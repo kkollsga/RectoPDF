@@ -66,7 +66,7 @@ impl Host for AppHost {
         result
     }
 
-    fn check(&self, condition: Condition, tab: &str, page: Option<u32>) -> ConditionState {
+    fn check(&self, condition: Condition, tab: &recto_agent::TabRef, page: Option<u32>) -> ConditionState {
         self.session.check(condition, tab, page)
     }
 

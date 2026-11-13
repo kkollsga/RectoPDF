@@ -3,6 +3,7 @@
 
 use super::words::OnOff;
 use super::{Cmd, Cx, row_access};
+use crate::TabRef;
 use crate::table::{Access, Arg, BASE, GROUP_EDIT, Kind, Spec};
 use crate::{AgentError, Level, Runs, SessionAccess, exit};
 use serde_json::{Value, json};
@@ -68,7 +69,7 @@ impl Cmd for EditMode {
     // It reads nothing of a document, the one being read included.
     const PROTECTED_OK: bool = true;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {

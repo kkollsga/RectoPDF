@@ -2,6 +2,7 @@
 //!
 //! It holds one page's text at a time past the two pages a drag starts and ends on, and the next [`chrome::NEIGHBOURS`] read ahead, so a copy of a whole document costs what its few longest pages do, plus the copy. Running heads, footers and page numbers are left out of body text by comparing each page's edges with its neighbours' (see `recto_index::chrome`): a page past either end of the pick is read for that without the hidden-text check, as only its edge lines are kept.
 
+use crate::TabRef;
 use crate::render::open_for_text;
 use crate::{AgentError, SessionAccess, exit, no_such_page, select as select_tab, source_changed};
 use recto_index::chrome::{self, EdgeLine};
@@ -24,7 +25,7 @@ const MAX_SELECT_BYTES: usize = 4 * 1024 * 1024;
 
 /// What's been asked for, on the command line or the wire.
 pub(crate) struct Pick<'a> {
-    pub tab: &'a str,
+    pub tab: &'a TabRef,
     pub page: Option<u32>,
     pub to_page: Option<u32>,
     pub chars: Option<&'a str>,
@@ -377,7 +378,7 @@ mod tests {
 
     fn whole<'a>() -> Pick<'a> {
         Pick {
-            tab: "active",
+            tab: &crate::tab_ref::ACTIVE,
             page: None,
             to_page: None,
             chars: None,

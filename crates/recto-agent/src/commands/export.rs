@@ -14,8 +14,8 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Render {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     pub page: u32,
     /// A number, or `"max"` for the largest that fits, which reads as [`render::LARGEST_THAT_FITS`].
     #[serde(
@@ -37,7 +37,7 @@ impl Cmd for Render {
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -75,8 +75,8 @@ impl Cmd for Render {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExportSvg {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     pub page: u32,
     pub out: PathBuf,
     /// `x, y, width, height`, in points from the page's top left.
@@ -103,7 +103,7 @@ impl Cmd for ExportSvg {
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -158,8 +158,8 @@ impl Cmd for ExportSvg {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Images {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     pub page: u32,
 }
 
@@ -170,7 +170,7 @@ impl Cmd for Images {
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -202,8 +202,8 @@ impl Cmd for Images {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Image {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     pub page: u32,
     /// From 1, as `images` lists them.
     pub number: u32,
@@ -219,7 +219,7 @@ impl Cmd for Image {
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -274,8 +274,8 @@ impl Cmd for Image {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Snapshot {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     pub page: u32,
     /// `x, y, width, height`, in points from the page's top left, as it's shown.
     pub rect: [f32; 4],
@@ -297,7 +297,7 @@ impl Cmd for Snapshot {
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -359,8 +359,8 @@ impl Cmd for Snapshot {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Print {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     /// `4`, `4-6` or `4-`: all of them if left out.
     #[serde(default)]
     pub pages: Option<String>,
@@ -379,7 +379,7 @@ impl Cmd for Print {
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {

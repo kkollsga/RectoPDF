@@ -13,7 +13,8 @@ use recto_agent::commands::updates::{Settings, UpdateDevBuilds};
 use recto_agent::commands::view::{PaperChoice, Shown, View};
 use recto_agent::commands::words::OnOff;
 use recto_agent::commands::{Edit, Move, Updates};
-use recto_agent::{Command, envelope, exit, parse, table};
+use recto_agent::{Command, TabRef, envelope, exit, parse, table};
+use recto_session::TabId;
 
 /// Every value of every typed payload the tests enumerate, as the commands they are.
 fn every_typed_command() -> Vec<Command> {
@@ -23,14 +24,14 @@ fn every_typed_command() -> Vec<Command> {
     }
     for which in Which::ALL {
         for tab in ["active", "#3", "report"] {
-            all.push(ContentsShow { which, tab: tab.into() }.into());
+            all.push(ContentsShow { which, tab: TabRef::from(tab) }.into());
         }
     }
     for set in [None].into_iter().chain(OnOff::ALL.map(Some)) {
         all.push(UpdateDevBuilds { set }.into());
         all.push(Settings { auto_update: set }.into());
     }
-    let tabs = |list: &[&str]| list.iter().map(|tab| (*tab).to_string()).collect::<Vec<String>>();
+    let tabs = |list: &[&str]| list.iter().map(|tab| TabRef::from(*tab)).collect::<Vec<TabRef>>();
     all.extend([Compare::Look, Compare::Off].map(Command::from));
     for sync in [None].into_iter().chain(OnOff::ALL.map(Some)) {
         for list in [&["#1", "#2"][..], &["#1", "report", "#3"]] {
@@ -41,8 +42,8 @@ fn every_typed_command() -> Vec<Command> {
         all.push(Compare::Sync(sync).into());
     }
     for tab in ["#2", "report", "active"] {
-        all.push(Compare::Toggle(tab.into()).into());
-        all.push(Compare::Reading(tab.into()).into());
+        all.push(Compare::Toggle(TabRef::from(tab)).into());
+        all.push(Compare::Reading(TabRef::from(tab)).into());
     }
     let asks = [
         FindAsk::Look,
@@ -63,11 +64,12 @@ fn every_typed_command() -> Vec<Command> {
         }
     }
     let maybe = |words: &[Option<&str>]| words.iter().map(|word| word.map(str::to_string)).collect::<Vec<_>>();
+    let tab_refs = [None, Some(TabRef::Active), Some(TabRef::Id(TabId(2))), Some(TabRef::from("report"))];
     for paper in [None].into_iter().chain(PaperChoice::ALL.map(Some)) {
         for sidebar in [None].into_iter().chain(Shown::ALL.map(Some)) {
             for agent_icon in [None].into_iter().chain(Shown::ALL.map(Some)) {
                 for layout in [None].into_iter().chain(recto_session::record::Spread::ALL.map(Some)) {
-                    for tab in maybe(&[None, Some("active"), Some("#2"), Some("report")]) {
+                    for tab in &tab_refs {
                         for zoom in maybe(&[None, Some("fit"), Some("150%")]) {
                             all.push(
                                 View {

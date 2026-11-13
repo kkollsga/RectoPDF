@@ -8,6 +8,7 @@
 //! - **A PDF's flag against printing is ignored** (owner, 2026-11-08: "Ignore the flag"): nothing here reads it. A print to a PDF *file* is an export, so a file that asks not to be copied asks "anyway" (owner, the same day), and print to paper never does.
 //! - **SSD cost.** The app's print is written once to a temp file and removed when the system's printing is done with it: about 0.3 MB a page of text at 300 dpi and up to about 50 MB a page of a dense map, held to [`MAX_BYTES`] in all. That's one write of what's printed, which the system's own print spooling would make anyway.
 
+use crate::TabRef;
 use crate::render::{FileOut, Output, OwnTemp, output_exists, publish_picture};
 use crate::{AgentError, Direct, DocLoader, Session, SessionAccess, exit, no_such_page, parse_pages, select, source_changed};
 use flate2::{Compression, write::ZlibEncoder};
@@ -76,12 +77,12 @@ pub(crate) fn default_dpi() -> u32 {
 }
 
 /// [`print_pages`] on a session in hand, for the app's print.
-pub fn print_pages_in<L: DocLoader + Clone>(session: &mut Session<L>, tab: &str, pages: Option<&str>) -> Result<Vec<PrintPage>, AgentError> {
+pub fn print_pages_in<L: DocLoader + Clone>(session: &mut Session<L>, tab: &TabRef, pages: Option<&str>) -> Result<Vec<PrintPage>, AgentError> {
     print_pages(&Direct(RefCell::new(session), None), tab, pages)
 }
 
 /// The pages a print takes, as the tab has them, edits and all: each one's file and page there, and its unsaved turn. `pages` is `4`, `4-6` or `4-`, and all of them if left out.
-pub fn print_pages<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>) -> Result<Vec<PrintPage>, AgentError> {
+pub fn print_pages<A: SessionAccess>(access: &A, tab: &TabRef, pages: Option<&str>) -> Result<Vec<PrintPage>, AgentError> {
     let range = pages.map(|pages| parse_pages(pages, true)).transpose()?;
     let sources = access.with(|s| {
         let id = select(s, tab)?;

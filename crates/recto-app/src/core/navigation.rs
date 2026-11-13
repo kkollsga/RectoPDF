@@ -37,13 +37,13 @@ pub fn row<'a>(_: &'a Arc<Inner>, asked: &menu_rows::Asked<'_>) -> Option<menu_r
 
 /// Back, or Forward, in the tab being read.
 fn step(back: bool) -> Command {
-    let tab = "active".to_string();
+    let tab = recto_agent::TabRef::Active;
     if back { Back { tab }.into() } else { Forward { tab }.into() }
 }
 
 fn goto(tab: TabId, page: Option<u32>, label: Option<String>, within: Option<f64>) -> Command {
     Goto {
-        tab: format!("#{}", tab.0),
+        tab: recto_agent::TabRef::Id(tab),
         page,
         label,
         within,

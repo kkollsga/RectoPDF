@@ -2,6 +2,7 @@
 //!
 //! An agent sees where a link goes and can follow one within the document, as a click does. It never opens a web address: only the person can, in the app, after the app has asked them and shown the real address. A link's address comes from the file, so it goes under `untrusted`, and nothing about a link is ever run.
 
+use crate::TabRef;
 use crate::{AgentError, Event, SessionAccess, exit, locate, page_now, select, where_json};
 use recto_core::nav::{LinkTarget, PageLinks};
 use recto_session::{Author, DocLoader, Session, TabId};
@@ -46,11 +47,11 @@ pub fn link_json<L: DocLoader>(session: &Session<L>, id: TabId, from: u32, index
 }
 
 /// One page's links, read off the session's lock: a file on a slow disk holds up only this. With the page's unsaved quarter turns.
-fn read<A: SessionAccess>(access: &A, tab: &str, page: u32) -> Result<(TabId, u32, PageLinks), AgentError> {
+fn read<A: SessionAccess>(access: &A, tab: &TabRef, page: u32) -> Result<(TabId, u32, PageLinks), AgentError> {
     read_turned(access, tab, page).map(|(id, position, links, _)| (id, position, links))
 }
 
-fn read_turned<A: SessionAccess>(access: &A, tab: &str, page: u32) -> Result<(TabId, u32, PageLinks, u8), AgentError> {
+fn read_turned<A: SessionAccess>(access: &A, tab: &TabRef, page: u32) -> Result<(TabId, u32, PageLinks, u8), AgentError> {
     let (id, position, source) = locate(access, tab, page)?;
     let read = recto_core::nav::page_links(&source.path, &[source.page]).map_err(AgentError::from)?;
     let links = read.into_iter().next().map(|(_, links)| links).unwrap_or_default();
@@ -70,7 +71,7 @@ fn turned_box([x0, y0, x1, y1]: [f32; 4], (width, height): (f32, f32), turns: u8
 }
 
 /// `recto links`: what's on a page, and where each goes. On a page with an unsaved turn each link also has `shown_rect`, its box on the page as it's seen turned (PLAN, links follow-ups: agents got the file's box for a page the reader sees turned).
-pub fn links<A: SessionAccess>(access: &A, tab: &str, page: u32) -> Result<Value, AgentError> {
+pub fn links<A: SessionAccess>(access: &A, tab: &TabRef, page: u32) -> Result<Value, AgentError> {
     let (id, position, found, turns) = read_turned(access, tab, page)?;
     let size = found.frame.shown_size().filter(|_| turns != 0);
     access.with(|s| {
@@ -96,7 +97,7 @@ pub fn links<A: SessionAccess>(access: &A, tab: &str, page: u32) -> Result<Value
 }
 
 /// `recto follow`: what a click on a link does, within the document. A web address is the person's to open, and never an agent's.
-pub fn follow<A: SessionAccess>(access: &A, by: Author, tab: &str, page: u32, link: u32, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+pub fn follow<A: SessionAccess>(access: &A, by: Author, tab: &TabRef, page: u32, link: u32, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     let (id, position, found) = read(access, tab, page)?;
     // After the read, which can take a while on a slow disk, so the place taken in is the one showing as it goes.
     access.take_places();
@@ -105,7 +106,7 @@ pub fn follow<A: SessionAccess>(access: &A, by: Author, tab: &str, page: u32, li
             .then("`recto links --page N` lists them, counted from 1.")
     })?;
     access.with(|s| {
-        let id = select(s, &format!("#{}", id.0)).map_err(|_| AgentError::new("no_such_tab", "That tab closed.", exit::NOT_FOUND))?;
+        let id = select(s, &TabRef::Id(id)).map_err(|_| AgentError::new("no_such_tab", "That tab closed.", exit::NOT_FOUND))?;
         let went = match &chosen.target {
             LinkTarget::Page { page: file_page, within } => {
                 let to = s.pages().position_in_same_file(id, position, *file_page).ok_or_else(|| AgentError::new("link_goes_nowhere", "The page this link goes to isn't in the document as it's been edited.", exit::FAILED))?;
@@ -145,7 +146,7 @@ fn nothing_that_way(back: bool) -> AgentError {
 }
 
 /// `recto back` and `recto forward`, as ⌘[ and ⌘] do.
-pub fn step<A: SessionAccess>(access: &A, by: Author, tab: &str, back: bool, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+pub fn step<A: SessionAccess>(access: &A, by: Author, tab: &TabRef, back: bool, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
         let moved = s.step_as(id, back, by)?;
@@ -158,7 +159,7 @@ pub fn step<A: SessionAccess>(access: &A, by: Author, tab: &str, back: bool, eve
 }
 
 /// `recto goto label iv`: the page the file calls that, or a plain number no page is called, as the go-to field reads it.
-pub fn goto_label<A: SessionAccess>(access: &A, by: Author, tab: &str, label: &str, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+pub fn goto_label<A: SessionAccess>(access: &A, by: Author, tab: &TabRef, label: &str, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
         let page = s.pages().for_typed(id, label).ok_or_else(|| {

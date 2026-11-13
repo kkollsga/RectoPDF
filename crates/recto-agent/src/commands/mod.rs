@@ -30,7 +30,7 @@ pub mod view;
 pub mod words;
 
 use crate::table::{self, Access, Spec};
-use crate::{Actor, AgentError, Command, Event, Level, Runs, SessionAccess};
+use crate::{Actor, AgentError, Command, Event, Level, Runs, SessionAccess, TabRef};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -51,7 +51,7 @@ pub trait Cmd {
     /// which the person's every tap goes through (R2.3). One that forgot could stop the window answering.
     const WAITS: bool;
     /// The selector of the tab it acts on, which `execute` holds awake for as long as it runs. One that forgot could see its tab go dormant mid-command.
-    fn tab(&self) -> Option<&str>;
+    fn tab(&self) -> Option<&TabRef>;
     /// Who may run it. Most say their row's level, [`row_access`]; some depend on what's asked.
     fn access(&self) -> Access;
     /// Where it's answered.
@@ -93,12 +93,8 @@ pub fn log_file(path: &Path) -> Value {
 }
 
 /// A tab's name as typed isn't kept. `with_acted_tab` swaps in the `#id` it turned out to mean, which is what the log is for: this is only what's left if it didn't find one, such as an ambiguous name, or a command refused before it looked.
-pub fn log_tab(tab: &str) -> String {
-    if tab == "active" || tab.strip_prefix('#').is_some_and(|id| id.bytes().all(|b| b.is_ascii_digit()) && id.len() <= 10) {
-        tab.to_string()
-    } else {
-        "by name".to_string()
-    }
+pub fn log_tab(tab: &TabRef) -> String {
+    tab.log()
 }
 
 /// The type a command is read from on the wire: its [line](self#the-wire-and-the-types) where it has one, or the payload itself.
@@ -200,7 +196,7 @@ macro_rules! family {
                 }
             }
 
-            pub fn tab(&self) -> Option<&str> {
+            pub fn tab(&self) -> Option<&TabRef> {
                 match self {
                     $(Self::$variant(command) => $crate::commands::Cmd::tab(command),)*
                 }

@@ -27,7 +27,7 @@ impl Cmd for Open {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {
@@ -51,8 +51,8 @@ impl Cmd for Open {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tap {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
 }
 
 impl Cmd for Tap {
@@ -62,7 +62,7 @@ impl Cmd for Tap {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = true;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -103,7 +103,7 @@ impl Cmd for Recent {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {
@@ -148,7 +148,7 @@ impl Cmd for RecentClear {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {
@@ -180,8 +180,8 @@ impl Cmd for RecentClear {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Close {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
 }
 
 impl Cmd for Close {
@@ -191,7 +191,7 @@ impl Cmd for Close {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = true;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {

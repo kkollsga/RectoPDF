@@ -1,6 +1,7 @@
 //! Access and what agents have done: `permission show`, `permission request`, `log`, `sign` and `level changed`. The server's own loop answers all but `sign`, which nobody can run.
 
 use super::{Cmd, Cx, needs_server, row_access};
+use crate::TabRef;
 use crate::human::text;
 use crate::table::*;
 use crate::{AgentError, Level, Runs, SessionAccess};
@@ -19,7 +20,7 @@ impl Cmd for PermissionShow {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {
@@ -55,7 +56,7 @@ impl Cmd for PermissionRequest {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {
@@ -90,7 +91,7 @@ impl Cmd for Log {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {
@@ -122,7 +123,7 @@ impl Cmd for Sign {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {
@@ -154,7 +155,7 @@ impl Cmd for LevelChanged {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {

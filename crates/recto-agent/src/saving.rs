@@ -13,6 +13,7 @@
 //! a backup of the original: nothing is lost. It may Save As to a new file, which changes nothing that exists. Replacing another file, and a save
 //! that rewrites the file, which takes what was removed out of it for good, need Full. Read-only and Off can't save.
 
+use crate::TabRef;
 use crate::{AgentError, Event, Level, SessionAccess, exit, file_label, select};
 use recto_core::save::{AddedFile, PageRef, SaveError, SaveHooks, SaveOutcome, SaveRequest, SaveStep, Target, Writer};
 use recto_platform::FileStamp;
@@ -196,7 +197,7 @@ pub fn check_export_path(out: &Path, endings: &[&str], kind: &str) -> Result<(),
 
 /// The tab to save, unless its edits were made on another version of the file than the one there: those are saved nowhere, here or as a copy, as they'd
 /// land on its pages. What's known decides ([`recto_session::Notices::fit`]); a change since the last look is the save's own to find.
-fn tab_to_save<L: recto_session::DocLoader>(s: &recto_session::Session<L>, tab: &str) -> Result<recto_session::TabId, AgentError> {
+fn tab_to_save<L: recto_session::DocLoader>(s: &recto_session::Session<L>, tab: &TabRef) -> Result<recto_session::TabId, AgentError> {
     let id = select(s, tab)?;
     match crate::unfit::refusal(s.notices().fit(id), crate::unfit::Asked::Save) {
         Some(refused) => Err(refused),
@@ -228,7 +229,7 @@ fn as_said(error: SaveError, request: &SaveRequest<'_>, to: &SaveTo) -> SaveErro
 }
 
 /// **Saves a tab.** The one way an agent, the CLI or the app saves.
-pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &TabRef, to: &SaveTo, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     let mut to = to.clone();
     // Save As onto the tab's own file, which is a Save: a signed one's refusal then says to choose another name, not to use Save As.
     let mut onto_itself = false;

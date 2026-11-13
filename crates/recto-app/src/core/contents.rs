@@ -3,14 +3,14 @@
 //! are what the session published.
 
 use super::{Inner, lock, person};
-use recto_agent::Command;
 use recto_agent::commands::contents::{ContentsFold, ContentsShow, ContentsStop, Which};
+use recto_agent::{Command, TabRef};
 use recto_session::{ContentsAction, TabId};
 use std::sync::Arc;
 
 /// What the note's action comes to: Generate and Show generated are both `contents show generated`, which makes them if they aren't made.
 fn note_command(tab: TabId, action: ContentsAction) -> Command {
-    let tab = format!("#{}", tab.0);
+    let tab = TabRef::Id(tab);
     let show = |which: Which| ContentsShow { which, tab: tab.clone() }.into();
     match action {
         ContentsAction::Generate | ContentsAction::ShowGenerated => show(Which::Generated),
@@ -33,7 +33,14 @@ impl Inner {
             .get(first as usize)
             .map(|entry| (entry.tab, entry.entry, entry.expandable));
         if let Some((tab, entry, true)) = entry {
-            person::submit(self, ContentsFold { entry, tab: format!("#{tab}") }.into());
+            person::submit(
+                self,
+                ContentsFold {
+                    entry,
+                    tab: TabRef::Id(TabId(tab)),
+                }
+                .into(),
+            );
         }
     }
 }

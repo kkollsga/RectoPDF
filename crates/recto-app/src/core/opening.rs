@@ -4,12 +4,13 @@
 //! [`answered`].
 
 use super::*;
+use recto_agent::TabRef;
 use recto_agent::commands::Move;
 use recto_agent::commands::tabs::{Open, RecentClear, Tap};
 
-/// The tab a person's tap is for, as the window names it, `#3`.
+/// The tab a person's tap is for, as the window names it: by its id.
 fn tap(tab: TabId) -> Command {
-    Tap { tab: format!("#{}", tab.0) }.into()
+    Tap { tab: TabRef::Id(tab) }.into()
 }
 
 /// **The window's steps before a person's tap:** the tab's wake is timed from now, for how long it takes to show, as a tap always timed it; and it's the tab
@@ -22,8 +23,8 @@ pub fn before(inner: &Inner, reads: &mut FileReads, command: &Command) {
     match command {
         Command::Move(Move::Tap(Tap { tab })) => {
             reads.wanted_tab = None;
-            if let Some(id) = tab.strip_prefix('#').and_then(|id| id.parse().ok()) {
-                inner.engine.waking().note_wake(id, Instant::now());
+            if let TabRef::Id(id) = tab {
+                inner.engine.waking().note_wake(id.0, Instant::now());
             }
         }
         Command::Move(Move::Open(Open { path, .. })) => {

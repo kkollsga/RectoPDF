@@ -1,5 +1,6 @@
 //! The search index as commands see it: where a document's corpus stands, what to do about it, and the words for that. The corpus itself is `recto_index::corpus`, and what builds it belongs to whoever holds the session, behind [`Indexing`], because this crate holds no state.
 
+use crate::TabRef;
 use crate::{AgentError, ConditionState, SessionAccess, exit, select};
 use recto_index::corpus::{self, CorpusKey, DiskState, Summary};
 use recto_platform::FileStamp;
@@ -184,7 +185,7 @@ struct TabFile {
 }
 
 /// Every file a tab's pages come from.
-fn tab_files<A: SessionAccess>(access: &A, tab: &str) -> Result<(u32, Vec<TabFile>), AgentError> {
+fn tab_files<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<(u32, Vec<TabFile>), AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
         let path = s
@@ -224,7 +225,7 @@ fn no_indexing() -> AgentError {
 const MAX_LISTED_FILES: usize = 32;
 
 /// `recto index` and `recto index status`.
-pub(crate) fn index<A: SessionAccess>(access: &A, tab: &str, want: bool, agent: bool) -> Result<Value, AgentError> {
+pub(crate) fn index<A: SessionAccess>(access: &A, tab: &TabRef, want: bool, agent: bool) -> Result<Value, AgentError> {
     let indexing = access.indexing().ok_or_else(no_indexing)?;
     let (id, files) = tab_files(access, tab)?;
     if agent {
@@ -341,7 +342,7 @@ fn report(indexing: &dyn Indexing, id: u32, files: &[TabFile], want: bool) -> (V
 }
 
 /// `recto wait indexing-done`: asking counts as wanting it, or a wait could run out its time on something nobody started.
-pub(crate) fn look<A: SessionAccess>(access: &A, tab: &str) -> ConditionState {
+pub(crate) fn look<A: SessionAccess>(access: &A, tab: &TabRef) -> ConditionState {
     let Some(indexing) = access.indexing() else {
         return ConditionState::Failed(no_indexing());
     };
@@ -389,7 +390,7 @@ fn wait_until_stopped(indexing: &dyn Indexing, key: Option<CorpusKey>) {
 }
 
 /// `recto index clear`: this tab's files, or everything, and whatever's on its way for them.
-pub(crate) fn clear<A: SessionAccess>(access: &A, tab: &str, all: bool) -> Result<Value, AgentError> {
+pub(crate) fn clear<A: SessionAccess>(access: &A, tab: &TabRef, all: bool) -> Result<Value, AgentError> {
     let indexing = access.indexing().ok_or_else(no_indexing)?;
     let failed = || AgentError::new("write_failed", "The index folder couldn't be cleared.", exit::FAILED);
     if all {

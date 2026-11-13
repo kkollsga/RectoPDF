@@ -3,6 +3,7 @@
 //! Three kinds of search, over the same text `text` gives. The plain one compares the normaliser's text, lower-cased, with any run of space or line break as one space, so a phrase across a line break still matches. `--regex` runs a pattern over that text as it is, by ripgrep's own engine in this process. `--rank` counts words and puts pages in order: see `recto_index::rank`. Bounded by a limit on hits and a limit on
 //! time. Stopping early says where to go on from, so "nothing found" is only ever said of pages really searched.
 
+use crate::TabRef;
 use crate::index::{FileIndex, Indexing};
 use crate::{AgentError, SessionAccess, exit, parse_pages, select};
 use grep_matcher::Matcher;
@@ -72,7 +73,7 @@ impl PlanFile {
 
 /// What a search was asked for.
 pub(crate) struct Asked<'a> {
-    pub tab: &'a str,
+    pub tab: &'a TabRef,
     pub query: &'a str,
     pub pages: Option<&'a str>,
     pub limit: Option<u32>,
@@ -136,7 +137,7 @@ pub(crate) fn search<A: SessionAccess>(access: &A, asked: &Asked<'_>) -> Result<
     run(&plan, &query, mode, &settings(limit))
 }
 
-fn plan<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>) -> Result<Plan, AgentError> {
+fn plan<A: SessionAccess>(access: &A, tab: &TabRef, pages: Option<&str>) -> Result<Plan, AgentError> {
     let range = pages.map(|pages| parse_pages(pages, true)).transpose()?;
     access.with(|s| {
         let id = select(s, tab)?;

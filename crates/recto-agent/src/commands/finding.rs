@@ -153,7 +153,7 @@ impl Cmd for Find {
     // thread as a keystroke.
     const WAITS: bool = false;
     /// None held: it's in the document being read, which `execute` asks about for a protected one.
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {

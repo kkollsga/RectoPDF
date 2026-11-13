@@ -14,8 +14,8 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Search {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     pub query: String,
     /// `4` or `4-6`. All pages if left out.
     #[serde(default)]
@@ -43,7 +43,7 @@ impl Cmd for Search {
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -95,8 +95,8 @@ impl Cmd for Search {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Index {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     /// Also writes the folder an agent reads, one file per page, once the index is finished.
     #[serde(default)]
     pub agent: bool,
@@ -109,7 +109,7 @@ impl Cmd for Index {
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -136,8 +136,8 @@ impl Cmd for Index {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct IndexStatus {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
 }
 
 impl Cmd for IndexStatus {
@@ -147,7 +147,7 @@ impl Cmd for IndexStatus {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -174,8 +174,8 @@ impl Cmd for IndexStatus {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct IndexClear {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     #[serde(default)]
     pub all: bool,
 }
@@ -187,7 +187,7 @@ impl Cmd for IndexClear {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -234,8 +234,8 @@ impl Cmd for IndexClear {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Text {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     pub page: u32,
 }
 
@@ -246,7 +246,7 @@ impl Cmd for Text {
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -283,8 +283,8 @@ impl Cmd for Text {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Select {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     #[serde(default)]
     pub page: Option<u32>,
     #[serde(default)]
@@ -310,7 +310,7 @@ impl Cmd for Select {
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -368,8 +368,8 @@ impl Cmd for Select {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Copy {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     #[serde(default)]
     pub page: Option<u32>,
     #[serde(default)]
@@ -395,7 +395,7 @@ impl Cmd for Copy {
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {

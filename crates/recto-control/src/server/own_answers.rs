@@ -36,7 +36,7 @@ impl<H: Host> Loop<H> {
                 self.answer(index, tag, &Ok(data));
             }
             Command::Rights(Rights::PermissionRequest(asked)) => self.permission_request(index, level, asked.level, asked.timeout_ms),
-            Command::Waits(Waits::Wait(Wait { tab, .. })) if tab.len() > MAX_SELECTOR_BYTES => {
+            Command::Waits(Waits::Wait(Wait { tab, .. })) if tab.over_long() => {
                 self.answer(index, tag, &Err(AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND)));
             }
             Command::Waits(Waits::Wait(_) | Waits::Watch(_)) if self.subscribers() >= self.limits.max_subscribers => {

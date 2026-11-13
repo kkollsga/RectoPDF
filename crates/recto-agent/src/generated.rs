@@ -2,6 +2,7 @@
 //!
 //! **Made when asked, never on open** (SPEC decision 22's rule, which holds here too): asking for them is what starts the helper, and an answer that isn't ready says so at once and never waits.
 
+use crate::TabRef;
 use crate::{AgentError, ConditionState, SessionAccess, exit};
 use recto_index::corpus::{Cleared, CorpusKey};
 use recto_index::generated::{self, Generated};
@@ -180,7 +181,7 @@ pub fn failure_words(code: &str) -> &'static str {
 }
 
 /// `recto wait contents-generated`: asking counts as wanting them, or a wait could run out its time on something nobody started.
-pub(crate) fn look<A: SessionAccess>(access: &A, tab: &str) -> ConditionState {
+pub(crate) fn look<A: SessionAccess>(access: &A, tab: &TabRef) -> ConditionState {
     let Some(generating) = access.generating() else {
         return ConditionState::Failed(no_generating());
     };

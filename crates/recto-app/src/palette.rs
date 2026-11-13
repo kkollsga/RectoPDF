@@ -256,8 +256,9 @@ pub fn as_command(id: &str, recent: &[(&str, &str)]) -> Option<recto_agent::Comm
             page: None,
         }));
     }
-    let tab = id.strip_prefix("tab:")?;
-    Some(Command::from(recto_agent::commands::tabs::Tap { tab: format!("#{tab}") }))
+    // A row's id is the words the host hands back, `tab:3`: read as the wire reads `#3`.
+    let tab = recto_agent::TabRef::parse(&format!("#{}", id.strip_prefix("tab:")?));
+    Some(Command::from(recto_agent::commands::tabs::Tap { tab }))
 }
 
 /// What running a row comes to, once the palette's closed.

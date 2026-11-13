@@ -8,6 +8,7 @@
 //! (`Disagreement::Unchecked`). [`known_or_start`] is what the window asks, which starts the look on a thread of its own and calls back when it's known.
 //! At most [`LOOKS_AT_ONCE`] run at once, a save's counting, and [`KEPT`] answers are kept, so nothing grows with the files opened.
 
+use crate::TabRef;
 use crate::{AgentError, SessionAccess, select};
 use recto_core::OpenError;
 use recto_core::agreement::{Disagreement, View, compare, compared_pages, structure_view};
@@ -131,7 +132,7 @@ fn renderer_view(doc: &mut DocRenderer, page_count: u32, deadline: Instant) -> R
 
 /// The files a save of `tab` would write from, each with the version the session has: the tab's own and every PDF its pages were added from. None
 /// for a tab only the renderer could read, which `begin_save` refuses as such: no worker is started for an answer that's already known (review round 2).
-fn files_of<A: SessionAccess>(access: &A, tab: &str) -> Result<Vec<(PathBuf, Option<FileStamp>, bool)>, AgentError> {
+fn files_of<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<Vec<(PathBuf, Option<FileStamp>, bool)>, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
         if s.tabs().tab(id).is_some_and(|tab| tab.renderer_only) {
@@ -147,7 +148,7 @@ fn files_of<A: SessionAccess>(access: &A, tab: &str) -> Result<Vec<(PathBuf, Opt
 
 /// **The gate, before a save holds its tab** (review round 1): a look can take seconds, and edits shouldn't be frozen for it. The save asks again
 /// once it holds the tab ([`save_refusal`]), which is then answered from what this kept.
-pub fn refusal_for<A: SessionAccess>(access: &A, tab: &str) -> Result<Option<AgentError>, AgentError> {
+pub fn refusal_for<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<Option<AgentError>, AgentError> {
     let files = files_of(access, tab)?;
     Ok(refusal_among(files.iter().map(|(path, stamp, added)| (path.as_path(), *stamp, *added))))
 }
@@ -544,7 +545,7 @@ mod tests {
         let refused = crate::saving::save(
             &access,
             crate::Level::Full,
-            &format!("#{}", tab.0),
+            &crate::TabRef::Id(tab),
             &crate::saving::SaveTo::As {
                 out: out.clone(),
                 replace: false,

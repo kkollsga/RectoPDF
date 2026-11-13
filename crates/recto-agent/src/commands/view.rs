@@ -25,7 +25,7 @@ pub struct View {
     pub layout: Option<Spread>,
     /// The tab `layout` is for, and said of: the active tab's if left out. The window names the tab in the pane it was chosen on (R2.3), as the active tab
     /// may have moved on by the time it runs.
-    pub tab: Option<String>,
+    pub tab: Option<TabRef>,
 }
 
 /// A paper to show pages on, or `auto`, which goes with the window.
@@ -110,7 +110,7 @@ pub mod line {
         #[serde(default)]
         pub layout: Option<String>,
         #[serde(default)]
-        pub tab: Option<String>,
+        pub tab: Option<crate::TabRef>,
     }
 }
 
@@ -209,8 +209,8 @@ impl Cmd for View {
     const WAITS: bool = false;
     /// The tab a layout is for: the one named, or the one showing. Which tab it is decides, not how it was named, so a layout of a document withheld from
     /// agents is refused either way. The paper, the sidebar and the agent icon touch no tab, and a plain look names none.
-    fn tab(&self) -> Option<&str> {
-        self.tab.as_deref().or(self.layout.as_ref().map(|_| "active"))
+    fn tab(&self) -> Option<&TabRef> {
+        self.tab.as_ref().or(self.layout.map(|_| &crate::tab_ref::ACTIVE))
     }
     /// Asking how things are shown changes nothing, whichever tab's layout it asks for. Changing it is moving around.
     fn access(&self) -> Access {
@@ -254,7 +254,7 @@ impl Cmd for View {
                     .then("It works when `recto` is talking to the app."),
             );
         }
-        set(cx.access, cx.actor, (*paper, *sidebar, *agent_icon, *layout), tab.as_deref(), cx.events)
+        set(cx.access, cx.actor, (*paper, *sidebar, *agent_icon, *layout), tab.as_ref(), cx.events)
     }
     fn human(data: &Value) -> String {
         format!(
@@ -293,7 +293,7 @@ impl Cmd for Palette {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     /// Running a command is doing it, as its menu item would.
@@ -356,7 +356,7 @@ pub(crate) fn set<A: SessionAccess>(
     access: &A,
     actor: Actor,
     asked: (Option<PaperChoice>, Option<Shown>, Option<Shown>, Option<Spread>),
-    tab: Option<&str>,
+    tab: Option<&TabRef>,
     events: &mut Vec<Event>,
 ) -> Result<Value, AgentError> {
     let (paper, sidebar, agent_icon, layout) = asked;

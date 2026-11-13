@@ -18,8 +18,8 @@ use serde_json::{Value, json};
 pub struct ContentsFold {
     /// The entry's number, as `contents` gives it.
     pub entry: u32,
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
 }
 
 impl Cmd for ContentsFold {
@@ -30,7 +30,7 @@ impl Cmd for ContentsFold {
     // Which entries have sections under them is the shape of a document's contents.
     const PROTECTED_OK: bool = false;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -71,7 +71,7 @@ impl Cmd for ContentsFold {
 #[serde(into = "line::ContentsShow")]
 pub struct ContentsShow {
     pub which: Which,
-    pub tab: String,
+    pub tab: TabRef,
 }
 
 /// Which list of contents: the file's own, or generated ones.
@@ -103,8 +103,8 @@ pub mod line {
     pub struct ContentsShow {
         /// `own` or `generated`.
         pub which: String,
-        #[serde(default = "crate::active_tab")]
-        pub tab: String,
+        #[serde(default)]
+        pub tab: crate::TabRef,
     }
 }
 
@@ -151,7 +151,7 @@ impl Cmd for ContentsShow {
     const PROTECTED_OK: bool = false;
     // Generated ones not shown yet are looked for: the file's key, and the folder they're kept in.
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -190,7 +190,7 @@ fn view_word(view: Option<&GeneratedView>) -> &'static str {
 
 /// `contents show`, the note's Show and Generate: the file's own chosen, or generated ones, looked for with the session free if they aren't shown yet and
 /// asked for if they aren't made, as the note's Generate always did.
-fn show<A: SessionAccess>(access: &A, tab: &str, which: Which) -> Result<Value, AgentError> {
+fn show<A: SessionAccess>(access: &A, tab: &TabRef, which: Which) -> Result<Value, AgentError> {
     let generated = which == Which::Generated;
     let generating = if generated {
         Some(access.generating().ok_or_else(generated::no_generating)?)
@@ -219,8 +219,8 @@ fn show<A: SessionAccess>(access: &A, tab: &str, which: Which) -> Result<Value, 
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContentsStop {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
 }
 
 impl Cmd for ContentsStop {
@@ -230,7 +230,7 @@ impl Cmd for ContentsStop {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {

@@ -5,7 +5,7 @@
 use super::{Inner, lock, person};
 use recto_agent::commands::words::OnOff;
 use recto_agent::commands::{Move, compare::Compare};
-use recto_agent::{AgentError, Command};
+use recto_agent::{AgentError, Command, TabRef};
 use recto_session::TabId;
 use recto_session::compare::CompareError;
 use std::sync::Arc;
@@ -30,7 +30,7 @@ fn compare_words(error: &AgentError) -> Option<&'static str> {
 
 /// The reader's moved into another pane, by the pointer or a scroll: `compare --reading`, that pane's tab the one read. Nothing on screen moves.
 pub fn reading(tab: TabId) -> Command {
-    Compare::Reading(format!("#{}", tab.0)).into()
+    Compare::Reading(TabRef::Id(tab)).into()
 }
 
 /// **The comparison's menu ids** ([`super::menu_rows`]): the context menu's separate or synced scroll is `compare --sync off|on`.
@@ -44,6 +44,6 @@ pub fn row<'a>(_: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option
 impl Inner {
     /// ⌘-click or ⌃-click on a tab's row: `compare --toggle`, into the comparison or out of it, as it is when it runs.
     pub fn compare_toggle_for_person(self: &Arc<Self>, tab: TabId) {
-        person::submit(self, Compare::Toggle(format!("#{}", tab.0)).into());
+        person::submit(self, Compare::Toggle(TabRef::Id(tab)).into());
     }
 }

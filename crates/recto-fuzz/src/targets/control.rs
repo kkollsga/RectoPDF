@@ -38,7 +38,7 @@ impl Host for Guarded {
         }
         self.0.run(actor, command, events)
     }
-    fn check(&self, condition: Condition, tab: &str, page: Option<u32>) -> ConditionState {
+    fn check(&self, condition: Condition, tab: &recto_agent::TabRef, page: Option<u32>) -> ConditionState {
         self.0.check(condition, tab, page)
     }
     fn tab_count(&self) -> u32 {

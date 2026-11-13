@@ -1,6 +1,7 @@
 //! Waiting instead of polling: `wait`, `watch` and `watch stop`. The server's own loop answers them, since it holds the connections that wait.
 
 use super::{Cmd, Cx, needs_server, row_access};
+use crate::TabRef;
 use crate::human::{QUOTED_NAMES, count, number, tab_line};
 use crate::table::*;
 use crate::{AgentError, Condition, Runs, SessionAccess};
@@ -12,8 +13,8 @@ use serde_json::Value;
 #[serde(deny_unknown_fields)]
 pub struct Wait {
     pub condition: Condition,
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     #[serde(default)]
     pub page: Option<u32>,
     #[serde(default = "crate::default_wait_ms")]
@@ -27,7 +28,7 @@ impl Cmd for Wait {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -76,7 +77,7 @@ impl Cmd for Watch {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {
@@ -108,7 +109,7 @@ impl Cmd for WatchStop {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {

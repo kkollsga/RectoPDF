@@ -368,7 +368,7 @@ impl QaBridge {
                 "copied" => self.ask("copied", ""),
                 _ => Err(bad("That isn't a QA command.")),
             },
-            Qa::QaDrive(QaDrive { verb, value, timeout_ms, tab }) => self.drive_on_the_shown_tab(verb, value, *timeout_ms, tab.as_deref()),
+            Qa::QaDrive(QaDrive { verb, value, timeout_ms, tab }) => self.drive_on_the_shown_tab(verb, value, *timeout_ms, tab.as_ref()),
         }
     }
 
@@ -394,7 +394,7 @@ impl QaBridge {
     /// **The verbs that act on whatever tab the window shows** ([`recto_agent::commands::qa::ON_THE_SHOWN_TAB`]) say which tab that was, as
     /// `acted_on_tab`, and with `--tab` are refused, with nothing done, if the window shows another (owner, 2026-11-13: "Shouldnt it be clear which tab the
     /// action is sent to?"). Any other verb is refused `--tab`, as it isn't about the tab shown.
-    fn drive_on_the_shown_tab(&self, verb: &str, value: &str, timeout_ms: Option<u64>, expected: Option<&str>) -> Result<Value, AgentError> {
+    fn drive_on_the_shown_tab(&self, verb: &str, value: &str, timeout_ms: Option<u64>, expected: Option<&recto_agent::TabRef>) -> Result<Value, AgentError> {
         if !recto_agent::commands::qa::ON_THE_SHOWN_TAB.contains(&verb) {
             if expected.is_some() {
                 return Err(bad(
@@ -865,7 +865,7 @@ mod tests {
                 verb: verb.to_owned(),
                 value: value.to_owned(),
                 timeout_ms: None,
-                tab: Some(tab.to_owned()),
+                tab: Some(recto_agent::TabRef::from(tab)),
             }))
         };
         let before = app.session_json()["sidebar"].clone();

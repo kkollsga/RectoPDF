@@ -5,15 +5,15 @@
 use super::{HostAction, Inner, person};
 use crate::queue::{CoreCall, Origin, PersonCommand};
 use crate::saving::{CloseChoice, SAVED_NOT_CLOSED};
-use recto_agent::Command;
 use recto_agent::commands::tabs::Close;
 use recto_agent::commands::{Move, editing::Discard};
+use recto_agent::{Command, TabRef};
 use recto_session::TabId;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 fn close(tab: TabId) -> Command {
-    Close { tab: format!("#{}", tab.0) }.into()
+    Close { tab: TabRef::Id(tab) }.into()
 }
 
 /// **What the window says when a person's close didn't go:** only the close after the prompt's Save, which an edit made since the save stops, as the file
@@ -82,7 +82,7 @@ impl Inner {
             CloseChoice::SaveAs => return HostAction::ShowSavePanel,
             CloseChoice::Save if !self.core.frozen.load(Ordering::SeqCst) => super::saving::start_save(self, tab, None, true),
             CloseChoice::DontSave => {
-                person::submit(self, Discard { tab: format!("#{}", tab.0) }.into());
+                person::submit(self, Discard { tab: TabRef::Id(tab) }.into());
                 person::submit(self, close(tab));
             }
             CloseChoice::Save | CloseChoice::Cancel => {}

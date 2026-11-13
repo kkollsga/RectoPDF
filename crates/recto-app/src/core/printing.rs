@@ -277,7 +277,7 @@ pub fn start(inner: &Arc<Inner>, request: Request) -> bool {
         let listed = runner
             .host
             .session
-            .with_session(|session| print::print_pages_in(session, &format!("#{}", tab.0), Some(&pages)));
+            .with_session(|session| print::print_pages_in(session, &recto_agent::TabRef::Id(tab), Some(&pages)));
         let path = temp_path(generation);
         let outcome = listed.and_then(|listed| {
             if request.to_file && !request.anyway && print::any_copy_restricted(&listed) {

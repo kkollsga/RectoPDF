@@ -27,7 +27,7 @@ pub trait Host: Send + Sync + 'static {
     /// Runs a command for whoever asked: an agent at its level over the socket, or the person at the window.
     fn run(&self, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError>;
     /// Looks at a condition once.
-    fn check(&self, condition: Condition, tab: &str, page: Option<u32>) -> ConditionState;
+    fn check(&self, condition: Condition, tab: &recto_agent::TabRef, page: Option<u32>) -> ConditionState;
     /// How many tabs are open. Must never block: `status` answers from the socket's own thread.
     fn tab_count(&self) -> u32;
     /// The tabs with unsaved edits, which `stop` won't throw away.
@@ -394,7 +394,7 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
         self.run_on(&self.access(), actor, command, events)
     }
 
-    fn check(&self, condition: Condition, tab: &str, page: Option<u32>) -> ConditionState {
+    fn check(&self, condition: Condition, tab: &recto_agent::TabRef, page: Option<u32>) -> ConditionState {
         check_condition(&self.access(), condition, tab, page)
     }
 

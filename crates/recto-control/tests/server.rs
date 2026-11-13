@@ -81,17 +81,17 @@ impl Host for Stand {
         }
     }
 
-    fn check(&self, _condition: Condition, tab: &str, _page: Option<u32>) -> ConditionState {
-        if tab == "panics" {
+    fn check(&self, _condition: Condition, tab: &recto_agent::TabRef, _page: Option<u32>) -> ConditionState {
+        if tab.to_string() == "panics" {
             panic!("a bug in a look");
         }
-        if tab == "holds" {
+        if tab.to_string() == "holds" {
             let mut released = self.release.lock().unwrap();
             while !*released {
                 released = self.released.wait(released).unwrap();
             }
         }
-        if self.looks_answer.load(Ordering::SeqCst) && tab == "secret" {
+        if self.looks_answer.load(Ordering::SeqCst) && tab.to_string() == "secret" {
             return ConditionState::Met(json!({ "secret": true }));
         }
         ConditionState::Waiting

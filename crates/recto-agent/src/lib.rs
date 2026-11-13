@@ -33,6 +33,8 @@ mod command;
 mod route;
 mod search;
 mod selecting;
+pub mod tab_ref;
+pub use tab_ref::TabRef;
 pub mod skill;
 pub mod table;
 pub mod unfit;
@@ -132,10 +134,6 @@ impl Level {
             _ => None,
         }
     }
-}
-
-pub(crate) fn active_tab() -> String {
-    "active".into()
 }
 
 pub(crate) fn default_wait_ms() -> u64 {
@@ -587,7 +585,7 @@ pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, ev
     // Find has no tab of its own: it's in the document being read, so that's the one asked about.
     let about = command
         .tab_selector()
-        .or_else(|| matches!(command, Command::Move(commands::Move::Find(_))).then_some("active"));
+        .or_else(|| matches!(command, Command::Move(commands::Move::Find(_))).then_some(&tab_ref::ACTIVE));
     if let Some(selector) = about
         && !command.protected_ok()
         && !actor.sees_protected()
@@ -693,7 +691,7 @@ fn source_changed(path: &Path) -> AgentError {
 }
 
 /// Finds a tab's page as things stand now, edits included. Refuses if its file isn't the one the page's number is about.
-fn locate<A: SessionAccess>(access: &A, tab: &str, page: u32) -> Result<(TabId, u32, PageSource), AgentError> {
+fn locate<A: SessionAccess>(access: &A, tab: &TabRef, page: u32) -> Result<(TabId, u32, PageSource), AgentError> {
     let (id, position, source) = access.with(|s| {
         let id = select(s, tab)?;
         let position = page.checked_sub(1).ok_or_else(no_such_page)?;
@@ -854,7 +852,7 @@ fn which_pages(pages: &str, one: &str, many: &str) -> String {
 fn edit<A: SessionAccess>(
     access: &A,
     actor: Actor,
-    tab: &str,
+    tab: &TabRef,
     events: &mut Vec<Event>,
     did: String,
     change: impl FnOnce(&mut recto_session::PartMut<'_, recto_session::edit::PageEdits>) -> Result<(), recto_session::edit::EditError>,
@@ -1029,26 +1027,23 @@ fn tab_path<L: DocLoader>(session: &Session<L>, id: TabId) -> Result<PathBuf, Ag
 
 /// Finds a tab by `#id`, by `active`, or by a piece of its name. Selectors never guess: an ambiguous name lists the candidates.
 /// Which tab a selector means, for a host that handles a command itself.
-pub fn select_tab<L: DocLoader>(session: &Session<L>, selector: &str) -> Result<TabId, AgentError> {
-    select(session, selector)
+pub fn select_tab<L: DocLoader>(session: &Session<L>, tab: &TabRef) -> Result<TabId, AgentError> {
+    select(session, tab)
 }
 
-pub(crate) fn select<L: DocLoader>(session: &Session<L>, selector: &str) -> Result<TabId, AgentError> {
+pub(crate) fn select<L: DocLoader>(session: &Session<L>, tab: &TabRef) -> Result<TabId, AgentError> {
     let not_found = || AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND);
-    if selector.len() > MAX_SELECTOR_BYTES {
-        return Err(not_found());
-    }
-    if selector == "active" {
-        return session
-            .tabs()
-            .active()
-            .ok_or_else(|| AgentError::new("no_such_tab", "No PDF is open.", exit::NOT_FOUND).then("Open one with `recto open <file.pdf>`."));
-    }
-    if let Some(number) = selector.strip_prefix('#') {
-        let id = TabId(number.parse().map_err(|_| not_found())?);
-        return session.tabs().tab(id).map(|_| id).ok_or_else(not_found);
-    }
-    let needle = selector.to_lowercase();
+    let needle = match tab {
+        TabRef::Nothing(_) => return Err(not_found()),
+        TabRef::Active => {
+            return session
+                .tabs()
+                .active()
+                .ok_or_else(|| AgentError::new("no_such_tab", "No PDF is open.", exit::NOT_FOUND).then("Open one with `recto open <file.pdf>`."));
+        }
+        TabRef::Id(id) => return session.tabs().tab(*id).map(|_| *id).ok_or_else(not_found),
+        TabRef::Name(name) => name.to_lowercase(),
+    };
     let matches: Vec<_> = session
         .tabs()
         .iter()
@@ -1090,7 +1085,7 @@ pub enum ConditionState {
 }
 
 /// Looks at a condition once. Blocks for nothing but the session's lock.
-pub fn check_condition<A: SessionAccess>(access: &A, condition: Condition, tab: &str, page: Option<u32>) -> ConditionState {
+pub fn check_condition<A: SessionAccess>(access: &A, condition: Condition, tab: &TabRef, page: Option<u32>) -> ConditionState {
     // Whether a protected document's page is drawn, indexed or has contents is something read from it. Only its being open or closed is said.
     if !matches!(condition, Condition::TabOpen | Condition::TabClosed) && access.with(|s| select(s, tab).is_ok_and(|id| s.tabs().withheld_from_agents(id))) {
         return ConditionState::Failed(protected_refusal());
@@ -1167,7 +1162,7 @@ fn recent_json<L: DocLoader>(session: &Session<L>, level: Level) -> Value {
 }
 
 /// Puts each hit's page label on it, under `untrusted` as it's the file's words, where the file calls the page something other than its number, as Find shows it.
-fn label_hits<A: SessionAccess>(access: &A, tab: &str, answer: &mut Value) {
+fn label_hits<A: SessionAccess>(access: &A, tab: &TabRef, answer: &mut Value) {
     access.with(|s| {
         let Ok(id) = select(s, tab) else { return };
         if let Some(hits) = answer.get_mut("hits").and_then(Value::as_array_mut) {
@@ -1670,7 +1665,7 @@ mod tests {
     }
 
     fn every_command() -> Vec<Command> {
-        let tab = || "#1".to_string();
+        let tab = || crate::TabRef::from("#1");
         vec![
             Command::from(crate::commands::tabs::Open {
                 path: "/d/a.pdf".into(),
@@ -2345,7 +2340,7 @@ mod tests {
     fn bad_page_commands_change_nothing() {
         let mut s = edit_session();
         let id = TabId(1);
-        let tab = || "#1".to_string();
+        let tab = || crate::TabRef::from("#1");
         assert_eq!(
             run(
                 &mut s,
@@ -2588,7 +2583,7 @@ mod tests {
     }
 
     fn agent_attempts() -> Vec<Command> {
-        let tab = || "#1".to_string();
+        let tab = || crate::TabRef::from("#1");
         vec![
             Command::from(crate::commands::editing::PageRotate {
                 tab: tab(),
@@ -2618,7 +2613,7 @@ mod tests {
     fn an_agent_cant_erase_the_users_edits_at_any_step() {
         let mut s = edit_session();
         let id = TabId(1);
-        let tab = || "#1".to_string();
+        let tab = || crate::TabRef::from("#1");
         owners_rotation(&mut s, 0);
         owners_rotation(&mut s, 1);
         let users = turned_pages(&s);
@@ -2710,7 +2705,7 @@ mod tests {
     fn undoing_the_users_edit_doesnt_read_as_nothing_there() {
         let mut s = edit_session();
         let id = TabId(1);
-        let tab = || "#1".to_string();
+        let tab = || crate::TabRef::from("#1");
         owners_rotation(&mut s, 0);
         let undone = run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: tab() })).unwrap();
         assert_eq!(
@@ -2742,7 +2737,7 @@ mod tests {
     fn an_agent_can_throw_away_its_own_edits() {
         let mut s = edit_session();
         let id = TabId(1);
-        let tab = || "#1".to_string();
+        let tab = || crate::TabRef::from("#1");
         run(
             &mut s,
             Level::Control,
@@ -2792,7 +2787,7 @@ mod tests {
     #[test]
     fn an_edit_says_what_it_did() {
         let mut s = edit_session();
-        let tab = || "#1".to_string();
+        let tab = || crate::TabRef::from("#1");
         let said = |s: &mut Session<Fake>, command: Command| {
             let data = run(s, Level::Control, &command).unwrap();
             let shown = human::render(command.tag(), &data);
@@ -2927,7 +2922,7 @@ mod tests {
     #[test]
     fn every_edit_through_the_agent_interface_is_an_agents() {
         let mut s = edit_session();
-        let tab = || "#1".to_string();
+        let tab = || crate::TabRef::from("#1");
         for command in [
             Command::from(crate::commands::editing::PageRotate {
                 tab: tab(),
@@ -2958,7 +2953,7 @@ mod tests {
     /// edit; or the person's undo of an agent's step counts as the agent's. The same commands as the window sends, run as the person, are the owner's.
     #[test]
     fn every_edit_by_a_person_is_the_owners() {
-        let tab = || "#1".to_string();
+        let tab = || crate::TabRef::from("#1");
         let commands = [
             Command::from(crate::commands::editing::PageRotate {
                 tab: tab(),
@@ -3006,7 +3001,7 @@ mod tests {
         assert!(!s.lists().get(TabId(1)).unwrap().holds_owner_edits(), "the agent's step stays the agent's");
     }
 
-    fn commands_rotate(tab: String) -> Command {
+    fn commands_rotate(tab: TabRef) -> Command {
         Command::from(crate::commands::editing::PageRotate {
             tab,
             pages: "1".into(),
@@ -3018,7 +3013,7 @@ mod tests {
     #[test]
     fn a_step_past_the_undo_cap_still_counts_for_discard() {
         let mut s = edit_session();
-        let tab = || "#1".to_string();
+        let tab = || crate::TabRef::from("#1");
         owners_rotation(&mut s, 0);
         for _ in 0..recto_session::edit::MAX_UNDO - 1 {
             run(
@@ -3094,7 +3089,7 @@ mod tests {
     #[test]
     fn a_refused_close_says_all_it_would_lose_and_every_way_on() {
         let mut s = edit_session();
-        let tab = || "#1".to_string();
+        let tab = || crate::TabRef::from("#1");
         owners_rotation(&mut s, 0);
         owners_rotation(&mut s, 1);
         run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: tab() })).unwrap();
@@ -3507,7 +3502,7 @@ mod protected_tests {
             let text = value.to_string();
             text.contains("Secret chapter") || text.contains("Secret title") || text.contains("\"pages\":7") || text.contains("of 7")
         };
-        let tab = "#1".to_string();
+        let tab = TabRef::from("#1");
         for level in [Level::Off, Level::ReadOnly, Level::Control, Level::Full] {
             let commands = [
                 Command::from(crate::commands::reading::Sidebar {}),
@@ -3633,8 +3628,10 @@ mod protected_tests {
         assert!(!leaks(&page_changed(&session, id, 3).to_json()) && !leaks(&edits_changed(&session, id).to_json()));
         assert_eq!(page_changed(&session, other, 3).to_json()["page"], 3, "another tab's place is said as ever");
         let access = Direct(std::cell::RefCell::new(&mut session), None);
-        assert!(matches!(check_condition(&access, Condition::PageDrawn, "#1", Some(1)), ConditionState::Failed(error) if error.code == "protected"));
-        assert!(matches!(check_condition(&access, Condition::TabOpen, "#1", None), ConditionState::Met(data) if !leaks(&data)));
+        assert!(
+            matches!(check_condition(&access, Condition::PageDrawn, &TabRef::from("#1"), Some(1)), ConditionState::Failed(error) if error.code == "protected")
+        );
+        assert!(matches!(check_condition(&access, Condition::TabOpen, &TabRef::from("#1"), None), ConditionState::Met(data) if !leaks(&data)));
     }
 }
 

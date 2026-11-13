@@ -26,7 +26,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &Asked<'_>) -> Option<Row<'a>> {
         },
         Action::SetSpread(spread) => View {
             layout: Some(*spread),
-            tab: inner.panes.tab_of(inner.panes.reading()).map(|tab| format!("#{}", tab.0)),
+            tab: inner.panes.tab_of(inner.panes.reading()).map(recto_agent::TabRef::Id),
             ..View::default()
         },
         Action::Host(HostAction::None) if asked.id == "view.paper" => {

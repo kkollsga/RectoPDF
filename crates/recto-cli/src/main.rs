@@ -567,7 +567,7 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
                 ("rank_scan", true, false, true),
             ] {
                 let command = Command::from(recto_agent::commands::text::Search {
-                    tab: "active".to_string(),
+                    tab: recto_agent::TabRef::Active,
                     query: query.to_string(),
                     pages: None,
                     limit: None,

@@ -18,13 +18,13 @@ pub enum Compare {
     /// Back to one tab, the one being read.
     Off,
     /// These tabs side by side, left to right, and their scroll synced or not if said.
-    Set { tabs: Vec<String>, sync: Option<OnOff> },
+    Set { tabs: Vec<TabRef>, sync: Option<OnOff> },
     /// Synced scroll, or separate, for the comparison there is.
     Sync(OnOff),
     /// One tab into the comparison, or out of it, as ⌘-clicking its row does.
-    Toggle(String),
+    Toggle(TabRef),
     /// The pane to read, of those side by side, as moving the pointer into it does.
-    Reading(String),
+    Reading(TabRef),
 }
 
 /// `compare` as it's written on the wire.
@@ -82,12 +82,12 @@ impl TryFrom<line::Compare> for Compare {
             .transpose()?;
         Ok(match (tabs, sync, off, toggle, reading) {
             (Some(list), sync, ..) => {
-                let tabs: Vec<String> = list
+                let tabs: Vec<TabRef> = list
                     .split(',')
                     .map(str::trim)
                     .filter(|word| !word.is_empty())
                     .take(MAX_COMPARE_SELECTORS + 1)
-                    .map(str::to_string)
+                    .map(TabRef::parse)
                     .collect();
                 if tabs.len() > MAX_COMPARE_SELECTORS {
                     return Err(refused(recto_session::compare::CompareError::TooMany));
@@ -96,8 +96,8 @@ impl TryFrom<line::Compare> for Compare {
             }
             (None, Some(sync), ..) => Self::Sync(sync),
             (None, None, true, ..) => Self::Off,
-            (None, None, false, Some(tab), _) => Self::Toggle(tab),
-            (None, None, false, None, Some(tab)) => Self::Reading(tab),
+            (None, None, false, Some(tab), _) => Self::Toggle(TabRef::parse(&tab)),
+            (None, None, false, None, Some(tab)) => Self::Reading(TabRef::parse(&tab)),
             (None, None, false, None, None) => Self::Look,
         })
     }
@@ -109,7 +109,7 @@ impl From<&Compare> for line::Compare {
             Compare::Look => Self::default(),
             Compare::Off => Self { off: true, ..Self::default() },
             Compare::Set { tabs, sync } => Self {
-                tabs: Some(tabs.join(",")),
+                tabs: Some(tabs.iter().map(TabRef::to_string).collect::<Vec<_>>().join(",")),
                 sync: sync.map(|sync| sync.word().to_string()),
                 ..Self::default()
             },
@@ -118,11 +118,11 @@ impl From<&Compare> for line::Compare {
                 ..Self::default()
             },
             Compare::Toggle(tab) => Self {
-                toggle: Some(tab.clone()),
+                toggle: Some(tab.to_string()),
                 ..Self::default()
             },
             Compare::Reading(tab) => Self {
-                reading: Some(tab.clone()),
+                reading: Some(tab.to_string()),
                 ..Self::default()
             },
         }
@@ -154,7 +154,7 @@ impl Cmd for Compare {
     const PROTECTED_OK: bool = false;
     // A pane's cold file is read in place here, or, on the window's session thread, off it and the command run again once it's in (`later`).
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     /// Asking is reading. Changing it is moving around.
