@@ -243,7 +243,11 @@ impl SleepDraws {
                 )
             }
         };
-        let (file, source_page) = doc?.map.source(page)?;
+        // A page its map has no source for can't be drawn: the asking ends there, said, rather than gone with no word.
+        let Some((file, source_page)) = doc.and_then(|doc| doc.map.source(page)) else {
+            reader.wake.draws.end(Ended::Cold);
+            return None;
+        };
         owed.jobs += 1;
         let tab = owed.tab;
         reader.wake.draws.counts.jobs += 1;
