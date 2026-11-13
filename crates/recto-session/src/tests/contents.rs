@@ -226,3 +226,39 @@ fn stopping_generated_contents_shows_the_files_own_and_offers_them_again() {
     let note = s.sidebar().rows.iter().find(|row| row.kind == RowKind::Note).map(|row| row.action);
     assert_eq!(note, Some(Some(ContentsAction::Generate)), "and offered again");
 }
+
+/// **Failure (R3.5b): a tab whose list is asleep, its wake having failed, has its contents read as if it had no edits**: each entry shows the file's page
+/// number though the edits moved its page, the section being read is taken from the file's page at the reader's position, and following opens it. While
+/// the order isn't known, no entry has a number, none is the current one, and following opens nothing.
+#[test]
+fn a_list_asleep_lends_the_contents_no_page_numbers() {
+    struct Outlined;
+    impl DocLoader for Outlined {
+        fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
+            let line = |title, page, parent, depth| TocLine { title, page, parent, depth };
+            let lines = [line("One", 0, NONE, 0), line("Two", 5, NONE, 0), line("Two a", 6, 1, 1)];
+            Ok(DocFacts {
+                page_count: 10,
+                byte_len: 1,
+                encrypted: false,
+                version: "1.7".into(),
+                title: None,
+                toc: Toc::from_lines(&lines, false),
+                renderer_only: false,
+            })
+        }
+    }
+    let mut s = Session::new(Outlined);
+    let id = s.open(Path::new("/d/a.pdf")).unwrap();
+    s.edit_pages(id, |e| e.move_pages(6, 1, 0)).unwrap();
+    s.go_to(id, 6).unwrap();
+    assert!(s.lists.put_to_sleep(id));
+    let rows: Vec<(String, Option<u32>, bool, bool)> = s
+        .sidebar()
+        .rows
+        .iter()
+        .filter(|row| row.kind == RowKind::Contents)
+        .map(|row| (row.text.to_string(), row.page, row.current, row.expanded))
+        .collect();
+    assert_eq!(rows, [("One".into(), None, false, false), ("Two".into(), None, false, false)]);
+}

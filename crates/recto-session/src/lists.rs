@@ -37,6 +37,17 @@ impl Lists {
         self.edits.get(&id)
     }
 
+    /// **How a tab's pages are ordered now, as far as that's known,** for whatever maps the file's page numbers to positions (labels, the go-to field,
+    /// a link, the contents): the file's own order with no list, the list's, or not known while it's asleep (a wake that failed), when nothing may be
+    /// read from the file's numbers, as [`Self::get`]'s `None` would have it.
+    pub(crate) fn order(&self, id: TabId) -> Order<'_> {
+        match self.edits.get(&id) {
+            Some(edits) => Order::Edited(edits),
+            None if self.asleep.contains_key(&id) => Order::Unknown,
+            None => Order::File,
+        }
+    }
+
     pub(crate) fn get_mut(&mut self, id: TabId) -> Option<&mut PageEdits> {
         self.edits.get_mut(&id)
     }
@@ -219,4 +230,15 @@ impl crate::parts::PartMut<'_, Lists> {
     pub fn set_agent_at_full(&mut self, full: bool) {
         self.0.agent_at_full = full;
     }
+}
+
+/// How a tab's pages are ordered now: [`Lists::order`].
+#[derive(Clone, Copy)]
+pub(crate) enum Order<'a> {
+    /// No list: position is the file's page.
+    File,
+    /// As its list has them.
+    Edited(&'a PageEdits),
+    /// Its list is asleep and couldn't be read: no position can be had from a file's page, or a page from a position.
+    Unknown,
 }

@@ -1,6 +1,7 @@
 //! Contents: the sidebar model, generated contents, folds and the verdict.
 
 use super::*;
+use crate::lists::Order;
 
 impl<L: DocLoader> Session<L> {
     /// Builds the sidebar. Cost depends on the visible rows and the active tab's contents, never on idle tabs' PDFs.
@@ -54,7 +55,7 @@ impl<L: DocLoader> Session<L> {
                     _ => toc,
                 };
                 // The note isn't an entry: the host draws it over the contents, and the rail counts entries.
-                rail_filled = contents_rows(shown, tab, self.lists.get(tab.id), &mut rows);
+                rail_filled = contents_rows(shown, tab, self.lists.order(tab.id), &mut rows);
             }
         }
         let edited = self.tabs.active().is_some_and(|id| self.lists.is_edited(id));
@@ -97,7 +98,7 @@ impl<L: DocLoader> Session<L> {
     pub fn toggle_contents_section(&mut self, id: TabId, entry: u32) -> Option<bool> {
         let toc = self.shown_contents(id)?;
         let tab = self.tabs.tab(id)?;
-        let chain = following_chain(&toc, tab, self.lists.get(id));
+        let chain = following_chain(&toc, tab, self.lists.order(id));
         let has_children = toc.entries().get(entry as usize + 1).is_some_and(|next| next.parent == entry);
         if !has_children {
             return None;
@@ -137,10 +138,11 @@ impl<L: DocLoader> Session<L> {
 /// section. Returns how many rows the rail fills.
 ///
 /// With unsaved page edits, entries follow their pages to their new positions. An entry whose page was deleted stays
-/// without a number, and pages added from another PDF belong to no section.
-fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, edits: Option<&PageEdits>, rows: &mut Vec<SidebarRow<'a>>) -> usize {
-    let here = section_here(toc, tab, edits);
-    let chain = following_chain(toc, tab, edits);
+/// without a number, and pages added from another PDF belong to no section. While the tab's list is asleep, where any entry's page is now isn't known:
+/// none has a number, and none is the section being read.
+fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, order: Order<'_>, rows: &mut Vec<SidebarRow<'a>>) -> usize {
+    let here = section_here(toc, tab, order);
+    let chain = following_chain(toc, tab, order);
     let folds = tab.folds.as_deref();
     // Whether each entry's own children show: it's shown, and open. Entries come in document order, so a parent is always decided first.
     let mut children_show = vec![false; toc.entries().len()];
@@ -160,7 +162,11 @@ fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, edits: Option<&PageEdits>, r
             tab: tab.id,
             text: toc.title(entry),
             page: (entry.page != NONE)
-                .then(|| edits.map_or(Some(entry.page), |e| e.position_of(entry.page)))
+                .then(|| match order {
+                    Order::File => Some(entry.page),
+                    Order::Edited(edits) => edits.position_of(entry.page),
+                    Order::Unknown => None,
+                })
                 .flatten()
                 .map(|page| page + 1),
             depth: entry.depth,
@@ -179,18 +185,19 @@ fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, edits: Option<&PageEdits>, r
 }
 
 /// The entry for the section being read, in the file's own page numbers.
-fn section_here(toc: &Toc, tab: &TabRecord, edits: Option<&PageEdits>) -> Option<usize> {
-    let original_page = match edits {
-        Some(edits) => edits.slots().get(tab.page as usize).filter(|s| s.source == 0).map(|s| s.page),
-        None => Some(tab.page),
+fn section_here(toc: &Toc, tab: &TabRecord, order: Order<'_>) -> Option<usize> {
+    let original_page = match order {
+        Order::Edited(edits) => edits.slots().get(tab.page as usize).filter(|s| s.source == 0).map(|s| s.page),
+        Order::File => Some(tab.page),
+        Order::Unknown => None,
     };
     original_page.and_then(|page| toc.section_at(page))
 }
 
 /// The section being read and every section it's in, which following the place keeps open.
-fn following_chain(toc: &Toc, tab: &TabRecord, edits: Option<&PageEdits>) -> HashSet<u32> {
+fn following_chain(toc: &Toc, tab: &TabRecord, order: Order<'_>) -> HashSet<u32> {
     let mut open = HashSet::new();
-    let mut cursor = section_here(toc, tab, edits).map_or(NONE, |i| u32::try_from(i).unwrap_or(NONE));
+    let mut cursor = section_here(toc, tab, order).map_or(NONE, |i| u32::try_from(i).unwrap_or(NONE));
     while cursor != NONE && open.insert(cursor) {
         cursor = toc.entries().get(cursor as usize).map_or(NONE, |e| e.parent);
     }
