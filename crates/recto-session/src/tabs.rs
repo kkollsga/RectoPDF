@@ -6,14 +6,12 @@ impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
         Self {
             loader,
-            view: ViewSettings::default(),
+            viewing: viewing::Viewing::default(),
             tabs: Vec::new(),
             active: None,
             next_id: 1,
-            warm: VecDeque::new(),
-            woken: Vec::new(),
-            dirs: Vec::new(),
-            dir_ids: HashMap::new(),
+            warm: warm::Warm::default(),
+            dirs: dirs::Dirs::default(),
             edits: HashMap::new(),
             wake_failed: Vec::new(),
             asleep: HashMap::new(),
@@ -23,10 +21,7 @@ impl<L: DocLoader> Session<L> {
             just_read: None,
             woken_from_file: Vec::new(),
             left_warm: Vec::new(),
-            draws: VecDeque::new(),
-            place_lost: false,
-            find: FindRecord::default(),
-            edit_mode: false,
+            mail: mail::PageViewMail::default(),
             journaling: false,
             journals: HashMap::new(),
             fresh_journals: Vec::new(),
@@ -34,13 +29,10 @@ impl<L: DocLoader> Session<L> {
             departing: Vec::new(),
             history: None,
             agent_at_full: false,
-            generated: Vec::new(),
+            generated: generated::Generated::default(),
             comparison: None,
-            saving: Vec::new(),
-            saved_over: Vec::new(),
-            jumps: Vec::new(),
-            recent: VecDeque::new(),
-            recent_version: 0,
+            saves: saves::Saves::default(),
+            recent: recent::Recent::default(),
         }
     }
 
@@ -64,7 +56,7 @@ impl<L: DocLoader> Session<L> {
     /// The tab's full path, rebuilt from its interned folder and name.
     pub fn path_of(&self, id: TabId) -> Option<PathBuf> {
         let tab = self.tab(id)?;
-        Some(self.dirs.get(tab.dir as usize)?.join(&*tab.file_name))
+        Some(self.dirs.get(tab.dir)?.join(&*tab.file_name))
     }
 
     /// Opens a PDF as a new active tab. **A PDF can only be opened once** (SPEC decision 26): opening a file that already has a tab goes to that tab instead, by its path or as the same file on disk, so a link goes to its tab and a copy is another file.
@@ -127,22 +119,13 @@ impl<L: DocLoader> Session<L> {
 
     /// **A file opened, for File > Open Recent and ⌘K:** to the front, once, and the oldest past [`MAX_RECENT`] goes. Only a whole path is kept.
     pub fn note_recent(&mut self, path: &Path) {
-        if !path.is_absolute() || !PathField::from_path(path).fits() {
-            return;
-        }
-        if self.recent.front().is_some_and(|front| front == path) {
-            return;
-        }
-        self.recent.retain(|known| known != path);
-        self.recent.push_front(path.to_path_buf());
-        self.recent.truncate(MAX_RECENT);
-        self.recent_version += 1;
+        self.recent.note(path);
     }
 
     /// Files opened lately, newest first, with the tab each is open in now. Never reads a file: one that's gone says so when it's opened.
     pub fn recent_files(&self) -> Vec<RecentFile> {
         self.recent
-            .iter()
+            .paths()
             .map(|path| RecentFile {
                 path: path.clone(),
                 name: tab_name(path),
@@ -153,15 +136,12 @@ impl<L: DocLoader> Session<L> {
 
     /// A number that moves whenever the list of files opened lately does. Which of them are open moves with the tabs.
     pub fn recent_version(&self) -> u64 {
-        self.recent_version
+        self.recent.version()
     }
 
     /// File > Open Recent > Clear Menu.
     pub fn clear_recent(&mut self) -> bool {
-        let had = !self.recent.is_empty();
-        self.recent.clear();
-        self.recent_version += 1;
-        had
+        self.recent.clear()
     }
 
     /// Activates the tab already showing this file, if there is one. The first half of [`Self::open`], for a caller that reads the file without holding the session.
@@ -174,7 +154,7 @@ impl<L: DocLoader> Session<L> {
 
     /// The tab already showing this file, if there is one.
     pub fn tab_for_path(&self, path: &Path) -> Option<TabId> {
-        let dir = *self.dir_ids.get(path.parent().unwrap_or(Path::new("")))?;
+        let dir = self.dirs.id_of(path.parent().unwrap_or(Path::new("")))?;
         let file_name = path.file_name()?;
         self.tabs.iter().find(|t| t.dir == dir && &*t.file_name == file_name).map(|t| t.id)
     }
@@ -192,7 +172,7 @@ impl<L: DocLoader> Session<L> {
         if self.tabs.len() >= MAX_TABS {
             return Err(SessionError::TooManyTabs);
         }
-        let dir = self.intern_dir(dir_path);
+        let dir = self.dirs.intern(dir_path);
         if self.next_id >= MAX_TAB_ID {
             return Err(SessionError::TooManyTabs);
         }
@@ -231,7 +211,7 @@ impl<L: DocLoader> Session<L> {
         self.remember_warm(id, Arc::new(facts.toc));
         self.active = Some(id);
         self.note_recent(path);
-        self.generated.retain(|(tab, view)| *tab == id || !matches!(view, GeneratedView::Ready(_)));
+        self.generated.keep_ready_only_for(id);
         // A new PDF shows alone, as going to any tab that isn't side by side does.
         self.comparison = None;
         if let Some(history) = history {
@@ -312,12 +292,24 @@ impl<L: DocLoader> Session<L> {
     }
 
     pub(crate) fn relocate(&mut self, id: TabId, path: &Path) {
-        let dir = self.intern_dir(path.parent().unwrap_or(Path::new("")));
+        let dir = self.dirs.intern(path.parent().unwrap_or(Path::new("")));
         let name = tab_name(path);
+        let mut left = None;
         if let (Some(tab), Some(file_name)) = (self.tab_mut(id), path.file_name()) {
+            left = Some(tab.dir).filter(|was| *was != dir);
             tab.dir = dir;
             tab.file_name = file_name.into();
             tab.name = name.into();
+        }
+        if let Some(was) = left {
+            self.let_go_of_dir_if_unused(was);
+        }
+    }
+
+    /// A folder no tab is in any more is let go of, so the folders kept are only those in use.
+    fn let_go_of_dir_if_unused(&mut self, dir: u32) {
+        if !self.tabs.iter().any(|tab| tab.dir == dir) {
+            self.dirs.let_go(dir);
         }
     }
 
@@ -351,12 +343,11 @@ impl<L: DocLoader> Session<L> {
         self.edits.remove(&id);
         self.retire_sleep_file(id);
         let index = self.tabs.iter().position(|t| t.id == id).ok_or(SessionError::NoSuchTab)?;
-        self.tabs.remove(index);
-        self.draws.retain(|d| d.tab != id);
-        self.warm.retain(|(tab, _)| *tab != id);
-        self.generated.retain(|(tab, _)| *tab != id);
-        self.woken.retain(|(tab, _, _)| *tab != id);
-        self.jumps.retain(|(tab, _)| *tab != id);
+        let closed = self.tabs.remove(index);
+        self.let_go_of_dir_if_unused(closed.dir);
+        self.mail.forget(id);
+        self.generated.forget(id);
+        self.warm.forget(id);
         // Out of a comparison too. With one left it's that one alone, and the reader goes to another pane rather than the next tab along.
         let mut next_pane = None;
         if let Some(comparison) = &mut self.comparison
@@ -390,15 +381,5 @@ impl<L: DocLoader> Session<L> {
 
     pub(crate) fn tab_mut(&mut self, id: TabId) -> Option<&mut TabRecord> {
         self.tabs.iter_mut().find(|t| t.id == id)
-    }
-
-    pub(crate) fn intern_dir(&mut self, dir: &Path) -> u32 {
-        if let Some(&id) = self.dir_ids.get(dir) {
-            return id;
-        }
-        let id = u32::try_from(self.dirs.len()).unwrap_or(u32::MAX);
-        self.dirs.push(dir.into());
-        self.dir_ids.insert(dir.into(), id);
-        id
     }
 }

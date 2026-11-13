@@ -1,8 +1,9 @@
 //! Fixed samples of version 1's files, as they're written today, so a change can't quietly break reading what an older build left. A new version gets samples of its own, and these stay.
 
-use recto_session::Author;
 use recto_session::edit::PageEdits;
 use recto_session::record::{self, CURRENT_VERSION, FileNotice, FocusView, PathField, RecordError};
+use recto_session::{Author, RestoredEdits, Session};
+use std::collections::HashMap;
 
 const RECORD: &[u8] = include_bytes!("fixtures/record-v1.json");
 const JOURNAL: &[u8] = include_bytes!("fixtures/journal-v1.log");
@@ -81,4 +82,29 @@ fn a_later_version_is_only_recognised() {
     let header = journal[9..first_end].replace("\"version\":1", &format!("\"version\":{}", CURRENT_VERSION + 1));
     journal.replace_range(..first_end + 1, std::str::from_utf8(&record::journal_line(header.as_bytes())).unwrap());
     assert!(matches!(record::parse_journal(journal.as_bytes(), CURRENT_VERSION), Err(RecordError::Newer(_))));
+}
+
+/// Failure: a version 1 record, as an update finds it on disk, comes back into the session as something else and is written out differently, so a tab's place, its edits' journal, Find or the view drift across an update. This is the session's own reading and writing of the record, which the samples above don't reach, and what R3.2's moves of `Session`'s fields must leave as it is: everything the session keeps comes back out the same, byte for byte; only the host's own part is the host's to fill in.
+#[test]
+fn a_version_1_record_comes_back_out_of_the_session_the_same() {
+    let saved = record::decode_record(RECORD, CURRENT_VERSION).expect("version 1 reads").record;
+    let parsed = record::parse_journal(JOURNAL, CURRENT_VERSION).expect("version 1 reads");
+    let (edits, applied) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).unwrap();
+    let summary = edits.summary();
+    let journal = saved.tabs[0].journal.clone().unwrap();
+    let restored = RestoredEdits {
+        edits,
+        seq: applied as u64,
+        lost_lines: false,
+        rolled_off: false,
+    };
+    let mut session = Session::default();
+    session.restore(&saved, HashMap::from([(journal, restored)])).expect("it's taken");
+    let mut expected = saved.clone();
+    expected.app = record::AppRecord::default();
+    // A tab's edits are said as the list they came back as, which here is the sample journal's.
+    expected.tabs[0].edits = Some(summary);
+    let back = session.to_record();
+    assert_eq!(back, expected);
+    assert_eq!(record::encode_record(&back, 7), record::encode_record(&expected, 7));
 }

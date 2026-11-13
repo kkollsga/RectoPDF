@@ -13,27 +13,34 @@ pub mod sleep;
 pub mod trail;
 
 mod contents;
+mod dirs;
 mod editing;
 mod files;
+mod generated;
 mod journal;
+mod mail;
 mod pages;
+mod recent;
 mod restore;
+mod saves;
 mod saving;
 mod tabs;
 mod tiers;
 mod view;
+mod viewing;
+mod warm;
 
 pub use change::Closed;
 pub use edit::Author;
 use edit::{EditError, PageEdits};
 use record::{
     EditsSummary, FileNotice, FileStatus, FindRecord, JournalHeader, JournalOp, MAX_TAB_ID, PaperName, PathField, PlaceDelta, PlaceRecord, RecordError,
-    Selection, SessionRecord, TabEntry, ViewRecord,
+    Selection, SessionRecord, TabEntry,
 };
 use recto_core::verdict::ContentsVerdict;
 use recto_core::{DocFacts, NONE, OpenError, Toc};
 use recto_platform::{FileStamp, file_stamp};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -75,7 +82,7 @@ pub enum Tier {
 }
 
 /// One tab. Everything else about it can be rebuilt from disk.
-// size: asserted <= 256 by `tab_record_stays_small`. Held per tab, including cold ones.
+// size: asserted <= 224 (today's, 2 of them padding) by `tab_record_stays_small`. Held per tab, including cold ones.
 #[derive(Debug)]
 pub struct TabRecord {
     /// What's known of its file came from a sleep file, and the PDF hasn't said so yet: which version that file said it was of, or zero for none said.
@@ -766,14 +773,15 @@ pub fn edits_summary_of(edits: &PageEdits) -> EditsSummary {
 /// All open tabs and which one is active.
 pub struct Session<L = DiskLoader> {
     loader: L,
-    view: ViewSettings,
+    /// The view settings, Find and edit mode.
+    viewing: viewing::Viewing,
     tabs: Vec<TabRecord>,
     active: Option<TabId>,
     next_id: u32,
-    /// Most recently used first, at most [`MAX_WARM`].
-    warm: VecDeque<(TabId, Arc<Toc>)>,
-    dirs: Vec<Box<Path>>,
-    dir_ids: HashMap<Box<Path>, u32>,
+    /// The tabs that keep their contents, and the reads of cold tabs' files made ahead of waking them.
+    warm: warm::Warm,
+    /// The folders tabs' files are in.
+    dirs: dirs::Dirs,
     /// Only for tabs with page edits. A tab with none costs nothing here.
     edits: HashMap<TabId, PageEdits>,
     /// Lists that couldn't be read back, to try again, and whose tab says so meanwhile.
@@ -789,16 +797,8 @@ pub struct Session<L = DiskLoader> {
     just_read: Option<(TabId, sleep::SleepFile)>,
     woken_from_file: Vec<TabId>,
     left_warm: Vec<(TabId, Arc<Toc>)>,
-    /// The latest pages drawn or tried, newest last, at most [`MAX_DRAWS_KEPT`]. Lets a waiter find out about a page finished a moment before it asked.
-    draws: VecDeque<DrawNote>,
-    /// Cold tabs' files, read ahead of waking them with this session free. Each is taken by the next [`Self::activate`] of that tab, and goes if the tab stops being cold. At most [`MAX_READ_AHEAD`].
-    woken: Vec<(TabId, Result<DocFacts, OpenError>, Option<FileStamp>)>,
-    /// The last edit removed the page a tab was on, so its place moved to the nearest one. Read once with [`Session::take_place_lost`].
-    place_lost: bool,
-    /// Find, as the reader left it.
-    find: FindRecord,
-    /// Edit mode: the panel opens on its tools, and Rotate turns the page being read rather than every page.
-    edit_mode: bool,
+    /// The pages lately drawn, the jumps the page view hasn't taken, and a place lost to an edit.
+    mail: mail::PageViewMail,
     /// Whether edits go to a journal. A session with a state record has this, and one without has nothing writing them out.
     journaling: bool,
     /// Each edited tab's journal, by name. Nothing for a tab with no edits.
@@ -813,20 +813,14 @@ pub struct Session<L = DiskLoader> {
     history: Option<Arc<dyn HistorySource>>,
     /// An agent is acting at Full, so losing the owner's history is the holder's call. Set for each command.
     agent_at_full: bool,
-    /// Tabs being saved now. Nothing changes their edits until the save's done: an edit made while the file was being written would read as saved and not be in it (review). Next to none.
-    saving: Vec<TabId>,
+    /// Tabs being saved, and what saves lately moved their tabs on from.
+    saves: saves::Saves,
     /// Tabs side by side, if there's a comparison: see [`compare`]. The active tab is one of them, the pane being read.
     comparison: Option<compare::Comparison>,
-    /// Generated contents the sidebar knows of, for tabs someone asked about: at most [`MAX_GENERATED_VIEWS`], the oldest out, so a thousand tabs can't make this grow.
-    generated: Vec<(TabId, GeneratedView)>,
-    /// Tabs a save has moved to another version of their file, as `(tab, before, after)`: the pages the new version has are the ones that were shown, each as it was shown, so the page view keeps its layout, place and selection. At most [`MAX_SAVED_OVER`], the oldest out; one is only believed while its tab is still on `after`.
-    saved_over: Vec<(TabId, FileStamp, FileStamp)>,
-    /// Files opened lately, newest first, at most [`MAX_RECENT`]. In the state record.
-    recent: VecDeque<PathBuf>,
-    /// Moves whenever `recent` does, so the app rebuilds what it shows of it only then.
-    recent_version: u64,
-    /// Jumps the page view hasn't taken yet, with how far down the page to land: one per tab at most, the latest.
-    jumps: Vec<(TabId, trail::Stop)>,
+    /// Generated contents the sidebar knows of, for tabs someone asked about.
+    generated: generated::Generated,
+    /// Files opened lately, for File > Open Recent and ⌘K.
+    recent: recent::Recent,
 }
 
 /// A file opened lately, for File > Open Recent and ⌘K.
@@ -961,6 +955,12 @@ pub struct DrawNote {
     /// The failure's stable code, or `None` if it was drawn.
     pub failure: Option<&'static str>,
 }
+
+/// The session lives behind the app's one mutex and is handed between its threads: nothing in it may hold a lock, a cell or anything else that isn't `Send`. Failure caught: a component of `Session` (R3.2) brings state of its own that can't cross threads, which would only show in another crate's build.
+const _: () = {
+    const fn sendable<T: Send>() {}
+    sendable::<Session<DiskLoader>>();
+};
 
 impl Default for Session<DiskLoader> {
     fn default() -> Self {

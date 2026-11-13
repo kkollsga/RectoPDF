@@ -17,7 +17,7 @@ impl<L: DocLoader> Session<L> {
     pub fn apply_file_status(&mut self, id: TabId, status: FileStatus) {
         // A file changed or gone takes its generated contents with it, so the sidebar shows what an agent's `contents --generated` finds, which goes by the file as it is now.
         if matches!(status, FileStatus::Changed(_) | FileStatus::Missing) {
-            self.generated.retain(|(tab, _)| *tab != id);
+            self.generated.forget(id);
             // Folds are by entry number, which another version's contents don't share.
             if let Some(tab) = self.tab_mut(id) {
                 tab.folds = None;

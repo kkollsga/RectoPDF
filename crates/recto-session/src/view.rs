@@ -4,53 +4,34 @@ use super::*;
 
 impl<L: DocLoader> Session<L> {
     pub fn view(&self) -> ViewSettings {
-        self.view
+        self.viewing.view()
     }
 
     pub fn set_view(&mut self, view: ViewSettings) {
-        self.view = view;
+        self.viewing.set_view(view);
     }
 
     /// Find, as the reader left it.
     pub fn find(&self) -> &FindRecord {
-        &self.find
+        self.viewing.find()
     }
 
     /// Sets what's in Find. Longer text than [`record::MAX_FIND_BYTES`] is cut at a character.
     pub fn set_find(&mut self, open: bool, query: &str, draft: &str) {
-        let cut = |text: &str| {
-            let mut end = text.len().min(record::MAX_FIND_BYTES);
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
-            text[..end].to_string()
-        };
-        let (current, current_tab) = if query == self.find.query {
-            (self.find.current, self.find.current_tab)
-        } else {
-            (None, None)
-        };
-        self.find = FindRecord {
-            open,
-            query: cut(query),
-            draft: cut(draft),
-            current,
-            current_tab,
-        };
+        self.viewing.set_find(open, query, draft);
     }
 
     /// The hit Find went to last, by its place, for the record.
     pub fn set_find_current(&mut self, current: Option<(u32, u32)>, tab: Option<u32>) {
-        self.find.current = current;
-        self.find.current_tab = tab;
+        self.viewing.set_find_current(current, tab);
     }
 
     pub fn edit_mode(&self) -> bool {
-        self.edit_mode
+        self.viewing.edit_mode()
     }
 
     pub fn set_edit_mode(&mut self, on: bool) {
-        self.edit_mode = on;
+        self.viewing.set_edit_mode(on);
     }
 
     /// Turns the view of a tab, by quarter turns.
@@ -133,20 +114,16 @@ impl<L: DocLoader> Session<L> {
 
     /// Whether the last edit removed the page the reader was on, so its place moved to the nearest one. Asking clears it.
     pub fn take_place_lost(&mut self) -> bool {
-        std::mem::take(&mut self.place_lost)
+        self.mail.take_place_lost()
     }
 
     /// Notes that a page finished drawing, or couldn't be.
     pub fn note_drawn(&mut self, note: DrawNote) {
-        self.draws.retain(|d| (d.tab, d.page) != (note.tab, note.page));
-        self.draws.push_back(note);
-        while self.draws.len() > MAX_DRAWS_KEPT {
-            self.draws.pop_front();
-        }
+        self.mail.note_drawn(note);
     }
 
     /// What's known about a page's latest draw, if it's still remembered.
     pub fn draw_note(&self, tab: TabId, page: u32) -> Option<DrawNote> {
-        self.draws.iter().rev().find(|d| (d.tab, d.page) == (tab, page)).copied()
+        self.mail.draw_note(tab, page)
     }
 }

@@ -198,7 +198,7 @@ fn nothing_sends_a_tab_to_sleep_from_under_a_hold() {
     assert!(!s.can_go_dormant(a));
     assert!(!s.go_dormant(a));
     assert!(s.page_edits(a).is_some() && !s.list_is_asleep(a));
-    assert!(s.warm.iter().any(|(id, _)| *id == a), "its contents stay too");
+    assert!(s.warm.contains(a), "its contents stay too");
     s.let_go(a);
     assert!(!s.go_dormant(b), "nor the one on screen");
     s.save_prepared(
@@ -226,7 +226,7 @@ fn the_workers_word_on_a_files_length_goes_over_a_sleep_files() {
     let a = s.open(&path).unwrap();
     assert!(!s.file_length_is(a, 2, 5), "read the usual way, that's nothing to go on");
     s.open(Path::new("/d/b.pdf")).unwrap();
-    s.warm.retain(|(id, _)| *id != a);
+    s.warm.drop_contents(a);
     // Forged: a hundred pages.
     let forged = |file_pages: u32| sleep::SleepFile {
         file: stamp,
@@ -245,7 +245,7 @@ fn the_workers_word_on_a_files_length_goes_over_a_sleep_files() {
     assert_eq!(s.pages_in(a), 100, "believed for now");
     assert!(s.sleep_facts(a).is_none(), "and not written on, unchecked");
     assert!(s.file_length_is(a, 3, 5), "it says to read the file");
-    assert!(!s.warm.iter().any(|(id, _)| *id == a));
+    assert!(!s.warm.contains(a));
     assert!(
         s.journal_work().retired.iter().any(|name| *name == record::sleep_file_name(stamp, &path)),
         "and the file's gone"
@@ -273,14 +273,14 @@ fn the_workers_word_on_a_files_length_goes_over_a_sleep_files() {
     // Right about it: nothing to do, and from here it's been checked.
     s.discard_edits(a);
     s.open(Path::new("/d/c.pdf")).unwrap();
-    s.warm.retain(|(id, _)| *id != a);
+    s.warm.drop_contents(a);
     s.wake_from_sleep(a, &forged(3));
     s.tap(a).unwrap();
     assert!(!s.file_length_is(a, 3, 5));
     assert!(s.sleep_facts(a).is_some());
     // The right length, and another version: a rewrite that kept its size, time and number. Read after all.
     s.open(Path::new("/d/d.pdf")).unwrap();
-    s.warm.retain(|(id, _)| *id != a);
+    s.warm.drop_contents(a);
     s.wake_from_sleep(a, &forged(3));
     s.tap(a).unwrap();
     assert!(s.file_length_is(a, 3, 6), "another version");
@@ -323,7 +323,7 @@ fn going_dormant_has_one_deadline_and_goes_by_being_left_alone() {
     let ids: Vec<TabId> = (0..1000).map(|at| s.open(Path::new(&format!("/d/{at}.pdf"))).unwrap()).collect();
     assert!(s.dormant_candidates().count() <= MAX_WARM + 1);
     s.go_dormant(ids[998]);
-    assert!(!s.warm.iter().any(|(id, _)| *id == ids[998]), "its contents go");
+    assert!(!s.warm.contains(ids[998]), "its contents go");
     assert!(s.dormant_oldest_first().len() < MAX_WARM);
 }
 
@@ -408,7 +408,7 @@ fn a_list_of_another_length_than_its_file_isnt_believed() {
     list.journal_from_now();
     list.rotate(11, 1, 1).unwrap();
     s.take_up_history(a, "journal-00000000000000aa.log", list, 1);
-    s.warm.clear();
+    s.warm.clear_contents();
     s.tap(a).unwrap();
     assert!(s.page_edits(a).is_none(), "it's gone");
     assert_eq!(s.pages_in(a), 5);

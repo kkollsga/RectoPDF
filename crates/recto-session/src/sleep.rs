@@ -366,8 +366,7 @@ impl<L: DocLoader> Session<L> {
     /// The tabs that could go dormant, as they hold something: not the one on screen, and not one a save's under way on. Next to none however many tabs there are: the warm ones, and those with a list in memory.
     pub(crate) fn dormant_candidates(&self) -> impl Iterator<Item = TabId> + '_ {
         self.warm
-            .iter()
-            .map(|(id, _)| *id)
+            .ids()
             .chain(self.edits.keys().copied())
             .filter(move |id| !self.on_screen(*id) && !self.held.contains(id) && self.edits.get(id).is_none_or(|list| list.saving().is_none()))
     }
@@ -428,13 +427,12 @@ impl<L: DocLoader> Session<L> {
     /// **A tab goes dormant, SPEC decision 25: it costs a cold tab's memory from here on.** Its contents go, and its list goes if [`Self::list_to_sleep`] says it can, as all of it's on disk. Said once for each, and read back only if it's touched again. Says whether the list went, or there wasn't one.
     pub fn go_dormant(&mut self, id: TabId) -> bool {
         // A dormant tab holds no list: its generated contents are on disk, and found again when it's shown.
-        self.generated.retain(|(tab, _)| *tab != id);
+        self.generated.forget(id);
         if !self.can_go_dormant(id) {
             return false;
         }
-        self.warm.retain(|(tab, _)| *tab != id);
-        self.woken.retain(|(tab, _, _)| *tab != id);
-        self.draws.retain(|draw| draw.tab != id);
+        self.warm.forget(id);
+        self.mail.forget_draws(id);
         !self.edits.contains_key(&id) || self.put_list_to_sleep(id)
     }
 
@@ -504,7 +502,7 @@ impl<L: DocLoader> Session<L> {
 
     /// What a tab's sleep file would say of it, apart from what the page view knows, if it can have one: its file's been read this session, so its contents are here, and it isn't protected, as this would be those in the clear.
     pub fn sleep_facts(&self, id: TabId) -> Option<SleepFacts> {
-        let (_, toc) = self.warm.iter().find(|(tab, _)| *tab == id)?;
+        let toc = self.warm.toc(id)?;
         self.sleep_facts_with(id, toc)
     }
 
@@ -561,7 +559,7 @@ impl<L: DocLoader> Session<L> {
 
     /// What's on hand to wake a cold tab from its sleep file: which file, as far as anything's known, without looking at it. `None` for a tab that isn't cold.
     pub fn sleep_to_read(&self, id: TabId) -> Option<(FileStamp, PathBuf)> {
-        if self.warm.iter().any(|(tab, _)| *tab == id) {
+        if self.warm.contains(id) {
             return None;
         }
         let tab = self.tab(id)?;
@@ -632,12 +630,11 @@ impl<L: DocLoader> Session<L> {
 
     /// What was read of a tab goes, so it's read again: its file's turned out to be something else.
     pub fn forget_read(&mut self, id: TabId) {
-        self.generated.retain(|(tab, _)| *tab != id);
+        self.generated.forget(id);
         if let Some(tab) = self.tab_mut(id) {
             tab.from_sleep = None;
         }
-        self.warm.retain(|(tab, _)| *tab != id);
-        self.woken.retain(|(tab, _, _)| *tab != id);
+        self.warm.forget(id);
     }
 }
 

@@ -6,7 +6,7 @@ impl<L: DocLoader> Session<L> {
     /// **The one method a confirmed Save or Save As calls, and it marks a saved point.** Owner, 2026-11-07: "after a save you might still have regrets and want to make changes. But you definitely don't want history to leak into the pdf file". What was written is the file now, so the document reads as saved, and the history goes on: undoing past this makes it unsaved again, and back to here reads as saved. A failed save calls nothing, and everything stays. `saved_as` moves the tab if it went to another file, and the history goes with it. `kept` is what [`Self::save_prepared`] was told, and a Save As has the old file itself for that. What a step can't get pages from rolls off: see [`PageEdits::rebase_on_saved`], and the tab says so. The steps around it, and what a crash at each does, are in `docs/engineering/state-record.md`. Says how many steps rolled off.
     pub fn saved(&mut self, id: TabId, now: FileStamp, pages: u32, saved_as: Option<&Path>, kept: Option<edit::AddedSource>) -> usize {
         // Another version of the file now: the old one's generated contents and folds aren't about it.
-        self.generated.retain(|(tab, _)| *tab != id);
+        self.generated.forget(id);
         if let Some(tab) = self.tab_mut(id) {
             tab.folds = None;
         }
@@ -49,13 +49,8 @@ impl<L: DocLoader> Session<L> {
             self.relocate(id, path);
         }
         // What's in the new version is what was shown, page for page, so the page view goes on from where it was.
-        self.saved_over.retain(|(tab, _, _)| *tab != id);
-        if let Some(before) = self.tab(id).and_then(|tab| tab.stamp) {
-            if self.saved_over.len() >= MAX_SAVED_OVER {
-                self.saved_over.remove(0);
-            }
-            self.saved_over.push((id, before, now));
-        }
+        let before = self.tab(id).and_then(|tab| tab.stamp);
+        self.saves.saved_over(id, before, now);
         if let Some(tab) = self.tab_mut(id) {
             tab.stamp = Some(now);
             tab.page_count = pages;
@@ -64,7 +59,7 @@ impl<L: DocLoader> Session<L> {
             tab.problem = None;
             tab.place_dirty = true;
         }
-        self.draws.retain(|draw| draw.tab != id);
+        self.mail.forget_draws(id);
         if self.edits.get(&id).is_some_and(|list| !list.has_history()) {
             self.let_go_of_list(id);
         } else if self.edits.contains_key(&id) {
@@ -127,15 +122,14 @@ impl<L: DocLoader> Session<L> {
             }
             None => return Ok(None),
         };
-        self.saving.push(id);
+        self.saves.begin(id);
         self.hold(id);
         Ok(Some(snapshot))
     }
 
     /// A save of this tab has finished, however it went. One that didn't put a file in place calls this without [`Self::saved`], and what [`Self::save_prepared`] noted goes: the edits stand, as they were.
     pub fn end_save(&mut self, id: TabId) {
-        if let Some(at) = self.saving.iter().position(|saving| *saving == id) {
-            self.saving.remove(at);
+        if self.saves.end(id) {
             self.let_go(id);
             if let Some(list) = self.edits.get_mut(&id)
                 && list.saving().is_some()
@@ -159,12 +153,12 @@ impl<L: DocLoader> Session<L> {
 
     /// Whether a save of this tab is under way.
     pub fn is_saving(&self, id: TabId) -> bool {
-        self.saving.contains(&id)
+        self.saves.is_saving(id)
     }
 
     /// Whether any save is under way, which a hand-off waits for.
     pub fn any_saving(&self) -> bool {
-        !self.saving.is_empty()
+        self.saves.any()
     }
 
     /// The first step of a save, before anything's put in place: notes what the file will be if it works, and what's been kept for undoing past it, so that a crash between that and [`Self::saved`] can tell. Goes in the journal. **A save that removes something for good, as a redaction does, keeps nothing:** a copy of the file would hold what it's removing.

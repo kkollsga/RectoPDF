@@ -5,13 +5,13 @@ use super::*;
 impl<L: DocLoader> Session<L> {
     /// The tabs that keep their contents: the active one and the most recent others, at most [`MAX_WARM`].
     pub fn warm_tabs(&self) -> impl Iterator<Item = TabId> + '_ {
-        self.warm.iter().map(|(tab, _)| *tab)
+        self.warm.ids()
     }
 
     pub fn tier(&self, id: TabId) -> Tier {
         if self.active == Some(id) {
             Tier::Hot
-        } else if self.warm.iter().any(|(tab, _)| *tab == id) {
+        } else if self.warm.contains(id) {
             Tier::Warm
         } else {
             Tier::Cold
@@ -65,7 +65,7 @@ impl<L: DocLoader> Session<L> {
     }
 
     fn file_to_wake(&self, id: TabId) -> Option<(TabId, PathBuf)> {
-        if self.warm.iter().any(|(tab, _)| *tab == id) {
+        if self.warm.contains(id) {
             return None;
         }
         self.path_of(id).map(|path| (id, path))
@@ -73,24 +73,21 @@ impl<L: DocLoader> Session<L> {
 
     /// Whether a read of this cold tab's file is held for its waking, so it needn't be read again.
     pub fn holds_read_of(&self, id: TabId) -> bool {
-        self.woken.iter().any(|(tab, _, _)| *tab == id)
+        self.warm.holds_read_of(id)
     }
 
     /// What was read for [`Self::wake_for_tap`] or [`Self::wake_for_close`], kept for that tab's waking. A tab closed or already woken while it was being read has no use for it. Several can be read at once, so they don't take each other's place, and the oldest goes past the cap.
     pub fn give_woken(&mut self, id: TabId, loaded: Result<DocFacts, OpenError>, stamp: Option<FileStamp>) {
-        self.woken.retain(|(tab, _, _)| *tab != id);
+        self.warm.drop_read(id);
         if self.file_to_wake(id).is_none() {
             return;
         }
-        if self.woken.len() >= MAX_READ_AHEAD {
-            drop(self.woken.remove(0));
-        }
-        self.woken.push((id, loaded, stamp));
+        self.warm.keep_read(id, loaded, stamp);
     }
 
     /// A warm tab's contents and labels, shared: what the host needs to say a page by its label without asking the session again.
     pub fn warm_toc(&self, id: TabId) -> Option<Arc<Toc>> {
-        self.warm.iter().find(|(tab, _)| *tab == id).map(|(_, toc)| Arc::clone(toc))
+        self.warm.toc(id).map(Arc::clone)
     }
 
     /// Makes a restored active tab what it says it is, once its file has been read. No tap, so its fold isn't touched.
@@ -106,7 +103,7 @@ impl<L: DocLoader> Session<L> {
             self.comparison = None;
         }
         // Only the tab on screen holds a generated list in memory. The rest are on disk, and a cold tab stays a cold tab's size.
-        self.generated.retain(|(tab, view)| *tab == id || !matches!(view, GeneratedView::Ready(_)));
+        self.generated.keep_ready_only_for(id);
         self.wake_list(id);
         // A moved or changed file with nothing riding on it has been said on the way past.
         if let Some(left) = self.active.filter(|left| *left != id) {
@@ -120,18 +117,12 @@ impl<L: DocLoader> Session<L> {
             }
         }
         self.active = Some(id);
-        if let Some(position) = self.warm.iter().position(|(tab, _)| *tab == id) {
-            if let Some(entry) = self.warm.remove(position) {
-                self.warm.push_front(entry);
-            }
+        if self.warm.bring_to_front(id) {
             return;
         }
         // Woken from cold: rebuild from disk, or from what was read ahead with the session free. If that fails, the tab stays and says why.
-        let (loaded, stamp) = match self.woken.iter().position(|(tab, _, _)| *tab == id) {
-            Some(place) => {
-                let (_, loaded, stamp) = self.woken.remove(place);
-                (loaded, stamp)
-            }
+        let (loaded, stamp) = match self.warm.take_read(id) {
+            Some(read) => read,
             None => {
                 let stamp = self.path_of(id).and_then(|path| file_stamp(&path).ok());
                 (self.path_of(id).ok_or(OpenError::NotFound).and_then(|path| self.loader.load(&path)), stamp)
@@ -204,15 +195,13 @@ impl<L: DocLoader> Session<L> {
         if let Some(tab) = self.tab_mut(id) {
             tab.contents_verdict = recto_core::verdict::judge(&toc, tab.page_count);
         }
-        self.warm.push_front((id, toc));
-        while self.warm.len() > MAX_WARM {
+        let (sleep_files, left_warm) = (self.sleep_files, &mut self.left_warm);
+        self.warm.push(id, toc, |left| {
             // The least recent's gone cold, so what its sleep file needs is kept long enough to write that.
-            if let Some(left) = self.warm.pop_back()
-                && self.sleep_files
-            {
-                self.left_warm.push(left);
+            if sleep_files {
+                left_warm.push(left);
             }
-        }
+        });
     }
 
     /// Tabs just pushed out of the warm ones, and what their sleep files would say. There's a sleep file for any tab that's gone cold, by whatever way.
