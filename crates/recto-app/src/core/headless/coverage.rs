@@ -134,8 +134,25 @@ fn every_kind(app: &HeadlessApp) -> Vec<(String, UiAction)> {
             adding: false,
         },
         UiAction::Row {
+            row: crate::SidebarRow {
+                kind: RowKind::Contents,
+                page: Some(3),
+                ..row.clone()
+            },
+            adding: true,
+        },
+        UiAction::Row {
             row: rows[1].clone(),
             adding: true,
+        },
+        // The note over a tab's contents, b's, which has none of its own: its action is what a click does.
+        UiAction::Row {
+            row: crate::SidebarRow {
+                kind: RowKind::Note,
+                action: Some(recto_session::ContentsAction::Generate.id().into()),
+                ..rows[1].clone()
+            },
+            adding: false,
         },
         UiAction::PaneRead { tab },
         UiAction::Chevron { first: 0 },
@@ -189,8 +206,13 @@ fn every_kind(app: &HeadlessApp) -> Vec<(String, UiAction)> {
 fn kind(action: &UiAction) -> String {
     let name = match action {
         UiAction::Menu { .. } => "Menu",
-        UiAction::Row { adding: false, .. } => "Row",
-        UiAction::Row { adding: true, .. } => "Row(adding)",
+        UiAction::Row { row, adding } => match (row.kind, adding) {
+            (RowKind::Tab, false) => "Row(tab)",
+            (RowKind::Tab, true) => "Row(tab, adding)",
+            (RowKind::Contents, false) => "Row(contents)",
+            (RowKind::Contents, true) => "Row(contents, adding)",
+            (RowKind::Note, _) => "Row(note)",
+        },
         UiAction::PaneRead { .. } => "PaneRead",
         UiAction::Chevron { .. } => "Chevron",
         UiAction::Open { .. } => "Open",
@@ -307,28 +329,47 @@ fn every_control() -> (Vec<(String, Did)>, String) {
 }
 
 /// **What each control did, a line each, as the golden has it:** its name, the commands it sent, what it gave back to the host and whether it was
-/// understood, and which kinds of the Listener's calls it made. A recent file's key and a temporary folder are made the same on every app, so the line is the
-/// same on every run; no wording a person sees and no time is in it. Kinds and not their counts or order: how many times the host is told the model changed,
-/// and whether a page's drawing is told before or after, go by the page views' workers' timing (a save was told it 3 or 4 times in six runs).
+/// understood, and the Listener's calls it made, in order. A recent file's key and a temporary folder are made the same on every app, so the line is the
+/// same on every run; no wording a person sees and no time is in it. What the host is told is [`heard_line`]'s.
 fn golden_lines(controls: &[(String, Did)], recent: &str) -> Vec<String> {
     controls
         .iter()
         .map(|(name, did)| {
             let name = name.replace(recent, "<recent>");
             let sent = did.sent.iter().map(|wire| wire.replace(recent, "<recent>")).collect::<Vec<_>>().join(" ; ");
-            let heard: BTreeSet<&str> = did.heard.iter().copied().collect();
+            let saves = did.sent.iter().any(|wire| wire.starts_with(r#"{"cmd":"save","#));
             format!(
                 "{name} | sent [{sent}] | host {:?} understood {} | heard {}",
                 did.acted.host,
                 did.acted.understood,
-                if heard.is_empty() {
-                    "nothing".to_string()
-                } else {
-                    heard.into_iter().collect::<Vec<_>>().join(" ")
-                }
+                heard_line(&did.heard, saves)
             )
         })
         .collect()
+}
+
+/// **The Listener's calls as the golden holds them:** every call in order, a run of one kind as `kind*n`, so an announcement made with nothing changed is a
+/// count that differs, and the host told in another order is a line that differs. A control that saves has each run of a kind as `kind+` instead: a save's
+/// steps (checking every page, writing, putting the file in place) are each a change the host is told of, as Save's tooltip says each, and two steps the
+/// session thread's look finds together are one call; so how many go by the save's thread (2026-11-13: a save told 4 times in 19 runs of 20 under
+/// `--like-ci`, and 3 in one, each call a step's change), while the order of the kinds held in every run. Every other control's calls were the same in all 20.
+fn heard_line(heard: &[&str], saves: bool) -> String {
+    if heard.is_empty() {
+        return "nothing".to_string();
+    }
+    let mut runs: Vec<(&str, usize)> = Vec::new();
+    for kind in heard {
+        match runs.last_mut() {
+            Some((last, count)) if last == kind => *count += 1,
+            _ => runs.push((kind, 1)),
+        }
+    }
+    let run = |(kind, count): &(&str, usize)| match (saves, count) {
+        (true, _) => format!("{kind}+"),
+        (false, 1) => (*kind).to_string(),
+        (false, count) => format!("{kind}*{count}"),
+    };
+    runs.iter().map(run).collect::<Vec<_>>().join(" ")
 }
 
 /// What every control did on 2026-11-13, before `Inner`'s person's methods moved into their features (R3.7): one line a control, as [`golden_lines`] makes them.
