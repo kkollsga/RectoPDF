@@ -361,6 +361,19 @@ fn a_quiet_run_refuses_the_real_state() {
         .unwrap();
     let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(reply["error"]["code"], "needs_temp_state", "{reply}");
+    // Named, but not throwaway: a folder outside every temp folder, as the build's own is.
+    let kept = recto_testpdf::TempDir::new_in(&PathBuf::from(env!("CARGO_TARGET_TMPDIR")), "not-temp-state-");
+    let output = Command::new(bin())
+        .env(recto_control::state::STATE_ENV, kept.path().join("s"))
+        .args(["qa", "start", "--app", app.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+    // Inside the home, as a CI runner's build is, the override is refused before the quiet run's own rule is asked.
+    assert!(
+        matches!(reply["error"]["code"].as_str(), Some("needs_temp_state" | "state_refused")),
+        "a state folder outside the temp folders: {reply}"
+    );
     // The app itself says the same, whoever starts it.
     // A copy's executable, not the build folder's: running the built one registers the build folder and nothing forgets it (`app_launch_guard`).
     let Some(copy) = common::app::OwnCopy::new() else { return };

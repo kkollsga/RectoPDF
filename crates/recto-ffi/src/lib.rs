@@ -545,13 +545,9 @@ pub fn launch_answers_at_once(args: Vec<String>) -> Option<String> {
     (args == ["--build-kind"]).then(|| json!({ "release_build": recto_update::RELEASE_BUILD, "takes_test_hooks": !recto_update::RELEASE_BUILD }).to_string())
 }
 
-/// What a QA run must be: on a state folder that was set on purpose, never the real one. `recto qa start` writes the level there, since nothing else can.
+/// What a QA run must be: on a new folder in a temp folder, never the real one ([`StatePaths::for_quiet_run`]). `recto qa start` writes the level there, since nothing else can.
 fn state_for(qa: bool) -> Result<StatePaths, String> {
-    let paths = StatePaths::from_env().map_err(|error| error.message)?;
-    if qa && !paths.overridden {
-        return Err("A QA run needs RECTO_STATE_DIR set to a temp folder. It won't touch the real state.".into());
-    }
-    Ok(paths)
+    if qa { StatePaths::for_quiet_run() } else { StatePaths::from_env() }.map_err(|error| error.message)
 }
 
 #[uniffi::export]

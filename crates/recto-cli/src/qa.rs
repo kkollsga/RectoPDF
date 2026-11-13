@@ -41,18 +41,9 @@ fn find_app(given: Option<&Path>) -> Result<PathBuf, AgentError> {
     Err(failed("app_missing", "The app isn't built.").then("Run `tools/sysguard/heavy.sh app/build.sh`, or say where it is with `--app`."))
 }
 
-/// A quiet run's state must be a folder someone set on purpose, because the level there goes straight to Full.
+/// A quiet run's state: a new folder in a temp folder, because the level there goes straight to Full ([`StatePaths::for_quiet_run`]).
 fn quiet_paths() -> Result<StatePaths, AgentError> {
-    let paths = StatePaths::from_env()?;
-    if !paths.overridden {
-        return Err(AgentError::new(
-            "needs_temp_state",
-            "A QA run needs its own state folder, and won't use the real one.",
-            exit::PERMISSION,
-        )
-        .then(format!("Set {STATE_ENV} to a new folder in a temp folder.")));
-    }
-    Ok(paths)
+    StatePaths::for_quiet_run()
 }
 
 /// What a quiet run is started with, past `--qa`.
