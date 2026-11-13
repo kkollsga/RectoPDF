@@ -2,6 +2,10 @@
 //!
 //! **One writer, only while there's work.** The first tab queued starts it; it writes what's queued, oldest first, and ends when there's nothing left, which it finds out under the same lock a tab's queued under, so a tab queued as it ends starts the next one and is never left behind. At rest there's no thread. It's counted from its thread's start to that end, so two at once would show ([`WriterRunning`]), and one that panics leaves the way open for the next.
 //!
+//! **No timer per tab.** A pushed-out tab's file waits its cool-down ([`crate::sleeper::LEAVING_WAIT_MS`]) in the queue; the one writer waits on the queue's
+//! condition variable with the soonest due time as its timeout, looked at again in a loop, so a word missed costs at most that wait ([`Leaving::serve`]). The
+//! lock, the condition, the loop and a quit's drain are all here, beside the queue, and tested without the app on a clock the test moves.
+//!
 //! **Full, memory stays flat**, decided here and tested without the app:
 //! - What's held is what's queued and the one being written, which is counted till its write's done, so [`MAX_LEAVING_BYTES`] is all of it.
 //! - A tab queued again keeps only its newest: the older is what the newer says, less up to date. One written straight from the page view, as a flush or being asked has it, is newer than what's queued for it, which goes, or isn't written if it's already been taken for writing.
@@ -13,7 +17,9 @@ use recto_reader::SleepMaterial;
 use recto_session::{SleepFacts, TabId};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 /// Tabs whose sleep files may wait to be written at once. Each is a tab off screen, so a handful covers going through tabs at any pace a person does; past it, tabs are leaving faster than the disk takes their files, and the oldest go.
 pub const MAX_LEAVING_TABS: usize = 8;
@@ -21,12 +27,12 @@ pub const MAX_LEAVING_TABS: usize = 8;
 pub const MAX_LEAVING_BYTES: u64 = 16 * 1024 * 1024;
 
 /// One tab's sleep file, waiting.
-struct Leaving {
+struct Waiting {
     facts: SleepFacts,
     material: SleepMaterial,
     /// What its pictures hold.
     bytes: u64,
-    /// When it may be written, in the app's clock's milliseconds: a tab pushed out of the warm ones waits ([`crate::sleeper::leaving_due`]), and is handed
+    /// When it may be written, in the app's clock's milliseconds: a tab pushed out of the warm ones waits ([`Leaves::PushedOut`]), and is handed
     /// back if it's shown again meanwhile; zero is now.
     due: u64,
 }
@@ -68,7 +74,7 @@ fn bytes_of(facts: &SleepFacts, material: &SleepMaterial) -> u64 {
 /// **The queue,** behind one lock in the sleeper.
 #[derive(Default)]
 pub struct LeavingQueue {
-    queue: VecDeque<Leaving>,
+    queue: VecDeque<Waiting>,
     in_flight: Option<InFlight>,
     /// What's queued and in flight hold.
     bytes: u64,
@@ -79,6 +85,8 @@ pub struct LeavingQueue {
     peak_bytes: u64,
     peak_tabs: usize,
     peak_running: u32,
+    /// Drains (a quit's, a hand-off's) waiting on the queue now.
+    drains_waiting: u32,
     /// What's come of the tabs queued, for `qa state`.
     counts: Counts,
 }
@@ -102,16 +110,20 @@ struct Counts {
     /// Taken out of their cool-down to be written now, past the cap on tabs.
     hurried: u64,
     writer_panics: u64,
+    /// Times the writer waited on the queue's condition: each ends with a word or its timeout, so a writer that spins would show here.
+    waits: u64,
 }
 
 impl LeavingQueue {
-    /// Queues a tab's sleep file, by the rules above. Says whether a writer has to be started: only when there isn't one.
+    /// Queues a tab's sleep file, due now, for the tests of the rules below.
+    #[cfg(test)]
     #[must_use]
     pub fn push(&mut self, facts: SleepFacts, material: SleepMaterial) -> bool {
         self.push_due(facts, material, 0)
     }
 
-    /// The same, to be written no sooner than `due` by the clock.
+    /// **Queues a tab's sleep file,** to be written no sooner than `due` by the clock, by the rules above. Says whether a writer has to be started: only when
+    /// there isn't one.
     #[must_use]
     pub fn push_due(&mut self, facts: SleepFacts, material: SleepMaterial, due: u64) -> bool {
         if let Some(at) = self.queue.iter().position(|leaving| leaving.facts.id == facts.id) {
@@ -119,7 +131,7 @@ impl LeavingQueue {
             self.counts.replaced += 1;
         }
         let bytes = bytes_of(&facts, &material);
-        self.queue.push_back(Leaving { facts, material, bytes, due });
+        self.queue.push_back(Waiting { facts, material, bytes, due });
         self.bytes += bytes;
         // Past the cap on tabs, the oldest still in its cool-down is written now rather than dropped (found 2026-11-13: flicking through thirty tabs, every
         // sleep file past the eighth was dropped while it waited, and those tabs woke bare). Only when none is waiting, so the writer is behind (a slow disk),
@@ -192,11 +204,19 @@ impl LeavingQueue {
         Next::Write(Box::new((leaving.facts, leaving.material)))
     }
 
-    /// Everything queued is due now: a quit, a hand-off, the app going to the background, or memory pressure won't wait for the cool-down.
-    pub fn hurry(&mut self) {
+    /// **Everything queued is due now:** a quit, a hand-off, the app going to the background, or memory pressure won't wait for the cool-down. Says whether a
+    /// writer has to be started for it: something's queued and there's none, as after one panicked or couldn't be started.
+    #[must_use]
+    pub fn hurry(&mut self) -> bool {
         for leaving in &mut self.queue {
             leaving.due = 0;
         }
+        if self.writer || self.queue.is_empty() {
+            return false;
+        }
+        self.writer = true;
+        self.counts.writers_started += 1;
+        true
     }
 
     /// **A tab shown again while its sleep file waits:** what it was copied with comes back, for its first frame, and isn't written; the tab's queued again when
@@ -296,22 +316,26 @@ impl LeavingQueue {
             "handed_back": self.counts.handed_back,
             "hurried": self.counts.hurried,
             "writer_panics": self.counts.writer_panics,
+            "waits": self.counts.waits,
+            "drains_waiting": self.drains_waiting,
         })
     }
 }
 
-/// **A writer thread, from its start:** counted as running, so two at once would show in `peak_writers`. Its end is [`LeavingQueue::next`]'s `None`; if it panics instead, this lets the next tab queued start another, as a writer marked there for good would stop every sleep file after.
+/// **A writer thread, from its start:** counted as running, so two at once would show in `peak_writers`. Its end is [`Next::End`]; if it panics instead, this
+/// lets the next tab queued (or a drain, or a hurry) start another, as a writer marked there for good would stop every sleep file after, and says so to a drain
+/// waiting on it, which would otherwise wait out its limit for nothing.
 pub struct WriterRunning<'a> {
-    queue: &'a Mutex<LeavingQueue>,
+    line: &'a Leaving,
 }
 
 impl<'a> WriterRunning<'a> {
-    pub fn enter(queue: &'a Mutex<LeavingQueue>) -> Self {
-        let mut held = lock(queue);
+    pub fn enter(line: &'a Leaving) -> Self {
+        let mut held = lock(&line.queue);
         held.running += 1;
         held.peak_running = held.peak_running.max(held.running);
         drop(held);
-        Self { queue }
+        Self { line }
     }
 }
 
@@ -320,11 +344,206 @@ impl Drop for WriterRunning<'_> {
         if !std::thread::panicking() {
             return;
         }
-        let mut queue = lock(self.queue);
+        let mut queue = lock(&self.line.queue);
         queue.done();
         queue.writer = false;
         queue.running = queue.running.saturating_sub(1);
         queue.counts.writer_panics += 1;
+        drop(queue);
+        self.line.moved.notify_all();
+    }
+}
+
+/// Why a tab's sleep file is queued, which says when it's due: the one place that says a tab going dormant doesn't wait.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Leaves {
+    /// Pushed out of the warm ones: it waits its cool-down ([`crate::sleeper::LEAVING_WAIT_MS`]), and is handed back if it's shown again meanwhile.
+    PushedOut,
+    /// Going dormant by itself (left alone, the budget, memory pressure): written as soon as the writer gets to it.
+    Dormant,
+}
+
+/// **The queue and what waits on it:** its one short lock, the condition the writer and a drain wait on, the cool-down, and a hurry asked for from the UI thread,
+/// which takes no lock. Held by the sleeper; the writer's loop is [`Self::serve`].
+pub struct Leaving {
+    queue: Mutex<LeavingQueue>,
+    /// Said to whenever the queue changes in a way the writer or a drain should look again for: something queued, hurried, taken back, retired or written.
+    moved: Condvar,
+    /// How long a pushed-out tab's sleep file waits, in milliseconds of the app's clock: [`crate::sleeper::LEAVING_WAIT_MS`], set small by tests.
+    wait_ms: AtomicU64,
+    /// **A hurry asked for on the UI thread** (the app going to the background), which takes no lock there: the writer takes it in at its next look. With no
+    /// writer it waits for the next one, and a writer started for a tab queued after it is started without it (a stale hurry would write that tab early).
+    hurry_soon: AtomicBool,
+    /// A test's: the next writer panics as it starts, as one that met a bug would.
+    #[cfg(test)]
+    panic_next: AtomicBool,
+}
+
+impl Default for Leaving {
+    fn default() -> Self {
+        Self::new(crate::sleeper::LEAVING_WAIT_MS)
+    }
+}
+
+impl Leaving {
+    #[must_use]
+    pub fn new(wait_ms: u64) -> Self {
+        Self {
+            queue: Mutex::new(LeavingQueue::default()),
+            moved: Condvar::new(),
+            wait_ms: AtomicU64::new(wait_ms),
+            hurry_soon: AtomicBool::new(false),
+            #[cfg(test)]
+            panic_next: AtomicBool::new(false),
+        }
+    }
+
+    /// How long a pushed-out tab's sleep file waits, for tests.
+    pub fn set_wait(&self, ms: u64) {
+        self.wait_ms.store(ms, Ordering::SeqCst);
+        self.moved.notify_all();
+    }
+
+    /// **Queues a tab's sleep file** at `now` by the app's clock, due by why it's leaving ([`Leaves`]). Says whether a writer has to be started.
+    #[must_use]
+    pub fn push(&self, facts: SleepFacts, material: SleepMaterial, leaves: Leaves, now: u64) -> bool {
+        let wait = self.wait_ms.load(Ordering::SeqCst);
+        let due = match leaves {
+            Leaves::PushedOut if wait > 0 => now.saturating_add(wait),
+            Leaves::PushedOut | Leaves::Dormant => 0,
+        };
+        let start = lock(&self.queue).push_due(facts, material, due);
+        if start {
+            self.hurry_soon.store(false, Ordering::SeqCst);
+        }
+        self.moved.notify_all();
+        start
+    }
+
+    /// A tab shown again: what's waiting for it comes back ([`LeavingQueue::take_back`]).
+    pub fn take_back(&self, id: TabId) -> Option<(SleepFacts, SleepMaterial)> {
+        let back = lock(&self.queue).take_back(id);
+        self.moved.notify_all();
+        back
+    }
+
+    /// A tab's file is being written from what's newer ([`LeavingQueue::forget`]).
+    pub fn forget(&self, id: TabId) {
+        lock(&self.queue).forget(id);
+        self.moved.notify_all();
+    }
+
+    /// These sleep files are about to be removed, as retired ([`LeavingQueue::retire`]).
+    pub fn retire(&self, names: &[String]) {
+        lock(&self.queue).retire(names);
+        self.moved.notify_all();
+    }
+
+    /// **Everything waiting is due now.** Says whether a writer has to be started for it ([`LeavingQueue::hurry`]). Takes the lock: not for the UI thread.
+    #[must_use]
+    pub fn hurry(&self) -> bool {
+        let start = lock(&self.queue).hurry();
+        self.hurry_soon.store(false, Ordering::SeqCst);
+        self.moved.notify_all();
+        start
+    }
+
+    /// **The same, from the UI thread:** an atomic and a word to the writer, no lock. It starts no writer.
+    pub fn hurry_soon(&self) {
+        self.hurry_soon.store(true, Ordering::SeqCst);
+        self.moved.notify_all();
+    }
+
+    /// The writer looks at the queue again, as the clock's moved on (a test's clock, which no timeout follows).
+    pub fn poke(&self) {
+        self.moved.notify_all();
+    }
+
+    /// The writer couldn't be started ([`LeavingQueue::writer_gone`]): a drain waiting on it returns.
+    pub fn writer_gone(&self) {
+        lock(&self.queue).writer_gone();
+        self.moved.notify_all();
+    }
+
+    /// Whether the one in flight is still to be written ([`LeavingQueue::still_wanted`]): asked with the one-at-a-time lock held.
+    pub fn still_wanted(&self) -> bool {
+        lock(&self.queue).still_wanted()
+    }
+
+    /// Whether the one in flight's file was retired while it was being written ([`LeavingQueue::retired_in_flight`]).
+    pub fn retired_in_flight(&self) -> bool {
+        lock(&self.queue).retired_in_flight()
+    }
+
+    /// **Waits until nothing's queued or being written, or until `until`,** whichever's first (a quit's, a hand-off's): past it, what's left is written after or
+    /// not at all, which costs those tabs only their quick way back. With no writer to wait for (one that panicked, or couldn't be started), it returns at once:
+    /// waiting would only burn the limit. Says whether it all went. Real time, as it waits on another thread's disk.
+    pub fn drain(&self, until: Instant) -> bool {
+        let mut held = lock(&self.queue);
+        held.drains_waiting += 1;
+        let drained = loop {
+            if held.is_idle() {
+                break true;
+            }
+            if !held.writer {
+                break false;
+            }
+            let Some(left) = until.checked_duration_since(Instant::now()).filter(|left| !left.is_zero()) else {
+                break false;
+            };
+            held = self
+                .moved
+                .wait_timeout(held, left)
+                .map_or_else(|poisoned| poisoned.into_inner().0, |(held, _)| held);
+        };
+        held.drains_waiting -= 1;
+        drained
+    }
+
+    /// **The one writer's loop,** on its thread, till the queue's empty: the next due by `now` (the app's clock), handed to `write`, then let go of. With nothing
+    /// due it waits on the queue's condition for the soonest due time, looked at again each time round, so a word missed costs at most that wait, and it never
+    /// spins: each wait ends with a word or its timeout (counted as `waits`).
+    pub fn serve(&self, now: impl Fn() -> u64, mut write: impl FnMut(SleepFacts, SleepMaterial)) {
+        let _running = WriterRunning::enter(self);
+        #[cfg(test)]
+        assert!(!self.panic_next.swap(false, Ordering::SeqCst), "a sleep writer panicking, as a test asked");
+        while let Some((facts, material)) = self.next(&now) {
+            write(facts, material);
+            lock(&self.queue).done();
+            self.moved.notify_all();
+        }
+    }
+
+    /// The writer's next: waits for one to come due, or says there's none left (the writer's end, said under the lock a tab's queued under).
+    fn next(&self, now: &impl Fn() -> u64) -> Option<(SleepFacts, SleepMaterial)> {
+        let mut held = lock(&self.queue);
+        loop {
+            if self.hurry_soon.swap(false, Ordering::SeqCst) {
+                let _ = held.hurry();
+            }
+            match held.take_due(now()) {
+                Next::Write(leaving) => return Some(*leaving),
+                Next::End => return None,
+                Next::Wait(ms) => {
+                    held.counts.waits += 1;
+                    held = self
+                        .moved
+                        .wait_timeout(held, Duration::from_millis(ms.max(1)))
+                        .map_or_else(|poisoned| poisoned.into_inner().0, |(held, _)| held);
+                }
+            }
+        }
+    }
+
+    /// The next writer panics as it starts, for a test of what's left after one.
+    #[cfg(test)]
+    pub fn panic_next_writer(&self) {
+        self.panic_next.store(true, Ordering::SeqCst);
+    }
+
+    #[must_use]
+    pub fn report(&self) -> Value {
+        lock(&self.queue).report()
     }
 }
 
@@ -477,9 +696,9 @@ mod tests {
     fn a_sleep_file_waits_its_cool_down_unless_hurried_or_taken_back() {
         let wait = 5;
         let mut queue = LeavingQueue::default();
-        let _ = queue.push_due(facts(1), material(10, 1), crate::sleeper::leaving_due(100, true, wait));
+        let _ = queue.push_due(facts(1), material(10, 1), 100 + wait);
         assert!(matches!(queue.take_due(100 + wait - 1), Next::Wait(1)), "at the wait less one");
-        let _ = queue.push_due(facts(2), material(10, 2), crate::sleeper::leaving_due(101, false, wait));
+        let _ = queue.push_due(facts(2), material(10, 2), 0);
         assert!(
             matches!(queue.take_due(101), Next::Write(leaving) if leaving.0.id == TabId(2)),
             "going dormant doesn't wait"
@@ -488,11 +707,11 @@ mod tests {
             matches!(queue.take_due(100 + wait), Next::Write(leaving) if leaving.0.id == TabId(1)),
             "at the wait"
         );
-        let _ = queue.push_due(facts(3), material(10, 3), crate::sleeper::leaving_due(200, true, wait));
-        let _ = queue.push_due(facts(4), material(10, 4), crate::sleeper::leaving_due(200, true, wait));
+        let _ = queue.push_due(facts(3), material(10, 3), 200 + wait);
+        let _ = queue.push_due(facts(4), material(10, 4), 200 + wait);
         let (back, material) = queue.take_back(TabId(3)).expect("handed back");
         assert_eq!((back.id, material.pictures[0].bgra[0]), (TabId(3), 3));
-        queue.hurry();
+        assert!(!queue.hurry(), "a writer's there");
         assert!(matches!(queue.take_due(200), Next::Write(leaving) if leaving.0.id == TabId(4)), "hurried");
         assert!(matches!(queue.take_due(200), Next::End));
         assert_eq!(queue.report()["handed_back"], 1);
@@ -579,19 +798,19 @@ mod tests {
     /// Failure (review 1): a writer that panics leaves the queue saying there's a writer for good, so no sleep file is ever written again. Its guard says it's gone, what it held goes, and the next tab queued starts another.
     #[test]
     fn a_writer_that_panics_lets_the_next_one_start() {
-        let queue = Mutex::new(LeavingQueue::default());
-        assert!(lock(&queue).push(facts(1), material(10, 0)));
+        let line = Leaving::new(0);
+        assert!(lock(&line.queue).push(facts(1), material(10, 0)));
         let ended = std::thread::scope(|scope| {
             scope
                 .spawn(|| {
-                    let _running = WriterRunning::enter(&queue);
-                    let _taken = lock(&queue).take_next();
+                    let _running = WriterRunning::enter(&line);
+                    let _taken = lock(&line.queue).take_next();
                     panic!("a writer panicking, on purpose");
                 })
                 .join()
         });
         assert!(ended.is_err());
-        let mut queue = lock(&queue);
+        let mut queue = lock(&line.queue);
         let report = queue.report();
         assert_eq!(report["writer"], false, "{report}");
         assert_eq!(report["writers_running"], 0);
@@ -603,11 +822,12 @@ mod tests {
     /// Failure (review 1): two writers run at once, as one is started while the last is still ending, or one stays when there's nothing to write. Tabs queued from four threads at once, each writer counted from its thread's start: never more than one, and none at rest with nothing held.
     #[test]
     fn writers_never_overlap_and_none_is_left_at_rest() {
-        let queue = Mutex::new(LeavingQueue::default());
+        let line = Leaving::new(0);
+        let queue = &line.queue;
         let write = || {
-            let _running = WriterRunning::enter(&queue);
+            let _running = WriterRunning::enter(&line);
             loop {
-                let next = lock(&queue).take_next();
+                let next = lock(queue).take_next();
                 if next.is_none() {
                     return;
                 }
@@ -617,7 +837,6 @@ mod tests {
         std::thread::scope(|scope| {
             for from in 0..4u32 {
                 let write = &write;
-                let queue = &queue;
                 scope.spawn(move || {
                     for at in 0..200 {
                         if lock(queue).push(facts(from * 1000 + at), material(1024, 0)) {
@@ -630,12 +849,156 @@ mod tests {
                 });
             }
         });
-        let report = lock(&queue).report();
+        let report = lock(queue).report();
         assert_eq!(report["peak_writers"], 1, "{report}");
         assert!(report["writers_started"].as_u64().unwrap() >= 1);
         assert_eq!(report["writer"], false, "{report}");
         assert_eq!(report["writers_running"], 0);
         assert_eq!(report["queued"], 0);
         assert_eq!(report["queued_bytes"], 0);
+    }
+
+    /// A clock a test moves, in milliseconds.
+    #[derive(Default)]
+    struct TestClock(AtomicU64);
+
+    impl TestClock {
+        fn now(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+        fn set(&self, ms: u64) {
+            self.0.store(ms, Ordering::SeqCst);
+        }
+    }
+
+    /// Whatever a test's writer is waiting for is written as the test ends, a failed assertion included, so a scope never waits on a writer for ever.
+    struct EndsTheWriter<'a>(&'a Leaving);
+
+    impl Drop for EndsTheWriter<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.hurry();
+        }
+    }
+
+    /// Waits for `done`, bounded, polling: never a fixed sleep then a count.
+    fn until(what: &str, done: impl Fn() -> bool) {
+        let began = Instant::now();
+        while !done() {
+            assert!(began.elapsed() < Duration::from_secs(10), "{what}");
+            std::thread::sleep(Duration::from_millis(1)); // ratchet: poll
+        }
+    }
+
+    /// Failure (the cool-down's review, 2026-11-13): "a tab going dormant doesn't wait" was said in two places, the queue's caller pushing with no due time and a
+    /// rule with a flag no caller passed false, so a change to one left the other saying otherwise. One place: a pushed-out tab is due at its wait, a tab going
+    /// dormant at once, and with no wait set, both at once.
+    #[test]
+    fn a_pushed_out_tab_waits_its_cool_down_and_a_dormant_one_does_not() {
+        let line = Leaving::new(5);
+        let _ = line.push(facts(1), material(10, 0), Leaves::PushedOut, 100);
+        let _ = line.push(facts(2), material(10, 0), Leaves::Dormant, 100);
+        line.set_wait(0);
+        let _ = line.push(facts(3), material(10, 0), Leaves::PushedOut, 100);
+        let dues: Vec<u64> = lock(&line.queue).queue.iter().map(|waiting| waiting.due).collect();
+        assert_eq!(dues, [105, 0, 0]);
+    }
+
+    /// Failure (the cool-down's review, 2026-11-13): the writer's wait loop, untested in the hub it lived in, could spin on a clock that doesn't move, miss an item
+    /// that came due with no word said, or stay when the queue's empty. With a clock the test moves and a writer that only notes what it's handed: a file due
+    /// later waits, through words that change nothing, without spinning; one that comes due with no word is written at its timeout; one due now is written;
+    /// and with nothing left the writer ends and says so.
+    #[test]
+    fn the_writer_waits_without_spinning_misses_nothing_due_and_ends_with_the_queue() {
+        let line = Leaving::new(60_000);
+        let clock = TestClock::default();
+        let written = Mutex::new(Vec::new());
+        assert!(line.push(facts(1), material(10, 0), Leaves::PushedOut, 0), "the first starts a writer");
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| line.serve(|| clock.now(), |facts, _| lock(&written).push(facts.id)));
+            let _ends = EndsTheWriter(&line);
+            until("the writer waiting", || line.report()["waits"].as_u64().unwrap() >= 1);
+            for _ in 0..3 {
+                line.poke();
+            }
+            assert!(lock(&written).is_empty(), "written before its wait");
+            // Due with no word said: the writer's own timeout, a millisecond of real time here as the clock says so, finds it.
+            line.set_wait(1);
+            let _ = line.push(facts(2), material(10, 0), Leaves::PushedOut, clock.now());
+            clock.set(1);
+            until("the one come due written", || lock(&written).contains(&TabId(2)));
+            clock.set(60_000);
+            line.poke();
+            writer.join().expect("the writer ends");
+        });
+        assert_eq!(*lock(&written), [TabId(2), TabId(1)]);
+        let report = line.report();
+        assert_eq!(report["writer"], false, "{report}");
+        assert_eq!(report["writers_running"], 0, "{report}");
+        // Each wait ends with a word or its timeout: four words and a few timeouts here, where a spinning writer would count thousands.
+        assert!(report["waits"].as_u64().unwrap() <= 20, "the writer spun: {report}");
+    }
+
+    /// Failure (the cool-down's review, 2026-11-13, S4): after a writer panicked, what it left queued had no thread, and a quit's drain waited for it to its
+    /// limit, then went without the tab on screen's file. A drain with no writer returns at once; a hurry with something queued and no writer says to start one.
+    #[test]
+    fn a_drain_with_no_writer_returns_at_once_and_a_hurry_starts_one() {
+        let line = Leaving::new(1_000);
+        assert!(line.push(facts(1), material(10, 0), Leaves::PushedOut, 0));
+        line.writer_gone();
+        let began = Instant::now();
+        assert!(!line.drain(began + Duration::from_secs(5)), "nothing to wait for");
+        assert!(began.elapsed() < Duration::from_millis(2_500), "the drain waited for a writer there isn't");
+        assert!(line.hurry(), "something's queued and there's no writer");
+        assert!(!line.hurry(), "one's been started");
+    }
+
+    /// Failure (the cool-down's review, 2026-11-13): going to the background hurried the queue under its lock, on the UI thread. The UI thread's hurry is an
+    /// atomic the writer takes in at its next look: a file waiting its cool-down is written then, not at its wait.
+    #[test]
+    fn the_ui_threads_hurry_takes_no_lock_and_the_writer_takes_it_in() {
+        let line = Leaving::new(60_000);
+        let written = Mutex::new(Vec::new());
+        assert!(line.push(facts(1), material(10, 0), Leaves::PushedOut, 0));
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| line.serve(|| 0, |facts, _| lock(&written).push(facts.id)));
+            let _ends = EndsTheWriter(&line);
+            until("the writer waiting", || line.report()["waits"].as_u64().unwrap() >= 1);
+            line.hurry_soon();
+            until("the file hurried, written", || lock(&written).contains(&TabId(1)));
+            writer.join().expect("the writer ends");
+        });
+    }
+
+    /// Failure (the cool-down's review, 2026-11-13, S4): a writer that panicked while a quit's drain waited on it left the drain waiting out its limit. Its
+    /// guard tells the drain, which returns.
+    #[test]
+    fn a_writer_that_panics_lets_a_drain_return() {
+        let line = Leaving::new(0);
+        assert!(line.push(facts(1), material(10, 0), Leaves::Dormant, 0));
+        assert!(!line.push(facts(2), material(10, 0), Leaves::Dormant, 0));
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        let line = &line;
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(move || {
+                line.serve(
+                    || 0,
+                    |_, _| {
+                        let _ = gone.recv();
+                        panic!("a sleep writer panicking, on purpose");
+                    },
+                );
+            });
+            let drained = scope.spawn(move || {
+                let began = Instant::now();
+                (line.drain(began + Duration::from_secs(5)), began.elapsed())
+            });
+            until("the drain waiting", || line.report()["drains_waiting"] == 1);
+            drop(go);
+            assert!(writer.join().is_err());
+            let (all, took) = drained.join().expect("the drain returns");
+            assert!(!all, "the second is left, with no writer");
+            assert!(took < Duration::from_millis(2_500), "the drain waited out its limit for a writer that panicked: {took:?}");
+        });
+        assert_eq!(line.report()["writer_panics"], 1);
     }
 }

@@ -591,7 +591,7 @@ impl Inner {
         state.focus.window_key = window_key;
         drop(state);
         if went_back {
-            self.sleeper.hurry_leaving();
+            self.sleeper.hurry_leaving_soon();
             self.saver.write_soon()
         } else {
             self.saver.view_changed()

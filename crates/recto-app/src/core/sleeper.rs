@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::sleep_queue::Leaves;
 use crate::sleep_writer::{By, Event, Out, SleepWriter, Write};
 use crate::sleeper as app;
 pub use crate::sleeper::Why;
@@ -38,13 +39,8 @@ pub struct Sleeper {
     machine: Mutex<SleepWriter>,
     /// One sleep file being written at a time, so a flush has what's on its way.
     writing: Mutex<()>,
-    /// Sleep files written off the session's time, waiting for their one writer: [`crate::sleep_queue`].
-    leaving: Mutex<crate::sleep_queue::LeavingQueue>,
-    /// Said to whenever the queue changes in a way the writer or a flush waiting on it should look again for: something queued, hurried, taken back, retired
-    /// or written. The writer's wait on it has the soonest due time as its timeout, so a word missed costs at most that.
-    leaving_moved: std::sync::Condvar,
-    /// How long a pushed-out tab's sleep file waits, in milliseconds of the clock: [`crate::sleeper::LEAVING_WAIT_MS`], set small by tests.
-    leaving_wait_ms: AtomicU64,
+    /// Sleep files written off the session's time, waiting for their one writer, and what waits on them: [`crate::sleep_queue::Leaving`].
+    leaving: crate::sleep_queue::Leaving,
     /// Looks at files under way, each on a thread of its own: one per tab at most, and [`MAX_LOOKS`] in all.
     looks: std::sync::Arc<LookSlots>,
 }
@@ -94,9 +90,7 @@ impl Sleeper {
             due: AtomicU64::new(0),
             machine: Mutex::new(SleepWriter::default()),
             writing: Mutex::new(()),
-            leaving: Mutex::new(crate::sleep_queue::LeavingQueue::default()),
-            leaving_moved: std::sync::Condvar::new(),
-            leaving_wait_ms: AtomicU64::new(crate::sleeper::LEAVING_WAIT_MS),
+            leaving: crate::sleep_queue::Leaving::default(),
             looks: std::sync::Arc::new(LookSlots::default()),
         }
     }
@@ -142,42 +136,37 @@ impl Sleeper {
 
     /// These sleep files are about to be removed, as retired: nothing queued for them is written after ([`crate::sleep_queue::LeavingQueue::retire`]).
     pub fn retire(&self, names: &[String]) {
-        lock(&self.leaving).retire(names);
-        self.leaving_moved.notify_all();
+        self.leaving.retire(names);
     }
 
     /// How long a pushed-out tab's sleep file waits, for tests.
     pub fn set_leaving_wait(&self, ms: u64) {
-        self.leaving_wait_ms.store(ms, Ordering::SeqCst);
-        self.leaving_moved.notify_all();
-    }
-
-    /// Everything waiting is written now, without waiting for the cool-down: the app going to the background, memory pressure.
-    pub fn hurry_leaving(&self) {
-        lock(&self.leaving).hurry();
-        self.leaving_moved.notify_all();
+        self.leaving.set_wait(ms);
     }
 
     /// The writer looks at the queue again, as the clock's moved on (a test's clock, which no timeout follows).
     pub fn poke_leaving(&self) {
-        self.leaving_moved.notify_all();
+        self.leaving.poke();
     }
 
-    /// **Everything waiting is written now, and waited for until `until`** (a quit's, a hand-off's): past it, what's left is written after or not at all,
-    /// which costs those tabs only their quick way back. Real time, as it waits on another thread's disk.
-    pub fn drain_leaving(&self, until: Instant) {
-        let mut held = lock(&self.leaving);
-        held.hurry();
-        self.leaving_moved.notify_all();
-        while !held.is_idle() {
-            let Some(left) = until.checked_duration_since(Instant::now()).filter(|left| !left.is_zero()) else {
-                return;
-            };
-            held = self
-                .leaving_moved
-                .wait_timeout(held, left)
-                .map_or_else(|poisoned| poisoned.into_inner().0, |(held, _)| held);
+    /// **Everything waiting is written now, without waiting for the cool-down** (memory pressure, a quit, a hand-off), with a writer started for it by `start`
+    /// if there's none, as after one panicked. Not the UI thread's: that's [`Self::hurry_leaving_soon`].
+    pub fn hurry_leaving(&self, start: impl FnOnce()) {
+        if self.leaving.hurry() {
+            start();
         }
+    }
+
+    /// **Everything waiting is written now, and waited for until `until`** (a quit's, a hand-off's), a writer started for it by `start` if there's none: past
+    /// it, or with no writer to be had, what's left is written after or not at all, which costs those tabs only their quick way back. Says whether it all went.
+    pub fn drain_leaving(&self, until: Instant, start: impl FnOnce()) -> bool {
+        self.hurry_leaving(start);
+        self.leaving.drain(until)
+    }
+
+    /// The app's gone to the background: what's waiting is written at the writer's next look. The UI thread's: an atomic, no lock.
+    pub fn hurry_leaving_soon(&self) {
+        self.leaving.hurry_soon();
     }
 
     /// The one-at-a-time lock on writing sleep files, for a write someone's waiting on: waited for, or until `until` and no further (counted as skipped past it),
@@ -238,7 +227,7 @@ impl Sleeper {
             "pressure_events": counts.pressure_events,
             "system_pressure": { "warning": counts.system_warning, "critical": counts.system_critical },
             "looks_running": self.looks.running(),
-            "leaving": lock(&self.leaving).report(),
+            "leaving": self.leaving.report(),
         })
     }
 }
@@ -321,7 +310,7 @@ impl Inner {
             return;
         };
         // What's queued for it is older than this.
-        lock(&self.sleeper.leaving).forget(id);
+        self.sleeper.leaving.forget(id);
         self.write_with_material(facts, material, by, until);
     }
 
@@ -370,22 +359,25 @@ impl Inner {
     /// `shown` is the tab being shown: what's queued for it was copied as it left, so it's taken back, not written, and said for its first frame
     /// ([`Self::give_sleep_view`]); it's queued again when it next leaves.
     pub fn queue_those_leaving(&self, shown: TabId) -> Option<(SleepFacts, SleepMaterial)> {
-        let back = lock(&self.sleeper.leaving).take_back(shown);
+        let back = self.sleeper.leaving.take_back(shown);
         let left = self.host.session.with_session(|session| session.sleeper().take_left_warm());
-        let due = crate::sleeper::leaving_due(self.sleeper.millis(), true, self.sleeper.leaving_wait_ms.load(Ordering::SeqCst));
+        let now = self.sleeper.millis();
         let mut start = false;
         for facts in left {
-            let Some(now) = self.host.session.with_session(|session| pages_now(session, facts.id)) else {
+            let Some(now_pages) = self.host.session.with_session(|session| pages_now(session, facts.id)) else {
                 continue;
             };
-            if let Some(material) = self.panes.engine_for_tab(&self.engine, facts.id).waking().sleep_material(facts.id.0, &now) {
-                start |= lock(&self.sleeper.leaving).push_due(facts, material, due);
+            if let Some(material) = self
+                .panes
+                .engine_for_tab(&self.engine, facts.id)
+                .waking()
+                .sleep_material(facts.id.0, &now_pages)
+            {
+                start |= self.sleeper.leaving.push(facts, material, Leaves::PushedOut, now);
             }
         }
         if start {
             self.start_sleep_writer();
-        } else {
-            self.sleeper.leaving_moved.notify_all();
         }
         back
     }
@@ -402,17 +394,15 @@ impl Inner {
         let Some(material) = self.panes.engine_for_tab(&self.engine, id).waking().sleep_material(id.0, &now) else {
             return;
         };
-        if lock(&self.sleeper.leaving).push(facts, material) {
+        if self.sleeper.leaving.push(facts, material, Leaves::Dormant, self.sleeper.millis()) {
             self.start_sleep_writer();
-        } else {
-            self.sleeper.leaving_moved.notify_all();
         }
     }
 
     /// The queue's said there's no writer: one's started.
-    fn start_sleep_writer(&self) {
+    pub(crate) fn start_sleep_writer(&self) {
         let Some(inner) = self.saver.inner() else {
-            lock(&self.sleeper.leaving).writer_gone();
+            self.sleeper.leaving.writer_gone();
             return;
         };
         let spawned = std::thread::Builder::new()
@@ -420,48 +410,30 @@ impl Inner {
             .stack_size(512 * 1024)
             .spawn(move || inner.write_leaving());
         if spawned.is_err() {
-            lock(&self.sleeper.leaving).writer_gone();
+            self.sleeper.leaving.writer_gone();
         }
     }
 
-    /// **The queue's one writer:** oldest first, until there's none, and then it ends. Each is taken from the queue only as it's about to be written, and counted till it's done, so what's held is what the queue's caps allow. A write someone's waiting on goes first. One that something newer's been written for since it was taken isn't written: that's asked with the one-at-a-time lock held, so the newer either came before or comes after.
+    /// **The queue's one writer** ([`crate::sleep_queue::Leaving::serve`]): oldest first, until there's none, and then it ends. A write someone's waiting on goes
+    /// first. One that something newer's been written for since it was taken isn't written: that's asked with the one-at-a-time lock held, so the newer either
+    /// came before or comes after.
     fn write_leaving(&self) {
-        let queue = &self.sleeper.leaving;
-        let _running = crate::sleep_queue::WriterRunning::enter(queue);
-        loop {
-            // Its own block, so the queue's lock is let go before the write. Nothing due yet: waits for the soonest, or for word that something changed, with
-            // the timeout looked at again in the loop, so a word missed can't leave one past its time.
-            let next = {
-                let mut held = lock(queue);
-                loop {
-                    match held.take_due(self.sleeper.millis()) {
-                        crate::sleep_queue::Next::Wait(ms) => {
-                            held = self
-                                .sleeper
-                                .leaving_moved
-                                .wait_timeout(held, Duration::from_millis(ms.max(1)))
-                                .map_or_else(|poisoned| poisoned.into_inner().0, |(held, _)| held);
-                        }
-                        next => break next,
+        let leaving = &self.sleeper.leaving;
+        leaving.serve(
+            || self.sleeper.millis(),
+            |facts, material| {
+                self.sleeper.let_others_go_first();
+                let _one_at_a_time = lock(&self.sleeper.writing);
+                if leaving.still_wanted() {
+                    let (stamp, path) = (facts.sleep.file, facts.path.clone());
+                    self.write_holding_lock(facts, material, By::Queue);
+                    // Retired as it was written: the saver may have removed the file before this landed, so it goes now.
+                    if leaving.retired_in_flight() {
+                        self.saver.store.remove_sleep(stamp, &path);
                     }
                 }
-            };
-            let crate::sleep_queue::Next::Write(leaving) = next else { return };
-            let (facts, material) = *leaving;
-            self.sleeper.let_others_go_first();
-            let one_at_a_time = lock(&self.sleeper.writing);
-            if lock(queue).still_wanted() {
-                let (stamp, path) = (facts.sleep.file, facts.path.clone());
-                self.write_holding_lock(facts, material, By::Queue);
-                // Retired as it was written: the saver may have removed the file before this landed, so it goes now.
-                if lock(queue).retired_in_flight() {
-                    self.saver.store.remove_sleep(stamp, &path);
-                }
-            }
-            drop(one_at_a_time);
-            lock(queue).done();
-            self.sleeper.leaving_moved.notify_all();
-        }
+            },
+        );
     }
 
     /// Tabs just woken from their sleep files: nothing's asked of the PDF on the way, as it may be on a disk that's gone away. Each is looked at on a thread of its own, and if it's turned out to be something else, it's read after all.
@@ -577,7 +549,7 @@ impl Inner {
         let Some(Out::AllGo(critical)) = self.sleeper.step(Event::Pressure { critical }) else {
             return;
         };
-        self.sleeper.hurry_leaving();
+        self.sleeper.hurry_leaving(|| self.start_sleep_writer());
         let tabs = self.host.session.with_session(|session| session.dormant().oldest_first());
         self.go_dormant(&tabs, Why::Pressure);
         for engine in self.panes.engines(&self.engine) {
