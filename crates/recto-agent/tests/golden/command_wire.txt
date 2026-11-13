@@ -213,7 +213,7 @@
 {"cmd":"view"}
     ok view View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None, tab: None }
 {"cmd":"view","paper":"warm","sidebar":"off","agent_icon":"off","zoom":"fit","layout":"two_up"}
-    ok view View { paper: Some("warm"), sidebar: Some("off"), agent_icon: Some("off"), zoom: Some("fit"), layout: Some("two_up"), tab: None }
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`two_up` isn't a layout. It's one of single, two-up, two-up-cover.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"view","extra":1}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"view","paper":{}}
@@ -239,7 +239,7 @@
 ["view"]
     ok view View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None, tab: None }
 ["view","warm","off","off","fit","two_up"]
-    ok view View { paper: Some("warm"), sidebar: Some("off"), agent_icon: Some("off"), zoom: Some("fit"), layout: Some("two_up"), tab: None }
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`two_up` isn't a layout. It's one of single, two-up, two-up-cover.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"View"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"palette"}
@@ -269,7 +269,7 @@
 {"cmd":"find"}
     ok find Find { query: None, next: false, previous: false, jump: false, hit: None, open: false, close: false, limit: None }
 {"cmd":"find","query":"q","next":true,"previous":true,"close":true,"limit":3}
-    ok find Find { query: Some("q"), next: true, previous: true, jump: false, hit: None, open: false, close: true, limit: Some(3) }
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"That's more than one thing at once: a query, a step, a hit, opening or closing.","next":"Find first, then `recto find --next`."},"ok":false,"v":1}
 {"cmd":"find","extra":1}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"find","query":{}}
@@ -295,13 +295,13 @@
 ["find"]
     ok find Find { query: None, next: false, previous: false, jump: false, hit: None, open: false, close: false, limit: None }
 ["find","q",true,true,true,3]
-    ok find Find { query: Some("q"), next: true, previous: true, jump: true, hit: Some(3), open: false, close: false, limit: None }
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"That's more than one thing at once: a query, a step, a hit, opening or closing.","next":"Find first, then `recto find --next`."},"ok":false,"v":1}
 {"cmd":"Find"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"compare"}
     ok compare Compare { tabs: None, sync: None, off: false, toggle: None, reading: None }
 {"cmd":"compare","tabs":"#1,#2","sync":"on","off":true}
-    ok compare Compare { tabs: Some("#1,#2"), sync: Some("on"), off: true, toggle: None, reading: None }
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`--off` goes alone: it ends the comparison.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"compare","extra":1}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"compare","tabs":{}}
@@ -319,7 +319,7 @@
 ["compare"]
     ok compare Compare { tabs: None, sync: None, off: false, toggle: None, reading: None }
 ["compare","#1,#2","on",true]
-    ok compare Compare { tabs: Some("#1,#2"), sync: Some("on"), off: true, toggle: None, reading: None }
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`--off` goes alone: it ends the comparison.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"compare","toggle":"#2"}
     ok compare Compare { tabs: None, sync: None, off: false, toggle: Some("#2"), reading: None }
 {"cmd":"compare","reading":"#2"}
@@ -1620,5 +1620,13 @@ null
     ok close Close { tab: "report" }
 {"cmd":"sidebar","x":null}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"view","layout":"three-up","tab":"no such tab"}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"`three-up` isn't a layout. It's one of single, two-up, two-up-cover.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"settings","auto_update":"maybe"}
+    refused {"error":{"candidates":[],"code":"usage","exit":2,"message":"It's `on` or `off`.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"find","limit":0}
+    refused {"error":{"candidates":[],"code":"bad_limit","exit":1,"message":"A limit has to be at least 1.","next":"Leave it out to get the default, or ask for 1 or more."},"ok":false,"v":1}
+{"cmd":"compare","tabs":"#1,#2,#3,#4,#5,#6,#7,#8,#9"}
+    refused {"error":{"candidates":[],"code":"too_many_panes","exit":1,"message":"At most three PDFs can be side by side.","next":"`recto status` shows whether the session is healthy. If this keeps happening, tell the user what you tried."},"ok":false,"v":1}
 <65561 bytes>
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That command is too long.","next":"`recto help` lists every command."},"ok":false,"v":1}

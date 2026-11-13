@@ -5,6 +5,7 @@ use crate::generating::Generator;
 use crate::indexing::{Indexer, Notifier};
 use crate::record_store::{Flavor, RecordStore, StoreError};
 use crate::state::StatePaths;
+use recto_agent::Code;
 use recto_agent::commands::record::Records;
 use recto_agent::index::Indexing;
 use recto_agent::saving::SaveSupport;
@@ -27,7 +28,7 @@ pub trait Host: Send + Sync + 'static {
     /// Runs a command for whoever asked: an agent at its level over the socket, or the person at the window.
     fn run(&self, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError>;
     /// Looks at a condition once.
-    fn check(&self, condition: Condition, tab: &str, page: Option<u32>) -> ConditionState;
+    fn check(&self, condition: Condition, tab: &recto_agent::TabRef, page: Option<u32>) -> ConditionState;
     /// How many tabs are open. Must never block: `status` answers from the socket's own thread.
     fn tab_count(&self) -> u32;
     /// The tabs with unsaved edits, which `stop` won't throw away.
@@ -386,7 +387,7 @@ pub fn kept_json(store: &RecordStore, notice: Option<&str>) -> Value {
 
 /// A store's failure, for whoever asked.
 pub fn store_error(error: StoreError) -> AgentError {
-    AgentError::new(error.code, error.message, exit::FAILED)
+    AgentError::new(Code::lower(error.code), error.message, exit::FAILED)
 }
 
 impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
@@ -394,7 +395,7 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
         self.run_on(&self.access(), actor, command, events)
     }
 
-    fn check(&self, condition: Condition, tab: &str, page: Option<u32>) -> ConditionState {
+    fn check(&self, condition: Condition, tab: &recto_agent::TabRef, page: Option<u32>) -> ConditionState {
         check_condition(&self.access(), condition, tab, page)
     }
 
@@ -451,7 +452,7 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
 /// The refusal for stopping with unsaved edits.
 pub(crate) fn unsaved_refusal(tabs: &[(TabId, String)]) -> AgentError {
     let mut error = AgentError::new(
-        "unsaved_changes",
+        Code::UNSAVED_CHANGES,
         "The session wasn't stopped: these tabs have unsaved edits, which would be lost.",
         exit::FAILED,
     );

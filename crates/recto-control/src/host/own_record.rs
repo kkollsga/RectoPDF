@@ -4,6 +4,7 @@
 
 use super::{kept_json, store_error};
 use crate::record_store::{Loaded, RecordStore, notice_for};
+use recto_agent::Code;
 use recto_agent::commands::record::{HandOff, Records, Restored, Saved, Slept};
 use recto_agent::{AgentError, exit};
 use recto_session::held::Held;
@@ -77,7 +78,7 @@ impl<L: DocLoader + Clone> Records for OwnRecord<'_, L> {
         self.with(|session| {
             session
                 .restore(&restored.record, restored.journals)
-                .map_err(|error| AgentError::new(error.code(), "The record can't be used.", exit::FAILED))?;
+                .map_err(|error| AgentError::new(Code::lower(error.code()), "The record can't be used.", exit::FAILED))?;
             // The active tab's facts are what a session with no window would otherwise have to find out at its next look.
             session.wake_active();
             Ok(Restored { restored: true, notice })

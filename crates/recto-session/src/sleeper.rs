@@ -195,26 +195,3 @@ impl Sleeper<'_> {
         left.into_iter().filter_map(|(id, toc)| self.look().sleep_facts_with(id, &toc)).collect()
     }
 }
-
-/// R3.5: kept for `recto-agent/src/lib.rs` till `build/typed-payloads` merges, then it calls the sleeper and these go.
-impl<L: DocLoader> Session<L> {
-    /// R3.5: kept for `recto-agent/src/lib.rs` till `build/typed-payloads` merges. See [`Sleeper::wake_list`].
-    pub fn wake_list(&mut self, id: TabId) -> bool {
-        self.sleeper().wake_list(id)
-    }
-
-    /// R3.5: kept for `recto-agent/src/lib.rs` till `build/typed-payloads` merges. See [`Sleeper::touch`].
-    pub fn touch(&mut self, id: TabId) {
-        self.sleeper().touch(id);
-    }
-
-    /// R3.5: kept for `recto-agent/src/lib.rs` till `build/typed-payloads` merges. See [`Sleeper::let_go`].
-    pub fn let_go(&mut self, id: TabId) {
-        self.sleeper().let_go(id);
-    }
-
-    /// R3.5: kept for `recto-agent/src/lib.rs` till `build/typed-payloads` merges. See [`Sleeper::give_woken`].
-    pub fn give_woken(&mut self, id: TabId, loaded: Result<DocFacts, OpenError>, stamp: Option<FileStamp>) {
-        self.sleeper().give_woken(id, loaded, stamp);
-    }
-}

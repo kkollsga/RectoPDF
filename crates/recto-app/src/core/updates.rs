@@ -2,6 +2,7 @@
 
 use super::ScreenInfo;
 use super::{CoreCall, Inner, lock};
+use recto_agent::Code;
 use recto_agent::{AgentError, Command, exit};
 use recto_control::record_store::Loaded;
 use recto_platform::isolate::SharedMemory;
@@ -301,7 +302,9 @@ pub fn answered(inner: &Arc<Inner>, ran: &super::person::Ran<'_>) {
         return;
     }
     match (asked, ran.refused()) {
-        (Updates::UpdateInstall(UpdateInstall { zip: None, now: true }), Some(error)) if matches!(error.code, "nothing_on_offer" | "development_build") => {
+        (Updates::UpdateInstall(UpdateInstall { zip: None, now: true }), Some(error))
+            if matches!(error.code, Code::NOTHING_ON_OFFER | Code::DEVELOPMENT_BUILD) =>
+        {
             super::person::submit(inner, Command::from(UpdateCheck {}));
         }
         (Updates::UpdateCheck(_), _) | (_, Some(_)) => inner.updates.menu().unmark(),
@@ -354,13 +357,8 @@ impl Inner {
                 self.install_build(zip, *now)
             }
             Command::Updates(recto_agent::commands::Updates::UpdateDevBuilds(recto_agent::commands::updates::UpdateDevBuilds { set })) => {
-                if let Some(word) = set {
-                    let on = match word.as_str() {
-                        "on" => true,
-                        "off" => false,
-                        _ => return Err(AgentError::new("usage", "It's `on` or `off`.", exit::USAGE)),
-                    };
-                    self.set_dev_builds(on);
+                if let Some(set) = set {
+                    self.set_dev_builds(set.is_on());
                 }
                 Ok(self.dev_builds_answer())
             }
@@ -371,32 +369,31 @@ impl Inner {
                 let (version, words) = self.updates.waiting_build_words().unwrap_or_default();
                 Ok(json!({ "started": false, "version": version, "words": words }))
             }
-            Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: None, .. })) => match self
-                .updates
-                .update_now()
-            {
-                Ok(version) => Ok(
-                    json!({ "started": true, "version": version, "words": format!("Updating to {version}. RectoPDF downloads and checks it first, then quits and reopens as it was. `recto update status` says how it's going.") }),
-                ),
-                Err(InstallRefused::NotInThisBuild) => Err(
-                    AgentError::new("development_build", "A development build doesn't replace itself.", exit::FAILED)
-                        .then("`recto update check` still says whether there's a new version."),
-                ),
-                Err(InstallRefused::NothingOnOffer) => {
-                    Err(AgentError::new("nothing_on_offer", "There's no new version on offer.", exit::FAILED).then("`recto update check` looks for one."))
+            Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: None, .. })) => {
+                match self.updates.update_now() {
+                    Ok(version) => Ok(
+                        json!({ "started": true, "version": version, "words": format!("Updating to {version}. RectoPDF downloads and checks it first, then quits and reopens as it was. `recto update status` says how it's going.") }),
+                    ),
+                    Err(InstallRefused::NotInThisBuild) => {
+                        Err(
+                            AgentError::new(Code::DEVELOPMENT_BUILD, "A development build doesn't replace itself.", exit::FAILED)
+                                .then("`recto update check` still says whether there's a new version."),
+                        )
+                    }
+                    Err(InstallRefused::NothingOnOffer) => {
+                        Err(AgentError::new(Code::NOTHING_ON_OFFER, "There's no new version on offer.", exit::FAILED)
+                            .then("`recto update check` looks for one."))
+                    }
+                    Err(InstallRefused::Underway) => Err(
+                        AgentError::new(Code::UPDATE_UNDER_WAY, "An update or a check is already under way.", exit::BUSY)
+                            .then("`recto update status` says how it's going."),
+                    ),
+                    Err(refused) => Err(refused_words(&refused)),
                 }
-                Err(InstallRefused::Underway) => Err(AgentError::new("update_under_way", "An update or a check is already under way.", exit::BUSY)
-                    .then("`recto update status` says how it's going.")),
-                Err(refused) => Err(refused_words(&refused)),
-            },
+            }
             Command::Updates(recto_agent::commands::Updates::Settings(recto_agent::commands::updates::Settings { auto_update })) => {
-                if let Some(word) = auto_update {
-                    let on = match word.as_str() {
-                        "on" => true,
-                        "off" => false,
-                        _ => return Err(AgentError::new("usage", "It's `on` or `off`.", exit::USAGE)),
-                    };
-                    self.set_auto_update(on);
+                if let Some(on) = auto_update {
+                    self.set_auto_update(on.is_on());
                 }
                 Ok(self.settings_answer())
             }
@@ -538,7 +535,7 @@ impl Inner {
     /// one executor, off the UI thread. What any of them comes to is in the status, as before.
     pub fn setting_chosen(self: &Arc<Self>, id: &str, on: bool) {
         use recto_agent::commands::updates::{Settings, UpdateDevBuilds, UpdateInstall};
-        let word = || Some(if on { "on" } else { "off" }.to_owned());
+        let word = || Some(recto_agent::commands::words::OnOff::from_bool(on));
         let command = match id {
             AUTO_UPDATE_ROW => Command::from(Settings { auto_update: word() }),
             DEV_BUILDS_ROW => Command::from(UpdateDevBuilds { set: word() }),
@@ -637,7 +634,7 @@ fn refused_words(refused: &InstallRefused) -> AgentError {
         recto_update::updater::SaidKind::Busy => exit::BUSY,
         recto_update::updater::SaidKind::Failed => exit::FAILED,
     };
-    AgentError::new(said.code, said.words, exit).then(said.next)
+    AgentError::new(Code::lower(said.code), said.words, exit).then(said.next)
 }
 
 /// Whether a launch comes up behind what the user's doing: an update arriving, with the app not having been frontmost. Any other launch was asked for by someone, and comes forward as usual.

@@ -129,7 +129,7 @@ impl Command {
     }
 
     /// The selector of the tab this acts on, which `execute` holds awake while it runs.
-    pub(crate) fn tab_selector(&self) -> Option<&str> {
+    pub(crate) fn tab_selector(&self) -> Option<&crate::TabRef> {
         match self {
             Self::Measure(command) => command.tab(),
             Self::Edit(command) => command.tab(),

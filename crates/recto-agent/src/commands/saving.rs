@@ -1,6 +1,7 @@
 //! `save` and `save-as`: a tab's edits into its file, or its document as a new one. The writing is the saving module's.
 
 use super::{Cmd, Cx, row_access};
+use crate::Code;
 use crate::table::*;
 use crate::*;
 use serde::Deserialize;
@@ -11,8 +12,8 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Save {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     /// Save As: the new file. Without it, the file itself.
     #[serde(default)]
     pub out: Option<PathBuf>,
@@ -28,7 +29,7 @@ impl Cmd for Save {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -51,7 +52,7 @@ impl Cmd for Save {
                 out: out.clone(),
                 replace: *replace,
             },
-            None if *replace => return Err(AgentError::new("usage", "`--replace` goes with Save As's `--out`.", exit::USAGE)),
+            None if *replace => return Err(AgentError::new(Code::USAGE, "`--replace` goes with Save As's `--out`.", exit::USAGE)),
             None => saving::SaveTo::Same,
         };
         saving::save(cx.access, cx.level, tab, &to, cx.events)

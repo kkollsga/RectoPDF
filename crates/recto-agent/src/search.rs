@@ -3,6 +3,8 @@
 //! Three kinds of search, over the same text `text` gives. The plain one compares the normaliser's text, lower-cased, with any run of space or line break as one space, so a phrase across a line break still matches. `--regex` runs a pattern over that text as it is, by ripgrep's own engine in this process. `--rank` counts words and puts pages in order: see `recto_index::rank`. Bounded by a limit on hits and a limit on
 //! time. Stopping early says where to go on from, so "nothing found" is only ever said of pages really searched.
 
+use crate::Code;
+use crate::TabRef;
 use crate::index::{FileIndex, Indexing};
 use crate::{AgentError, SessionAccess, exit, parse_pages, select};
 use grep_matcher::Matcher;
@@ -72,7 +74,7 @@ impl PlanFile {
 
 /// What a search was asked for.
 pub(crate) struct Asked<'a> {
-    pub tab: &'a str,
+    pub tab: &'a TabRef,
     pub query: &'a str,
     pub pages: Option<&'a str>,
     pub limit: Option<u32>,
@@ -84,11 +86,11 @@ pub(crate) struct Asked<'a> {
 
 pub(crate) fn search<A: SessionAccess>(access: &A, asked: &Asked<'_>) -> Result<Value, AgentError> {
     if asked.query.len() > MAX_QUERY_BYTES {
-        return Err(AgentError::new("bad_query", "That search is too long.", exit::FAILED).then("Search for a few words."));
+        return Err(AgentError::new(Code::BAD_QUERY, "That search is too long.", exit::FAILED).then("Search for a few words."));
     }
     if asked.regex && asked.rank {
         return Err(AgentError::new(
-            "bad_query",
+            Code::BAD_QUERY,
             "`--regex` and `--rank` are two different searches, so it's one or the other.",
             exit::FAILED,
         )
@@ -112,7 +114,7 @@ pub(crate) fn search<A: SessionAccess>(access: &A, asked: &Asked<'_>) -> Result<
     if asked.rank {
         let terms = terms_of(asked.query);
         if terms.terms.is_empty() {
-            return Err(AgentError::new("bad_query", "That search has no words to count.", exit::FAILED)
+            return Err(AgentError::new(Code::BAD_QUERY, "That search has no words to count.", exit::FAILED)
                 .then("Give some words. Ranking goes by words, so punctuation by itself counts for nothing."));
         }
         let plan = plan(access, asked.tab, asked.pages)?;
@@ -121,13 +123,13 @@ pub(crate) fn search<A: SessionAccess>(access: &A, asked: &Asked<'_>) -> Result<
     }
     let (query, mode) = if asked.regex {
         if asked.query.is_empty() {
-            return Err(AgentError::new("bad_query", "That search has nothing to look for.", exit::FAILED).then("Give a pattern."));
+            return Err(AgentError::new(Code::BAD_QUERY, "That search has nothing to look for.", exit::FAILED).then("Give a pattern."));
         }
         (Query::regex(asked.query)?, "regex")
     } else {
         let needle = fold(asked.query).0;
         if needle.trim().is_empty() {
-            return Err(AgentError::new("bad_query", "That search has nothing to look for.", exit::FAILED).then("Search for a word or a phrase."));
+            return Err(AgentError::new(Code::BAD_QUERY, "That search has nothing to look for.", exit::FAILED).then("Search for a word or a phrase."));
         }
         (Query::Phrase(needle), "phrase")
     };
@@ -136,7 +138,7 @@ pub(crate) fn search<A: SessionAccess>(access: &A, asked: &Asked<'_>) -> Result<
     run(&plan, &query, mode, &settings(limit))
 }
 
-fn plan<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>) -> Result<Plan, AgentError> {
+fn plan<A: SessionAccess>(access: &A, tab: &TabRef, pages: Option<&str>) -> Result<Plan, AgentError> {
     let range = pages.map(|pages| parse_pages(pages, true)).transpose()?;
     access.with(|s| {
         let id = select(s, tab)?;
@@ -162,12 +164,12 @@ pub(crate) fn plan_of<L: recto_session::DocLoader>(
         let open_ended = pages.is_some_and(|pages| pages.ends_with('-'));
         let len = if open_ended { len.min(total.saturating_sub(start)) } else { len };
         if start >= total.max(1) || u64::from(start) + u64::from(len) > u64::from(total) {
-            return Err(AgentError::new("no_such_page", "Those pages aren't in this document.", exit::NOT_FOUND));
+            return Err(AgentError::new(Code::NO_SUCH_PAGE, "Those pages aren't in this document.", exit::NOT_FOUND));
         }
         let path = s
             .tabs()
             .path_of(id)
-            .ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?;
+            .ok_or_else(|| AgentError::new(Code::NO_SUCH_TAB, "That tab isn't open.", exit::NOT_FOUND))?;
         let mut files = vec![PlanFile {
             path,
             expected: s.notices().own_file_expected(id),
@@ -254,10 +256,10 @@ impl Query {
             let said = recto_core::clean_line(&error.to_string());
             let said: String = said.chars().take(400).collect();
             if said.contains("size limit") {
-                AgentError::new("pattern_too_large", "That pattern compiles to more than a search may use.", exit::FAILED)
+                AgentError::new(Code::PATTERN_TOO_LARGE, "That pattern compiles to more than a search may use.", exit::FAILED)
                     .then("Try a simpler one: fewer and smaller repeats.")
             } else {
-                AgentError::new("bad_pattern", format!("That pattern can't be read: {said}"), exit::FAILED)
+                AgentError::new(Code::BAD_PATTERN, format!("That pattern can't be read: {said}"), exit::FAILED)
                     .then("It's a Rust regex. There's no look-around or back-reference. For plain words, leave out `--regex`.")
             }
         })
@@ -1373,7 +1375,7 @@ mod tests {
     /// Failure: a hostile pattern takes the session's memory or time to compile, or panics, or a pattern that's just wrong reads as "nothing found". Each is refused, with its own code, and with no state left behind.
     #[test]
     fn a_hostile_pattern_is_refused_plainly() {
-        let code_of = |text: &str| Query::regex(text).err().map(|error| (error.code, error.exit));
+        let code_of = |text: &str| Query::regex(text).err().map(|error| (error.code.as_str(), error.exit));
         assert_eq!(code_of("(unclosed"), Some(("bad_pattern", exit::FAILED)));
         assert_eq!(code_of(r"(?<=look)behind"), Some(("bad_pattern", exit::FAILED)), "no look-around");
         assert_eq!(code_of(r"(a)\1"), Some(("bad_pattern", exit::FAILED)), "no back-references");

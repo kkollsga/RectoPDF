@@ -7,6 +7,7 @@
 
 use super::{FileReads, Inner, lock};
 use crate::queue::{CoreCall, Origin, PersonCommand, Reading};
+use recto_agent::Code;
 use recto_agent::Runs;
 use recto_agent::later::{Fetched, ReadLater};
 use recto_agent::{Actor, AgentError, Command, Event};
@@ -134,7 +135,10 @@ pub fn session_words(error: &AgentError) -> Option<&'static str> {
         SessionError::Open(OpenError::NotPdf),
         SessionError::Open(OpenError::TooComplex),
     ];
-    every.into_iter().find(|known| known.code() == error.code).map(SessionError::message)
+    every
+        .into_iter()
+        .find(|known| Code::lower(known.code()) == error.code)
+        .map(SessionError::message)
 }
 
 /// A line by the page in the person's words, which goes by itself.
@@ -259,7 +263,7 @@ mod tests {
         for error in [SessionError::Saving, SessionError::RendererOnly, SessionError::EditsUnreadable] {
             assert_eq!(super::session_words(&AgentError::from(error)), Some(error.message()), "{error:?}");
         }
-        let agents = AgentError::new("would_clear_redo", "…needs Full access.", recto_agent::exit::PERMISSION);
+        let agents = AgentError::new(recto_agent::Code::WOULD_CLEAR_REDO, "…needs Full access.", recto_agent::exit::PERMISSION);
         assert_eq!(super::session_words(&agents), None);
     }
 }

@@ -103,7 +103,7 @@ fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
         None => false,
     };
     let command = recto_agent::Command::from(recto_agent::commands::saving::Save {
-        tab: format!("#{}", id.0),
+        tab: recto_agent::TabRef::Id(id),
         out,
         replace,
     });

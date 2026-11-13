@@ -1,6 +1,7 @@
 //! **What's said when a tab's unsaved edits don't fit its file** ([`recto_session::Notices::fit`]): Save, Save As, Find and `search` are refused, in words that
 //! say what's true of how they don't fit, and with the one way on there is. The same for the person and an agent: the app's Find and save show these words.
 
+use crate::Code;
 use crate::{AgentError, exit};
 use recto_session::EditsFit;
 
@@ -58,7 +59,7 @@ pub fn refusal(fit: EditsFit, asked: Asked) -> Option<AgentError> {
         EditsFit::VersionUnknown => NEVER_KNOWN_NEXT,
         _ => NOT_THIS_FILE_NEXT,
     };
-    let code = fit.said().map_or("file_changed", |said| said.code);
+    let code = fit.said().map_or(Code::FILE_CHANGED, |said| Code::lower(said.code));
     Some(AgentError::new(code, message, exit::FAILED).then(next))
 }
 

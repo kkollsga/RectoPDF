@@ -1,0 +1,20 @@
+{"cmd":"edit_mode","set":"sideways"}	sideways
+{"cmd":"contents_show","which":"theirs","tab":"#1"}	theirs
+{"cmd":"update_dev_builds","set":"maybe"}	
+{"cmd":"settings","auto_update":"later"}	
+{"cmd":"view","paper":"purple"}	purple
+{"cmd":"view","sidebar":"sideways"}	sideways
+{"cmd":"view","agent_icon":"blink"}	blink
+{"cmd":"view","layout":"three-up","tab":"#1"}	three-up
+{"cmd":"view","layout":"two-up","paper":"purple"}	purple
+{"cmd":"compare","sync":"maybe"}	maybe
+{"cmd":"compare","off":true,"toggle":"#2"}	--off
+{"cmd":"compare","tabs":"#1,#2","reading":"#2"}	--reading
+{"cmd":"compare","toggle":"#2","sync":"on"}	--toggle
+{"cmd":"find","query":"q","next":true}	more than one thing
+{"cmd":"find","next":true,"previous":true}	more than one thing
+{"cmd":"find","open":true,"close":true}	more than one thing
+{"cmd":"find","hit":2,"close":true}	more than one thing
+{"cmd":"find","jump":true}	--jump
+{"cmd":"find","jump":true,"hit":1}	--jump
+{"cmd":"edit_mode","set":"side\u0007ways\u202e"}	side ways

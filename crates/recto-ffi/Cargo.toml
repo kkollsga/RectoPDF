@@ -37,5 +37,7 @@ serde_json.workspace = true
 uniffi = { version = "0.31", default-features = false }
 
 [dev-dependencies]
+# Tests read a refusal's code as the wire does.
+recto-agent = { workspace = true, features = ["test-words"] }
 recto-app = { workspace = true, features = ["testkit"] }
 recto-testpdf.workspace = true

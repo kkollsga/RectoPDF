@@ -9,7 +9,7 @@ file crates/recto-update/src/updater.rs 2572
 fn crates/recto-agent/src/print.rs::print_with_caps 152
 fn crates/recto-agent/src/render/svg.rs::write_record 154
 fn crates/recto-agent/src/saving.rs::save 151
-fn crates/recto-agent/src/selecting.rs::run_counted 157
+fn crates/recto-agent/src/selecting.rs::run_counted 154
 fn crates/recto-app/src/core/reconcile.rs::reconcile 227
 fn crates/recto-cli/src/qa.rs::budget 263
 fn crates/recto-control/src/record_store.rs::load_journals 157
@@ -110,5 +110,5 @@ type crates/recto-reader/src::Reader 82
 type crates/recto-render-service/src::DocRenderer 64
 type crates/recto-render/src::Walk 64
 type crates/recto-session/src::PageEdits 69
-type crates/recto-session/src::Session 107
+type crates/recto-session/src::Session 103
 type crates/recto-update/src::Updater 74
