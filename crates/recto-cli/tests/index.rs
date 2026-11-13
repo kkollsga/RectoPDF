@@ -437,8 +437,12 @@ fn opening_tabs_indexes_nothing_and_asking_leaves_nothing_behind() {
         assert_eq!(opened["ok"], true, "{opened}");
     }
     assert!(!state.paths.corpus.exists(), "opening 200 tabs wrote to the corpus folder");
-    std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(process_counters(serving.pid()).unwrap().threads, 1, "200 open tabs hold a thread");
+    // Whatever an open started may take a moment to go; a thread the tabs hold never does.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while process_counters(serving.pid()).unwrap().threads > 1 {
+        assert!(Instant::now() < deadline, "200 open tabs hold a thread");
+        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
+    }
     let (status, _) = state.json(&["index", "status"]);
     assert_eq!(
         (status["data"]["indexers_running"].as_u64(), status["data"]["indexers_waiting"].as_u64()),
