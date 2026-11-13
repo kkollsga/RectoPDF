@@ -65,9 +65,9 @@
 {"cmd":"Tap"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"goto"}
-    ok goto Goto { tab: "active", page: None, label: None }
+    ok goto Goto { tab: "active", page: None, label: None, within: None }
 {"cmd":"goto","tab":"#2","page":3,"label":"iv"}
-    ok goto Goto { tab: "#2", page: Some(3), label: Some("iv") }
+    ok goto Goto { tab: "#2", page: Some(3), label: Some("iv"), within: None }
 {"cmd":"goto","extra":1}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"goto","tab":{}}
@@ -77,15 +77,15 @@
 {"cmd":"goto","page":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"goto","page":null}
-    ok goto Goto { tab: "active", page: None, label: None }
+    ok goto Goto { tab: "active", page: None, label: None, within: None }
 {"cmd":"goto","label":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"goto","label":null}
-    ok goto Goto { tab: "active", page: None, label: None }
+    ok goto Goto { tab: "active", page: None, label: None, within: None }
 ["goto"]
-    ok goto Goto { tab: "active", page: None, label: None }
+    ok goto Goto { tab: "active", page: None, label: None, within: None }
 ["goto","#2",3,"iv"]
-    ok goto Goto { tab: "#2", page: Some(3), label: Some("iv") }
+    ok goto Goto { tab: "#2", page: Some(3), label: Some("iv"), within: None }
 {"cmd":"Goto"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"links","page":3}
@@ -1479,11 +1479,11 @@ null
 {"cmd":"render","page":1,"out":"/d/x.png","scale":"huge"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"goto","label":"iv"}
-    ok goto Goto { tab: "active", page: None, label: Some("iv") }
+    ok goto Goto { tab: "active", page: None, label: Some("iv"), within: None }
 {"cmd":"goto","page":2,"label":"iv"}
-    ok goto Goto { tab: "active", page: Some(2), label: Some("iv") }
+    ok goto Goto { tab: "active", page: Some(2), label: Some("iv"), within: None }
 {"cmd":"goto"}
-    ok goto Goto { tab: "active", page: None, label: None }
+    ok goto Goto { tab: "active", page: None, label: None, within: None }
 {"cmd":"view","zoom":"fit"}
     ok view View { paper: None, sidebar: None, agent_icon: None, zoom: Some("fit"), layout: None, tab: None }
 {"cmd":"view","paper":"warm"}

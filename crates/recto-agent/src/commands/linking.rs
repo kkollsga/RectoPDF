@@ -70,6 +70,10 @@ pub struct Goto {
     pub page: Option<u32>,
     #[serde(default)]
     pub label: Option<String>,
+    /// How far down the page, from 0, its top, to 1, its bottom, as a link's destination says it (`LinkTarget::Page`'s `within`): a click on a link sends
+    /// it. Past either end is that end, as a link's is.
+    #[serde(default)]
+    pub within: Option<f64>,
 }
 
 impl Cmd for Goto {
@@ -89,19 +93,25 @@ impl Cmd for Goto {
         Runs::Session
     }
     fn log_details(&self) -> Value {
-        let Self { tab, page, label } = self;
-        json!({ "tab": super::log_tab(tab), "page": page, "by_label": label.is_some() })
+        let Self { tab, page, label, within } = self;
+        json!({ "tab": super::log_tab(tab), "page": page, "by_label": label.is_some(), "within": within })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         cx.access.take_places();
         match (self.page, &self.label) {
             (Some(page), None) => cx.access.with(|s| {
                 let id = select(s, &self.tab)?;
-                go_to(s, id, page, cx.actor.author())?;
+                go_to(s, id, page, self.within.unwrap_or(0.0), cx.actor.author())?;
                 cx.events.push(page_now(s, id));
                 Ok(where_json(s, id))
             }),
-            (None, Some(label)) => linking::goto_label(cx.access, cx.actor.author(), &self.tab, label, cx.events),
+            (None, Some(label)) if self.within.is_none() => linking::goto_label(cx.access, cx.actor.author(), &self.tab, label, cx.events),
+            (None, Some(_)) => Err(AgentError::new(
+                "usage",
+                "`--within` is how far down a page, and goes with a page number, not a label.",
+                exit::USAGE,
+            )
+            .then("`recto goto 12 --within 0.3`.")),
             _ => Err(AgentError::new(
                 "usage",
                 "`goto` takes a page number, or `goto label` what the file calls a page, and not both.",
@@ -247,11 +257,18 @@ pub(crate) const ROWS_GOTO: &[Spec] = &[
                 required: true,
                 help: "The page, counted from 1.",
             },
+            Arg {
+                key: "within",
+                flag: Some("--within"),
+                kind: Kind::Fraction,
+                required: false,
+                help: "How far down the page to land, from 0, its top, to 1, its bottom, as a link's destination says. The top if left out.",
+            },
             TAB,
         ],
         data: AGENT_EXITS_PAGE,
         emits: &["page_changed"],
-        examples: &["recto goto 12", "recto goto 12 --tab report"],
+        examples: &["recto goto 12", "recto goto 12 --tab report", "recto goto 9 --within 0.3"],
         ..BASE
     },
     Spec {
@@ -415,5 +432,29 @@ mod tests {
         access.scroll_to(id, 3);
         access.run(r#"{"cmd":"forward"}"#);
         assert_eq!(page(access.run(r#"{"cmd":"back"}"#)), 3, "forward: the way back is the page that was showing");
+    }
+
+    /// Failure: `goto --within` takes a place on the page from a link's destination, which comes from the PDF, so a place past the page's end lands off
+    /// it, or one with a label lands somewhere unsaid; or the CLI lets through what the wire would clamp without a word. It lands that far down, clamped
+    /// to the page as a link's is; with a label it's refused; and the CLI refuses a share outside 0 to 1.
+    #[test]
+    fn goto_lands_that_far_down_the_page_and_no_further() {
+        let mut session = Session::new(Fake);
+        let id = session.open(Path::new("/d/a.pdf")).unwrap();
+        let access = Mutex::new(session);
+        let run = |line: &str| execute(&access, Actor::Agent(Level::Control), &parse(line).unwrap(), &mut Vec::new());
+        // Where the page view's told to land.
+        let here = || {
+            let stop = access.lock().unwrap().take_jump(id).unwrap();
+            (stop.page, stop.within)
+        };
+        run(r#"{"cmd":"goto","page":3,"within":0.4}"#).unwrap();
+        assert_eq!(here(), (2, 0.4));
+        run(r#"{"cmd":"goto","page":4,"within":7}"#).unwrap();
+        assert_eq!(here(), (3, 1.0), "past the bottom is the bottom");
+        assert_eq!(run(r#"{"cmd":"goto","label":"2","within":0.5}"#).unwrap_err().code, "usage");
+        let words = |words: &[&str]| table::parse_cli(&words.iter().map(|word| (*word).to_string()).collect::<Vec<_>>()).map(|line| line.wire());
+        assert!(words(&["goto", "3", "--within", "1.5"]).is_err());
+        assert!(words(&["goto", "3", "--within", "0.25"]).unwrap().contains("0.25"));
     }
 }

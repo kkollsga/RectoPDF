@@ -343,7 +343,7 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
     };
     access.with(|s| {
         if let Some(page) = page {
-            go_to(s, id, page, actor.author())?;
+            go_to(s, id, page, 0.0, actor.author())?;
         }
         events.push(if is_new { event::tab_opened(s, id) } else { event::tab_activated(s, id) });
         if page.is_some() {
