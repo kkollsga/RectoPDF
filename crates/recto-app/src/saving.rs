@@ -295,10 +295,11 @@ impl SaveUi {
 
 /// The problem a failed save shows: what went wrong, in the save's own words, and Save As where a copy is the way on.
 pub fn problem_for(error: &recto_agent::AgentError) -> SaveProblem {
-    // A signed document's copy is unsigned (SPEC decision 27), and the original keeps its signature: Save As is the way on for those too.
+    // A signed document's copy is unsigned (SPEC decision 27), and the original keeps its signature: Save As is the way on for those too. Not for a file changed
+    // on disk under the edits, or edits that don't fit it: a copy is refused as Save is, as the edits would land on the other version's pages.
     let copy_helps = matches!(
         error.code,
-        "file_changed" | "read_only" | "hard_links" | "breaks_certification" | "locked_by_signature" | "signed_needs_copy" | "signed_original"
+        "changed_since_opened" | "read_only" | "hard_links" | "breaks_certification" | "locked_by_signature" | "signed_needs_copy" | "signed_original"
     );
     SaveProblem {
         title: "The document couldn't be saved.".into(),

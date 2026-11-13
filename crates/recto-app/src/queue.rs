@@ -32,8 +32,9 @@ pub enum CoreCall {
     SleepTabs(Vec<TabId>, crate::sleeper::Why),
     /// The system's short of memory, and whether it's critical.
     MemoryPressure(bool),
-    /// A tab woken from its sleep file has another file there now.
-    WokenFileIsOther(TabId, FileStatus),
+    /// A tab woken from its sleep file has another file there now: what a look found, and the stamp it looked against. A result about a stamp the tab has moved
+    /// on from since, as a save moves it, says nothing.
+    WokenFileIsOther(TabId, FileStatus, Option<FileStamp>),
     /// The worker says how long a tab's own file is, and which version.
     FileLength(TabId, u32, u64),
     /// A worker's found a tab's file replaced, so it's looked at.
@@ -413,7 +414,7 @@ mod tests {
             CoreCall::LookAtShown,
             CoreCall::SleepTabs(vec![tab], crate::sleeper::Why::Asked),
             CoreCall::MemoryPressure(false),
-            CoreCall::WokenFileIsOther(tab, FileStatus::Same(stamp)),
+            CoreCall::WokenFileIsOther(tab, FileStatus::Same(stamp), Some(stamp)),
             CoreCall::FileLength(tab, 1, 1),
             CoreCall::LookAgain(tab),
             CoreCall::Page(1, None, tab),

@@ -53,10 +53,10 @@ impl<L: DocLoader> Session<L> {
         let before = self.tab(id).and_then(|tab| tab.file.stamp);
         self.saves.saved_over(id, before, now);
         if let Some(tab) = self.tab_mut(id) {
-            tab.file.stamp = Some(now);
+            tab.file.take_version(Some(now));
             tab.page_count = pages;
             tab.page = tab.page.min(pages.saturating_sub(1));
-            tab.file.notice = (rolled_off > 0).then(|| Box::new(FileNotice::HistoryRolledOff));
+            tab.file.set_notice((rolled_off > 0).then_some(FileNotice::HistoryRolledOff));
             tab.problem = None;
             tab.place_dirty = true;
         }
@@ -90,13 +90,15 @@ impl<L: DocLoader> Session<L> {
         if !self.wake_list(id) {
             return Err(SessionError::EditsUnreadable);
         }
+        // Edits that don't fit the file name no version of it to save onto.
+        let fits = self.notices().fit(id).fits();
         let tab = self.tab(id).ok_or(SessionError::NoSuchTab)?;
         // A confined tab whose path no longer leads into its folders isn't saved over: see [`Self::path_of`].
         let path = self.path_of(id).ok_or(SessionError::OutsideQuietRun)?;
         let snapshot = match self.lists.get(id).filter(|list| list.is_edited()) {
             Some(list) => SaveSnapshot {
                 path,
-                stamp: tab.file.stamp,
+                stamp: tab.file.stamp.filter(|_| fits),
                 file_pages: list.file_pages(),
                 slots: list.slots().to_vec(),
                 added: list.added_sources().to_vec(),
@@ -186,7 +188,7 @@ impl<L: DocLoader> Session<L> {
         if !self.wake_list(id) {
             self.give_up_on_asleep(id);
             if let Some(tab) = self.tab_mut(id) {
-                tab.file.notice = None;
+                tab.file.set_notice(None);
             }
             return true;
         }
@@ -211,11 +213,11 @@ impl<L: DocLoader> Session<L> {
         self.let_go_of_list(id);
         if let Some(tab) = self.tab_mut(id)
             && matches!(
-                tab.file.notice.as_deref(),
+                tab.file.notice(),
                 Some(FileNotice::Changed | FileNotice::EditsUnreadable | FileNotice::HistoryRolledOff)
             )
         {
-            tab.file.notice = None;
+            tab.file.set_notice(None);
         }
         self.after_change(id, place);
         true

@@ -176,7 +176,8 @@ pub(crate) fn file_index(indexing: &dyn Indexing, path: &Path, want: bool) -> (O
 
 struct TabFile {
     path: PathBuf,
-    expected: Option<FileStamp>,
+    /// As [`recto_session::recorded_version_is_current`] reads it.
+    expected: Option<Option<FileStamp>>,
     added: bool,
     /// How many of the tab's pages come from it now. Only files with some matter to what's searched.
     pages_used: u32,
@@ -192,7 +193,7 @@ fn tab_files<A: SessionAccess>(access: &A, tab: &str) -> Result<(u32, Vec<TabFil
             .ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?;
         let mut files = vec![TabFile {
             path,
-            expected: s.pages().own_file_expected(id),
+            expected: s.notices().own_file_expected(id),
             added: false,
             pages_used: s.pages().count(id),
         }];
@@ -200,7 +201,7 @@ fn tab_files<A: SessionAccess>(access: &A, tab: &str) -> Result<(u32, Vec<TabFil
             files[0].pages_used = 0;
             files.extend(edits.added_sources().iter().map(|added| TabFile {
                 path: added.path.to_path_buf(),
-                expected: added.stamp,
+                expected: Some(added.stamp),
                 added: true,
                 pages_used: 0,
             }));
@@ -235,7 +236,7 @@ pub(crate) fn index<A: SessionAccess>(access: &A, tab: &str, want: bool, agent: 
 
 /// Writes the tab's own file's folder for an agent, if its corpus is finished. If it isn't, there's nothing to make it from yet, and the answer says where that stands.
 fn make_agent_folder(indexing: &dyn Indexing, file: &TabFile) -> Result<(), AgentError> {
-    let current = file.expected.is_none_or(|stamp| recto_platform::file_stamp(&file.path).ok() == Some(stamp));
+    let current = recto_session::recorded_version_is_current(&file.path, file.expected);
     let (Some(key), FileIndex::Ready(_), true) = (CorpusKey::of_file(&file.path).ok(), file_index(indexing, &file.path, true).1, current) else {
         return Ok(());
     };
@@ -268,7 +269,7 @@ fn report(indexing: &dyn Indexing, id: u32, files: &[TabFile], want: bool) -> (V
         (0u64, 0u64, 0u32, 0u64, 0u64, 0u64, 0u64, 0u64);
     let (mut folder, mut agent_bytes) = (None, 0);
     for file in files.iter().filter(|file| file.pages_used > 0) {
-        let current = file.expected.is_none_or(|stamp| recto_platform::file_stamp(&file.path).ok() == Some(stamp));
+        let current = recto_session::recorded_version_is_current(&file.path, file.expected);
         let (key, state) = if current {
             file_index(indexing, &file.path, want)
         } else {

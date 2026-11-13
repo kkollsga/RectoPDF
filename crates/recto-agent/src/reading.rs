@@ -22,8 +22,8 @@ pub(crate) struct TabFile {
     positions: Option<Vec<u32>>,
     /// The file isn't the one those edits' page numbers came from.
     changed: bool,
-    /// What the file was when those page numbers were made, to look at it against.
-    check_against: Option<recto_platform::FileStamp>,
+    /// What the file was when those page numbers were made, to look at it against, as [`recto_session::recorded_version_is_current`] reads it.
+    check_against: Option<Option<recto_platform::FileStamp>>,
 }
 
 impl TabFile {
@@ -67,14 +67,12 @@ fn tab_file<A: SessionAccess>(access: &A, tab: &str) -> Result<TabFile, AgentErr
                 renderer_only: record.renderer_only,
                 positions,
                 changed: false,
-                check_against: s.pages().own_file_expected(id),
+                check_against: s.notices().own_file_expected(id),
             })
         })
         // Whether the file has changed is asked with the session free: a stat on a dead volume holds up this command and no other.
         .map(|mut file: TabFile| {
-            file.changed = file
-                .check_against
-                .is_some_and(|stamp| recto_platform::file_stamp(&file.path).ok() != Some(stamp));
+            file.changed = !recto_session::recorded_version_is_current(&file.path, file.check_against);
             file
         })
 }

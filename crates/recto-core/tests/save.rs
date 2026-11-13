@@ -379,8 +379,69 @@ fn a_file_changed_meanwhile_isnt_saved_over() {
     }
     let path = dir.write("during.pdf", &marked(&["A"]));
     let result = save::save(&request(&path, 1, &order, &[]), Target::Same, None, &mut Replacer(path.clone()));
-    assert_eq!(result, Err(SaveError::FileChanged), "changed during");
+    // Changed under the save while it ran: the caller, who knows whether there were edits and whose file it is, says which (recto-agent's `as_said`).
+    assert_eq!(result, Err(SaveError::ChangedSinceOpened), "changed during");
     assert_eq!(read_pages(&path), [("SOMEONE ELSE'S".into(), 0)], "and the other version stays");
+}
+
+/// Two documents of one length: `pages` pages each saying `who`, padded at the end, which readers allow, so a rewrite can keep the file's size.
+fn of_length(who: &str, pages: usize, len: usize) -> Vec<u8> {
+    let markers: Vec<String> = (1..=pages).map(|page| format!("{who} {page}")).collect();
+    let mut bytes = marked(&markers.iter().map(String::as_str).collect::<Vec<_>>());
+    assert!(bytes.len() <= len, "{} > {len}", bytes.len());
+    bytes.resize(len, b'\n');
+    bytes
+}
+
+/// Failure (B3, 2026-11-13): another program rewrites the file with its size and modification time put back, which no stamp can tell from the version the edits
+/// were made on, and Save or Save As writes the edits onto it. Rewritten in place (its number kept) with another page count, the page count read at save
+/// refuses it. Replaced by a rename (another number), the save's own look at the number refuses it here, given the stamp from before; **but in the app that
+/// doesn't protect**: a look at the file finds the same size and time, takes it for the version the edits were made on (`classify_file`'s `Same`, which goes
+/// by size and time whatever the number), and the tab's stamp takes the new number, so the save's look then passes. What's left uncaught is a different file
+/// with the same size, time and page count, put in place by any means (real on volumes with one-second times): nothing recorded per list today can tell it
+/// from the earlier version, which the page matcher has to know anyway.
+#[test]
+fn a_rewrite_that_keeps_size_and_time_isnt_saved_onto() {
+    let dir = Dir::new();
+    let len = 4096;
+    let path = dir.write("doc.pdf", &of_length("Mine", 10, len));
+    let known = stamp(&path);
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let order: Vec<(u32, u8)> = (0..10).map(|page| (page, u8::from(page == 8))).collect();
+    let order = own(&order);
+    let edits = SaveRequest {
+        path: &path,
+        stamp: Some(known),
+        file_pages: 10,
+        pages: &order,
+        added: &[],
+    };
+    let copy = dir.0.join("copy.pdf");
+    // In place: the same number, size and time, five pages.
+    let theirs = of_length("Theirs", 5, len);
+    std::fs::write(&path, &theirs).unwrap();
+    std::fs::File::options().write(true).open(&path).unwrap().set_modified(modified).unwrap();
+    let now = stamp(&path);
+    assert_eq!((now.size, now.mtime_ns, now.inode), (known.size, known.mtime_ns, known.inode), "no stamp tells");
+    for target in [Target::Same, Target::NewFile(&copy)] {
+        assert_eq!(
+            save::save(&edits, target, None, &mut save::NoHooks),
+            Err(SaveError::EditsDontMatch { file_pages: 5 }),
+            "{target:?}"
+        );
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), theirs, "nothing written onto it");
+    assert!(!copy.exists());
+    // By a rename: the same size and time under another number, ten pages this time.
+    let replacement = dir.write("incoming.pdf", &of_length("Other", 10, len));
+    std::fs::File::options().write(true).open(&replacement).unwrap().set_modified(modified).unwrap();
+    std::fs::rename(&replacement, &path).unwrap();
+    assert!(stamp(&path).same_contents(known), "size and time say it's the same");
+    for target in [Target::Same, Target::NewFile(&copy)] {
+        assert_eq!(save::save(&edits, target, None, &mut save::NoHooks), Err(SaveError::FileChanged), "{target:?}");
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), of_length("Other", 10, len));
+    assert!(!copy.exists());
 }
 
 /// Failure: a step that has to happen before the file's in place, such as noting the save in the journal, fails and the file is replaced anyway. Nothing changes, and nothing's left beside it.

@@ -554,19 +554,24 @@ pub fn look_before_showing(inner: &Inner, id: TabId) {
         let other = !matches!(&status, FileStatus::Same(now) if Some(*now) == stamp) && !matches!(status, FileStatus::NotLooked);
         // Too late for the frame: it's said the usual way.
         if send.try_send((other, status.clone())).is_err() && other {
-            core.push(CoreCall::WokenFileIsOther(id, status));
+            core.push(CoreCall::WokenFileIsOther(id, status, stamp));
         }
     });
     if looking.is_err() {
         inner.sleeper.looks.finish(id);
         return;
     }
-    if let Ok((true, status)) = receive.recv_timeout(LOOK_PATIENCE) {
-        inner.host.session.with_session(|session| {
-            session.apply_file_status(id, status);
-            session.forget_read(id);
-        });
-        inner.core.push(CoreCall::WokenFileIsOther(id, FileStatus::NotLooked));
+    // Only what's new: a tab whose file is already known to be another, shown again, is neither forgotten nor read again.
+    if let Ok((true, status)) = receive.recv_timeout(LOOK_PATIENCE)
+        && inner
+            .host
+            .session
+            .with_session(|session| session.tabs().own_stamp(id) == stamp && session.apply_file_status(id, status))
+    {
+        inner.host.session.with_session(|session| session.forget_read(id));
+        // The read, against the stamp as it is now that the news is in.
+        let now = inner.host.session.with_session(|session| session.tabs().own_stamp(id));
+        inner.core.push(CoreCall::WokenFileIsOther(id, FileStatus::NotLooked, now));
     }
 }
 
@@ -589,7 +594,7 @@ pub fn check_woken_file(inner: &std::sync::Arc<Inner>, id: TabId) {
     let spawned = std::thread::Builder::new().name("recto-look".into()).stack_size(256 * 1024).spawn(move || {
         let status = look_at_file(&path, stamp);
         if !matches!(&status, FileStatus::Same(now) if Some(*now) == stamp) && !matches!(status, FileStatus::NotLooked) {
-            core.push(CoreCall::WokenFileIsOther(id, status));
+            core.push(CoreCall::WokenFileIsOther(id, status, stamp));
         }
         // A look asked for meanwhile may be about a change made after this one looked: the files showing are looked at again.
         if slots.finish(id) {

@@ -540,7 +540,7 @@ impl FileNotice {
             }
             (Self::Moved { .. }, false) => "This file was moved, and the tab followed it.",
             (Self::Changed, true) => {
-                "This file changed on disk since it was last read here. Your unsaved edits are still here, but they were made on the old version, so pages may not line up. Nothing has been written to the file."
+                "This file changed on disk. Your unsaved edits are kept, but they were made on the earlier version and can't be saved onto this one, here or as a copy. Nothing has been written to the file."
             }
             (Self::Changed, false) => "This file changed on disk since it was last read here, so this is the new version.",
             (Self::Missing, true) => {
