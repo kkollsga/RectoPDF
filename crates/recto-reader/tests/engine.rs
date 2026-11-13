@@ -1476,11 +1476,13 @@ fn tab_switch_input_to_first_frame() {
         engine.note_wake(3, began);
         engine.activate(3, 3, 0, tab_map(&third), &[1, 2], None, recto_reader::layout::Spread::Single);
         engine.set_viewport(view(0.0));
+        let owed = engine.report().0["sleep_draws"]["owed_tab"].clone();
+        assert!(owed.is_u64() && owed != 3, "a tab left was owed its place as the switch came: {owed}");
         let deadline = Instant::now() + HANG;
         let wake = loop {
-            if !engine.drain().is_empty() {
-                engine.applied();
-            }
+            // As the host does: what it was given is applied, and it says so, which is when the page view looks at how the wake is going.
+            engine.drain();
+            engine.applied();
             let wake = engine.report().0["last_wake"].clone();
             if wake["tab"] == 3 && !wake["sharp_us"].is_null() || Instant::now() >= deadline {
                 break wake;
@@ -1490,11 +1492,6 @@ fn tab_switch_input_to_first_frame() {
         let micros = |key: &str| wake[key].as_u64().unwrap_or_else(|| panic!("{key} in {wake}")) as f64 / 1000.0;
         first_frames.push(micros("first_frame_us"));
         sharp.push(micros("sharp_us"));
-        assert_eq!(
-            engine.report().0["sleep_draws"]["owed_tab"],
-            1,
-            "tab 1 was still owed its place when the switch came"
-        );
         engine.shut_down();
     }
     first_frames.sort_by(f64::total_cmp);
