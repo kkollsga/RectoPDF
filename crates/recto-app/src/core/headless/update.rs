@@ -387,7 +387,12 @@ fn a_launch_an_update_opened_waits_for_its_state_however_late() {
     disk.install(&plan, Installed::Swapped);
     let app = disk.builder().update(&bed).hold(&[Seam::Launch, Seam::State]).start();
     let told = || app.listener().count(&Heard::RestoreReady);
-    assert_eq!(told(), 0, "past the host's second, with what it is not yet known: told nothing: {:?}", app.heard());
+    assert_eq!(
+        told(),
+        0,
+        "past the host's second, with what it is not yet known: told nothing: {:?}",
+        app.heard()
+    );
     app.let_through(Seam::Launch, 1);
     app.wait_until("the state's read to wait at its seam", || app.waiting(Seam::State) > 0);
     app.settle();

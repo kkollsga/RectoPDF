@@ -32,7 +32,8 @@ fn the_hidden_sidebar_and_each_tabs_layout_come_back_when_the_state_is_late() {
     app.open(&one);
     app.recto(Level::Control, &["view", "--layout", "two-up-cover"]).expect("a layout");
     app.open(&two);
-    app.recto(Level::Control, &["view", "--layout", "two-up", "--sidebar", "off"]).expect("a layout, and the sidebar hidden");
+    app.recto(Level::Control, &["view", "--layout", "two-up", "--sidebar", "off"])
+        .expect("a layout, and the sidebar hidden");
     app.recto(Level::Control, &["goto", "6"]).expect("goto");
     app.settle();
     as_left(&app, "before");

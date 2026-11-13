@@ -249,7 +249,9 @@ impl Builder {
         app.core().begin_restore();
         if self.held.contains(&Seam::Launch) {
             // What this copy is, looked at before the state's read: held there, the state's read waits behind it.
-            app.wait_until("the launch's look to wait at its seam", || recto_platform::slow::gate::waiting(Seam::Launch) > 0);
+            app.wait_until("the launch's look to wait at its seam", || {
+                recto_platform::slow::gate::waiting(Seam::Launch) > 0
+            });
             app.settle();
             return app;
         }

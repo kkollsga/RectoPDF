@@ -36,13 +36,21 @@ fn the_hit_gone_to_is_chosen_again_when_its_hits_come_after_the_state() {
     }
     app.settle();
     let before = shown(&app);
-    assert_eq!((before.0, before.2), (22, Some(5)), "eleven hits, a page row each, and the third hit's row: {before:?}");
+    assert_eq!(
+        (before.0, before.2),
+        (22, Some(5)),
+        "eleven hits, a page row each, and the third hit's row: {before:?}"
+    );
     let hit = selected(&app).expect("the hit gone to is selected on the page");
     let (_, disk) = app.quit();
     let app = disk.builder().hold(&[Seam::State, Seam::Remake]).start();
     assert_eq!(shown(&app).0, 0, "nothing found before the state's in");
     app.let_state_in();
-    assert_eq!(shown(&app), before, "the hits, and the hit gone to chosen again, on the window up without the state");
+    assert_eq!(
+        shown(&app),
+        before,
+        "the hits, and the hit gone to chosen again, on the window up without the state"
+    );
     assert_eq!(selected(&app), Some(hit), "and selected there");
     app.let_through(Seam::Remake, 1);
     app.settle();

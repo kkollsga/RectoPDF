@@ -122,7 +122,10 @@ fn what_is_done_before_the_window_is_made_from_a_late_state_waits_for_it() {
     let (_, disk) = app.quit();
     let app = disk.builder().hold(&[Seam::State, Seam::Remake]).start();
     app.let_state_in();
-    assert!(app.core().state_read() && !app.core().life.shown_with_state(), "the state's in, and the window not yet made from it");
+    assert!(
+        app.core().state_read() && !app.core().life.shown_with_state(),
+        "the state's in, and the window not yet made from it"
+    );
     assert!(!app.core().menu_item_enabled("find.open".into()), "⌘F isn't enabled on the window that's to go");
     app.core().perform("find.open".into());
     app.settle();
