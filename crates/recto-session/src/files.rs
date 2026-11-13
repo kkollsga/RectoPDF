@@ -49,7 +49,8 @@ impl<L: DocLoader> Session<L> {
             FileStatus::NotLooked => {}
             FileStatus::Same(now) => {
                 if let Some(tab) = self.tab_mut(id) {
-                    let was = (tab.file.stamp, tab.file.notice().is_some());
+                    // Edits about another version than what's held, found to fit again, are news whatever's said: what's held is of the other one.
+                    let was = (tab.file.stamp, tab.file.notice().is_some(), tab.file.elsewhere().is_some());
                     if other_version_unnamed {
                         // What's read next is this version, and it's what a look will find again; the edits stay about none.
                         let file_changed = fit != EditsFit::NotThisFile;
@@ -65,7 +66,7 @@ impl<L: DocLoader> Session<L> {
                     {
                         tab.file.set_notice(None);
                     }
-                    return other_version_unnamed || was != (tab.file.stamp, tab.file.notice().is_some());
+                    return other_version_unnamed || was != (tab.file.stamp, tab.file.notice().is_some(), tab.file.elsewhere().is_some());
                 }
             }
             FileStatus::Moved(path, now) => {

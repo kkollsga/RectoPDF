@@ -206,6 +206,29 @@ fn a_look_that_finds_what_is_already_known_is_nothing_new() {
     assert_eq!(bed.s.tabs().tab_notice(a), None);
 }
 
+/// Failure: edits made on v1, the file replaced and v2's contents read in, history rolling off puts its notice over "changed", and then v1's exact stamp is
+/// back (written in place, its time set back). The edits fit again, but the look said nothing new, as neither the stamp nor whether a notice shows had
+/// moved: so v2's contents stayed held while the tab fitted v1, and a sleep file named for v1 could be written of v2. Finding the edits' own version again is
+/// always news, so the app forgets v2 and reads the file again.
+#[test]
+fn the_edits_own_version_back_under_another_notice_is_news() {
+    let (mut bed, a, b) = Bed::new(10);
+    bed.s.edit_pages(a, |e| e.rotate(8, 1, 1)).unwrap();
+    let made_on = bed.stamp_now();
+    replace_file(&bed.path(), b"v2, saved by another app");
+    assert!(bed.s.apply_file_status(a, record::look_at_file(&bed.path(), Some(made_on))));
+    bed.s.forget_read(a);
+    bed.make_cold(a, b);
+    bed.s.tap(a).unwrap();
+    assert_eq!(bed.s.tier(a), Tier::Hot, "v2's contents are held");
+    bed.s.tabs_mut().tab_mut(a).unwrap().file.set_notice(Some(FileNotice::HistoryRolledOff));
+    assert!(
+        bed.s.apply_file_status(a, FileStatus::Same(made_on)),
+        "v1 back is news, so what's held of v2 goes"
+    );
+    assert_eq!(bed.s.notices().fit(a), EditsFit::Fit);
+}
+
 /// Pinned for the page matcher (2026-11-13): a tab's list has gone to disk with the tab dormant, the file changes while it sleeps, and the tab is looked at,
 /// woken and read again. The list comes back whole from its journal, the journal stays, and the tab says its file changed: a list asleep is no less kept.
 #[test]
