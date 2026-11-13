@@ -42,6 +42,10 @@ fresh; { echo 'fn a() {}'; echo '#[cfg(test)]'; echo 'mod tests {'; lines 40; ec
 out=$(R); rc=$?; check "an inline test module doesn't count" "0" "$rc"
 fresh; { echo '#[cfg(test)]'; echo 'mod checks;'; } > "$X/t/crates/a/src/lib.rs"; lines 40 > "$X/t/crates/a/src/checks.rs"
 out=$(R); rc=$?; check "an out-of-line test module doesn't count" "0" "$rc"
+fresh; echo 'mod only;' > "$X/t/crates/a/src/lib.rs"; { echo '#![cfg(test)]'; lines 40; } > "$X/t/crates/a/src/only.rs"
+out=$(R); rc=$?; check "a file whose own #![cfg(test)] line says it's for tests doesn't count" "0" "$rc"
+fresh; echo 'mod shipped;' > "$X/t/crates/a/src/lib.rs"; { echo '//! Unlike tests.rs, this file is not `#![cfg(test)]`.'; lines 40; } > "$X/t/crates/a/src/shipped.rs"
+out=$(R); rc=$?; check "a file that only mentions #![cfg(test)] in a comment counts" "1" "$rc"; has "as a new offender" "crates/a/src/shipped.rs is a new offender" "$out"
 
 # functions
 fresh; { fn_of 10 long; } > "$X/t/crates/a/src/lib.rs"; out=$(R); rc=$?

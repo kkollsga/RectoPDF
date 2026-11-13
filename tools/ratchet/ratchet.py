@@ -4,6 +4,7 @@ import bisect, os, re, subprocess, sys
 def env_int(name, default):
     return int(os.environ.get(name, default))
 
+ONLY_FOR_TESTS = re.compile(r'^[ \t]*#!\[cfg\(test\)\][ \t]*$', re.M)
 BUDGET = {
     "file": env_int("RATCHET_FILE_LINES", 1500),
     "fn": env_int("RATCHET_FN_LINES", 150),
@@ -272,7 +273,8 @@ def measure(root):
     # the types each crate defines, with or without an inherent impl: one whose methods all went to facades still exists, at 0, so its entry stays
     defined = set()
     for rel, raw in srcs.items():
-        if rel in test_mods or '#![cfg(test)]' in raw:
+        # its own `#![cfg(test)]` line, not a comment that mentions one
+        if rel in test_mods or ONLY_FOR_TESTS.search(raw):
             continue
         t, removed, _ = strip_tests(mask(raw))
         nl = [i for i, ch in enumerate(t) if ch == '\n']
