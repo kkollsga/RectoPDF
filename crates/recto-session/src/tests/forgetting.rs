@@ -20,10 +20,10 @@ fn holding(s: &Session<FakeLoader>, id: TabId) -> Vec<&'static str> {
         ("journals", s.journals.contains_key(&id)),
         ("fresh_journals", s.fresh_journals.iter().any(|(tab, _, _)| *tab == id)),
         ("departing", s.departing.iter().any(|append| append.tab == id)),
-        ("saving", s.saving.contains(&id)),
+        ("saving", s.saves.is_saving(id)),
         ("comparison", s.comparison.as_ref().is_some_and(|comparison| comparison.contains(id))),
         ("generated", s.generated.iter().any(|(tab, _)| *tab == id)),
-        ("saved_over", s.saved_over.iter().any(|(tab, _, _)| *tab == id)),
+        ("saved_over", s.saves.remembers(id)),
         ("jumps", s.jumps.iter().any(|(tab, _)| *tab == id)),
     ];
     parts.into_iter().filter(|(_, holds)| *holds).map(|(name, _)| name).collect()

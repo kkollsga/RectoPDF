@@ -49,13 +49,8 @@ impl<L: DocLoader> Session<L> {
             self.relocate(id, path);
         }
         // What's in the new version is what was shown, page for page, so the page view goes on from where it was.
-        self.saved_over.retain(|(tab, _, _)| *tab != id);
-        if let Some(before) = self.tab(id).and_then(|tab| tab.stamp) {
-            if self.saved_over.len() >= MAX_SAVED_OVER {
-                self.saved_over.remove(0);
-            }
-            self.saved_over.push((id, before, now));
-        }
+        let before = self.tab(id).and_then(|tab| tab.stamp);
+        self.saves.saved_over(id, before, now);
         if let Some(tab) = self.tab_mut(id) {
             tab.stamp = Some(now);
             tab.page_count = pages;
@@ -127,15 +122,14 @@ impl<L: DocLoader> Session<L> {
             }
             None => return Ok(None),
         };
-        self.saving.push(id);
+        self.saves.begin(id);
         self.hold(id);
         Ok(Some(snapshot))
     }
 
     /// A save of this tab has finished, however it went. One that didn't put a file in place calls this without [`Self::saved`], and what [`Self::save_prepared`] noted goes: the edits stand, as they were.
     pub fn end_save(&mut self, id: TabId) {
-        if let Some(at) = self.saving.iter().position(|saving| *saving == id) {
-            self.saving.remove(at);
+        if self.saves.end(id) {
             self.let_go(id);
             if let Some(list) = self.edits.get_mut(&id)
                 && list.saving().is_some()
@@ -159,12 +153,12 @@ impl<L: DocLoader> Session<L> {
 
     /// Whether a save of this tab is under way.
     pub fn is_saving(&self, id: TabId) -> bool {
-        self.saving.contains(&id)
+        self.saves.is_saving(id)
     }
 
     /// Whether any save is under way, which a hand-off waits for.
     pub fn any_saving(&self) -> bool {
-        !self.saving.is_empty()
+        self.saves.any()
     }
 
     /// The first step of a save, before anything's put in place: notes what the file will be if it works, and what's been kept for undoing past it, so that a crash between that and [`Self::saved`] can tell. Goes in the journal. **A save that removes something for good, as a redaction does, keeps nothing:** a copy of the file would hold what it's removing.

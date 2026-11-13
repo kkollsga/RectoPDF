@@ -274,11 +274,7 @@ impl<L: DocLoader> Session<L> {
     /// **The version of its file a save moved this tab on from,** while it's still on the version that save wrote: every page of that is a page that was shown before, as it was shown, in the same place. `None` once anything else has happened to the file.
     pub fn saved_from(&self, id: TabId) -> Option<FileStamp> {
         let now = self.own_stamp(id)?;
-        self.saved_over
-            .iter()
-            .rev()
-            .find(|(tab, _, after)| *tab == id && *after == now)
-            .map(|(_, before, _)| *before)
+        self.saves.saved_from(id, now)
     }
 
     /// Reverses the last page edit. Returns false with nothing to undo.

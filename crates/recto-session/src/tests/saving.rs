@@ -61,7 +61,7 @@ fn a_save_says_which_version_it_moved_on_from_and_only_while_it_holds() {
         s.apply_file_status(other, FileStatus::Same(stamp(100 + n)));
         s.saved(other, stamp(1000 + n), 3, None, None);
     }
-    assert!(s.saved_over.len() <= MAX_SAVED_OVER);
+    assert!(s.saves.remembered() <= MAX_SAVED_OVER);
 }
 
 /// Failure (review): an edit made while a save writes comes back reading as saved, with its turn not in the file. Every way of changing a tab's edits waits while it's saved; a save that fails lets go and forgets what it noted, and the edits stand.

@@ -20,6 +20,7 @@ mod journal;
 mod pages;
 mod recent;
 mod restore;
+mod saves;
 mod saving;
 mod tabs;
 mod tiers;
@@ -815,14 +816,12 @@ pub struct Session<L = DiskLoader> {
     history: Option<Arc<dyn HistorySource>>,
     /// An agent is acting at Full, so losing the owner's history is the holder's call. Set for each command.
     agent_at_full: bool,
-    /// Tabs being saved now. Nothing changes their edits until the save's done: an edit made while the file was being written would read as saved and not be in it (review). Next to none.
-    saving: Vec<TabId>,
+    /// Tabs being saved, and what saves lately moved their tabs on from.
+    saves: saves::Saves,
     /// Tabs side by side, if there's a comparison: see [`compare`]. The active tab is one of them, the pane being read.
     comparison: Option<compare::Comparison>,
     /// Generated contents the sidebar knows of, for tabs someone asked about: at most [`MAX_GENERATED_VIEWS`], the oldest out, so a thousand tabs can't make this grow.
     generated: Vec<(TabId, GeneratedView)>,
-    /// Tabs a save has moved to another version of their file, as `(tab, before, after)`: the pages the new version has are the ones that were shown, each as it was shown, so the page view keeps its layout, place and selection. At most [`MAX_SAVED_OVER`], the oldest out; one is only believed while its tab is still on `after`.
-    saved_over: Vec<(TabId, FileStamp, FileStamp)>,
     /// Files opened lately, for File > Open Recent and ⌘K.
     recent: recent::Recent,
     /// Jumps the page view hasn't taken yet, with how far down the page to land: one per tab at most, the latest.

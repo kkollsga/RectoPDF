@@ -35,8 +35,7 @@ impl<L: DocLoader> Session<L> {
             agent_at_full: false,
             generated: Vec::new(),
             comparison: None,
-            saving: Vec::new(),
-            saved_over: Vec::new(),
+            saves: saves::Saves::default(),
             jumps: Vec::new(),
             recent: recent::Recent::default(),
         }
