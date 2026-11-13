@@ -60,3 +60,37 @@ fn tabs_leaving_with_their_sleep_files_held_have_one_writer_and_a_capped_queue()
     assert_eq!(rest["peak_writers"], 1, "{rest}");
     drop(app.quit());
 }
+
+/// Whether the tab on screen has a sleep file in the state folder.
+fn active_has_a_sleep_file(app: &crate::testkit::headless::HeadlessApp) -> bool {
+    let core = app.core();
+    core.host
+        .session
+        .with_session(|session| session.active().and_then(|id| session.sleep_facts(id)))
+        .is_some_and(|facts| core.saver.store.read_sleep(facts.sleep.file, &facts.path).is_some())
+}
+
+/// Failure (d65da39, review 1 of the slow mode): a flush right after opening tabs, as a quit or an update has it, skipped the tab on screen's sleep file whenever
+/// another was being written, with no trace, and the next launch's first frame was bare paper. With every sleep file's write held at its seam, tabs opened,
+/// and a flush given a moment: the state's written, the tab on screen's file isn't, and the skip is counted; let through, the next flush writes it. (Replaces the
+/// app test `restore::a_flush_writes_the_tab_on_screens_sleep_file_or_says_it_skipped_it`, 7 s on CI, which could pass either way of its `or`.)
+#[test]
+fn a_flush_counts_the_tab_on_screens_sleep_file_it_skipped_and_writes_it_given_the_time() {
+    let disk = Disk::new();
+    let docs: Vec<_> = (0..8).map(|at| disk.pdf(&format!("t{at}.pdf"), 3)).collect();
+    let app = disk.builder().hold(&[Seam::SleepWrite]).start();
+    for doc in &docs {
+        app.open(doc);
+    }
+    app.wait_until("a sleep file held mid-write", || app.waiting(Seam::SleepWrite) > 0);
+    let report = app.core().saver.flush(false, std::time::Duration::from_millis(50)).expect("the state written");
+    assert_eq!(report.tabs, 8, "the state first, whatever the sleep files are doing");
+    assert!(!active_has_a_sleep_file(&app));
+    let sleep = app.record_json()["sleep"].clone();
+    assert_eq!(sleep["writes_skipped_busy"], 1, "the skip is counted: {sleep}");
+    recto_platform::slow::gate::open(Seam::SleepWrite);
+    app.wait_until("the queue written", || app.record_json()["sleep"]["leaving"]["writer"] == false);
+    app.core().saver.flush(false, crate::testkit::headless::WAIT_LIMIT).expect("the state written");
+    assert!(active_has_a_sleep_file(&app), "given the time, it's written: {}", app.record_json()["sleep"]);
+    drop(app.quit());
+}
