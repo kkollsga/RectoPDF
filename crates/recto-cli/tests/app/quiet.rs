@@ -405,7 +405,7 @@ fn the_run_befores_messages_are_kept_for_one_launch() {
     let began = std::time::Instant::now();
     while std::os::unix::net::UnixStream::connect(&state.paths.socket).is_ok() {
         assert!(began.elapsed() < Duration::from_secs(15), "the first run's socket stayed");
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
     }
     let said = std::fs::read_to_string(&state.paths.server_messages).unwrap_or_default();
     assert!(said.contains("this quiet run ended"), "the first run said why it ended: {said:?}");
