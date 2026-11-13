@@ -219,6 +219,126 @@ fn back_after_synced_scroll_past_a_sent_jump_marks_where_the_pane_followed() {
     }
 }
 
+/// Failure (review round 1 of the page view follow-ups): in a comparison with synced scroll, the look sends Back's jump to the pane read, and before that
+/// jump gets to the pane's page view the person's scroll in the other pane sends this pane a follow, asked after the jump and applied first. Who got the
+/// page view's lock decided: the older jump landed after the follow and undid the person's newer move. Now the follow's place stands in the view, and the
+/// session, which sent the jump, ends where the view is: the page the pane followed to, said once, nothing sending Back's jump again, and the trail as Back
+/// left it, its Forward stop where Back marked the reader and a Forward going there. Forced: the jump is held in the page view between being asked and
+/// taking the lock (`Engine::qa().hold_asks`) while the person scrolls. Twice: the follow takes the pane to page 7, and the follow keeps it on page 20, where
+/// it was before Back, which only the view's telling of its place after the jump it didn't take can say to the session.
+#[test]
+fn back_overtaken_by_synced_scroll_ends_where_the_pane_followed_and_forward_goes_where_back_left() {
+    back_overtaken_by_synced_scroll(2.4, 6);
+    back_overtaken_by_synced_scroll(15.3, 19);
+}
+
+/// [`back_overtaken_by_synced_scroll_ends_where_the_pane_followed_and_forward_goes_where_back_left`], with b scrolled `pages_down` from 0.5 of its page 5,
+/// which takes a to `followed_to` (from 0).
+fn back_overtaken_by_synced_scroll(pages_down: f64, followed_to: u32) {
+    use recto_reader::engine::Ask;
+    let disk = Disk::new();
+    let (a, b) = (disk.pdf("a.pdf", 30), disk.pdf("b.pdf", 30));
+    let app = disk.start();
+    app.open(&b);
+    app.open(&a);
+    let (b_tab, a_tab) = (app.tabs()[0].tab, app.tabs()[1].tab);
+    agent(&app, &format!(r##"{{"cmd":"goto","tab":"#{b_tab}","page":5,"within":0.5}}"##));
+    agent(&app, &format!(r##"{{"cmd":"goto","tab":"#{a_tab}","page":5,"within":0.3}}"##));
+    agent(&app, &format!(r##"{{"cmd":"compare","toggle":"#{b_tab}"}}"##));
+    agent(&app, r#"{"cmd":"compare","sync":"on"}"#);
+    agent(&app, &format!(r##"{{"cmd":"compare","reading":"#{a_tab}"}}"##));
+    app.settle();
+    let inner = std::sync::Arc::clone(app.core());
+    let pane_of = |tab: u32| {
+        (0..inner.panes.count())
+            .find(|pane| inner.panes.tab_of(*pane).map(|id| id.0) == Some(tab))
+            .expect("in a pane")
+    };
+    let (a_pane, b_pane) = (pane_of(a_tab), pane_of(b_tab));
+    // a's trail: a jump to page 20 from 0.3 of page 5, arrived at.
+    agent(&app, r#"{"cmd":"goto","page":20}"#);
+    app.settle();
+    app.person_scrolls(0.0);
+    app.settle();
+    assert_eq!(views_place(&app), (19, 0.0), "a went to page 20");
+    let b_engine = inner.panes.engine(&inner.engine, b_pane).expect("b's page view");
+    let a_engine = inner.panes.engine(&inner.engine, a_pane).expect("a's page view");
+    let b_place = b_engine.places().1.into_iter().find(|(tab, _)| *tab == b_tab).expect("b's place").1;
+    let scroll = |y: f64| recto_reader::Viewport {
+        y,
+        magnification: b_place.magnification,
+        backing: 2.0,
+        scrolled_to: u64::MAX - 1,
+        ..recto_reader::Viewport::default()
+    };
+    drop(inner.panes.viewport(&inner.engine, b_pane, false, scroll(b_place.y)));
+    // b's place and its page's height as its view now has it.
+    let b_place = b_engine.places().1.into_iter().find(|(tab, _)| *tab == b_tab).expect("b's place").1;
+    let b_page_height = b_place.document_height / 30.0;
+    let a_id = recto_session::TabId(a_tab);
+    app.hear_events();
+    a_engine.qa().hold_asks(Ask::Jump, true);
+    std::thread::scope(|scope| {
+        let back = scope.spawn(|| agent(&app, r#"{"cmd":"back"}"#));
+        assert!(a_engine.qa().wait_for_held_asks(1), "the look sent Back's jump to a's page view");
+        // The person's own scroll in b, from 0.5 of its page 5 down: a follows, to the same page from its own page 5.
+        drop(
+            inner
+                .panes
+                .viewport(&inner.engine, b_pane, true, scroll(b_place.y + pages_down * b_page_height)),
+        );
+        inner.panes.focus(a_pane);
+        a_engine.qa().hold_asks(Ask::Jump, false);
+        back.join().unwrap();
+    });
+    app.settle();
+    let (page, followed) = views_place(&app);
+    assert_eq!(
+        page, followed_to,
+        "a's pane followed b's, and Back's older jump didn't undo it: {page} {followed}"
+    );
+    let (session_page, here, waiting) = inner
+        .host
+        .session
+        .with_session(|s| (s.tabs().tab(a_id).map(|tab| tab.page), s.here(a_id), s.mail().waiting_jump(a_id)));
+    assert_eq!(session_page, Some(followed_to), "the session has the page the view is on");
+    assert!(
+        here.is_some_and(|here| here.page == followed_to && (f64::from(here.within) - followed).abs() < 0.01),
+        "the session has the reader where the view is: {here:?}, the view at {followed}"
+    );
+    assert_eq!(waiting, None, "no jump waits to be sent again");
+    let moves: Vec<_> = app
+        .heard_events()
+        .into_iter()
+        .filter(|event| matches!(event, recto_agent::Event::PageChanged { tab, .. } if *tab == a_id))
+        .collect();
+    assert!(
+        matches!(moves.as_slice(), [recto_agent::Event::PageChanged { page: Some(page), .. }] if *page == followed_to + 1),
+        "the view's page said once, as the reader's move: {moves:?}"
+    );
+    // Nothing sends Back's jump again: the view arrives where it was last sent, which is where it followed to.
+    app.person_scrolls(0.0);
+    app.settle();
+    let (again, at) = views_place(&app);
+    assert!(again == followed_to && (at - followed).abs() < 0.01, "no jump sent after: {again} {at}");
+    assert!(app.heard_events().is_empty(), "nothing more said");
+    // The trail is as Back left it: Forward is where Back marked the reader, page 20's top, and goes there.
+    let forward = inner
+        .host
+        .session
+        .with_session(|s| s.tabs().trail_of(a_id).and_then(|trail| trail.forward().last().copied()));
+    assert!(
+        forward.is_some_and(|stop| stop.page == 19 && stop.within == 0.0),
+        "Forward is page 20's top, where Back marked the reader: {forward:?}"
+    );
+    agent(&app, r#"{"cmd":"forward"}"#);
+    app.settle();
+    app.person_scrolls(0.0);
+    app.settle();
+    assert_eq!(views_place(&app), (19, 0.0), "Forward goes to page 20");
+    assert_eq!(inner.host.session.with_session(|s| s.tabs().tab(a_id).map(|tab| tab.page)), Some(19));
+}
+
 /// Failure: an agent's `back`, `forward` or `goto` takes in where the page views are and then marks where the reader is, under two locks on the session,
 /// and the session thread's look can come between: it sends the jump waiting on the page showing to the page view, and the mark, finding none waiting, takes
 /// the view's place from before that jump. So `goto 5 --within 0.8` from 0.3 of the way down page 5 then `back` kept 0.3 for Forward, `back` to 0.3 then
