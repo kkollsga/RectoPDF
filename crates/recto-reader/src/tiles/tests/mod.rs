@@ -2,6 +2,7 @@ use super::cache::{MAX_KEPT_BYTES, MAX_KEPT_PREVIEWS};
 use super::*;
 use crate::layout::PageBox;
 use recto_index::select::Range;
+use recto_platform::surface::PixelSurface;
 use recto_render_service::{LowResWhy, TileKind};
 use std::path::Path;
 

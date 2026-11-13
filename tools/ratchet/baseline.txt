@@ -29,7 +29,6 @@ impl crates/recto-ffi/src/lib.rs::AppCore 131
 impl crates/recto-reader/src/engine.rs::Engine 81
 impl crates/recto-reader/src/layout.rs::PageLayout 49
 impl crates/recto-reader/src/selection.rs::Selecting 41
-impl crates/recto-reader/src/tiles.rs::Reader 50
 impl crates/recto-render-service/src/host.rs::DocRenderer 61
 impl crates/recto-render/src/pdfium/contents.rs::Walk 64
 impl crates/recto-session/src/edit.rs::PageEdits 69

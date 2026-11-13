@@ -8,22 +8,22 @@
 
 use crate::layout::{PageBox, PageLayout, Spread};
 use crate::paper::PaperKind;
-use recto_index::select::PagePoint;
 use recto_platform::FileStamp;
-use recto_platform::surface::PixelSurface;
 use recto_proto::{MAX_SCALE, MIN_SCALE, TILE_EDGE, TileRect, device_size};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod cache;
+mod geometry;
 mod host;
 mod jobs;
 mod place;
 mod plan;
 mod pointer;
+mod report;
 mod wake;
 mod zoom;
 
@@ -1020,97 +1020,6 @@ impl Reader {
         self.refresh(MAX_ATTACH_PER_TURN);
     }
 
-    /// Where a point in the document is on a page as it's shown. It stays with the page it's nearest, past the page's edges if it must, which is what a drag off the side needs.
-    pub fn point_on_page(&self, x: f64, y: f64) -> Option<PagePoint> {
-        if !x.is_finite() || !y.is_finite() {
-            return None;
-        }
-        let doc = self.doc()?;
-        if doc.layout.count() == 0 {
-            return None;
-        }
-        let page = doc.layout.page_at_point(x, y);
-        let (u, v) = doc.layout.to_page(page, x, y);
-        Some(PagePoint {
-            page,
-            x: u as f32,
-            y: v as f32,
-        })
-    }
-
-    /// Where a point in the document is in the coordinates of `page`, whichever page it's over: past the page's edges if it's off it, for the caller to hold to them. A snapshot's box dragged across a page break stays on the page it was pressed on this way.
-    pub fn point_on_given_page(&self, page: u32, x: f64, y: f64) -> Option<PagePoint> {
-        if !x.is_finite() || !y.is_finite() {
-            return None;
-        }
-        let doc = self.doc()?;
-        if page >= doc.layout.count() {
-            return None;
-        }
-        let (u, v) = doc.layout.to_page(page, x, y);
-        Some(PagePoint {
-            page,
-            x: u as f32,
-            y: v as f32,
-        })
-    }
-
-    /// How many pages the tab shown has, edits and all: 0 with none shown.
-    pub fn page_count(&self) -> u32 {
-        self.doc().map_or(0, |doc| doc.layout.count())
-    }
-
-    /// A page's size as it's shown, in its own coordinates, before any unsaved turn: what a point from [`Self::point_on_page`] is held to.
-    pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)> {
-        let doc = self.doc()?;
-        (page < doc.layout.count()).then(|| {
-            let size = doc.layout.raw_size(page);
-            (size.width, size.height)
-        })
-    }
-
-    /// How far a page is shown turned, in quarter turns clockwise: its unsaved turn and the view's together. What a snapshot of it is turned by.
-    pub fn page_turns(&self, page: u32) -> u8 {
-        self.doc().map_or(0, |doc| doc.layout.turns_of(page))
-    }
-
-    /// The other way, for QA, which says where a click goes as an agent found it from `recto select`, and then does what the mouse does.
-    pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)> {
-        let doc = self.doc()?;
-        if page >= doc.layout.count() {
-            return None;
-        }
-        Some(doc.layout.from_page(page, x, y))
-    }
-
-    /// Where a file page of the same file as the page at `from` is now, counted as the view counts: what a link on that page means by its page. Nothing if it's not in the document.
-    pub fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<u32> {
-        let doc = self.doc()?;
-        match &doc.map.slots {
-            None => (file_page < doc.layout.count()).then_some(file_page),
-            Some(slots) => {
-                let (file, _) = *slots.get(from as usize)?;
-                slots
-                    .iter()
-                    .position(|(other, page)| *other == file && *page == file_page)
-                    .and_then(|at| u32::try_from(at).ok())
-            }
-        }
-    }
-
-    /// Whether a page of the view is from the tab's own file, and which page of it.
-    pub fn own_file_page(&self, position: u32) -> Option<u32> {
-        let doc = self.doc()?;
-        match &doc.map.slots {
-            None => (position < doc.layout.count()).then_some(position),
-            Some(slots) => slots.get(position as usize).filter(|(file, _)| *file == 0).map(|(_, page)| *page),
-        }
-    }
-
-    pub fn has_document(&self) -> bool {
-        self.doc().is_some_and(|doc| doc.layout.count() > 0)
-    }
-
     /// The thread that draws panicked and is starting over, or, with `give_up`, isn't. What it was doing is gone, and everything it would come back to is asked for again.
     pub fn thread_restarted(&mut self, give_up: bool) {
         self.work.running = None;
@@ -1131,7 +1040,7 @@ impl Reader {
         }
     }
 
-    /// A job has ended, with whatever it found. Returns anything it hands back.
+    /// A job has ended, with whatever it found.
     pub fn finish(&mut self, job: Job, outcome: Outcome) {
         self.work.running = None;
         self.counts.jobs += 1;
@@ -1280,82 +1189,6 @@ impl Reader {
             }
         }
         true
-    }
-
-    /// What QA reads, and the budgets. Numbers and states: no text from a document.
-    pub fn report(&self) -> ReaderReport {
-        let doc = self.doc();
-        let attached = self.cache.attached.values().map(Vec::len).sum::<usize>();
-        let attached_bytes: usize = self
-            .cache
-            .attached
-            .values()
-            .flatten()
-            .filter_map(|id| self.cache.entries.get(id))
-            .filter_map(|entry| entry.surface.as_ref())
-            .map(PixelSurface::len)
-            .sum();
-        let previews_attached = self
-            .cache
-            .attached
-            .values()
-            .flatten()
-            .filter_map(|id| self.cache.entries.get(id))
-            .filter(|entry| entry.preview)
-            .count();
-        let low_res_pages: HashSet<u32> = self
-            .cache
-            .attached
-            .iter()
-            .filter(|(_, ids)| ids.iter().filter_map(|id| self.cache.entries.get(id)).any(|entry| entry.low_res.is_some()))
-            .map(|(page, _)| *page)
-            .collect();
-        let mut low_res_pages: Vec<u32> = low_res_pages.into_iter().map(|page| page + 1).collect();
-        low_res_pages.sort_unstable();
-        let visible: Vec<u32> = doc.map(|doc| self.visible_pages(doc).map(|page| page + 1).collect()).unwrap_or_default();
-        ReaderReport(json!({
-            "tab": self.hot,
-            "pages": doc.map(|doc| doc.layout.count()),
-            "visible_pages": visible,
-            "page": self.place.last_view_page.map(|page| page + 1),
-            "magnification": self.viewport.magnification,
-            "fit": doc.map(|doc| doc.layout.fit()),
-            "spread": doc.map(|doc| format!("{:?}", doc.layout.spread())),
-            "tile_scale": doc.map(|doc| doc.tile_scale),
-            "document_height": doc.map(|doc| doc.layout.document_height()),
-            "scroll_y": self.viewport.y,
-            "scroll_x": self.viewport.x,
-            "paper": match self.paper { PaperKind::White => "white", PaperKind::Dark => "dark" },
-            "settled": self.is_settled(),
-            "note": self.note,
-            "low_res_pages": low_res_pages,
-            "tiles": {
-                "attached": attached,
-                "attached_bytes": attached_bytes,
-                "previews_attached": previews_attached,
-                "kept": self.cache.entries.len() - attached.min(self.cache.entries.len()),
-                "kept_bytes": self.cache.entries.values().filter(|entry| !entry.attached).filter_map(|entry| entry.surface.as_ref()).map(PixelSurface::len).sum::<usize>(),
-                "page_layers": self.host.shown.len(),
-            },
-            "counts": {
-                "jobs": self.counts.jobs,
-                "drawn": self.counts.drawn,
-                "cancelled": self.counts.cancelled,
-                "viewport_steps": self.counts.viewport_steps,
-                "blank_steps": self.counts.blank_steps,
-                "blank_seen_steps": self.counts.blank_seen_steps,
-                "discards_lost": self.counts.discards_lost,
-            },
-            "documents_held": self.docs.len(),
-            "left_picture_bytes": self.docs.values().filter_map(|doc| doc.left_pictures.as_ref()).flatten().map(|picture| picture.bgra.len()).sum::<usize>(),
-            "last_wake": self.last_wake().map(|wake| json!({ "tab": wake.tab, "from_sleep": wake.from_sleep, "first_frame_us": wake.first_frame_us, "sharp_us": wake.sharp_us, "blank_frames": wake.blank_frames })),
-            "window_open": self.window_open,
-            "selection": self.pointer.selecting.report(),
-        }))
-    }
-
-    pub fn counts(&self) -> &ReaderCounts {
-        &self.counts
     }
 }
 
