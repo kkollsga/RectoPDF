@@ -68,7 +68,9 @@ fn the_palettes_update_is_the_updaters_command_at_the_agents_level() {
 fn an_agents_palette_run_never_runs_as_the_person() {
     let app = HeadlessApp::start();
     let file = app.disk().file("locked.pdf", &super::files::locked_with("right", 3));
-    app.core().open_file(file);
+    app.act(crate::core::controls::UiAction::Open {
+        path: file.display().to_string(),
+    });
     app.settle();
     let id = app.reader().password_prompt.expect("it asks for its password").id;
     app.core().password_answered(id, Some("right".into()));

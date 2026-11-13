@@ -94,16 +94,8 @@ Inner::pub fn carry_out(&self, out: Option<crate::lifecycle::Out>)
 Inner::pub fn check_woken_files(&self)
 Inner::pub fn close_answered(self: &Arc<Self>, tab: u32, choice: CloseChoice) -> HostAction
 Inner::pub fn close_prompt(&self) -> ClosePrompt
-Inner::pub fn compare_toggle_for_person(self: &Arc<Self>, tab: TabId)
-Inner::pub fn contents_note_for_person(self: &Arc<Self>, tab: TabId, action: ContentsAction)
-Inner::pub fn contents_tapped(self: &Arc<Self>, tab: TabId, page: u32)
 Inner::pub fn dismiss_selection_notice(&self)
 Inner::pub fn dormancy_due(&self) -> Option<Vec<TabId>>
-Inner::pub fn find_choose_for_person(self: &Arc<Self>, row: u32)
-Inner::pub fn find_close_for_person(self: &Arc<Self>)
-Inner::pub fn find_open_for_person(self: &Arc<Self>)
-Inner::pub fn find_step_for_person(self: &Arc<Self>, forward: bool, jump: bool)
-Inner::pub fn find_typed_for_person(self: &Arc<Self>, text: String)
 Inner::pub fn forget_a_quiet_copy(&self)
 Inner::pub fn frontmost_changed(&self, app: bool, window_key: bool)
 Inner::pub fn gather_record(&self) -> (SessionRecord, PlaceDelta)
@@ -115,7 +107,6 @@ Inner::pub fn hand_off_check(&self) -> HandOffCheck
 Inner::pub fn hand_off_quit_now(&self) -> bool
 Inner::pub fn has_setting(&self, id: &str) -> bool
 Inner::pub fn link_prompt_answered(&self, id: u64, open: bool) -> Option<String>
-Inner::pub fn link_to_page(self: &Arc<Self>, tab: TabId, position: u32, within: Option<f32>)
 Inner::pub fn look_at_budget(&self)
 Inner::pub fn memory_pressure(&self, critical: bool)
 Inner::pub fn menu_item_enabled(&self, id: String) -> bool
@@ -123,9 +114,6 @@ Inner::pub fn note_input(&self)
 Inner::pub fn note_nearby(&self)
 Inner::pub fn note_update_facts(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String)
 Inner::pub fn notice_read(&self)
-Inner::pub fn open_file(&self, path: PathBuf)
-Inner::pub fn open_recent(&self, key: String)
-Inner::pub fn page_typed(self: &Arc<Self>, text: &str) -> bool
 Inner::pub fn password_answered(&self, id: u64, password: Option<String>)
 Inner::pub fn perform(self: &Arc<Self>, id: String) -> HostAction
 Inner::pub fn qa_save_from(&self, written: &str) -> Result<(), AgentError>
@@ -149,7 +137,6 @@ Inner::pub fn settings_model(&self) -> SettingsModel
 Inner::pub fn settings_window(&self) -> Option<SettingsWindow>
 Inner::pub fn settings_window_changed(&self, place: Option<SettingsWindow>)
 Inner::pub fn sheet_changed(&self, open: bool)
-Inner::pub fn show_sidebar(self: &Arc<Self>)
 Inner::pub fn shown_with_state(&self)
 Inner::pub fn shutdown(&self)
 Inner::pub fn sidebar_tabs(&self) -> Vec<SidebarRow>
@@ -157,16 +144,9 @@ Inner::pub fn start(start: Start) -> Result<Arc<Self>, String>
 Inner::pub fn start_with(start: Start, update_seams: updates::UpdateSeams) -> Result<Arc<Self>, String>
 Inner::pub fn state_json(&self) -> Value
 Inner::pub fn state_read(&self) -> bool
-Inner::pub fn step_for_person(self: &Arc<Self>, back: bool)
-Inner::pub fn swiped(self: &Arc<Self>, delta_x: f64)
 Inner::pub fn system_pressure(&self, critical: bool)
 Inner::pub fn take_places(&self)
 Inner::pub fn take_update_alert(&self) -> Option<UpdateAlert>
-Inner::pub fn tap_row(self: &Arc<Self>, row: SidebarRow)
-Inner::pub fn tap_row_adding(self: &Arc<Self>, row: SidebarRow)
-Inner::pub fn tap_tab(self: &Arc<Self>, tab: TabId)
-Inner::pub fn toggle_contents_section(self: &Arc<Self>, first: u32)
-Inner::pub fn toggle_sidebar(self: &Arc<Self>)
 Inner::pub fn update_command(&self, command: &Command) -> Result<Value, AgentError>
 Inner::pub fn update_report(&self) -> Value
 Inner::pub fn update_test_clock(&self, ahead_ms: i64) -> bool
@@ -178,7 +158,6 @@ Inner::pub fn window_replaced(&self)
 Inner::pub fn window_should_open(&self) -> bool
 Inner::pub fn write_sleep_for(&self, id: TabId, by: By)
 Inner::pub fn write_sleep_for_until(&self, id: TabId, until: Instant)
-Inner::pub fn zoom_for_person(&self, zoom: Zoom) -> bool
 Inner::pub(crate) fn carry_out_quit(self: &Arc<Self>, out: Option<Out>)
 Inner::pub(crate) fn carry_out_quit_answer(&self, out: Out)
 Lifecycle (pub struct)

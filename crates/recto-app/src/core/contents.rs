@@ -2,14 +2,12 @@
 //! `contents show own|generated` or `contents stop`, the commands an agent sends, run for the person. Which entry a chevron is on, and what the note offers,
 //! are what the session published.
 
-use super::{Inner, lock, person};
 use recto_agent::commands::contents::{ContentsFold, ContentsShow, ContentsStop, Which};
 use recto_agent::{Command, TabRef};
 use recto_session::{ContentsAction, TabId};
-use std::sync::Arc;
 
-/// What the note's action comes to: Generate and Show generated are both `contents show generated`, which makes them if they aren't made.
-fn note_command(tab: TabId, action: ContentsAction) -> Command {
+/// A tap on the note over a tab's contents: Generate and Show generated are both `contents show generated`, which makes them if they aren't made.
+pub fn note_command(tab: TabId, action: ContentsAction) -> Command {
     let tab = TabRef::Id(tab);
     let show = |which: Which| ContentsShow { which, tab: tab.clone() }.into();
     match action {
@@ -19,28 +17,16 @@ fn note_command(tab: TabId, action: ContentsAction) -> Command {
     }
 }
 
-impl Inner {
-    /// A tap on the note over a tab's contents.
-    pub fn contents_note_for_person(self: &Arc<Self>, tab: TabId, action: ContentsAction) {
-        person::submit(self, note_command(tab, action));
-    }
-
-    /// A contents row's chevron: `contents fold`, its section folded or opened as it is when it runs. A row with nothing under it has no chevron, and
-    /// does nothing.
-    pub fn toggle_contents_section(self: &Arc<Self>, first: u32) {
-        let entry = lock(&self.published)
-            .contents
-            .get(first as usize)
-            .map(|entry| (entry.tab, entry.entry, entry.expandable));
-        if let Some((tab, entry, true)) = entry {
-            person::submit(
-                self,
-                ContentsFold {
-                    entry,
-                    tab: TabRef::Id(TabId(tab)),
-                }
-                .into(),
-            );
+/// A contents row's chevron: `contents fold`, its section folded or opened as it is when it runs, by the row's place in what the session published. A row
+/// with nothing under it has no chevron, and does nothing.
+pub fn chevron(contents: &[crate::ContentsEntry], first: u32) -> Option<Command> {
+    let entry = contents.get(first as usize).map(|entry| (entry.tab, entry.entry, entry.expandable));
+    let Some((tab, entry, true)) = entry else { return None };
+    Some(
+        ContentsFold {
+            entry,
+            tab: TabRef::Id(TabId(tab)),
         }
-    }
+        .into(),
+    )
 }

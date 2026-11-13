@@ -13,7 +13,9 @@ fn opened_and_edited() -> (HeadlessApp, std::path::PathBuf, Vec<u8>) {
         .disk()
         .file("locked.pdf", &locked_allowing("right", 3, Permissions::PRINTABLE | Permissions::COPYABLE));
     let original = std::fs::read(&file).expect("the file");
-    app.core().open_file(file.clone());
+    app.act(crate::core::controls::UiAction::Open {
+        path: file.clone().display().to_string(),
+    });
     app.settle();
     let id = app.reader().password_prompt.expect("it asks for its password").id;
     app.core().password_answered(id, Some("right".into()));

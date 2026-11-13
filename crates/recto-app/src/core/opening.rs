@@ -9,8 +9,8 @@ use recto_agent::TabRef;
 use recto_agent::commands::Move;
 use recto_agent::commands::tabs::{Open, RecentClear, Tap};
 
-/// The tab a person's tap is for, as the window names it: by its id.
-fn tap(tab: TabId) -> Command {
+/// The tab a person's tap is for, as the window names it: by its id. A tap on its row, or its row in the palette.
+pub fn tap(tab: TabId) -> Command {
     Tap { tab: TabRef::Id(tab) }.into()
 }
 
@@ -167,40 +167,36 @@ pub fn file_length(inner: &Arc<Inner>, reads: &mut FileReads, id: TabId, pages: 
     }
 }
 
-/// **The window's side of opening and tapping,** as `AppCore` forwards it: each goes on the session thread, as waking a cold tab or reading a file can wait on a disk.
-impl Inner {
-    pub fn open_file(&self, path: PathBuf) {
-        // Asked for before the state's read: what a launch that goes back passes on.
-        if !self.life.state_read() {
-            updates::note_asked_to_open(std::slice::from_ref(&path));
-        }
-        open(&self.core, path);
+/// **A file the person opens:** the Open panel's, a drop, the Finder's. `open`, queued for the session thread, as [`open`]; and asked for before the state's
+/// read, it's what a launch that goes back passes on.
+pub fn open_for_person(life: &Lifecycle, core: &CoreQueue, path: PathBuf) {
+    if !life.state_read() {
+        updates::note_asked_to_open(std::slice::from_ref(&path));
     }
+    open(core, path);
+}
 
-    /// A tab's row in the palette, run: `tap`, as a click on the row is.
-    pub fn tap_tab(self: &Arc<Self>, tab: TabId) {
-        person::submit(self, tap(tab));
+/// **Opens a file from the files opened lately by its key,** as File > Open Recent and the palette's row do: the very file that was offered, however the
+/// list has moved since, and nothing if it's left the list. From what the session thread last published: it never waits.
+pub fn open_recent(published: &Mutex<Published>, core: &CoreQueue, key: &str) {
+    let path = lock(published).recent.iter().find(|file| file.key == key).map(|file| PathBuf::from(&file.path));
+    if let Some(path) = path {
+        open(core, path);
     }
+}
 
-    /// A row was tapped: a tab's is `tap`.
-    pub fn tap_row(self: &Arc<Self>, row: SidebarRow) {
-        match (row.kind, row.page) {
-            (crate::RowKind::Tab, _) => person::submit(self, tap(TabId(row.tab))),
-            (crate::RowKind::Contents, Some(page)) => self.contents_tapped(TabId(row.tab), page),
-            (crate::RowKind::Contents, None) => {}
-            (crate::RowKind::Note, _) => {
-                if let Some(action) = row.action.as_deref().and_then(recto_session::ContentsAction::from_id) {
-                    self.contents_note_for_person(TabId(row.tab), action);
-                }
-            }
-        }
-    }
-
-    /// ⌘-click or ⌃-click on a row: a tab goes into a comparison, or out of it. A contents row does what a click does.
-    pub fn tap_row_adding(self: &Arc<Self>, row: SidebarRow) {
-        match row.kind {
-            crate::RowKind::Tab => self.compare_toggle_for_person(TabId(row.tab)),
-            crate::RowKind::Contents | crate::RowKind::Note => self.tap_row(row),
-        }
+/// **What a row of the sidebar comes to, tapped** (`adding` for a ⌘- or ⌃-click): a tab's is `tap`, or with `adding` `compare --toggle`; a contents row's
+/// is `goto` its page, and the note over a tab's contents is its action, whichever the click. A contents row with no page does nothing.
+pub fn row_command(row: SidebarRow, adding: bool, panes: &panes::Panes, engine: &Engine) -> Option<Command> {
+    match (row.kind, row.page) {
+        (crate::RowKind::Tab, _) if adding => Some(super::comparison::toggle(TabId(row.tab))),
+        (crate::RowKind::Tab, _) => Some(tap(TabId(row.tab))),
+        (crate::RowKind::Contents, Some(page)) => Some(super::navigation::contents_tapped(panes, engine, TabId(row.tab), page)),
+        (crate::RowKind::Contents, None) => None,
+        (crate::RowKind::Note, _) => row
+            .action
+            .as_deref()
+            .and_then(recto_session::ContentsAction::from_id)
+            .map(|action| super::contents::note_command(TabId(row.tab), action)),
     }
 }

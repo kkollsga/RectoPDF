@@ -4,9 +4,10 @@
 //!
 //! The bridge has one export for all of it, `AppCore::act`, which is a call to [`Inner::act`]; nothing else of the window's comes in another way.
 
-use super::{HostAction, Inner};
+use super::{HostAction, Inner, lock};
 use crate::SidebarRow;
 use crate::saving::CloseChoice;
+use recto_session::TabId;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -66,6 +67,11 @@ impl Acted {
         understood: true,
     };
 
+    const NOT_UNDERSTOOD: Self = Self {
+        host: HostAction::None,
+        understood: false,
+    };
+
     fn host(host: HostAction) -> Self {
         Self { host, understood: true }
     }
@@ -73,80 +79,59 @@ impl Acted {
 
 impl Inner {
     /// **Does what the person did,** whatever the control. Never waits: what's slow goes on the session thread or a thread of its own.
+    ///
+    /// Each control is its feature's: the feature says what command it is (in the feature's file, from what it reads), and the command is the person's,
+    /// sent to the one executor ([`super::person::submit`]). What isn't one command (a menu id's row, the palette's, an open, the close prompt's answer,
+    /// Save As, a setting, the zoom, run where it's asked) is its feature's whole, and returns here.
     pub fn act(self: &Arc<Self>, action: UiAction) -> Acted {
-        match action {
-            UiAction::Menu { id } => Acted::host(self.perform(id)),
-            UiAction::Row { row, adding: false } => {
-                self.tap_row(row);
-                Acted::DONE
-            }
-            UiAction::Row { row, adding: true } => {
-                self.tap_row_adding(row);
-                Acted::DONE
-            }
-            UiAction::PaneRead { tab } => {
-                super::person::submit(self, super::comparison::reading(recto_session::TabId(tab)));
-                Acted::DONE
-            }
-            UiAction::Chevron { first } => {
-                self.toggle_contents_section(first);
-                Acted::DONE
-            }
+        let command = match action {
+            UiAction::Menu { id } => return Acted::host(self.perform(id)),
+            UiAction::Row { row, adding } => super::opening::row_command(row, adding, &self.panes, &self.engine),
+            UiAction::PaneRead { tab } => Some(super::comparison::reading(TabId(tab))),
+            UiAction::Chevron { first } => super::contents::chevron(&lock(&self.published).contents, first),
             UiAction::Open { path } => {
-                self.open_file(PathBuf::from(path));
-                Acted::DONE
+                super::opening::open_for_person(&self.life, &self.core, PathBuf::from(path));
+                return Acted::DONE;
             }
             UiAction::OpenRecent { key } => {
-                self.open_recent(key);
-                Acted::DONE
+                super::opening::open_recent(&self.published, &self.core, &key);
+                return Acted::DONE;
             }
-            UiAction::FindTyped { text } => {
-                self.find_typed_for_person(text);
-                Acted::DONE
-            }
-            UiAction::FindOpen => {
-                self.find_open_for_person();
-                Acted::DONE
-            }
-            UiAction::FindClose => {
-                self.find_close_for_person();
-                Acted::DONE
-            }
+            UiAction::FindTyped { text } => Some(super::find::typed(text)),
+            UiAction::FindOpen => Some(super::find::opened()),
+            UiAction::FindClose => Some(super::find::closed()),
             // The person's jump to the hit, so Back comes here again. ⌘G and ⇧⌘G are the menu's, and only step.
-            UiAction::FindReturn { forward } => {
-                self.find_step_for_person(forward, true);
-                Acted::DONE
+            UiAction::FindReturn { forward } => Some(super::find::step(forward, true)),
+            UiAction::FindChoose { row } => super::find::handle(self, |find| super::find::chosen(find, row)),
+            UiAction::PageTyped { text } => {
+                let Some(goto) = super::navigation::page_typed(&text, &self.core.frozen, &self.panes) else {
+                    return Acted::NOT_UNDERSTOOD;
+                };
+                Some(goto)
             }
-            UiAction::FindChoose { row } => {
-                self.find_choose_for_person(row);
-                Acted::DONE
+            UiAction::Swiped { delta_x } => super::navigation::swiped(delta_x),
+            UiAction::ZoomTyped { text, decimal } => {
+                let typed = recto_reader::tiles::typed_zoom(&text, decimal.chars().next().unwrap_or('.'));
+                return Acted {
+                    host: HostAction::None,
+                    understood: typed.is_some_and(|zoom| super::zoom::for_person(&self.host, &self.serving, zoom)),
+                };
             }
-            UiAction::PageTyped { text } => Acted {
-                host: HostAction::None,
-                understood: self.page_typed(&text),
-            },
-            UiAction::Swiped { delta_x } => {
-                self.swiped(delta_x);
-                Acted::DONE
-            }
-            UiAction::ZoomTyped { text, decimal } => Acted {
-                host: HostAction::None,
-                understood: recto_reader::tiles::typed_zoom(&text, decimal.chars().next().unwrap_or('.')).is_some_and(|zoom| self.zoom_for_person(zoom)),
-            },
-            UiAction::ToggleSidebar => {
-                self.toggle_sidebar();
-                Acted::DONE
-            }
-            UiAction::PaletteRun { id } => Acted::host(super::palette::run(self, &id)),
-            UiAction::CloseAnswered { tab, choice } => Acted::host(self.close_answered(tab, choice)),
+            UiAction::ToggleSidebar => Some(super::viewing::toggle_sidebar()),
+            UiAction::PaletteRun { id } => return Acted::host(super::palette::run(self, &id)),
+            UiAction::CloseAnswered { tab, choice } => return Acted::host(self.close_answered(tab, choice)),
             UiAction::SaveAs { tab, path } => {
                 self.save_as(tab, path);
-                Acted::DONE
+                return Acted::DONE;
             }
             UiAction::SettingChosen { id, on } => {
                 self.setting_chosen(&id, on);
-                Acted::DONE
+                return Acted::DONE;
             }
+        };
+        if let Some(command) = command {
+            super::person::submit(self, command);
         }
+        Acted::DONE
     }
 }
