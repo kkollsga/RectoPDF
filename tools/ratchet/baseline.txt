@@ -1,7 +1,6 @@
 apptest crates/recto-cli/tests 203
-ffi crates/recto-ffi/src 2284
+ffi crates/recto-ffi/src 2278
 file crates/recto-core/src/save.rs 2271
-file crates/recto-ffi/src/lib.rs 1501
 file crates/recto-index/src/corpus.rs 1686
 file crates/recto-render-service/src/host.rs 2274
 file crates/recto-render/src/pdfium/contents.rs 2885

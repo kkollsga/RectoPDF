@@ -350,7 +350,9 @@ fn qa_commands_are_refused_without_a_quiet_app() {
     assert_eq!(reply["error"]["code"], "qa_needs_app");
 }
 
-/// Failure: a QA run can be pointed at the owner's real state, or the app starts one with no state of its own. Refused before anything's started.
+/// Failure: `recto qa start` points a quiet run at the owner's real state, or at one that isn't throwaway. Refused before anything's started. (The app's own
+/// refusal at launch is `recto-app`'s `a_quiet_launch_takes_only_temp_state`, and the rule's, `recto-control`'s `a_quiet_run_takes_only_a_folder_in_a_temp_folder`
+/// and `a_quiet_run_refuses_the_users_own_state_named_or_not`: in process, with no copy of the app started.)
 #[test]
 fn a_quiet_run_refuses_the_real_state() {
     let Some(app) = app_path() else { return };
@@ -373,20 +375,6 @@ fn a_quiet_run_refuses_the_real_state() {
     assert!(
         matches!(reply["error"]["code"].as_str(), Some("needs_temp_state" | "state_refused")),
         "a state folder outside the temp folders: {reply}"
-    );
-    // The app itself says the same, whoever starts it.
-    // A copy's executable, not the build folder's: running the built one registers the build folder and nothing forgets it (`app_launch_guard`).
-    let Some(copy) = common::app::OwnCopy::new() else { return };
-    let output = Command::new(copy.executable())
-        .arg("--qa")
-        .env_remove(recto_control::state::STATE_ENV)
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("RECTO_STATE_DIR"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
     );
 }
 

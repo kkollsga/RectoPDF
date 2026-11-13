@@ -42,8 +42,17 @@ impl StatePaths {
     pub fn from_env() -> Result<Self, AgentError> {
         match std::env::var_os(STATE_ENV) {
             Some(path) => Self::overridden(Path::new(&path)),
-            None => Ok(Self::at(default_root()?, false)),
+            None => Self::users_own(),
         }
+    }
+
+    /// The user's own folders, as a run with nothing set has them. Nothing is created.
+    ///
+    /// # Errors
+    ///
+    /// When this user's home can't be found.
+    pub fn users_own() -> Result<Self, AgentError> {
+        Ok(Self::at(default_root()?, false))
     }
 
     /// A state folder other than the user's own, after checking it isn't their home in disguise. Nothing is created until a checked path comes back.
@@ -107,7 +116,16 @@ impl StatePaths {
     ///
     /// `needs_temp_state`, saying what to set, when nothing was set or the folder is the user's own or outside the temp folders.
     pub fn for_quiet_run() -> Result<Self, AgentError> {
-        let paths = Self::from_env()?;
+        Self::from_env()?.for_a_quiet_run()
+    }
+
+    /// [`Self::for_quiet_run`] on folders already chosen: these, if a quiet run may have them.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::for_quiet_run`].
+    pub fn for_a_quiet_run(self) -> Result<Self, AgentError> {
+        let paths = self;
         let real = default_root().ok().and_then(|real| resolved(&real));
         let temps: Vec<PathBuf> = [local::system_temp_dir(), Some(PathBuf::from("/tmp"))]
             .into_iter()
@@ -411,5 +429,28 @@ mod tests {
         );
         assert!(refuses_for_quiet_run(&temp.join("a"), &real, &[]), "no temp folder");
         let _ = std::fs::remove_dir_all(&made);
+    }
+
+    /// Failure: a quiet run starts on state that isn't throwaway: with no state folder named (the user's own), or with the user's own folder named, as
+    /// the app's `--qa` and `recto qa start` both ask it. A new folder in the temp folder is taken.
+    #[test]
+    fn a_quiet_run_refuses_the_users_own_state_named_or_not() {
+        let refused = StatePaths::users_own().unwrap().for_a_quiet_run().expect_err("none named");
+        assert_eq!(refused.code, "needs_temp_state");
+        assert!(refused.message.contains(STATE_ENV), "it says what to set: {}", refused.message);
+        let real = resolved(&default_root().unwrap()).unwrap();
+        assert_eq!(
+            StatePaths::at(real, true).for_a_quiet_run().expect_err("the user's own, named").code,
+            "needs_temp_state"
+        );
+        let temp = local::system_temp_dir()
+            .unwrap()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-quiet-{}", std::process::id()));
+        assert!(
+            StatePaths::overridden(&temp).unwrap().for_a_quiet_run().is_ok(),
+            "a new folder in the temp folder"
+        );
     }
 }

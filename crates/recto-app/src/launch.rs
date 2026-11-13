@@ -1,6 +1,7 @@
 //! **What a launch of the app was asked for:** the one parser of its arguments, so whether a launch is quiet, decided before the toolkit does anything, and what the rest
 //! of the launch does can't disagree.
 
+use recto_control::StatePaths;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -62,6 +63,25 @@ pub fn parse(args: &[String]) -> Result<LaunchArgs, String> {
     Ok(parsed)
 }
 
+/// **Where a launch keeps its state:** the folders named, or the user's own, and for a quiet run only a new folder in a temp folder
+/// ([`StatePaths::for_a_quiet_run`]): a quiet run's level starts at Full. What the bridge starts the app with.
+///
+/// # Errors
+///
+/// Why, in words: a folder that isn't allowed, or for a quiet run one that isn't throwaway.
+pub fn state(args: &LaunchArgs) -> Result<StatePaths, String> {
+    state_with(args, StatePaths::from_env().map_err(|error| error.message)?)
+}
+
+/// [`state`], with the folders named already chosen.
+fn state_with(args: &LaunchArgs, named: StatePaths) -> Result<StatePaths, String> {
+    if args.qa {
+        named.for_a_quiet_run().map_err(|error| error.message)
+    } else {
+        Ok(named)
+    }
+}
+
 /// A word of the arguments, made safe to say back: no control characters, and bounded.
 fn cleaned(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).take(64).collect()
@@ -90,5 +110,33 @@ mod tests {
         assert!(parse(&words(&["--nope"])).is_err());
         assert!(parse(&words(&["--qa-memory-limit-mib"])).is_err());
         assert_eq!(parse(&words(&["-psn_0_12345"])).unwrap(), LaunchArgs::default(), "what macOS adds");
+    }
+
+    /// Failure: the app starts a quiet run, whose level starts at Full, on state that isn't throwaway: with no state folder named (the user's own), or with
+    /// one outside the temp folders, and says nothing of what to set. A launch that isn't quiet keeps whatever it's given.
+    #[test]
+    fn a_quiet_launch_takes_only_temp_state() {
+        let quiet = LaunchArgs {
+            qa: true,
+            ..LaunchArgs::default()
+        };
+        let refused = state_with(&quiet, StatePaths::users_own().unwrap()).expect_err("none named");
+        assert!(refused.contains(recto_control::state::STATE_ENV), "it says what to set: {refused}");
+        let outside = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+        if let Ok(named) = StatePaths::overridden(&outside) {
+            assert!(state_with(&quiet, named).is_err(), "a folder outside the temp folders");
+        }
+        assert!(
+            state_with(&LaunchArgs::default(), StatePaths::users_own().unwrap()).is_ok(),
+            "a launch that isn't quiet"
+        );
+        let temp = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-launch-{}", std::process::id()));
+        assert!(
+            state_with(&quiet, StatePaths::overridden(&temp).unwrap()).is_ok(),
+            "a new folder in the temp folder"
+        );
     }
 }
