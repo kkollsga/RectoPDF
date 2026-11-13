@@ -1,4 +1,5 @@
 use super::*;
+use crate::follow::*;
 
 /// Failure: in a short contents area, a place that's just been brought to its anchor is outside the dead zone, so it moves again at every section, or for ever. Wherever the list is short, landing on the anchor is at rest.
 #[test]

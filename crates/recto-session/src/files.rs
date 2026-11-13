@@ -5,7 +5,7 @@ use super::*;
 impl<L: DocLoader> Session<L> {
     /// The tab's notice, if there is one.
     pub fn tab_notice(&self, id: TabId) -> Option<&FileNotice> {
-        self.tab(id)?.notice.as_deref()
+        self.tab(id)?.file.notice.as_deref()
     }
 
     /// Words for what's wrong with a tab's file, if anything is.
@@ -28,10 +28,12 @@ impl<L: DocLoader> Session<L> {
             FileStatus::NotLooked => {}
             FileStatus::Same(now) => {
                 if let Some(tab) = self.tab_mut(id) {
-                    tab.stamp = Some(now);
+                    tab.file.stamp = Some(now);
                     // Back to what edits are about. With none, the stamp's moved on to what the file is now, so being the same says nothing: it goes on saying it changed until it's been read, and left.
-                    if matches!(tab.notice.as_deref(), Some(FileNotice::Missing)) || (has_edits && matches!(tab.notice.as_deref(), Some(FileNotice::Changed))) {
-                        tab.notice = None;
+                    if matches!(tab.file.notice.as_deref(), Some(FileNotice::Missing))
+                        || (has_edits && matches!(tab.file.notice.as_deref(), Some(FileNotice::Changed)))
+                    {
+                        tab.file.notice = None;
                     }
                 }
             }
@@ -39,15 +41,15 @@ impl<L: DocLoader> Session<L> {
                 // Another tab having it means this one isn't a move of that file so much as a second look at it.
                 if self.tab_for_path(&path).is_some_and(|other| other != id) {
                     if let Some(tab) = self.tab_mut(id) {
-                        tab.notice = Some(Box::new(FileNotice::Missing));
+                        tab.file.notice = Some(Box::new(FileNotice::Missing));
                     }
                     return;
                 }
                 let from = self.path_of(id).map(|from| PathField::from_path(&from));
                 self.relocate(id, &path);
                 if let Some(tab) = self.tab_mut(id) {
-                    tab.stamp = Some(now);
-                    tab.notice = from.map(|from| Box::new(FileNotice::Moved { from }));
+                    tab.file.stamp = Some(now);
+                    tab.file.notice = from.map(|from| Box::new(FileNotice::Moved { from }));
                 }
             }
             FileStatus::Changed(now) => {
@@ -59,14 +61,14 @@ impl<L: DocLoader> Session<L> {
                 let has_edits = self.has_list(id);
                 if let Some(tab) = self.tab_mut(id) {
                     if !has_edits {
-                        tab.stamp = Some(now);
+                        tab.file.stamp = Some(now);
                     }
-                    tab.notice = Some(Box::new(FileNotice::Changed));
+                    tab.file.notice = Some(Box::new(FileNotice::Changed));
                 }
             }
             FileStatus::Missing => {
                 if let Some(tab) = self.tab_mut(id) {
-                    tab.notice = Some(Box::new(FileNotice::Missing));
+                    tab.file.notice = Some(Box::new(FileNotice::Missing));
                 }
             }
         }
@@ -74,6 +76,10 @@ impl<L: DocLoader> Session<L> {
 
     /// Every tab's file and what's known of it, for one pass by one thread after a restore. No thread or handle per tab.
     pub fn files_to_look_at(&self) -> Vec<(TabId, PathBuf, Option<FileStamp>)> {
-        self.tabs.iter().filter_map(|tab| Some((tab.id, self.path_of(tab.id)?, tab.stamp))).collect()
+        self.tabs
+            .all()
+            .iter()
+            .filter_map(|tab| Some((tab.id, self.path_of(tab.id)?, tab.file.stamp)))
+            .collect()
     }
 }

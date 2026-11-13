@@ -182,7 +182,7 @@ fn only_edited_tabs_have_an_edit_list() {
     let a = s.open(Path::new("/d/a.pdf")).unwrap();
     s.open(Path::new("/d/b.pdf")).unwrap();
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
-    assert_eq!(s.edits.len(), 1);
+    assert_eq!(s.lists.in_memory(), 1);
 }
 
 /// Failure: a dropped PDF that can't be read changes the document anyway.

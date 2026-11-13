@@ -9,8 +9,8 @@ impl<L: DocLoader> Session<L> {
         let mut rail_filled = 0;
         let mut place = String::new();
         let mut toc_open = false;
-        for tab in &self.tabs {
-            let is_active = self.active == Some(tab.id);
+        for tab in self.tabs.all() {
+            let is_active = self.tabs.active() == Some(tab.id);
             rows.push(SidebarRow {
                 kind: RowKind::Tab,
                 tab: tab.id,
@@ -54,11 +54,11 @@ impl<L: DocLoader> Session<L> {
                     _ => toc,
                 };
                 // The note isn't an entry: the host draws it over the contents, and the rail counts entries.
-                rail_filled = contents_rows(shown, tab, self.edits.get(&tab.id), &mut rows);
+                rail_filled = contents_rows(shown, tab, self.lists.get(tab.id), &mut rows);
             }
         }
-        let edited = self.active.is_some_and(|id| self.is_edited(id));
-        let undone_owner_steps = self.active.is_some_and(|id| self.has_undone_owner_steps(id));
+        let edited = self.tabs.active().is_some_and(|id| self.is_edited(id));
+        let undone_owner_steps = self.tabs.active().is_some_and(|id| self.has_undone_owner_steps(id));
         SidebarModel {
             rows,
             rail_filled,
@@ -79,7 +79,7 @@ impl<L: DocLoader> Session<L> {
         if self.tab(id).is_none() {
             return;
         }
-        self.generated.set(id, view, self.active);
+        self.generated.set(id, view, self.tabs.active());
     }
 
     /// Forgets where a tab's generated contents stand, so it offers them again.
@@ -115,7 +115,7 @@ impl<L: DocLoader> Session<L> {
     pub fn toggle_contents_section(&mut self, id: TabId, entry: u32) -> Option<bool> {
         let toc = self.shown_contents(id)?;
         let tab = self.tab(id)?;
-        let chain = following_chain(&toc, tab, self.edits.get(&id));
+        let chain = following_chain(&toc, tab, self.lists.get(id));
         let has_children = toc.entries().get(entry as usize + 1).is_some_and(|next| next.parent == entry);
         if !has_children {
             return None;
