@@ -107,27 +107,35 @@ fn main() {
         return failed("bad_job");
     };
     let faults = hooks::apply(&job);
-    let _faults = faults;
-    // Whoever started this has gone or wants it stopped.
-    let _ = std::thread::Builder::new().name("stdin".into()).stack_size(64 * 1024).spawn(|| {
+    // A helper that can't start its watchers doesn't run without them: nothing would stop it when its parent has gone, or when it grows.
+    let stdin_watch = start_watcher("stdin", &faults, || {
         let mut sink = [0u8; 64];
         while std::io::stdin().lock().read(&mut sink).is_ok_and(|count| count > 0) {}
-        std::process::exit(0);
+        // Whoever started this has gone or wants it stopped.
+        recto_platform::leave::leave_now(0)
     });
-    if let Some(limit) = job["memory_limit"].as_u64() {
-        let _ = std::thread::Builder::new().name("watch".into()).stack_size(64 * 1024).spawn(move || {
+    let memory_watch = job["memory_limit"].as_u64().is_none_or(|limit| {
+        start_watcher("watch", &faults, move || {
             loop {
                 if recto_platform::footprint_bytes().is_some_and(|bytes| bytes > limit) {
-                    std::process::exit(EXIT_OVER_LIMIT);
+                    recto_platform::leave::leave_now(EXIT_OVER_LIMIT);
                 }
                 std::thread::sleep(SELF_WATCH_EVERY);
             }
-        });
+        })
+    });
+    if !(stdin_watch && memory_watch) {
+        return failed("no_watch");
     }
-    let scan = if job["scan"] == "typography" { Scan::Typography } else { Scan::Full };
     hooks::busy(&job);
+    let scan = if job["scan"] == "typography" { Scan::Typography } else { Scan::Full };
     let started = Instant::now();
     report(&file, key, scan, started);
+}
+
+/// Starts one of the helper's two watchers, which leave the process at once (`leave_now`, not `exit`: an exit handler or a destructor waiting on what the busy main thread holds would keep it). False if the thread couldn't be made.
+fn start_watcher(name: &str, faults: &hooks::Faults, body: impl FnOnce() + Send + 'static) -> bool {
+    !faults.spawn_fails && std::thread::Builder::new().name(name.into()).stack_size(64 * 1024).spawn(body).is_ok()
 }
 
 fn same_file(file: &Path, key: CorpusKey) -> bool {
