@@ -459,7 +459,7 @@ impl Engine {
 
     pub fn jump_to(&self, page: u32) {
         let mut reader = lock(&self.shared.reader);
-        reader.jump_to(page);
+        reader.jump_to(page, 0.0);
         self.after(reader);
     }
 
@@ -468,10 +468,8 @@ impl Engine {
         let mut reader = lock(&self.shared.reader);
         if within.is_finite() && within > 0.0 {
             lock(&self.shared.pending).follow = None;
-            reader.follow(page, within);
-        } else {
-            reader.jump_to(page);
         }
+        reader.jump_to(page, within);
         self.after(reader);
     }
 

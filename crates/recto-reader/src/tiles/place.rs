@@ -226,8 +226,14 @@ impl Reader {
         self.doc().map(|doc| doc.layout.spread())
     }
 
-    /// Asks the host to go to a page, as an agent's `goto` or a contents row does.
-    pub fn jump_to(&mut self, page: u32) {
+    /// **A jump the session sends,** as an agent's `goto`, a contents row, a link or Back does: to the page's top, the margin above the first page
+    /// included, or `within` the way down it as [`Self::follow`] goes.
+    pub fn jump_to(&mut self, page: u32, within: f64) {
+        self.pointer.forget_reveal_unless(page);
+        if within.is_finite() && within > 0.0 {
+            self.follow(page, within);
+            return;
+        }
         // A wake's over once someone's gone somewhere else: what's bare from here is pages being reached, not the wake.
         self.finish_wake();
         let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
@@ -255,6 +261,7 @@ impl Reader {
 
     /// Goes where the tab's anchor says, which is on this page, as a jump.
     pub(super) fn jump_to_anchor(&mut self, page: u32) {
+        self.pointer.forget_reveal_unless(page);
         let Some(doc) = self.hot.and_then(|tab| self.docs.get(&tab)) else { return };
         let y = Self::place_y(doc);
         let seq = self.place.next_seq;
