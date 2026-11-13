@@ -559,7 +559,17 @@ fn the_host_is_told_to_quit_for_a_hand_off_and_that_the_session_ended_at_most_on
 /// A life whose state was read without the record's lock, at `0`, the window made from it: trying again for the lock.
 fn trying_for_the_lock() -> Life {
     let mut life = Life::default();
-    assert_eq!(life.step(Event::Keeping(keeping::Event::Read { keeps: false, as_read: 7 }), 0), None);
+    assert_eq!(
+        life.step(
+            Event::Keeping(keeping::Event::Read {
+                keeps: false,
+                as_read: 7,
+                by_update: false
+            }),
+            0
+        ),
+        None
+    );
     let _ = life.step(Event::StateRead, 0);
     let _ = life.step(Event::ShownWithState, 0);
     life
@@ -581,7 +591,14 @@ fn a_late_keep_is_made_into_the_window_once_unless_touched() {
         );
         assert!(!life.may_remake_window(3_000, false), "nor while the saved session's read");
         assert_eq!(
-            life.step(Event::Keeping(keeping::Event::Read { keeps: true, as_read: 0 }), 3_050),
+            life.step(
+                Event::Keeping(keeping::Event::Read {
+                    keeps: true,
+                    as_read: 0,
+                    by_update: false
+                }),
+                3_050
+            ),
             Some(Out::Keeping(keeping::Out::Kept { remake: true })),
             "kept, the window to be made again from it: the host's told, as at a launch"
         );
@@ -597,7 +614,14 @@ fn a_late_keep_is_made_into_the_window_once_unless_touched() {
 fn the_ordinary_late_state_is_made_into_the_window_as_before() {
     let mut life = Life::default();
     assert_eq!(
-        life.step(Event::Keeping(keeping::Event::Read { keeps: true, as_read: 0 }), 0),
+        life.step(
+            Event::Keeping(keeping::Event::Read {
+                keeps: true,
+                as_read: 0,
+                by_update: false
+            }),
+            0
+        ),
         Some(Out::Keeping(keeping::Out::Kept { remake: false }))
     );
     let _ = life.step(
@@ -641,7 +665,17 @@ fn a_window_not_made_again_is_never_said_to_have_been() {
         },
         host_patience(),
     );
-    assert_eq!(life.step(Event::Keeping(keeping::Event::Read { keeps: false, as_read: 7 }), late), None);
+    assert_eq!(
+        life.step(
+            Event::Keeping(keeping::Event::Read {
+                keeps: false,
+                as_read: 7,
+                by_update: false
+            }),
+            late
+        ),
+        None
+    );
     assert_eq!(life.step(Event::StateRead, late), Some(Out::RestoreReady { with_state: true, late: true }));
     assert!(!life.may_remake_window(late, false), "not made again while it tries");
     let _ = life.step(Event::ShownWithState, late);

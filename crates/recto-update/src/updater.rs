@@ -384,8 +384,14 @@ impl Updater {
         {
             crate::plan::move_to_new_names(&beside);
         }
+        // A second copy settles nothing (the plan, the outcome and `updates.json` are the first copy's, or the next launch's that keeps the record), but reads
+        // whether an update opened it, so that a new version that came up and drew a page as a second copy still tells the installer it started
+        // ([`Self::first_frame`]), and isn't sent back for not keeping the record.
         let settled = if second_copy {
-            Settled::default()
+            Settled {
+                arrived: Plan::read(&self.files.plan()).filter(|plan| plan.to == current),
+                ..Settled::default()
+            }
         } else {
             self.settle_last_install(&mut saved, &current, &app, now)
         };
@@ -435,7 +441,7 @@ impl Updater {
             st.second_copy = second_copy;
             st.status = status;
             st.notice = settled.notice;
-            st.reopened_by_update = settled.arrived.is_some() || settled.reopened;
+            st.reopened_by_update = !second_copy && (settled.arrived.is_some() || settled.reopened);
             st.fall_back = settled.fall_back;
             st.arrived = settled.arrived;
             if may_replace && offered.is_some() {
@@ -835,19 +841,28 @@ impl Updater {
             let kept = previous_app_in(&beside).is_dir();
             (version, arrived.clone(), new_here && (arrived.is_some() || kept), st.second_copy, kept)
         };
-        if second_copy {
+        // A second copy an update didn't open leaves it all to the first. One an update opened says it started, if it draws, and nothing more: see below.
+        if second_copy && arrived.is_none() {
             return;
         }
-        if to_prove {
+        if to_prove || second_copy {
             self.ready_folder();
         }
-        if to_prove && !self.host.can_draw() {
+        if (to_prove || second_copy) && !self.host.can_draw() {
             self.log(&format!("{version} can't draw a page"));
             // Without the word from here the installer would find out only by waiting. With no installer, the launches that don't come up are what count.
             if arrived.is_some() {
                 self.ready_folder();
                 let _ = local::write_private_file(&self.files.launch_failed(), version.as_bytes());
             }
+            return;
+        }
+        // **A new version an update opened, up and drawing, as a second copy** (another RectoPDF keeps the record): the installer's told it started, so a good
+        // update isn't sent back under a person's hands, and with no tab count, as it read no record and so can't have misread one (`plan::misread` passes a
+        // count it isn't given). Nothing else: what's proven, its watch for early ends and the last update are written by the next launch that keeps the record.
+        if second_copy {
+            self.say_started(&version, shown_at_ms, None);
+            self.log(&format!("{version} came up as a second copy, after an update: another copy keeps the record"));
             return;
         }
         let mut watched = false;
@@ -881,9 +896,7 @@ impl Updater {
             changed
         };
         if let Some(plan) = arrived {
-            self.ready_folder();
-            let line = crate::plan::launch_ok_line(&version, std::process::id(), shown_at_ms, self.host.tabs_restored());
-            let _ = local::write_private_file(&self.files.launch_ok(), line.as_bytes());
+            self.say_started(&version, shown_at_ms, self.host.tabs_restored());
             self.log(&format!(
                 "updated from {} to {}: {} ms from quit to first frame",
                 plan.from,
@@ -898,6 +911,14 @@ impl Updater {
         if watched {
             self.host.changed();
         }
+    }
+
+    /// **The installer told the new version started:** the one place `launch-ok` is written, in the updater's own folder beside the record's (never the record's
+    /// folder, so a second copy may write it), with the tabs it came up with if it read the record.
+    fn say_started(&self, version: &str, shown_at_ms: u64, tabs: Option<u32>) {
+        self.ready_folder();
+        let line = crate::plan::launch_ok_line(version, std::process::id(), shown_at_ms, tabs);
+        let _ = local::write_private_file(&self.files.launch_ok(), line.as_bytes());
     }
 
     /// The answer to what's under way, said by hand: in the margin, and as an alert too if it was chosen from the menu.
@@ -2271,6 +2292,86 @@ mod tests {
         second.first_frame(10);
         assert_eq!(std::fs::read(root.join("updates.json")).unwrap(), before, "it writes nothing of the first's");
         assert_eq!(second.menu_item().title, "Check for Updates…");
+    }
+
+    /// Failure (the coordinator's decision, 2026-11-13: an update is never rolled back for a launch that came up as a second copy): a new version an update opened
+    /// comes up and draws while another copy keeps the record, writes no launch-ok, and the installer waits out its two minutes, stops it under the person's
+    /// hands and puts the old version back; or, told, it settles the install or writes `updates.json` as if it kept the record; or a second copy no update opened
+    /// tells an installer anything. Opened by an update: launch-ok without a tab count, which the installer reads as started; can't draw: launch-failed, as
+    /// any new version; nothing else written. Not opened by one: nothing.
+    #[test]
+    fn a_second_copy_an_update_opened_tells_the_installer_it_started_and_nothing_more() {
+        for (opened_by_update, draws) in [(true, true), (true, false), (false, true)] {
+            let bed = Bed::new("second-arrived");
+            let root = bed.dir.join("state");
+            let files = Files::in_state(&root);
+            local::ensure_private_dir(&files.work).unwrap();
+            let plan = Plan {
+                id: "1-1".into(),
+                cdhash: "a".repeat(40),
+                team_required: false,
+                any_version: false,
+                development_build: false,
+                team_signed: false,
+                from: "0.1.0".into(),
+                to: if opened_by_update { "0.2.0" } else { "0.3.0" }.into(),
+                pid: 1,
+                app: bed.app.clone(),
+                beside: beside_app(&bed.app).unwrap(),
+                root: root.clone(),
+                quit_at_ms: 5,
+                background: false,
+                quit_limit_ms: 1,
+                start_limit_ms: 1,
+                handed_off_tabs: Some(4),
+                open: Vec::new(),
+                keep_record: false,
+                test: None,
+            };
+            plan.write(&files.plan()).unwrap();
+            let before = std::fs::read(root.join("updates.json")).ok();
+            let plan_before = std::fs::read(files.plan()).unwrap();
+            bed.fake.second_copy.store(true, Ordering::SeqCst);
+            bed.fake.cant_draw.store(!draws, Ordering::SeqCst);
+            let second = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
+            second.launched(Facts {
+                version: "0.2.0".into(),
+                app: bed.app.clone(),
+                system: "15.0".into(),
+            });
+            assert!(
+                !second.reopened_by_update(),
+                "a second copy isn't taken as reopened by the update it didn't settle"
+            );
+            second.first_frame(10);
+            let said = std::fs::read_to_string(files.launch_ok()).ok();
+            match (opened_by_update, draws) {
+                (true, true) => {
+                    let said = said.expect("launch-ok");
+                    assert_eq!(crate::plan::read_launch_ok(&said), Some(("0.2.0", None)), "{said}");
+                    assert!(!crate::plan::misread(plan.handed_off_tabs, None), "never a misread to the installer");
+                }
+                (true, false) => {
+                    assert_eq!(said, None);
+                    assert!(files.launch_failed().exists(), "can't draw: said, as any new version");
+                }
+                (false, _) => {
+                    assert_eq!(said, None, "not opened by an update: nothing");
+                    assert!(!files.launch_failed().exists());
+                }
+            }
+            assert_eq!(
+                std::fs::read(root.join("updates.json")).ok(),
+                before,
+                "{opened_by_update} {draws}: nothing of updates.json"
+            );
+            assert_eq!(
+                std::fs::read(files.plan()).unwrap(),
+                plan_before,
+                "{opened_by_update} {draws}: the plan as it was"
+            );
+            assert!(!files.outcome().exists());
+        }
     }
 
     /// Failure: an app that can't be replaced quits and reopens for ever, a day apart, saying nothing, which the review proved. It's told once it's back, and that's held against the version. Anything else that quit for nothing gets three goes, and then the same.

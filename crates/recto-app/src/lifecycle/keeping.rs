@@ -12,7 +12,9 @@
 //! - **The person opens or changes something first:** trying stops at once, and the window is one that won't be remembered, said at once ([`Out::SayNotKept`]):
 //!   they've started working in it, and should know. Restoring now would replace what they have, and keeping the record with their window would write over the
 //!   saved session, so neither is done (the coordinator's choice on 2026-11-13, until the saved session can be added beside theirs).
-//! - **The tries run out:** another RectoPDF really is keeping it, said as today ([`Out::SayNotKept`]), and nothing's tried again.
+//! - **The tries run out:** another RectoPDF really is keeping it, said as today ([`Out::SayNotKept`]), and nothing's tried again. A launch an update opened
+//!   tries for a minute ([`KEEP_TRYING_AFTER_UPDATE_MS`], the coordinator's decision of 2026-11-13), as its installer is waiting to hear it came up; as a second
+//!   copy it still tells the installer it started, if it drew a page, so an update isn't rolled back for the lock (`recto_update::updater::Updater::first_frame`).
 //! - **A quit or an update's hand-off begins first** ([`Event::Stopped`]): no more tries, and nothing said, as the window's going. Nothing in it can be unsaved
 //!   (anything in it would have stopped the trying), so a quit always goes.
 //!
@@ -46,6 +48,16 @@ pub const KEEP_TRYING_MS: u64 = 10_000;
 pub const TRY_EVERY_MS: u64 = 1_000;
 /// How many tries in all: one a second, the last at ten seconds.
 pub const TRIES: u32 = (KEEP_TRYING_MS / TRY_EVERY_MS) as u32;
+/// **How long a launch an update opened goes on trying** (the coordinator's decision, 2026-11-13): its installer is waiting for it to say it came up, and a
+/// late keep tells it with the tabs it restored, so it tries for longer, while the window's untouched. A minute: half the installer's two minutes
+/// (`recto_update::plan::START_LIMIT_MS`), which leave the other half for the launch itself (the installer gives an app it hasn't seen run a quarter of its
+/// limit, 30 s, to appear), the update launch's 20 s of patience for the state, and the first frame's drawing of a page, so the installer hears either way
+/// well inside its limit: kept and restored, or a second copy that started (`recto_update::updater::Updater::first_frame`).
+pub const KEEP_TRYING_AFTER_UPDATE_MS: u64 = 60_000;
+/// How many tries in all for a launch an update opened.
+pub const TRIES_AFTER_UPDATE: u32 = (KEEP_TRYING_AFTER_UPDATE_MS / TRY_EVERY_MS) as u32;
+// Half the installer's limit at most, held when it's built: a change to either that breaks it doesn't compile.
+const _: () = assert!(KEEP_TRYING_AFTER_UPDATE_MS * 2 <= recto_update::plan::START_LIMIT_MS);
 
 /// Whether this copy keeps the record.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -55,9 +67,15 @@ pub enum Keeping {
     NotAsked,
     /// It keeps the record: from the start, or since a late try's restore was taken in.
     Keeps,
-    /// Trying again, quietly: since when, how many tries so far, what the window had when the state was taken in, and whether a try is out (made on a thread
-    /// of its own, and not yet back).
-    Trying { since_ms: u64, tries: u32, as_read: u64, asking: bool },
+    /// Trying again, quietly: since when, how many tries so far, what the window had when the state was taken in, whether a try is out (made on a thread
+    /// of its own, and not yet back), and whether an update opened the launch (which tries for longer).
+    Trying {
+        since_ms: u64,
+        tries: u32,
+        as_read: u64,
+        asking: bool,
+        by_update: bool,
+    },
     /// A try got the lock, and the saved session is being read and taken in: the record's this copy's, and nothing's written to it until that's done.
     Restoring,
     /// It doesn't, for good: the tries ran out or the person started working in the window first. Said, and the updater told it's a second copy.
@@ -71,7 +89,8 @@ pub enum Keeping {
 pub enum Event {
     /// The state's been taken in, with the lock (`keeps`) or without it. The first time, `as_read` is what the window had then. Taken in with the lock while it's
     /// trying or restoring, it keeps the record from here: a late try's restore, or one read by any other way.
-    Read { keeps: bool, as_read: u64 },
+    /// `by_update`: the launch may be one an update opened ([`KEEP_TRYING_AFTER_UPDATE_MS`]).
+    Read { keeps: bool, as_read: u64, by_update: bool },
     /// A call's been taken on the session thread: what the window has now.
     Looked { now_as: u64 },
     /// A try at the lock is going out, because [`Keeping::due`] said so and a look found the window as it was read: made off the session thread and off the
@@ -110,12 +129,20 @@ impl Keeping {
                 *self = Self::Keeps;
                 Some(Out::Kept { remake: false })
             }
-            (Self::NotAsked, Event::Read { keeps: false, as_read }) => {
+            (
+                Self::NotAsked,
+                Event::Read {
+                    keeps: false,
+                    as_read,
+                    by_update,
+                },
+            ) => {
                 *self = Self::Trying {
                     since_ms: now_ms,
                     tries: 0,
                     as_read,
                     asking: false,
+                    by_update,
                 };
                 None
             }
@@ -138,6 +165,7 @@ impl Keeping {
                     tries,
                     as_read,
                     asking: false,
+                    by_update,
                 },
                 Event::Asking,
             ) => {
@@ -146,6 +174,7 @@ impl Keeping {
                     tries,
                     as_read,
                     asking: true,
+                    by_update,
                 };
                 Some(Out::Ask)
             }
@@ -159,11 +188,12 @@ impl Keeping {
                     tries,
                     as_read,
                     asking: true,
+                    by_update,
                 },
                 Event::Tried { got: false },
             ) => {
                 let tries = tries + 1;
-                if tries >= TRIES {
+                if tries >= if by_update { TRIES_AFTER_UPDATE } else { TRIES } {
                     *self = Self::NotKept;
                     return Some(Out::SayNotKept);
                 }
@@ -172,6 +202,7 @@ impl Keeping {
                     tries,
                     as_read,
                     asking: false,
+                    by_update,
                 };
                 None
             }
@@ -251,7 +282,18 @@ mod tests {
 
     fn trying_from(now: u64) -> Keeping {
         let mut keeping = Keeping::default();
-        assert_eq!(keeping.step(Event::Read { keeps: false, as_read: 7 }, now), None, "nothing said while it tries");
+        assert_eq!(
+            keeping.step(
+                Event::Read {
+                    keeps: false,
+                    as_read: 7,
+                    by_update: false
+                },
+                now
+            ),
+            None,
+            "nothing said while it tries"
+        );
         keeping
     }
 
@@ -283,6 +325,31 @@ mod tests {
         assert_eq!(keeping, Keeping::NotKept);
     }
 
+    /// Failure (the coordinator's decision, 2026-11-13): a launch an update opened gives up after ten seconds like any other, so a lock that comes later leaves the
+    /// installer hearing only that a second copy started; or it tries for ever, past the installer's two minutes. Sixty tries, one a second, and then said, with
+    /// the installer's limit at least twice that (held when it's built, beside the constant); a launch no update opened still stops at ten.
+    #[test]
+    fn a_launch_an_update_opened_tries_for_a_minute() {
+        let mut keeping = Keeping::default();
+        let _ = keeping.step(
+            Event::Read {
+                keeps: false,
+                as_read: 7,
+                by_update: true,
+            },
+            0,
+        );
+        let mut now = 0;
+        let mut said = None;
+        let mut tried = 0;
+        while let Some(wait) = keeping.due(now) {
+            now += u64::try_from(wait.as_millis()).unwrap();
+            said = try_once(&mut keeping, false, now);
+            tried += 1;
+        }
+        assert_eq!((tried, now, said), (TRIES_AFTER_UPDATE, KEEP_TRYING_AFTER_UPDATE_MS, Some(Out::SayNotKept)));
+    }
+
     /// Failure: a lock got on a try isn't taken as keeping the record (the saved session isn't restored, or the notice shows anyway), or the window isn't made
     /// again from it once it's in, or made again twice; or a launch that kept it from the start is ever told to restore again or that it isn't kept.
     #[test]
@@ -299,12 +366,30 @@ mod tests {
         );
         assert_eq!(keeping.step(Event::Stopped, 2_002), None, "nor a quit, whose write waits for it");
         assert_eq!(
-            keeping.step(Event::Read { keeps: true, as_read: 0 }, 2_050),
+            keeping.step(
+                Event::Read {
+                    keeps: true,
+                    as_read: 0,
+                    by_update: false
+                },
+                2_050
+            ),
             Some(Out::Kept { remake: true }),
             "the window made again from it"
         );
         assert_eq!(keeping, Keeping::Keeps);
-        assert_eq!(keeping.step(Event::Read { keeps: true, as_read: 0 }, 2_060), None, "and only once");
+        assert_eq!(
+            keeping.step(
+                Event::Read {
+                    keeps: true,
+                    as_read: 0,
+                    by_update: false
+                },
+                2_060
+            ),
+            None,
+            "and only once"
+        );
         assert_eq!(
             keeping.step(Event::Looked { now_as: 99 }, 3_000),
             None,
@@ -312,13 +397,27 @@ mod tests {
         );
         let mut from_the_start = Keeping::default();
         assert_eq!(
-            from_the_start.step(Event::Read { keeps: true, as_read: 7 }, 0),
+            from_the_start.step(
+                Event::Read {
+                    keeps: true,
+                    as_read: 7,
+                    by_update: false
+                },
+                0
+            ),
             Some(Out::Kept { remake: false }),
             "kept, and nothing made again"
         );
         assert_eq!(from_the_start.due(0), None);
         assert_eq!(
-            from_the_start.step(Event::Read { keeps: false, as_read: 7 }, 1),
+            from_the_start.step(
+                Event::Read {
+                    keeps: false,
+                    as_read: 7,
+                    by_update: false
+                },
+                1
+            ),
             None,
             "a second read changes nothing"
         );
@@ -331,7 +430,17 @@ mod tests {
     #[test]
     fn a_read_with_the_lock_while_it_tries_keeps_the_record() {
         let mut keeping = trying_from(0);
-        assert_eq!(keeping.step(Event::Read { keeps: true, as_read: 0 }, 500), Some(Out::Kept { remake: false }));
+        assert_eq!(
+            keeping.step(
+                Event::Read {
+                    keeps: true,
+                    as_read: 0,
+                    by_update: false
+                },
+                500
+            ),
+            Some(Out::Kept { remake: false })
+        );
         assert_eq!(keeping, Keeping::Keeps);
         assert_eq!(keeping.due(500), None);
         assert_eq!(keeping.step(Event::Looked { now_as: 8 }, 600), None, "and nothing's said after");
@@ -377,11 +486,25 @@ mod tests {
     fn agents_changes_are_refused_while_it_settles_and_only_then() {
         let mut keeping = Keeping::default();
         assert!(!keeping.refuses_agents_changes(), "before the state's read, the socket isn't served at all");
-        let _ = keeping.step(Event::Read { keeps: false, as_read: 7 }, 0);
+        let _ = keeping.step(
+            Event::Read {
+                keeps: false,
+                as_read: 7,
+                by_update: false,
+            },
+            0,
+        );
         assert!(keeping.refuses_agents_changes(), "trying");
         let _ = try_once(&mut keeping, true, 1_000);
         assert!(keeping.refuses_agents_changes(), "restoring");
-        let _ = keeping.step(Event::Read { keeps: true, as_read: 0 }, 1_050);
+        let _ = keeping.step(
+            Event::Read {
+                keeps: true,
+                as_read: 0,
+                by_update: false,
+            },
+            1_050,
+        );
         assert!(!keeping.refuses_agents_changes(), "kept");
         let mut not_kept = trying_from(0);
         let _ = not_kept.step(Event::Looked { now_as: 8 }, 10);
@@ -405,13 +528,14 @@ mod tests {
     /// Every state the machine can be in, with what it was read with: the states to walk every event from.
     fn every_state() -> Vec<Keeping> {
         let mut states = vec![Keeping::NotAsked, Keeping::Keeps, Keeping::Restoring, Keeping::NotKept, Keeping::Stopped];
-        for tries in [0, 1, TRIES - 1] {
+        for (tries, by_update) in [(0, false), (1, false), (TRIES - 1, false), (TRIES - 1, true), (TRIES_AFTER_UPDATE - 1, true)] {
             for asking in [false, true] {
                 states.push(Keeping::Trying {
                     since_ms: 0,
                     tries,
                     as_read: 7,
                     asking,
+                    by_update,
                 });
             }
         }
@@ -422,8 +546,10 @@ mod tests {
     fn every_event() -> Vec<Event> {
         let mut events = vec![Event::Stopped, Event::Asking, Event::Tried { got: true }, Event::Tried { got: false }];
         for keeps in [true, false] {
-            events.push(Event::Read { keeps, as_read: 7 });
-            events.push(Event::Read { keeps, as_read: 8 });
+            for by_update in [true, false] {
+                events.push(Event::Read { keeps, as_read: 7, by_update });
+                events.push(Event::Read { keeps, as_read: 8, by_update });
+            }
         }
         events.push(Event::Looked { now_as: 7 });
         events.push(Event::Looked { now_as: 8 });

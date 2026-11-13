@@ -327,10 +327,6 @@ fn an_update_whose_old_copy_still_holds_the_record_comes_back_as_it_was() {
     let status = app.update_status();
     assert_eq!(status["status"], "updated", "{status}");
     assert_eq!(status["second_copy"], false, "{status}");
-    assert!(
-        crate::lifecycle::keeping::KEEP_TRYING_MS < plan.start_limit_ms,
-        "the installer waits longer than a launch tries for the record, so a late keep is never sent back for being late"
-    );
 }
 
 /// How many times the updater says a new version came up from the update it arrived by: once a launch, at most.
@@ -388,6 +384,7 @@ fn nothing_of_an_update_begins_while_it_tries() {
     let bed = UpdateBed::new();
     let before = the_copy_before(&disk);
     let app = disk.builder().update(&bed).another_keeps().start();
+    crate::core::updates::first_frame_shown(app.core());
     bed.releases.offer(NEW);
     let refused = app
         .core()
@@ -413,7 +410,112 @@ fn nothing_of_an_update_begins_while_it_tries() {
         .expect_err("a second copy");
     assert_eq!(refused.code, "another_copy", "{refused:?}");
     assert!(bed.installer.plans().is_empty(), "nothing ever started");
+    assert!(
+        !app.disk().update_files().launch_ok().exists(),
+        "a second copy no update opened tells no installer it started"
+    );
     drop(before);
+}
+
+/// What the installer was told, as it reads it: the version, and the tab count if one was said.
+fn launch_ok_says(disk: &Disk) -> Option<(String, Option<u32>)> {
+    let text = std::fs::read_to_string(disk.update_files().launch_ok()).ok()?;
+    recto_update::plan::read_launch_ok(&text).map(|(version, tabs)| (version.to_owned(), tabs))
+}
+
+/// The record's folder by its files' bytes, `updates.json` and the installer's plan.
+type StateFiles = (BTreeMap<PathBuf, Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>);
+
+/// The state folder's files that a second copy must leave as they were: the record's folder, `updates.json` and the installer's plan.
+fn state_but_the_launch_ok(disk: &Disk) -> StateFiles {
+    let files = disk.update_files();
+    (record_folder(disk), std::fs::read(&files.saved).ok(), std::fs::read(files.plan()).ok())
+}
+
+/// The new version as a second copy that came up after an update: the notice, `update status` says so, and the installer was told it started, with no tab
+/// count, so it reads it as up and never as a misread.
+fn a_second_copy_that_started(app: &HeadlessApp, plan: &recto_update::plan::Plan) {
+    use crate::testkit::update_bed::NEW;
+    app.wait_until("the notice", || app.reader().note == not_kept_words());
+    app.wait_until("told it's a second copy", || app.update_status()["second_copy"] == true);
+    app.wait_for("the installer to see it up", || installer_sees(app.disk(), plan));
+    assert_eq!(launch_ok_says(app.disk()), Some((NEW.to_owned(), None)), "started, with no tab count");
+}
+
+/// Failure (the coordinator's decision on S3, 2026-11-13: an update is never rolled back for a launch that came up as a second copy): a new version an update
+/// opened, whose old copy still holds the record, is worked in by the person before the lock comes (a file opened at two seconds); it stops trying, as any
+/// launch does, and says so, but tells the installer nothing, so the installer waits its two minutes, stops the window the person is working in and swaps the
+/// old version back. It's a second copy, says so, runs the person's open at once, tells the installer it started (no tab count), and writes nothing else: the
+/// record's folder, `updates.json` and the plan as they were. The next launch, with the lock, restores the session and settles the install: the version proven.
+#[test]
+fn an_update_launch_worked_in_before_the_lock_comes_is_a_second_copy_that_started() {
+    use crate::testkit::update_bed::NEW;
+    let (disk, bed, plan, old_on_its_way_out) = handed_off_with_the_old_copy_holding();
+    let was = state_but_the_launch_ok(&disk);
+    let app = disk.builder().update(&bed).another_keeps().start();
+    crate::core::updates::first_frame_shown(app.core());
+    next_try_fails(&app);
+    next_try_fails(&app);
+    let c = app.disk().pdf("c.pdf", 2);
+    app.open(&c);
+    assert_eq!(tab_names(&app), ["c"], "the person's open, at once");
+    a_second_copy_that_started(&app, &plan);
+    assert_eq!(app.core().life.keeping(), Keeping::NotKept);
+    app.core().saver.write_soon();
+    app.settle();
+    let (_, disk) = app.quit();
+    assert!(state_but_the_launch_ok(&disk) == was, "the record, updates.json and the plan as they were");
+    drop(old_on_its_way_out);
+    disk.installer_saw_it_up();
+    let next = disk.builder().update(&bed).start();
+    assert_eq!(tab_names(&next), ["alpha"], "the next launch restores the session the hand-off wrote");
+    assert_eq!(page_of(&next, "alpha.pdf"), 8);
+    crate::core::updates::first_frame_shown(next.core());
+    next.wait_until("the install settled: the version proven", || {
+        recto_update::saved::Saved::read(&next.disk().update_files().saved).proven.as_deref() == Some(NEW)
+    });
+    drop(next.quit());
+}
+
+/// Failure (the coordinator's decision on S3): a launch an update opened gives up at ten seconds like any other, so an old copy that lets go at 45 s leaves the
+/// new version a second copy, and the session the hand-off wrote doesn't come back until the next launch. Untouched, it tries on, keeps the record at 45 s,
+/// restores it, isn't a second copy, and tells the installer it came up with the tab it was handed.
+#[test]
+fn an_update_launch_left_alone_keeps_a_lock_that_comes_at_45_seconds() {
+    use crate::testkit::update_bed::NEW;
+    let (disk, bed, plan, old_on_its_way_out) = handed_off_with_the_old_copy_holding();
+    let app = disk.builder().update(&bed).another_keeps().start();
+    crate::core::updates::first_frame_shown(app.core());
+    for _ in 1..45 {
+        next_try_fails(&app);
+    }
+    assert_eq!(app.reader().note, None, "nothing said in 44 seconds");
+    drop(old_on_its_way_out);
+    app.advance(TRY_EVERY_MS);
+    app.wait_until("the record kept", || app.core().life.keeping() == Keeping::Keeps);
+    app.settle();
+    assert_eq!(tab_names(&app), ["alpha"]);
+    app.wait_for("the installer to see it up", || installer_sees(app.disk(), &plan));
+    assert_eq!(launch_ok_says(app.disk()), Some((NEW.to_owned(), Some(1))), "up, with the tab it read");
+    assert_eq!(app.update_status()["second_copy"], false);
+}
+
+/// Failure (the coordinator's decision on S3): a launch an update opened and left alone, whose record another copy keeps for good, tries for ever, or gives up
+/// telling the installer nothing, which then rolls back a version that came up fine. At a minute it's a second copy, says so, and tells the installer it
+/// started.
+#[test]
+fn an_update_launch_left_alone_for_a_minute_is_a_second_copy_that_started() {
+    let (disk, bed, plan, old_on_its_way_out) = handed_off_with_the_old_copy_holding();
+    let app = disk.builder().update(&bed).another_keeps().start();
+    crate::core::updates::first_frame_shown(app.core());
+    for _ in 1..crate::lifecycle::keeping::TRIES_AFTER_UPDATE {
+        next_try_fails(&app);
+    }
+    assert_eq!(app.reader().note, None, "nothing said before the minute");
+    app.advance(TRY_EVERY_MS);
+    a_second_copy_that_started(&app, &plan);
+    assert_eq!(app.core().life.keeping_due(), None, "no more tries");
+    drop(old_on_its_way_out);
 }
 
 /// Failure (the coordinator's condition, 2026-11-13): a quit while a new version is still trying for the record tells the updater something it then writes (a

@@ -52,7 +52,9 @@ pub(super) fn taken_in(inner: &Arc<Inner>, other_instance: bool, first_time: boo
     let mut host = None;
     if first_time || keeps {
         let as_read = if keeps { 0 } else { as_done(inner, reads) };
-        host = step(inner, KeepingEvent::Read { keeps, as_read });
+        // A stat or two (the update's plan or outcome), as the window's patience asks on this thread too.
+        let by_update = !keeps && inner.updates.may_be_reopened_by_update();
+        host = step(inner, KeepingEvent::Read { keeps, as_read, by_update });
     }
     (!(other_instance && inner.life.keeping().trying()), host)
 }
