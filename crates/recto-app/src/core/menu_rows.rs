@@ -179,13 +179,21 @@ pub enum ForAgent<'a> {
 
 /// **An agent's palette run of `id`:** the row's command, resolved under `with_session` where it goes by the session when it runs, as the person's is on the
 /// session thread; or the window's part alone, if the row lets an agent have it.
-pub fn for_agent<'a>(inner: &'a Arc<Inner>, id: &str, with_session: impl FnOnce(WhenRun, Command) -> Command) -> ForAgent<'a> {
-    match row(inner, id) {
+///
+/// # Errors
+///
+/// What the resolver refused, as a tab withheld from the agent.
+pub fn for_agent<'a>(
+    inner: &'a Arc<Inner>,
+    id: &str,
+    with_session: impl FnOnce(WhenRun, Command) -> Result<Command, recto_agent::AgentError>,
+) -> Result<ForAgent<'a>, recto_agent::AgentError> {
+    Ok(match row(inner, id) {
         Some(Row::Command {
             command,
             when_run: Some(when_run),
             ..
-        }) => ForAgent::Command(with_session(when_run, command)),
+        }) => ForAgent::Command(with_session(when_run, command)?),
         Some(Row::Command { command, .. } | Row::OwnWay { command, .. }) => ForAgent::Command(command),
         Some(Row::Window {
             agents: Agents::AsTheMenu(needs),
@@ -197,5 +205,5 @@ pub fn for_agent<'a>(inner: &'a Arc<Inner>, id: &str, with_session: impl FnOnce(
         }) => ForAgent::PersonsOwn(why),
         Some(Row::Nothing) => ForAgent::NothingNow,
         None => ForAgent::Unknown,
-    }
+    })
 }

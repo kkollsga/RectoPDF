@@ -223,7 +223,9 @@ impl AppHost {
     /// and as the agent's step, resolved by the session as it is now where the row goes by it. What's the window's alone is done only where the row lets an
     /// agent have it, at the level it says (Full, or `copy`'s), by its way, which sends nothing as anyone; the person's own is refused at every level.
     pub(crate) fn run_menu_id(&self, actor: Actor, inner: &Arc<Inner>, id: &str, events: &mut Vec<Event>) -> Result<HostAction, AgentError> {
-        match super::menu_rows::for_agent(inner, id, |when_run, command| self.session.with_session(|session| when_run(session, command))) {
+        match super::menu_rows::for_agent(inner, id, |when_run, command| {
+            self.session.with_session(|session| when_run(session, actor, command))
+        })? {
             super::menu_rows::ForAgent::Command(direct) => {
                 inner.tools.palette.close();
                 self.run_counted(actor, &direct, events)?;

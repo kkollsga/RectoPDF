@@ -105,3 +105,67 @@ fn each_menu_id_is_claimed_by_one_feature() {
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
+
+/// Edit mode's Rotate by an agent's palette, resolved on `resolved_on`'s page 3 and then, before it runs, the person's tap on `then_tab`: what the agent's
+/// run came to, and which tabs it edited.
+fn rotate_raced(app: &HeadlessApp, then_tab: u32) -> (Result<(), String>, Vec<u32>) {
+    let core = app.core();
+    let resolved = crate::core::menu_rows::for_agent(core, "rotate.right", |when_run, command| {
+        let resolved = core.host.session.with_session(|session| when_run(session, Actor::Agent(Level::Full), command));
+        app.person(&format!(r##"{{"cmd":"tap","tab":"#{then_tab}"}}"##));
+        app.settle();
+        resolved
+    });
+    let command = match resolved {
+        Ok(crate::core::menu_rows::ForAgent::Command(command)) => command,
+        Ok(_) => panic!("Rotate is a command"),
+        Err(error) => return (Err(error.code.to_string()), edited_tabs(app)),
+    };
+    let result = core.host.run_counted(Actor::Agent(Level::Full), &command, &mut Vec::new());
+    app.settle();
+    (result.map(drop).map_err(|error| error.code.to_string()), edited_tabs(app))
+}
+
+/// The tabs with unsaved edits.
+fn edited_tabs(app: &HeadlessApp) -> Vec<u32> {
+    app.core()
+        .host
+        .session
+        .with_session(|session| session.tabs().iter().filter(|tab| session.is_edited(tab.id)).map(|tab| tab.id.0).collect())
+}
+
+/// Failure (review of R2.3, F2): edit mode's Rotate by an agent's palette is resolved under one hold of the session and run under another, its page from the
+/// tab being read and its tab left as `active`, so a tap between the two rotates that page of another tab; and from a document opened with its password it
+/// carries that tab's page onto one that isn't, where the agent's rotate isn't refused. The person's tap is put between the resolve and the run: the page
+/// rotated is the one on the tab it was resolved on, and on a protected tab the agent is refused `protected`, with nothing rotated anywhere.
+#[test]
+fn edit_modes_rotate_by_an_agent_is_the_page_it_was_resolved_on() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("locked.pdf", &super::files::locked_with("right", 5));
+    app.core().open_file(file);
+    app.settle();
+    let id = app.reader().password_prompt.expect("it asks for its password").id;
+    app.core().password_answered(id, Some("right".into()));
+    app.settle();
+    let plain = app.disk().pdf("plain.pdf", 5);
+    app.open(&plain);
+    let (locked, plain) = (1, 2);
+    for line in [r#"{"cmd":"goto","tab":"active","page":3}"#, r#"{"cmd":"edit_mode","set":"on"}"#] {
+        app.person(line);
+        app.settle();
+    }
+    assert_eq!(
+        rotate_raced(&app, locked),
+        (Ok(()), vec![plain]),
+        "resolved on the plain tab, run after a tap on the locked one"
+    );
+    app.person(r##"{"cmd":"discard","tab":"#2"}"##);
+    app.person(r#"{"cmd":"goto","tab":"active","page":3}"#);
+    app.settle();
+    assert_eq!(app.reader().shown_tab, locked, "the locked tab in front");
+    assert_eq!(
+        rotate_raced(&app, plain),
+        (Err("protected".to_string()), vec![]),
+        "resolved on the locked tab, run after a tap on the plain one"
+    );
+}

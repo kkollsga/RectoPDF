@@ -2,6 +2,7 @@
 //! (R2.3, C5d), and so the owner's, as a person's edits always are; Edit > Clear History is `clear-history`, and the panel's Done `edit mode off`.
 
 use super::*;
+use recto_agent::Actor;
 use recto_agent::commands::Edit;
 use recto_agent::commands::edit_mode::EditMode;
 use recto_agent::commands::editing::{ClearHistory, PageRotate, Redo, Undo};
@@ -17,17 +18,23 @@ fn rotate(turns: i32) -> Command {
     .into()
 }
 
-/// [`rotate`]'s pages, as the session has them when it runs: in edit mode, the page the tab being read is on.
-fn rotate_pages_now(session: &recto_session::Session<DrawableLoader>, command: Command) -> Command {
-    match command {
-        Command::Edit(Edit::PageRotate(mut asked)) if session.edit_mode() => {
-            if let Some(tab) = session.active().and_then(|id| session.tab(id)) {
-                asked.pages = (tab.page + 1).to_string();
-            }
-            asked.into()
-        }
-        other => other,
+/// [`rotate`]'s tab and pages, as the session has them when it runs: the tab being read, named, so a tap between this and the run doesn't move the rotate
+/// to another tab; and in edit mode the page it's on. A tab withheld from `actor` is refused here, before its page is read.
+fn rotate_pages_now(session: &recto_session::Session<DrawableLoader>, actor: Actor, command: Command) -> Result<Command, AgentError> {
+    let Command::Edit(Edit::PageRotate(mut asked)) = command else {
+        return Ok(command);
+    };
+    let Some(id) = session.active() else { return Ok(asked.into()) };
+    if !actor.sees_protected() && session.withheld_from_agents(id) {
+        return Err(recto_agent::protected_refusal());
     }
+    asked.tab = format!("#{}", id.0);
+    if session.edit_mode()
+        && let Some(tab) = session.tab(id)
+    {
+        asked.pages = (tab.page + 1).to_string();
+    }
+    Ok(asked.into())
 }
 
 /// **What the window says of a person's Rotate:** why it couldn't, by the page, in the session's words; and once it has, any line that was there goes, as
