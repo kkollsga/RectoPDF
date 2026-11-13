@@ -29,8 +29,9 @@ fn the_apps_state_and_its_parts_keep_their_size() {
     assert_eq!(now, SIZES, "the app's state and its parts, in bytes");
 }
 
-/// The sizes on 2026-11-13, before the moves.
-const SIZES: &str = "Inner 4864, Lifecycle 296, Serving 1064, WindowParts 464, Tools 1440, Published 808, AppState 248";
+/// The sizes on 2026-11-13, before the moves; Inner 16 bytes more with main's merge that evening, from `Panes`' plan keeping when its zoom was asked
+/// (`zoom_asked: Option<Asked>`, R3.6a's newer-asked zoom).
+const SIZES: &str = "Inner 4880, Lifecycle 296, Serving 1064, WindowParts 464, Tools 1440, Published 808, AppState 248";
 
 /// Failure: a move widens what other code can reach of the app's state: a part's field made `pub`, a part given `Default` or `Clone` so it can be built
 /// or replaced from outside, a method made `pub(crate)` that only its part should call; or takes away what a caller needs. The list is changed by hand, in
