@@ -297,14 +297,14 @@ pub fn answered(inner: &Arc<Inner>, ran: &super::person::Ran<'_>) {
     use recto_agent::commands::Updates;
     use recto_agent::commands::updates::{UpdateCheck, UpdateInstall};
     let Command::Updates(asked) = ran.command else { return };
-    if !inner.updates.marked_from_menu() {
+    if !inner.updates.menu().marked() {
         return;
     }
     match (asked, ran.refused()) {
         (Updates::UpdateInstall(UpdateInstall { zip: None, now: true }), Some(error)) if matches!(error.code, "nothing_on_offer" | "development_build") => {
             super::person::submit(inner, Command::from(UpdateCheck {}));
         }
-        (Updates::UpdateCheck(_), _) | (_, Some(_)) => inner.updates.unmark_from_menu(),
+        (Updates::UpdateCheck(_), _) | (_, Some(_)) => inner.updates.menu().unmark(),
         _ => {}
     }
 }
@@ -446,7 +446,7 @@ impl Inner {
 
     /// With the window open, the margin says it, and nothing more is put up.
     pub fn take_update_alert(&self) -> Option<UpdateAlert> {
-        let words = self.updates.take_alert()?;
+        let words = self.updates.menu().take_alert()?;
         let app = lock(&self.window.app);
         let in_dock = app.window.as_ref().is_some_and(|window| window.minimised);
         alert_for(words, !app.window_closed && !in_dock)
@@ -506,7 +506,7 @@ impl Inner {
     /// in (the updater's mark); with something under way, which was someone else's to ask for, it does nothing.
     pub fn update_chosen_for_person(self: &Arc<Self>) {
         use recto_agent::commands::updates::{UpdateCheck, UpdateInstall};
-        if !self.updates.mark_from_menu() {
+        if !self.updates.menu().mark() {
             return;
         }
         let command = if self.updates.menu_installs() {

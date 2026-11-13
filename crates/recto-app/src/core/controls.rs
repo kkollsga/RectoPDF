@@ -85,7 +85,7 @@ impl Inner {
                 Acted::DONE
             }
             UiAction::PaneRead { tab } => {
-                self.pane_read_for_person(recto_session::TabId(tab));
+                super::person::submit(self, super::comparison::reading(recto_session::TabId(tab)));
                 Acted::DONE
             }
             UiAction::Chevron { first } => {

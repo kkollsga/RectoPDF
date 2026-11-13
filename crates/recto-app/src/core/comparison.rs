@@ -27,6 +27,15 @@ fn compare_words(error: &AgentError) -> Option<&'static str> {
         .map(CompareError::message)
 }
 
+/// The reader's moved into another pane, by the pointer or a scroll: `compare --reading`, that pane's tab the one read. Nothing on screen moves.
+pub fn reading(tab: TabId) -> Command {
+    Compare {
+        reading: Some(format!("#{}", tab.0)),
+        ..Compare::default()
+    }
+    .into()
+}
+
 impl Inner {
     /// ⌘-click or ⌃-click on a tab's row: `compare --toggle`, into the comparison or out of it, as it is when it runs.
     pub fn compare_toggle_for_person(self: &Arc<Self>, tab: TabId) {
@@ -34,18 +43,6 @@ impl Inner {
             self,
             Compare {
                 toggle: Some(format!("#{}", tab.0)),
-                ..Compare::default()
-            }
-            .into(),
-        );
-    }
-
-    /// The reader's moved into another pane, by the pointer or a scroll: `compare --reading`, that pane's tab the one read. Nothing on screen moves.
-    pub fn pane_read_for_person(self: &Arc<Self>, tab: TabId) {
-        person::submit(
-            self,
-            Compare {
-                reading: Some(format!("#{}", tab.0)),
                 ..Compare::default()
             }
             .into(),

@@ -89,7 +89,7 @@ fn the_menus_update_whose_offer_has_gone_checks() {
     let (app, _bed) = running(false);
     window_shut(&app, true);
     let lines = sent(&app, |app| {
-        assert!(app.core().updates.mark_from_menu(), "the menu's step");
+        assert!(app.core().updates.menu().mark(), "the menu's step");
         app.person(INSTALL_NOW);
     });
     assert_eq!(lines, [INSTALL_NOW, CHECK]);

@@ -1589,26 +1589,26 @@ mod tests {
     fn what_the_menu_starts_leaves_its_answer_for_an_alert() {
         let bed = Bed::new("alert");
         bed.publish("0.1.0");
-        bed.updater.menu_chosen();
+        assert!(bed.updater.menu().mark() && bed.updater.check_in_background(Asked::ByHand));
         bed.wait_for("the check", |bed| !lock(&bed.updater.st).status.is_under_way());
-        let alert = bed.updater.take_alert().expect("the menu's check leaves its answer");
+        let alert = bed.updater.menu().take_alert().expect("the menu's check leaves its answer");
         assert!(alert.starts_with("You're up to date"), "{alert}");
-        assert_eq!(bed.updater.take_alert(), None, "taken once");
+        assert_eq!(bed.updater.menu().take_alert(), None, "taken once");
         assert_eq!(bed.updater.check_here(Asked::ByHand), Status::UpToDate);
         assert!(bed.updater.notice().is_some(), "an agent's check still says so in the margin");
-        assert_eq!(bed.updater.take_alert(), None, "and puts up nothing");
+        assert_eq!(bed.updater.menu().take_alert(), None, "and puts up nothing");
         assert!(bed.updater.check_in_background(Asked::ByItself));
         bed.wait_for("the check by itself", |bed| !lock(&bed.updater.st).status.is_under_way());
-        assert_eq!(bed.updater.take_alert(), None);
+        assert_eq!(bed.updater.menu().take_alert(), None);
         // An install from the menu that can't go ahead says why.
         bed.publish("0.2.0");
         bed.found("0.2.0");
         bed.server.set("/releases/download/v0.2.0/RectoPDF-0.2.0.zip", Answer::Status(500));
         bed.server
             .set("/releases/latest/download/latest.json", Answer::Body(latest_json("0.2.0", &"a".repeat(64))));
-        bed.updater.menu_chosen();
+        assert!(bed.updater.menu().mark() && bed.updater.update_now().is_ok());
         bed.wait_for("the install to fail", |bed| matches!(bed.status(), Status::Failed { .. }));
-        let alert = bed.updater.take_alert().expect("the menu's install leaves its answer");
+        let alert = bed.updater.menu().take_alert().expect("the menu's install leaves its answer");
         assert!(alert.starts_with("Couldn't update to 0.2.0"), "{alert}");
     }
 
