@@ -4,6 +4,7 @@
 use super::menu_twins::{GRID, set_up};
 use crate::testkit::headless::HeadlessApp;
 use recto_agent::{Actor, Level};
+use serde_json::json;
 
 /// The ids a notice offers, which no menu lists: a refused print's and a refused snapshot's "anyway", and Stop for a print being prepared.
 const NOTICE_IDS: [&str; 3] = ["print.anyway.1", "tools.copy_anyway.1", "print.stop"];
@@ -17,7 +18,9 @@ fn every_id() -> Vec<String> {
 
 /// **The rows that are the person's own,** which an agent's run never does, at any level: a decision the person made at a notice (Copy anyway, Print
 /// anyway: an agent's is `--anyway`, and it's logged), stopping the person's print, the palette's field taking the person's keyboard, quitting and closing
-/// the window (the app's lifecycle is the person's), and a submenu's or the system's own item, which does nothing.
+/// the window (the app's lifecycle is the person's), a submenu's or the system's own item, which does nothing; Copy, which puts the person's selection
+/// on the system's clipboard whoever asks, and Select All, which rearranges the person's window; and a window or field for the person, which an agent's run
+/// would only answer with a word (an agent has `open`, `save --out`, `print`, `goto` and `copy` of its own).
 const PERSONS_OWN: &[&str] = &[
     "edit.copy_anyway",
     "print.anyway.1",
@@ -29,6 +32,15 @@ const PERSONS_OWN: &[&str] = &[
     "app.services",
     "file.open_recent",
     "view.paper",
+    "edit.copy",
+    "edit.select_all",
+    "app.about",
+    "app.settings",
+    "file.settings",
+    "file.open",
+    "file.save_as",
+    "file.print",
+    "go.page",
 ];
 
 /// An agent's palette run of `id` on `app` at `level`, as `recto palette --run` makes it once the row's found, settled: the code it was refused with, if it was.
@@ -168,4 +180,35 @@ fn edit_modes_rotate_by_an_agent_is_the_page_it_was_resolved_on() {
         (Err("protected".to_string()), vec![]),
         "resolved on the locked tab, run after a tap on the plain one"
     );
+}
+
+/// Failure (review of R2.3, round 2, B1): an agent's palette run of Copy, with the person's text selected on a document opened with its password, copies it
+/// to the system's clipboard by the page view's own copy, which doesn't know who asked: text an agent's own `copy` refuses, readable by any process, and the
+/// person's clipboard overwritten. Refused, at Full, and nothing goes to the clipboard.
+#[test]
+fn an_agents_copy_puts_nothing_of_a_protected_document_on_the_clipboard() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("locked.pdf", &super::files::locked_with("right", 3));
+    app.core().open_file(file);
+    app.settle();
+    let id = app.reader().password_prompt.expect("it asks for its password").id;
+    app.core().password_answered(id, Some("right".into()));
+    app.settle();
+    app.act(crate::core::controls::UiAction::Menu { id: "edit.select_all".into() });
+    app.settle();
+    drop(app.listener().take());
+    let title = crate::core::palette::title_now(app.core(), "edit.copy").expect("Copy is listed with text selected");
+    let result = app.agent(Level::Full, &serde_json::json!({ "cmd": "palette", "query": title, "run": true }).to_string());
+    app.settle();
+    assert_eq!(result.map(drop).map_err(|error| error.code.to_string()), Err("persons_own".to_string()));
+    // A copy started is on its way to the clipboard page by page; none is, and none is waiting for the host to put on it.
+    let selection = app.core().panes.reading_engine(&app.core().engine).report().0["selection"].clone();
+    assert_eq!(selection["selected"], true, "the person's selection is still there: {selection}");
+    assert_eq!(
+        (&selection["copying"], &selection["copy_waiting_for_host"]),
+        (&json!(false), &json!(false)),
+        "nothing copied: {selection}"
+    );
+    let heard = app.listener().take();
+    assert!(!heard.iter().any(|heard| matches!(heard, crate::testkit::Heard::CopyReady)), "{heard:?}");
 }

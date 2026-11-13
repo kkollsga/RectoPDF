@@ -96,8 +96,8 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &menu_rows::Asked<'_>) -> Option<me
         }
         (menus::Action::ClearRecent, _) => Some(Row::command(RecentClear {})),
         (menus::Action::Host(host), "file.open") => Some(Row::host(
-            "opens the system's Open panel; what's chosen there is `Open`",
-            menu_rows::Agents::AT_FULL,
+            "opens the system's Open panel for the person; what's chosen there is `Open`",
+            menu_rows::Agents::ItsOwn("`recto open <path>`"),
             *host,
         )),
         (menus::Action::Host(host), "file.open_recent") => Some(Row::host("a submenu's own item only opens it", menu_rows::Agents::Never, *host)),

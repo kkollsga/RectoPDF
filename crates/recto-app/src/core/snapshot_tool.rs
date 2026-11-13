@@ -320,7 +320,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
     let serial = asked.id.strip_prefix(ANYWAY_PREFIX)?.to_string();
     Some(Row::window(
         "a notice's Copy anyway, for the person's own snapshot it refused, to the system's pasteboard: their decision, where an agent's is `--anyway`, which is logged",
-        super::menu_rows::Agents::Never,
+        super::menu_rows::Agents::ItsOwn("`recto snapshot --anyway`"),
         move || {
             if let Some(job) = serial.parse().ok().and_then(|serial| inner.tools.tool.take_refused(serial)) {
                 start(inner, Job { anyway: true, ..job });

@@ -333,8 +333,8 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
             ))
         }
         (crate::menus::Action::Host(host), "app.settings" | "file.settings") => Some(Row::host(
-            "opens the Settings window; what's chosen there is `SettingChosen`",
-            super::menu_rows::Agents::AT_FULL,
+            "opens the Settings window for the person; what's chosen there is `SettingChosen`",
+            super::menu_rows::Agents::ItsOwn("`recto settings`"),
             *host,
         )),
         _ => None,

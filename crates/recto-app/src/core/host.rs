@@ -267,12 +267,15 @@ impl AppHost {
                 }
                 Ok(does())
             }
-            super::menu_rows::ForAgent::PersonsOwn(why) => Err(AgentError::new(
+            super::menu_rows::ForAgent::PersonsOwn { why, instead } => Err(AgentError::new(
                 "persons_own",
                 format!("`{id}` is the person's own in the window ({why}), so it isn't run for an agent."),
                 recto_agent::exit::FAILED,
             )
-            .then("Run the command it stands for itself, if it has one, at the level it needs: `recto help` lists them.")),
+            .then(match instead {
+                Some(command) => format!("{command} is an agent's own way to it, at the level it needs."),
+                None => "There's no agent's command for it: `recto help` lists what there is.".to_string(),
+            })),
             super::menu_rows::ForAgent::NothingNow => Err(AgentError::new(
                 "nothing_to_do",
                 format!("`{id}` has nothing to do just now, so nothing was run."),

@@ -199,6 +199,33 @@ fn differing(at: &str, key: Option<&str>, person: &Value, agent: &Value, leaves:
     }
 }
 
+/// **How many of the record's steps and stops are the owner's and how many an agent's:** an edit's entry (`by`, `a` an agent's) and a stop in a tab's
+/// trail (`back` and `forward`, `by_agent`). An undo moves an entry, as it was, from one list to another, and a step back a stop, so a run that makes none
+/// leaves both counts as they were or lower, and one that does adds to its own actor's.
+pub fn authored(record: &Value) -> (usize, usize) {
+    let mut found = Vec::new();
+    authored_in(record, false, &mut found);
+    let agents = found.iter().filter(|(_, agent)| *agent).count();
+    (found.len() - agents, agents)
+}
+
+/// Every edit entry and trail stop under `value`. `in_trail`: inside a `back` or `forward` list, where each object is a stop.
+fn authored_in(value: &Value, in_trail: bool, out: &mut Vec<(String, bool)>) {
+    match value {
+        Value::Object(map) if in_trail => out.push((value.to_string(), map.get("by_agent") == Some(&Value::Bool(true)))),
+        Value::Object(map) => match map.get("by") {
+            Some(by) if map.contains_key("step") => out.push((value.to_string(), by == "a")),
+            _ => {
+                for (key, value) in map {
+                    authored_in(value, matches!(key.as_str(), "back" | "forward"), out);
+                }
+            }
+        },
+        Value::Array(list) => list.iter().for_each(|value| authored_in(value, in_trail, out)),
+        _ => {}
+    }
+}
+
 /// Takes these keys out, wherever they are.
 fn strip(value: &mut Value, keys: &[&str]) {
     match value {

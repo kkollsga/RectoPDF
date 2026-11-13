@@ -85,10 +85,14 @@ impl<'a> Row<'a> {
 /// **Whether an agent's palette run may do a row that's the window's alone,** said by every such row, as there's no default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Agents {
-    /// Never, at any level: the person's own. A decision they made at a notice (an agent's own is `--anyway`, which is logged), the keyboard's focus, the
-    /// app's lifecycle, or an item that does nothing.
+    /// Never, at any level: the person's own, with no command of an agent's for it. The app's lifecycle, the keyboard's focus, a window for the person, or
+    /// an item that does nothing.
     Never,
-    /// As the menu does it, at this level: a window to show, the pasteboard, the window's own panel or pointer mode. Its way sends nothing as anyone.
+    /// Never by the menu's way, at any level: the person's own, where an agent has a command of its own, which the refusal names. A decision the person
+    /// made at a notice (an agent's is `--anyway`, which is logged), the person's selection or clipboard, a sheet or field for the person to fill.
+    ItsOwn(&'static str),
+    /// As the menu does it, at this level: the window's own state, which the agent's run really changes (the tools panel, the pointer's tool). Its way
+    /// sends nothing as anyone and reads nothing of a document.
     AsTheMenu(recto_agent::table::Access),
 }
 
@@ -175,8 +179,8 @@ pub enum ForAgent<'a> {
     Command(Command),
     /// The window's alone, which an agent's run may do at `needs`: `does` does it, sending nothing as anyone.
     Window { needs: recto_agent::table::Access, does: Way<'a> },
-    /// The person's own, said `why`: refused, at any level.
-    PersonsOwn(&'static str),
+    /// The person's own, said `why`, and the agent's own command for it if it has one: refused, at any level.
+    PersonsOwn { why: &'static str, instead: Option<&'static str> },
     /// One of these ids, with nothing to do now.
     NothingNow,
     /// An id no row has.
@@ -209,7 +213,12 @@ pub fn for_agent<'a>(
         }) => ForAgent::Window { needs, does },
         Some(Row::Window {
             agents: Agents::Never, why, ..
-        }) => ForAgent::PersonsOwn(why),
+        }) => ForAgent::PersonsOwn { why, instead: None },
+        Some(Row::Window {
+            agents: Agents::ItsOwn(instead),
+            why,
+            ..
+        }) => ForAgent::PersonsOwn { why, instead: Some(instead) },
         Some(Row::Nothing) => ForAgent::NothingNow,
         None => ForAgent::Unknown,
     })

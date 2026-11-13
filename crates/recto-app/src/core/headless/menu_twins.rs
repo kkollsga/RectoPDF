@@ -31,9 +31,18 @@ pub(super) enum Showing {
     Edited,
     /// A third tab in front, a document the person opened with its password, which every agent's command about it is refused (`protected`).
     Protected,
+    /// The same, with its text selected, so Copy and Select All can be chosen on it.
+    ProtectedSelected,
 }
 
-pub(super) const GRID: [Showing; 9] = [
+impl Showing {
+    /// Whether a document the person opened with its password is in front.
+    fn protected(self) -> bool {
+        matches!(self, Self::Protected | Self::ProtectedSelected)
+    }
+}
+
+pub(super) const GRID: [Showing; 10] = [
     Showing::Reading,
     Showing::SidebarHidden,
     Showing::EditMode,
@@ -43,10 +52,11 @@ pub(super) const GRID: [Showing; 9] = [
     Showing::Selected,
     Showing::Edited,
     Showing::Protected,
+    Showing::ProtectedSelected,
 ];
 
 /// The states an agent's run at Control is checked in too: where the owner's edits and a protected document decide what an agent below Full may do.
-const AT_CONTROL: [Showing; 2] = [Showing::Edited, Showing::Protected];
+const AT_CONTROL: [Showing; 3] = [Showing::Edited, Showing::Protected, Showing::ProtectedSelected];
 
 /// **What the record says of whose something is,** which the actor decides: an edit's step is `by` the owner (`o`) or an agent (`a`), a jump in the trail is
 /// `by_agent` or not, and what the session keeps says whether the owner's edits are there. Where the twins differ at one of these, the person's must be the
@@ -71,7 +81,7 @@ const STAMPED: &[&str] = &["journal"];
 
 /// The person's own commands that make `showing`, on one of the twins, settled, with what they announced heard and forgotten.
 pub(super) fn set_up(app: &HeadlessApp, showing: Showing) {
-    if showing == Showing::Protected {
+    if showing.protected() {
         let file = app.disk().file("locked.pdf", &super::files::locked_with("right", 5));
         app.core().open_file(file);
         app.settle();
@@ -81,7 +91,7 @@ pub(super) fn set_up(app: &HeadlessApp, showing: Showing) {
     }
     let mut lines = vec![r#"{"cmd":"goto","tab":"active","page":3}"#];
     lines.extend(match showing {
-        Showing::Reading | Showing::Protected => vec![],
+        Showing::Reading | Showing::Protected | Showing::ProtectedSelected => vec![],
         Showing::SidebarHidden => vec![r#"{"cmd":"view","sidebar":"off"}"#],
         Showing::EditMode => vec![r#"{"cmd":"edit_mode","set":"on"}"#],
         Showing::Comparing => vec![r##"{"cmd":"compare","toggle":"#1"}"##],
@@ -103,7 +113,7 @@ pub(super) fn set_up(app: &HeadlessApp, showing: Showing) {
         app.person(line);
         app.settle();
     }
-    if showing == Showing::Selected {
+    if matches!(showing, Showing::Selected | Showing::ProtectedSelected) {
         app.act(UiAction::Menu { id: "edit.select_all".into() });
         app.settle();
     }
@@ -133,11 +143,12 @@ enum ActorRule {
     FindOpenWithTheSidebarHidden,
     /// The close rule (`recto_agent::close_rule`): with unsaved edits a person is asked, and an agent is refused `unsaved_changes`.
     CloseThatLosesEdits,
-    /// A row that's the window's alone and the person's own (`menu_rows::Agents::Never`): the person's run does it, and an agent's is refused
-    /// `persons_own` with nothing changed.
+    /// A row that's the window's alone and the person's own (`menu_rows::Agents::Never` or `ItsOwn`): the person's run does it, and an agent's is
+    /// refused `persons_own` with nothing changed.
     PersonsOwn,
     /// A document the person opened with its password gives an agent nothing (agent report §5.5): an agent's command about it is refused `protected`,
-    /// with nothing changed, and the person's does what it does. That the palette's run is refused as its command is, `differences_at_control` holds.
+    /// with nothing changed, and the person's does what it does. An agent's run that isn't refused is an agent's command (which `differences_at_control`
+    /// holds to what that command does) or the window's own state, which reads nothing of a document; any other is a difference.
     Protected,
 }
 
@@ -148,13 +159,13 @@ fn actor_rule(app: &HeadlessApp, showing: Showing, id: &str) -> Option<ActorRule
     let persons_own = matches!(
         crate::core::menu_rows::row(app.core(), id),
         Some(Row::Window {
-            agents: crate::core::menu_rows::Agents::Never,
+            agents: crate::core::menu_rows::Agents::Never | crate::core::menu_rows::Agents::ItsOwn(_),
             ..
         })
     );
     match id {
         _ if persons_own => Some(ActorRule::PersonsOwn),
-        _ if showing == Showing::Protected => Some(ActorRule::Protected),
+        _ if showing.protected() => Some(ActorRule::Protected),
         "find.next" | "find.previous" if !find_open => Some(ActorRule::FindStepWithFindClosed),
         "find.open" if reader.sidebar_hidden => Some(ActorRule::FindOpenWithTheSidebarHidden),
         "file.close" if reader.edited => Some(ActorRule::CloseThatLosesEdits),
@@ -172,6 +183,15 @@ fn sends_a_command(app: &HeadlessApp, id: &str) -> bool {
 fn differences(twins: &Twins, showing: Showing, id: &str, title: &str) -> Vec<String> {
     let rule = actor_rule(&twins.person, showing, id);
     let sends = sends_a_command(&twins.person, id);
+    let row = crate::core::menu_rows::row(twins.agent.core(), id).map(|row| match row {
+        Row::Window { agents, why, .. } => Row::Window {
+            agents,
+            why,
+            does: Box::new(|| crate::menus::HostAction::None),
+        },
+        other => other,
+    });
+    let person_before = twins.person.session_json();
     let (find_before, kept_before) = (twins.person.session_json()["find"].clone(), twins.agent.session_json());
     twins.person.keep_sent();
     twins.agent.keep_sent();
@@ -183,6 +203,28 @@ fn differences(twins: &Twins, showing: Showing, id: &str, title: &str) -> Vec<St
     agent_said.extend(twins.agent.heard_events());
     let (person_sent, agent_sent) = (twins.person.sent(), twins.agent.sent());
     let mut found = Vec::new();
+    // Nothing an agent runs puts anything on the person's clipboard: no copy is on its way, nor waiting for the host.
+    let selection = twins.agent.core().panes.reading_engine(&twins.agent.core().engine).report().0["selection"].clone();
+    if selection["copying"] == true || selection["copy_waiting_for_host"] == true {
+        found.push(format!("the agent's run started a copy to the person's clipboard: {selection}"));
+    }
+    // Every step and stop a run made is its actor's, whether or not the twins differ there: the person's run adds none of an agent's, an agent's none of
+    // the owner's.
+    let (person_was, agent_was) = (super::twins::authored(&person_before), super::twins::authored(&kept_before));
+    let (person_now, agent_now) = (
+        super::twins::authored(&twins.person.session_json()),
+        super::twins::authored(&twins.agent.session_json()),
+    );
+    if person_now.1 > person_was.1 {
+        found.push(format!(
+            "the person's run made an agent's step or stop (owner's and agent's: {person_was:?} to {person_now:?})"
+        ));
+    }
+    if agent_now.0 > agent_was.0 {
+        found.push(format!(
+            "the agent's run made an owner's step or stop (owner's and agent's: {agent_was:?} to {agent_now:?})"
+        ));
+    }
     // Whose it is, by the one route each has: the person's sent as theirs, an agent's never.
     if !agent_sent.is_empty() {
         found.push(format!("the agent's run sent as the person {agent_sent:?}"));
@@ -239,6 +281,20 @@ fn differences(twins: &Twins, showing: Showing, id: &str, title: &str) -> Vec<St
             if twins.agent.session_json() != kept_before {
                 found.push("an agent's run refused `protected` changed something".into());
             }
+            return found;
+        }
+        Some(ActorRule::Protected)
+            if refused.is_none()
+                && !matches!(
+                    row,
+                    Some(Row::Command { .. } | Row::OwnWay { .. })
+                        | Some(Row::Window {
+                            agents: crate::core::menu_rows::Agents::AsTheMenu(_),
+                            ..
+                        })
+                ) =>
+        {
+            found.push("an agent's run on a protected document went through, and is neither its command nor the window's own".into());
             return found;
         }
         Some(ActorRule::Protected) | None => {}

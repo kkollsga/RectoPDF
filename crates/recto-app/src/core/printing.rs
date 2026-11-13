@@ -219,8 +219,8 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
     use super::menu_rows::Row;
     if asked.id == "file.print" {
         return Some(Row::host(
-            "opens the system's print panel, which is the host's",
-            super::menu_rows::Agents::AT_FULL,
+            "opens the system's print panel for the person",
+            super::menu_rows::Agents::ItsOwn("`recto print`"),
             asked.host()?,
         ));
     }
@@ -237,7 +237,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
     let serial = asked.id.strip_prefix(ANYWAY_PREFIX)?.to_string();
     Some(Row::window(
         "a notice's Print anyway, for the person's own print it refused: their decision, where an agent's is `print --anyway`, which is logged",
-        super::menu_rows::Agents::Never,
+        super::menu_rows::Agents::ItsOwn("`recto print --anyway`"),
         move || {
             if let Some(request) = serial.parse().ok().and_then(|serial| inner.tools.printing.take_refused(serial)) {
                 start(inner, Request { anyway: true, ..request });
