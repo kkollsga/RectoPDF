@@ -9,11 +9,12 @@ use crate::host::{Host, unsaved_refusal};
 use crate::levels;
 use crate::log::{self, ActivityLog};
 use crate::state::StatePaths;
+use recto_agent::Code;
 use recto_agent::commands::{Rights, Session, Start, Waits, access::Log, session::Stop, sync::Wait, sync::Watch};
 use recto_agent::table::EVENT_GROUPS;
 use recto_agent::{
-    Actor, AgentError, Command, Condition, ConditionState, DEFAULT_WATCH_MS, Event, Level, MAX_COMMAND_BYTES, MAX_SELECTOR_BYTES, MAX_WAIT_MS, Runs, VERSION,
-    allowed, condition_topics, exit, parse, refusal, reply, table,
+    Actor, AgentError, Command, Condition, ConditionState, DEFAULT_WATCH_MS, Event, Level, MAX_COMMAND_BYTES, MAX_WAIT_MS, Refused, Runs, UNKNOWN, VERSION,
+    allowed, condition_topics, exit, refusal, reply, table,
 };
 use recto_platform::local::{self, Listener, PollEntry, SocketFile, Stream, Token};
 use serde_json::{Value, json};
@@ -99,7 +100,7 @@ pub enum BindError {
 impl From<BindError> for AgentError {
     fn from(error: BindError) -> Self {
         match error {
-            BindError::AlreadyRunning => AgentError::new("already_running", "A session is already running on this state folder.", exit::FAILED)
+            BindError::AlreadyRunning => AgentError::new(Code::ALREADY_RUNNING, "A session is already running on this state folder.", exit::FAILED)
                 .then("`recto status` shows it, and `recto stop` ends it."),
             BindError::Refused(error) => error,
         }
@@ -124,7 +125,7 @@ impl Server {
     pub fn bind(paths: &StatePaths) -> Result<Self, BindError> {
         paths.prepare().map_err(BindError::Refused)?;
         let failed = |message: &str| {
-            BindError::Refused(AgentError::new("serve_failed", message.to_string(), exit::FAILED).then("Check that the state folder can be written to."))
+            BindError::Refused(AgentError::new(Code::SERVE_FAILED, message.to_string(), exit::FAILED).then("Check that the state folder can be written to."))
         };
         let lock = OpenOptions::new()
             .create(true)
@@ -142,7 +143,7 @@ impl Server {
             Ok(SocketFile::Other) | Err(_) => {
                 return Err(BindError::Refused(
                     AgentError::new(
-                        "socket_refused",
+                        Code::SOCKET_REFUSED,
                         "Something that isn't this session's socket is where its socket goes, so it won't be touched.",
                         exit::PERMISSION,
                     )
@@ -252,7 +253,11 @@ const STOP_BYTE: u8 = 2;
 
 #[derive(Debug)]
 enum WaitFor {
-    Condition { condition: Condition, tab: String, page: Option<u32> },
+    Condition {
+        condition: Condition,
+        tab: recto_agent::TabRef,
+        page: Option<u32>,
+    },
     Level(Level),
 }
 
@@ -310,7 +315,7 @@ enum Job {
         conn: u64,
         generation: u64,
         condition: Condition,
-        tab: String,
+        tab: recto_agent::TabRef,
         page: Option<u32>,
     },
 }
@@ -528,10 +533,11 @@ impl<H: Host> Loop<H> {
         }
     }
 
+    /// A line past the cap: refused as [`recto_agent::read`] refuses one too long to be a command, and logged as every line refused as it's read is.
     fn refuse_line(&mut self, index: usize) {
-        let error = AgentError::new("bad_command", "That command is too long.", exit::FAILED);
-        self.log.record("unknown", levels::current(&self.paths), error.code, &Value::Null);
-        self.answer(index, "unknown", &Err(error));
+        let refused = Refused::too_long();
+        self.log.record_refused_as_read(refused.tag, levels::current(&self.paths), refused.error.code);
+        self.answer(index, refused.tag, &Err(*refused.error));
         let conn = &mut self.conns[index];
         conn.closing = true;
         conn.input = Vec::new();
@@ -543,26 +549,24 @@ impl<H: Host> Loop<H> {
         if self.stopping.is_some() {
             self.answer(
                 index,
-                "unknown",
-                &Err(AgentError::new("session_ended", "The session is stopping.", exit::NOT_RUNNING).then("Start it again with `recto serve --background`.")),
+                UNKNOWN,
+                &Err(
+                    AgentError::new(Code::SESSION_ENDED, "The session is stopping.", exit::NOT_RUNNING).then("Start it again with `recto serve --background`.")
+                ),
             );
             return;
         }
-        let command = std::str::from_utf8(line)
-            .map_err(|_| AgentError::new("bad_command", "That isn't a command RectoPDF knows.", exit::FAILED))
-            .and_then(parse);
-        let command = match command {
+        let command = match crate::local::read_line(&mut self.log, || level, line) {
             Ok(command) => command,
-            Err(error) => {
-                self.log.record("unknown", level, error.code, &Value::Null);
-                self.answer(index, "unknown", &Err(error));
+            Err(refused) => {
+                self.answer(index, refused.tag, &Err(*refused.error));
                 return;
             }
         };
         let needed = command.access();
         if !allowed(level, needed) {
             let error = refusal(table::display_name(command.tag()), level, needed);
-            self.log.record(command.tag(), level, error.code, &command.log_details());
+            self.log.record(command.tag(), level, error.code.as_str(), &command.log_details());
             self.answer(index, command.tag(), &Err(error));
             return;
         }
@@ -577,7 +581,7 @@ impl<H: Host> Loop<H> {
             self.answer(
                 index,
                 tag,
-                &Err(AgentError::new("busy", "The session has too many connections right now.", exit::BUSY)),
+                &Err(AgentError::new(Code::BUSY, "The session has too many connections right now.", exit::BUSY)),
             );
             self.conns[index].closing = true;
             return;
@@ -719,7 +723,7 @@ impl<H: Host> Loop<H> {
     fn watch(&mut self, index: usize, level: Level, events: Option<Vec<String>>, timeout_ms: Option<u64>, count: Option<u32>) {
         if let Some(unknown) = events.iter().flatten().find(|group| !EVENT_GROUPS.contains(&group.as_str())) {
             let error = AgentError::new(
-                "bad_events",
+                Code::BAD_EVENTS,
                 format!(
                     "`{}` isn't something `watch` knows. It knows: {}.",
                     recto_core::clean_line(unknown),
@@ -728,7 +732,7 @@ impl<H: Host> Loop<H> {
                 exit::FAILED,
             )
             .then("`recto help watch` lists them.");
-            self.log.record("watch", level, error.code, &Value::Null);
+            self.log.record("watch", level, error.code.as_str(), &Value::Null);
             self.answer(index, "watch", &Err(error));
             return;
         }
@@ -1006,8 +1010,8 @@ impl<H: Host> Loop<H> {
             if let Some(index) = self.conns.iter().position(|c| c.id == conn) {
                 self.answer(
                     index,
-                    "unknown",
-                    &Err(AgentError::new("busy", "The session couldn't start this right now.", exit::BUSY)),
+                    UNKNOWN,
+                    &Err(AgentError::new(Code::BUSY, "The session couldn't start this right now.", exit::BUSY)),
                 );
             }
         }
@@ -1051,10 +1055,10 @@ impl<H: Host> Loop<H> {
                     let error = match what {
                         WaitFor::Level(wanted) => {
                             let command = format!("recto permission set {}", wanted.name());
-                            AgentError::new("timed_out", "The user hasn't allowed this yet.", exit::TIMED_OUT)
+                            AgentError::new(Code::TIMED_OUT, "The user hasn't allowed this yet.", exit::TIMED_OUT)
                                 .then(format!("Tell the user to run `{command}` in their own terminal, then try again."))
                         }
-                        WaitFor::Condition { .. } => AgentError::new("timed_out", "The time ran out before that happened.", exit::TIMED_OUT)
+                        WaitFor::Condition { .. } => AgentError::new(Code::TIMED_OUT, "The time ran out before that happened.", exit::TIMED_OUT)
                             .then("Check `recto status` and `recto tabs`, or wait longer with `--timeout`."),
                     };
                     self.log.record(tag, self.last_level, "timed_out", &Value::Null);
@@ -1068,7 +1072,7 @@ impl<H: Host> Loop<H> {
                 } if now >= *deadline => {
                     let total = *delivered;
                     if remaining.is_some() {
-                        let error = AgentError::new("timed_out", "The time ran out before that many events came.", exit::TIMED_OUT);
+                        let error = AgentError::new(Code::TIMED_OUT, "The time ran out before that many events came.", exit::TIMED_OUT);
                         self.answer(index, "watch", &Err(error));
                     } else {
                         self.end_watch(index, "time reached", total);
@@ -1101,7 +1105,7 @@ impl<H: Host> Loop<H> {
             if let Some(index) = self.conns.iter().position(|c| c.id == conn)
                 && matches!(self.conns[index].state, State::Busy)
             {
-                self.answer(index, "unknown", &Err(stopping_now()));
+                self.answer(index, UNKNOWN, &Err(stopping_now()));
             }
         }
         for index in 0..self.conns.len() {
@@ -1111,7 +1115,7 @@ impl<H: Host> Loop<H> {
                     self.answer(
                         index,
                         tag,
-                        &Err(AgentError::new("session_ended", "The session is stopping.", exit::NOT_RUNNING)
+                        &Err(AgentError::new(Code::SESSION_ENDED, "The session is stopping.", exit::NOT_RUNNING)
                             .then("Start it again with `recto serve --background`.")),
                     );
                 }
@@ -1140,7 +1144,7 @@ impl<H: Host> Loop<H> {
         } else if Instant::now() >= request.deadline {
             self.stop_request = None;
             if let Some(index) = self.conns.iter().position(|c| c.id == request.conn) {
-                let error = AgentError::new("busy", "A command is still running, so the session wasn't stopped.", exit::BUSY)
+                let error = AgentError::new(Code::BUSY, "A command is still running, so the session wasn't stopped.", exit::BUSY)
                     .then("Try again when it's finished. `recto status` shows the session is alive.");
                 self.answer(index, "stop", &Err(error));
             }
@@ -1202,7 +1206,8 @@ impl<H: Host> Loop<H> {
 }
 
 fn too_large(tag: &str) -> Vec<u8> {
-    let error = AgentError::new("reply_too_large", "That answer is too large to send.", exit::FAILED).then("Ask for less, such as one page or fewer entries.");
+    let error =
+        AgentError::new(Code::REPLY_TOO_LARGE, "That answer is too large to send.", exit::FAILED).then("Ask for less, such as one page or fewer entries.");
     let mut line = reply(tag, &Err(error)).to_string();
     line.push('\n');
     line.into_bytes()
@@ -1395,7 +1400,7 @@ fn run_job<H: Host>(host: &H, paths: &StatePaths, job: Job, max_reply: usize) ->
                 host.run(Actor::Agent(level), &command, &mut events)
             }))
             .unwrap_or_else(|_| Err(internal()));
-            let outcome = result.as_ref().map_or_else(|error| error.code, |_| "ok");
+            let outcome = result.as_ref().map_or_else(|error| error.code.as_str(), |_| "ok");
             let details = recto_agent::with_acted_tab(command.log_details(), acted, &result, &command);
             let stop = matches!(command, Command::Session(Session::Stop(_))) && result.is_ok();
             let mut line = reply(tag, &result).to_string();
@@ -1418,17 +1423,17 @@ fn run_job<H: Host>(host: &H, paths: &StatePaths, job: Job, max_reply: usize) ->
 }
 
 fn stopping_now() -> AgentError {
-    AgentError::new("busy", "The session is stopping, so this wasn't done.", exit::BUSY)
+    AgentError::new(Code::BUSY, "The session is stopping, so this wasn't done.", exit::BUSY)
         .then("If it didn't stop, try again. `recto status` shows whether it's still there.")
 }
 
 fn too_many_waiting() -> AgentError {
-    AgentError::new("busy", "Too many clients are waiting on this session right now.", exit::BUSY)
+    AgentError::new(Code::BUSY, "Too many clients are waiting on this session right now.", exit::BUSY)
 }
 
 fn internal() -> AgentError {
     AgentError::new(
-        "internal",
+        Code::INTERNAL,
         "RectoPDF hit an internal error on this command. The session is still running.",
         exit::FAILED,
     )

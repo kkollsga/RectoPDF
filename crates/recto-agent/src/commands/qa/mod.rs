@@ -33,7 +33,7 @@ impl Cmd for QaRead {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {
@@ -64,7 +64,7 @@ pub struct QaDrive {
     /// **The tab the caller means a window-wide verb for** (`qa menu`, `qa button`, `qa key-action`, `qa print-to-pdf`, which act on whatever tab the
     /// window shows): refused, with nothing done, if the window shows another. Owner, 2026-11-13: "Shouldnt it be clear which tab the action is sent to?"
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tab: Option<String>,
+    pub tab: Option<TabRef>,
 }
 
 /// The verbs that act on whatever tab the window shows, and so take `--tab` and say in their answer which tab they acted on.
@@ -78,7 +78,7 @@ impl Cmd for QaDrive {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {

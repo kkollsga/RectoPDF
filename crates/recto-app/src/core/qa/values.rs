@@ -1,6 +1,7 @@
 //! **What each QA verb takes,** checked here so the host is only ever told what it can do and has no rules of its own about it: a place on a page, a
 //! word from a short list, a size, a test's own file, where a shot may go.
 
+use recto_agent::Code;
 use recto_agent::{AgentError, exit};
 use std::path::Path;
 
@@ -144,7 +145,7 @@ pub(super) fn refuse_shot_path(out: &Path, in_real_home: impl Fn(&Path) -> bool)
     }
     if in_real_home(out) {
         return Err(AgentError::new(
-            "path_refused",
+            Code::PATH_REFUSED,
             "A shot goes outside your home folder, somewhere temporary.",
             exit::FAILED,
         ));
@@ -157,7 +158,7 @@ pub(super) fn refuse_shot_path(out: &Path, in_real_home: impl Fn(&Path) -> bool)
 }
 
 pub(super) fn bad(words: impl Into<String>) -> AgentError {
-    AgentError::new("usage", words.into(), exit::USAGE)
+    AgentError::new(Code::USAGE, words.into(), exit::USAGE)
 }
 
 pub(super) fn cleaned(text: &str) -> String {

@@ -1,6 +1,7 @@
 //! Where the session keeps its files. One folder per user, private to them. Tests and QA point it elsewhere with [`STATE_ENV`], and that override refuses the real home, so a test can't touch the
 //! user's real level, log or session however it's run.
 
+use recto_agent::Code;
 use recto_agent::{AgentError, exit};
 use recto_platform::local;
 use recto_platform::run_folders::resolved;
@@ -131,7 +132,7 @@ impl StatePaths {
         let temps = crate::quiet::temp_folders();
         if !paths.overridden || real.as_deref().is_none_or(|real| refuses_for_quiet_run(&paths.root, real, &temps)) {
             return Err(AgentError::new(
-                "needs_temp_state",
+                Code::NEEDS_TEMP_STATE,
                 if paths.overridden {
                     format!(
                         "A QA run's {STATE_ENV} has to be a new folder in the system's temp folder, and {} isn't.",
@@ -151,7 +152,7 @@ impl StatePaths {
     pub fn prepare(&self) -> Result<(), AgentError> {
         let failed = |path: &Path| {
             AgentError::new(
-                "state_refused",
+                Code::STATE_REFUSED,
                 format!("The state folder {} isn't private to this user, or can't be made.", display(path)),
                 exit::FAILED,
             )
@@ -174,7 +175,7 @@ fn display(path: &Path) -> String {
 
 fn refused(path: &Path) -> AgentError {
     AgentError::new(
-        "state_refused",
+        Code::STATE_REFUSED,
         format!("{STATE_ENV} can't be {}: it's the real home, or inside it.", display(path)),
         exit::PERMISSION,
     )
@@ -186,7 +187,7 @@ fn refused(path: &Path) -> AgentError {
 pub fn default_root() -> Result<PathBuf, AgentError> {
     local::real_home()
         .map(|home| default_root_in(&home))
-        .ok_or_else(|| AgentError::new("state_refused", "This user's home folder couldn't be found.", exit::FAILED))
+        .ok_or_else(|| AgentError::new(Code::STATE_REFUSED, "This user's home folder couldn't be found.", exit::FAILED))
 }
 
 fn default_corpus_in(home: &Path) -> PathBuf {

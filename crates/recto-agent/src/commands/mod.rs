@@ -3,6 +3,17 @@
 //! Commands come in families, one enum each, under the small top-level [`Command`](crate::Command): a family is a group of the help (Read, Move, Edit…), declared below with [`family!`] in the shape of a plain enum, so the ratchet counts its variants as it would any enum's. Adding a command to a family is one line there: its rows go into the table, in its group of `recto help`, at its family's place in [`PARTS`].
 //!
 //! The wire stays one flat object, `{"cmd": "follow", …}`. [`parse`](crate::parse) reads the tag first, then the line as the family that has it, internally tagged by `cmd`. Each payload refuses unknown fields itself.
+//!
+//! # The wire and the types
+//!
+//! A command whose choices are words or a combination of flags (`view`, `compare`, `find`, `edit mode`…) holds them as types, so what it can't mean can't be built (step R2.5). Its wire form is a `line` struct in its module, the fields as the socket has always read them, and serde's reading of it is unchanged: the same nulls, unknown fields and positional arrays. The typed payload is `TryFrom` its line, which refuses what can't be with the words the run gave before, and prints as it (`Serialize` and `Debug`), so a command made in code is a line an agent could send. A command with no `line` is its own.
+//!
+//! **A malformed request is refused as malformed first** (decided on the review of R2.5, F2). What a typed payload refuses as it's read is refused before
+//! anything else is looked at: before the agent's level, before the tab it names, and before whether there's an app to answer it. So a request with two
+//! faults is refused for its form: `view` with no such layout and no such tab is `usage`, not `no_such_tab`; `settings --auto-update maybe` with no app is
+//! `usage` (exit 2), not `needs_app`; `find --limit 0` is `bad_limit` and nine tabs to compare `too_many_panes` at any level, `off` included. None of these
+//! refusals reads the session, so none tells anything of it: each says only constant words and the agent's own, cleaned. Its reply and its log line name
+//! its command ([`crate::Refused`]), as a run's refusal does.
 
 pub mod access;
 pub mod compare;
@@ -23,9 +34,11 @@ pub mod tabs;
 pub mod text;
 pub mod updates;
 pub mod view;
+pub mod words;
 
+use crate::Code;
 use crate::table::{self, Access, Spec};
-use crate::{Actor, AgentError, Command, Event, Level, Runs, SessionAccess};
+use crate::{Actor, AgentError, Command, Event, Level, Runs, SessionAccess, TabRef};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -46,7 +59,7 @@ pub trait Cmd {
     /// which the person's every tap goes through (R2.3). One that forgot could stop the window answering.
     const WAITS: bool;
     /// The selector of the tab it acts on, which `execute` holds awake for as long as it runs. One that forgot could see its tab go dormant mid-command.
-    fn tab(&self) -> Option<&str>;
+    fn tab(&self) -> Option<&TabRef>;
     /// Who may run it. Most say their row's level, [`row_access`]; some depend on what's asked.
     fn access(&self) -> Access;
     /// Where it's answered.
@@ -79,7 +92,7 @@ pub fn row_access(tag: &str) -> Access {
 
 /// What a command answered by the server's own loop says if it reaches `execute`, as with a session run in one process.
 pub fn needs_server() -> AgentError {
-    AgentError::new("needs_server", "This needs the long-running session.", crate::exit::NOT_RUNNING)
+    AgentError::new(Code::NEEDS_SERVER, "This needs the long-running session.", crate::exit::NOT_RUNNING)
 }
 
 /// A file's name for the log. It comes from outside, so even cleaned, it goes under `untrusted`, here as everywhere.
@@ -88,19 +101,46 @@ pub fn log_file(path: &Path) -> Value {
 }
 
 /// A tab's name as typed isn't kept. `with_acted_tab` swaps in the `#id` it turned out to mean, which is what the log is for: this is only what's left if it didn't find one, such as an ambiguous name, or a command refused before it looked.
-pub fn log_tab(tab: &str) -> String {
-    if tab == "active" || tab.strip_prefix('#').is_some_and(|id| id.bytes().all(|b| b.is_ascii_digit()) && id.len() <= 10) {
-        tab.to_string()
-    } else {
-        "by name".to_string()
-    }
+pub fn log_tab(tab: &TabRef) -> String {
+    tab.log()
+}
+
+/// The type a command is read from on the wire: its [line](self#the-wire-and-the-types) where it has one, or the payload itself.
+macro_rules! line_of {
+    ($line:ty ; $payload:ty) => {
+        $line
+    };
+    (; $payload:ty) => {
+        $payload
+    };
+}
+
+/// A command read from its line: checked whole by its `TryFrom`, where it has a line of its own, or the payload as serde read it.
+macro_rules! from_line {
+    ($line:ty ; $payload:ty ; $read:expr) => {
+        <$payload as TryFrom<$line>>::try_from($read)
+    };
+    (; $payload:ty ; $read:expr) => {
+        Ok::<$payload, $crate::AgentError>($read)
+    };
+}
+
+/// A typed payload's tag, or none for a command that's its own line.
+macro_rules! typed_tag {
+    ($line:ty ; $payload:ty) => {
+        Some(<$payload as $crate::commands::Cmd>::TAG)
+    };
+    (; $payload:ty) => {
+        None
+    };
 }
 
 /// Declares a family: the enum, and everything about its commands taken from their payloads. Written as a plain enum, so the ratchet counts its variants.
+/// A variant marked `#[line(module::line::Name)]` is a typed payload, read from that line and checked whole when it's parsed (step R2.5).
 macro_rules! family {
-    ($(#[$meta:meta])* pub enum $family:ident { $($variant:ident($payload:ty),)* }) => {
+    ($(#[$meta:meta])* pub enum $family:ident { $($(#[line($line:ty)])? $variant:ident($payload:ty),)* }) => {
         $(#[$meta])*
-        #[derive(Clone, serde::Deserialize, serde::Serialize)]
+        #[derive(Clone, serde::Serialize)]
         #[serde(tag = "cmd", rename_all = "snake_case")]
         pub enum $family {
             $($variant($payload),)*
@@ -122,9 +162,26 @@ macro_rules! family {
             /// The wire names this family reads.
             pub const TAGS: &'static [&'static str] = &[$(<$payload as $crate::commands::Cmd>::TAG,)*];
 
-            /// Reads a line known to name one of this family's commands.
-            pub(crate) fn parse(line: &str) -> Result<$crate::Command, serde_json::Error> {
-                serde_json::from_str::<Self>(line).map($crate::Command::$family)
+            /// Which of them are typed payloads, read from a line of their own and checked whole (step R2.5).
+            pub const TYPED: &'static [Option<&'static str>] = &[$(typed_tag!($($line)? ; $payload),)*];
+
+            /// Reads a line known to name one of this family's commands: as serde reads its line, refused as no command if that fails, and then, for a
+            /// typed payload, checked whole, refused with its own words if what it holds can't be (step R2.5). A refusal of what a line holds is the
+            /// command's, by its tag, as a run's refusal was; only a line that isn't a command is [`UNKNOWN`](crate::UNKNOWN).
+            pub(crate) fn parse(line: &str) -> Result<$crate::Command, $crate::Refused> {
+                // Named as the family's commands are, which share their words as a family's do.
+                #[allow(clippy::enum_variant_names)]
+                #[derive(serde::Deserialize)]
+                #[serde(tag = "cmd", rename_all = "snake_case")]
+                enum Lines {
+                    $($variant(line_of!($($line)? ; $payload)),)*
+                }
+                let read = serde_json::from_str::<Lines>(line).map_err(|_| $crate::Refused::not_a_command())?;
+                Ok($crate::Command::$family(match read {
+                    $(Lines::$variant(read) => Self::$variant(
+                        from_line!($($line)? ; $payload ; read).map_err(|error| $crate::Refused::of(<$payload as $crate::commands::Cmd>::TAG, error))?
+                    ),)*
+                }))
             }
 
             pub fn tag(&self) -> &'static str {
@@ -163,7 +220,7 @@ macro_rules! family {
                 }
             }
 
-            pub fn tab(&self) -> Option<&str> {
+            pub fn tab(&self) -> Option<&TabRef> {
                 match self {
                     $(Self::$variant(command) => $crate::commands::Cmd::tab(command),)*
                 }
@@ -249,12 +306,16 @@ family! {
         RecentClear(tabs::RecentClear),
         Close(tabs::Close),
         Tap(tabs::Tap),
+        #[line(compare::line::Compare)]
         Compare(compare::Compare),
         ContentsFold(contents::ContentsFold),
+        #[line(contents::line::ContentsShow)]
         ContentsShow(contents::ContentsShow),
         ContentsStop(contents::ContentsStop),
+        #[line(view::line::View)]
         View(view::View),
         Palette(view::Palette),
+        #[line(finding::line::Find)]
         Find(finding::Find),
     }
 }
@@ -272,6 +333,7 @@ family! {
         Redo(editing::Redo),
         ClearHistory(editing::ClearHistory),
         Save(saving::Save),
+        #[line(edit_mode::line::EditMode)]
         EditMode(edit_mode::EditMode),
     }
 }
@@ -302,7 +364,9 @@ family! {
         UpdateStatus(updates::UpdateStatus),
         UpdateCheck(updates::UpdateCheck),
         UpdateInstall(updates::UpdateInstall),
+        #[line(updates::line::UpdateDevBuilds)]
         UpdateDevBuilds(updates::UpdateDevBuilds),
+        #[line(updates::line::Settings)]
         Settings(updates::Settings),
     }
 }
@@ -378,32 +442,57 @@ pub(crate) fn tag_of(line: &str) -> Option<std::borrow::Cow<'_, str>> {
     serde_json::from_str::<Tag<'_>>(line).ok()?.0
 }
 
-type Reads = fn(&str) -> Result<Command, serde_json::Error>;
+type Reads = fn(&str) -> Result<Command, crate::Refused>;
 type Words = fn(&str, &Value) -> Option<String>;
+type Typed = &'static [Option<&'static str>];
 
-/// Every family: the wire names it reads, how it reads one, and its commands' plain words. One line each.
-const FAMILIES: &[(&[&str], Reads, Words)] = &[
-    (Start::TAGS, Start::parse, Start::human),
-    (Read::TAGS, Read::parse, Read::human),
-    (Move::TAGS, Move::parse, Move::human),
-    (Edit::TAGS, Edit::parse, Edit::human),
-    (Measure::TAGS, Measure::parse, Measure::human),
-    (Waits::TAGS, Waits::parse, Waits::human),
-    (Rights::TAGS, Rights::parse, Rights::human),
-    (Session::TAGS, Session::parse, Session::human),
-    (Qa::TAGS, Qa::parse, Qa::human),
-    (Record::TAGS, Record::parse, Record::human),
-    (Updates::TAGS, Updates::parse, Updates::human),
+/// Every family: the wire names it reads, how it reads one, its commands' plain words, and which are typed payloads. One line each.
+const FAMILIES: &[(&[&str], Reads, Words, Typed)] = &[
+    (Start::TAGS, Start::parse, Start::human, Start::TYPED),
+    (Read::TAGS, Read::parse, Read::human, Read::TYPED),
+    (Move::TAGS, Move::parse, Move::human, Move::TYPED),
+    (Edit::TAGS, Edit::parse, Edit::human, Edit::TYPED),
+    (Measure::TAGS, Measure::parse, Measure::human, Measure::TYPED),
+    (Waits::TAGS, Waits::parse, Waits::human, Waits::TYPED),
+    (Rights::TAGS, Rights::parse, Rights::human, Rights::TYPED),
+    (Session::TAGS, Session::parse, Session::human, Session::TYPED),
+    (Qa::TAGS, Qa::parse, Qa::human, Qa::TYPED),
+    (Record::TAGS, Record::parse, Record::human, Record::TYPED),
+    (Updates::TAGS, Updates::parse, Updates::human, Updates::TYPED),
 ];
 
 /// The family that reads a wire name, if one does. A name no family has is one of the commands not moved here yet, or none.
 pub(crate) fn parser_for(tag: &str) -> Option<Reads> {
-    FAMILIES.iter().find(|(tags, _, _)| tags.contains(&tag)).map(|(_, parse, _)| *parse)
+    FAMILIES.iter().find(|(tags, ..)| tags.contains(&tag)).map(|(_, parse, ..)| *parse)
 }
 
 /// The plain words for an answer, from the command whose answer it is.
 pub(crate) fn human(tag: &str, data: &Value) -> Option<String> {
-    FAMILIES.iter().find_map(|(_, _, words)| words(tag, data))
+    FAMILIES.iter().find_map(|(_, _, words, _)| words(tag, data))
+}
+
+/// The refusals of flags that can't go together, by command, which a typed payload makes as it's read (step R2.5).
+#[cfg(any(test, feature = "test-words"))]
+const COMBINATIONS: &[(&str, &str)] = &[
+    ("compare", compare::OFF_ALONE),
+    ("compare", compare::TOGGLE_ALONE),
+    ("compare", compare::READING_ALONE),
+    ("find", finding::ONE_THING),
+    ("find", finding::JUMP_WITH_A_STEP),
+];
+
+/// For tests (the table's and the fuzz target's): whether a line the CLI built, each of whose words its row takes, is refused as it's read only for what its
+/// words come to together. Flags that can't go together, or more tabs to compare than are read; nothing else, so a word the CLI offers and the command's
+/// type refuses can't pass as one.
+#[cfg(any(test, feature = "test-words"))]
+pub fn refused_for_its_combination(tag: &str, error: &AgentError) -> bool {
+    let words = error.message.as_str();
+    (error.code == Code::USAGE && COMBINATIONS.contains(&(tag, words))) || (tag == "compare" && error.code == Code::TOO_MANY_PANES)
+}
+
+/// Whether a wire name is a typed payload's, read from a line of its own and checked whole as it's read (step R2.5).
+pub fn is_typed(tag: &str) -> bool {
+    FAMILIES.iter().any(|(.., typed)| typed.contains(&Some(tag)))
 }
 
 /// **The table.** Each family's rows, and the rows of the commands not in a family yet and of what runs in `recto` itself, which has no command. `recto help` shows them by group in [`GROUP_ORDER`], each group once; within a group, in the order here. A new command needs no line here: its family's list places it.

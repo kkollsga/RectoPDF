@@ -1,5 +1,6 @@
 //! Quiet runs of the app: starting one, running a script against it, and measuring it. The app does the work and refuses unless started this way. All of it stays on a temp state folder, and nothing here posts an event, takes focus or touches a screen.
 
+use recto_agent::Code;
 use recto_agent::table::{Invocation, parse_cli};
 use recto_agent::{AgentError, Level, exit};
 use recto_control::client::Client;
@@ -17,7 +18,12 @@ const READY_WAIT: Duration = Duration::from_secs(30);
 pub const OWNER_ENV: &str = "RECTO_QA_OWNER_PID";
 const DEFAULT_SCRIPT_LIMIT: Duration = Duration::from_secs(120);
 
-fn failed(code: &'static str, message: impl Into<String>) -> AgentError {
+/// A file to clone a thousand tabs' copies from couldn't be made.
+fn no_clone_source() -> AgentError {
+    failed(Code::WRITE_FAILED, "A file to clone couldn't be made.")
+}
+
+fn failed(code: recto_agent::Code, message: impl Into<String>) -> AgentError {
     AgentError::new(code, message.into(), exit::FAILED)
 }
 
@@ -26,7 +32,7 @@ fn find_app(given: Option<&Path>) -> Result<PathBuf, AgentError> {
     if let Some(path) = given {
         return a_rectopdf_app(path);
     }
-    let this = std::env::current_exe().map_err(|_| failed("app_missing", "This program can't tell where it is."))?;
+    let this = std::env::current_exe().map_err(|_| failed(Code::APP_MISSING, "This program can't tell where it is."))?;
     let here = this.parent().map(Path::to_path_buf).unwrap_or_default();
     let beside = here.join("RectoPDF");
     if beside.is_file() {
@@ -38,7 +44,7 @@ fn find_app(given: Option<&Path>) -> Result<PathBuf, AgentError> {
             return Ok(built);
         }
     }
-    Err(failed("app_missing", "The app isn't built.").then("Run `tools/sysguard/heavy.sh app/build.sh`, or say where it is with `--app`."))
+    Err(failed(Code::APP_MISSING, "The app isn't built.").then("Run `tools/sysguard/heavy.sh app/build.sh`, or say where it is with `--app`."))
 }
 
 /// **The app a QA command starts is RectoPDF's** (2026-11-13): the executable `RectoPDF` in a `.app` bundle's `Contents/MacOS`, where it really is,
@@ -49,10 +55,10 @@ fn find_app(given: Option<&Path>) -> Result<PathBuf, AgentError> {
 /// whatever it is, so that isn't what keeps the user's files safe.
 fn a_rectopdf_app(path: &Path) -> Result<PathBuf, AgentError> {
     let not_ours = || {
-        AgentError::new("not_rectopdf", "That isn't RectoPDF's app, so it wasn't started.", exit::USAGE)
+        AgentError::new(Code::NOT_RECTOPDF, "That isn't RectoPDF's app, so it wasn't started.", exit::USAGE)
             .then("`--app` takes the RectoPDF executable inside a RectoPDF bundle: `RectoPDF.app/Contents/MacOS/RectoPDF`.")
     };
-    let real = path.canonicalize().map_err(|_| failed("app_missing", "The app named isn't there."))?;
+    let real = path.canonicalize().map_err(|_| failed(Code::APP_MISSING, "The app named isn't there."))?;
     let bundle = real
         .parent()
         .filter(|folder| folder.ends_with("Contents/MacOS"))
@@ -83,7 +89,7 @@ struct Launch {
 /// Starts the app and waits for its ready line.
 fn launch(app: &Path, paths: &StatePaths, options: &Launch) -> Result<(Child, Value), AgentError> {
     paths.prepare()?;
-    levels::store(paths, Level::Full).map_err(|_| failed("write_failed", "The state folder couldn't be written to."))?;
+    levels::store(paths, Level::Full).map_err(|_| failed(Code::WRITE_FAILED, "The state folder couldn't be written to."))?;
     // The run before's messages are kept for one launch more: a test that compares runs on one state folder fails once the next has started, and what the run before said went with this launch's truncation (CI, 2026-11-12: the contents' report on a restart, silent in the logs kept).
     let _ = std::fs::rename(&paths.server_messages, paths.server_messages.with_file_name("server-messages.previous.txt"));
     let messages = std::fs::OpenOptions::new()
@@ -91,7 +97,7 @@ fn launch(app: &Path, paths: &StatePaths, options: &Launch) -> Result<(Child, Va
         .write(true)
         .truncate(true)
         .open(&paths.server_messages)
-        .map_err(|_| failed("write_failed", "The state folder couldn't be written to."))?;
+        .map_err(|_| failed(Code::WRITE_FAILED, "The state folder couldn't be written to."))?;
     let mut command = Command::new(app);
     command.arg("--qa");
     if let Some(limit) = options.memory_limit_mib {
@@ -116,8 +122,8 @@ fn launch(app: &Path, paths: &StatePaths, options: &Launch) -> Result<(Child, Va
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
     let mut child = command
         .spawn()
-        .map_err(|_| failed("app_missing", format!("The app at {} couldn't be started.", app.display())))?;
-    let stdout = child.stdout.take().ok_or_else(|| failed("app_refused", "The app couldn't be started."))?;
+        .map_err(|_| failed(Code::APP_MISSING, format!("The app at {} couldn't be started.", app.display())))?;
+    let stdout = child.stdout.take().ok_or_else(|| failed(Code::APP_REFUSED, "The app couldn't be started."))?;
     let (send, receive) = mpsc::channel();
     let _ = std::thread::Builder::new().name("qa-ready".into()).spawn(move || {
         let mut line = String::new();
@@ -131,7 +137,7 @@ fn launch(app: &Path, paths: &StatePaths, options: &Launch) -> Result<(Child, Va
             let _ = child.wait();
             let message = std::fs::read_to_string(&paths.server_messages).unwrap_or_default();
             return Err(failed(
-                "app_refused",
+                Code::APP_REFUSED,
                 if message.trim().is_empty() {
                     "The app ended before it was ready.".to_string()
                 } else {
@@ -142,16 +148,16 @@ fn launch(app: &Path, paths: &StatePaths, options: &Launch) -> Result<(Child, Va
         Err(_) => {
             let _ = child.kill();
             return Err(AgentError::new(
-                "timed_out",
+                Code::TIMED_OUT,
                 "The app wasn't ready in time, so it was stopped.",
                 exit::TIMED_OUT,
             ));
         }
     };
-    let value: Value = serde_json::from_str(line.trim()).map_err(|_| failed("app_refused", "The app said something that isn't its ready line."))?;
+    let value: Value = serde_json::from_str(line.trim()).map_err(|_| failed(Code::APP_REFUSED, "The app said something that isn't its ready line."))?;
     if value["ok"] != true {
         return Err(failed(
-            "app_refused",
+            Code::APP_REFUSED,
             value["error"]["message"].as_str().unwrap_or("The app refused to start.").to_string(),
         ));
     }
@@ -162,7 +168,7 @@ fn launch(app: &Path, paths: &StatePaths, options: &Launch) -> Result<(Child, Va
 pub fn start(invocation: &Invocation) -> Result<Value, AgentError> {
     let paths = quiet_paths()?;
     if Client::connect(&paths).is_ok() {
-        return Err(failed("already_running", "Something is already running on this state folder.").then("`recto stop` ends it."));
+        return Err(failed(Code::ALREADY_RUNNING, "Something is already running on this state folder.").then("`recto stop` ends it."));
     }
     let app = find_app(invocation.fields.get("app").and_then(Value::as_str).map(Path::new))?;
     let options = Launch {
@@ -184,13 +190,13 @@ fn owner(given: Option<u64>, from_env: Option<&str>) -> Result<Option<u32>, Agen
         (Some(pid), _) => u32::try_from(pid).ok(),
         (None, Some(text)) => Some(
             text.parse::<u32>()
-                .map_err(|_| AgentError::new("usage", format!("{OWNER_ENV} is a process number."), exit::USAGE))?,
+                .map_err(|_| AgentError::new(Code::USAGE, format!("{OWNER_ENV} is a process number."), exit::USAGE))?,
         ),
         (None, None) => return Ok(None),
     };
     match pid {
         Some(pid) if pid > 1 && recto_platform::local::process_exists(pid) => Ok(Some(pid)),
-        _ => Err(failed("owner_gone", "The process the run's to end with isn't running.")
+        _ => Err(failed(Code::OWNER_GONE, "The process the run's to end with isn't running.")
             .then(format!("Leave out --owner and {OWNER_ENV}, or name one that's running."))),
     }
 }
@@ -267,7 +273,7 @@ pub fn run_script(invocation: &Invocation) -> Result<Value, AgentError> {
     // The run's folders first, and the script held to them before a byte of it is read, so a file outside them, there or not, gets the one refusal.
     let paths = quiet_paths()?;
     recto_agent::quiet_files::check_paths(&recto_platform::run_folders::RunFolders::quiet_run(), std::slice::from_ref(&script))?;
-    let text = std::fs::read_to_string(&script).map_err(|_| failed("not_found", format!("The script {} couldn't be read.", script.display())))?;
+    let text = std::fs::read_to_string(&script).map_err(|_| failed(Code::NOT_FOUND, format!("The script {} couldn't be read.", script.display())))?;
     let started = Instant::now();
     let mut failures = Vec::new();
     let mut steps = 0;
@@ -333,7 +339,7 @@ pub fn run_script(invocation: &Invocation) -> Result<Value, AgentError> {
         Ok(result)
     } else {
         let mut error = failed(
-            "qa_failed",
+            Code::QA_FAILED,
             format!(
                 "FAIL {}: {}",
                 script.display(),
@@ -361,9 +367,9 @@ struct Measured {
 impl Measured {
     fn start(app: &Path, options: &Launch) -> Result<Self, AgentError> {
         // A state folder of this run's own, never one a run killed partway left behind (a process id comes round again), and gone with the run.
-        let temp = recto_platform::local::system_temp_dir().ok_or_else(|| failed("no_temp", "There's no temp folder."))?;
-        let root =
-            recto_platform::fresh::FreshDir::new_in(&temp, "rqb", "").map_err(|error| failed("no_temp", format!("Couldn't make a state folder: {error}.")))?;
+        let temp = recto_platform::local::system_temp_dir().ok_or_else(|| failed(Code::NO_TEMP, "There's no temp folder."))?;
+        let root = recto_platform::fresh::FreshDir::new_in(&temp, "rqb", "")
+            .map_err(|error| failed(Code::NO_TEMP, format!("Couldn't make a state folder: {error}.")))?;
         let paths = StatePaths::overridden(root.path())?;
         // This command waits on the run it measures, so it's what the run ends with.
         let options = Launch {
@@ -381,7 +387,7 @@ impl Measured {
         if reply["ok"] == true {
             Ok(reply["data"].clone())
         } else {
-            Err(failed("qa_failed", format!("{line} said: {}", reply["error"]["message"])))
+            Err(failed(Code::QA_FAILED, format!("{line} said: {}", reply["error"]["message"])))
         }
     }
 
@@ -492,7 +498,7 @@ pub fn select_budget(invocation: &Invocation) -> Result<Value, AgentError> {
             page += 1;
         }
     }
-    let (x, y) = place.ok_or_else(|| failed("qa_failed", "No page near the start of this file has text to select."))?;
+    let (x, y) = place.ok_or_else(|| failed(Code::QA_FAILED, "No page near the start of this file has text to select."))?;
     run.call(json!({ "cmd": "goto", "page": page }))?;
     run.settled()?;
 
@@ -543,7 +549,7 @@ pub fn select_budget(invocation: &Invocation) -> Result<Value, AgentError> {
             break;
         }
         if Instant::now() >= deadline {
-            return Err(failed("timed_out", "The copy didn't finish."));
+            return Err(failed(Code::TIMED_OUT, "The copy didn't finish."));
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -579,7 +585,7 @@ pub fn compare_budget(invocation: &Invocation) -> Result<Value, AgentError> {
     // Split as the quiet run's check split it, so what was checked is what's opened.
     let files = recto_control::quiet::split_files(invocation.fields.get("files").and_then(Value::as_str).unwrap_or_default());
     if files.is_empty() || files.iter().any(|file| !file.is_absolute()) {
-        return Err(failed("usage", "`--files` takes whole paths, with commas between."));
+        return Err(failed(Code::USAGE, "`--files` takes whole paths, with commas between."));
     }
     let panes = invocation.fields.get("panes").and_then(Value::as_u64).unwrap_or(files.len() as u64).clamp(1, 3) as usize;
     let synced = invocation.fields.get("sync").and_then(Value::as_str) == Some("on");
@@ -740,16 +746,16 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     // Many tabs: the footprint with each of many tabs of the same large file, under names of their own.
     let run = Measured::start(&app, &Launch::default())?;
     let tabs_dir = run.root.path().join("tabs");
-    std::fs::create_dir_all(&tabs_dir).map_err(|_| failed("write_failed", "The temp folder couldn't be written to."))?;
+    std::fs::create_dir_all(&tabs_dir).map_err(|_| failed(Code::WRITE_FAILED, "The temp folder couldn't be written to."))?;
     let tab_file = heavy.clone().unwrap_or_else(|| file.clone());
-    let clone_from = recto_platform::local::clone_source_in(&tab_file, &tabs_dir).map_err(|_| failed("write_failed", "A file to clone couldn't be made."))?;
+    let clone_from = recto_platform::local::clone_source_in(&tab_file, &tabs_dir).map_err(|_| no_clone_source())?;
     let mut measures = Vec::new();
     let mut opened = 0u32;
     for count in [2u32, 100, 1000] {
         while opened < count {
             // A clone, as a link would be the same PDF, and a PDF is open once (SPEC decision 26). It costs next to nothing on this disk.
             let link = tabs_dir.join(format!("t{opened}.pdf"));
-            recto_platform::local::clone_file(&clone_from, &link).map_err(|_| failed("write_failed", "A copy couldn't be made."))?;
+            recto_platform::local::clone_file(&clone_from, &link).map_err(|_| failed(Code::WRITE_FAILED, "A copy couldn't be made."))?;
             run.call(json!({ "cmd": "open", "path": link }))?;
             opened += 1;
         }
@@ -759,7 +765,7 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
         let got = state["session"]["tabs"].as_array().map_or(0, Vec::len);
         if got != count as usize {
             return Err(failed(
-                "qa_failed",
+                Code::QA_FAILED,
                 format!("Asked for {count} tabs and got {got}, so these numbers wouldn't mean what they say."),
             ));
         }
@@ -778,7 +784,7 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     let sidebar_state = run.state()?;
     let sidebar_ms = started.elapsed().as_secs_f64() * 1000.0;
     if sidebar_state["app"]["sidebar_visible"] != true {
-        return Err(failed("qa_failed", "The sidebar didn't come back."));
+        return Err(failed(Code::QA_FAILED, "The sidebar didn't come back."));
     }
     let (first_tabs, last) = (measures[0]["app_mib"].as_f64().unwrap_or(0.0), measures[2]["app_mib"].as_f64().unwrap_or(0.0));
     report["tabs"] = json!({ "file": tab_file.file_name().map(|name| name.to_string_lossy().to_string()), "measures": measures, "app_mib_over_2_tabs_at_1000": round(last - first_tabs), "budget_mib_over_2_tabs": 4, "switch_to_a_cold_tab_ms": round(switch_ms), "sidebar_opens_ms": round(sidebar_ms), "budget_sidebar_ms": 150 });

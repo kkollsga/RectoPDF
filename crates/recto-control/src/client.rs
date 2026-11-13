@@ -1,6 +1,7 @@
 //! The thin side: connects, sends one JSON line, reads the answer. It checks the other end as carefully as the server checks it.
 
 use crate::state::StatePaths;
+use recto_agent::Code;
 use recto_agent::{AgentError, VERSION, exit};
 use recto_platform::local::{self, SocketFile, Stream};
 use serde_json::Value;
@@ -23,7 +24,7 @@ pub struct Client {
 }
 
 pub fn not_running() -> AgentError {
-    AgentError::new("not_running", "RectoPDF isn't running.", exit::NOT_RUNNING)
+    AgentError::new(Code::NOT_RUNNING, "RectoPDF isn't running.", exit::NOT_RUNNING)
 }
 
 impl Client {
@@ -31,7 +32,7 @@ impl Client {
     pub fn connect(paths: &StatePaths) -> Result<Self, AgentError> {
         let refused = || {
             AgentError::new(
-                "socket_refused",
+                Code::SOCKET_REFUSED,
                 "The session's socket isn't private to this user, so it won't be used.",
                 exit::PERMISSION,
             )
@@ -85,7 +86,7 @@ impl Client {
                 self.buffer.drain(..=at);
                 if value["v"] != VERSION {
                     return Err(AgentError::new(
-                        "wrong_version",
+                        Code::WRONG_VERSION,
                         "The running session speaks a different version of this interface.",
                         exit::FAILED,
                     ));
@@ -130,18 +131,18 @@ fn line_end(buffer: &[u8], searched: &mut usize) -> Option<usize> {
 }
 
 fn ended() -> AgentError {
-    AgentError::new("session_ended", "The session ended before it answered.", exit::NOT_RUNNING)
+    AgentError::new(Code::SESSION_ENDED, "The session ended before it answered.", exit::NOT_RUNNING)
         .then("Start it again with `recto serve --background`. Its tabs and unsaved edits are gone, and `recto status` will say what's there.")
 }
 
 fn dropped() -> AgentError {
-    AgentError::new("connection_dropped", "The session closed this connection without an answer. It's still running.", exit::BUSY)
+    AgentError::new(Code::CONNECTION_DROPPED, "The session closed this connection without an answer. It's still running.", exit::BUSY)
         .then("It does that when it's out of descriptors or has too many clients, and takes connections again as others close. Check whether the command took effect before trying it again.")
 }
 
 fn no_answer(wait: Duration) -> AgentError {
     AgentError::new(
-        "no_answer",
+        Code::NO_ANSWER,
         format!("The session didn't answer within {} s.", wait.as_secs_f32().round()),
         exit::TIMED_OUT,
     )
@@ -149,7 +150,7 @@ fn no_answer(wait: Duration) -> AgentError {
 }
 
 fn bad_answer() -> AgentError {
-    AgentError::new("bad_answer", "The session's answer couldn't be read.", exit::FAILED)
+    AgentError::new(Code::BAD_ANSWER, "The session's answer couldn't be read.", exit::FAILED)
 }
 
 #[cfg(test)]
@@ -211,7 +212,7 @@ mod tests {
         let mut reading = connect();
         drop_next();
         let error = reading.read(Duration::from_secs(5)).unwrap_err();
-        assert_eq!((error.code, error.exit), ("connection_dropped", exit::BUSY), "{}", error.message);
+        assert_eq!((error.code.as_str(), error.exit), ("connection_dropped", exit::BUSY), "{}", error.message);
         clear();
         let mut writing = connect();
         drop_next();

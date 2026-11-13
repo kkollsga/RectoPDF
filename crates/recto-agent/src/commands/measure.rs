@@ -21,7 +21,7 @@ impl Cmd for Budget {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {
@@ -55,8 +55,8 @@ impl Cmd for Budget {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BudgetRender {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     pub pages: u32,
     /// One-based first page. The first page of the file if left out.
     #[serde(default)]
@@ -87,7 +87,7 @@ impl Cmd for BudgetRender {
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {
@@ -141,8 +141,8 @@ impl Cmd for BudgetRender {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BudgetViewport {
-    #[serde(default = "crate::active_tab")]
-    pub tab: String,
+    #[serde(default)]
+    pub tab: TabRef,
     /// `WIDTHxHEIGHT` in device pixels, such as `3024x1964`.
     pub viewport: String,
     /// One-based first page. The first page of the file if left out.
@@ -162,7 +162,7 @@ impl Cmd for BudgetViewport {
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
     fn access(&self) -> Access {

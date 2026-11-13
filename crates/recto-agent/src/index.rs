@@ -1,5 +1,7 @@
 //! The search index as commands see it: where a document's corpus stands, what to do about it, and the words for that. The corpus itself is `recto_index::corpus`, and what builds it belongs to whoever holds the session, behind [`Indexing`], because this crate holds no state.
 
+use crate::Code;
+use crate::TabRef;
 use crate::{AgentError, ConditionState, SessionAccess, exit, select};
 use recto_index::corpus::{self, CorpusKey, DiskState, Summary};
 use recto_platform::FileStamp;
@@ -184,13 +186,13 @@ struct TabFile {
 }
 
 /// Every file a tab's pages come from.
-fn tab_files<A: SessionAccess>(access: &A, tab: &str) -> Result<(u32, Vec<TabFile>), AgentError> {
+fn tab_files<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<(u32, Vec<TabFile>), AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
         let path = s
             .tabs()
             .path_of(id)
-            .ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?;
+            .ok_or_else(|| AgentError::new(Code::NO_SUCH_TAB, "That tab isn't open.", exit::NOT_FOUND))?;
         let mut files = vec![TabFile {
             path,
             expected: s.notices().own_file_expected(id),
@@ -216,7 +218,7 @@ fn tab_files<A: SessionAccess>(access: &A, tab: &str) -> Result<(u32, Vec<TabFil
 }
 
 fn no_indexing() -> AgentError {
-    AgentError::new("needs_server", "Building an index needs the long-running session.", exit::NOT_RUNNING)
+    AgentError::new(Code::NEEDS_SERVER, "Building an index needs the long-running session.", exit::NOT_RUNNING)
         .then("Start it with `recto serve --background`. `recto search` works without an index.")
 }
 
@@ -224,7 +226,7 @@ fn no_indexing() -> AgentError {
 const MAX_LISTED_FILES: usize = 32;
 
 /// `recto index` and `recto index status`.
-pub(crate) fn index<A: SessionAccess>(access: &A, tab: &str, want: bool, agent: bool) -> Result<Value, AgentError> {
+pub(crate) fn index<A: SessionAccess>(access: &A, tab: &TabRef, want: bool, agent: bool) -> Result<Value, AgentError> {
     let indexing = access.indexing().ok_or_else(no_indexing)?;
     let (id, files) = tab_files(access, tab)?;
     if agent {
@@ -242,22 +244,24 @@ fn make_agent_folder(indexing: &dyn Indexing, file: &TabFile) -> Result<(), Agen
     };
     match corpus::ensure_agent_folder(indexing.root(), key, &corpus::BuildLimits::default()) {
         Ok(_) | Err(corpus::AgentFolderError::NotReady) => Ok(()),
-        Err(corpus::AgentFolderError::Busy) => Err(AgentError::new("busy", "This document's index is being written right now.", exit::BUSY)),
+        Err(corpus::AgentFolderError::Busy) => Err(AgentError::new(Code::BUSY, "This document's index is being written right now.", exit::BUSY)),
         Err(corpus::AgentFolderError::TooLarge) => {
             Err(
-                AgentError::new("too_large", "This document has too many pages for a folder of one file each.", exit::FAILED)
+                AgentError::new(Code::TOO_LARGE, "This document has too many pages for a folder of one file each.", exit::FAILED)
                     .then("`recto search` works without it."),
             )
         }
         Err(corpus::AgentFolderError::Damaged) => {
             let _ = corpus::clear(indexing.root(), key);
             indexing.want(&file.path, key);
-            Err(
-                AgentError::new("index_failed", "This document's index didn't add up, so it's being built again.", exit::FAILED)
-                    .then("`recto wait indexing-done`, then ask again."),
+            Err(AgentError::new(
+                Code::INDEX_FAILED,
+                "This document's index didn't add up, so it's being built again.",
+                exit::FAILED,
             )
+            .then("`recto wait indexing-done`, then ask again."))
         }
-        Err(corpus::AgentFolderError::Failed) => Err(AgentError::new("write_failed", "The folder couldn't be written.", exit::FAILED)),
+        Err(corpus::AgentFolderError::Failed) => Err(AgentError::new(Code::WRITE_FAILED, "The folder couldn't be written.", exit::FAILED)),
     }
 }
 
@@ -341,7 +345,7 @@ fn report(indexing: &dyn Indexing, id: u32, files: &[TabFile], want: bool) -> (V
 }
 
 /// `recto wait indexing-done`: asking counts as wanting it, or a wait could run out its time on something nobody started.
-pub(crate) fn look<A: SessionAccess>(access: &A, tab: &str) -> ConditionState {
+pub(crate) fn look<A: SessionAccess>(access: &A, tab: &TabRef) -> ConditionState {
     let Some(indexing) = access.indexing() else {
         return ConditionState::Failed(no_indexing());
     };
@@ -355,19 +359,19 @@ pub(crate) fn look<A: SessionAccess>(access: &A, tab: &str) -> ConditionState {
         None => ConditionState::Met(value),
         Some(FileIndex::Refused(code)) => ConditionState::Failed(
             AgentError::new(
-                "not_indexed",
+                Code::NOT_INDEXED,
                 format!("This file won't be indexed: {}.", refused_words(&code)),
                 if code == "needs_password" { exit::PROTECTED } else { exit::FAILED },
             )
             .then("`recto search` still reads its pages one by one, if they can be read."),
         ),
         Some(FileIndex::Failed(code)) => ConditionState::Failed(
-            AgentError::new("index_failed", format!("The index couldn't be built ({code})."), exit::FAILED)
+            AgentError::new(Code::INDEX_FAILED, format!("The index couldn't be built ({code})."), exit::FAILED)
                 .then("`recto search` still reads the pages one by one. It's tried again after a pause."),
         ),
         Some(FileIndex::Unavailable) => ConditionState::Failed(
             AgentError::new(
-                "index_failed",
+                Code::INDEX_FAILED,
                 "A file behind this tab has changed or gone, so it can't be indexed as recorded.",
                 exit::FAILED,
             )
@@ -389,9 +393,9 @@ fn wait_until_stopped(indexing: &dyn Indexing, key: Option<CorpusKey>) {
 }
 
 /// `recto index clear`: this tab's files, or everything, and whatever's on its way for them.
-pub(crate) fn clear<A: SessionAccess>(access: &A, tab: &str, all: bool) -> Result<Value, AgentError> {
+pub(crate) fn clear<A: SessionAccess>(access: &A, tab: &TabRef, all: bool) -> Result<Value, AgentError> {
     let indexing = access.indexing().ok_or_else(no_indexing)?;
-    let failed = || AgentError::new("write_failed", "The index folder couldn't be cleared.", exit::FAILED);
+    let failed = || AgentError::new(Code::WRITE_FAILED, "The index folder couldn't be cleared.", exit::FAILED);
     if all {
         indexing.cancel(None);
         wait_until_stopped(indexing, None);
@@ -423,7 +427,7 @@ fn said_cleared(mut report: corpus::Cleared, contents: Option<corpus::Cleared>) 
     report.being_built += contents.being_built;
     if report.failed > 0 {
         return Err(AgentError::new(
-            "clear_incomplete",
+            Code::CLEAR_INCOMPLETE,
             format!("{} couldn't be removed, so that text is still on disk. {} went.", report.failed, report.cleared),
             exit::FAILED,
         )

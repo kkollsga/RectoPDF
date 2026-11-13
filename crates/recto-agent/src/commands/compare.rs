@@ -1,31 +1,198 @@
 //! `compare`: tabs side by side, with separate or synced scroll.
 
+use super::words::OnOff;
 use super::{Cmd, Cx, row_access};
+use crate::Code;
 use crate::human::text;
 use crate::table::*;
 use crate::*;
-use serde::Deserialize;
 use serde_json::{Value, json};
 
-/// Tabs side by side: which, the one being read, and separate or synced scroll. With nothing, only says.
-#[derive(Clone, Debug, Default, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Compare {
-    /// Tabs by selector, with commas between: `#1,#3`.
-    #[serde(default)]
-    pub tabs: Option<String>,
-    /// `on` for synced scroll, `off` for separate.
-    #[serde(default)]
-    pub sync: Option<String>,
+/// Tabs side by side: which, the one being read, and separate or synced scroll. With nothing, only says. One thing at a time, but for tabs put side by
+/// side and synced in one go: what can't go together can't be made.
+#[derive(Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(into = "line::Compare")]
+pub enum Compare {
+    /// Only says.
+    #[default]
+    Look,
     /// Back to one tab, the one being read.
-    #[serde(default)]
-    pub off: bool,
+    Off,
+    /// These tabs side by side, left to right, and their scroll synced or not if said.
+    Set { tabs: Panes, sync: Option<OnOff> },
+    /// Synced scroll, or separate, for the comparison there is.
+    Sync(OnOff),
     /// One tab into the comparison, or out of it, as ⌘-clicking its row does.
-    #[serde(default)]
-    pub toggle: Option<String>,
+    Toggle(TabRef),
     /// The pane to read, of those side by side, as moving the pointer into it does.
-    #[serde(default)]
-    pub reading: Option<String>,
+    Reading(TabRef),
+}
+
+/// `compare` as it's written on the wire.
+pub mod line {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Compare {
+        /// Tabs by selector, with commas between: `#1,#3`.
+        #[serde(default)]
+        pub tabs: Option<String>,
+        /// `on` for synced scroll, `off` for separate.
+        #[serde(default)]
+        pub sync: Option<String>,
+        #[serde(default)]
+        pub off: bool,
+        #[serde(default)]
+        pub toggle: Option<String>,
+        #[serde(default)]
+        pub reading: Option<String>,
+    }
+}
+
+/// The most selectors `compare --tabs` reads, so a long list can't be made to look up thousands of names. More than there can be panes, so too many is said in words.
+const MAX_COMPARE_SELECTORS: usize = 8;
+
+/// The tabs `compare --tabs` names, left to right. Made by [`Panes::parse`] from the words, or [`Panes::new`] from tabs, each of which keeps to what a list
+/// can say: at most [`MAX_COMPARE_SELECTORS`], and no name with a comma or with spaces at its ends, or empty, which the list's words would read back as
+/// other tabs (review of R2.5, F1). So a compare that exists prints as a line that reads back as itself.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Panes(Vec<TabRef>);
+
+impl Panes {
+    /// These tabs, if a list can say them: `None` past [`MAX_COMPARE_SELECTORS`], or for a name the list's words can't hold.
+    #[must_use]
+    pub fn new(tabs: Vec<TabRef>) -> Option<Self> {
+        let sayable = |tab: &TabRef| {
+            let words = tab.to_string();
+            !words.is_empty() && words.trim() == words && !words.contains(',')
+        };
+        (tabs.len() <= MAX_COMPARE_SELECTORS && tabs.iter().all(sayable)).then_some(Self(tabs))
+    }
+
+    /// The tabs a list names, by selector with commas between (`#1,#3`); spaces around each and empty ones are let go. Past [`MAX_COMPARE_SELECTORS`]
+    /// is refused in the session's words, having read no more than one past it.
+    pub fn parse(list: &str) -> Result<Self, AgentError> {
+        let tabs: Vec<TabRef> = list
+            .split(',')
+            .map(str::trim)
+            .filter(|word| !word.is_empty())
+            .take(MAX_COMPARE_SELECTORS + 1)
+            .map(TabRef::parse)
+            .collect();
+        if tabs.len() > MAX_COMPARE_SELECTORS {
+            return Err(refused(recto_session::compare::CompareError::TooMany));
+        }
+        Ok(Self(tabs))
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[TabRef] {
+        &self.0
+    }
+}
+
+/// Its words in the list: the selectors with commas between.
+impl std::fmt::Display for Panes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (at, tab) in self.0.iter().enumerate() {
+            if at > 0 {
+                f.write_str(",")?;
+            }
+            write!(f, "{tab}")?;
+        }
+        Ok(())
+    }
+}
+
+/// The refusals of flags that go alone, each said with another.
+pub(crate) const OFF_ALONE: &str = "`--off` goes alone: it ends the comparison.";
+pub(crate) const TOGGLE_ALONE: &str = "`--toggle` goes alone: it puts one tab side by side with the others, or takes it out.";
+pub(crate) const READING_ALONE: &str = "`--reading` goes alone: it chooses which of the tabs side by side is read.";
+
+/// Checked whole as it's read, in the order the run checked it before: what goes alone, then the scroll's word, then how many tabs are named.
+impl TryFrom<line::Compare> for Compare {
+    type Error = AgentError;
+    fn try_from(line: line::Compare) -> Result<Self, AgentError> {
+        let usage = |words: &str| AgentError::new(Code::USAGE, words, exit::USAGE);
+        let line::Compare {
+            tabs,
+            sync,
+            off,
+            toggle,
+            reading,
+        } = line;
+        let said = [tabs.is_some(), sync.is_some(), off, toggle.is_some(), reading.is_some()]
+            .into_iter()
+            .filter(|said| *said)
+            .count();
+        if off && said > 1 {
+            return Err(usage(OFF_ALONE));
+        }
+        if toggle.is_some() && said > 1 {
+            return Err(usage(TOGGLE_ALONE));
+        }
+        if reading.is_some() && said > 1 {
+            return Err(usage(READING_ALONE));
+        }
+        let sync = sync
+            .map(|word| OnOff::from_word(&word).ok_or_else(|| usage(&format!("`{}` isn't for `--sync`. It's `on` or `off`.", recto_core::clean_line(&word)))))
+            .transpose()?;
+        Ok(match (tabs, sync, off, toggle, reading) {
+            (Some(list), sync, ..) => Self::Set {
+                tabs: Panes::parse(&list)?,
+                sync,
+            },
+            (None, Some(sync), ..) => Self::Sync(sync),
+            (None, None, true, ..) => Self::Off,
+            (None, None, false, Some(tab), _) => Self::Toggle(TabRef::parse(&tab)),
+            (None, None, false, None, Some(tab)) => Self::Reading(TabRef::parse(&tab)),
+            (None, None, false, None, None) => Self::Look,
+        })
+    }
+}
+
+impl From<&Compare> for line::Compare {
+    fn from(asked: &Compare) -> Self {
+        match asked {
+            Compare::Look => Self::default(),
+            Compare::Off => Self { off: true, ..Self::default() },
+            Compare::Set { tabs, sync } => Self {
+                tabs: Some(tabs.to_string()),
+                sync: sync.map(|sync| sync.word().to_string()),
+                ..Self::default()
+            },
+            Compare::Sync(sync) => Self {
+                sync: Some(sync.word().to_string()),
+                ..Self::default()
+            },
+            Compare::Toggle(tab) => Self {
+                toggle: Some(tab.to_string()),
+                ..Self::default()
+            },
+            Compare::Reading(tab) => Self {
+                reading: Some(tab.to_string()),
+                ..Self::default()
+            },
+        }
+    }
+}
+
+impl From<Compare> for line::Compare {
+    fn from(asked: Compare) -> Self {
+        Self::from(&asked)
+    }
+}
+
+impl std::fmt::Debug for Compare {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        line::Compare::from(self).fmt(f)
+    }
+}
+
+/// A comparison that can't be as asked, in the session's words.
+fn refused(error: recto_session::compare::CompareError) -> AgentError {
+    AgentError::new(Code::lower(error.code()), error.message(), exit::FAILED)
 }
 
 impl Cmd for Compare {
@@ -36,19 +203,13 @@ impl Cmd for Compare {
     const PROTECTED_OK: bool = false;
     // A pane's cold file is read in place here, or, on the window's session thread, off it and the command run again once it's in (`later`).
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     /// Asking is reading. Changing it is moving around.
     fn access(&self) -> Access {
         match self {
-            Self {
-                tabs: None,
-                sync: None,
-                off: false,
-                toggle: None,
-                reading: None,
-            } => row_access(Self::TAG),
+            Self::Look => row_access(Self::TAG),
             _ => Access::At(Level::Control),
         }
     }
@@ -56,11 +217,16 @@ impl Cmd for Compare {
         Runs::Session
     }
     fn log_details(&self) -> Value {
-        let mut details = json!({ "sync": self.sync.as_deref().map(recto_core::clean_line), "off": self.off });
-        for (key, tab) in [("toggle", &self.toggle), ("reading", &self.reading)] {
-            if let Some(tab) = tab {
-                details[key] = json!(super::log_tab(tab));
-            }
+        let sync = match self {
+            Self::Set { sync, .. } => *sync,
+            Self::Sync(sync) => Some(*sync),
+            _ => None,
+        };
+        let mut details = json!({ "sync": sync.map(OnOff::word), "off": *self == Self::Off });
+        match self {
+            Self::Toggle(tab) => details["toggle"] = json!(super::log_tab(tab)),
+            Self::Reading(tab) => details["reading"] = json!(super::log_tab(tab)),
+            _ => {}
         }
         details
     }
@@ -98,9 +264,6 @@ impl Cmd for Compare {
     }
 }
 
-/// The most selectors `compare --tabs` reads, so a long list can't be made to look up thousands of names. More than there can be panes, so too many is said in words.
-const MAX_COMPARE_SELECTORS: usize = 8;
-
 /// `recto compare`: what the sidebar's ⌘-click, moving into a pane and the right-click menu's scroll items do, for an agent and for the person alike. Owner,
 /// 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view, right click menu can enable separate scroll (default) and synced scroll. Zoom is
 /// always synced."
@@ -108,85 +271,47 @@ const MAX_COMPARE_SELECTORS: usize = 8;
 /// **Run again from the start once a pane's file is in** (`later`), on the window's session thread: so nothing changes before every read it needs is done,
 /// and each form is one change however many times it runs before then.
 fn compare<A: SessionAccess>(access: &A, asked: &Compare, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-    let usage = |words: &str| AgentError::new("usage", words, exit::USAGE);
-    let refused = |error: recto_session::compare::CompareError| AgentError::new(error.code(), error.message(), exit::FAILED);
-    let Compare {
-        tabs,
-        sync,
-        off,
-        toggle,
-        reading,
-    } = asked;
-    let others = |this: bool| {
-        [tabs.is_some(), sync.is_some(), *off, toggle.is_some(), reading.is_some()]
-            .into_iter()
-            .filter(|set| *set)
-            .count()
-            > usize::from(this)
-    };
-    if *off && others(true) {
-        return Err(usage("`--off` goes alone: it ends the comparison."));
-    }
-    if toggle.is_some() && others(true) {
-        return Err(usage("`--toggle` goes alone: it puts one tab side by side with the others, or takes it out."));
-    }
-    if reading.is_some() && others(true) {
-        return Err(usage("`--reading` goes alone: it chooses which of the tabs side by side is read."));
-    }
-    let sync = match sync.as_deref() {
-        None => None,
-        Some("on") => Some(true),
-        Some("off") => Some(false),
-        Some(other) => {
-            return Err(usage(&format!("`{}` isn't for `--sync`. It's `on` or `off`.", recto_core::clean_line(other))));
-        }
-    };
     let mut changed = false;
-    if *off {
-        changed |= access.with(|s| s.end_compare());
-    }
-    if let Some(list) = tabs {
-        let selectors: Vec<&str> = list
-            .split(',')
-            .map(str::trim)
-            .filter(|word| !word.is_empty())
-            .take(MAX_COMPARE_SELECTORS + 1)
-            .collect();
-        if selectors.len() > MAX_COMPARE_SELECTORS {
-            return Err(refused(recto_session::compare::CompareError::TooMany));
-        }
-        let ids = access.with(|s| selectors.iter().map(|selector| select(s, selector)).collect::<Result<Vec<TabId>, AgentError>>())?;
-        recto_session::compare::Comparison::check(&ids).map_err(refused)?;
-        // Each pane is a live document, so each cold one is read with the session free, as a tap's is, and none with it held.
-        let reading = access.with(|s| s.tabs().active().filter(|active| ids.contains(active)).unwrap_or(ids[0]));
-        for (id, path) in access.with(|s| s.wake_for_compare(&ids)) {
-            read_ahead(access, |_| Some((id, path)))?;
-        }
-        changed |= access.with(|s| s.compare(&ids, Some(reading))).map_err(refused)?;
-    }
-    if let Some(selector) = toggle {
-        let id = access.with(|s| select(s, selector))?;
-        // The tab joining, or the pane read next if the one being read leaves.
-        read_ahead(access, |s| s.wake_for_compare_click(id))?;
-        let change = access.with(|s| s.toggle_compare(id)).map_err(refused)?;
-        changed |= change != recto_session::compare::CompareChange::Nothing;
-    }
-    if let Some(selector) = reading {
-        let id = access.with(|s| {
-            let id = select(s, selector)?;
-            match s.comparison() {
-                Some(comparison) if comparison.contains(id) => Ok(id),
-                _ => Err(not_side_by_side()),
+    match asked {
+        Compare::Look => {}
+        Compare::Off => changed |= access.with(|s| s.end_compare()),
+        Compare::Set { tabs, sync } => {
+            let ids = access.with(|s| {
+                tabs.as_slice()
+                    .iter()
+                    .map(|selector| select(s, selector))
+                    .collect::<Result<Vec<TabId>, AgentError>>()
+            })?;
+            recto_session::compare::Comparison::check(&ids).map_err(refused)?;
+            // Each pane is a live document, so each cold one is read with the session free, as a tap's is, and none with it held.
+            let reading = access.with(|s| s.tabs().active().filter(|active| ids.contains(active)).unwrap_or(ids[0]));
+            for (id, path) in access.with(|s| s.wake_for_compare(&ids)) {
+                read_ahead(access, |_| Some((id, path)))?;
             }
-        })?;
-        read_ahead(access, |s| s.wake_for_tap(id))?;
-        events.extend(access.with(|s| s.focus_pane(id).then(|| event::tab_activated(s, id))));
-    }
-    if let Some(on) = sync {
-        changed |= access.with(|s| s.set_compare_synced(on)).ok_or_else(|| {
-            AgentError::new("not_comparing", "There's no comparison to sync.", exit::NOT_FOUND)
-                .then("`recto compare --tabs \"#1,#2\"` puts two side by side first.")
-        })?;
+            changed |= access.with(|s| s.compare(&ids, Some(reading))).map_err(refused)?;
+            if let Some(sync) = sync {
+                changed |= set_synced(access, *sync)?;
+            }
+        }
+        Compare::Sync(sync) => changed |= set_synced(access, *sync)?,
+        Compare::Toggle(selector) => {
+            let id = access.with(|s| select(s, selector))?;
+            // The tab joining, or the pane read next if the one being read leaves.
+            read_ahead(access, |s| s.wake_for_compare_click(id))?;
+            let change = access.with(|s| s.toggle_compare(id)).map_err(refused)?;
+            changed |= change != recto_session::compare::CompareChange::Nothing;
+        }
+        Compare::Reading(selector) => {
+            let id = access.with(|s| {
+                let id = select(s, selector)?;
+                match s.comparison() {
+                    Some(comparison) if comparison.contains(id) => Ok(id),
+                    _ => Err(not_side_by_side()),
+                }
+            })?;
+            read_ahead(access, |s| s.wake_for_tap(id))?;
+            events.extend(access.with(|s| s.focus_pane(id).then(|| event::tab_activated(s, id))));
+        }
     }
     if changed {
         events.push(access.with(|s| event::comparison_changed(s)));
@@ -199,10 +324,18 @@ fn compare<A: SessionAccess>(access: &A, asked: &Compare, events: &mut Vec<Event
     })
 }
 
+/// Synced scroll or separate, for the comparison there is. Says whether that's a change.
+fn set_synced<A: SessionAccess>(access: &A, sync: OnOff) -> Result<bool, AgentError> {
+    access.with(|s| s.set_compare_synced(sync.is_on())).ok_or_else(|| {
+        AgentError::new(Code::NOT_COMPARING, "There's no comparison to sync.", exit::NOT_FOUND)
+            .then("`recto compare --tabs \"#1,#2\"` puts two side by side first.")
+    })
+}
+
 /// `--reading` of a tab that isn't one of those side by side.
 fn not_side_by_side() -> AgentError {
     AgentError::new(
-        "not_side_by_side",
+        Code::NOT_SIDE_BY_SIDE,
         "That tab isn't side by side with others, so it can't be the pane read.",
         exit::NOT_FOUND,
     )
@@ -226,7 +359,7 @@ pub(crate) const ROWS_COMPARE: &[Spec] = &[Spec {
         Arg {
             key: "sync",
             flag: Some("--sync"),
-            kind: Kind::Choice(&["on", "off"]),
+            kind: Kind::Choice(OnOff::WORDS),
             required: false,
             help: "`on` for synced scroll, from where each pane is now, or `off` for separate, the default.",
         },
@@ -302,7 +435,7 @@ mod tests {
 
     fn run(session: &Mutex<Session<Fake>>, level: Level, line: &str) -> (Result<Value, AgentError>, Vec<Event>) {
         let mut events = Vec::new();
-        let result = execute(session, Actor::Agent(level), &parse(line).expect("a command"), &mut events);
+        let result = parse(line).and_then(|command| execute(session, Actor::Agent(level), &command, &mut events));
         (result, events)
     }
 

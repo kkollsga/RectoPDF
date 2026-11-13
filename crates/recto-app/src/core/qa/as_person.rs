@@ -106,8 +106,11 @@ pub(super) fn check_tests_files(inner: &Inner, named: &[&Path]) -> Result<(), Ag
 fn pinned(inner: &Inner, command: &Command) -> Result<Command, AgentError> {
     let mut wire: Value = serde_json::from_str(&command.wire()).map_err(|_| bad("That command can't be read back."))?;
     if let Some(tab) = wire.get("tab").and_then(Value::as_str).map(str::to_owned) {
-        let id = inner.host.session.with_session(|session| recto_agent::select_tab(session, &tab))?;
-        wire["tab"] = Value::from(format!("#{}", id.0));
+        let id = inner
+            .host
+            .session
+            .with_session(|session| recto_agent::select_tab(session, &recto_agent::TabRef::parse(&tab)))?;
+        wire["tab"] = Value::from(recto_agent::TabRef::Id(id).to_string());
     }
     for key in NAMED_FILE_KEYS {
         if let Some(real) = wire.get(*key).and_then(Value::as_str).and_then(|path| Path::new(path).canonicalize().ok()) {

@@ -2,6 +2,7 @@
 //! Save over the file would break, or two readers that disagree about it) and the Save icon's tooltip; and the looks at a file's signatures, one thread per file and version,
 //! capped. The save itself (`recto-ffi`'s `start_save`, through the command an agent's `recto save` runs) stays in the bridge until the saver moves.
 
+use recto_agent::Code;
 use recto_platform::FileStamp;
 use recto_session::TabId;
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
@@ -107,7 +108,7 @@ pub struct SaveState {
 pub fn save_from_gate(path: &std::path::Path, known: Option<FileStamp>) -> Result<(), recto_agent::AgentError> {
     match known.and_then(|stamp| recto_agent::agreement::check(path, stamp)) {
         Some(disagreement) => Err(recto_agent::AgentError::new(
-            "parsers_disagree",
+            Code::PARSERS_DISAGREE,
             disagreement.message(),
             recto_agent::exit::FAILED,
         )),
@@ -297,16 +298,17 @@ impl SaveUi {
 pub fn problem_for(error: &recto_agent::AgentError) -> SaveProblem {
     // A signed document's copy is unsigned (SPEC decision 27), and the original keeps its signature: Save As is the way on for those too. Not for a file changed
     // on disk under the edits, or edits that don't fit it: a copy is refused as Save is, as the edits would land on the other version's pages.
+    use recto_agent::Code;
     let copy_helps = matches!(
         error.code,
-        "changed_since_opened"
-            | "changed_while_copying"
-            | "read_only"
-            | "hard_links"
-            | "breaks_certification"
-            | "locked_by_signature"
-            | "signed_needs_copy"
-            | "signed_original"
+        Code::CHANGED_SINCE_OPENED
+            | Code::CHANGED_WHILE_COPYING
+            | Code::READ_ONLY
+            | Code::HARD_LINKS
+            | Code::BREAKS_CERTIFICATION
+            | Code::LOCKED_BY_SIGNATURE
+            | Code::SIGNED_NEEDS_COPY
+            | Code::SIGNED_ORIGINAL
     );
     SaveProblem {
         title: "The document couldn't be saved.".into(),
@@ -465,12 +467,18 @@ mod tests {
     /// Failure (SPEC decision 27): a save refused for a signature offers no way on, though Save As makes an unsigned copy and the original keeps its signature. The alert for a certified document, one a signature locks, a signed one whose change needs a rewrite, and Save As onto a signed file's own name (review round 2) each offers Save As; one for a damaged file doesn't, as a copy can't help it.
     #[test]
     fn a_signature_refusal_offers_save_as() {
-        for code in ["breaks_certification", "locked_by_signature", "signed_needs_copy", "signed_original"] {
+        use recto_agent::Code;
+        for code in [
+            Code::BREAKS_CERTIFICATION,
+            Code::LOCKED_BY_SIGNATURE,
+            Code::SIGNED_NEEDS_COPY,
+            Code::SIGNED_ORIGINAL,
+        ] {
             let problem = problem_for(&recto_agent::AgentError::new(code, "refused", recto_agent::exit::FAILED));
             assert_eq!(problem.save_as_title.as_deref(), Some("Save As…"), "{code}");
         }
         assert_eq!(
-            problem_for(&recto_agent::AgentError::new("damaged", "refused", recto_agent::exit::FAILED)).save_as_title,
+            problem_for(&recto_agent::AgentError::new(Code::DAMAGED, "refused", recto_agent::exit::FAILED)).save_as_title,
             None
         );
     }

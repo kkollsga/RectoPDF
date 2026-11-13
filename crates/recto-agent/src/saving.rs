@@ -13,6 +13,8 @@
 //! a backup of the original: nothing is lost. It may Save As to a new file, which changes nothing that exists. Replacing another file, and a save
 //! that rewrites the file, which takes what was removed out of it for good, need Full. Read-only and Off can't save.
 
+use crate::Code;
+use crate::TabRef;
 use crate::{AgentError, Event, Level, SessionAccess, exit, file_label, select};
 use recto_core::save::{AddedFile, PageRef, SaveError, SaveHooks, SaveOutcome, SaveRequest, SaveStep, Target, Writer};
 use recto_platform::FileStamp;
@@ -100,18 +102,18 @@ fn from_save(error: &SaveError) -> AgentError {
         SaveError::NoPagesLeft => "Keep at least one of the file's own pages, or tell the user. The edits stay unsaved, and nothing is lost.",
         _ => "Tell the user what failed. The edits are still here, unsaved, and the file is as it was.",
     };
-    AgentError::new(error.code(), error.message(), exit).then(next)
+    AgentError::new(Code::lower(error.code()), error.message(), exit).then(next)
 }
 
 fn needs_full(what: &str) -> AgentError {
-    let mut error = AgentError::new("permission_denied", format!("{what} needs Full access."), exit::PERMISSION);
+    let mut error = AgentError::new(Code::PERMISSION_DENIED, format!("{what} needs Full access."), exit::PERMISSION);
     error.next = "Run `recto permission request full`, which tells the user what to allow. Nothing else raises this.".to_string();
     error.ask = Some("recto permission request full".into());
     error
 }
 
 fn bad_path(message: &str) -> AgentError {
-    AgentError::new("bad_save_path", message, exit::USAGE).then("Choose a name ending in .pdf, in a folder that isn't hidden or in ~/Library.")
+    AgentError::new(Code::BAD_SAVE_PATH, message, exit::USAGE).then("Choose a name ending in .pdf, in a folder that isn't hidden or in ~/Library.")
 }
 
 /// What's wrong with a place to write a file, by the rules every write path keeps (review of Save): the name has the right ending; no part of the path, as given or as it leads, is hidden (a dotfile like `~/.zshenv` is run by a shell); and nothing goes in `~/Library`, where the system and apps keep files they act on.
@@ -177,7 +179,7 @@ pub fn check_save_path(out: &Path) -> Result<(), AgentError> {
 pub fn check_export_path(out: &Path, endings: &[&str], kind: &str) -> Result<(), AgentError> {
     let suggested = endings.first().copied().unwrap_or("");
     let bad = |message: String| {
-        AgentError::new("bad_output", message, exit::FAILED)
+        AgentError::new(Code::BAD_OUTPUT, message, exit::FAILED)
             .then(format!("Choose a name ending in .{suggested}, in a folder that isn't hidden or in ~/Library."))
     };
     let listed = endings.iter().map(|ending| format!(".{ending}")).collect::<Vec<_>>().join(" or ");
@@ -196,7 +198,7 @@ pub fn check_export_path(out: &Path, endings: &[&str], kind: &str) -> Result<(),
 
 /// The tab to save, unless its edits were made on another version of the file than the one there: those are saved nowhere, here or as a copy, as they'd
 /// land on its pages. What's known decides ([`recto_session::Notices::fit`]); a change since the last look is the save's own to find.
-fn tab_to_save<L: recto_session::DocLoader>(s: &recto_session::Session<L>, tab: &str) -> Result<recto_session::TabId, AgentError> {
+fn tab_to_save<L: recto_session::DocLoader>(s: &recto_session::Session<L>, tab: &TabRef) -> Result<recto_session::TabId, AgentError> {
     let id = select(s, tab)?;
     match crate::unfit::refusal(s.notices().fit(id), crate::unfit::Asked::Save) {
         Some(refused) => Err(refused),
@@ -228,7 +230,7 @@ fn as_said(error: SaveError, request: &SaveRequest<'_>, to: &SaveTo) -> SaveErro
 }
 
 /// **Saves a tab.** The one way an agent, the CLI or the app saves.
-pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &TabRef, to: &SaveTo, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     let mut to = to.clone();
     // Save As onto the tab's own file, which is a Save: a signed one's refusal then says to choose another name, not to use Save As.
     let mut onto_itself = false;
@@ -254,7 +256,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
         })?;
         if elsewhere {
             return Err(AgentError::new(
-                "open_in_another_tab",
+                Code::OPEN_IN_ANOTHER_TAB,
                 "That file is open in another tab, so it isn't replaced. A PDF can only be open once.",
                 exit::FAILED,
             )
@@ -350,7 +352,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
         }
         Err(SaveError::SignedNeedsCopy) if onto_itself => {
             drop(ending);
-            return Err(AgentError::new("signed_original", "This document is signed, so it isn't saved over, even by Save As onto its own name. Choose another name for the new copy, which won't be signed. Nothing was written, and the original keeps its signature.", exit::FAILED).then("Choose a new name: `recto save-as --out <new.pdf>`."));
+            return Err(AgentError::new(Code::SIGNED_ORIGINAL, "This document is signed, so it isn't saved over, even by Save As onto its own name. Choose another name for the new copy, which won't be signed. Nothing was written, and the original keeps its signature.", exit::FAILED).then("Choose a new name: `recto save-as --out <new.pdf>`."));
         }
         Err(error) => {
             drop(ending);
