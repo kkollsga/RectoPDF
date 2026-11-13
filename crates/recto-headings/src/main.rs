@@ -4,6 +4,8 @@
 //!
 //! **Limits, from outside:** the session reads this process's footprint and kills it past its limit, and past its time. It's started with `MallocLargeCache=0`, which took distillPDF's page path on the 383-page NASA report from 281 MiB to 39 MiB of footprint, since the system allocator otherwise keeps freed large blocks dirty. As a second line it watches itself, and leaves past the limit it was given. The render worker it uses for the check for hidden text has limits of its own, half a reader's.
 
+mod hooks;
+
 use recto_headings::{Failure, InkSource, PageInk, Scan, find_headings, keep_visible};
 use recto_index::corpus::CorpusKey;
 use recto_render_service::{DocRenderer, Policy, RenderStats, ServiceConfig};
@@ -104,6 +106,8 @@ fn main() {
     let (Some(file), Some(key)) = (job["file"].as_str().map(PathBuf::from), job["key"].as_str().and_then(CorpusKey::from_hex)) else {
         return failed("bad_job");
     };
+    let faults = hooks::apply(&job);
+    let _faults = faults;
     // Whoever started this has gone or wants it stopped.
     let _ = std::thread::Builder::new().name("stdin".into()).stack_size(64 * 1024).spawn(|| {
         let mut sink = [0u8; 64];
@@ -121,6 +125,7 @@ fn main() {
         });
     }
     let scan = if job["scan"] == "typography" { Scan::Typography } else { Scan::Full };
+    hooks::busy(&job);
     let started = Instant::now();
     report(&file, key, scan, started);
 }

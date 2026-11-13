@@ -5,7 +5,7 @@ use recto_index::generated::Generated;
 use recto_testpdf::TempPdf;
 use serde_json::{Value, json};
 use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 fn run(path: &std::path::Path, key: CorpusKey, close_stdin: bool) -> (Value, Option<Generated>, Duration) {
@@ -146,4 +146,88 @@ fn headings_in_heavy_type_stay() {
         ["1 Introduction", "2 Background", "3 Method", "4 Results", "5 Discussion", "6 Conclusion"],
         "{report}"
     );
+}
+
+/// How long the helper has to be gone once it has a reason to go (stdin closed, memory limit passed), whatever its main thread is doing. It's a rule, not a measure of speed: the faults below hold the helper for 15 s or 30 s, so only going at once passes, and a starved machine has to be 10 times slower than this one to fail it by itself.
+const GONE_WITHIN: Duration = Duration::from_secs(5);
+
+/// What the helper did, said so a failure explains itself.
+struct Went {
+    status: Option<ExitStatus>,
+    said: String,
+    elapsed: Duration,
+}
+
+impl Went {
+    fn describe(&self) -> String {
+        match self.status {
+            Some(status) => format!("exited {status} after {:?}, said {:?}", self.elapsed, self.said),
+            None => format!("was still alive after {:?} and was killed, said {:?}", self.elapsed, self.said),
+        }
+    }
+}
+
+fn wait_for(child: &mut Child, bound: Duration) -> Option<ExitStatus> {
+    let until = Instant::now() + bound;
+    while Instant::now() < until {
+        if let Some(status) = child.try_wait().unwrap() {
+            return Some(status);
+        }
+        std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
+    }
+    None
+}
+
+/// Starts the helper on a small valid PDF with `job`'s extra fields (a debug build reads the `test_` ones), closes its stdin or keeps it open, and waits at most `bound` for it to go.
+fn start_and_wait(extra: Value, close_stdin: bool, bound: Duration) -> Went {
+    let pdf = TempPdf::new("small.pdf", &recto_testpdf::headings_document());
+    let key = CorpusKey::of_file(&pdf.0).unwrap();
+    let mut job = json!({ "file": pdf.0, "key": key.hex() });
+    job.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+    let started = Instant::now();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_recto-headings"))
+        .env_clear()
+        .env("MallocLargeCache", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(stdin, "{job}").unwrap();
+    let held_open = (!close_stdin).then_some(stdin);
+    let status = wait_for(&mut child, bound);
+    let elapsed = started.elapsed();
+    if status.is_none() {
+        let _ = child.kill();
+    }
+    let mut said = String::new();
+    let _ = child.stdout.take().unwrap().read_to_string(&mut said);
+    let _ = child.wait();
+    drop(held_open);
+    Went { status, said, elapsed }
+}
+
+/// Failure: a helper whose stdin closed is kept by something in its own process, as `std::process::exit` is by an exit handler or a destructor waiting on a lock (the 2026-11-13 failure: it worked 5.3 s after its stdin closed). Here its main thread is busy for 30 s and an exit handler stalls for 15 s, and it still has to go, quietly, within the bound.
+#[test]
+fn it_goes_at_once_when_its_stdin_closes_whatever_it_is_doing() {
+    let went = start_and_wait(json!({ "test_busy_ms": 30_000, "test_stall_exit_ms": 15_000 }), true, GONE_WITHIN);
+    assert!(went.status.is_some_and(|status| status.success()) && went.said.is_empty(), "closing its stdin didn't stop it: it {}", went.describe());
+}
+
+/// Failure: a helper past its memory limit stays, because its way out waits on something, so a hostile file keeps a gigabyte until the session's own watch notices. It has to go with the over-the-limit code (3) and no report.
+#[test]
+fn it_goes_at_once_when_it_passes_its_memory_limit() {
+    let extra = json!({ "memory_limit": 100u64 << 20, "test_hold_mib": 300, "test_busy_ms": 30_000, "test_stall_exit_ms": 15_000 });
+    let went = start_and_wait(extra, false, GONE_WITHIN);
+    assert!(went.status.is_some_and(|status| status.code() == Some(3)) && went.said.is_empty(), "past its memory limit it didn't stop: it {}", went.describe());
+}
+
+/// Failure: a helper that couldn't start its watchers (a thread that wouldn't spawn) runs the job without them, so nothing makes it go when its parent has, or when it grows. It has to refuse the job with a plain code and do none of it.
+#[test]
+fn it_refuses_the_job_when_it_cant_start_its_watchers() {
+    let went = start_and_wait(json!({ "memory_limit": 512u64 << 20, "test_spawn_fails": true }), false, GONE_WITHIN);
+    let report: Value = serde_json::from_str(went.said.lines().next().unwrap_or("null")).unwrap_or(Value::Null);
+    assert!(went.status.is_some() && report["state"] == "failed" && report["code"] == "no_watch", "it did the job without its watchers: it {}", went.describe());
+    assert_eq!(went.said.lines().count(), 1, "{}", went.describe());
 }
