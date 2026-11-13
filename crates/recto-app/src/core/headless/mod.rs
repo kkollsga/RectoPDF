@@ -11,4 +11,5 @@ mod passwords;
 mod quit;
 mod recent;
 mod selection;
+mod sidebar;
 mod update;

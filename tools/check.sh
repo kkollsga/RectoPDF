@@ -222,7 +222,7 @@ names_or_stop() {
 # says the remake happened (`record.remade`); a tab woken from its sleep file late is `slow::a_slow_run_waits_at_every_seam_it_passes`. Here: the one
 # whole-state test with every seam late, the first frame drawn through late workers, the switch's own check, and the late-state tests whose twins are still
 # to come (PLAN R1.4).
-SLOW_TESTS='test(=slow_stage::everything_comes_back_after_a_quit_when_every_wait_is_late) | test(=the_hidden_sidebar_and_each_tabs_layout_come_back) | test(=a_protected_tab_asks_again_after_a_quit) | test(=the_first_frame_is_the_right_one) | test(=what_is_done_before_a_late_state_comes_in_isnt_lost) | test(=slow::a_quiet_run_with_no_switch_is_never_slow)'
+SLOW_TESTS='test(=slow_stage::everything_comes_back_after_a_quit_when_every_wait_is_late) | test(=a_protected_tab_asks_again_after_a_quit) | test(=the_first_frame_is_the_right_one) | test(=what_is_done_before_a_late_state_comes_in_isnt_lost) | test(=slow::a_quiet_run_with_no_switch_is_never_slow)'
 export SLOW_TESTS
 # How a run is shaped, set below from the mode and what changed, and read by `run`:
 #   tests_first    the crates whose tests go first (what changed is most likely to fail)
