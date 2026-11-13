@@ -1,4 +1,5 @@
-//! What passes between the session and the page view outside a call: the pages lately drawn, the jumps it hasn't taken yet, and that an edit took away the page being read.
+//! What passes between the session and the page view outside a call: the pages lately drawn, the jumps it hasn't taken yet and those it's been sent and
+//! hasn't told of yet, and that an edit took away the page being read.
 
 use crate::trail::Stop;
 use crate::{DrawNote, MAX_DRAWS_KEPT, TabId};
@@ -11,6 +12,10 @@ pub(crate) struct PageViewMail {
     draws: VecDeque<DrawNote>,
     /// Jumps the page view hasn't taken yet, with how far down the page to land: one per tab at most, the latest.
     jumps: Vec<(TabId, Stop)>,
+    /// **Jumps the session thread's look has sent the page view and the view hasn't told of yet,** one per tab at most, the latest: where the session has
+    /// sent the reader, until a look takes in the view's word after it. What the view said before the send, taken in by a command between that look and its
+    /// step, is about where it was before the jump.
+    sent: Vec<(TabId, Stop)>,
     /// The last edit removed the page a tab was on, so its place moved to the nearest one. Read once with [`crate::Session::take_place_lost`].
     place_lost: bool,
 }
@@ -30,9 +35,10 @@ impl PageViewMail {
         self.draws.iter().rev().find(|d| (d.tab, d.page) == (tab, page)).copied()
     }
 
-    /// A tab's pages are no longer what was drawn of them.
+    /// A tab's pages are no longer what was drawn of them, and a jump it was sent is about the pages as they were.
     pub(crate) fn forget_draws(&mut self, tab: TabId) {
         self.draws.retain(|d| d.tab != tab);
+        self.forget_sent(tab);
     }
 
     /// A jump in a tab for the page view to take, in place of any it hasn't.
@@ -49,6 +55,24 @@ impl PageViewMail {
     pub(crate) fn take_jump(&mut self, id: TabId) -> Option<Stop> {
         let at = self.jumps.iter().position(|(tab, _)| *tab == id)?;
         Some(self.jumps.swap_remove(at).1)
+    }
+
+    /// A jump the look has sent the page view, in place of any it had.
+    pub(crate) fn sent(&mut self, id: TabId, to: Stop) {
+        self.forget_sent(id);
+        self.sent.push((id, to));
+    }
+
+    /// The jump a tab's page view was sent and hasn't told of yet.
+    pub(crate) fn sent_jump(&self, tab: TabId) -> Option<Stop> {
+        self.sent.iter().find(|(id, _)| *id == tab).map(|(_, stop)| *stop)
+    }
+
+    /// The page view has told of where it is since, or the tab's moved on: the jump it was sent is no longer where the reader is.
+    pub(crate) fn forget_sent(&mut self, tab: TabId) {
+        if let Some(at) = self.sent.iter().position(|(id, _)| *id == tab) {
+            self.sent.swap_remove(at);
+        }
     }
 
     pub(crate) fn set_place_lost(&mut self, lost: bool) {
@@ -77,6 +101,6 @@ impl PageViewMail {
 
     #[cfg(test)]
     pub(crate) fn no_jumps(&self) -> bool {
-        self.jumps.is_empty()
+        self.jumps.is_empty() && self.sent.is_empty()
     }
 }

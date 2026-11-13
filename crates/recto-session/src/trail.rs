@@ -138,7 +138,7 @@ fn push_capped(list: &mut Vec<Stop>, stop: Stop) {
 use super::*;
 
 impl<L: DocLoader> Session<L> {
-    /// Moves a tab to a zero-based page, clamped to the document.
+    /// Moves a tab to a zero-based page, clamped to the document. A jump its page view was sent is about the page it's left.
     pub fn go_to(&mut self, id: TabId, page: u32) -> Result<(), SessionError> {
         let pages = self.pages_in(id);
         let tab = self.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
@@ -146,19 +146,22 @@ impl<L: DocLoader> Session<L> {
         if tab.page != page {
             tab.page = page;
             tab.place_dirty = true;
+            self.mail.forget_sent(id);
         }
         Ok(())
     }
 
-    /// **Where the reader is in a tab,** for a jump to mark: a jump the page view hasn't taken yet, while the tab is still on its page, as that's where the
-    /// session has sent the reader; or else the page, and how far down it if the page view has said lately. The page view's word is about where it was
-    /// before such a jump, and on the same page would mark the wrong place down it (Back straight after a jump on the page showing kept the old place for
-    /// Forward).
+    /// **Where the reader is in a tab,** for a jump to mark, while the tab is still on the page it went to: a jump the page view hasn't taken yet, then
+    /// one it's been sent and hasn't told of yet, as each is where the session has sent the reader; or else the page, and how far down it if the page view
+    /// has said lately. The page view's word is about where it was before such a jump, and on the same page would mark the wrong place down it: Back
+    /// straight after a jump on the page showing kept the old place for Forward, and so did Back whose take-in of the views' places came just before the
+    /// session thread's look sent the jump (the word taken in was the view's from before it).
     pub fn here(&self, id: TabId) -> Option<trail::Stop> {
         let tab = self.tab(id)?;
         // Only while it's still where the tab is: a move since that sent the page view no jump of its own, as Find's step, is the newer.
-        if let Some(waiting) = self.mail.waiting_jump(id).filter(|waiting| waiting.page == tab.page) {
-            return Some(trail::Stop::new(waiting.page, f64::from(waiting.within)));
+        let on_page = |stop: &trail::Stop| stop.page == tab.page;
+        if let Some(jump) = self.mail.waiting_jump(id).filter(on_page).or_else(|| self.mail.sent_jump(id).filter(on_page)) {
+            return Some(trail::Stop::new(jump.page, f64::from(jump.within)));
         }
         let within = tab
             .reading
@@ -182,22 +185,8 @@ impl<L: DocLoader> Session<L> {
         self.land(id, to)
     }
 
-    /// Back in a tab's trail, by the person. Says whether there was anywhere to go.
-    pub fn go_back(&mut self, id: TabId) -> Result<bool, SessionError> {
-        self.step_trail(id, true, Author::Owner)
-    }
-
-    /// Forward in a tab's trail, the same way.
-    pub fn go_forward(&mut self, id: TabId) -> Result<bool, SessionError> {
-        self.step_trail(id, false, Author::Owner)
-    }
-
-    /// Back or forward, by the person or an agent.
+    /// Back (`back`) or forward in a tab's trail, by the person or an agent. Says whether there was anywhere to go.
     pub fn step_as(&mut self, id: TabId, back: bool, by: Author) -> Result<bool, SessionError> {
-        self.step_trail(id, back, by)
-    }
-
-    fn step_trail(&mut self, id: TabId, back: bool, by: Author) -> Result<bool, SessionError> {
         let here = self.here(id).ok_or(SessionError::NoSuchTab)?;
         let agent = by == Author::Agent;
         let Some(trail) = self.tab_mut(id).and_then(|tab| tab.reading.trail.as_deref_mut()) else {
@@ -235,6 +224,17 @@ impl<L: DocLoader> Session<L> {
     /// The last jump in a tab the page view hasn't taken, with how far down to land. Taken once.
     pub fn take_jump(&mut self, id: TabId) -> Option<trail::Stop> {
         self.mail.take_jump(id)
+    }
+
+    /// **What the session thread's look has had a tab's page view do,** said by the look alone, as only it sends jumps and only its read of a view comes
+    /// after everything that view was sent. `Some(jump)`: the jump taken with [`Self::take_jump`] has been sent, and is where the reader is ([`Self::here`])
+    /// until the view tells of where it is after it. `None`: the look has taken in the view's word on the tab, which came after any jump sent before, so no
+    /// sent jump is where the reader is any more.
+    pub fn view_sent(&mut self, id: TabId, jump: Option<trail::Stop>) {
+        match jump {
+            Some(jump) => self.mail.sent(id, jump),
+            None => self.mail.forget_sent(id),
+        }
     }
 }
 

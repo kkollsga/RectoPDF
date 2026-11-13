@@ -58,12 +58,15 @@ impl Said {
 
     /// **Takes in what was said, by [`is_views_own`],** with the session held. `sent` is what each pane's view was last sent, `waiting` the tabs with a
     /// jump the session thread is about to send. A tab a view holds but doesn't show is taken as it was left. Says each pane whose reader moved to another
-    /// page, which the session now has, with that page, and announces it.
+    /// page, which the session now has, with that page, and announces it. `at_the_look`: this is the session thread's look, whose read of a view came after
+    /// every jump that view was sent, as looks alone send them; so a place it takes in is told of after any jump sent before, which is then forgotten
+    /// ([`recto_session::Session::view_sent`]). A command's read can come before a look's send, and forgets nothing.
     pub fn take_in(
         self,
         session: &mut recto_session::Session<DrawableLoader>,
         sent: &[Option<Sent>],
         waiting: &[(TabId, Stop)],
+        at_the_look: bool,
         events: &mut Vec<Event>,
     ) -> Vec<(usize, u32)> {
         if let Some((tab, range)) = self.selection {
@@ -103,6 +106,9 @@ impl Said {
                     continue;
                 }
                 session.note_place(id, place_record(&saved));
+                if at_the_look {
+                    session.view_sent(id, None);
+                }
             }
         }
         went
@@ -111,13 +117,17 @@ impl Said {
 
 impl Said {
     /// **What the session thread's look takes in,** with the session held: the jumps it's about to send are taken first, then what the views said by
-    /// [`is_views_own`], with the pages the readers moved to kept as what each pane's view now has. The jumps go back, for the look to send.
+    /// [`is_views_own`], with the pages the readers moved to kept as what each pane's view now has. The jumps go back, for the look to send, each kept by
+    /// the session as sent until a later look takes in the view's word after it.
     pub fn take_in_at_the_look(self, session: &mut recto_session::Session<DrawableLoader>, synced: &mut Synced, events: &mut Vec<Event>) -> Vec<(TabId, Stop)> {
         let jumps: Vec<(TabId, Stop)> = session.panes().into_iter().filter_map(|id| Some((id, session.take_jump(id)?))).collect();
-        for (pane, page) in self.take_in(session, &sent_to_views(synced), &jumps, events) {
+        for (pane, page) in self.take_in(session, &sent_to_views(synced), &jumps, true, events) {
             if let Some(pane) = synced.panes.get_mut(pane) {
                 pane.page = page;
             }
+        }
+        for (id, jump) in &jumps {
+            session.view_sent(*id, Some(*jump));
         }
         jumps
     }
@@ -150,15 +160,15 @@ fn place_record(saved: &SavedPlace) -> PlaceRecord {
 impl Inner {
     /// **Takes in where the page views say each tab they hold is,** by [`is_views_own`]: before a command jumps or steps, so the trail marks where the
     /// view really is, and before the record is written. The pages the readers moved to are left for the session thread's look, which alone knows which
-    /// jumps it's about to send. A jump on the page already showing, still waiting, isn't seen from here; the mark doesn't need it to be, as the session
-    /// answers where the reader is from that jump itself (`Session::here`).
+    /// jumps it's about to send. A jump on the page already showing, waiting or sent by a look and not yet told of, isn't seen from here; the mark doesn't
+    /// need it to be, as the session answers where the reader is from that jump itself (`Session::here`), and a look can send it between this and the step.
     pub fn take_places(&self) {
         let said = Said::read(self, false);
         #[cfg(any(test, feature = "testkit"))]
         self.serving.on_taking_places.read();
         let sent = self.panes.sent();
         self.host.session.with_session(|session| {
-            said.take_in(session, &sent, &[], &mut Vec::new());
+            said.take_in(session, &sent, &[], false, &mut Vec::new());
         });
         #[cfg(any(test, feature = "testkit"))]
         self.serving.on_taking_places.taken();
