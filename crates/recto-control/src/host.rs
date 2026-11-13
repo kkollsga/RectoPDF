@@ -102,6 +102,8 @@ struct Hosted<'a, L> {
     places: Option<&'a Places>,
     /// How what a command needs is read, on a host that mustn't wait on a disk: the window's session thread. None everywhere else.
     reads_later: Option<&'a dyn recto_agent::later::ReadLater>,
+    /// Whether the answer is read: not on the window's session thread, which draws what the session publishes.
+    answer_read: bool,
     own_record: Option<own_record::OwnRecord<'a, L>>,
 }
 
@@ -141,6 +143,9 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
     }
     fn reads_later(&self) -> Option<&dyn recto_agent::later::ReadLater> {
         self.reads_later
+    }
+    fn answer_read(&self) -> bool {
+        self.answer_read
     }
 }
 
@@ -275,12 +280,14 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             effects: self.effects.get(),
             places: self.places.get(),
             reads_later: None,
+            answer_read: true,
             own_record: self.record.as_ref().map(|store| own_record::OwnRecord { session: &self.session, store }),
         }
     }
 
     /// **A command on a thread that mustn't wait on a disk,** the window's session thread: what it needs from a file is read by `reads`, off this thread, and it
-    /// runs again once that's in ([`recto_agent::later`]). Otherwise as [`Host::run`].
+    /// runs again once that's in ([`recto_agent::later`]). Its answer isn't read, as the window draws what the session publishes, so a command that would build
+    /// a costly one doesn't (`SessionAccess::answer_read`). Otherwise as [`Host::run`].
     pub fn run_reading_later(
         &self,
         actor: Actor,
@@ -291,6 +298,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         self.run_on(
             &Hosted {
                 reads_later: Some(reads),
+                answer_read: false,
                 ..self.access()
             },
             actor,

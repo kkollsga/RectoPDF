@@ -79,6 +79,13 @@ fn measure(tabs: usize) {
             adding: false,
         });
     });
+    // A file that's open already, opened again, as the Open panel, a drop or the Finder does: its tab comes to the front, with nothing read.
+    let (file_a, file_b) = (files[files.len() - 1].clone(), files[files.len().saturating_sub(2)].clone());
+    case(&app, "open its tab", tabs, nothing, |app, first| {
+        app.act(UiAction::Open {
+            path: if first { file_b.clone() } else { file_a.clone() },
+        });
+    });
     app.act(UiAction::Row { row: a.clone(), adding: false });
     app.settle();
     let contents = |page: u32| crate::SidebarRow {
@@ -121,12 +128,28 @@ fn measure(tabs: usize) {
             id: (if first { "view.zoom_in" } else { "view.zoom_out" }).into(),
         });
     });
+    // The panel's Rotate, every page as one step, as outside edit mode.
+    case(&app, "rotate", tabs, nothing, |app, first| {
+        app.act(UiAction::Menu {
+            id: (if first { "rotate.right" } else { "rotate.left" }).into(),
+        });
+    });
     let rotate = |app: &HeadlessApp| {
         app.act(UiAction::Menu { id: "rotate.right".into() });
         assert!(app.core().core.flush(WAIT_LIMIT));
     };
     case(&app, "undo", tabs, rotate, |app, _| {
         app.act(UiAction::Menu { id: "edit.undo".into() });
+    });
+    // A file that isn't open, opened as the Open panel does: read off the session thread, and its tab made. A flush waits for the reads before it, so this
+    // is the read too. Closed again, untimed, before each; the first close is of the edited tab in front, and is refused.
+    let new = app.disk().pdf("new.pdf", 10);
+    let close_it = |app: &HeadlessApp| {
+        let _ = app.agent(recto_agent::Level::Full, r#"{"cmd":"close"}"#);
+        app.settle();
+    };
+    case(&app, "open new file", tabs, close_it, |app, _| {
+        app.act(UiAction::Open { path: new.clone() });
     });
     drop(app.quit());
 }

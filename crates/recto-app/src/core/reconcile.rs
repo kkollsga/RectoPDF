@@ -26,16 +26,6 @@ pub fn compare_click_now(inner: &Inner, id: TabId, events: &mut Vec<Event>) {
     }
 }
 
-/// What a tap on a tab does, once whatever it needs from disk is here.
-pub fn tap_now(inner: &Inner, id: TabId, events: &mut Vec<Event>) {
-    let host = &inner.host;
-    host.session.with_session(|session| {
-        if let Ok(switched) = session.tap(id) {
-            recto_agent::event::switched(session, switched, events);
-        }
-    });
-}
-
 /// The session's word for a layout, as the page view has it.
 pub fn reader_spread(spread: record::Spread) -> recto_reader::layout::Spread {
     match spread {
@@ -147,18 +137,6 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
 }
 
 /// Brings everything into line with the session, on the session thread. The place in a tab can move two ways, by the reader or by an agent, and each is passed to the other side.
-/// Closes a tab by the owner's word, throwing away its edits and history first if `discard`. A close the session refuses, as for edits made meanwhile, leaves it open.
-pub fn close_tab(host: &AppHost, id: TabId, discard: bool, events: &mut Vec<Event>) {
-    host.session.with_session(|session| {
-        if discard {
-            session.discard_edits(id);
-        }
-        if let Ok(closed) = session.close(id) {
-            recto_agent::event::closed(session, closed, events);
-        }
-    });
-}
-
 pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let nothing_held = lock(&inner.life.holding_tab).is_none();
     // A tab about to be shown in a pane that wasn't: its file's looked at first, so nothing of a version that's been replaced goes up, held or not.

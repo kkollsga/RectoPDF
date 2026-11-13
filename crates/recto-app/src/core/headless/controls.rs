@@ -33,17 +33,16 @@ fn place(action: &UiAction) -> (usize, usize) {
     (place, 19)
 }
 
-/// Failure (rule 3): a control the window has waits for the session's lock on the UI thread, so a command holding it (a save, a long read) freezes the window
-/// for as long: the zoom, now `view --zoom` run on the calling thread, would if it ran the session's part of `view`. Every kind of control, and every menu
-/// item, and a click on a link, called while another thread holds the session, each returns.
-#[test]
-fn every_control_returns_while_the_session_is_held() {
+/// An app with two files open, and one of every kind of control on it, every menu item among them.
+fn every_kind_of_control() -> (crate::testkit::headless::HeadlessApp, Vec<UiAction>) {
     let disk = Disk::new();
     let (a, b) = (disk.pdf("a.pdf", 4), disk.pdf("b.pdf", 4));
     let saved_as = disk.files().join("copy.pdf");
+    let not_open = disk.pdf("c.pdf", 2);
     let app = disk.start();
     app.open(&a);
     app.open(&b);
+    let recent_key = app.core().recent_files()[0].key.clone();
     let rows = app.tabs();
     let (row, tab) = (rows[0].clone(), rows[0].tab);
     let contents = crate::SidebarRow {
@@ -81,9 +80,32 @@ fn every_control_returns_while_the_session_is_held() {
         },
         UiAction::ToggleSidebar,
         UiAction::PaletteRun { id: "view.zoom_in".into() },
+        // The palette's tab row is a person's `tap`, and Clear Menu `recent clear` (C5c).
+        UiAction::PaletteRun { id: format!("tab:{tab}") },
+        UiAction::Menu { id: "recent.clear".into() },
+        // The panel's Rotate is a person's `page rotate`, resolved when it runs, and Undo and Redo `undo` and `redo` (C5d).
+        UiAction::Menu { id: "rotate.right".into() },
+        UiAction::Menu { id: "edit.undo".into() },
+        UiAction::Menu { id: "edit.redo".into() },
+        UiAction::Menu { id: "edit_mode.done".into() },
+        UiAction::Menu {
+            id: "edit.clear_history".into(),
+        },
+        // Opening a file that isn't open, and Open Recent's file, are a person's `open` (C5c).
+        UiAction::Open { path: not_open.clone() },
+        UiAction::OpenRecent { key: recent_key },
         UiAction::CloseAnswered {
             tab,
             choice: CloseChoice::Cancel,
+        },
+        // The close prompt's Save is the window's Save, on a thread of its own, and Don't Save `discard` and `close` (C5c).
+        UiAction::CloseAnswered {
+            tab,
+            choice: CloseChoice::Save,
+        },
+        UiAction::CloseAnswered {
+            tab,
+            choice: CloseChoice::DontSave,
         },
         UiAction::SaveAs {
             tab,
@@ -95,6 +117,15 @@ fn every_control_returns_while_the_session_is_held() {
         },
         UiAction::Row { row, adding: false },
     ]);
+    (app, actions)
+}
+
+/// Failure (rule 3): a control the window has waits for the session's lock on the UI thread, so a command holding it (a save, a long read) freezes the window
+/// for as long: the zoom, now `view --zoom` run on the calling thread, would if it ran the session's part of `view`. Every kind of control, and every menu
+/// item, and a click on a link, called while another thread holds the session, each returns.
+#[test]
+fn every_control_returns_while_the_session_is_held() {
+    let (app, actions) = every_kind_of_control();
     let mut kinds: Vec<usize> = actions.iter().map(|action| place(action).0).collect();
     kinds.sort_unstable();
     kinds.dedup();

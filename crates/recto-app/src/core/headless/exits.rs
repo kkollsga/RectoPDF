@@ -2,7 +2,6 @@
 //! a move, pages added from another PDF, a delete and the rotation of every page, each on a tab of its own; one way of leaving; and back, with every edit as it
 //! was, whose it was, its undo and redo, and no PDF changed by a byte. Twins of `recto-cli`'s `restore::exits`, which keeps what only the real app shows.
 
-use crate::queue::CoreCall;
 use crate::testkit::headless::{Disk, HeadlessApp};
 use recto_agent::Level;
 use recto_session::TabId;
@@ -158,7 +157,7 @@ fn every_edit_survives_sleep_and_a_kill_while_asleep() {
     assert_eq!(edits(&app), before, "after a kill while asleep");
     for doc in &docs {
         let tab = tab_of(&app, doc);
-        app.send(CoreCall::Tap(tab));
+        app.person(&format!(r##"{{"cmd":"tap","tab":"#{}"}}"##, tab.0));
         app.settle();
         let now = full(&app, &["edits", "--tab", &format!("#{}", tab.0)]);
         assert_eq!(
@@ -168,7 +167,7 @@ fn every_edit_survives_sleep_and_a_kill_while_asleep() {
             doc.kind
         );
     }
-    app.send(CoreCall::Tap(showing));
+    app.person(&format!(r##"{{"cmd":"tap","tab":"#{}"}}"##, showing.0));
     app.settle();
     assert_eq!(edits(&app), before, "woken, as they were");
     untouched(&docs, &extra);
@@ -204,7 +203,7 @@ fn every_edit_survives_printing_and_exporting() {
     let before = edits(&app);
     for doc in &docs {
         let tab = tab_of(&app, doc);
-        app.send(CoreCall::Tap(tab));
+        app.person(&format!(r##"{{"cmd":"tap","tab":"#{}"}}"##, tab.0));
         app.settle();
         let printed = app.disk().files().join(format!("{}-printed.pdf", doc.kind));
         full(&app, &["print", "--to-pdf", printed.to_str().expect("a path")]);

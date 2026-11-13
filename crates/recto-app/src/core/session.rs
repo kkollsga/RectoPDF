@@ -9,7 +9,7 @@ pub fn apply_restored(
     loaded: Loaded,
     synced: &mut Synced,
     reads: &mut FileReads,
-    deferred: &mut Vec<PathBuf>,
+    deferred: &mut Vec<Box<crate::queue::PersonCommand>>,
 ) -> Option<crate::lifecycle::Out> {
     let source: Arc<dyn HistorySource> = Arc::clone(&inner.saver.store) as Arc<dyn HistorySource>;
     inner.host.session.with_session(|session| {
@@ -113,8 +113,8 @@ pub fn apply_restored(
         return ready;
     }
     start_serving(inner);
-    for path in deferred.drain(..) {
-        inner.core.push(CoreCall::Open(path));
+    for run in deferred.drain(..) {
+        inner.core.push(CoreCall::Run(run));
     }
     ready
 }
@@ -205,7 +205,7 @@ pub fn start_serving(inner: &Arc<Inner>) {
 pub fn session_thread(inner: &Arc<Inner>) {
     let mut synced = Synced::default();
     let mut reads = FileReads::default();
-    let mut deferred: Vec<PathBuf> = Vec::new();
+    let mut deferred: Vec<Box<crate::queue::PersonCommand>> = Vec::new();
     loop {
         // Parked for the queue and the state's one deadline, and nothing else.
         let Some(call) = inner.core.next_or_due(|| {
@@ -239,10 +239,6 @@ pub fn session_thread(inner: &Arc<Inner>) {
             CoreCall::Reconcile => {}
             CoreCall::LookAtShown => look_at_shown(inner),
             CoreCall::Unlocked(ask, loaded, stamp, password) => unlocked(inner, ask, loaded, stamp, password, &mut events),
-            CoreCall::ClearRecent => {
-                host.session.with_session(|session| session.clear_recent());
-                inner.saver.write_soon();
-            }
             CoreCall::Restored(loaded) => {
                 let ready = apply_restored(inner, *loaded, &mut synced, &mut reads, &mut deferred);
                 // What every call ends with, and before the host's told, as it makes the window from what's published now: Find's field among it, or a field that had the keyboard comes back without it (CI, run 43062872948).
@@ -253,13 +249,17 @@ pub fn session_thread(inner: &Arc<Inner>) {
                 continue;
             }
             CoreCall::RestorePatienceOver => restore_patience_over(inner),
-            CoreCall::Open(path) if !inner.life.state_read() => {
-                deferred.push(path);
+            // An open waits for the state to be read, as what's opened goes over what comes back.
+            CoreCall::Run(run) if !inner.life.state_read() && opening::is_open(&run.command) => {
+                deferred.push(run);
                 continue;
             }
-            CoreCall::Tap(id) => tap(inner, &mut reads, id, &mut events),
-            CoreCall::Open(path) => open(inner, &mut reads, path),
-            CoreCall::Read(read) => reads.finished(inner, *read, &mut events),
+            CoreCall::Read(read) => {
+                // A person's command waiting for this read runs again now, in this call, as the window's own tap and open did.
+                if let Some(run) = reads.finished(inner, *read, &mut events) {
+                    let _ = person::run(inner, &mut reads, run, &mut events);
+                }
+            }
             CoreCall::SleepTabs(tabs, why) => {
                 inner.go_dormant(&tabs, why);
             }
@@ -272,18 +272,11 @@ pub fn session_thread(inner: &Arc<Inner>) {
             }
             CoreCall::FileLength(id, pages, version) => file_length(inner, &mut reads, id, pages, version),
             CoreCall::Events(list) => events.extend(list),
-            CoreCall::CloseTab(id, discard) => close_tab(host, id, discard, &mut events),
-            CoreCall::CloseAnswered(id, choice) => close_answered(inner, id, choice, &mut events),
-            CoreCall::CloseAfterSave(id) => close_after_save(inner, id, &mut events),
-            CoreCall::ClearEditHistory => clear_edit_history(inner),
             CoreCall::ContentsAction(id, action) => generated_contents::act(inner, id, action),
             CoreCall::GeneratedFinished => generated_contents::look_again(inner),
             CoreCall::GeneratedView(id, view, version) => host.session.with_session(|session| session.set_generated_view_for(id, view, version)),
             CoreCall::ToggleSection(id, entry) => host.session.with_session(|session| session.toggle_contents_section(id, entry)),
             CoreCall::Find(call) => find::act(inner, call, &mut events),
-            CoreCall::SetEditMode(on) => host.session.with_session(|session| session.set_edit_mode(on)),
-            CoreCall::Rotate(turns) => rotate(inner, turns, &mut events),
-            CoreCall::UndoOrRedo(undo) => undo_or_redo(inner, undo, &mut events),
             CoreCall::CompareClick(id) => compare_click(inner, &mut reads, id, &mut events),
             CoreCall::FocusPane(id) => focus_pane(inner, &mut reads, id, &mut events),
             CoreCall::SetSynced(on) => set_synced(inner, on, &mut events),
@@ -445,7 +438,15 @@ impl FileReads {
         }
     }
 
-    pub fn finished(&mut self, inner: &Arc<Inner>, read: FileRead, events: &mut Vec<Event>) {
+    /// A read that couldn't start (past the cap, which says so itself, or no thread) leaves no command waiting for it, which nothing would ever run.
+    pub fn forget_unless_running(&mut self, what: &Reading) {
+        if !self.running.contains(what) {
+            self.then.remove(what);
+        }
+    }
+
+    /// Takes a read in, and says the person's command it was for, if one's to run again now.
+    pub fn finished(&mut self, inner: &Arc<Inner>, read: FileRead, events: &mut Vec<Event>) -> Option<crate::queue::PersonCommand> {
         self.running.remove(&read.what);
         inner.life.reads_running.fetch_sub(1, Ordering::SeqCst);
         let host = &inner.host;
@@ -474,16 +475,12 @@ impl FileReads {
             Reading::Tab(tab) => {
                 let then = self.then.remove(&Reading::Tab(tab));
                 // Only if it's still what's wanted. If not, there's no telling how long till it's used, and it'll be read fresh when it's asked for.
-                if let Some(command) = then {
-                    if self.wanted_tab == Some(tab) {
-                        self.wanted_tab = None;
-                        host.session.with_session(|session| session.give_woken(tab, read.loaded, read.stamp));
-                        person::read_in(inner, *command, None);
-                    }
-                } else if self.wanted_tab == Some(tab) {
+                if let Some(command) = then
+                    && self.wanted_tab == Some(tab)
+                {
                     self.wanted_tab = None;
                     host.session.with_session(|session| session.give_woken(tab, read.loaded, read.stamp));
-                    tap_now(inner, tab, events);
+                    return Some(person::read_in(*command, None));
                 }
             }
             Reading::Compare(clicked, tab) => {
@@ -503,35 +500,18 @@ impl FileReads {
                         .with_session(|session| session.focus_pane(tab).then(|| recto_agent::event::tab_activated(session, tab))),
                 );
             }
-            Reading::File(path) if self.then.contains_key(&Reading::File(path.clone())) => {
-                let command = self.then.remove(&Reading::File(path.clone())).expect("looked at");
+            Reading::File(path) => {
+                let command = self.then.remove(&Reading::File(path.clone()))?;
                 let fetched = recto_agent::later::Fetched {
                     stamp: read.stamp,
                     facts: read.loaded,
                     history: read.history,
                     unlocked: read.unlocked,
                 };
-                person::read_in(inner, *command, Some((path, fetched)));
+                return Some(person::read_in(*command, Some((path, fetched))));
             }
-            Reading::File(path) => match read.loaded.map_err(SessionError::Open).and_then(|facts| {
-                host.session.with_session(|session| {
-                    if read.unlocked {
-                        session.open_unlocked(&path, facts, read.stamp)
-                    } else {
-                        session.open_with_facts(&path, facts, read.stamp, read.history)
-                    }
-                })
-            }) {
-                Ok(id) => {
-                    events.push(host.session.with_session(|session| recto_agent::event::tab_opened(session, id)));
-                }
-                // A protected file asks for its password, on the system's sheet, rather than only saying it needs one. After any other file asking, each with its own answer.
-                Err(SessionError::Open(OpenError::PasswordNeeded)) => {
-                    lock(&inner.tools.prompts.passwords).ask(passwords::Target::File, &path);
-                }
-                Err(error) => *lock(&inner.window.open_failure) = Some(error.message().to_string()),
-            },
         }
+        None
     }
 }
 

@@ -72,9 +72,17 @@ impl Twins {
 
     /// **Both apps show and keep the same:** the reader's model as the window pulls it, the sidebar's, and the record as it would be written, each with its
     /// disk's folder and its files' stamps (`file`: their inodes and times, which two disks never share) taken out. `except` names more record keys left out
-    /// of the comparison, which the caller checks itself (who a jump was by).
+    /// of the comparison, and fields of the window's models that say yes or no, which the caller checks itself (who a jump or an edit was by).
     pub fn assert_same(&self, what: &str, except: &[&str]) {
-        let shown = |app: &HeadlessApp, root: &str| format!("{:?} {:?}", app.reader(), app.sidebar()).replace(root, "<files>");
+        let shown = |app: &HeadlessApp, root: &str| {
+            let mut shown = format!("{:?} {:?}", app.reader(), app.sidebar()).replace(root, "<files>");
+            for key in except {
+                shown = shown
+                    .replace(&format!("{key}: true"), &format!("{key}: _"))
+                    .replace(&format!("{key}: false"), &format!("{key}: _"));
+            }
+            shown
+        };
         assert_eq!(
             shown(&self.person, &self.roots[0]),
             shown(&self.agent, &self.roots[1]),

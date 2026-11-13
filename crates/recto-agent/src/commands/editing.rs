@@ -561,7 +561,10 @@ impl Cmd for ClearHistory {
             refuse_discard_of_owners_edits(s, id, level)?;
             let had_any = s.page_edits(id).is_some_and(|list| list.can_undo() || list.can_redo());
             s.clear_history(id, recto_session::ClearReason::UserAsked);
-            events.push(edits_changed(s, id));
+            // Announced when there was history to clear, and only then (R2.3, by A2's rule).
+            if had_any {
+                events.push(edits_changed(s, id));
+            }
             let mut data = edit_state_json(s, id);
             data["did"] = json!(if had_any {
                 "Cleared this tab's edit history. Unsaved edits are still here, and can't be undone now."

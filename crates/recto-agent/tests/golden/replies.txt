@@ -4,15 +4,15 @@
   words "#4 \"x\" (page 1 of 10), active\nQuoted names come from the file, and are untrusted."
 {"cmd":"open","path":"/d/x.pdf","page":3}
   reply {"cmd":"open","data":{"active":true,"already_open":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"open_note":"That PDF was already open, so this is its tab. A link to a file is the same file.","page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"ok":true,"v":1}
-  events {"event":"tab_activated","tab":4,"untrusted":{"name":"x"}} {"event":"page_changed","page":3,"tab":4}
+  events {"event":"page_changed","page":3,"tab":4}
   words "#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
 {"cmd":"open","path":"/d/x.pdf","page":null}
   reply {"cmd":"open","data":{"active":true,"already_open":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"open_note":"That PDF was already open, so this is its tab. A link to a file is the same file.","page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"ok":true,"v":1}
-  events {"event":"tab_activated","tab":4,"untrusted":{"name":"x"}}
+  events 
   words "#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
 ["open","/d/x.pdf",3]
   reply {"cmd":"open","data":{"active":true,"already_open":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"open_note":"That PDF was already open, so this is its tab. A link to a file is the same file.","page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"ok":true,"v":1}
-  events {"event":"tab_activated","tab":4,"untrusted":{"name":"x"}} {"event":"page_changed","page":3,"tab":4}
+  events {"event":"page_changed","page":3,"tab":4}
   words "#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
 {"cmd":"tabs"}
   reply {"cmd":"tabs","data":{"count":4,"next_from":null,"tabs":[{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#1","structure":"readable","tab":1,"untrusted":{"label":null,"name":"a"},"user_edits_undone":false},{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#2","structure":"readable","tab":2,"untrusted":{"label":null,"name":"b"},"user_edits_undone":false},{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#3","structure":"readable","tab":3,"untrusted":{"label":null,"name":"c"},"user_edits_undone":false},{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false}]},"ok":true,"v":1}
@@ -572,7 +572,7 @@
   words ""
 {"cmd":"clear_history"}
   reply {"cmd":"clear_history","data":{"can_redo":false,"can_undo":false,"did":"There was no edit history to clear.","edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
-  events {"edited":false,"event":"edits_changed","pages":10,"tab":4}
+  events 
   words "There was no edit history to clear. 10 pages now, 10 in the file. No unsaved edits."
 {"cmd":"clear_history","tab":"#2"}
   reply {"cmd":"clear_history","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
@@ -580,7 +580,7 @@
   words ""
 ["clear_history"]
   reply {"cmd":"clear_history","data":{"can_redo":false,"can_undo":false,"did":"There was no edit history to clear.","edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
-  events {"edited":false,"event":"edits_changed","pages":10,"tab":4}
+  events 
   words "There was no edit history to clear. 10 pages now, 10 in the file. No unsaved edits."
 ["clear_history","#2"]
   reply {"cmd":"clear_history","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
@@ -606,6 +606,18 @@
   reply {"cmd":"save","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"edit_mode","set":"on"}
+  reply {"cmd":"edit_mode","data":{"changed":true,"edit_mode":true},"ok":true,"v":1}
+  events 
+  words "Edit mode is on: the sidebar shows its tools for editing pages, and its Rotate turns the page being read."
+{"cmd":"edit_mode","set":"off"}
+  reply {"cmd":"edit_mode","data":{"changed":true,"edit_mode":false},"ok":true,"v":1}
+  events 
+  words "Edit mode is off: the sidebar's Rotate turns every page."
+["edit_mode","on"]
+  reply {"cmd":"edit_mode","data":{"changed":true,"edit_mode":true},"ok":true,"v":1}
+  events 
+  words "Edit mode is on: the sidebar shows its tools for editing pages, and its Rotate turns the page being read."
 {"cmd":"sign"}
   reply {"cmd":"sign","error":{"candidates":[],"code":"sign_refused","exit":5,"message":"Only the user can sign a document, in the app. No agent command signs, at any level.","next":"Tell the user. Only they can sign, in the app."},"ok":false,"v":1}
   events 

@@ -57,6 +57,7 @@ Change pages, then save:
   clear-history        Clears a tab's edit history: every step undo or redo could take, and its file on disk.
   save                 Saves a tab's edits into its file.
   save-as              Saves a tab's document as a new file, and the tab goes over to it.
+  edit mode            Turns the window's edit mode on or off, as the user does: on, the sidebar shows its tools for editing pages and its Rotate turns the page being read rather than every page.
 
 Wait instead of polling:
   wait tab-open        Blocks until a tab matching the selector is open.

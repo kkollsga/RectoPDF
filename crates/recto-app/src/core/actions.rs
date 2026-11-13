@@ -28,7 +28,7 @@ impl Inner {
             .find(|file| file.key == key)
             .map(|file| PathBuf::from(&file.path));
         if let Some(path) = path {
-            self.core.push(CoreCall::Open(path));
+            super::opening::open(&self.core, path);
         }
     }
 
@@ -62,23 +62,23 @@ impl Inner {
                 return HostAction::FocusPalette;
             }
             menus::Action::OpenRecent(key) => self.open_recent(key),
-            menus::Action::ClearRecent => self.core.push(CoreCall::ClearRecent),
+            menus::Action::ClearRecent => super::opening::clear_recent(self),
             menus::Action::FindOpen => {
                 self.core.push(CoreCall::Find(find::FindCall::Open));
                 return HostAction::FocusFind;
             }
             menus::Action::FindStep(forward) => self.core.push(CoreCall::Find(find::FindCall::Step(forward, recto_agent::find::Going::Step))),
-            menus::Action::LeaveEditMode => self.core.push(CoreCall::SetEditMode(false)),
+            menus::Action::LeaveEditMode => self.edit_mode_for_person(false),
             menus::Action::Step(back) => self.step_for_person(back),
-            menus::Action::ClearEditHistory => self.core.push(CoreCall::ClearEditHistory),
+            menus::Action::ClearEditHistory => self.clear_history_for_person(),
             menus::Action::Zoom(zoom) => {
                 self.zoom_for_person(zoom);
             }
             menus::Action::ToggleSidebar => self.toggle_sidebar(),
             menus::Action::SetSpread(spread) => self.set_layout(spread),
-            menus::Action::Rotate(turns) => self.core.push(CoreCall::Rotate(turns)),
-            menus::Action::Undo => self.core.push(CoreCall::UndoOrRedo(true)),
-            menus::Action::Redo => self.core.push(CoreCall::UndoOrRedo(false)),
+            menus::Action::Rotate(turns) => self.rotate_for_person(turns),
+            menus::Action::Undo => self.undo_or_redo_for_person(true),
+            menus::Action::Redo => self.undo_or_redo_for_person(false),
             menus::Action::ToggleAgentIcon => self.toggle_agent_icon(),
             menus::Action::SetPaper(paper) => self.set_paper(paper),
             menus::Action::TogglePanel => {
@@ -103,7 +103,7 @@ impl Inner {
                     return HostAction::ConfirmClose;
                 }
                 if reader.shown_tab != 0 {
-                    self.core.push(CoreCall::CloseTab(TabId(reader.shown_tab), false));
+                    self.close_for_person(TabId(reader.shown_tab));
                 }
             }
         }

@@ -68,7 +68,7 @@ impl SaveSupport for AppSaving {
     }
 }
 
-/// **A save from the window, off the UI thread,** through the same command an agent's `recto save` runs, at the owner's level. `out` makes it a Save As. `close_after` closes the tab once it's saved, for the close prompt's Save. A hand-off waits for it, as it's a running command.
+/// **A save from the window, off the UI thread,** through the same command an agent's `recto save` runs, as the person's. `out` makes it a Save As. `close_after` closes the tab once it's saved, for the close prompt's Save. A hand-off waits for it, as it's a running command.
 pub fn start_save(inner: &Arc<super::Inner>, tab: TabId, out: Option<std::path::PathBuf>, close_after: bool) {
     // When the person answered Save As's sheet: a file made at that name after this isn't one they agreed to replace (review).
     let answered = std::time::SystemTime::now();
@@ -108,7 +108,7 @@ fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
         replace,
     });
     let mut events = Vec::new();
-    match inner.host.run(recto_agent::Actor::Agent(recto_agent::Level::Full), &command, &mut events) {
+    match inner.host.run(recto_agent::Actor::Person, &command, &mut events) {
         Ok(data) => {
             let notes: Vec<&str> = data["notes"]
                 .as_array()
@@ -119,7 +119,7 @@ fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
             // Watchers hear it was saved before they hear it closed.
             inner.core.push(super::CoreCall::Events(std::mem::take(&mut events)));
             if close_after {
-                inner.core.push(super::CoreCall::CloseAfterSave(id));
+                super::closing::after_save(inner, id);
             }
         }
         Err(error) => inner.tools.save_ui.set_problem(Some(app::problem_for(&error))),
@@ -127,8 +127,8 @@ fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
     inner.core.push(super::CoreCall::Events(events));
 }
 
-/// **Saving and closing, as the window asks:** Save As's sheet and its answer, what closing a document asks and its answer, and a save's problem answered. What they
-/// say is `crate::saving`'s; the save itself, [`start_save`]'s.
+/// **Saving and closing, as the window asks:** Save As's sheet and its answer, what closing a document asks, and a save's problem answered. What they say
+/// is `crate::saving`'s; the save itself, [`start_save`]'s; the prompt's answer, `core/closing.rs`'s.
 impl super::Inner {
     /// What Save As's sheet says, for the tab showing. Never waits: from what's published.
     pub fn save_panel(&self) -> SavePanelModel {
@@ -157,18 +157,6 @@ impl super::Inner {
             save_off,
             self.tools.save_ui.disagreement_now().as_deref(),
         )
-    }
-
-    /// The close prompt's answer. Save closes once it's saved, and not if the save fails. Don't Save throws the edits away and closes. Save As opens its sheet, and the tab stays.
-    pub fn close_answered(&self, tab: u32, choice: CloseChoice) -> super::HostAction {
-        if tab == 0 {
-            return super::HostAction::None;
-        }
-        if choice == CloseChoice::SaveAs {
-            return super::HostAction::ShowSavePanel;
-        }
-        self.core.push(super::CoreCall::CloseAnswered(TabId(tab), choice));
-        super::HostAction::None
     }
 
     /// A save's problem was answered: with Save As, its sheet opens.

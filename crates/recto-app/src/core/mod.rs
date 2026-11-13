@@ -17,6 +17,7 @@ pub mod snapshot_tool;
 pub mod start;
 pub mod updates;
 
+mod closing;
 mod comparison;
 pub mod controls;
 mod editing;
@@ -34,7 +35,6 @@ mod viewing;
 pub mod zoom;
 
 use comparison::*;
-use editing::*;
 pub use host::*;
 use opening::*;
 pub use reconcile::*;
@@ -67,7 +67,7 @@ use recto_reader::tiles::PageMap;
 use recto_reader::{Engine, PaperKind};
 use recto_session::HistorySource;
 use recto_session::record::{self, AppRecord, Appearance, ContentsScroll, FileStatus, FocusRecord, SettingsWindow, WindowRecord, look_at_file};
-use recto_session::{ContentsFollow, DocLoader, DrawNote, Paper, SessionError, TabId, ViewSettings};
+use recto_session::{ContentsFollow, DocLoader, DrawNote, Paper, TabId, ViewSettings};
 use saver::Saver;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -593,9 +593,11 @@ impl Inner {
                 session.set_find(find.open, &find.query, value);
                 Ok(())
             }),
-            // What going in does, and what Done does.
+            // What going in does, and what Done does: the person's `edit mode on|off`.
             "edit_mode" => {
-                self.core.push(CoreCall::SetEditMode(value == "on"));
+                if let Some(inner) = self.saver.inner() {
+                    inner.edit_mode_for_person(value == "on");
+                }
                 self.core.flush(Duration::from_secs(5));
                 Ok(())
             }
@@ -853,7 +855,7 @@ mod tests {
         fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
     }
 
-    /// Failure (review 1 of the slow mode): an arm of the session thread's loop left it early, with `continue`, and skipped what every call ends with. The state's coming in announced nothing it did and left Find's field behind for the window made from it (CI, run 43062872948), and a flush's own changes were never announced. Only these leave early, each for its reason: an open before the state's in, put off whole; a drawn page, which announces itself and makes no view; and the state's coming in, after its tail, before the host's told.
+    /// Failure (review 1 of the slow mode): an arm of the session thread's loop left it early, with `continue`, and skipped what every call ends with. The state's coming in announced nothing it did and left Find's field behind for the window made from it (CI, run 43062872948), and a flush's own changes were never announced. Only these leave early, each for its reason: a person's open before the state's in, put off whole; a drawn page, which announces itself and makes no view; and the state's coming in, after its tail, before the host's told.
     #[test]
     fn every_call_on_the_session_thread_ends_with_what_every_call_ends_with() {
         let source = include_str!("session.rs");
@@ -874,7 +876,7 @@ mod tests {
                 early.push(arm);
             }
         }
-        assert_eq!(early, ["CoreCall::Restored", "CoreCall::Open", "CoreCall::Page"], "the arms that leave early");
+        assert_eq!(early, ["CoreCall::Restored", "CoreCall::Run", "CoreCall::Page"], "the arms that leave early");
         assert!(
             tail_before.contains("CoreCall::Restored"),
             "the state's coming in ends with the tail before it goes"

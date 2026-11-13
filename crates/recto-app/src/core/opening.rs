@@ -1,6 +1,78 @@
 //! **Opening and waking files, as the session thread does them:** a tap, an open, and a file that turned out other than the one asleep, each read off the thread.
+//! A tap on a tab's row, opening a file (the Open panel, a drop, the Finder, Open Recent, files named at launch) and File > Open Recent > Clear Menu are `tap`,
+//! `open` and `recent clear`, the commands an agent sends, run for the person (R2.3, C5c), with the window's own steps around them here: [`before`] and
+//! [`answered`].
 
 use super::*;
+use recto_agent::commands::Move;
+use recto_agent::commands::tabs::{Open, RecentClear, Tap};
+
+/// The tab a person's tap is for, as the window names it, `#3`.
+fn tap(tab: TabId) -> Command {
+    Tap { tab: format!("#{}", tab.0) }.into()
+}
+
+/// **The window's steps before a person's tap:** the tab's wake is timed from now, for how long it takes to show, as a tap always timed it; and it's the tab
+/// last asked for from here, so a read for another tab asked for before, landing later, doesn't take the window there. A tap that needs its tab read says
+/// it's wanted again as its read starts.
+///
+/// **And before a person's open:** it's what was asked for last, as a tap is; what it said of a failure before goes; and opening a file again is what starts
+/// its password tries afresh (SPEC), for the file by this name and the tab's own.
+pub fn before(inner: &Inner, reads: &mut FileReads, command: &Command) {
+    match command {
+        Command::Move(Move::Tap(Tap { tab })) => {
+            reads.wanted_tab = None;
+            if let Some(id) = tab.strip_prefix('#').and_then(|id| id.parse().ok()) {
+                inner.engine.note_wake(id, Instant::now());
+            }
+        }
+        Command::Move(Move::Open(Open { path, .. })) => {
+            reads.wanted_tab = None;
+            *lock(&inner.window.open_failure) = None;
+            let (tab, own) = inner.host.session.with_session(|session| {
+                let tab = session.tab_for_path(path);
+                (tab, tab.and_then(|id| session.path_of(id)))
+            });
+            lock(&inner.tools.prompts.passwords).opened_again(&[Some(path.clone()), own].into_iter().flatten().collect::<Vec<_>>(), tab);
+        }
+        _ => {}
+    }
+}
+
+/// **What the window does once a person's tab command has run:** a list of files opened lately that's been cleared is written at once, as Clear Menu always
+/// had it, and not when the record's next due. A tap that can't be done (a tab closed meanwhile) says nothing, as it never did.
+///
+/// **And once a person's open has:** a file that needs a password asks for it, on the system's sheet, rather than only saying it needs one; any other file
+/// that didn't open says why by the window, in the session's words.
+pub fn answered(inner: &Inner, ran: &person::Ran<'_>) {
+    match (ran.command, ran.refused()) {
+        (Command::Move(Move::RecentClear(_)), None) if ran.result.is_ok() => inner.saver.write_soon(),
+        (Command::Move(Move::Open(Open { path, .. })), Some(error)) if error.code == OpenError::PasswordNeeded.code() => {
+            lock(&inner.tools.prompts.passwords).ask(passwords::Target::File, path);
+        }
+        (Command::Move(Move::Open(_)), Some(error)) => {
+            if let Some(words) = person::session_words(error) {
+                *lock(&inner.window.open_failure) = Some(words.to_string());
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A file to open, for the person: `open`, queued for the session thread, which holds it until the state's been read, as an open always waited. Never waits.
+pub fn open(core: &CoreQueue, path: PathBuf) {
+    core.push(CoreCall::Run(crate::queue::PersonCommand::input(Open { path, page: None }.into())));
+}
+
+/// Whether a person's command is an open, which waits for the state to be read.
+pub fn is_open(command: &Command) -> bool {
+    matches!(command, Command::Move(Move::Open(_)))
+}
+
+/// File > Open Recent > Clear Menu: `recent clear`.
+pub fn clear_recent(inner: &Arc<Inner>) {
+    person::submit(inner, RecentClear {}.into());
+}
 
 /// `CoreCall::LookAtShown`, on the session thread.
 pub fn look_at_shown(inner: &Arc<Inner>) {
@@ -9,48 +81,6 @@ pub fn look_at_shown(inner: &Arc<Inner>) {
         for id in host.session.with_session(|session| session.panes()) {
             sleeper::check_woken_file(&inner, id);
         }
-    }
-}
-
-/// `CoreCall::Tap`, on the session thread.
-pub fn tap(inner: &Arc<Inner>, reads: &mut FileReads, id: TabId, events: &mut Vec<Event>) {
-    let host = &inner.host;
-    inner.engine.note_wake(id.0, Instant::now());
-    // A cold tab's file is read on a thread of its own, as an `open` is, so a file on a dead volume holds up neither this thread nor anything that asks about tabs, and a later tap goes ahead.
-    match host.session.with_session(|session| session.wake_for_tap(id)) {
-        Some((tab, path)) => {
-            reads.wanted_tab = Some(tab);
-            reads.start(inner, Reading::Tab(tab), path);
-        }
-        None => {
-            reads.wanted_tab = None;
-            tap_now(inner, id, events);
-        }
-    }
-}
-
-/// `CoreCall::Open`, on the session thread.
-pub fn open(inner: &Arc<Inner>, reads: &mut FileReads, path: PathBuf) {
-    let host = &inner.host;
-    *lock(&inner.window.open_failure) = None;
-    // Opening a file again is what starts its password tries afresh (SPEC).
-    let (tab, own) = host.session.with_session(|session| {
-        let tab = session.tab_for_path(&path);
-        (tab, tab.and_then(|id| session.path_of(id)))
-    });
-    lock(&inner.tools.prompts.passwords).opened_again(&[Some(path.clone()), own].into_iter().flatten().collect::<Vec<_>>(), tab);
-    let cold = host
-        .session
-        .with_session(|session| session.tab_for_path(&path).and_then(|id| session.wake_for_tap(id)));
-    if let Some((tab, file)) = cold {
-        reads.wanted_tab = Some(tab);
-        reads.start(inner, Reading::Tab(tab), file);
-    } else if host.session.with_session(|session| session.go_to_open_file(&path)).is_some() {
-        reads.wanted_tab = None;
-    } else {
-        // A link or a moved name is found once it's been looked at, on the thread reading it.
-        reads.wanted_tab = None;
-        reads.start(inner, Reading::File(path.clone()), path);
     }
 }
 
@@ -97,13 +127,18 @@ impl Inner {
         if !self.life.state_read() {
             updates::note_asked_to_open(std::slice::from_ref(&path));
         }
-        self.core.push(CoreCall::Open(path));
+        open(&self.core, path);
     }
 
-    /// A row was tapped.
+    /// A tab's row in the palette, run: `tap`, as a click on the row is.
+    pub fn tap_tab(self: &Arc<Self>, tab: TabId) {
+        person::submit(self, tap(tab));
+    }
+
+    /// A row was tapped: a tab's is `tap`.
     pub fn tap_row(self: &Arc<Self>, row: SidebarRow) {
         let call = match (row.kind, row.page) {
-            (crate::RowKind::Tab, _) => CoreCall::Tap(TabId(row.tab)),
+            (crate::RowKind::Tab, _) => return person::submit(self, tap(TabId(row.tab))),
             (crate::RowKind::Contents, Some(page)) => return self.contents_tapped(TabId(row.tab), page),
             (crate::RowKind::Contents, None) => return,
             (crate::RowKind::Note, _) => match row.action.as_deref().and_then(recto_session::ContentsAction::from_id) {

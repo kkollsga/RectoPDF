@@ -214,6 +214,9 @@ save level=control tab=Some("#2") draws=false reads_pages=false route=session lo
 save level=control tab=Some("active") draws=false reads_pages=false route=session log={"tab":"active"}
 save level=control tab=Some("active") draws=false reads_pages=false route=session log={"tab":"active"}
 save level=control tab=Some("#2") draws=false reads_pages=false route=session log={"replace":true,"tab":"#2","untrusted":{"file":"x.pdf"}}
+edit_mode level=control tab=None draws=false reads_pages=false route=session log={"set":"on"}
+edit_mode level=control tab=None draws=false reads_pages=false route=session log={"set":"off"}
+edit_mode level=control tab=None draws=false reads_pages=false route=session log={"set":"on"}
 sign level=nobody tab=None draws=false reads_pages=false route=session log=null
 sign level=nobody tab=None draws=false reads_pages=false route=session log=null
 status level=off tab=None draws=false reads_pages=false route=server log=null

@@ -605,6 +605,14 @@
 ["save"]
 ["save","#2","/d/x.pdf",true]
 {"cmd":"Save"}
+{"cmd":"edit_mode"}
+{"cmd":"edit_mode","set":"on"}
+{"cmd":"edit_mode","set":"off"}
+{"cmd":"edit_mode","extra":1}
+{"cmd":"edit_mode","set":{}}
+{"cmd":"edit_mode","set":null}
+["edit_mode","on"]
+{"cmd":"EditMode"}
 {"cmd":"sign"}
 {"cmd":"sign","extra":1}
 ["sign"]

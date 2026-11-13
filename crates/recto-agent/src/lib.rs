@@ -447,6 +447,12 @@ pub trait SessionAccess {
     fn reads_later(&self) -> Option<&dyn later::ReadLater> {
         None
     }
+    /// **Whether anyone reads the answer,** or only what the command does: not the window's own commands for the person, which it draws from what the
+    /// session publishes. A command whose answer is costly to build makes none when it isn't read: a tap's is the sidebar's every row, 650 µs at 1,000 tabs,
+    /// five times the tap (R2.3). Every other host's answers are read.
+    fn answer_read(&self) -> bool {
+        true
+    }
     /// **Takes in where the window's page views are now,** before a jump or a step in the trail marks where it leaves: what the reader has scrolled to that
     /// the session hasn't heard yet, so Back comes back to the place that was showing (R2.3, accident A1). Called without the session held, as it takes it
     /// itself. A session with no window has nothing to take in.
@@ -1461,6 +1467,32 @@ mod tests {
         assert_eq!(deferring.with(|s| s.tabs().len()), 5);
     }
 
+    /// Failure (R2.3, input to frame): the window's tap, run for the person, builds the sidebar's every row for an answer nobody reads, 650 µs of a tap's
+    /// 780 at 1,000 tabs, past the bound on a person's input. Where the answer isn't read, a tap does all it does (the tab in front, its news) and answers
+    /// nothing; where it is, it answers the sidebar, as ever.
+    #[test]
+    fn a_tap_whose_answer_isnt_read_builds_none() {
+        struct Unread<'a>(RefCell<&'a mut Session<Fake>>);
+        impl SessionAccess for Unread<'_> {
+            type Loader = Fake;
+            fn with<R>(&self, step: impl FnOnce(&mut Session<Fake>) -> R) -> R {
+                step(&mut self.0.borrow_mut())
+            }
+            fn answer_read(&self) -> bool {
+                false
+            }
+        }
+        let tap = Command::from(crate::commands::tabs::Tap { tab: "#1".into() });
+        let (mut session, mut twin) = (with_tabs(&["a", "b"]), with_tabs(&["a", "b"]));
+        let (mut events, mut twin_events) = (Vec::new(), Vec::new());
+        let unread = execute(&Unread(RefCell::new(&mut session)), Actor::Person, &tap, &mut events).expect("tapped");
+        let read = execute(&Direct(RefCell::new(&mut twin), None), Actor::Person, &tap, &mut twin_events).expect("tapped");
+        assert_eq!(unread, Value::Null, "nothing built");
+        assert!(read["rows"].as_array().is_some_and(|rows| rows.len() >= 2), "the sidebar: {read}");
+        assert_eq!(looks(&session), looks(&twin), "the same done");
+        assert_eq!(format!("{events:?}"), format!("{twin_events:?}"), "the same news");
+    }
+
     fn with_tabs(names: &[&str]) -> Session<Fake> {
         let mut session = Session::new(Fake);
         for name in names {
@@ -1776,6 +1808,7 @@ mod tests {
             Command::from(crate::commands::editing::Redo { tab: tab() }),
             Command::from(crate::commands::editing::Discard { tab: tab() }),
             Command::from(crate::commands::editing::ClearHistory { tab: tab() }),
+            Command::from(crate::commands::edit_mode::EditMode { set: "on".into() }),
             Command::from(crate::commands::record::SessionSleep { tab: tab() }),
             Command::from(crate::commands::saving::Save {
                 tab: tab(),
