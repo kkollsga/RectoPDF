@@ -146,7 +146,7 @@ impl Inner {
                 #[cfg(any(test, feature = "testkit"))]
                 place_seams: crate::testkit::place_seams::PlaceSeams::default(),
             },
-            window: WindowParts::new(watchdog),
+            window: Window::new(watchdog),
             tools: Tools::new(&save_step),
         });
         saver.attach(Arc::downgrade(&inner));

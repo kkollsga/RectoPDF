@@ -35,6 +35,7 @@ mod record_commands;
 pub mod showing;
 mod unlocking;
 mod viewing;
+pub mod window;
 mod window_rows;
 pub mod zoom;
 
@@ -45,6 +46,7 @@ use recto_agent::Code;
 pub use session::*;
 pub use start::*;
 use unlocking::*;
+pub use window::{AppState, Window};
 
 use crate::RecentFile;
 use crate::SelectionNotice;
@@ -70,8 +72,8 @@ use recto_reader::engine::EngineEvents;
 use recto_reader::tiles::PageMap;
 use recto_reader::{Engine, PaperKind};
 use recto_session::HistorySource;
-use recto_session::record::{self, AppRecord, Appearance, ContentsScroll, FileStatus, FocusRecord, SettingsWindow, WindowRecord, look_at_file};
-use recto_session::{ContentsFollow, DocLoader, DrawNote, Paper, TabId, ViewSettings};
+use recto_session::record::{self, AppRecord, ContentsScroll, FileStatus, look_at_file};
+use recto_session::{DocLoader, DrawNote, Paper, TabId, ViewSettings};
 use saver::Saver;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -183,7 +185,7 @@ pub struct Inner {
     /// Shared with the control socket's thread, which holds nothing else of the core while it serves, so the session's end goes by the machine too.
     pub life: Arc<Lifecycle>,
     pub serving: Serving,
-    pub window: WindowParts,
+    pub window: Window,
     pub tools: Tools,
 }
 
@@ -241,21 +243,6 @@ pub struct Serving {
     /// Where a test comes between the reads of the views' places and their take-in, and the looks counted: [`crate::testkit::place_seams::PlaceSeams`].
     #[cfg(any(test, feature = "testkit"))]
     pub(crate) place_seams: crate::testkit::place_seams::PlaceSeams,
-}
-
-/// **What the window is and says:** what the host tells of it for the record, its appearance and panel, the contents' follow, the UI thread's hang watchdog, and the
-/// notices that go by themselves.
-pub struct WindowParts {
-    pub contents_follow: Mutex<ContentsFollow>,
-    pub app: Mutex<AppState>,
-    pub watchdog: Watchdog,
-    pub dark: AtomicBool,
-    pub panel_open: AtomicBool,
-    pub(crate) open_failure: Mutex<Option<String>>,
-    /// Why something the reader chose couldn't be done, or what a save has to say, as a notice that goes by itself.
-    pub(crate) action_notice: Mutex<Option<String>>,
-    /// The tab showing when the window was last brought up to date: a notice is about what was on screen, so it goes with a change of tab.
-    pub(crate) notice_tab: AtomicU32,
 }
 
 /// **The window's features with state of their own:** the sheets that ask, saving's, the snapshot tool, the sidebar's folds, the chrome's marks, printing, ⌘K and
@@ -350,38 +337,6 @@ impl Lifecycle {
     }
 }
 
-impl WindowParts {
-    /// At launch: no window yet, the system's appearance, nothing said.
-    pub fn new(watchdog: Watchdog) -> Self {
-        Self {
-            app: Mutex::new(AppState {
-                window: None,
-                appearance: Appearance::System,
-                sidebar_width: record::SIDEBAR_WIDTH,
-                contents_y: None,
-                contents_resume: None,
-                selection_resume: None,
-                focus: FocusRecord::default(),
-                settings_window: None,
-                window_closed: false,
-                app_hidden: false,
-                hidden_decided: false,
-                minimised_decided: false,
-                window_decided: false,
-                from_state: None,
-                selections_held: Vec::new(),
-            }),
-            dark: AtomicBool::new(false),
-            panel_open: AtomicBool::new(false),
-            contents_follow: Mutex::new(ContentsFollow::default()),
-            watchdog,
-            open_failure: Mutex::new(None),
-            action_notice: Mutex::new(None),
-            notice_tab: AtomicU32::new(0),
-        }
-    }
-}
-
 impl Tools {
     /// At launch: every tool at rest.
     pub fn new(save_step: &Arc<AtomicU8>) -> Self {
@@ -396,35 +351,6 @@ impl Tools {
             find_field: Mutex::new(crate::find::Field::default()),
         }
     }
-}
-
-/// What the host tells Rust about the window, kept for the record. A short lock: the UI thread sets these and a writer copies them.
-#[derive(Clone, Debug)]
-pub struct AppState {
-    pub window: Option<WindowRecord>,
-    pub appearance: Appearance,
-    pub sidebar_width: f64,
-    /// The active tab's contents. A copy, as they're the host's to scroll.
-    pub contents_y: Option<f64>,
-    /// Where they go on the tab's first showing, and whose they are then.
-    pub contents_resume: Option<(TabId, ContentsScroll)>,
-    /// What was selected, to put back on the tab's first showing.
-    pub selection_resume: Option<(TabId, record::Selection)>,
-    pub focus: FocusRecord,
-    pub settings_window: Option<SettingsWindow>,
-    pub window_closed: bool,
-    /// Hidden with ⌘H, as the record has it.
-    pub app_hidden: bool,
-    /// The host has asked whether the app comes back hidden, and done it: a restore after that keeps what it did.
-    pub hidden_decided: bool,
-    /// The same for the window in the Dock.
-    pub minimised_decided: bool,
-    /// And for whether there's a window at all.
-    pub window_decided: bool,
-    /// What the state said, as it was taken in after a window went up without it. That window can report its own size, focus and the rest before it's made again, which a full check on a slow machine saw, so the one made again goes by this: see [`AppCore::window_replaced`].
-    pub from_state: Option<Box<AppState>>,
-    /// What each pane had selected as its window went for another made from the state, to be selected again on the new one.
-    pub selections_held: Vec<(usize, recto_index::select::Range)>,
 }
 
 /// What's in flight, for an update to wait for. A save from the window counts here, and an agent's save or an export is a command.

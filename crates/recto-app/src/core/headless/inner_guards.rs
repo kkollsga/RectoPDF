@@ -2,7 +2,7 @@
 //! each of its parts, and what each lets other code reach. What every control sends and the host is told is held by the coverage test's golden
 //! (`coverage.rs`); what a person's action allocates on the window's thread, by `tests/inner_allocations.rs`, in a binary of its own for its allocator.
 
-use crate::core::{AppState, Inner, Lifecycle, Published, Serving, Tools, WindowParts};
+use crate::core::{AppState, Inner, Lifecycle, Published, Serving, Tools, Window};
 use std::mem::size_of;
 
 /// Failure: the app's state or one of its parts grows (a field, a lock or a buffer added, a part given its own `Arc` of the queue), which nothing else sees,
@@ -18,7 +18,7 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
         ("Inner", size_of::<Inner>()),
         ("Lifecycle", size_of::<Lifecycle>()),
         ("Serving", size_of::<Serving>()),
-        ("WindowParts", size_of::<WindowParts>()),
+        ("Window", size_of::<Window>()),
         ("Tools", size_of::<Tools>()),
         ("Published", size_of::<Published>()),
         ("AppState", size_of::<AppState>()),
@@ -41,7 +41,7 @@ const BUDGETS: [(&str, usize); 7] = [
     ("Inner", 4888),
     ("Lifecycle", 296),
     ("Serving", 1064),
-    ("WindowParts", 464),
+    ("Window", 464),
     ("Tools", 1448),
     ("Published", 808),
     ("AppState", 248),
@@ -52,7 +52,7 @@ const BUDGETS: [(&str, usize); 7] = [
 /// the commit that means it, so each widening and narrowing is in a diff.
 #[test]
 fn what_the_apps_state_lets_other_code_reach_is_listed() {
-    let types = ["Inner", "Lifecycle", "Serving", "WindowParts", "Tools", "Printing", "Published", "AppState"];
+    let types = ["Inner", "Lifecycle", "Serving", "Window", "Tools", "Printing", "Published", "AppState"];
     let files = recto_testpdf::surface::rust_files(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core"));
     let now = recto_testpdf::surface::listing(
         &files,
@@ -96,7 +96,7 @@ Inner.pub saver: Arc<Saver>
 Inner.pub serving: Serving
 Inner.pub tools: Tools
 Inner.pub updates: Arc<recto_update::updater::Updater>
-Inner.pub window: WindowParts
+Inner.pub window: Window
 Inner.pub(crate) keys: Arc<recto_reader::engine::Keyring>
 Inner.pub(crate) listener: Arc<dyn crate::Listener>
 Inner.pub(crate) sleeper: sleeper::Sleeper
@@ -238,14 +238,14 @@ Tools.pub(crate) palette: crate::palette::Palette
 Tools.pub(crate) prompts: crate::prompts::Prompts
 Tools.pub(crate) save_ui: saving::SaveUi
 Tools::pub fn new(save_step: &Arc<AtomicU8>) -> Self
-WindowParts (pub struct)
-WindowParts.pub app: Mutex<AppState>
-WindowParts.pub contents_follow: Mutex<ContentsFollow>
-WindowParts.pub dark: AtomicBool
-WindowParts.pub panel_open: AtomicBool
-WindowParts.pub watchdog: Watchdog
-WindowParts.pub(crate) action_notice: Mutex<Option<String>>
-WindowParts.pub(crate) notice_tab: AtomicU32
-WindowParts.pub(crate) open_failure: Mutex<Option<String>>
-WindowParts::pub fn new(watchdog: Watchdog) -> Self
+Window (pub struct)
+Window.pub app: Mutex<AppState>
+Window.pub contents_follow: Mutex<ContentsFollow>
+Window.pub dark: AtomicBool
+Window.pub panel_open: AtomicBool
+Window.pub watchdog: Watchdog
+Window.pub(crate) action_notice: Mutex<Option<String>>
+Window.pub(crate) notice_tab: AtomicU32
+Window.pub(crate) open_failure: Mutex<Option<String>>
+Window::pub fn new(watchdog: Watchdog) -> Self
 ";
