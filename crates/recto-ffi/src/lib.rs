@@ -1294,17 +1294,7 @@ impl AppCore {
 
     /// Whether what the window would show now is right: the place on the layers, or nothing to wait for. Then, or once the patience is over, it shows. A short lock, asked only until it's showing.
     pub fn ready_to_show(&self) -> bool {
-        if self.inner.life.started.elapsed() >= SHOW_PATIENCE + RESTORE_PATIENCE {
-            return true;
-        }
-        if !self.inner.state_read() || lock(&self.inner.life.holding_tab).is_some() {
-            return false;
-        }
-        // It's asked on the UI thread, which doesn't wait for whatever has the session: this comes round again.
-        let Some(active) = self.inner.host.session.try_with_session(|session| session.active()) else {
-            return false;
-        };
-        active.is_none() || self.inner.engine.is_on_place() || self.inner.engine.is_showable()
+        self.inner.ready_to_show()
     }
 
     /// The window has just been put on the screen, showing this, and `why`: `ready` when `ready_to_show` said yes, `patience` when the host's timer ran out. For QA to see what the first frame was.

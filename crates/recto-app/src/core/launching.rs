@@ -44,20 +44,44 @@ impl Inner {
         self.life.state_read()
     }
 
-    /// **What the window's first showing had on it, and why it was shown** (the first-frame failure under CI's limits, 2026-11-13: a frame with no tiles, and nothing to say whether Rust had called it ready or the patience had run out). `why` is the host's: `ready` when `ready_to_show` said yes, `patience` when its timer did. The rest is how the pieces of that answer were at the show, each a boolean, written once per window.
+    /// The page checks as they are now, gathered for [`showing::decide`]. The UI thread asks, and doesn't wait for the session.
+    fn page_checks(&self) -> showing::PageChecks {
+        let active = self.host.session.try_with_session(|session| session.active().is_some());
+        showing::PageChecks {
+            state_read: self.state_read(),
+            holding_tab: lock(&self.life.holding_tab).is_some(),
+            session_free: active.is_some(),
+            has_tab: active.unwrap_or(false),
+            on_place: self.engine.is_on_place(),
+            showable: self.engine.is_showable(),
+        }
+    }
+
+    /// Whether the window may be shown now, by [`showing::decide`]; what it said is kept for the record.
+    pub fn ready_to_show(&self) -> bool {
+        let opened = lock(&self.life.window_opened_at).map(|at| at.elapsed());
+        let decision = showing::decide(opened, self.life.started.elapsed(), self.page_checks());
+        self.life.shown_by_cap.store(decision == showing::Show::Cap, Ordering::Relaxed);
+        decision != showing::Show::Wait
+    }
+
+    /// **What the window's first showing had on it, and why it was shown.** `why` is `ready` (the page checks passed), `cap` (Rust's cap ran out: the host asked and was told yes) or `patience` (the host's timer showed it). The rest is how the page checks were at the show, written once per window.
     pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str) {
         let report = self.engine.report().0;
-        let held = lock(&self.life.holding_tab).is_some();
-        let session_free = self.host.session.try_with_session(|session| session.active().is_some());
+        let checks = self.page_checks();
+        let why = if why == "ready" && self.life.shown_by_cap.load(Ordering::Relaxed) {
+            "cap"
+        } else {
+            why
+        };
         let opened = lock(&self.life.window_opened_at).map(|at| at.elapsed());
-        let since_start = self.life.started.elapsed();
         *lock(&self.life.first_shown) = Some(json!({
             "home": home, "page": report["page"], "scroll_y": report["scroll_y"], "scroll_x": report["scroll_x"], "magnification": report["magnification"], "settled": report["settled"], "tab": report["tab"],
-            "tile_layers": tile_layers, "ms_from_start": since_start.as_secs_f64() * 1000.0,
+            "tile_layers": tile_layers, "ms_from_start": self.life.started.elapsed().as_secs_f64() * 1000.0,
             "why": why,
             "ms_since_window_opened": opened.map(|opened| opened.as_secs_f64() * 1000.0),
-            "patience_ms": SHOW_PATIENCE.as_millis() as u64, "cap_ms": (SHOW_PATIENCE + RESTORE_PATIENCE).as_millis() as u64,
-            "when_shown": { "state_read": self.state_read(), "holding_tab": held, "session_free": session_free.is_some(), "has_tab": session_free.unwrap_or(false), "on_place": self.engine.is_on_place(), "showable": self.engine.is_showable() },
+            "patience_ms": SHOW_PATIENCE.as_millis() as u64,
+            "when_shown": { "state_read": checks.state_read, "holding_tab": checks.holding_tab, "session_free": checks.session_free, "has_tab": checks.has_tab, "on_place": checks.on_place, "showable": checks.showable },
         }));
     }
 
