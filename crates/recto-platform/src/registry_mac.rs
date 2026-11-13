@@ -278,7 +278,10 @@ mod tests {
         };
         let set = [PathBuf::from("/b/own-1-1/RectoPDF.app"), PathBuf::from("/t/bed/install/RectoPDF.app")];
         assert!(none_registered_under(&[], &set));
-        assert!(none_registered_under(&[copy("/b/own-1-10/RectoPDF.app"), copy("/Applications/RectoPDF.app")], &set));
+        assert!(none_registered_under(
+            &[copy("/b/own-1-10/RectoPDF.app"), copy("/Applications/RectoPDF.app")],
+            &set
+        ));
         assert!(!none_registered_under(&[copy("/t/bed/install/RectoPDF.app")], &set), "the second of the set");
         assert!(
             !none_registered_under(&[copy("/b/own-1-1/RectoPDF.app/Contents/Helpers/RectoRender.app")], &set),

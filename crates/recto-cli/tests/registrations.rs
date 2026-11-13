@@ -428,7 +428,11 @@ fn what_counts_as_this_trees() {
     // Which folders on disk are this tree's tests' copies, for the stage to find the ones a test left.
     let mine = bed_folder::name(77, 5, checkout);
     assert_eq!(maker_of_this_trees_folder("own-12-3", true, checkout), Some(12));
-    assert_eq!(maker_of_this_trees_folder("own-12-3", false, checkout), None, "own copies are beside the build only");
+    assert_eq!(
+        maker_of_this_trees_folder("own-12-3", false, checkout),
+        None,
+        "own copies are beside the build only"
+    );
     assert_eq!(maker_of_this_trees_folder(&mine, false, checkout), Some(77));
     assert_eq!(maker_of_this_trees_folder(&mine, true, checkout), None, "beds are in temp only");
     assert_eq!(
@@ -436,7 +440,11 @@ fn what_counts_as_this_trees() {
         None,
         "another tree's"
     );
-    assert_eq!(maker_of_this_trees_folder("recto-update-e2e-77-5", false, checkout), None, "from before folders named their tree");
+    assert_eq!(
+        maker_of_this_trees_folder("recto-update-e2e-77-5", false, checkout),
+        None,
+        "from before folders named their tree"
+    );
     assert_eq!(bed_folder::parse_own(&bed_folder::own_name(12, 3)), Some(12));
     for not_own in ["own-12", "own-12-3-4", "own-a-3", "RectoPDF.app"] {
         assert_eq!(bed_folder::parse_own(not_own), None, "{not_own}");

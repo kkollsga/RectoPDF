@@ -229,7 +229,11 @@ fn a_copy_opened_and_dropped_at_once_is_forgotten() {
     let state = super::common::State::new();
     copy.open_quietly(&state.root);
     // The test's point, so it pays for the settling itself: the copy ended, forgotten, and the system's dump has none of it twice in a row.
-    assert!(copy.end_settled(), "{} is still registered or running after the copy was ended and forgotten", bundle.display());
+    assert!(
+        copy.end_settled(),
+        "{} is still registered or running after the copy was ended and forgotten",
+        bundle.display()
+    );
     drop(copy);
     assert!(!bundle.exists(), "the copy is still there");
 }
