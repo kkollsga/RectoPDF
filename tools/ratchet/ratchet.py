@@ -479,6 +479,78 @@ def report(root, ref):
         print('  total added to hubs: %d' % sum(a for a, _ in added.values()))
     return 0
 
+# ---- A merge of two baselines ---------------------------------------------------------------------------------------------------------------
+def parse_side(text, stage):
+    """{(kind, key): n} of one version of the baseline, or a message naming the first line that is not "kind key number"."""
+    d = {}
+    for ln, line in enumerate(text.split('\n'), 1):
+        if not line:
+            continue
+        parts = line.split(' ')
+        if len(parts) != 3 or not parts[2].isdigit():
+            return None, 'stage %d (%s) line %d is not "kind key number": %r' % (stage, STAGES[stage], ln, line)
+        d[(parts[0], parts[1])] = int(parts[2])
+    return d, None
+
+STAGES = {1: 'base', 2: 'ours', 3: 'theirs'}
+
+def merge_sides(base, ours, theirs):
+    """The merged baseline and the lines saying where the two sides differed. A key both have: the lower number. A key one side added: kept.
+    A key either side dropped: gone. A key both added with two numbers: the lower, and said to need the check."""
+    merged, said = {}, []
+    for k in sorted(set(ours) | set(theirs) | set(base)):
+        name = '%s %s' % k
+        o, t, b = ours.get(k), theirs.get(k), base.get(k)
+        if o is not None and t is not None:
+            merged[k] = min(o, t)
+            if o != t:
+                said.append('%s: ours %d, theirs %d -> %d%s' % (name, o, t, min(o, t),
+                            '  (both sides added it: needs the check)' if b is None else ''))
+        elif o is not None or t is not None:
+            who, n = ('ours', o) if o is not None else ('theirs', t)
+            if b is None:
+                merged[k] = n
+                said.append('%s: added by %s at %d -> kept' % (name, who, n))
+            else:
+                said.append('%s: dropped by %s -> gone' % (name, 'theirs' if who == 'ours' else 'ours'))
+    return merged, said
+
+def git_out(root, *args):
+    r = subprocess.run(['git', '-C', root] + list(args), capture_output=True, text=True)
+    return r.returncode, r.stdout, r.stderr
+
+def resolve(root, bpath):
+    rel = os.path.relpath(os.path.abspath(bpath), root)
+    rc, out, err = git_out(root, 'ls-files', '-u', '--', rel)
+    if rc != 0:
+        print('ratchet --resolve: git failed: %s' % err.strip()); return 1
+    stages = {int(l.split()[2]) for l in out.splitlines() if len(l.split()) >= 3}
+    if not stages:
+        print('ratchet --resolve: %s is not in conflict (no merge under way, or it merged cleanly). Nothing changed.' % rel); return 1
+    if 2 not in stages or 3 not in stages:
+        print('ratchet --resolve: %s was deleted on one side; decide that by hand. Nothing changed.' % rel); return 1
+    sides = {}
+    for n in (1, 2, 3):
+        if n in stages:
+            rc, text, err = git_out(root, 'show', ':%d:%s' % (n, rel))
+            if rc != 0:
+                print('ratchet --resolve: cannot read stage %d: %s' % (n, err.strip())); return 1
+        else:
+            text = ''  # added on both sides: no common ancestor version
+        sides[n], bad = parse_side(text, n)
+        if bad:
+            print('ratchet --resolve: %s. Nothing changed; fix the line by hand.' % bad); return 1
+    merged, said = merge_sides(sides[1], sides[2], sides[3])
+    write_baseline(bpath, merged)
+    print('ratchet --resolve: wrote %s with %d entries (not added to git).' % (rel, len(merged)))
+    for s in said:
+        print('  ' + s)
+    if not said:
+        print('  the two sides agree on every key.')
+    print('Now run tools/ratchet.sh on the merged tree: the true number can be higher than either side\'s when both branches added to the same thing '
+          '(raise it only by a hand edit a reviewer sees). When it passes: git add %s' % rel)
+    return 0
+
 # ---- Main ---------------------------------------------------------------------------------------------------------------------------------
 def main(argv):
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -492,6 +564,8 @@ def main(argv):
             i += 1; bpath = argv[i]
         elif a == '--update':
             mode = 'update'
+        elif a == '--resolve':
+            mode = 'resolve'
         elif a == '--moved':
             mode = 'moved'
             if i + 2 >= len(argv):
@@ -506,9 +580,11 @@ def main(argv):
             if ref is None:
                 print('usage: tools/ratchet.sh --report <base-ref>'); return 2
         else:
-            print(__doc__); print('usage: tools/ratchet.sh [--update | --report <base-ref> | --moved <old> <new> [--kind K]] [--root DIR] [--baseline FILE]'); return 2
+            print(__doc__); print('usage: tools/ratchet.sh [--update | --resolve | --report <base-ref> | --moved <old> <new> [--kind K]] [--root DIR] [--baseline FILE]'); return 2
         i += 1
     bpath = bpath or os.path.join(root, 'tools', 'ratchet', 'baseline.txt')
+    if mode == 'resolve':
+        return resolve(root, bpath)
     if mode == 'report':
         return report(root, ref)
     if mode == 'moved':
