@@ -2,6 +2,28 @@
 
 use super::{DocView, HOST_ROUNDING, MAX_ATTACH_PER_TURN, Op, Reader, SavedPlace, Viewport};
 use crate::layout::Spread;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// **The place clock:** one count for the whole process, moved on, under the page view's lock, by everything that moves where a page view says a tab is:
+/// a jump or a follow sent to the host, a change of layout that sends the place again, a zoom, and every viewport the host gives, the reader's own scroll
+/// among them. So a read of a page view's places taken with its lock held ([`crate::Engine::places`]) can be told older or newer than another, of the same
+/// view or of another one a tab has moved to, and than a jump sent: what the session needs so that the newer read wins (`recto_app`'s `core/places.rs`).
+/// One atomic add on the scroll path: no lock, no allocation. It's process-wide, not a page view's, because a tab moves between page views (a comparison's
+/// panes, which are made afresh) and a count of each view's own couldn't order one view's read against another's. **Only the order of two stamps taken in
+/// one process means anything, never a stamp's value:** two headless apps in one test share the clock, so a test never asserts a stamp's number.
+static PLACE_CLOCK: AtomicU64 = AtomicU64::new(0);
+
+/// Moves the place clock on, saying where it's come to.
+pub(super) fn tick() -> u64 {
+    PLACE_CLOCK.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+/// Where the place clock is: a read of a page view's places taken with its lock held, after a send that came to `s`, carries a stamp at or past `s`, and
+/// one taken before it a stamp under `s`.
+#[must_use]
+pub fn place_stamp() -> u64 {
+    PLACE_CLOCK.load(Ordering::SeqCst)
+}
 
 #[derive(Debug)]
 pub(super) struct Place {
@@ -27,6 +49,14 @@ impl Place {
             user_scrolled: false,
             arrived: false,
         }
+    }
+
+    /// A scroll to send the host: its sequence number, which the host says back once it's arrived, with the place clock moved on.
+    pub(super) fn send(&mut self) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        tick();
+        seq
     }
 
     /// What the new viewport says of the reader: whether it was their own scroll, and whether the host arrived where it was sent.
@@ -141,8 +171,7 @@ impl Reader {
         doc.place.anchor = (page, within);
         let y = doc.layout.anchor_y((page, within));
         doc.place.exact_y = Some((y, doc.layout.document_height()));
-        let seq = self.place.next_seq;
-        self.place.next_seq += 1;
+        let seq = self.place.send();
         self.place.jump = Some(seq);
         let moved = self.place.last_view_page != Some(page);
         self.place.last_view_page = Some(page);
@@ -227,28 +256,27 @@ impl Reader {
     }
 
     /// **A jump the session sends,** as an agent's `goto`, a contents row, a link or Back does: to the page's top, the margin above the first page
-    /// included, or `within` the way down it as [`Self::follow`] goes.
-    pub fn jump_to(&mut self, page: u32, within: f64) {
+    /// included, or `within` the way down it as [`Self::follow`] goes. Says whether it went to the host: not with no tab showing.
+    pub fn jump_to(&mut self, page: u32, within: f64) -> bool {
         self.pointer.forget_reveal_unless(page);
         if within.is_finite() && within > 0.0 {
-            self.follow(page, within);
-            return;
+            return self.follow(page, within).is_some();
         }
         // A wake's over once someone's gone somewhere else: what's bare from here is pages being reached, not the wake.
         self.finish_wake();
         let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
-            return;
+            return false;
         };
         let page = page.min(doc.layout.count().saturating_sub(1));
         doc.place.anchor = (page, 0.0);
         let y = doc.layout.jump_y(page);
         // To the pixel while the layout holds: the first page's jump goes above it, to the margin, which its anchor can't say.
         doc.place.exact_y = Some((y, doc.layout.document_height()));
-        let seq = self.place.next_seq;
-        self.place.next_seq += 1;
+        let seq = self.place.send();
         self.place.jump = Some(seq);
         self.place.last_view_page = Some(page);
         self.host.ops.push_back(Op::ScrollTo { y, seq });
+        true
     }
 
     /// How far down the tab's place is: to the pixel if the layout's what it was, and otherwise as far down its page.
@@ -264,8 +292,7 @@ impl Reader {
         self.pointer.forget_reveal_unless(page);
         let Some(doc) = self.hot.and_then(|tab| self.docs.get(&tab)) else { return };
         let y = Self::place_y(doc);
-        let seq = self.place.next_seq;
-        self.place.next_seq += 1;
+        let seq = self.place.send();
         self.place.jump = Some(seq);
         self.place.last_view_page = Some(page.min(doc.layout.count().saturating_sub(1)));
         self.host.ops.push_back(Op::ScrollTo { y, seq });
@@ -287,8 +314,7 @@ impl Reader {
             top_room,
             bottom_room,
         });
-        let seq = self.place.next_seq;
-        self.place.next_seq += 1;
+        let seq = self.place.send();
         if self.place.jump.is_some() {
             self.place.jump = Some(seq);
         }

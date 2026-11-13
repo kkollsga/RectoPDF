@@ -14,10 +14,10 @@ use recto_session::compare::{Comparison, MAX_PANES};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// **What a pane's page view was last sent by the session thread:** the tab it shows and the page. What it says of where it is is its own only once
+/// **What a pane's page view was last given by the session thread's look:** the tab it shows and the page. What it says of where it is is its own only once
 /// this is what the session has ([`crate::core::places::is_views_own`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Sent {
+pub struct ViewGiven {
     pub tab: TabId,
     pub page: u32,
 }
@@ -39,8 +39,8 @@ pub struct Panes {
     reading: AtomicUsize,
     /// What each pane shows, left to right.
     shown: Mutex<Vec<TabId>>,
-    /// What each pane's page view was last sent, for what takes in the views' places off the session thread.
-    sent: Mutex<Vec<Option<Sent>>>,
+    /// What each pane's page view was last given, for what takes in the views' places off the session thread.
+    given: Mutex<Vec<Option<ViewGiven>>>,
     plan: Mutex<Plan>,
     hooks: Arc<dyn EngineEvents>,
     config: EngineConfig,
@@ -52,7 +52,7 @@ impl Panes {
             extra: Mutex::new(Vec::new()),
             reading: AtomicUsize::new(0),
             shown: Mutex::new(Vec::new()),
-            sent: Mutex::new(Vec::new()),
+            given: Mutex::new(Vec::new()),
             plan: Mutex::new(Plan::default()),
             hooks,
             config,
@@ -123,13 +123,13 @@ impl Panes {
         }
     }
 
-    /// What each pane's page view has been sent, as the session thread's look leaves it.
-    pub fn set_sent(&self, sent: Vec<Option<Sent>>) {
-        *lock(&self.sent) = sent;
+    /// What each pane's page view has been given, as the session thread's look leaves it.
+    pub fn set_given(&self, given: Vec<Option<ViewGiven>>) {
+        *lock(&self.given) = given;
     }
 
-    pub fn sent(&self) -> Vec<Option<Sent>> {
-        lock(&self.sent).clone()
+    pub fn given(&self) -> Vec<Option<ViewGiven>> {
+        lock(&self.given).clone()
     }
 
     /// What's side by side now, for the UI thread: which tab each pane shows, which is read, and the comparison with each pane's length.
