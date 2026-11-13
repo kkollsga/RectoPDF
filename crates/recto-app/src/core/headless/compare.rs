@@ -108,3 +108,29 @@ fn only_a_fourth_pane_says_why_it_wasnt_added() {
     assert_eq!(app.session_json()["comparison"], before, "the comparison stands");
     assert!(names(&app.heard_events()).is_empty(), "and nothing's announced");
 }
+
+/// Failure (R2.3, the coordinator's decision of 2026-11-13: the tab last asked for wins): a ⌘-click on a cold tab, then a plain tap on another tab before
+/// the cold one's read is in, ends with the two side by side once the read lands, though a plain tap means one tab. It ends on the tab tapped, alone.
+#[test]
+fn a_tap_after_a_command_click_still_being_read_wins() {
+    let disk = Disk::new();
+    let files: Vec<_> = (0..4).map(|at| disk.pdf(&format!("f{at}.pdf"), 3)).collect();
+    let app = disk.start();
+    for file in &files {
+        app.open(file);
+    }
+    cold(&app, 1);
+    let inner = app.core();
+    inner.life.qa_hold_reads.store(true, std::sync::atomic::Ordering::SeqCst);
+    app.act(command_click(&app, 1));
+    app.wait_until("the cold tab's read to be under way", || {
+        inner.life.reads_running.load(std::sync::atomic::Ordering::SeqCst) > 0
+    });
+    let row = app.tabs().into_iter().find(|row| row.tab == 3).expect("its row");
+    app.act(UiAction::Row { row, adding: false });
+    app.wait_until("the tap taken", || app.reader().shown_tab == 3);
+    inner.life.qa_hold_reads.store(false, std::sync::atomic::Ordering::SeqCst);
+    app.settle();
+    assert_eq!(app.reader().shown_tab, 3, "the tab tapped is in front");
+    assert!(app.session_json()["comparison"].is_null(), "and alone: {}", app.session_json()["comparison"]);
+}
