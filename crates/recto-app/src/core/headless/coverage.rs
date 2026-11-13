@@ -326,6 +326,12 @@ fn every_control_is_a_command_or_the_hosts_with_a_reason() {
             wrong.push(format!("{id} is in HOST_ONLY and no control is it"));
         }
     }
+    // What an agent's `palette --run` may do as the menu does is only what sends no command (review, 2026-11-13).
+    for id in crate::palette::THE_WINDOWS_ALONE {
+        if !HOST_ONLY.iter().any(|(host, _)| host == id) {
+            wrong.push(format!("{id} is in palette::THE_WINDOWS_ALONE and isn't the host's alone"));
+        }
+    }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     assert!(controls.len() > 60, "every control: {}", controls.len());
 }

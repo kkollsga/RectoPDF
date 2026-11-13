@@ -204,6 +204,21 @@ impl AppHost {
                     self.run_counted(actor, &direct, events)?;
                     HostAction::None
                 }
+                // A row that's a person's command by the menu's way, with none of the agent's own: the menu's way would run it as the person, past the
+                // refusals every agent's command has. Refused, whatever the level.
+                None if !crate::palette::THE_WINDOWS_ALONE.contains(&first.id.as_str()) => {
+                    let full = recto_agent::table::Access::At(Level::Full);
+                    if !actor.may(full) {
+                        return Err(recto_agent::refusal(&format!("palette --run for {}", first.id), actor.level(), full)
+                            .then("Run that command itself, if it has one, at the level it needs."));
+                    }
+                    return Err(AgentError::new(
+                        "needs_its_command",
+                        format!("`{}` is the person's control in the window, and isn't run for an agent.", first.id),
+                        recto_agent::exit::FAILED,
+                    )
+                    .then("Run the command it stands for itself, at the level it needs: `recto help` lists them."));
+                }
                 None => {
                     let needed = if first.id.starts_with("edit.copy") {
                         recto_agent::table::by_tag("copy").map_or(recto_agent::table::Access::At(Level::Full), |spec| spec.access)
