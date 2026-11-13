@@ -299,6 +299,11 @@ impl Lifecycle {
         self.life().shown() == crate::lifecycle::Shown::WithState
     }
 
+    /// Whether the window went up without the state and was made again from it.
+    pub(crate) fn remade(&self) -> bool {
+        self.life().remade()
+    }
+
     /// Whether the window takes what a person does, now.
     pub(crate) fn takes_input(&self) -> bool {
         let now = self.now_ms();
@@ -548,7 +553,7 @@ impl Inner {
     /// What QA reads of how a restore and the record went, none of it what the user sees.
     pub fn record_report(&self) -> Value {
         let (writes, appends) = self.saver.store.writes();
-        json!({ "first_shown": *lock(&self.life.first_shown), "sleep": self.sleeper.report(), "writes": writes, "appends": appends, "wrote_bytes": self.saver.store.wrote_bytes(), "failed": self.saver.has_failed() })
+        json!({ "first_shown": *lock(&self.life.first_shown), "remade": self.life.remade(), "sleep": self.sleeper.report(), "writes": writes, "appends": appends, "wrote_bytes": self.saver.store.wrote_bytes(), "failed": self.saver.has_failed() })
     }
 
     /// A QA verb that needs no window. `None` if it's for the host. Calls what the UI will.

@@ -61,6 +61,8 @@ pub struct Life {
     patience_due_ms: Option<u64>,
     hand_off: HandOff,
     quit: Quit,
+    /// The window went up without the state and was made again from it when it came in: what a test of a late state asks, so it can't pass on the on-time path.
+    remade: bool,
 }
 
 /// What happens to the app's life.
@@ -141,7 +143,9 @@ impl Life {
                     late: self.shown == Shown::WithoutState,
                 })
             }
+            // Made again from the state only while the window may still be: the rule the host asks (`may_remake_window`) before it makes it again.
             Event::ShownWithState => {
+                self.remade |= self.shown == Shown::WithoutState && !self.takes_input(now_ms);
                 self.shown = Shown::WithState;
                 None
             }
@@ -203,6 +207,12 @@ impl Life {
     #[must_use]
     pub fn shown(&self) -> Shown {
         self.shown
+    }
+
+    /// Whether the window went up without the state and was then made again from it.
+    #[must_use]
+    pub fn remade(&self) -> bool {
+        self.remade
     }
 
     #[must_use]
