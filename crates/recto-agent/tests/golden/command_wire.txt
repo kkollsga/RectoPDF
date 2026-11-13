@@ -1212,6 +1212,22 @@
     ok save Save { tab: "#2", out: Some("/d/x.pdf"), replace: true }
 {"cmd":"Save"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"edit_mode"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"edit_mode","set":"on"}
+    ok edit_mode EditMode { set: "on" }
+{"cmd":"edit_mode","set":"off"}
+    ok edit_mode EditMode { set: "off" }
+{"cmd":"edit_mode","extra":1}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"edit_mode","set":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"edit_mode","set":null}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+["edit_mode","on"]
+    ok edit_mode EditMode { set: "on" }
+{"cmd":"EditMode"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"sign"}
     ok sign Sign
 {"cmd":"sign","extra":1}

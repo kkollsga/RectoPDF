@@ -1808,6 +1808,7 @@ mod tests {
             Command::from(crate::commands::editing::Redo { tab: tab() }),
             Command::from(crate::commands::editing::Discard { tab: tab() }),
             Command::from(crate::commands::editing::ClearHistory { tab: tab() }),
+            Command::from(crate::commands::edit_mode::EditMode { set: "on".into() }),
             Command::from(crate::commands::record::SessionSleep { tab: tab() }),
             Command::from(crate::commands::saving::Save {
                 tab: tab(),

@@ -606,6 +606,18 @@
   reply {"cmd":"save","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"edit_mode","set":"on"}
+  reply {"cmd":"edit_mode","data":{"changed":true,"edit_mode":true},"ok":true,"v":1}
+  events 
+  words "Edit mode is on: the sidebar shows its tools for editing pages, and its Rotate turns the page being read."
+{"cmd":"edit_mode","set":"off"}
+  reply {"cmd":"edit_mode","data":{"changed":true,"edit_mode":false},"ok":true,"v":1}
+  events 
+  words "Edit mode is off: the sidebar's Rotate turns every page."
+["edit_mode","on"]
+  reply {"cmd":"edit_mode","data":{"changed":true,"edit_mode":true},"ok":true,"v":1}
+  events 
+  words "Edit mode is on: the sidebar shows its tools for editing pages, and its Rotate turns the page being read."
 {"cmd":"sign"}
   reply {"cmd":"sign","error":{"candidates":[],"code":"sign_refused","exit":5,"message":"Only the user can sign a document, in the app. No agent command signs, at any level.","next":"Tell the user. Only they can sign, in the app."},"ok":false,"v":1}
   events 

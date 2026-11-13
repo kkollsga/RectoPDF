@@ -6,6 +6,7 @@
 
 pub mod access;
 pub mod compare;
+pub mod edit_mode;
 pub mod editing;
 pub mod export;
 pub mod finding;
@@ -255,7 +256,7 @@ family! {
 }
 
 family! {
-    /// Changing pages and saving them: rotate, move, delete, insert, the edits, discard, undo, redo, clear-history and save.
+    /// Changing pages and saving them: rotate, move, delete, insert, the edits, discard, undo, redo, clear-history, save, and the window's edit mode.
     pub enum Edit {
         PageRotate(editing::PageRotate),
         PageMove(editing::PageMove),
@@ -267,6 +268,7 @@ family! {
         Redo(editing::Redo),
         ClearHistory(editing::ClearHistory),
         Save(saving::Save),
+        EditMode(edit_mode::EditMode),
     }
 }
 
