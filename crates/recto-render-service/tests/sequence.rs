@@ -80,6 +80,18 @@ fn fake_worker() {
                 }
                 .encode()
             }
+            // Where the page's images are, the same at any limit: asking is a walk of its objects, with nothing drawn.
+            Kind::ImagesRequest => {
+                let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
+                if mode == "low_res_walk_overruns" {
+                    leak_for_ever();
+                }
+                proto::PageImages {
+                    job_id,
+                    boxes: vec![[0, 0, 32_768, 32_768]],
+                }
+                .encode()
+            }
             Kind::TextRequest => {
                 let job = TextJob::decode(&frame.payload).unwrap();
                 TextReply {
@@ -118,7 +130,7 @@ fn fake_worker() {
                     _ => match mode.as_str() {
                         "fits_normal" => true,
                         "fits_heavy" => in_heavy,
-                        "fits_low_res" => low_res,
+                        "fits_low_res" | "low_res_walk_overruns" => low_res,
                         "fits_heavy_or_low_res" => in_heavy || low_res,
                         _ => false,
                     },
@@ -315,6 +327,74 @@ fn step_3_a_lower_resolution_version_is_drawn_and_reported() {
     done(doc.render_tile(&request(0), &surface()));
     assert_eq!(doc.stats().memory_kills, 2, "it ran the failed steps again");
     assert_eq!(doc.stats().spawns, spawns);
+}
+
+/// Failure: a page that's gone to a lower resolution, as one does after a memory-limit kill or once a document's heavy pages are used up, isn't asked where its images are, so dark paper judges it whole where a sharp draw of it was judged by its images, and the same page comes out two ways by whether a draw went low first (review of 2026-11-13: the USGS sheet turned over, then went light grey once a zoomed tile hit the limit after a wake). Asking walks the page's objects and decodes nothing, in the normal worker that draws its lower resolution, so it's asked as any page is.
+#[test]
+fn a_lower_resolution_page_is_still_asked_where_its_images_are() {
+    let (mut low, _file) = doc("fits_low_res");
+    done(low.render_tile(&request(0), &surface()));
+    assert_eq!(low.page_draw_state(0), PageDrawState::LowResOnly);
+    assert_eq!(low.image_boxes(0, 1).unwrap(), Some(vec![[0, 0, 32_768, 32_768]]));
+    // One that failed at a high zoom even at its lower resolution, and draws at fit: the same.
+    let (mut zoomed, _zoomed_file) = doc("heavy_below_3x");
+    assert!(zoomed.render_tile(&TileRequest { scale: 16.0, ..request(0) }, &surface()).is_err());
+    assert!(matches!(zoomed.page_draw_state(0), PageDrawState::Failed(_)), "{:?}", zoomed.page_draw_state(0));
+    assert_eq!(zoomed.image_boxes(0, 1).unwrap(), Some(vec![[0, 0, 32_768, 32_768]]));
+    assert_eq!(
+        done(zoomed.render_tile(&TileRequest { scale: 1.0, ..request(0) }, &surface())).low_res,
+        None,
+        "sharp at fit"
+    );
+}
+
+/// Failure (rule 6): asking a lower-resolution page where its images are is a walk of a hostile page in a worker, and one that overruns the worker's memory limit either isn't stopped, or is asked again for every tile, a kill each time, or leaves the page without its lower resolution. It's killed at the limit, the page is judged whole from then on (no boxes), it isn't asked again, and its lower resolution still draws.
+#[test]
+fn a_walk_for_images_that_overruns_is_stopped_once_and_the_page_still_draws() {
+    let (mut doc, _file) = doc("low_res_walk_overruns");
+    done(doc.render_tile(&request(0), &surface()));
+    assert_eq!(doc.page_draw_state(0), PageDrawState::LowResOnly);
+    let kills = doc.stats().memory_kills;
+    assert_eq!(doc.image_boxes(0, 1), Ok(None), "killed at the limit, so not known");
+    // A kill in a worker that had done other work is tried once more in a fresh one, as for any job: at most two.
+    let after = doc.stats().memory_kills;
+    assert!((kills + 1..=kills + 2).contains(&after), "{kills} kills before, {after} after");
+    let spawns = doc.stats().spawns;
+    assert_eq!(doc.image_boxes(0, 2), Ok(None), "and not asked again");
+    assert_eq!((doc.stats().memory_kills, doc.stats().spawns), (after, spawns));
+    assert!(
+        done(doc.render_tile(&request(0), &surface())).low_res.is_some(),
+        "its lower resolution still draws"
+    );
+}
+
+/// Failure: workers killed walking pages for where their images are count towards stopping the document, as a draw's do, so a heavy atlas whose pages' walks overrun stops drawing about three times sooner than its draws alone would stop it (second review of 2026-11-13). With the stop set at 2, three walks killed leave the document drawing, and two draws killed still stop it. The walk's kills have a cap of their own, as the hidden-text check's do: past 16, pages go unasked, judged whole, and cost no worker.
+#[test]
+fn walk_kills_never_stop_a_document_and_draw_kills_still_do() {
+    let policy = Policy {
+        max_kills_per_document: 2,
+        ..policy()
+    };
+    let (mut doc, _file) = doc_with("low_res_walk_overruns", policy, &HeavySlot::new());
+    for page in 0..3 {
+        assert_eq!(doc.image_boxes(page, 1), Ok(None), "page {page}'s walk killed, so not known");
+    }
+    assert_eq!(doc.stats().memory_kills, 3, "one each, in a fresh worker");
+    assert!(doc.render_tile(&request(1), &surface()).is_ok(), "drawing goes on after three walks killed");
+    // Page 0 fits only at a lower resolution: drawing it sharp kills a worker at the normal limit, and the larger.
+    let _ = doc.render_tile(&request(0), &surface());
+    assert_eq!(
+        doc.render_tile(&request(2), &surface()),
+        Err(RenderFailure::DocumentStopped),
+        "two draws killed stop it"
+    );
+    doc.forget_failures();
+    for page in 3..20 {
+        let _ = doc.image_boxes(page, 1);
+    }
+    let (kills, spawns) = (doc.stats().memory_kills, doc.stats().spawns);
+    assert_eq!(doc.image_boxes(20, 1), Ok(None), "past the walk's cap");
+    assert_eq!((doc.stats().memory_kills, doc.stats().spawns), (kills, spawns), "unasked, at no cost");
 }
 
 /// Failure: the lower-resolution rectangle runs off the page's smaller size at its edge, and the worker refuses the very tile that should have been saved.

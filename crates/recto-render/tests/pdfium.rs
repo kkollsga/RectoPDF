@@ -753,3 +753,45 @@ fn open_failures_say_why() {
         "a password with a NUL"
     );
 }
+
+/// Failure: a page with more pictures apart than an answer holds, a catalogue page of photos with gaps between them, is answered with one box round them all, which dark paper keeps as one bright picture over most of a page that turns over; or a page with exactly as many is refused; or one image drawn twice in the same place counts twice. Or the step at 64 isn't where the walk folds. Real PDFium's walk over made pages of one small image: in 64 places apart, in 65, and 65 times in 64 places, as many places as an answer holds are given, each once, and one more is refused as too many, for the page to be judged whole; 64 in a row, each overlapping the next, are given one by one, and 65 are folded into one box. How images fold is `places.rs`'s.
+#[test]
+fn a_page_with_more_images_than_an_answer_holds_is_refused() {
+    let _turn = turn();
+    let draws = |places: &[usize]| -> Page {
+        let content: String = places
+            .iter()
+            .map(|at| format!("q 8 0 0 8 {} {} cm /Im0 Do Q\n", 20 + (at % 10) * 50, 40 + (at / 10) * 60))
+            .collect();
+        Page::new(content.into_bytes())
+    };
+    let sixty_four: Vec<usize> = (0..64).collect();
+    let sixty_five: Vec<usize> = (0..65).collect();
+    let one_twice: Vec<usize> = (0..64).chain([10]).collect();
+    // And the step: 64 and 65 images in a row along the page, each overlapping the next.
+    let in_a_row = |count: usize| -> Page {
+        let content: String = (0..count).map(|at| format!("q 12 0 0 12 {} 400 cm /Im0 Do Q\n", 20 + at * 8)).collect();
+        Page::new(content.into_bytes())
+    };
+    let list = [draws(&sixty_four), draws(&sixty_five), draws(&one_twice), in_a_row(64), in_a_row(65)];
+    let image = recto_testpdf::first_extra_object(list.len());
+    let file = TempPdf::new(
+        "catalogue.pdf",
+        &recto_testpdf::pages_with(
+            &list,
+            &format!("/XObject << /Im0 {image} 0 R >>"),
+            vec![recto_testpdf::Object::Stream {
+                dict: "/Type /XObject /Subtype /Image /Width 2 /Height 2 /BitsPerComponent 8 /ColorSpace /DeviceGray".into(),
+                data: vec![40, 200, 200, 40],
+            }],
+        ),
+    );
+    let mut backend = open(&file);
+    let found = backend.image_boxes(0).expect("64 places");
+    assert_eq!(found.len(), 64, "{found:?}");
+    assert!(found.iter().all(|place| place[0] < place[2] && place[1] < place[3]), "{found:?}");
+    assert_eq!(backend.image_boxes(1), Err(recto_render::FailCode::TooLarge), "65 places");
+    assert_eq!(backend.image_boxes(2).map(|found| found.len()), Ok(64), "65 images in 64 places");
+    assert_eq!(backend.image_boxes(3).map(|found| found.len()), Ok(64), "64 in a row: each as it is");
+    assert_eq!(backend.image_boxes(4).map(|found| found.len()), Ok(1), "65 in a row: folded into one");
+}
