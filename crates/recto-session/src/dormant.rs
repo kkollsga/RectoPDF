@@ -32,16 +32,26 @@ impl Dormant<'_> {
         self.warm.ids().chain(self.lists.ids()).filter(move |id| self.may_go(*id))
     }
 
+    /// How long from now until the next tab comes due to go dormant, in seconds, by the session's own clock: [`Self::next_at`] less the time now.
+    pub fn next_in(&self, after: u32) -> Option<u32> {
+        self.next_at(after).map(|at| at.saturating_sub(self.dormancy.seconds_now()))
+    }
+
+    /// The tabs due to go dormant now, by the session's own clock.
+    pub fn due(&self, after: u32) -> Vec<TabId> {
+        self.due_at(self.dormancy.seconds_now(), after)
+    }
+
     /// When the next tab comes due to go dormant, in seconds of the session, this long after it was last touched. One deadline for all of them, kept by whoever's waiting anyway. There's no timer per tab.
-    pub fn next_at(&self, after: u32) -> Option<u32> {
+    pub(crate) fn next_at(&self, after: u32) -> Option<u32> {
         self.candidates()
             .filter_map(|id| self.tabs.tab(id))
             .map(|tab| tab.touched.saturating_add(after))
             .min()
     }
 
-    /// The tabs due to go dormant now.
-    pub fn due(&self, now: u32, after: u32) -> Vec<TabId> {
+    /// The tabs due to go dormant at `now`, in seconds of the session.
+    pub(crate) fn due_at(&self, now: u32, after: u32) -> Vec<TabId> {
         let mut due: Vec<TabId> = self
             .candidates()
             .filter(|id| self.tabs.tab(*id).is_some_and(|tab| tab.touched.saturating_add(after) <= now))

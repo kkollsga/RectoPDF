@@ -298,17 +298,17 @@ fn going_dormant_has_one_deadline_and_goes_by_being_left_alone() {
     let (mut s, a, b) = with_a_list(&files);
     s.tabs.touch_at(a, 100);
     assert_eq!(s.dormant().next_at(AFTER), Some(400));
-    assert!(s.dormant().due(399, AFTER).is_empty());
-    assert_eq!(s.dormant().due(400, AFTER), [a]);
-    assert!(!s.dormant().due(10_000, AFTER).contains(&b), "the tab on screen doesn't go");
+    assert!(s.dormant().due_at(399, AFTER).is_empty());
+    assert_eq!(s.dormant().due_at(400, AFTER), [a]);
+    assert!(!s.dormant().due_at(10_000, AFTER).contains(&b), "the tab on screen doesn't go");
     s.tabs.touch_at(a, 200);
     assert_eq!(s.dormant().next_at(AFTER), Some(500), "being used puts it off");
     // Being worked on.
     s.dormancy_mut().hold(a);
-    assert!(s.dormant().due(10_000, AFTER).is_empty());
+    assert!(s.dormant().due_at(10_000, AFTER).is_empty());
     assert!(s.dormant().oldest_first().is_empty(), "whatever's asking");
     s.let_go(a);
-    assert_eq!(s.dormant().due(10_000, AFTER), [a]);
+    assert_eq!(s.dormant().due_at(10_000, AFTER), [a]);
     // A save under way.
     s.save_prepared(
         a,
@@ -320,7 +320,7 @@ fn going_dormant_has_one_deadline_and_goes_by_being_left_alone() {
         },
         None,
     );
-    assert!(s.dormant().due(10_000, AFTER).is_empty());
+    assert!(s.dormant().due_at(10_000, AFTER).is_empty());
     // Cold tabs aren't candidates, however many there are.
     let mut s = session(5);
     let ids: Vec<TabId> = (0..1000).map(|at| s.open(Path::new(&format!("/d/{at}.pdf"))).unwrap()).collect();
@@ -456,8 +456,8 @@ fn going_dormant_is_a_look_over_the_tabs_the_warm_ones_and_the_holds() {
         Some(80),
         "the warm tab left, 30 after it was touched; tab 4 holds nothing to let go"
     );
-    assert_eq!(look.due(79, 30), Vec::<TabId>::new());
-    assert_eq!(look.due(80, 30), vec![TabId(2)]);
+    assert_eq!(look.due_at(79, 30), Vec::<TabId>::new());
+    assert_eq!(look.due_at(80, 30), vec![TabId(2)]);
     dormancy.let_go(TabId(3));
     let look = Dormant {
         tabs: &tabs,

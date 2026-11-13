@@ -192,14 +192,11 @@ impl Sleeper {
 impl Inner {
     /// Works out the next deadline, after anything that can have changed it. A look at the few tabs that hold anything.
     ///
-    /// **Real time:** how long until the next is due is the session's own clock (`next_dormant_at` less `seconds_now`, as every `touch` goes by it); the
+    /// **Real time:** how long until the next is due is the session's own clock (`Dormant::next_in`, as every `touch` goes by it); the
     /// deadline it comes to is on the app's clock.
     pub fn rearm_dormancy(&self) {
         let after = self.sleeper.after_seconds();
-        let in_seconds = self
-            .host
-            .session
-            .with_session(|session| session.dormant().next_at(after).map(|at| at.saturating_sub(session.dormancy().seconds_now())));
+        let in_seconds = self.host.session.with_session(|session| session.dormant().next_in(after));
         let _ = self.sleeper.step(Event::Rearm { in_seconds });
     }
 
@@ -209,11 +206,7 @@ impl Inner {
         let busy = self.life.reads_running.load(Ordering::SeqCst) > 0 || self.core.frozen.load(Ordering::SeqCst);
         self.sleeper.step(Event::DueNow { busy })?;
         let after = self.sleeper.after_seconds();
-        Some(
-            self.host
-                .session
-                .with_session(|session| session.dormant().due(session.dormancy().seconds_now(), after)),
-        )
+        Some(self.host.session.with_session(|session| session.dormant().due(after)))
     }
 
     /// **Those tabs go dormant,** on the session thread, those that may: whatever's asking, not the one on screen or one being worked on or saved. Whatever hasn't gone to its journal goes first, or a list couldn't.

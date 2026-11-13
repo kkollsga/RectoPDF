@@ -196,7 +196,7 @@ fn what_a_component_lets_a_caller_outside_the_crate_do_is_listed() {
         "Dormant: impl in dormant.rs",
         "Dormant: pub fn due",
         "Dormant: pub fn may_go",
-        "Dormant: pub fn next_at",
+        "Dormant: pub fn next_in",
         "Dormant: pub fn oldest_first",
         "Generated: derive Debug",
         "Generated: impl in generated.rs",
