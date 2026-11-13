@@ -83,6 +83,9 @@ fn fake_worker() {
             // Where the page's images are, the same at any limit: asking is a walk of its objects, with nothing drawn.
             Kind::ImagesRequest => {
                 let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
+                if mode == "low_res_walk_overruns" {
+                    leak_for_ever();
+                }
                 proto::PageImages {
                     job_id,
                     boxes: vec![[0, 0, 32_768, 32_768]],
@@ -127,7 +130,7 @@ fn fake_worker() {
                     _ => match mode.as_str() {
                         "fits_normal" => true,
                         "fits_heavy" => in_heavy,
-                        "fits_low_res" => low_res,
+                        "fits_low_res" | "low_res_walk_overruns" => low_res,
                         "fits_heavy_or_low_res" => in_heavy || low_res,
                         _ => false,
                     },
@@ -342,6 +345,26 @@ fn a_lower_resolution_page_is_still_asked_where_its_images_are() {
         done(zoomed.render_tile(&TileRequest { scale: 1.0, ..request(0) }, &surface())).low_res,
         None,
         "sharp at fit"
+    );
+}
+
+/// Failure (rule 6): asking a lower-resolution page where its images are is a walk of a hostile page in a worker, and one that overruns the worker's memory limit either isn't stopped, or is asked again for every tile, a kill each time, or leaves the page without its lower resolution. It's killed at the limit, the page is judged whole from then on (no boxes), it isn't asked again, and its lower resolution still draws.
+#[test]
+fn a_walk_for_images_that_overruns_is_stopped_once_and_the_page_still_draws() {
+    let (mut doc, _file) = doc("low_res_walk_overruns");
+    done(doc.render_tile(&request(0), &surface()));
+    assert_eq!(doc.page_draw_state(0), PageDrawState::LowResOnly);
+    let kills = doc.stats().memory_kills;
+    assert_eq!(doc.image_boxes(0, 1), Ok(None), "killed at the limit, so not known");
+    // A kill in a worker that had done other work is tried once more in a fresh one, as for any job: at most two.
+    let after = doc.stats().memory_kills;
+    assert!((kills + 1..=kills + 2).contains(&after), "{kills} kills before, {after} after");
+    let spawns = doc.stats().spawns;
+    assert_eq!(doc.image_boxes(0, 2), Ok(None), "and not asked again");
+    assert_eq!((doc.stats().memory_kills, doc.stats().spawns), (after, spawns));
+    assert!(
+        done(doc.render_tile(&request(0), &surface())).low_res.is_some(),
+        "its lower resolution still draws"
     );
 }
 
