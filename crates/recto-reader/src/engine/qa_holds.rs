@@ -38,4 +38,11 @@ impl Engine {
             self.unpark_thread();
         }
     }
+
+    /// For QA: whether synced scroll's place is left pending for this view's own thread, so a test that forces the busy ordering can see that the follow
+    /// really was left and the round didn't quietly become the free one.
+    #[cfg(any(test, feature = "qa"))]
+    pub fn follow_is_pending(&self) -> bool {
+        lock(&self.shared.pending).follow.is_some()
+    }
 }

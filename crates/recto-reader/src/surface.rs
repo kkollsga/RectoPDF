@@ -400,6 +400,7 @@ Engine::pub fn drain(&self) -> Vec<Op>
 Engine::pub fn empty_discardable(&self) -> usize
 Engine::pub fn fit(&self) -> Option<f64>
 Engine::pub fn follow(&self, page: u32, within: f64) -> Option<u32>
+Engine::pub fn follow_is_pending(&self) -> bool
 Engine::pub fn follow_soon(&self, page: u32, within: f64) -> bool
 Engine::pub fn has_thread(&self) -> bool
 Engine::pub fn hold_busy(&self, on: bool)

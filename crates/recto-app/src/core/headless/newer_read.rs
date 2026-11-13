@@ -192,6 +192,11 @@ fn back_after_synced_scroll_past_a_sent_jump_marks_where_the_pane_followed() {
             page == 4 && (followed - 0.9).abs() > 0.05,
             "b's scroll stays on its page 5, away from 0.9: {page} {followed}"
         );
+        assert_eq!(
+            a_engine.follow_is_pending(),
+            busy,
+            "the follow is left pending for a's own thread in the busy round, and applied at once in the free one"
+        );
         // The window would make b's pane the one read, by a call of its own still to come: the agent's `back` here is on a, ahead of it.
         inner.panes.focus(a_pane);
         if !busy {
