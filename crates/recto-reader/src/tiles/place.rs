@@ -25,7 +25,7 @@ pub fn place_stamp() -> u64 {
     PLACE_CLOCK.load(Ordering::SeqCst)
 }
 
-/// Built only in the tiles module ([`Place::new`]), and the one `Reader::new` makes is the only one there is: the engine reaches it through `Reader`'s field for the three takes below; nothing outside `tiles` builds one, and replacing it would take another `Reader`'s (`reader.field = Reader::new().field`), which nothing does.
+/// Built only in the tiles module ([`Place::new`]), as each of [`Reader`]'s parts is (see there): the engine reaches it through `Reader`'s field for the three takes below.
 #[derive(Debug)]
 pub(crate) struct Place {
     pub(super) next_seq: u64,

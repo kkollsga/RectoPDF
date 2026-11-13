@@ -433,6 +433,64 @@ fn the_listing_reads_every_file_it_should() {
     assert_eq!(found, want, "a file in a folder under tiles/ is read, and a tests folder isn't");
 }
 
+/// The lines of `text` that build a `Reader` (`Reader::new()`) or put another part in one of its fields: assigned (`reader.docs = …`), or swapped,
+/// replaced or taken through `std::mem` (`mem::swap(&mut a.docs, …)`). `parts` are the names of `Reader`'s visible fields.
+fn builds_or_replaces_a_part<'a>(text: &'a str, parts: &[&str]) -> Vec<&'a str> {
+    text.lines()
+        .filter(|line| {
+            let code = line.split("//").next().unwrap_or("");
+            code.contains("Reader::new()")
+                || parts.iter().any(|part| {
+                    let field = format!(".{part}");
+                    code.match_indices(&field).any(|(at, _)| {
+                        let after = code[at + field.len()..].trim_start();
+                        let assigned = after.starts_with('=') && !after.starts_with("==");
+                        let through_mem = code.contains("mem::") && code[..at].contains("&mut") && !after.starts_with('.') && !after.starts_with('(');
+                        assigned || through_mem
+                    })
+                })
+        })
+        .collect()
+}
+
+/// Failure it catches: code outside `tiles` builds a `Reader` of its own and takes a part from it (`reader.docs = Reader::new().docs`), or swaps or replaces
+/// a part, which no visibility stops (the fields are `pub(crate)`) and the listing above doesn't show, as it lists items and not statements. The one
+/// `Reader` there is, the engine's, is built in one place.
+#[test]
+fn nothing_outside_tiles_builds_a_reader_or_replaces_a_part() {
+    let listed = listing();
+    let parts: Vec<&str> = listed
+        .lines()
+        .filter_map(|line| line.strip_prefix("Reader.pub(crate) ")?.split(':').next())
+        .collect();
+    assert!(parts.contains(&"docs"), "the parts are read from the listing: {parts:?}");
+    let seeded = "    let docs = reader.docs.hot;\n    reader.docs = Reader::new().docs;\n    if reader.place == other {}\n    std::mem::swap(&mut reader.work, &mut spare.work);\n    reader.place.jump = None;\n";
+    assert_eq!(
+        builds_or_replaces_a_part(seeded, &parts),
+        [
+            "    reader.docs = Reader::new().docs;",
+            "    std::mem::swap(&mut reader.work, &mut spare.work);"
+        ],
+        "the scan sees a part replaced and nothing else"
+    );
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found = Vec::new();
+    for file in other_sources().into_iter().chain(sources()) {
+        if file.starts_with(root.join("tiles")) || file == root.join("tiles.rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&file).unwrap_or_else(|error| panic!("{}: {error}", file.display()));
+        for line in builds_or_replaces_a_part(&text, &parts) {
+            found.push(format!("{}: {}", file.strip_prefix(&root).unwrap_or(&file).display(), line.trim()));
+        }
+    }
+    assert_eq!(
+        found,
+        ["engine.rs: reader: Mutex::new(Reader::new()),"],
+        "outside tiles, only the engine builds its one Reader, and nothing replaces a part"
+    );
+}
+
 /// What the page view lets other code reach, sorted. Each change to it is deliberate: see [`what_the_page_view_lets_other_code_reach_is_listed`].
 const SURFACE: &str = r#"
 Applied (private struct, derives Default)

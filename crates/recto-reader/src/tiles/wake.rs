@@ -188,7 +188,7 @@ pub(super) fn shrink_into(
     }
 }
 
-/// Built only in the tiles module ([`Waking::new`]), with no `Default`, and the one `Reader::new` makes is the only one there is: the engine reaches it through `Reader`'s field for what a wake is given and told below; nothing outside `tiles` builds one, and replacing it would take another `Reader`'s (`reader.field = Reader::new().field`), which nothing does.
+/// Built only in the tiles module ([`Waking::new`]), with no `Default`, as each of [`Reader`]'s parts is (see there): the engine reaches it through `Reader`'s field for what a wake is given and told below.
 #[derive(Debug)]
 pub(crate) struct Waking {
     /// What's come from a tab's sleep file, for when it's made the hot tab.

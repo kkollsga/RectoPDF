@@ -90,7 +90,7 @@ pub(super) struct Entry {
     pub(super) last_used: u64,
 }
 
-/// Built only in the tiles module ([`TileCache::new`]), and the one `Reader::new` makes is the only one there is: the engine reaches it through `Reader`'s field for its share and QA's discard; nothing outside `tiles` builds one, and replacing it would take another `Reader`'s (`reader.field = Reader::new().field`), which nothing does.
+/// Built only in the tiles module ([`TileCache::new`]), as each of [`Reader`]'s parts is (see there): the engine reaches it through `Reader`'s field for its share and QA's discard.
 #[derive(Debug)]
 pub(crate) struct TileCache {
     pub(super) entries: HashMap<u64, Entry>,

@@ -226,6 +226,10 @@ pub struct ReaderCounts {
 /// What QA reads.
 pub struct ReaderReport(pub Value);
 
+/// **The page view's state, a composition of parts** (`tiles/<part>.rs`). **Each part is built only in `tiles`, by its own `new`, and the one
+/// [`Reader::new`] makes is the only one there is:** the engine reaches a part through its `pub(crate)` field here and calls only that part's
+/// `pub(crate)` methods; outside `tiles` nothing builds a `Reader` but the engine's one, and nothing assigns, swaps or replaces a part, which no visibility
+/// stops (the fields are `pub(crate)`) and so `surface.rs` scans for (`nothing_outside_tiles_builds_a_reader_or_replaces_a_part`).
 pub(crate) struct Reader {
     /// The tabs held, hot and warm, and which is showing: the engine asks which tab shows, whether one's held and what it holds through this field's own methods.
     pub(crate) docs: Docs,
