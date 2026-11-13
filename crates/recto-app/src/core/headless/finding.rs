@@ -32,3 +32,22 @@ fn opening_find_that_is_open_announces_nothing() {
     app.settle();
     assert!(said.is_empty() && app.heard_events().is_empty(), "an agent's look: {said:?}");
 }
+
+/// What an agent's line made and what the session thread announced after it, settled.
+fn agent_said(app: &HeadlessApp, line: &str) -> Vec<recto_agent::Event> {
+    let (result, mut said) = app.agent_heard(Level::Control, line);
+    assert!(result.is_ok(), "{line}: {result:?}");
+    app.settle();
+    said.extend(app.heard_events());
+    said
+}
+
+/// Failure (R2.3, C5g, difference 3): an agent's step to a hit is heard with `page_changed` twice, once from the command and again from the window's
+/// selecting the hit (`Effect::Reveal`). A hit gone to is heard as `page_changed` and then `find_changed` with its page, once each.
+#[test]
+fn an_agents_step_is_heard_once() {
+    let app = findable();
+    agent_said(&app, r#"{"cmd":"find","query":"pdf page 1"}"#);
+    let said = agent_said(&app, r#"{"cmd":"find","next":true}"#);
+    assert_eq!(names(&said), ["page_changed", "find_changed"], "{said:?}");
+}

@@ -282,7 +282,7 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
         match session.find_step(forward, going) {
             Some((tab, hit)) => {
                 lock(self.field).pending_step = None;
-                self.reveal(tab, &hit, events);
+                self.went(tab, &hit, events);
             }
             None => lock(self.field).pending_step = session.finder().is_running().then_some((forward, going)),
         }
@@ -335,7 +335,7 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
                 if let Some(index) = self.hit_of_row(row)
                     && let Some((tab, hit)) = session.find_choose(index)
                 {
-                    self.reveal(tab, &hit, events);
+                    self.went(tab, &hit, events);
                 }
             }
             FindCall::News => {
@@ -357,18 +357,25 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
                     });
                 }
             }
-            FindCall::Reveal(tab, hit) => self.reveal(tab, &hit, events),
+            // What watchers hear of it is the command's, which said it as it went.
+            FindCall::Reveal(tab, hit) => self.reveal(tab, &hit),
         }
         self.keep_up();
         self.listener.model_changed();
     }
 
-    /// Selects a hit on the page and brings it into view, in the pane being read if it's that tab's.
-    fn reveal(&self, tab: u32, hit: &find::Hit, events: &mut Vec<Event>) {
+    /// Selects a hit on the page and brings it into view, in the pane being read if it's that tab's. Announces nothing: what watchers hear of a hit gone to
+    /// is said where it's gone to.
+    fn reveal(&self, tab: u32, hit: &find::Hit) {
         let engine = self.panes.reading_engine(self.engine);
         if engine.hot_tab() == Some(tab) {
             engine.reveal(hit.page, hit.start, hit.end);
         }
+    }
+
+    /// The person's step or click went to a hit: selected on the page, and heard.
+    fn went(&self, tab: u32, hit: &find::Hit, events: &mut Vec<Event>) {
+        self.reveal(tab, hit);
         // What watchers hear: no page for a document opened with a password.
         events.push(
             self.session
