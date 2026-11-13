@@ -29,7 +29,7 @@ impl<L: DocLoader> Session<L> {
                 holds: None,
             })
         });
-        self.retire_sleep_file(id);
+        self.journal_desk().retire_sleep_file(id);
         let rebased = self.lists.get_mut(id).map(|list| list.rebase_on_saved(pages, kept.clone()));
         let mut rolled_off = 0;
         match rebased {
@@ -72,7 +72,7 @@ impl<L: DocLoader> Session<L> {
             self.journals.drop_fresh(id);
             if self.journals.journaling() {
                 let seq = self.lists.get(id).map_or(0, PageEdits::journal_seq);
-                self.journal_name_for(id);
+                self.journal_desk().name_for(id);
                 self.journals.start_fresh(id, seq, replaces);
             } else if let Some(old) = replaces {
                 self.journals.retire_name(old.into());
@@ -187,7 +187,7 @@ impl<L: DocLoader> Session<L> {
         }
         // What's gone mustn't stay in a picture of it.
         if matches!(reason, ClearReason::Redaction | ClearReason::HiddenDataRemoval) {
-            self.retire_sleep_file(id);
+            self.journal_desk().retire_sleep_file(id);
         }
         let Some(list) = self.lists.get_mut(id) else { return false };
         if reason != ClearReason::Discard && list.is_edited() {

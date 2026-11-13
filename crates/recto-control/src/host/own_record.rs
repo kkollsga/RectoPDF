@@ -39,9 +39,9 @@ impl<L: DocLoader + Clone> Records for OwnRecord<'_, L> {
         let started = std::time::Instant::now();
         let (record, checkpoints, lists, edited, retired) = self.with(|session| {
             // What's been discarded goes, or it would come back at the next restore.
-            let retired = session.journal_work().retired;
-            let checkpoints = session.checkpoints();
-            let lists = session.lists_by_journal();
+            let retired = session.journal_desk().work().retired;
+            let checkpoints = session.journal_desk().checkpoints();
+            let lists = session.journal_look().lists_by_journal();
             let edited = session.lists().edited_tabs();
             (session.to_record(), checkpoints, lists, edited, retired)
         });

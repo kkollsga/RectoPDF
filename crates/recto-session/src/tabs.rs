@@ -173,7 +173,8 @@ impl<L: DocLoader> Session<L> {
         self.comparison = None;
         if let Some(history) = history {
             let rolled_off = history.restored.rolled_off;
-            self.take_up_history(id, &history.name, history.restored.edits, history.restored.seq);
+            self.journal_desk()
+                .take_up_history(id, &history.name, history.restored.edits, history.restored.seq);
             if rolled_off && let Some(tab) = self.tabs.tab_mut(id) {
                 tab.file.set_notice(Some(FileNotice::HistoryRolledOff));
             }
@@ -266,7 +267,7 @@ impl<L: DocLoader> Session<L> {
         }
         let keeps_history = self.journals.journaling() && self.lists.get(id).is_some_and(PageEdits::has_history);
         if keeps_history {
-            if let Some(append) = self.append_for(id) {
+            if let Some(append) = self.journal_desk().append_for(id) {
                 self.journals.depart(JournalAppend { closing: true, ..append });
             }
             self.journals.forget_name(id);
@@ -275,7 +276,7 @@ impl<L: DocLoader> Session<L> {
         }
         self.journals.drop_fresh(id);
         self.lists.remove(id);
-        self.retire_sleep_file(id);
+        self.journal_desk().retire_sleep_file(id);
         let index = self.tabs.position(id).ok_or(SessionError::NoSuchTab)?;
         self.tabs.remove(index);
         self.mail.forget(id);

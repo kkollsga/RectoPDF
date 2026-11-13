@@ -25,6 +25,8 @@ const WATCHED: &[&str] = &[
     "Held",
     "HeldGuard",
     "Comparison",
+    "JournalDesk",
+    "JournalLook",
 ];
 
 /// The last path segment of a type, without its generic arguments, except the handle's, which says which component it's for: `PartMut<Tabs>`.
@@ -247,6 +249,13 @@ fn listing() -> Vec<String> {
                     let signature = signature(code, &mut lines);
                     if watched(&ty) {
                         out.push(format!("{ty}: {vis} fn {name}"));
+                        // An operation type (the journal desk) or a look borrows components: one handing a `&mut` or a component out, by
+                        // returning it or giving it to a closure, is as sure a way in as an accessor returning one.
+                        let ret = signature.split_once(") -> ").map_or("", |(_, ret)| ret.trim_end_matches('{').trim());
+                        if reaches(ret) {
+                            out.push(format!("{ty}: {vis} fn {name} -> {ret}"));
+                        }
+                        out.extend(handed_mut(&signature).into_iter().map(|arg| format!("{ty}: {vis} fn {name} hands {arg}")));
                     } else if ty == "Session" {
                         let ret = signature.split_once(") -> ").map_or("", |(_, ret)| ret.trim_end_matches('{').trim());
                         if reaches(ret) {
@@ -290,9 +299,12 @@ const LISTED: &[&str] = &[
     "Dormant: pub fn oldest_first",
     "Held: impl in held.rs",
     "Held: pub fn confinement",
+    "Held: pub fn confinement -> &Confinement",
     "Held: pub fn lock",
+    "Held: pub fn lock -> HeldGuard<'_, L>",
     "Held: pub fn new",
     "Held: pub fn try_lock",
+    "Held: pub fn try_lock -> Option<HeldGuard<'_, L>>",
     "HeldGuard: impl Deref",
     "HeldGuard: impl DerefMut",
     "HeldGuard: impl Drop",
@@ -319,6 +331,17 @@ const LISTED: &[&str] = &[
     "Generated: impl in generated.rs",
     "Generated: pub fn making",
     "Generated: pub fn view",
+    "JournalDesk: impl in journal.rs",
+    "JournalDesk: pub fn checkpoints",
+    "JournalDesk: pub fn outcome",
+    "JournalDesk: pub fn take_up_history",
+    "JournalDesk: pub fn work",
+    "JournalLook: impl in journal.rs",
+    "JournalLook: pub fn checkpoint_if_caught_up",
+    "JournalLook: pub fn has_work",
+    "JournalLook: pub fn lists_by_journal",
+    "Session: pub fn journal_desk -> journal::JournalDesk<'_>",
+    "Session: pub fn journal_look -> journal::JournalLook<'_>",
     "Journals: impl in journals.rs",
     "Journals: pub fn has_pending",
     "Journals: pub fn history",
@@ -445,7 +468,9 @@ const LISTED: &[&str] = &[
 /// handing out `&mut Tabs`, or a public field, would let `recto-agent` or `recto-app` write `*session.tabs_mut() = Default::default()` or
 /// `std::mem::swap` two sessions' tabs: the confinement cell a quiet run's file wall rests on would go or move (the host's lock-free copy then disagreeing
 /// with the session), the owner's unsaved edits would go past the close and discard rules, and components would disagree. A new accessor (`saves_mut`)
-/// shows here too. Each line is a choice a reviewer sees: add one only if it can't put a component out of step with another or with the host.
+/// shows here too, and so does an operation type (the journal desk) that grows a public field, a constructor, or a method returning or handing a closure
+/// the `&mut Lists` or `&mut Journals` it borrows. Each line is a choice a reviewer sees: add one only if it can't put a component out of step with
+/// another or with the host.
 #[test]
 fn what_a_component_lets_a_caller_outside_the_crate_do_is_listed() {
     let listing = listing();

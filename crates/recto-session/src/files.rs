@@ -93,7 +93,7 @@ impl<L: DocLoader> Session<L> {
                 }
             }
             FileStatus::Changed(now) => {
-                self.retire_sleep_file(id);
+                self.journal_desk().retire_sleep_file(id);
                 // With nothing unsaved there's only history, and its steps don't apply to this. Unsaved edits stay, and say so.
                 if has_edits && !edited {
                     self.clear_history(id, ClearReason::FileChanged);
