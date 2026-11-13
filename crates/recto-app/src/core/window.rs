@@ -8,7 +8,7 @@ use crate::lock;
 use crate::queue::{CoreCall, CoreQueue};
 use crate::records::ScreenInfo;
 use crate::watchdog::Watchdog;
-use recto_session::record::{self, AppRecord, Appearance, ContentsScroll, FocusRecord, Rect, ScreenRecord, SettingsWindow, WindowRecord};
+use recto_session::record::{self, AppRecord, Appearance, ContentsScroll, FocusRecord, FocusView, Rect, ScreenRecord, SettingsWindow, WindowRecord};
 use recto_session::{ContentsFollow, TabId};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -183,6 +183,56 @@ impl Window {
         saved.full_screen = full_screen;
         drop(app);
         saver.view_changed();
+    }
+
+    /// The sidebar's edge was dragged, or QA said so. Rust holds it to its limits, and the window's drawn again at it.
+    pub fn set_sidebar_width(&self, width: f64, core: &CoreQueue) {
+        lock(&self.app).sidebar_width = record::sidebar_width(width);
+        core.push(CoreCall::Reconcile);
+    }
+
+    /// Where the contents are scrolled to now: nowhere, for what isn't a number.
+    pub fn contents_position(&self, y: f64, saver: &Saver) {
+        lock(&self.app).contents_y = y.is_finite().then_some(y);
+        saver.view_changed();
+    }
+
+    /// What has the keyboard, by its name. A name that's none of them changes nothing.
+    pub fn focus_changed(&self, view: &str, saver: &Saver) {
+        if let Some(view) = FocusView::from_name(view) {
+            lock(&self.app).focus.view = view;
+            saver.view_changed();
+        }
+    }
+
+    /// The name of what has the keyboard.
+    pub fn focus_view(&self) -> &'static str {
+        lock(&self.app).focus.view.name()
+    }
+
+    /// Light or dark as chosen, or `system`.
+    pub fn appearance_choice(&self) -> &'static str {
+        match lock(&self.app).appearance {
+            Appearance::System => "system",
+            Appearance::Light => "light",
+            Appearance::Dark => "dark",
+        }
+    }
+
+    /// Light or dark chosen, by its name; anything else is the system's.
+    pub fn set_appearance_choice(&self, choice: &str, saver: &Saver) {
+        lock(&self.app).appearance = match choice {
+            "light" => Appearance::Light,
+            "dark" => Appearance::Dark,
+            _ => Appearance::System,
+        };
+        saver.view_changed();
+    }
+
+    /// The system's appearance went dark or light, and the window's drawn again in it.
+    pub fn set_dark(&self, dark: bool, core: &CoreQueue) {
+        self.dark.store(dark, Ordering::SeqCst);
+        core.push(CoreCall::Reconcile);
     }
 
     /// Where the Settings window was, if it was open.

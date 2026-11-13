@@ -34,7 +34,7 @@ pub use recto_app::reader_view::ReaderView;
 pub use recto_app::records::{HighlightRect, ReaderOp, ScreenInfo};
 pub use recto_app::{RowKind, SidebarRow, SidebarView};
 use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Viewport};
-use recto_session::record::{self, Appearance, FocusView, Rect, ScreenNow, SettingsWindow, place_window};
+use recto_session::record::{self, FocusView, Rect, ScreenNow, SettingsWindow, place_window};
 use recto_session::{CONTENTS_ROW_HEIGHT, ContentsRowChange, ContentsView, FollowMove, TAB_ROW_HEIGHT, TabId, row_full_text, sidebar_heights_with_note};
 use serde_json::json;
 use std::io::Write;
@@ -830,8 +830,7 @@ impl AppCore {
     }
 
     pub fn set_dark_appearance(&self, dark: bool) {
-        self.inner.window.dark.store(dark, Ordering::SeqCst);
-        self.inner.core.push(CoreCall::Reconcile);
+        self.inner.window.set_dark(dark, &self.inner.core);
     }
 
     /// What hovering over a row reveals: its full text, clean and bounded, and what it is.
@@ -1283,26 +1282,21 @@ impl AppCore {
 
     /// The sidebar's edge was dragged, or QA said so. Rust holds it to its limits.
     pub fn set_sidebar_width(&self, width: f64) {
-        lock(&self.inner.window.app).sidebar_width = record::sidebar_width(width);
-        self.inner.core.push(CoreCall::Reconcile);
+        self.inner.window.set_sidebar_width(width, &self.inner.core);
     }
 
     /// Where the contents are scrolled to now.
     pub fn contents_position(&self, y: f64) {
-        lock(&self.inner.window.app).contents_y = y.is_finite().then_some(y);
-        self.inner.saver.view_changed();
+        self.inner.window.contents_position(y, &self.inner.saver);
     }
 
     /// What has the keyboard.
     pub fn focus_changed(&self, view: String) {
-        if let Some(view) = FocusView::from_name(&view) {
-            lock(&self.inner.window.app).focus.view = view;
-            self.inner.saver.view_changed();
-        }
+        self.inner.window.focus_changed(&view, &self.inner.saver);
     }
 
     pub fn focus_view(&self) -> String {
-        lock(&self.inner.window.app).focus.view.name().to_string()
+        self.inner.window.focus_view().to_string()
     }
 
     /// The app became the active one or stopped, and the window key or not. Going to the background writes what's changed: from there, nobody's watching.
@@ -1312,21 +1306,11 @@ impl AppCore {
 
     /// Light or dark as chosen, or `system`.
     pub fn appearance_choice(&self) -> String {
-        match lock(&self.inner.window.app).appearance {
-            Appearance::System => "system",
-            Appearance::Light => "light",
-            Appearance::Dark => "dark",
-        }
-        .to_string()
+        self.inner.window.appearance_choice().to_string()
     }
 
     pub fn set_appearance_choice(&self, choice: String) {
-        lock(&self.inner.window.app).appearance = match choice.as_str() {
-            "light" => Appearance::Light,
-            "dark" => Appearance::Dark,
-            _ => Appearance::System,
-        };
-        self.inner.saver.view_changed();
+        self.inner.window.set_appearance_choice(&choice, &self.inner.saver);
     }
 
     /// A sheet or panel opened over the window, or closed. An update waits for it.

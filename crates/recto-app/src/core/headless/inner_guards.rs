@@ -243,13 +243,20 @@ Window.pub(crate) action_notice: Mutex<Option<String>>
 Window.pub(crate) notice_tab: AtomicU32
 Window.pub(crate) open_failure: Mutex<Option<String>>
 Window::pub fn app_record(&self, notice: Option<String>) -> AppRecord
+Window::pub fn appearance_choice(&self) -> &'static str
 Window::pub fn changed(&self, frame: Option<Vec<f64>>, screen: Option<ScreenInfo>, full_screen: bool, saver: &Saver)
 Window::pub fn comes_back_hidden(&self, reopened: bool) -> bool
+Window::pub fn contents_position(&self, y: f64, saver: &Saver)
+Window::pub fn focus_changed(&self, view: &str, saver: &Saver)
+Window::pub fn focus_view(&self) -> &'static str
 Window::pub fn frontmost_changed(&self, app: bool, window_key: bool, saver: &Saver, core: &CoreQueue)
 Window::pub fn hidden_changed(&self, hidden: bool, saver: &Saver)
 Window::pub fn minimised_changed(&self, minimised: bool, saver: &Saver)
 Window::pub fn new(watchdog: Watchdog) -> Self
 Window::pub fn opens_in_background(&self, reopened: bool) -> bool
+Window::pub fn set_appearance_choice(&self, choice: &str, saver: &Saver)
+Window::pub fn set_dark(&self, dark: bool, core: &CoreQueue)
+Window::pub fn set_sidebar_width(&self, width: f64, core: &CoreQueue)
 Window::pub fn settings_window(&self) -> Option<SettingsWindow>
 Window::pub fn settings_window_changed(&self, place: Option<SettingsWindow>, saver: &Saver)
 Window::pub fn should_open(&self, reopened: bool) -> bool

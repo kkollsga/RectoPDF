@@ -213,3 +213,92 @@ fn a_move_is_kept_as_the_bridge_kept_it() {
         assert_eq!(rig.kept(), Kept::InItsTime, "{asked}");
     }
 }
+
+/// Failure: the sidebar's width is kept past its limits or as what isn't a number, so a record makes a sidebar nobody can use, or the window isn't drawn
+/// again at it: the bridge's `set_sidebar_width`, held to `record::sidebar_width`'s limits and redrawn by the session thread every time.
+#[test]
+fn the_sidebars_width_is_kept_as_the_bridge_kept_it() {
+    let (narrowest, widest) = record::SIDEBAR_WIDTHS;
+    for (asked, kept) in [
+        (10.0, narrowest),
+        (300.4, 300.0),
+        (300.6, 301.0),
+        (10_000.0, widest),
+        (f64::NAN, record::SIDEBAR_WIDTH),
+        (f64::INFINITY, record::SIDEBAR_WIDTH),
+    ] {
+        let rig = Rig::new();
+        rig.window.set_sidebar_width(asked, &rig.core);
+        assert_eq!(rig.app().sidebar_width, kept, "asked {asked}");
+        assert_eq!(rig.queued(), ["Reconcile"], "asked {asked}");
+        assert_eq!(rig.kept(), Kept::Not, "the record goes with the next reconcile, not here");
+    }
+}
+
+/// Failure: a scroll that isn't a number is kept, so the record can't be read back, or one is lost: the bridge's `contents_position`.
+#[test]
+fn the_contents_scroll_is_kept_as_the_bridge_kept_it() {
+    for (asked, kept) in [
+        (120.5, Some(120.5)),
+        (0.0, Some(0.0)),
+        (-4.0, Some(-4.0)),
+        (f64::NAN, None),
+        (f64::NEG_INFINITY, None),
+    ] {
+        let rig = Rig::new();
+        lock(&rig.window.app).contents_y = Some(9.0);
+        rig.window.contents_position(asked, &rig.saver);
+        assert_eq!((rig.app().contents_y, rig.kept()), (kept, Kept::InItsTime), "asked {asked}");
+    }
+}
+
+/// Failure: a focus the host names that's none of the three is kept as something, or written for nothing, or a real one is lost: the bridge's
+/// `focus_changed` and `focus_view`.
+#[test]
+fn focus_is_kept_as_the_bridge_kept_it() {
+    for (asked, answer, kept) in [
+        ("page", "page", Kept::InItsTime),
+        ("sidebar", "sidebar", Kept::InItsTime),
+        ("find", "find", Kept::InItsTime),
+        ("the moon", "page", Kept::Not),
+        ("Sidebar", "page", Kept::Not),
+        ("", "page", Kept::Not),
+    ] {
+        let rig = Rig::new();
+        rig.window.focus_changed(asked, &rig.saver);
+        assert_eq!((rig.window.focus_view(), rig.kept()), (answer, kept), "asked {asked:?}");
+    }
+}
+
+/// Failure: an appearance the host names that's neither light nor dark is kept as one of them, or a choice isn't written: the bridge's
+/// `set_appearance_choice` and `appearance_choice`.
+#[test]
+fn the_appearance_is_kept_as_the_bridge_kept_it() {
+    for (asked, kept, answer) in [
+        ("light", Appearance::Light, "light"),
+        ("dark", Appearance::Dark, "dark"),
+        ("system", Appearance::System, "system"),
+        ("Dark", Appearance::System, "system"),
+        ("plaid", Appearance::System, "system"),
+    ] {
+        let rig = Rig::new();
+        lock(&rig.window.app).appearance = Appearance::Light;
+        rig.window.set_appearance_choice(asked, &rig.saver);
+        assert_eq!(
+            (rig.app().appearance, rig.window.appearance_choice(), rig.kept()),
+            (kept, answer, Kept::InItsTime),
+            "asked {asked:?}"
+        );
+    }
+}
+
+/// Failure: the system going dark isn't drawn: the bridge's `set_dark_appearance`, kept and the window redrawn either way.
+#[test]
+fn the_systems_appearance_is_kept_as_the_bridge_kept_it() {
+    for dark in [true, false] {
+        let rig = Rig::new();
+        rig.window.set_dark(dark, &rig.core);
+        assert_eq!(rig.window.dark.load(Ordering::SeqCst), dark);
+        assert_eq!(rig.queued(), ["Reconcile"], "dark {dark}");
+    }
+}

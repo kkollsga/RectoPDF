@@ -16,7 +16,6 @@ use crate::testkit::headless::{Disk, HeadlessApp};
 mod bridge {
     use crate::core::{Inner, updates};
     use crate::lock;
-    use recto_session::record::{self, Appearance, FocusView};
 
     /// The part of `window_placement` that decides what's kept: whether the window comes back in the Dock, and that it's been decided.
     pub fn window_placement_decides(inner: &Inner) -> bool {
@@ -30,50 +29,6 @@ mod bridge {
             app.clone()
         };
         app.window.as_ref().is_some_and(|window| window.minimised)
-    }
-
-    pub fn set_sidebar_width(inner: &Inner, width: f64) {
-        lock(&inner.window.app).sidebar_width = record::sidebar_width(width);
-        inner.core.push(crate::queue::CoreCall::Reconcile);
-    }
-
-    pub fn contents_position(inner: &Inner, y: f64) {
-        lock(&inner.window.app).contents_y = y.is_finite().then_some(y);
-        inner.saver.view_changed();
-    }
-
-    pub fn focus_changed(inner: &Inner, view: String) {
-        if let Some(view) = FocusView::from_name(&view) {
-            lock(&inner.window.app).focus.view = view;
-            inner.saver.view_changed();
-        }
-    }
-
-    pub fn focus_view(inner: &Inner) -> String {
-        lock(&inner.window.app).focus.view.name().to_string()
-    }
-
-    pub fn appearance_choice(inner: &Inner) -> String {
-        match lock(&inner.window.app).appearance {
-            Appearance::System => "system",
-            Appearance::Light => "light",
-            Appearance::Dark => "dark",
-        }
-        .to_string()
-    }
-
-    pub fn set_appearance_choice(inner: &Inner, choice: String) {
-        lock(&inner.window.app).appearance = match choice.as_str() {
-            "light" => Appearance::Light,
-            "dark" => Appearance::Dark,
-            _ => Appearance::System,
-        };
-        inner.saver.view_changed();
-    }
-
-    pub fn set_dark_appearance(inner: &Inner, dark: bool) {
-        inner.window.dark.store(dark, std::sync::atomic::Ordering::SeqCst);
-        inner.core.push(crate::queue::CoreCall::Reconcile);
     }
 
     pub fn contents_user_scrolled(inner: &Inner) {
@@ -140,31 +95,31 @@ const STEPS: &[(&str, Step)] = &[
         said(inner.window.comes_back_hidden(inner.updates.reopened_by_update()))
     }),
     ("shown", |inner| done(inner.window.hidden_changed(false, &inner.saver))),
-    ("sidebar too narrow", |inner| done(bridge::set_sidebar_width(inner, 10.0))),
-    ("sidebar wide", |inner| done(bridge::set_sidebar_width(inner, 300.4))),
-    ("contents nowhere", |inner| done(bridge::contents_position(inner, f64::NAN))),
-    ("contents scrolled", |inner| done(bridge::contents_position(inner, 120.5))),
+    ("sidebar too narrow", |inner| done(inner.window.set_sidebar_width(10.0, &inner.core))),
+    ("sidebar wide", |inner| done(inner.window.set_sidebar_width(300.4, &inner.core))),
+    ("contents nowhere", |inner| done(inner.window.contents_position(f64::NAN, &inner.saver))),
+    ("contents scrolled", |inner| done(inner.window.contents_position(120.5, &inner.saver))),
     ("focus on the sidebar", |inner| {
-        bridge::focus_changed(inner, "sidebar".into());
-        Some(bridge::focus_view(inner))
+        inner.window.focus_changed("sidebar", &inner.saver);
+        Some(inner.window.focus_view().to_string())
     }),
     ("focus on nothing known", |inner| {
-        bridge::focus_changed(inner, "the moon".into());
-        Some(bridge::focus_view(inner))
+        inner.window.focus_changed("the moon", &inner.saver);
+        Some(inner.window.focus_view().to_string())
     }),
     ("dark chosen", |inner| {
-        bridge::set_appearance_choice(inner, "dark".into());
-        Some(bridge::appearance_choice(inner))
+        inner.window.set_appearance_choice("dark", &inner.saver);
+        Some(inner.window.appearance_choice().to_string())
     }),
     ("light chosen", |inner| {
-        bridge::set_appearance_choice(inner, "light".into());
-        Some(bridge::appearance_choice(inner))
+        inner.window.set_appearance_choice("light", &inner.saver);
+        Some(inner.window.appearance_choice().to_string())
     }),
     ("nothing known chosen", |inner| {
-        bridge::set_appearance_choice(inner, "plaid".into());
-        Some(bridge::appearance_choice(inner))
+        inner.window.set_appearance_choice("plaid", &inner.saver);
+        Some(inner.window.appearance_choice().to_string())
     }),
-    ("the system went dark", |inner| done(bridge::set_dark_appearance(inner, true))),
+    ("the system went dark", |inner| done(inner.window.set_dark(true, &inner.core))),
     ("to the background", |inner| {
         inner.window.frontmost_changed(false, false, &inner.saver, &inner.core);
         said(inner.window.opens_in_background(inner.updates.reopened_by_update()))
