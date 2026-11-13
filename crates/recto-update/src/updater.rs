@@ -19,6 +19,7 @@ use std::time::Duration;
 pub mod builds;
 mod flow;
 mod handing;
+mod menu;
 mod now;
 mod said;
 pub mod seams;
@@ -920,34 +921,6 @@ impl Updater {
         if watched {
             self.host.changed();
         }
-    }
-
-    /// The menu item was chosen. Whichever it says: it starts on a thread of its own, and the UI's not held.
-    pub fn menu_chosen(self: &Arc<Self>) {
-        {
-            let mut st = lock(&self.st);
-            // Only what this starts: something already under way was someone else's to ask for.
-            if st.status.is_under_way() {
-                return;
-            }
-            st.from_menu = true;
-        }
-        // The same call as Settings' button and `recto update install`: a waiting build goes at once, by hand, else what's on offer; and with neither, the menu checks.
-        let started = match self.update_now() {
-            Ok(_) => true,
-            // A local build never installs, so for it the menu only ever checks.
-            Err(InstallRefused::NothingOnOffer | InstallRefused::NotInThisBuild) => self.check_in_background(Asked::ByHand),
-            Err(_) => false,
-        };
-        if !started {
-            lock(&self.st).from_menu = false;
-        }
-    }
-
-    /// What's been said of something chosen from the menu, to show as an alert when there's no window to say it in. Taken once.
-    #[must_use]
-    pub fn take_alert(&self) -> Option<String> {
-        lock(&self.st).alert.take()
     }
 
     /// The answer to what's under way, said by hand: in the margin, and as an alert too if it was chosen from the menu.

@@ -30,6 +30,14 @@ impl Updater {
         }
     }
 
+    /// **Whether the menu's item goes now** (an update or a build on offer, its title *Update to X…*) rather than checks (*Check for Updates…*): what the
+    /// person's choosing it sends, `update install --now` or `update check` (R2.3, C8).
+    #[must_use]
+    pub fn menu_installs(&self) -> bool {
+        let st = lock(&self.st);
+        !st.status.is_under_way() && (st.build.is_some() || self.offered_here(&st).is_some())
+    }
+
     /// The menu item. Rust's words, whichever way things stand. An offer stays on it through whatever else has happened: a check that failed last night, or an install that didn't work, which by hand can always be tried again.
     #[must_use]
     pub fn menu_item(&self) -> MenuItem {

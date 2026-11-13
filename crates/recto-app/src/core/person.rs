@@ -78,16 +78,17 @@ const BEFORE: &[fn(&Inner, &mut FileReads, &Command)] = &[super::opening::before
 /// **What the window does with how a person's command went,** feature by feature, one line each: a failure in the person's own words, from the feature
 /// it's about, and the window's own steps after (a list kept at once). A failure no feature has words for is said nothing of, as the window's own calls said
 /// nothing (an Undo with nothing to undo); an agent's words, which name `recto` commands and levels, are never shown to a person.
-const ANSWERED: &[fn(&Inner, &Ran<'_>)] = &[
+const ANSWERED: &[fn(&Arc<Inner>, &Ran<'_>)] = &[
     super::navigation::answered,
     super::opening::answered,
     super::closing::answered,
     super::editing::answered,
     super::comparison::answered,
     super::find::answered,
+    super::updates::answered,
 ];
 
-fn answered(inner: &Inner, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {
+fn answered(inner: &Arc<Inner>, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {
     let ran = Ran { command, origin, result };
     for answer in ANSWERED {
         answer(inner, &ran);

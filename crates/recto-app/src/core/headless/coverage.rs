@@ -24,10 +24,6 @@ const HOST_ONLY: &[(&str, &str)] = &[
     ("app.services", "the system fills the Services menu"),
     ("app.settings", "opens the Settings window; what's chosen there is `SettingChosen`"),
     (
-        "app.update",
-        "the updater's own steps, off the UI thread, until C8 makes it `update check|install`",
-    ),
-    (
         "edit.copy",
         "the selection is the page view's, on the UI thread, and goes to the system's pasteboard",
     ),
@@ -48,10 +44,6 @@ const HOST_ONLY: &[(&str, &str)] = &[
     (
         "UiAction::CloseAnswered(SaveAs)",
         "opens the Save As sheet for a document Save is off for; its answer is `SaveAs`",
-    ),
-    (
-        "UiAction::SettingChosen",
-        "a switch in Settings, kept by the updater, until C8 makes it `settings`",
     ),
 ];
 

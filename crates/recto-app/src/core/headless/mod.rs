@@ -26,4 +26,5 @@ mod sidebar;
 mod tabs;
 mod twins;
 mod update;
+mod update_menu;
 mod view;

@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 /// **What the window says when a person's ⌘-click couldn't be done:** why, by the page, in the session's words for a comparison (a fourth pane), as the
 /// ⌘-click always said. A pane that couldn't be read, or scroll with no comparison to sync, said nothing and says nothing.
-pub fn answered(inner: &Inner, ran: &person::Ran<'_>) {
+pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
     if let (Command::Move(Move::Compare(Compare { toggle: Some(_), .. })), Some(error)) = (ran.command, ran.refused())
         && let Some(words) = compare_words(error)
     {
