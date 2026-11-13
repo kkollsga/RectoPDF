@@ -3,9 +3,9 @@
 //! with nothing held across it; the UI thread never waits for any of it.
 //!
 //! **The order, once a try gets the lock** (the review of 2026-11-13's two blockers):
-//! 1. The try is made under the saver's gate and the life's lock, so no writer of the record is between gathering what it writes and writing it, and no quit or
-//!    hand-off begins between the look at whether a try is due and the try; and with no agent's change under way (one that is makes it a try that didn't get the
-//!    lock). The machine is then restoring, and from here until the saved session is in, every writer writes nothing (`saver`) and what the person does waits,
+//! 1. The try is made holding the saver's gate and the life's lock, so no writer of the record is between gathering what it writes and writing it, and no quit
+//!    or hand-off begins between the look at whether a try is due and the try; and with no agent's change under way. A writer holding the gate, or an agent's
+//!    change under way, makes it a try that didn't get the lock: the session thread never waits for either. The machine is then restoring, and from here until the saved session is in, every writer writes nothing (`saver`) and what the person does waits,
 //!    as at a launch (the session thread holds it back), so nothing they do is replaced by the restore.
 //! 2. Off the session thread, as at a launch ([`super::launching::read_state`]): the updater is told of the launch, held back until now, as a copy that keeps the
 //!    record ([`updates::tell_launch`]), before anything is read, so a version that keeps failing goes back here having written nothing over the record; then
@@ -84,9 +84,15 @@ pub(super) fn when_due(inner: &Arc<Inner>, reads: &FileReads) {
         return;
     }
     let out = {
-        let _gate = lock(&inner.saver.gate);
+        // Held across the try. A writer between gathering and writing has it: then this is a try that didn't get the lock, and the session thread doesn't wait
+        // on the disk for it.
+        let gate = match inner.saver.gate.try_lock() {
+            Ok(gate) => Some(gate),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        };
         inner.life.try_keeping(
-            || inner.host.running.load(Ordering::SeqCst) > 0 || inner.host.handing_off.load(Ordering::SeqCst),
+            || gate.is_none() || inner.host.running.load(Ordering::SeqCst) > 0 || inner.host.handing_off.load(Ordering::SeqCst),
             || inner.saver.store.try_to_keep(),
         )
     };

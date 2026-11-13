@@ -28,9 +28,9 @@
 //! show the person a notice) nor be replaced by the restore, its tab number then naming one of the owner's tabs. The app counts a change of an agent's that's
 //! under way, and a try that finds one is a try that didn't get the lock (`core::keeping`).
 //!
-//! **Nothing writes over the record between the try and the restore.** The try is made under the saver's gate, which every writer of the record holds from
-//! gathering what it writes to writing it, and while it's restoring the writers write nothing (`core::saver`): so a writer either gathered first and is refused
-//! (it doesn't keep the record yet), or gathers the restored session.
+//! **Nothing writes over the record between the try and the restore.** The try is made holding the saver's gate, which every writer of the record holds from
+//! gathering what it writes to writing it (a writer that has it makes the try one that didn't get the lock), and while it's restoring the writers write nothing
+//! (`core::saver`): so a writer either gathered first and is refused (it doesn't keep the record yet), or gathers the restored session.
 //!
 //! Pure: the state, an event and `now` in milliseconds of the app's clock. The app holds it in [`super::Life`] and carries out the [`Out`]
 //! (`core::keeping`).

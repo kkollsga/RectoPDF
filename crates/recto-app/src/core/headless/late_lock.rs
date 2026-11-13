@@ -488,31 +488,59 @@ fn a_write_due_while_the_saved_session_is_read_back_writes_nothing_over_it() {
     comes_back_at_the_next_launch(disk);
 }
 
-/// Failure (review, 2026-11-13, route 3): an agent's `session save` (which only asks, so it isn't refused while trying) gathers the empty window, a try gets the
-/// lock under it, and its write then goes past the lock and writes the empty window over the saved session. The save is held at its write with the empty window
-/// gathered, and a try comes due: the try waits for the write, which is refused, and then takes the lock and restores; the agent's told its save wasn't
-/// written, and the saved session comes back, now and at the next launch.
-#[test]
-fn an_agents_save_at_the_moment_of_a_try_writes_nothing_over_the_saved_session() {
-    let disk = a_saved_session();
-    let before = the_copy_before(&disk);
-    let app = disk.builder().another_keeps().hold(&[Seam::RecordWrite]).start();
+/// The agent's `session save` (which only asks, so it isn't refused while trying), on a thread of its own as the socket's server runs it.
+fn agents_save(app: &HeadlessApp) -> std::thread::JoinHandle<Result<serde_json::Value, recto_agent::AgentError>> {
     let core = Arc::clone(app.core());
-    let saving = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let command = recto_agent::parse(r#"{"cmd":"session_save"}"#).expect("a command");
         recto_control::host::Host::run(&*core.host, Actor::Agent(Level::Full), &command, &mut Vec::new())
-    });
-    app.wait_until("the agent's save held with the empty window gathered", || app.waiting(Seam::RecordWrite) > 0);
-    drop(before);
-    app.advance(TRY_EVERY_MS);
-    app.let_through(Seam::RecordWrite, 1);
-    let saved = saving.join().expect("the agent's save answered");
-    assert!(saved.is_err(), "the empty window isn't written: {saved:?}");
-    app.wait_until("the record kept", || app.core().life.keeping() == Keeping::Keeps);
-    app.settle();
-    assert_eq!(tab_names(&app), ["a", "b"]);
-    let (_, disk) = app.quit();
-    comes_back_at_the_next_launch(disk);
+    })
+}
+
+/// Failure (review, 2026-11-13, route 3): an agent's `session save` gathers the empty window, a try gets the lock under it, and the save's write then goes past
+/// the lock and writes the empty window over the saved session; or a save that comes just after a try got the lock writes the empty window before the saved
+/// session is in. Gathered before the try (held at its write): the try is one that didn't get the lock, the save is refused, and the next try keeps the
+/// record. Come after the try (the saved session's read held): the save is refused. Either way the saved session comes back, now and at the next launch.
+#[test]
+fn an_agents_save_at_the_moment_of_a_try_writes_nothing_over_the_saved_session() {
+    for gathered_first in [true, false] {
+        let disk = a_saved_session();
+        let before = the_copy_before(&disk);
+        let on_disk = record_folder(&disk);
+        let app = disk.builder().another_keeps().hold(&[Seam::RecordWrite]).start();
+        let saved = if gathered_first {
+            let saving = agents_save(&app);
+            app.wait_until("the agent's save held with the empty window gathered", || app.waiting(Seam::RecordWrite) > 0);
+            drop(before);
+            next_try_fails(&app);
+            assert!(!app.core().saver.store.holds_the_record(), "not taken under a writer");
+            app.let_through(Seam::RecordWrite, 1);
+            let saved = saving.join().expect("the agent's save answered");
+            app.advance(TRY_EVERY_MS);
+            saved
+        } else {
+            recto_platform::slow::gate::hold(&[Seam::State]);
+            drop(before);
+            app.advance(TRY_EVERY_MS);
+            app.wait_until("the saved session's read held at its seam", || app.waiting(Seam::State) > 0);
+            let saving = agents_save(&app);
+            // A save that got past the read would wait at its write: let it, and see what it did.
+            app.wait_until("the agent's save answered or at its write", || {
+                saving.is_finished() || app.waiting(Seam::RecordWrite) > 0
+            });
+            app.let_through(Seam::RecordWrite, 1);
+            let saved = saving.join().expect("the agent's save answered");
+            assert_eq!(record_folder(app.disk()), on_disk, "nothing written while it's read back");
+            app.let_through(Seam::State, 1);
+            saved
+        };
+        assert!(saved.is_err(), "gathered first {gathered_first}: the empty window isn't written: {saved:?}");
+        app.wait_until("the record kept", || app.core().life.keeping() == Keeping::Keeps);
+        app.settle();
+        assert_eq!(tab_names(&app), ["a", "b"], "gathered first {gathered_first}");
+        let (_, disk) = app.quit();
+        comes_back_at_the_next_launch(disk);
+    }
 }
 
 /// Failure (review, 2026-11-13): an agent's `open` while it tries either counts as the person working in the window (stopping the retry and showing the person a
