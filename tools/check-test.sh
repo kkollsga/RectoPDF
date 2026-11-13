@@ -8,7 +8,7 @@
 # the prologue and carries state only inside itself: a segment's header says what it starts from, and a new case goes in the segment whose state it needs
 # (or a new one). Run with no argument, the script starts every segment as a process of its own, CHECK_TEST_JOBS at a time (default 3: CI's cores), keeps each one's
 # output in its own file, and prints them all, in order, whole. CHECK_TEST_SEGMENT=<name> runs one alone. The longest are first, so none starts last.
-SEGMENTS="N1 J2 D K1 C N2 J1 F B A L M I K2 G O P1 P2 P3 P4 P5"
+SEGMENTS="N1 J2 D K1 C N2 N3 J1 F B A L M I K2 G O P1 P2 P3 P4 P5"
 set -uo pipefail
 SOURCE="$(cd "$(dirname "$0")/.." && pwd)"
 if [ -z "${CHECK_TEST_SEGMENT:-}" ]; then
@@ -111,9 +111,14 @@ echo "gh $*" >> "$CALLS.gh"
 [ -z "${STUB_GH_HANG:-}" ] || exec sleep 30
 [ -z "${STUB_GH_FAIL:-}" ] || exit 1
 case "$*" in
-  # A commit's own runs when the case set them (STUB_GH_COMMITS/<sha>), for a watch that moves from one commit's run to another's.
-  "run list"*"--commit"*) c=$(printf '%s' "$*" | sed -E 's/.*--commit ([0-9a-f]+).*/\1/'); if [ -n "${STUB_GH_COMMITS:-}" ] && [ -f "$STUB_GH_COMMITS/$c" ]; then cat "$STUB_GH_COMMITS/$c"; elif [ -f "$CALLS.gh-rerun" ] && [ -n "${STUB_GH_RUNS_AFTER:-}" ]; then printf '%s\n' "$STUB_GH_RUNS_AFTER"; else printf '%s\n' "${STUB_GH_RUNS:-[]}"; fi ;;
-  "run list"*) if [ -f "$CALLS.gh-rerun" ] && [ -n "${STUB_GH_RUNS_AFTER:-}" ]; then printf '%s\n' "$STUB_GH_RUNS_AFTER"; else printf '%s\n' "${STUB_GH_RUNS:-[]}"; fi ;;
+  # The runs a watch sees. Like GitHub (2026-11-13, run 43469313717), an answer filtered by --branch or --commit leaves out a run that isn't completed.
+  # STUB_GH_SEQ: a folder of answers 1, 2, 3 ... one a call (the last stays), for a run that is queued, then running, then done.
+  "run list"*)
+    if [ -n "${STUB_GH_SEQ:-}" ]; then n=$(($(cat "$CALLS.seq" 2>/dev/null || echo 0) + 1)); echo $n > "$CALLS.seq"; [ -f "$STUB_GH_SEQ/$n" ] || n=$(ls "$STUB_GH_SEQ" | wc -l | tr -d ' '); j=$(cat "$STUB_GH_SEQ/$n")
+    elif [ -f "$CALLS.gh-rerun" ] && [ -n "${STUB_GH_RUNS_AFTER:-}" ]; then j=$STUB_GH_RUNS_AFTER
+    else j=${STUB_GH_RUNS:-[]}; fi
+    case "$*" in *--branch*|*--commit*) j="[$(printf '%s' "$j" | tr -d '\n' | sed -E 's/^\[//; s/\]$//; s/\},\{/}\n{/g' | grep -Ev '"status":"(queued|in_progress|waiting|pending)"' | paste -sd, -)]" ;; esac
+    printf '%s\n' "$j" ;;
   # How long a run's check job took, in seconds: nothing unless the case says (STUB_GH_CHECK_SECS).
   "run view"*"fromdate"*) echo "${STUB_GH_CHECK_SECS:-}" ;;
   # A run's jobs: name, conclusion, steps, steps failed or cut off, id. By default a part that ran and failed; STUB_GH_JOBS for others.
@@ -195,7 +200,7 @@ quick_tests() { grep '^nextest run' "$X/quick.calls" || true; }
 branch_with() { git checkout -q main; git checkout -qb "$1"; fresh_ledger; }
 sel() { : > "$CALLS"; rm -f "$CALLS.slow"; sel_full "$@" > "$X/sel.out"; echo $?; cp "$CALLS" "$X/sel.calls"; : > "$CALLS"; }
 sel_has() { grep -c -- "$1" "$X/sel.calls" | tr -d ' '; }
-run_of() { printf '[{"conclusion":"%s","databaseId":%s,"headSha":"%s","status":"%s","url":"https://ci/%s"}]' "$1" "$2" "$3" "${4:-completed}" "$2"; }
+run_of() { printf '[{"conclusion":"%s","databaseId":%s,"headBranch":"%s","headSha":"%s","status":"%s","url":"https://ci/%s"}]' "$1" "$2" "${5:-main}" "$3" "${4:-completed}" "$2"; }
 
 # Segment A. Starts from: the prologue's repository (branch main, pushed to origin); makes branch `work` and runs a full run on it. The ledger carries from case to case, up to the dirty-tree cases.
 seg_A() {
@@ -1164,7 +1169,7 @@ commit_code after-other
 out=$(STUB_GH_RUNS="$(run_of failure 10 1234567890123456789012345678901234567890)" full --why "unrelated red"); rc=$?
 check "a red run of a commit that isn't in main's history doesn't count" "0" "$rc"
 commit_code after-cancelled
-out=$(STUB_GH_RUNS="[{\"conclusion\":\"cancelled\",\"databaseId\":11,\"headSha\":\"$pushed\",\"status\":\"completed\",\"url\":\"u\"},$(run_of failure 12 "$pushed" | tr -d '[]')]" full --why "cancelled then red"); rc=$?
+out=$(STUB_GH_RUNS="[{\"conclusion\":\"cancelled\",\"databaseId\":11,\"headBranch\":\"main\",\"headSha\":\"$pushed\",\"status\":\"completed\",\"url\":\"u\"},$(run_of failure 12 "$pushed" | tr -d '[]')]" full --why "cancelled then red"); rc=$?
 check "a cancelled run is passed over for the one before it" "4" "$rc"
 commit_code no-gh
 out=$(PUSH_MAIN_GH=/nonexistent/gh full --why "no gh"); rc=$?
@@ -1204,12 +1209,12 @@ check "a green watch ends with 0 and says so" "0 yes" "$rc $(printf '%s' "$out" 
 # Failure (owner, 2026-11-12: "Add a rule so the ci doesnt regress in the future"): CI's check went from about 14 minutes to 18 to 33 in a day and
 # nothing said so. A green run's time is kept and said against the budget; the median of the last five decides, so one slow runner isn't an alarm.
 rm -f .git/recto-ci-times
-out=$(STUB_GH_CHECK_SECS=600 STUB_GH_RUNS="$(run_of success 14 "$pushed")" PUSH_MAIN_POLL=0 PUSH_MAIN_CI_BUDGET=900 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+out=$(STUB_GH_CHECK_SECS=600 STUB_GH_RUNS="$(run_of success 141 "$pushed")" PUSH_MAIN_POLL=0 PUSH_MAIN_CI_BUDGET=900 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
 has "a green run's check time is said against the budget" "CI's check took 10 min 0 s; the median of the last 1 green runs is 10 min 0 s, and the budget is 15 min 0 s." "$out"
 check "under it, nothing more is said, and the time is kept" "no 600" "$(printf '%s' "$out" | grep -q "TIME BUDGET" && echo yes || echo no) $(tail -1 .git/recto-ci-times | cut -f4)"
-out=$(STUB_GH_CHECK_SECS=2000 STUB_GH_RUNS="$(run_of success 14 "$pushed")" PUSH_MAIN_POLL=0 PUSH_MAIN_CI_BUDGET=900 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+out=$(STUB_GH_CHECK_SECS=2000 STUB_GH_RUNS="$(run_of success 142 "$pushed")" PUSH_MAIN_POLL=0 PUSH_MAIN_CI_BUDGET=900 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
 check "one slow run among fast ones isn't over the budget, and never fails the watch" "0 no" "$rc $(printf '%s' "$out" | grep -q "TIME BUDGET" && echo yes || echo no)"
-out=$(STUB_GH_CHECK_SECS=1000 STUB_GH_RUNS="$(run_of success 14 "$pushed")" PUSH_MAIN_POLL=0 PUSH_MAIN_CI_BUDGET=900 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+out=$(STUB_GH_CHECK_SECS=1000 STUB_GH_RUNS="$(run_of success 143 "$pushed")" PUSH_MAIN_POLL=0 PUSH_MAIN_CI_BUDGET=900 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
 has "a median over the budget is a stern warning, with by how much" "WARNING: CI IS OVER ITS TIME BUDGET" "$out"
 has "saying it is the reader's to act on" "not someone else's job" "$out"
 has "the numbers" "a median of 16 min 40 s over its last 3 green runs. The budget is 15 min 0 s: over by 1 min 40 s." "$out"
@@ -1252,18 +1257,14 @@ git checkout -q main
 older=$(git rev-parse HEAD)
 commit_code superseding
 newer=$(git rev-parse HEAD)
-mkdir -p "$X/gh-commits"
-run_of cancelled 21 "$older" > "$X/gh-commits/$older"
-run_of success 22 "$newer" > "$X/gh-commits/$newer"
 both="[$(run_of success 22 "$newer" | sed -E 's/^\[//; s/\]$//'),$(run_of cancelled 21 "$older" | sed -E 's/^\[//; s/\]$//')]"
-out=$(STUB_GH_COMMITS="$X/gh-commits" STUB_GH_RUNS=$both PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$older" 2>&1); rc=$?
+out=$(STUB_GH_RUNS=$both PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$older" 2>&1); rc=$?
 has "a run cancelled by a newer push is superseded, with both commits" "CI on main $(printf '%s' "$older" | cut -c1-12) was superseded: a newer push ($(printf '%s' "$newer" | cut -c1-12)) cancelled its run" "$out"
 check "it's never called red, and the watch ends as the newer run does" "0 no yes" "$rc $(printf '%s' "$out" | grep -q "RED" && echo yes || echo no) $(printf '%s' "$out" | grep -q "CI is green on main $(printf '%s' "$newer" | cut -c1-12)" && echo yes)"
 check "and is kept as superseded, not as a failure" "superseded" "$(grep "$older" .git/recto-ci-main | tail -1 | cut -f4)"
-run_of failure 22 "$newer" > "$X/gh-commits/$newer"
-out=$(STUB_GH_COMMITS="$X/gh-commits" STUB_GH_RUNS="[$(run_of failure 22 "$newer" | sed -E 's/^\[//; s/\]$//'),$(run_of cancelled 21 "$older" | sed -E 's/^\[//; s/\]$//')]" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$older" 2>&1); rc=$?
+out=$(STUB_GH_RUNS="[$(run_of failure 22 "$newer" | sed -E 's/^\[//; s/\]$//'),$(run_of cancelled 21 "$older" | sed -E 's/^\[//; s/\]$//')]" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$older" 2>&1); rc=$?
 check "a newer run that fails is the red one, by its own commit" "1 yes" "$rc $(printf '%s' "$out" | grep -q "CI is RED on main $(printf '%s' "$newer" | cut -c1-12)" && echo yes)"
-out=$(STUB_GH_COMMITS="$X/gh-commits" STUB_GH_RUNS="$(run_of cancelled 21 "$older")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$older" 2>&1); rc=$?
+out=$(STUB_GH_RUNS="$(run_of cancelled 21 "$older")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$older" 2>&1); rc=$?
 check "a cancelled run with no newer one is still reported as it ended, never as superseded" "no" "$(printf '%s' "$out" | grep -q superseded && echo yes || echo no)"
 commit_code after-never
 out=$(STUB_GH_JOBS=$never_jobs STUB_GH_RUNS="$(run_of failure 21 "$pushed")" full --why "never ran"); rc=$?
@@ -1273,6 +1274,92 @@ commit_code after-real-red
 out=$(STUB_GH_RUNS="$(run_of failure 22 "$pushed")" full --why "real red"); rc=$?
 check "while a run whose part failed still does" "4" "$rc"
 
+}
+
+# Segment N3. Starts from: branch main, pushed (this segment pushes and reads origin/main itself). What the CI watcher sees and says about a push (2026-11-13):
+# a queued run, a range of code with documents on top, no run at all, a run that never got a runner, two watchers of one run.
+seg_N3() {
+git checkout -q main
+git push -q origin main
+export PUSH_MAIN_WORKFLOW_FILE="$SOURCE/.github/workflows/ci.yml"
+mkdir -p docs "$X/seq" "$X/fake"
+push_code_and_docs() { commit_code "$1"; echo "$1" >> docs/notes.md; git add docs; git commit -qm "docs $1"; git push -q origin main; pushed=$(git rev-parse origin/main); short=$(printf '%s' "$pushed" | cut -c1-12); }
+W() { PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1; }
+
+# Failure (2026-11-13, a push of 91 files): the last commit was a plan update, so the watcher said "it changed only documents, which CI skips" and gave up at
+# 3 min, while the run waited for a runner. GitHub decides over the whole pushed range, and a queued run is a run.
+push_code_and_docs one
+out=$(STUB_GH_RUNS="[]" PUSH_MAIN_NORUN=0 W); rc=$?
+check "code with a documents commit on top is not documents only: no run at all is said as that, with the range's files" "2 yes yes" "$rc $(printf '%s' "$out" | grep -q 'no CI run at all for '"$short"' after 0 min, and the pushed range (2 files)' && echo yes) $(printf '%s' "$out" | grep -qi 'only documents, which CI\|is documents' && echo no || echo yes)"
+rm -rf "$X/seq"; mkdir "$X/seq"; rm -f "$CALLS.seq" .git/recto-ci-times
+run_of "" 31 "$pushed" queued > "$X/seq/1"; run_of "" 31 "$pushed" in_progress > "$X/seq/2"; run_of success 31 "$pushed" > "$X/seq/3"
+out=$(STUB_GH_SEQ="$X/seq" STUB_GH_CHECK_SECS=600 W); rc=$?
+check "a queued run is waited for through running to its result, and kept" "0 yes 3 600" "$rc $(printf '%s' "$out" | grep -q "CI is green on main $short" && echo yes) $(cat "$CALLS.seq") $(tail -1 .git/recto-ci-times | cut -f4)"
+check "and the list it asks isn't filtered by branch or commit, which would leave a queued run out" "0" "$(grep 'run list' "$CALLS.gh" | grep -c -- '--branch\|--commit' || true)"
+
+# Failure: documents only was guessed from the last commit. A range of documents alone is skipped, and says so with its count.
+echo more >> docs/notes.md; git add docs; git commit -qm docs-only; git push -q origin main; pushed=$(git rev-parse origin/main)
+out=$(STUB_GH_RUNS="[]" W); rc=$?
+check "a range of documents only is skipped at once and says so" "0 yes" "$rc $(printf '%s' "$out" | grep -q 'everything pushed with it (1 files, .*) is documents, which CI.s workflow skips' && echo yes)"
+check "even with a run, it is the run that is watched" "0 yes" "$(STUB_GH_RUNS="$(run_of success 32 "$pushed")" W > "$X/o"; echo $?) $(grep -q 'CI is green' "$X/o" && echo yes)"
+
+# The ignore list is the workflow's, not a copy: what the script skips follows the workflow file.
+want=$(grep 'paths-ignore' "$SOURCE/.github/workflows/ci.yml" | head -1 | grep -o "'[^']*'" | tr -d "'")
+check "the script's ignore list is the workflow's paths-ignore" "$want" "$(tools/push-main.sh --ignored)"
+mkdir -p tools; echo x >> tools/some-tool.sh; git add tools; git commit -qm tools-only; git push -q origin main; pushed=$(git rev-parse origin/main)
+out=$(STUB_GH_RUNS="[]" PUSH_MAIN_NORUN=0 W); rc=$?
+check "a range of tools is code to this workflow" "2" "$rc"
+sed "s/paths-ignore: \[/paths-ignore: ['tools\/**', /" "$SOURCE/.github/workflows/ci.yml" > "$X/ci-other.yml"
+out=$(PUSH_MAIN_WORKFLOW_FILE="$X/ci-other.yml" STUB_GH_RUNS="[]" PUSH_MAIN_NORUN=0 W); rc=$?
+check "and ignored when the workflow says so" "0" "$rc"
+out=$(PUSH_MAIN_WORKFLOW_FILE="$X/none.yml" STUB_GH_RUNS="[]" PUSH_MAIN_NORUN=0 W); rc=$?
+check "a workflow the script can't read is never taken for documents only" "2" "$rc"
+
+# Failure: a run that waits for a runner for the whole limit was reported as "hadn't finished", or kept as a result. It never got a runner: neither colour.
+echo three >> crates/alpha/src/lib.rs; git add .; git commit -qm three; git push -q origin main; pushed=$(git rev-parse origin/main); short=$(printf '%s' "$pushed" | cut -c1-12)
+before=$(wc -l < .git/recto-ci-main | tr -d ' ')/$(wc -l < .git/recto-ci-times | tr -d ' ')
+out=$(STUB_GH_RUNS="$(run_of "" 33 "$pushed" queued)" PUSH_MAIN_LIMIT=0 W); rc=$?
+check "a run still queued at the limit never got a runner (exit 3), says so, and keeps no result or time" "3 yes $before" "$rc $(printf '%s' "$out" | grep -q "CI for $short never got a runner: still queued" && echo yes) $(wc -l < .git/recto-ci-main | tr -d ' ')/$(wc -l < .git/recto-ci-times | tr -d ' ')"
+out=$(STUB_GH_RUNS="$(run_of "" 33 "$pushed" in_progress)" PUSH_MAIN_LIMIT=0 W); rc=$?
+check "one that was running is only unfinished" "3 no" "$rc $(printf '%s' "$out" | grep -q 'never got a runner' && echo yes || echo no)"
+
+# Failure (2026-11-13): two watchers saw run 43431982955 go green and kept it twice, and the median was taken over the twice. A run is kept once; a
+# repeat already in the file is read once.
+rm -f .git/recto-ci-times
+for n in 1 2 3 4 5 6; do PUSH_MAIN_WATCHER_FILE="$X/watcher-$n" STUB_GH_CHECK_SECS=600 STUB_GH_RUNS="$(run_of success 34 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" > "$X/w$n.out" 2>&1 & done
+wait
+check "a green run six watchers saw at once is kept once" "1" "$(wc -l < .git/recto-ci-times | tr -d ' ')"
+check "and every one of them said it was green" "6" "$(cat "$X"/w?.out | grep -c 'CI is green')"
+check "and no lock is left" "no" "$([ -e .git/recto-ci-times.lock ] && echo yes || echo no)"
+printf 'd\ts\t1\t100\nd\ts\t1\t100\nd\ts\t2\t2000\nd\ts\t3\t200\n' > .git/recto-ci-times
+out=$(PUSH_MAIN_CI_BUDGET=150 tools/push-main.sh --budget 2>&1)
+has "a repeated run in the file counts once in the median (200 s of 100, 2000, 200, not 100 of 100, 100, 200, 2000)" "a median of 3 min 20 s over its last 3 green runs" "$out"
+
+# Failure: a push made while the last push's watcher was alive left two watchers reporting the same run. The newer says so; the older stops once the newer has
+# taken its commit (or a later one) over, and a run is reported by one.
+# A live push-main as the registry sees one: a process whose command has push-main in it (exec, so killing it leaves no child holding the output open).
+printf '#!/usr/bin/env bash\nexec -a push-main-fake sleep 30\n' > "$X/fake/push-main-fake.sh"
+bash "$X/fake/push-main-fake.sh" & fake=$!
+WF="$X/watcher-live"
+printf '%s %s\n' "$fake" "$pushed" > "$WF"
+out=$(PUSH_MAIN_WATCHER_FILE="$WF" STUB_GH_RUNS="$(run_of success 35 "$pushed")" W)
+has "a watch that starts beside a live one says so, in one line" "another watcher is running here (process $fake, on $short)" "$out"
+check "and its own entry is gone when it ends" "gone" "$([ -f "$WF" ] && echo left || echo gone)"
+rm -f "$WF"
+sleep 0 & dead=$!; wait "$dead"; printf '%s %s\n' "$dead" "$pushed" > "$WF"
+out=$(PUSH_MAIN_WATCHER_FILE="$WF" STUB_GH_RUNS="$(run_of success 36 "$pushed")" W)
+check "beside a dead one it says nothing" "no" "$(printf '%s' "$out" | grep -q 'another watcher' && echo yes || echo no)"
+rm -f "$WF"
+# The older watcher: a queued run, a short limit (so a watcher that doesn't stop ends by it), and a newer watcher that takes over once the older is registered.
+PUSH_MAIN_WATCHER_FILE="$WF" PUSH_MAIN_LIMIT=4 PUSH_MAIN_POLL=0.1 STUB_GH_RUNS="$(run_of "" 37 "$pushed" queued)" tools/push-main.sh --watch "$pushed" > "$X/older.out" 2>&1 & older=$!
+for _ in $(seq 1 100); do [ -f "$WF" ] && break; sleep 0.05; done
+git commit -q --allow-empty -m newer-push; newer_sha=$(git rev-parse HEAD)
+printf '%s %s\n' "$fake" "$newer_sha" > "$WF"
+wait "$older"; rc=$?
+check "the older watcher stops at once, with 0, when a newer one has taken its commit over" "0 yes" "$rc $(grep -q "stopping the watch of $short: a newer watcher (process $fake" "$X/older.out" && echo yes)"
+check "and reports no run" "no" "$(grep -q 'never got a runner\|hadn.t finished' "$X/older.out" && echo yes || echo no)"
+kill "$fake" 2>/dev/null; wait "$fake" 2>/dev/null
+rm -f "$WF"
 }
 
 # Segment O. Starts from: branch main as the prologue leaves it. --like-ci.
