@@ -84,7 +84,9 @@ fn from_save(error: &SaveError) -> AgentError {
         _ => exit::FAILED,
     };
     let next = match error {
-        SaveError::FileChanged => "Tell the user the file changed on disk. `recto save-as --out <new.pdf>` keeps both versions.",
+        SaveError::FileChanged => {
+            "Tell the user: the file changed on disk after these edits were made, so they can't be saved, here or as a copy. The edits are kept. The user can put the earlier version back, or discard them."
+        }
         SaveError::ReadOnly | SaveError::HardLinks => "`recto save-as --out <new.pdf>` saves a separate copy.",
         SaveError::BreaksCertification | SaveError::LockedBySignature | SaveError::SignedNeedsCopy => {
             "Tell the user. The edits stay unsaved, and the signed file is untouched. `recto save-as --out <new.pdf>` makes an unsigned copy, if the user wants one."

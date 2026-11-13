@@ -202,7 +202,7 @@ impl SaveError {
     /// A plain sentence for the person using the app. Each says that nothing changed, as nothing did.
     pub fn message(&self) -> String {
         match self {
-            Self::FileChanged => "This file has changed on disk since it was opened, so saving over it could lose that. Nothing was written. Save As keeps both.".into(),
+            Self::FileChanged => "This file changed on disk after these edits were made, so saving them could put them on the wrong pages. Nothing was written, and your edits are kept.".into(),
             Self::EditsDontMatch { file_pages } => format!("These edits don't fit the file as it is on disk, which has {file_pages} pages. Nothing was written."),
             Self::AddedFileChanged { name } => format!("“{name}”, whose pages were added, has changed or moved since, so its pages can't be saved from it. Nothing was written."),
             Self::AddedFileProtected { name } => format!("“{name}” is password-protected, and its pages can't be saved into another file yet. Nothing was written."),
