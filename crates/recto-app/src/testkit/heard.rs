@@ -64,18 +64,27 @@ impl HeadlessApp {
     /// # Panics
     ///
     /// If the session thread doesn't get to the held call within [`super::headless::WAIT_LIMIT`].
+    ///
+    /// A call the thread is already in when this begins ends with a look at what's overheard too, which this holds: so if the held call isn't reached at once,
+    /// what's overheard is let go for that call to end, and the hold is begun again, until the limit.
     #[must_use]
     pub fn hold_session_thread(&self) -> SessionThreadHeld<'_> {
-        let overheard = crate::lock(&self.core().serving.heard);
-        // A flush's marker is let go after its call's look at the session and before its look at what's overheard, where the thread then waits.
-        let parked = std::sync::Arc::new(crate::queue::Flushed::default());
-        self.core().core.push(crate::queue::CoreCall::Flush(std::sync::Arc::clone(&parked)));
-        assert!(
-            parked.wait(super::headless::WAIT_LIMIT),
-            "the session thread didn't get to the held call in {:?}",
-            super::headless::WAIT_LIMIT
-        );
-        SessionThreadHeld(overheard)
+        let began = std::time::Instant::now();
+        loop {
+            let overheard = crate::lock(&self.core().serving.heard);
+            // A flush's marker is let go after its call's look at the session and before its look at what's overheard, where the thread then waits.
+            let parked = std::sync::Arc::new(crate::queue::Flushed::default());
+            self.core().core.push(crate::queue::CoreCall::Flush(std::sync::Arc::clone(&parked)));
+            if parked.wait(std::time::Duration::from_millis(100)) {
+                return SessionThreadHeld(overheard);
+            }
+            drop(overheard);
+            assert!(
+                parked.wait(super::headless::WAIT_LIMIT.saturating_sub(began.elapsed())) && began.elapsed() < super::headless::WAIT_LIMIT,
+                "the session thread didn't get to the held call in {:?}",
+                super::headless::WAIT_LIMIT
+            );
+        }
     }
 
     /// **Starts hearing what the session thread announces to watchers** from now on, as `recto watch` would on the app's socket, which a test's core has
@@ -88,5 +97,57 @@ impl HeadlessApp {
     #[must_use]
     pub fn heard_events(&self) -> Vec<recto_agent::Event> {
         crate::lock(&self.core().serving.heard).events.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::headless::{HeadlessApp, WAIT_LIMIT};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// Failure (a full check of `build/record-lock-retry` at a load of about 19, 2026-11-13: `back_after_a_jump`'s hold failed with "the session thread didn't
+    /// get to the held call in 20s"): a call the session thread is already in as a test begins its hold ends with a look at what's overheard, which the hold
+    /// has taken, so the thread waits there for the test while the test waits for the thread to get to its own call, queued behind, until the limit. The
+    /// thread caught inside a call (the session held elsewhere) as the hold begins, and let go only once the hold has what's overheard: the hold still stops
+    /// it at its own call, well inside the limit.
+    #[test]
+    fn a_hold_begun_while_the_session_thread_is_in_another_call_still_holds_it() {
+        let app = HeadlessApp::start();
+        let (in_call, in_call_heard) = std::sync::mpsc::channel();
+        let (go, go_heard) = std::sync::mpsc::channel::<()>();
+        let core = Arc::clone(app.core());
+        let holder = std::thread::Builder::new()
+            .name("test-session-held".into())
+            .spawn(move || {
+                core.host.session.with_session(|_| {
+                    let _ = in_call.send(());
+                    let _ = go_heard.recv_timeout(WAIT_LIMIT);
+                });
+            })
+            .expect("a thread");
+        in_call_heard.recv_timeout(WAIT_LIMIT).expect("the session held");
+        // Taken by the session thread, which then waits for the session inside it.
+        app.send(crate::queue::CoreCall::Reconcile);
+        let core = Arc::clone(app.core());
+        let releaser = std::thread::Builder::new()
+            .name("test-releaser".into())
+            .spawn(move || {
+                let began = Instant::now();
+                // Let go once the hold has what's overheard, so the call ends with a look at it while it's held.
+                while core.serving.heard.try_lock().is_ok() && began.elapsed() < WAIT_LIMIT {
+                    std::thread::sleep(Duration::from_millis(1)); // ratchet: poll
+                }
+                drop(go);
+            })
+            .expect("a thread");
+        let began = Instant::now();
+        let held = app.hold_session_thread();
+        let took = began.elapsed();
+        drop(held);
+        releaser.join().expect("the releaser");
+        holder.join().expect("the holder");
+        app.settle();
+        assert!(took < WAIT_LIMIT / 2, "the hold took {took:?}");
     }
 }
