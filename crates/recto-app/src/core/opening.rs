@@ -206,28 +206,35 @@ mod tests {
     use super::*;
     use recto_update::updater::Host as _;
 
-    /// Failure (R3.7, the coordinator's answer to Q1): a file the person opens before the state's been read isn't passed on to a launch that goes back,
-    /// because the way it came in (File > Open Recent, the palette's recent row) pushed the open itself where the Open panel's way noted it first. Every
-    /// way in is [`open_for_person`]: the Open panel's, a drop and the Finder's directly, and File > Open Recent's and the palette's by [`open_recent`]; each
-    /// notes what's asked for before the state's read, and queues the open.
+    /// Failure (R3.7): a way a person opens a file goes around [`open_for_person`], the one function every open a person makes goes through (the Open
+    /// panel's, a drop and the Finder's directly; File > Open Recent's and the palette's recent row by [`open_recent`]), so what it does for each open isn't
+    /// done for that one. Seen here by what it does before the state's read: it notes the file for a launch that goes back, besides queuing the open. A key
+    /// that's left the list opens nothing. The note is a process-wide list other tests may write to as well, so this asks only that its own files are in it.
     #[test]
-    fn every_way_a_person_opens_a_file_is_noted_before_the_states_read() {
+    fn every_way_a_person_opens_a_file_goes_through_one_function() {
         let life = Lifecycle::new(Arc::new(crate::clock::SystemClock::new()));
         assert!(!life.state_read(), "a launch's life, before the state's read");
         let core = CoreQueue::default();
-        let mut published = Published::empty();
-        published.recent = Arc::new(vec![RecentFile {
-            key: "k1".into(),
+        let (panel, recent, gone) = (
+            PathBuf::from("/files/one-way/panel.pdf"),
+            PathBuf::from("/files/one-way/recent.pdf"),
+            PathBuf::from("/files/one-way/gone.pdf"),
+        );
+        let file = |key: &str, path: &PathBuf| RecentFile {
+            key: key.into(),
             name: "recent".into(),
-            folder: "/files".into(),
-            path: "/files/recent.pdf".into(),
+            folder: "/files/one-way".into(),
+            path: path.display().to_string(),
             open: false,
-        }]);
-        open_for_person(&life, &core, PathBuf::from("/files/panel.pdf"));
-        open_recent(&published.recent, &life, &core, "k1");
-        open_recent(&published.recent, &life, &core, "a key that's left the list");
+        };
+        let list = [file("k1", &recent)];
+        open_for_person(&life, &core, panel.clone());
+        open_recent(&list, &life, &core, "k1");
+        open_recent(&[file("k2", &gone)], &life, &core, "a key that's left the list");
         let asked = super::updates::Hooks::new(Arc::new(super::updates::RealInstaller)).documents_asked_for();
-        assert_eq!(asked, [PathBuf::from("/files/panel.pdf"), PathBuf::from("/files/recent.pdf")]);
+        assert!(asked.contains(&panel), "the Open panel's file noted: {asked:?}");
+        assert!(asked.contains(&recent), "Open Recent's file noted, as the Open panel's is: {asked:?}");
+        assert!(!asked.contains(&gone), "nothing for a key that's left the list: {asked:?}");
         let mut opened = Vec::new();
         while let Some(CoreCall::Run(run)) = core.next_or_due(|| Some(Duration::ZERO)) {
             opened.push(run.command.wire());
