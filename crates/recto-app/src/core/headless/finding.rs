@@ -100,3 +100,47 @@ fn a_persons_step_is_heard_as_an_agents() {
         assert_eq!(heard[1], recto_agent::Event::FindOpened { page: *page }, "{what}: Find at the hit's page");
     }
 }
+
+/// The page being read, from 1.
+fn page(app: &HeadlessApp) -> u64 {
+    app.recto(Level::Control, &["where"]).expect("where")["page"].as_u64().expect("a page")
+}
+
+/// Failure (R2.3, C5g's new surface): an agent can't do what Return in the Find field and a click on a hit's row do: go to a hit marked for `back`, and go
+/// to one hit by its index; or `--open` rearranges the person's window (A6) or doesn't find again what was typed last. `--next --jump` goes to page 10 and
+/// `back` comes back; `--hit 2` goes to the third hit's page and says so; `--jump` alone is a usage error; `--open` after `--close` finds the query again and
+/// leaves a hidden sidebar hidden.
+#[test]
+fn an_agent_jumps_to_a_hit_chooses_one_and_opens_find() {
+    let app = findable();
+    let at = |words: &[&str]| app.recto(Level::Control, words).unwrap_or_else(|error| panic!("{words:?}: {error:?}"));
+    at(&["find", "pdf page 1"]);
+    at(&["find", "--next"]);
+    assert_eq!(page(&app), 1, "the first hit is on the page read");
+    let went = at(&["find", "--next", "--jump"]);
+    assert_eq!((went["went_to"]["page"].as_u64(), page(&app)), (Some(10), 10), "{went}");
+    at(&["back"]);
+    assert_eq!(page(&app), 1, "a jump is marked for back");
+    let went = at(&["find", "--hit", "2"]);
+    assert_eq!(
+        (went["went_to"]["page"].as_u64(), went["current"]["index"].as_u64(), page(&app)),
+        (Some(11), Some(2), 11),
+        "{went}"
+    );
+    let refused = app.recto(Level::Control, &["find", "--hit", "999"]).expect_err("no such hit");
+    assert_eq!(refused.code, "no_such_hit");
+    let refused = app.recto(Level::Control, &["find", "--jump"]).expect_err("a jump needs a step");
+    assert_eq!(refused.code, "usage");
+    at(&["find", "--close"]);
+    at(&["view", "--sidebar", "off"]);
+    app.settle();
+    let opened = at(&["find", "--open"]);
+    app.settle();
+    assert_eq!(
+        (opened["open"].as_bool(), opened["hits_total"].as_u64()),
+        (Some(true), Some(11)),
+        "found again: {opened}"
+    );
+    assert!(app.reader().sidebar_hidden, "an agent's Find leaves the sidebar hidden");
+    assert!(app.recto(Level::ReadOnly, &["find", "--open"]).is_err(), "at Control");
+}

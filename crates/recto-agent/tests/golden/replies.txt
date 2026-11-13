@@ -239,7 +239,7 @@
   events 
   words "Find is closed."
 {"cmd":"find","query":"q","next":true,"previous":true,"close":true,"limit":3}
-  reply {"cmd":"find","error":{"candidates":[],"code":"usage","exit":2,"message":"That's more than one thing at once: a query, a step, or closing.","next":"Find first, then `recto find --next`."},"ok":false,"v":1}
+  reply {"cmd":"find","error":{"candidates":[],"code":"usage","exit":2,"message":"That's more than one thing at once: a query, a step, a hit, opening or closing.","next":"Find first, then `recto find --next`."},"ok":false,"v":1}
   events 
   words ""
 {"cmd":"find","query":null}
@@ -255,7 +255,7 @@
   events 
   words "Find is closed."
 ["find","q",true,true,true,3]
-  reply {"cmd":"find","error":{"candidates":[],"code":"usage","exit":2,"message":"That's more than one thing at once: a query, a step, or closing.","next":"Find first, then `recto find --next`."},"ok":false,"v":1}
+  reply {"cmd":"find","error":{"candidates":[],"code":"usage","exit":2,"message":"That's more than one thing at once: a query, a step, a hit, opening or closing.","next":"Find first, then `recto find --next`."},"ok":false,"v":1}
   events 
   words ""
 {"cmd":"compare"}

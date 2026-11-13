@@ -8,8 +8,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fmt::Write;
 
-/// The app's Find, in the document being read: a query, a step to the next or previous hit, or closing. With nothing, only says.
-#[derive(Clone, Debug, Deserialize)]
+/// The app's Find, in the document being read: a query, a step to the next or previous hit (as a jump, or not), a hit by its index, opening or closing.
+/// With nothing, only says.
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Find {
     #[serde(default)]
@@ -18,6 +19,12 @@ pub struct Find {
     pub next: bool,
     #[serde(default)]
     pub previous: bool,
+    #[serde(default)]
+    pub jump: bool,
+    #[serde(default)]
+    pub hit: Option<u32>,
+    #[serde(default)]
+    pub open: bool,
     #[serde(default)]
     pub close: bool,
     #[serde(default)]
@@ -30,8 +37,9 @@ impl Cmd for Find {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
-    // An agent's query waits for its hits; until the person's doesn't, it isn't run on the window's session thread.
-    const WAITS: bool = true;
+    // An agent's query waits for its hits; the person's returns at once, its step kept for when its hit is known, so it's run on the window's session
+    // thread as a keystroke.
+    const WAITS: bool = false;
     /// None held: it's in the document being read, which `execute` asks about for a protected one.
     fn tab(&self) -> Option<&str> {
         None
@@ -45,24 +53,38 @@ impl Cmd for Find {
     /// Not what's looked for: that's the document's business, as a search's words are.
     fn log_details(&self) -> Value {
         let Self {
-            query, next, previous, close, ..
+            query,
+            next,
+            previous,
+            jump,
+            hit,
+            open,
+            close,
+            ..
         } = self;
-        json!({ "query": query.is_some(), "next": next, "previous": previous, "close": close })
+        json!({ "query": query.is_some(), "next": next, "previous": previous, "jump": jump, "hit": hit, "open": open, "close": close })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self {
             query,
             next,
             previous,
+            jump,
+            hit,
+            open,
             close,
             limit,
         } = self;
         find::command(
             cx.access,
+            cx.actor,
             &find::Asked {
                 query: query.as_deref(),
                 next: *next,
                 previous: *previous,
+                jump: *jump,
+                hit: *hit,
+                open: *open,
                 close: *close,
                 limit: *limit,
             },
@@ -115,7 +137,7 @@ pub(crate) const ROWS_FIND: &[Spec] = &[Spec {
     tag: "find",
     group: GROUP_MOVE,
     access: Access::At(Level::Control),
-    summary: "The app's Find, in the document being read (in a comparison, the pane being read): what the Find field in the sidebar does. A query finds every hit in reading order and waits for them, up to 30 s; `--next` and `--previous` go to a hit, from where the reader is, and the app selects it, waiting while a query runs for the hit wanted or the query's end, within the same 30 s; `--close` closes Find. With nothing, says where it stands. For finding words without touching what's on screen, use `search`.",
+    summary: "The app's Find, in the document being read (in a comparison, the pane being read): what the Find field in the sidebar does. A query finds every hit in reading order and waits for them, up to 30 s; `--next` and `--previous` go to a hit, from where the reader is, and the app selects it, waiting while a query runs for the hit wanted or the query's end, within the same 30 s, and with `--jump` go as Return in the field does, marked for `back`; `--hit` goes to a hit by its `index`, as a click on its row does; `--open` opens Find as ⌘F does, finding what was typed last again, and leaves the sidebar as it is; `--close` closes Find. With nothing, says where it stands. For finding words without touching what's on screen, use `search`.",
     args: &[
         Arg {
             key: "query",
@@ -139,6 +161,27 @@ pub(crate) const ROWS_FIND: &[Spec] = &[Spec {
             help: "Go to the hit before, as ⇧⌘G does.",
         },
         Arg {
+            key: "jump",
+            flag: Some("--jump"),
+            kind: Kind::Switch,
+            required: false,
+            help: "With `--next` or `--previous`: go to the hit as Return in the field does, marked for `back`, as following a link is.",
+        },
+        Arg {
+            key: "hit",
+            flag: Some("--hit"),
+            kind: Kind::Count(999),
+            required: false,
+            help: "Go to the hit with this `index` in the answer's `hits`, counted from 0, as a click on its row does, marked for `back`. A hit on text that looks hidden isn't gone to.",
+        },
+        Arg {
+            key: "open",
+            flag: Some("--open"),
+            kind: Kind::Switch,
+            required: false,
+            help: "Open Find, as ⌘F does, with what was typed last found again. The sidebar stays as the user left it.",
+        },
+        Arg {
             key: "close",
             flag: Some("--close"),
             kind: Kind::Switch,
@@ -159,6 +202,9 @@ pub(crate) const ROWS_FIND: &[Spec] = &[Spec {
         "recto find \"force majeure\"",
         "recto find --next",
         "recto find --previous --json",
+        "recto find --next --jump",
+        "recto find --hit 3",
+        "recto find --open",
         "recto find --close",
     ],
     client_wait_s: 60,

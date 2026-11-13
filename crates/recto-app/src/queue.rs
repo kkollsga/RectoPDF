@@ -424,7 +424,7 @@ mod tests {
             CoreCall::Find(crate::find::FindCall::Typed("a".into())),
             CoreCall::Find(crate::find::FindCall::Open),
             CoreCall::Find(crate::find::FindCall::Close),
-            CoreCall::Find(crate::find::FindCall::Step(true, recto_agent::find::Going::Jump)),
+            CoreCall::Find(crate::find::FindCall::Step(true, recto_agent::find::Going::Jump(recto_session::Author::Owner))),
             CoreCall::Find(crate::find::FindCall::Choose(0)),
             CoreCall::Find(crate::find::FindCall::News),
             CoreCall::Find(crate::find::FindCall::Reveal(1, hit)),

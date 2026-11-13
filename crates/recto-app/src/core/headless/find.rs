@@ -32,7 +32,10 @@ fn the_hit_gone_to_is_chosen_again_when_its_hits_come_after_the_state() {
     app.send(CoreCall::Find(FindCall::Typed("pdf page 1".into())));
     app.settle();
     for _ in 0..3 {
-        app.send(CoreCall::Find(FindCall::Step(true, recto_agent::find::Going::Jump)));
+        app.send(CoreCall::Find(FindCall::Step(
+            true,
+            recto_agent::find::Going::Jump(recto_session::Author::Owner),
+        )));
     }
     app.settle();
     let before = shown(&app);
@@ -57,7 +60,10 @@ fn the_hit_gone_to_is_chosen_again_when_its_hits_come_after_the_state() {
     assert!(app.core().life.remade(), "the window made again from the state");
     assert_eq!(shown(&app), before, "still, on the window made from it");
     assert_eq!(selected(&app), Some(hit), "and selected there");
-    app.send(CoreCall::Find(FindCall::Step(true, recto_agent::find::Going::Jump)));
+    app.send(CoreCall::Find(FindCall::Step(
+        true,
+        recto_agent::find::Going::Jump(recto_session::Author::Owner),
+    )));
     app.settle();
     assert_eq!(shown(&app).2, Some(7), "and it goes on from there");
 }

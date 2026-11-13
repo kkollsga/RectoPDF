@@ -73,7 +73,7 @@ fn only_the_finders_news_gets_through_a_freeze() {
         FindCall::Typed("a".into()),
         FindCall::Open,
         FindCall::Close,
-        FindCall::Step(true, Going::Jump),
+        FindCall::Step(true, Going::Jump(recto_session::Author::Owner)),
         FindCall::Choose(0),
     ] {
         assert!(call.is_user_action(), "{call:?}");

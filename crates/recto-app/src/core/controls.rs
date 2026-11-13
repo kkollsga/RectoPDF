@@ -105,7 +105,7 @@ impl Inner {
             UiAction::FindOpen => self.find_call(find::FindCall::Open),
             UiAction::FindClose => self.find_call(find::FindCall::Close),
             // The person's jump to the hit, so Back comes here again. ⌘G and ⇧⌘G are the menu's, and only step.
-            UiAction::FindReturn { forward } => self.find_call(find::FindCall::Step(forward, recto_agent::find::Going::Jump)),
+            UiAction::FindReturn { forward } => self.find_call(find::FindCall::Step(forward, recto_agent::find::Going::Jump(recto_session::Author::Owner))),
             UiAction::FindChoose { row } => self.find_call(find::FindCall::Choose(row)),
             UiAction::PageTyped { text } => Acted {
                 host: HostAction::None,

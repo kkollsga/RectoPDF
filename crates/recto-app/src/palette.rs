@@ -304,11 +304,9 @@ pub fn as_command(id: &str, reader: Showing, recent: &[(&str, &str)]) -> Option<
             replace: false,
         }),
         "find.next" | "find.previous" => Command::from(recto_agent::commands::finding::Find {
-            query: None,
             next: id == "find.next",
             previous: id == "find.previous",
-            close: false,
-            limit: None,
+            ..Default::default()
         }),
         "rotate.left" if !reader.edit_mode => Command::from(recto_agent::commands::editing::PageRotate {
             tab: active(),

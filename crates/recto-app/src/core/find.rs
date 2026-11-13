@@ -26,6 +26,8 @@ fn handle<R>(inner: &Inner, step: impl FnOnce(&FindHandle<'_, dyn crate::Listene
 pub fn effects(core: std::sync::Arc<crate::queue::CoreQueue>) -> recto_control::host::Effects {
     std::sync::Arc::new(move |effect| match effect {
         recto_agent::Effect::Reveal { tab, hit } => core.push(crate::queue::CoreCall::Find(FindCall::Reveal(tab.0, hit))),
+        // Only the person's step is kept, and the window's own Find keeps it itself until its steps are the person's `find`.
+        recto_agent::Effect::FindStepPending { .. } => {}
     })
 }
 

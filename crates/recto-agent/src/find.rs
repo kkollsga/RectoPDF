@@ -524,40 +524,8 @@ pub trait Finding: Send + Sync {
     fn wait_past(&self, version: u64, limit: Duration) -> bool;
 }
 
-/// How long `recto find` waits for a query to finish before answering with what's found so far.
-const COMMAND_WAIT: Duration = Duration::from_secs(30);
-/// Hits in an answer, if not told otherwise, and at most.
-const DEFAULT_LISTED: u32 = 20;
-const MAX_LISTED: u32 = 200;
-
-/// What `recto find` was asked.
-pub(crate) struct Asked<'a> {
-    pub query: Option<&'a str>,
-    pub next: bool,
-    pub previous: bool,
-    pub close: bool,
-    pub limit: Option<u32>,
-}
-
-/// Results kept for a session that can't find in the background, such as `recto local`: one command's worth.
-struct Here(std::sync::Mutex<Results>);
-
-impl Finding for Here {
-    fn start(&self, _plan: FindPlan, _query: &str, _needle: String) -> u64 {
-        0
-    }
-    fn clear(&self) {}
-    fn with_results(&self, step: &mut dyn FnMut(&mut Results)) {
-        step(&mut self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-    }
-    fn wait(&self, _generation: u64, _limit: Duration) -> bool {
-        true
-    }
-    // A run here is over before anything looks at it.
-    fn wait_past(&self, _version: u64, _limit: Duration) -> bool {
-        true
-    }
-}
+mod command;
+pub(crate) use command::{Asked, command};
 
 /// Starts finding `query` in the document being read, in the background if this session can, and otherwise here, to the end. Puts it in the Find field and opens Find. Says which run it is. **The one way a query starts,** for `recto find` and the app's field alike.
 pub fn begin<A: crate::SessionAccess>(access: &A, query: &str) -> Result<u64, AgentError> {
@@ -602,7 +570,8 @@ pub fn stale_query<A: crate::SessionAccess>(access: &A, finding: &dyn Finding) -
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Going {
     Step,
-    Jump,
+    /// By whom, for the trail: an agent's marks give way to the person's.
+    Jump(recto_session::Author),
 }
 
 /// Goes to the next hit or the one before, from the current one or from where the reader is, and notes it in the state record. The tab's page goes there too; the app also selects the hit. `None` if there's nothing to go to.
@@ -617,12 +586,17 @@ pub fn step<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, forward:
 
 /// **A step that waits for its hit,** for an agent's `recto find --next` and `--previous`, which answer once: while the query runs, [`Results::step`] says wait when the hit wanted isn't known yet, as the app's kept step does, so it's tried again each time more is known, until there's a hit, the query ends, or `limit` passes. Only then is there nothing to go to. The same rule as the app's: what's waited on is [`step`] saying so, never a second judgement.
 pub fn step_waiting<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, forward: bool, going: Going, limit: Duration) -> Option<(u32, Hit)> {
+    waiting_for(finding, limit, || step(access, finding, forward, going))
+}
+
+/// Tries `went` each time more is known while the query runs, until it goes somewhere, the query ends, or `limit` passes.
+pub(crate) fn waiting_for(finding: &dyn Finding, limit: Duration, mut went: impl FnMut() -> Option<(u32, Hit)>) -> Option<(u32, Hit)> {
     let deadline = Instant::now() + limit;
     loop {
         // What was known before the try: anything after it is worth another.
         let mut known = (0, false);
         finding.with_results(&mut |results| known = (results.version, results.running()));
-        if let Some(went) = step(access, finding, forward, going) {
+        if let Some(went) = went() {
             return Some(went);
         }
         let left = deadline.saturating_duration_since(Instant::now());
@@ -634,11 +608,11 @@ pub fn step_waiting<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, 
 }
 
 /// Goes to a hit by its number in the list, as a click on its row does: the person's jump.
-pub fn choose<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, index: usize) -> Option<(u32, Hit)> {
+pub fn choose<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, index: usize, by: recto_session::Author) -> Option<(u32, Hit)> {
     let mut hit = None;
     finding.with_results(&mut |results| hit = results.choose(index).cloned().zip(results.tab));
     let (hit, tab) = hit?;
-    went_to(access, tab, &hit, Going::Jump);
+    went_to(access, tab, &hit, Going::Jump(by));
     Some((tab, hit))
 }
 
@@ -652,8 +626,8 @@ fn went_to<A: crate::SessionAccess>(access: &A, tab: u32, hit: &Hit, going: Goin
                     let _ = s.go_to(id, hit.page);
                 }
                 // Marked for Back, and the page view's told nothing more: the app brings the hit itself into view, a third down, which landing at the page's top would undo.
-                Going::Jump => {
-                    if s.jump_as(id, hit.page, 0.0, recto_session::Author::Owner).is_ok() {
+                Going::Jump(by) => {
+                    if s.jump_as(id, hit.page, 0.0, by).is_ok() {
                         let _ = s.take_jump(id);
                     }
                 }
@@ -682,126 +656,6 @@ pub fn close<A: crate::SessionAccess>(access: &A) {
         s.set_find(false, "", &draft);
         s.set_find_current(None, None);
     });
-}
-
-/// `recto find`: the app's Find, for an agent. With a query, finds it in the document being read and waits for it; `--next` and `--previous` go to a hit, from where the reader is; `--close` closes Find. Always says where Find stands.
-pub(crate) fn command<A: crate::SessionAccess>(access: &A, asked: &Asked<'_>, events: &mut Vec<crate::Event>) -> Result<serde_json::Value, AgentError> {
-    let listed = crate::positive_limit(asked.limit, DEFAULT_LISTED, MAX_LISTED)?;
-    if [asked.query.is_some(), asked.next || asked.previous, asked.close]
-        .iter()
-        .filter(|said| **said)
-        .count()
-        > 1
-        || (asked.next && asked.previous)
-    {
-        return Err(
-            AgentError::new("usage", "That's more than one thing at once: a query, a step, or closing.", exit::USAGE)
-                .then("Find first, then `recto find --next`."),
-        );
-    }
-    let here = Here(std::sync::Mutex::new(Results::default()));
-    let finding: &dyn Finding = access.finding().unwrap_or(&here);
-    // One wait for the whole command, a query's and a step's together, inside the client's patience.
-    let deadline = Instant::now() + COMMAND_WAIT;
-    if asked.close {
-        close(access);
-        events.push(crate::Event::FindClosed);
-        return Ok(answer(access, finding, listed, None));
-    }
-    // A step needs the hits of what's in the field, for the document being read: found again if they're of something else, as after a restart.
-    let query = match asked.query {
-        Some(query) => Some(query.to_string()),
-        None if asked.next || asked.previous => stale_query(access, finding),
-        None => None,
-    };
-    if let Some(query) = &query {
-        let generation = begin(access, query)?;
-        if access.finding().is_some() {
-            finding.wait(generation, deadline.saturating_duration_since(Instant::now()));
-        } else {
-            let (plan, needle) = access.with(|s| {
-                Ok::<_, AgentError>((
-                    plan(
-                        s,
-                        s.active()
-                            .ok_or_else(|| AgentError::new("no_active_tab", "There's no document being read to find in.", exit::NOT_FOUND))?,
-                    )?,
-                    needle(query).unwrap_or_default(),
-                ))
-            })?;
-            let mut results = Results::default();
-            let generation = results.begin_on(&plan, query);
-            let stop = AtomicBool::new(false);
-            let (end, progress) = run(&plan, &needle, access.indexing(), &stop, &mut |hits, progress| {
-                results.add(generation, hits, progress)
-            });
-            results.finish(generation, end, progress);
-            here.with_results(&mut |kept| *kept = std::mem::take(&mut results));
-        }
-        events.push(crate::Event::FindOpened { page: None });
-    }
-    let mut went = None;
-    if asked.next || asked.previous {
-        let Some((tab, hit)) = step_waiting(access, finding, asked.next, Going::Step, deadline.saturating_duration_since(Instant::now())) else {
-            return Err(AgentError::new("nothing_found", "There's no hit to go to.", exit::NOT_FOUND).then("Find something first: `recto find \"words\"`."));
-        };
-        access.with(|s| heard_going_to(s, tab, &hit, events));
-        // The page view selects it, as ⌘G's does, whoever asked.
-        access.effect(crate::Effect::Reveal {
-            tab: TabId(tab),
-            hit: hit.clone(),
-        });
-        went = Some((tab, hit));
-    }
-    Ok(answer(access, finding, listed, went))
-}
-
-/// Where Find stands, for an answer.
-fn answer<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, listed: usize, went: Option<(u32, Hit)>) -> serde_json::Value {
-    use serde_json::json;
-    let record = access.with(|s| s.find().clone());
-    // Hits from a document the person opened with a password are text read with it: none of them goes to an agent, whichever tab is being read now.
-    let mut about = None;
-    finding.with_results(&mut |results| about = results.tab);
-    let withheld = about.is_some_and(|tab| access.with(|s| s.withheld_from_agents(TabId(tab))));
-    let mut value = json!(null);
-    finding.with_results(&mut |results| {
-        let state = match &results.end {
-            _ if results.tab.is_none() => "idle",
-            None => "running",
-            Some(End::Finished) => "done",
-            Some(End::Stopped) => "stopped",
-            Some(End::OutOfTime(_)) => "out_of_time",
-            Some(End::Failed(_)) => "failed",
-        };
-        let hit_json = |index: usize, hit: &Hit| json!({ "index": index, "page": hit.page + 1, "start": hit.start, "end": hit.end, "hidden": hit.hidden, "untrusted": { "before": hit.before, "matched": hit.matched, "after": hit.after } });
-        let p = results.progress;
-        value = json!({
-            "open": record.open,
-            "query": record.query,
-            "tab": results.tab,
-            "state": state,
-            "status": results.status(),
-            "hits_total": p.total,
-            "hits_listed": results.hits.len(),
-            "pages_with_hits": p.pages_with_hits,
-            "pages_searched": p.pages_done,
-            "pages_in_scope": p.pages,
-            "failed_pages": p.failed,
-            "no_text_pages": p.no_text,
-            "first_hit_ms": results.first_hit.map(|took| took.as_secs_f64() * 1000.0),
-            "took_ms": results.took.map(|took| took.as_secs_f64() * 1000.0),
-            "current": results.current.and_then(|at| results.hits.get(at).map(|hit| hit_json(at, hit))),
-            "hits": results.hits.iter().take(listed).enumerate().map(|(at, hit)| hit_json(at, hit)).collect::<Vec<_>>(),
-        });
-        if withheld {
-            value = json!({ "open": record.open, "tab": results.tab, "state": state, "protected": true, "protected_note": crate::PROTECTED_NOTE, "hits": [] });
-        }
-    });
-    if let Some((tab, hit)) = went {
-        value["went_to"] = json!({ "tab": tab, "page": hit.page + 1, "start": hit.start, "end": hit.end });
-    }
-    value
 }
 
 #[cfg(test)]

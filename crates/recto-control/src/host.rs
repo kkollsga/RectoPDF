@@ -104,6 +104,8 @@ struct Hosted<'a, L> {
     reads_later: Option<&'a dyn recto_agent::later::ReadLater>,
     /// Whether the answer is read: not on the window's session thread, which draws what the session publishes.
     answer_read: bool,
+    /// The person's passwords, for their own Find.
+    find_keys: Option<&'a recto_agent::find::KeyLookup>,
     own_record: Option<own_record::OwnRecord<'a, L>>,
 }
 
@@ -146,6 +148,9 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
     }
     fn answer_read(&self) -> bool {
         self.answer_read
+    }
+    fn find_keys(&self, actor: Actor) -> Option<recto_agent::find::KeyLookup> {
+        self.find_keys.filter(|_| actor.sees_protected()).cloned()
     }
 }
 
@@ -213,7 +218,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
 
     /// A click on a hit's row.
     pub fn find_choose(&self, index: usize) -> Option<(u32, recto_agent::find::Hit)> {
-        recto_agent::find::choose(&self.access(), &self.finder, index)
+        recto_agent::find::choose(&self.access(), &self.finder, index, recto_session::Author::Owner)
     }
 
     /// Escape in the field, by the same step as `recto find --close`.
@@ -281,6 +286,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             places: self.places.get(),
             reads_later: None,
             answer_read: true,
+            find_keys: self.find_keys.get(),
             own_record: self.record.as_ref().map(|store| own_record::OwnRecord { session: &self.session, store }),
         }
     }
