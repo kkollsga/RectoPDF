@@ -141,11 +141,18 @@ impl Notices<'_> {
     /// **Whether a tab's unsaved edits fit its file: the one place it's decided,** for every read and output for an agent, search and Find, the sleep file, a
     /// save and the words. Nothing's looked at on disk: what's known, from the last look and read. A tab with no unsaved edits fits.
     pub fn fit(&self, id: TabId) -> EditsFit {
-        let Some(tab) = self.tabs.tab(id).filter(|_| self.lists.is_edited(id)) else {
-            return EditsFit::Fit;
-        };
+        self.tabs.tab(id).map_or(EditsFit::Fit, |tab| self.fit_of(tab))
+    }
+
+    /// [`Self::fit`], for a tab whose record is in hand: what a walk over every tab calls, as the sidebar and the record do. Looking each tab up again by
+    /// its number made every publish quadratic in the tabs open (2026-11-13: about 0.5 µs a tab on every action at 1,000 tabs). A tab whose version is
+    /// known, with nothing known against it, fits whether or not it has edits, so most tabs are answered from their own record with no lookup at all.
+    pub(crate) fn fit_of(&self, tab: &TabRecord) -> EditsFit {
         // Not the notice: whatever's said over it, this is what's known.
         let elsewhere = tab.file.elsewhere();
+        if (tab.file.stamp.is_some() && elsewhere.is_none()) || !self.lists.is_edited(tab.id) {
+            return EditsFit::Fit;
+        }
         let file_changed = elsewhere.is_some_and(|elsewhere| elsewhere.file_changed);
         match (tab.file.stamp, elsewhere) {
             (Some(_), None) => EditsFit::Fit,
@@ -168,14 +175,18 @@ impl Notices<'_> {
 
     /// What a tab says of its file, if anything: that it can't be found first, then that its edits don't fit it, which nothing else may hide, then its notice.
     pub fn said(&self, id: TabId) -> Option<NoticeSaid> {
-        let tab = self.tabs.tab(id)?;
+        self.said_of(self.tabs.tab(id)?)
+    }
+
+    /// [`Self::said`], for a tab whose record is in hand, with no lookup of the tab: see [`Self::fit_of`].
+    pub(crate) fn said_of(&self, tab: &TabRecord) -> Option<NoticeSaid> {
         let said = |notice: &FileNotice| NoticeSaid {
             code: notice.code(),
-            message: notice.message(self.lists.has_list(id)),
+            message: notice.message(self.lists.has_list(tab.id)),
         };
         match tab.file.notice() {
             Some(missing @ FileNotice::Missing) => Some(said(missing)),
-            notice => self.fit(id).said().or_else(|| notice.map(said)),
+            notice => self.fit_of(tab).said().or_else(|| notice.map(said)),
         }
     }
 }

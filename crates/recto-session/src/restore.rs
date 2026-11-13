@@ -19,6 +19,7 @@ impl<L: DocLoader> Session<L> {
             saves: _,
             recent,
         } = self;
+        let notices = self.notices();
         let tabs = open
             .all()
             .iter()
@@ -64,7 +65,7 @@ impl<L: DocLoader> Session<L> {
                     renderer_only: *renderer_only,
                     selection: selection.as_deref().copied(),
                     // Edits on a version the file isn't any more are said to be whatever notice is over them, as the tab says it: so a restore knows.
-                    notice: match self.notices().fit(*id) {
+                    notice: match notices.fit_of(tab) {
                         EditsFit::FileChanged | EditsFit::FileChangedVersionUnknown => Some(FileNotice::Changed),
                         _ => tab.file.notice().cloned(),
                     },
