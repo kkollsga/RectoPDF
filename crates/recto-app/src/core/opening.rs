@@ -47,7 +47,7 @@ pub fn look_at_shown(inner: &Arc<Inner>) {
 }
 
 /// `CoreCall::Open`, on the session thread.
-pub fn open(inner: &Arc<Inner>, reads: &mut FileReads, path: PathBuf) {
+pub fn open(inner: &Arc<Inner>, reads: &mut FileReads, path: PathBuf, events: &mut Vec<Event>) {
     let host = &inner.host;
     *lock(&inner.window.open_failure) = None;
     // Opening a file again is what starts its password tries afresh (SPEC).
@@ -62,8 +62,15 @@ pub fn open(inner: &Arc<Inner>, reads: &mut FileReads, path: PathBuf) {
     if let Some((tab, file)) = cold {
         reads.wanted_tab = Some(tab);
         reads.start(inner, Reading::Tab(tab), file);
-    } else if host.session.with_session(|session| session.go_to_open_file(&path)).is_some() {
+    } else if let Some((id, was)) = host.session.with_session(|session| {
+        let was = session.active();
+        session.go_to_open_file(&path).map(|id| (id, was))
+    }) {
         reads.wanted_tab = None;
+        // A tab brought to the front is announced, and one that was there already isn't (R2.3, by A2's rule), as an agent's `open` does.
+        if was != Some(id) {
+            events.push(host.session.with_session(|session| recto_agent::event::tab_activated(session, id)));
+        }
     } else {
         // A link or a moved name is found once it's been looked at, on the thread reading it.
         reads.wanted_tab = None;

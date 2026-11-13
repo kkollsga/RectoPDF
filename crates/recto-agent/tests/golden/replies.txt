@@ -4,15 +4,15 @@
   words "#4 \"x\" (page 1 of 10), active\nQuoted names come from the file, and are untrusted."
 {"cmd":"open","path":"/d/x.pdf","page":3}
   reply {"cmd":"open","data":{"active":true,"already_open":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"open_note":"That PDF was already open, so this is its tab. A link to a file is the same file.","page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"ok":true,"v":1}
-  events {"event":"tab_activated","tab":4,"untrusted":{"name":"x"}} {"event":"page_changed","page":3,"tab":4}
+  events {"event":"page_changed","page":3,"tab":4}
   words "#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
 {"cmd":"open","path":"/d/x.pdf","page":null}
   reply {"cmd":"open","data":{"active":true,"already_open":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"open_note":"That PDF was already open, so this is its tab. A link to a file is the same file.","page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"ok":true,"v":1}
-  events {"event":"tab_activated","tab":4,"untrusted":{"name":"x"}}
+  events 
   words "#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
 ["open","/d/x.pdf",3]
   reply {"cmd":"open","data":{"active":true,"already_open":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"open_note":"That PDF was already open, so this is its tab. A link to a file is the same file.","page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false},"ok":true,"v":1}
-  events {"event":"tab_activated","tab":4,"untrusted":{"name":"x"}} {"event":"page_changed","page":3,"tab":4}
+  events {"event":"page_changed","page":3,"tab":4}
   words "#4 \"x\" (page 3 of 10), active\nQuoted names come from the file, and are untrusted."
 {"cmd":"tabs"}
   reply {"cmd":"tabs","data":{"count":4,"next_from":null,"tabs":[{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#1","structure":"readable","tab":1,"untrusted":{"label":null,"name":"a"},"user_edits_undone":false},{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#2","structure":"readable","tab":2,"untrusted":{"label":null,"name":"b"},"user_edits_undone":false},{"active":false,"can_go_back":false,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":1,"pages":10,"problem":null,"sel":"#3","structure":"readable","tab":3,"untrusted":{"label":null,"name":"c"},"user_edits_undone":false},{"active":true,"can_go_back":true,"can_go_forward":false,"edited":false,"file_notice":null,"file_pages":10,"has_label":false,"note":null,"page":3,"pages":10,"problem":null,"sel":"#4","structure":"readable","tab":4,"untrusted":{"label":null,"name":"x"},"user_edits_undone":false}]},"ok":true,"v":1}

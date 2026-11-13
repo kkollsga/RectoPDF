@@ -300,6 +300,8 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
     };
     // A file already open, in a tab gone cold, is read with the session free too.
     read_ahead(access, |s| s.tab_for_file(path, stamp).and_then(|id| s.wake_for_tap(id)))?;
+    // What was in front, so a tab brought there is announced and one that was there already isn't (R2.3, by A2's rule).
+    let active_before = access.with(|s| s.active());
     // Already open, by this name or another: SPEC decision 26. Check the page before anything moves.
     let existing = access.with(|s| {
         let id = s.tab_for_file(path, stamp)?;
@@ -346,7 +348,11 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
         if let Some(page) = page {
             go_to(s, id, page, 0.0, actor.author())?;
         }
-        events.push(if is_new { event::tab_opened(s, id) } else { event::tab_activated(s, id) });
+        if is_new {
+            events.push(event::tab_opened(s, id));
+        } else if active_before != Some(id) {
+            events.push(event::tab_activated(s, id));
+        }
         if page.is_some() {
             events.push(page_now(s, id));
         }

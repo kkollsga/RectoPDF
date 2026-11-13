@@ -253,7 +253,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
                 deferred.push(path);
                 continue;
             }
-            CoreCall::Open(path) => open(inner, &mut reads, path),
+            CoreCall::Open(path) => open(inner, &mut reads, path, &mut events),
             CoreCall::Read(read) => {
                 // A person's command waiting for this read runs again now, in this call, as the window's own tap and open did.
                 if let Some(run) = reads.finished(inner, *read, &mut events) {
@@ -510,16 +510,23 @@ impl FileReads {
             }
             Reading::File(path) => match read.loaded.map_err(SessionError::Open).and_then(|facts| {
                 host.session.with_session(|session| {
+                    let before = (session.tabs().len(), session.active());
                     if read.unlocked {
                         session.open_unlocked(&path, facts, read.stamp)
                     } else {
                         session.open_with_facts(&path, facts, read.stamp, read.history)
                     }
+                    .map(|id| (id, before))
                 })
             }) {
-                Ok(id) => {
-                    events.push(host.session.with_session(|session| recto_agent::event::tab_opened(session, id)));
-                }
+                // A new tab is announced as opened; one already open by another name, as brought to the front if it wasn't there (by A2's rule).
+                Ok((id, (count, active))) => host.session.with_session(|session| {
+                    if session.tabs().len() > count {
+                        events.push(recto_agent::event::tab_opened(session, id));
+                    } else if active != Some(id) {
+                        events.push(recto_agent::event::tab_activated(session, id));
+                    }
+                }),
                 // A protected file asks for its password, on the system's sheet, rather than only saying it needs one. After any other file asking, each with its own answer.
                 Err(SessionError::Open(OpenError::PasswordNeeded)) => {
                     lock(&inner.tools.prompts.passwords).ask(passwords::Target::File, &path);

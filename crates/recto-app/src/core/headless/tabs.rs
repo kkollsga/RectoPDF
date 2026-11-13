@@ -120,3 +120,32 @@ fn the_tab_last_tapped_wins_over_one_still_being_read() {
     assert_eq!(app.reader().shown_tab, 1, "and the first comes when it's tapped again");
     assert!(names(&app.heard_events()).contains(&"tab_activated"));
 }
+
+/// Failure (R2.3, by A2's rule): opening a file that's open already is announced other than by whether it changed what's in front: the window's open said
+/// nothing when it brought the tab to the front, and an agent's `open` said `tab_activated` when that tab was in front already. For the person and an agent,
+/// a tab brought to the front is announced, and one that was there already isn't.
+#[test]
+fn opening_a_file_thats_open_announces_its_tab_only_when_it_comes_to_the_front() {
+    let disk = Disk::new();
+    let (a, b) = (disk.pdf("a.pdf", 3), disk.pdf("b.pdf", 3));
+    let app = disk.start();
+    app.open(&a);
+    app.open(&b);
+    app.hear_events();
+    let person = |path: &std::path::Path| {
+        app.act(UiAction::Open { path: path.to_path_buf() });
+        app.settle();
+        names(&app.heard_events())
+    };
+    let agent = |path: &std::path::Path| {
+        let (result, mut said) = app.agent_heard(Level::Full, &format!(r#"{{"cmd":"open","path":{:?}}}"#, path.display().to_string()));
+        result.expect("opened");
+        app.settle();
+        said.extend(app.heard_events());
+        names(&said)
+    };
+    assert_eq!(person(&a), ["tab_activated"], "the person's open brought a.pdf to the front");
+    assert!(person(&a).is_empty(), "and again, with it in front already");
+    assert_eq!(agent(&b), ["tab_activated"], "an agent's open brought b.pdf to the front");
+    assert!(agent(&b).is_empty(), "and again, with it in front already");
+}
