@@ -7,6 +7,8 @@
 pub mod actor;
 pub use actor::Actor;
 pub mod agreement;
+pub mod effect;
+pub use effect::Effect;
 pub mod commands;
 pub mod event;
 #[cfg(test)]
@@ -438,6 +440,8 @@ pub trait SessionAccess {
     fn records(&self) -> Result<&dyn commands::record::Records, AgentError> {
         Err(commands::needs_server())
     }
+    /// What the window's to do after this command, if there's a window: see [`Effect`]. A session with no window has nothing to show.
+    fn effect(&self, _effect: Effect) {}
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Mutex<Session<L>> {

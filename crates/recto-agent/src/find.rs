@@ -737,6 +737,11 @@ pub(crate) fn command<A: crate::SessionAccess>(access: &A, asked: &Asked<'_>, ev
         };
         events.push(access.with(|s| crate::page_changed(s, recto_session::TabId(tab), hit.page + 1)));
         events.push(crate::Event::FindOpened { page: Some(hit.page + 1) });
+        // The page view selects it, as ⌘G's does, whoever asked.
+        access.effect(crate::Effect::Reveal {
+            tab: TabId(tab),
+            hit: hit.clone(),
+        });
         went = Some((tab, hit));
     }
     Ok(answer(access, finding, listed, went))

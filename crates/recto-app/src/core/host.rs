@@ -120,22 +120,6 @@ impl AppHost {
     /// A command the session answers, and what the window does after it.
     fn run_session(&self, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         let result = self.session.run(actor, command, events);
-        // `recto find --next` went to a hit: the page view selects it, as ⌘G's does.
-        if let (Command::Move(Move::Find(_)), Ok(answer)) = (command, &result)
-            && let Some(went) = answer.get("went_to").filter(|went| went.is_object())
-            && let (Some(tab), Some(page), Some(start), Some(end)) = (went["tab"].as_u64(), went["page"].as_u64(), went["start"].as_u64(), went["end"].as_u64())
-        {
-            let hit = recto_agent::find::Hit {
-                page: (page as u32).saturating_sub(1),
-                start: start as u32,
-                end: end as u32,
-                before: "".into(),
-                matched: "".into(),
-                after: "".into(),
-                hidden: false,
-            };
-            self.core.push(CoreCall::Find(find::FindCall::Reveal(tab as u32, hit)));
-        }
         self.core.push(CoreCall::Reconcile);
         result
     }

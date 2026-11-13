@@ -22,6 +22,13 @@ fn handle<R>(inner: &Inner, step: impl FnOnce(&FindHandle<'_, dyn crate::Listene
     })
 }
 
+/// **What a command asks of the window, carried out on the session thread,** whoever asked: Find's hit selected and brought into view.
+pub fn effects(core: std::sync::Arc<crate::queue::CoreQueue>) -> recto_control::host::Effects {
+    std::sync::Arc::new(move |effect| match effect {
+        recto_agent::Effect::Reveal { tab, hit } => core.push(crate::queue::CoreCall::Find(FindCall::Reveal(tab.0, hit))),
+    })
+}
+
 pub fn is_open(inner: &Inner) -> bool {
     app::is_open(&inner.tools.find_field)
 }

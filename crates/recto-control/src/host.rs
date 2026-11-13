@@ -63,7 +63,12 @@ pub struct SessionHost<L = DrawableLoader> {
     find_keys: std::sync::OnceLock<recto_agent::find::KeyLookup>,
     /// The app's state record, which it keeps as it goes, for the record's commands. Set once, by the app.
     records: std::sync::OnceLock<Arc<dyn Records + Send + Sync>>,
+    /// Where what a command asks of the window goes, set once by the app: none for a session with no window.
+    effects: std::sync::OnceLock<Effects>,
 }
+
+/// What carries a command's [`recto_agent::Effect`] to the window.
+pub type Effects = Arc<dyn Fn(recto_agent::Effect) + Send + Sync>;
 
 /// A session with no window keeps backups and no journals as it goes, so its saves need only the folder.
 pub struct BackupsOnly(pub PathBuf);
@@ -88,6 +93,7 @@ struct Hosted<'a, L> {
     finder: &'a Finder,
     /// The app's record, or this session's own, or none.
     records: Option<&'a (dyn Records + Send + Sync)>,
+    effects: Option<&'a Effects>,
     own_record: Option<own_record::OwnRecord<'a, L>>,
 }
 
@@ -115,6 +121,11 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
             (None, None) => Err(recto_agent::commands::record::no_record()),
         }
     }
+    fn effect(&self, effect: recto_agent::Effect) {
+        if let Some(effects) = self.effects {
+            effects(effect);
+        }
+    }
 }
 
 impl Default for SessionHost<DrawableLoader> {
@@ -135,6 +146,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             saving: std::sync::OnceLock::new(),
             find_keys: std::sync::OnceLock::new(),
             records: std::sync::OnceLock::new(),
+            effects: std::sync::OnceLock::new(),
         }
     }
 
@@ -206,6 +218,11 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         let _ = self.records.set(records);
     }
 
+    /// Where what a command asks of the window goes. The first one set stays.
+    pub fn set_effects(&self, effects: Effects) {
+        let _ = self.effects.set(effects);
+    }
+
     /// With generated contents made on demand, kept in the state folder's contents folder.
     #[must_use]
     pub fn with_generating(mut self, paths: &StatePaths) -> Self {
@@ -233,6 +250,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             finder: &self.finder,
             saving: self.saving.get().map(|saving| &**saving),
             records: self.records.get().map(|records| &**records),
+            effects: self.effects.get(),
             own_record: self.record.as_ref().map(|store| own_record::OwnRecord { session: &self.session, store }),
         }
     }
