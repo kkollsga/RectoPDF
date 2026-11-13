@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// Every part of the session that keeps something of a tab, by the name of what it keeps, and whether it holds anything of this one. A part added to the session, or moved into a component, is listed here.
+/// Every part of the session that keeps something of a tab, by the name of what it keeps, and whether it holds anything of this one: the names of those that do, sorted. A part added to the session, or moved into a component, is listed here.
 fn holding(s: &Session<FakeLoader>, id: TabId) -> Vec<&'static str> {
     let parts = [
         ("tabs", s.tabs.iter().any(|tab| tab.id == id)),
@@ -13,9 +13,6 @@ fn holding(s: &Session<FakeLoader>, id: TabId) -> Vec<&'static str> {
         ("asleep", s.asleep.contains_key(&id)),
         ("wake_failed", s.wake_failed.contains(&id)),
         ("draws", s.mail.holds_draw_of(id)),
-        ("journals", s.journals.contains_key(&id)),
-        ("fresh_journals", s.fresh_journals.iter().any(|(tab, _, _)| *tab == id)),
-        ("departing", s.departing.iter().any(|append| append.tab == id)),
         ("saving", s.saves.is_saving(id)),
         ("abandoned_saves", s.saves.abandoned_has(id)),
         ("comparison", s.comparison.as_ref().is_some_and(|comparison| comparison.contains(id))),
@@ -23,12 +20,16 @@ fn holding(s: &Session<FakeLoader>, id: TabId) -> Vec<&'static str> {
         ("saved_over", s.saves.remembers(id)),
         ("jumps", s.mail.holds_jump_of(id)),
     ];
-    parts
+    let mut holding: Vec<&'static str> = parts
         .into_iter()
         .chain(s.dormancy.holding(id))
+        .chain(s.journals.holding(id))
         .filter(|(_, holds)| *holds)
         .map(|(name, _)| name)
-        .collect()
+        .collect();
+    // By name, so a part moving into a component doesn't change what's said.
+    holding.sort_unstable();
+    holding
 }
 
 fn stamp(n: u64) -> FileStamp {
@@ -118,7 +119,7 @@ fn forgetting_what_was_read_of_a_tab_forgets_all_of_it() {
     let a = s.open(Path::new("/d/a.pdf")).unwrap();
     s.set_generated_view(a, ready());
     s.forget_read(a);
-    assert_eq!(holding(&s, a), ["tabs", "active"]);
+    assert_eq!(holding(&s, a), ["active", "tabs"]);
     assert!(s.tab(a).unwrap().from_sleep.is_none());
 }
 

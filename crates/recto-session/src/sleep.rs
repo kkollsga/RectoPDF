@@ -415,11 +415,11 @@ impl<L: DocLoader> Session<L> {
 
     /// What a dormant tab's journal has to say for its list to go to disk: the whole list, to compact to and compare with. `None` if there's no list, if it's not all in the file, or if nobody keeps journals here.
     pub fn list_to_sleep(&self, id: TabId) -> Option<(String, JournalHeader, record::EditsRecord)> {
-        if !self.journaling || self.history.is_none() {
+        if !self.journals.kept_and_readable() {
             return None;
         }
         let (header, base) = self.checkpoint_if_caught_up(id)?;
-        Some((self.journals.get(&id)?.to_string(), header, base))
+        Some((self.journals.name_of(id)?.to_string(), header, base))
     }
 
     /// **A tab goes dormant, SPEC decision 25: it costs a cold tab's memory from here on.** Its contents go, and its list goes if [`Self::list_to_sleep`] says it can, as all of it's on disk. Said once for each, and read back only if it's touched again. Says whether the list went, or there wasn't one.
@@ -446,7 +446,7 @@ impl<L: DocLoader> Session<L> {
     /// **Brings a tab's list back from its journal, if it's on disk.** Everything about the tab comes here first, so nothing can act on a list it can't see. **If it can't be read just now, it stays asleep, its name kept, to be tried again by whatever's next,** and says false. Nothing goes on that hasn't got a list to go on: a new edit laid on a journal it never read would land on the wrong pages. The tab says so till then. Only a discard or a confirmed save gives up on it.
     pub fn wake_list(&mut self, id: TabId) -> bool {
         let Some(&summary) = self.asleep.get(&id) else { return true };
-        let restored = self.journals.get(&id).and_then(|name| self.history.as_ref()?.read_list(name));
+        let restored = self.journals.name_of(id).and_then(|name| self.journals.history()?.read_list(name));
         match restored {
             Some(restored) if restored.edits.summary() == summary || restored.rolled_off => {
                 self.asleep.remove(&id);
@@ -465,8 +465,7 @@ impl<L: DocLoader> Session<L> {
                 }
                 // Steps have gone that the journal has, so it has to start again from the list, or it wouldn't read back as this.
                 if restored.rolled_off {
-                    self.fresh_journals.retain(|(tab, _, _)| *tab != id);
-                    self.fresh_journals.push((id, restored.seq, None));
+                    self.journals.start_fresh(id, restored.seq, None);
                 }
                 true
             }
@@ -494,7 +493,7 @@ impl<L: DocLoader> Session<L> {
     pub fn asleep_by_journal(&self) -> HashMap<String, EditsSummary> {
         self.asleep
             .iter()
-            .filter_map(|(id, summary)| Some((self.journals.get(id)?.to_string(), *summary)))
+            .filter_map(|(id, summary)| Some((self.journals.name_of(*id)?.to_string(), *summary)))
             .collect()
     }
 
@@ -578,7 +577,7 @@ impl<L: DocLoader> Session<L> {
             return false;
         }
         let Some((stamp, path)) = self.sleep_to_read(id) else { return false };
-        let Some(sleep) = self.history.as_ref().and_then(|source| source.read_sleep(stamp, &path)) else {
+        let Some(sleep) = self.journals.history().and_then(|source| source.read_sleep(stamp, &path)) else {
             return false;
         };
         self.wake_from_sleep(id, &sleep);

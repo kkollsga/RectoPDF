@@ -55,7 +55,7 @@ impl<L: DocLoader> Session<L> {
             return Err(SessionError::Edit(EditError::TooManyPages));
         }
         let place = self.place_of(id);
-        let journaling = self.journaling;
+        let journaling = self.journals.journaling();
         let may_push_owner = by == Author::Agent && self.agent_at_full;
         let edits = self.edits.entry(id).or_insert_with(|| PageEdits::new(page_count));
         if journaling {
@@ -151,16 +151,8 @@ impl<L: DocLoader> Session<L> {
                 .collect();
             self.retire_kept(kept);
         }
-        self.fresh_journals.retain(|(tab, _, replaces)| {
-            if *tab == id {
-                if let Some(old) = replaces {
-                    self.retired_journals.push(old.as_str().into());
-                }
-                return false;
-            }
-            true
-        });
-        self.retire_journal(id);
+        self.journals.let_go_of_fresh(id);
+        self.journals.retire(id);
     }
 
     /// Whether a tab has a list of edits, in memory or on disk.
@@ -181,7 +173,7 @@ impl<L: DocLoader> Session<L> {
     pub fn list_record_anywhere(&self, id: TabId) -> Option<record::EditsRecord> {
         self.edits_record(id).or_else(|| {
             self.asleep.contains_key(&id).then_some(())?;
-            Some(self.history.as_ref()?.read_list(self.journals.get(&id)?)?.edits.to_record())
+            Some(self.journals.history()?.read_list(self.journals.name_of(id)?)?.edits.to_record())
         })
     }
 

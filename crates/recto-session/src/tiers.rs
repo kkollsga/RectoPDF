@@ -175,7 +175,7 @@ impl<L: DocLoader> Session<L> {
                 }
                 // Another version of the file than the sleep file's about, which won't be read again.
                 if let (Some(known), Some(path)) = (replaced, self.path_of(id)) {
-                    self.retired_journals.push(record::sleep_file_name(known, &path).into());
+                    self.journals.retire_name(record::sleep_file_name(known, &path).into());
                 }
                 self.remember_warm(id, Arc::new(facts.toc));
             }

@@ -19,6 +19,7 @@ mod editing;
 mod files;
 mod generated;
 mod journal;
+mod journals;
 mod mail;
 mod pages;
 mod recent;
@@ -793,18 +794,8 @@ pub struct Session<L = DiskLoader> {
     dormancy: dormancy::Dormancy,
     /// The pages lately drawn, the jumps the page view hasn't taken, and a place lost to an edit.
     mail: mail::PageViewMail,
-    /// Whether edits go to a journal. A session with a state record has this, and one without has nothing writing them out.
-    journaling: bool,
-    /// Each edited tab's journal, by name. Nothing for a tab with no edits.
-    journals: HashMap<TabId, Box<str>>,
-    /// Lists whose journal has to start again from the whole list: which tab, as of which count, and the journal it takes over from. Next to none, and only until they're written.
-    fresh_journals: Vec<(TabId, u64, Option<String>)>,
-    /// Journals to remove, as what's in them has been discarded or saved.
-    retired_journals: Vec<Box<str>>,
-    /// Journals of tabs that have closed, with what hadn't gone out yet. Nothing's lost by closing.
-    departing: Vec<JournalAppend>,
-    /// Where a PDF's history is, for one being opened.
-    history: Option<Arc<dyn HistorySource>>,
+    /// Each edited tab's journal, what's waiting to go out to the journals, and where a PDF's history is read from.
+    journals: journals::Journals,
     /// An agent is acting at Full, so losing the owner's history is the holder's call. Set for each command.
     agent_at_full: bool,
     /// Tabs being saved, and what saves lately moved their tabs on from.

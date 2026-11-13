@@ -17,12 +17,7 @@ impl<L: DocLoader> Session<L> {
             asleep: HashMap::new(),
             dormancy: dormancy::Dormancy::default(),
             mail: mail::PageViewMail::default(),
-            journaling: false,
-            journals: HashMap::new(),
-            fresh_journals: Vec::new(),
-            retired_journals: Vec::new(),
-            departing: Vec::new(),
-            history: None,
+            journals: journals::Journals::default(),
             agent_at_full: false,
             generated: generated::Generated::default(),
             comparison: None,
@@ -66,7 +61,7 @@ impl<L: DocLoader> Session<L> {
             return Ok(id);
         }
         let facts = self.loader.load(path).map_err(SessionError::Open)?;
-        let history = self.history.clone().and_then(|source| source.history_of(stamp, path));
+        let history = self.journals.history().cloned().and_then(|source| source.history_of(stamp, path));
         self.open_with_facts(path, facts, stamp, history)
     }
 
@@ -323,18 +318,18 @@ impl<L: DocLoader> Session<L> {
         if !self.wake_list(id) {
             self.asleep.remove(&id);
             self.wake_failed.retain(|failed| *failed != id);
-            self.journals.remove(&id);
+            self.journals.forget_name(id);
         }
-        let keeps_history = self.journaling && self.edits.get(&id).is_some_and(PageEdits::has_history);
+        let keeps_history = self.journals.journaling() && self.edits.get(&id).is_some_and(PageEdits::has_history);
         if keeps_history {
             if let Some(append) = self.append_for(id) {
-                self.departing.push(JournalAppend { closing: true, ..append });
+                self.journals.depart(JournalAppend { closing: true, ..append });
             }
-            self.journals.remove(&id);
+            self.journals.forget_name(id);
         } else {
             self.let_go_of_list(id);
         }
-        self.fresh_journals.retain(|(tab, _, _)| *tab != id);
+        self.journals.drop_fresh(id);
         self.edits.remove(&id);
         self.retire_sleep_file(id);
         let index = self.tabs.iter().position(|t| t.id == id).ok_or(SessionError::NoSuchTab)?;

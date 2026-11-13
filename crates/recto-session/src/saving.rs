@@ -68,14 +68,14 @@ impl<L: DocLoader> Session<L> {
             self.let_go_of_list(id);
         } else if self.edits.contains_key(&id) {
             // A journal goes by its file's identity, which this has changed. The old one goes only once the new one's there, so a crash in between has one of them.
-            let replaces = self.journals.remove(&id).map(String::from);
-            self.fresh_journals.retain(|(tab, _, _)| *tab != id);
-            if self.journaling {
+            let replaces = self.journals.forget_name(id).map(String::from);
+            self.journals.drop_fresh(id);
+            if self.journals.journaling() {
                 let seq = self.edits.get(&id).map_or(0, PageEdits::journal_seq);
                 self.journal_name_for(id);
-                self.fresh_journals.push((id, seq, replaces));
+                self.journals.start_fresh(id, seq, replaces);
             } else if let Some(old) = replaces {
-                self.retired_journals.push(old.into());
+                self.journals.retire_name(old.into());
             }
         }
         rolled_off
@@ -201,12 +201,11 @@ impl<L: DocLoader> Session<L> {
             let unconfirmed = list.keeping().filter(|kept| kept.kept).map(|kept| kept.path.clone());
             let let_go: Vec<Box<Path>> = list.drop_history().into_iter().chain(unconfirmed).collect();
             let seq = list.journal_seq();
-            let journaled = self.journaling;
+            let journaled = self.journals.journaling();
             self.retire_kept(let_go);
             if journaled {
-                self.fresh_journals.retain(|(tab, _, _)| *tab != id);
                 // The same name as it has now, as the file's the same, replaced in one step.
-                self.fresh_journals.push((id, seq, None));
+                self.journals.start_fresh(id, seq, None);
             }
             return true;
         }
