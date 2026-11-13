@@ -28,6 +28,7 @@ mod launching;
 mod navigation;
 mod opening;
 pub mod person;
+pub mod places;
 mod quitting;
 mod record_commands;
 pub mod showing;

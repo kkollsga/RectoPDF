@@ -126,34 +126,6 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
     }
 }
 
-/// The places the page views moved to, in the session, for the tabs they still show.
-fn take_moved_pages(
-    session: &mut recto_session::Session<recto_agent::DrawableLoader>,
-    synced: &mut Synced,
-    moved: &[(usize, u32)],
-    shown_before: &[Option<TabId>],
-    events: &mut Vec<Event>,
-) {
-    let panes = session.panes();
-    for (pane, page) in moved {
-        let was = panes.get(*pane).and_then(|id| session.tab(*id)).map(|tab| tab.page);
-        if let (Some(id), Some(Some(shown))) = (panes.get(*pane).copied(), shown_before.get(*pane))
-            && *shown == id
-            && session.go_to(id, *page).is_ok()
-        {
-            let page = session.tab(id).map_or(*page, |tab| tab.page);
-            if let Some(pane) = synced.panes.get_mut(*pane) {
-                pane.page = page;
-            }
-            // Announced when the page changed, and only then: a page view settling on the page the session already has, as after a jump to a hit there,
-            // is no news.
-            if was != Some(page) {
-                events.push(recto_agent::page_changed(session, id, page + 1));
-            }
-        }
-    }
-}
-
 /// Brings everything into line with the session, on the session thread. The place in a tab can move two ways, by the reader or by an agent, and each is passed to the other side.
 pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let nothing_held = lock(&inner.life.holding_tab).is_none();
@@ -164,15 +136,8 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             sleeper::look_before_showing(inner, *id);
         }
     }
-    let engines = inner.panes.engines(&inner.engine);
-    let moved: Vec<(usize, u32)> = engines
-        .iter()
-        .enumerate()
-        .filter_map(|(pane, engine)| Some((pane, engine.take_moved_page()?)))
-        .collect();
-    // What the page views hold of tabs they're about to let go of goes in the session first, as a cold tab holds nothing there.
-    inner.take_places();
-    let shown_before: Vec<Option<TabId>> = synced.panes.iter().map(|pane| pane.tab).collect();
+    // What the page views say of where they are goes in the session first, the tabs they're about to let go of among it, as a cold tab holds nothing there.
+    let said = places::Said::read(inner, true);
     let held = {
         let published = lock(&inner.published);
         crate::Held {
@@ -184,10 +149,10 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     };
     // One look at the session for the whole pass, so what's projected is of one moment: the places the page views moved first, then everything the window shows.
     let mut facts = inner.host.session.with_session(|session| {
-        take_moved_pages(session, synced, &moved, &shown_before, events);
+        let mut jumps = said.take_in_at_the_look(session, synced, events);
         let mut facts = crate::read(session, &held);
         for snapshot in &mut facts.panes {
-            snapshot.jump = session.take_jump(snapshot.id);
+            snapshot.jump = places::jump_for(&mut jumps, snapshot.id);
         }
         facts
     });
@@ -240,6 +205,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         panes_changed |= synced.panes[pane].tab != Some(snapshot.id);
         show_in_pane(inner, &engine, &mut synced.panes[pane], snapshot);
     }
+    inner.panes.set_sent(places::sent_to_views(synced));
     let shown_tabs: Vec<TabId> = facts.panes.iter().map(|shown| shown.id).collect();
     let reading_pane = active.and_then(|id| shown_tabs.iter().position(|shown| *shown == id)).unwrap_or(0);
     let comparing = comparison.is_some();
