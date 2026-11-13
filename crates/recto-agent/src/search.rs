@@ -1531,7 +1531,7 @@ mod tests {
         }
     }
 
-    /// Failure: a hostile pattern on one page uses up the search, and the answer reads as "nothing found" for it, or says a total, or never says where to go on from. The page is listed, and that's said to be why.
+    /// Failure: a hostile pattern on one page uses up the search, and the answer reads as "nothing found" for it, or says a total, or never says where to go on from. The page is listed, and that's said to be why. The pattern takes many seconds on this page, so a short deadline runs out on it; one that ran out before the page was even reached, which a loaded machine can do, is seen in the answer and tried again longer, rather than every run waiting out a deadline long enough for any load.
     #[test]
     fn a_page_a_pattern_ran_out_of_time_on_is_listed() {
         let page = "a".repeat(MAX_PATTERN_PAGE_BYTES);
@@ -1544,14 +1544,21 @@ mod tests {
                 Some(("another".to_string(), true)),
             ],
         );
-        let started = Instant::now();
-        // Long enough to reach the page on a Mac under any load, and far short of the many seconds this page takes.
-        let settings = Settings {
-            deadline: started + Duration::from_secs(3),
-            ..settings(&fixture)
-        };
-        let answer = run(&fixture.plan, &Query::regex(r"\w+\d|\w").unwrap(), "regex", &settings).unwrap();
-        assert!(started.elapsed() < Duration::from_secs(30), "{:?}", started.elapsed());
+        let query = Query::regex(r"\w+\d|\w").unwrap();
+        let mut answer = Value::Null;
+        for wait in [100, 400, 1600, 6400].map(Duration::from_millis) {
+            let started = Instant::now();
+            let settings = Settings {
+                deadline: started + wait,
+                ..settings(&fixture)
+            };
+            answer = run(&fixture.plan, &query, "regex", &settings).unwrap();
+            assert!(started.elapsed() < wait + Duration::from_secs(10), "{:?} for a deadline of {wait:?}", started.elapsed());
+            let never_reached = answer["coverage"]["next_page"] == 1 && answer["coverage"]["failed_pages"] == json!([]);
+            if !never_reached {
+                break;
+            }
+        }
         let coverage = &answer["coverage"];
         assert_eq!(coverage["failed_pages"], json!([1]), "{answer}");
         assert_eq!(coverage["pages_a_pattern_ran_out_of_time_on"], 1, "{answer}");
