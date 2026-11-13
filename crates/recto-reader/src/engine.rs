@@ -118,11 +118,12 @@ static ASKED: AtomicU64 = AtomicU64::new(0);
 struct Pending {
     /// Synced scroll's place: a page and how far down it.
     follow: Option<(u32, f64)>,
-    /// When `follow` was asked for ([`asked`]): it's applied, by whichever route takes it, only if no jump, follow or tab change asked after it has been.
+    /// When `follow` was asked for ([`asked`]): it's applied, by whichever route takes it, only if no jump, follow or tab change asked after it has been;
+    /// and a follow asked before it isn't left over it. Kept when the follow is dropped, so one asked before that isn't left after.
     follow_asked: u64,
     /// The one zoom of a comparison.
     zoom: Option<f64>,
-    /// When `zoom` was asked for: applied only if no zoom asked after it has been.
+    /// When `zoom` was asked for: applied only if no zoom asked after it has been, and a zoom asked before it isn't left over it.
     zoom_asked: u64,
     /// Another pane took the selection.
     clear_selection: bool,
@@ -243,20 +244,7 @@ impl Engine {
     pub fn follow_soon(&self, page: u32, within: f64) -> bool {
         let when = asked();
         self.shared.after_asking(Ask::Follow);
-        self.now_or_soon(
-            |pending| {
-                pending.follow = Some((page, within));
-                pending.follow_asked = when;
-            },
-            |reader, pending| {
-                if pending.follow_asked < when {
-                    pending.follow = None;
-                }
-                if newest(&self.shared.applied.place, when) {
-                    reader.follow(page, within);
-                }
-            },
-        )
+        follow_soon_at(self, when, page, within)
     }
 
     /// The comparison's one zoom, from the UI thread, the same way: now if the page view's free, and otherwise left for its thread, the latest only; and
@@ -264,20 +252,7 @@ impl Engine {
     pub fn zoom_soon(&self, value: f64) -> bool {
         let when = asked();
         self.shared.after_asking(Ask::ZoomSoon);
-        self.now_or_soon(
-            |pending| {
-                pending.zoom = Some(value);
-                pending.zoom_asked = when;
-            },
-            |reader, pending| {
-                if pending.zoom_asked < when {
-                    pending.zoom = None;
-                }
-                if newest(&self.shared.applied.zoom, when) {
-                    reader.zoom(Zoom::To(value));
-                }
-            },
-        )
+        zoom_soon_at(self, when, value)
     }
 
     /// Does something with the page view's lock if it's free, and otherwise leaves it for its own thread. Never waits for the lock: the UI thread calls this.
@@ -635,6 +610,48 @@ fn jump_after(engine: &Engine, page: u32, within: f64) -> Option<u64> {
         engine.shared.events.page_moved();
     }
     sent
+}
+
+/// [`Engine::follow_soon`], asked at `when`: now if the view's free, and otherwise left pending.
+fn follow_soon_at(engine: &Engine, when: u64, page: u32, within: f64) -> bool {
+    engine.now_or_soon(
+        // Only over one asked before it: one asked after it, left while this waited, is newer.
+        |pending| {
+            if pending.follow_asked < when {
+                pending.follow = Some((page, within));
+                pending.follow_asked = when;
+            }
+        },
+        |reader, pending| {
+            if pending.follow_asked < when {
+                pending.follow = None;
+            }
+            if newest(&engine.shared.applied.place, when) {
+                reader.follow(page, within);
+            }
+        },
+    )
+}
+
+/// [`Engine::zoom_soon`], asked at `when`: now if the view's free, and otherwise left pending.
+fn zoom_soon_at(engine: &Engine, when: u64, value: f64) -> bool {
+    engine.now_or_soon(
+        // Only over one asked before it, as a follow's.
+        |pending| {
+            if pending.zoom_asked < when {
+                pending.zoom = Some(value);
+                pending.zoom_asked = when;
+            }
+        },
+        |reader, pending| {
+            if pending.zoom_asked < when {
+                pending.zoom = None;
+            }
+            if newest(&engine.shared.applied.zoom, when) {
+                reader.zoom(Zoom::To(value));
+            }
+        },
+    )
 }
 
 /// Drops a follow synced scroll left that was asked before `when`.
@@ -1186,6 +1203,43 @@ mod tests {
             zooming.join().unwrap();
         });
         assert_eq!(engine.magnification(), Some(2.0), "the older zoom isn't applied after the newer");
+    }
+
+    /// Failure (review round 2 of the page view follow-ups): a zoom left pending overwrites a newer one left before it. The person's ⌘+ on the UI thread
+    /// ticks and is preempted before it looks at the lock; an agent's zoom ticks after it, finds the pane busy and leaves its zoom; the UI thread then finds
+    /// it busy too and leaves its older zoom over the agent's, and the pane lands at the person's zoom while the agent's was the newer. Forced: the person's
+    /// ask is held between its tick and the lock while the agent's, ticked after it, is left; the pane is held busy for both.
+    #[test]
+    fn an_older_zoom_left_pending_doesnt_overwrite_a_newer_one() {
+        let engine = without_its_thread();
+        engine.qa().hold_asks(Ask::ZoomSoon, true);
+        std::thread::scope(|scope| {
+            let persons = scope.spawn(|| engine.zoom_soon(1.5));
+            assert!(engine.qa().wait_for_held_asks(1), "the person's zoom asked");
+            engine.qa().hold_busy(true);
+            assert!(!zoom_soon_at(&engine, asked(), 2.0), "busy: the agent's zoom is left");
+            engine.qa().hold_asks(Ask::ZoomSoon, false);
+            assert!(!persons.join().unwrap(), "busy: the person's zoom is left too");
+        });
+        engine.qa().hold_busy(false);
+        assert_eq!(engine.magnification(), Some(2.0), "the newer asked zoom stands");
+    }
+
+    /// Failure (the same review): the same for synced scroll's place: an older follow left pending overwrites a newer one left before it.
+    #[test]
+    fn an_older_follow_left_pending_doesnt_overwrite_a_newer_one() {
+        let engine = without_its_thread();
+        engine.qa().hold_asks(Ask::Follow, true);
+        std::thread::scope(|scope| {
+            let older = scope.spawn(|| engine.follow_soon(60, 0.5));
+            assert!(engine.qa().wait_for_held_asks(1), "the older follow asked");
+            engine.qa().hold_busy(true);
+            assert!(!follow_soon_at(&engine, asked(), 20, 0.25), "busy: the newer follow is left");
+            engine.qa().hold_asks(Ask::Follow, false);
+            assert!(!older.join().unwrap(), "busy: the older follow is left too");
+        });
+        engine.qa().hold_busy(false);
+        assert_eq!(engine.reading_anchor(), Some((20, 0.25)), "the newer asked follow stands");
     }
 
     /// Failure (review round 1 of the page view follow-ups, note 7): a read of where the view is (as the session thread's look and every command make)
