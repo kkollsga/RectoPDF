@@ -572,7 +572,7 @@
   words ""
 {"cmd":"clear_history"}
   reply {"cmd":"clear_history","data":{"can_redo":false,"can_undo":false,"did":"There was no edit history to clear.","edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
-  events {"edited":false,"event":"edits_changed","pages":10,"tab":4}
+  events 
   words "There was no edit history to clear. 10 pages now, 10 in the file. No unsaved edits."
 {"cmd":"clear_history","tab":"#2"}
   reply {"cmd":"clear_history","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
@@ -580,7 +580,7 @@
   words ""
 ["clear_history"]
   reply {"cmd":"clear_history","data":{"can_redo":false,"can_undo":false,"did":"There was no edit history to clear.","edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
-  events {"edited":false,"event":"edits_changed","pages":10,"tab":4}
+  events 
   words "There was no edit history to clear. 10 pages now, 10 in the file. No unsaved edits."
 ["clear_history","#2"]
   reply {"cmd":"clear_history","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}

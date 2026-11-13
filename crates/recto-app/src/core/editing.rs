@@ -72,10 +72,15 @@ impl Inner {
 }
 
 /// `CoreCall::ClearEditHistory`, on the session thread.
-pub fn clear_edit_history(inner: &Arc<Inner>) {
+pub fn clear_edit_history(inner: &Arc<Inner>, events: &mut Vec<Event>) {
     inner.host.session.with_session(|session| {
         if let Some(id) = session.active() {
+            let had_any = session.page_edits(id).is_some_and(|list| list.can_undo() || list.can_redo());
             session.clear_history(id, recto_session::ClearReason::UserAsked);
+            // Announced when there was history to clear, and only then, as `clear-history` does (R2.3, by A2's rule).
+            if had_any {
+                events.push(recto_agent::edits_changed(session, id));
+            }
         }
     });
 }

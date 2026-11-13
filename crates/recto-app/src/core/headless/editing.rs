@@ -96,3 +96,37 @@ fn the_panels_done_is_edit_mode_off() {
     assert!(!twins.person.reader().edit_mode, "out of edit mode");
     twins.assert_same("Done and edit mode off", &[]);
 }
+
+/// Failure (R2.3, by A2's rule): Clear History is announced other than by whether there was history to clear: the window's said nothing when it cleared some,
+/// and an agent's `clear-history` said `edits_changed` when there was none. For the person and an agent, a clear of some history is announced, and one of
+/// none isn't.
+#[test]
+fn clear_history_is_announced_only_when_there_was_history() {
+    let app = crate::testkit::headless::Disk::new().start();
+    let file = app.disk().pdf("a.pdf", 3);
+    app.open(&file);
+    app.hear_events();
+    let edit = || {
+        app.person(r#"{"cmd":"page_rotate","tab":"active","pages":"all","degrees":90}"#);
+        app.settle();
+        drop(app.heard_events());
+    };
+    let person = || {
+        app.act(menu("edit.clear_history"));
+        app.settle();
+        names(&app.heard_events())
+    };
+    let agent = || {
+        let (result, mut said) = app.agent_heard(recto_agent::Level::Full, r#"{"cmd":"clear_history"}"#);
+        result.expect("cleared");
+        app.settle();
+        said.extend(app.heard_events());
+        names(&said)
+    };
+    edit();
+    assert_eq!(person(), ["edits_changed"], "the person's clear of a step");
+    assert!(person().is_empty(), "and of none");
+    edit();
+    assert_eq!(agent(), ["edits_changed"], "an agent's clear of a step");
+    assert!(agent().is_empty(), "and of none");
+}
