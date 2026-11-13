@@ -28,6 +28,9 @@ pub(super) struct TileKey {
     pub(super) preview: bool,
 }
 
+// size: one per tile in `cover`, up to `MAX_ENTRIES` of them and more for a region's tiles. Held at what it is today, so a field added to it is a deliberate change.
+const _: () = assert!(size_of::<TileKey>() <= 20, "a tile's key in the cache grew");
+
 #[derive(Debug)]
 pub(super) struct LowResNote {
     pub(super) message: &'static str,
