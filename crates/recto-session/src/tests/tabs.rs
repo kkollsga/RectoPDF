@@ -181,9 +181,9 @@ fn the_same_inode_isnt_enough_to_be_the_same_pdf() {
     let opened = s.open(&z).unwrap();
     assert_ne!(opened, tab, "it's another PDF");
     assert_eq!(s.tabs().path_of(tab).unwrap(), y, "and the tab with edits stays on what they're about");
-    assert!(s.is_edited(tab));
+    assert!(s.lists().is_edited(tab));
     assert_eq!(s.pages_in(opened), 6, "nothing of the edits on it");
-    assert!(!s.is_edited(opened));
+    assert!(!s.lists().is_edited(opened));
     // Changed in place under its own name, by a link: that's still the tab.
     let (own, link) = (dir.join("own.pdf"), dir.join("link.pdf"));
     std::fs::write(&own, b"before").unwrap();

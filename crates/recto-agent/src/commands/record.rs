@@ -155,7 +155,7 @@ impl Cmd for SessionRestore {
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let records = cx.access.records()?;
-        if cx.level < Level::Full && cx.access.with(|session| session.holds_owner_edits()) {
+        if cx.level < Level::Full && cx.access.with(|session| session.lists().holds_owner_edits()) {
             return Err(restore_would_lose_owners_edits());
         }
         let restored = records.restore()?;

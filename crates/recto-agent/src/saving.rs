@@ -227,7 +227,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
     }
     let to = &to;
     // The agreement gate (SPEC section 3), before the tab's held, as a look can take seconds (review round 1); asked again below, from what this kept.
-    let something = matches!(to, SaveTo::As { .. }) || access.with(|s| select(s, tab).map(|id| s.is_edited(id)))?;
+    let something = matches!(to, SaveTo::As { .. }) || access.with(|s| select(s, tab).map(|id| s.lists().is_edited(id)))?;
     if something && let Some(refusal) = crate::agreement::refusal_for(access, tab)? {
         return Err(refusal);
     }
@@ -287,7 +287,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
     let backups = support.and_then(SaveSupport::backups);
     // A Save As leaves the old file where it is, so the history needs no copy of its pages.
     let needed = if snapshot.needs_own_pages && matches!(to, SaveTo::Same) {
-        access.with(|s| s.own_pages_needed(id))
+        access.with(|s| s.lists().own_pages_needed(id))
     } else {
         Vec::new()
     };

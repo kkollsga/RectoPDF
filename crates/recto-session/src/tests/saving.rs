@@ -20,13 +20,16 @@ fn a_close_after_save_keeps_what_came_in_since() {
     );
     s.edit_pages(id, |edits| edits.rotate(1, 1, 1)).unwrap();
     assert_eq!(s.close_after_save(id).map(|closed| closed.is_some()), Ok(false), "an edit since: it stays");
-    assert!(s.tabs().tab(id).is_some() && s.is_edited(id), "and the edit stands");
+    assert!(s.tabs().tab(id).is_some() && s.lists().is_edited(id), "and the edit stands");
     s.undo_edit(id);
     s.undo_edit(id);
-    assert!(s.is_edited(id), "an undo past the save is a change from the file too");
+    assert!(s.lists().is_edited(id), "an undo past the save is a change from the file too");
     assert_eq!(s.close_after_save(id).map(|closed| closed.is_some()), Ok(false));
     s.redo_edit(id);
-    assert!(!s.is_edited(id) && s.has_undone_owner_steps(id), "back at the saved point, with a step undone");
+    assert!(
+        !s.lists().is_edited(id) && s.lists().has_undone_owner_steps(id),
+        "back at the saved point, with a step undone"
+    );
     assert_eq!(
         s.close_after_save(id).map(|closed| closed.is_some()),
         Ok(true),
@@ -95,11 +98,11 @@ fn nothing_changes_a_tab_while_it_is_saved() {
         },
         None,
     );
-    assert!(s.page_edits(id).unwrap().saving().is_some());
+    assert!(s.lists().get(id).unwrap().saving().is_some());
     s.end_save(id);
     assert!(!s.is_saving(id) && !s.any_saving());
-    assert!(s.page_edits(id).unwrap().saving().is_none(), "what a failed save noted goes");
-    assert!(s.is_edited(id), "and the edits stand");
+    assert!(s.lists().get(id).unwrap().saving().is_none(), "what a failed save noted goes");
+    assert!(s.lists().is_edited(id), "and the edits stand");
     s.edit_pages(id, |edits| edits.rotate(1, 1, 1)).unwrap();
 }
 
@@ -118,7 +121,7 @@ fn a_save_marks_a_point_that_undo_goes_past_and_comes_back_to() {
         inode: 2,
     };
     let keeping = kept(KEPT_A, 100);
-    assert!(s.page_edits(a).unwrap().needs_own_pages(), "the delete's way back names a page of this file");
+    assert!(s.lists().get(a).unwrap().needs_own_pages(), "the delete's way back names a page of this file");
     s.save_prepared(a, target, Some(&keeping));
     write_journal(&mut s, &mut files);
     let parsed = record::parse_journal(files.values().next().unwrap(), record::CURRENT_VERSION).unwrap();
@@ -128,10 +131,10 @@ fn a_save_marks_a_point_that_undo_goes_past_and_comes_back_to() {
         "and what's kept for it"
     );
     // A failed save: nothing's called, and all of it is as it was.
-    assert!(s.is_edited(a) && s.page_edits(a).unwrap().can_undo());
+    assert!(s.lists().is_edited(a) && s.lists().get(a).unwrap().can_undo());
     let before: Vec<_> = (0..4).map(|at| s.page_source(a, at).unwrap().page).collect();
     assert_eq!(s.saved(a, target, 4, None, Some(keeping)), 0, "nothing had to go");
-    assert!(!s.is_edited(a), "it reads as saved");
+    assert!(!s.lists().is_edited(a), "it reads as saved");
     assert!(!s.sidebar().edited);
     assert_eq!(s.pages_in(a), 4);
     assert_eq!(s.tabs().own_stamp(a), Some(target));
@@ -142,10 +145,10 @@ fn a_save_marks_a_point_that_undo_goes_past_and_comes_back_to() {
         [0, 1, 2, 3],
         "and the new file has them in order"
     );
-    assert!(s.page_edits(a).unwrap().can_undo(), "the history's still there");
+    assert!(s.lists().get(a).unwrap().can_undo(), "the history's still there");
     // Past it, one step at a time, and back.
     assert!(s.undo_edit(a));
-    assert!(s.is_edited(a), "undone past the saved point, it's unsaved again");
+    assert!(s.lists().is_edited(a), "undone past the saved point, it's unsaved again");
     assert_eq!(
         s.page_source(a, 0).unwrap().quarter_turns,
         3,
@@ -164,12 +167,12 @@ fn a_save_marks_a_point_that_undo_goes_past_and_comes_back_to() {
         (Path::new("/d/a.pdf"), 0),
         "and the rest from the file"
     );
-    assert!(s.is_edited(a));
+    assert!(s.lists().is_edited(a));
     assert!(!s.undo_edit(a));
     assert!(s.redo_edit(a));
-    assert!(s.is_edited(a));
+    assert!(s.lists().is_edited(a));
     assert!(s.redo_edit(a));
-    assert!(!s.is_edited(a), "back at the saved point, it reads as saved");
+    assert!(!s.lists().is_edited(a), "back at the saved point, it reads as saved");
     assert_eq!((0..4).map(|at| s.page_source(a, at).unwrap().page).collect::<Vec<_>>(), [0, 1, 2, 3]);
     assert_eq!(s.page_source(a, 0).unwrap().quarter_turns, 0);
 }
@@ -207,8 +210,8 @@ fn a_saved_history_is_a_new_journal_that_comes_back_the_same() {
     assert_eq!(parsed.header.file_pages, 3);
     let (replayed, applied) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).unwrap();
     assert_eq!(applied, parsed.ops.len());
-    assert_eq!(replayed.to_record(), s.edits_record(a).unwrap());
-    assert_eq!(replayed.is_edited(), s.is_edited(a));
+    assert_eq!(replayed.to_record(), s.lists().edits_record(a).unwrap());
+    assert_eq!(replayed.is_edited(), s.lists().is_edited(a));
 }
 
 /// Failure (decision 25): a step undoes wrongly because the pages it needs are gone from the file, or the app says nothing about undo stopping short. It rolls off, with everything older, as a step's way back depends on those after it, and the tab says so. What came after it stays, and nothing about the document changes.
@@ -226,19 +229,19 @@ fn a_step_whose_pages_cant_be_kept_rolls_off_and_says_so() {
         inode: 2,
     };
     assert_eq!(s.saved(a, target, 5, None, None), 2, "the delete, and the older rotation with it");
-    assert!(!s.is_edited(a));
+    assert!(!s.lists().is_edited(a));
     assert_eq!(
         s.tabs().tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()),
         Some("history_rolled_off")
     );
     assert!(s.tab_notice_message(a).is_some_and(|words| words.contains("Undo")));
-    assert_eq!(s.page_edits(a).unwrap().summary().undo, 1);
+    assert_eq!(s.lists().get(a).unwrap().summary().undo, 1);
     assert!(s.undo_edit(a), "the newer step still works");
     assert!(!s.undo_edit(a), "and undo stops rather than undoing wrongly");
     assert_eq!(s.pages_in(a), 5);
     assert_eq!(s.page_source(a, 1).unwrap().quarter_turns, 3);
     assert!(s.redo_edit(a));
-    assert!(!s.is_edited(a));
+    assert!(!s.lists().is_edited(a));
     // Going to another tab has said it.
     let b = s.open(Path::new("/d/b.pdf")).unwrap();
     s.tap(a).unwrap();
@@ -250,10 +253,10 @@ fn a_step_whose_pages_cant_be_kept_rolls_off_and_says_so() {
     let a = s.open(Path::new("/d/a.pdf")).unwrap();
     s.edit_pages(a, |e| e.move_pages(0, 1, 2)).unwrap();
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
-    assert!(!s.page_edits(a).unwrap().needs_own_pages());
+    assert!(!s.lists().get(a).unwrap().needs_own_pages());
     assert_eq!(s.saved(a, target, 6, None, None), 0);
     assert_eq!(s.tabs().tab(a).unwrap().file.notice, None);
-    assert!(s.undo_edit(a) && s.undo_edit(a) && s.is_edited(a));
+    assert!(s.undo_edit(a) && s.undo_edit(a) && s.lists().is_edited(a));
 }
 
 /// Failure: copies kept for a PDF go past the limit a history has, over many saves. The oldest goes, with the steps that need it, and its file's let go of.
@@ -271,13 +274,13 @@ fn copies_kept_stay_within_the_limit() {
     s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
     assert_eq!(s.saved(a, target, 9, None, Some(kept(KEPT_A, big))), 0);
     s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
-    assert_eq!(s.page_edits(a).unwrap().kept_sources().count(), 1);
+    assert_eq!(s.lists().get(a).unwrap().kept_sources().count(), 1);
     assert_eq!(
         s.saved(a, target, 8, None, Some(kept(KEPT_B, big))),
         1,
         "two wouldn't fit, so the first's step goes"
     );
-    let list = s.page_edits(a).unwrap();
+    let list = s.lists().get(a).unwrap();
     assert_eq!(
         list.kept_sources()
             .map(|(_, added)| added.path.file_name().unwrap().to_str().unwrap().to_string())
@@ -303,7 +306,7 @@ fn save_as_takes_the_history_along() {
     assert_eq!(s.saved(a, target, 4, Some(Path::new("/e/copy.pdf")), None), 0);
     assert_eq!(s.tabs().path_of(a).unwrap(), Path::new("/e/copy.pdf"));
     assert_eq!(&*s.tabs().tab(a).unwrap().name, "copy");
-    assert!(!s.is_edited(a));
+    assert!(!s.lists().is_edited(a));
     assert!(s.undo_edit(a));
     assert_eq!(
         (s.page_source(a, 0).unwrap().path.as_path(), s.page_source(a, 0).unwrap().page),
@@ -313,7 +316,11 @@ fn save_as_takes_the_history_along() {
         (s.page_source(a, 1).unwrap().path.as_path(), s.page_source(a, 1).unwrap().page),
         (Path::new("/e/copy.pdf"), 0)
     );
-    assert_eq!(s.page_edits(a).unwrap().kept_sources().count(), 0, "the old file isn't the history's to remove");
+    assert_eq!(
+        s.lists().get(a).unwrap().kept_sources().count(),
+        0,
+        "the old file isn't the history's to remove"
+    );
 }
 
 /// Failure: what was written isn't this list, as its length says, and the steps get laid on a file they're not about. All of it goes, and it says so.
@@ -329,7 +336,7 @@ fn a_save_of_something_else_ends_the_history() {
         inode: 2,
     };
     assert_eq!(s.saved(a, target, 3, None, Some(kept(KEPT_A, 100))), 1);
-    assert!(s.page_edits(a).is_none());
+    assert!(s.lists().get(a).is_none());
     assert_eq!(s.pages_in(a), 3);
     assert_eq!(
         s.tabs().tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()),
@@ -365,10 +372,10 @@ fn clearing_a_history_removes_its_files_and_keeps_unsaved_work() {
         write_journal(&mut s, &mut files);
         s.saved(a, target, 4, None, Some(kept(KEPT_A, 100)));
         write_journal(&mut s, &mut files);
-        assert!(s.page_edits(a).is_some_and(PageEdits::can_undo));
+        assert!(s.lists().get(a).is_some_and(PageEdits::can_undo));
         assert_eq!(files.len(), 1);
         assert!(s.clear_history(a, reason));
-        assert!(s.page_edits(a).is_none(), "{reason:?}");
+        assert!(s.lists().get(a).is_none(), "{reason:?}");
         assert!(s.has_retired_journals());
         let work = s.journal_work();
         assert_eq!(
@@ -398,10 +405,10 @@ fn clearing_a_history_removes_its_files_and_keeps_unsaved_work() {
         "it was in the journal"
     );
     assert!(s.clear_history(a, ClearReason::UserAsked));
-    assert!(s.is_edited(a), "unsaved work stays");
+    assert!(s.lists().is_edited(a), "unsaved work stays");
     assert_eq!(s.pages_in(a), 4);
-    assert!(!s.page_edits(a).unwrap().can_undo() && !s.page_edits(a).unwrap().can_redo());
-    assert_eq!(s.page_edits(a).unwrap().added_sources().len(), 0, "the added file was only history");
+    assert!(!s.lists().get(a).unwrap().can_undo() && !s.lists().get(a).unwrap().can_redo());
+    assert_eq!(s.lists().get(a).unwrap().added_sources().len(), 0, "the added file was only history");
     write_journal(&mut s, &mut files);
     assert_eq!(files.len(), 1, "the same name, replaced");
     let bytes = files.values().next().unwrap();
@@ -411,7 +418,7 @@ fn clearing_a_history_removes_its_files_and_keeps_unsaved_work() {
     );
     let parsed = record::parse_journal(bytes, record::CURRENT_VERSION).unwrap();
     let (replayed, _) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).unwrap();
-    assert_eq!(replayed.to_record(), s.edits_record(a).unwrap());
+    assert_eq!(replayed.to_record(), s.lists().edits_record(a).unwrap());
     let none = s.open(Path::new("/d/none.pdf")).unwrap();
     assert!(!s.clear_history(none, ClearReason::UserAsked), "nothing to clear");
     // A file changed outside: with only history, its steps don't apply, and they go, whichever way it was noticed.
@@ -425,15 +432,15 @@ fn clearing_a_history_removes_its_files_and_keeps_unsaved_work() {
     let a = s.open(Path::new("/d/a.pdf")).unwrap();
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
     s.saved(a, target, 5, None, None);
-    assert!(s.page_edits(a).is_some_and(PageEdits::can_undo));
+    assert!(s.lists().get(a).is_some_and(PageEdits::can_undo));
     s.apply_file_status(a, FileStatus::Changed(now));
-    assert!(s.page_edits(a).is_none());
+    assert!(s.lists().get(a).is_none());
     assert_eq!(s.tabs().own_stamp(a), Some(now));
     assert_eq!(s.tabs().tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()), Some("file_changed"));
     // With unsaved edits, they stay and say so, as decision 23 has it.
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
     s.apply_file_status(a, FileStatus::Changed(target));
-    assert!(s.is_edited(a) && s.page_edits(a).unwrap().can_undo());
+    assert!(s.lists().is_edited(a) && s.lists().get(a).unwrap().can_undo());
     assert_eq!(s.tabs().own_stamp(a), Some(now), "they're about the file they were made on");
 }
 
@@ -454,7 +461,7 @@ fn a_file_changed_under_a_history_clears_it_on_waking() {
     std::fs::write(&file, b"another version altogether").unwrap();
     s.warm.clear_contents();
     s.tap(a).unwrap();
-    assert!(s.page_edits(a).is_none());
+    assert!(s.lists().get(a).is_none());
     assert_eq!(s.tabs().tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()), Some("file_changed"));
     assert_eq!(
         s.journal_work().retired.iter().filter(|name| record::is_journal_name(name)).count(),
@@ -487,7 +494,7 @@ fn clearing_takes_a_copy_kept_for_an_unconfirmed_save() {
         assert!(s.clear_history(a, ClearReason::UserAsked));
         assert!(s.journal_work().retired.iter().any(|name| name == KEPT_A), "unsaved: {unsaved}");
         // Once it's gone, the next journal's first line doesn't name it either.
-        if let Some(list) = s.page_edits(a) {
+        if let Some(list) = s.lists().get(a) {
             assert!(list.keeping().is_none());
         }
     }
@@ -504,7 +511,7 @@ fn a_save_left_under_way_by_a_restore_says_nothing_of_the_tab_with_its_number() 
     s.restore(&another_session_with(1), HashMap::new()).unwrap();
     let restored = old;
     s.edit_pages(restored, |edits| edits.delete(2, 1)).unwrap();
-    let list = s.edits_record(restored);
+    let list = s.lists().edits_record(restored);
     let version = s.tabs().own_stamp(restored);
     assert_eq!(
         s.begin_save(restored, false).unwrap_err(),
@@ -516,8 +523,8 @@ fn a_save_left_under_way_by_a_restore_says_nothing_of_the_tab_with_its_number() 
     assert_eq!(s.saved(old, stamp_for(7), 9, None, None), 0);
     s.end_save(old);
     assert_eq!(s.tabs().own_stamp(restored), version, "the restored tab keeps its version");
-    assert_eq!(s.edits_record(restored), list, "and its list, with nothing noted of a save");
-    assert!(s.is_edited(restored), "and it's still unsaved");
+    assert_eq!(s.lists().edits_record(restored), list, "and its list, with nothing noted of a save");
+    assert!(s.lists().is_edited(restored), "and it's still unsaved");
     assert_eq!(s.saved_from(restored), None);
     assert!(!s.any_saving() && !s.saves.abandoned_has(old), "nothing's left marked as saving");
     assert!(

@@ -57,8 +57,8 @@ impl<L: DocLoader> Session<L> {
                 rail_filled = contents_rows(shown, tab, self.lists.get(tab.id), &mut rows);
             }
         }
-        let edited = self.tabs.active().is_some_and(|id| self.is_edited(id));
-        let undone_owner_steps = self.tabs.active().is_some_and(|id| self.has_undone_owner_steps(id));
+        let edited = self.tabs.active().is_some_and(|id| self.lists.is_edited(id));
+        let undone_owner_steps = self.tabs.active().is_some_and(|id| self.lists.has_undone_owner_steps(id));
         SidebarModel {
             rows,
             rail_filled,

@@ -6,6 +6,15 @@ use super::*;
 use crate::record::FindRecord;
 
 impl<L: DocLoader> Session<L> {
+    /// Every tab's list of edits, in memory or gone to disk, and whether an agent's at Full.
+    pub fn lists(&self) -> &lists::Lists {
+        &self.lists
+    }
+
+    pub fn lists_mut(&mut self) -> &mut lists::Lists {
+        &mut self.lists
+    }
+
     /// Every open tab in the sidebar's order, which one's active, and their folders.
     pub fn tabs(&self) -> &registry::Tabs {
         &self.tabs
@@ -65,5 +74,30 @@ impl<L: DocLoader> Session<L> {
     // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `viewing_mut().set_find`.
     pub fn set_find(&mut self, open: bool, query: &str, draft: &str) {
         self.viewing.set_find(open, query, draft);
+    }
+
+    // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `lists().is_edited`.
+    pub fn is_edited(&self, id: TabId) -> bool {
+        self.lists.is_edited(id)
+    }
+
+    // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `lists().get`.
+    pub fn page_edits(&self, id: TabId) -> Option<&PageEdits> {
+        self.lists.get(id)
+    }
+
+    // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `lists().own_pages_needed`.
+    pub fn own_pages_needed(&self, id: TabId) -> Vec<u32> {
+        self.lists.own_pages_needed(id)
+    }
+
+    // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `lists().undo_and_redo`.
+    pub fn undo_and_redo(&self, id: TabId) -> (bool, bool) {
+        self.lists.undo_and_redo(id)
+    }
+
+    // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `lists().is_asleep`.
+    pub fn list_is_asleep(&self, id: TabId) -> bool {
+        self.lists.is_asleep(id)
     }
 }

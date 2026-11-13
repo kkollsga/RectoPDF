@@ -125,7 +125,7 @@ fn files_of<A: SessionAccess>(access: &A, tab: &str) -> Result<Vec<(PathBuf, Opt
             return Ok(Vec::new());
         }
         let mut files: Vec<(PathBuf, Option<FileStamp>, bool)> = s.tabs().path_of(id).map(|path| (path, s.tabs().own_stamp(id), false)).into_iter().collect();
-        if let Some(edits) = s.page_edits(id) {
+        if let Some(edits) = s.lists().get(id) {
             files.extend(edits.added_sources().iter().map(|added| (added.path.to_path_buf(), added.stamp, true)));
         }
         Ok(files)

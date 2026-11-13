@@ -510,10 +510,10 @@ fn reading_facts<L: DocLoader>(session: &Session<L>, shown: Option<&PaneSnapshot
     let edit_mode = session.viewing().edit_mode();
     let Some(shown) = shown else { return ReadingFacts::none(edit_mode) };
     let page = session.tabs().tab(shown.id).map_or(0, |tab| tab.page);
-    let (can_undo, can_redo) = session.undo_and_redo(shown.id);
+    let (can_undo, can_redo) = session.lists().undo_and_redo(shown.id);
     let (can_go_back, can_go_forward) = session.tabs().can_go_back_and_forward(shown.id);
     ReadingFacts {
-        edited: session.is_edited(shown.id),
+        edited: session.lists().is_edited(shown.id),
         can_undo,
         can_redo,
         edit_mode,
@@ -524,7 +524,7 @@ fn reading_facts<L: DocLoader>(session: &Session<L>, shown: Option<&PaneSnapshot
             .path_of(shown.id)
             .zip(session.tabs().own_stamp(shown.id))
             .map(|(path, stamp)| (shown.id, path, stamp)),
-        needs_rewrite: session.needs_rewrite(shown.id),
+        needs_rewrite: session.lists().needs_rewrite(shown.id),
         protected: session.tabs().withheld_from_agents(shown.id),
         can_go_back,
         can_go_forward,
@@ -851,7 +851,7 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
     let same_file = session.tabs().own_stamp(id).map(version_of);
     // A save wrote these pages as they were shown: the page view goes on with its layout, place and selection.
     let follows = session.saved_from(id).map(version_of);
-    let mut map = match session.page_edits(id) {
+    let mut map = match session.lists().get(id) {
         None => PageMap {
             files: vec![own],
             slots: None,
@@ -915,7 +915,11 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
         }),
     });
     // Edits that can't be read just now can't say what's on the pages, so it's the file that's shown.
-    let pages = if session.list_is_asleep(id) { tab.page_count } else { session.pages_in(id) };
+    let pages = if session.lists().is_asleep(id) {
+        tab.page_count
+    } else {
+        session.pages_in(id)
+    };
     Some(PaneSnapshot {
         id,
         pages,

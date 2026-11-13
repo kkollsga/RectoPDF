@@ -28,11 +28,6 @@ impl<L: DocLoader> Session<L> {
         self.journals.set_journaling(on);
     }
 
-    /// An agent's next edits are at Full, where the owner's history can be pushed out, or not.
-    pub fn set_agent_at_full(&mut self, full: bool) {
-        self.lists.set_agent_at_full(full);
-    }
-
     /// What's waiting to go in journals: which to remove, and what to append to which. Copied, not taken: operations stay until [`Self::journal_outcome`] says they're in the file, so nothing's lost if the disk refuses, and nothing goes twice if one journal fails and another doesn't. A list's first time here gets its journal's name.
     pub fn journal_work(&mut self) -> JournalWork {
         let ids: Vec<TabId> = self
@@ -120,7 +115,7 @@ impl<L: DocLoader> Session<L> {
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
             let name = self.journal_name_for(id);
-            let (Some(tab), Some(path), Some(list)) = (self.tabs.tab(id), self.tabs.path_of(id), self.edits_record(id)) else {
+            let (Some(tab), Some(path), Some(list)) = (self.tabs.tab(id), self.tabs.path_of(id), self.lists.edits_record(id)) else {
                 continue;
             };
             out.push((name, JournalHeader::new(id.0, &path, tab.file.stamp, tab.page_count, 0), list));
@@ -148,13 +143,6 @@ impl<L: DocLoader> Session<L> {
     /// Whether a journal has been retired, or a tab with one has closed, which wants writing at once.
     pub fn has_retired_journals(&self) -> bool {
         self.journals.has_pending()
-    }
-
-    /// Those operations are in the file.
-    pub fn journal_written(&mut self, id: TabId, through: u64) {
-        if let Some(edits) = self.lists.get_mut(id) {
-            edits.journal_written(through);
-        }
     }
 
     /// A journal's name for this tab, from its PDF's identity.

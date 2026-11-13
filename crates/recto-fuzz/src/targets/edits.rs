@@ -191,7 +191,7 @@ fn step(session: &mut Session<NamedLoader>, model: &mut Model, by: Author, op: O
         Author::Agent => agent_step(session, model, op),
     }
     // The session lets go of a list with nothing left in it, and a new one starts its numbering again.
-    if session.page_edits(model.id).is_none() {
+    if session.lists().get(model.id).is_none() {
         model.undo.clear();
         model.redo.clear();
         model.sources.clear();
@@ -261,8 +261,8 @@ fn agent_step(session: &mut Session<NamedLoader>, model: &mut Model, op: Op) {
         Op::Close => format!(r#"{{"cmd":"close","tab":"{tab}"}}"#),
     };
     let command = parse(&line).unwrap_or_else(|_| panic!("a command written here: {line}"));
-    let holds_owner_before = session.page_edits(model.id).is_some_and(|edits| edits.holds_owner_edits());
-    let owner_undone_before = session.page_edits(model.id).is_some_and(|edits| edits.owner_steps_undone());
+    let holds_owner_before = session.lists().get(model.id).is_some_and(|edits| edits.holds_owner_edits());
+    let owner_undone_before = session.lists().get(model.id).is_some_and(|edits| edits.owner_steps_undone());
     let result = run(session, Level::Control, &command);
     match op {
         Op::Move { .. } | Op::Rotate { .. } | Op::Delete { .. } | Op::Insert { .. } => {
@@ -290,10 +290,10 @@ fn agent_step(session: &mut Session<NamedLoader>, model: &mut Model, op: Op) {
         }
     }
     // The heart of it. What an agent does can move the owner's steps around, and can't make them stop counting, unless the document is back at the file with nothing left to say so.
-    let edits = session.page_edits(model.id);
+    let edits = session.lists().get(model.id);
     if holds_owner_before && !matches!(op, Op::Close) {
         let holds_now = edits.is_some_and(|edits| edits.holds_owner_edits());
-        assert!(holds_now || !session.is_edited(model.id), "{line} lost the owner's edits");
+        assert!(holds_now || !session.lists().is_edited(model.id), "{line} lost the owner's edits");
     }
 }
 
@@ -359,7 +359,8 @@ fn mirror_undo(session: &Session<NamedLoader>, model: &mut Model, undone: bool) 
     }
     let past = model.undo.pop().expect("the session undid a step the model never saw");
     let now = session
-        .page_edits(model.id)
+        .lists()
+        .get(model.id)
         .map_or_else(|| fingerprint(&identity(model.file_pages)), |edits| fingerprint(edits.slots()));
     assert_eq!(now, past.before, "undo didn't give back what was there before the step");
     model.redo.push(Past {
@@ -367,7 +368,8 @@ fn mirror_undo(session: &Session<NamedLoader>, model: &mut Model, undone: bool) 
         by: past.by,
     });
     model.slots = session
-        .page_edits(model.id)
+        .lists()
+        .get(model.id)
         .map_or_else(|| identity(model.file_pages), |edits| edits.slots().to_vec());
 }
 
@@ -383,7 +385,8 @@ fn mirror_redo(session: &Session<NamedLoader>, model: &mut Model, redone: bool) 
     }
     let past = model.redo.pop().expect("the session redid a step the model never saw");
     let now = session
-        .page_edits(model.id)
+        .lists()
+        .get(model.id)
         .map_or_else(|| fingerprint(&identity(model.file_pages)), |edits| fingerprint(edits.slots()));
     assert_eq!(now, past.before, "redo didn't give back what was undone");
     model.undo.push(Past {
@@ -391,7 +394,8 @@ fn mirror_redo(session: &Session<NamedLoader>, model: &mut Model, redone: bool) 
         by: past.by,
     });
     model.slots = session
-        .page_edits(model.id)
+        .lists()
+        .get(model.id)
         .map_or_else(|| identity(model.file_pages), |edits| edits.slots().to_vec());
 }
 
@@ -412,7 +416,7 @@ fn assert_state_holds(session: &Session<NamedLoader>, model: &Model) {
         tab.page < session.pages_in(model.id).max(1),
         "the reader's place is off the end of the document"
     );
-    let edits = session.page_edits(model.id);
+    let edits = session.lists().get(model.id);
     match edits {
         Some(edits) => {
             assert_eq!(edits.slots(), model.slots, "the page order isn't the model's");
@@ -436,7 +440,7 @@ fn assert_state_holds(session: &Session<NamedLoader>, model: &Model) {
         }
         None => {
             assert!(is_the_file(&model.slots, model.file_pages), "no list, but the model has edits");
-            assert!(!session.is_edited(model.id));
+            assert!(!session.lists().is_edited(model.id));
         }
     }
     assert!(model.slots.len() <= MAX_PAGES.max(model.file_pages as usize), "{} pages", model.slots.len());
@@ -452,9 +456,9 @@ fn end_game(session: &mut Session<NamedLoader>, model: &mut Model) {
     }
     assert!(undone <= MAX_UNDO, "{undone} steps undone");
     // With nothing left to undo, anything still differing is what fell off the list, and it has to say so.
-    if session.is_edited(id) {
+    if session.lists().is_edited(id) {
         assert!(
-            session.page_edits(id).is_some_and(|edits| edits.history_dropped()),
+            session.lists().get(id).is_some_and(|edits| edits.history_dropped()),
             "nothing left to undo, it still differs, and nothing says why"
         );
     }
@@ -467,6 +471,6 @@ fn end_game(session: &mut Session<NamedLoader>, model: &mut Model) {
         "an undone step of the owner's was dropped"
     );
     session.discard_edits(id);
-    assert!(session.page_edits(id).is_none(), "discarding keeps nothing");
-    assert!(!session.is_edited(id));
+    assert!(session.lists().get(id).is_none(), "discarding keeps nothing");
+    assert!(!session.lists().is_edited(id));
 }

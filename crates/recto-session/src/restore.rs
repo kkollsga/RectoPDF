@@ -94,11 +94,6 @@ impl<L: DocLoader> Session<L> {
         }
     }
 
-    /// A tab's edits whole, as QA reads them and for a journal's checkpoint.
-    pub fn edits_record(&self, id: TabId) -> Option<record::EditsRecord> {
-        self.lists.get(id).map(PageEdits::to_record)
-    }
-
     /// **Puts the session back as a record has it.** No file is opened: every tab comes back cold, and its name and place are all it costs. Replaces what's here. The caller reads journals, and gets the active tab's file read, and checks what's become of the rest, each off this lock.
     pub fn restore(&mut self, record: &SessionRecord, mut journals: HashMap<String, RestoredEdits>) -> Result<(), RecordError> {
         record::validate_record(record)?;

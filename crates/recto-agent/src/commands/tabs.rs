@@ -221,7 +221,7 @@ impl Cmd for Close {
                 let id = select(s, tab)?;
                 refused(s, id)?;
                 // At Full, what's lost is the holder's call, and the close rule has let it through. The session itself won't lose the owner's undone steps unasked.
-                if level >= Level::Full && s.has_undone_owner_steps(id) {
+                if level >= Level::Full && s.lists().has_undone_owner_steps(id) {
                     s.discard_edits(id);
                 }
                 let closed = s.close(id)?;

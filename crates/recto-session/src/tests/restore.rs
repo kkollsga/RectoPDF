@@ -82,28 +82,28 @@ fn a_session_comes_back_whole_from_its_record_and_journals() {
     let mut back = journaled(5);
     back.restore(&read.record, back_from(&files)).unwrap();
     assert_eq!(back.to_record(), s.to_record());
-    assert_eq!(back.edits_record(a), s.edits_record(a));
+    assert_eq!(back.lists().edits_record(a), s.lists().edits_record(a));
     assert_eq!(back.viewing().view(), s.viewing().view());
     assert_eq!(back.tabs().spread_of(a), Some(record::Spread::TwoUpCover), "a tab's layout comes back with it");
     assert_eq!(back.tabs().active(), s.tabs().active());
     assert_eq!(back.tier(a), Tier::Hot, "it's the active one");
     assert!(back.warm_tabs().next().is_none(), "and nothing's been opened");
-    assert_eq!(back.page_edits(a).unwrap().slots(), s.page_edits(a).unwrap().slots());
+    assert_eq!(back.lists().get(a).unwrap().slots(), s.lists().get(a).unwrap().slots());
     // Redo works, after a restart, and whose each step is holds for what's then allowed.
-    assert!(back.page_edits(a).unwrap().can_redo());
-    assert!(back.has_undone_owner_steps(a), "the owner's move is undone, and still theirs");
+    assert!(back.lists().get(a).unwrap().can_redo());
+    assert!(back.lists().has_undone_owner_steps(a), "the owner's move is undone, and still theirs");
     assert!(back.redo_edit(a));
-    assert!(!back.has_undone_owner_steps(a));
+    assert!(!back.lists().has_undone_owner_steps(a));
     assert!(back.redo_edit(a));
     assert!(s.redo_edit(a) && s.redo_edit(a));
-    assert_eq!(back.page_edits(a).unwrap().slots(), s.page_edits(a).unwrap().slots());
+    assert_eq!(back.lists().get(a).unwrap().slots(), s.lists().get(a).unwrap().slots());
     // What comes next goes on the same journal, with its count following on.
     back.edit_pages(a, |e| e.rotate(1, 1, 1)).unwrap();
     s.edit_pages(a, |e| e.rotate(1, 1, 1)).unwrap();
     write_journal(&mut back, &mut files);
     let mut third = journaled(5);
     third.restore(&back.to_record(), back_from(&files)).unwrap();
-    assert_eq!(third.edits_record(a), s.edits_record(a));
+    assert_eq!(third.lists().edits_record(a), s.lists().edits_record(a));
 }
 
 /// Failure: restoring a thousand tabs reads a file for each, or holds their contents, or a restored tab costs what an opened one doesn't. Every one of them comes back cold with no load at all.
@@ -134,13 +134,13 @@ fn a_tab_whose_journal_cant_be_read_says_so() {
     let mut back = journaled(5);
     back.restore(&s.to_record(), HashMap::new()).unwrap();
     assert_eq!(back.tabs().tab_notice(a).unwrap().code(), "edits_unreadable");
-    assert!(!back.is_edited(a));
+    assert!(!back.lists().is_edited(a));
     let mut torn = back_from(&files);
     torn.values_mut().next().unwrap().lost_lines = true;
     let mut partly = journaled(5);
     partly.restore(&s.to_record(), torn).unwrap();
     assert_eq!(partly.tabs().tab_notice(a).unwrap().code(), "edits_unreadable");
-    assert!(partly.is_edited(a), "what could be read is here");
+    assert!(partly.lists().is_edited(a), "what could be read is here");
 }
 
 /// Failure: restoring turns a hostile record into something that panics later: a page past the end, or an active tab that isn't there. Or a record's tabs with no journal cost it a tab.
@@ -227,7 +227,7 @@ fn a_restored_tab_isnt_being_saved_for_the_tab_it_replaced() {
     assert!(!s.is_saving(a) && !s.any_saving());
     assert_eq!(s.edit_pages(a, |edits| edits.rotate(0, 1, 1)), Ok(()));
     s.end_save(a);
-    assert!(s.is_edited(a), "the save that ends later takes nothing of the restored tab's");
+    assert!(s.lists().is_edited(a), "the save that ends later takes nothing of the restored tab's");
 }
 
 /// Failure: a hold on a tab a restore replaced, by an agent's command or an export, keeps the restored tab with its number from ever going dormant once that hold has been let go of as well.

@@ -146,10 +146,10 @@ impl<L: DocLoader> Session<L> {
 
     /// **The close a prompt's Save asked for, once the save is done.** If an edit or an undo came in since, the file doesn't have it, so the tab stays open and this says `None`: nothing is lost unasked. Otherwise it closes, letting go of undone steps, as the prompt said they would go.
     pub fn close_after_save(&mut self, id: TabId) -> Result<Option<Closed>, SessionError> {
-        if self.is_edited(id) {
+        if self.lists.is_edited(id) {
             return Ok(None);
         }
-        if self.has_undone_owner_steps(id) {
+        if self.lists.has_undone_owner_steps(id) {
             self.discard_edits(id);
         }
         self.close(id).map(Some)

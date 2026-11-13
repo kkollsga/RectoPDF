@@ -262,7 +262,7 @@ impl<L: DocLoader> Session<L> {
         if self.is_saving(id) {
             return Err(SessionError::Saving);
         }
-        if self.is_edited(id) || self.has_undone_owner_steps(id) {
+        if self.lists.is_edited(id) || self.lists.has_undone_owner_steps(id) {
             return Err(SessionError::UnsavedChanges);
         }
         // History with nothing unsaved stays in its journal, for the PDF's next opening, as long as what's in the file is up to date: what hasn't gone out goes with it. Without any, or with no journal being kept, there's nothing to keep.

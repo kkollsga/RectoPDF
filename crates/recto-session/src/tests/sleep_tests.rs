@@ -40,16 +40,16 @@ fn with_a_list(files: &Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>>) -> (Sess
 fn a_dormant_tabs_list_goes_to_disk_and_comes_back_by_every_route() {
     let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let (mut s, a, _b) = with_a_list(&files);
-    let as_it_was = s.edits_record(a).unwrap();
+    let as_it_was = s.lists().edits_record(a).unwrap();
     assert!(s.go_dormant(a));
-    assert!(s.list_is_asleep(a));
-    assert!(s.page_edits(a).is_none(), "out of memory");
+    assert!(s.lists().is_asleep(a));
+    assert!(s.lists().get(a).is_none(), "out of memory");
     // A look at it, with nothing read.
     assert_eq!(s.pages_in(a), 4);
-    assert!(s.is_edited(a));
-    assert!(s.holds_owner_edits());
+    assert!(s.lists().is_edited(a));
+    assert!(s.lists().holds_owner_edits());
     assert_eq!(s.to_record().tabs[0].edits.unwrap().pages, 4);
-    assert_eq!(s.undo_and_redo(a), (true, true), "and what can be undone, with nothing read");
+    assert_eq!(s.lists().undo_and_redo(a), (true, true), "and what can be undone, with nothing read");
     assert!(s.to_record().tabs[0].journal.is_some());
     assert_eq!(
         s.close(a),
@@ -98,9 +98,9 @@ fn a_dormant_tabs_list_goes_to_disk_and_comes_back_by_every_route() {
         assert!(s.go_dormant(a));
         go(&mut s, a);
         go(&mut twin, a);
-        assert!(!s.list_is_asleep(a), "{route}");
-        assert_eq!(s.edits_record(a), twin.edits_record(a), "{route}");
-        assert_eq!(s.is_edited(a), twin.is_edited(a), "{route}");
+        assert!(!s.lists().is_asleep(a), "{route}");
+        assert_eq!(s.lists().edits_record(a), twin.lists().edits_record(a), "{route}");
+        assert_eq!(s.lists().is_edited(a), twin.lists().is_edited(a), "{route}");
         assert_eq!(s.pages_in(a), twin.pages_in(a), "{route}");
     }
     // And what it goes on to write follows on from the journal, so a crash after that replays exactly.
@@ -112,7 +112,7 @@ fn a_dormant_tabs_list_goes_to_disk_and_comes_back_by_every_route() {
     write_journal(&mut s, &mut plain);
     let parsed = record::parse_journal(plain.values().next().unwrap(), record::CURRENT_VERSION).unwrap();
     let (replayed, _) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).unwrap();
-    assert_eq!(replayed.to_record(), s.edits_record(a).unwrap());
+    assert_eq!(replayed.to_record(), s.lists().edits_record(a).unwrap());
 }
 
 /// Failure: a list goes out of memory with some of it not on disk, or its journal's gone and it's lost in silence. It stays until it's all there, and if the journal can't be read the tab says so.
@@ -123,7 +123,7 @@ fn a_list_only_sleeps_with_all_of_it_on_disk() {
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
     assert!(s.list_to_sleep(a).is_none(), "a step hasn't gone out");
     assert!(!s.go_dormant(a));
-    assert!(s.page_edits(a).is_some());
+    assert!(s.lists().get(a).is_some());
     let mut plain = files.lock().unwrap().clone();
     write_journal(&mut s, &mut plain);
     *files.lock().unwrap() = plain;
@@ -131,12 +131,12 @@ fn a_list_only_sleeps_with_all_of_it_on_disk() {
     // The journal can't be read just now. **It stays asleep, by its name, and nothing's laid on what can't be seen,** which would land on the wrong pages (review L3). The tab says so, and every look at it tries again.
     let (name, bytes) = files.lock().unwrap().drain().next().unwrap();
     assert!(!s.wake_list(a));
-    assert!(s.list_is_asleep(a));
+    assert!(s.lists().is_asleep(a));
     assert_eq!(
         s.tabs().tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()),
         Some("edits_unreadable")
     );
-    assert!(s.is_edited(a), "what's known of it stands");
+    assert!(s.lists().is_edited(a), "what's known of it stands");
     assert_eq!(
         s.edit_pages(a, |e| e.rotate(0, 1, 1)),
         Err(SessionError::EditsUnreadable),
@@ -152,14 +152,14 @@ fn a_list_only_sleeps_with_all_of_it_on_disk() {
     // It's back.
     files.lock().unwrap().insert(name.clone(), bytes);
     assert!(s.wake_list(a));
-    assert!(s.page_edits(a).is_some());
+    assert!(s.lists().get(a).is_some());
     assert_eq!(s.tabs().tab(a).unwrap().file.notice, None, "and it's stopped saying so");
     // Gone for good, and given up on by saying so.
     assert!(s.go_dormant(a));
     files.lock().unwrap().clear();
     assert!(!s.wake_list(a));
     s.discard_edits(a);
-    assert!(!s.list_is_asleep(a) && !s.is_edited(a));
+    assert!(!s.lists().is_asleep(a) && !s.lists().is_edited(a));
     assert_eq!(s.tabs().tab(a).unwrap().file.notice, None);
     assert!(s.journal_work().retired.contains(&name));
     // A session that keeps no journal keeps its lists.
@@ -168,7 +168,7 @@ fn a_list_only_sleeps_with_all_of_it_on_disk() {
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
     s.open(Path::new("/d/b.pdf")).unwrap();
     assert!(!s.go_dormant(a));
-    assert!(s.page_edits(a).is_some());
+    assert!(s.lists().get(a).is_some());
 }
 
 /// Failure (review): a sleep file's pictures match a list they're not about, as a count of edits starts again after a discard. What's compared is what's on the pages, so one order is one mark, however it was reached, and back at the file it's the mark of no list at all.
@@ -200,7 +200,7 @@ fn nothing_sends_a_tab_to_sleep_from_under_a_hold() {
     s.hold(a);
     assert!(!s.can_go_dormant(a));
     assert!(!s.go_dormant(a));
-    assert!(s.page_edits(a).is_some() && !s.list_is_asleep(a));
+    assert!(s.lists().get(a).is_some() && !s.lists().is_asleep(a));
     assert!(s.warm.contains(a), "its contents stay too");
     s.let_go(a);
     assert!(!s.go_dormant(b), "nor the one on screen");
@@ -383,9 +383,9 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
         !s.sleep_facts(plain).unwrap().pictures_allowed,
         "a page from a protected file means no pictures"
     );
-    assert!(s.page_edits(plain).unwrap().added_sources()[0].protected);
+    assert!(s.lists().get(plain).unwrap().added_sources()[0].protected);
     // Carried through its journal, so it's known after a restart.
-    let record = s.edits_record(plain).unwrap();
+    let record = s.lists().edits_record(plain).unwrap();
     assert!(record.added[0].protected);
     assert!(PageEdits::from_record(&record).unwrap().has_protected_pages());
     assert!(s.undo_edit(plain));
@@ -413,7 +413,7 @@ fn a_list_of_another_length_than_its_file_isnt_believed() {
     s.take_up_history(a, "journal-00000000000000aa.log", list, 1);
     s.warm.clear_contents();
     s.tap(a).unwrap();
-    assert!(s.page_edits(a).is_none(), "it's gone");
+    assert!(s.lists().get(a).is_none(), "it's gone");
     assert_eq!(s.pages_in(a), 5);
     assert_eq!(
         s.tabs().tab(a).unwrap().file.notice.as_ref().map(|notice| notice.code()),

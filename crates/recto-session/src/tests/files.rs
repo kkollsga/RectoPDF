@@ -64,13 +64,13 @@ fn a_tab_says_what_became_of_its_file_and_keeps_its_edits() {
     assert_eq!(s.tabs().path_of(a).unwrap(), Path::new("/e/moved.pdf"));
     assert_eq!(&*s.tabs().tab(a).unwrap().name, "moved");
     assert!(s.tab_notice_message(a).unwrap().contains("moved"));
-    assert!(s.is_edited(a));
+    assert!(s.lists().is_edited(a));
     s.apply_file_status(a, FileStatus::Changed(now));
     assert_eq!(s.tabs().tab_notice(a).unwrap().code(), "file_changed");
     assert_ne!(s.tabs().own_stamp(a), Some(now), "edits keep the version they were made on");
     s.apply_file_status(a, FileStatus::Missing);
     assert!(s.tab_notice_message(a).unwrap().contains("edits"));
-    assert!(s.is_edited(a));
+    assert!(s.lists().is_edited(a));
     assert_eq!(s.sidebar().rows[0].notice, s.tab_notice_message(a));
     s.apply_file_status(a, FileStatus::Same(now));
     assert_eq!(s.tabs().tab_notice(a), None, "it came back");

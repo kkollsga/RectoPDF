@@ -31,7 +31,7 @@ impl Records for AppRecords {
         host.core.flush(Duration::from_secs(5));
         Ok(host.session.with_session(|session| Slept {
             dormant: !session.warm_tabs().any(|other| other == tab),
-            list_asleep: session.list_is_asleep(tab),
+            list_asleep: session.lists().is_asleep(tab),
         }))
     }
 

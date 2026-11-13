@@ -544,9 +544,9 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept:
             let place = session.tabs().place_to_show(tab.id);
             // A protected document's place and length were read with its password.
             if session.tabs().withheld_from_agents(tab.id) {
-                return json!({ "tab": tab.id.0, "protected": true, "page": null, "pages": null, "zoom": place.map(|place| place.zoom), "within_page": null, "layout": tab.spread.name(), "edited": session.is_edited(tab.id), "can_undo": session.undo_and_redo(tab.id).0, "can_redo": session.undo_and_redo(tab.id).1, "notice": notice });
+                return json!({ "tab": tab.id.0, "protected": true, "page": null, "pages": null, "zoom": place.map(|place| place.zoom), "within_page": null, "layout": tab.spread.name(), "edited": session.lists().is_edited(tab.id), "can_undo": session.lists().undo_and_redo(tab.id).0, "can_redo": session.lists().undo_and_redo(tab.id).1, "notice": notice });
             }
-            json!({ "tab": tab.id.0, "page": tab.page + 1, "pages": session.pages_in(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.filter(|place| place.anchor_page == place.page).map(|place| place.within), "layout": tab.spread.name(), "edited": session.is_edited(tab.id), "can_undo": session.undo_and_redo(tab.id).0, "can_redo": session.undo_and_redo(tab.id).1, "notice": notice })
+            json!({ "tab": tab.id.0, "page": tab.page + 1, "pages": session.pages_in(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.filter(|place| place.anchor_page == place.page).map(|place| place.within), "layout": tab.spread.name(), "edited": session.lists().is_edited(tab.id), "can_undo": session.lists().undo_and_redo(tab.id).0, "can_redo": session.lists().undo_and_redo(tab.id).1, "notice": notice })
         })
         .collect();
     let find = session.viewing().find();
@@ -846,7 +846,7 @@ fn edit<A: SessionAccess>(
 /// An agent's edit, undo or redo says whether it's at Full, which may push past the owner's steps. The person's edits are the owner's, and say nothing of it.
 fn note_agent_at_full<L: DocLoader>(session: &mut Session<L>, actor: Actor) {
     if let Actor::Agent(level) = actor {
-        session.set_agent_at_full(level >= Level::Full);
+        session.lists_mut().set_agent_at_full(level >= Level::Full);
     }
 }
 
@@ -855,7 +855,7 @@ pub(crate) const ASK_FULL: &str = "recto permission request full";
 
 /// Undone steps can still be got back, and a new edit clears them for good, which is how an agent could erase the user's edits: undo them all, make one edit. So below Full, an edit that would lose an undone step of the user's is refused. Undone steps of agents' own are theirs to lose. SPEC decision log, 2026-11-07: below Full, an agent can throw away only agents' edits, never the owner's.
 fn keep_owners_undone_steps<L: DocLoader>(session: &Session<L>, id: TabId, level: Level) -> Result<(), AgentError> {
-    if level >= Level::Full || !session.has_undone_owner_steps(id) {
+    if level >= Level::Full || !session.lists().has_undone_owner_steps(id) {
         return Ok(());
     }
     let mut error = AgentError::new(
@@ -873,7 +873,7 @@ fn keep_owners_undone_steps<L: DocLoader>(session: &Session<L>, id: TabId, level
 /// its list back first, so one still asleep is one whose journal couldn't be read: its summary says some of what's there, not all of it. An agent's
 /// `discard` or `clear-history` of it is refused at every level; the person, whose tab says so, decides.
 fn refuse_unreadable<L: DocLoader>(session: &Session<L>, id: TabId, actor: Actor, what: &str) -> Result<(), AgentError> {
-    if actor == Actor::Person || !session.list_is_asleep(id) {
+    if actor == Actor::Person || !session.lists().is_asleep(id) {
         return Ok(());
     }
     Err(AgentError::new(
@@ -886,7 +886,7 @@ fn refuse_unreadable<L: DocLoader>(session: &Session<L>, id: TabId, actor: Actor
 
 /// `discard` throws away everything on the tab's list, undone or not, and whatever fell off its capped undo list too, since that's still in the page order. Below Full, none of that may be the user's.
 fn refuse_discard_of_owners_edits<L: DocLoader>(session: &Session<L>, id: TabId, level: Level) -> Result<(), AgentError> {
-    if level >= Level::Full || !session.edits_summary(id).is_some_and(|summary| summary.holds_owner_edits) {
+    if level >= Level::Full || !session.lists().summary(id).is_some_and(|summary| summary.holds_owner_edits) {
         return Ok(());
     }
     let mut error = AgentError::new(
@@ -918,8 +918,8 @@ pub const USER_EDITS_UNDONE_NOTE: &str =
     "The user's edits on this tab are undone, not gone: `recto redo` brings them back, and closing would lose them. Nothing has been saved.";
 
 fn edit_state_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
-    let edited = session.is_edited(id);
-    let user_edits_undone = session.has_undone_owner_steps(id);
+    let edited = session.lists().is_edited(id);
+    let user_edits_undone = session.lists().has_undone_owner_steps(id);
     json!({
         "tab": id.0,
         "pages": session.pages_in(id),
@@ -929,8 +929,8 @@ fn edit_state_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
         // The user's undone edits aren't in the file, and closing would lose them, so nothing about this says "saved".
         "saved": !edited && !user_edits_undone,
         "user_edits_undone": user_edits_undone,
-        "can_undo": session.undo_and_redo(id).0,
-        "can_redo": session.undo_and_redo(id).1,
+        "can_undo": session.lists().undo_and_redo(id).0,
+        "can_redo": session.lists().undo_and_redo(id).1,
         "note": if edited { Some(UNSAVED_NOTE) } else { user_edits_undone.then_some(USER_EDITS_UNDONE_NOTE) },
     })
 }
@@ -944,7 +944,7 @@ const MAX_EDIT_RUNS: usize = 1000;
 /// The edited page order, as runs of pages from one file with one rotation.
 fn edits_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
     let mut data = edit_state_json(session, id);
-    let Some(edits) = session.page_edits(id) else {
+    let Some(edits) = session.lists().get(id) else {
         data["runs"] = json!([]);
         data["runs_truncated"] = json!(false);
         return data;
@@ -1159,7 +1159,7 @@ fn label_hits<A: SessionAccess>(access: &A, tab: &str, answer: &mut Value) {
 
 fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
     let Some(tab) = session.tabs().tab(id) else { return Value::Null };
-    let edited = session.is_edited(id);
+    let edited = session.lists().is_edited(id);
     // Its file's name is the person's, and not read from the file. Its place, length and the rest were read with its password.
     if session.tabs().withheld_from_agents(id) {
         return json!({ "tab": id.0, "sel": format!("#{}", id.0), "protected": true, "protected_note": PROTECTED_NOTE, "page": null, "pages": null, "file_pages": null, "active": session.tabs().active() == Some(id), "edited": edited, "untrusted": { "name": &*tab.name } });
@@ -1175,10 +1175,10 @@ fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
         "can_go_forward": session.tabs().can_go_back_and_forward(id).1,
         "active": session.tabs().active() == Some(id),
         "edited": edited,
-        "user_edits_undone": session.has_undone_owner_steps(id),
+        "user_edits_undone": session.lists().has_undone_owner_steps(id),
         "structure": if tab.renderer_only { "renderer_only" } else { "readable" },
         "problem": tab.problem.map(recto_core::OpenError::message),
-        "note": if edited { Some(UNSAVED_NOTE) } else { session.has_undone_owner_steps(id).then_some(USER_EDITS_UNDONE_NOTE) },
+        "note": if edited { Some(UNSAVED_NOTE) } else { session.lists().has_undone_owner_steps(id).then_some(USER_EDITS_UNDONE_NOTE) },
         "file_notice": session.tabs().tab_notice(id).map(|notice| json!({ "code": notice.code(), "message": session.tab_notice_message(id) })),
         "untrusted": { "name": &*tab.name, "label": session.page_label_differs(id, tab.page) },
     })
@@ -2241,7 +2241,7 @@ mod tests {
         assert_eq!(moved["saved"], false);
         assert!(moved["note"].as_str().unwrap().contains("aren't saved"), "it must say so plainly: {moved}");
         let id = TabId(1);
-        assert_eq!(s.page_edits(id).unwrap().slots()[0].page, 2);
+        assert_eq!(s.lists().get(id).unwrap().slots()[0].page, 2);
         let tabs = run(
             &mut s,
             Level::ReadOnly,
@@ -2259,8 +2259,8 @@ mod tests {
             }),
         )
         .unwrap();
-        assert_eq!(s.page_edits(id).unwrap().slots()[1].quarter_turns, 3);
-        let turns = |s: &Session<_>| s.page_edits(id).unwrap().slots().iter().map(|slot| slot.quarter_turns).collect::<Vec<u8>>();
+        assert_eq!(s.lists().get(id).unwrap().slots()[1].quarter_turns, 3);
+        let turns = |s: &Session<_>| s.lists().get(id).unwrap().slots().iter().map(|slot| slot.quarter_turns).collect::<Vec<u8>>();
         let before = turns(&s);
         run(
             &mut s,
@@ -2470,7 +2470,7 @@ mod tests {
                 .code,
             "nothing_to_redo"
         );
-        assert!(!s.is_edited(id));
+        assert!(!s.lists().is_edited(id));
         assert_eq!(s.pages_in(id), 10);
     }
 
@@ -2517,7 +2517,10 @@ mod tests {
             "{}",
             save.message
         );
-        assert!(s.is_edited(TabId(1)) && !s.is_saving(TabId(1)), "the edits stand, and the tab isn't held");
+        assert!(
+            s.lists().is_edited(TabId(1)) && !s.is_saving(TabId(1)),
+            "the edits stand, and the tab isn't held"
+        );
         let replace = run(
             &mut s,
             Level::Control,
@@ -2543,7 +2546,7 @@ mod tests {
             "throwing edits away asks for what making them does"
         );
         run(&mut s, Level::Control, &Command::from(crate::commands::editing::Discard { tab: "#1".into() })).unwrap();
-        assert!(!s.is_edited(TabId(1)));
+        assert!(!s.lists().is_edited(TabId(1)));
         assert!(run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: "#1".into() })).is_ok());
     }
 
@@ -2553,7 +2556,8 @@ mod tests {
 
     /// A rotation of page 1, which tells apart "the agent's edit is still here" from "it's gone".
     fn turned_pages(s: &Session<Fake>) -> Vec<u8> {
-        s.page_edits(TabId(1))
+        s.lists()
+            .get(TabId(1))
             .map_or_else(Vec::new, |edits| edits.slots().iter().map(|slot| slot.quarter_turns).collect())
     }
 
@@ -2593,7 +2597,7 @@ mod tests {
         owners_rotation(&mut s, 1);
         let users = turned_pages(&s);
         let check_still_there = |s: &Session<Fake>, when: &str| {
-            assert!(s.page_edits(id).is_some_and(recto_session::edit::PageEdits::holds_owner_edits), "{when}");
+            assert!(s.lists().get(id).is_some_and(recto_session::edit::PageEdits::holds_owner_edits), "{when}");
             assert_eq!(s.tabs().len(), 1, "{when}");
         };
         // Directly: discard and close while they're still applied.
@@ -2631,7 +2635,7 @@ mod tests {
             check_still_there(&s, "after an undo");
         }
         assert!(
-            !s.is_edited(id),
+            !s.lists().is_edited(id),
             "with both undone there's nothing unsaved, and that's when a close would have got through"
         );
         // And redo gets back all of it, exactly.
@@ -2730,7 +2734,7 @@ mod tests {
             &Command::from(crate::commands::editing::PageDelete { tab: tab(), pages: "2".into() }),
         )
         .expect("a new edit may clear its own undone step");
-        assert!(!s.page_edits(id).unwrap().can_redo());
+        assert!(!s.lists().get(id).unwrap().can_redo());
         // A close with unsaved edits stops, and says the way on, and that way works at Control.
         let close = run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).unwrap_err();
         assert_eq!((close.code, close.exit), ("unsaved_changes", exit::FAILED));
@@ -2740,7 +2744,7 @@ mod tests {
             close.next
         );
         run(&mut s, Level::Control, &Command::from(crate::commands::editing::Discard { tab: tab() })).expect("its own edits are its own to throw away");
-        assert!(!s.is_edited(id));
+        assert!(!s.lists().is_edited(id));
         // Undone, with nothing unsaved: it can close, and lose only that.
         run(
             &mut s,
@@ -2753,7 +2757,7 @@ mod tests {
         )
         .unwrap();
         run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: tab() })).unwrap();
-        assert!(s.page_edits(id).unwrap().can_redo());
+        assert!(s.lists().get(id).unwrap().can_redo());
         run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).expect("nothing of the user's is at stake");
         assert!(s.tabs().is_empty());
     }
@@ -2917,11 +2921,11 @@ mod tests {
             }),
         ] {
             run(&mut s, Level::Control, &command).unwrap();
-            assert!(!s.page_edits(TabId(1)).unwrap().holds_owner_edits(), "{}", command.tag());
+            assert!(!s.lists().get(TabId(1)).unwrap().holds_owner_edits(), "{}", command.tag());
         }
         run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: tab() })).unwrap();
         run(&mut s, Level::Control, &Command::from(crate::commands::editing::Redo { tab: tab() })).unwrap();
-        assert!(!s.page_edits(TabId(1)).unwrap().holds_owner_edits(), "undo and redo don't change that");
+        assert!(!s.lists().get(TabId(1)).unwrap().holds_owner_edits(), "undo and redo don't change that");
     }
 
     /// Failure: the person's edit through a command is recorded as an agent's, so an agent below Full may throw it away, undo it past them or lose it with a new
@@ -2951,7 +2955,7 @@ mod tests {
             let mut s = edit_session();
             execute(&Direct(RefCell::new(&mut s), None), Actor::Person, &command, &mut Vec::new()).unwrap();
             assert!(
-                s.page_edits(TabId(1)).unwrap().holds_owner_edits(),
+                s.lists().get(TabId(1)).unwrap().holds_owner_edits(),
                 "{} by the person is the owner's",
                 command.tag()
             );
@@ -2973,7 +2977,7 @@ mod tests {
         ] {
             execute(&Direct(RefCell::new(&mut s), None), Actor::Person, &step, &mut Vec::new()).unwrap();
         }
-        assert!(!s.page_edits(TabId(1)).unwrap().holds_owner_edits(), "the agent's step stays the agent's");
+        assert!(!s.lists().get(TabId(1)).unwrap().holds_owner_edits(), "the agent's step stays the agent's");
     }
 
     fn commands_rotate(tab: String) -> Command {
@@ -3014,7 +3018,7 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(refused.code, "history_full");
-        assert!(!s.page_edits(TabId(1)).unwrap().history_dropped(), "and it's still there");
+        assert!(!s.lists().get(TabId(1)).unwrap().history_dropped(), "and it's still there");
         // At Full it's the holder's call.
         run(
             &mut s,
@@ -3035,7 +3039,7 @@ mod tests {
         assert_eq!(turned_pages(&s)[0], 1, "the user's edit is still there");
         // The cap isn't an agent erasing anything: all the agent's steps can come off, and undo isn't refused.
         while run(&mut s, Level::Control, &Command::from(crate::commands::editing::Undo { tab: tab() })).is_ok() {}
-        assert!(s.is_edited(TabId(1)), "it still differs from the file, and says so");
+        assert!(s.lists().is_edited(TabId(1)), "it still differs from the file, and says so");
         let close = run(&mut s, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).unwrap_err();
         assert!(
             close.next.contains("past the undo limit"),
@@ -3055,7 +3059,7 @@ mod tests {
             )
             .unwrap();
         }
-        assert!(own.page_edits(TabId(1)).unwrap().history_dropped());
+        assert!(own.lists().get(TabId(1)).unwrap().history_dropped());
         run(&mut own, Level::Control, &Command::from(crate::commands::editing::Discard { tab: tab() })).expect("all of it is its own");
         assert!(run(&mut own, Level::Control, &Command::from(crate::commands::tabs::Close { tab: tab() })).is_ok());
     }

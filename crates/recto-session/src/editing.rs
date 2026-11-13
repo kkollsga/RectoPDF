@@ -3,37 +3,6 @@
 use super::*;
 
 impl<L: DocLoader> Session<L> {
-    /// Whether a tab has unsaved changes.
-    pub fn is_edited(&self, id: TabId) -> bool {
-        self.lists.is_edited(id)
-    }
-
-    /// **Whether saving this tab's edits writes the file anew:** a page of the file isn't there once, as a delete leaves it. The writer's own rule, `recto_core::save::writer_for`, kept as the list changes, and for a list that's asleep, in its summary.
-    pub fn needs_rewrite(&self, id: TabId) -> bool {
-        self.lists.needs_rewrite(id)
-    }
-
-    /// Whether the owner's edits on this tab have been undone and can still be redone. Closing would lose them.
-    pub fn has_undone_owner_steps(&self, id: TabId) -> bool {
-        self.lists.has_undone_owner_steps(id)
-    }
-
-    /// **What a tab's edits come to, wherever its list is,** in memory or asleep with only its summary kept: unsaved or not, the steps to undo and redo, and
-    /// whether the owner's are among them. With nothing read. `None` for a tab with no list.
-    pub fn edits_summary(&self, id: TabId) -> Option<record::EditsSummary> {
-        self.lists.summary(id)
-    }
-
-    /// A tab's page edits, if it has any and they're in memory. A list that's asleep has to be woken first, with [`Self::wake_list`], which everything that's about a tab does: this says `None` of one that's on disk, so anything that reads a tab from here is after that.
-    pub fn page_edits(&self, id: TabId) -> Option<&PageEdits> {
-        self.lists.get(id)
-    }
-
-    /// The file's pages this tab's history can put back, ascending: what a save keeps a copy of. Nothing for a tab without a history.
-    pub fn own_pages_needed(&self, id: TabId) -> Vec<u32> {
-        self.lists.get(id).map(PageEdits::own_pages_needed).unwrap_or_default()
-    }
-
     /// Applies the owner's page edit: rearranging, rotating or deleting. This is what the app's own edits call, with nothing to say whose they are. Everything from the agent interface goes through [`Self::edit_pages_as`] with [`Author::Agent`].
     pub fn edit_pages(&mut self, id: TabId, change: impl FnOnce(&mut PageEdits) -> Result<(), EditError>) -> Result<(), SessionError> {
         self.edit_pages_as(id, Author::Owner, change)
@@ -161,22 +130,12 @@ impl<L: DocLoader> Session<L> {
         self.journals.retire(id);
     }
 
-    /// Whether there's a step to undo and one to redo, wherever its list is. With nothing read.
-    pub fn undo_and_redo(&self, id: TabId) -> (bool, bool) {
-        self.lists.undo_and_redo(id)
-    }
-
     /// A tab's list whole, wherever it is, for QA and a look: one on disk is read for this and stays there.
     pub fn list_record_anywhere(&self, id: TabId) -> Option<record::EditsRecord> {
-        self.edits_record(id).or_else(|| {
+        self.lists.edits_record(id).or_else(|| {
             self.lists.is_asleep(id).then_some(())?;
             Some(self.journals.history()?.read_list(self.journals.name_of(id)?)?.edits.to_record())
         })
-    }
-
-    /// Whether putting the session back would lose anything of the owner's: unsaved edits or their history, which an agent below Full can't throw away. SPEC decision 20.
-    pub fn holds_owner_edits(&self) -> bool {
-        self.lists.holds_owner_edits()
     }
 
     /// Adds every page of another PDF at a position, as dropping it into the page view does. Only its facts are read.

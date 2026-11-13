@@ -240,7 +240,7 @@ impl Cmd for Discard {
             let id = select(s, tab)?;
             refuse_unreadable(s, id, actor, "discarded")?;
             refuse_discard_of_owners_edits(s, id, level)?;
-            let had_any = s.edits_summary(id).is_some();
+            let had_any = s.lists().summary(id).is_some();
             s.discard_edits(id);
             events.push(edits_changed(s, id));
             let mut data = edit_state_json(s, id);
@@ -561,7 +561,7 @@ impl Cmd for ClearHistory {
             let id = select(s, &self.tab)?;
             refuse_unreadable(s, id, actor, "cleared")?;
             refuse_discard_of_owners_edits(s, id, level)?;
-            let had_any = s.edits_summary(id).is_some_and(|summary| summary.undo > 0 || summary.redo > 0);
+            let had_any = s.lists().summary(id).is_some_and(|summary| summary.undo > 0 || summary.redo > 0);
             s.clear_history(id, recto_session::ClearReason::UserAsked);
             // Announced when there was history to clear, and only then (R2.3, by A2's rule).
             if had_any {

@@ -402,7 +402,7 @@ impl Inner {
         {
             return;
         }
-        let (pages, mark) = self.host.session.with_session(|session| (session.pages_in(id), session.list_mark(id)));
+        let (pages, mark) = self.host.session.with_session(|session| (session.pages_in(id), session.lists().list_mark(id)));
         if sleep.pages != pages || sleep.list_seq != mark {
             return;
         }
@@ -455,7 +455,7 @@ impl Inner {
                         + self
                             .host
                             .session
-                            .with_session(|session| session.page_edits(*id).map_or(0, |list| list.history_bytes() as u64)),
+                            .with_session(|session| session.lists().get(*id).map_or(0, |list| list.history_bytes() as u64)),
                 )
             })
             .collect();

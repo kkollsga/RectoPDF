@@ -340,11 +340,6 @@ pub fn decode_sleep(bytes: &[u8], newest: u32) -> Result<SleepFile, RecordError>
 use super::*;
 
 impl<L: DocLoader> Session<L> {
-    /// Whether a tab's list is on disk now.
-    pub fn list_is_asleep(&self, id: TabId) -> bool {
-        self.lists.is_asleep(id)
-    }
-
     /// Seconds of this session so far.
     pub fn seconds_now(&self) -> u32 {
         self.dormancy.seconds_now()
@@ -525,11 +520,6 @@ impl<L: DocLoader> Session<L> {
             sleep,
             pictures_allowed: !list.is_some_and(PageEdits::has_protected_pages),
         })
-    }
-
-    /// What a tab's pictures are about, as the session has it, for telling if a sleep file's are.
-    pub fn list_mark(&self, id: TabId) -> u64 {
-        self.lists.get(id).map_or(0, PageEdits::order_mark)
     }
 
     /// The same for a tab that's just been woken some other way, for a picture for its first frame.

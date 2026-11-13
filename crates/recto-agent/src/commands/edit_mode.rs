@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(refusals(&session), off, "and each refused the same with it on");
         let session = session.into_inner().unwrap();
         let id = session.tabs().active().expect("a tab");
-        assert!(session.has_undone_owner_steps(id), "the owner's step is still there to redo");
+        assert!(session.lists().has_undone_owner_steps(id), "the owner's step is still there to redo");
     }
 
     /// Failure: edit mode is turned by an agent below Control, or by a word that isn't on or off.

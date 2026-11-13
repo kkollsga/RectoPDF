@@ -58,7 +58,7 @@ pub fn basis<L: DocLoader>(session: &Session<L>, id: TabId) -> Basis {
         tab: id.0,
         pages: session.pages_in(id),
         stamp: session.tabs().own_stamp(id),
-        changes: session.page_edits(id).map_or(0, recto_session::edit::PageEdits::changes),
+        changes: session.lists().get(id).map_or(0, recto_session::edit::PageEdits::changes),
     }
 }
 

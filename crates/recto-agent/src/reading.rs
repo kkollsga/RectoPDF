@@ -44,7 +44,7 @@ fn tab_file<A: SessionAccess>(access: &A, tab: &str) -> Result<TabFile, AgentErr
                 .tabs()
                 .tab(id)
                 .ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?;
-            let positions = s.page_edits(id).map(|edits| {
+            let positions = s.lists().get(id).map(|edits| {
                 let mut positions = vec![u32::MAX; record.page_count as usize];
                 for (position, slot) in edits.slots().iter().enumerate() {
                     if slot.source == 0
@@ -63,11 +63,11 @@ fn tab_file<A: SessionAccess>(access: &A, tab: &str) -> Result<TabFile, AgentErr
                     .ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?,
                 name: record.name.to_string(),
                 pages: s.pages_in(id),
-                edited: s.is_edited(id),
+                edited: s.lists().is_edited(id),
                 renderer_only: record.renderer_only,
                 positions,
                 changed: false,
-                check_against: s.page_edits(id).is_some().then(|| s.tabs().own_stamp(id)).flatten(),
+                check_against: s.lists().get(id).is_some().then(|| s.tabs().own_stamp(id)).flatten(),
             })
         })
         // Whether the file has changed is asked with the session free: a stat on a dead volume holds up this command and no other.

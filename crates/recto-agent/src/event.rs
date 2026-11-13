@@ -228,7 +228,7 @@ pub fn edits_changed<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
     Event::EditsChanged {
         tab: id,
         pages,
-        edited: session.is_edited(id),
+        edited: session.lists().is_edited(id),
     }
 }
 
