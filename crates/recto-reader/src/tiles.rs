@@ -39,7 +39,7 @@ use place::Place;
 use pointer::Pointer;
 use scratch::Scratch;
 use wake::Waking;
-pub use wake::{RawPicture, SleepMaterial, SleepShot, SleepView, WakeReport};
+pub use wake::{RawPicture, SleepMaterial, SleepShot, SleepView, WakeReport, WakeStock};
 
 pub use zoom::{MAX_ZOOM, MIN_ZOOM, ZOOM_STEP, Zoom, typed_zoom, zoom_after_scroll, zoom_percent};
 
@@ -498,6 +498,7 @@ impl Reader {
         self.jump_to_anchor(page);
         self.host.ops.push_back(Op::ScrollAcross { x: across });
         self.recount_wanted_files(warm);
+        self.note_wake_stock(tab);
         self.refresh(MAX_ATTACH_PER_TURN);
     }
 

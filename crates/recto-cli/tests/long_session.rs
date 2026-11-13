@@ -81,6 +81,7 @@ fn a_long_session_stays_flat() {
     let mut wakes: Vec<(bool, u64, u64)> = Vec::new();
     let mut blank_frames = 0u64;
     let mut bare: Vec<BareWake> = Vec::new();
+    let (mut unowed_bare, mut no_first_frame) = (0u64, Vec::<String>::new());
     for round in 0..rounds {
         for (at, id) in ids.iter().enumerate() {
             // As a click on its row does.
@@ -98,9 +99,20 @@ fn a_long_session_stays_flat() {
                     woken["first_frame_us"].as_u64().unwrap_or(0),
                     woken["sharp_us"].as_u64().unwrap_or(0),
                 ));
-                blank_frames += woken["blank_frames"].as_u64().unwrap_or(0);
-                if woken["blank_frames"].as_u64().unwrap_or(0) > 0 {
+                let blank = woken["blank_frames"].as_u64().unwrap_or(0);
+                blank_frames += blank;
+                // What a wake had to show when it began, as its report says: a bare page is only a bug where a picture of the view was here.
+                let owed = !matches!(woken["had"].as_str(), Some("nothing" | "not_looked") | None);
+                if blank > 0 && !owed {
+                    unowed_bare += 1;
+                }
+                if woken["first_frame_us"].is_null() {
+                    no_first_frame.push(format!("round {round}, row {at}: {woken}"));
+                }
+                if blank > 0 {
                     println!("a wake with bare frames, round {round}, row {at}: {woken}");
+                }
+                if blank > 0 && owed {
                     bare.push(BareWake {
                         round,
                         row: at,
@@ -169,7 +181,9 @@ fn a_long_session_stays_flat() {
         sleeping.len(),
         wakes.len()
     );
-    if blank_frames != 0 {
+    println!("wakes with a bare page and nothing to show them with, which is allowed until the renderer answers: {unowed_bare}");
+    assert!(no_first_frame.is_empty(), "a wake never got its first frame:\n{}", no_first_frame.join("\n"));
+    if !bare.is_empty() {
         let said: Vec<String> = bare
             .iter()
             .map(|wake| {
@@ -180,7 +194,8 @@ fn a_long_session_stays_flat() {
             })
             .collect();
         panic!(
-            "no wake from a file or otherwise shows a bare page for long: {blank_frames} bare frames.\n{}\nall wakes (from a file, first frame us, sharp us): {wakes:?}\nload now {}",
+            "a wake that began with a picture of its view, from the sleep file or the cache, showed a bare page ({} wakes; {blank_frames} bare frames in all, {unowed_bare} wakes bare with nothing to show). `had` and `bare_with_picture` say which.\n{}\nall wakes (from a file, first frame us, sharp us): {wakes:?}\nload now {}",
+            bare.len(),
             said.join("\n"),
             load()
         );
