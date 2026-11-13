@@ -5,7 +5,7 @@
 //! file.
 
 use recto_platform::run_folders::RunFolders;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 /// The refusal's words, the one wording for every route: `recto-agent`'s refusal is made from these.
@@ -25,6 +25,23 @@ impl Confinement {
     /// The folders, if it's confined.
     pub fn folders(&self) -> Option<&Arc<RunFolders>> {
         self.0.get()
+    }
+
+    /// **The path to read a file by, once it's been put to the rule:** for a confined session, where it really leads, so the read goes where the rule
+    /// looked and not wherever its name leads a moment later; for a free one, the path as given, with nothing asked of the disk. `None` when it's
+    /// outside. The tab keeps the name it was given: this is only what the read opens.
+    pub fn to_read(&self, path: &Path) -> Option<PathBuf> {
+        match self.0.get() {
+            Some(folders) => folders.inside(path),
+            None => Some(path.to_path_buf()),
+        }
+    }
+
+    /// **Whether an edit list read back from disk may be this session's:** every PDF whose pages it adds (another file inserted, a copy kept for undo) in
+    /// the folders. A record or journal in the state folder isn't the session's to trust, so one naming a file outside doesn't bring that file's pages
+    /// back, by a restore, a wake or a closed PDF's history taken up (review of the branch, the replayed history).
+    pub fn admits_edits(&self, edits: &crate::edit::PageEdits) -> bool {
+        self.0.get().is_none() || edits.added_sources().iter().chain(edits.keeping()).all(|added| self.admits(&added.path))
     }
 
     /// Whether a file may be the session's: anywhere, unless it's confined. Looks at the disk only when it is.

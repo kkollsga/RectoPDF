@@ -64,6 +64,21 @@ pub fn check<A: SessionAccess>(access: &A, command: &Command) -> Result<(), Agen
     }
 }
 
+/// **The session's own wall for a file about to be written** (an export's `--out`, a print's, a Save As's): a whole path, and in a confined session's
+/// folders, as it resolves now. Called by what writes, inside the command, so a route that never met [`check`] (the table's wall, in the executor) still
+/// can't write outside (review of the branch, F4).
+///
+/// # Errors
+///
+/// A relative path's refusal, or [`outside_the_run`].
+pub fn check_new_file<A: SessionAccess>(access: &A, out: &Path) -> Result<(), AgentError> {
+    crate::require_absolute(out)?;
+    match confinement(access) {
+        Some(folders) => check_paths(&folders, &[out.to_path_buf()]),
+        None => Ok(()),
+    }
+}
+
 /// Each of these files in the folders, or the refusal for the first that isn't. A relative path is refused as every command refuses one, as it would
 /// mean wherever this process happens to be.
 pub fn check_paths(folders: &RunFolders, paths: &[PathBuf]) -> Result<(), AgentError> {
@@ -139,7 +154,7 @@ mod tests {
             let command = parse(&line.to_string()).unwrap_or_else(|error| panic!("{line}: {}", error.message));
             for actor in [Actor::Agent(Level::Full), Actor::Person] {
                 let mut session = Session::new(crate::DrawableLoader);
-                session.confinement().confine(RunFolders::for_state(outside.path()));
+                session.confinement().confine(RunFolders::quiet_run());
                 session.open(&run.join("mine.pdf")).unwrap();
                 let access = Mutex::new(session);
                 let error = execute(&access, actor, &command, &mut Vec::new()).expect_err(&format!("{tag} for {actor:?} wasn't refused"));
@@ -167,6 +182,85 @@ mod tests {
         assert!(untried.is_empty(), "commands with a file that weren't tried: {untried:?}");
     }
 
+    /// Failure (review of the branch, F4): what a confined session writes rests only on the table's check in the executor, so a route that runs a command
+    /// without it (a host added later, a command run from inside another) writes an export, a print or a Save As outside the run's folders. Every
+    /// command that names a file, run past that check, as [`execute`] runs it after its checks: each is refused, and nothing is written outside.
+    #[test]
+    fn past_the_tables_check_the_session_still_writes_nothing_outside() {
+        let outside = outside();
+        let run = recto_testpdf::TempDir::new("recto-quiet-run-");
+        std::fs::write(run.join("mine.pdf"), pdf("the run's own")).unwrap();
+        for (name, wire) in commands_naming_files() {
+            let mut line = wire.clone();
+            let spec = table::TABLE.iter().find(|spec| spec.name == name).unwrap();
+            for arg in spec.args.iter().filter(|arg| arg.kind == Kind::Path) {
+                line[arg.key] = json!(outside.path().join(format!("{}-{}.out", line["cmd"].as_str().unwrap(), arg.key)));
+            }
+            let command = parse(&line.to_string()).unwrap_or_else(|error| panic!("{line}: {}", error.message));
+            let mut session = Session::new(crate::DrawableLoader);
+            session.confinement().confine(RunFolders::quiet_run());
+            session.open(&run.join("mine.pdf")).unwrap();
+            let access = Mutex::new(session);
+            let refused = crate::execute_held(&access, Actor::Agent(Level::Full), &command, &mut Vec::new());
+            assert!(refused.is_err(), "{name} ran with a file outside");
+        }
+        let left: Vec<_> = std::fs::read_dir(outside.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(left, ["secret.pdf"], "something was written outside");
+    }
+
+    /// Failure (review of the branch, F3): the folder a confined tab's file is in is swapped for a link out after the open, and the tab's later reads and
+    /// writes follow it: its text, a search, a picture of a page, a save. Each is refused or finds nothing of the outside file, which is left as it was.
+    #[cfg(unix)]
+    #[test]
+    fn a_tab_whose_folder_turns_into_a_link_out_reads_and_writes_nothing_there() {
+        let outside = outside();
+        let run = recto_testpdf::TempDir::new("recto-quiet-run-");
+        std::fs::create_dir(run.join("docs")).unwrap();
+        std::fs::write(run.join("docs/secret.pdf"), pdf("the run's own")).unwrap();
+        let mut session = Session::new(crate::DrawableLoader);
+        session.confinement().confine(RunFolders::quiet_run());
+        session.open(&run.join("docs/secret.pdf")).unwrap();
+        let access = Mutex::new(session);
+        // An edit, so a save has something to write.
+        let rotate = table::parse_cli(&["page".into(), "rotate".into(), "1".into(), "--by".into(), "90".into()]).unwrap();
+        execute(&access, Actor::Agent(Level::Full), &parse(&rotate.wire()).unwrap(), &mut Vec::new()).unwrap();
+        std::fs::rename(run.join("docs"), run.join("docs-real")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), run.join("docs")).unwrap();
+        let before = std::fs::read(outside.path().join("secret.pdf")).unwrap();
+        let out = run.join("page.png");
+        for words in [
+            vec!["text", "--page", "1"],
+            vec!["search", "user's"],
+            vec!["render", "--page", "1", "--out", out.to_str().unwrap()],
+            vec!["save"],
+        ] {
+            let mut words: Vec<String> = words.into_iter().map(str::to_owned).collect();
+            words.insert(0, "recto".into());
+            let line = table::parse_cli(&words[1..]).unwrap_or_else(|error| panic!("{words:?}: {}", error.message));
+            let command = parse(&line.wire()).unwrap();
+            let answer = execute(&access, Actor::Agent(Level::Full), &command, &mut Vec::new());
+            let said = match &answer {
+                Ok(value) => value.to_string(),
+                Err(error) => format!(
+                    "{} {}",
+                    error.message,
+                    error.untrusted.as_ref().map(|data| data.to_string()).unwrap_or_default()
+                ),
+            };
+            assert!(!said.contains("user's own"), "{words:?} read the outside file: {said}");
+        }
+        assert!(!out.exists(), "a page was drawn from the outside file");
+        assert_eq!(
+            std::fs::read(outside.path().join("secret.pdf")).unwrap(),
+            before,
+            "the outside file was written"
+        );
+    }
+
     /// Failure: the wall is on a session that isn't confined (the user's own app), so the user can't open their own documents; or it's a quiet run's
     /// file and is refused. A free session's `open` of the same outside PDF opens it.
     #[test]
@@ -175,7 +269,7 @@ mod tests {
         let open = |path: PathBuf, confined: bool| {
             let session = Session::new(crate::DrawableLoader);
             if confined {
-                session.confinement().confine(RunFolders::for_state(outside.path()));
+                session.confinement().confine(RunFolders::quiet_run());
             }
             let access = Mutex::new(session);
             execute(

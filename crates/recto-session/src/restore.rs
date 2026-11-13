@@ -55,7 +55,7 @@ impl<L: DocLoader> Session<L> {
                 } = tab;
                 TabEntry {
                     id: id.0,
-                    path: PathField::from_path(&self.path_of(*id).unwrap_or_default()),
+                    path: PathField::from_path(&self.tabs.path_of(*id).unwrap_or_default()),
                     file: stamp.map(Into::into),
                     page: *page,
                     page_count: *page_count,
@@ -131,7 +131,8 @@ impl<L: DocLoader> Session<L> {
             let id = TabId(entry.id);
             let mut notice = entry.notice.clone();
             if let Some(name) = &entry.journal {
-                match journals.remove(name) {
+                // A list naming a file outside a confined session's folders is as unreadable as one that's gone: see [`confined`].
+                match journals.remove(name).filter(|restored| self.confinement.admits_edits(&restored.edits)) {
                     Some(restored) => {
                         if restored.rolled_off {
                             notice = Some(FileNotice::HistoryRolledOff);

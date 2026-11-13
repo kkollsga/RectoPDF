@@ -43,16 +43,18 @@ impl<L: DocLoader> Session<L> {
         self.tabs.get(id)
     }
 
-    /// The tab's full path, rebuilt from its interned folder and name.
+    /// **The tab's full path, for whatever reads or writes its file,** rebuilt from its interned folder and name. In a confined session it's put to the
+    /// rule again, as it resolves now, so a folder swapped for a link after the open leads nowhere: `None`, as for no tab, and
+    /// [`Self::apply_file_status`] says its file is missing (2026-11-13). What only names the tab (its record, journal and sleep file) goes by the
+    /// registry's path. A free session asks nothing of the disk.
     pub fn path_of(&self, id: TabId) -> Option<PathBuf> {
-        self.tabs.path_of(id)
+        self.tabs.path_of(id).filter(|path| self.confinement.admits(path))
     }
 
     /// Opens a PDF as a new active tab. **A PDF can only be opened once** (SPEC decision 26): opening a file that already has a tab goes to that tab instead, by its path or as the same file on disk, so a link goes to its tab and a copy is another file.
     pub fn open(&mut self, path: &Path) -> Result<TabId, SessionError> {
-        if !self.confinement.admits(path) {
-            return Err(SessionError::OutsideQuietRun);
-        }
+        // What's read is where the rule looked: see [`confined::Confinement::to_read`].
+        let to_read = self.confinement.to_read(path).ok_or(SessionError::OutsideQuietRun)?;
         // The tab already showing this file, if there is one.
         if let Some(id) = self.tab_for_path(path) {
             self.activate(id);
@@ -60,12 +62,12 @@ impl<L: DocLoader> Session<L> {
             return Ok(id);
         }
         // Looked at first, so a change during the read shows as a change.
-        let stamp = file_stamp(path).ok();
+        let stamp = file_stamp(&to_read).ok();
         if let Some(id) = self.tab_for_file(path, stamp) {
             self.reach_open_file(id, path);
             return Ok(id);
         }
-        let facts = self.loader.load(path).map_err(SessionError::Open)?;
+        let facts = self.loader.load(&to_read).map_err(SessionError::Open)?;
         let history = self.journals.history().cloned().and_then(|source| source.history_of(stamp, path));
         self.open_with_facts(path, facts, stamp, history)
     }
@@ -89,6 +91,7 @@ impl<L: DocLoader> Session<L> {
                         && known.device == stamp.device
                         && (known.same_contents(stamp)
                             || self
+                                .tabs
                                 .path_of(tab.id)
                                 .and_then(|own| file_stamp(&own).ok())
                                 .is_some_and(|now| now.inode == stamp.inode && now.device == stamp.device))
@@ -102,12 +105,12 @@ impl<L: DocLoader> Session<L> {
 
     /// Goes to the tab a file is open in, reached by another name. If the name it was open under has gone, the file moved, and the tab goes with it. A stat on the volume this path has just answered from, so it can't be a dead one.
     fn reach_open_file(&mut self, id: TabId, path: &Path) {
-        let gone = self.path_of(id).is_some_and(|known| known != path && !known.exists());
+        let gone = self.tabs.path_of(id).is_some_and(|known| known != path && !known.exists());
         if gone {
             self.relocate(id, path);
         }
         self.activate(id);
-        if let Some(own) = self.path_of(id) {
+        if let Some(own) = self.tabs.path_of(id) {
             self.note_recent(&own);
         }
     }
@@ -146,10 +149,11 @@ impl<L: DocLoader> Session<L> {
 
     /// The second half of [`Self::open`]: makes the tab from facts already read, and what's left of the PDF's history, if a [`HistorySource`] found any. It's the one way a tab comes to exist, so every route has to say. Someone may have opened the same file meanwhile, and then that's the tab, and the history stays where it is.
     pub fn open_with_facts(&mut self, path: &Path, facts: DocFacts, stamp: Option<FileStamp>, history: Option<TakenHistory>) -> Result<TabId, SessionError> {
-        // A quiet run's tab is a file in its own folders, whatever route it came by: see [`confined`].
+        // A quiet run's tab is a file in its own folders, whatever route it came by, and so is every file its history brings pages from: see [`confined`].
         if !self.confinement.admits(path) {
             return Err(SessionError::OutsideQuietRun);
         }
+        let history = history.filter(|taken| self.confinement.admits_edits(&taken.restored.edits));
         if let Some(id) = self.tab_for_file(path, stamp) {
             // Read already, so no read with the session held if it's cold.
             self.give_woken(id, Ok(facts), stamp);
