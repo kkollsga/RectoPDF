@@ -212,6 +212,12 @@ impl Tabs {
         self.tab(id).and_then(|tab| tab.file.stamp)
     }
 
+    /// Every tab's own file's stamp, where known, in one walk: for a caller about all the files open, which asking [`Self::own_stamp`] of each tab would
+    /// make a search a tab.
+    pub fn own_stamps(&self) -> impl Iterator<Item = FileStamp> + '_ {
+        self.tabs.iter().filter_map(|tab| tab.file.stamp)
+    }
+
     /// How a tab's pages are laid out.
     pub fn spread_of(&self, id: TabId) -> Option<record::Spread> {
         self.tab(id).map(|tab| tab.spread)

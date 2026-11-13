@@ -280,14 +280,10 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     };
     // A password goes with its tab: one for a file no tab has open now is let go, and overwritten.
     if !inner.keys.is_empty() {
-        let open: Vec<(u64, u64)> = inner.host.session.with_session(|session| {
-            session
-                .tabs()
-                .iter()
-                .filter_map(|tab| session.tabs().own_stamp(tab.id))
-                .map(|stamp| (stamp.device, stamp.inode))
-                .collect()
-        });
+        let open: Vec<(u64, u64)> = inner
+            .host
+            .session
+            .with_session(|session| session.tabs().own_stamps().map(|stamp| (stamp.device, stamp.inode)).collect());
         inner.keys.keep_only(&open);
     }
     let reading_engine = inner.panes.reading_engine(&inner.engine);
