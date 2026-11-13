@@ -29,6 +29,7 @@
 # is taken over, with a line saying so; the holder's exit, failed or interrupted, removes it. The time waited is said apart and is not in the stage's
 # seconds (`check.sh --slow`, the budgets), nor in the ledger's. On CI (CI set) the lock is taken over and never waited on.
 #   CHECK_APP_TIER=free        no lock at all: the coordinator's solo measurements.
+#   CHECK_APP_TIER_POLL=<s>    seconds between looks (default 2, a fraction is fine); CHECK_APP_TIER_NOOWNER=<s> how old an owner-less lock is before it is taken over (default 10).
 #   CHECK_APP_TIER_WAIT=<s>    how long a waiter waits before it stops (default 2700): exit 5, nothing tested, never a run, a failure or a ledger line.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -219,7 +220,7 @@ app_tier_stale() {
   if [ -z "${pid:-}" ]; then
     local made
     made=$(stat -f %m "$app_tier_dir" 2>/dev/null || date +%s)
-    [ $(($(date +%s) - made)) -gt 10 ] && echo "it has no owner" || true
+    [ $(($(date +%s) - made)) -ge "${CHECK_APP_TIER_NOOWNER:-10}" ] && echo "it has no owner" || true
     return 0
   fi
   if ! kill -0 "$pid" 2>/dev/null; then echo "its owner (process $pid) is gone"; return 0; fi
@@ -272,7 +273,7 @@ app_tier_take() {
   done
   printf '%s %s %s %s %s\n' "$$" "$CHECK_TOP_PID" "$(date +%s)" "$1" "$PWD" > "$app_tier_dir/owner" 2>/dev/null || true
   app_tier_waited=$(($(date +%s) - began))
-  if [ "$app_tier_waited" -ge 1 ] && [ -n "$said" ]; then echo "check: got the app tier after waiting $app_tier_waited s"; fi
+  if [ -n "$said" ]; then echo "check: got the app tier after waiting $app_tier_waited s"; fi
   [ -z "${check_mark:-}" ] || echo "$app_tier_waited" >> "$check_mark.waited" 2>/dev/null || true
 }
 app_tier_stale_of() { local d=$app_tier_dir r; app_tier_dir=$1; r=$(app_tier_stale); app_tier_dir=$d; echo "$r"; }
