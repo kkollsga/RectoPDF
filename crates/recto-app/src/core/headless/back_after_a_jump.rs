@@ -32,27 +32,35 @@ fn agent(app: &HeadlessApp, line: &str) -> serde_json::Value {
 }
 
 /// Failure (the red `main`): an agent's `back` straight after its `find --next --jump` to a hit on page 10 leaves the tab on page 10. The jump's hit is
-/// brought into view by an effect the session thread carries out after the command, and here after `back` too; the page view's word that it went to page
-/// 10 for it was then taken as the reader's own scroll, over Back's page 1. Held so `back` comes before the effect every time.
+/// brought into view by an effect the session thread carries out after the command, and here after `back` too, in either order with the look at the
+/// session the two commands end with, as a look already queued takes theirs: with the effect first, its page view's word that it went to page 10 was taken
+/// at the look as the reader's own scroll, over Back's page 1; with the look first, Back's page 1 was sent and the effect then took the page view back to
+/// the hit, which it told of as its own. Held so `back` comes before the effect every time.
 #[test]
 fn an_agents_back_before_the_window_has_shown_its_jumps_hit_stays_back() {
-    let app = thirty_pages();
-    agent(&app, r#"{"cmd":"find","query":"pdf page 1"}"#);
-    agent(&app, r#"{"cmd":"find","next":true}"#);
-    app.settle();
-    assert_eq!(page(&app), 1, "the first hit is on the page read");
-    let held = app.hold_session_thread();
-    let went = agent(&app, r#"{"cmd":"find","next":true,"jump":true}"#);
-    assert_eq!(went["went_to"]["page"].as_u64(), Some(10), "{went}");
-    agent(&app, r#"{"cmd":"back"}"#);
-    drop(held);
-    app.settle();
-    assert_eq!(
-        page(&app),
-        1,
-        "Back from the hit on page 10, taken before the window showed the hit, is on page {} where it went to 1",
-        page(&app)
-    );
+    for look_first in [false, true] {
+        let app = thirty_pages();
+        agent(&app, r#"{"cmd":"find","query":"pdf page 1"}"#);
+        agent(&app, r#"{"cmd":"find","next":true}"#);
+        app.settle();
+        assert_eq!(page(&app), 1, "the first hit is on the page read");
+        let held = app.hold_session_thread();
+        if look_first {
+            // Queued ahead of the effect: the commands' own looks are this one.
+            app.send(crate::queue::CoreCall::Reconcile);
+        }
+        let went = agent(&app, r#"{"cmd":"find","next":true,"jump":true}"#);
+        assert_eq!(went["went_to"]["page"].as_u64(), Some(10), "{went}");
+        agent(&app, r#"{"cmd":"back"}"#);
+        drop(held);
+        app.settle();
+        assert_eq!(
+            page(&app),
+            1,
+            "Back from the hit on page 10, taken before the window showed the hit (the look first: {look_first}), is on page {} where it went to 1",
+            page(&app)
+        );
+    }
 }
 
 /// Waits, bounded, for the page view to have been sent to a page (counted from 1) by the session thread's look after a command, and no further: what it

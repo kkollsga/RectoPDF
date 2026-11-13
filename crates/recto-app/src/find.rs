@@ -259,7 +259,14 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
     /// again. Announces nothing: what watchers hear of a hit gone to is said where it's gone to.
     pub fn carry_out(&self, effect: recto_agent::Effect) {
         match effect {
-            recto_agent::Effect::Reveal { tab, hit } => self.reveal(tab.0, &hit),
+            // Asked by the command that went to the hit, and carried out after it. A step made since, such as an agent's `back` straight after its
+            // `find --next --jump`, is the newer: the hit is brought into view only while the tab is still on its page, or the page view would be taken
+            // back to the hit from where the session has it.
+            recto_agent::Effect::Reveal { tab, hit } => {
+                if self.session.with_session(|s| s.tab(tab).is_some_and(|shown| shown.page == hit.page)) {
+                    self.reveal(tab.0, &hit);
+                }
+            }
             recto_agent::Effect::FindStepPending { forward, going } => lock(self.field).pending_step = Some((forward, going)),
         }
     }
