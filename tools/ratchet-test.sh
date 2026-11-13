@@ -100,6 +100,13 @@ check "so growing back up to the budget, not over it, still fails" "1" "$rc"; ha
 rm "$X/t/crates/a/src/d.rs"
 printf 'ffi crates/recto-ffi/src 0\ntype crates/a/src::Gone 8\ntype crates/a/src::T 9\n' > "$X/t/base.txt"; R --update >/dev/null
 check "an entry for a type that no longer exists is dropped, one that exists stays" "type crates/a/src::T 3" "$(grep '^type' "$X/t/base.txt")"
+# Failure (review round 1 of the page view follow-ups): a type whose inherent methods all move to facades has no inherent impl left, so it dropped out of
+# the counts and the baseline, and could grow back to the budget unseen. While the type exists its entry stays, at 0.
+{ echo 'struct T;'; echo "struct F<'a>(&'a T);"; impls 3 "F<'_>" f; } > "$X/t/crates/a/src/lib.rs"; R --update >/dev/null
+check "a type that still exists with no inherent method keeps its entry at 0" "type crates/a/src::T 0" "$(grep '^type crates/a/src::T ' "$X/t/base.txt")"
+{ echo 'struct T;'; echo "struct F<'a>(&'a T);"; impls 3 "F<'_>" f; impls 2 T back; } > "$X/t/crates/a/src/lib.rs"; out=$(R); rc=$?
+check "so a method back on it fails" "1" "$rc"; has "naming the baseline of 0" "type crates/a/src::T grew: 2 methods in all its inherent impl blocks, baseline 0, budget 5" "$out"
+{ echo 'struct T;'; impls 3 T a; } > "$X/t/crates/a/src/lib.rs"
 printf 'ffi crates/recto-ffi/src 0\ntype crates/a/src::T 9\n' > "$X/t/base.txt"; { echo 'struct T;'; impls 3 T a; echo "impl Tr for T {"; for i in 1 2 3 4 5 6; do echo " fn t$i(&self) {}"; done; echo "}"; } > "$X/t/crates/a/src/lib.rs"
 out=$(R); check "trait impls are not counted" "0" "$(echo "$out" | grep -c 'type crates/a/src::T grew')"
 fresh; { echo 'struct T;'; impls 3 T a; echo '#[cfg(test)]'; echo 'mod tests {'; impls 6 T t; echo '}'; } > "$X/t/crates/a/src/lib.rs"
