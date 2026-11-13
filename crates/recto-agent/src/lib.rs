@@ -1989,7 +1989,7 @@ mod tests {
         );
         assert_eq!(
             Command::from(crate::commands::view::View {
-                paper: Some("white".into()),
+                paper: Some(crate::commands::view::PaperChoice::Is(recto_session::Paper::White)),
                 sidebar: None,
                 agent_icon: None,
                 zoom: None,
@@ -2002,7 +2002,7 @@ mod tests {
         assert_eq!(
             Command::from(crate::commands::view::View {
                 paper: None,
-                sidebar: Some("off".into()),
+                sidebar: Some(crate::commands::view::Shown::Off),
                 agent_icon: None,
                 zoom: None,
                 layout: None,

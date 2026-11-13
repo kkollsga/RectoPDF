@@ -4,29 +4,200 @@ use super::{Cmd, Cx, OnlyAsks, row_access};
 use crate::human::text;
 use crate::table::*;
 use crate::*;
+use recto_session::Paper;
+use recto_session::record::Spread;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fmt::Write;
 
 /// How the app shows pages. The default asks and changes nothing.
-#[derive(Clone, Debug, Default, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Default, PartialEq, serde::Serialize)]
+#[serde(into = "line::View")]
 pub struct View {
-    #[serde(default)]
-    pub paper: Option<String>,
-    #[serde(default)]
-    pub sidebar: Option<String>,
-    #[serde(default)]
-    pub agent_icon: Option<String>,
-    #[serde(default)]
+    pub paper: Option<PaperChoice>,
+    pub sidebar: Option<Shown>,
+    pub agent_icon: Option<Shown>,
+    /// The zoom, as the word `view --zoom` takes. It stays that word here: its grammar (`in`, `out`, `fit`, `actual`, a number, a level like `150%`) is the
+    /// page views', which read it with `recto_reader`'s, a crate this one doesn't depend on, and the app, which owns the zoom, refuses a word it can't read
+    /// before anything else of the command is done (step R2.5).
     pub zoom: Option<String>,
-    /// The active tab's layout: `single`, `two-up` or `two-up-cover`.
-    #[serde(default)]
-    pub layout: Option<String>,
+    /// The tab's layout.
+    pub layout: Option<Spread>,
     /// The tab `layout` is for, and said of: the active tab's if left out. The window names the tab in the pane it was chosen on (R2.3), as the active tab
     /// may have moved on by the time it runs.
-    #[serde(default)]
     pub tab: Option<String>,
+}
+
+/// A paper to show pages on, or `auto`, which goes with the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaperChoice {
+    Auto,
+    Is(Paper),
+}
+
+impl PaperChoice {
+    /// Every choice, in the order the row lists their words.
+    pub const ALL: [Self; 4] = [Self::Is(Paper::White), Self::Is(Paper::Warm), Self::Is(Paper::Dark), Self::Auto];
+
+    /// Its word on the wire.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Is(paper) => paper.name(),
+        }
+    }
+
+    /// The paper it sets: none for `auto`.
+    #[must_use]
+    pub fn paper(self) -> Option<Paper> {
+        match self {
+            Self::Auto => None,
+            Self::Is(paper) => Some(paper),
+        }
+    }
+}
+
+/// Whether something that can be hidden is shown: `on`, `off`, or `toggle`, which goes by how it is when it runs (R2.3: a toggle worked out from what the
+/// window last showed lost a quick second press).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shown {
+    On,
+    Off,
+    Toggle,
+}
+
+impl Shown {
+    pub const ALL: [Self; 3] = [Self::On, Self::Off, Self::Toggle];
+
+    /// Its word on the wire.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Off => "off",
+            Self::Toggle => "toggle",
+        }
+    }
+
+    /// Whether it's hidden after, from whether it's hidden now.
+    #[must_use]
+    pub fn hidden_after(self, hidden: bool) -> bool {
+        match self {
+            Self::On => false,
+            Self::Off => true,
+            Self::Toggle => !hidden,
+        }
+    }
+}
+
+/// `view` as it's written on the wire.
+pub mod line {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct View {
+        #[serde(default)]
+        pub paper: Option<String>,
+        #[serde(default)]
+        pub sidebar: Option<String>,
+        #[serde(default)]
+        pub agent_icon: Option<String>,
+        #[serde(default)]
+        pub zoom: Option<String>,
+        /// The active tab's layout: `single`, `two-up` or `two-up-cover`.
+        #[serde(default)]
+        pub layout: Option<String>,
+        #[serde(default)]
+        pub tab: Option<String>,
+    }
+}
+
+fn usage(message: String) -> AgentError {
+    AgentError::new("usage", message, exit::USAGE)
+}
+
+/// A word for something hidden or not, or the refusal of one that isn't.
+fn shown(word: Option<String>, what: &str) -> Result<Option<Shown>, AgentError> {
+    word.map(|word| {
+        Shown::ALL
+            .into_iter()
+            .find(|shown| shown.word() == word)
+            .ok_or_else(|| usage(format!("`{}` isn't for {what}. It's `on`, `off` or `toggle`.", recto_core::clean_line(&word))))
+    })
+    .transpose()
+}
+
+/// Checked whole as it's read, in the order the run checked it before: the layout, the paper, the sidebar, the agent icon. A `view` with a good layout and
+/// a bad paper can't be made, so it can't lay a tab out and then refuse (review of 2026-11-13).
+impl TryFrom<line::View> for View {
+    type Error = AgentError;
+    fn try_from(line: line::View) -> Result<Self, AgentError> {
+        let line::View {
+            paper,
+            sidebar,
+            agent_icon,
+            zoom,
+            layout,
+            tab,
+        } = line;
+        let layout = layout
+            .map(|name| {
+                Spread::from_name(&name).ok_or_else(|| {
+                    usage(format!(
+                        "`{}` isn't a layout. It's one of {}.",
+                        recto_core::clean_line(&name),
+                        Spread::ALL.map(Spread::name).join(", ")
+                    ))
+                })
+            })
+            .transpose()?;
+        let paper = paper
+            .map(|name| {
+                PaperChoice::ALL.into_iter().find(|choice| choice.word() == name).ok_or_else(|| {
+                    usage(format!(
+                        "`{}` isn't a paper. It's one of {}, or `auto`.",
+                        recto_core::clean_line(&name),
+                        Paper::ALL.map(Paper::name).join(", ")
+                    ))
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            paper,
+            sidebar: shown(sidebar, "the sidebar")?,
+            agent_icon: shown(agent_icon, "the agent icon")?,
+            zoom,
+            layout,
+            tab,
+        })
+    }
+}
+
+impl From<&View> for line::View {
+    fn from(asked: &View) -> Self {
+        Self {
+            paper: asked.paper.map(|paper| paper.word().to_string()),
+            sidebar: asked.sidebar.map(|shown| shown.word().to_string()),
+            agent_icon: asked.agent_icon.map(|shown| shown.word().to_string()),
+            zoom: asked.zoom.clone(),
+            layout: asked.layout.map(|layout| layout.name().to_string()),
+            tab: asked.tab.clone(),
+        }
+    }
+}
+
+impl From<View> for line::View {
+    fn from(asked: View) -> Self {
+        Self::from(&asked)
+    }
+}
+
+impl std::fmt::Debug for View {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        line::View::from(self).fmt(f)
+    }
 }
 
 impl Cmd for View {
@@ -83,7 +254,7 @@ impl Cmd for View {
                     .then("It works when `recto` is talking to the app."),
             );
         }
-        set(cx.access, cx.actor, [paper, sidebar, agent_icon, layout], tab.as_deref(), cx.events)
+        set(cx.access, cx.actor, (*paper, *sidebar, *agent_icon, *layout), tab.as_deref(), cx.events)
     }
     fn human(data: &Value) -> String {
         format!(
@@ -178,67 +349,53 @@ impl OnlyAsks for Palette {
     }
 }
 
-/// `on`, `off` or `toggle` for something hidden or not: whether it's hidden after, `toggle` going by how it is now, when it runs (R2.3: a toggle worked out
-/// from what the window last showed lost a quick second press).
-fn hidden_after(word: Option<&str>, hidden: bool, what: &str) -> Result<bool, AgentError> {
-    match word {
-        None => Ok(hidden),
-        Some("on") => Ok(false),
-        Some("off") => Ok(true),
-        Some("toggle") => Ok(!hidden),
-        Some(other) => Err(AgentError::new(
-            "usage",
-            format!("`{}` isn't for {what}. It's `on`, `off` or `toggle`.", recto_core::clean_line(other)),
-            exit::USAGE,
-        )),
-    }
-}
-
 /// Sets what's asked, and says how things are shown now. `[paper, sidebar, agent_icon, layout]`, as `view` has them, and the tab the layout is for, if not the
 /// active one. A change is announced only if something changed.
 /// The answer says the layout of the tab laid out or showing, unless it's withheld from `actor`.
 pub(crate) fn set<A: SessionAccess>(
     access: &A,
     actor: Actor,
-    asked: [&Option<String>; 4],
+    asked: (Option<PaperChoice>, Option<Shown>, Option<Shown>, Option<Spread>),
     tab: Option<&str>,
     events: &mut Vec<Event>,
 ) -> Result<Value, AgentError> {
-    let [paper, sidebar, agent_icon, layout] = asked;
+    let (paper, sidebar, agent_icon, layout) = asked;
     access.with(|s| {
-            let was = s.viewing().view();
-            let laid_out = match tab {
-                Some(selector) => Some(select(s, selector)?),
-                None => s.tabs().active(),
-            };
-            // Everything asked is checked before anything's changed, so a refused `view` changes nothing (review, 2026-11-13).
-            let spread = match layout.as_deref() {
-                Some(name) => {
-                    let spread = recto_session::record::Spread::from_name(name).ok_or_else(|| AgentError::new("usage", format!("`{}` isn't a layout. It's one of {}.", recto_core::clean_line(name), recto_session::record::Spread::ALL.map(recto_session::record::Spread::name).join(", ")), exit::USAGE))?;
-                    let id = laid_out.ok_or_else(|| AgentError::new("no_active_tab", "There's no tab showing to lay out.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first."))?;
-                    Some((id, spread))
-                }
-                None => None,
-            };
-            let mut view = was;
-            match paper.as_deref() {
-                Some("auto") => view.paper = None,
-                Some(name) => view.paper = Some(recto_session::Paper::from_name(name).ok_or_else(|| AgentError::new("usage", format!("`{}` isn't a paper. It's one of {}, or `auto`.", recto_core::clean_line(name), recto_session::Paper::ALL.map(recto_session::Paper::name).join(", ")), exit::USAGE))?),
-                None => {}
+        let was = s.viewing().view();
+        let laid_out = match tab {
+            Some(selector) => Some(select(s, selector)?),
+            None => s.tabs().active(),
+        };
+        // Everything asked is checked before anything's changed, so a refused `view` changes nothing (review, 2026-11-13): its words were checked as it was
+        // read, and the tab it lays out is here.
+        let spread = match layout {
+            Some(spread) => {
+                let id = laid_out.ok_or_else(|| AgentError::new("no_active_tab", "There's no tab showing to lay out.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first."))?;
+                Some((id, spread))
             }
-            view.sidebar_hidden = hidden_after(sidebar.as_deref(), view.sidebar_hidden, "the sidebar")?;
-            view.agent_icon_hidden = hidden_after(agent_icon.as_deref(), view.agent_icon_hidden, "the agent icon")?;
-            if let Some((id, spread)) = spread
-                && s.tabs_mut().set_spread(id, spread)
-            {
-                events.push(Event::LayoutChanged { tab: id, layout: spread.name() });
-            }
-            s.viewing_mut().set_view(view);
-            if view != was {
-                events.push(view_changed(view));
-            }
-            Ok(json!({ "paper": paper_name(view), "papers": recto_session::Paper::ALL.map(recto_session::Paper::name), "sidebar": !view.sidebar_hidden, "agent_icon": !view.agent_icon_hidden, "layout": laid_out.filter(|id| actor.sees_protected() || !s.tabs().withheld_from_agents(*id)).and_then(|id| s.tabs().spread_of(id)).map(recto_session::record::Spread::name) }))
-        })
+            None => None,
+        };
+        let mut view = was;
+        if let Some(paper) = paper {
+            view.paper = paper.paper();
+        }
+        if let Some(sidebar) = sidebar {
+            view.sidebar_hidden = sidebar.hidden_after(view.sidebar_hidden);
+        }
+        if let Some(agent_icon) = agent_icon {
+            view.agent_icon_hidden = agent_icon.hidden_after(view.agent_icon_hidden);
+        }
+        if let Some((id, spread)) = spread
+            && s.tabs_mut().set_spread(id, spread)
+        {
+            events.push(Event::LayoutChanged { tab: id, layout: spread.name() });
+        }
+        s.viewing_mut().set_view(view);
+        if view != was {
+            events.push(view_changed(view));
+        }
+        Ok(json!({ "paper": paper_name(view), "papers": Paper::ALL.map(Paper::name), "sidebar": !view.sidebar_hidden, "agent_icon": !view.agent_icon_hidden, "layout": laid_out.filter(|id| actor.sees_protected() || !s.tabs().withheld_from_agents(*id)).and_then(|id| s.tabs().spread_of(id)).map(Spread::name) }))
+    })
 }
 
 pub(crate) const ROWS_VIEW: &[Spec] = &[Spec {
@@ -364,7 +521,11 @@ mod tests {
 
     fn run(session: &mut Session<Fake>, line: &str) -> (Result<serde_json::Value, AgentError>, Vec<Event>) {
         let mut events = Vec::new();
-        let command = parse(line).expect("a command");
+        // A word no type takes is refused as it's read (R2.5), before anything is looked at.
+        let command = match parse(line) {
+            Ok(command) => command,
+            Err(refused) => return (Err(refused), events),
+        };
         let access = std::sync::Mutex::new(std::mem::replace(session, Session::new(Fake)));
         let result = execute(&access, Actor::Agent(Level::Control), &command, &mut events);
         *session = access.into_inner().expect("not poisoned");

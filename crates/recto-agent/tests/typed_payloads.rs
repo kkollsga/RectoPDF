@@ -8,6 +8,7 @@
 use recto_agent::commands::contents::{ContentsShow, Which};
 use recto_agent::commands::edit_mode::EditMode;
 use recto_agent::commands::updates::{Settings, UpdateDevBuilds};
+use recto_agent::commands::view::{PaperChoice, Shown, View};
 use recto_agent::commands::words::OnOff;
 use recto_agent::commands::{Edit, Move, Updates};
 use recto_agent::{Command, envelope, exit, parse, table};
@@ -27,6 +28,30 @@ fn every_typed_command() -> Vec<Command> {
         all.push(UpdateDevBuilds { set }.into());
         all.push(Settings { auto_update: set }.into());
     }
+    let maybe = |words: &[Option<&str>]| words.iter().map(|word| word.map(str::to_string)).collect::<Vec<_>>();
+    for paper in [None].into_iter().chain(PaperChoice::ALL.map(Some)) {
+        for sidebar in [None].into_iter().chain(Shown::ALL.map(Some)) {
+            for agent_icon in [None].into_iter().chain(Shown::ALL.map(Some)) {
+                for layout in [None].into_iter().chain(recto_session::record::Spread::ALL.map(Some)) {
+                    for tab in maybe(&[None, Some("active"), Some("#2"), Some("report")]) {
+                        for zoom in maybe(&[None, Some("fit"), Some("150%")]) {
+                            all.push(
+                                View {
+                                    paper,
+                                    sidebar,
+                                    agent_icon,
+                                    zoom,
+                                    layout,
+                                    tab: tab.clone(),
+                                }
+                                .into(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
     all
 }
 
@@ -37,6 +62,7 @@ fn same(a: &Command, b: &Command) -> bool {
         (Command::Move(Move::ContentsShow(a)), Command::Move(Move::ContentsShow(b))) => a == b,
         (Command::Updates(Updates::UpdateDevBuilds(a)), Command::Updates(Updates::UpdateDevBuilds(b))) => a == b,
         (Command::Updates(Updates::Settings(a)), Command::Updates(Updates::Settings(b))) => a == b,
+        (Command::Move(Move::View(a)), Command::Move(Move::View(b))) => a == b,
         _ => false,
     }
 }
@@ -75,6 +101,13 @@ fn a_rows_words_are_its_types_words() {
     assert_eq!(row_words("update dev-builds", "set"), on_off);
     assert_eq!(row_words("settings", "auto_update"), on_off);
     assert_eq!(row_words("contents show", "which"), Which::ALL.map(Which::word).to_vec());
+    assert_eq!(row_words("view", "paper"), PaperChoice::ALL.map(PaperChoice::word).to_vec());
+    assert_eq!(row_words("view", "sidebar"), Shown::ALL.map(Shown::word).to_vec());
+    assert_eq!(row_words("view", "agent_icon"), Shown::ALL.map(Shown::word).to_vec());
+    assert_eq!(
+        row_words("view", "layout"),
+        recto_session::record::Spread::ALL.map(recto_session::record::Spread::name).to_vec()
+    );
 }
 
 /// Requests whose words no type takes, sent as JSON, with the word that's wrong in each.
@@ -83,6 +116,12 @@ const MALFORMED: &[(&str, &str)] = &[
     (r##"{"cmd":"contents_show","which":"theirs","tab":"#1"}"##, "theirs"),
     (r#"{"cmd":"update_dev_builds","set":"maybe"}"#, ""),
     (r#"{"cmd":"settings","auto_update":"later"}"#, ""),
+    (r#"{"cmd":"view","paper":"purple"}"#, "purple"),
+    (r#"{"cmd":"view","sidebar":"sideways"}"#, "sideways"),
+    (r#"{"cmd":"view","agent_icon":"blink"}"#, "blink"),
+    (r##"{"cmd":"view","layout":"three-up","tab":"#1"}"##, "three-up"),
+    // A good layout with a bad paper: refused whole, so nothing can be laid out first.
+    (r#"{"cmd":"view","layout":"two-up","paper":"purple"}"#, "purple"),
 ];
 
 /// Failure (owner's decision on R2.5, D2 b): a malformed request is refused one way at one level and another at the next, or for the person and an agent,
@@ -110,6 +149,8 @@ fn a_malformed_request_is_usage_at_every_level_and_says_only_its_own_words() {
         &["contents", "show", "theirs"],
         &["update", "dev-builds", "maybe"],
         &["settings", "--auto-update", "later"],
+        &["view", "--paper", "purple"],
+        &["view", "--layout", "three-up"],
     ] {
         let words: Vec<String> = words.iter().map(|word| (*word).to_string()).collect();
         assert_eq!(table::parse_cli(&words).expect_err("refused").code, "usage", "{words:?}");

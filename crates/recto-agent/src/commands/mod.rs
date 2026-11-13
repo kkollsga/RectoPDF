@@ -151,6 +151,8 @@ macro_rules! family {
             /// Reads a line known to name one of this family's commands: as serde reads its line, refused as no command if that fails, and then, for a
             /// typed payload, checked whole, refused with its own words if what it holds can't be (step R2.5).
             pub(crate) fn parse(line: &str) -> Result<$crate::Command, $crate::AgentError> {
+                // Named as the family's commands are, which share their words as a family's do.
+                #[allow(clippy::enum_variant_names)]
                 #[derive(serde::Deserialize)]
                 #[serde(tag = "cmd", rename_all = "snake_case")]
                 enum Lines {
@@ -289,6 +291,7 @@ family! {
         #[line(contents::line::ContentsShow)]
         ContentsShow(contents::ContentsShow),
         ContentsStop(contents::ContentsStop),
+        #[line(view::line::View)]
         View(view::View),
         Palette(view::Palette),
         Find(finding::Find),

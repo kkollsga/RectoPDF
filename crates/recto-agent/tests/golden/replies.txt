@@ -178,10 +178,6 @@
   reply {"cmd":"view","data":{"agent_icon":true,"layout":"single","paper":"auto","papers":["white","warm","dark"],"sidebar":true},"ok":true,"v":1}
   events 
   words "Paper: auto. Sidebar: shown. Agent icon: on. Layout: single."
-{"cmd":"view","paper":"warm","sidebar":"off","agent_icon":"off","zoom":"fit","layout":"two_up"}
-  reply {"cmd":"view","error":{"candidates":[],"code":"zoom_needs_app","exit":1,"message":"Zoom is about what's on a screen, and this session has none.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
-  events 
-  words ""
 {"cmd":"view","paper":null}
   reply {"cmd":"view","data":{"agent_icon":true,"layout":"single","paper":"auto","papers":["white","warm","dark"],"sidebar":true},"ok":true,"v":1}
   events 
@@ -206,10 +202,6 @@
   reply {"cmd":"view","data":{"agent_icon":true,"layout":"single","paper":"auto","papers":["white","warm","dark"],"sidebar":true},"ok":true,"v":1}
   events 
   words "Paper: auto. Sidebar: shown. Agent icon: on. Layout: single."
-["view","warm","off","off","fit","two_up"]
-  reply {"cmd":"view","error":{"candidates":[],"code":"zoom_needs_app","exit":1,"message":"Zoom is about what's on a screen, and this session has none.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
-  events 
-  words ""
 {"cmd":"palette"}
   reply {"cmd":"palette","error":{"candidates":[],"code":"palette_needs_app","exit":1,"message":"The palette lists the app's commands, and this session has no app.","next":"It works when `recto` is talking to the app."},"ok":false,"v":1}
   events 

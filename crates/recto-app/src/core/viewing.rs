@@ -4,7 +4,7 @@
 use super::menu_rows::{Agents, Asked, Row};
 use super::{HostAction, Inner, person};
 use crate::menus::Action;
-use recto_agent::commands::view::View;
+use recto_agent::commands::view::{PaperChoice, Shown, View};
 use std::sync::Arc;
 
 /// **The view's menu ids** ([`super::menu_rows`]): the paper, the sidebar, the agent icon and a tab's layout are each `view`. A toggle toggles when it runs,
@@ -13,19 +13,19 @@ use std::sync::Arc;
 pub fn row<'a>(inner: &'a Arc<Inner>, asked: &Asked<'_>) -> Option<Row<'a>> {
     let view = match asked.action.as_ref()? {
         Action::SetPaper(paper) => View {
-            paper: Some(paper.name().into()),
+            paper: Some(PaperChoice::Is(*paper)),
             ..View::default()
         },
         Action::ToggleSidebar => View {
-            sidebar: Some("toggle".into()),
+            sidebar: Some(Shown::Toggle),
             ..View::default()
         },
         Action::ToggleAgentIcon => View {
-            agent_icon: Some("toggle".into()),
+            agent_icon: Some(Shown::Toggle),
             ..View::default()
         },
         Action::SetSpread(spread) => View {
-            layout: Some(spread.name().into()),
+            layout: Some(*spread),
             tab: inner.panes.tab_of(inner.panes.reading()).map(|tab| format!("#{}", tab.0)),
             ..View::default()
         },
@@ -47,7 +47,7 @@ impl Inner {
     /// second press before the first is shown is a second toggle (accident A3).
     pub fn toggle_sidebar(self: &Arc<Self>) {
         self.view_for_person(View {
-            sidebar: Some("toggle".into()),
+            sidebar: Some(Shown::Toggle),
             ..View::default()
         });
     }
@@ -55,7 +55,7 @@ impl Inner {
     /// The sidebar shown, as ⌘K's palette, which is in it, needs: `view --sidebar on`.
     pub fn show_sidebar(self: &Arc<Self>) {
         self.view_for_person(View {
-            sidebar: Some("on".into()),
+            sidebar: Some(Shown::On),
             ..View::default()
         });
     }
