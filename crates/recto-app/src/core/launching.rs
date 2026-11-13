@@ -44,6 +44,23 @@ impl Inner {
         self.life.state_read()
     }
 
+    /// **What the window's first showing had on it, and why it was shown** (the first-frame failure under CI's limits, 2026-11-13: a frame with no tiles, and nothing to say whether Rust had called it ready or the patience had run out). `why` is the host's: `ready` when `ready_to_show` said yes, `patience` when its timer did. The rest is how the pieces of that answer were at the show, each a boolean, written once per window.
+    pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str) {
+        let report = self.engine.report().0;
+        let held = lock(&self.life.holding_tab).is_some();
+        let session_free = self.host.session.try_with_session(|session| session.active().is_some());
+        let opened = lock(&self.life.window_opened_at).map(|at| at.elapsed());
+        let since_start = self.life.started.elapsed();
+        *lock(&self.life.first_shown) = Some(json!({
+            "home": home, "page": report["page"], "scroll_y": report["scroll_y"], "scroll_x": report["scroll_x"], "magnification": report["magnification"], "settled": report["settled"], "tab": report["tab"],
+            "tile_layers": tile_layers, "ms_from_start": since_start.as_secs_f64() * 1000.0,
+            "why": why,
+            "ms_since_window_opened": opened.map(|opened| opened.as_secs_f64() * 1000.0),
+            "patience_ms": SHOW_PATIENCE.as_millis() as u64, "cap_ms": (SHOW_PATIENCE + RESTORE_PATIENCE).as_millis() as u64,
+            "when_shown": { "state_read": self.state_read(), "holding_tab": held, "session_free": session_free.is_some(), "has_tab": session_free.unwrap_or(false), "on_place": self.engine.is_on_place(), "showable": self.engine.is_showable() },
+        }));
+    }
+
     /// Whether this launch opens a window. Any launch does but an update's arrival, which leaves things as they were: a window closed stays closed, rather than appearing behind whatever the user's doing.
     pub fn window_should_open(&self) -> bool {
         let reopened = self.updates.reopened_by_update();
@@ -54,6 +71,7 @@ impl Inner {
 
     /// The window opened: its page views have somewhere to draw again, what was selected on the window it replaced comes back, and the contents go back to where they were.
     pub fn window_opened(&self) {
+        *lock(&self.life.window_opened_at) = Some(Instant::now());
         let engines = self.panes.engines(&self.engine);
         for engine in &engines {
             engine.window_opened();

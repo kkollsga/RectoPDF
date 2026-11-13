@@ -1307,15 +1307,12 @@ impl AppCore {
         active.is_none() || self.inner.engine.is_on_place() || self.inner.engine.is_showable()
     }
 
-    /// The window has just been put on the screen, showing this. For QA to see what the first frame was.
-    pub fn window_shown(&self, home: bool, tile_layers: u32) {
+    /// The window has just been put on the screen, showing this, and `why`: `ready` when `ready_to_show` said yes, `patience` when the host's timer ran out. For QA to see what the first frame was.
+    pub fn window_shown(&self, home: bool, tile_layers: u32, why: String) {
         for engine in self.inner.panes.engines(&self.inner.engine) {
             engine.window_up();
         }
-        let report = self.inner.engine.report().0;
-        *lock(&self.inner.life.first_shown) = Some(
-            json!({ "home": home, "page": report["page"], "scroll_y": report["scroll_y"], "scroll_x": report["scroll_x"], "magnification": report["magnification"], "settled": report["settled"], "tab": report["tab"], "tile_layers": tile_layers, "ms_from_start": self.inner.life.started.elapsed().as_secs_f64() * 1000.0 }),
-        );
+        self.inner.record_window_shown(home, tile_layers, &why);
         // The installer's waiting for this, off this thread, as it writes a small file and may start a worker, and only for a version that's new here.
         let updates = Arc::clone(&self.inner.updates);
         let _ = std::thread::Builder::new()

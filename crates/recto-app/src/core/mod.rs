@@ -208,6 +208,8 @@ pub struct Lifecycle {
     pub(crate) last_input_ms: AtomicU64,
     /// What the window's first showing had on it.
     pub first_shown: Mutex<Option<Value>>,
+    /// When the window was last put up, for how long the patience had run when it was shown.
+    pub window_opened_at: Mutex<Option<Instant>>,
 }
 
 /// **The control socket:** where the state lives, the server waiting for the session to be as it was, and what stops it and announces to its watchers.
@@ -266,6 +268,7 @@ impl Lifecycle {
             life: Mutex::new(crate::lifecycle::Life::default()),
             holding_tab: Mutex::new(None),
             first_shown: Mutex::new(None),
+            window_opened_at: Mutex::new(None),
             last_input_ms: AtomicU64::new(0),
             update_facts: Mutex::new(None),
             reads_running: AtomicU32::new(0),

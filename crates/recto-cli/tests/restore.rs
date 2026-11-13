@@ -502,7 +502,10 @@ fn find_comes_back(second_launch: &[(&str, &std::ffi::OsStr)]) {
     run.quit();
 }
 
-/// Failure: the first frame shows the wrong page or the home screen, or the window comes up empty and fills in. It's held back until the page is on its layers, and this is what was on it when it showed: the place, drawn.
+/// Failure: the first frame shows the wrong page or the home screen, or the window comes up empty and fills in, or says nothing of why it came up. The rule is that Rust's `ready_to_show` holds the frame until the place is on the layers, and the host's timer lets it go after the product's patience whatever is on it; so the test asserts the rule, not a machine's speed (the old form, tiles on the first frame whatever the machine, failed 2 of 2 under `--like-ci` on `e656236`, `c8a918d` and `203a03a` alike, where the frame shows by patience).
+/// - **`why` is `ready`:** the frame has tiles on it and is at the right page and scroll. That is the old assertion, unchanged, and a frame with no tiles that claims `ready` fails here (a `ready_to_show` that answers before the pages are covered).
+/// - **`why` is `patience`:** the app said so, the show didn't come before the patience (the record's own `patience_ms`, the product's constant) had run since the window was put up (a timer that fires early), and once settled the place is the right one with tiles on it and no blank frame counted after it settles.
+/// - **Either way,** the restored place is right once settled (a place restored wrong after settling).
 #[test]
 fn the_first_frame_is_the_right_one() {
     let state = State::new();
@@ -518,16 +521,49 @@ fn the_first_frame_is_the_right_one() {
     run.quit();
     let run = Run::on(&state).unwrap();
     run.settled();
-    let shown = run.report()["record"]["first_shown"].clone();
+    let settled = run.report();
+    let shown = settled["record"]["first_shown"].clone();
     assert_eq!(shown["home"], false, "{shown}");
-    // Something on the page, from its sleep file if nothing else: a window doesn't wait for sharp tiles, which on a heavy page is most of a second.
-    assert!(shown["tile_layers"].as_u64().unwrap() > 0, "{shown}");
-    assert_eq!(shown["page"], before["reader"]["page"]);
-    assert!(
-        (shown["scroll_y"].as_f64().unwrap() - before["reader"]["scroll_y"].as_f64().unwrap()).abs() < 0.25,
-        "{shown} {}",
-        before["reader"]
-    );
+    let why = shown["why"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the window didn't say why it was shown: {shown}"));
+    let right_place = |at: &serde_json::Value, what: &str| {
+        assert_eq!(at["page"], before["reader"]["page"], "{what}: the page: {shown}");
+        assert!(
+            (at["scroll_y"].as_f64().unwrap() - before["reader"]["scroll_y"].as_f64().unwrap()).abs() < 0.25,
+            "{what}: the scroll: {at} {}",
+            before["reader"]
+        );
+    };
+    match why {
+        "ready" => {
+            // Something on the page, from its sleep file if nothing else: Rust said the place was on the layers.
+            assert!(shown["tile_layers"].as_u64().unwrap() > 0, "shown as ready with no tiles on it: {shown}");
+            right_place(&shown, "shown as ready");
+        }
+        "patience" => {
+            let since = shown["ms_since_window_opened"]
+                .as_f64()
+                .unwrap_or_else(|| panic!("no time since the window was put up: {shown}"));
+            let patience = shown["patience_ms"].as_f64().unwrap();
+            assert!(
+                since >= patience,
+                "shown by patience {since} ms after the window went up, before its {patience} ms: {shown}"
+            );
+        }
+        other => panic!("a reason that isn't one: {other}: {shown}"),
+    }
+    // Settled, whichever way it was shown: the place is right, there are tiles, and nothing blank is counted from here.
+    right_place(&settled["reader"], "settled");
+    assert!(settled["app"]["page_layers"].as_u64().unwrap() > 0, "settled with no tiles: {}", settled["app"]);
+    let blanks = |report: &serde_json::Value| {
+        (
+            report["reader"]["counts"]["blank_seen_steps"].clone(),
+            report["reader"]["counts"]["blank_steps"].clone(),
+        )
+    };
+    run.settled();
+    assert_eq!(blanks(&run.report()), blanks(&settled), "a blank frame counted after it settled");
 }
 
 /// Failure: an update mid-work loses what the reader had going, or asks them something. It hands off in the middle of Find text typed and edit mode on, and the whole report comes back. It never prompts: there's nothing to answer in a quiet run, and it ends by itself.
