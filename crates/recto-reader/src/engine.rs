@@ -347,6 +347,8 @@ impl Engine {
 
     pub fn jump_to(&self, page: u32) {
         let mut reader = lock(&self.shared.reader);
+        // Newer than any place synced scroll left for this view, which would otherwise land after it.
+        lock(&self.shared.pending).follow = None;
         reader.jump_to(page, 0.0);
         self.after(reader);
     }
@@ -356,9 +358,8 @@ impl Engine {
     /// one and every read before it an earlier one; `None` if it wasn't sent, with no tab showing.
     pub fn jump_within(&self, page: u32, within: f64) -> Option<u64> {
         let mut reader = lock(&self.shared.reader);
-        if within.is_finite() && within > 0.0 {
-            lock(&self.shared.pending).follow = None;
-        }
+        // Newer than any place synced scroll left for this view, to a page's top as much as a way down it.
+        lock(&self.shared.pending).follow = None;
         let sent = reader.jump_to(page, within).then(crate::tiles::place_stamp);
         self.after(reader);
         sent
@@ -720,6 +721,32 @@ mod tests {
         });
         assert!(outcome.scrolled);
         assert!(lock(&engine.shared.pending).follow.is_none());
+    }
+
+    /// Failure: a place synced scroll left for a busy pane lands after a jump the session sent the pane since to a page's top (an agent's `goto`, Back to
+    /// where a page began, the session's own page for the pane), and takes the pane back to where the other pane's scroll had it, undoing the newer jump;
+    /// a jump a way down a page already dropped it. The jump is newer, as a newer follow is.
+    #[test]
+    fn a_jump_to_a_pages_top_drops_a_place_left_for_the_pane() {
+        for by_page in [true, false] {
+            let engine = without_its_thread();
+            let held = engine.shared.reader.lock().unwrap();
+            assert!(!engine.follow_soon(60, 0.5));
+            drop(held);
+            if by_page {
+                engine.jump_to(12);
+            } else {
+                assert!(engine.jump_within(12, 0.0).is_some());
+            }
+            // Its own thread comes round.
+            let mut reader = lock(&engine.shared.reader);
+            take_pending_follow(&engine.shared, &mut reader);
+            assert_eq!(
+                reader.docs.shown().map(|doc| doc.reading_anchor()),
+                Some((12, 0.0)),
+                "by the page alone: {by_page}"
+            );
+        }
     }
 
     /// Failure (review 1): with a middle pane gone, the tab that moves into its page view gets the place synced scroll left for the one before.
