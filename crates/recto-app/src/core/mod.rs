@@ -19,6 +19,7 @@ pub mod updates;
 
 mod closing;
 mod comparison;
+mod contents;
 pub mod controls;
 mod editing;
 #[cfg(test)]
@@ -34,7 +35,6 @@ mod unlocking;
 mod viewing;
 pub mod zoom;
 
-use comparison::*;
 pub use host::*;
 use opening::*;
 pub use reconcile::*;
@@ -204,6 +204,9 @@ pub struct Lifecycle {
     pub(crate) reads_running: AtomicU32,
     /// The one pass over the other tabs' files after a restore, while it's under way: what a test waits for, as nothing else does.
     pub(crate) others_looking: AtomicU32,
+    /// A person's commands on threads of their own (`person::submit`), to the end of what came of them: what a test waits for. The host counts them for a
+    /// hand-off as it counts any command.
+    pub(crate) persons_running: AtomicU32,
     /// Sheets and panels over the window now, which a hand-off waits for.
     pub sheets: AtomicU32,
     /// When the user last touched the app, in milliseconds of `clock`. One number, set by what the event monitor calls, with no timer.
@@ -281,6 +284,7 @@ impl Lifecycle {
             last_input_ms: AtomicU64::new(0),
             update_facts: Mutex::new(None),
             reads_running: AtomicU32::new(0),
+            persons_running: AtomicU32::new(0),
             others_looking: AtomicU32::new(0),
             sheets: AtomicU32::new(0),
             qa_hold_reads: AtomicBool::new(false),

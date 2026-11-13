@@ -137,34 +137,23 @@ impl Inner {
 
     /// A row was tapped: a tab's is `tap`.
     pub fn tap_row(self: &Arc<Self>, row: SidebarRow) {
-        let call = match (row.kind, row.page) {
-            (crate::RowKind::Tab, _) => return person::submit(self, tap(TabId(row.tab))),
-            (crate::RowKind::Contents, Some(page)) => return self.contents_tapped(TabId(row.tab), page),
-            (crate::RowKind::Contents, None) => return,
-            (crate::RowKind::Note, _) => match row.action.as_deref().and_then(recto_session::ContentsAction::from_id) {
-                Some(action) => CoreCall::ContentsAction(TabId(row.tab), action),
-                None => return,
-            },
-        };
-        self.core.push(call);
+        match (row.kind, row.page) {
+            (crate::RowKind::Tab, _) => person::submit(self, tap(TabId(row.tab))),
+            (crate::RowKind::Contents, Some(page)) => self.contents_tapped(TabId(row.tab), page),
+            (crate::RowKind::Contents, None) => {}
+            (crate::RowKind::Note, _) => {
+                if let Some(action) = row.action.as_deref().and_then(recto_session::ContentsAction::from_id) {
+                    self.contents_note_for_person(TabId(row.tab), action);
+                }
+            }
+        }
     }
 
     /// ⌘-click or ⌃-click on a row: a tab goes into a comparison, or out of it. A contents row does what a click does.
     pub fn tap_row_adding(self: &Arc<Self>, row: SidebarRow) {
         match row.kind {
-            crate::RowKind::Tab => self.core.push(CoreCall::CompareClick(TabId(row.tab))),
+            crate::RowKind::Tab => self.compare_toggle_for_person(TabId(row.tab)),
             crate::RowKind::Contents | crate::RowKind::Note => self.tap_row(row),
-        }
-    }
-
-    /// A contents row's chevron was tapped: its sections fold or open.
-    pub fn toggle_contents_section(&self, first: u32) {
-        let entry = lock(&self.published)
-            .contents
-            .get(first as usize)
-            .map(|entry| (entry.tab, entry.entry, entry.expandable));
-        if let Some((tab, entry, true)) = entry {
-            self.core.push(CoreCall::ToggleSection(TabId(tab), entry));
         }
     }
 }

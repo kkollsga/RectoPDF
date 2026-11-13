@@ -121,15 +121,17 @@ impl<L: DocLoader> Session<L> {
     }
 
     /// Opens a contents section that's closed, or closes one that's open, as its chevron does. Owner, 2026-11-07: "there should be a collapse toggle button for sections with sub chapters on the left side of the headers". What following the place opens is the default, and only what differs from it is kept, at most [`record::MAX_CONTENTS_FOLDS`], in the record.
-    pub fn toggle_contents_section(&mut self, id: TabId, entry: u32) {
-        let Some(toc) = self.shown_contents(id) else { return };
-        let Some(tab) = self.tab(id) else { return };
+    ///
+    /// Says whether the section's open now, or `None` if it isn't one: the entry has nothing under it, or the tab's contents aren't read.
+    pub fn toggle_contents_section(&mut self, id: TabId, entry: u32) -> Option<bool> {
+        let toc = self.shown_contents(id)?;
+        let tab = self.tab(id)?;
         let chain = following_chain(&toc, tab, self.edits.get(&id));
         let has_children = toc.entries().get(entry as usize + 1).is_some_and(|next| next.parent == entry);
         if !has_children {
-            return;
+            return None;
         }
-        let Some(tab) = self.tab_mut(id) else { return };
+        let tab = self.tab_mut(id)?;
         let open_now = section_open(tab.folds.as_deref(), &chain, entry);
         let mut folds: Vec<(u32, bool)> = tab.folds.take().map(Vec::from).unwrap_or_default();
         folds.retain(|(at, _)| *at != entry);
@@ -141,6 +143,7 @@ impl<L: DocLoader> Session<L> {
         folds.drain(..over);
         tab.folds = (!folds.is_empty()).then(|| folds.into_boxed_slice());
         tab.place_dirty = true;
+        Some(!open_now)
     }
 
     /// The contents the sidebar shows for a tab: its generated ones if they're chosen and ready, or its own.

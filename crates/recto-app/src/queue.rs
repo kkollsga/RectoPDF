@@ -28,12 +28,6 @@ pub enum CoreCall {
     Unlocked(crate::passwords::Ask, Result<DocFacts, OpenError>, Option<FileStamp>, Arc<recto_core::Password>),
     /// The app's come to the front: the files showing are looked at, as another app may have changed them.
     LookAtShown,
-    /// ⌘-click or ⌃-click on a tab: into a comparison, or out of it.
-    CompareClick(TabId),
-    /// The reader's moved into another pane.
-    FocusPane(TabId),
-    /// Synced scroll, or separate.
-    SetSynced(bool),
     /// Those tabs go dormant.
     SleepTabs(Vec<TabId>, crate::sleeper::Why),
     /// The system's short of memory, and whether it's critical.
@@ -55,14 +49,10 @@ pub enum CoreCall {
     RestorePatienceOver,
     /// What a save off this thread did, for watchers.
     Events(Vec<Event>),
-    /// The reader tapped the note over a tab's contents.
-    ContentsAction(TabId, recto_session::ContentsAction),
     /// Generated contents were made, or failed: tabs waiting for them look.
     GeneratedFinished,
     /// What a look off this thread found of a tab's generated contents, for the version of the file it looked at.
     GeneratedView(TabId, recto_session::GeneratedView, Option<FileStamp>),
-    /// A contents section's chevron: fold it or open it.
-    ToggleSection(TabId, u32),
     /// The Find field, its list, and ⌘G.
     Find(crate::find::FindCall),
     /// **A command for the person** (step R2.3): the one an agent would send, run by the one executor on this thread, as theirs.
@@ -123,12 +113,6 @@ impl CoreCall {
     #[must_use]
     pub fn is_user_action(&self) -> bool {
         match self {
-            Self::CompareClick(_)
-            | Self::FocusPane(_)
-            | Self::SetSynced(_)
-            // The note over the contents, and a section's chevron: both kept in the record.
-            | Self::ContentsAction(..)
-            | Self::ToggleSection(..) => true,
             Self::Find(call) => call.is_user_action(),
             Self::Run(run) => run.origin == Origin::Input,
             // A password tried on its own thread: dropped, its prompt would wait for good. Its file's read as a `Read` is.
@@ -286,10 +270,6 @@ pub enum Reading {
     File(PathBuf),
     /// A restored active tab: what's become of its file, first, then its facts.
     Restored(TabId),
-    /// A ⌘-click on the first tab, with the second, cold, being read for it: the tab joining, or the pane read next.
-    Compare(TabId, TabId),
-    /// A cold tab in a comparison's pane, which the reader's moved into.
-    Pane(TabId),
 }
 
 /// A file read off the session thread, on its way back to it.
@@ -428,9 +408,6 @@ mod tests {
                 Arc::new(recto_core::Password::new("pw").unwrap()),
             ),
             CoreCall::LookAtShown,
-            CoreCall::CompareClick(tab),
-            CoreCall::FocusPane(tab),
-            CoreCall::SetSynced(true),
             CoreCall::SleepTabs(vec![tab], crate::sleeper::Why::Asked),
             CoreCall::MemoryPressure(false),
             CoreCall::WokenFileIsOther(tab, FileStatus::Same(stamp)),
@@ -442,10 +419,8 @@ mod tests {
             CoreCall::Restored(Box::new(Loaded::Nothing)),
             CoreCall::RestorePatienceOver,
             CoreCall::Events(Vec::new()),
-            CoreCall::ContentsAction(tab, recto_session::ContentsAction::Generate),
             CoreCall::GeneratedFinished,
             CoreCall::GeneratedView(tab, recto_session::GeneratedView::Making, None),
-            CoreCall::ToggleSection(tab, 0),
             CoreCall::Find(crate::find::FindCall::Typed("a".into())),
             CoreCall::Find(crate::find::FindCall::Open),
             CoreCall::Find(crate::find::FindCall::Close),
@@ -467,39 +442,34 @@ mod tests {
             CoreCall::Reconcile => 0,
             CoreCall::Unlocked(..) => 1,
             CoreCall::LookAtShown => 2,
-            CoreCall::CompareClick(_) => 3,
-            CoreCall::FocusPane(_) => 4,
-            CoreCall::SetSynced(_) => 5,
-            CoreCall::SleepTabs(..) => 6,
-            CoreCall::MemoryPressure(_) => 7,
-            CoreCall::WokenFileIsOther(..) => 8,
-            CoreCall::FileLength(..) => 9,
-            CoreCall::LookAgain(_) => 10,
-            CoreCall::Page(..) => 11,
-            CoreCall::Read(_) => 12,
-            CoreCall::Flush(_) => 13,
-            CoreCall::Restored(_) => 14,
-            CoreCall::RestorePatienceOver => 15,
-            CoreCall::Events(_) => 16,
-            CoreCall::ContentsAction(..) => 17,
-            CoreCall::GeneratedFinished => 18,
-            CoreCall::GeneratedView(..) => 19,
-            CoreCall::ToggleSection(..) => 20,
+            CoreCall::SleepTabs(..) => 3,
+            CoreCall::MemoryPressure(_) => 4,
+            CoreCall::WokenFileIsOther(..) => 5,
+            CoreCall::FileLength(..) => 6,
+            CoreCall::LookAgain(_) => 7,
+            CoreCall::Page(..) => 8,
+            CoreCall::Read(_) => 9,
+            CoreCall::Flush(_) => 10,
+            CoreCall::Restored(_) => 11,
+            CoreCall::RestorePatienceOver => 12,
+            CoreCall::Events(_) => 13,
+            CoreCall::GeneratedFinished => 14,
+            CoreCall::GeneratedView(..) => 15,
             CoreCall::Find(find_call) => match find_call {
-                crate::find::FindCall::Typed(_) => 21,
-                crate::find::FindCall::Open => 22,
-                crate::find::FindCall::Close => 23,
-                crate::find::FindCall::Step(..) => 24,
-                crate::find::FindCall::Choose(_) => 25,
-                crate::find::FindCall::News => 26,
-                crate::find::FindCall::Reveal(..) => 27,
+                crate::find::FindCall::Typed(_) => 16,
+                crate::find::FindCall::Open => 17,
+                crate::find::FindCall::Close => 18,
+                crate::find::FindCall::Step(..) => 19,
+                crate::find::FindCall::Choose(_) => 20,
+                crate::find::FindCall::News => 21,
+                crate::find::FindCall::Reveal(..) => 22,
             },
             CoreCall::Run(run) => match run.origin {
-                Origin::Input => 28,
-                Origin::Finishing => 29,
+                Origin::Input => 23,
+                Origin::Finishing => 24,
             },
         };
-        (place, 30)
+        (place, 25)
     }
 
     /// Failure (review C8): a call a person makes isn't on the hand-off freeze's list, so it's taken while a hand-off writes what comes back, and lost: closing a tab, the close prompt's answer, the contents' note and a section's chevron were. Every variant is sampled, and those a person makes, named here apart from the code that decides, are exactly the ones held back. The rest get through.
@@ -517,19 +487,14 @@ mod tests {
             matches!(call, CoreCall::Run(run) if run.origin == Origin::Input)
                 || matches!(
                     call,
-                    CoreCall::CompareClick(_)
-                        | CoreCall::FocusPane(_)
-                        | CoreCall::SetSynced(_)
-                        | CoreCall::ContentsAction(..)
-                        | CoreCall::ToggleSection(..)
-                        | CoreCall::Find(
-                            crate::find::FindCall::Typed(_)
-                                | crate::find::FindCall::Open
-                                | crate::find::FindCall::Close
-                                | crate::find::FindCall::Step(..)
-                                | crate::find::FindCall::Choose(_)
-                                | crate::find::FindCall::Reveal(..)
-                        )
+                    CoreCall::Find(
+                        crate::find::FindCall::Typed(_)
+                            | crate::find::FindCall::Open
+                            | crate::find::FindCall::Close
+                            | crate::find::FindCall::Step(..)
+                            | crate::find::FindCall::Choose(_)
+                            | crate::find::FindCall::Reveal(..)
+                    )
                 )
         };
         for call in calls {

@@ -123,6 +123,30 @@ fn measure(tabs: usize) {
             text: (if first { "page 1" } else { "page" }).into(),
         });
     });
+    // ⌘G and ⇧⌘G through what was typed last, its hits all in.
+    app.act(UiAction::FindTyped { text: "page".into() });
+    app.settle();
+    case(&app, "find step", tabs, nothing, |app, first| {
+        app.act(UiAction::Menu {
+            id: (if first { "find.next" } else { "find.previous" }).into(),
+        });
+    });
+    app.act(UiAction::FindClose);
+    app.settle();
+    // ⌘-click on the row of a warm tab, b, with a in front: b joins, side by side, and leaves again, a alone.
+    case(&app, "compare click", tabs, nothing, |app, _| {
+        app.act(UiAction::Row { row: b.clone(), adding: true });
+    });
+    // With a and b side by side, the reader moving from one pane into the other, as the pointer or a scroll reports it.
+    app.act(UiAction::Row { row: b.clone(), adding: true });
+    app.settle();
+    case(&app, "pane focus", tabs, nothing, |app, first| {
+        app.act(UiAction::PaneRead {
+            tab: if first { a.tab } else { b.tab },
+        });
+    });
+    app.act(UiAction::Row { row: a.clone(), adding: false });
+    app.settle();
     case(&app, "zoom", tabs, nothing, |app, first| {
         app.act(UiAction::Menu {
             id: (if first { "view.zoom_in" } else { "view.zoom_out" }).into(),

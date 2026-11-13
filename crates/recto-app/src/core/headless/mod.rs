@@ -2,6 +2,8 @@
 //! feature. Each names the app-launching test it stands in for, where it replaced one.
 
 mod closing;
+mod compare;
+mod contents;
 mod controls;
 mod editing;
 mod exits;

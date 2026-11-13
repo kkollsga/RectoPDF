@@ -51,7 +51,7 @@ impl Inner {
             menus::Action::Host(host) => return host,
             menus::Action::Copy { anyway } => self.panes.reading_engine(&self.engine).copy_selection(anyway),
             menus::Action::SelectAll => self.panes.reading_engine(&self.engine).select_all(),
-            menus::Action::SetSynced(on) => self.core.push(CoreCall::SetSynced(on)),
+            menus::Action::SetSynced(on) => self.synced_for_person(on),
             menus::Action::PaletteOpen => {
                 // The palette is in the sidebar, so ⌘K shows it.
                 if lock(&self.published).reader.sidebar_hidden {

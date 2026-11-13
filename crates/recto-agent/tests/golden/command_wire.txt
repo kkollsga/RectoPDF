@@ -299,27 +299,43 @@
 {"cmd":"Find"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"compare"}
-    ok compare Compare { tabs: None, sync: None, off: false }
+    ok compare Compare { tabs: None, sync: None, off: false, toggle: None, reading: None }
 {"cmd":"compare","tabs":"#1,#2","sync":"on","off":true}
-    ok compare Compare { tabs: Some("#1,#2"), sync: Some("on"), off: true }
+    ok compare Compare { tabs: Some("#1,#2"), sync: Some("on"), off: true, toggle: None, reading: None }
 {"cmd":"compare","extra":1}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"compare","tabs":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"compare","tabs":null}
-    ok compare Compare { tabs: None, sync: None, off: false }
+    ok compare Compare { tabs: None, sync: None, off: false, toggle: None, reading: None }
 {"cmd":"compare","sync":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"compare","sync":null}
-    ok compare Compare { tabs: None, sync: None, off: false }
+    ok compare Compare { tabs: None, sync: None, off: false, toggle: None, reading: None }
 {"cmd":"compare","off":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"compare","off":null}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 ["compare"]
-    ok compare Compare { tabs: None, sync: None, off: false }
+    ok compare Compare { tabs: None, sync: None, off: false, toggle: None, reading: None }
 ["compare","#1,#2","on",true]
-    ok compare Compare { tabs: Some("#1,#2"), sync: Some("on"), off: true }
+    ok compare Compare { tabs: Some("#1,#2"), sync: Some("on"), off: true, toggle: None, reading: None }
+{"cmd":"compare","toggle":"#2"}
+    ok compare Compare { tabs: None, sync: None, off: false, toggle: Some("#2"), reading: None }
+{"cmd":"compare","reading":"#2"}
+    ok compare Compare { tabs: None, sync: None, off: false, toggle: None, reading: Some("#2") }
+{"cmd":"compare","toggle":"#2"}
+    ok compare Compare { tabs: None, sync: None, off: false, toggle: Some("#2"), reading: None }
+{"cmd":"compare","toggle":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"compare","toggle":null}
+    ok compare Compare { tabs: None, sync: None, off: false, toggle: None, reading: None }
+{"cmd":"compare","reading":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"compare","reading":null}
+    ok compare Compare { tabs: None, sync: None, off: false, toggle: None, reading: None }
+["compare",null,null,false,null,"#2"]
+    ok compare Compare { tabs: None, sync: None, off: false, toggle: None, reading: Some("#2") }
 {"cmd":"Compare"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"qa_read","verb":"state"}
@@ -866,6 +882,54 @@
     ok contents Contents { tab: "active", from: None, limit: None, depth: None, generated: false }
 ["contents","#2",3,3,3,true]
     ok contents Contents { tab: "#2", from: Some(3), limit: Some(3), depth: Some(3), generated: true }
+{"cmd":"contents_fold","entry":0}
+    ok contents_fold ContentsFold { entry: 0, tab: "active" }
+{"cmd":"contents_fold","entry":0,"tab":"#2"}
+    ok contents_fold ContentsFold { entry: 0, tab: "#2" }
+{"cmd":"contents_fold","entry":0,"extra":1}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"contents_fold","entry":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"contents_fold","entry":null}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"contents_fold"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"contents_fold","entry":0,"tab":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"contents_fold","entry":0,"tab":null}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+["contents_fold",0,"#2"]
+    ok contents_fold ContentsFold { entry: 0, tab: "#2" }
+{"cmd":"ContentsFold","entry":0}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"contents_show","which":"own"}
+    ok contents_show ContentsShow { which: "own", tab: "active" }
+{"cmd":"contents_show","which":"generated","tab":"#2"}
+    ok contents_show ContentsShow { which: "generated", tab: "#2" }
+{"cmd":"contents_show","which":"own","extra":1}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"contents_show","which":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"contents_show","which":null}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"contents_show"}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"contents_show","which":"own","tab":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+["contents_show","generated","#2"]
+    ok contents_show ContentsShow { which: "generated", tab: "#2" }
+{"cmd":"contents_stop"}
+    ok contents_stop ContentsStop { tab: "active" }
+{"cmd":"contents_stop","tab":"#2"}
+    ok contents_stop ContentsStop { tab: "#2" }
+{"cmd":"contents_stop","extra":1}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"contents_stop","tab":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+{"cmd":"contents_stop","tab":null}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+["contents_stop","#2"]
+    ok contents_stop ContentsStop { tab: "#2" }
 {"cmd":"Contents"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"search","query":"q"}
@@ -1515,7 +1579,7 @@ null
 {"cmd":"palette","run":true}
     ok palette Palette { query: None, run: true, limit: None }
 {"cmd":"compare","off":true}
-    ok compare Compare { tabs: None, sync: None, off: true }
+    ok compare Compare { tabs: None, sync: None, off: true, toggle: None, reading: None }
 {"cmd":"contents","generated":true}
     ok contents Contents { tab: "active", from: None, limit: None, depth: None, generated: true }
 {"cmd":"save","out":"/d/y.pdf","replace":true}

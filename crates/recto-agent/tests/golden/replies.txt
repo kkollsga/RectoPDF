@@ -282,6 +282,30 @@
   reply {"cmd":"compare","error":{"candidates":[],"code":"usage","exit":2,"message":"`--off` goes alone: it ends the comparison.","next":"`recto help` lists every command."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"compare","toggle":"#2"}
+  reply {"cmd":"compare","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"compare","reading":"#2"}
+  reply {"cmd":"compare","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"compare","toggle":"#2"}
+  reply {"cmd":"compare","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"compare","toggle":null}
+  reply {"cmd":"compare","data":{"comparing":false,"max_panes":3,"note":null,"panes":[],"sync":"off","sync_from":null},"ok":true,"v":1}
+  events 
+  words "One tab showing, no comparison."
+{"cmd":"compare","reading":null}
+  reply {"cmd":"compare","data":{"comparing":false,"max_panes":3,"note":null,"panes":[],"sync":"off","sync_from":null},"ok":true,"v":1}
+  events 
+  words "One tab showing, no comparison."
+["compare",null,null,false,null,"#2"]
+  reply {"cmd":"compare","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
 {"cmd":"qa_read","verb":"state"}
   reply {"cmd":"qa_read","error":{"candidates":[],"code":"qa_needs_app","exit":1,"message":"QA commands only work on an app started with `recto qa start`.","next":"Set RECTO_STATE_DIR to a temp folder and run `recto qa start`."},"ok":false,"v":1}
   events 
@@ -376,6 +400,42 @@
   words "This document has no contents.\nThis file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages."
 ["contents","#2",3,3,3,true]
   reply {"cmd":"contents","error":{"candidates":[],"code":"no_generated_contents","exit":1,"message":"Generated contents aren't available in this session.","next":"Run it against the app's session, or `recto serve`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"contents_fold","entry":0}
+  reply {"cmd":"contents_fold","error":{"candidates":[],"code":"not_a_section","exit":3,"message":"That entry has nothing under it in the contents the sidebar shows, so there's nothing to fold or open.","next":"`recto contents` numbers the entries, and an entry with deeper ones after it is a section."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"contents_fold","entry":0,"tab":"#2"}
+  reply {"cmd":"contents_fold","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+["contents_fold",0,"#2"]
+  reply {"cmd":"contents_fold","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"contents_show","which":"own"}
+  reply {"cmd":"contents_show","data":{"shown":"own","state":null,"tab":4},"ok":true,"v":1}
+  events 
+  words "The sidebar shows the file's own contents."
+{"cmd":"contents_show","which":"generated","tab":"#2"}
+  reply {"cmd":"contents_show","error":{"candidates":[],"code":"no_generated_contents","exit":1,"message":"Generated contents aren't available in this session.","next":"Run it against the app's session, or `recto serve`."},"ok":false,"v":1}
+  events 
+  words ""
+["contents_show","generated","#2"]
+  reply {"cmd":"contents_show","error":{"candidates":[],"code":"no_generated_contents","exit":1,"message":"Generated contents aren't available in this session.","next":"Run it against the app's session, or `recto serve`."},"ok":false,"v":1}
+  events 
+  words ""
+{"cmd":"contents_stop"}
+  reply {"cmd":"contents_stop","data":{"stopped":false,"tab":4},"ok":true,"v":1}
+  events 
+  words "Nothing was being made. The sidebar shows the file's own contents."
+{"cmd":"contents_stop","tab":"#2"}
+  reply {"cmd":"contents_stop","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
+  events 
+  words ""
+["contents_stop","#2"]
+  reply {"cmd":"contents_stop","error":{"candidates":[],"code":"no_such_tab","exit":3,"message":"That tab isn't open.","next":"`recto tabs` lists what's open. `recto open <file.pdf>` opens a file."},"ok":false,"v":1}
   events 
   words ""
 {"cmd":"index"}

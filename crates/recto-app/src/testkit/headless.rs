@@ -522,6 +522,10 @@ impl HeadlessApp {
         if reads > 0 {
             busy.push(format!("{reads} file(s) being read"));
         }
+        let persons = inner.life.persons_running.load(Ordering::SeqCst);
+        if persons > 0 {
+            busy.push(format!("{persons} of the person's command(s) on a thread of their own"));
+        }
         if inner.life.others_looking.load(Ordering::SeqCst) > 0 {
             busy.push("the other tabs' files being looked at".to_string());
         }
