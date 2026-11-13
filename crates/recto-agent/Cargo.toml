@@ -6,6 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# A code compared with a word, `error.code == "usage"`, for tests: only dev-dependencies (and `recto-app`'s `testkit`) turn this on, so a release build
+# has no string comparison of a code (review of R2.5, F3).
+test-words = []
+
 [lints]
 workspace = true
 
@@ -26,6 +31,8 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# Its own integration tests read codes as the wire does.
+recto-agent = { path = ".", features = ["test-words"] }
 # To make an encrypted file with permissions, as nothing else here writes one.
 lopdf.workspace = true
 recto-testpdf.workspace = true

@@ -4,8 +4,9 @@
 //!
 //! [`Code`] is a word with a private field, not an enum: there are more codes than the budget for an enum's variants allows, and they're a table, not a
 //! type with behaviour of each. What an enum would give is held by tests instead (`tests/codes.rs`): every code in the goldens is listed, every entry
-//! says its next step, no two share a word, [`Code::ALL`] is every entry, every code a crate below names is listed, and no code outside this module is
-//! compared as a string.
+//! says its next step, no two share a word, [`Code::ALL`] is every entry, every code any crate names is listed, no code is made from a word written in
+//! place, and no code outside this module is compared as a string. The set is closed: a code is a listed one, and [`Code::lower`] sends a word the table
+//! doesn't list as [`Code::INTERNAL`], never as a new word on the wire.
 
 use crate::exit;
 use std::fmt;
@@ -59,10 +60,14 @@ impl Code {
     }
 
     /// A code a crate below this one names (a session's refusal, a save's, the renderer's, the updater's), as the code it is here. Each such word is listed,
-    /// which a test holds by reading those crates; one that somehow isn't keeps its word on the wire, and says the next step for its exit.
+    /// which a test holds by reading every crate's sources; one that somehow isn't is a bug, which fails a debug build here, and in a release build goes out
+    /// as [`Code::INTERNAL`]: never a word the table doesn't list.
     #[must_use]
-    pub fn lower(word: &'static str) -> Code {
-        Self::listed(word).unwrap_or(Code(word))
+    pub fn lower(word: &str) -> Code {
+        Self::listed(word).unwrap_or_else(|| {
+            debug_assert!(false, "`{word}` is named below and isn't in the table of codes");
+            Self::INTERNAL
+        })
     }
 
     /// The next step for this code, by its entry, or else by its kind of exit. Every error says one.
@@ -105,14 +110,30 @@ impl serde::Serialize for Code {
     }
 }
 
-/// For a test that reads a refusal as the wire does, `assert_eq!(error.code, "usage")`. Code that routes compares named codes, which `tests/codes.rs`
-/// holds by reading every source outside tests.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure (review of R2.5, F3): a word a crate below says that the table doesn't list goes out on the wire as a code of its own, which nothing
+    /// documents or routes on. It's a bug, which a debug build stops at, and a release build sends as `internal`.
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "isn't in the table of codes"))]
+    fn a_word_the_table_doesnt_list_never_goes_out_as_a_code() {
+        assert_eq!(Code::lower("unlisted_word"), Code::INTERNAL);
+    }
+}
+
+/// For a test that reads a refusal as the wire does, `assert_eq!(error.code, "usage")`: only in a test build, this crate's own or another crate's through
+/// the `test-words` feature, which only dev-dependencies (and `recto-app`'s `testkit`) turn on. A release build has no string comparison at all, so code
+/// that ships compares named codes; in a workspace's test build, where features unify, `tests/codes.rs` holds that by reading every source outside tests.
+#[cfg(any(test, feature = "test-words"))]
 impl PartialEq<&str> for Code {
     fn eq(&self, word: &&str) -> bool {
         self.0 == *word
     }
 }
 
+#[cfg(any(test, feature = "test-words"))]
 impl PartialEq<str> for Code {
     fn eq(&self, word: &str) -> bool {
         self.0 == word

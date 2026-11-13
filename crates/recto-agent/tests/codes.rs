@@ -82,31 +82,55 @@ fn the_table_is_whole_and_every_entry_says_its_next_step() {
     assert!(listed.iter().all(|word| words.contains(word)));
 }
 
-/// The code words a crate below names in what a refusal carries: in a `code()`'s body, a `code:` field, or the constructors that take one.
+/// The crates whose sources are read: every folder under `crates/` but the test-only ones, so a new crate's codes are read as soon as it's made.
+fn every_crate() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(crates())
+        .expect("the crates folder")
+        .flatten()
+        .filter(|entry| entry.path().join("src").is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| !matches!(name.as_str(), "recto-testpdf" | "recto-fuzz"))
+        .collect();
+    names.sort();
+    names
+}
+
+/// A crate's production sources: its files outside `tests` folders, each with its lines outside test items, joined.
+fn production_sources(krate: &str) -> Vec<(PathBuf, String)> {
+    sources(krate)
+        .into_iter()
+        .filter(|(path, _)| !path.components().any(|part| part.as_os_str() == "tests") && !path.to_string_lossy().ends_with("tests.rs"))
+        .map(|(path, text)| {
+            let lines: Vec<&str> = production_lines(&text).into_iter().map(|(_, line)| line).collect();
+            (path, lines.join("\n"))
+        })
+        .collect()
+}
+
+/// A `code()` whose words are its crate's own reasons, which a caller turns into words or its own state, never a refusal's code; each with why.
+const OWN_REASONS: &[(&str, &str)] = &[
+    // An agreement's verdict, a navigation's and a heading's reasons, and an index's: said in their own words, or as a field of an answer.
+    ("recto-core/src/agreement.rs", "a verdict's reason, an answer's field"),
+    ("recto-core/src/verdict.rs", "a verdict's reason, an answer's field"),
+    ("recto-core/src/nav.rs", "where a link goes, an answer's field"),
+    ("recto-headings/src/lib.rs", "why generated contents weren't made, turned into words"),
+    ("recto-index/src/corpus.rs", "why an index was refused, turned into words"),
+    ("recto-update/src/updater.rs", "an update's status, an answer's field"),
+];
+
+/// The code words the crates name in what a refusal carries: in a `code()`'s body, a `code:` field, or the constructors that take one. Every crate is read
+/// but this one and the test-only ones; a `code()` of a crate's own reasons is left out by [`OWN_REASONS`].
 fn named_below() -> BTreeSet<String> {
     let mut named = BTreeSet::new();
-    let code_fns = [
-        "recto-core/src/save_error.rs",
-        "recto-core/src/lib.rs",
-        "recto-session/src/lib.rs",
-        "recto-session/src/edit.rs",
-        "recto-session/src/compare.rs",
-        "recto-session/src/record.rs",
-        "recto-update/src/handover.rs",
-        "recto-render-service/src/host.rs",
-    ];
-    for file in code_fns {
-        let text = std::fs::read_to_string(crates().join(file)).expect("a source file");
-        for (at, _) in text.match_indices("pub fn code(") {
-            let body = &text[at..];
-            let end = body.find("\n    }\n").expect("the function's end");
-            named.extend(quoted_words(&body[..end]).into_iter().map(str::to_string));
-        }
-    }
-    for krate in ["recto-update", "recto-session", "recto-control"] {
-        for (path, text) in sources(krate) {
-            if path.components().any(|part| part.as_os_str() == "tests") {
-                continue;
+    for krate in every_crate().iter().filter(|krate| *krate != "recto-agent") {
+        for (path, text) in production_sources(krate) {
+            let shown = path.strip_prefix(crates()).unwrap_or(&path).display().to_string();
+            if !OWN_REASONS.iter().any(|(file, _)| shown.ends_with(file)) {
+                for (at, _) in text.match_indices("pub fn code(") {
+                    let body = &text[at..];
+                    let end = body.find("\n    }\n").or_else(|| body.find("\n}\n")).expect("the function's end");
+                    named.extend(quoted_words(&body[..end]).into_iter().map(str::to_string));
+                }
             }
             for line in text.lines() {
                 for marker in ["StageError::now(\"", "StageError::lasting(\"", "StoreError::new(\"", "code: \""] {
@@ -131,14 +155,29 @@ fn named_below() -> BTreeSet<String> {
     named
 }
 
-/// Failure: a crate below names a new code that a refusal carries out, and the table never lists it, so it has no next step of its own and nothing
-/// routes on it by name.
+/// Failure: a crate names a new code that a refusal carries out, and the table never lists it, so it has no next step of its own and nothing routes on it
+/// by name, or (now that an unlisted word goes out as `internal`) its refusal reads as a bug. Every crate's sources are read, so a new crate's are too.
 #[test]
 fn every_code_a_crate_below_names_is_listed() {
     let named = named_below();
     assert!(named.len() > 80, "the crates below were read: {} codes", named.len());
     let missing: Vec<&String> = named.iter().filter(|word| Code::listed(word).is_none()).collect();
     assert!(missing.is_empty(), "codes named below that no entry lists: {missing:?}");
+}
+
+/// Failure (review of R2.5, F3): production code makes a code from a word it writes itself, `Code::lower("my_word")`, which is a code the table doesn't list
+/// and no scan of the crates below reads. A code written in code is a named one; `lower` is for a word a crate below says.
+#[test]
+fn no_code_is_made_from_a_word_written_in_place() {
+    let mut found = Vec::new();
+    for krate in every_crate() {
+        for (path, text) in production_sources(&krate) {
+            for line in text.lines().filter(|line| line.contains("Code::lower(\"")) {
+                found.push(format!("{}: {}", path.display(), line.trim()));
+            }
+        }
+    }
+    assert!(found.is_empty(), "codes made from a word written in place: {found:#?}");
 }
 
 /// A source's lines outside test items: an item under `#[cfg(test)]` is left out to its end, and everything after it is read. Braces are counted as written,

@@ -2205,10 +2205,9 @@ mod tests {
             exit::PROTECTED,
             exit::BUSY,
         ] {
-            assert!(
-                !AgentError::new(Code::lower("some_new_code"), "m", exit_code).next.is_empty(),
-                "exit {exit_code}"
-            );
+            for code in Code::ALL {
+                assert!(!AgentError::new(*code, "m", exit_code).next.is_empty(), "{code} at exit {exit_code}");
+            }
         }
     }
 
@@ -3386,8 +3385,8 @@ mod tests {
     fn the_envelope_always_says_its_version_and_outcome() {
         let ok = envelope(&Ok(json!({ "x": 1 })));
         assert_eq!((&ok["v"], &ok["ok"]), (&json!(VERSION), &json!(true)));
-        let failed = envelope(&Err(AgentError::new(Code::lower("c"), "m", exit::FAILED)));
-        assert_eq!((&failed["ok"], &failed["error"]["code"]), (&json!(false), &json!("c")));
+        let failed = envelope(&Err(AgentError::new(Code::USAGE, "m", exit::FAILED)));
+        assert_eq!((&failed["ok"], &failed["error"]["code"]), (&json!(false), &json!("usage")));
     }
 }
 
