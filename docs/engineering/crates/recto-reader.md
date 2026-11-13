@@ -12,7 +12,8 @@
 
 | Struct | Held per | Limit |
 |---|---|---|
-| `TileKey` | Tile in the cache | ≤ 16 B |
+| `recto_reader::tiles::cache::TileKey` | Tile in the page view's cache: a key of `cover`, one for each tile an entry covers | ≤ 20 B, held at compile time in `tiles/cache.rs`; 20 B today |
+| `recto_proto::TileKey` | Nothing yet: the key a tile cache on the host's side would hold, not on the wire | ≤ 16 B, held by `per_item_sizes_stay_small` in `recto-proto` |
 | `recto_reader::layout::Override` | Visited page whose size isn't the document's usual one, or turned the other way from most, at most 65,536, hot and warm tabs only. Turning every page adds none | ≤ 32 B |
 | `recto_reader::tiles::PageMap::turns` | Page of an edited tab, hot and warm only, and only once a page of it is turned; also every page of a tab whose view is turned (the state record's view rotation) | 1 B |
 
