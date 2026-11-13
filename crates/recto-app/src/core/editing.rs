@@ -47,13 +47,27 @@ pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
     }
 }
 
-impl Inner {
-    /// The panel's Rotate: `page rotate`, every page or in edit mode the page being read.
-    pub fn rotate_for_person(self: &Arc<Self>, turns: i32) {
-        person::submit_when_run(self, rotate(turns), rotate_pages_now);
-    }
+/// **Editing's menu ids** ([`super::menu_rows`]): the panel's Rotate is `page rotate`, every page or in edit mode the page being read, by the session as it is
+/// when it runs; Undo, Redo and Clear History are `undo`, `redo` and `clear-history` on the tab being read; the panel's Done is `edit mode off`.
+pub fn row<'a>(_: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+    use super::menu_rows::Row;
+    let active = || "active".to_string();
+    Some(match asked.action.as_ref()? {
+        menus::Action::Rotate(turns) => Row::Command {
+            command: rotate(*turns),
+            when_run: Some(rotate_pages_now),
+            host: HostAction::None,
+        },
+        menus::Action::Undo => Row::command(Undo { tab: active() }),
+        menus::Action::Redo => Row::command(Redo { tab: active() }),
+        menus::Action::ClearEditHistory => Row::command(ClearHistory { tab: active() }),
+        menus::Action::LeaveEditMode => Row::command(EditMode { set: "off".into() }),
+        _ => return None,
+    })
+}
 
-    /// Into edit mode or out of it, as the panel's Done takes it out: `edit mode on|off`.
+impl Inner {
+    /// Into edit mode or out of it: `edit mode on|off`.
     pub fn edit_mode_for_person(self: &Arc<Self>, on: bool) {
         person::submit(
             self,
@@ -62,16 +76,5 @@ impl Inner {
             }
             .into(),
         );
-    }
-
-    /// Edit > Clear History: `clear-history`, on the tab being read. The person's level is Full, so the owner's-edits rules never refuse it.
-    pub fn clear_history_for_person(self: &Arc<Self>) {
-        person::submit(self, ClearHistory { tab: "active".into() }.into());
-    }
-
-    /// Edit > Undo, or Redo: `undo` or `redo`, on the tab being read.
-    pub fn undo_or_redo_for_person(self: &Arc<Self>, undo: bool) {
-        let tab = "active".to_string();
-        person::submit(self, if undo { Undo { tab }.into() } else { Redo { tab }.into() });
     }
 }

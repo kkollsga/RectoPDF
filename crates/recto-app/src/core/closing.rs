@@ -33,12 +33,38 @@ pub fn after_save(inner: &Inner, tab: TabId) {
     inner.core.push(CoreCall::Run(Box::new(PersonCommand::finishing(close(tab), None))));
 }
 
-impl Inner {
-    /// File > Close on a tab with nothing to lose: `close`.
-    pub fn close_for_person(self: &Arc<Self>, tab: TabId) {
-        person::submit(self, close(tab));
+/// **Closing's menu ids** ([`super::menu_rows`]): File > Close is `close` on the document showing, with nothing to do with none or while it's saving; Close
+/// Window is the system's.
+pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+    use super::menu_rows::Row;
+    match (asked.action.as_ref()?, asked.id) {
+        (crate::menus::Action::CloseDocument, _) => {
+            let (reader, undone_owner_steps) = {
+                let published = super::lock(&inner.published);
+                (published.reader.clone(), published.sidebar.undone_owner_steps)
+            };
+            if reader.home || reader.saving || reader.shown_tab == 0 {
+                return Some(Row::Nothing);
+            }
+            let tab = TabId(reader.shown_tab);
+            Some(Row::own_way(
+                close(tab),
+                "a person is asked first when closing would lose unsaved edits or their own undone steps, as any Mac app asks",
+                move || {
+                    if reader.edited || undone_owner_steps {
+                        return HostAction::ConfirmClose;
+                    }
+                    person::submit(inner, close(tab));
+                    HostAction::None
+                },
+            ))
+        }
+        (crate::menus::Action::Host(host), "file.close_window") => Some(Row::host("closes the window, which is the system's", *host)),
+        _ => None,
     }
+}
 
+impl Inner {
     /// The close prompt's answer. Save closes once it's saved, and not if the save fails. Don't Save throws the edits away and closes: `discard`, then
     /// `close`. Save As opens its sheet, and the tab stays. Past a hand-off's last look, neither Save nor Don't Save is taken, as before.
     pub fn close_answered(self: &Arc<Self>, tab: u32, choice: CloseChoice) -> HostAction {

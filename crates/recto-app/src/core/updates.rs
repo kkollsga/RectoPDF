@@ -309,6 +309,36 @@ pub fn answered(inner: &Arc<Inner>, ran: &super::person::Ran<'_>) {
     }
 }
 
+/// **The updates' menu ids** ([`super::menu_rows`]): *Update to X…* is `update install --now` and *Check for Updates…* `update check`, by what the updater
+/// offers now; Settings opens its window, whose switches are `UiAction::SettingChosen`.
+pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+    use super::menu_rows::Row;
+    use recto_agent::commands::updates::{UpdateCheck, UpdateInstall};
+    match (asked.action.as_ref()?, asked.id) {
+        (crate::menus::Action::Update, _) => {
+            let command = if inner.updates.menu_installs() {
+                Command::from(UpdateInstall { zip: None, now: true })
+            } else {
+                Command::from(UpdateCheck {})
+            };
+            Some(Row::own_way(
+                command.clone(),
+                "the person's is said in an alert too when there's no document window to say it in (the updater's mark), and does nothing with something under way, which was someone else's to ask for; on a thread of its own",
+                move || {
+                    if inner.updates.menu().mark() {
+                        super::person::submit(inner, command);
+                    }
+                    super::HostAction::None
+                },
+            ))
+        }
+        (crate::menus::Action::Host(host), "app.settings" | "file.settings") => {
+            Some(Row::host("opens the Settings window; what's chosen there is `SettingChosen`", *host))
+        }
+        _ => None,
+    }
+}
+
 impl Inner {
     /// What `recto update` and `recto settings` come to. The level's been checked.
     pub fn update_command(&self, command: &Command) -> Result<Value, AgentError> {
@@ -499,22 +529,6 @@ impl Inner {
             privacy_title: crate::privacy::STATEMENT_TITLE.to_owned(),
             privacy_url: crate::privacy::statement_url(),
         }
-    }
-
-    /// **The menu's item, as the person chooses it** (R2.3, C8): what its title says, *Update to X…* the person's `update install --now` and *Check for
-    /// Updates…* their `update check`, each on a thread of its own. What's said of it is put up as an alert too when there's no document window to say it
-    /// in (the updater's mark); with something under way, which was someone else's to ask for, it does nothing.
-    pub fn update_chosen_for_person(self: &Arc<Self>) {
-        use recto_agent::commands::updates::{UpdateCheck, UpdateInstall};
-        if !self.updates.menu().mark() {
-            return;
-        }
-        let command = if self.updates.menu_installs() {
-            Command::from(UpdateInstall { zip: None, now: true })
-        } else {
-            Command::from(UpdateCheck {})
-        };
-        super::person::submit(self, command);
     }
 
     /// **A switch or the button in Settings, as the person chooses it** (R2.3, C8): *Update automatically* is `settings --auto-update on|off`, *Allow

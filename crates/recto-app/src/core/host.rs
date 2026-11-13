@@ -196,40 +196,46 @@ impl AppHost {
                 AgentError::new("nothing_found", "Nothing matches that, so nothing was run.", recto_agent::exit::NOT_FOUND)
                     .then("`recto palette` lists what there is.")
             })?;
-            let reader = lock(&inner.published).reader.clone();
-            // What it comes to as an agent's own command runs as that, at the agent's level, with that command's checks, and as the agent's step. What has none, or writes the clipboard, needs what the direct way needs: Full, or `copy`'s level.
-            let host = match palette::as_command(&first.id, &reader, &inner.recent_files()) {
-                Some(direct) => {
+            // What it comes to as an agent's own command runs as that, at the agent's level, with that command's checks, and as the agent's step: a tab's or a
+            // recent file's row, or a menu id's command in the one table (`menu_rows`), resolved by the session as it is now where the row goes by it. What's
+            // the window's alone needs what the direct way needs: Full, or `copy`'s level.
+            let id = first.id.as_str();
+            let direct = palette::as_command(id, &inner.recent_files()).map_or_else(
+                || super::menu_rows::for_agent(&inner, id, |when_run, command| self.session.with_session(|session| when_run(session, command))),
+                super::menu_rows::ForAgent::Command,
+            );
+            let host = match direct {
+                super::menu_rows::ForAgent::Command(direct) => {
                     inner.tools.palette.close();
                     self.run_counted(actor, &direct, events)?;
                     HostAction::None
                 }
                 // A row that's a person's command by the menu's way, with none of the agent's own: the menu's way would run it as the person, past the
                 // refusals every agent's command has. Refused, whatever the level.
-                None if !crate::palette::THE_WINDOWS_ALONE.contains(&first.id.as_str()) => {
+                super::menu_rows::ForAgent::Refused => {
                     let full = recto_agent::table::Access::At(Level::Full);
                     if !actor.may(full) {
-                        return Err(recto_agent::refusal(&format!("palette --run for {}", first.id), actor.level(), full)
+                        return Err(recto_agent::refusal(&format!("palette --run for {id}"), actor.level(), full)
                             .then("Run that command itself, if it has one, at the level it needs."));
                     }
                     return Err(AgentError::new(
                         "needs_its_command",
-                        format!("`{}` is the person's control in the window, and isn't run for an agent.", first.id),
+                        format!("`{id}` is the person's control in the window, and isn't run for an agent."),
                         recto_agent::exit::FAILED,
                     )
                     .then("Run the command it stands for itself, at the level it needs: `recto help` lists them."));
                 }
-                None => {
-                    let needed = if first.id.starts_with("edit.copy") {
+                super::menu_rows::ForAgent::Window => {
+                    let needed = if id.starts_with("edit.copy") {
                         recto_agent::table::by_tag("copy").map_or(recto_agent::table::Access::At(Level::Full), |spec| spec.access)
                     } else {
                         recto_agent::table::Access::At(Level::Full)
                     };
                     if !actor.may(needed) {
-                        return Err(recto_agent::refusal(&format!("palette --run for {}", first.id), actor.level(), needed)
+                        return Err(recto_agent::refusal(&format!("palette --run for {id}"), actor.level(), needed)
                             .then("Run that command itself, if it has one, at the level it needs."));
                     }
-                    palette::run(&inner, &first.id)
+                    palette::run(&inner, id)
                 }
             };
             let ran = if first.from_file {

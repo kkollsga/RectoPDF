@@ -301,20 +301,29 @@ pub fn tab_came_forward(inner: &super::Inner) {
     }
 }
 
-/// What a menu item, panel button or notice button does, if it's the tool's: toggling it, or a notice's "Copy anyway", which takes again only what that notice refused. Says whether it was the tool's.
-pub fn perform(inner: &Arc<Inner>, id: &str) -> bool {
-    if id == TOGGLE_ID {
-        inner.tools.tool.toggle();
-        inner.core.push(super::CoreCall::Reconcile);
-        inner.listener.model_changed();
-        return true;
+/// **The snapshot tool's menu ids** ([`super::menu_rows`]), all the window's alone: toggling the tool, and a notice's "Copy anyway", which takes again only
+/// what that notice refused.
+pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+    use super::menu_rows::Row;
+    if asked.id == TOGGLE_ID {
+        return Some(Row::window("the snapshot tool is what the pointer does in the window", move || {
+            inner.tools.tool.toggle();
+            inner.core.push(super::CoreCall::Reconcile);
+            inner.listener.model_changed();
+            super::HostAction::None
+        }));
     }
-    let Some(serial) = id.strip_prefix(ANYWAY_PREFIX) else { return false };
-    if let Some(job) = serial.parse().ok().and_then(|serial| inner.tools.tool.take_refused(serial)) {
-        start(inner, Job { anyway: true, ..job });
-    }
-    inner.core.push(super::CoreCall::Reconcile);
-    true
+    let serial = asked.id.strip_prefix(ANYWAY_PREFIX)?.to_string();
+    Some(Row::window(
+        "a notice's Copy anyway, for the person's own snapshot it refused, to the system's pasteboard",
+        move || {
+            if let Some(job) = serial.parse().ok().and_then(|serial| inner.tools.tool.take_refused(serial)) {
+                start(inner, Job { anyway: true, ..job });
+            }
+            inner.core.push(super::CoreCall::Reconcile);
+            super::HostAction::None
+        },
+    ))
 }
 
 /// What the notice says when a snapshot couldn't be taken, in Rust's words, and whether it offers "Copy anyway".

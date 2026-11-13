@@ -1,7 +1,7 @@
 //! **⌘K's palette, as the window and `recto palette` reach it:** the rows it finds from what's published, and what running one does. The ranking, the words and
 //! the routes are `crate::palette`'s, the records the bridge's.
 
-use super::{HostAction, Inner, ReaderView, RecentFile, lock};
+use super::{HostAction, Inner, RecentFile, lock};
 use crate::palette as app;
 use crate::palette::{ForWhom, PaletteView};
 use recto_session::TabId;
@@ -51,15 +51,25 @@ pub fn found_for(inner: &Arc<Inner>, query: &str, whom: &ForWhom) -> Vec<app::Pa
     )
 }
 
-/// The agent's command a palette row comes to, for `recto palette --run`, so it's run at the agent's level with its own checks and as the agent's step, as the command itself would be. `None` for what has no such command: that needs Full, and is done as the menu item does.
-pub fn as_command(id: &str, reader: &ReaderView, recent: &[RecentFile]) -> Option<recto_agent::Command> {
-    let showing = app::Showing {
-        sidebar_hidden: reader.sidebar_hidden,
-        agent_icon_hidden: reader.agent_icon_hidden,
-        edit_mode: reader.edit_mode,
-    };
+/// The agent's command a tab's or a recent file's row comes to, for `recto palette --run`. A menu id's is [`super::menu_rows`]'s.
+pub fn as_command(id: &str, recent: &[RecentFile]) -> Option<recto_agent::Command> {
     let recent: Vec<(&str, &str)> = recent.iter().map(|file| (file.key.as_str(), file.path.as_str())).collect();
-    app::as_command(id, showing, &recent)
+    app::as_command(id, &recent)
+}
+
+/// **The palette's menu id** ([`super::menu_rows`]): ⌘K opens it, in the sidebar, so the sidebar's shown first, and its field takes the keyboard.
+pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+    if asked.action != Some(crate::menus::Action::PaletteOpen) {
+        return None;
+    }
+    Some(super::menu_rows::Row::window("the palette's field takes the keyboard", move || {
+        if lock(&inner.published).reader.sidebar_hidden {
+            inner.show_sidebar();
+        }
+        inner.tools.palette.open();
+        inner.listener.model_changed();
+        HostAction::FocusPalette
+    }))
 }
 
 /// What the host draws now.

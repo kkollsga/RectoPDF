@@ -25,6 +25,7 @@ mod editing;
 #[cfg(test)]
 mod headless;
 mod launching;
+pub mod menu_rows;
 mod navigation;
 mod opening;
 pub mod person;
@@ -34,6 +35,7 @@ mod record_commands;
 pub mod showing;
 mod unlocking;
 mod viewing;
+mod window_rows;
 pub mod zoom;
 
 pub use host::*;

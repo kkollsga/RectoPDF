@@ -69,9 +69,36 @@ pub fn is_open(command: &Command) -> bool {
     matches!(command, Command::Move(Move::Open(_)))
 }
 
-/// File > Open Recent > Clear Menu: `recent clear`.
-pub fn clear_recent(inner: &Arc<Inner>) {
-    person::submit(inner, RecentClear {}.into());
+/// **Opening's menu ids** ([`super::menu_rows`]): an Open Recent file is `open` on the very file the menu showed, read off the session thread as every open
+/// the window makes is, and nothing once it's left the list; Clear Menu is `recent clear`; Open… shows the system's panel.
+pub fn row<'a>(inner: &'a Arc<Inner>, asked: &menu_rows::Asked<'_>) -> Option<menu_rows::Row<'a>> {
+    use menu_rows::Row;
+    match (asked.action.as_ref()?, asked.id) {
+        (menus::Action::OpenRecent(key), _) => {
+            let path = lock(&inner.published)
+                .recent
+                .iter()
+                .find(|file| file.key == *key)
+                .map(|file| PathBuf::from(&file.path));
+            Some(path.map_or(Row::Nothing, |path| {
+                Row::own_way(
+                    Open {
+                        path: path.clone(),
+                        page: None,
+                    },
+                    "an open is read off the session thread, on its own queue, as every open the window makes is",
+                    move || {
+                        open(&inner.core, path);
+                        HostAction::None
+                    },
+                )
+            }))
+        }
+        (menus::Action::ClearRecent, _) => Some(Row::command(RecentClear {})),
+        (menus::Action::Host(host), "file.open") => Some(Row::host("opens the system's Open panel; what's chosen there is `Open`", *host)),
+        (menus::Action::Host(host), "file.open_recent") => Some(Row::host("a submenu's own item only opens it", *host)),
+        _ => None,
+    }
 }
 
 /// `CoreCall::LookAtShown`, on the session thread.
