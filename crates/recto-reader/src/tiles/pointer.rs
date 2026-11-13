@@ -3,10 +3,9 @@
 use super::{Op, Reader};
 use crate::selection::{Notice, Selecting};
 use recto_index::select::Range;
-use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Built only in the tiles module ([`Pointer::new`]), with no `Default`: the engine reaches it through `Reader`'s field to call the methods below, and can neither build one nor put another in its place.
+/// Built only in the tiles module ([`Pointer::new`]), with no `Default`, as each of [`Reader`]'s parts is (see there): the engine reaches it through `Reader`'s field to call the methods below.
 #[derive(Debug)]
 pub(crate) struct Pointer {
     pub(super) selecting: Selecting,
@@ -90,6 +89,21 @@ impl Pointer {
     /// `Reader::jump_to` (with or without a place down the page) and `Reader::jump_to_anchor`.
     pub(super) fn forget_reveal_unless(&mut self, page: u32) {
         if self.revealing.is_some_and(|(_, range, _)| range.start.page != page) {
+            self.revealing = None;
+        }
+    }
+
+    /// **The person has moved on:** Find's hit waiting for its page's text isn't brought into view when the text comes, after a follow synced scroll sent
+    /// this view or the person's own scroll in it, either of which is newer than the Find that asked for it. One field written: the scroll path calls this.
+    pub(crate) fn forget_reveal(&mut self) {
+        self.revealing = None;
+    }
+
+    /// The session's jump to a page was overtaken by a newer move before it got to the view: Find's hit on that page, which the jump went with, goes with
+    /// it. A hit on another page is left: a jump that landed would have dropped it ([`Self::forget_reveal_unless`]), and the newer move that overtook this
+    /// one has dropped it already or was asked before it.
+    pub(crate) fn forget_reveal_with(&mut self, page: u32) {
+        if self.revealing.is_some_and(|(_, range, _)| range.start.page == page) {
             self.revealing = None;
         }
     }
@@ -224,16 +238,12 @@ impl Reader {
         true
     }
 
-    pub(super) fn heavy_pages(&self) -> HashMap<u32, bool> {
-        self.docs.shown().map(|doc| doc.drawing.heavy.clone()).unwrap_or_default()
-    }
-
     /// Starts the selection on its way to the clipboard, a page at a time, off this thread. `anyway` is the reader having said so.
     pub fn start_copy(&mut self, anyway: bool) {
         let Some(pages) = self.docs.shown().map(|doc| doc.layout.count()) else {
             return;
         };
-        let heavy = self.heavy_pages();
+        let heavy = self.docs.heavy_pages();
         self.pointer
             .selecting
             .start_copy(anyway, pages, |page| heavy.get(&page).copied().unwrap_or(false));
@@ -257,7 +267,7 @@ impl Reader {
 
     pub(super) fn advance_copy(&mut self) {
         let pages = self.docs.shown().map_or(0, |doc| doc.layout.count());
-        let heavy = self.heavy_pages();
+        let heavy = self.docs.heavy_pages();
         self.pointer.selecting.advance_copy(pages, |page| heavy.get(&page).copied().unwrap_or(false));
     }
 

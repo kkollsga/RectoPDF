@@ -25,7 +25,7 @@ pub fn place_stamp() -> u64 {
     PLACE_CLOCK.load(Ordering::SeqCst)
 }
 
-/// Built only in the tiles module ([`Place::new`]): the engine reaches it through `Reader`'s field for the three takes below, and can neither build one nor put another in its place.
+/// Built only in the tiles module ([`Place::new`]), as each of [`Reader`]'s parts is (see there): the engine reaches it through `Reader`'s field for the three takes below.
 #[derive(Debug)]
 pub(crate) struct Place {
     pub(super) next_seq: u64,
@@ -126,6 +126,18 @@ impl Place {
 
     pub(crate) fn has_moved_page(&self) -> bool {
         self.moved_page.is_some()
+    }
+
+    /// **Tells where the view is again,** as a scroll of the reader's own does: the page it's on as the page the reader moved to, with the place clock
+    /// moved on. For a jump the session sent that a newer ask overtook before it got to the view ([`crate::Engine::jump_within`]): the session has the
+    /// jump's place, and takes the view's from its next read. Says whether there's a page to tell.
+    pub(crate) fn tell_again(&mut self) -> bool {
+        let Some(page) = self.last_view_page else {
+            return false;
+        };
+        self.moved_page = Some(page);
+        tick();
+        true
     }
 
     /// A page the reader scrolled to, for the session to take as its place. Asking clears it.
@@ -257,6 +269,9 @@ impl Reader {
         let seq = self.place.send();
         self.place.jump = Some(seq);
         self.place.last_view_page = Some(page);
+        // The session sent this, so it has this page: a page a move before it went to (a follow, say) is about a place it's left, and taken from the view
+        // after, it would send the session where the view isn't.
+        self.place.moved_page = None;
         self.host.ops.push_back(Op::ScrollTo { y, seq });
         true
     }
