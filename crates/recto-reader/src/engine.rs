@@ -428,8 +428,9 @@ impl Engine {
         let ops = reader.set_viewport(viewport);
         let scrolled = reader.place.take_user_scrolled();
         if scrolled {
-            // The reader's own scroll here is newer than any place synced scroll left for this pane.
+            // The reader's own scroll here is newer than any place synced scroll left for this pane, and than Find's hit waiting for its text.
             lock(&self.shared.pending).follow = None;
+            reader.pointer.forget_reveal();
         }
         let (magnification, anchor) = reader.docs.shown().map(|doc| (doc.magnification(), doc.reading_anchor())).unzip();
         let moved = reader.place.has_moved_page();
@@ -605,7 +606,8 @@ fn take_pending_follow(shared: &Shared, reader: &mut Reader) -> bool {
 /// or one the UI thread or the view's own thread or a read applied while this waited for the lock), this jump isn't applied to the view. The session sent
 /// it and has its place, so it's still said sent, and the view then tells where it is as it does for a scroll of its own: the page it's on as the page the
 /// reader moved to, with the place clock moved on, so every read of its places from here carries a stamp at or past the one said, and the session's next
-/// look takes the view's page and place as the reader's (`recto_app`'s `core/places.rs`).
+/// look takes the view's page and place as the reader's (`recto_app`'s `core/places.rs`). Find's hit on the jump's page, waiting for its text, went with the
+/// jump and is dropped with it, so the text's arrival doesn't take the view back over the newer move.
 fn jump_after(engine: &Engine, page: u32, within: f64) -> Option<u64> {
     let when = asked();
     engine.shared.after_asking(Ask::Jump);
@@ -615,6 +617,8 @@ fn jump_after(engine: &Engine, page: u32, within: f64) -> Option<u64> {
     let (sent, told) = if newest(&engine.shared.applied.place, when) {
         (reader.jump_to(page, within), false)
     } else {
+        // Find's hit on this page went with this jump, and goes with it.
+        reader.pointer.forget_reveal_with(page);
         let told = reader.docs.shown().is_some() && reader.place.tell_again();
         (told, told)
     };
@@ -641,6 +645,7 @@ fn follow_soon_at(engine: &Engine, when: u64, page: u32, within: f64) -> bool {
                 pending.follow = None;
             }
             if newest(&engine.shared.applied.place, when) {
+                reader.pointer.forget_reveal();
                 reader.follow(page, within);
             }
         },
@@ -702,6 +707,7 @@ fn apply_pending(shared: &Shared, reader: &mut Reader) -> bool {
     }
     let follow = pending.follow.filter(|_| newest(&shared.applied.place, pending.follow_asked));
     if let Some((page, within)) = follow {
+        reader.pointer.forget_reveal();
         reader.follow(page, within);
     }
     zoom.is_some() || pending.clear_selection || follow.is_some()
@@ -1285,6 +1291,119 @@ mod tests {
         });
         engine.qa().hold_busy(false);
         assert_eq!(engine.reading_anchor(), Some((20, 0.25)), "the newer asked follow stands");
+    }
+
+    /// A viewport of the test's page view: 800 by 900 at `y`, the host having arrived at the scroll it was sent numbered `scrolled_to`.
+    fn view_at(y: f64, scrolled_to: u64) -> Viewport {
+        Viewport {
+            x: 0.0,
+            y,
+            width: 800.0,
+            height: 900.0,
+            frame_width: 800.0,
+            magnification: 1.0,
+            backing: 2.0,
+            live: false,
+            scrolled_to,
+        }
+    }
+
+    /// The host arrives where the view was last sent. Says where that is.
+    fn arrive(engine: &Engine) -> (f64, u64) {
+        let sent = engine
+            .drain()
+            .into_iter()
+            .rev()
+            .find_map(|op| if let Op::ScrollTo { y, seq } = op { Some((y, seq)) } else { None })
+            .expect("the view was sent somewhere");
+        engine.set_viewport(view_at(sent.0, sent.1));
+        sent
+    }
+
+    /// A page's text comes in, as its job's outcome: "find me here" in a line at `pdf_y` up the page, so Find's hit at characters 0 to 4 has a place.
+    fn text_lands(engine: &Engine, page: u32, pdf_y: f32) {
+        let frame = recto_proto::PageFrame {
+            turns: 0,
+            left: 0.0,
+            bottom: 0.0,
+            right: 612.0,
+            top: 792.0,
+        };
+        let chars: Vec<recto_proto::CharRecord> = "find me here".chars().map(|ch| recto_proto::CharRecord::new(ch as u32, 0)).collect();
+        let boxes: Vec<recto_proto::CharBox> = (0..chars.len())
+            .map(|at| [72.0 + at as f32 * 6.0, pdf_y, 77.0 + at as f32 * 6.0, pdf_y + 10.0])
+            .collect();
+        let text = Arc::new(recto_index::select::PageText::build(&chars, &boxes, frame, true, false));
+        let job = crate::tiles::Job {
+            tab: 1,
+            position: page,
+            file: PathBuf::from("/nowhere/a.pdf"),
+            source_page: page,
+            generation: u64::MAX,
+            kind: crate::tiles::JobKind::Text { check: false },
+        };
+        let mut reader = lock(&engine.shared.reader);
+        reader.finish(job, crate::tiles::Outcome::Text { text, checked: true });
+        engine.after(reader);
+    }
+
+    /// Failure (review round 2 of the page view follow-ups): Find's hit waiting for its page's text takes the view back to it when the text comes, after a
+    /// follow the person's scroll in another pane sent this pane since, by every route a follow reaches the view: the person had moved on, and the view
+    /// went back to the hit over their newer move.
+    #[test]
+    fn a_follow_after_finds_hit_keeps_the_view_when_the_hits_text_comes() {
+        for route in [Route::Now, Route::OwnThread, Route::Read, Route::Zoom] {
+            let engine = without_its_thread();
+            engine.selection().reveal(30, 0, 4);
+            follow_by(&engine, route);
+            text_lands(&engine, 30, 400.0);
+            assert_eq!(engine.reading_anchor(), Some((60, 0.5)), "the follow's place stands: {route:?}");
+        }
+    }
+
+    /// Failure (the same review): the same after the person scrolls this pane themselves: the hit's text takes the view back from where they scrolled to.
+    #[test]
+    fn the_persons_own_scroll_after_finds_hit_keeps_the_view_when_the_hits_text_comes() {
+        let engine = without_its_thread();
+        engine.selection().reveal(30, 0, 4);
+        let (y, seq) = arrive(&engine);
+        assert!(engine.set_viewport_scrolled(view_at(y + 2000.0, seq)).scrolled, "the person's own scroll");
+        let scrolled_to = engine.reading_anchor();
+        text_lands(&engine, 30, 400.0);
+        assert_eq!(engine.reading_anchor(), scrolled_to, "where the person scrolled to stands");
+    }
+
+    /// Failure (the same review): the session's jump to Find's hit's page is overtaken by the person's follow, asked after it, before it gets to the view,
+    /// and the hit, on the page in view and waiting for its text, is still brought into view when the text comes, over the newer follow. The hit goes with
+    /// its jump. Forced: the jump is held between its tick and the lock while the follow lands and the hit is selected.
+    #[test]
+    fn finds_hit_goes_with_its_jump_when_a_newer_follow_overtakes_it() {
+        for by_page in [true, false] {
+            let engine = without_its_thread();
+            engine.qa().hold_asks(Ask::Jump, true);
+            std::thread::scope(|scope| {
+                let jumping = scope.spawn(|| {
+                    if by_page {
+                        engine.jump_to(20);
+                    } else {
+                        assert!(engine.jump_within(20, 0.0).is_some());
+                    }
+                });
+                assert!(engine.qa().wait_for_held_asks(1), "the jump asked");
+                assert!(engine.follow_soon(20, 0.25), "the person's follow, asked after the jump, lands");
+                arrive(&engine);
+                engine.selection().reveal(20, 0, 4);
+                engine.qa().hold_asks(Ask::Jump, false);
+                jumping.join().unwrap();
+            });
+            // The hit near the page's top, above the view a quarter down it: brought into view, it would move the view.
+            text_lands(&engine, 20, 770.0);
+            assert_eq!(
+                engine.reading_anchor(),
+                Some((20, 0.25)),
+                "the follow's place stands (by the page alone: {by_page})"
+            );
+        }
     }
 
     /// Failure (review round 1 of the page view follow-ups, note 7): a read of where the view is (as the session thread's look and every command make)

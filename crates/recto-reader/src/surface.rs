@@ -631,6 +631,8 @@ Placement (pub(super) struct, derives Clone, Copy, Debug, PartialEq)
 PlanKind (pub(super) enum, derives Debug)
 Pointer (pub(crate) struct, derives Debug)
 Pointer::pub(crate) fn dismiss_selection_notice(&mut self)
+Pointer::pub(crate) fn forget_reveal(&mut self)
+Pointer::pub(crate) fn forget_reveal_with(&mut self, page: u32)
 Pointer::pub(crate) fn has_selection(&self) -> bool
 Pointer::pub(crate) fn selection_can_be_sent(&self, pages: u32) -> bool
 Pointer::pub(crate) fn selection_notice(&self) -> Option<Notice>

@@ -92,6 +92,21 @@ impl Pointer {
             self.revealing = None;
         }
     }
+
+    /// **The person has moved on:** Find's hit waiting for its page's text isn't brought into view when the text comes, after a follow synced scroll sent
+    /// this view or the person's own scroll in it, either of which is newer than the Find that asked for it. One field written: the scroll path calls this.
+    pub(crate) fn forget_reveal(&mut self) {
+        self.revealing = None;
+    }
+
+    /// The session's jump to a page was overtaken by a newer move before it got to the view: Find's hit on that page, which the jump went with, goes with
+    /// it. A hit on another page is left: a jump that landed would have dropped it ([`Self::forget_reveal_unless`]), and the newer move that overtook this
+    /// one has dropped it already or was asked before it.
+    pub(crate) fn forget_reveal_with(&mut self, page: u32) {
+        if self.revealing.is_some_and(|(_, range, _)| range.start.page == page) {
+            self.revealing = None;
+        }
+    }
 }
 
 impl Reader {
