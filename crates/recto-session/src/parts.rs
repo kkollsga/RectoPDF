@@ -156,11 +156,6 @@ impl<L: DocLoader> Session<L> {
         self.lists.is_asleep(id)
     }
 
-    // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `saves().is_saving`.
-    pub fn is_saving(&self, id: TabId) -> bool {
-        self.saves.is_saving(id)
-    }
-
     // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `journals_mut().set_journaling`.
     pub fn set_journaling(&mut self, on: bool) {
         self.journals.set_journaling(on);
@@ -169,5 +164,30 @@ impl<L: DocLoader> Session<L> {
     // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `dormancy_mut().hold`.
     pub fn hold(&mut self, id: TabId) {
         self.dormancy.hold(id);
+    }
+}
+
+/// Session's methods kept only for the bodies of its own operations that another branch is changing (R3.5's bounds: `apply_file_status`, `activate`,
+/// `let_go_of_list` and `saving.rs`), so they're left as they are on `main`. Each goes once that branch has merged, its callers taking the component the
+/// comment names.
+impl<L: DocLoader> Session<L> {
+    // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `self.tabs.tab_mut`.
+    pub(crate) fn tab_mut(&mut self, id: TabId) -> Option<&mut TabRecord> {
+        self.tabs.tab_mut(id)
+    }
+
+    // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `self.tabs.for_path`.
+    pub(crate) fn tab_for_path(&self, path: &Path) -> Option<TabId> {
+        self.tabs.for_path(path)
+    }
+
+    // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `self.lists.has_undone_owner_steps`.
+    pub(crate) fn has_undone_owner_steps(&self, id: TabId) -> bool {
+        self.lists.has_undone_owner_steps(id)
+    }
+
+    // R3.5: kept for a caller in a file another branch holds; goes once that branch has merged. Callers: `self.journals.retire_kept`.
+    pub(crate) fn retire_kept(&mut self, kept: Vec<Box<Path>>) {
+        self.journals.retire_kept(kept);
     }
 }

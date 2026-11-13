@@ -14,7 +14,7 @@ impl<L: DocLoader> Session<L> {
         if matches!(status, FileStatus::Changed(_) | FileStatus::Missing) {
             self.generated.forget(id);
             // Folds are by entry number, which another version's contents don't share.
-            if let Some(tab) = self.tabs.tab_mut(id) {
+            if let Some(tab) = self.tab_mut(id) {
                 tab.folds = None;
             }
         }
@@ -22,7 +22,7 @@ impl<L: DocLoader> Session<L> {
         match status {
             FileStatus::NotLooked => {}
             FileStatus::Same(now) => {
-                if let Some(tab) = self.tabs.tab_mut(id) {
+                if let Some(tab) = self.tab_mut(id) {
                     tab.file.stamp = Some(now);
                     // Back to what edits are about. With none, the stamp's moved on to what the file is now, so being the same says nothing: it goes on saying it changed until it's been read, and left.
                     if matches!(tab.file.notice.as_deref(), Some(FileNotice::Missing))
@@ -34,15 +34,15 @@ impl<L: DocLoader> Session<L> {
             }
             FileStatus::Moved(path, now) => {
                 // Another tab having it means this one isn't a move of that file so much as a second look at it.
-                if self.tabs.for_path(&path).is_some_and(|other| other != id) {
-                    if let Some(tab) = self.tabs.tab_mut(id) {
+                if self.tab_for_path(&path).is_some_and(|other| other != id) {
+                    if let Some(tab) = self.tab_mut(id) {
                         tab.file.notice = Some(Box::new(FileNotice::Missing));
                     }
                     return;
                 }
-                let from = self.tabs.path_of(id).map(|from| PathField::from_path(&from));
+                let from = self.path_of(id).map(|from| PathField::from_path(&from));
                 self.relocate(id, &path);
-                if let Some(tab) = self.tabs.tab_mut(id) {
+                if let Some(tab) = self.tab_mut(id) {
                     tab.file.stamp = Some(now);
                     tab.file.notice = from.map(|from| Box::new(FileNotice::Moved { from }));
                 }
@@ -50,11 +50,11 @@ impl<L: DocLoader> Session<L> {
             FileStatus::Changed(now) => {
                 self.retire_sleep_file(id);
                 // With nothing unsaved there's only history, and its steps don't apply to this. Unsaved edits stay, and say so.
-                if has_edits && !self.lists.is_edited(id) {
+                if has_edits && !self.is_edited(id) {
                     self.clear_history(id, ClearReason::FileChanged);
                 }
                 let has_edits = self.lists.has_list(id);
-                if let Some(tab) = self.tabs.tab_mut(id) {
+                if let Some(tab) = self.tab_mut(id) {
                     if !has_edits {
                         tab.file.stamp = Some(now);
                     }
@@ -62,7 +62,7 @@ impl<L: DocLoader> Session<L> {
                 }
             }
             FileStatus::Missing => {
-                if let Some(tab) = self.tabs.tab_mut(id) {
+                if let Some(tab) = self.tab_mut(id) {
                     tab.file.notice = Some(Box::new(FileNotice::Missing));
                 }
             }

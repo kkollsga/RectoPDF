@@ -94,7 +94,7 @@ impl<L: DocLoader> Session<L> {
         if let Some(left) = self.tabs.active().filter(|left| *left != id) {
             let clean = !self.lists.has_list(left);
             self.touch(left);
-            if let Some(tab) = self.tabs.tab_mut(left)
+            if let Some(tab) = self.tab_mut(left)
                 && ((clean && matches!(tab.file.notice.as_deref(), Some(FileNotice::Moved { .. } | FileNotice::Changed)))
                     || matches!(tab.file.notice.as_deref(), Some(FileNotice::HistoryRolledOff)))
             {
@@ -109,34 +109,34 @@ impl<L: DocLoader> Session<L> {
         let (loaded, stamp) = match self.warm.take_read(id) {
             Some(read) => read,
             None => {
-                let stamp = self.tabs.path_of(id).and_then(|path| file_stamp(&path).ok());
-                (self.tabs.path_of(id).ok_or(OpenError::NotFound).and_then(|path| self.loader.load(&path)), stamp)
+                let stamp = self.path_of(id).and_then(|path| file_stamp(&path).ok());
+                (self.path_of(id).ok_or(OpenError::NotFound).and_then(|path| self.loader.load(&path)), stamp)
             }
         };
         // The file is what the list was made on, and is another length than it says: the list can't be about it, however it got here. A journal can say anything, as a save having happened.
         if let (Ok(facts), Some(known), Some(list)) = (&loaded, stamp, self.lists.get(id))
-            && self.tabs.tab(id).is_some_and(|tab| tab.file.stamp == Some(known))
+            && self.tab(id).is_some_and(|tab| tab.file.stamp == Some(known))
             && list.file_pages() != facts.page_count
         {
             self.let_go_of_list(id);
-            if let Some(tab) = self.tabs.tab_mut(id) {
+            if let Some(tab) = self.tab_mut(id) {
                 tab.file.notice = Some(Box::new(FileNotice::EditsUnreadable));
             }
         }
         // Woken to another file, with only history: its steps don't apply to this, whichever way it's noticed. Unsaved edits stay.
         if let (Some(now), Some(list)) = (stamp, self.lists.get(id))
             && !list.is_edited()
-            && self.tabs.tab(id).and_then(|tab| tab.file.stamp).is_some_and(|known| !known.same_contents(now))
+            && self.tab(id).and_then(|tab| tab.file.stamp).is_some_and(|known| !known.same_contents(now))
         {
             self.clear_history(id, ClearReason::FileChanged);
-            if let Some(tab) = self.tabs.tab_mut(id) {
+            if let Some(tab) = self.tab_mut(id) {
                 tab.file.notice = Some(Box::new(FileNotice::Changed));
             }
         }
         // An edited tab's length is its edit list's, not the file's: added pages must stay reachable.
         let pages_with_edits = self.lists.get(id).map(PageEdits::len);
         let mut replaced = None;
-        let tab = self.tabs.tab_mut(id);
+        let tab = self.tab_mut(id);
         match loaded {
             Ok(facts) => {
                 if let Some(tab) = tab {
@@ -159,7 +159,7 @@ impl<L: DocLoader> Session<L> {
                     }
                 }
                 // Another version of the file than the sleep file's about, which won't be read again.
-                if let (Some(known), Some(path)) = (replaced, self.tabs.path_of(id)) {
+                if let (Some(known), Some(path)) = (replaced, self.path_of(id)) {
                     self.journals.retire_name(record::sleep_file_name(known, &path).into());
                 }
                 self.remember_warm(id, Arc::new(facts.toc));
