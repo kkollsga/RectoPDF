@@ -25,7 +25,7 @@ impl Engine {
 }
 
 impl Wake<'_> {
-    /// What a tab's first frame shows, for its next [`Self::activate`].
+    /// What a tab's first frame shows, for its next [`Engine::activate`].
     pub fn give_sleep(&self, tab: u32, view: crate::tiles::SleepView) {
         lock(&self.engine.shared.reader).wake.give_sleep(tab, view);
     }
