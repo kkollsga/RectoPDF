@@ -3,34 +3,14 @@
 //! appearance, the app in front, the Settings window), and after each step what the host was told, in order, what it was answered, and the host's part of
 //! the record as it would be written ([`crate::core::Window::app_record`], with what's been decided for a launch). Held against `golden/window.txt`.
 //!
-//! The steps the bridge works out itself today are done here by [`bridge`], a copy of the bridge's bodies at `main` on 2026-11-13; as each moves into Rust
-//! its copy goes and the step calls what the bridge then calls, and the golden doesn't change.
+//! The steps the bridge worked out itself were first done here by a copy of the bridge's bodies at `main` on 2026-11-13 (the guard's commit); as each moved
+//! into Rust its copy went and the step called what the bridge then calls, with the golden unchanged.
 
 use super::coverage::heard_kind;
 use crate::core::Inner;
 use crate::lock;
 use crate::records::ScreenInfo;
 use crate::testkit::headless::{Disk, HeadlessApp};
-
-/// The bridge's bodies for what it works out itself, copied from `recto-ffi/src/lib.rs` as they were, with `self.inner` for `inner`.
-mod bridge {
-    use crate::core::{Inner, updates};
-    use crate::lock;
-
-    /// The part of `window_placement` that decides what's kept: whether the window comes back in the Dock, and that it's been decided.
-    pub fn window_placement_decides(inner: &Inner) -> bool {
-        let app = {
-            let mut app = lock(&inner.window.app);
-            let arrived = inner.updates.reopened_by_update();
-            if let Some(window) = app.window.as_mut() {
-                window.minimised = updates::stays_out_of_sight(window.minimised, arrived);
-            }
-            app.minimised_decided = true;
-            app.clone()
-        };
-        app.window.as_ref().is_some_and(|window| window.minimised)
-    }
-}
 
 /// A screen the window is on, with a name that needs cleaning.
 fn screen() -> ScreenInfo {
@@ -74,7 +54,9 @@ const STEPS: &[(&str, Step)] = &[
         done(inner.window.changed(Some(vec![1.0, 2.0, 3.0]), Some(screen()), false, &inner.saver))
     }),
     ("into the Dock", |inner| done(inner.window.minimised_changed(true, &inner.saver))),
-    ("placed at a launch", |inner| said(bridge::window_placement_decides(inner))),
+    ("placed at a launch", |inner| {
+        said(inner.window.placement(Vec::new(), inner.updates.reopened_by_update(), false).minimised)
+    }),
     ("into the Dock again", |inner| done(inner.window.minimised_changed(true, &inner.saver))),
     ("closed", |inner| done(inner.window_closed())),
     ("should open", |inner| said(inner.window.should_open(inner.updates.reopened_by_update()))),

@@ -24,6 +24,7 @@ pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSe
 pub use recto_app::PaneView;
 pub use recto_app::RecentFile;
 pub use recto_app::SelectionNotice;
+pub use recto_app::core::WindowPlacement;
 use recto_app::core::controls::UiAction;
 use recto_app::core::*;
 pub use recto_app::hand_off::{BusyItem, HandOffCheck, HandOffError, HandOffReport};
@@ -34,7 +35,7 @@ pub use recto_app::reader_view::ReaderView;
 pub use recto_app::records::{HighlightRect, ReaderOp, ScreenInfo};
 pub use recto_app::{RowKind, SidebarRow, SidebarView};
 use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Viewport};
-use recto_session::record::{self, FocusView, Rect, ScreenNow, SettingsWindow, place_window};
+use recto_session::record::{self, SettingsWindow};
 use recto_session::{CONTENTS_ROW_HEIGHT, ContentsRowChange, ContentsView, FollowMove, TAB_ROW_HEIGHT, TabId, row_full_text, sidebar_heights_with_note};
 use serde_json::json;
 use std::io::Write;
@@ -96,7 +97,7 @@ pub struct ScreenInfo {
 }
 
 /// Where a new window goes, as Rust's rule has it.
-#[derive(Clone, Copy, Debug, PartialEq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct WindowPlacement {
     /// There's a place to go: otherwise it's a new window, wherever the host starts one.
     pub saved: bool,
@@ -1198,84 +1199,7 @@ impl AppCore {
 
     /// Where the new window goes, on the screens there are now. Rust's rule, from what was saved. In a quiet run it keeps its place off every screen, and only its size comes back.
     pub fn window_placement(&self, screens: Vec<ScreenInfo>) -> WindowPlacement {
-        let app = {
-            let mut app = lock(&self.inner.window.app);
-            // In the Dock across an update, as it was. Any other launch shows it, and the record's told so.
-            let arrived = self.inner.updates.reopened_by_update();
-            if let Some(window) = app.window.as_mut() {
-                window.minimised = updates::stays_out_of_sight(window.minimised, arrived);
-            }
-            app.minimised_decided = true;
-            app.clone()
-        };
-        let minimised = app.window.as_ref().is_some_and(|window| window.minimised);
-        let activate = app.focus.app_frontmost;
-        let focus_sidebar = app.focus.view == FocusView::Sidebar;
-        let in_background = updates::opens_in_background(self.inner.updates.reopened_by_update(), activate);
-        let Some(saved) = app.window else {
-            return WindowPlacement {
-                saved: false,
-                x: 0.0,
-                y: 0.0,
-                width: 0.0,
-                height: 0.0,
-                full_screen: false,
-                activate,
-                focus_sidebar,
-                in_background,
-                full_screen_when_active: false,
-                minimised: false,
-            };
-        };
-        if self.qa_mode {
-            return WindowPlacement {
-                saved: true,
-                x: -40_000.0,
-                y: -40_000.0,
-                width: saved.frame.width.max(record::WINDOW_MIN.0),
-                height: saved.frame.height.max(record::WINDOW_MIN.1),
-                full_screen: saved.full_screen,
-                activate,
-                focus_sidebar,
-                in_background: false,
-                full_screen_when_active: false,
-                minimised,
-            };
-        }
-        let now: Vec<ScreenNow> = screens
-            .into_iter()
-            .map(|screen| ScreenNow {
-                id: screen.id,
-                name: screen.name,
-                frame: Rect {
-                    x: screen.x,
-                    y: screen.y,
-                    width: screen.width,
-                    height: screen.height,
-                },
-                visible: Rect {
-                    x: screen.visible_x,
-                    y: screen.visible_y,
-                    width: screen.visible_width,
-                    height: screen.visible_height,
-                },
-            })
-            .collect();
-        let place = place_window(&saved, &now);
-        let (full_screen, full_screen_when_active) = updates::full_screen_on_showing(place.full_screen, in_background);
-        WindowPlacement {
-            saved: true,
-            x: place.frame.x,
-            y: place.frame.y,
-            width: place.frame.width,
-            height: place.frame.height,
-            full_screen,
-            activate,
-            focus_sidebar,
-            in_background,
-            full_screen_when_active,
-            minimised,
-        }
+        self.inner.window.placement(screens, self.inner.updates.reopened_by_update(), self.qa_mode)
     }
 
     /// The window moved, resized or went full screen. Off a window's delegate, so at most as often as those.

@@ -302,3 +302,117 @@ fn the_systems_appearance_is_kept_as_the_bridge_kept_it() {
         assert_eq!(rig.queued(), ["Reconcile"], "dark {dark}");
     }
 }
+
+/// What a placement's answer is, in one tuple for a table: saved, the frame, full screen, activate, the sidebar focused, in the background, full screen
+/// when active, in the Dock.
+type Placed = (bool, (f64, f64, f64, f64), bool, bool, bool, bool, bool, bool);
+
+fn placed(placement: WindowPlacement) -> Placed {
+    (
+        placement.saved,
+        (placement.x, placement.y, placement.width, placement.height),
+        placement.full_screen,
+        placement.activate,
+        placement.focus_sidebar,
+        placement.in_background,
+        placement.full_screen_when_active,
+        placement.minimised,
+    )
+}
+
+/// Failure: a new window is placed otherwise than the bridge placed it: a launch with no window saved isn't a new one, a quiet run's window comes onto a
+/// screen (taking the person's), an update arriving behind their work goes into full screen and moves them to another Space, the Dock is kept for a launch
+/// the person asked for, or a launch doesn't say the Dock's been decided, so a state read late puts it back: the bridge's `window_placement`.
+#[test]
+fn a_new_window_is_placed_as_the_bridge_placed_it() {
+    let (min_width, min_height) = record::WINDOW_MIN;
+    // (a window saved, in the Dock, full screen, in front, the sidebar focused, reopened by an update, quiet) → the placement
+    let table: [((bool, bool, bool, bool, bool, bool, bool), Placed); 9] = [
+        // No window saved: a new one, wherever the host starts it.
+        (
+            (false, false, false, true, false, false, false),
+            (false, (0.0, 0.0, 0.0, 0.0), false, true, false, false, false, false),
+        ),
+        (
+            (false, false, false, false, true, true, false),
+            (false, (0.0, 0.0, 0.0, 0.0), false, false, true, true, false, false),
+        ),
+        // Where it was, on the screen there is.
+        (
+            (true, false, false, true, false, false, false),
+            (true, (100.0, 100.0, 900.0, 700.0), false, true, false, false, false, false),
+        ),
+        // Full screen comes back for an app that comes forward, and waits for one that arrives behind the person's work.
+        (
+            (true, false, true, true, false, false, false),
+            (true, (100.0, 100.0, 900.0, 700.0), true, true, false, false, false, false),
+        ),
+        (
+            (true, false, true, false, false, true, false),
+            (true, (100.0, 100.0, 900.0, 700.0), false, false, false, true, true, false),
+        ),
+        // The Dock across an update only.
+        (
+            (true, true, false, true, false, false, false),
+            (true, (100.0, 100.0, 900.0, 700.0), false, true, false, false, false, false),
+        ),
+        (
+            (true, true, false, true, false, true, false),
+            (true, (100.0, 100.0, 900.0, 700.0), false, true, false, false, false, true),
+        ),
+        // A quiet run: off every screen, at its size held to the smallest a window goes, and never behind.
+        (
+            (true, false, true, false, true, true, true),
+            (true, (-40_000.0, -40_000.0, 900.0, 700.0), true, false, true, false, false, false),
+        ),
+        (
+            (true, true, false, true, false, true, true),
+            (true, (-40_000.0, -40_000.0, 900.0, 700.0), false, true, false, false, false, true),
+        ),
+    ];
+    let screen = ScreenInfo {
+        id: 1,
+        name: "Built-in".into(),
+        x: 0.0,
+        y: 0.0,
+        width: 1920.0,
+        height: 1080.0,
+        visible_x: 0.0,
+        visible_y: 0.0,
+        visible_width: 1920.0,
+        visible_height: 1055.0,
+    };
+    for ((saved, in_dock, full_screen, frontmost, sidebar, reopened, quiet), expected) in table {
+        let rig = Rig::new();
+        {
+            let mut app = lock(&rig.window.app);
+            app.focus.app_frontmost = frontmost;
+            app.focus.view = if sidebar { record::FocusView::Sidebar } else { record::FocusView::Page };
+            app.window = saved.then_some(WindowRecord {
+                frame: record::Rect {
+                    x: 100.0,
+                    y: 100.0,
+                    width: 900.0,
+                    height: 700.0,
+                },
+                screen: None,
+                full_screen,
+                minimised: in_dock,
+            });
+        }
+        let asked = format!("saved {saved}, in the Dock {in_dock}, full screen {full_screen}, in front {frontmost}, reopened {reopened}, quiet {quiet}");
+        assert_eq!(placed(rig.window.placement(vec![screen.clone()], reopened, quiet)), expected, "{asked}");
+        let app = rig.app();
+        assert!(app.minimised_decided, "{asked}");
+        assert_eq!(
+            app.window.map(|window| window.minimised),
+            saved.then_some(expected.7),
+            "{asked}: the Dock as kept"
+        );
+    }
+    // A quiet run's window is never smaller than a window goes.
+    let rig = Rig::new().with_a_window();
+    lock(&rig.window.app).window.as_mut().expect("a window").frame.width = 10.0;
+    let placement = rig.window.placement(Vec::new(), false, true);
+    assert_eq!((placement.width, placement.height), (min_width, 700.0_f64.max(min_height)));
+}

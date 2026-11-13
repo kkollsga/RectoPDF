@@ -2,6 +2,9 @@
 //! appearance, the Settings window), the contents' follow, the UI thread's hang watchdog, and the notices that go by themselves. Its opening, replacing and
 //! closing are `Inner`'s, as they reach the page views and the saver, and they call what's here.
 
+mod placement;
+pub use placement::WindowPlacement;
+
 use super::saver::Saver;
 use super::updates;
 use crate::lock;

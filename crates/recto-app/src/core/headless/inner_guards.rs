@@ -261,6 +261,7 @@ Window::pub fn minimised_changed(&self, minimised: bool, saver: &Saver)
 Window::pub fn new(watchdog: Watchdog) -> Self
 Window::pub fn opens_in_background(&self, reopened: bool) -> bool
 Window::pub fn panel_open(&self) -> bool
+Window::pub fn placement(&self, screens: Vec<ScreenInfo>, reopened: bool, quiet: bool) -> WindowPlacement
 Window::pub fn set_appearance_choice(&self, choice: &str, saver: &Saver)
 Window::pub fn set_dark(&self, dark: bool, core: &CoreQueue)
 Window::pub fn set_sidebar_width(&self, width: f64, core: &CoreQueue)
