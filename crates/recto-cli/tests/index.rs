@@ -1061,13 +1061,17 @@ fn clearing_stops_what_is_on_its_way() {
         (Some(1), Some(0)),
         "{cleared}"
     );
+    // A build counts as running until its helper has ended, so with none running and none waiting nothing more can be written.
     let (status, _) = state.json(&["index", "status", "--tab", "running"]);
     assert_eq!(
-        (status["data"]["state"].as_str(), status["data"]["indexers_running"].as_u64()),
-        (Some("not_started"), Some(0)),
+        (
+            status["data"]["state"].as_str(),
+            status["data"]["indexers_running"].as_u64(),
+            status["data"]["indexers_waiting"].as_u64()
+        ),
+        (Some("not_started"), Some(0), Some(0)),
         "{status}"
     );
-    std::thread::sleep(Duration::from_millis(500));
     let text = all_text_under(&root);
     assert!(!text.contains("alpha document"), "the build that was cleared carried on writing");
     assert!(!text.contains("queuedword"), "the file that was cleared got written anyway");
@@ -1096,13 +1100,19 @@ fn lowering_to_off_stops_indexing() {
     state.json(&["index"]);
     let (lowered, code) = state.json(&["permission", "set", "off"]);
     assert_eq!(code, 0, "{lowered}");
-    std::thread::sleep(Duration::from_millis(500));
-    let at_first = pages_done(&root, running_key);
-    std::thread::sleep(Duration::from_millis(1000));
-    assert_eq!(pages_done(&root, running_key), at_first, "it kept writing at Off");
-    assert!(at_first < 1200, "it was meant to stop partway");
-    assert!(!all_text_under(&root).contains("offqueuedword"), "a waiting file got written at Off");
+    // Asked at Control, as Off reads nothing about it. A build counts as running until its helper has ended, so once none is, nothing more can be written, and what's there is all there'll be: a build that went on at Off has finished by then.
     state.set_level(Level::Control);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let (status, _) = state.json(&["index", "status", "--tab", "off-waiting"]);
+        if status["data"]["indexers_running"].as_u64() == Some(0) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the build never ended: {status}");
+        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
+    }
+    assert!(pages_done(&root, running_key) < 1200, "it kept writing at Off");
+    assert!(!all_text_under(&root).contains("offqueuedword"), "a waiting file got written at Off");
     let (status, code) = state.json(&["index", "status", "--tab", "off-waiting"]);
     assert_eq!(code, 0, "{status}");
     assert_eq!(
