@@ -124,3 +124,46 @@ fn file_save_is_heard_once_settled() {
     let said = twins.person.heard_events();
     assert_eq!(names(&said), ["saved", "edits_changed"], "{said:?}");
 }
+
+/// Failure (review of R2.3, S1): an agent's `close` of a tab whose edit list is asleep, with only the owner's undone steps in it and its journal unreadable just now, is refused with the guidance
+/// for a tab with nothing of the owner's: no "Some of them are the user's", no `ask` for Full, no `recto redo`, and a `discard` that's itself refused below
+/// Full. What a close would lose is read wherever the list is, so the refusal says the same of a tab asleep as of one awake.
+#[test]
+fn an_agents_close_of_an_asleep_tab_says_what_it_would_lose() {
+    let disk = Disk::new();
+    let (a, b) = (disk.pdf("a.pdf", 3), disk.pdf("b.pdf", 3));
+    let app = disk.start();
+    app.open(&a);
+    app.open(&b);
+    for line in [
+        r##"{"cmd":"tap","tab":"#1"}"##,
+        r##"{"cmd":"page_rotate","tab":"#1","pages":"1","degrees":90}"##,
+        r##"{"cmd":"undo","tab":"#1"}"##,
+        r##"{"cmd":"tap","tab":"#2"}"##,
+    ] {
+        app.person(line);
+        app.settle();
+    }
+    let slept = app.agent(Level::Full, r##"{"cmd":"session_sleep","tab":"#1"}"##).expect("put to sleep");
+    assert_eq!(slept["list_asleep"], true, "{slept}");
+    // Its journal can't be read back just now, so the list stays asleep through the command, with only its summary to go by.
+    let journals = app.core().saver.store.main_folder().join("journals");
+    for entry in std::fs::read_dir(&journals).expect("the journals").flatten() {
+        if entry.file_name().to_string_lossy().starts_with("journal-") {
+            std::fs::write(entry.path(), b"not a journal").expect("written over");
+        }
+    }
+    let error = app
+        .agent(Level::Control, r##"{"cmd":"close","tab":"#1"}"##)
+        .expect_err("the owner's undone steps, below Full");
+    assert_eq!(error.code, "would_clear_redo", "{error:?}");
+    assert!(error.message.contains("Some of them are the user's."), "{error:?}");
+    assert_eq!(error.ask.as_deref(), Some("recto permission request full"), "{error:?}");
+    assert!(error.next.contains("`recto redo`"), "{error:?}");
+    assert!(error.next.contains("needs Full access"), "{error:?}");
+    assert_eq!(app.tabs().len(), 2, "it stays");
+    assert!(
+        app.core().host.session.with_session(|session| session.list_is_asleep(recto_session::TabId(1))),
+        "the list was asleep when the close was asked"
+    );
+}

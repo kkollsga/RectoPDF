@@ -27,15 +27,16 @@ pub struct WouldLose {
 }
 
 impl WouldLose {
-    /// What closing `id` would lose now.
+    /// What closing `id` would lose now, wherever its list is: one asleep, whose journal can't be read back just now, says it from its summary, as one in
+    /// memory does. Only whether some of it is past the undo limit needs the list itself, and a list asleep is taken to have none past it.
     pub fn of<L: DocLoader>(session: &Session<L>, id: TabId) -> Self {
-        let edits = session.page_edits(id);
+        let summary = session.edits_summary(id).unwrap_or_default();
         Self {
-            unsaved: session.is_edited(id),
-            undone: edits.is_some_and(PageEdits::can_redo),
-            owners_undone: session.has_undone_owner_steps(id),
-            owners_anywhere: edits.is_some_and(PageEdits::holds_owner_edits),
-            history_dropped: edits.is_some_and(PageEdits::history_dropped),
+            unsaved: summary.edited,
+            undone: summary.redo > 0,
+            owners_undone: summary.owner_steps_undone,
+            owners_anywhere: summary.holds_owner_edits,
+            history_dropped: session.page_edits(id).is_some_and(PageEdits::history_dropped),
         }
     }
 
