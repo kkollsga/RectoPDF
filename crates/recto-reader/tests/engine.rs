@@ -1240,7 +1240,7 @@ fn tile_colours_on(ops: &[Op], pages: &[u32]) -> std::collections::BTreeSet<[u8;
                 let Some(surface) = (unsafe { recto_platform::surface::PixelSurface::from_host_reference(*surface) }) else {
                     continue;
                 };
-                let _ = surface.with_pixels(|pixels| colours.extend(pixels.chunks_exact(4).map(|pixel| [pixel[2], pixel[1], pixel[0]])));
+                let _ = surface.with_pixels(|pixels| colours.extend(pixels.as_chunks::<4>().0.iter().map(|pixel| [pixel[2], pixel[1], pixel[0]])));
             }
             _ => {}
         }
