@@ -235,6 +235,7 @@ codes! {
     NOT_HERE = "not_here", Next::ByExit;
     NOT_INDEXED = "not_indexed", Next::ByExit;
     NOT_PDF = "not_pdf", Next::Says("This file can't be opened. Try another file.");
+    NOT_READY = "not_ready", Next::ByExit;
     NOT_RECTOPDF = "not_rectopdf", Next::ByExit;
     NOT_RUNNING = "not_running", Next::Says("Start it with `recto serve --background`.");
     NOT_SIDE_BY_SIDE = "not_side_by_side", Next::ByExit;
@@ -312,6 +313,7 @@ codes! {
     SOCKET_REFUSED = "socket_refused", Next::ByExit;
     SOURCE_CHANGED = "source_changed", Next::Says("Tell the user this file changed. `recto edits` shows what's unsaved. `recto discard` throws the edits away, which needs Full access if some are the user's, and opening the file again starts from what's there now.");
     STATE_REFUSED = "state_refused", Next::ByExit;
+    STILL_BUSY = "still_busy", Next::ByExit;
     TARGET_EXISTS = "target_exists", Next::ByExit;
     TIMED_OUT = "timed_out", Next::ByExit;
     TOO_COMPLEX = "too_complex", Next::ByExit;
