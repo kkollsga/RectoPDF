@@ -528,8 +528,6 @@ Reader.pub(crate) place: Place
 Reader.pub(crate) pointer: Pointer
 Reader.pub(crate) wake: Waking
 Reader.pub(crate) work: Work
-Reader: Default (trait impl)
-Reader: Default::fn default() -> Self
 Reader::pub fn activate(&mut self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>, spread: Spread)
 Reader::pub fn applied(&mut self)
 Reader::pub fn clear_selection(&mut self)

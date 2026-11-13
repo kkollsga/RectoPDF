@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
 
-/// The tabs the page view holds, hot and warm, and which is showing. Built only in the tiles module ([`Docs::new`]): the engine reaches it through `Reader`'s field for the lookups below, and can neither build one nor put another in its place.
+/// The tabs the page view holds, hot and warm, and which is showing. Built only in the tiles module ([`Docs::new`]), and the one `Reader::new` makes is the only one there is: the engine reaches it through `Reader`'s field for the lookups below; nothing outside `tiles` builds one, and replacing it would take another `Reader`'s (`reader.field = Reader::new().field`), which nothing does.
 #[derive(Debug)]
 pub(crate) struct Docs {
     pub(super) views: HashMap<u32, DocView>,

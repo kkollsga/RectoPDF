@@ -183,7 +183,7 @@ pub(super) struct Running {
     pub(super) check: bool,
 }
 
-/// Built only in the tiles module ([`Work::new`]): the engine reaches it through `Reader`'s field for what it takes and notes below, and can neither build one nor put another in its place.
+/// Built only in the tiles module ([`Work::new`]), and the one `Reader::new` makes is the only one there is: the engine reaches it through `Reader`'s field for what it takes and notes below; nothing outside `tiles` builds one, and replacing it would take another `Reader`'s (`reader.field = Reader::new().field`), which nothing does.
 #[derive(Debug)]
 pub(crate) struct Work {
     pub(super) running: Option<Running>,

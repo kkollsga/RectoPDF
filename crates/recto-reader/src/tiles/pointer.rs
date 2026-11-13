@@ -6,7 +6,7 @@ use recto_index::select::Range;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Built only in the tiles module ([`Pointer::new`]), with no `Default`: the engine reaches it through `Reader`'s field to call the methods below, and can neither build one nor put another in its place.
+/// Built only in the tiles module ([`Pointer::new`]), with no `Default`, and the one `Reader::new` makes is the only one there is: the engine reaches it through `Reader`'s field to call the methods below; nothing outside `tiles` builds one, and replacing it would take another `Reader`'s (`reader.field = Reader::new().field`), which nothing does.
 #[derive(Debug)]
 pub(crate) struct Pointer {
     pub(super) selecting: Selecting,

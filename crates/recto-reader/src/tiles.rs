@@ -259,12 +259,6 @@ const _: () = assert!(size_of::<Reader>() <= 2096, "the page view grew");
 /// What a page says once the thread that draws has given up.
 const CANT_DRAW: &str = "RectoPDF can't draw pages right now, because something went wrong too many times. Quit and open it again.";
 
-impl Default for Reader {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Reader {
     pub fn new() -> Self {
         Self {
