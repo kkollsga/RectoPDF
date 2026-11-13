@@ -8,13 +8,13 @@
 //! **Each image is judged by its own pixels** (owner, 2026-11-07: "We need to detect scanned images (with predominently white bg, and flip and match grey tone paper color", and "similar with images with white bg"). One with a mostly white background, a scanned page, an embedded letter, a chart, turns over with the page, its background brought to true white first so it lands on the paper's tone, with no bright box or hard edge. One without stays as it is on a page of text.
 //!
 //! **A page that's mostly a picture turns over only if its background is mostly white** (owner, 2026-11-07, answering "should pages that are mostly a picture be dimmed instead of flipped? I recommend yes": "I agree"; then 2026-11-13, shown a photo over 53% of a white page with text dimmed whole to light grey: "The image should flip if the background is mostly white"). Which pages the background decides for is the coordinator's reading, the conservative one, which the owner may change. In the code:
-//! - **Mostly a picture** is [`MOSTLY_PICTURE`] of the page or more, added up over the pictures that are kept and large enough to judge. **Under it, the page turns over whatever its background,** as it always has, keeping its pictures: a slide on a dark or coloured background with a logo, a report page with a coloured band beside a photo, a page on cream. A picture under [`LEAST_PIXELS_TO_JUDGE`] in the picture the look is decided from, a spacer, a box with no width, is left alone where it is and is no picture for this.
+//! - **Mostly a picture** is [`MOSTLY_PICTURE`] of the page or more, covered by the pictures that are kept and large enough to judge, together: where they overlap, as a photo and its drop shadow do, it counts once. It's the same measure as the background's, the part of the picture of the page outside every kept picture's box. **Under it, the page turns over whatever its background,** as it always has, keeping its pictures: a slide on a dark or coloured background with a logo, a report page with a coloured band beside a photo, a page on cream. A picture under [`LEAST_PIXELS_TO_JUDGE`] in the picture the look is decided from, a spacer, a box with no width, is left alone where it is and is no picture for this.
 //! - **The background** is the page outside the boxes of the pictures that are kept: its own paper, and any white-backed pictures on it.
 //! - **It's mostly white** when its paper, every pixel outside every image's box, is mostly white by [`ImageSample::is_mostly_white`], the one definition, which the test for a white-backed image is built on too: at least [`WHITE_LEAST`] of it plain white, each channel at least [`WHITE_LIGHTEST_CHANNEL`] and at most [`WHITE_MOST_SPREAD`] apart, or at least [`SCAN_LEAST_PAPER`] of it paper-like, as a scan's yellowed or grey paper is. An image must also have little colour, as a photo with a white half is a photo; the page's paper needn't, as its pictures are taken out of it, and what colour is left is the page's own, its headings, coloured bands and table fills, which turn over with it on a page with no picture. White-backed pictures passed their own test, so where there's too little paper outside every box to judge and white-backed pictures make up the rest, the background is theirs, and white.
 //! - **Mostly a picture on a mostly white background: the page turns over** however large its picture: paper dark, text light, and a photo on it keeps its own colours, a little dimmed, as under half. A picture whose own background is mostly white turns over with it (2026-11-07, unchanged).
 //! - **Mostly a picture with too little background to judge: the page is a picture,** and isn't turned over. A full-page photograph or a map edge to edge, or a picture with all but a margin under [`LEAST_BACKGROUND`] of the page, a twentieth, which is a margin of about 3 mm round a letter page, keeps its true colours dimmed by [`PICTURE_PAGE_DIM`] so it doesn't glare.
 //! - **Mostly a picture on a coloured or dark background isn't turned over either:** the whole page is dimmed, true colours, the same as a page that's a picture, since turning it over would make a dark page light round it.
-//! - **Several pictures** are one background between them: each is judged by itself, their shares are added up, and the background is what's outside the kept ones.
+//! - **Several pictures** are one background between them: each is judged by itself, what they cover together is their share, and the background is what's outside the kept ones.
 //! - **A page with no picture kept** turns over as before, whatever its background: a page of text, a large drawing in vectors, which has no picture to keep, and a page of white-backed pictures.
 //!
 //! **When a page's images can't be told apart, it's judged whole, and what's uncertain is dimmed,** as an image turned over is a negative, and a page dimmed is only brighter than it might have been. That's unchanged: the page with a photo over 53% of it, judged whole, is dimmed, as its photo is too much colour for a page of white. A page is judged whole only when its images can't be had: a page that fails at every zoom, or an asking that was stopped; a page drawn at a lower resolution is asked as any page is (`recto-render-service`, `image_boxes`). A look refused a worker isn't decided at all, and so isn't remembered (`engine/run.rs`). There's one [`PageLook`] a page while its renderer lives, so its tiles, preview, lower-resolution version and the picture it sleeps as can't disagree. **Across a renderer dropped and made again, as a tab sleeps and wakes, the look is decided again,** from the preview if that's drawn first or the look picture otherwise, and what's decided can differ only in part: whether the page turns over or is dimmed doesn't hang on which picture it's decided from (0 of 1,291 pages differed between pictures 1,144, 512 and 128 pixels tall, `tests/look_survey.rs`, `sizes`), but whether one image on it turns over with the page or is kept can (7 of 292 pages with images between the look picture and the largest preview, 29 at a lower resolution's quarter), so such an image can change across a sleep and a wake. **Its limits:** a photo inside a scan turns over with it, which is accepted. A chart drawn as vectors on a page of text turns over with the text, since pixels can't say what they belong to.
@@ -139,7 +139,7 @@ fn dim_pixel(pixel: &mut [u8; 4]) {
     }
 }
 
-/// How much of a page, added up over the pictures kept on it that are large enough to judge, makes its background decide: half, which is what "mostly a picture" says (owner, 2026-11-07). Under it a page turns over whatever its background, as it always has. Measured over `bench100`: USGS map sheets 0.59 to 1.0, with their legends and titles in vectors around the map, and figures on arXiv pages of text 0.16 to 0.26.
+/// How much of a page, covered by the pictures kept on it that are large enough to judge, an overlap counted once, makes its background decide: half, which is what "mostly a picture" says (owner, 2026-11-07). Under it a page turns over whatever its background, as it always has. Measured over `bench100`: USGS map sheets 0.59 to 1.0, with their legends and titles in vectors around the map, and figures on arXiv pages of text 0.16 to 0.26.
 pub const MOSTLY_PICTURE: f64 = 0.5;
 /// The least background, the part of a page outside the pictures kept on it, that can be judged at all: a twentieth of the page, which round a letter page is a margin of about 3 mm. With less, the page is a picture edge to edge and is dimmed, whatever colour that sliver is: a printer's margin round a full-page photograph isn't a page of white. A photo over 90% of a white page, a margin of about 6 mm on each side, is judged, and turns over.
 pub const LEAST_BACKGROUND: f64 = 0.05;
@@ -412,15 +412,6 @@ fn pixel_boxes(boxes: impl Iterator<Item = [u16; 4]>, width: u32, height: u32) -
     found
 }
 
-/// The parts of a page these cover, in its own 65535ths, so at any size of picture the same. Added up, so images that overlap count twice, and a page can't come to more than all of it. A box inside out covers nothing.
-fn share_of_page(boxes: &[[u16; 4]]) -> f64 {
-    boxes
-        .iter()
-        .map(|sides| f64::from(sides[2].saturating_sub(sides[0])) * f64::from(sides[3].saturating_sub(sides[1])) / (65_535.0 * 65_535.0))
-        .sum::<f64>()
-        .min(1.0)
-}
-
 /// The part of a picture `width` by `height` that none of `holes` covers. Images that overlap count once.
 fn share_outside(holes: &[PixelBox], width: u32, height: u32) -> f64 {
     let (width, height) = (width as usize, height as usize);
@@ -445,7 +436,7 @@ impl PageLook {
         Self::default()
     }
 
-    /// Decides from a small picture of the whole page, `width` by `height` of BGRA pixels as drawn for white paper. `boxes` is where its images are, if that's known, and with none known the page is judged whole. With them known, each is judged by itself, and a page whose kept pictures come to [`MOSTLY_PICTURE`] of it or more turns over only if its background is mostly white (owner, 2026-11-13).
+    /// Decides from a small picture of the whole page, `width` by `height` of BGRA pixels as drawn for white paper. `boxes` is where its images are, if that's known, and with none known the page is judged whole. With them known, each is judged by itself, and a page whose kept pictures cover [`MOSTLY_PICTURE`] of it or more between them turns over only if its background is mostly white (owner, 2026-11-13).
     pub fn decide(boxes: Option<&[[u16; 4]]>, pixels: &[u8], stride: usize, width: u32, height: u32) -> Self {
         let sample = |sides: [u16; 4]| {
             let [left, top, right, bottom] = in_pixels(sides, width, height, false).map(|side| side as usize);
@@ -479,16 +470,18 @@ impl PageLook {
                 }
             }
         }
-        if share_of_page(&pictures) < MOSTLY_PICTURE || Self::background_is_white(boxes, &pictures, !whiten.is_empty(), pixels, stride, width, height) {
+        // How much of the page is picture, and how much is background, are one measure: the part of the picture outside every kept picture's box, where pictures that overlap, as a photo and its drop shadow do, count once.
+        let outside = share_outside(&pixel_boxes(pictures.iter().copied(), width, height), width, height);
+        if 1.0 - outside < MOSTLY_PICTURE || Self::background_is_white(outside, boxes, !whiten.is_empty(), pixels, stride, width, height) {
             return Self { dim: false, keep, whiten };
         }
         // Most of the page a picture, edge to edge or on a background that isn't white: true colours, dimmed.
         Self { dim: true, ..Self::default() }
     }
 
-    /// Whether a page's background, the page outside the pictures `pictures` that stay as they are, is mostly white, as the module's doc says: enough of it to judge, and its paper outside every one of `boxes` mostly white by [`ImageSample::is_mostly_white`], or too little paper to judge with white-backed pictures, `whitened`, making up the rest.
-    fn background_is_white(boxes: &[[u16; 4]], pictures: &[[u16; 4]], whitened: bool, pixels: &[u8], stride: usize, width: u32, height: u32) -> bool {
-        if share_outside(&pixel_boxes(pictures.iter().copied(), width, height), width, height) < LEAST_BACKGROUND {
+    /// Whether a page's background, the part of it outside the pictures that stay as they are, `outside` of it, is mostly white, as the module's doc says: enough of it to judge, and its paper outside every one of `boxes` mostly white by [`ImageSample::is_mostly_white`], or too little paper to judge with white-backed pictures, `whitened`, making up the rest.
+    fn background_is_white(outside: f64, boxes: &[[u16; 4]], whitened: bool, pixels: &[u8], stride: usize, width: u32, height: u32) -> bool {
+        if outside < LEAST_BACKGROUND {
             return false;
         }
         let paper = sample_outside(
@@ -1023,12 +1016,13 @@ mod tests {
     const PAGE: (u32, u32) = (200, 260);
     const PAGE_STRIDE: usize = PAGE.0 as usize * 4;
 
-    /// What's on a made page, from the top: a photo, which is shaded colour and no white, a chart, which is white with a few flat blue bars, or a band of colour drawn on the page, shaded through many blues and purples, as a cover's or a heading's band is.
+    /// What's on a made page, from the top: a photo, which is shaded colour and no white, a chart, which is white with a few flat blue bars, a band of colour drawn on the page, shaded through many blues and purples, as a cover's or a heading's band is, or a photo's drop shadow, an image of dark grey.
     #[derive(Clone, Copy)]
     enum Part {
         Photo,
         Chart,
         Band,
+        Shadow,
     }
 
     /// A made page: `parts` on a `background`, with a line of `text` every few rows across its middle where nothing else is. Places are parts of the page, `[left, top, right, bottom]`.
@@ -1043,6 +1037,7 @@ mod tests {
                         Part::Photo if y % 40 < 22 => [70 + (x % 60) as u8, 130 + (y % 50) as u8, 220 - (x % 40) as u8],
                         Part::Photo => [30 + (x % 20) as u8, 90 + (x * 3 % 70) as u8, 40],
                         Part::Band => [30 + (x * 7 % 160) as u8, 60 + (y * 5 % 120) as u8, 200],
+                        Part::Shadow => [40, 40, 45],
                         Part::Chart => {
                             let (inside_x, inside_y) = ((fx - left * width) as u32, (fy - top * height) / ((bottom - top) * height));
                             if (inside_x / 12) % 3 == 0 && inside_y > 0.6 {
@@ -1171,6 +1166,30 @@ mod tests {
         }
     }
 
+    /// Failure: a navy slide with a photo over 30% of it and the photo's drop shadow, an image of its own under it in nearly the same box, is dimmed whole while its neighbour with the same photo and no shadow turns over (second review of 2026-11-13). The two boxes overlap all but a sliver, so they cover about 32% of the page between them; added up, they came to 60%, and the background decided. How much of a page is picture counts an overlap once, as the background outside the pictures does.
+    #[test]
+    fn a_photo_with_a_drop_shadow_turns_over_like_the_photo_alone() {
+        let navy = [30, 60, 110];
+        let photo = centred_photo(0.30);
+        let shadow = [photo[0] + 0.015, photo[1] + 0.012, photo[2] + 0.015, photo[3] + 0.012];
+        let alone = made_page(&[(photo, Part::Photo)], navy, [235, 235, 235]);
+        let alone = PageLook::decide(Some(&[sides(photo)]), &alone, PAGE_STRIDE, PAGE.0, PAGE.1);
+        assert!(!alone.dim, "{alone:?}");
+        let pixels = made_page(&[(photo, Part::Photo), (shadow, Part::Shadow)], navy, [235, 235, 235]);
+        let boxes = [sides(shadow), sides(photo)];
+        let look = PageLook::decide(Some(&boxes), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1);
+        assert!(!look.dim && look.keep == boxes, "with its shadow: {look:?}, alone: {alone:?}");
+    }
+
+    /// Failure: two photos side by side on a navy page, over 30% of it each and 60% between them, turn over with their page, so a dark page comes out light round pictures that are most of it, as the background is asked only of a page that's mostly a picture. Their boxes don't overlap, so their share is both of them: half or more, the background decides, and navy is dimmed whole.
+    #[test]
+    fn two_photos_over_half_a_coloured_page_between_them_dim_it() {
+        let (top, bottom) = ([0.05, 0.05, 0.95, 0.383], [0.05, 0.6, 0.95, 0.933]);
+        let pixels = made_page(&[(top, Part::Photo), (bottom, Part::Photo)], [30, 60, 110], [235, 235, 235]);
+        let look = PageLook::decide(Some(&[sides(top), sides(bottom)]), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1);
+        assert!(look.dim, "{look:?}");
+    }
+
     /// Failure: a report page with a coloured header band and sidebar beside a photo over 30% of it is dimmed whole to light grey between neighbours that turn over, as the background test did when any picture made it decide (review of 2026-11-13). Under [`MOSTLY_PICTURE`] the page turns over as before, its band and sidebar with it, and keeps its photo.
     #[test]
     fn a_page_with_a_coloured_band_and_sidebar_and_a_small_photo_turns_over() {
@@ -1216,7 +1235,8 @@ mod tests {
             let (x, y) = (20 * (at % 10) + 5, 8 * (at / 10) + 4);
             boxes.push([x * 65_535 / PAGE.0, y * 65_535 / PAGE.1, (x + 7) * 65_535 / PAGE.0, (y + 7) * 65_535 / PAGE.1].map(|side| side as u16));
         }
-        assert!(share_of_page(&boxes) >= MOSTLY_PICTURE, "{}", share_of_page(&boxes));
+        let covered = 1.0 - share_outside(&pixel_boxes(boxes.iter().copied(), PAGE.0, PAGE.1), PAGE.0, PAGE.1);
+        assert!(covered >= MOSTLY_PICTURE, "{covered}");
         let look = PageLook::decide(Some(&boxes), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1);
         assert!(!look.dim, "sixty spacers: {look:?}");
     }
