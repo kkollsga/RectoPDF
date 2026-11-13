@@ -6,9 +6,10 @@ use recto_platform::FileStamp;
 /// Saves left under way by a restore that are kept by name. Saves run one a tab and end in moments, so a restore meets next to none; past this many, every save not begun since is doubted (see [`Saves::beyond`]).
 pub(crate) const MAX_ABANDONED_SAVES: usize = 64;
 
-/// Tabs being saved, and saves remembered for the page view.
+/// Tabs being saved, and what saves lately moved their tabs on from. What's public here only reads; a save begins and ends with the session, as it goes
+/// with the tab's list and file.
 #[derive(Debug, Default)]
-pub(crate) struct Saves {
+pub struct Saves {
     /// Tabs being saved now. Nothing changes their edits until the save's done: an edit made while the file was being written would read as saved and not be in it (review). Next to none.
     saving: Vec<TabId>,
     /// Tabs a save has moved to another version of their file, as `(tab, before, after)`: the pages the new version has are the ones that were shown, each as it was shown, so the page view keeps its layout, place and selection. At most [`MAX_SAVED_OVER`], the oldest out; one is only believed while its tab is still on `after`.
@@ -79,11 +80,13 @@ impl Saves {
         true
     }
 
-    pub(crate) fn is_saving(&self, id: TabId) -> bool {
+    /// Whether a save of this tab is under way.
+    pub fn is_saving(&self, id: TabId) -> bool {
         self.saving.contains(&id)
     }
 
-    pub(crate) fn any(&self) -> bool {
+    /// Whether any save is under way, which a hand-off waits for.
+    pub fn any(&self) -> bool {
         !self.saving.is_empty()
     }
 

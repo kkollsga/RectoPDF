@@ -13,16 +13,16 @@ fn command_click_builds_a_comparison_and_a_plain_click_ends_it() {
     assert_eq!(s.panes(), vec![ids[0]]);
     assert_eq!(s.toggle_compare(ids[1]), Ok(compare::CompareChange::Added));
     assert_eq!(s.panes(), vec![ids[0], ids[1]]);
-    assert_eq!(s.active(), Some(ids[1]), "the one clicked is read");
+    assert_eq!(s.tabs().active(), Some(ids[1]), "the one clicked is read");
     assert_eq!(s.toggle_compare(ids[2]), Ok(compare::CompareChange::Added));
     assert_eq!(s.toggle_compare(ids[3]), Err(compare::CompareError::TooMany));
     assert_eq!(s.panes().len(), compare::MAX_PANES);
     assert!(s.focus_pane(ids[0]));
-    assert_eq!(s.active(), Some(ids[0]));
+    assert_eq!(s.tabs().active(), Some(ids[0]));
     assert!(!s.focus_pane(ids[3]), "not a pane");
     assert_eq!(s.toggle_compare(ids[0]), Ok(compare::CompareChange::Removed));
     assert_eq!(s.panes(), vec![ids[1], ids[2]]);
-    assert_eq!(s.active(), Some(ids[1]), "reading moves to a pane that's left");
+    assert_eq!(s.tabs().active(), Some(ids[1]), "reading moves to a pane that's left");
     assert_eq!(s.toggle_compare(ids[2]), Ok(compare::CompareChange::Ended));
     assert_eq!(s.panes(), vec![ids[1]]);
     assert!(s.comparison().is_none());
@@ -30,7 +30,7 @@ fn command_click_builds_a_comparison_and_a_plain_click_ends_it() {
     s.tap(ids[2]).unwrap();
     assert!(s.comparison().is_none(), "a plain click returns to one");
     assert_eq!(s.panes(), vec![ids[2]]);
-    assert!(s.tab(ids[2]).unwrap().toc_open, "and doesn't fold its contents");
+    assert!(s.tabs().tab(ids[2]).unwrap().toc_open, "and doesn't fold its contents");
     s.compare(&[ids[0], ids[1]], None).unwrap();
     s.open(&PathBuf::from("/d/e.pdf")).unwrap();
     assert!(s.comparison().is_none(), "opening another PDF shows it alone");
@@ -46,9 +46,9 @@ fn panes_on_screen_dont_go_dormant() {
         .map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap())
         .collect();
     s.compare(&[ids[0], ids[1]], Some(ids[0])).unwrap();
-    assert!(!s.can_go_dormant(ids[1]), "a pane not being read is still on screen");
-    assert!(!s.dormant_oldest_first().contains(&ids[1]));
-    assert!(s.dormant_oldest_first().contains(&ids[2]), "the tab off screen can");
+    assert!(!s.dormant().may_go(ids[1]), "a pane not being read is still on screen");
+    assert!(!s.dormant().oldest_first().contains(&ids[1]));
+    assert!(s.dormant().oldest_first().contains(&ids[2]), "the tab off screen can");
     assert!(!s.go_dormant(ids[1]));
 }
 
@@ -63,7 +63,7 @@ fn closing_a_panes_tab_takes_its_pane() {
     s.compare(&[ids[1], ids[2], ids[3]], Some(ids[2])).unwrap();
     s.close(ids[2]).unwrap();
     assert_eq!(s.panes(), vec![ids[1], ids[3]]);
-    assert_eq!(s.active(), Some(ids[1]), "to a pane, not the next tab along");
+    assert_eq!(s.tabs().active(), Some(ids[1]), "to a pane, not the next tab along");
     s.close(ids[1]).unwrap();
     assert!(s.comparison().is_none(), "one left is alone");
     assert_eq!(s.panes(), vec![ids[3]]);
@@ -90,7 +90,7 @@ fn a_comparison_comes_back_from_the_record_exactly() {
     back.restore(&read.record, HashMap::new()).unwrap();
     assert_eq!(back.comparison(), s.comparison());
     assert_eq!(back.comparison().unwrap().sync_from, vec![7, 3]);
-    assert_eq!(back.active(), Some(ids[0]));
+    assert_eq!(back.tabs().active(), Some(ids[0]));
     assert_eq!(back.to_record(), s.to_record());
     for tabs in [vec![ids[0].0], vec![ids[0].0, 99], vec![ids[0].0, ids[0].0], vec![1, 2, 3, 3]] {
         let mut bad = s.to_record();
@@ -119,7 +119,7 @@ fn a_comparison_of_cold_tabs_is_the_live_documents_and_reads_nothing_held() {
         .iter()
         .map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap())
         .collect();
-    assert_eq!(s.active(), Some(ids[4]));
+    assert_eq!(s.tabs().active(), Some(ids[4]));
     let panes = [ids[0], ids[1], ids[2]];
     let cold = s.wake_for_compare(&panes);
     assert_eq!(
@@ -134,7 +134,7 @@ fn a_comparison_of_cold_tabs_is_the_live_documents_and_reads_nothing_held() {
     let loads = s.loader().loads.get();
     s.compare(&panes, None).unwrap();
     assert_eq!(s.loader().loads.get(), loads, "nothing read with the session held");
-    let mut warm: Vec<TabId> = s.warm_tabs().collect();
+    let mut warm: Vec<TabId> = s.warm().ids().collect();
     warm.sort();
     assert_eq!(warm, panes.to_vec(), "the panes are the live documents, and only they");
     assert!(warm.len() <= MAX_WARM);
@@ -153,7 +153,7 @@ fn the_pane_read_next_is_read_ahead() {
     let record = s.to_record();
     let mut back = session(10);
     back.restore(&record, HashMap::new()).unwrap();
-    assert_eq!(back.active(), Some(ids[1]));
+    assert_eq!(back.tabs().active(), Some(ids[1]));
     back.wake_active();
     assert_eq!(
         back.wake_for_close(ids[1]).map(|(id, _)| id),
@@ -174,5 +174,5 @@ fn the_pane_read_next_is_read_ahead() {
     back.toggle_compare(ids[1]).unwrap();
     assert_eq!(back.loader().loads.get(), read_ahead, "nothing read with the session held");
     assert!(read_ahead > loads);
-    assert_eq!(back.active(), Some(ids[0]));
+    assert_eq!(back.tabs().active(), Some(ids[0]));
 }

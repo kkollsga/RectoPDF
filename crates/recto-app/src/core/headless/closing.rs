@@ -68,7 +68,7 @@ fn the_windows_closes_are_the_agents_commands() {
         .core()
         .host
         .session
-        .with_session(|session| session.path_of(recto_session::TabId(tab)))
+        .with_session(|session| session.tabs().path_of(recto_session::TabId(tab)))
         .expect("its file");
     let before = std::fs::read(&file).expect("the file");
     twins.person.act(UiAction::CloseAnswered {
@@ -158,7 +158,10 @@ fn an_agents_close_of_an_asleep_tab_says_what_it_would_lose() {
     }
     assert_eq!(app.tabs().len(), 2, "it stays");
     assert!(
-        app.core().host.session.with_session(|session| session.list_is_asleep(recto_session::TabId(1))),
+        app.core()
+            .host
+            .session
+            .with_session(|session| session.lists().is_asleep(recto_session::TabId(1))),
         "the list was asleep when the close was asked"
     );
     app.person(r##"{"cmd":"tap","tab":"#1"}"##);

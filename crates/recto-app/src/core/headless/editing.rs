@@ -170,13 +170,22 @@ fn an_agent_neither_discards_nor_clears_edits_it_cant_read() {
     let slept = app.agent(Level::Full, r##"{"cmd":"session_sleep","tab":"#1"}"##).expect("put to sleep");
     assert_eq!(slept["list_asleep"], true, "{slept}");
     super::closing::journals_written_over(&app);
-    let asleep = || app.core().host.session.with_session(|session| session.list_is_asleep(recto_session::TabId(1)));
+    let asleep = || {
+        app.core()
+            .host
+            .session
+            .with_session(|session| session.lists().is_asleep(recto_session::TabId(1)))
+    };
     for line in [r##"{"cmd":"discard","tab":"#1"}"##, r##"{"cmd":"clear_history","tab":"#1"}"##] {
         for level in [Level::Control, Level::Full] {
             let refused = app.agent(level, line).map(drop).map_err(|error| error.code);
             app.settle();
             assert_eq!(refused, Err("edits_unreadable"), "{line} at {level:?}");
-            let edited = app.core().host.session.with_session(|session| session.is_edited(recto_session::TabId(1)));
+            let edited = app
+                .core()
+                .host
+                .session
+                .with_session(|session| session.lists().is_edited(recto_session::TabId(1)));
             assert!(asleep() && edited, "{line} at {level:?}: nothing given up");
         }
     }

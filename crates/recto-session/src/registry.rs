@@ -1,12 +1,17 @@
 //! The open tabs: each tab's record in the sidebar's order, which one is active, the number the next one gets, and the folders their files are in.
 
 use crate::dirs::Dirs;
-use crate::{TabId, TabRecord};
+use crate::record::{self, FileNotice, PlaceRecord, Selection};
+use crate::{TabId, TabRecord, trail};
+use recto_core::OpenError;
+use recto_platform::FileStamp;
 use std::path::{Path, PathBuf};
 
-/// Every open tab, which one's active, and their folders.
+/// Every open tab, which one's active, and their folders. Reads as the tabs in the sidebar's order. What's public here is about one tab, or reads; what
+/// adds a tab, takes one away or hands out a tab's record to change stays the crate's, as the other components hold something of every tab and must change
+/// with it.
 #[derive(Debug)]
-pub(crate) struct Tabs {
+pub struct Tabs {
     /// In the sidebar's order.
     tabs: Vec<TabRecord>,
     active: Option<TabId>,
@@ -27,6 +32,15 @@ impl Default for Tabs {
     }
 }
 
+/// The tabs in the sidebar's order, to read. There's no `DerefMut`: a tab's record isn't changed from outside the crate.
+impl std::ops::Deref for Tabs {
+    type Target = [TabRecord];
+
+    fn deref(&self) -> &[TabRecord] {
+        &self.tabs
+    }
+}
+
 impl Tabs {
     /// Every tab, in the sidebar's order.
     pub(crate) fn all(&self) -> &[TabRecord] {
@@ -37,15 +51,11 @@ impl Tabs {
         self.tabs.iter_mut()
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.tabs.len()
-    }
-
-    pub(crate) fn get(&self, id: TabId) -> Option<&TabRecord> {
+    pub fn tab(&self, id: TabId) -> Option<&TabRecord> {
         self.tabs.iter().find(|t| t.id == id)
     }
 
-    pub(crate) fn get_mut(&mut self, id: TabId) -> Option<&mut TabRecord> {
+    pub(crate) fn tab_mut(&mut self, id: TabId) -> Option<&mut TabRecord> {
         self.tabs.iter_mut().find(|t| t.id == id)
     }
 
@@ -70,7 +80,7 @@ impl Tabs {
         closed
     }
 
-    pub(crate) fn active(&self) -> Option<TabId> {
+    pub fn active(&self) -> Option<TabId> {
         self.active
     }
 
@@ -107,13 +117,13 @@ impl Tabs {
     }
 
     /// The tab's full path, rebuilt from its interned folder and name.
-    pub(crate) fn path_of(&self, id: TabId) -> Option<PathBuf> {
-        let tab = self.get(id)?;
+    pub fn path_of(&self, id: TabId) -> Option<PathBuf> {
+        let tab = self.tab(id)?;
         Some(self.dirs.get(tab.file.dir)?.join(&*tab.file.file_name))
     }
 
     /// The tab already showing this file, by its path.
-    pub(crate) fn for_path(&self, path: &Path) -> Option<TabId> {
+    pub fn for_path(&self, path: &Path) -> Option<TabId> {
         let dir = self.dirs.id_of(path.parent().unwrap_or(Path::new("")))?;
         let file_name = path.file_name()?;
         self.tabs.iter().find(|t| t.file.dir == dir && &*t.file.file_name == file_name).map(|t| t.id)
@@ -123,6 +133,89 @@ impl Tabs {
     pub(crate) fn let_go_of_dir_if_unused(&mut self, dir: u32) {
         if !self.tabs.iter().any(|tab| tab.file.dir == dir) {
             self.dirs.let_go(dir);
+        }
+    }
+
+    /// The tab's notice, if there is one.
+    pub fn tab_notice(&self, id: TabId) -> Option<&FileNotice> {
+        self.tab(id)?.file.notice.as_deref()
+    }
+
+    /// Whether a tab's file needs a password that hasn't been given, which the app asks for when it's showing.
+    pub fn needs_password(&self, id: TabId) -> bool {
+        self.tab(id).is_some_and(|tab| tab.problem == Some(OpenError::PasswordNeeded))
+    }
+
+    /// **Nothing of this tab's file goes to an agent:** it was opened with a password the person typed, or it needs one, and what the record has of it (its length, its place) was read with one. Reading a protected document needs the person's consent for that document (agent report §5.5), which isn't built, so it's refused outright. `encrypted` alone isn't this: a file anyone may open can be encrypted too.
+    pub fn withheld_from_agents(&self, id: TabId) -> bool {
+        self.tab(id).is_some_and(|tab| {
+            tab.file.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.file.notice.as_deref(), Some(FileNotice::NeedsPassword))
+        })
+    }
+
+    /// What a tab's own file was when its page numbers were recorded, for a caller listing pages by file.
+    pub fn own_stamp(&self, id: TabId) -> Option<FileStamp> {
+        self.tab(id).and_then(|tab| tab.file.stamp)
+    }
+
+    /// How a tab's pages are laid out.
+    pub fn spread_of(&self, id: TabId) -> Option<record::Spread> {
+        self.tab(id).map(|tab| tab.spread)
+    }
+
+    /// A tab's trail, for QA and `recto where`.
+    pub fn trail_of(&self, id: TabId) -> Option<&trail::Trail> {
+        self.tab(id)?.reading.trail.as_deref()
+    }
+
+    /// Whether a tab can go back, and forward.
+    pub fn can_go_back_and_forward(&self, id: TabId) -> (bool, bool) {
+        self.trail_of(id)
+            .map_or((false, false), |trail| (!trail.back().is_empty(), !trail.forward().is_empty()))
+    }
+
+    /// Where to bring a tab back to: only if it's still about the page the tab is on, as a `goto` while it was cold leaves it not.
+    pub fn place_to_show(&self, id: TabId) -> Option<PlaceRecord> {
+        let tab = self.tab(id)?;
+        tab.reading.place.filter(|place| place.page == tab.page)
+    }
+
+    /// Turns the view of a tab, by quarter turns.
+    pub fn set_view_rotation(&mut self, id: TabId, quarter_turns: u8) {
+        if let Some(tab) = self.tab_mut(id) {
+            tab.view_rotation = quarter_turns % 4;
+        }
+    }
+
+    /// Lays a tab's pages out another way. Says whether that changed anything.
+    pub fn set_spread(&mut self, id: TabId, spread: record::Spread) -> bool {
+        match self.tab_mut(id) {
+            Some(tab) if tab.spread != spread => {
+                tab.spread = spread;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// What's selected in a tab. Carried across a restart, and nothing else here reads it.
+    pub fn set_selection(&mut self, id: TabId, selection: Option<Selection>) {
+        if let Some(tab) = self.tab_mut(id) {
+            tab.reading.selection = selection.map(Box::new);
+        }
+    }
+
+    /// A tab's facts were, or are about to be, read with a password the person typed. Marked before they're taken in, and kept while the tab's open and in the record, so there's no moment an agent could read them.
+    pub fn note_password_used(&mut self, id: TabId) {
+        if let Some(tab) = self.tab_mut(id) {
+            tab.file.password = true;
+        }
+    }
+
+    /// [`crate::Session::touch`], at a given time.
+    pub fn touch_at(&mut self, id: TabId, now: u32) {
+        if let Some(tab) = self.tab_mut(id) {
+            tab.touched = now;
         }
     }
 
@@ -139,6 +232,6 @@ impl Tabs {
     /// Every part that holds something of this tab, by name.
     #[cfg(test)]
     pub(crate) fn holding(&self, id: TabId) -> [(&'static str, bool); 2] {
-        [("tabs", self.get(id).is_some()), ("active", self.active == Some(id))]
+        [("tabs", self.tab(id).is_some()), ("active", self.active == Some(id))]
     }
 }

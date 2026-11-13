@@ -151,7 +151,7 @@ pub(crate) fn plan_of<L: recto_session::DocLoader>(
     range: Option<(u32, u32)>,
 ) -> Result<Plan, AgentError> {
     {
-        let total = s.pages_in(id);
+        let total = s.pages().count(id);
         let (start, len) = range.unwrap_or((0, total));
         // `5-` runs to the end, which is what a search's `next_page` is for.
         let open_ended = pages.is_some_and(|pages| pages.ends_with('-'));
@@ -160,14 +160,15 @@ pub(crate) fn plan_of<L: recto_session::DocLoader>(
             return Err(AgentError::new("no_such_page", "Those pages aren't in this document.", exit::NOT_FOUND));
         }
         let path = s
+            .tabs()
             .path_of(id)
             .ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?;
         let mut files = vec![PlanFile {
             path,
-            expected: s.page_edits(id).and_then(|_| s.own_stamp(id)),
+            expected: s.lists().get(id).and_then(|_| s.tabs().own_stamp(id)),
             added: false,
         }];
-        let list = match s.page_edits(id) {
+        let list = match s.lists().get(id) {
             None => (start..start.saturating_add(len)).map(|page| (page, 0, page)).collect(),
             Some(edits) => {
                 files.extend(edits.added_sources().iter().map(|added| PlanFile {

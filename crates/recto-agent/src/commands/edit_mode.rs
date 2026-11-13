@@ -48,8 +48,8 @@ impl Cmd for EditMode {
             }
         };
         Ok(cx.access.with(|s| {
-            let was = s.edit_mode();
-            s.set_edit_mode(on);
+            let was = s.viewing().edit_mode();
+            s.viewing_mut().set_edit_mode(on);
             json!({ "edit_mode": on, "changed": was != on })
         }))
     }
@@ -147,11 +147,11 @@ mod tests {
         )
         .expect("an agent at Control may turn it on");
         assert_eq!(on["edit_mode"], true);
-        assert!(session.lock().unwrap().edit_mode());
+        assert!(session.lock().unwrap().viewing().edit_mode());
         assert_eq!(refusals(&session), off, "and each refused the same with it on");
         let session = session.into_inner().unwrap();
-        let id = session.active().expect("a tab");
-        assert!(session.has_undone_owner_steps(id), "the owner's step is still there to redo");
+        let id = session.tabs().active().expect("a tab");
+        assert!(session.lists().has_undone_owner_steps(id), "the owner's step is still there to redo");
     }
 
     /// Failure: edit mode is turned by an agent below Control, or by a word that isn't on or off.
@@ -163,7 +163,7 @@ mod tests {
         assert_eq!(refused.code, "permission_denied");
         let refused = execute(&session, Actor::Agent(Level::Control), &line("sideways"), &mut Vec::new()).expect_err("no such way");
         assert_eq!(refused.code, "usage");
-        assert!(!session.lock().unwrap().edit_mode(), "left off");
+        assert!(!session.lock().unwrap().viewing().edit_mode(), "left off");
         let answer = execute(&session, Actor::Person, &line("off"), &mut Vec::new()).expect("off again");
         assert_eq!(answer["changed"], false);
         assert!(matches!(line("on"), Command::Edit(_)));

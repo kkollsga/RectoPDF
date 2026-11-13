@@ -199,7 +199,7 @@ impl Inner {
         let in_seconds = self
             .host
             .session
-            .with_session(|session| session.next_dormant_at(after).map(|at| at.saturating_sub(session.seconds_now())));
+            .with_session(|session| session.dormant().next_at(after).map(|at| at.saturating_sub(session.dormancy().seconds_now())));
         let _ = self.sleeper.step(Event::Rearm { in_seconds });
     }
 
@@ -209,7 +209,11 @@ impl Inner {
         let busy = self.life.reads_running.load(Ordering::SeqCst) > 0 || self.core.frozen.load(Ordering::SeqCst);
         self.sleeper.step(Event::DueNow { busy })?;
         let after = self.sleeper.after_seconds();
-        Some(self.host.session.with_session(|session| session.due_dormant(session.seconds_now(), after)))
+        Some(
+            self.host
+                .session
+                .with_session(|session| session.dormant().due(session.dormancy().seconds_now(), after)),
+        )
     }
 
     /// **Those tabs go dormant,** on the session thread, those that may: whatever's asking, not the one on screen or one being worked on or saved. Whatever hasn't gone to its journal goes first, or a list couldn't.
@@ -217,7 +221,7 @@ impl Inner {
         let tabs: Vec<(TabId, bool)> = self
             .host
             .session
-            .with_session(|session| tabs.iter().map(|id| (*id, session.can_go_dormant(*id))).collect());
+            .with_session(|session| tabs.iter().map(|id| (*id, session.dormant().may_go(*id))).collect());
         let frozen = self.core.frozen.load(Ordering::SeqCst);
         let Some(Out::GoDormant { tabs, in_place }) = self.sleeper.step(Event::GoDormant { why, tabs, frozen }) else {
             return 0;
@@ -373,7 +377,7 @@ impl Inner {
 
     /// Tabs just woken from their sleep files: nothing's asked of the PDF on the way, as it may be on a disk that's gone away. Each is looked at on a thread of its own, and if it's turned out to be something else, it's read after all.
     pub fn check_woken_files(&self) {
-        let woken = self.host.session.with_session(|session| session.take_woken_from_file());
+        let woken = self.host.session.with_session(|session| session.dormancy_mut().take_woken_from_file());
         if woken.is_empty() {
             return;
         }
@@ -387,7 +391,7 @@ impl Inner {
 
     /// What a tab's first frame shows, for the page view: from the file just read, or its sleep file if nobody's read it, whichever way this tab's been asked for. Only what's about the document as it is now. Each picture says what paper it's for, and only goes on that. On the session thread, with no lock on the page view while the surfaces are made.
     pub fn give_sleep_view(&self, engine: &recto_reader::Engine, id: TabId) {
-        let read = self.host.session.with_session(|session| session.take_sleep_read(id));
+        let read = self.host.session.with_session(|session| session.dormancy_mut().take_sleep_read(id));
         let sleep = read.or_else(|| {
             let (stamp, path) = self.host.session.with_session(|session| session.sleep_to_read_awake(id))?;
             self.saver.store.read_sleep(stamp, &path)
@@ -397,12 +401,15 @@ impl Inner {
         if self
             .host
             .session
-            .with_session(|session| session.own_stamp(id))
+            .with_session(|session| session.tabs().own_stamp(id))
             .is_none_or(|now| !(now.same_contents(sleep.file) && now.inode == sleep.file.inode))
         {
             return;
         }
-        let (pages, mark) = self.host.session.with_session(|session| (session.pages_in(id), session.list_mark(id)));
+        let (pages, mark) = self
+            .host
+            .session
+            .with_session(|session| (session.pages().count(id), session.lists().list_mark(id)));
         if sleep.pages != pages || sleep.list_seq != mark {
             return;
         }
@@ -431,7 +438,10 @@ impl Inner {
 
     /// The documents off screen against their budget. At most once a second, and only with something off screen, which most of the time there's little of.
     pub fn look_at_budget(&self) {
-        let (warm, active) = self.host.session.with_session(|session| (session.dormant_oldest_first(), session.active()));
+        let (warm, active) = self
+            .host
+            .session
+            .with_session(|session| (session.dormant().oldest_first(), session.tabs().active()));
         // A change of tab is when a document comes to be off screen, so that's looked at straight away.
         if self
             .sleeper
@@ -452,7 +462,7 @@ impl Inner {
                         + self
                             .host
                             .session
-                            .with_session(|session| session.page_edits(*id).map_or(0, |list| list.history_bytes() as u64)),
+                            .with_session(|session| session.lists().get(*id).map_or(0, |list| list.history_bytes() as u64)),
                 )
             })
             .collect();
@@ -474,7 +484,7 @@ impl Inner {
         let Some(Out::AllGo(critical)) = self.sleeper.step(Event::Pressure { critical }) else {
             return;
         };
-        let tabs = self.host.session.with_session(|session| session.dormant_oldest_first());
+        let tabs = self.host.session.with_session(|session| session.dormant().oldest_first());
         self.go_dormant(&tabs, Why::Pressure);
         for engine in self.panes.engines(&self.engine) {
             engine.memory_pressure(critical);
@@ -520,7 +530,11 @@ pub use crate::version_of;
 
 /// **Looks at a tab's file before it's shown, for as long as a frame can wait for it.** Another file there means what's held of it is of something else, so the tab's read again, and nothing drawn of the old one is shown: the page view's told its version's changed. Past the time, which is a disk that's gone away, it's shown as it was, and the look goes on on its own thread. A stat, which is microseconds.
 pub fn look_before_showing(inner: &Inner, id: TabId) {
-    let Some((path, stamp)) = inner.host.session.with_session(|session| Some((session.path_of(id)?, session.own_stamp(id)))) else {
+    let Some((path, stamp)) = inner
+        .host
+        .session
+        .with_session(|session| Some((session.tabs().path_of(id)?, session.tabs().own_stamp(id))))
+    else {
         return;
     };
     // One look per tab, and so many in all: with a disk that's stopped answering, showing tab after tab adds no threads past them.
@@ -560,7 +574,11 @@ const LOOK_PATIENCE: Duration = Duration::from_millis(30);
 
 /// One thread looks at the one file a tab was woken from its sleep file on, or that's showing when the app comes to the front, and ends. If it's something else now, the session's told, and it's read after all. A tab with a look under way already, or past [`MAX_LOOKS`] in all, isn't looked at now: see [`LookSlots`].
 pub fn check_woken_file(inner: &std::sync::Arc<Inner>, id: TabId) {
-    let Some((path, stamp)) = inner.host.session.with_session(|session| Some((session.path_of(id)?, session.own_stamp(id)))) else {
+    let Some((path, stamp)) = inner
+        .host
+        .session
+        .with_session(|session| Some((session.tabs().path_of(id)?, session.tabs().own_stamp(id))))
+    else {
         return;
     };
     if !inner.sleeper.looks.start(id) {

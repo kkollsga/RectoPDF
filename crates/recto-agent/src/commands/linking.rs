@@ -445,7 +445,7 @@ mod tests {
         let run = |line: &str| execute(&access, Actor::Agent(Level::Control), &parse(line).unwrap(), &mut Vec::new());
         // Where the page view's told to land.
         let here = || {
-            let stop = access.lock().unwrap().take_jump(id).unwrap();
+            let stop = access.lock().unwrap().mail_mut().take_jump(id).unwrap();
             (stop.page, stop.within)
         };
         run(r#"{"cmd":"goto","page":3,"within":0.4}"#).unwrap();

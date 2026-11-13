@@ -5,7 +5,7 @@ use crate::{Paper, ViewSettings};
 
 /// The view's settings, Find and edit mode.
 #[derive(Debug, Default)]
-pub(crate) struct Viewing {
+pub struct Viewing {
     view: ViewSettings,
     /// Find, as the reader left it.
     find: FindRecord,
@@ -14,20 +14,21 @@ pub(crate) struct Viewing {
 }
 
 impl Viewing {
-    pub(crate) fn view(&self) -> ViewSettings {
+    pub fn view(&self) -> ViewSettings {
         self.view
     }
 
-    pub(crate) fn set_view(&mut self, view: ViewSettings) {
+    pub fn set_view(&mut self, view: ViewSettings) {
         self.view = view;
     }
 
-    pub(crate) fn find(&self) -> &FindRecord {
+    /// Find, as the reader left it.
+    pub fn find(&self) -> &FindRecord {
         &self.find
     }
 
     /// Sets what's in Find. Longer text than [`record::MAX_FIND_BYTES`] is cut at a character.
-    pub(crate) fn set_find(&mut self, open: bool, query: &str, draft: &str) {
+    pub fn set_find(&mut self, open: bool, query: &str, draft: &str) {
         let cut = |text: &str| {
             let mut end = text.len().min(record::MAX_FIND_BYTES);
             while !text.is_char_boundary(end) {
@@ -49,16 +50,17 @@ impl Viewing {
         };
     }
 
-    pub(crate) fn set_find_current(&mut self, current: Option<(u32, u32)>, tab: Option<u32>) {
+    /// The hit Find went to last, by its place, for the record.
+    pub fn set_find_current(&mut self, current: Option<(u32, u32)>, tab: Option<u32>) {
         self.find.current = current;
         self.find.current_tab = tab;
     }
 
-    pub(crate) fn edit_mode(&self) -> bool {
+    pub fn edit_mode(&self) -> bool {
         self.edit_mode
     }
 
-    pub(crate) fn set_edit_mode(&mut self, on: bool) {
+    pub fn set_edit_mode(&mut self, on: bool) {
         self.edit_mode = on;
     }
 

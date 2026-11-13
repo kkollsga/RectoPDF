@@ -175,7 +175,7 @@ impl AppHost {
                 session
                     .tabs()
                     .iter()
-                    .filter(|tab| session.withheld_from_agents(tab.id))
+                    .filter(|tab| session.tabs().withheld_from_agents(tab.id))
                     .map(|tab| tab.id.0)
                     .collect()
             }),
