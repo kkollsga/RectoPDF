@@ -462,6 +462,36 @@ fn zoomed_out_past_a_preview_a_dark_page_is_never_shown_light() {
     }
 }
 
+/// Failure (review of 2026-11-13, S4): a page with no images is decided from one tile of it, its top left, as when a tile that isn't the whole page is taken for one, so a white page whose dark band fills most of that tile is taken for a dark page and dimmed whole. Zoomed out just past where a preview is drawn, with the page two tiles across, a white page with a navy band across its top 330 points, 42% of it and 58% of its top left tile, turns over: its white is the dark paper's tone on every tile shown. That no preview was drawn is checked, as a page is decided from its preview when there is one. Seen failing with `covers_page` always saying yes.
+#[test]
+fn a_white_page_whose_band_fills_its_first_tile_turns_over() {
+    let lines: Vec<String> = (0..20).map(|at| format!("Line {at} of the text under the band.")).collect();
+    let mut content = b"0.13 0.23 0.42 rg 0 462 612 330 re f\n0 g\n".to_vec();
+    content.extend(text_lines(&lines.iter().map(String::as_str).collect::<Vec<_>>()));
+    // The text from 440 points down, under the band.
+    let content = String::from_utf8(content).unwrap().replace("72 720 Td", "72 440 Td").into_bytes();
+    let file = TempPdf::new("band.pdf", &pages_with(&[Page::new(content)], "", Vec::new()));
+    // At 0.37 a letter page is 0.92 pixels a point at a backing of 2, 566 pixels across, two tiles, its top left tile its top 557 points; a preview is drawn from 0.375 up.
+    let viewport = Viewport {
+        magnification: 0.37,
+        ..view(0.0)
+    };
+    let (shown, report) = shown_on_dark_paper(&file.0, 1, 0, Policy::default(), viewport);
+    assert_eq!(report["tiles"]["previews_attached"], 0, "{report}");
+    assert_eq!(report["tiles"]["kept"], 0, "no preview drawn: {report}");
+    assert!(
+        shown.iter().filter(|tile| tile.page == 0).count() >= 2,
+        "the page in more than one tile: {report}"
+    );
+    let seen: Vec<u32> = shown
+        .iter()
+        .filter(|tile| tile.page == 0)
+        .flat_map(|tile| [(590.0, 500.0), (300.0, 780.0), (40.0, 700.0)].into_iter().filter_map(|(x, y)| tile.at(x, y)))
+        .collect();
+    assert!(!seen.is_empty(), "nothing shown of the white part: {report}");
+    assert!(seen.iter().all(|rgb| *rgb == DARK_PAPER), "turned over to the paper's tone: {seen:06x?}");
+}
+
 /// Failure: a tab woken onto its sleep picture, where the slide shows dark, then turns the slide light on the first sharp tile, as a page with no images got a page of text's look when no picture of the whole page was at hand: the sleep picture stands for the page's preview, so the first job is a tile, on a renderer that has decided nothing. Every sharper tile of the slide shown after the sleep picture is dark, and the white page of text turns over as before.
 #[test]
 fn woken_onto_a_sleep_picture_a_dark_page_stays_dark() {
