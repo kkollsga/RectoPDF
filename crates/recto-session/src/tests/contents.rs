@@ -14,7 +14,7 @@ fn generated_contents_are_offered_labelled_and_never_replace_the_files_own() {
             .map(|row| (row.text.to_string(), row.action))
     }
     assert_eq!(note(&s), Some(("Generate contents".into(), Some(ContentsAction::Generate))));
-    s.choose_generated(id, true);
+    s.tabs_mut().choose_generated(id, true);
     s.set_generated_view(id, GeneratedView::Making);
     assert_eq!(note(&s).map(|(_, action)| action), Some(Some(ContentsAction::Stop)), "the reader can stop them");
     let lines = [
@@ -49,14 +49,14 @@ fn generated_contents_are_offered_labelled_and_never_replace_the_files_own() {
     );
     assert_eq!(model.rail_filled, 1, "the rail counts entries, not the note");
     assert!(s.to_record().tabs[0].generated_contents, "the choice is kept");
-    s.choose_generated(id, false);
+    s.tabs_mut().choose_generated(id, false);
     assert_eq!(note(&s), Some(("Show generated contents".into(), Some(ContentsAction::ShowGenerated))));
     assert!(
         s.sidebar().rows.iter().all(|row| row.kind != RowKind::Contents),
         "the file's own, which are none"
     );
     // A file changed underneath: the old version's list goes, as an agent's `contents --generated` would find none for the new one.
-    s.choose_generated(id, true);
+    s.tabs_mut().choose_generated(id, true);
     s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
     s.apply_file_status(
         id,
@@ -189,7 +189,7 @@ fn contents_sections_fold_and_their_folds_come_back() {
     s.toggle_contents_section(id, 2);
     assert!(s.to_record().tabs[0].contents_folds.is_empty());
     s.toggle_contents_section(id, 2);
-    s.choose_generated(id, true);
+    s.tabs_mut().choose_generated(id, true);
     assert!(s.to_record().tabs[0].contents_folds.is_empty(), "the other list's entries aren't these");
 }
 
@@ -218,7 +218,7 @@ fn fine_contents_get_no_note() {
 fn stopping_generated_contents_shows_the_files_own_and_offers_them_again() {
     let mut s = session(40);
     let id = s.open(Path::new("/d/a.pdf")).unwrap();
-    s.choose_generated(id, true);
+    s.tabs_mut().choose_generated(id, true);
     s.set_generated_view(id, GeneratedView::Making);
     s.stop_generated_contents(id);
     assert_eq!(s.generated().view(id), None, "where they stood is forgotten");

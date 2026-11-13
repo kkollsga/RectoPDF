@@ -168,12 +168,12 @@ fn a_restored_tab_never_shows_the_generated_contents_of_the_tab_it_replaced() {
     }];
     let mut other = session(10);
     let b = other.open(Path::new("/d/other.pdf")).unwrap();
-    other.choose_generated(b, true);
+    other.tabs_mut().choose_generated(b, true);
     let record = other.to_record();
     let mut s = session(10);
     let a = s.open(Path::new("/d/old.pdf")).unwrap();
     assert_eq!(a, b, "the restored tab has the old one's number");
-    s.choose_generated(a, true);
+    s.tabs_mut().choose_generated(a, true);
     s.set_generated_view(a, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
     s.restore(&record, HashMap::new()).unwrap();
     // As the agent's restore does next.

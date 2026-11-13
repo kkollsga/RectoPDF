@@ -201,8 +201,9 @@ impl Tabs {
         tab.reading.place.filter(|place| place.page == tab.page)
     }
 
-    /// What's selected in a tab. Carried across a restart, and nothing else here reads it.
-    pub fn set_selection(&mut self, id: TabId, selection: Option<Selection>) {
+    /// What's selected in a tab. Carried across a restart, and nothing else here reads it. The crate's: from outside, a selection is noted only by
+    /// [`crate::parts::PartMut::note_selection`], which keeps the rule that only the tab showing holds one.
+    pub(crate) fn set_selection(&mut self, id: TabId, selection: Option<Selection>) {
         if let Some(tab) = self.tab_mut(id) {
             tab.reading.selection = selection.map(Box::new);
         }
@@ -216,9 +217,19 @@ impl Tabs {
     }
 
     /// [`crate::Session::touch`], at a given time.
-    pub fn touch_at(&mut self, id: TabId, now: u32) {
+    pub(crate) fn touch_at(&mut self, id: TabId, now: u32) {
         if let Some(tab) = self.tab_mut(id) {
             tab.touched = now;
+        }
+    }
+
+    /// Shows a tab's generated contents, or its own. The choice is kept in the record, and the file is never changed. What's folded goes, as it was about the other list's entries.
+    pub(crate) fn choose_generated(&mut self, id: TabId, generated: bool) {
+        if let Some(tab) = self.tab_mut(id)
+            && tab.generated_contents != generated
+        {
+            tab.generated_contents = generated;
+            tab.folds = None;
         }
     }
 
@@ -272,6 +283,21 @@ impl crate::parts::PartMut<'_, Tabs> {
             self.0.confinement = host.shared();
         }
         false
+    }
+
+    /// What's selected in the tab showing, as the page view says. Only that one holds a selection: one that's left has lost its.
+    pub fn note_selection(&mut self, showing: TabId, selection: Option<Selection>) {
+        for tab in self.0.tabs.iter_mut() {
+            if tab.reading.selection.is_some() && tab.id != showing {
+                tab.reading.selection = None;
+            }
+        }
+        self.0.set_selection(showing, selection);
+    }
+
+    /// [`Tabs::choose_generated`], which the session's own operations call too.
+    pub fn choose_generated(&mut self, id: TabId, generated: bool) {
+        self.0.choose_generated(id, generated);
     }
 
     /// [`Tabs::note_password_used`], which the session's own unlocking calls too.

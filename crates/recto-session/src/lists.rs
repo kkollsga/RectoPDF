@@ -29,7 +29,10 @@ impl Lists {
         }
     }
 
-    /// A tab's list, if it's in memory.
+    /// **A tab's list, if it's in memory, which isn't the same as whether it has edits:** `None` for a tab with no list *and* for one whose list is
+    /// asleep on disk ([`Self::is_asleep`]), edited or not. A caller asking whether there are edits, unsaved changes or the owner's steps asks
+    /// [`Self::is_edited`], [`Self::summary`] or [`Self::holds_owner_edits`], which answer for a list wherever it is; one reading the pages wakes the list
+    /// first (`Session::wake_list`), as every agent command about a tab does.
     pub fn get(&self, id: TabId) -> Option<&PageEdits> {
         self.edits.get(&id)
     }
