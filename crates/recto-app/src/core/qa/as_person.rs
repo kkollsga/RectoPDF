@@ -131,12 +131,18 @@ pub(super) fn owner_edit_words(value: &str) -> Result<String, AgentError> {
 
 /// Runs the words as the person's command, after the checks. Returns as the window's control does: at once, the command on its way.
 pub(super) fn run(inner: &Arc<Inner>, line: &str) -> Result<(), AgentError> {
-    let command = pinned(inner, &command(line)?)?;
-    let named = named_files(&command);
+    let asked = command(line)?;
     // A confined session's one rule first, so a file outside its folders is refused as every route refuses one; the person's command would meet it
-    // only later, on the session thread, with nobody to hear.
-    if let Some(folders) = inner.host.session.confinement() {
-        recto_agent::quiet_files::check_paths(&folders, &named)?;
+    // only later, on the session thread, with nobody to hear. On the files as named, before anything resolves them, so the refusal doesn't say
+    // whether a file outside exists; and again on the files they resolve to, which is what runs.
+    let confinement = inner.host.session.confinement();
+    if let Some(folders) = &confinement {
+        recto_agent::quiet_files::check_paths(folders, &named_files(&asked))?;
+    }
+    let command = pinned(inner, &asked)?;
+    let named = named_files(&command);
+    if let Some(folders) = &confinement {
+        recto_agent::quiet_files::check_paths(folders, &named)?;
     }
     check_tests_files(inner, &named.iter().map(PathBuf::as_path).collect::<Vec<_>>())?;
     person::submit(inner, command);
@@ -233,6 +239,32 @@ mod tests {
         app.open(&elsewhere);
         assert_eq!(app.tabs().len(), 1, "a file that isn't a test's opened");
         let _ = std::fs::remove_file(&elsewhere);
+    }
+
+    /// **Failure (R3.5a): a refusal says whether a file outside the run exists.** The named file was resolved before the rule ran, so a link in a test's
+    /// folder to a file outside was refused under the outside file's own name when that file was there, and under the link's when it wasn't. The rule
+    /// goes first, on the files as named, so the refusal is the same either way.
+    #[cfg(unix)]
+    #[test]
+    fn a_refusal_is_the_same_whether_the_outside_file_exists() {
+        let app = HeadlessApp::start();
+        let Some(elsewhere) = crate::testkit::headless::outside_the_tests_folders("recto-as-person-refusal.pdf") else {
+            return;
+        };
+        let alias = app.disk().pdf("a.pdf", 1).with_file_name("alias.pdf");
+        std::os::unix::fs::symlink(&elsewhere, &alias).unwrap();
+        let open = format!("open \"{}\"", alias.display());
+        let _ = std::fs::remove_file(&elsewhere);
+        let missing = run(app.core(), &open).expect_err("a link to nowhere outside");
+        std::fs::write(&elsewhere, b"%PDF-1.7").unwrap();
+        let there = run(app.core(), &open).expect_err("a link to a file outside");
+        let _ = std::fs::remove_file(&elsewhere);
+        assert_eq!(missing.code, "outside_quiet_run");
+        assert_eq!(
+            (there.code, &there.message, &there.untrusted),
+            (missing.code, &missing.message, &missing.untrusted),
+            "the refusal is the same whether the outside file is there or not"
+        );
     }
 
     /// Failure (review of R2.4, item 3): what the wall checked isn't what runs: a tab named by `active` or by a name that means another tab by the time the
