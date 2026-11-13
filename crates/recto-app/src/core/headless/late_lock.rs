@@ -349,7 +349,7 @@ fn nothing_of_an_update_begins_while_it_tries() {
         .core()
         .update_command(&recto_agent::parse(r#"{"cmd":"update_check"}"#).expect("a command"))
         .expect_err("not yet");
-    assert_eq!(refused.code, "starting", "{refused:?}");
+    assert_eq!(refused.code, "not_ready", "{refused:?}");
     app.person(r#"{"cmd":"update_check"}"#);
     app.person(r#"{"cmd":"update_install","now":true}"#);
     app.settle();

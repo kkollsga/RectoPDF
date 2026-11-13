@@ -288,7 +288,7 @@ impl Saver {
         // doesn't keep the record is refused at the write, and can't come to keep it while this holds the gate.
         if inner.life.keeping().restoring() {
             return Err(StoreError {
-                code: "restoring",
+                code: "not_ready",
                 message: "The saved session is being read back in, so nothing's written over it until it's in.".to_string(),
             });
         }

@@ -97,7 +97,7 @@ impl InstallRefused {
                 SaidKind::Failed,
             ),
             Self::Starting => (
-                "starting",
+                "not_ready",
                 "RectoPDF is still starting, so it can't look for or install an update yet.".into(),
                 "Try again in a few seconds.",
                 SaidKind::Busy,
