@@ -382,27 +382,29 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
     );
     assert_eq!(left[0].sleep.file_pages, 3);
     assert!(s.sleeper().take_left_warm().is_empty());
-    // A protected file's pages in a plain document: its facts are fine, and no picture is.
+    // An encrypted file's pages in a plain document: a file that needs a password can't be added at all, so what's added opens for anyone, and the
+    // document keeps its pictures (2026-11-13; before, it lost them).
     let plain = s.open(&file("plain.pdf")).unwrap();
     assert!(s.dormant().sleep_facts(plain).unwrap().pictures_allowed);
-    let locked_file = file("locked.pdf");
-    let facts = s.loader().load(&locked_file).unwrap();
-    s.insert_pdf_with_facts(plain, Author::Owner, 0, &locked_file, &facts, file_stamp(&locked_file).ok())
+    let open_file = file("open-to-anyone.pdf");
+    let facts = s.loader().load(&open_file).unwrap();
+    assert!(facts.encrypted);
+    s.insert_pdf_with_facts(plain, Author::Owner, 0, &open_file, &facts, file_stamp(&open_file).ok())
         .unwrap();
     assert!(
-        !s.dormant().sleep_facts(plain).unwrap().pictures_allowed,
-        "a page from a protected file means no pictures"
-    );
-    assert!(s.lists().get(plain).unwrap().added_sources()[0].protected);
-    // Carried through its journal, so it's known after a restart.
-    let record = s.lists().edits_record(plain).unwrap();
-    assert!(record.added[0].protected);
-    assert!(PageEdits::from_record(&record).unwrap().has_protected_pages());
-    assert!(s.undo_edit(plain));
-    assert!(
         s.dormant().sleep_facts(plain).unwrap().pictures_allowed,
-        "with those pages gone from the document, it's fine again"
+        "a page from a file anyone may open keeps the document's pictures"
     );
+    assert!(!s.lists().get(plain).unwrap().added_sources()[0].protected);
+    // A journal written before, with a page it called protected: carried through, so the document has no pictures till those pages are gone.
+    let mut edits = PageEdits::new(3);
+    edits.insert_pdf_noting(0, &file("old.pdf"), 1, None, true).unwrap();
+    let record = edits.to_record();
+    assert!(record.added[0].protected);
+    let mut read = PageEdits::from_record(&record).unwrap();
+    assert!(read.has_protected_pages(), "an old record's flag still holds");
+    read.delete(0, 1).unwrap();
+    assert!(!read.has_protected_pages(), "with those pages gone from the document, it's fine again");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

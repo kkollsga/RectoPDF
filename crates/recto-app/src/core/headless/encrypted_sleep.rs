@@ -169,3 +169,30 @@ fn a_pdf_that_needed_a_password_never_gets_a_sleep_file() {
     );
     drop(app.quit());
 }
+
+/// Failure (found with the one above, 2026-11-13): a page added to a plain document from a file anyone may open, encrypted or not, was counted as a protected
+/// file's page, so the whole document's sleep file had no pictures and it woke bare. Added at the front and drawn, then left and put to sleep: its sleep file
+/// has a picture. (A file that needs a password can't be added at all, which `a_pdf_that_needed_a_password_never_gets_a_sleep_file` holds.)
+#[test]
+fn a_page_added_from_an_encrypted_pdf_anyone_may_open_keeps_the_documents_pictures() {
+    let disk = Disk::new();
+    let open_to_anyone = disk.file("open-to-anyone.pdf", &locked_allowing("", 1, Permissions::PRINTABLE));
+    let plain = disk.pdf("plain.pdf", 2);
+    let other = disk.pdf("other.pdf", 2);
+    let app = disk.start();
+    app.core().engine.waking().window_up();
+    opened_by_the_person(&app, &plain, None);
+    full(&app, &["page", "insert", open_to_anyone.to_str().unwrap(), "--at", "1"]);
+    drawn(&app);
+    assert_eq!(full(&app, &["edits"])["pages"], 3);
+    opened_by_the_person(&app, &other, None);
+    full(&app, &["session", "sleep", "--tab", &format!("#{}", tab_named(&app, "plain.pdf"))]);
+    app.settle();
+    let files = sleep_files(&app);
+    assert!(
+        files.len() == 1 && files[0] >= 1,
+        "the document with the added page has a sleep file with a picture: {files:?}; {}",
+        app.record_json()["sleep"]
+    );
+    drop(app.quit());
+}
