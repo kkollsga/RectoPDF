@@ -365,9 +365,9 @@
 {"cmd":"QaRead"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"qa_drive","verb":"state","value":"1"}
-    ok qa_drive QaDrive { verb: "state", value: "1", timeout_ms: None }
+    ok qa_drive QaDrive { verb: "state", value: "1", timeout_ms: None, tab: None }
 {"cmd":"qa_drive","verb":"state","value":"1","timeout_ms":3}
-    ok qa_drive QaDrive { verb: "state", value: "1", timeout_ms: Some(3) }
+    ok qa_drive QaDrive { verb: "state", value: "1", timeout_ms: Some(3), tab: None }
 {"cmd":"qa_drive","verb":"state","value":"1","extra":1}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"qa_drive","verb":{},"value":"1"}
@@ -385,11 +385,11 @@
 {"cmd":"qa_drive","verb":"state","value":"1","timeout_ms":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"qa_drive","verb":"state","value":"1","timeout_ms":null}
-    ok qa_drive QaDrive { verb: "state", value: "1", timeout_ms: None }
+    ok qa_drive QaDrive { verb: "state", value: "1", timeout_ms: None, tab: None }
 ["qa_drive"]
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 ["qa_drive","state","1",3]
-    ok qa_drive QaDrive { verb: "state", value: "1", timeout_ms: Some(3) }
+    ok qa_drive QaDrive { verb: "state", value: "1", timeout_ms: Some(3), tab: None }
 {"cmd":"QaDrive"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"render","page":3,"out":"/d/x.pdf"}

@@ -365,7 +365,7 @@ impl QaBridge {
                 "copied" => self.ask("copied", ""),
                 _ => Err(bad("That isn't a QA command.")),
             },
-            Qa::QaDrive(QaDrive { verb, value, timeout_ms }) => self.drive(verb, value, *timeout_ms),
+            Qa::QaDrive(QaDrive { verb, value, timeout_ms, tab }) => self.drive_on_the_shown_tab(verb, value, *timeout_ms, tab.as_deref()),
         }
     }
 
@@ -386,6 +386,54 @@ impl QaBridge {
         });
         let _ = std::fs::remove_file(&temp);
         published
+    }
+
+    /// **The verbs that act on whatever tab the window shows** ([`recto_agent::commands::qa::ON_THE_SHOWN_TAB`]) say which tab that was, as
+    /// `acted_on_tab`, and with `--tab` are refused, with nothing done, if the window shows another (owner, 2026-11-13: "Shouldnt it be clear which tab the
+    /// action is sent to?"). Any other verb is refused `--tab`, as it isn't about the tab shown.
+    fn drive_on_the_shown_tab(&self, verb: &str, value: &str, timeout_ms: Option<u64>, expected: Option<&str>) -> Result<Value, AgentError> {
+        if !recto_agent::commands::qa::ON_THE_SHOWN_TAB.contains(&verb) {
+            if expected.is_some() {
+                return Err(bad(
+                    "`--tab` is only for `qa menu`, `qa button`, `qa key-action` and `qa print-to-pdf`, which act on the tab the window shows.",
+                ));
+            }
+            return self.drive(verb, value, timeout_ms);
+        }
+        let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
+        let shown = lock(&inner.published).reader.shown_tab;
+        let meant = expected
+            .map(|expected| inner.host.session.with_session(|session| recto_agent::select_tab(session, expected)))
+            .transpose()?;
+        let acted_on = on_the_shown_tab(shown, meant.map(|id| id.0))?;
+        let mut answer = self.drive(verb, value, timeout_ms)?;
+        answer["acted_on_tab"] = acted_on;
+        Ok(answer)
+    }
+
+    /// **Where `qa print-to-pdf` writes**, held to the rules every export keeps (a file that's there isn't replaced) and to the quiet run's folders, as its
+    /// value, `OUT.pdf|FIRST|LAST`, is a file the table can't see as one.
+    fn check_print_target(&self, value: &str) -> Result<(), AgentError> {
+        let (out, range) = value.split_once('|').map_or((value, None), |(out, range)| (out, Some(range)));
+        let out = Path::new(out);
+        // A file in a compound value the table can't see as one, so it's put through the session's one rule here (2026-11-13).
+        if let Some(folders) = self
+            .inner()
+            .and_then(|inner| inner.host.session.with_session(|session| session.confinement().folders().cloned()))
+        {
+            recto_agent::quiet_files::check_paths(&folders, &[out.to_path_buf()])?;
+        }
+        recto_agent::saving::check_export_path(out, &["pdf"], "PDF")?;
+        if !out.is_absolute() || std::fs::symlink_metadata(out).is_ok() {
+            return Err(bad("A print goes to a new file, by its whole path."));
+        }
+        if let Some(range) = range {
+            let (first, last) = range.split_once('|').ok_or_else(|| bad("A range is FIRST|LAST."))?;
+            if first.parse::<u32>().is_err() || last.parse::<u32>().is_err() {
+                return Err(bad("A range is two page numbers."));
+            }
+        }
+        Ok(())
     }
 
     fn drive(&self, verb: &str, value: &str, timeout_ms: Option<u64>) -> Result<Value, AgentError> {
@@ -503,28 +551,8 @@ impl QaBridge {
                 return self.ask("state", "");
             }
             "mouse_up" | "notice_button" | "zoom_escape" | "page_escape" => {}
-            // Where the print goes is held to the rules every export keeps, and a file that's there isn't replaced.
-            "print_to_pdf" => {
-                let (out, range) = value.split_once('|').map_or((value, None), |(out, range)| (out, Some(range)));
-                let out = Path::new(out);
-                // A file in a compound value the table can't see as one, so it's put through the session's one rule here (2026-11-13).
-                if let Some(folders) = self
-                    .inner()
-                    .and_then(|inner| inner.host.session.with_session(|session| session.confinement().folders().cloned()))
-                {
-                    recto_agent::quiet_files::check_paths(&folders, &[out.to_path_buf()])?;
-                }
-                recto_agent::saving::check_export_path(out, &["pdf"], "PDF")?;
-                if !out.is_absolute() || std::fs::symlink_metadata(out).is_ok() {
-                    return Err(bad("A print goes to a new file, by its whole path."));
-                }
-                if let Some(range) = range {
-                    let (first, last) = range.split_once('|').ok_or_else(|| bad("A range is FIRST|LAST."))?;
-                    if first.parse::<u32>().is_err() || last.parse::<u32>().is_err() {
-                        return Err(bad("A range is two page numbers."));
-                    }
-                }
-            }
+            // Where the print goes is checked by `check_print_target`.
+            "print_to_pdf" => self.check_print_target(value)?,
             "scroll" => {
                 number(-1e9, 1e9)?;
             }
@@ -750,6 +778,22 @@ fn stuck() -> AgentError {
         .then("That's a hang, and a bug. `recto qa state` may show it once it's back.")
 }
 
+/// **What a verb on the shown tab answers with** (`acted_on_tab`), or its refusal when the tab meant isn't the one the window shows (`shown`, 0 for
+/// none): nothing is done then.
+fn on_the_shown_tab(shown: u32, meant: Option<u32>) -> Result<Value, AgentError> {
+    match meant {
+        Some(meant) if meant != shown => {
+            let words = if shown == 0 {
+                "The window shows no tab, so nothing was done.".to_owned()
+            } else {
+                format!("The window shows tab #{shown}, not #{meant}, so nothing was done.")
+            };
+            Err(AgentError::new("not_the_shown_tab", words, exit::FAILED).then("`recto tap` that tab first, or leave out `--tab`."))
+        }
+        _ => Ok(if shown == 0 { Value::Null } else { json!(format!("#{shown}")) }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -774,6 +818,7 @@ mod tests {
             verb: verb.to_owned(),
             value: value.to_owned(),
             timeout_ms: None,
+            tab: None,
         }))
     }
 
@@ -845,6 +890,44 @@ mod tests {
             recto_control::quiet::check_here(app.disk().paths(), &line).unwrap_err().code,
             "outside_quiet_run"
         );
+    }
+
+    /// Failure (owner, 2026-11-13: "Shouldnt it be clear which tab the action is sent to?"): `qa menu` (and `qa button`, `qa key-action`, `qa print-to-pdf`)
+    /// acts on whatever tab the window shows and its answer doesn't say which; or `--tab` naming another tab acts anyway. With `--tab` naming another
+    /// it's refused before anything is asked of the window, naming the one shown, and nothing changes; with the one shown, or none, the answer says which it
+    /// acted on; `--tab` on a verb that isn't about the shown tab is refused. (Acting itself needs the window, which this kit hasn't got: the answer's
+    /// `acted_on_tab` is [`on_the_shown_tab`]'s, held here, and the app test `text_selection_is_the_default_tool` sees it come back.)
+    #[test]
+    fn a_verb_on_the_shown_tab_says_which_and_takes_the_one_meant() {
+        let app = HeadlessApp::start();
+        let qa = bridge(&app);
+        app.open(&app.disk().pdf("a.pdf", 2));
+        app.open(&app.disk().pdf("b.pdf", 2));
+        let shown = crate::lock(&app.core().published).reader.shown_tab;
+        let other = if shown == 1 { 2 } else { 1 };
+        let with_tab = |verb: &str, value: &str, tab: &str| {
+            qa.run(&Qa::QaDrive(QaDrive {
+                verb: verb.to_owned(),
+                value: value.to_owned(),
+                timeout_ms: None,
+                tab: Some(tab.to_owned()),
+            }))
+        };
+        let before = app.session_json()["sidebar"].clone();
+        let refused = with_tab("menu", "view.sidebar", &format!("#{other}")).expect_err("the window shows another tab");
+        assert_eq!(refused.code, "not_the_shown_tab");
+        assert!(refused.message.contains(&format!("#{shown}")), "it names the tab shown: {}", refused.message);
+        app.settle();
+        assert_eq!(app.session_json()["sidebar"], before, "nothing was done");
+        assert_eq!(
+            with_tab("zoom", "1", &format!("#{shown}")).unwrap_err().code,
+            "usage",
+            "--tab on a verb that isn't about the tab shown"
+        );
+        assert_eq!(on_the_shown_tab(2, Some(2)).unwrap(), "#2", "the tab meant, shown");
+        assert_eq!(on_the_shown_tab(2, None).unwrap(), "#2", "no --tab: it says which");
+        assert!(on_the_shown_tab(0, None).unwrap().is_null(), "no tab shown");
+        assert_eq!(on_the_shown_tab(0, Some(1)).unwrap_err().code, "not_the_shown_tab");
     }
 
     /// Failure (review of R2.4, item 7): `qa password`, sent as a client sends it, types into the sheet for a file that isn't a test's: the check is a

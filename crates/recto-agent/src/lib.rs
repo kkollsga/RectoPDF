@@ -1893,6 +1893,7 @@ mod tests {
                 verb: "zoom".into(),
                 value: "1".into(),
                 timeout_ms: None,
+                tab: None,
             }),
             Command::from(commands::session::Stop {}),
             Command::from(crate::commands::record::SessionShow {}),
@@ -2031,6 +2032,7 @@ mod tests {
                 verb: "zoom".into(),
                 value: "1".into(),
                 timeout_ms: None,
+                tab: None,
             }),
         ] {
             let error = run(&mut s, Level::Full, &command).unwrap_err();

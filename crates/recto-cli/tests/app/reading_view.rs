@@ -91,7 +91,9 @@ fn text_selection_is_the_default_tool() {
     run.ok(&["open", one.0.to_str().unwrap()]);
     run.settled();
     assert_eq!(snapshot_ticked(&run), json!(false), "off at launch");
-    run.ok(&["qa", "menu", "tools.snapshot"]);
+    // The answer says which tab the menu item acted on (owner, 2026-11-13: "Shouldnt it be clear which tab the action is sent to?").
+    let chosen = run.ok(&["qa", "menu", "tools.snapshot", "--tab", "#1"]);
+    assert_eq!(chosen["acted_on_tab"], "#1", "{chosen}");
     assert_eq!(snapshot_ticked(&run), json!(true), "on by its menu item and key");
     run.ok(&["open", two.0.to_str().unwrap()]);
     run.settled();
