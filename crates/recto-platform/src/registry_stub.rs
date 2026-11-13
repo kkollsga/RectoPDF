@@ -71,3 +71,13 @@ impl Settling {
 pub fn forget_and_look(_bundle: &Path) -> bool {
     true
 }
+
+/// One look for a whole set, where nothing is registered: clean.
+pub fn forget_all_and_look(_bundles: &[PathBuf]) -> bool {
+    true
+}
+
+#[must_use]
+pub fn none_registered_under(_all: &[Registered], _bundles: &[PathBuf]) -> bool {
+    true
+}

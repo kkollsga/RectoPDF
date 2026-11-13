@@ -110,9 +110,23 @@ impl Settling {
 
 /// One look: forgets `bundle` and everything in it, then says whether the dump has none of it.
 pub fn forget_and_look(bundle: &Path) -> bool {
-    forget_all_under(bundle);
-    forget(bundle);
-    !registered().iter().any(|copy| copy.path.starts_with(bundle))
+    forget_all_and_look(std::slice::from_ref(&bundle.to_path_buf()))
+}
+
+/// One look for a whole set: forgets every bundle, and everything in each, then reads the dump once and says whether it has none of them. A set costs the
+/// one dump a single bundle does, which is why a run's ended copies are settled together.
+pub fn forget_all_and_look(bundles: &[PathBuf]) -> bool {
+    for bundle in bundles {
+        forget_all_under(bundle);
+        forget(bundle);
+    }
+    none_registered_under(&registered(), bundles)
+}
+
+/// Whether none of these bundles, nor anything inside one, is in the dump.
+#[must_use]
+pub fn none_registered_under(all: &[Registered], bundles: &[PathBuf]) -> bool {
+    !all.iter().any(|copy| bundles.iter().any(|bundle| copy.path.starts_with(bundle)))
 }
 
 /// The same without waiting, for a process on its way out: the tool outlives it.
@@ -251,6 +265,24 @@ mod tests {
         assert!(
             none.contains("  none\n") && none.contains("not named: 1") && !none.contains("/Applications"),
             "{none}"
+        );
+    }
+
+    /// Failure: a set settled together is called gone while one of its bundles, or something inside one, is still in the dump, or a sibling folder
+    /// with a longer name is taken for it (`own-1-1` for `own-1-10`).
+    #[test]
+    fn a_set_is_gone_only_when_none_of_it_is_registered() {
+        let copy = |path: &str| Registered {
+            path: PathBuf::from(path),
+            identifier: ID_PREFIX.into(),
+        };
+        let set = [PathBuf::from("/b/own-1-1/RectoPDF.app"), PathBuf::from("/t/bed/install/RectoPDF.app")];
+        assert!(none_registered_under(&[], &set));
+        assert!(none_registered_under(&[copy("/b/own-1-10/RectoPDF.app"), copy("/Applications/RectoPDF.app")], &set));
+        assert!(!none_registered_under(&[copy("/t/bed/install/RectoPDF.app")], &set), "the second of the set");
+        assert!(
+            !none_registered_under(&[copy("/b/own-1-1/RectoPDF.app/Contents/Helpers/RectoRender.app")], &set),
+            "a helper inside the first"
         );
     }
 
