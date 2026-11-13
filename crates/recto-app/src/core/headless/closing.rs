@@ -148,12 +148,7 @@ fn an_agents_close_of_an_asleep_tab_says_what_it_would_lose() {
     let slept = app.agent(Level::Full, r##"{"cmd":"session_sleep","tab":"#1"}"##).expect("put to sleep");
     assert_eq!(slept["list_asleep"], true, "{slept}");
     // Its journal can't be read back just now, so the list stays asleep through the command, with only its summary to go by.
-    let journals = app.core().saver.store.main_folder().join("journals");
-    for entry in std::fs::read_dir(&journals).expect("the journals").flatten() {
-        if entry.file_name().to_string_lossy().starts_with("journal-") {
-            std::fs::write(entry.path(), b"not a journal").expect("written over");
-        }
-    }
+    journals_written_over(&app);
     for level in [Level::Control, Level::Full] {
         let error = app
             .agent(level, r##"{"cmd":"close","tab":"#1"}"##)
@@ -170,4 +165,14 @@ fn an_agents_close_of_an_asleep_tab_says_what_it_would_lose() {
     app.settle();
     let acted = app.act(UiAction::Menu { id: "file.close".into() });
     assert_eq!(acted.host, crate::menus::HostAction::ConfirmClose, "the person is asked first");
+}
+
+/// Every journal in the state folder written over, so a list asleep can't be read back: what a disk that lost them, or a journal another build wrote, leaves.
+pub(super) fn journals_written_over(app: &HeadlessApp) {
+    let journals = app.core().saver.store.main_folder().join("journals");
+    for entry in std::fs::read_dir(&journals).expect("the journals").flatten() {
+        if entry.file_name().to_string_lossy().starts_with("journal-") {
+            std::fs::write(entry.path(), b"not a journal").expect("written over");
+        }
+    }
 }

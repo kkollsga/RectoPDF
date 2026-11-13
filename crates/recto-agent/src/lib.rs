@@ -855,7 +855,7 @@ pub(crate) const ASK_FULL: &str = "recto permission request full";
 
 /// Undone steps can still be got back, and a new edit clears them for good, which is how an agent could erase the user's edits: undo them all, make one edit. So below Full, an edit that would lose an undone step of the user's is refused. Undone steps of agents' own are theirs to lose. SPEC decision log, 2026-11-07: below Full, an agent can throw away only agents' edits, never the owner's.
 fn keep_owners_undone_steps<L: DocLoader>(session: &Session<L>, id: TabId, level: Level) -> Result<(), AgentError> {
-    if level >= Level::Full || !session.page_edits(id).is_some_and(recto_session::edit::PageEdits::owner_steps_undone) {
+    if level >= Level::Full || !session.has_undone_owner_steps(id) {
         return Ok(());
     }
     let mut error = AgentError::new(
@@ -869,9 +869,24 @@ fn keep_owners_undone_steps<L: DocLoader>(session: &Session<L>, id: TabId, level
     Err(error)
 }
 
+/// **An agent throws away nothing it can't read** (coordinator, 2026-11-13: unknown is "would lose", not "nothing to lose"). Every command about a tab reads
+/// its list back first, so one still asleep is one whose journal couldn't be read: its summary says some of what's there, not all of it. An agent's
+/// `discard` or `clear-history` of it is refused at every level; the person, whose tab says so, decides.
+fn refuse_unreadable<L: DocLoader>(session: &Session<L>, id: TabId, actor: Actor, what: &str) -> Result<(), AgentError> {
+    if actor == Actor::Person || !session.list_is_asleep(id) {
+        return Ok(());
+    }
+    Err(AgentError::new(
+        "edits_unreadable",
+        format!("Nothing was {what}: this tab's edits couldn't be read back just now, so what that would throw away can't all be known."),
+        exit::FAILED,
+    )
+    .then("Leave them: the tab tells the user its edits couldn't be read, and what to do with them is theirs. `recto session show` says what's known of them."))
+}
+
 /// `discard` throws away everything on the tab's list, undone or not, and whatever fell off its capped undo list too, since that's still in the page order. Below Full, none of that may be the user's.
 fn refuse_discard_of_owners_edits<L: DocLoader>(session: &Session<L>, id: TabId, level: Level) -> Result<(), AgentError> {
-    if level >= Level::Full || !session.page_edits(id).is_some_and(recto_session::edit::PageEdits::holds_owner_edits) {
+    if level >= Level::Full || !session.edits_summary(id).is_some_and(|summary| summary.holds_owner_edits) {
         return Ok(());
     }
     let mut error = AgentError::new(

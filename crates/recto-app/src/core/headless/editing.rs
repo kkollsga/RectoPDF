@@ -4,6 +4,7 @@
 use super::twins::{Twins, names};
 use crate::core::controls::UiAction;
 use crate::testkit::headless::HeadlessApp;
+use recto_agent::Level;
 
 fn menu(id: &str) -> UiAction {
     UiAction::Menu { id: id.into() }
@@ -146,4 +147,44 @@ fn clear_history_is_announced_only_when_there_was_history() {
     edit();
     assert_eq!(agent(), ["edits_changed"], "an agent's clear of a step");
     assert!(agent().is_empty(), "and of none");
+}
+
+/// Failure (review of R2.3, round 2, B2): an agent's `discard` or `clear-history` of a tab whose edit list is asleep and can't be read back throws away the
+/// owner's edits: the guards read the owner's edits from a list in memory, which an asleep one isn't, so an agent at Control got past them, the list was
+/// given up, and `discard` said there had been no edits. Where what it would lose can't all be read, an agent is refused `edits_unreadable` at Control and
+/// at Full, and nothing is given up; the person's own discard still throws them away, and says so.
+#[test]
+fn an_agent_neither_discards_nor_clears_edits_it_cant_read() {
+    let disk = crate::testkit::headless::Disk::new();
+    let (a, b) = (disk.pdf("a.pdf", 3), disk.pdf("b.pdf", 3));
+    let app = disk.start();
+    app.open(&a);
+    app.open(&b);
+    for line in [
+        r##"{"cmd":"page_rotate","tab":"#1","pages":"1","degrees":90}"##,
+        r##"{"cmd":"tap","tab":"#2"}"##,
+    ] {
+        app.person(line);
+        app.settle();
+    }
+    let slept = app.agent(Level::Full, r##"{"cmd":"session_sleep","tab":"#1"}"##).expect("put to sleep");
+    assert_eq!(slept["list_asleep"], true, "{slept}");
+    super::closing::journals_written_over(&app);
+    let asleep = || app.core().host.session.with_session(|session| session.list_is_asleep(recto_session::TabId(1)));
+    for line in [r##"{"cmd":"discard","tab":"#1"}"##, r##"{"cmd":"clear_history","tab":"#1"}"##] {
+        for level in [Level::Control, Level::Full] {
+            let refused = app.agent(level, line).map(drop).map_err(|error| error.code);
+            app.settle();
+            assert_eq!(refused, Err("edits_unreadable"), "{line} at {level:?}");
+            let edited = app.core().host.session.with_session(|session| session.is_edited(recto_session::TabId(1)));
+            assert!(asleep() && edited, "{line} at {level:?}: nothing given up");
+        }
+    }
+    drop(app.heard_events());
+    app.hear_events();
+    app.person(r##"{"cmd":"discard","tab":"#1"}"##);
+    app.settle();
+    assert!(!asleep(), "the person's discard gives the list up");
+    let said = app.heard_events();
+    assert!(said.iter().any(|event| event.name() == "edits_changed"), "and says so: {said:?}");
 }
