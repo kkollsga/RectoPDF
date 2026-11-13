@@ -932,24 +932,32 @@ mod tests {
     /// Failure (the cool-down's review, 2026-11-13): the writer's wait loop, untested in the hub it lived in, could spin on a clock that doesn't move, miss an item
     /// that came due with no word said, or stay when the queue's empty. With a clock the test moves and a writer that only notes what it's handed: a file due
     /// later waits, through words that change nothing, without spinning; one that comes due with no word is written at its timeout; one due now is written;
-    /// and with nothing left the writer ends and says so.
+    /// and with nothing left the writer ends and says so. (The second review: the push and the change of wait both say a word, and the clock moved
+    /// nanoseconds after, so a writer waiting with no timeout at all passed. Now the writer is seen waiting at the clock's zero, after the push, before the
+    /// clock moves with no word said: a writer whose wait has no timeout never sees it come due, which was seen failing.)
     #[test]
     fn the_writer_waits_without_spinning_misses_nothing_due_and_ends_with_the_queue() {
         let line = Leaving::new(60_000);
         let clock = TestClock::default();
         let written = Mutex::new(Vec::new());
+        let waits = || line.report()["waits"].as_u64().unwrap();
         assert!(line.push(facts(1), material(10, 0), Leaves::PushedOut, 0), "the first starts a writer");
         std::thread::scope(|scope| {
             let writer = scope.spawn(|| line.serve(|| clock.now(), |facts, _| lock(&written).push(facts.id)));
             let _ends = EndsTheWriter(&line);
-            until("the writer waiting", || line.report()["waits"].as_u64().unwrap() >= 1);
+            until("the writer waiting", || waits() >= 1);
             for _ in 0..3 {
                 line.poke();
             }
             assert!(lock(&written).is_empty(), "written before its wait");
-            // Due with no word said: the writer's own timeout, a millisecond of real time here as the clock says so, finds it.
+            // Each wait ends with a word or its timeout: the first, three words and the change of wait at most, where a spinning writer would count thousands.
             line.set_wait(1);
+            assert!(waits() <= 5, "the writer spun: {}", line.report());
+            // Due at 1 with the clock at 0: the writer, seen waiting after the push (its waits counted since, each a millisecond's timeout on a clock that
+            // stands still), has looked at it at 0 and found it not due. Then the clock moves with no word said: only the wait's own timeout finds it.
             let _ = line.push(facts(2), material(10, 0), Leaves::PushedOut, clock.now());
+            let after_push = waits();
+            until("the writer waiting at 0, after the push", || waits() > after_push);
             clock.set(1);
             until("the one come due written", || lock(&written).contains(&TabId(2)));
             clock.set(60_000);
@@ -960,8 +968,6 @@ mod tests {
         let report = line.report();
         assert_eq!(report["writer"], false, "{report}");
         assert_eq!(report["writers_running"], 0, "{report}");
-        // Each wait ends with a word or its timeout: four words and a few timeouts here, where a spinning writer would count thousands.
-        assert!(report["waits"].as_u64().unwrap() <= 20, "the writer spun: {report}");
     }
 
     /// Failure (the cool-down's review, 2026-11-13, S4): after a writer panicked, what it left queued had no thread, and a quit's drain waited for it to its
