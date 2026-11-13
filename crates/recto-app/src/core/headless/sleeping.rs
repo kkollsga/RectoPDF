@@ -279,34 +279,3 @@ fn a_tab_asleep_whose_pages_change_wakes_with_no_picture_from_before() {
     assert_eq!(woke["sleep_in_view"], 0, "a picture from before its pages changed: {woke}");
     drop(app.quit());
 }
-
-/// Failure: a warm tab whose pages change while it's off screen is come back to without sleeping, and the previews it was left with (those drawn for its place before it sleeps among them) go up for a frame under the page numbers they had, pictures of other pages. With drawing held, so only what's kept could show: nothing of it is on a layer. Tab c, unedited, shows what it kept, so the look isn't empty for want of anything kept.
-#[test]
-fn a_warm_tab_whose_pages_change_off_screen_shows_nothing_kept_from_before() {
-    let disk = Disk::new();
-    let (a, b, c) = (disk.pdf("a.pdf", 6), disk.pdf("b.pdf", 3), disk.pdf("c.pdf", 6));
-    let app = disk.start();
-    let engine = app.core().engine.clone();
-    let mut view = window_view();
-    for doc in [&c, &a, &b] {
-        app.open(doc);
-        view = window_view();
-        drop(engine.set_viewport(view));
-        host_turns(&app, &mut view, true);
-    }
-    let (a, c) = (tab_named(&app, "a.pdf"), tab_named(&app, "c.pdf"));
-    full(&app, &["page", "delete", "1", "--tab", &format!("#{a}")]);
-    host_turns(&app, &mut view, true);
-    engine.hold_drawing(true);
-    let mut back = |tab: u64| {
-        full(&app, &["tap", &format!("#{tab}")]);
-        host_turns(&app, &mut view, false);
-        engine.report().0["tiles"].clone()
-    };
-    let c_tiles = back(c);
-    assert!(c_tiles["attached"].as_u64().unwrap() > 0, "unedited, what it kept goes up: {c_tiles}");
-    let a_tiles = back(a);
-    assert_eq!(a_tiles["attached"], 0, "kept from before its pages changed: {a_tiles}");
-    engine.hold_drawing(false);
-    drop(app.quit());
-}

@@ -588,3 +588,48 @@ fn a_tab_left_is_not_under_way_once_drawing_has_given_up() {
     reader.thread_restarted(true);
     assert!(!SleepDraws::under_way(&reader), "{}", draws(&reader));
 }
+
+/// Failure: a warm tab whose pages change while it's off screen (its first deleted) is come back to without sleeping, and what's kept of it, the previews drawn for its place before it sleeps among them, goes up under the page numbers it had: pictures of other pages, for a frame or more. Everything of it on a layer once it's back was drawn after it came back.
+#[test]
+fn a_warm_tab_whose_pages_change_shows_nothing_kept_from_before() {
+    let mut reader = left_undrawn();
+    run_jobs(&mut reader, &[]);
+    assert!(draws(&reader)["pictures"].as_u64().unwrap() >= 1, "{}", draws(&reader));
+    let kept_before = reader
+        .cache
+        .entries
+        .values()
+        .filter(|entry| entry.tab == 1)
+        .map(|entry| entry.id)
+        .max()
+        .expect("tab 1 has things kept");
+    // Its first page gone: each position is the next page of the file.
+    let shifted = PageMap {
+        slots: Some((1..40).map(|page| (0, page)).collect()),
+        ..map()
+    };
+    reader.activate(1, 39, 19, shifted, &[2], None, Spread::Single);
+    reader.set_viewport(view(20_000.0));
+    // Looked at after every step, as each is a frame the host can show.
+    let mut shown_from_before = Vec::new();
+    for _ in 0..10_000 {
+        reader.host.take_ops();
+        reader.applied();
+        shown_from_before.extend(
+            reader
+                .cache
+                .entries
+                .values()
+                .filter(|entry| entry.tab == 1 && entry.attached && entry.id <= kept_before)
+                .map(|entry| entry.page),
+        );
+        let Some(job) = reader.next_job() else { break };
+        reader.note_started(&job, None);
+        let outcome = answer(&job, |_| letter());
+        reader.finish(job, outcome);
+    }
+    assert!(
+        shown_from_before.is_empty(),
+        "kept from before its pages changed, on a layer: {shown_from_before:?}"
+    );
+}
