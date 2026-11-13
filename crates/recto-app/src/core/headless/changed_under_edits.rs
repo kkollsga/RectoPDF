@@ -271,7 +271,8 @@ fn assert_kept_and_nothing_written(app: &HeadlessApp, file: &Path, theirs: &[u8]
 }
 
 /// Pinned for the page matcher (2026-11-13): page 9 of ten turned, and the file becomes five pages, then the same ten pages in another order, then fourteen.
-/// No panic anywhere, the edits are kept, nothing is written, and asking for a position past the new file's end fails in words rather than reading past it.
+/// No panic anywhere, the edits are kept, nothing is written, and asking for a page, inside the new file's end or past it, fails in words rather than reading
+/// the other version as the edited document's page (the test once took any answer).
 /// (The edited document stays the edit list's ten positions whatever the file's length: the four pages appended aren't reachable until the matcher.)
 #[test]
 fn edits_under_a_file_that_shrinks_reorders_or_grows_are_kept_and_nothing_is_written() {
@@ -281,11 +282,11 @@ fn edits_under_a_file_that_shrinks_reorders_or_grows_are_kept_and_nothing_is_wri
     replace(&file, &five);
     look(&app);
     assert_kept_and_nothing_written(&app, &file, &five, &edits_before, "five pages");
-    for page in ["6", "9", "10"] {
-        match app.recto(Level::Full, &["text", "--page", page]) {
-            Ok(read) => assert!(read.to_string().len() < 64 * 1024, "page {page}: {read}"),
-            Err(refused) => assert!(!refused.message.is_empty(), "page {page}: {refused:?}"),
-        }
+    // Inside the five pages and past them alike: the edited document's page isn't read from a version its edits weren't made on, so it's refused, in words.
+    for page in ["3", "6", "9", "10"] {
+        let refused = app.recto(Level::Full, &["text", "--page", page]).expect_err(&format!("page {page} refused"));
+        assert_eq!(refused.code, "source_changed", "page {page}: {refused:?}");
+        assert!(!refused.message.is_empty(), "page {page}: {refused:?}");
     }
     let reordered: Vec<recto_testpdf::Page> = (1..=10)
         .rev()
@@ -299,10 +300,12 @@ fn edits_under_a_file_that_shrinks_reorders_or_grows_are_kept_and_nothing_is_wri
     replace(&file, &fourteen);
     look(&app);
     assert_kept_and_nothing_written(&app, &file, &fourteen, &edits_before, "four pages appended");
+    // Marks what the page matcher changes: until it, the edited document is the list's ten positions whatever the file's length, so the four pages appended
+    // aren't in it. Nothing a person relies on is pinned here; when the matcher lands, this is the line it means to change.
     assert_eq!(
         app.session_json()["tabs"][0]["edits"]["pages"],
         10,
-        "the appended pages aren't in the edited document"
+        "the appended pages aren't in the edited document, until the matcher"
     );
 }
 
