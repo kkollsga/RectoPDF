@@ -241,6 +241,8 @@ impl<L: DocLoader> Session<L> {
         if let Some(tab) = self.tabs.tab_mut(id) {
             tab.contents_verdict = recto_core::verdict::judge(&toc, tab.page_count);
         }
+        // Warm again, it's not on its way to a sleep file any more: a tab is warm, cold with a sleep file on its way, or cold, never two at once.
+        self.dormancy.not_leaving(id);
         // The least recent's gone cold, so what its sleep file needs is kept long enough to write that.
         let dormancy = &mut self.dormancy;
         self.warm.push(id, toc, |left| dormancy.note_left(left));

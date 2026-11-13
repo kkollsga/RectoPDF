@@ -538,6 +538,8 @@ impl<L: DocLoader> Session<L> {
     /// What was read of a tab goes, so it's read again: its file's turned out to be something else.
     pub fn forget_read(&mut self, id: TabId) {
         self.generated.forget(id);
+        // What it left the warm ones with is of what was read, so it goes too, or it'd be written into a sleep file under the same stamp.
+        self.dormancy.not_leaving(id);
         if let Some(tab) = self.tabs.tab_mut(id) {
             tab.from_sleep = None;
         }

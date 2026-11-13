@@ -74,6 +74,12 @@ impl Dormancy {
         }
     }
 
+    /// A tab's no longer on its way to a sleep file from the warm ones: it's warm again, so what it left with would be written for a tab on
+    /// screen, or what was read of it has turned out to be of another file, which no sleep file may carry on.
+    pub(crate) fn not_leaving(&mut self, id: TabId) {
+        self.left_warm.retain(|(tab, _)| *tab != id);
+    }
+
     pub(crate) fn take_left(&mut self) -> Vec<(TabId, Arc<Toc>)> {
         std::mem::take(&mut self.left_warm)
     }

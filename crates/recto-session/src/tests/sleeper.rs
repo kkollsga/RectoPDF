@@ -1,0 +1,299 @@
+//! **Going dormant and waking, held as one rule:** a tab is warm, cold with a sleep file on its way, or cold, and never two of them at once; and a list
+//! asleep reads back from its journal as what's kept of it, unless its journal's gone, when the tab says so. Driven through every way a tab goes dormant
+//! and wakes at the session's seam, the way the app's sleeper and the executor call it.
+
+use super::*;
+use std::sync::Mutex;
+
+/// What the state record's store holds, in memory: journals by name, and sleep files by the file they're about.
+#[derive(Default)]
+struct Store {
+    journals: Mutex<HashMap<String, Vec<u8>>>,
+    sleeps: Mutex<Vec<(FileStamp, PathBuf, Vec<u8>)>>,
+}
+
+impl HistorySource for Store {
+    fn history_of(&self, _stamp: Option<FileStamp>, _path: &Path) -> Option<TakenHistory> {
+        None
+    }
+
+    fn read_list(&self, name: &str) -> Option<RestoredEdits> {
+        let journals = self.journals.lock().unwrap();
+        let parsed = record::parse_journal(journals.get(name)?, record::CURRENT_VERSION).ok()?;
+        let (edits, applied) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).ok()?;
+        Some(RestoredEdits {
+            edits,
+            seq: parsed.header.base_seq + applied as u64,
+            lost_lines: false,
+            rolled_off: false,
+        })
+    }
+
+    fn read_sleep(&self, stamp: FileStamp, path: &Path) -> Option<sleep::SleepFile> {
+        let sleeps = self.sleeps.lock().unwrap();
+        let (_, _, bytes) = sleeps.iter().find(|(at, named, _)| *at == stamp && named == path)?;
+        sleep::decode_sleep(bytes, record::CURRENT_VERSION).ok()
+    }
+}
+
+impl Store {
+    /// A sleep file written as the app's sleeper writes one from a tab's facts, with no pictures.
+    fn write_sleep(&self, facts: &SleepFacts) {
+        let mut sleeps = self.sleeps.lock().unwrap();
+        sleeps.retain(|(at, named, _)| !(*at == facts.sleep.file && *named == facts.path));
+        sleeps.push((facts.sleep.file, facts.path.clone(), sleep::encode_sleep(&facts.sleep)));
+    }
+
+    /// The session's journal work, written.
+    fn write_journals<L: DocLoader>(&self, s: &mut Session<L>) {
+        let mut plain = self.journals.lock().unwrap().clone();
+        write_journal(s, &mut plain);
+        *self.journals.lock().unwrap() = plain;
+    }
+}
+
+/// Five pages, with contents titled `title`, whatever the file.
+struct Titled(&'static str);
+
+impl DocLoader for Titled {
+    fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
+        Ok(DocFacts {
+            page_count: 5,
+            byte_len: 1,
+            encrypted: false,
+            version: "1.7".into(),
+            title: None,
+            toc: Toc::from_lines(
+                &[TocLine {
+                    title: self.0,
+                    page: 1,
+                    parent: recto_core::NONE,
+                    depth: 0,
+                }],
+                false,
+            ),
+            renderer_only: false,
+        })
+    }
+}
+
+/// Real files, so tabs have stamps and so sleep files: `names` in a folder of its own.
+fn files(names: &[&str]) -> (recto_testpdf::TempDir, Vec<PathBuf>) {
+    let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-sleeper-");
+    std::fs::create_dir_all(&dir).unwrap();
+    let paths = names
+        .iter()
+        .map(|name| {
+            let path = dir.join(name);
+            std::fs::write(&path, name.as_bytes()).unwrap();
+            path
+        })
+        .collect();
+    (dir, paths)
+}
+
+/// A session that keeps journals and sleep files, in `store`.
+fn sleeping_session(store: &Arc<Store>, title: &'static str) -> Session<Titled> {
+    let mut s = Session::new(Titled(title));
+    s.journals_mut().set_journaling(true);
+    s.journals_mut().set_history(Arc::clone(store) as Arc<dyn HistorySource>);
+    s.dormancy_mut().set_sleep_files(true);
+    s
+}
+
+/// **The rule, after a step:** every tab is in exactly one of warm, cold with a sleep file on its way, and cold; and every list asleep reads back
+/// from its journal as its summary, except those in `unreadable`, whose journals the step took away, which say so on the tab once a wake has tried.
+fn holds<L: DocLoader>(s: &Session<L>, store: &Store, unreadable: &[TabId], step: &str) {
+    for tab in s.tabs().iter() {
+        let warm = s.warm.contains(tab.id);
+        let leaving = s.dormancy.holding(tab.id).iter().any(|(part, holds)| *part == "left_warm" && *holds);
+        assert!(
+            !(warm && leaving),
+            "{step}: tab {} is warm and cold with a sleep file on its way at once",
+            tab.id.0
+        );
+    }
+    for (id, summary) in s.lists.asleep() {
+        if unreadable.contains(id) {
+            continue;
+        }
+        let name = s
+            .journals()
+            .name_of(*id)
+            .unwrap_or_else(|| panic!("{step}: tab {}'s list is asleep with no journal", id.0));
+        let back = store
+            .read_list(name)
+            .unwrap_or_else(|| panic!("{step}: tab {}'s list is asleep and its journal doesn't read", id.0));
+        assert_eq!(back.edits.summary(), *summary, "{step}: tab {}'s journal is behind its list", id.0);
+    }
+}
+
+/// The app's sleeper sending these to sleep: what's waiting goes to the journals first, its sleep file is written, its list goes if it's all on disk,
+/// and one that doesn't go is touched, to be looked at again next time it's left alone.
+fn go_dormant<L: DocLoader>(s: &mut Session<L>, store: &Store, tabs: &[TabId]) -> usize {
+    store.write_journals(s);
+    let mut gone = 0;
+    for &id in tabs {
+        if let Some(facts) = s.sleep_facts(id) {
+            store.write_sleep(&facts);
+        }
+        let _ = s.list_to_sleep(id);
+        if s.go_dormant(id) {
+            gone += 1;
+        } else {
+            s.touch(id);
+        }
+    }
+    gone
+}
+
+/// The app showing a tab, as an agent's `tab` command does: its sleep file if it has one, its PDF read with the session free if not, then the tap.
+fn show<L: DocLoader>(s: &mut Session<L>, id: TabId) {
+    if let Some((tab, path)) = s.wake_for_tap(id) {
+        let read = s.loader().load(&path);
+        s.give_woken(tab, read, file_stamp(&path).ok());
+    }
+    s.tap(id).unwrap();
+}
+
+/// **Failure: a tab is warm and cold with a sleep file on its way at once, or a list goes to sleep with some of it not on disk.** The first writes a
+/// sleep file for a tab that's on screen (wasted writes on the person's drive, the owner's "reduce SSD wear as much as we can"), and after a file's
+/// found to be another version, can write what was read of the old one into a new sleep file; the second loses edits after a crash. Driven through
+/// every way of going dormant (left alone, pushed out of the warm ones, the budget and memory pressure, asked, at quit) and of waking (shown, an edit,
+/// a command that reads pages, and a wake that fails on a journal that's gone), with the rule asserted after each.
+#[test]
+fn a_tab_is_warm_cold_with_a_sleep_file_on_its_way_or_cold_and_a_list_asleep_is_on_disk() {
+    let store = Arc::new(Store::default());
+    let (_dir, paths) = files(&["a.pdf", "b.pdf", "c.pdf", "d.pdf", "e.pdf"]);
+    let mut s = sleeping_session(&store, "Contents");
+    let a = s.open(&paths[0]).unwrap();
+    s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
+    store.write_journals(&mut s);
+    holds(&s, &store, &[], "a opened and edited");
+
+    // Pushed out of the warm ones: a is cold, its sleep file on its way.
+    let others: Vec<TabId> = paths[1..=MAX_WARM].iter().map(|path| s.open(path).unwrap()).collect();
+    assert!(!s.warm.contains(a));
+    holds(&s, &store, &[], "a pushed out of the warm ones");
+
+    // Shown again before its sleep file's been taken, as two of an agent's commands before the window catches up are: it's warm, and nothing's on
+    // its way for it any more.
+    show(&mut s, a);
+    holds(&s, &store, &[], "a shown again before its sleep file was taken");
+    let left: Vec<TabId> = s.take_left_warm().iter().map(|facts| facts.id).collect();
+    assert!(!left.contains(&a), "no sleep file is written for the tab on screen: {left:?}");
+    holds(&s, &store, &[], "what's left taken");
+
+    // Left alone: whatever's due goes.
+    let due = s.dormant().due_at(1_000, 300);
+    assert!(!due.is_empty() && !due.contains(&a), "a's on screen: {due:?}");
+    go_dormant(&mut s, &store, &due);
+    holds(&s, &store, &[], "left alone");
+
+    // Shown: b wakes, from its sleep file.
+    show(&mut s, others[0]);
+    holds(&s, &store, &[], "b shown");
+
+    // The budget, and memory pressure: oldest first, whatever's there. a's list goes to disk.
+    let oldest = s.dormant().oldest_first();
+    assert!(oldest.contains(&a));
+    go_dormant(&mut s, &store, &oldest);
+    assert!(s.lists().is_asleep(a));
+    holds(&s, &store, &[], "the budget");
+
+    // Asked: `recto session sleep` on one tab.
+    show(&mut s, others[1]);
+    go_dormant(&mut s, &store, &[others[0]]);
+    holds(&s, &store, &[], "asked");
+
+    // At quit: the tab on screen's sleep file, and nothing goes dormant.
+    let active = s.tabs().active().unwrap();
+    if let Some(facts) = s.sleep_facts(active) {
+        store.write_sleep(&facts);
+    }
+    holds(&s, &store, &[], "at quit");
+
+    // Woken by an edit, which goes on from its journal.
+    s.edit_pages(a, |e| e.rotate(1, 1, 1)).unwrap();
+    assert!(!s.lists().is_asleep(a));
+    store.write_journals(&mut s);
+    holds(&s, &store, &[], "a woken by an edit");
+    go_dormant(&mut s, &store, &[a]);
+    assert!(s.lists().is_asleep(a));
+    holds(&s, &store, &[], "a asleep again");
+
+    // Woken by a command that reads pages, as the executor wakes every tab it's about first.
+    assert!(s.wake_list(a));
+    holds(&s, &store, &[], "a woken to read its pages");
+    go_dormant(&mut s, &store, &[a]);
+    holds(&s, &store, &[], "a asleep once more");
+
+    // A wake that fails: its journal's gone from the disk. It stays asleep, under its name, and the tab says so; showing it doesn't change that.
+    let name = s.journals().name_of(a).unwrap().to_string();
+    store.journals.lock().unwrap().remove(&name);
+    assert!(!s.wake_list(a));
+    assert!(s.lists().is_asleep(a));
+    assert!(matches!(s.tabs().tab_notice(a), Some(FileNotice::EditsUnreadable)));
+    holds(&s, &store, &[a], "a's journal unreadable");
+    show(&mut s, a);
+    assert!(s.lists().is_asleep(a));
+    holds(&s, &store, &[a], "a shown with its journal unreadable");
+
+    // Shown again among the rest, pushing others out and back.
+    for &id in others.iter().chain([&a]) {
+        show(&mut s, id);
+        holds(&s, &store, &[a], "shown in turn");
+    }
+    s.open(&paths[MAX_WARM + 1]).unwrap();
+    holds(&s, &store, &[a], "one more opened");
+}
+
+/// **Failure: what was read of a file found to be another version is written into a new sleep file** (a correctness fault, not only wear). A tab woken
+/// from its sleep file and pushed out of the warm ones before the worker opens its file: the worker says it's another version, so what the sleep file
+/// said goes and the PDF's to be read ([`Session::file_length_is`]). Before 2026-11-13 the contents it was pushed out with were still on their way to a
+/// sleep file, and went into a new one under the same stamp, so the next wake showed the old version's contents again.
+#[test]
+fn a_file_found_to_be_another_version_doesnt_write_the_old_ones_contents_into_a_sleep_file() {
+    let store = Arc::new(Store::default());
+    let (_dir, paths) = files(&["x.pdf", "1.pdf", "2.pdf", "3.pdf", "4.pdf", "5.pdf", "6.pdf"]);
+    let mut s = sleeping_session(&store, "New");
+    let stamp = file_stamp(&paths[0]).unwrap();
+    // The sleep file an earlier version of x left: same stamp, as a rewrite that keeps size, time and number does, and other contents.
+    let old = sleep::SleepFile {
+        file: stamp,
+        file_pages: 5,
+        pages: 5,
+        list_seq: 0,
+        renderer_only: false,
+        version: Some(7),
+        toc: Titled("Old").load(&paths[0]).unwrap().toc,
+        usual: None,
+        sizes: Vec::new(),
+        pictures: Vec::new(),
+    };
+    store.sleeps.lock().unwrap().push((stamp, paths[0].clone(), sleep::encode_sleep(&old)));
+    let x = s.open(&paths[0]).unwrap();
+    for path in &paths[1..=MAX_WARM] {
+        s.open(path).unwrap();
+    }
+    s.take_left_warm();
+    // Woken from its sleep file, and shown.
+    show(&mut s, x);
+    assert!(s.tabs().tab(x).unwrap().from_sleep.is_some(), "woken from the sleep file");
+    // Pushed out before the worker's opened it.
+    for path in &paths[MAX_WARM + 1..] {
+        s.open(path).unwrap();
+    }
+    assert!(!s.warm.contains(x));
+    // The worker: another version.
+    assert!(s.file_length_is(x, 5, 8), "the file's to be read");
+    holds(&s, &store, &[], "x found to be another version");
+    let title = |facts: &SleepFacts| facts.sleep.toc.entries().first().map(|entry| facts.sleep.toc.title(entry).to_string());
+    for facts in s.take_left_warm() {
+        assert!(
+            facts.id != x,
+            "a sleep file's on its way for x with what was read of the old version: {:?}",
+            title(&facts)
+        );
+    }
+}
