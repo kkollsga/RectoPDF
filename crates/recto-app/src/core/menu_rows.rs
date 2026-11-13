@@ -27,8 +27,9 @@ pub enum Row<'a> {
     /// **The agent's command it is, with the person's run by a way of its own,** said `why`: `person` runs it. An agent's is `command`, as the agent's.
     OwnWay { command: Command, why: &'static str, person: Way<'a> },
     /// **The window's alone, with no command,** said `why`: a system panel or sheet, the keyboard's focus, the pasteboard, the window's own panel or pointer
-    /// mode. `person` does it, for the person, and for an agent's palette run as the menu does it, at the level that needs (Full, or `copy`'s).
-    Window { why: &'static str, person: Way<'a> },
+    /// mode, or something the person decided at a notice. `does` does it for the person; whether an agent's palette run may, `agents` says, as every such
+    /// row must.
+    Window { why: &'static str, agents: Agents, does: Way<'a> },
     /// One of these ids, with nothing to do now: a close with no document, a recent file that's left the list.
     Nothing,
 }
@@ -43,14 +44,18 @@ impl<'a> Row<'a> {
         }
     }
 
-    /// The window's alone: `person` does it.
-    pub fn window(why: &'static str, person: impl FnOnce() -> HostAction + 'a) -> Self {
-        Self::Window { why, person: Box::new(person) }
+    /// The window's alone: `does` does it, and an agent's run may as `agents` says.
+    pub fn window(why: &'static str, agents: Agents, does: impl FnOnce() -> HostAction + 'a) -> Self {
+        Self::Window {
+            why,
+            agents,
+            does: Box::new(does),
+        }
     }
 
     /// The window's alone, and all of it the host's to do.
-    pub fn host(why: &'static str, host: HostAction) -> Self {
-        Self::window(why, move || host)
+    pub fn host(why: &'static str, agents: Agents, host: HostAction) -> Self {
+        Self::window(why, agents, move || host)
     }
 
     /// The command, with the person's run by `person`.
@@ -69,6 +74,21 @@ impl<'a> Row<'a> {
             _ => None,
         }
     }
+}
+
+/// **Whether an agent's palette run may do a row that's the window's alone,** said by every such row, as there's no default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Agents {
+    /// Never, at any level: the person's own. A decision they made at a notice (an agent's own is `--anyway`, which is logged), the keyboard's focus, the
+    /// app's lifecycle, or an item that does nothing.
+    Never,
+    /// As the menu does it, at this level: a window to show, the pasteboard, the window's own panel or pointer mode. Its way sends nothing as anyone.
+    AsTheMenu(recto_agent::table::Access),
+}
+
+impl Agents {
+    /// As the menu does it, at Full.
+    pub const AT_FULL: Self = Self::AsTheMenu(recto_agent::table::Access::At(recto_agent::Level::Full));
 }
 
 /// A menu id asked about, with what `menus` makes of it.
@@ -90,22 +110,22 @@ impl Asked<'_> {
 /// A feature's rows: its own ids' [`Row`]s, or `None` for an id that isn't its.
 type Rows = for<'a> fn(&'a Arc<Inner>, &Asked<'_>) -> Option<Row<'a>>;
 
-/// **Every feature's rows, one line each.**
-const ROWS: &[Rows] = &[
-    super::viewing::row,
-    super::zoom::row,
-    super::editing::row,
-    super::navigation::row,
-    super::find::row,
-    super::comparison::row,
-    super::closing::row,
-    super::saving::row,
-    super::updates::row,
-    super::opening::row,
-    super::palette::row,
-    super::snapshot_tool::row,
-    super::printing::row,
-    super::window_rows::row,
+/// **Every feature's rows, one line each,** by the feature's name.
+const ROWS: &[(&str, Rows)] = &[
+    ("viewing", super::viewing::row),
+    ("zoom", super::zoom::row),
+    ("editing", super::editing::row),
+    ("navigation", super::navigation::row),
+    ("find", super::find::row),
+    ("comparison", super::comparison::row),
+    ("closing", super::closing::row),
+    ("saving", super::saving::row),
+    ("updates", super::updates::row),
+    ("opening", super::opening::row),
+    ("palette", super::palette::row),
+    ("snapshot_tool", super::snapshot_tool::row),
+    ("printing", super::printing::row),
+    ("window_rows", super::window_rows::row),
 ];
 
 /// What `id` is now, from what's published and the window's own state: never the session's lock. `None` for an id nothing has.
@@ -114,7 +134,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, id: &str) -> Option<Row<'a>> {
         id,
         action: crate::menus::action(id),
     };
-    ROWS.iter().find_map(|rows| rows(inner, &asked))
+    ROWS.iter().find_map(|(_, rows)| rows(inner, &asked))
 }
 
 /// **The person's run of a row,** saying what's left for the host. Never waits.
@@ -127,24 +147,29 @@ pub fn by_person(inner: &Arc<Inner>, row: Row<'_>) -> HostAction {
             }
             host
         }
-        Row::OwnWay { person, .. } | Row::Window { person, .. } => person(),
+        Row::OwnWay { person, .. } => person(),
+        Row::Window { does, .. } => does(),
         Row::Nothing => HostAction::None,
     }
 }
 
 /// What an agent's palette run of a menu id is.
-pub enum ForAgent {
+pub enum ForAgent<'a> {
     /// The command, as the agent's, resolved by the session as it is now where the row says so.
     Command(Command),
-    /// The window's alone: done as the menu does it, at the level that needs.
-    Window,
-    /// No command, nor the window's alone: refused, whatever the level, as running it the menu's way would run it as the person.
-    Refused,
+    /// The window's alone, which an agent's run may do at `needs`: `does` does it, sending nothing as anyone.
+    Window { needs: recto_agent::table::Access, does: Way<'a> },
+    /// The person's own, said `why`: refused, at any level.
+    PersonsOwn(&'static str),
+    /// One of these ids, with nothing to do now.
+    NothingNow,
+    /// An id no row has.
+    Unknown,
 }
 
 /// **An agent's palette run of `id`:** the row's command, resolved under `with_session` where it goes by the session when it runs, as the person's is on the
-/// session thread.
-pub fn for_agent(inner: &Arc<Inner>, id: &str, with_session: impl FnOnce(WhenRun, Command) -> Command) -> ForAgent {
+/// session thread; or the window's part alone, if the row lets an agent have it.
+pub fn for_agent<'a>(inner: &'a Arc<Inner>, id: &str, with_session: impl FnOnce(WhenRun, Command) -> Command) -> ForAgent<'a> {
     match row(inner, id) {
         Some(Row::Command {
             command,
@@ -152,7 +177,15 @@ pub fn for_agent(inner: &Arc<Inner>, id: &str, with_session: impl FnOnce(WhenRun
             ..
         }) => ForAgent::Command(with_session(when_run, command)),
         Some(Row::Command { command, .. } | Row::OwnWay { command, .. }) => ForAgent::Command(command),
-        Some(Row::Window { .. }) => ForAgent::Window,
-        Some(Row::Nothing) | None => ForAgent::Refused,
+        Some(Row::Window {
+            agents: Agents::AsTheMenu(needs),
+            does,
+            ..
+        }) => ForAgent::Window { needs, does },
+        Some(Row::Window {
+            agents: Agents::Never, why, ..
+        }) => ForAgent::PersonsOwn(why),
+        Some(Row::Nothing) => ForAgent::NothingNow,
+        None => ForAgent::Unknown,
     }
 }

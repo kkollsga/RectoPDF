@@ -26,7 +26,11 @@ pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
 pub fn row<'a>(_: &'a Arc<Inner>, asked: &menu_rows::Asked<'_>) -> Option<menu_rows::Row<'a>> {
     match (asked.action.as_ref()?, asked.id) {
         (menus::Action::Step(back), _) => Some(menu_rows::Row::command(step(*back))),
-        (menus::Action::Host(host), "go.page") => Some(menu_rows::Row::host("opens the go-to field; what's typed there is `PageTyped`", *host)),
+        (menus::Action::Host(host), "go.page") => Some(menu_rows::Row::host(
+            "opens the go-to field; what's typed there is `PageTyped`",
+            menu_rows::Agents::AT_FULL,
+            *host,
+        )),
         _ => None,
     }
 }

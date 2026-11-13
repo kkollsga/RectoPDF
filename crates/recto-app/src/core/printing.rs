@@ -218,22 +218,34 @@ pub fn chosen_range(pages: u32, all: bool, first: u32, last: u32, selection: Opt
 pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
     use super::menu_rows::Row;
     if asked.id == "file.print" {
-        return Some(Row::host("opens the system's print panel, which is the host's", asked.host()?));
+        return Some(Row::host(
+            "opens the system's print panel, which is the host's",
+            super::menu_rows::Agents::AT_FULL,
+            asked.host()?,
+        ));
     }
     if asked.id == STOP_ID {
-        return Some(Row::window("stops the print being prepared for the system's print panel", move || {
-            inner.tools.printing.cancel();
-            HostAction::None
-        }));
+        return Some(Row::window(
+            "stops the person's print being prepared for the system's print panel",
+            super::menu_rows::Agents::Never,
+            move || {
+                inner.tools.printing.cancel();
+                HostAction::None
+            },
+        ));
     }
     let serial = asked.id.strip_prefix(ANYWAY_PREFIX)?.to_string();
-    Some(Row::window("a notice's Print anyway, for the person's own print it refused", move || {
-        if let Some(request) = serial.parse().ok().and_then(|serial| inner.tools.printing.take_refused(serial)) {
-            start(inner, Request { anyway: true, ..request });
-        }
-        inner.core.push(CoreCall::Reconcile);
-        HostAction::None
-    }))
+    Some(Row::window(
+        "a notice's Print anyway, for the person's own print it refused: their decision, where an agent's is `print --anyway`, which is logged",
+        super::menu_rows::Agents::Never,
+        move || {
+            if let Some(request) = serial.parse().ok().and_then(|serial| inner.tools.printing.take_refused(serial)) {
+                start(inner, Request { anyway: true, ..request });
+            }
+            inner.core.push(CoreCall::Reconcile);
+            HostAction::None
+        },
+    ))
 }
 
 /// Starts preparing a print of `range`, pages counted from 1 as the tab has them now, off the UI thread.

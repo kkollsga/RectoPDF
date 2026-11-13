@@ -9,7 +9,7 @@ use recto_agent::Level;
 
 /// What's showing when the id is run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Showing {
+pub(super) enum Showing {
     /// Two tabs, the second in front on its page 3, the sidebar shown, edit mode off.
     Reading,
     SidebarHidden,
@@ -27,7 +27,7 @@ enum Showing {
     Edited,
 }
 
-const GRID: [Showing; 8] = [
+pub(super) const GRID: [Showing; 8] = [
     Showing::Reading,
     Showing::SidebarHidden,
     Showing::EditMode,
@@ -50,7 +50,7 @@ const WHOSE: &[&str] = &[
 ];
 
 /// The person's own commands that make `showing`, on one of the twins, settled, with what they announced heard and forgotten.
-fn set_up(app: &HeadlessApp, showing: Showing) {
+pub(super) fn set_up(app: &HeadlessApp, showing: Showing) {
     let mut lines = vec![r#"{"cmd":"goto","tab":"active","page":3}"#];
     lines.extend(match showing {
         Showing::Reading => vec![],
@@ -108,8 +108,11 @@ enum ActorRule {
     FindStepWithFindClosed,
     /// The same rule: the person's ⌘F shows the sidebar Find is in (A6); an agent's opens Find and leaves the sidebar as it is.
     FindOpenWithTheSidebarHidden,
-    /// The close rule (`refuse_close_that_loses_something`): with unsaved edits a person is asked, and an agent is refused `unsaved_changes`.
+    /// The close rule (`recto_agent::close_rule`): with unsaved edits a person is asked, and an agent is refused `unsaved_changes`.
     CloseThatLosesEdits,
+    /// A row that's the window's alone and the person's own (`menu_rows::Agents::Never`): the person's run does it, and an agent's is refused
+    /// `persons_own` with nothing changed.
+    PersonsOwn,
 }
 
 /// The actor rule that decides `id` on `app` as it is now, if one does.
@@ -120,6 +123,16 @@ fn actor_rule(app: &HeadlessApp, id: &str) -> Option<ActorRule> {
         "find.next" | "find.previous" if !find_open => Some(ActorRule::FindStepWithFindClosed),
         "find.open" if reader.sidebar_hidden => Some(ActorRule::FindOpenWithTheSidebarHidden),
         "file.close" if reader.edited => Some(ActorRule::CloseThatLosesEdits),
+        _ if matches!(
+            crate::core::menu_rows::row(app.core(), id),
+            Some(crate::core::menu_rows::Row::Window {
+                agents: crate::core::menu_rows::Agents::Never,
+                ..
+            })
+        ) =>
+        {
+            Some(ActorRule::PersonsOwn)
+        }
         _ => None,
     }
 }
@@ -171,6 +184,14 @@ fn differences(showing: Showing, id: &str, title: &str) -> Vec<String> {
                 ));
             }
             found.extend(twins.differences(&except));
+            return found;
+        }
+        Some(ActorRule::PersonsOwn) => {
+            if refused.as_deref() != Some("persons_own") || twins.agent.session_json() != kept_before {
+                found.push(format!(
+                    "an agent's run of the person's own wasn't refused `persons_own` with nothing changed: {result:?}"
+                ));
+            }
             return found;
         }
         None => {}

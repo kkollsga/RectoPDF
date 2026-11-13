@@ -306,16 +306,21 @@ pub fn tab_came_forward(inner: &super::Inner) {
 pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
     use super::menu_rows::Row;
     if asked.id == TOGGLE_ID {
-        return Some(Row::window("the snapshot tool is what the pointer does in the window", move || {
-            inner.tools.tool.toggle();
-            inner.core.push(super::CoreCall::Reconcile);
-            inner.listener.model_changed();
-            super::HostAction::None
-        }));
+        return Some(Row::window(
+            "the snapshot tool is what the pointer does in the window",
+            super::menu_rows::Agents::AT_FULL,
+            move || {
+                inner.tools.tool.toggle();
+                inner.core.push(super::CoreCall::Reconcile);
+                inner.listener.model_changed();
+                super::HostAction::None
+            },
+        ));
     }
     let serial = asked.id.strip_prefix(ANYWAY_PREFIX)?.to_string();
     Some(Row::window(
-        "a notice's Copy anyway, for the person's own snapshot it refused, to the system's pasteboard",
+        "a notice's Copy anyway, for the person's own snapshot it refused, to the system's pasteboard: their decision, where an agent's is `--anyway`, which is logged",
+        super::menu_rows::Agents::Never,
         move || {
             if let Some(job) = serial.parse().ok().and_then(|serial| inner.tools.tool.take_refused(serial)) {
                 start(inner, Job { anyway: true, ..job });

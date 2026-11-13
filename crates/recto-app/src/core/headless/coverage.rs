@@ -37,7 +37,7 @@ const ANY_RECENT: &str = "0123456789abcdef";
 /// The ids of the menu bar in every state it's drawn in: each paper, the sidebar and the agent icon shown or hidden, each layout or none, the update item's
 /// two titles, Open Recent empty and not; the snapshot tool's menu off and on; the context menu with each layout, in a comparison or not; the panel open,
 /// in edit mode, rotating or not, with the snapshot tool's part; and the keys with no ⌘.
-fn menu_ids() -> BTreeSet<String> {
+pub(super) fn menu_ids() -> BTreeSet<String> {
     let mut ids = BTreeSet::new();
     let mut add = |entries: Vec<menus::MenuEntry>| ids.extend(entries.into_iter().map(|entry| entry.id).filter(|id| !id.is_empty()));
     let recent = [RecentItem { key: ANY_RECENT, name: "c" }];

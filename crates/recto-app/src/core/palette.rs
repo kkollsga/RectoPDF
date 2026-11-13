@@ -62,14 +62,18 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
     if asked.action != Some(crate::menus::Action::PaletteOpen) {
         return None;
     }
-    Some(super::menu_rows::Row::window("the palette's field takes the keyboard", move || {
-        if lock(&inner.published).reader.sidebar_hidden {
-            inner.show_sidebar();
-        }
-        inner.tools.palette.open();
-        inner.listener.model_changed();
-        HostAction::FocusPalette
-    }))
+    Some(super::menu_rows::Row::window(
+        "the palette's field takes the person's keyboard",
+        super::menu_rows::Agents::Never,
+        move || {
+            if lock(&inner.published).reader.sidebar_hidden {
+                inner.show_sidebar();
+            }
+            inner.tools.palette.open();
+            inner.listener.model_changed();
+            HostAction::FocusPalette
+        },
+    ))
 }
 
 /// What the host draws now.
