@@ -6,7 +6,13 @@ fn every_way_of_zooming_is_one_path_with_one_set_of_limits() {
     let mut reader = reader_on(10);
     settle(&mut reader);
     assert_eq!(reader.zoom(Zoom::In), Some(ZOOM_STEP));
-    assert!(reader.take_ops().iter().any(|op| matches!(op, Op::Magnify { value } if *value == ZOOM_STEP)));
+    assert!(
+        reader
+            .host
+            .take_ops()
+            .iter()
+            .any(|op| matches!(op, Op::Magnify { value } if *value == ZOOM_STEP))
+    );
     assert_eq!(reader.zoom(Zoom::Out), Some(1.0));
     assert_eq!(reader.zoom(Zoom::To(1e9)), Some(MAX_ZOOM));
     assert_eq!(reader.zoom(Zoom::To(0.0)), Some(MIN_ZOOM));

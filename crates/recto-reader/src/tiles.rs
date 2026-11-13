@@ -15,12 +15,15 @@ use recto_platform::surface::{PixelSurface, Purge};
 use recto_proto::{BYTES_PER_PIXEL, MAX_REGION_BYTES, MAX_SCALE, MIN_SCALE, TILE_EDGE, TileRect, device_size};
 use recto_render_service::{CancelHandle, LowResWhy, TileKind, plan_regions};
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod host;
 mod zoom;
+
+use host::{HostQueue, Placement};
 
 pub use zoom::{MAX_ZOOM, MIN_ZOOM, ZOOM_STEP, Zoom, typed_zoom, zoom_after_scroll, zoom_percent};
 
@@ -519,18 +522,6 @@ struct Running {
     check: bool,
 }
 
-/// How a page sits.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Placement {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    fit: f64,
-    paper_rgb: u32,
-    turns: u8,
-}
-
 /// Counts for QA and the budgets.
 #[derive(Clone, Debug, Default)]
 pub struct ReaderCounts {
@@ -561,14 +552,7 @@ pub struct Reader {
     next_id: u64,
     /// Attached entries by page, on the hot tab only.
     attached: HashMap<u32, Vec<u64>>,
-    shown: HashMap<u32, Placement>,
-    ops: VecDeque<Op>,
-    /// The host has been given ops it hasn't said it's applied.
-    unapplied: bool,
-    /// Gone off a layer, in ops the host hasn't been given yet.
-    to_discard: Vec<u64>,
-    /// Gone off a layer, in ops the host has been given. It's these that "applied" is about.
-    handed_to_host: Vec<u64>,
+    host: HostQueue,
     clock: u64,
     running: Option<Running>,
     next_generation: u64,
@@ -581,7 +565,6 @@ pub struct Reader {
     selection_before_change: Option<(u32, recto_index::select::Range)>,
     /// Find's hit, selected and on its way into view once its page's text says where on the page it is: the tab, the hit, and whether its page was jumped to for it, which then places it whatever it shows.
     revealing: Option<(u32, recto_index::select::Range, bool)>,
-    more_to_attach: bool,
     counts: ReaderCounts,
     wanted_files: Arc<Vec<PathBuf>>,
     note: Option<String>,
@@ -640,11 +623,7 @@ impl Reader {
             cover: HashMap::new(),
             next_id: 1,
             attached: HashMap::new(),
-            shown: HashMap::new(),
-            ops: VecDeque::new(),
-            unapplied: false,
-            to_discard: Vec::new(),
-            handed_to_host: Vec::new(),
+            host: HostQueue::default(),
             clock: 0,
             running: None,
             next_generation: 1,
@@ -655,7 +634,6 @@ impl Reader {
             moved_page: None,
             selection_before_change: None,
             revealing: None,
-            more_to_attach: false,
             counts: ReaderCounts::default(),
             wanted_files: Arc::new(Vec::new()),
             note: None,
@@ -732,7 +710,7 @@ impl Reader {
         if moved {
             self.moved_page = Some(page);
         }
-        self.ops.push_back(Op::ScrollTo { y, seq });
+        self.host.ops.push_back(Op::ScrollTo { y, seq });
         Some(page)
     }
 
@@ -884,7 +862,7 @@ impl Reader {
 
     /// Whether every visible page is showing something, at the place, with nothing on its way to the host: what a window can go up with. It'll sharpen from there.
     pub fn is_showable(&self) -> bool {
-        if self.jump.is_some() || !self.ops.is_empty() || self.unapplied || self.viewport.height <= 0.0 {
+        if self.jump.is_some() || !self.host.ops.is_empty() || self.host.unapplied || self.viewport.height <= 0.0 {
             return false;
         }
         let Some(doc) = self.doc() else { return false };
@@ -1364,10 +1342,10 @@ impl Reader {
             doc.exact_y = None;
         }
         let (magnification, across) = self.docs.get(&tab).map_or((1.0, 0.0), |doc| (doc.magnification, doc.scroll_x));
-        self.ops.push_back(Op::Magnify { value: magnification });
+        self.host.ops.push_back(Op::Magnify { value: magnification });
         self.lay_out();
         self.jump_to_anchor(page);
-        self.ops.push_back(Op::ScrollAcross { x: across });
+        self.host.ops.push_back(Op::ScrollAcross { x: across });
         self.recount_wanted_files(warm);
         self.refresh(MAX_ATTACH_PER_TURN);
     }
@@ -1533,16 +1511,16 @@ impl Reader {
 
     /// Takes everything off the screen, in one op.
     fn clear_screen(&mut self) {
-        self.ops.push_back(Op::Clear);
+        self.host.ops.push_back(Op::Clear);
         for ids in std::mem::take(&mut self.attached).into_values() {
             for id in ids {
                 if let Some(entry) = self.entries.get_mut(&id) {
                     entry.attached = false;
-                    self.to_discard.push(id);
+                    self.host.to_discard.push(id);
                 }
             }
         }
-        self.shown.clear();
+        self.host.shown.clear();
         self.selecting.layers_gone();
     }
 
@@ -1581,7 +1559,7 @@ impl Reader {
         self.next_seq += 1;
         self.jump = Some(seq);
         self.last_view_page = Some(page);
-        self.ops.push_back(Op::ScrollTo { y, seq });
+        self.host.ops.push_back(Op::ScrollTo { y, seq });
     }
 
     /// How far down the tab's place is: to the pixel if the layout's what it was, and otherwise as far down its page.
@@ -1600,7 +1578,7 @@ impl Reader {
         self.next_seq += 1;
         self.jump = Some(seq);
         self.last_view_page = Some(page.min(doc.layout.count().saturating_sub(1)));
-        self.ops.push_back(Op::ScrollTo { y, seq });
+        self.host.ops.push_back(Op::ScrollTo { y, seq });
     }
 
     /// The document's size, then the place in it. Called when the fit or a page's size has changed.
@@ -1613,7 +1591,7 @@ impl Reader {
         let (top_room, bottom_room) = doc.layout.end_room();
         let y = Self::place_y(doc);
         doc.width_shown = doc.layout.document_width_for(y, y + self.viewport.height);
-        self.ops.push_back(Op::Document {
+        self.host.ops.push_back(Op::Document {
             width: doc.width_shown,
             height: doc.layout.document_height(),
             top_room,
@@ -1624,7 +1602,7 @@ impl Reader {
         if self.jump.is_some() {
             self.jump = Some(seq);
         }
-        self.ops.push_back(Op::ScrollTo { y, seq });
+        self.host.ops.push_back(Op::ScrollTo { y, seq });
     }
 
     /// The host's view moved. Called on every scroll, on the UI thread: a few map lookups per visible tile, and at most [`MAX_ATTACH_PER_TURN`] surfaces reclaimed. What it returns is for the host to apply now.
@@ -1635,7 +1613,7 @@ impl Reader {
         self.scrolled_to = viewport.scrolled_to.max(self.scrolled_to);
         // A new window's first word, before it's been told anything: the top of the document at no zoom. That's nobody's place.
         if !self.window_open {
-            return self.take_ops();
+            return self.host.take_ops();
         }
         // The reader's own scroll: the view moved down or up, with nothing the host was sent arriving, no change of zoom or room, and no pinch or resize under way.
         self.user_scrolled = !viewport.live
@@ -1666,7 +1644,7 @@ impl Reader {
         self.refresh(MAX_ATTACH_PER_TURN);
         self.cancel_if_unwanted();
         self.count_blanks();
-        self.take_ops()
+        self.host.take_ops()
     }
 
     /// The document as wide as the rows in view need, which is the window's unless a fold-out's row is in view: told to the host when that changes, as the view reaches a fold-out or leaves it.
@@ -1681,7 +1659,7 @@ impl Reader {
         }
         doc.width_shown = width;
         let (top_room, bottom_room) = doc.layout.end_room();
-        self.ops.push_back(Op::Document {
+        self.host.ops.push_back(Op::Document {
             width,
             height: doc.layout.document_height(),
             top_room,
@@ -1899,7 +1877,7 @@ impl Reader {
 
     /// Brings the screen into line with what's wanted, attaching at most `budget` tiles. The rest wait for the next turn.
     fn refresh(&mut self, mut budget: usize) {
-        self.more_to_attach = false;
+        self.host.more_to_attach = false;
         let Some(tab) = self.hot else { return };
         if !self.window_open {
             return;
@@ -1922,7 +1900,7 @@ impl Reader {
             visible.clone()
         };
 
-        let stale: Vec<u32> = self.shown.keys().copied().filter(|page| !on_paper.contains(page)).collect();
+        let stale: Vec<u32> = self.host.shown.keys().copied().filter(|page| !on_paper.contains(page)).collect();
         for page in stale {
             self.hide_page(page);
         }
@@ -1949,9 +1927,9 @@ impl Reader {
             ));
         }
         for (page, placement) in placements {
-            if self.shown.get(&page) != Some(&placement) {
-                self.shown.insert(page, placement);
-                self.ops.push_back(Op::ShowPage {
+            if self.host.shown.get(&page) != Some(&placement) {
+                self.host.shown.insert(page, placement);
+                self.host.ops.push_back(Op::ShowPage {
                     page,
                     x: placement.x,
                     y: placement.y,
@@ -1996,7 +1974,7 @@ impl Reader {
                 let attached = self.entries.get(&id).is_some_and(|entry| entry.attached);
                 if !attached {
                     if budget == 0 {
-                        self.more_to_attach = true;
+                        self.host.more_to_attach = true;
                         missing = true;
                     } else if self.attach(id, false) {
                         budget -= 1;
@@ -2109,7 +2087,7 @@ impl Reader {
         if surface == 0 && rgb.is_none_or(|rgb| rgb == self.paper.rgb()) {
             return true;
         }
-        self.ops.push_back(Op::Attach {
+        self.host.ops.push_back(Op::Attach {
             id,
             page,
             x: f64::from(rect.x) / scale,
@@ -2135,20 +2113,20 @@ impl Reader {
         if let Some(entry) = self.entries.get_mut(&id) {
             entry.attached = false;
             if entry.surface.is_some() || entry.rgb.is_some_and(|rgb| rgb != self.paper.rgb()) {
-                self.ops.push_back(Op::Detach { id });
+                self.host.ops.push_back(Op::Detach { id });
             }
-            self.to_discard.push(id);
+            self.host.to_discard.push(id);
         }
     }
 
     fn hide_page(&mut self, page: u32) {
-        self.ops.push_back(Op::HidePage { page });
-        self.shown.remove(&page);
+        self.host.ops.push_back(Op::HidePage { page });
+        self.host.shown.remove(&page);
         self.selecting.page_hidden(page);
         for id in self.attached.remove(&page).unwrap_or_default() {
             if let Some(entry) = self.entries.get_mut(&id) {
                 entry.attached = false;
-                self.to_discard.push(id);
+                self.host.to_discard.push(id);
             }
         }
     }
@@ -2167,7 +2145,7 @@ impl Reader {
         {
             ids.retain(|other| *other != id);
             if entry.surface.is_some() {
-                self.ops.push_back(Op::Detach { id });
+                self.host.ops.push_back(Op::Detach { id });
             }
         }
     }
@@ -2228,27 +2206,19 @@ impl Reader {
     /// The ops for the host, attaching at most `budget` more first.
     pub fn drain(&mut self, budget: usize) -> Vec<Op> {
         self.refresh(budget);
-        self.take_ops()
-    }
-
-    fn take_ops(&mut self) -> Vec<Op> {
-        if !self.ops.is_empty() {
-            self.unapplied = true;
-        }
-        self.handed_to_host.append(&mut self.to_discard);
-        self.ops.drain(..).collect()
+        self.host.take_ops()
     }
 
     /// Whether the host should come back for more.
     pub fn has_ops(&self) -> bool {
-        !self.ops.is_empty() || self.more_to_attach
+        self.host.has_ops()
     }
 
     /// The host has applied what it was given. What's now off every layer can be marked discardable, and it leaves the footprint.
     pub fn applied(&mut self) {
-        self.unapplied = false;
+        self.host.unapplied = false;
         self.track_wake();
-        for id in std::mem::take(&mut self.handed_to_host) {
+        for id in std::mem::take(&mut self.host.handed_to_host) {
             if let Some(entry) = self.entries.get_mut(&id)
                 && !entry.attached
                 && !entry.discardable
@@ -2313,16 +2283,7 @@ impl Reader {
         for id in ids {
             self.forget_entry(id);
         }
-        // Nothing's there to take them. What was waiting is thrown away, and each `Attach` holds a reference to a surface, which goes with it.
-        for op in self.ops.drain(..) {
-            if let Op::Attach { surface, .. } = op {
-                PixelSurface::release_for_host(surface);
-            }
-        }
-        self.to_discard.clear();
-        self.handed_to_host.clear();
-        self.unapplied = false;
-        self.more_to_attach = false;
+        self.host.close();
         if let Some(running) = &self.running
             && let Some(cancel) = &running.cancel
         {
@@ -2341,12 +2302,12 @@ impl Reader {
         // The window is new, at the top of the document and no zoom. It's sent back to the place and zoom this tab was left at, and until it's got there, what it says about where it is isn't the reader moving.
         if let Some(magnification) = self.doc().map(|doc| doc.magnification) {
             self.viewport.magnification = magnification;
-            self.ops.push_back(Op::Magnify { value: magnification });
+            self.host.ops.push_back(Op::Magnify { value: magnification });
             self.jump = Some(u64::MAX);
         }
         self.lay_out();
         if let Some(across) = self.doc().map(|doc| doc.scroll_x) {
-            self.ops.push_back(Op::ScrollAcross { x: across });
+            self.host.ops.push_back(Op::ScrollAcross { x: across });
         }
         self.refresh(MAX_ATTACH_PER_TURN);
     }
@@ -2563,10 +2524,10 @@ impl Reader {
         if self.selecting.nothing_to_draw() {
             return;
         }
-        let pages: Vec<u32> = self.shown.keys().copied().collect();
+        let pages: Vec<u32> = self.host.shown.keys().copied().collect();
         for page in pages {
             if let Some(rects) = self.selecting.layer_update(page) {
-                self.ops.push_back(Op::Highlight { page, rects });
+                self.host.ops.push_back(Op::Highlight { page, rects });
             }
         }
     }
@@ -3120,9 +3081,9 @@ impl Reader {
     /// Whether everything visible is drawn and on its layers, or marked as it is.
     pub fn is_settled(&self) -> bool {
         if self.gave_up {
-            return self.ops.is_empty() && !self.unapplied;
+            return self.host.ops.is_empty() && !self.host.unapplied;
         }
-        if self.running.is_some() || !self.ops.is_empty() || self.unapplied || self.more_to_attach {
+        if self.running.is_some() || !self.host.ops.is_empty() || self.host.unapplied || self.host.more_to_attach {
             return false;
         }
         let Some(doc) = self.doc() else { return true };
@@ -3214,7 +3175,7 @@ impl Reader {
                 "previews_attached": previews_attached,
                 "kept": self.entries.len() - attached.min(self.entries.len()),
                 "kept_bytes": self.entries.values().filter(|entry| !entry.attached).filter_map(|entry| entry.surface.as_ref()).map(PixelSurface::len).sum::<usize>(),
-                "page_layers": self.shown.len(),
+                "page_layers": self.host.shown.len(),
             },
             "counts": {
                 "jobs": self.counts.jobs,

@@ -110,7 +110,7 @@ impl Reader {
             doc.magnification
         };
         doc.magnification = value;
-        self.ops.push_back(Op::Magnify { value });
+        self.host.ops.push_back(Op::Magnify { value });
         Some(value)
     }
 

@@ -2,6 +2,7 @@ use super::*;
 use crate::layout::PageBox;
 use std::path::Path;
 
+mod host;
 mod zoom;
 
 fn map() -> PageMap {
@@ -49,7 +50,7 @@ fn settle(reader: &mut Reader) -> Vec<Job> {
 fn settle_all_sized(reader: &mut Reader, size: PageBox) -> Vec<Job> {
     let mut drawn = Vec::new();
     for _ in 0..10_000 {
-        reader.take_ops();
+        reader.host.take_ops();
         reader.applied();
         let Some(job) = reader.next_job() else { break };
         let outcome = match &job.kind {
@@ -139,6 +140,7 @@ fn finds_hit_is_selected_and_brought_a_third_down_the_view() {
     reader.reveal_range(range);
     assert_eq!(reader.selection_range(), Some(range), "selected");
     let to_page = reader
+        .host
         .take_ops()
         .into_iter()
         .rev()
@@ -147,6 +149,7 @@ fn finds_hit_is_selected_and_brought_a_third_down_the_view() {
     reader.set_viewport(view(to_page));
     reader.take_text(1, 6, Some((page_with_line_at(40.0), true)));
     let placed = reader
+        .host
         .take_ops()
         .into_iter()
         .rev()
@@ -161,13 +164,16 @@ fn finds_hit_is_selected_and_brought_a_third_down_the_view() {
     );
     // Another hit on what's showing, away from the edges, moves nothing.
     reader.set_viewport(view(placed));
-    reader.take_ops();
+    reader.host.take_ops();
     let near = recto_index::select::Range {
         start: recto_index::select::Place { page: 6, at: 5 },
         end: recto_index::select::Place { page: 6, at: 7 },
     };
     reader.reveal_range(near);
-    assert!(!reader.take_ops().iter().any(|op| matches!(op, Op::ScrollTo { .. })), "it's in view already");
+    assert!(
+        !reader.host.take_ops().iter().any(|op| matches!(op, Op::ScrollTo { .. })),
+        "it's in view already"
+    );
 }
 
 /// Failure: a tile for the wrong place, or none at all, reaches the screen, because the grid and the view don't agree. Every visible cell must be covered when it says it's settled, and every attached tile must be in view.
@@ -320,37 +326,6 @@ fn previews_outlive_their_tiles() {
     let ops = reader.set_viewport(view(0.0));
     assert!(ops.iter().any(|op| matches!(op, Op::Attach { below: true, .. })), "and shows at once: {ops:?}");
     assert_eq!(reader.counts().blank_seen_steps, 0);
-}
-
-/// Failure: a burst of attachments stalls the UI thread, or the leftovers are forgotten and part of a page stays blank until something else happens.
-#[test]
-fn at_most_eight_tiles_are_attached_in_a_turn_and_the_rest_follow() {
-    let mut reader = reader_on(100);
-    let big = Viewport {
-        width: 4000.0,
-        height: 3000.0,
-        frame_width: 1168.0,
-        ..view(0.0)
-    };
-    reader.set_viewport(big);
-    settle(&mut reader);
-    reader.set_viewport(view(40_000.0));
-    settle(&mut reader);
-    let ops = reader.set_viewport(big);
-    reader.applied();
-    let attaches = |ops: &[Op]| ops.iter().filter(|op| matches!(op, Op::Attach { .. })).count();
-    assert_eq!(attaches(&ops), MAX_ATTACH_PER_TURN, "a full turn, or this tests nothing");
-    assert!(reader.has_ops(), "and it says there's more");
-    let mut turns = 0;
-    while reader.has_ops() {
-        let more = reader.drain(MAX_ATTACH_PER_TURN);
-        reader.applied();
-        assert!(attaches(&more) <= MAX_ATTACH_PER_TURN);
-        turns += 1;
-        assert!(turns < 100, "the leftovers never end");
-    }
-    assert!(turns >= 1);
-    assert!(reader.is_settled(), "the leftovers all came: {}", reader.report().0);
 }
 
 /// Failure: a tile from before a zoom stays on screen once its replacements are all there, or the old tiles go before the new ones arrive, leaving a blank.
@@ -544,7 +519,7 @@ fn a_jump_isnt_reported_back_as_a_move() {
     reader.set_viewport(base);
     reader.take_moved_page();
     reader.jump_to(50);
-    let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().find(|op| matches!(op, Op::ScrollTo { .. })) else {
+    let Some(Op::ScrollTo { y, seq }) = reader.host.take_ops().into_iter().find(|op| matches!(op, Op::ScrollTo { .. })) else {
         panic!("no scroll")
     };
     let mut there = view(y);
@@ -570,7 +545,7 @@ fn a_view_the_host_rounded_to_its_pixels_is_still_on_the_place() {
     reader.set_viewport(base);
     reader.take_moved_page();
     reader.jump_to(8);
-    let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().find(|op| matches!(op, Op::ScrollTo { .. })) else {
+    let Some(Op::ScrollTo { y, seq }) = reader.host.take_ops().into_iter().find(|op| matches!(op, Op::ScrollTo { .. })) else {
         panic!("no scroll")
     };
     let anchor = reader.doc().unwrap().layout.anchor_for(y, 8);
@@ -612,7 +587,7 @@ fn only_the_readers_own_scroll_leads_a_synced_pane() {
     assert!(!reader.take_user_scrolled(), "asking clears it");
     let page = reader.follow(40, 0.25).expect("a tab is showing");
     assert_eq!(page, 40);
-    let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else {
+    let Some(Op::ScrollTo { y, seq }) = reader.host.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else {
         panic!("no scroll")
     };
     let mut there = scrolled;
@@ -643,7 +618,7 @@ fn arriving_on_another_page_than_asked_says_so() {
     reader.take_moved_page();
     assert_eq!(reader.follow(40, 0.9), Some(40));
     assert_eq!(reader.take_moved_page(), Some(40), "sent there");
-    let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else {
+    let Some(Op::ScrollTo { y, seq }) = reader.host.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else {
         panic!("no scroll")
     };
     let mut there = view(y);
@@ -682,7 +657,7 @@ fn side_by_side_keeps_the_page_of_its_row_the_reader_was_on() {
     settle(&mut reader);
     reader.take_moved_page();
     reader.jump_to(51);
-    let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else {
+    let Some(Op::ScrollTo { y, seq }) = reader.host.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else {
         panic!("no scroll")
     };
     let mut there = view(y);
@@ -759,7 +734,7 @@ fn the_host_hears_the_documents_width_for_what_it_shows() {
     doc.layout.set_page_size(21, PageBox { width: 3000.0, height: 792.0 });
     let (wide, frame) = (doc.layout.rect(21), doc.layout.document_width_for(0.0, 1.0));
     reader.lay_out();
-    reader.take_ops();
+    reader.host.take_ops();
     let widths = |ops: Vec<Op>| {
         ops.into_iter()
             .filter_map(|op| if let Op::Document { width, .. } = op { Some(width) } else { None })
@@ -776,7 +751,7 @@ fn the_host_hears_the_documents_width_for_what_it_shows() {
 
 /// The view the host goes to on the reader's next turn: wherever the last scroll it was told of says, as it would have applied it.
 fn follow_host(reader: &mut Reader, mut at: Viewport) -> Viewport {
-    if let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) {
+    if let Some(Op::ScrollTo { y, seq }) = reader.host.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) {
         at.y = y;
         at.scrolled_to = seq;
     }
@@ -944,7 +919,7 @@ fn a_turn_keeps_the_place_in_the_page_and_across() {
 /// Answers what the reader asks as a file whose page 0 is `first` and the rest letter would, until it asks nothing more.
 fn settle_sized(reader: &mut Reader, first: PageBox) {
     for _ in 0..10_000 {
-        reader.take_ops();
+        reader.host.take_ops();
         reader.applied();
         let Some(job) = reader.next_job() else { break };
         let outcome = match &job.kind {
@@ -1264,7 +1239,7 @@ fn a_page_whose_size_cant_be_read_is_asked_once() {
     let mut reader = reader_on(3);
     let mut asked = 0;
     for _ in 0..200 {
-        reader.take_ops();
+        reader.host.take_ops();
         reader.applied();
         let Some(job) = reader.next_job() else { break };
         let outcome = match &job.kind {
@@ -1358,7 +1333,7 @@ fn no_surface_serves_two_files() {
     fn run(reader: &mut Reader, answer: TileKind, held: &mut Vec<PixelSurface>) -> HashSet<u32> {
         let mut seen = HashSet::new();
         for _ in 0..1000 {
-            reader.take_ops();
+            reader.host.take_ops();
             reader.applied();
             let Some(job) = reader.next_job() else { break };
             let outcome = match &job.kind {
@@ -1396,27 +1371,10 @@ fn no_surface_serves_two_files() {
     }
 }
 
-/// Failure: a tile comes off in Rust just after the UI thread took its ops, and "applied" for those ops marks it discardable while its layer is still showing it, so the OS can empty a surface on screen. Only what the host was told about counts.
-#[test]
-fn a_surface_goes_discardable_only_after_the_host_was_told() {
-    let mut reader = reader_on(3);
-    settle(&mut reader);
-    let (&page, ids) = reader.attached.iter().next().unwrap();
-    let id = ids[0];
-    reader.take_ops();
-    // The engine's thread, between the host's taking its ops and saying it has applied them.
-    reader.detach(id, page);
-    reader.applied();
-    assert!(!reader.entries[&id].discardable, "the layer still has it");
-    reader.take_ops();
-    reader.applied();
-    assert!(reader.entries[&id].discardable, "now the host has been told");
-}
-
 /// Finishes everything that isn't text, with a pretend renderer, and hands back the first text job.
 fn settle_to_text(reader: &mut Reader) -> Option<Job> {
     loop {
-        reader.take_ops();
+        reader.host.take_ops();
         reader.applied();
         let job = reader.next_job()?;
         match &job.kind {
@@ -1530,9 +1488,10 @@ fn coming_back_to_a_tab_keeps_the_place_in_the_page() {
         follows: None,
     };
     reader.activate(2, 10, 0, other.clone(), &[1], None, Spread::Single);
-    reader.take_ops();
+    reader.host.take_ops();
     reader.activate(1, 100, page, map(), &[2], None, Spread::Single);
     let scrolled: Vec<f64> = reader
+        .host
         .take_ops()
         .into_iter()
         .filter_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None })
@@ -1540,9 +1499,10 @@ fn coming_back_to_a_tab_keeps_the_place_in_the_page() {
     assert!((scrolled.last().unwrap() - inside).abs() < 1.0, "{scrolled:?} against {inside}");
 
     reader.activate(2, 10, 0, other, &[1], None, Spread::Single);
-    reader.take_ops();
+    reader.host.take_ops();
     reader.activate(1, 100, page + 3, map(), &[2], None, Spread::Single);
     let scrolled: Vec<f64> = reader
+        .host
         .take_ops()
         .into_iter()
         .filter_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None })
@@ -1677,8 +1637,8 @@ fn the_tabs_sleep_view_is_its_first_frame() {
     let attached = reader.attached.get(&0).is_some_and(|ids| !ids.is_empty());
     assert!(attached, "it's up with nothing drawn: {ops:?}");
     assert!(ops.iter().any(|op| matches!(op, Op::Attach { below: true, .. })));
-    reader.take_ops();
-    reader.unapplied = true;
+    reader.host.take_ops();
+    reader.host.unapplied = true;
     reader.applied();
     let wake = reader.last_wake().unwrap();
     assert!(wake.from_sleep);
@@ -1691,14 +1651,14 @@ fn the_tabs_sleep_view_is_its_first_frame() {
     bare.set_viewport(view(0.0));
     bare.note_wake(1, Instant::now());
     bare.activate(1, 5, 0, map(), &[], Some(saved), Spread::Single);
-    bare.take_ops();
+    bare.host.take_ops();
     let scrolled = bare.jump.unwrap_or(0);
     bare.set_viewport(Viewport {
         scrolled_to: scrolled,
         ..view(0.0)
     });
-    bare.take_ops();
-    bare.unapplied = true;
+    bare.host.take_ops();
+    bare.host.unapplied = true;
     bare.applied();
     assert_eq!(bare.last_wake().unwrap().blank_frames, 1);
     // A worker's asked for what's sharp, as if there'd been none of this, and no preview as it's got one.
@@ -1822,7 +1782,7 @@ fn another_version_of_the_file_takes_every_picture_of_the_old_one() {
     reader.activate(1, 5, 0, on(version(2)), &[], None, Spread::Single);
     assert!(reader.entries.is_empty(), "every picture and tile of it goes");
     assert!(reader.sleep_material(1, version(2)).unwrap().pictures.is_empty());
-    assert!(reader.take_ops().contains(&Op::Clear), "and off the screen");
+    assert!(reader.host.take_ops().contains(&Op::Clear), "and off the screen");
     assert_eq!(
         reader.take_reopen_files(),
         [PathBuf::from("/d/a.pdf")],
@@ -1845,7 +1805,7 @@ fn nothing_drawn_of_an_old_version_is_shown_or_kept() {
     reader.note_version(file, 2);
     assert!(drawn.iter().all(|id| !reader.entries.contains_key(id)), "everything of version 1 is gone");
     reader.set_viewport(view(0.0));
-    let ops = reader.take_ops();
+    let ops = reader.host.take_ops();
     assert!(
         !ops.iter().any(|op| matches!(op, Op::Attach { id, .. } if drawn.contains(id))),
         "nothing of it goes back on a layer"
@@ -1934,15 +1894,15 @@ fn a_window_can_go_up_with_a_picture_on_every_page() {
         },
     );
     reader.activate(1, 5, 0, map(), &[], Some(saved), Spread::Single);
-    reader.take_ops();
+    reader.host.take_ops();
     assert!(!reader.is_showable(), "still being sent to its place, with nothing on it");
     let scrolled = reader.jump.unwrap_or(0);
     reader.set_viewport(Viewport {
         scrolled_to: scrolled,
         ..view(0.0)
     });
-    reader.take_ops();
-    reader.unapplied = false;
+    reader.host.take_ops();
+    reader.host.unapplied = false;
     assert!(!reader.is_showable(), "a bare page isn't what goes up");
     let shot = SleepShot {
         page: 0,
@@ -1960,14 +1920,14 @@ fn a_window_can_go_up_with_a_picture_on_every_page() {
         },
     );
     reader.activate(2, 1, 0, map(), &[], Some(saved), Spread::Single);
-    reader.take_ops();
+    reader.host.take_ops();
     let scrolled = reader.jump.unwrap_or(0);
     reader.set_viewport(Viewport {
         scrolled_to: scrolled,
         ..view(0.0)
     });
-    reader.take_ops();
-    reader.unapplied = false;
+    reader.host.take_ops();
+    reader.host.unapplied = false;
     assert!(reader.is_showable());
     assert!(!reader.is_on_place(), "and that's sooner than sharp");
 }
@@ -1994,7 +1954,7 @@ fn a_saved_place_comes_back_to_the_pixel() {
         page_size: Some(letter()),
     };
     reader.activate(1, 100, 40, map(), &[], Some(saved), Spread::Single);
-    let ops = reader.take_ops();
+    let ops = reader.host.take_ops();
     assert!(ops.iter().any(|op| matches!(op, Op::Magnify { value } if *value == 1.75)), "{ops:?}");
     assert!(ops.iter().any(|op| matches!(op, Op::ScrollAcross { x } if *x == 33.5)), "{ops:?}");
     let Some(Op::ScrollTo { y: went, seq }) = ops.iter().rev().find(|op| matches!(op, Op::ScrollTo { .. })) else {
@@ -2024,7 +1984,7 @@ fn a_saved_place_comes_back_to_the_pixel() {
     // Left and back in the same session.
     reader.activate(2, 10, 0, map(), &[1], None, Spread::Single);
     reader.activate(1, 100, 40, map(), &[2], None, Spread::Single);
-    let ops = reader.take_ops();
+    let ops = reader.host.take_ops();
     let Some(Op::ScrollTo { y: went, .. }) = ops.iter().rev().find(|op| matches!(op, Op::ScrollTo { .. })) else {
         panic!("{ops:?}")
     };
@@ -2034,7 +1994,7 @@ fn a_saved_place_comes_back_to_the_pixel() {
     fresh.window_opened();
     fresh.set_viewport(view(0.0));
     fresh.activate(1, 100, 7, map(), &[], Some(saved), Spread::Single);
-    let ops = fresh.take_ops();
+    let ops = fresh.host.take_ops();
     let Some(Op::ScrollTo { y: went, .. }) = ops.iter().rev().find(|op| matches!(op, Op::ScrollTo { .. })) else {
         panic!("{ops:?}")
     };
@@ -2059,7 +2019,7 @@ fn a_saved_place_comes_back_to_the_pixel() {
         }),
         Spread::Single,
     );
-    for op in hostile.take_ops() {
+    for op in hostile.host.take_ops() {
         match op {
             Op::ScrollTo { y, .. } => assert!(y.is_finite(), "{y}"),
             Op::ScrollAcross { x } => assert!(x.is_finite(), "{x}"),
@@ -2067,37 +2027,6 @@ fn a_saved_place_comes_back_to_the_pixel() {
             _ => {}
         }
     }
-}
-
-/// Failure: closing the window leaves ops queued with nobody to take them. Each `Attach` holds a surface's memory until the window's back, and `qa wait-settled` waits for ever. They're gone, and the surfaces with them, the moment it's closed.
-#[test]
-fn a_closed_window_keeps_no_ops_or_surfaces_for_them() {
-    let mut reader = reader_on(10);
-    let draw = a_draw_job(&mut reader, DrawKind::Preview);
-    let JobKind::Draw { surface, .. } = &draw.kind else { panic!() };
-    let held = surface.clone();
-    reader.finish(
-        draw,
-        Outcome::Drawn {
-            kind: TileKind::Colour,
-            low_res: None,
-        },
-    );
-    // Attached in Rust, and waiting for a host that hasn't come for it.
-    assert!(
-        reader.ops.iter().any(|op| matches!(op, Op::Attach { surface, .. } if *surface != 0)),
-        "{:?}",
-        reader.ops
-    );
-    let before = held.reference_count();
-    reader.window_closed();
-    assert!(reader.ops.is_empty(), "{:?}", reader.ops);
-    assert!(
-        held.reference_count() < before - 1,
-        "the entry's and the waiting op's both gone: {} from {before}",
-        held.reference_count()
-    );
-    assert!(reader.is_settled(), "{}", reader.report().0);
 }
 
 /// Failure: the host's size change moves the reader away from what they were reading.
@@ -2147,120 +2076,6 @@ fn a_page_pointed_at_has_its_links_read_and_a_click_found() {
     // Another tab: what's known goes with the one that was showing.
     reader.activate(2, 10, 0, map(), &[], None, Spread::Single);
     assert_eq!(reader.link_pages_held(), 0);
-}
-
-fn kind_of(op: &Op) -> &'static str {
-    match op {
-        Op::Clear => "Clear",
-        Op::Document { .. } => "Document",
-        Op::Magnify { .. } => "Magnify",
-        Op::ScrollTo { .. } => "ScrollTo",
-        Op::ScrollAcross { .. } => "ScrollAcross",
-        Op::ShowPage { .. } => "ShowPage",
-        Op::HidePage { .. } => "HidePage",
-        Op::Attach { .. } => "Attach",
-        Op::Detach { .. } => "Detach",
-        Op::Highlight { .. } => "Highlight",
-    }
-}
-
-/// [`settle`], keeping every op the host is given, in order.
-fn settle_recording(reader: &mut Reader, seen: &mut Vec<Op>) {
-    for _ in 0..10_000 {
-        seen.extend(reader.take_ops());
-        reader.applied();
-        let Some(job) = reader.next_job() else { break };
-        let outcome = match &job.kind {
-            JobKind::Size => Outcome::Size(letter()),
-            JobKind::Text { .. } => panic!("no text was asked for"),
-            JobKind::Links => Outcome::Links(None),
-            JobKind::Traits => Outcome::Heavy(false),
-            JobKind::Draw { .. } => Outcome::Drawn {
-                kind: TileKind::Colour,
-                low_res: None,
-            },
-        };
-        reader.finish(job, outcome);
-        seen.extend(reader.drain(MAX_ATTACH_PER_TURN));
-        reader.applied();
-    }
-    for _ in 0..100 {
-        if !reader.has_ops() {
-            break;
-        }
-        seen.extend(reader.drain(MAX_ATTACH_PER_TURN));
-        reader.applied();
-    }
-}
-
-/// Failure: the host applies a batch in the order it's given, so a batch out of order shows wrongly: a `Clear` after a tile's `Attach` leaves the page bare, a `Magnify` after the `ScrollTo` scrolls at the old zoom, a `ShowPage` before the `Document` places a page in a document of the old size, and a `Detach` of a tile that isn't on a layer, or an `Attach` of one that is, leaves a layer the host can't take off. Checked on a first activation, a tab switch and back, a scroll down and up, and a window closed and opened again.
-#[test]
-fn the_host_gets_each_batch_in_the_order_it_applies_it() {
-    const ORDER: [&str; 7] = ["Clear", "Magnify", "Document", "ScrollTo", "ScrollAcross", "ShowPage", "Attach"];
-    let in_order = |what: &str, ops: &[Op], needed: &[&str]| {
-        let kinds: Vec<&str> = ops.iter().map(kind_of).collect();
-        for kind in needed {
-            assert!(kinds.contains(kind), "{what}: no {kind} in {kinds:?}");
-        }
-        let firsts: Vec<usize> = ORDER.iter().filter_map(|kind| kinds.iter().position(|seen| seen == kind)).collect();
-        assert!(firsts.windows(2).all(|pair| pair[0] < pair[1]), "{what}: {kinds:?}");
-    };
-    // The host's layers, as the ops say: every `Detach` is of a tile on one, and every `Attach` of one that isn't. A page's `HidePage` takes its tiles with it.
-    let layers_hold = |what: &str, ops: &[Op]| {
-        let mut on: HashMap<u64, u32> = HashMap::new();
-        for op in ops {
-            match op {
-                Op::Clear => on.clear(),
-                // A page's layer goes with its tiles.
-                Op::HidePage { page } => on.retain(|_, on_page| on_page != page),
-                Op::Attach { id, page, .. } => assert!(on.insert(*id, *page).is_none(), "{what}: {id} attached twice"),
-                Op::Detach { id } => assert!(on.remove(id).is_some(), "{what}: {id} detached while not attached"),
-                _ => {}
-            }
-        }
-    };
-    let mut reader = Reader::new();
-    let mut all = reader.set_viewport(view(0.0));
-    reader.activate(1, 12, 0, map(), &[], None, Spread::Single);
-    let first = reader.take_ops();
-    in_order("a first activation", &first, &["Clear", "Magnify", "Document", "ScrollTo", "ScrollAcross"]);
-    all.extend(first);
-    all.extend(reader.set_viewport(view(0.0)));
-    settle_recording(&mut reader, &mut all);
-    for step in (1..=10).chain((0..10).rev()) {
-        all.extend(reader.set_viewport(view(f64::from(step) * 700.0)));
-        settle_recording(&mut reader, &mut all);
-    }
-    reader.activate(2, 12, 0, map(), &[1], None, Spread::Single);
-    let switch = reader.take_ops();
-    in_order("a switch to a new tab", &switch, &["Clear", "Magnify", "Document", "ScrollTo", "ScrollAcross"]);
-    all.extend(switch);
-    all.extend(reader.set_viewport(view(0.0)));
-    settle_recording(&mut reader, &mut all);
-    reader.activate(1, 12, 0, map(), &[2], None, Spread::Single);
-    let back = reader.take_ops();
-    in_order("a switch back to a tab that's drawn", &back, &ORDER);
-    all.extend(back);
-    all.extend(reader.set_viewport(view(0.0)));
-    settle_recording(&mut reader, &mut all);
-    layers_hold("before the window closed", &all);
-    reader.window_closed();
-    reader.window_opened();
-    let reopened = reader.take_ops();
-    in_order(
-        "a window opened again",
-        &reopened,
-        &["Magnify", "Document", "ScrollTo", "ScrollAcross", "ShowPage"],
-    );
-    let mut after = reopened;
-    after.extend(reader.set_viewport(view(0.0)));
-    settle_recording(&mut reader, &mut after);
-    for step in 1..=6 {
-        after.extend(reader.set_viewport(view(f64::from(step) * 700.0)));
-        settle_recording(&mut reader, &mut after);
-    }
-    assert!(after.iter().any(|op| matches!(op, Op::Detach { .. })), "the scroll took tiles off");
-    layers_hold("after the window opened again", &after);
 }
 
 /// What the page view allocates while the reader scrolls, counted on the thread that scrolls.
