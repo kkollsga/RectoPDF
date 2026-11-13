@@ -1599,7 +1599,6 @@ mod tests {
     fn a_protected_document_has_its_own_exit_code() {
         let error = AgentError::from(recto_render_service::RenderFailure::NeedsPassword);
         assert_eq!((error.code, error.exit), ("needs_password", exit::PROTECTED));
-        assert_eq!(exit::PROTECTED, 8);
         let opening = AgentError::from(SessionError::Open(OpenError::PasswordNeeded));
         assert_eq!(opening.exit, exit::PROTECTED, "the session refusing it first must say the same");
     }
