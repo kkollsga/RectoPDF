@@ -2,6 +2,8 @@
 //!
 //! **Made when asked, never on open** (SPEC decision 22's rule, which holds here too): asking for them is what starts the helper, and an answer that isn't ready says so at once and never waits.
 
+use crate::Code;
+use crate::TabRef;
 use crate::{AgentError, ConditionState, SessionAccess, exit};
 use recto_index::corpus::{Cleared, CorpusKey};
 use recto_index::generated::{self, Generated};
@@ -88,8 +90,12 @@ pub fn reason_words(code: &str) -> &'static str {
 }
 
 pub(crate) fn no_generating() -> AgentError {
-    AgentError::new("no_generated_contents", "Generated contents aren't available in this session.", exit::FAILED)
-        .then("Run it against the app's session, or `recto serve`.")
+    AgentError::new(
+        Code::NO_GENERATED_CONTENTS,
+        "Generated contents aren't available in this session.",
+        exit::FAILED,
+    )
+    .then("Run it against the app's session, or `recto serve`.")
 }
 
 /// The file a tab shows, and its key now, looked at with the session free.
@@ -101,7 +107,7 @@ pub(crate) struct Keyed {
 pub(crate) fn key_of(path: &Path) -> Result<CorpusKey, AgentError> {
     CorpusKey::of_file(path).map_err(|_| {
         AgentError::new(
-            "file_unreadable",
+            Code::FILE_UNREADABLE,
             "The tab's file can't be looked at just now, so it has no generated contents.",
             exit::FAILED,
         )
@@ -115,13 +121,13 @@ pub(crate) fn not_ready(generating: &dyn Generating, keyed: &Keyed, pages: u32, 
     }
     Some(match generating.state(keyed.key) {
         GenState::Refused(code) => Err(AgentError::new(
-            "not_generated",
+            Code::NOT_GENERATED,
             format!("This file won't have generated contents: {}.", reason_words(&code)),
             if code == "needs_password" { exit::PROTECTED } else { exit::FAILED },
         )
         .then("`recto contents` gives the file's own, if it has any.")),
         GenState::Failed(code) => Err(AgentError::new(
-            "generating_failed",
+            Code::GENERATING_FAILED,
             format!("Generated contents couldn't be made: {}.", reason_words(&code)),
             exit::FAILED,
         )
@@ -179,15 +185,20 @@ pub fn failure_words(code: &str) -> &'static str {
     }
 }
 
+/// Whether a tab a wait asks about isn't open yet, so it may be: no tab by that name, which an ambiguous name isn't.
+fn not_open_yet(error: &AgentError) -> bool {
+    error.code == Code::NO_SUCH_TAB && error.exit != exit::AMBIGUOUS
+}
+
 /// `recto wait contents-generated`: asking counts as wanting them, or a wait could run out its time on something nobody started.
-pub(crate) fn look<A: SessionAccess>(access: &A, tab: &str) -> ConditionState {
+pub(crate) fn look<A: SessionAccess>(access: &A, tab: &TabRef) -> ConditionState {
     let Some(generating) = access.generating() else {
         return ConditionState::Failed(no_generating());
     };
     let (file, keyed) = match crate::reading::tab_file_keyed(access, tab) {
         Ok(found) => found,
         // A tab that isn't open yet may be; a file that's changed under its edits or can't be looked at won't be, so the wait ends now rather than at its time.
-        Err(error) if error.code == "no_such_tab" && error.exit != exit::AMBIGUOUS => return ConditionState::Waiting,
+        Err(error) if not_open_yet(&error) => return ConditionState::Waiting,
         Err(error) => return ConditionState::Failed(error),
     };
     match not_ready(generating, &keyed, file.pages, true) {
@@ -203,6 +214,20 @@ pub(crate) fn look<A: SessionAccess>(access: &A, tab: &str) -> ConditionState {
 #[cfg(test)]
 mod tests {
     use super::failure_words;
+
+    /// Failure (R2.5): a wait for generated contents on a tab not open yet ends at once as failed, so an agent opening it next waits for nothing; or one on
+    /// a name that matches two tabs, or a file changed under its edits, waits out its time. Routed by a named code: only no such tab waits.
+    #[test]
+    fn only_a_tab_not_open_yet_is_waited_for() {
+        use super::{AgentError, Code, exit, not_open_yet};
+        assert!(not_open_yet(&AgentError::new(Code::NO_SUCH_TAB, "That tab isn't open.", exit::NOT_FOUND)));
+        assert!(!not_open_yet(&AgentError::new(
+            Code::AMBIGUOUS,
+            "More than one tab matches that name.",
+            exit::AMBIGUOUS
+        )));
+        assert!(!not_open_yet(&AgentError::new(Code::FILE_CHANGED, "changed", exit::FAILED)));
+    }
 
     /// Failure: a refusal or failure the helper names says the same as one it doesn't, so the pointer on the note can't say a protected file is never read, or that the helper's missing; or an unknown code says nothing.
     #[test]

@@ -57,7 +57,7 @@ fn every_route_answers_as_declared_on_a_session_with_no_record() {
         let Some(expected) = own_refusal(&command) else { continue };
         seen += 1;
         let answer = host.run(recto_agent::Actor::Agent(Level::Full), &command, &mut Vec::new());
-        let code = answer.as_ref().err().map(|error| error.code);
+        let code = answer.as_ref().err().map(|error| error.code.as_str());
         assert_eq!(
             code,
             Some(expected),

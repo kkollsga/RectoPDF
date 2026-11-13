@@ -1,5 +1,6 @@
 //! `recto update install <zip>`: the hand-over of a development build. This process, which has its caller's file access, opens the zip and puts a copy in the app's own folder; the app then opens only that copy and never a path an agent named (so macOS's question about a removable volume is this process's to wait on, and say so, not the app's). The decisions, limits and words are `recto_update::handover`'s; this only calls them.
 
+use recto_agent::Code;
 use recto_agent::table::Invocation;
 use recto_agent::{AgentError, exit};
 use recto_control::StatePaths;
@@ -15,7 +16,7 @@ fn refused(refusal: &Refusal) -> AgentError {
     let mut chars = words.chars();
     let sentence = chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect());
     let kind = if matches!(refusal, Refusal::NotABuild) { exit::USAGE } else { exit::FAILED };
-    AgentError::new(refusal.code(), format!("{sentence}."), kind)
+    AgentError::new(Code::lower(refusal.code()), format!("{sentence}."), kind)
         .then("`recto update install <zip>` hands a build over; `recto update status` says how the app stands.")
 }
 
@@ -77,7 +78,7 @@ mod tests {
             .iter()
             .map(|zip| {
                 let refused = install(&paths, &invocation, zip, Duration::from_secs(1)).unwrap_err();
-                (refused.code, refused.message)
+                (refused.code.as_str(), refused.message)
             })
             .collect();
         assert_eq!(said[0].0, "outside_quiet_run", "{said:?}");

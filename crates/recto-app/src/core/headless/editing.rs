@@ -177,7 +177,7 @@ fn edits_of_a_list_that_cant_be_read_back_is_refused_not_empty() {
     let app = edits_that_cant_be_read();
     let refused = app
         .agent(Level::Full, r##"{"cmd":"edits","tab":"#1"}"##)
-        .map_err(|error| (error.code, error.next.clone()));
+        .map_err(|error| (error.code.as_str(), error.next.clone()));
     let Err((code, next)) = refused else { panic!("answered: {refused:?}") };
     assert_eq!(code, "edits_unreadable");
     assert!(next.contains("recto discard"), "it says what to do: {next}");
@@ -198,7 +198,7 @@ fn an_agent_neither_discards_nor_clears_edits_it_cant_read() {
     };
     for line in [r##"{"cmd":"discard","tab":"#1"}"##, r##"{"cmd":"clear_history","tab":"#1"}"##] {
         for level in [Level::Control, Level::Full] {
-            let refused = app.agent(level, line).map(drop).map_err(|error| error.code);
+            let refused = app.agent(level, line).map(drop).map_err(|error| error.code.as_str());
             app.settle();
             assert_eq!(refused, Err("edits_unreadable"), "{line} at {level:?}");
             let edited = app

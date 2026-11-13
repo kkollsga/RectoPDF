@@ -3,6 +3,7 @@
 //! but look things up and refuse, so running it again from the start is running it once. Every other host reads in place, with the session free, as it always
 //! has, and never hears of this.
 
+use crate::Code;
 use crate::{AgentError, exit};
 use recto_core::{DocFacts, OpenError};
 use recto_platform::FileStamp;
@@ -29,7 +30,7 @@ pub trait ReadLater {
 }
 
 /// The code of [`later`].
-pub const LATER: &str = "later";
+pub const LATER: crate::Code = Code::LATER;
 
 /// What a command says when it's waiting for a read: nothing's done yet, and it runs again once the read's in. Never an answer anyone sees.
 #[must_use]

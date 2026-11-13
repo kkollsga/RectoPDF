@@ -3,6 +3,7 @@
 //! thread, for the person), taking no session lock and queuing nothing.
 
 use super::*;
+use recto_agent::Code;
 use recto_agent::commands::view::View;
 use recto_reader::tiles::Zoom;
 
@@ -15,7 +16,7 @@ pub fn run(host: &AppHost, asked: &View) -> Result<Value, AgentError> {
     let word = asked.zoom.as_deref().unwrap_or_default();
     let zoom = menus::zoom_from_word(word).ok_or_else(|| {
         AgentError::new(
-            "usage",
+            Code::USAGE,
             format!(
                 "`{}` isn't a zoom. It's `in`, `out`, `fit`, `actual` or a number.",
                 recto_core::clean_line(word)
@@ -30,7 +31,7 @@ pub fn run(host: &AppHost, asked: &View) -> Result<Value, AgentError> {
     let value = inner
         .as_ref()
         .map_or_else(|| host.engine.zoom(zoom), |inner| inner.panes.zoom_all(&inner.engine, zoom))
-        .ok_or_else(|| AgentError::new("no_active_tab", "There's no page to zoom.", recto_agent::exit::NOT_FOUND))?;
+        .ok_or_else(|| AgentError::new(Code::NO_ACTIVE_TAB, "There's no page to zoom.", recto_agent::exit::NOT_FOUND))?;
     let mut answer = json!({ "zoom": value });
     if let Some(fit) = reading.fit() {
         answer["zoom_level"] = json!(menus::zoom_label(value, fit).text);

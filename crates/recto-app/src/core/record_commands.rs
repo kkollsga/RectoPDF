@@ -3,6 +3,7 @@
 //! Holds the app's host weakly, as the host holds the session that holds this. Locks: each call takes the session's lock only for a look of its own, after its work, and never holds it across a push to the session thread or a wait for it (`flush`): the session thread takes that lock itself. The notice's lock is taken and let go before anything else.
 
 use super::*;
+use recto_agent::Code;
 use recto_agent::commands::record::{HandOff, Records, Restored, SaveTimings, Saved, Slept};
 use std::sync::Weak;
 
@@ -13,7 +14,7 @@ impl AppRecords {
     fn host(&self) -> Result<Arc<AppHost>, AgentError> {
         self.0
             .upgrade()
-            .ok_or_else(|| AgentError::new("busy", "The app is going away.", recto_agent::exit::BUSY))
+            .ok_or_else(|| AgentError::new(Code::BUSY, "The app is going away.", recto_agent::exit::BUSY))
     }
 }
 

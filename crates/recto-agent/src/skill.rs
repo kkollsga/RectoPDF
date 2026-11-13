@@ -2,6 +2,7 @@
 //!
 //! The teaching text comes from the agent report's §7.1, without the agent panel, which is Phase 6. It names only what's built: an agent still searches through `recto`, and pointing one at the corpus folder with its own tools is Phase 6.
 
+use crate::Code;
 use crate::table::{Access, GROUP_ACCESS, GROUP_EDIT, GROUP_MOVE, GROUP_READ, GROUP_SESSION, GROUP_START, GROUP_SYNC, Spec, TABLE, exit_codes, usage_line};
 use crate::{AgentError, Level, exit};
 use serde_json::{Value, json};
@@ -239,7 +240,7 @@ pub fn install(folder: &Path, replace: bool, dry_run: bool) -> Result<Value, Age
     }
     if !refused.is_empty() {
         let mut error = AgentError::new(
-            "skill_changed",
+            Code::SKILL_CHANGED,
             "Nothing was written: these files were changed by someone, or aren't plain files, and won't be replaced without saying so.",
             exit::FAILED,
         )
@@ -280,7 +281,7 @@ fn write_new(path: &Path, body: &str) -> std::io::Result<()> {
 
 fn write_failed(folder: &Path) -> AgentError {
     AgentError::new(
-        "write_failed",
+        Code::WRITE_FAILED,
         format!("The skill couldn't be written to {}.", recto_core::clean_line(&folder.display().to_string())),
         exit::FAILED,
     )

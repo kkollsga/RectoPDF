@@ -1,6 +1,7 @@
 //! The session itself: `status`, which always gets through, and `stop`. The server's own loop answers both.
 
 use super::{Cmd, Cx, needs_server, row_access};
+use crate::TabRef;
 use crate::human::{number, text};
 use crate::table::*;
 use crate::{AgentError, Level, Runs, SessionAccess};
@@ -20,7 +21,7 @@ impl Cmd for Status {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = false;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {
@@ -52,7 +53,7 @@ impl Cmd for Stop {
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = true;
-    fn tab(&self) -> Option<&str> {
+    fn tab(&self) -> Option<&TabRef> {
         None
     }
     fn access(&self) -> Access {
