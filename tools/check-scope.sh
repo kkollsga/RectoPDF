@@ -137,7 +137,10 @@ select_scope() {
     fi
   fi
   [ -n "$base" ] || base=HEAD
-  files=$( { git diff --name-only "$base" 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u | grep -vE '^docs/|\.md$' || true)
+  # Not the ratchet's baseline: it is numbers, not a tool, and the ratchet has already run against it, first, in this same check. Counting it as a tool ran
+  # the tools' own tests (183 to 267 s on CI) on every push that only locked a number in, and made a branch's check run everything (2026-11-13: every
+  # one of an evening's eight pushes).
+  files=$( { git diff --name-only "$base" 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u | grep -vE '^docs/|\.md$|^tools/ratchet/baseline\.txt$' || true)
   local headings=0 other=""
   while IFS= read -r file; do
     [ -n "$file" ] || continue
