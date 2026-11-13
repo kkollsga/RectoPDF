@@ -186,8 +186,9 @@ pub(super) fn shrink_into(
     }
 }
 
-#[derive(Debug, Default)]
-pub(super) struct Waking {
+/// Built only in the tiles module ([`Waking::new`]), with no `Default`: the engine reaches it through `Reader`'s field for what a wake is given and told below, and can neither build one nor put another in its place.
+#[derive(Debug)]
+pub(crate) struct Waking {
     /// What's come from a tab's sleep file, for when it's made the hot tab.
     pub(super) sleep_view: Option<(u32, SleepView)>,
     /// When the wake under way was asked for, and how it's gone.
@@ -204,6 +205,53 @@ pub(super) struct Waking {
 const _: () = assert!(size_of::<Waking>() <= 440, "the wake's state grew");
 
 impl Waking {
+    pub(super) fn new() -> Self {
+        Self {
+            sleep_view: None,
+            waking: None,
+            last_wake: None,
+            window_up: false,
+            draws: super::sleep_draw::SleepDraws::default(),
+        }
+    }
+
+    /// **What a tab's first frame shows, from its sleep file, ahead of [`Reader::activate`].** Pictures of the pages at its place, kept as those pages' previews, so they go on as a preview does, and the same rules take them off. The tab's been asked for from here, for how long it takes.
+    pub(crate) fn give_sleep(&mut self, tab: u32, view: SleepView) {
+        self.sleep_view = Some((tab, view));
+    }
+
+    /// A tab's being woken, as of now, with `hot` the tab showing. For how long it takes.
+    pub(crate) fn note_wake(&mut self, hot: Option<u32>, tab: u32, began: Instant) {
+        // Said when it was asked for, and said again on its way to the screen: the first is when it began.
+        if hot != Some(tab) && !self.waking.is_some_and(|(_, report)| report.tab == tab) {
+            self.waking = Some((
+                began,
+                WakeReport {
+                    tab,
+                    from_sleep: false,
+                    ..WakeReport::default()
+                },
+            ));
+        }
+    }
+
+    /// The window's gone up. From here, a bare page is one that's seen.
+    pub(crate) fn window_up(&mut self) {
+        self.window_up = true;
+    }
+
+    /// How the last wake went.
+    pub(crate) fn last_wake(&self) -> Option<WakeReport> {
+        self.waking.map(|(_, report)| report).or(self.last_wake)
+    }
+
+    /// The wake under way is over: someone's gone somewhere else, or it's sharp.
+    pub(super) fn finish_wake(&mut self) {
+        if let Some((_, report)) = self.waking.take() {
+            self.last_wake = Some(report);
+        }
+    }
+
     /// Whether a picture of each of these pages, the part of them that is in view being at least [`MIN_SHARE_OF_VIEW`] of it, is here for the tab, on a layer or not, from a sleep file or drawn. Looks at the cache once, and allocates only for the bare frames of a wake.
     pub(super) fn pictures_exist_for(reader: &Reader, doc: &DocView, pages: impl Iterator<Item = u32>) -> bool {
         let (top, bottom) = (reader.viewport.y, reader.viewport.y + reader.viewport.height);
@@ -260,36 +308,6 @@ impl Waking {
 }
 
 impl Reader {
-    /// **What a tab's first frame shows, from its sleep file, ahead of [`Self::activate`].** Pictures of the pages at its place, kept as those pages' previews, so they go on as a preview does, and the same rules take them off. The tab's been asked for from here, for how long it takes.
-    pub fn give_sleep(&mut self, tab: u32, view: SleepView) {
-        self.wake.sleep_view = Some((tab, view));
-    }
-
-    /// A tab's being woken, as of now. For how long it takes.
-    pub fn note_wake(&mut self, tab: u32, began: Instant) {
-        // Said when it was asked for, and said again on its way to the screen: the first is when it began.
-        if self.hot != Some(tab) && !self.wake.waking.is_some_and(|(_, report)| report.tab == tab) {
-            self.wake.waking = Some((
-                began,
-                WakeReport {
-                    tab,
-                    from_sleep: false,
-                    ..WakeReport::default()
-                },
-            ));
-        }
-    }
-
-    /// The window's gone up. From here, a bare page is one that's seen.
-    pub fn window_up(&mut self) {
-        self.wake.window_up = true;
-    }
-
-    /// How the last wake went.
-    pub fn last_wake(&self) -> Option<WakeReport> {
-        self.wake.waking.map(|(_, report)| report).or(self.wake.last_wake)
-    }
-
     /// Whether every visible page is showing something, at the place, with nothing on its way to the host: what a window can go up with. It'll sharpen from there.
     pub fn is_showable(&self) -> bool {
         if self.place.jump.is_some() || !self.host.ops.is_empty() || self.host.unapplied || self.viewport.height <= 0.0 {
@@ -309,12 +327,6 @@ impl Reader {
         })
     }
 
-    pub(super) fn finish_wake(&mut self) {
-        if let Some((_, report)) = self.wake.waking.take() {
-            self.wake.last_wake = Some(report);
-        }
-    }
-
     /// Goes through how a wake's going, each time the host has applied something.
     pub(super) fn track_wake(&mut self) {
         let Some((began, mut report)) = self.wake.waking else { return };
@@ -324,7 +336,7 @@ impl Reader {
         }
         // Past this, it's not the wake that's being looked at any more.
         if began.elapsed() > WAKE_FOLLOWED_FOR {
-            self.finish_wake();
+            self.wake.finish_wake();
             return;
         }
         let Some(doc) = self.doc() else { return };

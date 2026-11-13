@@ -194,7 +194,7 @@ fn a_tab_gone_cold_holds_nothing() {
     );
     assert!(reader.cache.entries.values().all(|entry| entry.tab != 1), "tab 1 isn't warm");
     assert!(!reader.docs.contains_key(&1));
-    assert_eq!(*reader.wanted_files(), vec![PathBuf::from("/d/b.pdf")]);
+    assert_eq!(*reader.work.wanted_files(), vec![PathBuf::from("/d/b.pdf")]);
     reader.activate(
         3,
         10,
@@ -211,7 +211,7 @@ fn a_tab_gone_cold_holds_nothing() {
         None,
         Spread::Single,
     );
-    assert_eq!(reader.wanted_files().len(), 2, "a warm tab's file is kept");
+    assert_eq!(reader.work.wanted_files().len(), 2, "a warm tab's file is kept");
 }
 
 /// Failure: closing a warm tab leaves its layout, tiles, worker and open file until the next switch of tab, which may never come.
@@ -236,11 +236,11 @@ fn a_warm_tab_that_goes_holds_nothing_at_once() {
         Spread::Single,
     );
     assert!(reader.cache.entries.values().any(|entry| entry.tab == 1), "still warm");
-    assert_eq!(reader.wanted_files().len(), 2);
+    assert_eq!(reader.work.wanted_files().len(), 2);
     reader.set_warm(&[]);
     assert!(reader.cache.entries.values().all(|entry| entry.tab != 1), "closed");
     assert!(!reader.docs.contains_key(&1));
-    assert_eq!(*reader.wanted_files(), vec![PathBuf::from("/d/b.pdf")], "and its worker goes");
+    assert_eq!(*reader.work.wanted_files(), vec![PathBuf::from("/d/b.pdf")], "and its worker goes");
 }
 
 /// Failure: the window closed still holds tiles, so a closed window stays over budget.
@@ -251,7 +251,7 @@ fn a_closed_window_holds_no_tiles_and_comes_back() {
     reader.window_closed();
     assert!(reader.cache.entries.is_empty());
     assert!(reader.next_job().is_none(), "nothing draws for a closed window");
-    assert!(reader.wanted_files().is_empty(), "the renderer goes too");
+    assert!(reader.work.wanted_files().is_empty(), "the renderer goes too");
     reader.window_opened();
     reader.set_viewport(view(0.0));
     settle(&mut reader);

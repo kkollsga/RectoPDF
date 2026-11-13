@@ -368,7 +368,7 @@ fn a_save_leaves_zoom_place_layout_and_selection_as_they_were() {
         at.x = 25.0;
         at.magnification = 1.28;
         reader.set_viewport(at);
-        reader.take_moved_page();
+        reader.place.take_moved_page();
         let selected = Range {
             start: recto_index::select::Place { page: 2, at: 5 },
             end: recto_index::select::Place { page: 4, at: 9 },
@@ -552,7 +552,7 @@ fn another_version_of_the_file_takes_every_picture_of_the_old_one() {
     assert!(reader.sleep_material(1, &on(version(2))).unwrap().pictures.is_empty());
     assert!(reader.host.take_ops().contains(&Op::Clear), "and off the screen");
     assert_eq!(
-        reader.take_reopen_files(),
+        reader.work.take_reopen_files(),
         [PathBuf::from("/d/a.pdf")],
         "and a worker that has the old one open goes, or it goes on drawing that"
     );
@@ -602,7 +602,7 @@ fn nothing_drawn_of_an_old_version_is_shown_or_kept() {
         paper: PaperKind::White,
         surface: PixelSurface::create(153, 198).unwrap(),
     };
-    woken.give_sleep(
+    woken.wake.give_sleep(
         1,
         SleepView {
             version: Some(7),

@@ -35,8 +35,9 @@ use cache::{Entry, TileCache};
 pub(crate) use doc::DocView;
 use doc::Issue;
 use host::HostQueue;
+pub(crate) use jobs::Work;
 pub use jobs::{DrawKind, Job, JobKind, JobPlan, Outcome};
-use jobs::{MAX_KEYLESS, PlanKind, Work};
+use jobs::{MAX_KEYLESS, PlanKind};
 use place::Place;
 pub use place::place_stamp;
 use pointer::Pointer;
@@ -234,13 +235,16 @@ pub struct Reader {
     window_open: bool,
     cache: TileCache,
     host: HostQueue,
-    work: Work,
-    place: Place,
+    /// What's asked of the renderer: the engine notes what it starts and takes what it must open again through this field's own methods.
+    pub(crate) work: Work,
+    /// Where the reader is: the engine takes the reader's own scroll and the page moved to through this field's own methods.
+    pub(crate) place: Place,
     counts: ReaderCounts,
     note: Option<String>,
     /// What the pointer does on a page: the engine calls its methods for the selection's and the links' own state, which reach nothing else.
     pub(crate) pointer: Pointer,
-    wake: Waking,
+    /// The wake and sleep pictures: the engine gives a tab's sleep file and says the window's up through this field's own methods.
+    pub(crate) wake: Waking,
     /// The least room either side of the pages: a comparison's pane has less than a window.
     margins: (f64, f64),
     /// The lists a scroll step fills, kept between steps.
@@ -279,7 +283,7 @@ impl Reader {
             counts: ReaderCounts::default(),
             note: None,
             pointer: Pointer::new(),
-            wake: Waking::default(),
+            wake: Waking::new(),
             margins: (crate::layout::MIN_SIDE_MARGIN, crate::layout::CORNER_MARGIN),
             scratch: Scratch::default(),
         }

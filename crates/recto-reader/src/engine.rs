@@ -352,17 +352,19 @@ impl Engine {
 
     /// What a tab's first frame shows, for its next [`Self::activate`].
     pub fn give_sleep(&self, tab: u32, view: crate::tiles::SleepView) {
-        lock(&self.shared.reader).give_sleep(tab, view);
+        lock(&self.shared.reader).wake.give_sleep(tab, view);
     }
 
     /// The window's gone up.
     pub fn window_up(&self) {
-        lock(&self.shared.reader).window_up();
+        lock(&self.shared.reader).wake.window_up();
     }
 
     /// A tab's being woken, as of now.
     pub fn note_wake(&self, tab: u32, began: Instant) {
-        lock(&self.shared.reader).note_wake(tab, began);
+        let mut reader = lock(&self.shared.reader);
+        let hot = reader.hot_tab();
+        reader.wake.note_wake(hot, tab, began);
     }
 
     /// Whether a view of this tab's held.
@@ -377,7 +379,7 @@ impl Engine {
 
     /// For QA: nothing's drawn till this is let go, so a first frame stays to be looked at.
     pub fn hold_drawing(&self, on: bool) {
-        lock(&self.shared.reader).hold_drawing(on);
+        lock(&self.shared.reader).work.hold_drawing(on);
         self.wake();
     }
 
@@ -448,9 +450,9 @@ impl Engine {
         self.after(reader);
     }
 
-    /// Files whose renderer found they need a password it has none for: see [`Reader::take_keyless`].
+    /// Files whose renderer found they need a password it has none for: see [`crate::tiles::Work::take_keyless`].
     pub fn take_keyless(&self) -> Vec<PathBuf> {
-        lock(&self.shared.reader).take_keyless()
+        lock(&self.shared.reader).work.take_keyless()
     }
 
     /// A password's been given for a file: see [`Reader::key_given`].
@@ -520,13 +522,13 @@ impl Engine {
         self.shared.ops_signalled.store(false, Ordering::SeqCst);
         let mut reader = lock(&self.shared.reader);
         let ops = reader.set_viewport(viewport);
-        let scrolled = reader.take_user_scrolled();
+        let scrolled = reader.place.take_user_scrolled();
         if scrolled {
             // The reader's own scroll here is newer than any place synced scroll left for this pane.
             lock(&self.shared.pending).follow = None;
         }
         let (magnification, anchor) = reader.doc().map(|doc| (doc.magnification(), doc.reading_anchor())).unzip();
-        let moved = reader.has_moved_page();
+        let moved = reader.place.has_moved_page();
         let more = reader.has_ops();
         let note = reader.note().map(str::to_string);
         drop(reader);
@@ -694,7 +696,7 @@ impl Engine {
     }
 
     pub fn take_moved_page(&self) -> Option<u32> {
-        lock(&self.shared.reader).take_moved_page()
+        lock(&self.shared.reader).place.take_moved_page()
     }
 
     /// From the UI thread, when told there are ops.
@@ -881,7 +883,7 @@ fn run_guarded(shared: &Shared) {
 
 fn run(shared: &Shared) {
     let mut renderers: HashMap<PathBuf, OpenDoc> = HashMap::new();
-    let mut wanted = lock(&shared.reader).wanted_files();
+    let mut wanted = lock(&shared.reader).work.wanted_files();
     let service = shared.config.service.clone().map_or_else(ServiceConfig::discover, Ok);
     let policy = shared.config.policy.clone().unwrap_or_default();
     let mut resting_since: Option<Instant> = None;
@@ -895,12 +897,12 @@ fn run(shared: &Shared) {
         }
         let plan = {
             let mut reader = lock(&shared.reader);
-            let files = reader.wanted_files();
+            let files = reader.work.wanted_files();
             if !Arc::ptr_eq(&files, &wanted) {
                 wanted = files;
             }
             // Dropping one kills its worker and closes its file, and the next job opens what's there now.
-            for file in reader.take_reopen_files() {
+            for file in reader.work.take_reopen_files() {
                 renderers.remove(&file);
                 openings.remove(&file);
             }
@@ -929,7 +931,7 @@ fn run(shared: &Shared) {
             resting_since = None;
             Workers::MayStart
         };
-        lock(&shared.reader).note_started(&job, None);
+        lock(&shared.reader).work.note_started(&job, None);
         if matches!(job.kind, JobKind::Links) {
             read_links(shared, &renderers, job);
             continue;
@@ -950,7 +952,7 @@ fn run(shared: &Shared) {
         } else {
             match renderer_for(shared, &mut renderers, &mut openings, &job.file, &service, &policy) {
                 Ok(open) => {
-                    lock(&shared.reader).set_cancel(open.doc.cancel_handle());
+                    lock(&shared.reader).work.set_cancel(open.doc.cancel_handle());
                     let outcome = DocRenderer::with_workers(open, |open| &mut open.doc, workers, |open| do_job(open, &job));
                     file_changed = seen_replaced(open) | std::mem::take(&mut open.replaced);
                     if file_changed {

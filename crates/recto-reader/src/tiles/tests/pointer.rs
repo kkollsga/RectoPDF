@@ -76,7 +76,7 @@ fn a_jump_the_session_sends_drops_a_hit_waiting_for_its_text() {
         reader.jump_to(1, within);
         let back = last_scroll(&mut reader).expect("page 2");
         reader.set_viewport(view(back));
-        reader.take_moved_page();
+        reader.place.take_moved_page();
         reader.take_text(1, 6, Some((page_with_line_at(40.0), true)));
         assert_eq!(last_scroll(&mut reader), None, "{what}: the text of the hit's page moves nothing");
         assert_eq!(
@@ -84,7 +84,7 @@ fn a_jump_the_session_sends_drops_a_hit_waiting_for_its_text() {
             Some(1),
             "{what}: still where the jump put it"
         );
-        assert_eq!(reader.take_moved_page(), None, "{what}: and tells of no move");
+        assert_eq!(reader.place.take_moved_page(), None, "{what}: and tells of no move");
     }
     // The session's jump to the hit's own page, as the look after ⌘G sends it, leaves the hit to be put a third down once its text is in.
     let mut reader = reader_on(10);
@@ -134,7 +134,7 @@ fn a_check_goes_when_the_view_wants_something_and_a_read_does_not() {
     reader.select_all();
     let first = settle_to_text(&mut reader).expect("what shows is read");
     assert!(matches!(first.kind, JobKind::Text { check: false }), "{first:?}");
-    reader.note_started(&first, None);
+    reader.work.note_started(&first, None);
     reader.set_viewport(view(40_000.0));
     assert!(reader.running_is_wanted(), "a read stays, as what's showing needs it");
     reader.work.running = None;
@@ -144,7 +144,7 @@ fn a_check_goes_when_the_view_wants_something_and_a_read_does_not() {
     reader.finish(first, Outcome::Text { text, checked: false });
     let check = settle_to_text(&mut reader).expect("selected and showing, so it's checked");
     assert!(matches!(check.kind, JobKind::Text { check: true }), "{check:?}");
-    reader.note_started(&check, None);
+    reader.work.note_started(&check, None);
     assert!(reader.running_is_wanted(), "nothing else is wanted");
     // A scroll to pages with nothing drawn.
     let asked = reader.counts.cancels_asked;

@@ -183,8 +183,9 @@ pub(super) struct Running {
     pub(super) check: bool,
 }
 
+/// Built only in the tiles module ([`Work::new`]): the engine reaches it through `Reader`'s field for what it takes and notes below, and can neither build one nor put another in its place.
 #[derive(Debug)]
-pub(super) struct Work {
+pub(crate) struct Work {
     pub(super) running: Option<Running>,
     pub(super) next_generation: u64,
     /// Files whose renderers have the wrong version open, to be let go of and opened again.
@@ -222,43 +223,29 @@ impl Work {
     }
 }
 
-impl Reader {
+impl Work {
     /// Files whose renderers have to start again.
-    pub fn take_reopen_files(&mut self) -> Vec<PathBuf> {
-        std::mem::take(&mut self.work.reopen_files)
+    pub(crate) fn take_reopen_files(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.reopen_files)
     }
 
     /// Files the renderer found need a password it has none for, since this was last asked. Asking clears them.
-    pub fn take_keyless(&mut self) -> Vec<PathBuf> {
-        std::mem::take(&mut self.work.keyless)
+    pub(crate) fn take_keyless(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.keyless)
     }
 
     /// For QA: nothing's drawn till it's let go, so a first frame stays to be looked at.
-    pub fn hold_drawing(&mut self, on: bool) {
-        self.work.hold_drawing = on;
+    pub(crate) fn hold_drawing(&mut self, on: bool) {
+        self.hold_drawing = on;
     }
 
     /// Files the engine should keep a renderer for: hot and warm tabs'.
-    pub fn wanted_files(&self) -> Arc<Vec<PathBuf>> {
-        Arc::clone(&self.work.wanted_files)
-    }
-
-    pub(super) fn recount_wanted_files(&mut self, warm: &[u32]) {
-        let mut files: Vec<PathBuf> = Vec::new();
-        for tab in warm.iter().copied().chain(self.hot) {
-            if let Some(doc) = self.docs.get(&tab) {
-                files.extend(doc.map.files.iter().cloned());
-            }
-        }
-        files.sort();
-        files.dedup();
-        if *self.work.wanted_files != files {
-            self.work.wanted_files = Arc::new(files);
-        }
+    pub(crate) fn wanted_files(&self) -> Arc<Vec<PathBuf>> {
+        Arc::clone(&self.wanted_files)
     }
 
     /// A job has started. Its cancel handle lets the UI thread stop it the moment it stops being wanted.
-    pub fn note_started(&mut self, job: &Job, cancel: Option<CancelHandle>) {
+    pub(crate) fn note_started(&mut self, job: &Job, cancel: Option<CancelHandle>) {
         let (rect, scale, preview) = match &job.kind {
             JobKind::Draw { scale, rect, what, .. } => (Some(*rect), *scale, *what == DrawKind::Preview),
             _ => (None, 0.0, false),
@@ -267,7 +254,7 @@ impl Reader {
             JobKind::Text { check } => (true, check),
             _ => (false, false),
         };
-        self.work.running = Some(Running {
+        self.running = Some(Running {
             tab: job.tab,
             position: job.position,
             rect,
@@ -282,9 +269,25 @@ impl Reader {
     }
 
     /// What can stop the job now running, once there's something that can.
-    pub fn set_cancel(&mut self, cancel: CancelHandle) {
-        if let Some(running) = &mut self.work.running {
+    pub(crate) fn set_cancel(&mut self, cancel: CancelHandle) {
+        if let Some(running) = &mut self.running {
             running.cancel = Some(cancel);
+        }
+    }
+}
+
+impl Reader {
+    pub(super) fn recount_wanted_files(&mut self, warm: &[u32]) {
+        let mut files: Vec<PathBuf> = Vec::new();
+        for tab in warm.iter().copied().chain(self.hot) {
+            if let Some(doc) = self.docs.get(&tab) {
+                files.extend(doc.map.files.iter().cloned());
+            }
+        }
+        files.sort();
+        files.dedup();
+        if *self.work.wanted_files != files {
+            self.work.wanted_files = Arc::new(files);
         }
     }
 }

@@ -367,7 +367,10 @@ Owed (pub(super) struct, derives Debug)
 PageMap (pub struct, derives Clone, Debug, Default, PartialEq, Eq)
 PageNow (pub(super) struct, derives Clone, Copy, Debug, Default, PartialEq, Eq)
 Pending (private struct, derives Default)
-Place (pub(super) struct, derives Debug)
+Place (pub(crate) struct, derives Debug)
+Place::pub(crate) fn has_moved_page(&self) -> bool
+Place::pub(crate) fn take_moved_page(&mut self) -> Option<u32>
+Place::pub(crate) fn take_user_scrolled(&mut self) -> bool
 Placement (pub(super) struct, derives Clone, Copy, Debug, PartialEq)
 PlanKind (pub(super) enum, derives Debug)
 Pointer (pub(crate) struct, derives Debug)
@@ -383,7 +386,10 @@ Pointer::pub(crate) fn take_copied(&mut self) -> Option<recto_index::select::Cop
 Pointer::pub(crate) fn take_copy_signal(&mut self) -> bool
 RawPicture (pub struct, derives Clone, Debug, PartialEq)
 Reader (pub struct)
+Reader.pub(crate) place: Place
 Reader.pub(crate) pointer: Pointer
+Reader.pub(crate) wake: Waking
+Reader.pub(crate) work: Work
 Reader: Default (trait impl)
 Reader: Default::fn default() -> Self
 Reader::pub fn activate(&mut self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>, spread: Spread)
@@ -398,9 +404,7 @@ Reader::pub fn file_changed(&mut self, tab: u32)
 Reader::pub fn files_of(&self, tab: u32) -> Vec<PathBuf>
 Reader::pub fn finish(&mut self, job: Job, outcome: Outcome)
 Reader::pub fn follow(&mut self, page: u32, within: f64) -> Option<u32>
-Reader::pub fn give_sleep(&mut self, tab: u32, view: SleepView)
 Reader::pub fn has_ops(&self) -> bool
-Reader::pub fn hold_drawing(&mut self, on: bool)
 Reader::pub fn holds(&self, tab: u32) -> bool
 Reader::pub fn hot_tab(&self) -> Option<u32>
 Reader::pub fn is_on_place(&self) -> bool
@@ -409,14 +413,11 @@ Reader::pub fn is_settled(&self) -> bool
 Reader::pub fn is_showable(&self) -> bool
 Reader::pub fn jump_to(&mut self, page: u32, within: f64) -> bool
 Reader::pub fn key_given(&mut self, path: &std::path::Path)
-Reader::pub fn last_wake(&self) -> Option<WakeReport>
 Reader::pub fn memory_pressure(&mut self, critical: bool)
 Reader::pub fn new() -> Self
 Reader::pub fn next_plan(&mut self) -> Option<JobPlan>
 Reader::pub fn note(&self) -> Option<&str>
-Reader::pub fn note_started(&mut self, job: &Job, cancel: Option<CancelHandle>)
 Reader::pub fn note_version(&mut self, file: &std::path::Path, version: u64)
-Reader::pub fn note_wake(&mut self, tab: u32, began: Instant)
 Reader::pub fn places(&self) -> Vec<(u32, SavedPlace)>
 Reader::pub fn pointer_is_over_text(&mut self, x: f64, y: f64) -> bool
 Reader::pub fn pointer_link(&mut self, x: f64, y: f64) -> Option<crate::links::LinkHit>
@@ -427,7 +428,6 @@ Reader::pub fn running_is_wanted(&self) -> bool
 Reader::pub fn select_all(&mut self)
 Reader::pub fn selection_drag(&mut self, x: f64, y: f64)
 Reader::pub fn selection_press(&mut self, x: f64, y: f64, clicks: u32, shift: bool)
-Reader::pub fn set_cancel(&mut self, cancel: CancelHandle)
 Reader::pub fn set_margins(&mut self, left: f64, right: f64)
 Reader::pub fn set_paper(&mut self, paper: PaperKind)
 Reader::pub fn set_share(&mut self, views: usize)
@@ -436,18 +436,11 @@ Reader::pub fn set_viewport(&mut self, viewport: Viewport) -> Vec<Op>
 Reader::pub fn set_warm(&mut self, warm: &[u32])
 Reader::pub fn sleep_material(&mut self, tab: u32, now: &PageMap) -> Option<SleepMaterial>
 Reader::pub fn start_copy(&mut self, anyway: bool)
-Reader::pub fn take_keyless(&mut self) -> Vec<PathBuf>
-Reader::pub fn take_moved_page(&mut self) -> Option<u32>
-Reader::pub fn take_reopen_files(&mut self) -> Vec<PathBuf>
-Reader::pub fn take_user_scrolled(&mut self) -> bool
 Reader::pub fn thread_restarted(&mut self, give_up: bool)
-Reader::pub fn wanted_files(&self) -> Arc<Vec<PathBuf>>
 Reader::pub fn window_closed(&mut self)
 Reader::pub fn window_opened(&mut self)
-Reader::pub fn window_up(&mut self)
 Reader::pub fn zoom(&mut self, zoom: Zoom) -> Option<f64>
 Reader::pub(crate) fn doc(&self) -> Option<&DocView>
-Reader::pub(crate) fn has_moved_page(&self) -> bool
 ReaderCounts (pub struct, derives Clone, Debug, Default)
 ReaderReport (pub struct)
 Running (pub(super) struct, derives Debug)
@@ -473,8 +466,18 @@ WakeReport (pub struct, derives Clone, Copy, Debug, Default)
 WakeStock (pub enum, derives Clone, Copy, Debug, Default, PartialEq, Eq)
 WakeStock::pub fn covered_the_view(self) -> bool
 WakeStock::pub fn word(self) -> &'static str
-Waking (pub(super) struct, derives Debug, Default)
-Work (pub(super) struct, derives Debug)
+Waking (pub(crate) struct, derives Debug)
+Waking::pub(crate) fn give_sleep(&mut self, tab: u32, view: SleepView)
+Waking::pub(crate) fn last_wake(&self) -> Option<WakeReport>
+Waking::pub(crate) fn note_wake(&mut self, hot: Option<u32>, tab: u32, began: Instant)
+Waking::pub(crate) fn window_up(&mut self)
+Work (pub(crate) struct, derives Debug)
+Work::pub(crate) fn hold_drawing(&mut self, on: bool)
+Work::pub(crate) fn note_started(&mut self, job: &Job, cancel: Option<CancelHandle>)
+Work::pub(crate) fn set_cancel(&mut self, cancel: CancelHandle)
+Work::pub(crate) fn take_keyless(&mut self) -> Vec<PathBuf>
+Work::pub(crate) fn take_reopen_files(&mut self) -> Vec<PathBuf>
+Work::pub(crate) fn wanted_files(&self) -> Arc<Vec<PathBuf>>
 Zoom (pub enum, derives Clone, Copy, Debug, PartialEq)
 fn (pub) pub fn place_stamp() -> u64
 fn (pub) pub fn typed_zoom(text: &str, decimal: char) -> Option<Zoom>

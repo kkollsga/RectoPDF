@@ -25,8 +25,9 @@ pub fn place_stamp() -> u64 {
     PLACE_CLOCK.load(Ordering::SeqCst)
 }
 
+/// Built only in the tiles module ([`Place::new`]): the engine reaches it through `Reader`'s field for the three takes below, and can neither build one nor put another in its place.
 #[derive(Debug)]
-pub(super) struct Place {
+pub(crate) struct Place {
     pub(super) next_seq: u64,
     pub(super) jump: Option<u64>,
     pub(super) scrolled_to: u64,
@@ -119,35 +120,21 @@ impl Place {
     }
 
     /// Whether the last viewport was the reader scrolling, which another pane follows with synced scroll. Asking clears it.
-    pub(super) fn take_user_scrolled(&mut self) -> bool {
+    pub(crate) fn take_user_scrolled(&mut self) -> bool {
         std::mem::take(&mut self.user_scrolled)
     }
 
-    pub(super) fn has_moved_page(&self) -> bool {
+    pub(crate) fn has_moved_page(&self) -> bool {
         self.moved_page.is_some()
     }
 
     /// A page the reader scrolled to, for the session to take as its place. Asking clears it.
-    pub(super) fn take_moved_page(&mut self) -> Option<u32> {
+    pub(crate) fn take_moved_page(&mut self) -> Option<u32> {
         self.moved_page.take()
     }
 }
 
 impl Reader {
-    /// Whether the last viewport was the reader scrolling, which another pane follows with synced scroll. Asking clears it.
-    pub fn take_user_scrolled(&mut self) -> bool {
-        self.place.take_user_scrolled()
-    }
-
-    pub(crate) fn has_moved_page(&self) -> bool {
-        self.place.has_moved_page()
-    }
-
-    /// A page the reader scrolled to, for the session to take as its place. Asking clears it.
-    pub fn take_moved_page(&mut self) -> Option<u32> {
-        self.place.take_moved_page()
-    }
-
     /// The least room either side of the pages, as a comparison's pane has it. The place is kept.
     pub fn set_margins(&mut self, left: f64, right: f64) {
         self.margins = (left, right);
@@ -163,7 +150,7 @@ impl Reader {
 
     /// Sends the view to a place in a page, as another pane's reader is in theirs, for synced scroll. A jump, so arriving there isn't the reader moving, and neither is it this pane leading the others. Held to the document. Says which page it went to.
     pub fn follow(&mut self, page: u32, within: f64) -> Option<u32> {
-        self.finish_wake();
+        self.wake.finish_wake();
         let doc = self.hot.and_then(|tab| self.docs.get_mut(&tab))?;
         let page = page.min(doc.layout.count().saturating_sub(1));
         let within = if within.is_finite() { within.clamp(0.0, 1.0) } else { 0.0 };
@@ -257,7 +244,7 @@ impl Reader {
             return self.follow(page, within).is_some();
         }
         // A wake's over once someone's gone somewhere else: what's bare from here is pages being reached, not the wake.
-        self.finish_wake();
+        self.wake.finish_wake();
         let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
             return false;
         };

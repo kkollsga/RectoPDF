@@ -48,7 +48,7 @@ fn run_jobs(reader: &mut Reader, heavy: &[(u32, u32)]) -> Vec<Did> {
                 low_res: None,
             },
         };
-        reader.note_started(&job, None);
+        reader.work.note_started(&job, None);
         reader.finish(job, outcome);
     }
     did
@@ -163,7 +163,7 @@ fn settle_tab(reader: &mut Reader, tab: u32) -> Option<Job> {
         reader.host.take_ops();
         reader.applied();
         let job = reader.next_job()?;
-        reader.note_started(&job, None);
+        reader.work.note_started(&job, None);
         if job.tab != tab {
             return Some(job);
         }
@@ -325,7 +325,7 @@ fn a_tile_for_the_tab_just_left_is_cancelled_even_while_it_is_owed() {
         reader.host.take_ops();
         reader.applied();
         let job = reader.next_job().expect("tab 1 wants its new place drawn");
-        reader.note_started(&job, None);
+        reader.work.note_started(&job, None);
         if matches!(
             job.kind,
             JobKind::Draw {
@@ -411,7 +411,7 @@ fn the_pages_drawn_for_a_tab_left_are_the_pages_its_wake_shows() {
         if job.tab == 1 && matches!(job.kind, JobKind::Draw { what: DrawKind::Preview, .. }) {
             previews.push(job.position);
         }
-        reader.note_started(&job, None);
+        reader.work.note_started(&job, None);
         let outcome = answer(&job, size_of);
         reader.finish(job, outcome);
     }
@@ -566,7 +566,7 @@ fn a_preview_for_a_tab_left_that_goes_nowhere_never_pushes_out_the_tab_showing_s
             let outcome = answer(&job, |_| letter());
             reader.finish(job, outcome);
             job = reader.next_job().expect("the tab left's next job");
-            reader.note_started(&job, None);
+            reader.work.note_started(&job, None);
         }
         assert_eq!(job.tab, 1);
         before_landing(&mut reader);
@@ -594,7 +594,7 @@ fn a_tab_left_is_asked_for_no_longer_than_its_time() {
     began(&mut reader, ASKING_FOR - Duration::from_secs(1));
     let job = reader.next_job().expect("within its time");
     assert_eq!(job.tab, 1);
-    reader.note_started(&job, None);
+    reader.work.note_started(&job, None);
     let outcome = answer(&job, |_| letter());
     reader.finish(job, outcome);
     began(&mut reader, ASKING_FOR + Duration::from_millis(1));
@@ -620,7 +620,7 @@ fn a_page_that_would_need_a_heavy_worker_is_passed_over_and_the_rest_drawn() {
         reader.host.take_ops();
         reader.applied();
         let Some(job) = reader.next_job() else { break };
-        reader.note_started(&job, None);
+        reader.work.note_started(&job, None);
         let preview = job.tab == 1 && matches!(job.kind, JobKind::Draw { what: DrawKind::Preview, .. });
         let outcome = if preview && job.position == owed[0] {
             Outcome::Unstarted { heavy: true }
@@ -691,7 +691,7 @@ fn a_warm_tab_whose_pages_change_shows_nothing_kept_from_before() {
                 .map(|entry| entry.page),
         );
         let Some(job) = reader.next_job() else { break };
-        reader.note_started(&job, None);
+        reader.work.note_started(&job, None);
         let outcome = answer(&job, |_| letter());
         reader.finish(job, outcome);
     }
