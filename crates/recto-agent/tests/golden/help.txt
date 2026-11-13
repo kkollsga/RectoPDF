@@ -177,7 +177,7 @@ Testing the app:
   qa save-as           What Save As's sheet does when it's answered with a new file's path: the window's save, off its thread, the tab going over to the new file.
   qa save-from         A quiet run's test of what happens around a save's writing, with a file the caller has written in place of the save's own writer: keeps the pages undo needs, notes what's coming, puts the file in place of the active tab's, and confirms.
   qa as-person         Runs a `recto` command as the person at the window does, through the window's own path: the owner's edits, the window's Find, an open that doesn't wait.
-  qa owner-edit        Makes an edit as the owner, as the app's own tools will: `rotate:PAGE`, `delete:PAGE`, `undo` or `redo`.
+  qa owner-edit        Makes an edit as the owner: `rotate:PAGE` (a quarter turn), `delete:PAGE`, `undo` or `redo`, as `qa as-person` runs the person's `page rotate`, `page delete`, `undo` or `redo`, under the same rules.
   qa note-input        Says the user just touched the app, by what the event monitor calls.
   qa open-file         Opens a file by the route a drop or the menu takes, which reads it off the session thread.
   qa hold-reads        Holds files being read for opening where they are until it's told otherwise, as a slow disk would, for what's waiting on them to be seen.

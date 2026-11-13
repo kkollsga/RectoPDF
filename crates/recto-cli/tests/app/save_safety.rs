@@ -29,7 +29,7 @@ fn a_file_the_two_readers_see_differently_turns_save_off_in_the_window() {
     let original = std::fs::read(&file.0).unwrap();
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "rotate:1"]);
+    run.ok(&["qa", "as-person", "page rotate 1 --by 90"]);
     let off = wait_for(&run, |state| {
         state["app"]["save_button"]["visible"] == true && state["app"]["save_button"]["enabled"] == false
     });

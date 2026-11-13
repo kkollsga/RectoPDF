@@ -618,8 +618,8 @@ row 154 qa as-person: e74cb8199eab7b0f 968 bytes
 help qa as-person: bcdadc071b570220 724 bytes
 usage qa as-person: 84bb2b7b927ad70d 26 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 155 qa owner-edit: 73fde94cd527b8ba 505 bytes
-help qa owner-edit: 052ef87b89dd88fb 267 bytes
+row 155 qa owner-edit: d61f77cb32cdb5aa 655 bytes
+help qa owner-edit: ff827931065d1f4f 417 bytes
 usage qa owner-edit: b266e81b75088795 27 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
 row 156 qa note-input: c46c4f0fa71a7fce 470 bytes
@@ -752,7 +752,7 @@ family update: 62ff714e1bcf66d6 626 bytes
 family settings: cbf29ce484222325 0 bytes
 family skill: 263c8540bc3d3bc9 284 bytes
 family budget: aec822ae884cf326 558 bytes
-family qa: 377ebe39625bab14 12937 bytes
-help --json: 06d690ff42dfc31a 128159 bytes
+family qa: e6a1e80966684851 13031 bytes
+help --json: 7b6940dd14079d90 128306 bytes
 SKILL.md: a300f313582dd513 24057 bytes
 REFERENCE.md: 9f01a56c3d959cf3 77953 bytes

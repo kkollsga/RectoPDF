@@ -547,7 +547,7 @@ fn an_update_in_the_middle_of_things_changes_nothing() {
         "{shown}"
     );
     assert_eq!(after["session"]["app"]["focus"]["view"], "find");
-    run.ok(&["qa", "owner-edit", "redo"]);
+    run.ok(&["qa", "as-person", "redo"]);
 
     // The gap, as measured from the old app being told to quit to the new one's first correct frame.
     let wait_for_last = Instant::now();
@@ -694,7 +694,7 @@ fn a_new_app_that_wont_start_goes_back_with_the_same_state() {
     run.settled();
     run.ok(&["goto", "17"]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "rotate:3"]);
+    run.ok(&["qa", "as-person", "page rotate 3 --by 90"]);
     run.ok(&["page", "delete", "5"]);
     run.ok(&["qa", "frontmost", "off"]);
     run.settled();
@@ -737,7 +737,7 @@ fn a_new_app_that_cant_draw_goes_back() {
     run.settled();
     run.ok(&["goto", "9"]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "rotate:3"]);
+    run.ok(&["qa", "as-person", "page rotate 3 --by 90"]);
     run.ok(&["qa", "frontmost", "off"]);
     run.settled();
     run.ok(&["session", "save"]);
@@ -953,7 +953,7 @@ fn keeps_ending(bed: &Bed, broken: Broken) -> (Run<'_>, Value) {
     run.settled();
     run.ok(&["goto", "12"]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "rotate:3"]);
+    run.ok(&["qa", "as-person", "page rotate 3 --by 90"]);
     run.ok(&["qa", "frontmost", "off"]);
     run.settled();
     run.ok(&["session", "save"]);

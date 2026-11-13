@@ -2306,8 +2306,8 @@ fn the_windows_save_close_prompt_and_save_as_act_on_their_own_tab() {
 
     // Only undone steps: nothing to save, so the prompt offers Close, says the steps go, and closing lets them go.
     // The owner's steps, as the app's own tools make them: an agent's undone steps are its own to lose, and closing doesn't ask about those.
-    run.ok(&["qa", "owner-edit", "rotate:1"]);
-    run.ok(&["qa", "owner-edit", "undo"]);
+    run.ok(&["qa", "as-person", "page rotate 1 --by 90"]);
+    run.ok(&["qa", "as-person", "undo"]);
     wait_for(&run, |state| state["app"]["document_edited"] == false);
     run.ok(&["qa", "menu", "file.close"]);
     let asked = wait_for(&run, |state| state["app"]["sheet"]["kind"] == "close_prompt");
@@ -3180,7 +3180,7 @@ fn a_delete_saves_by_rewriting_and_undo_goes_past_it() {
     let file = three_marked();
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "delete:2"]);
+    run.ok(&["qa", "as-person", "page delete 2"]);
     let edited = wait_for(&run, |state| state["app"]["save_button"]["visible"] == true && state["reader"]["pages"] == 2);
     assert_eq!(
         edited["app"]["save_button"]["enabled"], true,
@@ -3214,7 +3214,7 @@ fn a_delete_saves_by_rewriting_and_undo_goes_past_it() {
         "it holds the deleted page alone"
     );
     // Undo past the save: the page comes back, from the copy, and draws.
-    run.ok(&["qa", "owner-edit", "undo"]);
+    run.ok(&["qa", "as-person", "undo"]);
     let back = wait_for(&run, |state| state["reader"]["pages"] == 3 && state["app"]["document_edited"] == true);
     assert_eq!(back["app"]["save_button"]["visible"], true);
     run.ok(&["goto", "2"]);
@@ -3243,7 +3243,7 @@ fn a_signed_files_delete_turns_save_off_and_save_as_is_unsigned() {
         run.ok(&["open", file.0.to_str().unwrap()]);
         run.settled();
         // A certification forbids a turn too; a person's signature only what has to be written anew.
-        run.ok(&["qa", "owner-edit", if kind == "certified" { "rotate:1" } else { "delete:2" }]);
+        run.ok(&["qa", "as-person", if kind == "certified" { "page rotate 1 --by 90" } else { "page delete 2" }]);
         let off = wait_for(&run, |state| {
             state["app"]["save_button"]["visible"] == true && state["app"]["save_button"]["enabled"] == false
         });
@@ -3294,7 +3294,7 @@ fn usage_rights_alone_save_in_place_with_a_quiet_note() {
     let file = signed_two("usage_rights");
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    run.ok(&["qa", "owner-edit", "delete:2"]);
+    run.ok(&["qa", "as-person", "page delete 2"]);
     let edited = wait_for(&run, |state| state["app"]["save_button"]["visible"] == true);
     assert_eq!(
         edited["app"]["save_button"]["enabled"], true,

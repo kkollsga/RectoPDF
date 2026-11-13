@@ -796,7 +796,7 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     run.call(json!({ "cmd": "goto", "page": (pages / 2).max(1) }))?;
     run.settled()?;
     run.drive("scroll", "120")?;
-    run.drive("owner_edit", "rotate:1")?;
+    run.drive("as_person", "page rotate 1 --by 90")?;
     run.settled()?;
     let mut gaps = Vec::new();
     let mut first_frames = Vec::new();
@@ -823,7 +823,7 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     let store_before = run.call(json!({ "cmd": "session_show" }))?["record"]["wrote_bytes"].as_u64().unwrap_or(0);
     let before = written(run.pid);
     for page in 0..200 {
-        run.drive("owner_edit", &format!("rotate:{}", page % pages + 1))?;
+        run.drive("as_person", &format!("page rotate {} --by 90", page % pages + 1))?;
     }
     std::thread::sleep(Duration::from_secs(6));
     let _ = Command::new("/bin/sync").status();

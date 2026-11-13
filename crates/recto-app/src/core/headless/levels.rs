@@ -13,10 +13,7 @@ fn levels_and_ownership_hold_after_a_restart() {
     let app = HeadlessApp::start();
     let (a, b) = (app.disk().pdf("owners.pdf", 8), app.disk().pdf("agents.pdf", 8));
     app.open(&a);
-    app.core()
-        .qa_session_verb("owner_edit", "rotate:1")
-        .expect("a QA verb")
-        .expect("the owner's rotation");
+    app.person(r#"{"cmd":"page_rotate","pages":"1","degrees":90}"#);
     app.settle();
     app.open(&b);
     app.agent(Level::Control, r#"{"cmd":"page_rotate","pages":"1","degrees":90}"#)

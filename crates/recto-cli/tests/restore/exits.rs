@@ -37,10 +37,10 @@ fn one_of_each(run: &Run<'_>, folder: &Path) -> (Vec<Edited>, Edited) {
         run.ok(&["open", path.to_str().unwrap()]);
         run.settled();
         match kind {
-            "turn" => run.ok(&["qa", "owner-edit", "rotate:2"]),
+            "turn" => run.ok(&["qa", "as-person", "page rotate 2 --by 90"]),
             "move" => run.ok(&["page", "move", "3", "--to", "1"]),
             "add" => run.ok(&["page", "insert", extra.path.to_str().unwrap(), "--at", "2"]),
-            "delete" => run.ok(&["qa", "owner-edit", "delete:2"]),
+            "delete" => run.ok(&["qa", "as-person", "page delete 2"]),
             _ => run.ok(&["page", "rotate", "all", "--by", "90"]),
         };
         docs.push(Edited {
@@ -160,9 +160,9 @@ fn a_kill_between_the_move_and_saved_carries_the_save_over() {
         run.ok(&["open", file.to_str().unwrap()]);
         run.settled();
         if delete {
-            run.ok(&["qa", "owner-edit", "delete:2"]);
+            run.ok(&["qa", "as-person", "page delete 2"]);
         } else {
-            run.ok(&["qa", "owner-edit", "rotate:1"]);
+            run.ok(&["qa", "as-person", "page rotate 1 --by 90"]);
             run.ok(&["page", "move", "4", "--to", "1"]);
             run.ok(&["page", "insert", extra.to_str().unwrap(), "--at", "5"]);
         }

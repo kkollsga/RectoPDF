@@ -412,9 +412,14 @@ impl QaBridge {
             "quit" => return self.ask(verb, value),
             "handoff" => return self.handoff(),
             // A person's command, as the window sends it, for what only a person may do. Checked there: its level is its row's, Full.
-            "as_person" => {
+            "as_person" | "owner_edit" => {
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
-                as_person::run(&inner, value)?;
+                let words = if verb == "owner_edit" {
+                    as_person::owner_edit_words(value)?
+                } else {
+                    value.to_owned()
+                };
+                as_person::run(&inner, &words)?;
                 self.core.flush(ANSWER_AFTER_CLICK);
                 return self.ask("state", "");
             }

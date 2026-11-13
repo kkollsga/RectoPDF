@@ -99,6 +99,18 @@ fn is_a_tests_path(path: &Path, state: Option<&Path>) -> bool {
     path.parent().is_some_and(|folder| is_a_tests_file(folder, state))
 }
 
+/// **`qa owner-edit`'s words as `qa as-person`'s:** `rotate:PAGE` a quarter turn, `delete:PAGE`, `undo`, `redo`. Kept, as an alias on the person's own
+/// commands, only until the worker in `recto-cli/tests/long_session.rs` has merged and that test moves to `qa as-person` (2026-11-13); then it goes.
+pub(super) fn owner_edit_words(value: &str) -> Result<String, AgentError> {
+    let page = |word: &str| word.parse::<u32>().ok().filter(|page| *page > 0);
+    match value.split_once(':') {
+        Some(("rotate", word)) if page(word).is_some() => Ok(format!("page rotate {word} --by 90")),
+        Some(("delete", word)) if page(word).is_some() => Ok(format!("page delete {word}")),
+        None if matches!(value, "undo" | "redo") => Ok(value.to_owned()),
+        _ => Err(bad("It's `rotate:PAGE`, `delete:PAGE`, `undo` or `redo`.")),
+    }
+}
+
 /// Runs the words as the person's command, after the checks. Returns as the window's control does: at once, the command on its way.
 pub(super) fn run(inner: &Arc<Inner>, line: &str) -> Result<(), AgentError> {
     let command = command(line)?;
@@ -125,6 +137,18 @@ mod tests {
     use super::*;
     use crate::testkit::headless::HeadlessApp;
     use recto_agent::Level;
+
+    /// Failure: the alias for `long_session.rs` turns an owner's edit into something else than what it said: a page other than the one named, a turn
+    /// other than a quarter, or a word it doesn't know let through.
+    #[test]
+    fn owner_edit_is_the_persons_command() {
+        assert_eq!(owner_edit_words("rotate:3").unwrap(), "page rotate 3 --by 90");
+        assert_eq!(owner_edit_words("delete:9").unwrap(), "page delete 9");
+        assert_eq!(owner_edit_words("undo").unwrap(), "undo");
+        for wrong in ["rotate:0", "rotate:x", "delete", "save", ""] {
+            assert!(owner_edit_words(wrong).is_err(), "{wrong}");
+        }
+    }
 
     /// Failure: the command's words are split other than as a `.qa` line splits them, so a path with a space in it is two words, or an open quote runs on.
     #[test]

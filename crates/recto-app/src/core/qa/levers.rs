@@ -56,7 +56,6 @@ impl Inner {
                 }),
                 _ => Err(usage("It's a number of quarter turns, from 0 to 3.".to_string())),
             },
-            "owner_edit" => self.owner_edit(value),
             "save_from" => self.qa_save_from(value),
             // What Save As's sheet does when it's answered with this path: the same call.
             "save_as" => match self.saver.inner() {
@@ -175,40 +174,5 @@ impl Inner {
         let now = recto_platform::file_stamp(&path).map_err(|_| failed("Looking at the saved file"))?;
         self.host.session.with_session(|session| session.saved(id, now, pages, None, kept));
         Ok(())
-    }
-
-    /// An edit as the owner's, as the app's own tools will make it: they aren't built yet.
-    pub fn owner_edit(&self, value: &str) -> Result<(), AgentError> {
-        let usage = || {
-            AgentError::new(
-                "usage",
-                "It's `rotate:PAGE`, `delete:PAGE`, `undo` or `redo`.".to_string(),
-                recto_agent::exit::USAGE,
-            )
-        };
-        self.host.session.with_session(|session| {
-            let id = session
-                .active()
-                .ok_or_else(|| AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND))?;
-            let page = |word: &str| word.parse::<u32>().ok().and_then(|page| page.checked_sub(1)).ok_or_else(usage);
-            match value.split_once(':') {
-                Some(("rotate", word)) => {
-                    let page = page(word)?;
-                    session.edit_pages(id, |edits| edits.rotate(page, 1, 1))?;
-                }
-                Some(("delete", word)) => {
-                    let page = page(word)?;
-                    session.edit_pages(id, |edits| edits.delete(page, 1))?;
-                }
-                None if value == "undo" => {
-                    session.undo_edit(id);
-                }
-                None if value == "redo" => {
-                    session.redo_edit(id);
-                }
-                _ => return Err(usage()),
-            }
-            Ok(())
-        })
     }
 }

@@ -101,7 +101,7 @@ fn a_quiet_run_never_puts_a_window_on_screen() {
     run.ok(&["qa", "sheet-answer", "cancel"]);
     super::wait_for(&run, |state| state["app"]["sheet"].as_object().is_none_or(|sheet| sheet.is_empty()));
     // A close prompt, an alert, drawn into a shot from its own window.
-    run.ok(&["qa", "owner-edit", "rotate:1"]);
+    run.ok(&["qa", "as-person", "page rotate 1 --by 90"]);
     run.ok(&["qa", "menu", "file.close"]);
     sheet_up(&run, "close_prompt");
     watch.catch_up(10);

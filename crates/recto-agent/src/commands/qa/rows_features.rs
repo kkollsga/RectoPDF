@@ -272,8 +272,8 @@ pub(crate) const ROWS: &[Spec] = &[
         name: "qa owner-edit",
         tag: "qa_drive",
         group: GROUP_QA,
-        access: Access::At(Level::Control),
-        summary: "Makes an edit as the owner, as the app's own tools will: `rotate:PAGE`, `delete:PAGE`, `undo` or `redo`.",
+        access: Access::At(Level::Full),
+        summary: "Makes an edit as the owner: `rotate:PAGE` (a quarter turn), `delete:PAGE`, `undo` or `redo`, as `qa as-person` runs the person's `page rotate`, `page delete`, `undo` or `redo`, under the same rules. Kept only until `long_session.rs` moves to `qa as-person`.",
         args: &[Arg {
             key: "value",
             flag: None,
@@ -642,7 +642,8 @@ pub(super) const VERBS: &[QaVerb] = &[
     // A save with the writing done by the test.
     verb("save_from", Condition, None),
     verb("as_person", Person, None),
-    verb("owner_edit", StandIn, None),
+    // An alias on `as_person`, kept only until the worker in `recto-cli/tests/long_session.rs` has merged (2026-11-13).
+    verb("owner_edit", Person, None),
     verb("note_input", Condition, None),
     verb("open_file", StandIn, Some(Dialogs)),
     verb("hold_reads", Condition, None),
