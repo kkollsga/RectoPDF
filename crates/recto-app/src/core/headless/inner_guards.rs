@@ -167,7 +167,6 @@ Inner::pub fn window_closed(&self)
 Inner::pub fn window_interactive(&self) -> bool
 Inner::pub fn window_opened(&self)
 Inner::pub fn window_replaced(&self)
-Inner::pub fn window_should_open(&self) -> bool
 Inner::pub fn write_sleep_for(&self, id: TabId, by: By)
 Inner::pub fn write_sleep_for_until(&self, id: TabId, until: Instant)
 Inner::pub(crate) fn carry_out_quit(self: &Arc<Self>, out: Option<Out>)
@@ -248,4 +247,5 @@ Window::pub fn app_record(&self, notice: Option<String>) -> AppRecord
 Window::pub fn new(watchdog: Watchdog) -> Self
 Window::pub fn settings_window(&self) -> Option<SettingsWindow>
 Window::pub fn settings_window_changed(&self, place: Option<SettingsWindow>, saver: &Saver)
+Window::pub fn should_open(&self, reopened: bool) -> bool
 ";

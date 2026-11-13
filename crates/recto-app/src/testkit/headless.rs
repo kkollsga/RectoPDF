@@ -300,7 +300,7 @@ impl HostPlay {
                 self.launch_done = true;
                 let with_state = inner.state_read();
                 self.late_taken_in = with_state;
-                if inner.window_should_open() {
+                if inner.window.should_open(inner.updates.reopened_by_update()) {
                     inner.window_opened();
                 } else {
                     inner.window_closed();

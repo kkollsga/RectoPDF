@@ -1121,7 +1121,7 @@ impl AppCore {
 
     /// Whether this launch opens a window. Any launch does but an update's arrival, which leaves things as they were: a window closed stays closed, rather than appearing behind whatever the user's doing.
     pub fn window_should_open(&self) -> bool {
-        self.inner.window_should_open()
+        self.inner.window.should_open(self.inner.updates.reopened_by_update())
     }
 
     /// Whether the state's been read and taken in. A window that went up without it, past the patience, is made again from it once it has: see the host's `restoreReady`.

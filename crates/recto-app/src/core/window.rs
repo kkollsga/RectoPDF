@@ -83,6 +83,14 @@ impl Window {
         saver.view_changed();
     }
 
+    /// Whether this launch opens a window, `reopened` by an update or not. Any launch does but an update's arrival, which leaves things as they were: a window
+    /// closed stays closed, rather than appearing behind whatever the user's doing.
+    pub fn should_open(&self, reopened: bool) -> bool {
+        let mut app = lock(&self.app);
+        app.window_decided = true;
+        !(app.window_closed && reopened)
+    }
+
     /// Where the Settings window was, if it was open.
     pub fn settings_window(&self) -> Option<SettingsWindow> {
         lock(&self.app).settings_window

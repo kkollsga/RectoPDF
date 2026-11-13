@@ -86,14 +86,6 @@ impl Inner {
         }));
     }
 
-    /// Whether this launch opens a window. Any launch does but an update's arrival, which leaves things as they were: a window closed stays closed, rather than appearing behind whatever the user's doing.
-    pub fn window_should_open(&self) -> bool {
-        let reopened = self.updates.reopened_by_update();
-        let mut app = lock(&self.window.app);
-        app.window_decided = true;
-        !(app.window_closed && reopened)
-    }
-
     /// The window opened: its page views have somewhere to draw again, what was selected on the window it replaced comes back, and the contents go back to where they were.
     pub fn window_opened(&self) {
         *lock(&self.life.window_opened_at) = Some(Instant::now());

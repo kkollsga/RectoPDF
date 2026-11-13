@@ -195,7 +195,7 @@ const STEPS: &[(&str, Step)] = &[
     ("placed at a launch", |inner| said(bridge::window_placement_decides(inner))),
     ("into the Dock again", |inner| done(bridge::window_minimised_changed(inner, true))),
     ("closed", |inner| done(inner.window_closed())),
-    ("should open", |inner| said(inner.window_should_open())),
+    ("should open", |inner| said(inner.window.should_open(inner.updates.reopened_by_update()))),
     ("opened", |inner| done(inner.window_opened())),
     ("out of the Dock with no window", |inner| done(bridge::window_minimised_changed(inner, false))),
     ("hidden", |inner| done(bridge::app_hidden_changed(inner, true))),
