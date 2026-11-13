@@ -239,12 +239,14 @@ const STEPS: &[(&str, Step)] = &[
         said(bridge::contents_is_following(inner))
     }),
     ("settings opened", |inner| {
-        inner.settings_window_changed(Some(recto_session::record::SettingsWindow { x: 40.0, y: 50.0 }));
-        Some(format!("{:?}", inner.settings_window()))
+        inner
+            .window
+            .settings_window_changed(Some(recto_session::record::SettingsWindow { x: 40.0, y: 50.0 }), &inner.saver);
+        Some(format!("{:?}", inner.window.settings_window()))
     }),
     ("settings closed", |inner| {
-        inner.settings_window_changed(None);
-        Some(format!("{:?}", inner.settings_window()))
+        inner.window.settings_window_changed(None, &inner.saver);
+        Some(format!("{:?}", inner.window.settings_window()))
     }),
     ("made again", |inner| {
         inner.window_replaced();

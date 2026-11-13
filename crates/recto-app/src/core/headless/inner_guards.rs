@@ -148,8 +148,6 @@ Inner::pub fn save_problem_answered(&self, save_as: bool) -> super::HostAction
 Inner::pub fn set_frozen(&self, frozen: bool)
 Inner::pub fn setting_chosen(self: &Arc<Self>, id: &str, on: bool)
 Inner::pub fn settings_model(&self) -> SettingsModel
-Inner::pub fn settings_window(&self) -> Option<SettingsWindow>
-Inner::pub fn settings_window_changed(&self, place: Option<SettingsWindow>)
 Inner::pub fn sheet_changed(&self, open: bool)
 Inner::pub fn shown_with_state(&self)
 Inner::pub fn shutdown(&self)
@@ -248,4 +246,6 @@ Window.pub(crate) notice_tab: AtomicU32
 Window.pub(crate) open_failure: Mutex<Option<String>>
 Window::pub fn app_record(&self, notice: Option<String>) -> AppRecord
 Window::pub fn new(watchdog: Watchdog) -> Self
+Window::pub fn settings_window(&self) -> Option<SettingsWindow>
+Window::pub fn settings_window_changed(&self, place: Option<SettingsWindow>, saver: &Saver)
 ";

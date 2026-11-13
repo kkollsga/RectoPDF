@@ -2,6 +2,7 @@
 //! appearance, the Settings window), the contents' follow, the UI thread's hang watchdog, and the notices that go by themselves. Its opening, replacing and
 //! closing are `Inner`'s, as they reach the page views and the saver, and they call what's here.
 
+use super::saver::Saver;
 use crate::lock;
 use crate::watchdog::Watchdog;
 use recto_session::record::{self, AppRecord, Appearance, ContentsScroll, FocusRecord, SettingsWindow, WindowRecord};
@@ -74,6 +75,17 @@ impl Window {
             window_closed: app.window_closed,
             app_hidden: app.app_hidden,
         }
+    }
+
+    /// The Settings window opened, moved or closed: it's part of what comes back, so the record's told.
+    pub fn settings_window_changed(&self, place: Option<SettingsWindow>, saver: &Saver) {
+        lock(&self.app).settings_window = place;
+        saver.view_changed();
+    }
+
+    /// Where the Settings window was, if it was open.
+    pub fn settings_window(&self) -> Option<SettingsWindow> {
+        lock(&self.app).settings_window
     }
 }
 

@@ -1446,17 +1446,19 @@ impl AppCore {
 
     /// The Settings window opened, moved or closed. It's part of what comes back.
     pub fn settings_window_changed(&self, open: bool, x: f64, y: f64) {
-        self.inner.settings_window_changed(open.then_some(SettingsWindow { x, y }));
+        self.inner
+            .window
+            .settings_window_changed(open.then_some(SettingsWindow { x, y }), &self.inner.saver);
     }
 
     /// Whether the Settings window was open.
     pub fn settings_window_was_open(&self) -> bool {
-        self.inner.settings_window().is_some()
+        self.inner.window.settings_window().is_some()
     }
 
     /// Where the Settings window goes on the screens there are now: where it was, if that's still on one. Otherwise wherever the host starts one.
     pub fn settings_window_place(&self, screens: Vec<ScreenInfo>) -> Option<Vec<f64>> {
-        updates::settings_place(self.inner.settings_window(), &screens)
+        updates::settings_place(self.inner.window.settings_window(), &screens)
     }
 
     /// Whether this launch comes up behind what the user's doing: see [`WindowPlacement::in_background`].
