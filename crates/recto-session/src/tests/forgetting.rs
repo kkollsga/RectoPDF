@@ -120,31 +120,16 @@ fn forgetting_what_was_read_of_a_tab_forgets_all_of_it() {
     assert!(s.tab(a).unwrap().from_sleep.is_none());
 }
 
-/// Failure: a restore keeps the tabs, contents or edits of the session it replaces, so a tab comes back with another's.
+/// Failure: a restore keeps something of the tabs of the session it replaces, so a restored tab with the same number, another file, takes it as its own.
 #[test]
 fn a_restore_keeps_nothing_of_the_tabs_it_replaces() {
     let mut s = journaled(10);
     let (a, b) = busy(&mut s);
+    s.hold(a);
     let empty = session(10).to_record();
     s.restore(&empty, HashMap::new()).unwrap();
     for id in [a, b] {
-        let left = holding(&s, id);
-        for part in [
-            "tabs",
-            "active",
-            "warm",
-            "woken",
-            "edits",
-            "asleep",
-            "wake_failed",
-            "draws",
-            "journals",
-            "fresh_journals",
-            "jumps",
-            "comparison",
-        ] {
-            assert!(!left.contains(&part), "{part} still has tab {id:?}: {left:?}");
-        }
+        assert_eq!(holding(&s, id), Vec::<&str>::new(), "tab {id:?}");
     }
 }
 
