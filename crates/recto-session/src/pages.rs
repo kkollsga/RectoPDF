@@ -9,7 +9,7 @@ impl<L: DocLoader> Session<L> {
         if toc.labels.is_empty() {
             return None;
         }
-        let page = match self.edits.get(&id) {
+        let page = match self.lists.get(id) {
             None => position,
             Some(edits) => {
                 let slot = edits.slots().get(position as usize)?;
@@ -45,7 +45,7 @@ impl<L: DocLoader> Session<L> {
         {
             let file_pages = self.tab(id).map_or(0, |tab| tab.page_count);
             if let Some(file_page) = toc.labels.find(typed, file_pages) {
-                match self.edits.get(&id) {
+                match self.lists.get(id) {
                     None => return Some(file_page),
                     Some(edits) => {
                         if let Some(position) = edits.slots().iter().position(|slot| slot.source == 0 && slot.page == file_page) {
@@ -60,7 +60,7 @@ impl<L: DocLoader> Session<L> {
 
     /// **Where a link's page goes now,** with edits counted: `file_page` of the same file as the page at position `from`, which is what a link on that page means. Nothing if that page isn't in the document any more.
     pub fn position_in_same_file(&self, id: TabId, from: u32, file_page: u32) -> Option<u32> {
-        match self.edits.get(&id) {
+        match self.lists.get(id) {
             None => (file_page < self.pages_in(id)).then_some(file_page),
             Some(edits) => {
                 let source = edits.slots().get(from as usize)?.source;
@@ -75,11 +75,6 @@ impl<L: DocLoader> Session<L> {
 
     /// How many pages a tab has now, counting unsaved edits.
     pub fn pages_in(&self, id: TabId) -> u32 {
-        self.edits
-            .get(&id)
-            .map(PageEdits::len)
-            .or_else(|| self.asleep.get(&id).map(|summary| summary.pages))
-            .or_else(|| self.tab(id).map(|t| t.page_count))
-            .unwrap_or(0)
+        self.lists.pages(id).or_else(|| self.tab(id).map(|t| t.page_count)).unwrap_or(0)
     }
 }

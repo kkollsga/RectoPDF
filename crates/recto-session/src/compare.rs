@@ -180,13 +180,13 @@ impl<L: DocLoader> Session<L> {
     pub fn panes(&self) -> Vec<TabId> {
         match &self.comparison {
             Some(comparison) => comparison.tabs.clone(),
-            None => self.active.into_iter().collect(),
+            None => self.tabs.active().into_iter().collect(),
         }
     }
 
     /// Whether a tab is on screen: active, or a pane of a comparison. Such a tab doesn't go dormant, whatever's asking.
     pub fn on_screen(&self, id: TabId) -> bool {
-        self.active == Some(id) || self.comparison.as_ref().is_some_and(|comparison| comparison.contains(id))
+        self.tabs.active() == Some(id) || self.comparison.as_ref().is_some_and(|comparison| comparison.contains(id))
     }
 
     /// **Puts these tabs side by side,** in this order, separate scroll, with `reading` the pane being read, or the active tab if it's one of them, or the first. Their edits are woken, as a pane shows them. A tab that's cold is read here if nobody's read it ahead with the session free, as [`Self::wake_for_tap`] lets a caller do.
@@ -201,7 +201,7 @@ impl<L: DocLoader> Session<L> {
         }
         let reading = reading
             .filter(|id| tabs.contains(id))
-            .or(self.active.filter(|id| tabs.contains(id)))
+            .or(self.tabs.active().filter(|id| tabs.contains(id)))
             .unwrap_or(tabs[0]);
         // Synced scroll stays on through a change of tabs, starting again from where each is now.
         let synced = self.comparison.as_ref().is_some_and(|was| was.synced);
@@ -225,12 +225,12 @@ impl<L: DocLoader> Session<L> {
         let joining = !self.comparison.as_ref().is_some_and(|comparison| comparison.contains(id));
         let next = if joining {
             id
-        } else if self.active == Some(id) {
+        } else if self.tabs.active() == Some(id) {
             self.pane_after(id)?
         } else {
             return None;
         };
-        if self.active == Some(next) {
+        if self.tabs.active() == Some(next) {
             return None;
         }
         self.file_to_wake_now(next)
@@ -238,7 +238,7 @@ impl<L: DocLoader> Session<L> {
 
     /// The panes a comparison of these tabs would wake from cold, with their files, to read with the session free before [`Self::compare`].
     pub fn wake_for_compare(&mut self, tabs: &[TabId]) -> Vec<(TabId, PathBuf)> {
-        let active = self.active;
+        let active = self.tabs.active();
         tabs.iter()
             .filter(|id| active != Some(**id))
             .filter_map(|id| self.file_to_wake_now(*id))
@@ -251,7 +251,7 @@ impl<L: DocLoader> Session<L> {
             return Err(compare::CompareError::NoSuchTab);
         }
         let Some(mut comparison) = self.comparison.clone() else {
-            let Some(active) = self.active.filter(|active| *active != id) else {
+            let Some(active) = self.tabs.active().filter(|active| *active != id) else {
                 return Ok(compare::CompareChange::Nothing);
             };
             self.compare(&[active, id], Some(id))?;
@@ -269,7 +269,7 @@ impl<L: DocLoader> Session<L> {
             }
             let reading = comparison.tabs.first().copied();
             self.comparison = Some(comparison);
-            if self.active == Some(id)
+            if self.tabs.active() == Some(id)
                 && let Some(reading) = reading
             {
                 self.activate(reading);
@@ -291,7 +291,7 @@ impl<L: DocLoader> Session<L> {
 
     /// Synced scroll on, from where each pane is now, or separate. Says nothing if there was no comparison to set, and otherwise whether it changed.
     pub fn set_compare_synced(&mut self, on: bool) -> Option<bool> {
-        let pages: HashMap<TabId, u32> = self.tabs.iter().map(|tab| (tab.id, tab.page)).collect();
+        let pages: HashMap<TabId, u32> = self.tabs.all().iter().map(|tab| (tab.id, tab.page)).collect();
         self.comparison.as_mut().map(|comparison| {
             let was = comparison.clone();
             comparison.set_synced(on, |id| pages.get(&id).copied().unwrap_or(0));
@@ -301,7 +301,7 @@ impl<L: DocLoader> Session<L> {
 
     /// The reader's moved into another pane: it's the one read now, for the contents and the page number. Nothing changes on screen.
     pub fn focus_pane(&mut self, id: TabId) -> bool {
-        if self.active == Some(id) || !self.comparison.as_ref().is_some_and(|comparison| comparison.contains(id)) {
+        if self.tabs.active() == Some(id) || !self.comparison.as_ref().is_some_and(|comparison| comparison.contains(id)) {
             return false;
         }
         self.activate(id);
