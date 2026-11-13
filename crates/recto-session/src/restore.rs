@@ -63,7 +63,11 @@ impl<L: DocLoader> Session<L> {
                     layout: *spread,
                     renderer_only: *renderer_only,
                     selection: selection.as_deref().copied(),
-                    notice: tab.file.notice().cloned(),
+                    // Edits on a version the file isn't any more are said to be whatever notice is over them, as the tab says it: so a restore knows.
+                    notice: match self.notices().fit(*id) {
+                        EditsFit::FileChanged | EditsFit::FileChangedVersionUnknown => Some(FileNotice::Changed),
+                        _ => tab.file.notice().cloned(),
+                    },
                     journal: journals.name_of(*id).map(ToString::to_string),
                     edits: lists.summary(*id),
                     generated_contents: *generated_contents,
@@ -146,6 +150,12 @@ impl<L: DocLoader> Session<L> {
                 }
             }
             let pages = self.lists.get(id).map_or(entry.page_count, PageEdits::len);
+            // Edits the record says the file changed under aren't taken to fit it until a look or a read says so: nothing reads it as theirs meanwhile.
+            let elsewhere = (matches!(entry.notice, Some(FileNotice::Changed)) && self.lists.is_edited(id)).then_some(fit::Elsewhere {
+                seen: None,
+                seen_pages: None,
+                file_changed: true,
+            });
             let trail = (!entry.back.is_empty() || !entry.forward.is_empty()).then(|| Box::new(trail::Trail::from_record(&entry.back, &entry.forward, pages)));
             self.tabs.push(TabRecord {
                 from_sleep: None,
@@ -167,7 +177,7 @@ impl<L: DocLoader> Session<L> {
                     dir,
                     file_name: file_name.into(),
                     stamp: entry.file.map(Into::into),
-                    news: fit::FileNews::saying(notice),
+                    news: fit::FileNews::restored(notice, elsewhere),
                     encrypted: false,
                     password: entry.password,
                 },

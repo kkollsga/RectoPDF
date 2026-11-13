@@ -81,4 +81,65 @@ mod tests {
             assert!(journal.next.contains("discard"), "{journal:?}");
         }
     }
+
+    fn pdf(who: &str, pages: usize) -> Vec<u8> {
+        let pages: Vec<recto_testpdf::Page> = (1..=pages)
+            .map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("{who} page {page}")])))
+            .collect();
+        recto_testpdf::pages(&pages)
+    }
+
+    /// Failure (the window after a restart): only a tab's notice goes in the record, so a tab whose edits were made on a version its file isn't any more, and
+    /// which kept that version's stamp, came back with nothing saying they don't fit: until the restore's look or read landed, `fit` said they did. Save and an
+    /// agent's text were still refused by the stamp, but Find and `search` went through, skipping the tab's own pages with no reason given. Restored, and asked
+    /// at once, before any look or read: each is refused with its reason.
+    #[test]
+    fn a_restored_tab_whose_file_changed_under_its_edits_refuses_at_once() {
+        use recto_session::{Session, edit::PageEdits, record};
+        use std::sync::Mutex;
+        let dir = recto_testpdf::TempDir::new("recto-unfit-restart-");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.pdf");
+        std::fs::write(&path, pdf("Mine", 10)).unwrap();
+        let mut before = Session::new(crate::DrawableLoader);
+        let id = before.open(&path).unwrap();
+        before.edit_pages(id, |e| e.rotate(8, 1, 1)).unwrap();
+        // Another program's save, of the same length, renamed over it; the app looks and hears.
+        let incoming = dir.join("doc.incoming");
+        std::fs::write(&incoming, pdf("Theirs", 10)).unwrap();
+        std::fs::rename(&incoming, &path).unwrap();
+        before.apply_file_status(id, record::look_at_file(&path, before.tabs().own_stamp(id)));
+        assert_eq!(before.notices().fit(id), EditsFit::FileChanged);
+        let mut saved = before.to_record();
+        let journal = "journal-00000000000000ab.log";
+        saved.tabs[0].journal = Some(journal.into());
+        let mut edits = PageEdits::new(10);
+        edits.rotate(8, 1, 1).unwrap();
+        let restored = recto_session::RestoredEdits {
+            edits,
+            seq: 1,
+            lost_lines: false,
+            rolled_off: false,
+        };
+        let mut after = Session::new(crate::DrawableLoader);
+        after
+            .restore(&saved, std::collections::HashMap::from([(journal.to_string(), restored)]))
+            .unwrap();
+        let access = Mutex::new(after);
+        let tab = format!("#{}", id.0);
+        for (words, code) in [
+            (vec!["find", "Theirs"], "file_changed"),
+            (vec!["search", "Theirs", "--tab", &tab], "file_changed"),
+            (vec!["save", "--tab", &tab], "file_changed"),
+            (vec!["text", "--page", "3", "--tab", &tab], "source_changed"),
+        ] {
+            let owned: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
+            let command = crate::parse(&crate::table::parse_cli(&owned).unwrap().wire()).unwrap();
+            let refused =
+                crate::execute(&access, crate::Actor::Agent(crate::Level::Full), &command, &mut Vec::new()).expect_err(&format!("{words:?} refused at once"));
+            assert_eq!(refused.code, code, "{words:?}: {refused:?}");
+            assert!(!refused.message.is_empty(), "{words:?}: with its reason");
+            assert!(!format!("{refused:?}").contains("Theirs page"), "{words:?}: nothing of the other version");
+        }
+    }
 }

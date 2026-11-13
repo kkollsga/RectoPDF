@@ -229,6 +229,39 @@ fn the_edits_own_version_back_under_another_notice_is_news() {
     assert_eq!(bed.s.notices().fit(a), EditsFit::Fit);
 }
 
+/// Failure (the window after a restart): only the notice went in the record, and history rolling off had put its own over "changed", so the tab came back
+/// with its edits' stamp and nothing saying the file changed under them: `fit` said they fitted until a look or read landed. The record says what the tab
+/// said, and the restored tab's edits don't fit until a look says they do: here, the version they were made on, found back.
+#[test]
+fn a_restored_tab_whose_file_changed_under_its_edits_doesnt_fit_till_a_look_says_so() {
+    let (mut bed, a, _b) = Bed::new(10);
+    bed.s.edit_pages(a, |e| e.rotate(8, 1, 1)).unwrap();
+    bed.write_journal();
+    let made_on = bed.stamp_now();
+    replace_file(&bed.path(), b"v2, saved by another app");
+    assert!(bed.s.apply_file_status(a, record::look_at_file(&bed.path(), Some(made_on))));
+    bed.s.tabs_mut().tab_mut(a).unwrap().file.set_notice(Some(FileNotice::HistoryRolledOff));
+    let saved = bed.s.to_record();
+    let journal = saved.tabs.iter().find(|tab| tab.id == a.0).and_then(|tab| tab.journal.clone()).unwrap();
+    let mut edits = PageEdits::new(10);
+    edits.rotate(8, 1, 1).unwrap();
+    let restored = RestoredEdits {
+        edits,
+        seq: 1,
+        lost_lines: false,
+        rolled_off: false,
+    };
+    let mut s = Session::new(Shifting {
+        pages: Rc::clone(&bed.pages),
+        replace_with: Rc::clone(&bed.replace_with),
+    });
+    s.restore(&saved, HashMap::from([(journal, restored)])).unwrap();
+    assert_eq!(s.notices().fit(a), EditsFit::FileChanged, "at once, before any look or read");
+    assert!(!s.page_source(a, 2).unwrap().is_current());
+    assert!(s.apply_file_status(a, FileStatus::Same(made_on)), "the version they were made on, found: news");
+    assert_eq!(s.notices().fit(a), EditsFit::Fit);
+}
+
 /// Pinned for the page matcher (2026-11-13): a tab's list has gone to disk with the tab dormant, the file changes while it sleeps, and the tab is looked at,
 /// woken and read again. The list comes back whole from its journal, the journal stays, and the tab says its file changed: a list asleep is no less kept.
 #[test]

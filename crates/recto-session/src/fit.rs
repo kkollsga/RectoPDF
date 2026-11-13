@@ -72,14 +72,9 @@ pub(crate) struct FileNews {
 }
 
 impl FileNews {
-    /// What's said of a file and nothing more, as a record brings a tab back: whether its edits fit is found again by the restore's look and read.
-    pub(crate) fn saying(notice: Option<FileNotice>) -> Option<Box<Self>> {
-        notice.map(|notice| {
-            Box::new(Self {
-                notice: Some(notice),
-                elsewhere: None,
-            })
-        })
+    /// What a record brings back of a tab's file: what's said of it, and whether its edits are known not to fit it, which the restore's look and read then settle.
+    pub(crate) fn restored(notice: Option<FileNotice>, elsewhere: Option<Elsewhere>) -> Option<Box<Self>> {
+        (notice.is_some() || elsewhere.is_some()).then(|| Box::new(Self { notice, elsewhere }))
     }
 }
 
