@@ -19,20 +19,21 @@ fn searched_for(app: &HeadlessApp, action: UiAction) -> (u64, u64) {
 }
 
 /// The most records one look's searches may look at, a tab open: what the counts were after the fix (2026-11-13: 32 a look for a zoom or the sidebar
-/// toggled, to 54 for opening a file that's open already, at 100 tabs and at 1,000 alike), rounded up. Each is a few dozen lookups of the tab being read,
+/// toggled, to 54 for opening a file that's open already, at 50 tabs and at 400 alike), rounded up. Each is a few dozen lookups of the tab being read,
 /// as the action and the look read its pane, its facts and its notices, and each lookup searches the tabs in order up to it: the last opened, so all of them
-/// here. A walk that looks every tab up again adds half the tabs a tab for each lookup in it: the sidebar's notices made two, 100 records a tab at 100
-/// tabs and 1,000 at 1,000.
+/// here. A walk that looks every tab up again adds half the tabs a tab for each lookup in it: the sidebar's notices made two, 50 records a tab at 50
+/// tabs and 400 at 400.
 const SEARCHED_PER_TAB: u64 = 55;
 
 /// Failure: an action, or the look that publishes after it, looks a tab up by its number for each tab it walks (the sidebar's notices did, until
 /// 2026-11-13; and, with a password kept, the look's walk that keeps only the passwords of the files open did too), so its cost grows with the square of
 /// the tabs open: at 1,000 tabs about a million records more for every action. Held two ways: no action
-/// searches more than [`SEARCHED_PER_TAB`] records a tab a look, and none searches more a tab at 1,000 tabs than at 100, give or take a few lookups.
+/// searches more than [`SEARCHED_PER_TAB`] records a tab a look, and none searches more a tab at 400 tabs than at 50, give or take a few lookups. 50 and 400
+/// tabs, not 1,000: the same rule, seen in a third of the time.
 #[test]
 fn an_action_searches_the_tabs_no_more_a_tab_with_more_tabs() {
-    let mut per_tab_at_100 = Vec::new();
-    for tabs in [100_u64, 1000] {
+    let mut per_tab_at_50 = Vec::new();
+    for tabs in [50_u64, 400] {
         let disk = Disk::new();
         let files: Vec<_> = (1..tabs).map(|at| disk.pdf(&format!("f{at:04}.pdf"), 3)).collect();
         let app = disk.start();
@@ -72,11 +73,11 @@ fn an_action_searches_the_tabs_no_more_a_tab_with_more_tabs() {
                 "{name} at {tabs} tabs searched {searched} records, over {SEARCHED_PER_TAB} a tab: something looks a tab up again for each tab it walks"
             );
             let per_tab = searched / tabs;
-            match per_tab_at_100.get(at) {
-                None => per_tab_at_100.push(per_tab),
-                Some(&at_100) => assert!(
-                    per_tab <= at_100 + 5,
-                    "{name} searched {per_tab} records a tab at {tabs} tabs, {at_100} at 100: its cost grows with the tabs it isn't about"
+            match per_tab_at_50.get(at) {
+                None => per_tab_at_50.push(per_tab),
+                Some(&at_50) => assert!(
+                    per_tab <= at_50 + 5,
+                    "{name} searched {per_tab} records a tab at {tabs} tabs, {at_50} at 50: its cost grows with the tabs it isn't about"
                 ),
             }
         }
