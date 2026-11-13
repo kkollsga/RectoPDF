@@ -182,7 +182,6 @@ fn a_long_session_stays_flat() {
         wakes.len()
     );
     println!("wakes with a bare page and nothing to show them with, which is allowed until the renderer answers: {unowed_bare}");
-    assert!(no_first_frame.is_empty(), "a wake never got its first frame:\n{}", no_first_frame.join("\n"));
     if !bare.is_empty() {
         let said: Vec<String> = bare
             .iter()
@@ -200,6 +199,7 @@ fn a_long_session_stays_flat() {
             load()
         );
     }
+    assert!(no_first_frame.is_empty(), "a wake never got its first frame:\n{}", no_first_frame.join("\n"));
     let report = ok(&["qa", "state"]);
     let dormant = &report["record"]["sleep"]["gone_dormant"]["left_alone"];
     assert!(dormant.as_u64().unwrap() >= TABS as u64 / 2, "tabs did go dormant: {dormant}");
