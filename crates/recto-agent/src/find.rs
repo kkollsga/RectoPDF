@@ -538,7 +538,7 @@ pub trait Finding: Send + Sync {
 }
 
 mod command;
-pub(crate) use command::{Asked, command};
+pub(crate) use command::command;
 
 /// Starts finding `query` in the document being read, in the background if this session can, and otherwise here, to the end. Puts it in the Find field and opens Find. Says which run it is. **The one way a query starts,** for `recto find` and the app's field alike.
 pub fn begin<A: crate::SessionAccess>(access: &A, query: &str) -> Result<u64, AgentError> {

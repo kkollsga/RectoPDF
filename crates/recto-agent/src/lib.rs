@@ -793,12 +793,15 @@ fn one_based(page: u32) -> Result<u32, AgentError> {
         .ok_or_else(|| AgentError::new("no_such_page", "Pages are numbered from 1.", exit::NOT_FOUND))
 }
 
+/// The refusal of a limit of none.
+pub(crate) fn bad_limit() -> AgentError {
+    AgentError::new("bad_limit", "A limit has to be at least 1.", exit::FAILED).then("Leave it out to get the default, or ask for 1 or more.")
+}
+
 /// How many a command should give: what was asked, up to the most it gives, or its default. Asking for none is refused: it can't be what was meant, and answering with one would be a guess.
 pub(crate) fn positive_limit(limit: Option<u32>, default: u32, max: u32) -> Result<usize, AgentError> {
     match limit {
-        Some(0) => {
-            Err(AgentError::new("bad_limit", "A limit has to be at least 1.", exit::FAILED).then("Leave it out to get the default, or ask for 1 or more."))
-        }
+        Some(0) => Err(bad_limit()),
         Some(limit) => Ok(limit.min(max) as usize),
         None => Ok(default.min(max) as usize),
     }
@@ -1783,10 +1786,7 @@ mod tests {
                 rank: false,
                 context: None,
             }),
-            Command::from(crate::commands::finding::Find {
-                query: Some("x".into()),
-                ..Default::default()
-            }),
+            Command::from(crate::commands::finding::Find::from(crate::commands::finding::FindAsk::Query("x".into()))),
             Command::from(crate::commands::text::Index { tab: tab(), agent: false }),
             Command::from(crate::commands::view::Palette {
                 query: Some("zoom".into()),
@@ -3552,29 +3552,19 @@ mod protected_tests {
                 }),
                 Command::from(crate::commands::linking::Back { tab: tab.clone() }),
                 Command::from(crate::commands::linking::Forward { tab: tab.clone() }),
-                Command::from(crate::commands::finding::Find {
-                    query: Some("Secret".into()),
-                    ..Default::default()
-                }),
-                Command::from(crate::commands::finding::Find {
-                    next: true,
-                    ..Default::default()
-                }),
+                Command::from(crate::commands::finding::Find::from(crate::commands::finding::FindAsk::Query("Secret".into()))),
+                Command::from(crate::commands::finding::Find::from(crate::commands::finding::FindAsk::Step {
+                    forward: true,
+                    jump: false,
+                })),
                 Command::from(crate::commands::finding::Find::default()),
                 // The forms C5g added: a step as a jump, a hit by its index, and opening Find, which finds the draft again.
-                Command::from(crate::commands::finding::Find {
-                    next: true,
+                Command::from(crate::commands::finding::Find::from(crate::commands::finding::FindAsk::Step {
+                    forward: true,
                     jump: true,
-                    ..Default::default()
-                }),
-                Command::from(crate::commands::finding::Find {
-                    hit: Some(0),
-                    ..Default::default()
-                }),
-                Command::from(crate::commands::finding::Find {
-                    open: true,
-                    ..Default::default()
-                }),
+                })),
+                Command::from(crate::commands::finding::Find::from(crate::commands::finding::FindAsk::Hit(0))),
+                Command::from(crate::commands::finding::Find::from(crate::commands::finding::FindAsk::Open)),
                 Command::from(crate::commands::editing::Edits { tab: tab.clone() }),
                 Command::from(crate::commands::reading::Signatures { tab: tab.clone() }),
                 Command::from(crate::commands::tabs::Open {

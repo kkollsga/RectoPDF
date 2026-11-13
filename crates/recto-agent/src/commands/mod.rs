@@ -295,6 +295,7 @@ family! {
         #[line(view::line::View)]
         View(view::View),
         Palette(view::Palette),
+        #[line(finding::line::Find)]
         Find(finding::Find),
     }
 }

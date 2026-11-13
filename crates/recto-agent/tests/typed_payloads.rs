@@ -8,6 +8,7 @@
 use recto_agent::commands::compare::Compare;
 use recto_agent::commands::contents::{ContentsShow, Which};
 use recto_agent::commands::edit_mode::EditMode;
+use recto_agent::commands::finding::{Find, FindAsk};
 use recto_agent::commands::updates::{Settings, UpdateDevBuilds};
 use recto_agent::commands::view::{PaperChoice, Shown, View};
 use recto_agent::commands::words::OnOff;
@@ -42,6 +43,24 @@ fn every_typed_command() -> Vec<Command> {
     for tab in ["#2", "report", "active"] {
         all.push(Compare::Toggle(tab.into()).into());
         all.push(Compare::Reading(tab.into()).into());
+    }
+    let asks = [
+        FindAsk::Look,
+        FindAsk::Query("words".into()),
+        FindAsk::Query(String::new()),
+        FindAsk::Step { forward: true, jump: false },
+        FindAsk::Step { forward: false, jump: false },
+        FindAsk::Step { forward: true, jump: true },
+        FindAsk::Step { forward: false, jump: true },
+        FindAsk::Hit(0),
+        FindAsk::Hit(7),
+        FindAsk::Open,
+        FindAsk::Close,
+    ];
+    for ask in asks {
+        for limit in [None, std::num::NonZeroU32::new(1), std::num::NonZeroU32::new(200)] {
+            all.push(Find { ask: ask.clone(), limit }.into());
+        }
     }
     let maybe = |words: &[Option<&str>]| words.iter().map(|word| word.map(str::to_string)).collect::<Vec<_>>();
     for paper in [None].into_iter().chain(PaperChoice::ALL.map(Some)) {
@@ -79,6 +98,7 @@ fn same(a: &Command, b: &Command) -> bool {
         (Command::Updates(Updates::Settings(a)), Command::Updates(Updates::Settings(b))) => a == b,
         (Command::Move(Move::View(a)), Command::Move(Move::View(b))) => a == b,
         (Command::Move(Move::Compare(a)), Command::Move(Move::Compare(b))) => a == b,
+        (Command::Move(Move::Find(a)), Command::Move(Move::Find(b))) => a == b,
         _ => false,
     }
 }
@@ -143,6 +163,12 @@ const MALFORMED: &[(&str, &str)] = &[
     (r##"{"cmd":"compare","off":true,"toggle":"#2"}"##, "--off"),
     (r##"{"cmd":"compare","tabs":"#1,#2","reading":"#2"}"##, "--reading"),
     (r##"{"cmd":"compare","toggle":"#2","sync":"on"}"##, "--toggle"),
+    (r#"{"cmd":"find","query":"q","next":true}"#, "more than one thing"),
+    (r#"{"cmd":"find","next":true,"previous":true}"#, "more than one thing"),
+    (r#"{"cmd":"find","open":true,"close":true}"#, "more than one thing"),
+    (r#"{"cmd":"find","hit":2,"close":true}"#, "more than one thing"),
+    (r#"{"cmd":"find","jump":true}"#, "--jump"),
+    (r#"{"cmd":"find","jump":true,"hit":1}"#, "--jump"),
 ];
 
 /// Failure (owner's decision on R2.5, D2 b): a malformed request is refused one way at one level and another at the next, or for the person and an agent,
@@ -164,7 +190,7 @@ fn a_malformed_request_is_usage_at_every_level_and_says_only_its_own_words() {
             assert!(!said.contains(told), "{line}: the refusal tells `{told}`: {said}");
         }
     }
-    // The CLI refuses the same words with the same code, before anything is sent.
+    // The CLI refuses the same words with the same code: a word by its row, before anything is sent, and a combination as its line is read.
     for words in [
         &["edit", "mode", "sideways"][..],
         &["contents", "show", "theirs"],
@@ -173,8 +199,11 @@ fn a_malformed_request_is_usage_at_every_level_and_says_only_its_own_words() {
         &["view", "--paper", "purple"],
         &["view", "--layout", "three-up"],
         &["compare", "--sync", "maybe"],
+        &["find", "--next", "--previous"],
+        &["find", "--jump"],
     ] {
         let words: Vec<String> = words.iter().map(|word| (*word).to_string()).collect();
-        assert_eq!(table::parse_cli(&words).expect_err("refused").code, "usage", "{words:?}");
+        let refused = table::parse_cli(&words).and_then(|line| line.command()).expect_err("refused");
+        assert_eq!(refused.code, "usage", "{words:?}");
     }
 }

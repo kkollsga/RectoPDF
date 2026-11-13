@@ -4,31 +4,143 @@ use super::{Cmd, Cx, row_access};
 use crate::human::{number, text};
 use crate::table::*;
 use crate::*;
-use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fmt::Write;
+use std::num::NonZeroU32;
 
 /// The app's Find, in the document being read: a query, a step to the next or previous hit (as a jump, or not), a hit by its index, opening or closing.
-/// With nothing, only says.
-#[derive(Clone, Debug, Default, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+/// With nothing, only says. One thing at a time, and a jump only with a step: what can't go together can't be made.
+#[derive(Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(into = "line::Find")]
 pub struct Find {
-    #[serde(default)]
-    pub query: Option<String>,
-    #[serde(default)]
-    pub next: bool,
-    #[serde(default)]
-    pub previous: bool,
-    #[serde(default)]
-    pub jump: bool,
-    #[serde(default)]
-    pub hit: Option<u32>,
-    #[serde(default)]
-    pub open: bool,
-    #[serde(default)]
-    pub close: bool,
-    #[serde(default)]
-    pub limit: Option<u32>,
+    pub ask: FindAsk,
+    /// Most hits in the answer: at least one.
+    pub limit: Option<NonZeroU32>,
+}
+
+/// What `find` is asked to do.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum FindAsk {
+    /// Only says where Find stands.
+    #[default]
+    Look,
+    /// Finds these words in the document being read.
+    Query(String),
+    /// To the next hit or the previous one from where the reader is; as a jump, marked for Back, as Return in the field does, or not, as ⌘G does.
+    Step {
+        forward: bool,
+        jump: bool,
+    },
+    /// The hit with this index in the list, as a click on its row does.
+    Hit(u32),
+    /// Opens Find, with what was typed last found again.
+    Open,
+    Close,
+}
+
+/// `find` as it's written on the wire.
+pub mod line {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Find {
+        #[serde(default)]
+        pub query: Option<String>,
+        #[serde(default)]
+        pub next: bool,
+        #[serde(default)]
+        pub previous: bool,
+        #[serde(default)]
+        pub jump: bool,
+        #[serde(default)]
+        pub hit: Option<u32>,
+        #[serde(default)]
+        pub open: bool,
+        #[serde(default)]
+        pub close: bool,
+        #[serde(default)]
+        pub limit: Option<u32>,
+    }
+}
+
+/// Checked whole as it's read, in the order the run checked it before: the limit, then one thing at a time, then a jump only with a step.
+impl TryFrom<line::Find> for Find {
+    type Error = AgentError;
+    fn try_from(line: line::Find) -> Result<Self, AgentError> {
+        let line::Find {
+            query,
+            next,
+            previous,
+            jump,
+            hit,
+            open,
+            close,
+            limit,
+        } = line;
+        let limit = limit.map(|limit| NonZeroU32::new(limit).ok_or_else(bad_limit)).transpose()?;
+        let said = [query.is_some(), next || previous, hit.is_some(), open, close];
+        if said.iter().filter(|said| **said).count() > 1 || (next && previous) {
+            return Err(AgentError::new(
+                "usage",
+                "That's more than one thing at once: a query, a step, a hit, opening or closing.",
+                exit::USAGE,
+            )
+            .then("Find first, then `recto find --next`."));
+        }
+        if jump && !(next || previous) {
+            return Err(AgentError::new("usage", "`--jump` goes with `--next` or `--previous`.", exit::USAGE).then("`recto find --next --jump`."));
+        }
+        let ask = match (query, hit) {
+            (Some(query), _) => FindAsk::Query(query),
+            (None, Some(index)) => FindAsk::Hit(index),
+            (None, None) if next || previous => FindAsk::Step { forward: next, jump },
+            (None, None) if open => FindAsk::Open,
+            (None, None) if close => FindAsk::Close,
+            (None, None) => FindAsk::Look,
+        };
+        Ok(Self { ask, limit })
+    }
+}
+
+impl From<&Find> for line::Find {
+    fn from(asked: &Find) -> Self {
+        let mut line = Self {
+            limit: asked.limit.map(NonZeroU32::get),
+            ..Self::default()
+        };
+        match &asked.ask {
+            FindAsk::Look => {}
+            FindAsk::Query(query) => line.query = Some(query.clone()),
+            FindAsk::Step { forward, jump } => {
+                line.next = *forward;
+                line.previous = !*forward;
+                line.jump = *jump;
+            }
+            FindAsk::Hit(index) => line.hit = Some(*index),
+            FindAsk::Open => line.open = true,
+            FindAsk::Close => line.close = true,
+        }
+        line
+    }
+}
+
+impl From<Find> for line::Find {
+    fn from(asked: Find) -> Self {
+        Self::from(&asked)
+    }
+}
+
+impl std::fmt::Debug for Find {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        line::Find::from(self).fmt(f)
+    }
+}
+
+impl From<FindAsk> for Find {
+    fn from(ask: FindAsk) -> Self {
+        Self { ask, limit: None }
+    }
 }
 
 impl Cmd for Find {
@@ -52,7 +164,7 @@ impl Cmd for Find {
     }
     /// Not what's looked for: that's the document's business, as a search's words are.
     fn log_details(&self) -> Value {
-        let Self {
+        let line::Find {
             query,
             next,
             previous,
@@ -61,35 +173,11 @@ impl Cmd for Find {
             open,
             close,
             ..
-        } = self;
+        } = line::Find::from(self);
         json!({ "query": query.is_some(), "next": next, "previous": previous, "jump": jump, "hit": hit, "open": open, "close": close })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        let Self {
-            query,
-            next,
-            previous,
-            jump,
-            hit,
-            open,
-            close,
-            limit,
-        } = self;
-        find::command(
-            cx.access,
-            cx.actor,
-            &find::Asked {
-                query: query.as_deref(),
-                next: *next,
-                previous: *previous,
-                jump: *jump,
-                hit: *hit,
-                open: *open,
-                close: *close,
-                limit: *limit,
-            },
-            cx.events,
-        )
+        find::command(cx.access, cx.actor, &self.ask, self.limit, cx.events)
     }
     fn human(data: &Value) -> String {
         words(data)

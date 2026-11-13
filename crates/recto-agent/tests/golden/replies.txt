@@ -230,10 +230,6 @@
   reply {"cmd":"find","data":{"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
   events 
   words "Find is closed."
-{"cmd":"find","query":"q","next":true,"previous":true,"close":true,"limit":3}
-  reply {"cmd":"find","error":{"candidates":[],"code":"usage","exit":2,"message":"That's more than one thing at once: a query, a step, a hit, opening or closing.","next":"Find first, then `recto find --next`."},"ok":false,"v":1}
-  events 
-  words ""
 {"cmd":"find","query":null}
   reply {"cmd":"find","data":{"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
   events 
@@ -246,10 +242,6 @@
   reply {"cmd":"find","data":{"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
   events 
   words "Find is closed."
-["find","q",true,true,true,3]
-  reply {"cmd":"find","error":{"candidates":[],"code":"usage","exit":2,"message":"That's more than one thing at once: a query, a step, a hit, opening or closing.","next":"Find first, then `recto find --next`."},"ok":false,"v":1}
-  events 
-  words ""
 {"cmd":"compare"}
   reply {"cmd":"compare","data":{"comparing":false,"max_panes":3,"note":null,"panes":[],"sync":"off","sync_from":null},"ok":true,"v":1}
   events 

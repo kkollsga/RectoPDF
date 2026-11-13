@@ -10,28 +10,16 @@
 //!   brings the sidebar back.
 
 use super::*;
+use crate::commands::finding::FindAsk;
 use crate::{Actor, Effect, Event};
 use serde_json::{Value, json};
+use std::num::NonZeroU32;
 
 /// How long `recto find` waits for a query to finish before answering with what's found so far.
 const COMMAND_WAIT: Duration = Duration::from_secs(30);
 /// Hits in an answer, if not told otherwise, and at most.
 const DEFAULT_LISTED: u32 = 20;
 const MAX_LISTED: u32 = 200;
-
-/// What `recto find` was asked.
-pub(crate) struct Asked<'a> {
-    pub query: Option<&'a str>,
-    pub next: bool,
-    pub previous: bool,
-    /// The step goes to the hit as a jump, marked for Back, as Return in the field does.
-    pub jump: bool,
-    /// A hit by its index in the list, as a click on its row.
-    pub hit: Option<u32>,
-    pub open: bool,
-    pub close: bool,
-    pub limit: Option<u32>,
-}
 
 /// Results kept for a session that can't find in the background, such as `recto local`: one command's worth.
 struct Here(std::sync::Mutex<Results>);
@@ -64,9 +52,14 @@ struct Run<'a, A> {
 
 /// `recto find`: with a query, finds it in the document being read; `--next` and `--previous` go to a hit from where the reader is, `--jump` as a jump;
 /// `--hit` goes to one by its index; `--open` opens Find with what was typed last found again; `--close` closes it. Always says where Find stands.
-pub(crate) fn command<A: crate::SessionAccess>(access: &A, actor: Actor, asked: &Asked<'_>, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-    let listed = crate::positive_limit(asked.limit, DEFAULT_LISTED, MAX_LISTED)?;
-    one_thing(asked)?;
+pub(crate) fn command<A: crate::SessionAccess>(
+    access: &A,
+    actor: Actor,
+    asked: &FindAsk,
+    limit: Option<NonZeroU32>,
+    events: &mut Vec<Event>,
+) -> Result<Value, AgentError> {
+    let listed = crate::positive_limit(limit.map(NonZeroU32::get), DEFAULT_LISTED, MAX_LISTED)?;
     let here = Here(std::sync::Mutex::new(Results::default()));
     let run = Run {
         access,
@@ -75,56 +68,36 @@ pub(crate) fn command<A: crate::SessionAccess>(access: &A, actor: Actor, asked: 
         here: &here,
         deadline: Instant::now() + COMMAND_WAIT,
     };
-    let went = if asked.close {
-        // Announced when Find changed, and only then: closing it closed already changes nothing.
-        let before = access.with(|s| s.viewing().find().clone());
-        close(access);
-        if access.with(|s| *s.viewing().find() != before) {
-            events.push(Event::FindClosed);
+    let went = match asked {
+        FindAsk::Close => {
+            // Announced when Find changed, and only then: closing it closed already changes nothing.
+            let before = access.with(|s| s.viewing().find().clone());
+            close(access);
+            if access.with(|s| *s.viewing().find() != before) {
+                events.push(Event::FindClosed);
+            }
+            None
         }
-        None
-    } else if asked.open {
-        run.open(events)?;
-        None
-    } else if let Some(query) = asked.query {
-        run.query(query, events)?;
-        None
-    } else if asked.next || asked.previous {
-        let going = if asked.jump { Going::Jump(actor.author()) } else { Going::Step };
-        run.step(asked.next, going, events)?
-    } else if let Some(index) = asked.hit {
-        run.hit(index as usize, events)?
-    } else {
-        None
+        FindAsk::Open => {
+            run.open(events)?;
+            None
+        }
+        FindAsk::Query(query) => {
+            run.query(query, events)?;
+            None
+        }
+        FindAsk::Step { forward, jump } => {
+            let going = if *jump { Going::Jump(actor.author()) } else { Going::Step };
+            run.step(*forward, going, events)?
+        }
+        FindAsk::Hit(index) => run.hit(*index as usize, events)?,
+        FindAsk::Look => None,
     };
     // The window draws what the session publishes, and reads no answer.
     if !access.answer_read() {
         return Ok(Value::Null);
     }
     Ok(answer(access, run.finding, listed, went))
-}
-
-/// One thing at a time: a query, a step, a hit, opening or closing.
-fn one_thing(asked: &Asked<'_>) -> Result<(), AgentError> {
-    let said = [
-        asked.query.is_some(),
-        asked.next || asked.previous,
-        asked.hit.is_some(),
-        asked.open,
-        asked.close,
-    ];
-    if said.iter().filter(|said| **said).count() > 1 || (asked.next && asked.previous) {
-        return Err(AgentError::new(
-            "usage",
-            "That's more than one thing at once: a query, a step, a hit, opening or closing.",
-            exit::USAGE,
-        )
-        .then("Find first, then `recto find --next`."));
-    }
-    if asked.jump && !(asked.next || asked.previous) {
-        return Err(AgentError::new("usage", "`--jump` goes with `--next` or `--previous`.", exit::USAGE).then("`recto find --next --jump`."));
-    }
-    Ok(())
 }
 
 /// Whether a query's running.

@@ -7,7 +7,8 @@ use super::{Inner, lock, person};
 use crate::find::{self as app, FindHandle};
 pub use crate::find::{FIELD_HEIGHT, FindCall, ROW_HEIGHT, STATUS_HEIGHT, heights};
 pub use crate::find::{FindRow, FindRowKind, FindView};
-use recto_agent::commands::{Move, finding::Find};
+use recto_agent::commands::Move;
+use recto_agent::commands::finding::{Find, FindAsk};
 use recto_agent::{Command, Effect, Event};
 use serde_json::Value;
 use std::sync::Arc;
@@ -48,9 +49,9 @@ pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
     };
     {
         let mut field = lock(&inner.tools.find_field);
-        if asked.close {
+        if asked.ask == FindAsk::Close {
             field.clear_pending();
-        } else if asked.query.is_some() || asked.open || asked.next || asked.previous {
+        } else if matches!(asked.ask, FindAsk::Query(_) | FindAsk::Open | FindAsk::Step { .. }) {
             let too_long = recto_agent::find::too_long();
             field.set_note(
                 ran.refused()
@@ -67,15 +68,14 @@ pub fn row<'a>(_: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option
     use super::menu_rows::Row;
     Some(match asked.action.as_ref()? {
         crate::menus::Action::FindOpen => Row::Command {
-            command: Find { open: true, ..Find::default() }.into(),
+            command: Find::from(FindAsk::Open).into(),
             when_run: None,
             host: super::HostAction::FocusFind,
         },
-        crate::menus::Action::FindStep(forward) => Row::command(Find {
-            next: *forward,
-            previous: !*forward,
-            ..Find::default()
-        }),
+        crate::menus::Action::FindStep(forward) => Row::command(Find::from(FindAsk::Step {
+            forward: *forward,
+            jump: false,
+        })),
         _ => return None,
     })
 }
@@ -83,58 +83,28 @@ pub fn row<'a>(_: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option
 impl Inner {
     /// What's in the Find field now, as it's typed: `find <query>`.
     pub fn find_typed_for_person(self: &Arc<Self>, text: String) {
-        person::submit(
-            self,
-            Find {
-                query: Some(text),
-                ..Find::default()
-            }
-            .into(),
-        );
+        person::submit(self, Find::from(FindAsk::Query(text)).into());
     }
 
     /// ⌘F, or the field's own button: `find --open`, which shows the sidebar Find is in.
     pub fn find_open_for_person(self: &Arc<Self>) {
-        person::submit(self, Find { open: true, ..Find::default() }.into());
+        person::submit(self, Find::from(FindAsk::Open).into());
     }
 
     /// Escape in the field, or its close button: `find --close`.
     pub fn find_close_for_person(self: &Arc<Self>) {
-        person::submit(
-            self,
-            Find {
-                close: true,
-                ..Find::default()
-            }
-            .into(),
-        );
+        person::submit(self, Find::from(FindAsk::Close).into());
     }
 
     /// ⌘G and ⇧⌘G, a step, or Return and ⇧Return in the field, a jump, so Back comes here again: `find --next|--previous [--jump]`.
     pub fn find_step_for_person(self: &Arc<Self>, forward: bool, jump: bool) {
-        person::submit(
-            self,
-            Find {
-                next: forward,
-                previous: !forward,
-                jump,
-                ..Find::default()
-            }
-            .into(),
-        );
+        person::submit(self, Find::from(FindAsk::Step { forward, jump }).into());
     }
 
     /// A click on a row of Find's list: `find --hit N`, the hit that row is. A page's row is no hit, and does nothing.
     pub fn find_choose_for_person(self: &Arc<Self>, row: u32) {
         if let Some(index) = handle(self, |find| find.hit_of_row(row)).and_then(|index| u32::try_from(index).ok()) {
-            person::submit(
-                self,
-                Find {
-                    hit: Some(index),
-                    ..Find::default()
-                }
-                .into(),
-            );
+            person::submit(self, Find::from(FindAsk::Hit(index)).into());
         }
     }
 }
