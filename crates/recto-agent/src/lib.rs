@@ -179,19 +179,8 @@ pub enum Command {
     Read(commands::Read),
     #[serde(skip)]
     Qa(commands::Qa),
-    /// Puts a tab to sleep now, as being left alone for five minutes would.
-    SessionSleep {
-        #[serde(default = "active_tab")]
-        tab: String,
-    },
-    /// What the state record holds and what's become of it.
-    SessionShow {},
-    /// Writes the state record now and reads it back.
-    SessionSave {},
-    /// Puts the session back as the state record has it.
-    SessionRestore {},
-    /// Whether this is a safe moment to hand off to a new version.
-    SessionCheck {},
+    #[serde(skip)]
+    Record(commands::Record),
     /// What's running, what's on offer, and how the last update went.
     UpdateStatus {},
     /// Looks for a new version now, and says what it found.
@@ -615,9 +604,7 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
         Command::Rights(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Session(command) => command.run(&mut commands::Cx { access, level, events }),
         Command::Qa(command) => command.run(&mut commands::Cx { access, level, events }),
-        Command::SessionSleep { .. } | Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {} | Command::SessionCheck {} => {
-            Err(AgentError::new("needs_server", "This needs the long-running session.", exit::NOT_RUNNING))
-        }
+        Command::Record(command) => command.run(&mut commands::Cx { access, level, events }),
     }
 }
 
@@ -1639,7 +1626,7 @@ mod tests {
             Command::from(crate::commands::editing::Redo { tab: tab() }),
             Command::from(crate::commands::editing::Discard { tab: tab() }),
             Command::from(crate::commands::editing::ClearHistory { tab: tab() }),
-            Command::SessionSleep { tab: tab() },
+            Command::from(crate::commands::record::SessionSleep { tab: tab() }),
             Command::from(crate::commands::saving::Save {
                 tab: tab(),
                 out: None,
@@ -1684,10 +1671,10 @@ mod tests {
                 timeout_ms: None,
             }),
             Command::from(commands::session::Stop {}),
-            Command::SessionShow {},
-            Command::SessionSave {},
-            Command::SessionRestore {},
-            Command::SessionCheck {},
+            Command::from(crate::commands::record::SessionShow {}),
+            Command::from(crate::commands::record::SessionSave {}),
+            Command::from(crate::commands::record::SessionRestore {}),
+            Command::from(crate::commands::record::SessionCheck {}),
             Command::UpdateStatus {},
             Command::UpdateCheck {},
             Command::UpdateInstall { zip: None, now: false },

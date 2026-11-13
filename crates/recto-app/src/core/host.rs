@@ -2,6 +2,8 @@
 
 use super::*;
 use recto_agent::commands::Move;
+use recto_agent::commands::Record;
+use recto_agent::commands::record::SessionSleep;
 use recto_agent::commands::view::{Palette, View};
 
 /// The session the socket and the app share.
@@ -42,12 +44,12 @@ impl AppHost {
 
     pub fn record_command(&self, level: Level, command: &Command) -> Result<Value, AgentError> {
         match command {
-            Command::SessionShow {} => {
+            Command::Record(Record::SessionShow(_)) => {
                 let notice = lock(&self.notice).clone();
                 let kept = kept_json(&self.saver.store, notice.as_deref().and_then(record::notices::words));
                 Ok(self.session.with_session(|session| recto_agent::session_show_json(session, level, kept)))
             }
-            Command::SessionSleep { tab } => {
+            Command::Record(Record::SessionSleep(SessionSleep { tab })) => {
                 let id = self.session.with_session(|session| recto_agent::select_tab(session, tab))?;
                 self.core.push(CoreCall::SleepTabs(vec![id], sleeper::Why::Asked));
                 self.core.flush(Duration::from_secs(5));
@@ -56,13 +58,13 @@ impl AppHost {
                     .with_session(|session| (session.warm_tabs().any(|other| other == id), session.list_is_asleep(id)));
                 Ok(json!({ "tab": id.0, "dormant": !warm, "list_asleep": list_asleep }))
             }
-            Command::SessionSave {} => {
+            Command::Record(Record::SessionSave(_)) => {
                 let report = self.saver.flush(false, Duration::from_secs(5)).map_err(store_error)?;
                 Ok(
                     json!({ "saved": true, "tabs": report.tabs, "edited_tabs": report.edited_tabs, "record_bytes": report.record_bytes, "journal_bytes": report.journal_bytes, "wrote_bytes": report.wrote_bytes, "total_ms": report.total_us / 1000, "total_us": report.total_us, "write_us": report.write_us, "force_us": report.force_us, "verify_us": report.verify_us }),
                 )
             }
-            Command::SessionRestore {} => {
+            Command::Record(Record::SessionRestore(_)) => {
                 if level < Level::Full && self.session.with_session(|session| session.holds_owner_edits()) {
                     return Err(recto_agent::restore_would_lose_owners_edits());
                 }
@@ -84,9 +86,9 @@ impl Host for AppHost {
         let asks_only = matches!(
             command,
             Command::Qa(_)
-                | Command::SessionCheck {}
-                | Command::SessionShow {}
-                | Command::SessionSave {}
+                | Command::Record(Record::SessionCheck(_))
+                | Command::Record(Record::SessionShow(_))
+                | Command::Record(Record::SessionSave(_))
                 | Command::UpdateStatus {}
                 | Command::UpdateDevBuilds { set: None }
                 | Command::Settings { auto_update: None }
@@ -104,7 +106,10 @@ impl Host for AppHost {
         }
         if matches!(
             command,
-            Command::SessionSleep { .. } | Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {}
+            Command::Record(Record::SessionSleep(_))
+                | Command::Record(Record::SessionShow(_))
+                | Command::Record(Record::SessionSave(_))
+                | Command::Record(Record::SessionRestore(_))
         ) {
             let result = self.record_command(level, command);
             if !asks_only {
@@ -210,7 +215,7 @@ impl AppHost {
             }
             return inner.update_command(command);
         }
-        if matches!(command, Command::SessionCheck {}) {
+        if matches!(command, Command::Record(Record::SessionCheck(_))) {
             let check = hand_off_check(self);
             let busy: Vec<Value> = check.busy.iter().map(|item| json!({ "code": item.code, "message": item.message })).collect();
             return Ok(json!({ "safe": check.safe, "busy": busy, "seconds_since_input": check.seconds_since_input }));

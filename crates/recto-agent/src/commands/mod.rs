@@ -13,6 +13,7 @@ pub mod linking;
 pub mod measure;
 pub mod qa;
 pub mod reading;
+pub mod record;
 pub mod saving;
 pub mod session;
 pub mod sync;
@@ -262,6 +263,17 @@ family! {
 }
 
 family! {
+    /// The state record, which each host keeps: what it holds, a tab put to sleep, writing it, reading it back, and whether it's a safe moment to hand off.
+    pub enum Record {
+        SessionShow(record::SessionShow),
+        SessionSleep(record::SessionSleep),
+        SessionSave(record::SessionSave),
+        SessionRestore(record::SessionRestore),
+        SessionCheck(record::SessionCheck),
+    }
+}
+
+family! {
     /// Testing the app: what an app started in QA mode shows, and making it do what the UI does. Their rows are [`qa::ROWS_QA`].
     pub enum Qa {
         QaRead(qa::QaRead),
@@ -346,6 +358,7 @@ const FAMILIES: &[(&[&str], Reads, Words)] = &[
     (Rights::TAGS, Rights::parse, Rights::human),
     (Session::TAGS, Session::parse, Session::human),
     (Qa::TAGS, Qa::parse, Qa::human),
+    (Record::TAGS, Record::parse, Record::human),
 ];
 
 /// The family that reads a wire name, if one does. A name no family has is one of the commands not moved here yet, or none.
@@ -370,13 +383,7 @@ const PARTS: &[&[&[Spec]]] = &[
     &[table::CLI_PERMISSION_SET, table::CLI_SERVE],
     Session::ROWS,
     &[table::CLI_LOCAL],
-    &[
-        table::ROWS_SESSION_SHOW,
-        table::ROWS_SESSION_SLEEP,
-        table::ROWS_SESSION_SAVE,
-        table::ROWS_SESSION_RESTORE,
-        table::ROWS_SESSION_CHECK,
-    ],
+    Record::ROWS,
     &[
         table::ROWS_UPDATE_STATUS,
         table::ROWS_UPDATE_CHECK,
