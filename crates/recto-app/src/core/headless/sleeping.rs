@@ -504,6 +504,22 @@ fn a_tab_shown_again_before_its_queued_sleep_file_is_written_has_none_written() 
     drop(app.quit());
 }
 
+/// Whatever the writer's taking now is written: nothing in flight at two looks 5 ms apart, so one it was about to take has been taken and written. Bounded.
+fn writes_landed(app: &crate::testkit::headless::HeadlessApp) {
+    let began = std::time::Instant::now();
+    let idle = || app.record_json()["sleep"]["leaving"]["in_flight"] == false;
+    while began.elapsed() < crate::testkit::headless::WAIT_LIMIT {
+        if idle() {
+            std::thread::sleep(std::time::Duration::from_millis(5)); // ratchet: poll
+            if idle() {
+                return;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1)); // ratchet: poll
+    }
+    panic!("a sleep file stayed in flight: {}", app.record_json()["sleep"]["leaving"]);
+}
+
 /// **Measures what switching tabs writes and how tabs wake,** asserting nothing: `tabs` documents opened, then the first `cycle` of them shown in a seeded
 /// random order, each for `dwell` milliseconds of the app's clock (low to high), until `total` has gone by, the window up, and with `reading` moved to
 /// another page before it's left; with the cool-down at `wait` and the hour's cap at `cap`. Each showing is classed as from warm (no wake), from a picture, or bare. Synthetic pages: their files are a few KB, a real page's about
@@ -553,6 +569,9 @@ fn switching(tabs: usize, cycle: usize, dwell: (u64, u64), total: u64, wait: u64
         let dwell = dwell.0 + next() % (dwell.1 - dwell.0 + 1);
         app.advance(dwell);
         elapsed += dwell;
+        // The clock jumps the whole dwell at once, so whatever came due in it is written now, just as the next tab's shown: as a person's dwell is spent, not
+        // jumped, those writes are let land first (a tab shown in the milliseconds its file is being written wakes from the file before).
+        writes_landed(&app);
     }
     app.advance(wait + 1);
     app.wait_until("the queue written", || app.record_json()["sleep"]["leaving"]["writer"] == false);
