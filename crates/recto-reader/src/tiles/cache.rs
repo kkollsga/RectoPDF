@@ -368,7 +368,7 @@ impl Reader {
         }
         self.cache.entries.insert(id, entry);
         if let Some(doc) = self.docs.get_mut(&tab) {
-            doc.seen.insert(page);
+            doc.note_seen(page);
         }
         id
     }
