@@ -215,7 +215,7 @@ impl<L: DocLoader> Session<L> {
         if self.journals.kept_and_readable() {
             let others: Vec<TabId> = self.lists.ids().filter(|id| !self.on_screen(*id)).collect();
             for id in others {
-                self.put_list_to_sleep(id);
+                self.sleeper().put_list_to_sleep(id);
             }
         }
         Ok(())

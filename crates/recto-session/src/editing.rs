@@ -49,10 +49,10 @@ impl<L: DocLoader> Session<L> {
         if self.saves.is_saving(id) {
             return Err(SessionError::Saving);
         }
-        if !self.wake_list(id) {
+        if !self.sleeper().wake_list(id) {
             return Err(SessionError::EditsUnreadable);
         }
-        self.touch(id);
+        self.sleeper().touch(id);
         let tab = self.tabs.tab(id).ok_or(SessionError::NoSuchTab)?;
         if tab.renderer_only {
             return Err(SessionError::RendererOnly);
@@ -131,7 +131,7 @@ impl<L: DocLoader> Session<L> {
                     }
                 }
                 // Looked at and not read yet: what's held isn't of it, and it's read when it's next shown.
-                None => self.forget_read(id),
+                None => self.sleeper().forget_read(id),
             }
             if let Some(tab) = self.tabs.tab_mut(id) {
                 tab.file.take_version(seen);
@@ -292,10 +292,10 @@ impl<L: DocLoader> Session<L> {
 
     /// Reverses the last page edit. Returns false with nothing to undo.
     pub fn undo_edit(&mut self, id: TabId) -> bool {
-        if self.saves.is_saving(id) || !self.wake_list(id) {
+        if self.saves.is_saving(id) || !self.sleeper().wake_list(id) {
             return false;
         }
-        self.touch(id);
+        self.sleeper().touch(id);
         let place = self.place_of(id);
         let undone = self.lists.get_mut(id).is_some_and(PageEdits::undo);
         if undone {
@@ -338,10 +338,10 @@ impl<L: DocLoader> Session<L> {
         if self.saves.is_saving(id) {
             return Err(SessionError::Saving);
         }
-        if !self.wake_list(id) {
+        if !self.sleeper().wake_list(id) {
             return Err(SessionError::EditsUnreadable);
         }
-        self.touch(id);
+        self.sleeper().touch(id);
         let place = self.place_of(id);
         let may_push_owner = self.lists.may_push_owner(by);
         let Some(edits) = self.lists.get_mut(id) else { return Ok(false) };
@@ -359,10 +359,10 @@ impl<L: DocLoader> Session<L> {
 
     /// Repeats the last undone page edit. Returns false with nothing to redo.
     pub fn redo_edit(&mut self, id: TabId) -> bool {
-        if self.saves.is_saving(id) || !self.wake_list(id) {
+        if self.saves.is_saving(id) || !self.sleeper().wake_list(id) {
             return false;
         }
-        self.touch(id);
+        self.sleeper().touch(id);
         let place = self.place_of(id);
         let redone = self.lists.get_mut(id).is_some_and(PageEdits::redo);
         if redone {

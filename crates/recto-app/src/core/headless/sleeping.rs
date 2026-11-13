@@ -66,7 +66,7 @@ fn active_has_a_sleep_file(app: &crate::testkit::headless::HeadlessApp) -> bool 
     let core = app.core();
     core.host
         .session
-        .with_session(|session| session.tabs().active().and_then(|id| session.sleep_facts(id)))
+        .with_session(|session| session.tabs().active().and_then(|id| session.dormant().sleep_facts(id)))
         .is_some_and(|facts| core.saver.store.read_sleep(facts.sleep.file, &facts.path).is_some())
 }
 

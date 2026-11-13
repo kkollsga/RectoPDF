@@ -270,7 +270,7 @@ impl Tabs {
         }
     }
 
-    /// [`crate::Session::touch`], at a given time.
+    /// [`crate::Sleeper::touch`], at a given time.
     pub(crate) fn touch_at(&mut self, id: TabId, now: u32) {
         if let Some(tab) = self.tab_mut(id) {
             tab.touched = now;

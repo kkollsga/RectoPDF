@@ -27,6 +27,7 @@ const WATCHED: &[&str] = &[
     "Comparison",
     "JournalDesk",
     "JournalLook",
+    "Sleeper",
 ];
 
 /// The last path segment of a type, without its generic arguments, except the handle's, which says which component it's for: `PartMut<Tabs>`.
@@ -293,10 +294,15 @@ const LISTED: &[&str] = &[
     "Dormancy: impl in dormancy.rs",
     "Dormancy: pub fn seconds_now",
     "Dormant: impl in dormant.rs",
+    "Dormant: pub fn asleep_by_journal",
     "Dormant: pub fn due",
+    "Dormant: pub fn list_to_sleep",
     "Dormant: pub fn may_go",
     "Dormant: pub fn next_in",
     "Dormant: pub fn oldest_first",
+    "Dormant: pub fn sleep_facts",
+    "Dormant: pub fn sleep_to_read",
+    "Dormant: pub fn sleep_to_read_awake",
     "Held: impl in held.rs",
     "Held: pub fn confinement",
     "Held: pub fn confinement -> &Confinement",
@@ -342,6 +348,17 @@ const LISTED: &[&str] = &[
     "JournalLook: pub fn lists_by_journal",
     "Session: pub fn journal_desk -> journal::JournalDesk<'_>",
     "Session: pub fn journal_look -> journal::JournalLook<'_>",
+    "Session: pub fn sleeper -> sleeper::Sleeper<'_>",
+    "Sleeper: impl in sleeper.rs",
+    "Sleeper: pub fn file_length_is",
+    "Sleeper: pub fn forget_read",
+    "Sleeper: pub fn give_woken",
+    "Sleeper: pub fn go_dormant",
+    "Sleeper: pub fn let_go",
+    "Sleeper: pub fn take_left_warm",
+    "Sleeper: pub fn touch",
+    "Sleeper: pub fn wake_from_sleep_file",
+    "Sleeper: pub fn wake_list",
     "Journals: impl in journals.rs",
     "Journals: pub fn has_pending",
     "Journals: pub fn history",
@@ -468,8 +485,8 @@ const LISTED: &[&str] = &[
 /// handing out `&mut Tabs`, or a public field, would let `recto-agent` or `recto-app` write `*session.tabs_mut() = Default::default()` or
 /// `std::mem::swap` two sessions' tabs: the confinement cell a quiet run's file wall rests on would go or move (the host's lock-free copy then disagreeing
 /// with the session), the owner's unsaved edits would go past the close and discard rules, and components would disagree. A new accessor (`saves_mut`)
-/// shows here too, and so does an operation type (the journal desk) that grows a public field, a constructor, or a method returning or handing a closure
-/// the `&mut Lists` or `&mut Journals` it borrows. Each line is a choice a reviewer sees: add one only if it can't put a component out of step with
+/// shows here too, and so does an operation type (the journal desk, the sleeper) that grows a public field, a constructor, or a method returning or handing a closure
+/// the `&mut Lists`, `&mut Journals` or `&mut Tabs` it borrows. Each line is a choice a reviewer sees: add one only if it can't put a component out of step with
 /// another or with the host.
 #[test]
 fn what_a_component_lets_a_caller_outside_the_crate_do_is_listed() {
