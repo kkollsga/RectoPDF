@@ -194,6 +194,11 @@ pub mod local;
 #[cfg_attr(not(target_os = "macos"), path = "registry_stub.rs")]
 pub mod registry;
 
+/// Another thread's CPU time and run state, for telling a stalled thread that waits from one that isn't given a core.
+#[cfg_attr(target_os = "macos", path = "thread_mac.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "thread_stub.rs")]
+pub mod thread;
+
 /// A folder of a run's own in a temp folder, never one already there, removed when it's dropped.
 pub mod fresh;
 
