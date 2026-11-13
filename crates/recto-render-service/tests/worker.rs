@@ -927,9 +927,18 @@ fn a_job_that_may_start_no_worker_never_goes_heavy() {
     assert_eq!(doc.largest_image_pixels(0, 1).unwrap(), 0);
     assert_eq!(doc.page_draw_state(0), recto_render_service::PageDrawState::NeedsHeavy);
     drawn_after(&mut doc, 1, "learning that");
-    let (pid, spawns) = (doc.worker_pid(), doc.stats().spawns);
+    let (pid, stats) = (doc.worker_pid(), doc.stats());
     let surface = tile_surface();
     assert_eq!(only_there(&mut doc, 0, 1, &surface), Err(RenderFailure::WouldStart { heavy: true }));
     assert_eq!(slot.times_taken(), 0, "the slot's free for whoever needs it");
-    assert_eq!((doc.worker_pid(), doc.stats().spawns), (pid, spawns), "the worker there is the one there was");
+    assert_eq!(
+        (doc.worker_pid(), doc.stats().spawns),
+        (pid, stats.spawns),
+        "the worker there is the one there was"
+    );
+    assert_eq!(
+        doc.stats().heavy_pages,
+        stats.heavy_pages,
+        "nor is it counted against the document's heavy pages"
+    );
 }
