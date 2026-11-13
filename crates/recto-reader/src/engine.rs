@@ -113,6 +113,32 @@ fn asked() -> u64 {
 /// The count [`asked`] moves on.
 static ASKED: AtomicU64 = AtomicU64::new(0);
 
+/// **One tick of when something was asked, for asking it of several page views:** the comparison's one zoom is asked of every pane, and each view orders
+/// it against another zoom by this same moment, so two zooms that interleave (the person's and an agent's) end the same in every pane. Taken once, before
+/// any view's lock is waited for; each method here is the [`Engine`] method of its name, asked at this tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Asked(u64);
+
+impl Asked {
+    /// The tick for an ask made now.
+    #[must_use]
+    pub fn now() -> Self {
+        Self(asked())
+    }
+
+    /// [`Engine::zoom`], asked at this tick.
+    pub fn zoom(self, engine: &Engine, zoom: Zoom) -> Option<f64> {
+        engine.shared.after_asking(Ask::Zoom);
+        zoom_at(engine, self.0, zoom)
+    }
+
+    /// [`Engine::zoom_soon`], asked at this tick.
+    pub fn zoom_soon(self, engine: &Engine, value: f64) -> bool {
+        engine.shared.after_asking(Ask::ZoomSoon);
+        zoom_soon_at(engine, self.0, value)
+    }
+}
+
 /// What's waiting for a page view that was busy when the UI thread asked. Only the latest of each counts.
 #[derive(Default)]
 struct Pending {
@@ -250,9 +276,7 @@ impl Engine {
     /// The comparison's one zoom, from the UI thread, the same way: now if the page view's free, and otherwise left for its thread, the latest only; and
     /// not at all once a zoom asked after it has been applied ([`Self::zoom`] from another thread).
     pub fn zoom_soon(&self, value: f64) -> bool {
-        let when = asked();
-        self.shared.after_asking(Ask::ZoomSoon);
-        zoom_soon_at(self, when, value)
+        Asked::now().zoom_soon(self, value)
     }
 
     /// Does something with the page view's lock if it's free, and otherwise leaves it for its own thread. Never waits for the lock: the UI thread calls this.
@@ -339,17 +363,7 @@ impl Engine {
     /// doesn't land after; and if a zoom asked after this one has been applied already ([`Self::zoom_soon`] from the UI thread while this waited for the
     /// lock), this one isn't, and what's said is the zoom the view has.
     pub fn zoom(&self, zoom: Zoom) -> Option<f64> {
-        let when = asked();
-        self.shared.after_asking(Ask::Zoom);
-        let mut reader = lock(&self.shared.reader);
-        apply_pending(&self.shared, &mut reader);
-        let value = if newest(&self.shared.applied.zoom, when) {
-            reader.zoom(zoom)
-        } else {
-            reader.docs.shown().map(|doc| doc.magnification())
-        };
-        self.after(reader);
-        value
+        Asked::now().zoom(self, zoom)
     }
 
     /// The tab showing's fit, document points per PDF point, if a tab is showing: what a zoom level is worked out from.
@@ -631,6 +645,19 @@ fn follow_soon_at(engine: &Engine, when: u64, page: u32, within: f64) -> bool {
             }
         },
     )
+}
+
+/// [`Engine::zoom`], asked at `when`.
+fn zoom_at(engine: &Engine, when: u64, zoom: Zoom) -> Option<f64> {
+    let mut reader = lock(&engine.shared.reader);
+    apply_pending(&engine.shared, &mut reader);
+    let value = if newest(&engine.shared.applied.zoom, when) {
+        reader.zoom(zoom)
+    } else {
+        reader.docs.shown().map(|doc| doc.magnification())
+    };
+    engine.after(reader);
+    value
 }
 
 /// [`Engine::zoom_soon`], asked at `when`: now if the view's free, and otherwise left pending.

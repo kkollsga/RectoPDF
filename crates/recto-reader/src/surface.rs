@@ -495,6 +495,10 @@ fn nothing_outside_tiles_builds_a_reader_or_replaces_a_part() {
 const SURFACE: &str = r#"
 Applied (private struct, derives Default)
 Ask (pub enum, derives Clone, Copy, Debug, PartialEq, Eq)
+Asked (pub struct, derives Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)
+Asked::pub fn now() -> Self
+Asked::pub fn zoom(self, engine: &Engine, zoom: Zoom) -> Option<f64>
+Asked::pub fn zoom_soon(self, engine: &Engine, value: f64) -> bool
 Changed (private struct)
 DocDrawing (pub(super) struct, derives Debug)
 DocPlace (pub(super) struct, derives Debug)
