@@ -663,8 +663,8 @@ fn a_file_of_another_list_pages_or_version_shows_nothing_of_the_place() {
     assert!(there_for_other_place(Some(&unknown), &now, &material), "a file that says no version");
 }
 
-/// Failure (the cool-down's review, 2026-11-13, S3): one hour's cap anyone could use up: an agent looping a move and `session sleep` used the app's whole 4 MiB
-/// in about 57 writes, after which every wake of the person's was bare for the hour. With the caps set small: an agent's writes go up to its share and stop at
+/// Failure (the cool-down's review, 2026-11-13, S3): one hour's cap anyone could use up: an agent looping a move and `session sleep` used the app's whole hour
+/// (then 4 MiB, about 57 writes), after which every wake of the person's was bare for the hour. With the caps set small: an agent's writes go up to its share and stop at
 /// the share plus one, said in words with when it comes back; the person's own routes (a tab pushed out, going dormant) still have the rest of the hour; and
 /// the person's own `session sleep` isn't held to the agents' share.
 #[test]

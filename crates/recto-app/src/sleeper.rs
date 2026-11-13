@@ -31,15 +31,16 @@ pub const SLEEP_WRITE_EVERY_SECONDS: u32 = 60;
 /// wait. A crash inside it costs that tab only its quick way back.
 pub const LEAVING_WAIT_MS: u64 = 20_000;
 
-/// What sleep files may come to in an hour, all told, for the whole app, for the same reason. 4 MiB (owner, 2026-11-13, "I agree with your recommendation",
-/// over 1 and 2): a text page's file at a Retina window's fit is about 72 KB and a photograph page's about 100 KiB, so about 57 text files an hour for all tabs,
-/// and at worst about 32 MiB written in an eight-hour day. At 1 MiB ordinary switching used it in about 14 writes, and every wake after was bare for the hour.
-pub const SLEEP_BYTES_PER_HOUR: u64 = 4 * 1024 * 1024;
-/// **What sleep files written at an agent's asking may come to in an hour** (the cool-down's review, 2026-11-13): an agent looping a move and `session sleep`
-/// used the app's whole [`SLEEP_BYTES_PER_HOUR`] in about 57 writes, after which every wake of the person's was bare for the hour. An agent's take at most
-/// this, so the person's own routes (tabs pushed out of the warm ones, going dormant, a quit) always have the rest, 3 MiB. Within it an agent's writes are
-/// held to the gap and the place rules like any other.
-pub const AGENT_SLEEP_BYTES_PER_HOUR: u64 = 1024 * 1024;
+/// What sleep files may come to in an hour, all told, for the whole app, for the same reason. **16 MiB** (owner, 2026-11-13, late evening, on measurements: "I
+/// agree with 16 mb an hour"): a scripted hour among 6 of 12 tabs with real documents reached the 4 MiB cap before it after about 19 minutes, after which about
+/// half of all wakes were bare, and wrote 12.2 MB with no cap at all; a sleep file is 65 KB on average, so about 250 files an hour for all tabs, and at worst
+/// 128 MiB written in an eight-hour day. Before: 1 MiB, used by ordinary switching in about 14 writes; then 4 MiB.
+pub const SLEEP_BYTES_PER_HOUR: u64 = 16 * 1024 * 1024;
+/// **What sleep files written at an agent's asking may come to in an hour: 2 MiB** (the cool-down's review, 2026-11-13, and the owner the same evening, "I
+/// agree with ... your other recommendations"): an agent looping a move and `session sleep` used the app's whole hour of sleep files (then 4 MiB, about 57
+/// writes), after which every wake of the person's was bare for the hour. An agent's take at most this, so the person's own routes (tabs pushed out of the warm
+/// ones, going dormant, a quit) always have the rest, 14 MiB. Within it an agent's writes are held to the gap and the place rules like any other.
+pub const AGENT_SLEEP_BYTES_PER_HOUR: u64 = 2 * 1024 * 1024;
 /// How often the budget's looked at, at the most, as each look is a call to the kernel per worker.
 pub const BUDGET_LOOK_EVERY_MS: u64 = 1_000;
 /// The most the queue's writer holds back for a write someone's waiting on, each time.

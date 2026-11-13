@@ -406,9 +406,9 @@ impl SleepWriter {
     pub fn agents_share_words(&self, now: u64) -> Option<String> {
         self.hour.agents_share_used().then(|| {
             format!(
-                "Its sleep file wasn't written: agents' share of sleep files this hour ({} KiB of {} KiB) is used, and the rest is kept for the person's own switching. The tab is asleep either way; its file is written when the person next leaves it, or ask again in {} minutes.",
-                crate::sleeper::AGENT_SLEEP_BYTES_PER_HOUR / 1024,
-                crate::sleeper::SLEEP_BYTES_PER_HOUR / 1024,
+                "Its sleep file wasn't written: agents' share of sleep files this hour ({} MiB of {} MiB) is used, and the rest is kept for the person's own switching. The tab is asleep either way; its file is written when the person next leaves it, or ask again in {} minutes.",
+                crate::sleeper::AGENT_SLEEP_BYTES_PER_HOUR / (1024 * 1024),
+                crate::sleeper::SLEEP_BYTES_PER_HOUR / (1024 * 1024),
                 self.hour.minutes_left(now)
             )
         })

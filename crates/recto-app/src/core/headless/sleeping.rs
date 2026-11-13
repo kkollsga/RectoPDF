@@ -892,7 +892,7 @@ fn switching(tabs: usize, cycle: usize, dwell: (u64, u64), total: u64, wait: u64
     line
 }
 
-/// **Measures switching, before and after the cool-down and the 4 MiB cap:** ten tabs flicked through twice, three seconds each; and twelve tabs with six
+/// **Measures switching, before and after the cool-down and the hour's cap ([`crate::sleeper::SLEEP_BYTES_PER_HOUR`]):** ten tabs flicked through twice, three seconds each; and twelve tabs with six
 /// switched among every 5 to 15 seconds for an hour of the app's clock. Run when asked:
 /// `cargo nextest run -p recto-app -p recto-render-service --run-ignored only --no-capture -E 'test(=core::headless::sleeping::switching_tabs_writes)'`.
 #[test]
@@ -905,7 +905,7 @@ fn switching_tabs_writes() {
         ("an hour, reading on", 12, 6, (5_000, 15_000), 3_600_000, true),
     ];
     for (what, tabs, cycle, dwell, total, reading) in runs {
-        for (when, wait, cap) in [("before", 0, old_cap), ("4 MiB cap, no wait", 0, cap), ("after", wait, cap)] {
+        for (when, wait, cap) in [("before", 0, old_cap), ("the hour's cap, no wait", 0, cap), ("after", wait, cap)] {
             println!("{what}, {when}: {}", switching(tabs, cycle, dwell, total, wait, cap, reading));
         }
     }
