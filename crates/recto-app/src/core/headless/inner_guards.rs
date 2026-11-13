@@ -5,11 +5,15 @@
 use crate::core::{AppState, Inner, Lifecycle, Published, Serving, Tools, WindowParts};
 use std::mem::size_of;
 
-/// Failure: a move adds a field, a lock or a buffer to the app's state or one of its parts (a part given its own `Arc` of the queue, a `Mutex` where an
-/// atomic was), which nothing else sees, as there's one of each in the app. Each is held at its size on the day the moves began, in this test build (whose
-/// `Serving` has two fields more than the app's): one that grows is a change to say, and one that shrinks is written down here.
+/// Failure: the app's state or one of its parts grows (a field, a lock or a buffer added, a part given its own `Arc` of the queue), which nothing else sees,
+/// as there's one of each in the app. Each is held at no more than its budget, in this test build (whose `Serving` has two fields more than the app's).
+///
+/// **What each of the two guards is for.** A field another part of the code can reach, and its type, is the listing's below: a field added, or a `Mutex`
+/// where an atomic was, changes a line there, named (each seen failing on a seeded change, 2026-11-13). This one holds what the listing can't see: a private
+/// field, and growth inside a field's own type from another module or crate. It's a budget and not an exact size, so a merge that shrinks a part (or a
+/// type of another crate a part holds) passes; a budget only comes down, by hand, and goes up only in a commit that says why.
 #[test]
-fn the_apps_state_and_its_parts_keep_their_size() {
+fn the_apps_state_and_its_parts_stay_within_their_budgets() {
     let sizes = [
         ("Inner", size_of::<Inner>()),
         ("Lifecycle", size_of::<Lifecycle>()),
@@ -19,13 +23,28 @@ fn the_apps_state_and_its_parts_keep_their_size() {
         ("Published", size_of::<Published>()),
         ("AppState", size_of::<AppState>()),
     ];
-    let now = sizes.iter().map(|(name, size)| format!("{name} {size}")).collect::<Vec<_>>().join(", ");
-    assert_eq!(now, SIZES, "the app's state and its parts, in bytes");
+    let names: Vec<&str> = sizes.iter().map(|(name, _)| *name).collect();
+    assert_eq!(names, BUDGETS.map(|(name, _)| name), "the types held");
+    let over: Vec<String> = sizes
+        .iter()
+        .zip(BUDGETS)
+        .filter(|((_, size), (_, budget))| size > budget)
+        .map(|((name, size), (_, budget))| format!("{name}: {size} bytes, budget {budget}"))
+        .collect();
+    assert!(over.is_empty(), "the app's state and its parts, in bytes: {over:#?}");
 }
 
-/// The sizes on 2026-11-13, before the moves; Inner 16 bytes more with main's merge that evening, from `Panes`' plan keeping when its zoom was asked
-/// (`zoom_asked: Option<Asked>`, R3.6a's newer-asked zoom).
-const SIZES: &str = "Inner 4880, Lifecycle 296, Serving 1064, WindowParts 464, Tools 1440, Published 808, AppState 248";
+/// The budgets, in bytes: the sizes on 2026-11-13, before the moves, with Inner's 16 bytes more from main's merge that evening (`Panes`' plan keeping when
+/// its zoom was asked, R3.6a).
+const BUDGETS: [(&str, usize); 7] = [
+    ("Inner", 4880),
+    ("Lifecycle", 296),
+    ("Serving", 1064),
+    ("WindowParts", 464),
+    ("Tools", 1440),
+    ("Published", 808),
+    ("AppState", 248),
+];
 
 /// Failure: a move widens what other code can reach of the app's state: a part's field made `pub`, a part given `Default` or `Clone` so it can be built
 /// or replaced from outside, a method made `pub(crate)` that only its part should call; or takes away what a caller needs. The list is changed by hand, in
