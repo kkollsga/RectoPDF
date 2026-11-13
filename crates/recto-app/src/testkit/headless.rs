@@ -526,6 +526,11 @@ impl HeadlessApp {
         if persons > 0 {
             busy.push(format!("{persons} of the person's command(s) on a thread of their own"));
         }
+        // The window's Save and Save As run on a thread of their own, and what they did is announced once they're through.
+        let saves = inner.tools.save_ui.running.load(Ordering::SeqCst);
+        if saves > 0 {
+            busy.push(format!("{saves} of the window's save(s)"));
+        }
         if inner.life.others_looking.load(Ordering::SeqCst) > 0 {
             busy.push("the other tabs' files being looked at".to_string());
         }

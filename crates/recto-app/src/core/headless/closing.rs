@@ -112,3 +112,15 @@ fn only_the_close_after_a_save_says_the_tab_stayed() {
         "the close after a save says so, in the prompt's words"
     );
 }
+
+/// Failure (found by `menu_twins`, 2026-11-13): the test kit's settle doesn't wait for the window's Save, which runs on a thread of its own, so a test that
+/// settles after File > Save and asks what was announced hears nothing, or hears it in the next step's events. Settled, File > Save has been heard.
+#[test]
+fn file_save_is_heard_once_settled() {
+    let twins = Twins::on(&[("a.pdf", 3)]);
+    edited(&twins);
+    twins.person.act(UiAction::Menu { id: "file.save".into() });
+    twins.person.settle();
+    let said = twins.person.heard_events();
+    assert_eq!(names(&said), ["saved", "edits_changed"], "{said:?}");
+}
