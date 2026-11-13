@@ -12,7 +12,7 @@ use crate::state::StatePaths;
 use recto_agent::commands::{Rights, Session, Start, Waits, access::Log, session::Stop, sync::Wait, sync::Watch};
 use recto_agent::table::EVENT_GROUPS;
 use recto_agent::{
-    AgentError, Command, Condition, ConditionState, DEFAULT_WATCH_MS, Event, Level, MAX_COMMAND_BYTES, MAX_SELECTOR_BYTES, MAX_WAIT_MS, VERSION, allowed,
+    AgentError, Command, Condition, ConditionState, DEFAULT_WATCH_MS, Event, Level, MAX_COMMAND_BYTES, MAX_SELECTOR_BYTES, MAX_WAIT_MS, Runs, VERSION, allowed,
     condition_topics, exit, parse, refusal, reply, table,
 };
 use recto_platform::local::{self, Listener, PollEntry, SocketFile, Stream, Token};
@@ -24,6 +24,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
+
+mod own_answers;
 
 /// Every limit on what clients can make the server do.
 #[derive(Clone, Copy, Debug)]
@@ -590,91 +592,18 @@ impl<H: Host> Loop<H> {
             self.answer(index, tag, &Err(stopping_now()));
             return;
         }
-        match command {
-            Command::Session(Session::Stop(_)) => {
-                self.conns[index].state = State::Busy;
-                let conn = self.conns[index].id;
-                self.stop_request = Some(StopRequest {
-                    conn,
-                    deadline: Instant::now() + self.limits.stop_grace,
-                    checking: false,
-                });
-                // Anything still waiting its turn could be an edit that `stop` would then lose.
-                let queued: Vec<u64> = self.queue.iter().filter(|job| matches!(job, Job::Command { .. })).map(Job::conn).collect();
-                self.queue.retain(|job| !matches!(job, Job::Command { .. }));
-                for conn in queued {
-                    if let Some(index) = self.conns.iter().position(|c| c.id == conn) {
-                        self.answer(index, "unknown", &Err(stopping_now()));
-                    }
-                }
-            }
-            Command::Start(Start::Status(_)) => {
-                let data = self.status(level);
-                self.log.record(tag, level, "ok", &Value::Null);
-                self.answer(index, tag, &Ok(data));
-            }
-            Command::Rights(Rights::LevelChanged(_)) => self.answer(index, tag, &Ok(json!({ "level": level.name() }))),
-            Command::Rights(Rights::PermissionShow(_)) => {
-                let data = levels::show(&self.paths, self.pending);
-                self.log.record(tag, level, "ok", &Value::Null);
-                self.answer(index, tag, &Ok(data));
-            }
-            Command::Rights(Rights::PermissionRequest(asked)) => self.permission_request(index, level, asked.level, asked.timeout_ms),
-            Command::Waits(Waits::Wait(Wait { tab, .. })) if tab.len() > MAX_SELECTOR_BYTES => {
-                self.answer(index, tag, &Err(AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND)));
-            }
-            Command::Waits(Waits::Wait(_) | Waits::Watch(_)) if self.subscribers() >= self.limits.max_subscribers => {
-                self.log.record(tag, level, "busy", &Value::Null);
-                self.answer(index, tag, &Err(too_many_waiting()));
-            }
-            Command::Waits(Waits::Wait(wait)) => {
-                let deadline = Instant::now() + Duration::from_millis(wait.timeout_ms.min(MAX_WAIT_MS));
-                self.log.record(tag, level, "started", &json!({ "condition": format!("{:?}", wait.condition) }));
-                let generation = self.next_generation();
-                self.conns[index].state = State::Waiting {
-                    what: WaitFor::Condition {
-                        condition: wait.condition,
-                        tab: wait.tab,
-                        page: wait.page,
-                    },
-                    tag,
-                    deadline,
-                    generation,
-                    looking: false,
-                    look_again: false,
-                };
-                self.look(index);
-            }
-            Command::Waits(Waits::Watch(Watch { events, timeout_ms, count })) => self.watch(index, level, events, timeout_ms, count),
-            Command::Waits(Waits::WatchStop(_)) => {
-                let watching: Vec<(usize, u64)> = self
-                    .conns
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(at, conn)| match conn.state {
-                        State::Watching { delivered, .. } => Some((at, delivered)),
-                        _ => None,
-                    })
-                    .collect();
-                for (at, delivered) in &watching {
-                    self.end_watch(*at, "ended by `recto watch stop`", *delivered);
-                }
-                let stopped = watching.len();
-                self.log.record(tag, level, "ok", &json!({ "stopped": stopped }));
-                self.answer(index, tag, &Ok(json!({ "stopped": stopped })));
-            }
-            Command::Rights(Rights::Log(Log { last })) => {
-                self.log.flush();
-                let data = log::recent(&self.paths, last);
-                self.log.record(tag, level, "ok", &Value::Null);
-                self.answer(index, tag, &Ok(data));
-            }
-            command => {
-                self.conns[index].state = State::Busy;
-                let conn = self.conns[index].id;
-                self.queue.push_back(Job::Command { conn, command });
-            }
+        // Where it's answered is the command's own declaration: the server's loop answers its own, and everything else is the host's.
+        match command.route() {
+            Runs::Server => self.answer_here(index, level, command),
+            Runs::Session | Runs::Record | Runs::App => self.send_on(index, command),
         }
+    }
+
+    /// The host's to run, in its turn.
+    fn send_on(&mut self, index: usize, command: Command) {
+        self.conns[index].state = State::Busy;
+        let conn = self.conns[index].id;
+        self.queue.push_back(Job::Command { conn, command });
     }
 
     /// Reads the level, and tells anyone it matters to if it moved. Called for every command, so it's never stale for long even if the file changed with no message.

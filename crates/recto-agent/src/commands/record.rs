@@ -1,10 +1,11 @@
-//! **The state record's commands:** `session show`, `session sleep`, `session save`, `session restore` and `session check`. Each host keeps its own record and its own lifecycle, so its route is the record's: a host answers them, and `execute` only says they need the long-running session.
+//! **The state record's commands:** `session show`, `session sleep`, `session save`, `session restore` and `session check`. Each host keeps its own record and its own lifecycle, which it gives these through [`Records`]; every answer, and the refusal that keeps the owner's edits, is made here, once, for both. `execute` runs them right after the level check: before the protected check, as none reads a document, and before the hold, which would keep `session sleep`'s tab awake.
 
 #![allow(unused_imports)]
-use super::{Cmd, Cx, needs_server, row_access};
+use super::{Cmd, Cx, OnlyAsks, needs_server, row_access};
 use crate::human::*;
 use crate::table::*;
 use crate::*;
+use recto_session::TabId;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fmt::Write;
@@ -32,9 +33,10 @@ impl Cmd for SessionShow {
     fn log_details(&self) -> Value {
         Value::Null
     }
-    /// Each host keeps its own record, and answers this itself.
-    fn run<A: SessionAccess>(&self, _: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        Err(needs_server())
+    fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
+        // What the record says is the host's to look up, and isn't asked with the session held.
+        let kept = cx.access.records()?.kept();
+        Ok(cx.access.with(|session| session_show_json(session, cx.level, kept)))
     }
     fn human(data: &Value) -> String {
         show_words(data)
@@ -67,9 +69,11 @@ impl Cmd for SessionSleep {
     fn log_details(&self) -> Value {
         json!({ "tab": super::log_tab(&self.tab) })
     }
-    /// Each host keeps its own record, and answers this itself.
-    fn run<A: SessionAccess>(&self, _: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        Err(needs_server())
+    fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
+        let records = cx.access.records()?;
+        let id = cx.access.with(|session| select(session, &self.tab))?;
+        let slept = records.put_to_sleep(id)?;
+        Ok(json!({ "tab": id.0, "dormant": slept.dormant, "list_asleep": slept.list_asleep }))
     }
     fn human(data: &Value) -> String {
         serde_json::to_string_pretty(data).unwrap_or_default()
@@ -99,9 +103,16 @@ impl Cmd for SessionSave {
     fn log_details(&self) -> Value {
         Value::Null
     }
-    /// Each host keeps its own record, and answers this itself.
-    fn run<A: SessionAccess>(&self, _: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        Err(needs_server())
+    fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
+        let saved = cx.access.records()?.save()?;
+        let mut answer = json!({ "saved": true, "tabs": saved.tabs, "edited_tabs": saved.edited_tabs, "record_bytes": saved.record_bytes, "journal_bytes": saved.journal_bytes, "wrote_bytes": saved.wrote_bytes, "total_ms": saved.total_us / 1000 });
+        if let Some(timings) = saved.timings {
+            answer["total_us"] = json!(saved.total_us);
+            answer["write_us"] = json!(timings.write_us);
+            answer["force_us"] = json!(timings.force_us);
+            answer["verify_us"] = json!(timings.verify_us);
+        }
+        Ok(answer)
     }
     fn human(data: &Value) -> String {
         format!(
@@ -138,9 +149,14 @@ impl Cmd for SessionRestore {
     fn log_details(&self) -> Value {
         Value::Null
     }
-    /// Each host keeps its own record, and answers this itself.
-    fn run<A: SessionAccess>(&self, _: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        Err(needs_server())
+    fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
+        let records = cx.access.records()?;
+        if cx.level < Level::Full && cx.access.with(|session| session.holds_owner_edits()) {
+            return Err(restore_would_lose_owners_edits());
+        }
+        let restored = records.restore()?;
+        let (count, active) = cx.access.with(|session| (session.tabs().len(), session.active().map(|id| id.0)));
+        Ok(json!({ "restored": restored.restored, "count": count, "active": active, "notice": restored.notice }))
     }
     fn human(data: &Value) -> String {
         match data["notice"].as_str() {
@@ -186,9 +202,10 @@ impl Cmd for SessionCheck {
     fn log_details(&self) -> Value {
         Value::Null
     }
-    /// Each host keeps its own record, and answers this itself.
-    fn run<A: SessionAccess>(&self, _: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        Err(needs_server())
+    fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
+        let check = cx.access.records()?.hand_off();
+        let busy: Vec<Value> = check.busy.iter().map(|(code, message)| json!({ "code": code, "message": message })).collect();
+        Ok(json!({ "safe": check.safe, "busy": busy, "seconds_since_input": check.seconds_since_input }))
     }
     fn human(data: &Value) -> String {
         {
@@ -205,6 +222,108 @@ impl Cmd for SessionCheck {
             out
         }
     }
+}
+
+impl super::Record {
+    /// Whether it only asks: looking, writing the record and the hand-off check don't change the session an update carries across; sleeping and restoring do.
+    pub fn only_asks(&self) -> bool {
+        match self {
+            Self::SessionShow(command) => command.only_asks(),
+            Self::SessionSleep(command) => command.only_asks(),
+            Self::SessionSave(command) => command.only_asks(),
+            Self::SessionRestore(command) => command.only_asks(),
+            Self::SessionCheck(command) => command.only_asks(),
+        }
+    }
+}
+
+impl OnlyAsks for SessionShow {
+    fn only_asks(&self) -> bool {
+        true
+    }
+}
+
+impl OnlyAsks for SessionSleep {
+    fn only_asks(&self) -> bool {
+        false
+    }
+}
+
+impl OnlyAsks for SessionSave {
+    fn only_asks(&self) -> bool {
+        true
+    }
+}
+
+impl OnlyAsks for SessionRestore {
+    fn only_asks(&self) -> bool {
+        false
+    }
+}
+
+impl OnlyAsks for SessionCheck {
+    fn only_asks(&self) -> bool {
+        true
+    }
+}
+
+/// **What a host keeps of the state record**, for its five commands. Each host has its own: the app writes its record as it goes and sleeps tabs through its sleeper; a session with no window writes only when told to. Reached through [`SessionAccess::records`]. Each is called with nothing held, the session's lock included, as a host's own work can wait on its session thread.
+pub trait Records {
+    /// What's known of the record, for `session show`: numbers, and Rust's own words.
+    fn kept(&self) -> Value;
+    /// Puts a tab to sleep now, as five minutes left alone would.
+    fn put_to_sleep(&self, tab: TabId) -> Result<Slept, AgentError>;
+    /// Writes the record now and reads it back.
+    fn save(&self) -> Result<Saved, AgentError>;
+    /// Puts the session back as the record has it. The owner's edits were asked about first.
+    fn restore(&self) -> Result<Restored, AgentError>;
+    /// Whether this is a safe moment to hand off to a new version.
+    fn hand_off(&self) -> HandOff;
+}
+
+/// What became of a tab put to sleep.
+pub struct Slept {
+    pub dormant: bool,
+    pub list_asleep: bool,
+}
+
+/// A record written and read back.
+pub struct Saved {
+    pub tabs: usize,
+    pub edited_tabs: usize,
+    pub record_bytes: u64,
+    pub journal_bytes: u64,
+    pub wrote_bytes: u64,
+    pub total_us: u64,
+    /// Where the time went, for a host that measures it.
+    pub timings: Option<SaveTimings>,
+}
+
+/// Where a save's time went.
+pub struct SaveTimings {
+    pub write_us: u64,
+    pub force_us: u64,
+    pub verify_us: u64,
+}
+
+/// What a restore found.
+pub struct Restored {
+    pub restored: bool,
+    /// What the record's reading told the reader, in Rust's words.
+    pub notice: Option<&'static str>,
+}
+
+/// Whether a hand-off could go now, and what's in its way: `(code, message)`.
+pub struct HandOff {
+    pub safe: bool,
+    pub busy: Vec<(String, String)>,
+    /// Since the user last touched the app, for a host that has a user.
+    pub seconds_since_input: Option<f64>,
+}
+
+/// A long-running session that keeps no record of its own.
+pub fn no_record() -> AgentError {
+    AgentError::new("no_record", "This session doesn't keep a state record.", exit::FAILED)
 }
 
 fn show_words(data: &Value) -> String {

@@ -7,7 +7,8 @@ mod qa;
 use recto_agent::commands::access::{Log, PermissionRequest};
 use recto_agent::commands::qa::{QaDrive, QaRead};
 use recto_agent::commands::sync::{Wait, Watch};
-use recto_agent::commands::{Edit, Qa, Rights, Waits};
+use recto_agent::commands::updates::UpdateInstall;
+use recto_agent::commands::{Edit, Qa, Rights, Updates, Waits};
 use recto_agent::table::{Invocation, Route, family_help, find_row, help_for, help_text, parse_cli, table_json};
 use recto_agent::{AgentError, Command, DrawableLoader, Level, VERSION, exit, human, parse, reply, skill};
 use recto_control::client::Client;
@@ -163,7 +164,7 @@ fn through_session(invocation: &Invocation) -> i32 {
             }
             (_, Err(error)) => Err(error),
             (Command::Waits(Waits::Watch(_)), Ok(client)) => Ok(Answer::Stream(client, wait)),
-            (Command::UpdateInstall { zip: Some(zip), .. }, Ok(client)) => {
+            (Command::Updates(Updates::UpdateInstall(UpdateInstall { zip: Some(zip), .. })), Ok(client)) => {
                 drop(client);
                 handover::install(&paths, invocation, zip, wait).map(Answer::Envelope)
             }

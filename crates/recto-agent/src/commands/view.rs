@@ -1,6 +1,6 @@
 //! How the app shows pages: `view` (the paper, the sidebar, the agent icon, the active tab's layout, and the zoom, which is the app's, as it's about a screen) and ⌘K's `palette`, which only the app has.
 
-use super::{Cmd, Cx, row_access};
+use super::{Cmd, Cx, OnlyAsks, row_access};
 use crate::human::text;
 use crate::table::*;
 use crate::*;
@@ -84,6 +84,13 @@ impl Cmd for View {
     }
 }
 
+/// A zoom changes what's on the screen.
+impl OnlyAsks for View {
+    fn only_asks(&self) -> bool {
+        false
+    }
+}
+
 /// ⌘K's palette: what a query finds among the app's commands and tabs, best first, and running the first.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -148,6 +155,13 @@ impl Cmd for Palette {
             );
         }
         out.trim_end().to_string()
+    }
+}
+
+/// Its `--run` does what the row does, so an update waits for it, as for any command that may change something.
+impl OnlyAsks for Palette {
+    fn only_asks(&self) -> bool {
+        false
     }
 }
 
