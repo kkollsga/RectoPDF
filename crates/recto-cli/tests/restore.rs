@@ -2415,7 +2415,7 @@ fn finds_field_has_the_keyboard_again_when_the_session_is_late_after_the_state()
     run.quit();
 }
 
-/// Failure: a protected tab comes back after a quit open, as though its password had been kept; or it comes back saying nothing, with no way to type it again; or Cancel leaves it asking at once.
+/// Failure: a protected tab comes back after a quit open, as though its password had been kept; or it comes back saying nothing, with no way to type it again; or Cancel leaves it asking at once. In the slow stage too (R1.4): Rust asks as soon as the tab's restored, before the window's made from the state, so which window has the sheet and where its Cancel goes is the window's, and the headless kit has none to see it.
 #[test]
 fn a_protected_tab_asks_again_after_a_quit() {
     protected_tab_asks_again(&[]);

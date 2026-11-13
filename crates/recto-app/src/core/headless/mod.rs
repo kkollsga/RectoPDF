@@ -3,10 +3,13 @@
 
 mod exits;
 mod files;
+mod find;
 mod launch;
 mod levels;
 mod palette;
 mod passwords;
 mod quit;
 mod recent;
+mod selection;
+mod sidebar;
 mod update;

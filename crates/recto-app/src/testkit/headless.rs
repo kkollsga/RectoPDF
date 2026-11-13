@@ -8,7 +8,7 @@
 //!
 //! **How a test stays deterministic.** There's no fixed sleep anywhere here. Every wait is for a condition, bounded, and fails naming what it was still waiting for:
 //! [`HeadlessApp::settle`] waits for the session thread to have taken everything queued and every file being read, then for the threads the product starts for a
-//! password, a look at files and a write of the record to have finished, and takes what they queued. Time the app's rules go by moves only by
+//! password, a look at files, a write of the record and Find to have finished, and takes what they queued. Time the app's rules go by moves only by
 //! [`HeadlessApp::advance`]. What's left to real time is what's real in the product too: a flush's limit on a slow disk, the sleep files' lock.
 
 use super::update_bed::UpdateBed;
@@ -247,6 +247,14 @@ impl Builder {
         // `applicationDidFinishLaunching`: the state's read on a thread of its own. The host's own timer isn't armed: a test that wants the window up without the
         // state says so ([`Builder::state_late`]).
         app.core().begin_restore();
+        if self.held.contains(&Seam::Launch) {
+            // What this copy is, looked at before the state's read: held there, the state's read waits behind it.
+            app.wait_until("the launch's look to wait at its seam", || {
+                recto_platform::slow::gate::waiting(Seam::Launch) > 0
+            });
+            app.settle();
+            return app;
+        }
         if state_held {
             app.wait_until("the state's read to wait at its seam", || recto_platform::slow::gate::waiting(Seam::State) > 0);
             app.settle();
@@ -289,8 +297,10 @@ impl HostPlay {
                 inner.ready(open);
             } else if inner.state_read() && !self.late_taken_in && !inner.window_interactive() {
                 self.late_taken_in = true;
-                // The window made again from the state: the old one goes without counting as the person closing it, and the new one opens.
+                // The window made again from the state: the old one goes without counting as the person closing it (`windowDidClose` while replacing), and the
+                // new one opens.
                 if !crate::lock(&inner.window.app).window_closed {
+                    inner.window_replaced();
                     inner.window_opened();
                 }
                 inner.shown_with_state();
@@ -512,6 +522,10 @@ impl HeadlessApp {
         if inner.saver.is_writing() {
             busy.push("the record being written".to_string());
         }
+        // Its thread goes once it's said how its last query ended, which the session thread takes as Find's news.
+        if inner.host.session.finder().has_thread() {
+            busy.push("Find looking".to_string());
+        }
         busy
     }
 
@@ -693,7 +707,7 @@ impl HeadlessApp {
 
     /// **Lets go of the core, as a process ending does,** whether by a quit's way out or a kill: from this moment nothing more is written, whatever's still
     /// running; nothing queued for the session thread is taken; every held seam opens, so what waited there goes on to find it can't write; the page views end;
-    /// and every thread that held the core lets go of it.
+    /// and every thread that held the core, or the updater, lets go of it.
     fn end(&mut self) -> Disk {
         if let Some(inner) = self.inner.take() {
             inner.saver.store.let_go();
@@ -708,6 +722,19 @@ impl HeadlessApp {
                     began.elapsed() < WAIT_LIMIT,
                     "the core is still held by {} other(s) {WAIT_LIMIT:?} after it was ended",
                     Arc::strong_count(&inner) - 1
+                );
+                std::thread::sleep(LOOK_EVERY); // ratchet: poll
+            }
+            // And the updater's threads end with it: an install that had handed off was waiting for its process to go, on a clock that stands still here,
+            // and looks at whether its app has ended instead.
+            let updater = Arc::downgrade(&inner.updates);
+            drop(inner);
+            let began = Instant::now();
+            while updater.strong_count() > 0 {
+                assert!(
+                    began.elapsed() < WAIT_LIMIT,
+                    "the updater is still held by {} {WAIT_LIMIT:?} after its app ended: an update's thread that didn't end with it",
+                    updater.strong_count()
                 );
                 std::thread::sleep(LOOK_EVERY); // ratchet: poll
             }

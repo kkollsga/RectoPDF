@@ -76,6 +76,35 @@ impl Inner {
         self.saver.view_changed();
     }
 
+    /// The window's going, for another made at once in its place, from a state that came in late: what it showed goes, as for a closed window, and nothing's recorded as closed.
+    pub fn window_replaced(&self) {
+        let engines = self.panes.engines(&self.engine);
+        // What's selected goes with the window's layers, and comes back on the new one (a selection and Find's hit, under a late state).
+        let held: Vec<(usize, recto_index::select::Range)> = engines
+            .iter()
+            .enumerate()
+            .filter_map(|(pane, engine)| Some((pane, engine.hot_selection()?.1?)))
+            .collect();
+        for engine in &engines {
+            engine.window_closed();
+        }
+        // What the going window said about itself since the state came in isn't kept: the new one comes from the state. What the host chose about what's out of sight is.
+        let mut app = lock(&self.window.app);
+        if let Some(state) = app.from_state.take() {
+            let minimised = app.window.as_ref().is_some_and(|window| window.minimised);
+            let (hidden, closed) = (app.app_hidden, app.window_closed);
+            let decided = (app.hidden_decided, app.minimised_decided, app.window_decided);
+            *app = *state;
+            app.app_hidden = hidden;
+            app.window_closed = closed;
+            (app.hidden_decided, app.minimised_decided, app.window_decided) = decided;
+            if let Some(window) = app.window.as_mut() {
+                window.minimised = minimised;
+            }
+        }
+        app.selections_held = held;
+    }
+
     /// The window closed, by the person or QA: what it showed goes, and the record says it's closed.
     pub fn window_closed(&self) {
         for engine in self.panes.engines(&self.engine) {
