@@ -175,7 +175,7 @@ impl<L: DocLoader> Session<L> {
                 }
                 // Another version of the file than the sleep file's about, which won't be read again.
                 if let (Some(known), Some(path)) = (replaced, self.path_of(id)) {
-                    self.retired_journals.push(record::sleep_file_name(known, &path).into());
+                    self.journals.retire_name(record::sleep_file_name(known, &path).into());
                 }
                 self.remember_warm(id, Arc::new(facts.toc));
             }
@@ -195,18 +195,14 @@ impl<L: DocLoader> Session<L> {
         if let Some(tab) = self.tab_mut(id) {
             tab.contents_verdict = recto_core::verdict::judge(&toc, tab.page_count);
         }
-        let (sleep_files, left_warm) = (self.sleep_files, &mut self.left_warm);
-        self.warm.push(id, toc, |left| {
-            // The least recent's gone cold, so what its sleep file needs is kept long enough to write that.
-            if sleep_files {
-                left_warm.push(left);
-            }
-        });
+        // The least recent's gone cold, so what its sleep file needs is kept long enough to write that.
+        let dormancy = &mut self.dormancy;
+        self.warm.push(id, toc, |left| dormancy.note_left(left));
     }
 
     /// Tabs just pushed out of the warm ones, and what their sleep files would say. There's a sleep file for any tab that's gone cold, by whatever way.
     pub fn take_left_warm(&mut self) -> Vec<SleepFacts> {
-        let left = std::mem::take(&mut self.left_warm);
+        let left = self.dormancy.take_left();
         left.into_iter().filter_map(|(id, toc)| self.sleep_facts_with(id, &toc)).collect()
     }
 }

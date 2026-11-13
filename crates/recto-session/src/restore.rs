@@ -16,19 +16,9 @@ impl<L: DocLoader> Session<L> {
             edits,
             wake_failed: _,
             asleep,
-            started: _,
-            held: _,
-            sleep_files: _,
-            just_read: _,
-            woken_from_file: _,
-            left_warm: _,
+            dormancy: _,
             mail: _,
-            journaling: _,
             journals,
-            fresh_journals: _,
-            retired_journals: _,
-            departing: _,
-            history: _,
             agent_at_full: _,
             generated: _,
             comparison,
@@ -77,7 +67,7 @@ impl<L: DocLoader> Session<L> {
                     renderer_only: *renderer_only,
                     selection: selection.as_deref().copied(),
                     notice: notice.as_deref().cloned(),
-                    journal: journals.get(id).map(ToString::to_string),
+                    journal: journals.name_of(*id).map(ToString::to_string),
                     edits: edits.get(id).map(PageEdits::summary).or_else(|| asleep.get(id).copied()),
                     generated_contents: *generated_contents,
                     contents_folds: folds.as_deref().map(<[(u32, bool)]>::to_vec).unwrap_or_default(),
@@ -127,15 +117,11 @@ impl<L: DocLoader> Session<L> {
         self.asleep.clear();
         self.wake_failed.clear();
         self.mail = mail::PageViewMail::default();
-        self.journals.clear();
-        self.fresh_journals.clear();
+        self.journals.restored();
         // Each of these is about a tab of the session being replaced, and a restored tab can have its number: another file's generated contents, sleep file or save would be taken as its own. What's still to be done on disk, journals to write or remove, stays, as it's about files.
         self.generated = generated::Generated::default();
-        self.saves = saves::Saves::default();
-        self.held.clear();
-        self.just_read = None;
-        self.woken_from_file.clear();
-        self.left_warm.clear();
+        self.saves.restored();
+        self.dormancy.restored();
         self.active = None;
         self.comparison = None;
         self.next_id = record.next_id;
@@ -158,13 +144,13 @@ impl<L: DocLoader> Session<L> {
                             notice = Some(FileNotice::EditsUnreadable);
                         }
                         let mut edits = restored.edits;
-                        if self.journaling {
+                        if self.journals.journaling() {
                             edits.set_journal_seq(restored.seq);
                         } else {
                             edits.no_journal();
                         }
                         self.edits.insert(id, edits);
-                        self.journals.insert(id, name.as_str().into());
+                        self.journals.set_name(id, name);
                     }
                     None => notice = Some(FileNotice::EditsUnreadable),
                 }
@@ -220,7 +206,7 @@ impl<L: DocLoader> Session<L> {
             self.active = comparison.tabs.first().copied();
         }
         // What's come back for tabs nobody's looking at is on disk already, and needn't be here too.
-        if self.journaling && self.history.is_some() {
+        if self.journals.kept_and_readable() {
             let others: Vec<TabId> = self.edits.keys().copied().filter(|id| !self.on_screen(*id)).collect();
             for id in others {
                 self.put_list_to_sleep(id);
