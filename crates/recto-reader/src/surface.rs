@@ -366,7 +366,7 @@ Points::pub fn page_count(&self) -> u32
 Points::pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)>
 Points::pub fn page_turns(&self, page: u32) -> u8
 RawPicture (pub struct, derives Clone, Debug, PartialEq)
-Reader (pub struct)
+Reader (pub(crate) struct)
 Reader.pub(crate) cache: TileCache
 Reader.pub(crate) host: HostQueue
 Reader.pub(crate) place: Place
@@ -378,7 +378,6 @@ Reader: Default::fn default() -> Self
 Reader::pub fn activate(&mut self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>, spread: Spread)
 Reader::pub fn applied(&mut self)
 Reader::pub fn clear_selection(&mut self)
-Reader::pub fn counts(&self) -> &ReaderCounts
 Reader::pub fn deactivate(&mut self)
 Reader::pub fn drain(&mut self, budget: usize) -> Vec<Op>
 Reader::pub fn expected_stamp(&self, tab: u32, file: &std::path::Path) -> Option<FileStamp>

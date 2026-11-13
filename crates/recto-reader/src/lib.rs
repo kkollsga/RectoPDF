@@ -21,4 +21,4 @@ mod surface;
 pub use engine::{Engine, EngineConfig};
 pub use layout::{PageBox, PageLayout, PageRect};
 pub use paper::PaperKind;
-pub use tiles::{Op, RawPicture, Reader, ReaderReport, SleepMaterial, SleepShot, SleepView, Viewport};
+pub use tiles::{Op, RawPicture, ReaderReport, SleepMaterial, SleepShot, SleepView, Viewport};

@@ -227,7 +227,7 @@ pub struct ReaderCounts {
 /// What QA reads.
 pub struct ReaderReport(pub Value);
 
-pub struct Reader {
+pub(crate) struct Reader {
     docs: HashMap<u32, DocView>,
     hot: Option<u32>,
     viewport: Viewport,

@@ -1,6 +1,6 @@
 //! **What QA reads:** numbers and states of the page view, and the counts the budgets go by. No text from a document.
 
-use super::{Reader, ReaderCounts, ReaderReport};
+use super::{Reader, ReaderReport};
 use crate::paper::PaperKind;
 use recto_platform::surface::PixelSurface;
 use serde_json::json;
@@ -80,7 +80,9 @@ impl Reader {
         }))
     }
 
-    pub fn counts(&self) -> &ReaderCounts {
+    /// The counts, for a test: the engine and QA read them in [`Self::report`]. Found unused outside the tests once `Reader` was the crate's own (R3.6).
+    #[cfg(test)]
+    pub fn counts(&self) -> &super::ReaderCounts {
         &self.counts
     }
 }
