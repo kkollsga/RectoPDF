@@ -78,7 +78,7 @@ fn a_page_knows_whether_its_file_is_the_one_it_was_numbered_from() {
     assert!(s.page_source(id, 0).unwrap().added);
     assert!(s.page_source(id, 0).unwrap().is_current());
     assert!(s.page_source(id, 3).unwrap().is_current());
-    assert!(s.own_file_is_current(id));
+    assert_eq!(s.notices().fit(id), EditsFit::Fit, "the edits fit their file");
     std::fs::write(&added, b"two, longer").unwrap();
     assert!(!s.page_source(id, 0).unwrap().is_current(), "the added file changed");
     assert!(s.page_source(id, 3).unwrap().is_current(), "the tab's own file hasn't");
@@ -91,7 +91,6 @@ fn a_page_knows_whether_its_file_is_the_one_it_was_numbered_from() {
     assert!(!s.page_source(id, 0).unwrap().is_current(), "the added file's gone");
     std::fs::write(&own, b"one, longer").unwrap();
     assert!(!s.page_source(id, 3).unwrap().is_current());
-    assert!(!s.own_file_is_current(id));
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

@@ -935,7 +935,7 @@
   events 
   words ""
 {"cmd":"save","out":"/d/y.pdf","replace":true}
-  reply {"cmd":"save","error":{"candidates":[],"code":"file_changed","exit":1,"message":"This file has changed on disk since it was opened, so saving over it could lose that. Nothing was written. Save As keeps both.","next":"Tell the user the file changed on disk. `recto save-as --out <new.pdf>` keeps both versions."},"ok":false,"v":1}
+  reply {"cmd":"save","error":{"candidates":[],"code":"changed_since_opened","exit":1,"message":"This file has changed on disk since it was opened, so saving over it could lose that. Nothing was written. Save As keeps both.","next":"Tell the user the file changed on disk. `recto save-as --out <new.pdf>` keeps both versions."},"ok":false,"v":1}
   events 
   words ""
 {"cmd":"save","replace":true}

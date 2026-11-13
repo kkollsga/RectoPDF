@@ -192,14 +192,11 @@ impl Sleeper {
 impl Inner {
     /// Works out the next deadline, after anything that can have changed it. A look at the few tabs that hold anything.
     ///
-    /// **Real time:** how long until the next is due is the session's own clock (`next_dormant_at` less `seconds_now`, as every `touch` goes by it); the
+    /// **Real time:** how long until the next is due is the session's own clock (`Dormant::next_in`, as every `touch` goes by it); the
     /// deadline it comes to is on the app's clock.
     pub fn rearm_dormancy(&self) {
         let after = self.sleeper.after_seconds();
-        let in_seconds = self
-            .host
-            .session
-            .with_session(|session| session.dormant().next_at(after).map(|at| at.saturating_sub(session.dormancy().seconds_now())));
+        let in_seconds = self.host.session.with_session(|session| session.dormant().next_in(after));
         let _ = self.sleeper.step(Event::Rearm { in_seconds });
     }
 
@@ -209,11 +206,7 @@ impl Inner {
         let busy = self.life.reads_running.load(Ordering::SeqCst) > 0 || self.core.frozen.load(Ordering::SeqCst);
         self.sleeper.step(Event::DueNow { busy })?;
         let after = self.sleeper.after_seconds();
-        Some(
-            self.host
-                .session
-                .with_session(|session| session.dormant().due(session.dormancy().seconds_now(), after)),
-        )
+        Some(self.host.session.with_session(|session| session.dormant().due(after)))
     }
 
     /// **Those tabs go dormant,** on the session thread, those that may: whatever's asking, not the one on screen or one being worked on or saved. Whatever hasn't gone to its journal goes first, or a list couldn't.
@@ -561,20 +554,34 @@ pub fn look_before_showing(inner: &Inner, id: TabId) {
         let other = !matches!(&status, FileStatus::Same(now) if Some(*now) == stamp) && !matches!(status, FileStatus::NotLooked);
         // Too late for the frame: it's said the usual way.
         if send.try_send((other, status.clone())).is_err() && other {
-            core.push(CoreCall::WokenFileIsOther(id, status));
+            core.push(CoreCall::WokenFileIsOther(id, status, stamp));
         }
     });
     if looking.is_err() {
         inner.sleeper.looks.finish(id);
         return;
     }
+    // Only what's new: a tab whose file is already known to be another, shown again, is neither forgotten nor read again.
     if let Ok((true, status)) = receive.recv_timeout(LOOK_PATIENCE) {
-        inner.host.session.with_session(|session| {
-            session.apply_file_status(id, status);
-            session.forget_read(id);
-        });
-        inner.core.push(CoreCall::WokenFileIsOther(id, FileStatus::NotLooked));
+        take_shown_look(inner, id, stamp, status);
     }
+}
+
+/// What a look at a tab being shown found, made against `stamp`, taken in in time for its frame: on news, what's held is forgotten and the file read again.
+/// A save meanwhile moves the stamp, and a look against the old one is about nothing now. Says whether it was news.
+pub(crate) fn take_shown_look(inner: &Inner, id: TabId, stamp: Option<recto_platform::FileStamp>, status: FileStatus) -> bool {
+    if !inner
+        .host
+        .session
+        .with_session(|session| session.tabs().own_stamp(id) == stamp && session.apply_file_status(id, status))
+    {
+        return false;
+    }
+    inner.host.session.with_session(|session| session.forget_read(id));
+    // The read, against the stamp as it is now that the news is in.
+    let now = inner.host.session.with_session(|session| session.tabs().own_stamp(id));
+    inner.core.push(CoreCall::WokenFileIsOther(id, FileStatus::NotLooked, now));
+    true
 }
 
 /// How long a tab being shown waits for a look at its file.
@@ -596,7 +603,7 @@ pub fn check_woken_file(inner: &std::sync::Arc<Inner>, id: TabId) {
     let spawned = std::thread::Builder::new().name("recto-look".into()).stack_size(256 * 1024).spawn(move || {
         let status = look_at_file(&path, stamp);
         if !matches!(&status, FileStatus::Same(now) if Some(*now) == stamp) && !matches!(status, FileStatus::NotLooked) {
-            core.push(CoreCall::WokenFileIsOther(id, status));
+            core.push(CoreCall::WokenFileIsOther(id, status, stamp));
         }
         // A look asked for meanwhile may be about a change made after this one looked: the files showing are looked at again.
         if slots.finish(id) {

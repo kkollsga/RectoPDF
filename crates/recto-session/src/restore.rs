@@ -3,7 +3,7 @@
 use super::*;
 
 impl<L: DocLoader> Session<L> {
-    /// The whole session as a record, with the host's own part at its defaults for the host to fill in. Every field is named here, with no `..`, so one added to a tab or to the view doesn't compile until it's carried or said not to be. A tab's edits go by journal, and [`Self::edits_record`] gives them whole.
+    /// The whole session as a record, with the host's own part at its defaults for the host to fill in. Every field is named here, with no `..`, so one added to a tab or to the view doesn't compile until it's carried or said not to be. A tab's edits go by journal, and [`Lists::edits_record`](crate::Lists::edits_record) gives them whole.
     pub fn to_record(&self) -> SessionRecord {
         let Self {
             loader: _,
@@ -45,7 +45,7 @@ impl<L: DocLoader> Session<L> {
                             dir: _,
                             file_name: _,
                             stamp,
-                            notice,
+                            news: _,
                             encrypted: _,
                             password,
                         },
@@ -63,7 +63,11 @@ impl<L: DocLoader> Session<L> {
                     layout: *spread,
                     renderer_only: *renderer_only,
                     selection: selection.as_deref().copied(),
-                    notice: notice.as_deref().cloned(),
+                    // Edits on a version the file isn't any more are said to be whatever notice is over them, as the tab says it: so a restore knows.
+                    notice: match self.notices().fit(*id) {
+                        EditsFit::FileChanged | EditsFit::FileChangedVersionUnknown => Some(FileNotice::Changed),
+                        _ => tab.file.notice().cloned(),
+                    },
                     journal: journals.name_of(*id).map(ToString::to_string),
                     edits: lists.summary(*id),
                     generated_contents: *generated_contents,
@@ -102,12 +106,12 @@ impl<L: DocLoader> Session<L> {
         record::one_tab_per_file(&mut deduped);
         let record = &deduped;
         self.tabs.restored(record.next_id, record.tabs.len());
-        self.warm = warm::Warm::default();
+        self.warm = warm::Warm::new();
         self.lists.restored();
-        self.mail = mail::PageViewMail::default();
+        self.mail = mail::PageViewMail::new();
         self.journals.restored();
         // Each of these is about a tab of the session being replaced, and a restored tab can have its number: another file's generated contents, sleep file or save would be taken as its own. What's still to be done on disk, journals to write or remove, stays, as it's about files.
-        self.generated = generated::Generated::default();
+        self.generated = generated::Generated::new();
         self.saves.restored();
         self.dormancy.restored();
         self.comparison = None;
@@ -146,6 +150,13 @@ impl<L: DocLoader> Session<L> {
                 }
             }
             let pages = self.lists.get(id).map_or(entry.page_count, PageEdits::len);
+            // Edits the record says the file changed under aren't taken to fit it until a look or a read says so: nothing reads it as theirs meanwhile.
+            let elsewhere = (matches!(entry.notice, Some(FileNotice::Changed)) && self.lists.is_edited(id)).then_some(fit::Elsewhere {
+                seen: None,
+                seen_pages: None,
+                file_changed: true,
+                other_length: false,
+            });
             let trail = (!entry.back.is_empty() || !entry.forward.is_empty()).then(|| Box::new(trail::Trail::from_record(&entry.back, &entry.forward, pages)));
             self.tabs.push(TabRecord {
                 from_sleep: None,
@@ -167,7 +178,7 @@ impl<L: DocLoader> Session<L> {
                     dir,
                     file_name: file_name.into(),
                     stamp: entry.file.map(Into::into),
-                    notice: notice.map(Box::new),
+                    news: fit::FileNews::restored(notice, elsewhere),
                     encrypted: false,
                     password: entry.password,
                 },

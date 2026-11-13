@@ -31,7 +31,7 @@ impl<L: DocLoader + Clone> Records for OwnRecord<'_, L> {
     fn put_to_sleep(&self, tab: TabId) -> Result<Slept, AgentError> {
         Ok(self.with(|session| Slept {
             dormant: session.go_dormant(tab),
-            list_asleep: session.list_is_asleep(tab),
+            list_asleep: session.lists().is_asleep(tab),
         }))
     }
 
@@ -42,7 +42,7 @@ impl<L: DocLoader + Clone> Records for OwnRecord<'_, L> {
             let retired = session.journal_work().retired;
             let checkpoints = session.checkpoints();
             let lists = session.lists_by_journal();
-            let edited = session.tabs().iter().filter(|tab| session.page_edits(tab.id).is_some()).count();
+            let edited = session.lists().edited_tabs();
             (session.to_record(), checkpoints, lists, edited, retired)
         });
         for name in &retired {
@@ -163,6 +163,25 @@ mod tests {
         );
         let refused = run(&host, Level::ReadOnly, r#"{"cmd":"session_save"}"#).expect_err("saving is doing");
         assert_eq!(refused.code, "permission_denied");
+    }
+
+    /// **Failure (R3.5a): a windowless session's `session save` counts lists in memory as `edited_tabs`,** so a tab whose every step was undone, with
+    /// nothing unsaved, is counted as edited. It's the tabs with unsaved changes, by the read the close and quit rules use, as the app counts them.
+    #[test]
+    fn a_save_counts_the_tabs_with_unsaved_changes() {
+        let (host, _root) = with_record();
+        for name in ["a", "b"] {
+            run(&host, Level::Full, &format!(r#"{{"cmd":"open","path":"/d/{name}.pdf"}}"#)).expect("opened");
+        }
+        for line in [
+            r##"{"cmd":"page_rotate","tab":"#1","pages":"1","degrees":90}"##,
+            r##"{"cmd":"page_rotate","tab":"#2","pages":"1","degrees":90}"##,
+            r##"{"cmd":"undo","tab":"#2"}"##,
+        ] {
+            run(&host, Level::Full, line).expect(line);
+        }
+        let saved = run(&host, Level::Control, r#"{"cmd":"session_save"}"#).expect("saved");
+        assert_eq!(saved["edited_tabs"], 1, "only #1 has unsaved changes: {saved}");
     }
 
     /// Failure: a long-running session that keeps no record answers one of the record's commands as if it did, or as needing the long-running session it is, or says so before it says the level is too low.

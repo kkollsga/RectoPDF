@@ -35,6 +35,7 @@ mod search;
 mod selecting;
 pub mod skill;
 pub mod table;
+pub mod unfit;
 pub use commands::updates::update_needs_app;
 pub use route::{Runs, qa_needs_app};
 #[cfg(test)]
@@ -548,7 +549,7 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept:
         .iter()
         .take(MAX_TABS_LISTED as usize)
         .map(|tab| {
-            let notice = session.tabs().tab_notice(tab.id).map(|notice| json!({ "code": notice.code(), "message": session.tab_notice_message(tab.id) }));
+            let notice = session.notices().said(tab.id).map(|said| json!({ "code": said.code, "message": said.message }));
             let place = session.tabs().place_to_show(tab.id);
             // A protected document's place and length were read with its password.
             if session.tabs().withheld_from_agents(tab.id) {
@@ -586,7 +587,7 @@ pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, ev
     if let Some(selector) = about
         && !command.protected_ok()
         && !actor.sees_protected()
-        && access.with(|s| select(s, selector).is_ok_and(|id| s.withheld_from_agents(id)))
+        && access.with(|s| select(s, selector).is_ok_and(|id| s.tabs().withheld_from_agents(id)))
     {
         return Err(protected_refusal());
     }
@@ -599,7 +600,7 @@ pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, ev
             // always have (coordinator, 2026-11-13).
             let awake = s.wake_list(id);
             s.touch(id);
-            s.hold(id);
+            s.dormancy_mut().hold(id);
             Some((id, awake))
         })
     });
@@ -719,11 +720,21 @@ fn require_absolute(path: &Path) -> Result<(), AgentError> {
 
 /// What's side by side: each pane's tab, its page and length, the one being read, synced or separate, and what's said about lengths.
 pub fn compare_json<L: DocLoader>(session: &Session<L>) -> Value {
-    let panes: Vec<Value> = session
-        .comparison()
-        .map(|comparison| comparison.tabs.iter().filter_map(|id| session.tabs().tab(*id).map(|tab| if session.tabs().withheld_from_agents(*id) { json!({ "tab": id.0, "protected": true, "page": null, "pages": null, "reading": session.tabs().active() == Some(*id), "untrusted": { "name": &*tab.name } }) } else { json!({ "tab": id.0, "page": tab.page + 1, "pages": session.pages().count(*id), "reading": session.tabs().active() == Some(*id), "untrusted": { "name": &*tab.name } }) })).collect())
-        .unwrap_or_default();
     let comparison = session.comparison();
+    let (tabs, pages) = (session.tabs(), session.pages());
+    let active = tabs.active();
+    let pane = |id: TabId| {
+        let tab = tabs.tab(id)?;
+        let reading = active == Some(id);
+        Some(if tabs.withheld_from_agents(id) {
+            json!({ "tab": id.0, "protected": true, "page": null, "pages": null, "reading": reading, "untrusted": { "name": &*tab.name } })
+        } else {
+            json!({ "tab": id.0, "page": tab.page + 1, "pages": pages.count(id), "reading": reading, "untrusted": { "name": &*tab.name } })
+        })
+    };
+    let panes: Vec<Value> = comparison
+        .map(|comparison| comparison.tabs.iter().filter_map(|id| pane(*id)).collect())
+        .unwrap_or_default();
     json!({
         "comparing": comparison.is_some(),
         "panes": panes,
@@ -1168,29 +1179,34 @@ fn label_hits<A: SessionAccess>(access: &A, tab: &str, answer: &mut Value) {
 }
 
 fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
-    let Some(tab) = session.tabs().tab(id) else { return Value::Null };
-    let edited = session.lists().is_edited(id);
+    let (tabs, lists, pages) = (session.tabs(), session.lists(), session.pages());
+    let Some(tab) = tabs.tab(id) else { return Value::Null };
+    let edited = lists.is_edited(id);
+    let active = tabs.active() == Some(id);
     // Its file's name is the person's, and not read from the file. Its place, length and the rest were read with its password.
-    if session.tabs().withheld_from_agents(id) {
-        return json!({ "tab": id.0, "sel": format!("#{}", id.0), "protected": true, "protected_note": PROTECTED_NOTE, "page": null, "pages": null, "file_pages": null, "active": session.tabs().active() == Some(id), "edited": edited, "untrusted": { "name": &*tab.name } });
+    if tabs.withheld_from_agents(id) {
+        return json!({ "tab": id.0, "sel": format!("#{}", id.0), "protected": true, "protected_note": PROTECTED_NOTE, "page": null, "pages": null, "file_pages": null, "active": active, "edited": edited, "untrusted": { "name": &*tab.name } });
     }
+    let label = pages.label_differs(id, tab.page);
+    let (can_go_back, can_go_forward) = tabs.can_go_back_and_forward(id);
+    let undone = lists.has_undone_owner_steps(id);
     json!({
         "tab": id.0,
         "sel": format!("#{}", id.0),
         "page": tab.page + 1,
-        "has_label": session.pages().label_differs(id, tab.page).is_some(),
-        "pages": session.pages().count(id),
+        "has_label": label.is_some(),
+        "pages": pages.count(id),
         "file_pages": tab.page_count,
-        "can_go_back": session.tabs().can_go_back_and_forward(id).0,
-        "can_go_forward": session.tabs().can_go_back_and_forward(id).1,
-        "active": session.tabs().active() == Some(id),
+        "can_go_back": can_go_back,
+        "can_go_forward": can_go_forward,
+        "active": active,
         "edited": edited,
-        "user_edits_undone": session.lists().has_undone_owner_steps(id),
+        "user_edits_undone": undone,
         "structure": if tab.renderer_only { "renderer_only" } else { "readable" },
         "problem": tab.problem.map(recto_core::OpenError::message),
-        "note": if edited { Some(UNSAVED_NOTE) } else { session.lists().has_undone_owner_steps(id).then_some(USER_EDITS_UNDONE_NOTE) },
-        "file_notice": session.tabs().tab_notice(id).map(|notice| json!({ "code": notice.code(), "message": session.tab_notice_message(id) })),
-        "untrusted": { "name": &*tab.name, "label": session.pages().label_differs(id, tab.page) },
+        "note": if edited { Some(UNSAVED_NOTE) } else { undone.then_some(USER_EDITS_UNDONE_NOTE) },
+        "file_notice": session.notices().said(id).map(|said| json!({ "code": said.code, "message": said.message })),
+        "untrusted": { "name": &*tab.name, "label": label },
     })
 }
 

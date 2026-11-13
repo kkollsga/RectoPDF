@@ -180,7 +180,8 @@ impl Cmd for Edits {
     const TAG: &'static str = "edits";
     const ROWS: &'static [Spec] = ROWS_EDITS;
     const DRAWS: bool = false;
-    const READS_PAGES: bool = false;
+    // It says what's on the pages: a list that can't be read back is refused as a page read is, not answered as no runs (R3.5a).
+    const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&str> {

@@ -8,7 +8,7 @@ fn a_tab_whose_file_vanished_stays_and_says_why() {
     assert!(gone.is_err());
     let ids: Vec<_> = (0..5).map(|i| s.open(Path::new(&format!("/d/{i}.pdf"))).unwrap()).collect();
     // Rename the first tab's file underneath the session, then wake it from cold.
-    s.tabs_mut().tab_mut(ids[0]).unwrap().file.file_name = OsStr::new("missing.pdf").into();
+    s.tabs.tab_mut(ids[0]).unwrap().file.file_name = OsStr::new("missing.pdf").into();
     s.tap(ids[0]).unwrap();
     assert_eq!(s.tabs().tab(ids[0]).unwrap().problem, Some(OpenError::NotFound));
     assert_eq!(s.tabs().active(), Some(ids[0]));
@@ -63,15 +63,15 @@ fn a_tab_says_what_became_of_its_file_and_keeps_its_edits() {
     s.apply_file_status(a, at("/e/moved.pdf"));
     assert_eq!(s.tabs().path_of(a).unwrap(), Path::new("/e/moved.pdf"));
     assert_eq!(&*s.tabs().tab(a).unwrap().name, "moved");
-    assert!(s.tab_notice_message(a).unwrap().contains("moved"));
+    assert!(s.notices().said(a).map(|said| said.message).unwrap().contains("moved"));
     assert!(s.lists().is_edited(a));
     s.apply_file_status(a, FileStatus::Changed(now));
     assert_eq!(s.tabs().tab_notice(a).unwrap().code(), "file_changed");
     assert_ne!(s.tabs().own_stamp(a), Some(now), "edits keep the version they were made on");
     s.apply_file_status(a, FileStatus::Missing);
-    assert!(s.tab_notice_message(a).unwrap().contains("edits"));
+    assert!(s.notices().said(a).map(|said| said.message).unwrap().contains("edits"));
     assert!(s.lists().is_edited(a));
-    assert_eq!(s.sidebar().rows[0].notice, s.tab_notice_message(a));
+    assert_eq!(s.sidebar().rows[0].notice, s.notices().said(a).map(|said| said.message));
     s.apply_file_status(a, FileStatus::Same(now));
     assert_eq!(s.tabs().tab_notice(a), None, "it came back");
     assert_eq!(s.tabs().own_stamp(a), Some(now));

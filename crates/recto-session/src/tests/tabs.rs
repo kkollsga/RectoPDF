@@ -245,7 +245,7 @@ fn a_protected_pdf_asks_again() {
     back.restore(&saved, HashMap::new()).unwrap();
     back.wake_active();
     assert_eq!(back.tabs().tab(a).unwrap().problem, Some(OpenError::PasswordNeeded));
-    assert!(back.tab_notice_message(a).unwrap().contains("password"));
+    assert!(back.notices().said(a).map(|said| said.message).unwrap().contains("password"));
 }
 
 struct Locked;

@@ -25,8 +25,10 @@ pub struct Tabs {
     confinement: Confinement,
 }
 
-impl Default for Tabs {
-    fn default() -> Self {
+impl Tabs {
+    /// No tabs, and a confinement cell of its own, not yet set. The crate's: a `Tabs` made outside could take a session's place, and its cell with it
+    /// (see [`crate::parts::PartMut`]).
+    pub(crate) fn new() -> Self {
         Self {
             tabs: Vec::new(),
             active: None,
@@ -157,7 +159,7 @@ impl Tabs {
 
     /// The tab's notice, if there is one.
     pub fn tab_notice(&self, id: TabId) -> Option<&FileNotice> {
-        self.tab(id)?.file.notice.as_deref()
+        self.tab(id)?.file.notice()
     }
 
     /// Whether a tab's file needs a password that hasn't been given, which the app asks for when it's showing.
@@ -168,7 +170,7 @@ impl Tabs {
     /// **Nothing of this tab's file goes to an agent:** it was opened with a password the person typed, or it needs one, and what the record has of it (its length, its place) was read with one. Reading a protected document needs the person's consent for that document (agent report §5.5), which isn't built, so it's refused outright. `encrypted` alone isn't this: a file anyone may open can be encrypted too.
     pub fn withheld_from_agents(&self, id: TabId) -> bool {
         self.tab(id).is_some_and(|tab| {
-            tab.file.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.file.notice.as_deref(), Some(FileNotice::NeedsPassword))
+            tab.file.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.file.notice(), Some(FileNotice::NeedsPassword))
         })
     }
 
@@ -199,42 +201,35 @@ impl Tabs {
         tab.reading.place.filter(|place| place.page == tab.page)
     }
 
-    /// Turns the view of a tab, by quarter turns.
-    pub fn set_view_rotation(&mut self, id: TabId, quarter_turns: u8) {
-        if let Some(tab) = self.tab_mut(id) {
-            tab.view_rotation = quarter_turns % 4;
-        }
-    }
-
-    /// Lays a tab's pages out another way. Says whether that changed anything.
-    pub fn set_spread(&mut self, id: TabId, spread: record::Spread) -> bool {
-        match self.tab_mut(id) {
-            Some(tab) if tab.spread != spread => {
-                tab.spread = spread;
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// What's selected in a tab. Carried across a restart, and nothing else here reads it.
-    pub fn set_selection(&mut self, id: TabId, selection: Option<Selection>) {
+    /// What's selected in a tab. Carried across a restart, and nothing else here reads it. The crate's: from outside, a selection is noted only by
+    /// [`crate::parts::PartMut::note_selection`], which keeps the rule that only the tab showing holds one.
+    pub(crate) fn set_selection(&mut self, id: TabId, selection: Option<Selection>) {
         if let Some(tab) = self.tab_mut(id) {
             tab.reading.selection = selection.map(Box::new);
         }
     }
 
     /// A tab's facts were, or are about to be, read with a password the person typed. Marked before they're taken in, and kept while the tab's open and in the record, so there's no moment an agent could read them.
-    pub fn note_password_used(&mut self, id: TabId) {
+    pub(crate) fn note_password_used(&mut self, id: TabId) {
         if let Some(tab) = self.tab_mut(id) {
             tab.file.password = true;
         }
     }
 
     /// [`crate::Session::touch`], at a given time.
-    pub fn touch_at(&mut self, id: TabId, now: u32) {
+    pub(crate) fn touch_at(&mut self, id: TabId, now: u32) {
         if let Some(tab) = self.tab_mut(id) {
             tab.touched = now;
+        }
+    }
+
+    /// Shows a tab's generated contents, or its own. The choice is kept in the record, and the file is never changed. What's folded goes, as it was about the other list's entries.
+    pub(crate) fn choose_generated(&mut self, id: TabId, generated: bool) {
+        if let Some(tab) = self.tab_mut(id)
+            && tab.generated_contents != generated
+        {
+            tab.generated_contents = generated;
+            tab.folds = None;
         }
     }
 
@@ -252,5 +247,62 @@ impl Tabs {
     #[cfg(test)]
     pub(crate) fn holding(&self, id: TabId) -> [(&'static str, bool); 2] {
         [("tabs", self.tab(id).is_some()), ("active", self.active == Some(id))]
+    }
+}
+
+/// What a caller outside the crate may change of the tabs: a tab's layout, its view's turn, and that its file was opened with a password. Adding,
+/// removing or reordering tabs stays the session's, as every other component holds something of each tab.
+impl crate::parts::PartMut<'_, Tabs> {
+    /// Turns the view of a tab, by quarter turns.
+    pub fn set_view_rotation(&mut self, id: TabId, quarter_turns: u8) {
+        if let Some(tab) = self.0.tab_mut(id) {
+            tab.view_rotation = quarter_turns % 4;
+        }
+    }
+
+    /// Lays a tab's pages out another way. Says whether that changed anything.
+    pub fn set_spread(&mut self, id: TabId, spread: record::Spread) -> bool {
+        match self.0.tab_mut(id) {
+            Some(tab) if tab.spread != spread => {
+                tab.spread = spread;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// **The host's confinement cell, put back if a step it ran with the session in hand swapped another session in** (R3.5a): the host's cell is the
+    /// authority, as it's what the host reads with no lock. Says whether it was the session's already, which is always so unless something replaced the
+    /// whole session. Never widens: a cell that would let the session use more than it may now isn't taken (`Confinement::may_replace`), and the
+    /// session keeps its own.
+    pub fn keep_confinement(&mut self, host: &Confinement) -> bool {
+        if self.0.confinement.is(host) {
+            return true;
+        }
+        if host.may_replace(&self.0.confinement) {
+            self.0.confinement = host.shared();
+        }
+        false
+    }
+
+    /// What's selected in the tab showing, as the page view says. Only that one holds a selection: one that's left has lost its.
+    pub fn note_selection(&mut self, showing: TabId, selection: Option<Selection>) {
+        for tab in self.0.tabs.iter_mut() {
+            if tab.reading.selection.is_some() && tab.id != showing {
+                tab.reading.selection = None;
+            }
+        }
+        self.0.set_selection(showing, selection);
+    }
+
+    /// Shows a tab's generated contents, or its own: the tabs' own `choose_generated`, which the session's operations call too.
+    pub fn choose_generated(&mut self, id: TabId, generated: bool) {
+        self.0.choose_generated(id, generated);
+    }
+
+    /// A tab's facts were, or are about to be, read with a password the person typed: the tabs' own `note_password_used`, which the session's
+    /// unlocking calls too.
+    pub fn note_password_used(&mut self, id: TabId) {
+        self.0.note_password_used(id);
     }
 }

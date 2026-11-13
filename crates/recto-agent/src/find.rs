@@ -50,6 +50,8 @@ pub struct Basis {
     pub pages: u32,
     pub stamp: Option<recto_platform::FileStamp>,
     pub changes: u64,
+    /// Whether its unsaved edits fit its file: where they don't, nothing says which page of it a match is on, and Find says so ([`crate::unfit::refusal`]).
+    pub fit: recto_session::EditsFit,
 }
 
 /// A tab's basis now, under the session's lock: a few numbers.
@@ -59,6 +61,7 @@ pub fn basis<L: DocLoader>(session: &Session<L>, id: TabId) -> Basis {
         pages: session.pages().count(id),
         stamp: session.tabs().own_stamp(id),
         changes: session.lists().get(id).map_or(0, recto_session::edit::PageEdits::changes),
+        fit: session.notices().fit(id),
     }
 }
 
@@ -84,10 +87,12 @@ impl FindPlan {
 
 /// A tab's pages to look through, as its edits have them, under the session's lock. A few bytes a page.
 pub fn plan<L: DocLoader>(session: &Session<L>, id: TabId) -> Result<FindPlan, AgentError> {
-    search::plan_of(session, id, None, None).map(|plan| FindPlan {
-        plan,
-        basis: basis(session, id),
-    })
+    let basis = basis(session, id);
+    // The same words for the person's Find and an agent's.
+    if let Some(refused) = crate::unfit::refusal(basis.fit, crate::unfit::Asked::Find) {
+        return Err(refused);
+    }
+    search::plan_of(session, id, None, None).map(|plan| FindPlan { plan, basis })
 }
 
 impl FindPlan {
@@ -336,6 +341,14 @@ impl Results {
         self.first_hit = None;
         self.took = None;
         self.generation
+    }
+
+    /// This query can't be found in what `basis` is about, for `words`' reason: no hits, and the line under the field says why. Kept against that basis, so
+    /// it's said once and not tried again until the basis moves.
+    pub fn refused(&mut self, tab: u32, query: &str, basis: Basis, words: String) {
+        let generation = self.begin(tab, query, 0);
+        self.basis = Some(basis);
+        self.finish(generation, End::Failed(words), Progress::default());
     }
 
     /// Nothing's being looked for.

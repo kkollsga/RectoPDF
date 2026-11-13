@@ -19,6 +19,7 @@ mod dormancy;
 mod dormant;
 mod editing;
 mod files;
+mod fit;
 mod follow;
 mod generated;
 mod journal;
@@ -40,12 +41,22 @@ mod viewing;
 mod warm;
 
 pub use change::Closed;
+// The session's components, as the accessors in `parts.rs` hand them out: named here so a caller outside the crate can take one alone, and so their
+// docs are read. Naming one gives no way to build or replace it (R3.5a: no public constructor, and changes go through a `PartMut`).
+pub use dormancy::Dormancy;
 pub use dormant::Dormant;
 pub use edit::Author;
 use edit::{EditError, PageEdits};
+pub use fit::{EditsFit, NoticeSaid, Notices};
 pub use follow::{ContentsFollow, ContentsRowChange, ContentsView, FOLLOW_RESUME_AFTER, FollowMove};
+pub use generated::Generated;
+pub use journals::Journals;
+pub use lists::Lists;
+pub use mail::PageViewMail;
 pub use pages::Pages;
 pub use paper::{Paper, WARM_PAPER, contrast_ratio};
+pub use parts::PartMut;
+pub use recent::Recent;
 use record::{
     EditsSummary, FileNotice, FileStatus, JournalHeader, JournalOp, MAX_TAB_ID, PathField, PlaceDelta, PlaceRecord, RecordError, Selection, SessionRecord,
     TabEntry,
@@ -54,11 +65,13 @@ use recto_core::verdict::ContentsVerdict;
 use recto_core::{DocFacts, NONE, OpenError, Toc};
 use recto_platform::{FileStamp, file_stamp};
 pub use registry::Tabs;
+pub use saves::Saves;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 pub use viewing::Viewing;
+pub use warm::Warm;
 
 /// Tabs that may keep their contents in memory: the active one plus two recent ones.
 pub const MAX_WARM: usize = 3;
@@ -142,11 +155,11 @@ struct TabFile {
     file_name: Box<OsStr>,
     /// Which version of the file this tab's facts and any edits are about. `None` if it couldn't be looked at.
     stamp: Option<FileStamp>,
-    /// What the reader should be told about this tab's file, which is rare enough to be a pointer.
-    notice: Option<Box<FileNotice>>,
+    /// What the reader should be told about this tab's file, and whether its edits are about another version of it ([`fit`]): rare enough to be a pointer.
+    news: Option<Box<fit::FileNews>>,
     /// Its file's protected. Its contents and pages are never written anywhere, so it has no sleep file.
     encrypted: bool,
-    /// Its file was opened with a password the person typed, this session or one before (it's in the record). Unlike `encrypted`, which a file anyone may open has too, this means what's known of it was decrypted for the person, so nothing of it goes to an agent: see [`Session::withheld_from_agents`].
+    /// Its file was opened with a password the person typed, this session or one before (it's in the record). Unlike `encrypted`, which a file anyone may open has too, this means what's known of it was decrypted for the person, so nothing of it goes to an agent: see [`Tabs::withheld_from_agents`].
     password: bool,
 }
 
@@ -172,10 +185,11 @@ const _: () = {
 /// A trail stop's page, and which file and file page that was, if it was any.
 type StopSource = (u32, Option<(u16, u32)>);
 
-/// What an edit needs of before it: where the reader's page came from, and each trail stop's.
+/// What an edit needs of before it: where the reader's page came from, each trail stop's, and whether the edits fitted the file.
 struct Before {
     place: Option<(u16, u32, u32)>,
     stops: Option<Vec<StopSource>>,
+    fit: EditsFit,
 }
 
 /// Where a page of a tab comes from now.
@@ -193,12 +207,21 @@ pub struct PageSource {
 }
 
 impl PageSource {
-    /// Whether the file is still the one the page number is about. A file that's gone isn't. One that couldn't be looked at when it was recorded makes no claim.
+    /// Whether the file is still the one the page number is about, by [`recorded_version_is_current`]. A file that's gone isn't.
     pub fn is_current(&self) -> bool {
-        match self.expected {
-            None | Some(None) => true,
-            Some(Some(stamp)) => file_stamp(&self.path).ok() == Some(stamp),
-        }
+        recorded_version_is_current(&self.path, self.expected)
+    }
+}
+
+/// **Whether a file is still the version page numbers were recorded from: the one rule,** for a page of a tab ([`PageSource`]), a search's pages and an index's
+/// files alike. `None`: nothing was recorded, as for a tab with no edits, so the file as it is now is what's wanted. `Some(None)`: they were recorded from a
+/// version nothing names (its stamp couldn't be taken, or went as the edits don't fit the file), so nothing says this file is it, and it isn't taken to be, as
+/// a save has it. `Some(Some(stamp))`: the file at the path must still be that.
+pub fn recorded_version_is_current(path: &Path, expected: Option<Option<FileStamp>>) -> bool {
+    match expected {
+        None => true,
+        Some(None) => false,
+        Some(Some(stamp)) => file_stamp(path).ok() == Some(stamp),
     }
 }
 
@@ -249,11 +272,6 @@ pub struct SidebarModel<'a> {
     pub edited: bool,
     /// The owner's edits on the active PDF have been undone, by anyone, and can still be redone. The page matches the file, so `edited` is false, but closing would lose them, so the app has this to show.
     pub undone_owner_steps: bool,
-}
-
-/// How much of a tab's row in the host is what it's told about the file.
-pub fn tab_notice_words(tab: &TabRecord, has_edits: bool) -> Option<&'static str> {
-    tab.file.notice.as_deref().map(|notice| notice.message(has_edits))
 }
 
 /// A tab's row in the sidebar, in points.

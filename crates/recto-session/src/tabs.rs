@@ -6,17 +6,17 @@ impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
         Self {
             loader,
-            viewing: viewing::Viewing::default(),
-            tabs: registry::Tabs::default(),
-            warm: warm::Warm::default(),
-            lists: lists::Lists::default(),
-            dormancy: dormancy::Dormancy::default(),
-            mail: mail::PageViewMail::default(),
-            journals: journals::Journals::default(),
-            generated: generated::Generated::default(),
+            viewing: viewing::Viewing::new(),
+            tabs: registry::Tabs::new(),
+            warm: warm::Warm::new(),
+            lists: lists::Lists::new(),
+            dormancy: dormancy::Dormancy::new(),
+            mail: mail::PageViewMail::new(),
+            journals: journals::Journals::new(),
+            generated: generated::Generated::new(),
             comparison: None,
-            saves: saves::Saves::default(),
-            recent: recent::Recent::default(),
+            saves: saves::Saves::new(),
+            recent: recent::Recent::new(),
         }
     }
 
@@ -152,7 +152,7 @@ impl<L: DocLoader> Session<L> {
                 dir,
                 file_name: file_name.into(),
                 stamp,
-                notice: None,
+                news: None,
                 encrypted: false,
                 password: false,
             },
@@ -175,7 +175,7 @@ impl<L: DocLoader> Session<L> {
             let rolled_off = history.restored.rolled_off;
             self.take_up_history(id, &history.name, history.restored.edits, history.restored.seq);
             if rolled_off && let Some(tab) = self.tabs.tab_mut(id) {
-                tab.file.notice = Some(Box::new(FileNotice::HistoryRolledOff));
+                tab.file.set_notice(Some(FileNotice::HistoryRolledOff));
             }
         }
         Ok(id)

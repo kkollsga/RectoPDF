@@ -134,12 +134,12 @@ pub fn migrate_older_settings(inner: &Inner) {
         return;
     }
     inner.host.session.with_session(|session| {
-        let viewing = session.viewing_mut();
-        viewing.set_view(ViewSettings {
-            paper: paper.or(viewing.view().paper),
+        let view = session.viewing().view();
+        session.viewing_mut().set_view(ViewSettings {
+            paper: paper.or(view.paper),
             agent_icon_hidden: hidden,
-            ..viewing.view()
-        })
+            ..view
+        });
     });
     inner.saver.write_soon();
     let _ = std::fs::remove_file(paths.root.join(PAPER_FILE));
@@ -159,12 +159,7 @@ pub fn look_at_other_files(inner: &Arc<Inner>, active: TabId) {
             if id == active {
                 continue;
             }
-            let status = look_at_file(&path, stamp);
-            let is_as_it_was = matches!(&status, FileStatus::Same(now) if Some(*now) == stamp) || matches!(status, FileStatus::NotLooked);
-            if !is_as_it_was {
-                inner.host.session.with_session(|session| session.apply_file_status(id, status));
-                changed = true;
-            }
+            changed |= take_other_look(&inner, id, stamp, look_at_file(&path, stamp));
         }
         if changed {
             inner.core.push(CoreCall::Reconcile);
@@ -174,6 +169,17 @@ pub fn look_at_other_files(inner: &Arc<Inner>, active: TabId) {
     if spawned.is_err() {
         looking.life.others_looking.fetch_sub(1, Ordering::SeqCst);
     }
+}
+
+/// What a look at a tab not showing found, made against `stamp`, taken in: whether it was news. Only something other than what was known is told, and a save
+/// meanwhile moves the stamp, so a look against the old one is about nothing now.
+pub(crate) fn take_other_look(inner: &Inner, id: TabId, stamp: Option<recto_platform::FileStamp>, status: FileStatus) -> bool {
+    let is_as_it_was = matches!(&status, FileStatus::Same(now) if Some(*now) == stamp) || matches!(status, FileStatus::NotLooked);
+    !is_as_it_was
+        && inner
+            .host
+            .session
+            .with_session(|session| session.tabs().own_stamp(id) == stamp && session.apply_file_status(id, status))
 }
 
 /// Runs the socket from here on, now the session's as it was: nothing asked of it could be about an empty one, or open over what's coming back.
@@ -271,7 +277,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
                 inner.go_dormant(&tabs, why);
             }
             CoreCall::MemoryPressure(critical) => inner.memory_pressure(critical),
-            CoreCall::WokenFileIsOther(id, status) => woken_file_is_other(inner, &mut reads, id, status),
+            CoreCall::WokenFileIsOther(id, status, against) => woken_file_is_other(inner, &mut reads, id, status, against),
             CoreCall::LookAgain(id) => {
                 if let Some(inner) = inner.saver.inner() {
                     sleeper::check_woken_file(&inner, id);

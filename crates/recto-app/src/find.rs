@@ -341,7 +341,7 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
         if let Some((active, basis)) = now
             && (had.0 != Some(basis) || had.1 != record.query)
             && let Some(needle) = find::needle(&record.query)
-            && let Ok(plan) = session.with_session(|s| find::plan(s, active))
+            && let Some(plan) = self.plan_or_say_why(active, basis, &record.query)
         {
             // The person's own Find, with their passwords, so a document they opened with one is searched through its key, page by page, and nothing of it goes to a corpus.
             let plan = match session.find_keys() {
@@ -355,6 +355,23 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
             // The field stays as it is: a draft typed and not run is the reader's.
             session.finder().start(plan, &record.query, needle);
         }
+    }
+
+    /// The plan to find again on, or, where Find can't search what the hits would be about, none: the hits held go, as they're about something else, and the line
+    /// under the field says why, once, as it's kept against that basis.
+    fn plan_or_say_why(&self, active: recto_session::TabId, basis: find::Basis, query: &str) -> Option<find::FindPlan> {
+        let refused = match self.session.with_session(|s| find::plan(s, active)) {
+            Ok(plan) => return Some(plan),
+            Err(refused) => refused,
+        };
+        if !basis.fit.fits() {
+            let finder = self.session.finder();
+            finder.clear();
+            finder.with_results(&mut |results| results.refused(active.0, query, basis, refused.message.clone()));
+            self.session.with_session(|s| s.viewing_mut().set_find_current(None, None));
+            self.listener.model_changed();
+        }
+        None
     }
 
     /// What QA reads of Find.

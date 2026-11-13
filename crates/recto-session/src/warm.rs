@@ -11,7 +11,7 @@ pub(crate) type Read = (Result<DocFacts, OpenError>, Option<FileStamp>);
 
 /// The tabs that keep their contents, and reads of cold tabs' files made ahead of waking them. What's public here only reads; what's warm changes with
 /// activating and waking, which go with the tab and its list.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Warm {
     /// Most recently used first, at most [`MAX_WARM`].
     warm: VecDeque<(TabId, Arc<Toc>)>,
@@ -20,6 +20,14 @@ pub struct Warm {
 }
 
 impl Warm {
+    /// No tab warm, no read held. The crate's: see [`crate::parts::PartMut`].
+    pub(crate) fn new() -> Self {
+        Self {
+            warm: VecDeque::new(),
+            woken: Vec::new(),
+        }
+    }
+
     /// Most recently used first.
     pub fn ids(&self) -> impl Iterator<Item = TabId> + '_ {
         self.warm.iter().map(|(tab, _)| *tab)

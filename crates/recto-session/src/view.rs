@@ -3,16 +3,6 @@
 use super::*;
 
 impl<L: DocLoader> Session<L> {
-    /// What's selected in the tab showing, as the page view says. Only that one holds a selection: one that's left has lost its.
-    pub fn note_selection(&mut self, showing: TabId, selection: Option<Selection>) {
-        for tab in self.tabs.iter_mut() {
-            if tab.reading.selection.is_some() && tab.id != showing {
-                tab.reading.selection = None;
-            }
-        }
-        self.tabs.set_selection(showing, selection);
-    }
-
     /// **Exactly where a tab's reader is, as a read of the page view stamped `stamp` on the place clock says,** taken in only if it's as new as the
     /// read taken in last on this tab, whoever took that in: an older read still landing doesn't undo a newer one, the person's own scroll among it. A jump
     /// the view was sent at or before `stamp` is then told of ([`Self::here`]). Says whether it was taken. Marked to be written only if it's moved.

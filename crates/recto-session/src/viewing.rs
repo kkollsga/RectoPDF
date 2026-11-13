@@ -4,7 +4,7 @@ use crate::record::{self, FindRecord, ViewRecord};
 use crate::{Paper, ViewSettings};
 
 /// The view's settings, Find and edit mode.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Viewing {
     view: ViewSettings,
     /// Find, as the reader left it.
@@ -14,12 +14,17 @@ pub struct Viewing {
 }
 
 impl Viewing {
-    pub fn view(&self) -> ViewSettings {
-        self.view
+    /// The view as it is with nothing set, Find empty and edit mode off. The crate's: see [`crate::parts::PartMut`].
+    pub(crate) fn new() -> Self {
+        Self {
+            view: ViewSettings::default(),
+            find: FindRecord::default(),
+            edit_mode: false,
+        }
     }
 
-    pub fn set_view(&mut self, view: ViewSettings) {
-        self.view = view;
+    pub fn view(&self) -> ViewSettings {
+        self.view
     }
 
     /// Find, as the reader left it.
@@ -27,41 +32,8 @@ impl Viewing {
         &self.find
     }
 
-    /// Sets what's in Find. Longer text than [`record::MAX_FIND_BYTES`] is cut at a character.
-    pub fn set_find(&mut self, open: bool, query: &str, draft: &str) {
-        let cut = |text: &str| {
-            let mut end = text.len().min(record::MAX_FIND_BYTES);
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
-            text[..end].to_string()
-        };
-        let (current, current_tab) = if query == self.find.query {
-            (self.find.current, self.find.current_tab)
-        } else {
-            (None, None)
-        };
-        self.find = FindRecord {
-            open,
-            query: cut(query),
-            draft: cut(draft),
-            current,
-            current_tab,
-        };
-    }
-
-    /// The hit Find went to last, by its place, for the record.
-    pub fn set_find_current(&mut self, current: Option<(u32, u32)>, tab: Option<u32>) {
-        self.find.current = current;
-        self.find.current_tab = tab;
-    }
-
     pub fn edit_mode(&self) -> bool {
         self.edit_mode
-    }
-
-    pub fn set_edit_mode(&mut self, on: bool) {
-        self.edit_mode = on;
     }
 
     /// What the record has of these: the view, Find and edit mode. Every field is named, so one added doesn't compile until it's carried or said not to be.
@@ -100,5 +72,46 @@ impl Viewing {
             sidebar_hidden,
             agent_icon_hidden,
         };
+    }
+}
+
+/// What a caller outside the crate may change of the view: all of it, as nothing else holds any of it.
+impl crate::parts::PartMut<'_, Viewing> {
+    pub fn set_view(&mut self, view: ViewSettings) {
+        self.0.view = view;
+    }
+
+    /// Sets what's in Find. Longer text than [`record::MAX_FIND_BYTES`] is cut at a character.
+    pub fn set_find(&mut self, open: bool, query: &str, draft: &str) {
+        let cut = |text: &str| {
+            let mut end = text.len().min(record::MAX_FIND_BYTES);
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text[..end].to_string()
+        };
+        let find = &mut self.0.find;
+        let (current, current_tab) = if query == find.query {
+            (find.current, find.current_tab)
+        } else {
+            (None, None)
+        };
+        *find = FindRecord {
+            open,
+            query: cut(query),
+            draft: cut(draft),
+            current,
+            current_tab,
+        };
+    }
+
+    /// The hit Find went to last, by its place, for the record.
+    pub fn set_find_current(&mut self, current: Option<(u32, u32)>, tab: Option<u32>) {
+        self.0.find.current = current;
+        self.0.find.current_tab = tab;
+    }
+
+    pub fn set_edit_mode(&mut self, on: bool) {
+        self.0.edit_mode = on;
     }
 }

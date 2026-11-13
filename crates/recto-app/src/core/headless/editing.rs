@@ -149,12 +149,8 @@ fn clear_history_is_announced_only_when_there_was_history() {
     assert!(agent().is_empty(), "and of none");
 }
 
-/// Failure (review of R2.3, round 2, B2): an agent's `discard` or `clear-history` of a tab whose edit list is asleep and can't be read back throws away the
-/// owner's edits: the guards read the owner's edits from a list in memory, which an asleep one isn't, so an agent at Control got past them, the list was
-/// given up, and `discard` said there had been no edits. Where what it would lose can't all be read, an agent is refused `edits_unreadable` at Control and
-/// at Full, and nothing is given up; the person's own discard still throws them away, and says so.
-#[test]
-fn an_agent_neither_discards_nor_clears_edits_it_cant_read() {
+/// An app whose tab `#1` has the owner's rotation on page 1, its list asleep and its journal written over, so it can't be read back; `#2` is showing.
+fn edits_that_cant_be_read() -> crate::testkit::headless::HeadlessApp {
     let disk = crate::testkit::headless::Disk::new();
     let (a, b) = (disk.pdf("a.pdf", 3), disk.pdf("b.pdf", 3));
     let app = disk.start();
@@ -170,6 +166,30 @@ fn an_agent_neither_discards_nor_clears_edits_it_cant_read() {
     let slept = app.agent(Level::Full, r##"{"cmd":"session_sleep","tab":"#1"}"##).expect("put to sleep");
     assert_eq!(slept["list_asleep"], true, "{slept}");
     super::closing::journals_written_over(&app);
+    app
+}
+
+/// **Failure (R3.5a): `edits` on a tab whose list can't be read back answers that nothing is reordered or turned** (`runs: []`, from the list not being
+/// in memory), when the tab is edited and what's on its pages can't be known. It refuses as anything reading the pages does, `edits_unreadable`, with
+/// what to do.
+#[test]
+fn edits_of_a_list_that_cant_be_read_back_is_refused_not_empty() {
+    let app = edits_that_cant_be_read();
+    let refused = app
+        .agent(Level::Full, r##"{"cmd":"edits","tab":"#1"}"##)
+        .map_err(|error| (error.code, error.next.clone()));
+    let Err((code, next)) = refused else { panic!("answered: {refused:?}") };
+    assert_eq!(code, "edits_unreadable");
+    assert!(next.contains("recto discard"), "it says what to do: {next}");
+}
+
+/// Failure (review of R2.3, round 2, B2): an agent's `discard` or `clear-history` of a tab whose edit list is asleep and can't be read back throws away the
+/// owner's edits: the guards read the owner's edits from a list in memory, which an asleep one isn't, so an agent at Control got past them, the list was
+/// given up, and `discard` said there had been no edits. Where what it would lose can't all be read, an agent is refused `edits_unreadable` at Control and
+/// at Full, and nothing is given up; the person's own discard still throws them away, and says so.
+#[test]
+fn an_agent_neither_discards_nor_clears_edits_it_cant_read() {
+    let app = edits_that_cant_be_read();
     let asleep = || {
         app.core()
             .host
@@ -196,4 +216,32 @@ fn an_agent_neither_discards_nor_clears_edits_it_cant_read() {
     assert!(!asleep(), "the person's discard gives the list up");
     let said = app.heard_events();
     assert!(said.iter().any(|event| event.name() == "edits_changed"), "and says so: {said:?}");
+}
+
+/// **Failure (R3.5a): the app's `session save` counts lists in memory with a journal as `edited_tabs`,** so tabs whose edited lists went to disk
+/// aren't counted and one whose every step was undone is. It's the tabs with unsaved changes, by the read the close and quit rules use: `#1` awake, `#3`
+/// and `#4` asleep; not `#2`, all undone.
+#[test]
+fn a_save_counts_the_tabs_with_unsaved_changes_wherever_their_lists_are() {
+    let disk = crate::testkit::headless::Disk::new();
+    let docs: Vec<_> = ["a", "b", "c", "d", "e"].iter().map(|name| disk.pdf(&format!("{name}.pdf"), 3)).collect();
+    let app = disk.start();
+    for doc in &docs {
+        app.open(doc);
+    }
+    for tab in 1..=4 {
+        app.person(&format!(r##"{{"cmd":"page_rotate","tab":"#{tab}","pages":"1","degrees":90}}"##));
+        app.settle();
+    }
+    app.person(r##"{"cmd":"undo","tab":"#2"}"##);
+    app.person(r##"{"cmd":"tap","tab":"#5"}"##);
+    app.settle();
+    for tab in [3, 4] {
+        let slept = app
+            .agent(Level::Full, &format!(r##"{{"cmd":"session_sleep","tab":"#{tab}"}}"##))
+            .expect("put to sleep");
+        assert_eq!(slept["list_asleep"], true, "#{tab}: {slept}");
+    }
+    let saved = app.agent(Level::Full, r#"{"cmd":"session_save"}"#).expect("saved");
+    assert_eq!(saved["edited_tabs"], 3, "{saved}");
 }
