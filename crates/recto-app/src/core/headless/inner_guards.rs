@@ -2,6 +2,7 @@
 //! each of its parts, and what each lets other code reach. What every control sends and the host is told is held by the coverage test's golden
 //! (`coverage.rs`); what a person's action allocates on the window's thread, by `tests/inner_allocations.rs`, in a binary of its own for its allocator.
 
+use crate::core::sleeper::Sleeper;
 use crate::core::{AppState, Inner, Lifecycle, Published, Serving, Tools, Window};
 use std::mem::size_of;
 
@@ -22,6 +23,7 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
         ("Tools", size_of::<Tools>()),
         ("Published", size_of::<Published>()),
         ("AppState", size_of::<AppState>()),
+        ("Sleeper", size_of::<Sleeper>()),
     ];
     let names: Vec<&str> = sizes.iter().map(|(name, _)| *name).collect();
     assert_eq!(names, BUDGETS.map(|(name, _)| name), "the types held");
@@ -40,8 +42,9 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
 /// more from the sleep branch's sleeper, held inline: the cool-down queue (`sleep_queue::Leaving`, where `main` had the queue under its lock alone) with its
 /// condition variable, its wait, its writer's panic seam, a test's hold and the queue's own counts, the answer slots an agent's asked sleep waits on, the
 /// ticket counter, and the hurry going to the background asks for; and Tools' and Inner's 8 more for Find's fingerprint of what the host was last told it
-/// draws (`find::Field`, R3.7 S2's fix: Find announced with nothing changed). One of each per app, not per tab or page view.
-const BUDGETS: [(&str, usize); 7] = [
+/// draws (`find::Field`, R3.7 S2's fix: Find announced with nothing changed). And the sleeper on its own, at its size on 2026-11-14 (608 bytes, inside
+/// Inner's then), before R3.7 S5 moves it behind an `Arc` of its own, where Inner's budget no longer sees it. One of each per app, not per tab or page view.
+const BUDGETS: [(&str, usize); 8] = [
     ("Inner", 5072),
     ("Lifecycle", 344),
     ("Serving", 1064),
@@ -49,6 +52,7 @@ const BUDGETS: [(&str, usize); 7] = [
     ("Tools", 1448),
     ("Published", 808),
     ("AppState", 248),
+    ("Sleeper", 608),
 ];
 
 /// Failure: a move widens what other code can reach of the app's state: a part's field made `pub`, a part given `Default` or `Clone` so it can be built
