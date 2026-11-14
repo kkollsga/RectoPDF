@@ -335,16 +335,20 @@ impl Window {
     /// The window's going for another made from the state that came in late: what it said about itself since isn't kept, and what each pane had selected,
     /// `held`, is kept for the new one.
     pub(super) fn replaced(&self, held: Vec<(usize, recto_index::select::Range)>) {
-        // What the going window said about itself since the state came in isn't kept: the new one comes from the state. What the host chose about what's out of sight is.
+        // What the going window said about itself since the state came in isn't kept: the new one comes from the state. What the host chose about what's out of sight is,
+        // and so are the saved session's place and selection as the going window left them: one it put back already isn't put back again over what the person
+        // did since, and one it hadn't yet still is, once.
         let mut app = lock(&self.app);
         if let Some(state) = app.from_state.take() {
             let minimised = app.window.as_ref().is_some_and(|window| window.minimised);
             let (hidden, closed) = (app.app_hidden, app.window_closed);
             let decided = (app.hidden_decided, app.minimised_decided, app.window_decided);
+            let resumes = (app.contents_resume.take(), app.selection_resume.take());
             *app = *state;
             app.app_hidden = hidden;
             app.window_closed = closed;
             (app.hidden_decided, app.minimised_decided, app.window_decided) = decided;
+            (app.contents_resume, app.selection_resume) = resumes;
             if let Some(window) = app.window.as_mut() {
                 window.minimised = minimised;
             }

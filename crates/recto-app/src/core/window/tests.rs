@@ -505,3 +505,41 @@ fn showing_is_open_and_not_in_the_dock() {
     rig.window.closed();
     assert!(!rig.window.showing(), "closed");
 }
+
+/// Failure (2026-11-14, with `a_window_made_again_from_a_late_state_puts_the_saved_place_back_only_once`): a window made again from a state read late takes
+/// the state's resumes, so a place the going window had already put back comes back a second time; or, the other way, one the going window hadn't put back yet
+/// (its tab not shown yet) is lost. The going window's resumes stay as they are, taken or not; the rest comes from the state.
+#[test]
+fn a_window_made_again_keeps_the_resumes_as_the_going_one_left_them() {
+    let tab = TabId(2);
+    let selection = record::Selection {
+        from_page: 0,
+        from_char: 1,
+        to_page: 0,
+        to_char: 5,
+    };
+    let scroll = ContentsScroll { y: 80.0, following: false };
+    for taken in [true, false] {
+        let rig = Rig::new().with_a_window();
+        {
+            let mut app = lock(&rig.window.app);
+            app.window_decided = true;
+            let mut state = app.clone();
+            state.contents_resume = Some((tab, scroll));
+            state.selection_resume = Some((tab, selection));
+            state.sidebar_width = 333.0;
+            app.from_state = Some(Box::new(state));
+            if !taken {
+                app.contents_resume = Some((tab, scroll));
+                app.selection_resume = Some((tab, selection));
+            }
+        }
+        rig.window.replaced(Vec::new());
+        let app = rig.app();
+        assert_eq!(app.sidebar_width, 333.0, "taken {taken}: the rest from the state");
+        let resumes = (!taken).then_some(((tab, scroll), (tab, selection)));
+        assert_eq!(app.contents_resume.zip(app.selection_resume), resumes, "taken {taken}");
+        assert_eq!(rig.window.take_selection_resume(tab), (!taken).then_some(selection), "taken {taken}: once");
+        assert_eq!(rig.window.take_selection_resume(tab), None, "taken {taken}: and only once");
+    }
+}
