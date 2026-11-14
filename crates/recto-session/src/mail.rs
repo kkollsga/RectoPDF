@@ -21,12 +21,19 @@ struct ViewWord {
     /// The line the contents' current entry is found by, as the read taken in last said it with its place ([`crate::view::ViewSaid`]): the page and
     /// thousandths down it, or a page of `NONE` before any read.
     line: (u32, u16),
+    /// **The draws of the tab the mail drops** (the second review, S-3): those asked before the place clock came here, as they were asked of the view
+    /// while it was where a withheld place had it ([`PageViewMail::release`]); every one while it's [`PENDING`]; none while 0.
+    released: u64,
 }
 
 // size: one for each tab a page view has told of or been sent a jump on (hot and warm, a few), none for a cold tab. 40 bytes until 2026-11-14, 48 with the
-// line; the entry a jump went to is in what was the padding of the jump's (`Sent`, 24 bytes as `(Stop, u64)` was). Held there, so a field added is a
-// deliberate change.
-const _: () = assert!(size_of::<ViewWord>() == 48, "a page view's word on a tab grew");
+// line; the entry a jump went to is in what was the padding of the jump's (`Sent`, 24 bytes as `(Stop, u64)` was). 56 with `released` (the second
+// review's S-3, the coordinator's choice of 2026-11-14: a draw's stamp needs a whole clock, and the padding held 4 bytes). Held there, so a field added is
+// a deliberate change.
+const _: () = assert!(size_of::<ViewWord>() == 56, "a page view's word on a tab grew");
+
+/// [`ViewWord::released`] while the jump that lets a withheld place go hasn't been sent: every draw of the tab is from where it was.
+const PENDING: u64 = u64::MAX;
 
 /// **A jump sent a page view:** where to, the contents entry it went to (`recto goto --entry`, a click on a contents row) or `NONE`, and the place clock
 /// the send came to. Once a read at or past the send is taken in, a jump with no entry is done with; one with an entry is **kept**, its send [`KEPT`],
@@ -64,6 +71,8 @@ pub struct PageViewMail {
     words: Vec<ViewWord>,
     /// The last edit removed the page a tab was on, so its place moved to the nearest one. Read once with [`PartMut::take_place_lost`](crate::PartMut::take_place_lost).
     place_lost: bool,
+    /// Some word has a [`ViewWord::released`]: a draw's tab is looked up only then, so a draw of a tab whose place was never withheld costs one compare.
+    cutoffs: bool,
 }
 
 impl PageViewMail {
@@ -74,6 +83,7 @@ impl PageViewMail {
             jumps: Vec::new(),
             words: Vec::new(),
             place_lost: false,
+            cutoffs: false,
         }
     }
 
@@ -127,6 +137,7 @@ impl PageViewMail {
                     last_read: 0,
                     jump_on_its_way: None,
                     line: (crate::NONE, 0),
+                    released: 0,
                 });
                 self.words.len() - 1
             }
@@ -148,12 +159,17 @@ impl PageViewMail {
     /// the session has from here, with the `line` it said, and a jump sent at or before it is told of: done with, or for a jump to an entry kept, while
     /// the read's `anchor` is still where it put the reader.
     pub(crate) fn view_told_of(&mut self, tab: TabId, stamp: u64, line: (u32, u16), anchor: (u32, f64)) -> bool {
+        let jump_waiting = self.jumps.iter().any(|(id, ..)| *id == tab);
         let word = self.word(tab);
         if stamp < word.last_read {
             return false;
         }
         word.last_read = stamp;
         word.line = line;
+        // A release whose jump went another way than a send (Find's hit, brought into view by the app): the first read after it is the view's own.
+        if word.released == PENDING && !jump_waiting {
+            word.released = stamp;
+        }
         word.jump_on_its_way = word.jump_on_its_way.and_then(|sent| match sent.sent {
             KEPT => sent.holds(anchor).then_some(sent),
             at if at <= stamp => (sent.entry != crate::NONE && sent.holds(anchor)).then_some(Sent { sent: KEPT, ..sent }),
@@ -186,6 +202,25 @@ impl PageViewMail {
     /// The tab's gone dormant: no page view holds it, and it costs nothing here.
     pub(crate) fn forget_view_word(&mut self, tab: TabId) {
         self.words.retain(|word| word.tab != tab);
+        self.cutoffs = self.words.iter().any(|word| word.released != 0);
+    }
+
+    /// **A withheld place of the tab's has been let go** ([`crate::compare::let_go_of_place`]): every draw of it is dropped as it's told until the jump
+    /// that goes with the release is sent, and from then those asked before the send, as they were asked of a view that was where the withheld place had
+    /// it: a draw's end announced after the release would say which pages were around that place (`wait page-drawn`, a watcher's `page_drawn`).
+    pub(crate) fn release(&mut self, tab: TabId) {
+        self.word(tab).released = PENDING;
+        self.cutoffs = true;
+    }
+
+    /// Whether a draw of `tab` asked when the place clock was at `asked` is told: not if it was asked of the view before a release of the tab's.
+    fn draw_is_told(&self, tab: TabId, asked: u64) -> bool {
+        !self.cutoffs
+            || self
+                .words
+                .iter()
+                .find(|word| word.tab == tab)
+                .is_none_or(|word| word.released != PENDING && asked >= word.released)
     }
 
     pub(crate) fn set_place_lost(&mut self, lost: bool) {
@@ -225,12 +260,23 @@ impl PageViewMail {
 impl crate::parts::PartMut<'_, PageViewMail> {
     /// Notes that a page finished drawing, or couldn't be.
     pub fn note_drawn(&mut self, note: DrawNote) {
+        let _ = self.note_drawn_asked(note, u64::MAX - 1);
+    }
+
+    /// **Notes a draw asked of the page view when the place clock was at `asked`,** and says whether it's to be told: a draw asked before a release of
+    /// the tab's withheld place is dropped, unnoted and unannounced (S-3). A tab never withheld costs one compare.
+    #[must_use = "a draw not noted isn't announced either"]
+    pub fn note_drawn_asked(&mut self, note: DrawNote, asked: u64) -> bool {
+        if !self.0.draw_is_told(note.tab, asked) {
+            return false;
+        }
         let draws = &mut self.0.draws;
         draws.retain(|d| (d.tab, d.page) != (note.tab, note.page));
         draws.push_back(note);
         while draws.len() > MAX_DRAWS_KEPT {
             draws.pop_front();
         }
+        true
     }
 
     /// The last jump in a tab the page view hasn't taken, with how far down to land. Taken once.
@@ -258,6 +304,10 @@ impl crate::parts::PartMut<'_, PageViewMail> {
             None => crate::NONE,
         };
         let word = self.0.word(tab);
+        // The jump that let a withheld place go: draws asked before its send were asked where that place had the view.
+        if word.released == PENDING {
+            word.released = stamp;
+        }
         let sent = if word.last_read < stamp { stamp } else { KEPT };
         word.jump_on_its_way = (sent != KEPT || entry != crate::NONE).then_some(Sent { to, entry, sent });
     }

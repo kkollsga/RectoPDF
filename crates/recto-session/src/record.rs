@@ -759,6 +759,11 @@ pub struct TabEntry {
     /// Its file was opened with a password the person typed, so what's here of it (its length, its place) was read with one, and none of it goes to an agent. The password itself is never anywhere in the record. Added after version 1, so an older record has none.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub password: bool,
+    /// **Its place is withheld from agents on its own account:** it was left by following a protected document in a synced comparison and hasn't been
+    /// moved by a jump since (`compare::place_withheld`). Kept so a restart doesn't give an agent where following left it (the second review, S-4). Left
+    /// out when false, so a record without it is byte for byte as before, and an older app ignores it (no new version: a field with a default).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub place_withheld: bool,
     /// Back and forward: places to go back to, oldest first, and to go forward to, the nearest last. See [`crate::trail`]. Read up to [`MAX_TRAIL_READ`], and held to [`crate::trail::MAX_TRAIL`] when taken in.
     #[serde(default, deserialize_with = "capped::<_, _, MAX_TRAIL_READ>", skip_serializing_if = "Vec::is_empty")]
     pub back: Vec<crate::trail::Stop>,
@@ -1502,6 +1507,7 @@ mod tests {
             back: Vec::new(),
             forward: Vec::new(),
             password: false,
+            place_withheld: false,
         }
     }
 

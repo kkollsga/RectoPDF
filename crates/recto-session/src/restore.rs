@@ -49,8 +49,7 @@ impl<L: DocLoader> Session<L> {
                             news: _,
                             encrypted: _,
                             password,
-                            // In memory only: the record has no place for it, and isn't given one (the coordinator's decision, 2026-11-14).
-                            placed_by_withheld: _,
+                            placed_by_withheld,
                         },
                     reading: TabPlace { place, selection, trail },
                 } = tab;
@@ -76,6 +75,7 @@ impl<L: DocLoader> Session<L> {
                     generated_contents: *generated_contents,
                     contents_folds: folds.as_deref().map(<[(u32, bool)]>::to_vec).unwrap_or_default(),
                     password: *password,
+                    place_withheld: *placed_by_withheld,
                     back: trail.as_ref().map(|trail| trail.back().to_vec()).unwrap_or_default(),
                     forward: trail.as_ref().map(|trail| trail.forward().to_vec()).unwrap_or_default(),
                 }
@@ -184,7 +184,7 @@ impl<L: DocLoader> Session<L> {
                     news: fit::FileNews::restored(notice, elsewhere),
                     encrypted: false,
                     password: entry.password,
-                    placed_by_withheld: false,
+                    placed_by_withheld: entry.place_withheld,
                 },
                 reading: TabPlace {
                     place: entry.place,

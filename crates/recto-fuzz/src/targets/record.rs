@@ -132,6 +132,7 @@ fn use_a_log(bytes: &[u8]) {
             back: Vec::new(),
             forward: Vec::new(),
             password: false,
+            place_withheld: false,
         }],
         comparison: None,
         recent: Vec::new(),

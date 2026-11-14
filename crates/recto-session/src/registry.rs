@@ -243,8 +243,7 @@ impl Tabs {
 
     /// Whether a tab can go back, and forward.
     pub fn can_go_back_and_forward(&self, id: TabId) -> (bool, bool) {
-        self.trail_of(id)
-            .map_or((false, false), |trail| (!trail.back().is_empty(), !trail.forward().is_empty()))
+        self.trail_of(id).map_or((false, false), |trail| (trail.can_go(true), trail.can_go(false)))
     }
 
     /// Where to bring a tab back to: only if it's still about the page the tab is on, as a `goto` while it was cold leaves it not.

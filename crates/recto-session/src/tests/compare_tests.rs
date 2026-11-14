@@ -179,7 +179,7 @@ fn the_pane_read_next_is_read_ahead() {
 
 /// Failure (security review of phase R, S2): a tab's place says where a protected one is and goes on saying it: while it follows one in a synced
 /// comparison it isn't withheld, or it's let go as soon as sync is off though it's still on the page following left it on, or it stays withheld after it's
-/// moved otherwise. Withheld while it follows; after sync is off, only if it moved while it followed, and until its next move made otherwise; the protected
+/// moved by a jump. Withheld while it follows; after sync is off, only if it moved while it followed, and until its next jump (D-1); the protected
 /// tab is withheld throughout, and a comparison of two plain tabs withholds nothing.
 #[test]
 fn a_tab_that_follows_a_withheld_one_has_its_place_withheld_until_moved_otherwise() {
@@ -205,7 +205,12 @@ fn a_tab_that_follows_a_withheld_one_has_its_place_withheld_until_moved_otherwis
     assert!(compare::place_withheld(&s, plain), "and after the comparison ends");
     assert!(compare::place_withheld(&s, locked), "the protected tab, throughout");
     s.go_to(plain, 2).unwrap();
-    assert!(!compare::place_withheld(&s, plain), "moved otherwise");
+    assert!(
+        compare::place_withheld(&s, plain),
+        "the person's scroll lands where following left it, plus how far (D-1)"
+    );
+    s.jump_as(plain, 2, 0.0, Author::Agent).unwrap();
+    assert!(!compare::place_withheld(&s, plain), "moved by a jump");
 }
 
 /// A plain tab `plain` left by following a protected one in a synced comparison: synced with `locked`, moved to page 7 while it followed, then synced
@@ -515,4 +520,33 @@ fn the_record_keeps_a_withheld_place_and_its_trails_marks() {
         !text.contains("withheld") && !text.contains("mark_only"),
         "nothing written when nothing is withheld: {text}"
     );
+}
+
+/// Failure (the second review, S-3): a draw asked of the page view while it was where a withheld place had it, and finished after an agent's `goto` let
+/// that place go, is noted and announced, so `wait page-drawn` and a watcher's `page_drawn` name the pages around where following left the tab. From the
+/// release every draw of the tab is dropped until the jump's send, then those asked before the send; a tab never withheld has every draw told.
+#[test]
+fn draws_asked_before_a_withheld_place_was_let_go_are_dropped() {
+    let (mut s, plain, locked) = left_by_following();
+    let note = |page| DrawNote {
+        tab: plain,
+        page,
+        failure: None,
+    };
+    s.jump_as(plain, 2, 0.0, Author::Agent).unwrap();
+    assert!(!s.mail_mut().note_drawn_asked(note(8), 100), "drawn before the jump was sent");
+    let to = s.mail_mut().take_jump(plain).expect("the goto's jump");
+    s.mail_mut().jump_sent(plain, to, 200);
+    assert!(!s.mail_mut().note_drawn_asked(note(6), 199), "asked before the send");
+    assert_eq!(s.mail().draw_note(plain, 6), None);
+    assert!(s.mail_mut().note_drawn_asked(note(2), 200), "asked of the view at the jump");
+    assert!(s.mail().draw_note(plain, 2).is_some());
+    let other = s.open(&PathBuf::from("/d/other.pdf")).unwrap();
+    let plain_note = DrawNote {
+        tab: other,
+        page: 0,
+        failure: None,
+    };
+    assert!(s.mail_mut().note_drawn_asked(plain_note, 1), "a tab never withheld");
+    let _ = locked;
 }

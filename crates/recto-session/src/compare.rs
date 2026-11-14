@@ -333,22 +333,60 @@ pub fn place_withheld<L: DocLoader>(session: &Session<L>, id: TabId) -> bool {
 
 /// [`place_withheld`], for a tab in hand.
 pub fn place_withheld_of<L: DocLoader>(session: &Session<L>, tab: &crate::TabRecord) -> bool {
-    crate::withheld_tab(tab) || tab.file.placed_by_withheld || follows_withheld(session, tab.id)
+    withheld_by_itself(tab) || follows_withheld(session, tab.id)
 }
 
-/// Whether `id` is in a synced comparison with a tab withheld from agents, and isn't that tab.
+/// **A tab whose place is withheld on its own account,** not by following: its document is ([`crate::withheld_tab`]), or it was left by following one
+/// and hasn't been moved by a jump since. What follows it in a synced comparison has its place withheld too, so withholding carries from tab to tab
+/// through syncing (the second review, S-1): a plain tab synced beside one left by following moves with it, from where following left it. The one root
+/// the comparison's rules for an agent ask: [`follows_withheld`], [`comparison_withheld`], [`synced_would_withhold`].
+fn withheld_by_itself(tab: &crate::TabRecord) -> bool {
+    crate::withheld_tab(tab) || tab.file.placed_by_withheld
+}
+
+/// Whether `id` is in a synced comparison with a tab whose place is withheld on its own account, and isn't that tab. At most three panes looked at.
 pub(crate) fn follows_withheld<L: DocLoader>(session: &Session<L>, id: TabId) -> bool {
     session.comparison.as_ref().is_some_and(|comparison| {
-        comparison.synced && comparison.contains(id) && comparison.tabs.iter().any(|other| *other != id && session.tabs.withheld_from_agents(*other))
+        comparison.synced
+            && comparison.contains(id)
+            && comparison
+                .tabs
+                .iter()
+                .any(|other| *other != id && session.tabs.tab(*other).is_some_and(withheld_by_itself))
     })
 }
 
-/// Whether the comparison there is has a pane withheld from agents: its lengths and where synced scroll started each pane aren't said to one.
+/// Whether the comparison there is has a pane whose place is withheld: its lengths and where synced scroll started each pane aren't said to an agent.
 pub fn comparison_withheld<L: DocLoader>(session: &Session<L>) -> bool {
     session
         .comparison
         .as_ref()
-        .is_some_and(|comparison| comparison.tabs.iter().any(|id| session.tabs.withheld_from_agents(*id)))
+        .is_some_and(|comparison| synced_would_withhold(session, &comparison.tabs))
+}
+
+/// Whether these tabs, synced, would have a pane follow one whose place is withheld: an agent may not make such a comparison.
+pub fn synced_would_withhold<L: DocLoader>(session: &Session<L>, panes: &[TabId]) -> bool {
+    panes.iter().any(|id| session.tabs.tab(*id).is_some_and(withheld_by_itself))
+}
+
+/// **Lets a withheld place go, with all that came of it,** as a jump sets an absolute place (the second review, D-1 and S-2): the flag; the tab's draw
+/// notes and a jump on its way, drawn or sent from where it was; the exact place the page view last said, which on the page the jump goes to too would
+/// say how far down it following had left the tab, and its zoom only then; and every draw of the tab from before the jump's send, which the mail drops
+/// as it's told ([`crate::mail::PageViewMail::released`]). Nothing for a tab whose place isn't withheld on its own account, nor one that follows: what
+/// the jump does to it is as it always was. Find's hit gone to last stays marked if it was stepped to from the place: a step goes on from it, not from
+/// the place.
+pub(crate) fn let_go_of_place<L: DocLoader>(session: &mut Session<L>, id: TabId) {
+    if follows_withheld(session, id) {
+        return;
+    }
+    let Some(tab) = session.tabs.tab_mut(id).filter(|tab| tab.file.placed_by_withheld) else {
+        return;
+    };
+    set_placed_by_withheld(tab, &mut session.mail, false);
+    if tab.reading.place.take().is_some() {
+        tab.place_dirty = true;
+    }
+    session.mail.release(id);
 }
 
 /// **Whether `back` (or forward) in a tab would land on a stop made from a place withheld from agents** (S2's round): such a stop is where following left

@@ -17,10 +17,16 @@ pub struct Stop {
     pub by_agent: bool,
     /// **It was made from a place withheld from agents** (S2's round): where following a protected document left a tab, so landing on it tells that
     /// document's place. An agent's `back` or `forward` to it is refused, and the person's Back onto it withholds the place again
-    /// ([`crate::compare::trail_step_withheld`]). In the stop's padding, so it costs no byte; never written, so the record's format doesn't change, and a
-    /// restart forgets it (said in `docs/engineering/opening.md`).
-    #[serde(skip)]
+    /// ([`crate::compare::trail_step_withheld`]). In the stop's padding, so it costs no byte. Kept in the record as `withheld`, left out when false, so a
+    /// restart keeps it (the second review, S-4) and a record without any is byte for byte as it was.
+    #[serde(default, rename = "withheld", skip_serializing_if = "std::ops::Not::not")]
     pub from_withheld: bool,
+    /// **A mark, not a place to go** (the second review, D-2): left by a jump from a withheld place to the place it's on, so the trail says the same
+    /// whether or not the jump went where following left the tab, while the person's Back goes past it, as though it weren't there, and withholds where it
+    /// lands. Always made from a withheld place; at most one on top; not counted against [`MAX_TRAIL`]. In the stop's padding; kept in the record as
+    /// `mark_only`, left out when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mark_only: bool,
 }
 
 impl Stop {
@@ -31,6 +37,17 @@ impl Stop {
             within,
             by_agent: false,
             from_withheld: false,
+            mark_only: false,
+        }
+    }
+
+    /// The same place, as a mark only ([`Self::mark_only`]): made from a withheld place.
+    #[must_use]
+    pub fn as_mark(self) -> Self {
+        Self {
+            from_withheld: true,
+            mark_only: true,
+            ..self
         }
     }
 
@@ -74,7 +91,12 @@ impl Trail {
             let start = stops.len().saturating_sub(MAX_TRAIL);
             stops[start..]
                 .iter()
-                .map(|stop| Stop::new(stop.page.min(pages.saturating_sub(1)), f64::from(stop.within)).by(stop.by_agent))
+                .map(|stop| Stop {
+                    mark_only: stop.mark_only && stop.from_withheld,
+                    ..Stop::new(stop.page.min(pages.saturating_sub(1)), f64::from(stop.within))
+                        .by(stop.by_agent)
+                        .withheld(stop.from_withheld)
+                })
                 .collect()
         };
         Self {
@@ -97,13 +119,22 @@ impl Trail {
 
     /// A jump from `here`: it's marked to come back to, and the way forward goes, all of it for the person's jump and only an agent's own stops for an agent's. A jump to where the reader already is marks nothing.
     ///
-    /// A jump from a place withheld from agents is always marked, from the place it goes to and beside a stop at the same place alike: whether a stop
-    /// was left would say whether the jump went where following had left the tab (S2's round).
+    /// A jump from a place withheld from agents is always marked, beside a stop at the same place too, as whether a stop was left would say whether the
+    /// jump went where following had left the tab (S2's round); and one to the place it's on leaves a mark only ([`Stop::mark_only`]), which the person's
+    /// Back goes past, so their Back goes where it would have with nothing left (the second review, D-2), and an agent's own way forward goes as for a jump
+    /// elsewhere.
     pub fn jumped(&mut self, here: Stop, to: Stop, by_agent: bool) {
-        if here.same_place(to) && !here.from_withheld {
+        if here.same_place(to) {
+            if here.from_withheld && !self.back.last().is_some_and(|last| last.mark_only) {
+                push_capped(&mut self.back, here.by(by_agent).as_mark());
+                if by_agent {
+                    self.forward.retain(|stop| !stop.by_agent);
+                }
+            }
             return;
         }
-        if here.from_withheld || !self.back.last().is_some_and(|last| last.same_place(here)) {
+        let last_real = self.back.iter().rev().find(|stop| !stop.mark_only);
+        if here.from_withheld || !last_real.is_some_and(|last| last.same_place(here)) {
             push_capped(&mut self.back, here.by(by_agent));
         }
         if by_agent {
@@ -113,8 +144,10 @@ impl Trail {
         }
     }
 
-    /// Back from `here`, if there's somewhere to go: where to, with `here` kept for going forward again, marked by who went.
+    /// Back from `here`, if there's somewhere to go: where to, with `here` kept for going forward again, marked by who went. Marks only on the way are
+    /// gone past ([`Self::take_marks`] first, to know).
     pub fn go_back(&mut self, here: Stop, by_agent: bool) -> Option<Stop> {
+        self.take_marks();
         let to = self.back.pop()?;
         push_capped(&mut self.forward, here.by(by_agent));
         Some(to)
@@ -127,7 +160,21 @@ impl Trail {
         Some(to)
     }
 
-    /// The stop Back (`back`) or Forward would go to, without going.
+    /// **Takes the marks only on top of the way back** ([`Stop::mark_only`]), as Back goes past them: says whether there were any.
+    pub fn take_marks(&mut self) -> bool {
+        let before = self.back.len();
+        while self.back.last().is_some_and(|stop| stop.mark_only) {
+            self.back.pop();
+        }
+        self.back.len() != before
+    }
+
+    /// Whether there's a place to go back (`back`) or forward to, as the person's Back and Forward are offered: marks only aren't.
+    pub fn can_go(&self, back: bool) -> bool {
+        if back { &self.back } else { &self.forward }.iter().any(|stop| !stop.mark_only)
+    }
+
+    /// The stop Back (`back`) or Forward would go to, without going: a mark only on top is what an agent's would meet.
     pub fn next(&self, back: bool) -> Option<Stop> {
         if back { self.back.last() } else { self.forward.last() }.copied()
     }
@@ -163,13 +210,33 @@ impl Trail {
 }
 
 /// Adds a stop, and past the cap lets the oldest go: the oldest of an agent's for an agent's stop, and if there's none, the agent's own new one, so an agent can never push out the person's.
+/// Marks only aren't counted against the cap, so they never take a place a stop would have had; at most [`MAX_TRAIL`] of them are kept, the oldest going.
 fn push_capped(list: &mut Vec<Stop>, stop: Stop) {
     list.push(stop);
     if list.len() <= MAX_TRAIL {
         return;
     }
-    let oldest = if stop.by_agent { list.iter().position(|kept| kept.by_agent) } else { Some(0) };
-    list.remove(oldest.unwrap_or(list.len() - 1));
+    if list.iter().filter(|kept| !kept.mark_only).count() > MAX_TRAIL {
+        let older = &list[..list.len() - 1];
+        match older.iter().position(|kept| !kept.mark_only && (kept.by_agent || !stop.by_agent)) {
+            Some(oldest) => {
+                list.remove(oldest);
+            }
+            // An agent's own new stop gives way, as it can't push out the person's; made from a withheld place, it stays as a mark only, as one made to the
+            // place it's on would (D-2): whether the trail kept it would say whether the jump went where following left the tab.
+            None => {
+                let new = list.pop().unwrap_or(stop);
+                if new.from_withheld && !list.last().is_some_and(|last| last.mark_only) {
+                    list.push(new.as_mark());
+                }
+            }
+        }
+    }
+    if list.len() > 2 * MAX_TRAIL
+        && let Some(oldest) = list.iter().position(|kept| kept.mark_only)
+    {
+        list.remove(oldest);
+    }
 }
 
 use super::*;
@@ -181,9 +248,11 @@ impl<L: DocLoader> Session<L> {
         let following = compare::follows_withheld(self, id);
         let tab = self.tabs.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
         let page = page.min(pages.saturating_sub(1));
-        // Set while it follows a withheld tab, and let go by the next move made otherwise, to the page it's on too, so a move to the page it's on says
-        // nothing that a move elsewhere wouldn't: [`compare::place_withheld`].
-        compare::set_placed_by_withheld(tab, &mut self.mail, following);
+        // Set while it follows a withheld tab, and kept by a move that isn't absolute: the reader's own scroll, the page keys, Back and Forward, a step of
+        // Find land where they do from where it was. Let go only by a jump (the second review, D-1): [`compare::place_withheld`].
+        if following {
+            compare::set_placed_by_withheld(tab, &mut self.mail, true);
+        }
         if tab.page != page {
             tab.page = page;
             tab.place_dirty = true;
@@ -211,6 +280,9 @@ impl<L: DocLoader> Session<L> {
     pub fn jump_as(&mut self, id: TabId, page: u32, within: f64, by: Author) -> Result<(), SessionError> {
         let here = marked_here(self, id).ok_or(SessionError::NoSuchTab)?;
         let to = trail::Stop::new(page.min(self.pages().count(id).saturating_sub(1)), within);
+        // An absolute place: a withheld one is let go, with what came of it, to the page it's on too, so a jump there says nothing a jump elsewhere
+        // wouldn't (D-1, S-2).
+        compare::let_go_of_place(self, id);
         let tab = self.tabs.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
         tab.reading.trail.get_or_insert_default().jumped(here, to, by == Author::Agent);
         self.land(id, to)
@@ -223,7 +295,14 @@ impl<L: DocLoader> Session<L> {
         let Some(trail) = self.tabs.tab_mut(id).and_then(|tab| tab.reading.trail.as_deref_mut()) else {
             return Ok(false);
         };
-        let Some(to) = (if back { trail.go_back(here, agent) } else { trail.go_forward(here, agent) }) else {
+        // Back past a mark only (D-2) goes where it would have with none, and wherever it lands, or if it has nowhere to go, the place is withheld again,
+        // as onto a stop made from one: the mark stands for a stop at the withheld place.
+        let past_a_mark = back && trail.take_marks();
+        let went = if back { trail.go_back(here, agent) } else { trail.go_forward(here, agent) };
+        if past_a_mark {
+            compare::withhold_place(self, id);
+        }
+        let Some(to) = went else {
             return Ok(false);
         };
         // Pages may have gone since it was marked.
@@ -316,6 +395,7 @@ mod tests {
                 within: f32::NAN,
                 by_agent: false,
                 from_withheld: false,
+                mark_only: false,
             })
             .collect();
         let kept = Trail::from_record(&many, &many, 10);

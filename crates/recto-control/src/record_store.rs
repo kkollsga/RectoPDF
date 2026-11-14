@@ -1325,6 +1325,7 @@ fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress
             back: Vec::new(),
             forward: Vec::new(),
             password: false,
+            place_withheld: false,
         });
         taken_tabs.push(true);
         if record.active.is_none() {
@@ -1479,6 +1480,7 @@ mod tests {
                     back: Vec::new(),
                     forward: Vec::new(),
                     password: false,
+                    place_withheld: false,
                 })
                 .collect(),
             comparison: None,
