@@ -1552,7 +1552,7 @@ mod tests {
         );
     }
 
-    /// Failure (review of 2026-11-13, B1, and the second review of 2026-11-14): a white page with a dark sidebar a third wide or under, beside a photo over 45% of it and a column of text, or with text alone, is dimmed whole, as the sidebar is more than half of what the photo leaves, where before 2026-11-13 it turned over keeping its photo. Its ring isn't mostly dark: the sidebar's side is, and its share of the top and the foot, and the rest is white or the photo's. Seen failing with the ring's line at 0.3.
+    /// Failure (review of 2026-11-13, B1, and the second review of 2026-11-14): a white page with a dark sidebar beside a photo over 45% of it and a column of text, or with text alone, is dimmed whole, as the sidebar is more than half of what the photo leaves, where before 2026-11-13 it turned over keeping its photo. Its ring isn't mostly dark: the sidebar's side is, and its share of the top and the foot, and the rest is white or the photo's. Where the line is, a sidebar a third wide, is held on the real worker's pictures: `looks_on_real_files.rs`, `a_dark_sidebar_beside_a_photo_is_on_the_line_at_a_third_of_the_page`. Seen failing with the ring's line at 0.3.
     #[test]
     fn a_white_page_with_a_dark_sidebar_turns_over() {
         for side in [0.25, 0.3] {

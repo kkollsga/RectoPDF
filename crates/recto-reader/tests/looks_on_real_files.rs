@@ -594,6 +594,56 @@ fn the_owners_vector_drawing_turns_over() {
     );
 }
 
+/// **Where the dark rule's line is** (second review of 2026-11-14, the coordinator's word: "a line has to sit somewhere"): a white page with a dark navy sidebar down its left side beside a photo over 45% of it running off its right side, with a title and a column of text under the photo, as `look_survey.rs`'s made pages p5 and p18 are. With the sidebar 30% wide the page turns over, keeping its photo; a third wide, the page is dark and dimmed whole, as the photo takes the page's white side out of its ring and the sidebar is then half of it (0.48 and 0.51 at the look picture's size). Failure: the ring's share changes and the line moves unseen, either way: seen failing with the ring's line at 0.52 (the third turned over) and at 0.47 (the 30% page dimmed); its width at 0.03 or 0.08 of each side leaves this line where it is, the sidebar running the page's height. Decided through the real worker from the look picture, at 512, as a page with images is when no preview covers it; at 128 the third is under half, which is what being on the line is.
+#[test]
+fn a_dark_sidebar_beside_a_photo_is_on_the_line_at_a_third_of_the_page() {
+    let (w, h) = (120usize, 140usize);
+    let mut photo = Vec::with_capacity(w * h * 3);
+    for y in 0..h {
+        for x in 0..w {
+            photo.extend_from_slice(&if y < h * 55 / 100 {
+                [70 + (y * 120 / h) as u8, 130 + (y * 110 / h) as u8, 230 - (y * 40 / h) as u8]
+            } else {
+                [30, 90 + (70 * ((x * 3) % w) / w) as u8, 40]
+            });
+        }
+    }
+    let page = |side: u32, photo_x: u32, photo_w: u32, photo_h: u32, title_y: u32| {
+        let mut content = format!(
+            "0.129 0.231 0.420 rg 0 0 {side} 792 re f\n0.95 g BT /F1 14 Tf 20 740 Td (Sidebar) Tj ET\nq {photo_w} 0 0 {photo_h} {photo_x} 190 cm /Im0 Do Q\n0.12 g BT /F1 14 Tf {photo_x} {title_y} Td (A photo and a dark sidebar) Tj ET\n"
+        );
+        for line in 0..10 {
+            content.push_str(&format!(
+                "BT /F1 9 Tf {photo_x} {} Td (Line {}: the quick brown fox jumps over the lazy dog.) Tj ET\n",
+                170 - line * 15,
+                line + 1
+            ));
+        }
+        Page::new(content.into_bytes())
+    };
+    // p5's places, and p18's.
+    let list = [page(184, 196, 416, 523, 745), page(202, 214, 398, 548, 760)];
+    let image = first_extra_object(list.len());
+    let file = TempPdf::new(
+        "sidebars.pdf",
+        &pages_with(
+            &list,
+            &format!("/XObject << /Im0 {image} 0 R >>"),
+            vec![Object::Stream {
+                dict: format!("/Type /XObject /Subtype /Image /Width {w} /Height {h} /BitsPerComponent 8 /ColorSpace /DeviceRGB"),
+                data: photo,
+            }],
+        ),
+    );
+    let mut doc = renderer(&file.0);
+    let (dim, keep, _) = look_of(&mut doc, 0, 512.0, false);
+    assert!(
+        !dim && keep.len() == 1,
+        "a sidebar 30% wide turns over, keeping its photo: dim {dim}, kept {keep:?}"
+    );
+    assert!(look_of(&mut doc, 1, 512.0, false).0, "a sidebar a third wide is dark, and dimmed whole");
+}
+
 /// A document of `count` pages of text, no pictures.
 fn text_document(count: usize) -> TempPdf {
     let lines: Vec<String> = (0..48)
