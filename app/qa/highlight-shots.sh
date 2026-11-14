@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Highlights in the real app (R4.3): made from a selection by Mark Up > Highlight, unsaved on white, warm and dark paper, then saved, the file closed
 # and opened again, on white and dark paper as it really looks; then the file's own taken out (gone before a Save, back on Undo, gone once saved and
-# opened again), and one on a page an edit turned, saved and opened again (a saved highlight is part of the page PDFium draws, so dark paper turns it over with
+# opened again, and what the person's Snapshot tool copies of it taken out and back on Undo), and one on a page an edit turned, saved and opened again (a saved highlight is part of the page PDFium draws, so dark paper turns it over with
 # the page: the coordinator's Q8, a follow-up). Light and dark windows. Quiet runs only: nothing reaches a screen, nothing is posted (the `qa` verbs
 # call what the window's own controls call), state is temp, and the run ends with the script.
 #
 #   app/qa/highlight-shots.sh OUT_DIR
 #
-# OUT_DIR gets NN-<state>-<look>.png and notes.txt. Needs the debug app (app/build.sh, through tools/sysguard/heavy.sh) and the system's bash manual.
+# OUT_DIR gets NN-<state>-<look>.png, snapshot-<state>-<look>.png (the PNG the Snapshot tool put on the quiet run's own clipboard, read from it by
+# name) and notes.txt. Needs the debug app (app/build.sh, through tools/sysguard/heavy.sh) and the system's bash manual.
 set -uo pipefail
 out="$1"
 here="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -41,6 +42,31 @@ place() {
 import json,sys
 r=json.load(sys.stdin)['data']['pages'][0]['rects'][$2]
 print('$1:%.2f,%.2f' % (r[0]+r[2]*$3, r[1]+r[3]/2))"
+}
+
+# The PNG on the quiet run's own clipboard, by the name `qa copied` gives it, into a file: a read, nothing posted.
+cat >"$root/clip.swift" <<'SWIFT'
+import AppKit
+let board = NSPasteboard(name: NSPasteboard.Name(CommandLine.arguments[1]))
+guard let png = board.data(forType: .png) else { exit(1) }
+try! png.write(to: URL(fileURLWithPath: CommandLine.arguments[2]))
+SWIFT
+# The Snapshot tool's box around lines 2 to 6 of page 3, copied, and its PNG kept as snapshot-$1-$look.png.
+snapshot() {
+    local from to board
+    from=$("$recto" select 3 --json | /usr/bin/python3 -I -c "
+import json,sys
+p=json.load(sys.stdin)['data']['pages'][0]['rects']
+print('3:%.2f,%.2f' % (p[2][0]-10, p[2][1]-10))")
+    to=$("$recto" select 3 --json | /usr/bin/python3 -I -c "
+import json,sys
+p=json.load(sys.stdin)['data']['pages'][0]['rects']
+print('3:%.2f,%.2f' % (max(r[0]+r[2] for r in p[2:7])+10, p[6][1]+p[6][3]+10))")
+    r qa menu tools.snapshot
+    r qa mouse-down "$from"; r qa mouse-drag "$to"; r qa mouse-up; settle
+    board=$("$recto" qa copied --json | /usr/bin/python3 -I -c "import json,sys; print(json.load(sys.stdin)['data']['clipboard'])") || fail "qa copied"
+    /usr/bin/swift "$root/clip.swift" "$board" "$out/snapshot-$1-$look.png" || fail "no PNG on the clipboard ($1)"
+    r qa menu tools.snapshot; settle
 }
 
 mkdir -p "$root/in"
@@ -78,7 +104,9 @@ for look in light dark; do
     r qa mouse-down "$(place 3 2 0.2)"; r qa mouse-drag "$(place 3 6 0.7)"; r qa mouse-up
     r qa menu markup.remove_highlight; until_state "a['document_edited']"
     r qa mouse-down "$(place 3 2 0.2)"; r qa mouse-up; settle; shot removed-unsaved
+    snapshot removed-unsaved
     r qa menu edit.undo; until_state "not a['document_edited']"; settle; shot removal-undone
+    snapshot removal-undone
     r qa menu edit.redo; until_state "a['document_edited']"
     r qa menu file.save; until_state "not a['document_edited']"
     r qa menu file.close; settle
