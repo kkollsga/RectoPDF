@@ -44,6 +44,7 @@ type FPDF_ANNOTATION = *mut c_void;
 type FPDF_BOOL = c_int;
 
 mod contents;
+mod hidden;
 use contents::Walk;
 
 /// `fpdfview.h`: a transform.
@@ -253,6 +254,9 @@ pdfium_api! {
     FPDFPage_GetAnnot: fn(FPDF_PAGE, c_int) -> FPDF_ANNOTATION;
     FPDFPage_CloseAnnot: fn(FPDF_ANNOTATION);
     FPDFAnnot_GetSubtype: fn(FPDF_ANNOTATION) -> c_int;
+    FPDFAnnot_GetRect: fn(FPDF_ANNOTATION, *mut FS_RECTF) -> FPDF_BOOL;
+    FPDFAnnot_GetFlags: fn(FPDF_ANNOTATION) -> c_int;
+    FPDFAnnot_SetFlags: fn(FPDF_ANNOTATION, c_int) -> FPDF_BOOL;
 }
 
 /// Why PDFium couldn't be brought up. Separate from [`FailCode`] because a worker reports this once, at start.
@@ -346,6 +350,8 @@ pub struct PdfiumBackend {
     _one_thread: PhantomData<*mut ()>,
     /// A page's contents on their way out, a frame at a time. Goes before the page it's about, and any other job for any page ends it.
     walk: Option<Box<Walk>>,
+    /// The file's highlights a person has taken out and not saved, left out of what's drawn: [`hidden`].
+    hidden: hidden::Held,
 }
 
 /// Most bytes of an ID that go in a version. A real one is 16 bytes.
@@ -443,6 +449,7 @@ impl PdfiumBackend {
             _file: file,
             _one_thread: PhantomData,
             walk: None,
+            hidden: hidden::Held::default(),
         })
     }
 
@@ -477,6 +484,7 @@ impl PdfiumBackend {
         if page.is_null() {
             return Err(FailCode::BadPage);
         }
+        self.hide_on(index, page);
         self.open_page = Some(OpenPage {
             index,
             page,

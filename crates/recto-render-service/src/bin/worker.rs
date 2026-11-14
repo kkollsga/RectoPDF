@@ -214,6 +214,14 @@ fn handle(
                 Err(code) => proto::encode_failed(job_id, code),
             })
         }
+        // The file's highlights to leave out of what's drawn: never a write (`recto_render`'s `pdfium/hidden.rs`).
+        Kind::HiddenAnnots => {
+            let set = proto::hidden::HiddenAnnots::decode(&frame.payload).ok()?;
+            let Some(backend) = backend else {
+                return Some(proto::encode_failed(0, FailCode::NoDocument));
+            };
+            Some(backend.hide_annots(&set).encode())
+        }
         Kind::TextRequest => {
             let job = TextJob::decode(&frame.payload).ok()?;
             let Some(backend) = backend else {
