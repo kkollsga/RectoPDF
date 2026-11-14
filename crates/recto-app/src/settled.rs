@@ -12,7 +12,11 @@
 //!   as far as it shows (a window) or its thread resting with everything asked of it seen (the kit, which has no view to draw).
 //!
 //! **What's left out, and why.** The sleep files' writer ([`crate::sleep_queue::Leaving`]): it queues nothing for the session, so it can't leave the session
-//! unsettled, and a test that reads a sleep file or its counts waits for that write by name (some settle on purpose with it held mid-write). The search index
+//! unsettled, and a test that reads a sleep file or its counts waits for that write by name (some settle on purpose with it held mid-write). A late try at the
+//! record's lock and a late keep's read, each on a thread of its own: the deadline that starts a try is counted (the session thread acts on it before it's at
+//! rest), the thread it starts isn't, as tests hold it on purpose and wait for what it decides by name, and the life's keeping isn't the session's to read
+//! from here. A test that holds a page view's thread (`Seam::Worker`) waits for the session's part with the host's turns (`host_turns`), as the kit's settle
+//! waits for the page view at rest. The search index
 //! and generated contents, which the kit has off and which say when they're done in their own words. In the window, its animations and a snapshot or a print
 //! under way, which `qa wait` adds itself, as only the host knows them.
 //!

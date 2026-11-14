@@ -401,12 +401,15 @@ fn a_file_opened_again_while_the_page_view_was_busy_as_its_tab_closed_asks_for_i
     full(&app, &["goto", "3"]);
     crate::testkit::headless::host_turns(&app, &mut window_view(), false);
     app.wait_until("a job for B held", || app.waiting(Seam::Worker) > 0);
+    // The page view's thread stays held in B's job throughout, so what's waited for here is the session's part and the host's, not the page view at rest,
+    // which the kit's settle waits for (`crate::settled`).
     full(&app, &["close", "--tab", &format!("#{a}")]);
-    app.settle();
+    crate::testkit::headless::host_turns(&app, &mut window_view(), false);
     app.act(crate::core::controls::UiAction::Open {
         path: crafted.display().to_string(),
     });
-    app.settle();
+    crate::testkit::headless::host_turns(&app, &mut window_view(), false);
+    assert!(app.waiting(Seam::Worker) >= 1, "the page view's thread still held in B's job");
     recto_platform::slow::gate::open(Seam::Worker);
     drawn(&app);
     app.settle();
