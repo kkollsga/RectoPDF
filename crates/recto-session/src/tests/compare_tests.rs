@@ -207,3 +207,87 @@ fn a_tab_that_follows_a_withheld_one_has_its_place_withheld_until_moved_otherwis
     s.go_to(plain, 2).unwrap();
     assert!(!compare::place_withheld(&s, plain), "moved otherwise");
 }
+
+/// A plain tab `plain` left by following a protected one in a synced comparison: synced with `locked`, moved to page 7 while it followed, then synced
+/// scroll turned off. Gives the session and (plain, locked).
+fn left_by_following() -> (Session<FakeLoader>, TabId, TabId) {
+    let mut s = session(10);
+    let [plain, locked] = ["plain", "locked"].map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap());
+    s.tabs_mut().note_password_used(locked);
+    s.compare(&[locked, plain], Some(locked)).unwrap();
+    s.set_compare_synced(true);
+    s.go_to(plain, 7).unwrap();
+    s.set_compare_synced(false);
+    assert!(compare::place_withheld(&s, plain), "left where following put it");
+    (s, plain, locked)
+}
+
+/// Failure (security review of S2's round, the same-page oracle): an agent's `goto` to the page a tab left by following is already on keeps its place
+/// withheld, while one to any other page lets it go, so whether `where` then gives the page says whether the agent guessed where following left it. A
+/// move that isn't a follow sets the place, whether or not the page changes.
+#[test]
+fn a_move_to_the_page_a_tab_is_on_lets_its_place_go_as_any_move_does() {
+    let (mut s, plain, _) = left_by_following();
+    s.jump_as(plain, 7, 0.0, Author::Agent).unwrap();
+    assert!(!compare::place_withheld(&s, plain), "a goto to the same page set the place");
+}
+
+/// Failure (S2's round): a follow that stays on its page moves how far down it the tab is (`within_page`), and that isn't counted as placed by following,
+/// so after synced scroll is off the tab says how far down the protected one went. A place the page view tells of while the tab follows is withheld too.
+#[test]
+fn a_follow_within_a_page_withholds_the_place_too() {
+    let mut s = session(10);
+    let [plain, locked] = ["plain", "locked"].map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap());
+    s.tabs_mut().note_password_used(locked);
+    s.compare(&[locked, plain], Some(locked)).unwrap();
+    s.set_compare_synced(true);
+    let place = record::PlaceRecord {
+        page: 0,
+        anchor_page: 0,
+        within: 0.6,
+        x: 0.0,
+        y: 540.0,
+        document_height: 9000.0,
+        zoom: 1.0,
+        page_width: 0.0,
+        page_height: 0.0,
+    };
+    assert!(s.view_told_of(plain, place, 1));
+    s.set_compare_synced(false);
+    assert!(compare::place_withheld(&s, plain), "moved down its page while it followed");
+}
+
+/// Failure (S2's round): a page-drawn note made while a tab's place was its own answers `wait page-drawn` after following has moved it, or one made while
+/// it followed answers after its place is its own again, so which pages were drawn says where following took it. A tab's notes go whenever its place
+/// starts or stops being withheld.
+#[test]
+fn a_tabs_draw_notes_go_when_its_place_is_withheld_or_let_go() {
+    let mut s = session(10);
+    let [plain, locked] = ["plain", "locked"].map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap());
+    s.tabs_mut().note_password_used(locked);
+    let drawn = |s: &mut Session<FakeLoader>, page: u32| s.mail_mut().note_drawn(DrawNote { tab: plain, page, failure: None });
+    drawn(&mut s, 0);
+    s.compare(&[locked, plain], Some(locked)).unwrap();
+    s.set_compare_synced(true);
+    s.go_to(plain, 7).unwrap();
+    assert_eq!(s.mail().draw_note(plain, 0), None, "a note from before it followed");
+    drawn(&mut s, 7);
+    s.set_compare_synced(false);
+    s.jump_as(plain, 2, 0.0, Author::Agent).unwrap();
+    assert_eq!(s.mail().draw_note(plain, 7), None, "a note from while it followed");
+}
+
+/// Failure (security review of S2's round, S2): an agent's `goto` on a tab left by following lets its place go and marks where it was for Back, and
+/// `back` then lands there with its place its own, so `where` says where following left it; `forward` the same. A stop made from a withheld place is
+/// marked; the person's Back onto one lands where it always did, with the place withheld again; a stop made from a place of the tab's own isn't.
+#[test]
+fn a_stop_made_from_a_withheld_place_is_marked_and_withholds_it_again() {
+    let (mut s, plain, _) = left_by_following();
+    s.jump_as(plain, 2, 0.0, Author::Agent).unwrap();
+    assert!(compare::trail_step_withheld(&s, plain, true), "the stop Back would go to was made from the followed place");
+    assert!(!compare::trail_step_withheld(&s, plain, false), "nothing forward");
+    assert!(s.step_as(plain, true, Author::Owner).unwrap());
+    assert_eq!(s.tabs().tab(plain).unwrap().page, 7, "the person's Back goes where it always went");
+    assert!(compare::place_withheld(&s, plain), "and the place it lands on is withheld again");
+    assert!(!compare::trail_step_withheld(&s, plain, false), "Forward goes to page 3, made from a place of its own");
+}

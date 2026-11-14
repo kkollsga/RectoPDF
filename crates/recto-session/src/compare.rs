@@ -351,6 +351,12 @@ pub fn comparison_withheld<L: DocLoader>(session: &Session<L>) -> bool {
         .is_some_and(|comparison| comparison.tabs.iter().any(|id| session.tabs.withheld_from_agents(*id)))
 }
 
+/// **Whether `back` (or forward) in a tab would land on a stop made from a place withheld from agents** (S2's round): such a stop is where following left
+/// the tab, and landing there tells it.
+pub fn trail_step_withheld<L: DocLoader>(_session: &Session<L>, _id: TabId, _back: bool) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
