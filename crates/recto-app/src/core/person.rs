@@ -119,7 +119,7 @@ pub(super) fn on_its_own_thread(command: Command, counted: Running, turn: Option
     }
 }
 
-/// A test's hold on a person's command on a thread of its own: the next with this tag says it's there before it runs, then waits to be let go ([`hold`]).
+/// A test's hold on the next command with this tag the app's host runs (or the place named so): it says it's there, then waits to be let go ([`hold`]).
 #[cfg(test)]
 static HOLD: std::sync::Mutex<Option<(&'static str, std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>> = std::sync::Mutex::new(None);
 

@@ -214,3 +214,38 @@ fn named(mut command: Command, active: Option<TabId>) -> Command {
     }
     command
 }
+
+#[cfg(test)]
+mod tests {
+    /// Failure: a command that changes a document or fixes what's read of it goes around the lane (and can run before an edit asked ahead of it), or one
+    /// that only moves the view waits in it behind a highlight's read. Every edit but the list and edit mode, a save, a print and a close are ordered; a
+    /// jump, a tap, Find, the view, edit mode and the reads aren't.
+    #[test]
+    fn what_keeps_its_order_is_what_changes_or_fixes_a_document() {
+        let ordered = |line: &str| super::ordered(&recto_agent::parse(line).expect("a command"));
+        for line in [
+            r#"{"cmd":"undo"}"#,
+            r#"{"cmd":"redo"}"#,
+            r#"{"cmd":"page_rotate","pages":"all","degrees":90}"#,
+            r#"{"cmd":"discard"}"#,
+            r#"{"cmd":"clear_history"}"#,
+            r#"{"cmd":"save"}"#,
+            r#"{"cmd":"highlight","page":1,"chars":"0-4"}"#,
+            r#"{"cmd":"highlight_remove","id":1}"#,
+            r#"{"cmd":"print","to_pdf":"/tmp/a.pdf"}"#,
+            r#"{"cmd":"close"}"#,
+        ] {
+            assert!(ordered(line), "{line} keeps its order");
+        }
+        for line in [
+            r#"{"cmd":"goto","page":2}"#,
+            r##"{"cmd":"tap","tab":"#1"}"##,
+            r#"{"cmd":"edits"}"#,
+            r#"{"cmd":"edit_mode","set":"on"}"#,
+            r#"{"cmd":"view","sidebar":"off"}"#,
+            r#"{"cmd":"text","page":1}"#,
+        ] {
+            assert!(!ordered(line), "{line} goes as it always has");
+        }
+    }
+}
