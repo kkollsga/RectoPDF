@@ -2,6 +2,7 @@ reader.counts. Jobs and steps of its own run.
 reader.documents_held Warm tabs come back cold, by rule: only the active tab loads, so the rest cost what a cold tab costs.
 reader.last_wake How long a wake took, and that this one was from a sleep file: about this launch.
 reader.left_picture_bytes Pictures warm tabs were left with, held for their sleep files: warm tabs come back cold, and a cold tab holds none.
+reader.looks_held Pages waiting for their look on dark paper to be tried again, in this process: a new one decides its pages' looks afresh.
 reader.selection.text_ Page text held for a selection, which is read again when it's wanted.
 reader.selection.unit What the last press took, words or lines. It says what a shift-click extends by, and nothing that shows.
 reader.sleep_draws. Places drawn for tabs left before they were drawn, counted in its own run: what was drawn is in the sleep files, and warm tabs come back cold.
