@@ -417,9 +417,80 @@ pub fn after_call(inner: &Arc<Inner>, synced: &mut Synced, reads: &mut FileReads
 
 /// Reads a file's facts off the session thread: with the password the person typed for it, if the keyring has one for that file, so a protected tab that went cold and wakes doesn't ask again; and otherwise as any file is. Whether a password was used.
 pub fn read_facts(keys: &recto_reader::engine::Keyring, path: &std::path::Path) -> (Result<DocFacts, OpenError>, bool) {
+    #[cfg(test)]
+    reads_panic::here();
     match keys.for_path(path) {
         Some(key) => (recto_core::inspect_with_password(path, &key), true),
         None => (DrawableLoader.load(path), false),
+    }
+}
+
+/// **A test's read that panics,** where the reader's loader is called, as a parser's bug on a hostile file would (each test is a process of its own).
+#[cfg(test)]
+pub(crate) mod reads_panic {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    static ON: AtomicBool = AtomicBool::new(false);
+    static PANICKED: AtomicU32 = AtomicU32::new(0);
+
+    /// Reads panic from now on, or don't.
+    pub(crate) fn set(on: bool) {
+        ON.store(on, Ordering::SeqCst);
+    }
+
+    /// How many reads have panicked.
+    pub(crate) fn panicked() -> u32 {
+        PANICKED.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn here() {
+        if ON.load(Ordering::SeqCst) {
+            PANICKED.fetch_add(1, Ordering::SeqCst);
+            panic!("a test's panic in a file's read");
+        }
+    }
+}
+
+/// **What a read's thread read, sent to the session thread however the thread ends** (the review of R3.7's life slice, 2026-11-14). Made first thing on the
+/// thread and dropped with it, so a thread that panics in the read (a parser's bug on a hostile file, a look at the file, its history) still sends one: a read
+/// that failed, as for a file that isn't a PDF. The session thread takes it as it takes any read ([`FileReads::finished`]), which is where the read stops
+/// being counted, so the count still covers the thread and the queue until the result is taken in, and a hand-off, the sleeper and a tap of the same tab
+/// aren't held by a read that's gone. A file opened next, waiting its turn behind this one (`done`), is let go as the thread ends either way.
+struct ReadComesBack {
+    core: Arc<CoreQueue>,
+    /// What's being read, until what was read is sent.
+    what: Option<Reading>,
+    done: Option<Arc<Flushed>>,
+}
+
+impl ReadComesBack {
+    fn new(core: Arc<CoreQueue>, what: Reading, done: Option<Arc<Flushed>>) -> Self {
+        Self { core, what: Some(what), done }
+    }
+
+    /// What was read, sent; then a file waiting its turn behind it is let go, as before.
+    fn send(mut self, read: FileRead) {
+        self.what = None;
+        self.core.push(CoreCall::Read(Box::new(read)));
+    }
+}
+
+impl Drop for ReadComesBack {
+    fn drop(&mut self) {
+        // The thread ended without sending what it read: it failed, and the tab or the open it was for goes on as for any file that couldn't be read.
+        if let Some(what) = self.what.take() {
+            self.core.push(CoreCall::Read(Box::new(FileRead {
+                what,
+                loaded: Err(OpenError::NotPdf),
+                stamp: None,
+                status: None,
+                history: None,
+                unlocked: false,
+            })));
+        }
+        if let Some(done) = self.done.take() {
+            done.finished();
+        }
     }
 }
 
@@ -453,18 +524,19 @@ impl FileReads {
         let core = Arc::clone(&inner.core);
         let keys = Arc::clone(&inner.keys);
         let spawned = std::thread::Builder::new().name("recto-read".into()).stack_size(1024 * 1024).spawn(move || {
+            let comes_back = ReadComesBack::new(core, what.clone(), None);
             let status = look_at_file(&path, stamp);
             let path = if let FileStatus::Moved(moved, _) = &status { moved.clone() } else { path };
             let stamp = recto_platform::file_stamp(&path).ok();
             let (loaded, unlocked) = read_facts(&keys, &path);
-            core.push(CoreCall::Read(Box::new(FileRead {
+            comes_back.send(FileRead {
                 what,
                 loaded,
                 stamp,
                 status: Some(status),
                 history: None,
                 unlocked,
-            })));
+            });
         });
         if spawned.is_err() {
             self.running.remove(&Reading::Restored(id));
@@ -493,6 +565,7 @@ impl FileReads {
         let saver = Arc::clone(&inner.saver);
         let inner_for_read = Arc::clone(inner);
         let spawned = std::thread::Builder::new().name("recto-read".into()).stack_size(1024 * 1024).spawn(move || {
+            let comes_back = ReadComesBack::new(core, reading.clone(), done);
             while inner_for_read.life.reads_held() {
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -510,17 +583,14 @@ impl FileReads {
             if let Some(before) = before {
                 before.wait(OPEN_ORDER_WAIT);
             }
-            core.push(CoreCall::Read(Box::new(FileRead {
+            comes_back.send(FileRead {
                 what: reading,
                 loaded,
                 stamp,
                 status: None,
                 history,
                 unlocked,
-            })));
-            if let Some(done) = done {
-                done.finished();
-            }
+            });
         });
         if spawned.is_ok() {
             self.running.insert(what);
