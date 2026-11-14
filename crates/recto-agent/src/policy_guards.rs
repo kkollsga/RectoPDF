@@ -520,10 +520,59 @@ fn no_command_tells_an_agent_where_a_tab_that_followed_a_protected_one_is() {
     ];
     let steps = [(true, false), (false, false), (true, true)]
         .map(|(forward, jump)| Command::from(commands::finding::Find::from(commands::finding::FindAsk::Step { forward, jump })));
+    // Each command whose page can be left out, with it left out, so nothing that would default to where the tab is goes unseen; and Find's hit by its
+    // index.
+    let tab = || crate::TabRef::from("#1");
+    let unpaged = [
+        Command::from(commands::highlight::Highlights { tab: tab(), page: None }),
+        Command::from(commands::text::Select {
+            tab: tab(),
+            page: None,
+            to_page: None,
+            chars: None,
+            at: None,
+            to: None,
+            unit: None,
+            all: false,
+            anyway: false,
+        }),
+        Command::from(commands::text::Copy {
+            tab: tab(),
+            page: None,
+            to_page: None,
+            chars: None,
+            at: None,
+            to: None,
+            unit: None,
+            all: false,
+            anyway: false,
+        }),
+        Command::from(commands::highlight::Highlight {
+            tab: tab(),
+            page: None,
+            to_page: None,
+            chars: Some("0-5".into()),
+            at: None,
+            to: None,
+            unit: None,
+        }),
+        Command::from(commands::highlight::HighlightRemove {
+            tab: tab(),
+            what: commands::highlight::RemoveWhat::Pick {
+                page: None,
+                to_page: None,
+                chars: None,
+                at: None,
+                to: None,
+            },
+        }),
+        Command::from(commands::finding::Find::from(commands::finding::FindAsk::Hit(0))),
+    ];
     let commands: Vec<Command> = every_command()
         .into_iter()
         .chain(on_the_followed_page)
         .chain(steps)
+        .chain(unpaged)
         .map(|command| naming_the_plain_tab(&command))
         .collect();
     // Each arrangement on a thread of its own, as each run is a fresh session on files of its own: the walk is about 16 s of work.

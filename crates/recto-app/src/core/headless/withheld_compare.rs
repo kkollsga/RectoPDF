@@ -150,13 +150,13 @@ fn a_tab_left_by_following_a_protected_one_keeps_its_place_withheld_until_moved(
     assert_eq!(page_of(&app, plain_tab), 3, "an agent's goto set its place");
 }
 
-/// **What an agent is told while the person compares a plain document with a protected one of `pages` pages:** side by side; synced, the protected one
+/// **What an agent is told while the person compares a plain document with a protected one of `pages` pages that says `word`:** side by side; synced, the protected one
 /// leading to its end; the plain one leading back up; separate; and an agent at Control asking for synced scroll and setting a separate comparison of
 /// its own. At each step, a watch on every group and what `compare`, `where` on the plain tab, `tabs`, `session show` and `sidebar` say.
-fn agent_told_of_a_comparison(pages: usize) -> Vec<String> {
+fn agent_told_of_a_comparison(pages: usize, word: &str) -> Vec<String> {
     let disk = Disk::new();
     let plain = disk.pdf("plain.pdf", 30);
-    let locked = protected(&disk, pages, "Locked");
+    let locked = protected(&disk, pages, word);
     let app = disk.start();
     let mut watching = app.agent_watches(Level::Control);
     app.open(&plain);
@@ -214,7 +214,7 @@ fn agent_told_of_a_comparison(pages: usize) -> Vec<String> {
 /// looking at each step, is told the same of a five-page and a nine-page protected document.
 #[test]
 fn an_agent_is_told_the_same_of_two_compared_protected_documents() {
-    let (one, two) = (agent_told_of_a_comparison(5), agent_told_of_a_comparison(9));
+    let (one, two) = (agent_told_of_a_comparison(5, "Locked"), agent_told_of_a_comparison(9, "Sealed"));
     let differs: Vec<String> = one.iter().zip(&two).filter(|(a, b)| a != b).map(|(a, b)| format!("  {a}\n  {b}")).collect();
     assert!(
         differs.is_empty(),
@@ -222,6 +222,15 @@ fn an_agent_is_told_the_same_of_two_compared_protected_documents() {
         differs.join("\n")
     );
     assert_eq!(one.len(), two.len());
+}
+
+/// What a watcher heard, less Find's word that a search is running and has finished: each edit to the plain tab finds the person's query again, and how
+/// many of those runs are told apart follows how a busy machine's session thread takes them, not the documents (under `--like-ci` the twins differed in it in each of 10 rounds, 2026-11-14). Find's
+/// news about a tab whose place is withheld is held back whole ([`recto_agent::withheld`]); its hits are the plain document's.
+fn heard(watching: &mut crate::testkit::watching::Watching) -> Vec<Value> {
+    let mut heard = watching.heard();
+    heard.retain(|event| !(event["event"] == "find_finished" || (event["event"] == "find_changed" && event.get("running").is_some())));
+    heard
 }
 
 /// What an agent at Control is told, and hears, of the plain tab `plain` (`#P` below), which follows or followed the protected one, at `step`: what reads
@@ -233,7 +242,7 @@ fn probe(app: &HeadlessApp, watching: &mut crate::testkit::watching::Watching, p
     use recto_control::host::Host;
     app.act(UiAction::PaneRead { tab: plain });
     app.settle();
-    let mut told = vec![format!("{step} heard before: {:?}", watching.heard())];
+    let mut told = vec![format!("{step} heard before: {:?}", heard(watching))];
     let tab = format!("#{plain}");
     for line in [
         format!(r#"{{"cmd":"where","tab":"{tab}"}}"#),
@@ -280,7 +289,7 @@ fn probe(app: &HeadlessApp, watching: &mut crate::testkit::watching::Watching, p
     app.settle();
     app.act(UiAction::Menu { id: "find.next".into() });
     app.settle();
-    told.push(format!("{step} heard after: {:?}", watching.heard()));
+    told.push(format!("{step} heard after: {:?}", heard(watching)));
     told
 }
 
