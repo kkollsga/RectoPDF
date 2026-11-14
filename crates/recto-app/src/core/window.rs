@@ -66,8 +66,11 @@ impl Window {
         }
     }
 
-    /// The host's own part of the record, with the notice the session as a whole has now.
-    pub fn app_record(&self, notice: Option<String>) -> AppRecord {
+    /// The host's own part of the record, with the notice the session as a whole has now, as `notice` reads it (the host's, under its own lock). Called
+    /// on a line of its own, before the window's locks are taken, and each of those is let go before the next: the notice's lock ends inside `notice`,
+    /// so it's never held while the window's are taken, as the UI thread reads the notice (`notice_read`) and mustn't wait on a writer copying the window.
+    pub fn app_record(&self, notice: impl FnOnce() -> Option<String>) -> AppRecord {
+        let notice = notice();
         let app = lock(&self.app).clone();
         let following = lock(&self.contents_follow).is_following();
         AppRecord {

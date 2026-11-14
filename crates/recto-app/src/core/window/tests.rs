@@ -417,3 +417,24 @@ fn a_new_window_is_placed_as_the_bridge_placed_it() {
     let placement = rig.window.placement(Vec::new(), false, true);
     assert_eq!((placement.width, placement.height), (min_width, 700.0_f64.max(min_height)));
 }
+
+/// Failure (the review of R3.7's S2): the notice and the window's locks nest, so the UI thread's `notice_read` waits on a writer copying the window: the
+/// saver passed the notice as a temporary of its statement, which held the notice's lock through the window's two. The notice is now read by what's passed
+/// in, on a line of its own, so its lock ends inside that call; and the window holds neither of its locks while it's read, asserted from inside the read.
+/// The notice is in the record as read.
+#[test]
+fn the_records_notice_is_read_with_the_windows_locks_let_go() {
+    let rig = Rig::new().with_a_window();
+    let mut read = 0;
+    let record = rig.window.app_record(|| {
+        read += 1;
+        assert!(rig.window.app.try_lock().is_ok(), "the window's state is held while the notice is read");
+        assert!(
+            rig.window.contents_follow.try_lock().is_ok(),
+            "the contents' follow is held while the notice is read"
+        );
+        Some("other_instance".to_string())
+    });
+    assert_eq!((read, record.notice.as_deref()), (1, Some("other_instance")));
+    assert!(record.window.is_some(), "the window's own part as it is");
+}

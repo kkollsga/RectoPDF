@@ -81,7 +81,7 @@ fn window_at(app: &HeadlessApp, x: f64) {
 
 /// Where the record would say the window is now.
 fn window_x(app: &HeadlessApp) -> Option<f64> {
-    app.core().window.app_record(None).window.map(|window| window.frame.x)
+    app.core().window.app_record(|| None).window.map(|window| window.frame.x)
 }
 
 /// A session of two tabs, the first with a page turned and not saved, its window at [`SAVED_X`], quit as the copy before: its record and the first tab's journal
@@ -974,12 +974,16 @@ fn a_palette_row_run_while_the_saved_session_is_read_lands_on_it() {
 fn an_appearance_chosen_while_the_saved_session_is_read_stays() {
     use recto_session::record::Appearance;
     let app = restoring_held(a_saved_session());
-    assert_eq!(app.core().window.app_record(None).appearance, Appearance::System, "as the copy before left it");
+    assert_eq!(
+        app.core().window.app_record(|| None).appearance,
+        Appearance::System,
+        "as the copy before left it"
+    );
     crate::lock(&app.core().window.app).appearance = Appearance::Dark;
     app.core().saver.view_changed();
     let_the_restore_in(&app);
     assert_eq!(tab_names(&app), ["a", "b"]);
-    assert_eq!(app.core().window.app_record(None).appearance, Appearance::Dark, "what the person chose last");
+    assert_eq!(app.core().window.app_record(|| None).appearance, Appearance::Dark, "what the person chose last");
     drop(app.quit());
 }
 
@@ -1000,7 +1004,7 @@ fn an_ordinary_late_state_keeps_the_appearance_the_window_shows_once_it_takes_in
     assert_eq!(tab_names(&app), ["a", "b"], "the session comes back into the window");
     assert_eq!(crate::lock(&app.host).remade, 0, "not made again: it's taking input");
     assert_eq!(
-        app.core().window.app_record(None).appearance,
+        app.core().window.app_record(|| None).appearance,
         Appearance::Dark,
         "what the window shows, which the host applies"
     );

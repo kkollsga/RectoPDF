@@ -233,7 +233,7 @@ Tools::pub(crate) fn find_field(&self) -> &Mutex<crate::find::Field>
 Tools::pub(crate) fn palette(&self) -> &crate::palette::Palette
 Tools::pub(crate) fn save_ui(&self) -> &saving::SaveUi
 Window (pub struct)
-Window::pub fn app_record(&self, notice: Option<String>) -> AppRecord
+Window::pub fn app_record(&self, notice: impl FnOnce() -> Option<String>) -> AppRecord
 Window::pub fn appearance_choice(&self) -> &'static str
 Window::pub fn changed(&self, frame: Option<Vec<f64>>, screen: Option<ScreenInfo>, full_screen: bool, saver: &Saver)
 Window::pub fn comes_back_hidden(&self, reopened: bool) -> bool

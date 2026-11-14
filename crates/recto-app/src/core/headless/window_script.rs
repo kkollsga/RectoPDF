@@ -128,7 +128,7 @@ fn state(inner: &Inner) -> std::collections::BTreeMap<String, String> {
     let mut state = std::collections::BTreeMap::new();
     flatten(
         "record",
-        &serde_json::to_value(inner.window.app_record(lock(&inner.host.notice).clone())).expect("the record as JSON"),
+        &serde_json::to_value(inner.window.app_record(|| lock(&inner.host.notice).clone())).expect("the record as JSON"),
         &mut state,
     );
     let app = lock(&inner.window.app);
