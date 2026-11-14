@@ -45,10 +45,21 @@ pub(crate) fn put_hidden(sets: &mut HiddenSets, tab: u32, file: PathBuf, set: Op
 }
 
 /// **Drops what's drawn of a tab's pages that show these pages of its own file,** tiles and previews, so they're drawn again with what's hidden
-/// now. The tile's key doesn't change; the host is told only that they went, as for any that go.
+/// now. The tile's key doesn't change; the host is told only that they went, as for any that go. And what the tab has asked for and not had back
+/// isn't kept when it lands, as an edit does (second review of R4.3, S4): a draw under way may be under the old set, and the last thing asked for
+/// wins over a read still landing. It's asked for again.
 pub(crate) fn redraw_own_pages(reader: &mut Reader, tab: u32, file_pages: &[u32]) {
     if file_pages.is_empty() {
         return;
+    }
+    let floor = reader.work.next_generation;
+    let Some(doc) = reader.docs.views.get_mut(&tab) else { return };
+    doc.drawing.floor = floor;
+    if let Some(running) = &reader.work.running
+        && running.tab == tab
+        && let Some(cancel) = &running.cancel
+    {
+        cancel.cancel_before(running.generation + 1);
     }
     let Some(doc) = reader.docs.views.get(&tab) else { return };
     let positions: Vec<u32> = match &doc.map.slots {

@@ -89,3 +89,26 @@ fn a_hidden_set_is_held_only_while_it_hides_something() {
     assert!(sets.is_empty() && sets.capacity() == 0, "nothing held, not even the room");
     assert!(super::super::put_hidden(&mut sets, 1, file, None).is_empty());
 }
+
+/// **Failure (second review of R4.3, S4): a draw already running when a tab's set of hidden file highlights changes lands afterwards and is kept**,
+/// so a tile drawn with the old set (a highlight the person took out, or one they just put back missing) stays on screen: the last thing asked for
+/// loses to a read still landing. A draw held in flight across the change isn't kept; its page is asked for again.
+#[test]
+fn a_draw_in_flight_across_a_set_change_is_not_kept() {
+    let mut reader = reader_on(3);
+    let job = a_draw_job(&mut reader, DrawKind::Tile);
+    reader.work.note_started(&job, None);
+    let (tab, position) = (job.tab, job.position);
+    let cancelled = reader.counts().cancelled;
+    super::super::redraw_own_pages(&mut reader, tab, &[job.source_page]);
+    reader.finish(
+        job,
+        Outcome::Drawn {
+            kind: TileKind::Colour,
+            low_res: None,
+        },
+    );
+    assert_eq!(reader.counts().cancelled, cancelled + 1, "drawn under the old set, it isn't kept");
+    let again = std::iter::from_fn(|| reader.next_job()).any(|job| job.position == position && matches!(job.kind, JobKind::Draw { .. }));
+    assert!(again, "its page is drawn again, under the set as it is now");
+}
