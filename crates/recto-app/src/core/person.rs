@@ -24,19 +24,17 @@ pub fn submit(inner: &Arc<Inner>, command: Command) -> bool {
     if inner.core.frozen.load(std::sync::atomic::Ordering::SeqCst) {
         return false;
     }
+    let lane = Person::of(inner).lane();
+    let turn = lane.turn_for(&command);
     if command.waits() || command.route() != Runs::Session {
-        // Counted first, and then looked: a late try at the record's lock decides on keeping it (and restoring) only with none counted, under the life's lock
-        // (`keeping::try_back`), so either it sees this one and tries again later, or this one sees it restoring and waits on the queue with what else the
-        // person does, to run on the restored session.
-        let counted = Running::start(Arc::clone(inner));
-        if inner.life.keeping().restoring() {
-            drop(counted);
-            inner.core.push(CoreCall::Run(PersonCommand::input(command)));
-            return true;
+        match turn {
+            Some(turn) => lane.submit_waiting(command, turn),
+            None => lane.start_waiting(command, None),
         }
-        on_its_own_thread(command, counted);
     } else {
-        inner.core.push(CoreCall::Run(PersonCommand::input(command)));
+        let mut run = PersonCommand::input(command);
+        run.turn = turn;
+        inner.core.push(CoreCall::Run(run));
     }
     true
 }
@@ -53,6 +51,11 @@ impl<'a> Person<'a> {
     /// The person's way into `app`.
     pub(in crate::core) fn of(app: &'a Arc<Inner>) -> Self {
         Self { app }
+    }
+
+    /// The person's lane: their ordered commands, each in its turn ([`super::person_lane`]).
+    pub(in crate::core) fn lane(self) -> super::person_lane::PersonsLane<'a> {
+        super::person_lane::PersonsLane { app: self.app }
     }
 
     /// A command as the person's ([`submit`]), saying whether it was taken: false past a hand-off's last look.
@@ -91,16 +94,20 @@ static NO_THREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 
 /// A person's command that may hold its thread for long, as the window's Save always ran: through the host, counted for a hand-off, and what it did told.
 /// A thread that can't be started is said, as a refusal of the command: the person is never left with a click that did nothing.
-fn on_its_own_thread(command: Command, counted: Running) {
+pub(super) fn on_its_own_thread(command: Command, counted: Running, turn: Option<crate::queue::lane::Turn>) {
     let inner = Arc::clone(&counted.inner);
     let kept = command.clone();
     let spawned = spawn(move || {
         let inner = Arc::clone(&counted.inner);
+        let here = crate::queue::lane::hold_here(turn);
         let mut events = Vec::new();
         sent(&inner.serving, &command);
         let result = recto_control::host::Host::run(&*inner.host, Actor::Person, &command, &mut events);
         answered(&AnswerParts::of(&inner), &command, Origin::Input, &result);
         inner.core.push(CoreCall::Events(events));
+        // Its turn passes once what it did is told, so watchers hear of it before the person's next edit; and before its count goes, so the app's
+        // never seen at rest between the two.
+        drop(here);
         drop(counted);
     });
     // The thread that didn't start took its count with it, as the closure holding it was dropped. It's said in the person's words, then answered as
@@ -109,6 +116,30 @@ fn on_its_own_thread(command: Command, counted: Running) {
         say(inner.window.notices(), &inner.core, NOT_STARTED.to_string());
         let refused = Err(AgentError::new(Code::NOT_STARTED, NOT_STARTED, recto_agent::exit::BUSY));
         answered(&AnswerParts::of(&inner), &kept, Origin::Input, &refused);
+    }
+}
+
+/// A test's hold on a person's command on a thread of its own: the next with this tag says it's there before it runs, then waits to be let go ([`hold`]).
+#[cfg(test)]
+static HOLD: std::sync::Mutex<Option<(&'static str, std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>> = std::sync::Mutex::new(None);
+
+/// **A test holds the next command tagged `tag` the app's host runs,** in flight and counted running, before the executor has it, as a highlight is while
+/// its pages are read; or the next save as it writes (`save_writing`): what tells it's held, and what lets it go (dropped, it goes too).
+#[cfg(test)]
+pub(crate) fn hold(tag: &'static str) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+    let (told, held) = std::sync::mpsc::channel();
+    let (go, waiting) = std::sync::mpsc::channel();
+    *crate::lock(&HOLD) = Some((tag, told, waiting));
+    (held, go)
+}
+
+/// Where a test's hold named `at` waits, if it's held there ([`hold`]).
+#[cfg(test)]
+pub(crate) fn held_at(at: &str) {
+    let hold = crate::lock(&HOLD).take_if(|(tag, ..)| *tag == at);
+    if let Some((_, told, go)) = hold {
+        let _ = told.send(());
+        let _ = go.recv_timeout(crate::testkit::headless::WAIT_LIMIT);
     }
 }
 
@@ -134,13 +165,13 @@ pub fn not_started(error: &AgentError) -> bool {
 /// **A person's command counted as running for a hand-off** until it's dropped: as its thread ends, however it ends. A command that panicked was counted
 /// running for good, so a hand-off waited on it to the end of its patience and the tests' settle never settled (review, 2026-11-13).
 /// The life's count goes first as it's dropped (fields drop in the order they're declared), then the app, as when this let go of the count itself.
-struct Running {
+pub(super) struct Running {
     _counted: super::life::PersonRunning,
     inner: Arc<Inner>,
 }
 
 impl Running {
-    fn start(inner: Arc<Inner>) -> Self {
+    pub(super) fn start(inner: Arc<Inner>) -> Self {
         Self {
             _counted: inner.life.person_running(),
             inner,
@@ -191,7 +222,7 @@ const ANSWERED: &[fn(&AnswerParts<'_>, &Ran<'_>)] = &[
     super::printing::answered,
 ];
 
-fn answered(parts: &AnswerParts<'_>, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {
+pub(super) fn answered(parts: &AnswerParts<'_>, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {
     let ran = Ran { command, origin, result };
     for answer in ANSWERED {
         answer(parts, &ran);
@@ -237,11 +268,16 @@ pub fn say(notices: &super::window::Notices, core: &crate::queue::CoreQueue, wor
 
 /// Runs a person's command now. Its answer is nobody's but a test's: the window draws what the session publishes.
 pub fn run(inner: &Arc<Inner>, reads: &mut FileReads, run: PersonCommand, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    // One of the person's ordered edits whose turn hasn't come is parked, to run when it does.
+    let Some(run) = Person::of(inner).lane().taken(run) else {
+        return Ok(Value::Null);
+    };
     let PersonCommand {
         command,
         fetched,
         origin,
         when_run,
+        turn: _turn,
     } = run;
     let command = match when_run {
         Some(resolve) => match inner.host.session.with_session(|session| resolve(session, Actor::Person, command.clone())) {
@@ -319,8 +355,10 @@ pub fn submit_when_run(inner: &Arc<Inner>, command: Command, when_run: crate::qu
     if inner.core.frozen.load(std::sync::atomic::Ordering::SeqCst) {
         return;
     }
+    let turn = Person::of(inner).lane().turn_for(&command);
     let mut run = PersonCommand::input(command);
     run.when_run = Some(when_run);
+    run.turn = turn;
     inner.core.push(CoreCall::Run(run));
 }
 

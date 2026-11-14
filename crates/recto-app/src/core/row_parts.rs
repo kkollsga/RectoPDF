@@ -88,6 +88,11 @@ impl<'a> RowParts<'a> {
         super::saving::can_save(self.published, self.life)
     }
 
+    /// Whether an edit of `tab` the person asked for is still landing ([`crate::queue::lane::Lane::naming`]): a look at the lane, not the session.
+    pub fn edit_landing(&self, tab: TabId) -> bool {
+        self.core.lane().naming(tab.0)
+    }
+
     /// Whether the updates' menu item installs, rather than checks.
     pub fn update_installs(&self) -> bool {
         self.updates.menu_installs()

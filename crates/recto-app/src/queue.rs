@@ -18,6 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+pub mod lane;
+
 /// How many calls can wait for the session thread before notes of pages drawn stop being added.
 pub const MAX_QUEUED_CALLS: usize = 4096;
 /// What the session thread is asked to do, in the order the user asked.
@@ -74,6 +76,8 @@ pub struct PersonCommand {
     pub fetched: Option<(PathBuf, recto_agent::later::Fetched)>,
     /// What it comes to by what the session holds when it runs, not when it was asked: the panel's Rotate, every page or, in edit mode, the page being read.
     pub when_run: Option<WhenRun>,
+    /// Its ticket in the person's lane, for an edit that takes effect in the order asked ([`lane`]): held till it has run, or it's dropped.
+    pub turn: Option<lane::Turn>,
 }
 
 /// **Makes a command what it is by the session as it is when it runs,** just before: a person's on the session thread, an agent's on its own. What it reads
@@ -91,6 +95,7 @@ impl PersonCommand {
             origin: Origin::Input,
             fetched: None,
             when_run: None,
+            turn: None,
         })
     }
 
@@ -102,6 +107,7 @@ impl PersonCommand {
             origin: Origin::Finishing,
             fetched,
             when_run: None,
+            turn: None,
         }
     }
 }
@@ -251,9 +257,34 @@ pub struct CoreQueue {
     /// **Abandoned:** a headless app's kill, and only that ([`Self::abandon`]). From here a call pushed is dropped at once, with what it holds, as nothing will
     /// ever take it: a thread that waits on a channel a call carries (a late try's verdict) then sees it closed and ends. The app's queue is never abandoned.
     abandoned: AtomicBool,
+    /// The person's lane: their edits in the order they asked for them ([`lane`]).
+    lane: lane::Lane,
 }
 
 impl CoreQueue {
+    /// The person's lane.
+    pub fn lane(&self) -> &lane::Lane {
+        &self.lane
+    }
+
+    /// A ticket in the person's lane for an ordered command just asked, naming `tab` (0: none).
+    pub fn take_turn(self: &Arc<Self>, tab: u32) -> lane::Turn {
+        self.lane.take(Arc::downgrade(self), tab)
+    }
+
+    /// **A person's command let go from the lane, its turn come:** queued past a freeze, as it was asked before it, as the end of something under way is
+    /// ([`CoreCall::is_user_action`]). Dropped only once the queue's abandoned, with its turn, which passes.
+    pub fn push_turn_come(&self, call: CoreCall) {
+        let mut calls = lock(&self.calls);
+        if self.abandoned.load(Ordering::SeqCst) {
+            drop(calls);
+            return;
+        }
+        calls.push_back(call);
+        drop(calls);
+        self.ready.notify_one();
+    }
+
     pub fn push(&self, call: CoreCall) {
         #[cfg(test)]
         if matches!(call, CoreCall::Reconcile) {
@@ -312,8 +343,11 @@ impl CoreQueue {
         // push that got in first is taken away with the rest and one that comes after is dropped by `push`.
         let mut calls = lock(&self.calls);
         self.abandoned.store(true, Ordering::SeqCst);
-        drop(std::mem::take(&mut calls.queue));
+        let taken = std::mem::take(&mut calls.queue);
         drop(calls);
+        // Outside the lock: a person's turn among them passes as it's dropped, and may start the next, which the abandoned queue then drops.
+        drop(taken);
+        self.lane.clear();
         self.reconcile_queued.store(false, Ordering::SeqCst);
         self.end();
     }

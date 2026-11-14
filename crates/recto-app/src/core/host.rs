@@ -70,6 +70,8 @@ impl Host for AppHost {
                 );
             }
         }
+        #[cfg(test)]
+        super::person::held_at(command.tag());
         let result = self.run_counted(actor, command, events);
         if !asks_only {
             self.running.fetch_sub(1, Ordering::SeqCst);

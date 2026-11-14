@@ -35,6 +35,7 @@ pub mod menu_rows;
 mod navigation;
 mod opening;
 pub mod person;
+mod person_lane;
 pub mod places;
 mod quitting;
 mod record_commands;

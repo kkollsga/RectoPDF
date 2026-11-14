@@ -46,7 +46,7 @@ pub fn row<'a>(parts: &super::row_parts::RowParts<'a>, asked: &super::menu_rows:
             }
             let tab = TabId(reader.shown_tab);
             // The close rule, said once in recto-agent, asked of what the session thread published: the UI thread doesn't take the session's lock.
-            let would_lose = recto_agent::close_rule::WouldLose::as_published(reader.edited, undone_owner_steps);
+            let would_lose = recto_agent::close_rule::WouldLose::as_published(reader.edited, undone_owner_steps, parts.edit_landing(tab));
             let person = parts.person();
             Some(Row::own_way(
                 close(tab),

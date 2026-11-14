@@ -28,6 +28,8 @@ impl SaveSupport for AppSaving {
     }
 
     fn before_writing(&self, _tab: TabId) {
+        // The person's Save has begun, its tab held for it: their next edit goes on now (an agent's save holds no turn here).
+        crate::queue::lane::pass_here();
         if let Some(inner) = self.saver.inner() {
             self.saver.write_journals_now(inner.on_disk.keeper(), inner.on_disk.sleeper());
         }
@@ -56,6 +58,10 @@ impl SaveSupport for AppSaving {
     }
 
     fn step(&self, _tab: TabId, step: SaveStep) {
+        #[cfg(test)]
+        if matches!(step, SaveStep::Writing) {
+            super::person::held_at("save_writing");
+        }
         let value = match step {
             SaveStep::Checking => 1,
             SaveStep::Writing => 2,
@@ -78,23 +84,31 @@ pub fn can_save(published: &std::sync::Mutex<super::Published>, life: &super::Li
 pub fn start_save(inner: &Arc<super::Inner>, tab: TabId, out: Option<std::path::PathBuf>, close_after: bool) {
     // When the person answered Save As's sheet: a file made at that name after this isn't one they agreed to replace (review).
     let answered = std::time::SystemTime::now();
-    let inner = Arc::clone(inner);
-    inner.tools.save_ui().running.fetch_add(1, Ordering::SeqCst);
-    let spawned = std::thread::Builder::new().name("recto-save-file".into()).stack_size(1024 * 1024).spawn({
-        let inner = Arc::clone(&inner);
-        move || {
-            run_save(&inner, tab, out, close_after, answered);
-            inner.tools.save_ui().step.store(0, Ordering::SeqCst);
-            inner.core.push(super::CoreCall::Reconcile);
-            // Counted running until what it came to is queued, as the app's settled goes by the count ([`crate::settled`]).
+    // In its place among the person's edits, so what they asked for before it is in what it writes; on a thread of its own once its turn comes, holding
+    // its turn till it has begun.
+    let app = Arc::downgrade(inner);
+    let save = move |turn: crate::queue::lane::Turn| {
+        let Some(inner) = app.upgrade() else { return };
+        inner.tools.save_ui().running.fetch_add(1, Ordering::SeqCst);
+        let spawned = std::thread::Builder::new().name("recto-save-file".into()).stack_size(1024 * 1024).spawn({
+            let inner = Arc::clone(&inner);
+            move || {
+                let here = crate::queue::lane::hold_here(Some(turn));
+                run_save(&inner, tab, out, close_after, answered);
+                drop(here);
+                inner.tools.save_ui().step.store(0, Ordering::SeqCst);
+                inner.core.push(super::CoreCall::Reconcile);
+                // Counted running until what it came to is queued, as the app's settled goes by the count ([`crate::settled`]).
+                inner.tools.save_ui().running.fetch_sub(1, Ordering::SeqCst);
+            }
+        });
+        if spawned.is_err() {
             inner.tools.save_ui().running.fetch_sub(1, Ordering::SeqCst);
+            inner.tools.save_ui().set_problem(Some(app::not_started()));
+            inner.core.push(super::CoreCall::Reconcile);
         }
-    });
-    if spawned.is_err() {
-        inner.tools.save_ui().running.fetch_sub(1, Ordering::SeqCst);
-        inner.tools.save_ui().set_problem(Some(app::not_started()));
-        inner.core.push(super::CoreCall::Reconcile);
-    }
+    };
+    super::person::Person::of(inner).lane().submit_save(tab, Box::new(save));
 }
 
 /// The save of the tab the action was for, whichever is showing by now. A Save As's sheet has already asked whether to replace a file that's there, so one
