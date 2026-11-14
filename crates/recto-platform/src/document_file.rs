@@ -1,6 +1,6 @@
 //! **The file wall: the one way a path becomes a document's open file** (the security review of `build/print-protected`, S1, 2026-11-14). Every read of
 //! a document by its path (an open, a restore, a page added from another file, a page drawn, a save's read, a key for the index) opens it here, for every
-//! session and every actor; a reviewed source scan (`recto-agent`'s `file_wall_scan`) fails any other open of a path in the crates a command's path reaches.
+//! session and every actor; a reviewed source scan (`recto-agent`'s `file_wall_scan_tests`) fails any other open of a path in the crates a command's path reaches.
 //!
 //! **Why:** the person's print of a document they opened with its password is a plain PDF with no name, which the app holds by a descriptor while it's
 //! prepared and while the system prints it. `/dev/fd/N` opens a descriptor of this process again, so a path an agent names could reach a copy no name
