@@ -251,3 +251,114 @@ pub(crate) fn list<A: SessionAccess>(access: &A, tab: &TabRef, page: Option<u32>
         "note": "`rects` are x, y, width, height in points on the page as the file shows it, from its top left. `edits` are unsaved, and `recto highlight remove --id N` takes one away; `file` lists the file's own on `--page`, which can't be taken out yet.",
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Direct, Level, run as run_command};
+    use recto_render_service::{OutputCaps, PageEvent, draw_whole_page};
+    use recto_session::Session;
+    use recto_testpdf::{Page, TempPdf, pages, text_lines};
+    use std::cell::RefCell;
+
+    /// A page drawn by PDFium in the worker, at one pixel a point: its width, height, and BGRA pixels, top row first.
+    fn drawn(path: &std::path::Path) -> (u32, u32, Vec<u8>) {
+        let mut doc = crate::render::open_for_text(path).expect("a worker");
+        let (mut size, mut pixels, mut row) = ((0, 0), Vec::new(), Vec::new());
+        draw_whole_page(&mut doc, 0, 1.0, 0, &OutputCaps::default(), &mut None, |event| {
+            match event {
+                PageEvent::Begin { width, height } => {
+                    size = (width, height);
+                    row = vec![0u8; width as usize * 4];
+                }
+                PageEvent::Rows { memory, rect, stride, .. } => {
+                    for y in 0..rect.height as usize {
+                        assert!(memory.copy_out(y * stride as usize, &mut row));
+                        pixels.extend_from_slice(&row);
+                    }
+                }
+            }
+            Ok(())
+        })
+        .expect("drawn");
+        (size.0, size.1, pixels)
+    }
+
+    /// **Failure: a saved highlight isn't drawn where its text is, by a reader that isn't the one that wrote it** (R4.3, coordinator 2026-11-14): the
+    /// write and the read-back agree with each other and both are wrong, on a plain page or on one turned a quarter and cropped. The page is drawn by
+    /// PDFium before and after the save: inside the highlight's rectangle (where the page was white) the blue of the yellow comes down, and away from
+    /// it nothing changed. The property, not the pixels.
+    #[test]
+    fn a_saved_highlight_is_drawn_by_pdfium_where_its_text_is() {
+        for extra in ["", "/Rotate 90 /CropBox [40 60 560 740]"] {
+            let mut page = Page::new(text_lines(&["Highlighted words on a page"]));
+            page.page_extra = extra.into();
+            let file = TempPdf::new("highlighted.pdf", &pages(&[page]));
+            let before = file.0.with_file_name("before.pdf");
+            std::fs::copy(&file.0, &before).unwrap();
+            let mut session = Session::new(crate::DrawableLoader);
+            let run = |session: &mut Session<crate::DrawableLoader>, command: Command| run_command(session, Level::Full, &command);
+            run(
+                &mut session,
+                Command::from(crate::commands::tabs::Open {
+                    path: file.0.clone(),
+                    page: None,
+                }),
+            )
+            .unwrap();
+            let highlight = crate::commands::highlight::Highlight {
+                tab: TabRef::default(),
+                page: Some(1),
+                to_page: None,
+                chars: Some("0-11".into()),
+                at: None,
+                to: None,
+                unit: None,
+            };
+            run(&mut session, Command::from(highlight)).expect("highlighted");
+            let listed = list(&Direct(RefCell::new(&mut session), None), &TabRef::default(), None).unwrap();
+            let rect: Vec<f64> = listed["edits"][0]["rects"][0]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|edge| edge.as_f64().unwrap())
+                .collect();
+            run(
+                &mut session,
+                Command::from(crate::commands::saving::Save {
+                    tab: TabRef::default(),
+                    out: None,
+                    replace: false,
+                }),
+            )
+            .expect("saved");
+            let ((width, height, was), (_, _, now)) = (drawn(&before), drawn(&file.0));
+            let mut inside_changed = 0;
+            let mut inside_white = 0;
+            for y in 0..height as usize {
+                for x in 0..width as usize {
+                    let at = (y * width as usize + x) * 4;
+                    let (fx, fy) = (x as f64 + 0.5, y as f64 + 0.5);
+                    let inside = fx > rect[0] + 1.0 && fx < rect[0] + rect[2] - 1.0 && fy > rect[1] + 1.0 && fy < rect[1] + rect[3] - 1.0;
+                    let near = fx > rect[0] - 3.0 && fx < rect[0] + rect[2] + 3.0 && fy > rect[1] - 3.0 && fy < rect[1] + rect[3] + 3.0;
+                    if inside && was[at..at + 3].iter().all(|channel| *channel > 240) {
+                        inside_white += 1;
+                        // BGRA: the yellow takes the blue down, and leaves the red.
+                        inside_changed += usize::from(now[at] < 160 && now[at + 2] > 200);
+                    } else if !near {
+                        assert_eq!(
+                            &now[at..at + 4],
+                            &was[at..at + 4],
+                            "{extra:?}: ({x}, {y}) changed away from the highlight at {rect:?}"
+                        );
+                    }
+                }
+            }
+            assert!(inside_white > 50, "{extra:?}: a highlight of some size: {rect:?}");
+            assert!(
+                inside_changed * 10 > inside_white * 9,
+                "{extra:?}: {inside_changed} of {inside_white} of the highlight's white went yellow"
+            );
+        }
+    }
+}
