@@ -2077,8 +2077,9 @@ fn a_save_says_the_size_a_turned_page_was_shown_at() {
 /// verify on an ordinary file, so it reaches neither path and fuzzes nothing there.
 #[test]
 fn the_fuzzers_highlights_path_writes_and_takes_one_out() {
-    assert_eq!(save::highlights_in_memory(&with_file_highlights()), Ok(1));
-    assert_eq!(save::highlights_in_memory(&marked(&["A", "B", "C"])), Ok(3));
+    assert_eq!(save::highlights_in_memory(&with_file_highlights()), Ok((1, true)));
+    assert_eq!(save::highlights_in_memory(&with_a_highlight_reached_many_ways()), Ok((2, true)));
+    assert_eq!(save::highlights_in_memory(&marked(&["A", "B", "C"])), Ok((3, false)));
 }
 
 /// Two pages, and a highlight (object 6) reached every other way a file can reach it besides its place on page 1's list: listed there twice, listed on

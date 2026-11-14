@@ -41,7 +41,14 @@ pub fn check_save(data: &[u8]) {
         let _ = recto_core::save::plan_in_memory(&plain, &hostile);
         let _ = recto_core::save::plan_in_memory(&hostile, &plain);
         // Highlights alone on a hostile file's own pages, the path that writes no new tree, and one of its own taken out by the rewrite (R4.3).
-        let _ = recto_core::save::highlights_in_memory(&hostile);
+        // What a save says of its highlights holds in what it wrote: each place a `/Highlight` at its `/Rect`, and what it took out gone (S1, S2).
+        for file in [&hostile, &highlight_tree(data)] {
+            let held = recto_core::save::highlights_in_memory(file);
+            let broken = recto_core::save::SaveError::CheckFailed {
+                detail: recto_core::save::HIGHLIGHTS_DONT_HOLD,
+            };
+            assert_ne!(held, Err(broken), "what the save says of its highlights doesn't hold");
+        }
     });
     // The rewrite: a delete in a hostile file, with and without pages added, and hostile pages added to a plain file. What it writes passes the fork's verify, or it refuses.
     within("planning and writing a rewrite", BUDGET, || {
@@ -326,6 +333,80 @@ fn outline_dest(take: &mut Take<'_>, count: usize) -> String {
     }
 }
 
+/// A node of a page tree, as hostile as its kids, count and parent.
+fn pages_node(take: &mut Take<'_>, count: usize) -> String {
+    format!(
+        "<< /Type /Pages /Kids [{}] /Count {} /Parent {} >>",
+        references(take, count),
+        take.pick(NUMBERS),
+        reference(take, count)
+    )
+}
+
+/// A highlight, a reply to one, a popup, or a structure element naming one (second review of R4.3, SF6): what a save's removal of a file's
+/// highlight takes out, reached however the file likes (a list naming it twice, another page's list, `/IRT`, `/Popup`, `/Parent`, `/OBJR`), and
+/// sometimes a page or a catalog dressed as one.
+fn markup(take: &mut Take<'_>, count: usize) -> String {
+    match take.u8() % 5 {
+        0 | 1 => format!(
+            "<< /Type {} /Subtype /Highlight /Rect [{} {} {} {}] /Popup {} /AP << /N {} >> /Contents {} /StructParent {} >>",
+            take.pick(&["/Annot", "/Annot", "/Page"]),
+            take.pick(&["50", "50", "0", "-1e9"]),
+            take.pick(NUMBERS),
+            take.pick(NUMBERS),
+            take.pick(NUMBERS),
+            reference(take, count),
+            reference(take, count),
+            text(take),
+            take.pick(NUMBERS)
+        ),
+        2 => format!("<< /Subtype /Text /IRT {} /Rect [0 0 9 9] /Contents {} >>", reference(take, count), text(take)),
+        3 => format!(
+            "<< /Type /StructElem /S /Annot /Pg {} /K << /Type /OBJR /Obj {} >> >>",
+            reference(take, count),
+            reference(take, count)
+        ),
+        _ => format!(
+            "<< /Type {} /Subtype /Popup /Parent {} /Pages {} >>",
+            take.pick(&["/Annot", "/Page", "/Catalog"]),
+            reference(take, count),
+            reference(take, count)
+        ),
+    }
+}
+
+/// **A file whose first page lists a highlight, among hostile markup** (second review of R4.3, SF6): two pages and a fixed tree, so the save's
+/// removal path is reached on most inputs; everything the lists and the highlight name comes from the fuzz bytes. Page 1's first item is a highlight
+/// at `[50 700 150 712]` that a save can take out.
+pub fn highlight_tree(data: &[u8]) -> Vec<u8> {
+    let mut take = Take(data);
+    let count = 6 + usize::from(take.u8() % 24);
+    let mut objects = vec![
+        recto_testpdf::Object::Dict(format!(
+            "<< /Type /Catalog /Pages 2 0 R /StructTreeRoot << /K [{}] >> >>",
+            references(&mut take, count)
+        )),
+        recto_testpdf::Object::Dict("<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".into()),
+        recto_testpdf::Object::Dict(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R {}] >>",
+            references(&mut take, count)
+        )),
+        recto_testpdf::Object::Dict(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [{}] >>",
+            references(&mut take, count)
+        )),
+        recto_testpdf::Object::Dict(format!(
+            "<< /Type /Annot /Subtype /Highlight /Rect [50 700 150 712] /Popup {} /AP << /N {} >> /Contents (note) >>",
+            reference(&mut take, count),
+            reference(&mut take, count)
+        )),
+    ];
+    while objects.len() < count {
+        objects.push(recto_testpdf::Object::Dict(markup(&mut take, count)));
+    }
+    recto_testpdf::build(&objects)
+}
+
 /// Builds a PDF out of the bytes: objects that are pieces of what the walks read, joined by references the bytes choose, some to themselves, some to nothing. Object 1 is the catalog, and it names object 2 to 6 as its pages, outline, names, form and permissions.
 pub fn build_tree(data: &[u8]) -> Vec<u8> {
     let mut take = Take(data);
@@ -341,12 +422,7 @@ pub fn build_tree(data: &[u8]) -> Vec<u8> {
     while objects.len() < count {
         let which = if objects.len() < 6 { objects.len() as u8 - 1 } else { take.u8() % 12 };
         let object = match which {
-            0 | 6 => recto_testpdf::Object::Dict(format!(
-                "<< /Type /Pages /Kids [{}] /Count {} /Parent {} >>",
-                references(&mut take, count),
-                take.pick(NUMBERS),
-                reference(&mut take, count)
-            )),
+            0 | 6 => recto_testpdf::Object::Dict(pages_node(&mut take, count)),
             1 | 7 => {
                 let dest = outline_dest(&mut take, count);
                 recto_testpdf::Object::Dict(format!(
@@ -429,7 +505,8 @@ pub fn build_tree(data: &[u8]) -> Vec<u8> {
                     reference(&mut take, count)
                 }
             )),
-            _ => match take.u8() % 7 {
+            _ => match take.u8() % 8 {
+                7 => recto_testpdf::Object::Dict(markup(&mut take, count)),
                 0 => recto_testpdf::Object::Dict(format!(
                     "<< /Filter /Adobe.PPKLite /SubFilter /ETSI.CAdES.detached /Name {} /M {} /ByteRange [{} {} {} {}] >>",
                     text(&mut take),

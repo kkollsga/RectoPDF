@@ -96,8 +96,10 @@ pub fn plan_in_memory_within(target: &[u8], added: &[u8], work_limit: u64) -> Re
 /// **Highlights alone, on bytes in memory, for the fuzzer** (review of R4.3): `target`'s pages as they are, with a highlight on its first two, written
 /// as an update (the path a save of highlights alone takes: no new tree, each page written again with its list); then, if the first page's list
 /// has a highlight among its first eight items, that highlight taken out by the rewrite, through the fork's own verify. Gives back the pages the
-/// result has. The same plan and sinks a save uses, with no file.
-pub fn highlights_in_memory(target: &[u8]) -> Result<usize, SaveError> {
+/// result has, and whether a highlight was taken out. The same plan and sinks a save uses, with no file. After each write what a save says of
+/// its highlights is held against the bytes written (second review of R4.3, SF6): a failure there is [`HIGHLIGHTS_DONT_HOLD`], which a fuzzer
+/// treats as a bug, not a refusal.
+pub fn highlights_in_memory(target: &[u8]) -> Result<(usize, bool), SaveError> {
     let (reader, map) = open_bytes_for_save(target)?;
     let pages = u32::try_from(map.len()).map_err(|_| SaveError::Damaged)?;
     let order: Vec<PageRef> = (0..pages)
@@ -133,12 +135,15 @@ pub fn highlights_in_memory(target: &[u8]) -> Result<usize, SaveError> {
     let began = writer.position();
     let expected = plan.write(&reader, &[], &mut AppendSink { writer: &mut writer, began })?;
     writer.finish().map_err(from_append)?;
-    let (_, written) = open_bytes_for_save(&out).map_err(|_| SaveError::CheckFailed { detail: "doesn't open" })?;
+    let (written_reader, written) = open_bytes_for_save(&out).map_err(|_| SaveError::CheckFailed { detail: "doesn't open" })?;
     if written.len() != expected.len() {
         return Err(SaveError::CheckFailed { detail: "pages out of place" });
     }
+    if !plan.highlights.hold_in(&written_reader, &expected) {
+        return Err(SaveError::CheckFailed { detail: HIGHLIGHTS_DONT_HOLD });
+    }
     if gone.is_empty() {
-        return Ok(expected.len());
+        return Ok((expected.len(), false));
     }
     reader.check_rewritable().map_err(from_rewrite)?;
     let plan = Plan::make(&reader, &map, &request(&gone), &[], signature_facts(&reader), Writer::Rewrite, MAX_COPY_WORK)?;
@@ -159,8 +164,18 @@ pub fn highlights_in_memory(target: &[u8]) -> Result<usize, SaveError> {
     unverified
         .verify(&reader, std::sync::Arc::new(lopdf::BytesSource::new(std::sync::Arc::clone(&bytes))))
         .map_err(from_rewrite)?;
-    Ok(expected.len())
+    let (written, _) = open_bytes_for_save(&bytes).map_err(|_| SaveError::CheckFailed { detail: "doesn't open" })?;
+    // What a save reads back after a rewrite (S2), then what it must hold.
+    let read_back = plan.highlights.read_back((&reader, &map, &order), (&written, &expected));
+    if read_back.is_ok() && !plan.highlights.hold_in(&written, &expected) {
+        return Err(SaveError::CheckFailed { detail: HIGHLIGHTS_DONT_HOLD });
+    }
+    Ok((expected.len(), true))
 }
+
+/// What [`highlights_in_memory`] says when a write doesn't hold what the save says of its highlights: a place that isn't a `/Highlight` with the
+/// `/Rect` reported, or an object taken out that's still in the file.
+pub const HIGHLIGHTS_DONT_HOLD: &str = "the highlights written aren't what the save says";
 
 /// **The rewrite's planner on bytes in memory, for the fuzzer:** `target` with its first page deleted, and with `added`'s pages after the rest when `with_added`,
 /// written by the rewrite into memory, checked by the fork's own verify and read back. Gives back the pages the result has. The same plan and sink a save

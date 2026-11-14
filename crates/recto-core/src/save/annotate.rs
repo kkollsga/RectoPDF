@@ -83,6 +83,8 @@ pub(super) struct Highlights {
     written: RefCell<MarksWritten>,
     /// Each of the request's highlights' annotation, by its place in the request, once written: what a read-back finds it by.
     made: RefCell<Vec<ObjectId>>,
+    /// The objects taken out of the file, as the plan takes them: what [`Self::hold_in`] looks for.
+    taken: RefCell<Vec<ObjectId>>,
 }
 
 impl Highlights {
@@ -175,9 +177,10 @@ impl Highlights {
             self.written.borrow_mut().removed.extend(removed.into_iter().map(|index| (at, index)));
             // However else the file reaches them (the same entry twice, another page's list, a reply's `/IRT`, the structure tree's `/OBJR`, a
             // `/Popup` no list has), they're gone from the new file, and every reference to them with them (second review of R4.3, S1).
-            for id in objects {
-                writer.remove(id)?;
+            for id in &objects {
+                writer.remove(*id)?;
             }
+            self.taken.borrow_mut().extend(objects);
         }
         for (asked, rects) in highlights.into_iter().flatten() {
             if writer.taken() > cap {
@@ -265,6 +268,31 @@ impl Highlights {
             done.removed.extend(gone.into_iter().map(|index| (position, index)));
         }
         Ok(())
+    }
+}
+
+impl Highlights {
+    /// **What a write must hold, for the fuzzer** (second review of R4.3, S1, S2 and SF6): each place reported holds, in `written` (whose pages are
+    /// `ids` by position), a `/Highlight` with the `/Rect` reported; and nothing taken out is in it any more.
+    pub(super) fn hold_in(&self, written: &IndexedReader, ids: &[ObjectId]) -> bool {
+        let done = self.written.borrow();
+        let placed = self.by_position.iter().all(|(position, asked)| {
+            let list = match ids.get(*position as usize).map(|id| written.resolve_object(*id)) {
+                Some(Ok(Object::Dictionary(page))) => annots_of(written, &page),
+                _ => return false,
+            };
+            asked.iter().all(|(at, _)| {
+                let Some((index, rect)) = done.placed.get(*at) else { return false };
+                let found = list.get(*index as usize).and_then(|item| annotation_at(written, item));
+                found.is_some_and(|annot| is_kind(&annot, b"Highlight") && numbers_of(annot.get(b"Rect").ok()) == Some(*rect))
+            })
+        });
+        let gone = self
+            .taken
+            .borrow()
+            .iter()
+            .all(|id| !matches!(written.resolve_object(*id), Ok(Object::Dictionary(_))));
+        placed && gone
     }
 }
 
