@@ -85,7 +85,7 @@ for look in light dark; do
     r open "$doc"; r goto 3; settle; shot removed-saved-reopened
 
     # A highlight on a page an edit turned, saved, closed and opened again: on its text, where the turned page now has it (S3).
-    r page rotate --pages 3 --degrees 90; settle
+    r page rotate 3 --by 90; settle
     r highlight --page 3 --chars 0-160; until_state "a['document_edited']"; settle; shot turned-unsaved
     r qa menu file.save; until_state "not a['document_edited']"
     r qa menu file.close; settle
