@@ -338,8 +338,16 @@ pub struct Marks {
     /// Some highlight in the list is on a page the document has: worked out as the pages change ([`settle`]). One on a page that was deleted is kept
     /// to come back with it, and isn't something to save.
     shown: bool,
-    /// Goes up with every change to the list or what's hidden, so what's made from them can tell it's out of date without comparing them.
+    /// A tick of the whole process's, taken at every change to the list, what's hidden or the pages they're on, so what's made from them can tell
+    /// it's out of date without comparing them, whichever list it was made from ([`tick`]).
     changes: u64,
+}
+
+static TICKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A number no change to any list has had before: one list's state can't be taken for another's, even one made again in its place.
+pub(super) fn tick() -> u64 {
+    TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The caps a list is held to, set small by tests.
@@ -372,7 +380,7 @@ impl Marks {
         &self.hidden
     }
 
-    /// How many changes the highlights have had, in this process.
+    /// The tick of the last change to the highlights, what's hidden, or the pages they're on: the same tick is the same state.
     pub fn changes(&self) -> u64 {
         self.changes
     }
@@ -459,7 +467,7 @@ impl Marks {
     /// Applies a step and gives back its inverse. A highlight already here, or a number naming none, is passed over either way, so a hostile record
     /// can't make it panic or two highlights share a number.
     pub(super) fn apply(&mut self, step: MarkStep) -> MarkStep {
-        self.changes += 1;
+        self.changes = tick();
         match step {
             MarkStep::Add(marks) => MarkStep::Remove(self.add(marks.into_vec()).into_boxed_slice()),
             MarkStep::Remove(ids) => MarkStep::Add(self.take(&ids).into_boxed_slice()),

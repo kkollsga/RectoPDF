@@ -360,7 +360,7 @@ pub(in crate::edit) fn saved(edits: &mut PageEdits, own: Own<'_>, written: Optio
     marks.hidden.clear();
     // What's left is on pages the saved file doesn't have.
     marks.shown = false;
-    marks.changes += 1;
+    marks.changes = super::tick();
     edits.history.bytes = edits.history.undo.iter().chain(&edits.history.redo).map(|entry| entry.step.held_bytes()).sum();
     gone
 }
@@ -402,6 +402,10 @@ pub(in crate::edit) fn settle(edits: &mut PageEdits) {
         edits.slots.iter().any(|slot| pages.contains(&(slot.source, slot.page)))
     };
     edits.marks.shown = shown;
+    if !edits.marks.list.is_empty() {
+        // Their pages may be at other positions now.
+        edits.marks.changes = super::tick();
+    }
 }
 
 #[cfg(test)]
