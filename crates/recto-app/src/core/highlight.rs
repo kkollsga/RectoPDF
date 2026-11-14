@@ -133,7 +133,8 @@ pub fn answered(inner: &Arc<Inner>, ran: &person::Ran<'_>) {
 }
 
 /// Sets made lately, by tab and the tick of their list's last change: made again only when it changed (review of R4.3: they were made and compared
-/// on every pass, under the session's lock). On the session thread, which makes them; a few, as each pane shows one tab.
+/// on every pass, under the session's lock). On the session thread, which makes them; a few, as each pane shows one tab. Each pass's read lets go
+/// of a set that isn't its tab's now, a closed or sleeping tab's among them ([`forget_old_sets`]).
 const SETS_KEPT: usize = 8;
 
 std::thread_local! {
@@ -161,6 +162,23 @@ pub fn marks_of<L: DocLoader>(session: &Session<L>, id: TabId) -> Option<Arc<Tab
         kept.push((id.0, tick, Arc::clone(&made)));
     });
     Some(made)
+}
+
+/// **Lets go of each set kept that isn't its tab's now** (second review of R4.3, SF5): a closed tab's, a sleeping one's (its list is in its sleep
+/// file), one whose highlights changed since. Each pass's read calls it, so nothing of a tab is kept past the pass after it closes. Nothing to do
+/// with none kept.
+pub fn forget_old_sets<L: DocLoader>(session: &Session<L>) {
+    MADE.with_borrow_mut(|kept| {
+        kept.retain(|(tab, tick, _)| {
+            session
+                .lists()
+                .get(TabId(*tab))
+                .is_some_and(|list| list.marks().changes() == *tick && !list.marks().is_empty())
+        });
+        if kept.is_empty() {
+            *kept = Vec::new();
+        }
+    });
 }
 
 fn make_marks<L: DocLoader>(session: &Session<L>, id: TabId, list: &recto_session::edit::PageEdits) -> Arc<TabMarks> {
@@ -301,5 +319,36 @@ mod tests {
         );
         assert!(menu.entries.iter().all(|entry| is_menu_id(&entry.id)));
         assert!(!is_menu_id("tools.snapshot"));
+    }
+
+    /// The tabs a set is kept for, on this thread.
+    fn kept_for() -> Vec<u32> {
+        MADE.with_borrow(|made| made.iter().map(|(tab, ..)| *tab).collect())
+    }
+
+    /// **Failure (second review of R4.3, SF5): a closed tab's highlights stay held** in the sets kept on the session thread, up to eight tabs' worth
+    /// whatever was closed, until others push them out. After the close, the next pass's read keeps nothing of it; nor of a tab whose highlights
+    /// changed since its set was made.
+    #[test]
+    fn a_closed_tabs_set_isnt_kept() {
+        let file = recto_testpdf::TempPdf::new(
+            "kept.pdf",
+            &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["Highlighted words"]))]),
+        );
+        let mut session = Session::new(recto_agent::DrawableLoader);
+        let run = |session: &mut Session<recto_agent::DrawableLoader>, line: &str| {
+            recto_agent::run(session, recto_agent::Level::Full, &recto_agent::parse(line).unwrap()).unwrap()
+        };
+        run(&mut session, &format!(r#"{{"cmd":"open","path":{}}}"#, serde_json::json!(file.0)));
+        run(&mut session, r##"{"cmd":"highlight","tab":"active","page":1,"chars":"0-5"}"##);
+        let id = session.tabs().active().expect("a tab");
+        assert!(marks_of(&session, id).is_some());
+        assert_eq!(kept_for(), vec![id.0]);
+        forget_old_sets(&session);
+        assert_eq!(kept_for(), vec![id.0], "still its set");
+        run(&mut session, r##"{"cmd":"discard","tab":"active"}"##);
+        run(&mut session, r##"{"cmd":"close","tab":"active"}"##);
+        forget_old_sets(&session);
+        assert!(kept_for().is_empty(), "nothing of the closed tab");
     }
 }

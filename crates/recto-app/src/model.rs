@@ -553,6 +553,7 @@ fn recent_files<L: DocLoader>(session: &Session<L>) -> Vec<RecentFile> {
 
 /// **Reads everything a pass needs of the session,** in one go. Called under the session's one lock, so what it returns is of one moment. Takes nothing out of the session: the caller takes each pane's jump.
 pub fn read<L: DocLoader>(session: &Session<L>, held: &Held) -> Facts {
+    crate::core::highlight::forget_old_sets(session);
     let active = session.tabs().active();
     let panes = session.panes();
     let snapshots: Vec<PaneSnapshot> = panes
