@@ -379,11 +379,8 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         inner.listener.model_changed();
     }
     // What's left alone comes due from here, and what's off screen may be over its budget.
-    inner.sleeper.check_woken_files(&inner.host.session, &inner.core);
-    inner.sleeper.rearm(&inner.host.session);
-    inner
-        .sleeper
-        .look_at_budget(&sleeper::OnHand::new(&inner.host.session, &inner.panes, &inner.engine), &inner.core);
+    let on_hand = sleeper::OnHand::new(&inner.host.session, &inner.panes, &inner.engine);
+    inner.sleeper.after_a_call(&on_hand, &inner.core);
     // Whatever just happened may be something to keep. Nothing's written unless it really differs when its time comes.
     let (retired, journal_work) = inner
         .host

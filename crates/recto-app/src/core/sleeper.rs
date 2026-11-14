@@ -456,7 +456,7 @@ impl Sleeper {
 
     /// The documents off screen against their budget. At most once a second, and only with something off screen, which most of the time there's little of.
     /// Tabs it says are over go to the session thread through `core`.
-    pub(super) fn look_at_budget(&self, on_hand: &OnHand<'_>, core: &CoreQueue) {
+    fn look_at_budget(&self, on_hand: &OnHand<'_>, core: &CoreQueue) {
         let (warm, active) = on_hand
             .session
             .with_session(|session| (session.dormant().oldest_first(), session.tabs().active()));
@@ -489,11 +489,19 @@ impl Sleeper {
 }
 
 impl Sleeper {
+    /// **What the sleeper does at the end of every call on the session thread:** the tabs just woken from their sleep files are looked at, the next
+    /// deadline's worked out, and what's off screen is looked at against its budget, in that order.
+    pub(super) fn after_a_call(&self, on_hand: &OnHand<'_>, core: &Arc<CoreQueue>) {
+        self.check_woken_files(on_hand.session, core);
+        self.rearm(on_hand.session);
+        self.look_at_budget(on_hand, core);
+    }
+
     /// Works out the next deadline, after anything that can have changed it. A look at the few tabs that hold anything.
     ///
     /// **Real time:** how long until the next is due is the session's own clock (`Dormant::next_in`, as every `touch` goes by it); the
     /// deadline it comes to is on the app's clock.
-    pub(super) fn rearm(&self, session: &SessionHost<DrawableLoader>) {
+    fn rearm(&self, session: &SessionHost<DrawableLoader>) {
         let after = self.after_seconds();
         let in_seconds = session.with_session(|session| session.dormant().next_in(after));
         let _ = self.step(Event::Rearm { in_seconds });
@@ -510,7 +518,7 @@ impl Sleeper {
     }
 
     /// Tabs just woken from their sleep files: nothing's asked of the PDF on the way, as it may be on a disk that's gone away. Each is looked at on a thread of its own, and if it's turned out to be something else, it's read after all.
-    pub(super) fn check_woken_files(&self, session: &SessionHost<DrawableLoader>, core: &Arc<CoreQueue>) {
+    fn check_woken_files(&self, session: &SessionHost<DrawableLoader>, core: &Arc<CoreQueue>) {
         let woken = session.with_session(|session| session.dormancy_mut().take_woken_from_file());
         if woken.is_empty() {
             return;
@@ -563,6 +571,9 @@ impl<'a> OnHand<'a> {
 
 impl Inner {
     /// **Those tabs go dormant,** on the session thread, those that may: whatever's asking, not the one on screen or one being worked on or saved. Whatever hasn't gone to its journal goes first, or a list couldn't.
+    ///
+    /// **Stays on the app** (R3.7 S6): it coordinates the session, the saver's journals (written by `Saver::write_journals_now`, which takes the app for the
+    /// record's keeping) and the sleeper; it goes to the [`Sleeper`] when R3.7 S5 gives the record (its journals and its keeping) a part of its own.
     pub fn go_dormant(&self, tabs: &[TabId], why: Why) -> usize {
         let tabs: Vec<(TabId, bool)> = self
             .host
@@ -747,6 +758,9 @@ impl Sleeper {
 
 impl Inner {
     /// The system's memory pressure, from the host's dispatch source (and `qa memory-pressure system-warning`): acted on, or in a quiet run only counted ([`crate::pressure::heard`]). A quiet run is the one with a QA bridge.
+    ///
+    /// **Stays on the app** (R3.7 S6): it's the bridge's entry point (`recto-ffi` calls it), and reads the QA bridge and the core queue beside the sleeper;
+    /// it goes when the bridge's entry points are next touched.
     pub fn system_pressure(&self, critical: bool) {
         let quiet = self.qa.is_some();
         if let Some(Out::Pressure(critical)) = self.sleeper.step(Event::SystemPressure { critical, quiet }) {
@@ -755,6 +769,9 @@ impl Inner {
     }
 
     /// The system's asked for memory back: the same as a tab's being left alone, for all that can go, and now. Counted first, so a test can see it came.
+    ///
+    /// **Stays on the app** (R3.7 S6): it sends every tab that can go through [`Self::go_dormant`], which stays, and tells every page view; it goes with
+    /// `go_dormant`, when R3.7 S5 gives the record a part of its own.
     pub fn memory_pressure(&self, critical: bool) {
         let Some(Out::AllGo(critical)) = self.sleeper.step(Event::Pressure { critical }) else {
             return;
