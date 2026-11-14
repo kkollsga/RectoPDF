@@ -326,6 +326,7 @@ impl HostPlay {
                 let with_state = inner.life.state_read();
                 if inner.window.should_open(inner.updates.reopened_by_update()) {
                     inner.window_opened();
+                    shown(app);
                 } else {
                     inner.window_closed();
                 }
@@ -340,6 +341,7 @@ impl HostPlay {
                 if !inner.window.is_closed() {
                     inner.window_replaced();
                     inner.window_opened();
+                    shown(app);
                 }
                 inner.shown_with_state();
             } else if inner.life.state_read() {
@@ -347,6 +349,15 @@ impl HostPlay {
             }
         }
     }
+}
+
+/// The window put on the screen, as the host's `showNow` tells it: at once here, where the host waits for the page or its patience. Until it's told,
+/// `qa wait-settled` waits for it (`WindowShowing::not_yet_shown` in `core/life.rs`).
+fn shown(app: &HeadlessApp) {
+    let inner = app.core();
+    inner
+        .life
+        .record_window_shown(app.reader().home, 0, "ready", &inner.host.session, &inner.engine);
 }
 
 /// [`Builder`] on a disk of the test's.

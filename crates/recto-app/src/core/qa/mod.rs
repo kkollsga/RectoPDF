@@ -6,6 +6,8 @@ mod values;
 
 #[cfg(test)]
 mod files_tests;
+#[cfg(test)]
+mod settled_tests;
 
 use super::{CoreQueue, Inner, lock};
 use crate::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
@@ -645,7 +647,7 @@ impl QaBridge {
         }))
     }
 
-    /// Settled is the session thread done with what it was asked, every page view drawn, and no host animation running that changes what's shown: the sidebar contents' fade and slide, their drift, a name about to be shown, a zoom about to go sharp. Each of those ends by itself, and one ending can start drawing again (a zoom going sharp), so all of it is asked again until it holds at once, within the one limit.
+    /// Settled is the session thread done with what it was asked, every page view drawn, a window that's up shown, and no host animation running that changes what's shown: the sidebar contents' fade and slide, their drift, a name about to be shown, a zoom about to go sharp. Each of those ends by itself, and one ending can start drawing again (a zoom going sharp), so all of it is asked again until it holds at once, within the one limit.
     fn settled(&self, limit: Duration) -> Result<Value, AgentError> {
         let started = Instant::now();
         let left = || limit.saturating_sub(started.elapsed());
@@ -681,9 +683,18 @@ impl QaBridge {
                 )
                 .then("`recto qa state` shows what it's still waiting for."));
             }
-            let running = self.ask("animations", "")?;
+            let mut running = self.ask("animations", "")?;
             // The host's part of a print, a file handed to the system, is about to change what's shown; its pages being prepared are the definition's.
             let printing = self.inner().is_some_and(|inner| inner.tools.printing().busy());
+            // A window up and not yet shown: the host shows it when its page is ready or its patience runs out, and gives the keyboard back to what had it
+            // only then (CI run 43539671770: read before that, Find's field had lost the keyboard across a hand-off).
+            if let Some(up) = self.inner().and_then(|inner| inner.life.window_showing().not_yet_shown()) {
+                let unshown = json!(format!("window_not_yet_shown ({} ms up)", up.as_millis()));
+                match running.as_array_mut() {
+                    Some(list) => list.push(unshown),
+                    None => running = json!([unshown]),
+                }
+            }
             if running.as_array().is_none_or(Vec::is_empty) && !printing {
                 return Ok(
                     json!({ "settled": true, "waited_ms": started.elapsed().as_millis() as u64, "animations_waited_ms": animations_waited.as_millis() as u64 }),

@@ -264,7 +264,7 @@ Lifecycle::pub(crate) fn sheets_open(&self) -> u32
 Lifecycle::pub(crate) fn shown_with_state(&self) -> bool
 Lifecycle::pub(crate) fn take_holding_tab(&self) -> Option<TabId>
 Lifecycle::pub(crate) fn told_to_quit(&self) -> bool
-Lifecycle::pub(crate) fn window_opened(&self)
+Lifecycle::pub(crate) fn window_showing(&self) -> WindowShowing<'_>
 Lifecycle::pub(super) fn keeping(&self) -> crate::lifecycle::keeping::Keeping
 Lifecycle::pub(super) fn keeping_due(&self) -> Option<Duration>
 Lifecycle::pub(super) fn life(&self) -> crate::lifecycle::Life
