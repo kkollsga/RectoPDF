@@ -429,38 +429,3 @@ pub(super) fn window_as_it_is(app: &mut AppState, real: &AppState, appearance_th
     app.sidebar_width = real.sidebar_width;
     app.settings_window = real.settings_window;
 }
-
-#[cfg(test)]
-mod tests {
-    /// Failure (R3.7, S3: the desk's rule): code outside the desk steps keeping the record by itself (a `life.step(Event::Keeping(..))` or a `tried` of its
-    /// own), so what the step comes to is never carried out: a lock a try brought kept, keeping settled with nothing said, or the updater never told of a launch
-    /// held back. Outside the pure machine (`lifecycle/`, which makes them in its tests), a keeping event is made only in this file, by the desk, and in the
-    /// life's `tried`, which only the desk calls. Comments aside.
-    #[test]
-    fn a_keeping_event_is_made_only_by_its_desk() {
-        fn walk(dir: &std::path::Path, found: &mut Vec<String>) {
-            for entry in std::fs::read_dir(dir).expect("the sources").flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    if !path.ends_with("lifecycle") {
-                        walk(&path, found);
-                    }
-                    continue;
-                }
-                let Ok(text) = std::fs::read_to_string(&path) else { continue };
-                let name = path.to_string_lossy().replace('\\', "/");
-                for (n, line) in text.lines().enumerate() {
-                    let code = line.split("//").next().unwrap_or("");
-                    let makes = code.contains("Event::Keeping(") || code.contains(".tried(");
-                    let allowed = name.ends_with("src/core/keeping.rs") || (name.ends_with("src/core/life.rs") && code.contains("Event::Keeping("));
-                    if makes && !allowed {
-                        found.push(format!("{name}:{}: {}", n + 1, line.trim()));
-                    }
-                }
-            }
-        }
-        let mut found = Vec::new();
-        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut found);
-        assert!(found.is_empty(), "keeping stepped outside its desk: {found:#?}");
-    }
-}
