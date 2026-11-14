@@ -289,6 +289,7 @@ Person::pub fn save(self, tab: recto_session::TabId)
 Person::pub fn snapshot_anyway(self, serial: u64)
 Person::pub fn submit(self, command: Command) -> bool
 Person::pub fn submit_when_run(self, command: Command, when_run: crate::queue::WhenRun)
+Person::pub(in crate::core) fn lane(self) -> super::person_lane::PersonsLane<'a>
 Person::pub(in crate::core) fn of(app: &'a Arc<Inner>) -> Self
 Printing (pub struct, derives Default)
 Printing::pub fn busy(&self) -> bool
@@ -326,6 +327,7 @@ RowParts (pub struct, derives Clone, Copy)
 RowParts::pub fn can_save(&self) -> bool
 RowParts::pub fn cancel_print(&self)
 RowParts::pub fn copy_selection(&self, anyway: bool)
+RowParts::pub fn edit_landing(&self, tab: TabId) -> bool
 RowParts::pub fn mark_update_menu(&self) -> bool
 RowParts::pub fn open(&self, path: PathBuf)
 RowParts::pub fn open_palette(&self)

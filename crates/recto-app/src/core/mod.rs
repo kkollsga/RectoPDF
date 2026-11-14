@@ -21,6 +21,7 @@ pub mod updates;
 
 mod answer_parts;
 mod closing;
+pub(crate) mod command_kinds;
 mod comparison;
 mod contents;
 pub mod controls;
@@ -35,10 +36,12 @@ pub mod menu_rows;
 mod navigation;
 mod opening;
 pub mod person;
+mod person_lane;
 pub mod places;
 mod quitting;
 mod record_commands;
 pub mod row_parts;
+pub(crate) mod running;
 pub mod showing;
 mod unlocking;
 mod viewing;
@@ -264,14 +267,7 @@ pub fn hand_off_check(host: &AppHost) -> HandOffCheck {
 
 impl Inner {
     pub fn hand_off_check(&self) -> HandOffCheck {
-        let busy = hand_off_check_parts(
-            self.life.reads_running(),
-            self.life.sheets_open(),
-            self.host.running.load(Ordering::SeqCst),
-            self.life.persons_running(),
-            self.tools.save_ui().running.load(Ordering::SeqCst),
-            self.tools.printing().busy(),
-        );
+        let busy = running::Running::now(&self.life, &self.host, &self.tools).busy();
         let last = self.life.last_input_ms();
         let now = self.life.now_ms();
         HandOffCheck {
@@ -496,6 +492,7 @@ mod tests {
                 Arc::new(crate::clock::SystemClock::new()),
             )),
             running: AtomicU32::new(0),
+            changing: AtomicU32::new(0),
             handing_off: AtomicBool::new(false),
             notice: Mutex::new(None),
             watchers: Mutex::new(None),

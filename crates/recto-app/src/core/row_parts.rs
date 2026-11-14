@@ -85,7 +85,12 @@ impl<'a> RowParts<'a> {
 
     /// Whether Save can be chosen now, as the menu says ([`super::saving::can_save`]).
     pub fn can_save(&self) -> bool {
-        super::saving::can_save(self.published, self.life)
+        super::saving::can_save(self.published, self.life, self.core.lane())
+    }
+
+    /// Whether an edit of `tab` the person asked for is still landing ([`crate::queue::lane::Lane::landing`]): a look at the lane, not the session.
+    pub fn edit_landing(&self, tab: TabId) -> bool {
+        self.core.lane().landing(tab.0)
     }
 
     /// Whether the updates' menu item installs, rather than checks.

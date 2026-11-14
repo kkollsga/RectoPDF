@@ -85,16 +85,14 @@ pub fn apply_restored(
         start_serving(inner);
     }
     // What waited for the state: at the launch, and what the person did while a late keep's restore was read.
-    release(&inner.core, deferred, |command| {
-        person::submit(inner, command);
-    });
+    release(&inner.core, deferred, |run| person::Person::of(inner).lane().submit_held(run));
     ready
 }
 
 /// What the person did while a late keep's restore was read, let go once it's no longer restoring without the restore coming in (its patience ran out, or its
 /// thread ended): it runs on the window as it is. Not before the launch's state is read, when what waits is an open, which waits for that. Reads the life;
 /// `submit` sends a person's command to a thread of its own (`person::submit`).
-fn release_held(life: &Lifecycle, core: &CoreQueue, deferred: &mut Vec<CoreCall>, submit: impl FnMut(recto_agent::Command)) {
+fn release_held(life: &Lifecycle, core: &CoreQueue, deferred: &mut Vec<CoreCall>, submit: impl FnMut(Box<crate::queue::PersonCommand>)) {
     if deferred.is_empty() || !life.state_read() || life.keeping().restoring() {
         return;
     }
@@ -102,10 +100,10 @@ fn release_held(life: &Lifecycle, core: &CoreQueue, deferred: &mut Vec<CoreCall>
 }
 
 /// **What waited, let go:** each call back on the queue, in the order it came; a person's command that runs on a thread of its own sent there again, by `submit`.
-fn release(core: &CoreQueue, deferred: &mut Vec<CoreCall>, mut submit: impl FnMut(recto_agent::Command)) {
+fn release(core: &CoreQueue, deferred: &mut Vec<CoreCall>, mut submit: impl FnMut(Box<crate::queue::PersonCommand>)) {
     for call in deferred.drain(..) {
         match call {
-            CoreCall::Run(run) if person::on_a_thread_of_its_own(&run) => submit(run.command),
+            CoreCall::Run(run) if person::on_a_thread_of_its_own(&run) => submit(run),
             call => core.push(call),
         }
     }
@@ -114,14 +112,14 @@ fn release(core: &CoreQueue, deferred: &mut Vec<CoreCall>, mut submit: impl FnMu
 /// **Whether a call waits, and holds it if it does:** an open, for the launch's state, as what's opened goes over what comes back; and anything the person
 /// does, for a late keep's restore, so what they ask for last lands on the restored session (a command, Find's step on the page, and a command that runs on a
 /// thread of its own, held when it was asked for: see `person::submit`). A command of the last kind that's no longer held goes to its own thread, by `submit`.
-fn hold(life: &Lifecycle, call: CoreCall, deferred: &mut Vec<CoreCall>, submit: impl FnOnce(recto_agent::Command)) -> Option<CoreCall> {
+fn hold(life: &Lifecycle, call: CoreCall, deferred: &mut Vec<CoreCall>, submit: impl FnOnce(Box<crate::queue::PersonCommand>)) -> Option<CoreCall> {
     if waits(&call, life.state_read(), life.keeping().restoring()) {
         deferred.push(call);
         return None;
     }
     match call {
         CoreCall::Run(run) if person::on_a_thread_of_its_own(&run) => {
-            submit(run.command);
+            submit(run);
             None
         }
         call => Some(call),
@@ -238,9 +236,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
     let mut reads = FileReads::default();
     let mut deferred: Vec<CoreCall> = Vec::new();
     // What a held person's command runs by when it's let go: on a thread of its own, as `person::submit` sends it.
-    let submit = |command| {
-        person::submit(inner, command);
-    };
+    let submit = |run| person::Person::of(inner).lane().submit_held(run);
     // What a tab's going dormant reaches beyond the sleeper, for the run: borrowed from the app, which outlives this thread's loop.
     let going_dormant = sleeper::GoingDormant::new(
         sleeper::OnHand::new(&inner.host.session, &inner.panes, &inner.engine),

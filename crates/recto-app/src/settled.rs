@@ -252,7 +252,7 @@ fn off_the_session_thread(inner: &Watched<'_>, busy: &mut Vec<String>) {
     }
     let persons = inner.life.persons_running();
     if persons > 0 {
-        busy.push(format!("{persons} of the person's command(s) on a thread of their own"));
+        busy.push(format!("{persons} of the person's command(s) on a thread of their own or waiting their turn"));
     }
     // The window's Save and Save As run on a thread of their own, and what they did is announced once they're through.
     let saves = inner.tools.save_ui().running.load(Ordering::SeqCst);
