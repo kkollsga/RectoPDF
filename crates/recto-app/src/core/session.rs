@@ -108,7 +108,7 @@ pub fn apply_restored(
         Loaded::Nothing if first_time => migrate_older_settings(inner),
         _ => {}
     }
-    let (say_notice, remake) = keeping::taken_in(inner, other_instance, first_time, reads);
+    let (say_notice, remake) = keeping::Desk::of(inner).taken_in(&inner.window, other_instance, first_time, reads);
     if !say_notice {
         notice = None;
     }
@@ -305,7 +305,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             if inner.life.due().is_some_and(|wait| wait.is_zero()) {
                 restore_patience_over(inner);
             }
-            keeping::when_due(inner, &reads);
+            keeping::Desk::of(inner).when_due(&inner.window, &reads);
             release_held(&inner.life, &inner.core, &mut deferred, submit);
             if inner.saver.wait_for_due().is_some_and(|wait| wait.is_zero()) {
                 inner.saver.spawn_writer();
@@ -339,7 +339,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             }
             // A late try's saved session: taken in as the state is at a launch, while it's still restoring, and dropped after its patience.
             CoreCall::LateRead(read) => {
-                let Some(loaded) = keeping::late_read(inner, read) else {
+                let Some(loaded) = keeping::Desk::of(inner).late_read(read) else {
                     release_held(&inner.life, &inner.core, &mut deferred, submit);
                     after_call(inner, &mut synced, &mut reads, events);
                     continue;
@@ -371,7 +371,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             CoreCall::GeneratedFinished => generated_contents::look_again(inner),
             CoreCall::GeneratedView(id, view, version) => host.session.with_session(|session| session.set_generated_view_for(id, view, version)),
             CoreCall::Find(call) => find::act(inner, call, &mut events),
-            CoreCall::TryBack(back) => keeping::try_back(inner, &reads, back),
+            CoreCall::TryBack(back) => keeping::Desk::of(inner).try_back(&inner.window, &reads, back),
             CoreCall::Run(run) => {
                 let _ = person::run(inner, &mut reads, *run, &mut events);
             }
@@ -397,7 +397,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
 
 /// **What every call on the session thread ends with,** the state's coming in too (review 1: it went on without the events it made being announced, or a flush that waited on a read being told it was done): generated contents and Find kept up with the session, the host's view made from it, flushes with nothing left to read let go, and what happened announced.
 pub fn after_call(inner: &Arc<Inner>, synced: &mut Synced, reads: &mut FileReads, mut events: Vec<Event>) {
-    keeping::look_after_call(inner, reads);
+    keeping::Desk::of(inner).look_after_call(&inner.window, reads);
     generated_contents::look_if_chosen(inner);
     find::keep_up(inner);
     reconcile(inner, synced, &mut events);
