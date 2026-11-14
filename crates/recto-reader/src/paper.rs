@@ -16,8 +16,8 @@
 //!
 //! **A page that's mostly a picture turns over only if its background is mostly white** (owner, 2026-11-07, answering "should pages that are mostly a picture be dimmed instead of flipped? I recommend yes": "I agree"; then 2026-11-13, shown a photo over 53% of a white page with text dimmed whole to light grey: "The image should flip if the background is mostly white"). Which pages the background decides for is the coordinator's reading, the conservative one, which the owner may change. In the code:
 //! - **Mostly a picture** is [`MOSTLY_PICTURE`] of the page or more, covered by the pictures that are kept and large enough to judge, together: where they overlap, as a photo and its drop shadow do, it counts once. It's the same measure as the background's, the part of the picture of the page outside every kept picture's box. **Under it, a page whose background isn't dark turns over whatever its background,** as it always has, keeping its pictures: a slide on a light coloured background with a logo, a report page with a coloured band beside a photo, a page on cream. A picture under [`LEAST_PIXELS_TO_JUDGE`] in the picture the look is decided from, a spacer, a box with no width, is left alone where it is and is no picture for this.
-//! - **The background** is the page outside the boxes of the pictures that are kept: its own paper, and any white-backed pictures on it.
-//! - **It's mostly white** when its paper, every pixel outside every image's box, is mostly white by [`ImageSample::is_mostly_white`], the one definition, which the test for a white-backed image is built on too: at least [`WHITE_LEAST`] of it plain white, each channel at least [`WHITE_LIGHTEST_CHANNEL`] and at most [`WHITE_MOST_SPREAD`] apart, or at least [`SCAN_LEAST_PAPER`] of it paper-like, as a scan's yellowed or grey paper is. An image must also have little colour, as a photo with a white half is a photo; the page's paper needn't, as its pictures are taken out of it, and what colour is left is the page's own, its headings, coloured bands and table fills, which turn over with it on a page with no picture. White-backed pictures passed their own test, so where there's too little paper outside every box to judge and white-backed pictures make up the rest, the background is theirs, and white.
+//! - **The background** is the page outside the boxes of the pictures that are kept: its own paper, and any white-backed pictures on it, as for the dark test.
+//! - **It's mostly white** when it's mostly white by [`ImageSample::is_mostly_white`], the one definition, which the test for a white-backed image is built on too: at least [`WHITE_LEAST`] of it plain white, each channel at least [`WHITE_LIGHTEST_CHANNEL`] and at most [`WHITE_MOST_SPREAD`] apart, or at least [`SCAN_LEAST_PAPER`] of it paper-like, as a scan's yellowed or grey paper is. It's the background the dark test reads, the page's paper and its white-backed pictures read as they are (second review of 2026-11-14: read as only the paper outside every image's box, a white-backed chart over 30% beside a photo over 55% left a dark title band over 15% as all of it, and the page was dimmed whole, its chart grey-white). An image must also have little colour, as a photo with a white half is a photo; the page's background needn't, as its kept pictures are taken out of it, and what colour is left is the page's own, its headings, coloured bands and table fills, which turn over with it on a page with no picture, and a white-backed chart's bars.
 //! - **Mostly a picture on a mostly white background: the page turns over** however large its picture: paper dark, text light, and a photo on it keeps its own colours, a little dimmed, as under half. A picture whose own background is mostly white turns over with it (2026-11-07, unchanged).
 //! - **Mostly a picture with too little background to judge: the page is a picture,** and isn't turned over. A full-page photograph or a map edge to edge, or a picture with all but a margin under [`LEAST_BACKGROUND`] of the page, a twentieth, which is a margin of about 3 mm round a letter page, keeps its true colours dimmed by [`PICTURE_PAGE_DIM`] so it doesn't glare.
 //! - **Mostly a picture on a coloured background isn't turned over either:** the whole page is dimmed, true colours, the same as a page that's a picture, since turning it over would turn a page that isn't white round it.
@@ -585,25 +585,16 @@ impl PageLook {
             return Self::dark_page();
         }
         let outside = share_outside(&pictured, width, height);
-        let holes = pixel_boxes(boxes.iter().copied(), width, height);
-        if 1.0 - outside < MOSTLY_PICTURE || Self::background_is_white(outside, &holes, !whiten.is_empty(), pixels, stride, width, height) {
+        if 1.0 - outside < MOSTLY_PICTURE || Self::background_is_white(outside, &pictured, pixels, stride, width, height) {
             return Self { dim: false, keep, whiten };
         }
         // Most of the page a picture, edge to edge or on a background that isn't white: true colours, dimmed.
         Self { dim: true, ..Self::default() }
     }
 
-    /// Whether a page's background, the part of it outside the pictures that stay as they are, `outside` of it, is mostly white, as the module's doc says: enough of it to judge, and its paper outside every one of the image boxes, `holes`, mostly white by [`ImageSample::is_mostly_white`], or too little paper to judge with white-backed pictures, `whitened`, making up the rest.
-    fn background_is_white(outside: f64, holes: &[PixelBox], whitened: bool, pixels: &[u8], stride: usize, width: u32, height: u32) -> bool {
-        if outside < LEAST_BACKGROUND {
-            return false;
-        }
-        let paper = sample_outside(pixels, stride, [0, 0, width as usize, height as usize], holes);
-        if paper.pixels < LEAST_PIXELS_TO_JUDGE {
-            whitened
-        } else {
-            paper.is_mostly_white()
-        }
+    /// Whether a page's background, the part of it outside the pictures that stay as they are, their boxes `pictured`, `outside` of it, is mostly white, as the module's doc says: enough of it to judge, and mostly white by [`ImageSample::is_mostly_white`]. It's the background the dark test reads, the page's paper and its white-backed pictures as they are (second review of 2026-11-14: read as only the paper outside every box, a white-backed chart over 30% beside a photo over 55% left a dark title band over 15% as all of it, and the page was dimmed whole, its chart grey-white).
+    fn background_is_white(outside: f64, pictured: &[PixelBox], pixels: &[u8], stride: usize, width: u32, height: u32) -> bool {
+        outside >= LEAST_BACKGROUND && sample_outside(pixels, stride, [0, 0, width as usize, height as usize], pictured).is_mostly_white()
     }
 
     /// What it comes to in a rectangle of the page, whose size in device pixels at the rectangle's scale is `page`.
@@ -1582,6 +1573,18 @@ mod tests {
             let boxes: Vec<[u16; 4]> = parts.iter().filter(|(_, part)| matches!(part, Part::Photo)).map(|(place, _)| sides(*place)).collect();
             assert_eq!(PageLook::decide(Some(&boxes), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1), PageLook::dark_page(), "a navy page with {name}");
         }
+    }
+
+    /// Failure (second review of 2026-11-14): the dark test and the white test read different backgrounds, the white test only the paper outside every box, white-backed pictures cut out too. A white page with a photo over 55% of it, a white-backed chart over 30% and a dark title band over 15% isn't dark, 15 of its 45, but the white test saw only the band, and the page was dimmed whole, its chart grey-white, the owner's complaint of 2026-11-07 from the second test. One background for both, everything but the kept pictures, the chart read as it is: mostly white, so the page turns over, keeping its photo and turning its chart with it. Seen failing with the white test reading the paper outside every box.
+    #[test]
+    fn the_white_test_reads_the_same_background_as_the_dark_test() {
+        let (band, photo, chart) = ([0.0, 0.0, 1.0, 0.15], [0.0, 0.15, 1.0, 0.7], [0.0, 0.7, 1.0, 1.0]);
+        let pixels = made_page(&[(band, Part::Dark), (photo, Part::Photo), (chart, Part::Chart)], WHITE, INK);
+        let look = PageLook::decide(Some(&[sides(photo), sides(chart)]), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1);
+        assert!(
+            !look.dim && look.keep == [sides(photo)] && look.whiten.iter().map(|image| image.sides).eq([sides(chart)]),
+            "{look:?}"
+        );
     }
 
     /// Measures, and isn't a check: the darkness of the made pages the dark rule was chosen from, as `decide` reads it, the background outside the kept pictures and its ring. `cargo test -p recto-reader --lib -- --ignored made_pages_darkness --nocapture`.
