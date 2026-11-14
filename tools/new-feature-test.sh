@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# new-feature-test: proves tools/new-feature.sh on a copy of the tree, and tools/doc-paths.sh on a page made to fail. Run after changing either; check.sh
-# runs it in a full run when they change (tool_tests_for, tools/check-scope.sh).
+# new-feature-test: the feature kit's own test. Proves tools/new-feature.sh on a copy of the tree, tools/doc-paths.sh on a page made to fail, and
+# app/qa/contact-sheet.sh against a stand-in recto. check.sh runs it in a full run when any of them changes (tool_tests_for, tools/check-scope.sh).
 #
 #   tools/new-feature-test.sh                              a few seconds: no build, since recto-agent's and recto-app's own tests compile the
 #                                                          templates (`scaffold_template`), and the scaffold only puts a name in them
@@ -75,6 +75,49 @@ said=$(tools/doc-paths.sh bad.md 2>&1); rc=$?
 check "and fails one that doesn't" "1" "$rc"
 case "$said" in *"bad.md:1: no such file: crates/recto-agent/src/gone.rs"*"no such name in the sources: $gone"*) check "naming each, with its line" ok ok ;; *) check "naming each, with its line" ok "$said" ;; esac
 check "the pages it holds pass" "0" "$(tools/doc-paths.sh >/dev/null 2>&1; echo $?)"
+
+# The contact sheet (app/qa/contact-sheet.sh), against a stand-in `recto` that writes down each call and the state folder it was given, so nothing is
+# launched. Failure (review): a `recto` call, the trap's `stop` included, goes to the user's own state, and so to their own app or session; or a step
+# that fails is passed over, and a shot after it stands for a state that never was.
+sheet="$tree/sheet" && mkdir -p "$sheet/bin" "$sheet/stub"
+cat > "$sheet/bin/recto" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\t%s\n' "${RECTO_STATE_DIR:-<none>}" "$*" >> "$SHEET_LOG"
+if [ -n "${STUB_FAIL_ON:-}" ]; then case "$*" in *"$STUB_FAIL_ON"*) exit 1 ;; esac; fi
+st=$SHEET_STUB
+case "$*" in
+  "qa state --json") printf '{"data":{"app":{"document_edited":%s,"sheet":%s,"copy_notice":%s}}}\n' "$(cat "$st/edited" 2>/dev/null || echo false)" "$(cat "$st/sheet" 2>/dev/null || echo null)" "$(cat "$st/copy" 2>/dev/null || echo null)" ;;
+  "qa shot "*) echo '{"settled":true}' ;;
+  "select "*) echo '{"data":{"pages":[{"rects":[[0,0,9,9],[0,0,9,9],[0,0,9,9],[0,0,9,9],[0,0,9,9],[0,0,9,9],[0,0,9,9]]}]}}' ;;
+  "contents --generated --json") echo '{"data":{"entries":[{"entry":1,"depth":0},{"entry":2,"depth":1}]}}' ;;
+  "qa as-person page rotate"*) echo true > "$st/edited" ;;
+  "qa menu file.close") echo '{"kind":"close_prompt"}' > "$st/sheet" ;;
+  "qa as-person open"*) echo '{"kind":"password"}' > "$st/sheet" ;;
+  "qa sheet-answer"* | "qa password") echo null > "$st/sheet" ;;
+  "qa menu edit.copy") echo '"notice"' > "$st/copy" ;;
+esac
+exit 0
+STUB
+printf '#!/usr/bin/env bash\neval "out=\\${$#}"; : > "$out"\n' > "$sheet/bin/qpdf"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$sheet/bin/swift"
+chmod +x "$sheet/bin/"*
+contact_sheet() { # OUT [STUB_FAIL_ON]
+  : > "$sheet/log"; rm -f "$sheet/stub/"*
+  PATH="$sheet/bin:$PATH" RECTO_BIN="$sheet/bin/recto" RECTO_APP="$sheet/no-such-app/RectoPDF" SHEET_LOG="$sheet/log" \
+    SHEET_STUB="$sheet/stub" STUB_FAIL_ON="${2:-}" RECTO_STATE_DIR= bash "$SOURCE/app/qa/contact-sheet.sh" "$1" > "$sheet/run.out" 2>&1
+}
+contact_sheet "$sheet/out"; rc=$?
+check "the contact sheet runs through every step against the stand-in" "0" "$rc"
+check "and calls recto many times" "true" "$([ "$(wc -l < "$sheet/log")" -gt 50 ] && echo true || echo false)"
+# One temp root for every call, the script's own: a state folder in it for each look and one before the first, and gone when the script ends.
+roots=$(cut -f1 "$sheet/log" | sed -E 's#/state-(none|light|dark)$##' | sort -u)
+check "every call, the first stop and the trap's included, goes to a state folder of the script's own temp root" "1 yes" \
+  "$(printf '%s\n' "$roots" | grep -c .) $(case "$roots" in (/*) [ ! -e "$roots" ] && echo yes ;; esac)"
+check "and the calls before the first run and in the trap are among them" "yes" "$(head -1 "$sheet/log" | grep -q '/state-none'$'\t''stop' && tail -1 "$sheet/log" | grep -q $'\t''stop$' && echo yes)"
+contact_sheet "$sheet/out2" "palette-type"; rc=$?
+check "a step that fails stops the run" "1" "$rc"
+check "naming the step" "1" "$(grep -c 'FAILED (light, after shot 10): recto qa palette-type zoom' "$sheet/out2/notes.txt")"
+check "and nothing after it ran" "0" "$(grep -c 'edit mode on' "$sheet/log")"
 
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."

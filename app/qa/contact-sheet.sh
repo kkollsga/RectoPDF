@@ -16,25 +16,30 @@ started=$(date +%s)
 mkdir -p "$out/shots"
 sheets="$out"
 root="$(mktemp -d)"
+# Every `recto` this script runs, the trap's included, goes to a state folder of its own under the temp root: never the user's own app or session.
+export RECTO_STATE_DIR="$root/state-none"
 trap 'quiet_files_out 2>/dev/null || true; "$recto" stop >/dev/null 2>&1 || true; rm -rf "${root:?}"' EXIT
 out="$out/shots"
 . "$(dirname "$0")/quiet-files.sh"
 export RECTO_QA_OWNER_PID=$$
-r() { "$recto" "$@" >/dev/null; }
+# A step that fails stops the run and names itself, so no shot after it stands for a state that never was.
+fail() { note "FAILED ($look, after shot $n): $*"; exit 1; }
+r() { "$recto" "$@" >/dev/null || fail "recto $*"; }
 settle() { r qa wait-settled --timeout 60s; }
 note() { echo "$*" | tee -a "$sheets/notes.txt"; }
-n=0
+n=0 look=none
 # A shot waits for the window to settle, and says when it gave up: a shot not to trust.
 shot() {
     n=$((n + 1)); local name; name="$(printf %02d "$n")-$1-$look"; rm -f "$out/$name.png"
-    "$recto" qa shot --out "$out/$name.png" --json | grep -q '"settled":true' || note "not settled: $name"
+    local said; said=$("$recto" qa shot --out "$out/$name.png" --json) || fail "recto qa shot ($name)"
+    case "$said" in *'"settled":true'*) ;; *) note "not settled: $name" ;; esac
 }
 until_state() {
     for _ in $(seq 1 300); do
         "$recto" qa state --json | /usr/bin/python3 -I -c "import json,sys; d=json.load(sys.stdin)['data']; a=d['app']; sys.exit(0 if ($1) else 1)" && return 0
         sleep 0.1 # ratchet: poll
     done
-    note "never held ($look): $1"; return 1
+    fail "never held: $1"
 }
 # A point on a line of text, as `recto select` places it, in the form `qa mouse-*` takes: PAGE RECT SHARE.
 place() {
@@ -56,6 +61,7 @@ note "load at start: $(uptime)"
 
 for look in light dark; do
     n=0
+    # The last look's run, on its own state folder (the first time, none).
     "$recto" stop >/dev/null 2>&1
     for _ in $(seq 1 100); do pgrep -f "$app" >/dev/null || break; sleep 0.1; done # ratchet: poll
     export RECTO_STATE_DIR="$root/state-$look"

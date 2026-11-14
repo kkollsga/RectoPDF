@@ -102,9 +102,10 @@ affected_crates() {
     /dev/stdin <(printf '%s\n' "$edges") | sort -u
 }
 
-# What the tools' own tests (tools/check-test.sh, tools/ratchet-test.sh) are about: the tools, the hooks in tools/hooks, nextest's profiles and CI's workflow.
+# What the tools' own tests (tools/check-test.sh, tools/ratchet-test.sh, tools/new-feature-test.sh) are about: the tools, the hooks in tools/hooks,
+# nextest's profiles, CI's workflow, and the contact sheet (app/qa/contact-sheet.sh), which new-feature-test.sh runs against a stand-in recto.
 # A change to any of these since the base runs them in a full run, here and on CI; nothing else does.
-TOOLS_PATHS='^(tools|\.config|\.github)/'
+TOOLS_PATHS='^(tools|\.config|\.github)/|^app/qa/contact-sheet'
 
 # The commit CI compares with, for what the tools' tests are about: on main, the commit the push came after, which CI checked last; on any other branch,
 # where it left origin/main, so every push of a branch that changed the tools runs them. Prints it, or fails when it can't be worked out (a manual run, a
@@ -130,7 +131,7 @@ tool_tests_for() {
   case "$1" in
     tools/ratchet.sh | tools/ratchet/* | tools/ratchet-test.sh) tool_tests="ratchet" ;;
     tools/target-hygiene.sh | tools/target-hygiene-test.sh) tool_tests="hygiene" ;;
-    tools/new-feature.sh | tools/new-feature/* | tools/new-feature-test.sh | tools/doc-paths.sh | tools/doc-paths.py) tool_tests="feature" ;;
+    tools/new-feature.sh | tools/new-feature/* | tools/new-feature-test.sh | tools/doc-paths.sh | tools/doc-paths.py | app/qa/contact-sheet*) tool_tests="feature" ;;
     tools/check.sh | tools/check-*.sh | tools/push-main.sh | tools/hooks/* | tools/sysguard/heavy.sh) tool_tests="check" ;;
     *) tool_tests="ratchet hygiene check" ;;
   esac
