@@ -7,6 +7,7 @@
 use super::files::locked_allowing;
 use crate::testkit::headless::{Disk, HeadlessApp};
 use lopdf::encryption::Permissions;
+use recto_platform::slow::Seam;
 
 fn full(app: &HeadlessApp, words: &[&str]) -> serde_json::Value {
     app.recto(recto_agent::Level::Full, words)
@@ -380,6 +381,42 @@ fn a_file_opened_again_after_the_tab_its_password_was_typed_for_closed_asks_for_
         app.core().engine.note().is_some_and(|note| note.contains(ADDED_PAGES_NOTE)),
         "B's page from it still says why it isn't shown: {:?}",
         app.core().engine.note()
+    );
+    drop(app.quit());
+}
+
+/// Failure (a whole-suite run of 2026-11-14: the test above, once in 484, "its password is asked for again"): a renderer given the password typed for
+/// tab A was kept while any tab the page view held had its file as its own, not only A. Its thread lets renderers go between jobs, so with a job of
+/// another tab's under way as A was closed, and the file opened again before that job ended, the new tab was held by then and kept A's renderer: it
+/// drew with A's password, nobody was asked for it, and an agent could screenshot it. Forced with the page view's thread held in a job for B
+/// (`Seam::Worker`) while A is closed and its file opened again: the new tab asks for its password and nothing of it is drawn meanwhile.
+#[test]
+fn a_file_opened_again_while_the_page_view_was_busy_as_its_tab_closed_asks_for_its_password() {
+    let disk = Disk::new();
+    let crafted = disk.file("crafted.pdf", &locked_for_one_reader("right"));
+    let plain = disk.pdf("plain.pdf", 2);
+    let app = disk.start();
+    let (a, _) = typed_for_a_and_added_to_b(&app, &crafted, &plain);
+    recto_platform::slow::gate::hold(&[Seam::Worker]);
+    full(&app, &["goto", "3"]);
+    crate::testkit::headless::host_turns(&app, &mut window_view(), false);
+    app.wait_until("a job for B held", || app.waiting(Seam::Worker) > 0);
+    full(&app, &["close", "--tab", &format!("#{a}")]);
+    app.settle();
+    app.act(crate::core::controls::UiAction::Open {
+        path: crafted.display().to_string(),
+    });
+    app.settle();
+    recto_platform::slow::gate::open(Seam::Worker);
+    drawn(&app);
+    app.settle();
+    let again = tab_named(&app, "crafted.pdf");
+    let report = app.core().engine.report().0;
+    assert!(app.reader().password_prompt.is_some(), "opened again, its password is asked for: {report}");
+    assert_eq!(report["tab"], again, "{report}");
+    assert_eq!(
+        report["tiles"]["attached"], 0,
+        "nothing of it is drawn with the password typed for the tab that closed: {report}"
     );
     drop(app.quit());
 }
