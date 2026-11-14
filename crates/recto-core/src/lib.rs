@@ -94,6 +94,25 @@ pub struct TocEntry {
 /// A place down a page, as thousandths of its height from the top: [`TocEntry::top`]'s scale, and the one generated contents keep.
 pub const TOP_SCALE: u16 = 1000;
 
+/// **How far down a page a fraction of it is, in thousandths of the page** (0 its top, 1 its foot, to [`TOP_SCALE`]): the one rounding of a place for an
+/// outline's destination, generated contents, the page view's band and the session's line. In `f64` for every one of them, so no two round one place a
+/// half apart at a band's edge, as `f32` and `f64` do (0.5005 of a page is 501 in `f32` and 500 in `f64`). Not a number is the top, and past either end
+/// is that end.
+#[must_use]
+pub fn thousandths(within: f64) -> u16 {
+    if !within.is_finite() {
+        return 0;
+    }
+    // In 0 to 1000 after the clamp, so the cast neither wraps nor saturates.
+    (within.clamp(0.0, 1.0) * f64::from(TOP_SCALE)).round() as u16
+}
+
+/// A place in thousandths down a page as the fraction of it [`thousandths`] took it from, to go to: past [`TOP_SCALE`] is the page's foot.
+#[must_use]
+pub fn fraction_down(top: u16) -> f64 {
+    f64::from(top.min(TOP_SCALE)) / f64::from(TOP_SCALE)
+}
+
 /// A document's contents, compact and in document order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Toc {
@@ -544,7 +563,7 @@ fn page_of_dest(reader: &IndexedReader, root: &Dictionary, dest: &Object, pages:
             // quarter-turned page's top is a shown left, which says nothing (`Frame::within`).
             let top = nav::dest_top(items)
                 .and_then(|top| pages.frame(reader, page)?.within(top))
-                .map_or(0, |within| (within * f32::from(TOP_SCALE)).round() as u16);
+                .map_or(0, |within| thousandths(f64::from(within)));
             Some((page, top))
         }
         Object::Name(name) => {

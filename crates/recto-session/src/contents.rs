@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::lists::Order;
-use recto_core::TOP_SCALE;
+use recto_core::thousandths;
 
 impl<L: DocLoader> Session<L> {
     /// Builds the sidebar. Cost depends on the visible rows and the active tab's contents, never on idle tabs' PDFs.
@@ -145,11 +145,6 @@ fn shown_contents_of<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> Opt
     })
 }
 
-/// Thousandths down a page, from a fraction of it.
-fn thousandths(within: f32) -> u16 {
-    (within.clamp(0.0, 1.0) * f32::from(TOP_SCALE)).round() as u16
-}
-
 /// **The line the contents' current entry is found by:** the page at the top of the reader's view, as the session counts pages, and how far down it, in
 /// thousandths. An entry is current once its top is at or above this, so a heading becomes current as it reaches the top of the view, and an entry jumped to
 /// (whose top the jump puts on the view's top) stays current. It is where a jump the page view hasn't taken yet is going, else the place the page view last
@@ -157,12 +152,12 @@ fn thousandths(within: f32) -> u16 {
 /// else the top of the tab's page, as before the view has said.
 fn reading_line<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> (u32, u16) {
     if let Some(jump) = crate::trail::jump_here(session, tab) {
-        return (jump.page, thousandths(jump.within));
+        return (jump.page, thousandths(f64::from(jump.within)));
     }
     tab.reading
         .place
         .filter(|place| place.page == tab.page)
-        .map_or((tab.page, 0), |place| (place.anchor_page, thousandths(place.within as f32)))
+        .map_or((tab.page, 0), |place| (place.anchor_page, thousandths(place.within)))
 }
 
 /// Which pages of the file have entries whose places mean something: not those with an unsaved turn (or any page, with the view turned), whose frame isn't the

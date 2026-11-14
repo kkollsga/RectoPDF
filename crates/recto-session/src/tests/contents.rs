@@ -550,3 +550,56 @@ fn a_page_with_an_unsaved_turn_is_unplaced_and_has_no_band_to_leave() {
         "and a click on one goes to the page's top"
     );
 }
+
+/// Page 2 holding A and B, at the places given, and page 3 C.
+struct AtTops(&'static [u16]);
+impl DocLoader for AtTops {
+    fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
+        let line = |title, page| TocLine {
+            title,
+            page,
+            parent: NONE,
+            depth: 0,
+        };
+        Ok(DocFacts {
+            page_count: 10,
+            byte_len: 1,
+            encrypted: false,
+            version: "1.7".into(),
+            title: None,
+            toc: Toc::from_lines(&[line("A", 1), line("B", 1), line("C", 2)], false).with_tops(self.0),
+            renderer_only: false,
+        })
+    }
+}
+
+/// Failure (S5 of the second review): the session turned the view's place into thousandths in `f32` and the page view in `f64`, which round some halves
+/// apart: 0.5005 of a page is 501 in `f32` and 500 in `f64`. With B's top at 506, the session marked B and sent B's band, from 501, while the page view,
+/// reading 500, was outside it and woke the core, which sent the same band: a wake every pass while the view rested there. One rounding for both: the
+/// band the session sends holds the top of the view as the page view reads it.
+#[test]
+fn the_session_and_the_page_view_round_a_place_alike() {
+    let mut s = Session::new(AtTops(&[0, 506]));
+    let id = s.open(Path::new("/d/a.pdf")).unwrap();
+    s.jump(id, 1, 0.0).unwrap();
+    s.mail_mut().take_jump(id);
+    let within = 0.5005;
+    let place = PlaceRecord {
+        page: 1,
+        anchor_page: 1,
+        within,
+        x: 0.0,
+        y: 0.0,
+        document_height: 1.0,
+        zoom: 1.0,
+        page_width: 0.0,
+        page_height: 0.0,
+    };
+    assert!(s.view_told_of(id, place, 1));
+    // As the page view reads it, in `f64`.
+    let seen = (within * 1000.0).round() as u16;
+    assert_eq!(seen, 500);
+    let band = reading_band(&s, s.tabs().tab(id).unwrap()).expect("a band");
+    assert!(band.lo <= seen && seen < band.hi, "the page view at {seen} is outside the band {band:?}");
+    assert_eq!(current_of(&s), ["A"], "B, at 506, is 6 below the top of the view");
+}

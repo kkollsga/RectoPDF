@@ -13,11 +13,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// one process means anything, never a stamp's value:** two headless apps in one test share the clock, so a test never asserts a stamp's number.
 static PLACE_CLOCK: AtomicU64 = AtomicU64::new(0);
 
-/// How far down a page a fraction of it is, in thousandths of the page.
-pub(super) fn thousandths(within: f64) -> u16 {
-    (within.clamp(0.0, 1.0) * f64::from(recto_core::TOP_SCALE)).round() as u16
-}
-
 /// A band with no page: none is set. A band's `hi` is at most one past [`recto_core::TOP_SCALE`], so the top bit of the word it's kept in says whether the view has woken the core for it.
 pub(super) const NONE_PAGE: u32 = u32::MAX;
 pub(super) const BAND_WOKE: u16 = 0x8000;
@@ -138,7 +133,7 @@ impl Place {
             return;
         }
         let (at_page, within) = doc.layout.anchor_for(viewport.y, page);
-        let top = thousandths(within);
+        let top = recto_core::thousandths(within);
         if at_page != band_page || top < lo || top >= hi_woke {
             doc.band.2 |= BAND_WOKE;
             self.moved_page = Some(page);

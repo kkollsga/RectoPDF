@@ -30,8 +30,8 @@ pub const MAX_ENTRIES: usize = 4000;
 pub const MAX_TITLE_BYTES: usize = 240;
 /// Deepest nesting. distillPDF's levels go to six.
 pub const MAX_DEPTH: u8 = 5;
-/// A place on a page, as thousandths of its height from the top.
-pub const PLACE_SCALE: u16 = 1000;
+/// A place on a page, as thousandths of its height from the top: the contents' own scale, as an entry's place becomes its `top` unchanged.
+pub const PLACE_SCALE: u16 = recto_core::TOP_SCALE;
 /// Largest file or helper answer read, which [`MAX_ENTRIES`] of [`MAX_TITLE_BYTES`] fit in with their JSON.
 pub const MAX_FILE_BYTES: u64 = 1536 * 1024;
 /// How many documents' contents are kept, how much room they take together, and how long one is kept since it was written.

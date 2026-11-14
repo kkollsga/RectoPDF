@@ -60,18 +60,18 @@ pub fn contents_tapped(panes: &panes::Panes, engine: &Engine, contents: &[crate:
     } else {
         0
     };
-    goto(tab, Some(contents_page(page, shown)), None, entry_place(contents, row).map(f64::from))
+    goto(tab, Some(contents_page(page, shown)), None, entry_place(contents, row))
 }
 
 /// How far down its page the entry a tapped row names is, from 0 to 1, if the published entries say it and only one entry is that row. A row doesn't name its
 /// entry, so it's found by what it shows (its tab, words, page, depth and whether it folds); two the same are not told apart by a guess, and an entry with no
 /// place has none: either goes to the page's top. The words are the file's, and are only compared.
-pub fn entry_place(contents: &[crate::ContentsEntry], row: &crate::SidebarRow) -> Option<f32> {
+pub fn entry_place(contents: &[crate::ContentsEntry], row: &crate::SidebarRow) -> Option<f64> {
     let mut same = contents.iter().filter(|entry| {
         entry.tab == row.tab && entry.page == row.page && entry.depth == row.depth && entry.expandable == row.expandable && *entry.text == *row.text
     });
     let (Some(entry), None) = (same.next(), same.next()) else { return None };
-    (entry.top > 0).then(|| f32::from(entry.top) / f32::from(recto_core::TOP_SCALE))
+    (entry.top > 0).then(|| recto_core::fraction_down(entry.top))
 }
 
 /// A link to a page of this document, clicked: `goto` that page and as far down it as the link says, from the page view's hit, with nothing read again.
