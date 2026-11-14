@@ -13,8 +13,8 @@
 
 use super::person;
 use super::{CoreCall, Inner};
-use crate::queue::PersonCommand;
 use crate::queue::lane::{Asked, Start, Turn};
+use crate::queue::{Origin, PersonCommand};
 use recto_agent::commands::{Edit, Move, Read};
 use recto_agent::{AgentError, Command, TabRef};
 use recto_session::TabId;
@@ -122,15 +122,7 @@ impl PersonsLane<'_> {
         let counted = person::Running::start(Arc::clone(self.app));
         if self.app.life.keeping().restoring() {
             drop(counted);
-            let mut run = PersonCommand::input(command);
-            match turn {
-                // Its turn came: it was asked before whatever freezes the queue now.
-                Some(turn) => {
-                    run.turn = Some(turn);
-                    self.app.core.push_turn_come(CoreCall::Run(run));
-                }
-                None => self.app.core.push(CoreCall::Run(run)),
-            }
+            self.app.core.push(CoreCall::Run(turn_come(PersonCommand::input(command), turn)));
             return;
         }
         person::on_its_own_thread(command, counted, turn);
@@ -200,13 +192,14 @@ impl PersonsLane<'_> {
         let core = Arc::downgrade(&self.app.core);
         let start: Start = Box::new(move |turn| {
             if let Some(core) = core.upgrade() {
-                core.push_turn_come(CoreCall::Run(Box::new(PersonCommand {
+                let run = Box::new(PersonCommand {
                     command,
                     origin,
                     fetched,
                     when_run: None,
-                    turn: Some(turn),
-                })));
+                    turn: None,
+                });
+                core.push(CoreCall::Run(turn_come(run, Some(turn))));
             }
             drop(counted);
         });
@@ -214,6 +207,16 @@ impl PersonsLane<'_> {
         self.asked(self.app.core.lane().ask(turn, start));
         None
     }
+}
+
+/// A person's command given the turn it holds, if any: one whose turn has come was asked before whatever freezes the queue now, and is let through
+/// ([`Origin::TurnCame`]); the end of something under way stays that.
+fn turn_come(mut run: Box<PersonCommand>, turn: Option<Turn>) -> Box<PersonCommand> {
+    if turn.is_some() && run.origin == Origin::Input {
+        run.origin = Origin::TurnCame;
+    }
+    run.turn = turn;
+    run
 }
 
 /// The tab a command names, if it names one.

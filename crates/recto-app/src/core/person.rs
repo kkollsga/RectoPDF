@@ -81,7 +81,7 @@ impl<'a> Person<'a> {
 /// Whether a person's command, as it's queued, is one that runs on a thread of its own: one that may wait, or isn't the session's to answer. Only a command
 /// held while a late keep's restore was read is queued so ([`submit`]), and it goes to its thread once it's let go.
 pub(crate) fn on_a_thread_of_its_own(run: &PersonCommand) -> bool {
-    run.origin == Origin::Input && run.fetched.is_none() && super::person_lane::runs_on_its_own_thread(&run.command)
+    run.origin.is_persons_input() && run.fetched.is_none() && super::person_lane::runs_on_its_own_thread(&run.command)
 }
 
 /// What the person is told when their command's thread couldn't be started, before its feature's own words, if it has any.
@@ -320,7 +320,7 @@ pub fn run(inner: &Arc<Inner>, reads: &mut FileReads, run: PersonCommand, events
         },
         None => command,
     };
-    if origin == Origin::Input {
+    if origin.is_persons_input() {
         sent(&inner.serving, &command);
         for before in BEFORE {
             before(inner, reads, &command);

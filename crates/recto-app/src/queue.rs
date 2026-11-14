@@ -119,6 +119,17 @@ pub enum Origin {
     Input,
     /// The end of something already under way, as a command running again once its file's been read: let through, or it would wait for good.
     Finishing,
+    /// **What the person did, its turn in their lane come** ([`lane`]): asked before whatever freezes the queue now, as nothing a person does is taken
+    /// once it's frozen (`person::submit`), so let through, in the order asked; a quit waits for it, and a hand-off finds it running and doesn't go.
+    TurnCame,
+}
+
+impl Origin {
+    /// Whether it's what the person did, as their words and the window's own steps before it go by: the person's input, now or on its turn.
+    #[must_use]
+    pub fn is_persons_input(self) -> bool {
+        matches!(self, Self::Input | Self::TurnCame)
+    }
 }
 
 impl CoreCall {
@@ -129,7 +140,11 @@ impl CoreCall {
     pub fn is_user_action(&self) -> bool {
         match self {
             Self::Find(call) => call.is_user_action(),
-            Self::Run(run) => run.origin == Origin::Input,
+            // Its turn come in the person's lane, it was asked before the freeze: let through, in order ([`Origin::TurnCame`]).
+            Self::Run(run) => match run.origin {
+                Origin::Input => true,
+                Origin::Finishing | Origin::TurnCame => false,
+            },
             // A password tried on its own thread: dropped, its prompt would wait for good. Its file's read as a `Read` is.
             Self::Unlocked(..)
             | Self::Reconcile
@@ -271,19 +286,6 @@ impl CoreQueue {
     /// ([`lane::Lane::landing`]).
     pub fn take_turn(self: &Arc<Self>, tab: u32, landing: bool) -> lane::Turn {
         self.lane.take(Arc::downgrade(self), tab, landing)
-    }
-
-    /// **A person's command let go from the lane, its turn come:** queued past a freeze, as it was asked before it, as the end of something under way is
-    /// ([`CoreCall::is_user_action`]). Dropped only once the queue's abandoned, with its turn, which passes.
-    pub fn push_turn_come(&self, call: CoreCall) {
-        let mut calls = lock(&self.calls);
-        if self.abandoned.load(Ordering::SeqCst) {
-            drop(calls);
-            return;
-        }
-        calls.push_back(call);
-        drop(calls);
-        self.ready.notify_one();
     }
 
     pub fn push(&self, call: CoreCall) {
@@ -818,6 +820,11 @@ mod tests {
                 recto_agent::parse(r##"{"cmd":"tap","tab":"#1"}"##).expect("a command"),
                 None,
             ))),
+            CoreCall::Run({
+                let mut run = PersonCommand::input(recto_agent::parse(r#"{"cmd":"undo"}"#).expect("a command"));
+                run.origin = Origin::TurnCame;
+                run
+            }),
         ]
     }
 
@@ -847,11 +854,12 @@ mod tests {
             CoreCall::Run(run) => match run.origin {
                 Origin::Input => 18,
                 Origin::Finishing => 19,
+                Origin::TurnCame => 20,
             },
-            CoreCall::TryBack(_) => 20,
-            CoreCall::LateRead(_) => 21,
+            CoreCall::TryBack(_) => 21,
+            CoreCall::LateRead(_) => 22,
         };
-        (place, 22)
+        (place, 23)
     }
 
     /// Failure (review C8): a call a person makes isn't on the hand-off freeze's list, so it's taken while a hand-off writes what comes back, and lost: closing a tab, the close prompt's answer, the contents' note and a section's chevron were. Every variant is sampled, and those a person makes, named here apart from the code that decides, are exactly the ones held back. The rest get through.
