@@ -28,7 +28,9 @@ enum State {
     BuildWaiting,
     /// An install under way, waiting for a sheet to close.
     UnderWay,
-    /// The launch held back from the updater while it tries for the record's lock: "still starting".
+    /// The launch held back from the updater while it tries for the record's lock: "still starting". **Only the person's rows reach `updates::command`'s own
+    /// refusal here** (`not_ready`): an agent's setter, check or install is answered `busy` by the app's "still starting" gate before it gets there, and only
+    /// its looks go through, so the agents' Held rows hold that gate, not the command's refusal.
     Held,
     /// The tries ran out: another copy keeps the record.
     SecondCopy,
@@ -285,7 +287,8 @@ fn count_the_tells() {
 /// Failure (the record's-lock retry, the app's half of `lifecycle::keeping`'s walk): the updater told of the launch twice, or never, on one of the ways
 /// keeping settles: so an update is settled twice, counts an unstarted launch twice towards going back, or is never told at all and every check says
 /// "still starting" for the rest of the run. Once whether the lock came at the start, came to a later try, never came, or the person worked in the window
-/// first; never for a quit while it tries.
+/// first, a late keep's read ran past its patience, `session restore` took the lock after "not kept", or a hand-off was undone while it tried; never for a
+/// quit while it tries.
 #[test]
 fn the_updater_hears_of_the_launch_once_however_keeping_settles() {
     let bed = UpdateBed::new();
@@ -355,6 +358,60 @@ fn the_updater_hears_of_the_launch_once_however_keeping_settles() {
     assert!(answer.go, "{answer:?}");
     assert_eq!(told(), 0, "a quit while it tries tells it nothing");
     drop(copy);
+
+    // A late keep's read past its patience: a second copy, told once, and the read's end tells nothing more.
+    count_the_tells();
+    let disk = installed();
+    let copy = the_copy_before(&disk);
+    let app = disk.builder().update(&bed).another_keeps().start();
+    next_try_fails(&app);
+    gate::hold(&[Seam::State]);
+    drop(copy);
+    app.advance(TRY_EVERY_MS);
+    app.wait_until("the late keep's read held inside it", || app.waiting(Seam::State) > 0);
+    app.advance(crate::lifecycle::keeping::RESTORING_PATIENCE_MS);
+    app.wait_until("told it's a second copy", || app.update_status()["second_copy"] == true);
+    app.let_through(Seam::State, 1);
+    app.wait_until("let go once the read is out", || !app.core().saver.store.holds_the_record());
+    app.settle();
+    assert_eq!(told(), 1, "a read past its patience");
+    drop(app.quit());
+
+    // `session restore` after "not kept": the record kept then, and the updater, told it's a second copy, not told again.
+    count_the_tells();
+    let disk = installed();
+    let copy = the_copy_before(&disk);
+    let app = disk.builder().update(&bed).another_keeps().start();
+    for _ in 1..TRIES {
+        next_try_fails(&app);
+    }
+    app.advance(TRY_EVERY_MS);
+    app.wait_until("told it's a second copy", || app.update_status()["second_copy"] == true);
+    drop(copy);
+    app.person(r#"{"cmd":"session_restore"}"#);
+    app.settle();
+    assert_eq!(app.core().life.keeping(), Keeping::Keeps, "the restore keeps the record");
+    assert_eq!(told(), 1, "a restore after not kept");
+    drop(app.quit());
+
+    // A hand-off undone while it tries: the trying taken up again, and the lock at a later try tells it once.
+    count_the_tells();
+    let disk = installed();
+    let copy = the_copy_before(&disk);
+    let app = disk.builder().update(&bed).another_keeps().start();
+    next_try_fails(&app);
+    if app.core().hand_off(std::time::Duration::from_secs(5)).is_ok() {
+        app.core().hand_off_cancelled();
+    }
+    app.settle();
+    assert_eq!(told(), 0, "nothing told by the hand-off");
+    drop(copy);
+    app.advance(TRY_EVERY_MS);
+    app.wait_until("the record kept", || app.core().life.keeping() == Keeping::Keeps);
+    app.wait_until("told", || told() > 0);
+    app.settle();
+    assert_eq!(told(), 1, "kept after a hand-off undone");
+    drop(app.quit());
 }
 
 /// Every file under a folder, by its path and bytes.
