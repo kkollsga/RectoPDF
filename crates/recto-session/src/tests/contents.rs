@@ -541,7 +541,14 @@ fn a_page_with_an_unsaved_turn_is_unplaced_and_has_no_band_to_leave() {
     let (mut s, id) = reading_page_two();
     view_reads(&mut s, id, 1, 1, 0.0);
     assert_eq!(current_of(&s), ["A"], "placed: the top of the view is at A");
-    let tops = |s: &Session<ThreeToAPage>| s.sidebar().rows.iter().filter(|row| row.kind == RowKind::Contents).map(|row| row.top).collect::<Vec<_>>();
+    let tops = |s: &Session<ThreeToAPage>| {
+        s.sidebar()
+            .rows
+            .iter()
+            .filter(|row| row.kind == RowKind::Contents)
+            .map(|row| row.top)
+            .collect::<Vec<_>>()
+    };
     // Recorded at today's values (the contents module's guard): the rows' places, before the turn and after it.
     assert_eq!(tops(&s), [0, 300, 600, 0], "an unturned page's rows carry the file's places");
     s.edit_pages(id, |edits| edits.rotate(1, 1, 1)).unwrap();

@@ -404,7 +404,12 @@ fn the_place_contents_lists_is_where_a_click_on_the_row_goes() {
     app.settle();
     let listed = |app: &HeadlessApp| -> Vec<u64> {
         let said = app.recto(recto_agent::Level::Control, &["contents"]).expect("the contents");
-        said["entries"].as_array().expect("entries").iter().map(|entry| entry["place"].as_u64().expect("a place")).collect()
+        said["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .map(|entry| entry["place"].as_u64().expect("a place"))
+            .collect()
     };
     let clicked = |app: &HeadlessApp| -> Vec<u64> {
         let entries = rows(app);

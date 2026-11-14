@@ -117,26 +117,46 @@ mod rail_tests {
     fn the_rail_marks_what_the_bridge_marked() {
         assert_eq!(rail_rows(&[], 0, None, 0, 50), vec![], "an empty list has no rows");
         let one = list(&[0]);
-        assert_eq!(marks(&rail_rows(&one, 1, Some(0), 0, 50)), [(true, true, true, true)], "one entry is both ends, filled and current");
+        assert_eq!(
+            marks(&rail_rows(&one, 1, Some(0), 0, 50)),
+            [(true, true, true, true)],
+            "one entry is both ends, filled and current"
+        );
         assert_eq!(marks(&rail_rows(&one, 0, None, 0, 50)), [(false, false, true, true)]);
         let nested = list(&[0, 1, 1, 2, 0]);
         assert_eq!(
             marks(&rail_rows(&nested, 3, Some(2), 0, 50)),
-            [(false, true, true, false), (false, true, false, false), (true, true, false, false), (false, false, false, false), (false, false, false, true)],
+            [
+                (false, true, true, false),
+                (false, true, false, false),
+                (true, true, false, false),
+                (false, false, false, false),
+                (false, false, false, true)
+            ],
             "filled down to the entries counted, current on one"
         );
-        assert_eq!(marks(&rail_rows(&nested, 5, None, 3, 50)), [(false, true, false, false), (false, true, false, true)], "a window taken from the middle keeps the list's ends");
+        assert_eq!(
+            marks(&rail_rows(&nested, 5, None, 3, 50)),
+            [(false, true, false, false), (false, true, false, true)],
+            "a window taken from the middle keeps the list's ends"
+        );
         // Entries on one page, and one claiming a page past the last: the rail counts entries and says nothing about pages.
         let mut same = list(&[0, 0, 0]);
         for entry in &mut same {
             entry.page = Some(4);
         }
         same[2].page = Some(u32::MAX);
-        assert_eq!(marks(&rail_rows(&same, 2, Some(1), 0, 50)), [(false, true, true, false), (true, true, false, false), (false, false, false, true)]);
+        assert_eq!(
+            marks(&rail_rows(&same, 2, Some(1), 0, 50)),
+            [(false, true, true, false), (true, true, false, false), (false, false, false, true)]
+        );
         assert_eq!(rail_rows(&nested, 5, None, 5, 50), vec![], "a window past the end is empty");
         assert_eq!(rail_rows(&nested, 5, None, u32::MAX, u32::MAX), vec![], "and so is one at the largest numbers");
         assert_eq!(rail_rows(&nested, 9, Some(7), 4, 1).len(), 1);
-        assert!(rail_rows(&nested, 9, Some(7), 4, 1)[0].rail_filled && !rail_rows(&nested, 9, Some(7), 4, 1)[0].current, "a fill or a current beyond the list marks no row wrongly");
+        assert!(
+            rail_rows(&nested, 9, Some(7), 4, 1)[0].rail_filled && !rail_rows(&nested, 9, Some(7), 4, 1)[0].current,
+            "a fill or a current beyond the list marks no row wrongly"
+        );
     }
 
     /// **Failure: a hostile outline at the cap makes the fetch grow with what the file claims or the host asks:** more than [`crate::core::MAX_CONTENTS_FETCH`] rows
