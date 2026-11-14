@@ -445,6 +445,94 @@ fn heard(secret: u32, command: &Command, arranged: Arrangement) -> String {
         .replace(plain.folder().to_str().unwrap(), "<plain>")
 }
 
+/// Where the plain tab `#2` is, beside the protected `#1` in a comparison: [`following_session`] makes each.
+#[derive(Clone, Copy, Debug)]
+enum Followed {
+    /// Synced with `#1`, which its place follows: moved to that one's last page, as following its end would take it.
+    Following,
+    /// The same, then synced scroll off: left where following put it.
+    Left,
+    /// Left, then an agent's `goto 1` on it, which lets its place go and leaves the followed place on its trail for Back.
+    LeftThenJumped,
+    /// That, then the person's Back onto the followed place.
+    PersonWentBack,
+}
+
+const FOLLOWED: [Followed; 4] = [Followed::Following, Followed::Left, Followed::LeftThenJumped, Followed::PersonWentBack];
+
+/// `locked.pdf` (`#1`, `secret`'s) opened with its password, and a plain 30-page `plain.pdf` (`#2`) being read beside it in a comparison, placed as
+/// `followed` says: where following took it is the protected document's last page, so the twins differ in where the plain tab is, and in nothing else
+/// about it. With the two files, which go when they're dropped.
+fn following_session(secret: u32, followed: Followed) -> (Mutex<Session<crate::DrawableLoader>>, TempPdf, TempPdf) {
+    let locked = TempPdf::new("locked.pdf", &secret_pdf(secret));
+    let plain = TempPdf::new("plain.pdf", &pdf(30));
+    let mut session = Session::new(crate::DrawableLoader);
+    let id = session.open(&locked.0).unwrap();
+    let other = session.open(&plain.0).unwrap();
+    session.tabs_mut().note_password_used(id);
+    session.compare(&[id, other], Some(other)).unwrap();
+    session.set_compare_synced(true);
+    session.go_to(other, 6 + 2 * secret).unwrap();
+    if !matches!(followed, Followed::Following) {
+        session.set_compare_synced(false);
+    }
+    if matches!(followed, Followed::LeftThenJumped | Followed::PersonWentBack) {
+        session.jump_as(other, 0, 0.0, recto_session::Author::Agent).unwrap();
+    }
+    if matches!(followed, Followed::PersonWentBack) {
+        assert!(session.step_as(other, true, recto_session::Author::Owner).unwrap());
+    }
+    (Mutex::new(session), locked, plain)
+}
+
+/// Failure (security review of S2's round): an agent learns where a plain tab is that follows a protected one, or was left by following one, and so that
+/// document's place and length: by any command's answer or refusal, or what it hears (past the rule events leave by), at any level: `edits` and an edit's
+/// or a save's answer, `back` and `forward` after a jump, a step of Find from the place, a `goto` to the page it's on (the same-page oracle), a delete
+/// of that page ("now on page N"), `contents fold`'s open or shut. Every command, naming the plain tab, at every level, in each of [`FOLLOWED`], on twins
+/// that differ only in where following put it, is told and heard alike.
+#[test]
+fn no_command_tells_an_agent_where_a_tab_that_followed_a_protected_one_is() {
+    deadlines_met();
+    let mut differs = Vec::new();
+    // Page 9 is where following leaves the plain tab in the first twin, and not in the second.
+    let on_the_followed_page = [
+        Command::from(commands::linking::Goto {
+            tab: "#1".into(),
+            page: Some(9),
+            label: None,
+            within: None,
+            entry: None,
+        }),
+        Command::from(commands::editing::PageDelete {
+            tab: "#1".into(),
+            pages: "9".into(),
+        }),
+    ];
+    let steps = [(true, false), (false, false), (true, true)]
+        .map(|(forward, jump)| Command::from(commands::finding::Find::from(commands::finding::FindAsk::Step { forward, jump })));
+    for command in every_command().into_iter().chain(on_the_followed_page).chain(steps) {
+        let command = naming_the_plain_tab(&command);
+        for level in LEVELS {
+            for followed in FOLLOWED {
+                let told = |secret: u32| {
+                    let (access, locked, plain) = following_session(secret, followed);
+                    let mut events = Vec::new();
+                    let result = execute(&access, Actor::Agent(level), &command, &mut events);
+                    crate::withheld::for_agents(&access.lock().unwrap(), None, &mut events);
+                    format!("{} {events:?}", said(result))
+                        .replace(locked.folder().to_str().unwrap(), "<locked>")
+                        .replace(plain.folder().to_str().unwrap(), "<plain>")
+                };
+                let (one, two) = (told(1), told(2));
+                if one != two {
+                    differs.push(format!("{} at {level:?}, {followed:?}:\n  {one}\n  {two}", command.tag()));
+                }
+            }
+        }
+    }
+    assert!(differs.is_empty(), "told where the plain tab is:\n{}", differs.join("\n"));
+}
+
 /// **The twins' answers don't turn on the machine's speed:** every renderer in this test's process gets a page deadline it always meets, so the
 /// hidden-text check (a draw of the page at 2x, left unchecked past the deadline) runs to its end for both twins. Under load the check ran out of time on
 /// one twin only, and the walks told them apart by it (`copy`'s `pages_unchecked`, the draw `text` notes when the check ran), failing 1 of 20 like CI

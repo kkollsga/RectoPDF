@@ -190,6 +190,21 @@ mod tests {
         assert_eq!(events, [Event::TabClosed { tab: a }]);
     }
 
+    /// Failure (security review of S2's round, S3): the person's ⌘G in a plain pane that follows a protected one tells watchers Find's hit and its page
+    /// (`find_changed`), which is where the protected document is, as Find's news was judged only by whether the document it names, or the one being read,
+    /// is protected. Find's news is held back while the place of either is withheld.
+    #[test]
+    fn finds_news_is_held_back_while_the_place_it_starts_from_is_withheld() {
+        let (mut session, a, b) = two_tabs();
+        session.compare(&[a, b], Some(b)).expect("side by side");
+        session.set_compare_synced(true);
+        session.go_to(b, 6).expect("followed");
+        let find = || vec![Event::FindOpened { tab: Some(b), page: Some(7) }, Event::FindRunning { tab: Some(b) }];
+        let mut events = find();
+        for_agents(&session, Some(b), &mut events);
+        assert!(events.is_empty(), "b follows a: {events:?}");
+    }
+
     /// Failure: a batch with nothing about a document takes the session's lock to be let through, on the session thread for every page drawn.
     #[test]
     fn only_a_batch_about_a_document_asks_the_session() {

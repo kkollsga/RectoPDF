@@ -40,6 +40,7 @@ mod search;
 mod selecting;
 pub mod tab_ref;
 pub use tab_ref::TabRef;
+mod place;
 pub mod skill;
 pub mod table;
 pub mod unfit;
