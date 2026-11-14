@@ -182,6 +182,8 @@ struct Calls {
     queue: VecDeque<CoreCall>,
     /// Times the session thread has taken something, a call or a deadline that came due: two looks at rest with the same count saw nothing taken between them.
     turns: u64,
+    /// Times the session thread has parked: a wait for what's off it to come back wakes as the thread next parks ([`CoreQueue::wait_next_park`]).
+    parks: u64,
     doing: Doing,
 }
 
@@ -219,6 +221,9 @@ enum Doing {
 pub struct CoreQueue {
     calls: Mutex<Calls>,
     ready: Condvar,
+    /// Told when the session thread parks, for a wait for it to be through ([`Self::wait_parked`]). Nobody waits on it but a test's or QA's settled, and a
+    /// notice with no waiter is an atomic look.
+    parked: Condvar,
     reconcile_queued: AtomicBool,
     /// A hand-off or a quit is writing what comes back, so what a person does from here wouldn't: taps, opens and the rest aren't taken.
     pub frozen: AtomicBool,
@@ -316,6 +321,39 @@ impl CoreQueue {
         self.ways_back.load(Ordering::SeqCst)
     }
 
+    /// **Waits for the session thread to park with nothing queued,** at most `limit`: told as it parks, so the app's settled looks once it's through
+    /// rather than on a timer ([`crate::settled`]). Returns at once if it has, or has ended.
+    pub fn wait_parked(&self, limit: Duration) {
+        let deadline = Instant::now() + limit;
+        let mut calls = lock(&self.calls);
+        while !(self.has_ended() || calls.queue.is_empty() && matches!(calls.doing, Doing::Parked { .. })) {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return;
+            }
+            calls = self.parked.wait_timeout(calls, left).unwrap_or_else(PoisonError::into_inner).0;
+        }
+    }
+
+    /// How many times the session thread has parked, for [`Self::wait_next_park`].
+    pub fn parks(&self) -> u64 {
+        lock(&self.calls).parks
+    }
+
+    /// **Waits, at most `limit`, for the session thread to park after the `seen`th time:** what runs off it and comes back to it queues its word, which
+    /// the thread takes and then parks, so a wait for that work wakes as it's taken rather than on a timer ([`crate::settled`]).
+    pub fn wait_next_park(&self, seen: u64, limit: Duration) {
+        let deadline = Instant::now() + limit;
+        let mut calls = lock(&self.calls);
+        while calls.parks <= seen && !self.has_ended() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return;
+            }
+            calls = self.parked.wait_timeout(calls, left).unwrap_or_else(PoisonError::into_inner).0;
+        }
+    }
+
     /// **Whether the session thread is at rest now, by its own account:** nothing queued for it, and it's parked, having found none of its deadlines due
     /// when it last looked, not nudged since (a clock moved, a write asked for) and not past the time it parked till (a deadline that's come due on real
     /// time and the thread not yet scheduled). Says how many turns it has taken, for a second look to compare ([`crate::settled`]), or what it's at.
@@ -357,6 +395,8 @@ impl CoreQueue {
             calls = match deadline() {
                 None => {
                     calls.doing = Doing::Parked { until: None };
+                    calls.parks += 1;
+                    self.parked.notify_all();
                     self.ready.wait(calls).unwrap_or_else(PoisonError::into_inner)
                 }
                 Some(wait) if wait.is_zero() => {
@@ -368,6 +408,8 @@ impl CoreQueue {
                     calls.doing = Doing::Parked {
                         until: Instant::now().checked_add(wait),
                     };
+                    calls.parks += 1;
+                    self.parked.notify_all();
                     self.ready.wait_timeout(calls, wait).unwrap_or_else(PoisonError::into_inner).0
                 }
             };

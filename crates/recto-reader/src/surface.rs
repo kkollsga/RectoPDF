@@ -746,6 +746,7 @@ Qa::pub fn hold_tells(&self, on: bool) [qa feature only]
 Qa::pub fn let_a_tell_go(&self) [qa feature only]
 Qa::pub fn wait_for_held_asks(&self, count: u32) -> bool [qa feature only]
 Qa::pub fn wait_for_held_tell(&self, limit: Duration) -> bool [qa feature only]
+Qa::pub fn wait_resting(&self, limit: Duration) -> bool [qa feature only]
 QaHolds (pub(super) struct, derives Default) [qa feature only]
 RawPicture (pub struct, derives Clone, Debug, PartialEq)
 RawPicture.pub bgra: Vec<u8>

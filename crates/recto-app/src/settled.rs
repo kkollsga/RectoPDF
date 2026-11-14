@@ -31,9 +31,17 @@
 //! (a thread counted as running pushes what it found before it stops counting itself): so two looks at rest with the same counts saw a moment when all of it
 //! was at rest at once.
 //!
-//! **How the wait ends.** Each round: the session thread asked to get through what's queued (a flush, which also waits for files being read), the host's turn
-//! (the kit takes the page views' layer changes as the window would), then the two looks; otherwise a short pause and again. It answers only on two clean
-//! looks, so never early; and every wait in it is bounded by the caller's limit, past which it says what was still under way, so it can't hang.
+//! **Which of a page view's jobs.** All of them, drawing included: in the kit, which has no viewport, they're a page's size (which says the file's length),
+//! its links and text, and the pictures of a tab leaving the screen; under a window, what's in view. Measured on 2026-11-14 in the slowest test of the
+//! package (`menu_twins`, 3,268 settles), the page views' share of its waits was nothing; Find's thread and the signature looks were most of it.
+//!
+//! **How the wait ends.** Each round: the session thread asked to get through what's queued (a flush, which also waits for files being read; skipped when the
+//! last look found it at rest), then waited for as it parks, the host's turn (the kit takes the page views' layer changes as the window would), then the two
+//! looks. Between rounds it waits on what it found under way, woken as that comes to rest: the session thread as it parks, a page view's thread as it rests,
+//! and work off the session thread as the session thread takes its word and parks again; each wait at most a short timer (2 ms, growing to 16 ms for `qa
+//! wait`), so a word that falls between a look and a wait costs no more. Measured on 2026-11-14, the package's slowest tests under `--like-ci` went from 162 to
+//! 135 test-seconds with these waits, where the same rounds on timers alone took 490 against main's 424. It answers only on two clean looks, so never early;
+//! and every wait in it is bounded by the caller's limit, past which it says what was still under way, so it can't hang.
 
 use crate::core::Lifecycle;
 use crate::core::saver::Saver;
@@ -99,6 +107,8 @@ struct Look {
     stamp: Vec<u64>,
     /// The session thread was at rest at this look: the next round needn't ask it to get through its queue.
     session_at_rest: bool,
+    /// Every page view was at rest at this look.
+    views_at_rest: bool,
 }
 
 /// **Waits for the app to be at rest** (the module's notes), at most `limit`, running `host` each round as the host's own turn. Says what was still under way
@@ -118,6 +128,8 @@ pub fn wait(inner: &Watched<'_>, views: PageViews, limit: Duration, mut host: im
             busy.extend(look(inner, views).busy);
             return Err(busy);
         }
+        // The session thread through the flush's own call, and parked: woken as it parks, not looked at on a timer.
+        inner.core.wait_parked(limit.saturating_sub(began.elapsed()));
         if views == PageViews::Drawn {
             // Waited for where it's cheap to: each view's own condition, woken as its jobs end.
             for engine in inner.panes.engines(inner.engine) {
@@ -125,7 +137,9 @@ pub fn wait(inner: &Watched<'_>, views: PageViews, limit: Duration, mut host: im
             }
         }
         host();
+        let parks = inner.core.parks();
         let first = look(inner, views);
+        let views_at_rest = first.views_at_rest;
         session_at_rest = first.session_at_rest;
         let last = if first.busy.is_empty() {
             let second = look(inner, views);
@@ -143,9 +157,34 @@ pub fn wait(inner: &Watched<'_>, views: PageViews, limit: Duration, mut host: im
                 last.busy
             });
         }
-        std::thread::sleep(pause.min(limit.saturating_sub(began.elapsed()))); // ratchet: poll
+        // Waited for by what it waits on, woken as that comes to rest, where it can be: the session thread as it parks, a page view's thread as it rests;
+        // what's left (a thread off the session thread, a page view's drawing for a window) on a short timer.
+        let wait = pause.min(limit.saturating_sub(began.elapsed()));
+        if !session_at_rest {
+            inner.core.wait_parked(wait);
+        } else if !views_at_rest {
+            wait_for_the_views(inner, views, wait);
+        } else {
+            // What runs off the session thread mostly ends by queuing its word, which the session thread takes and then parks: woken by that.
+            inner.core.wait_next_park(parks, wait);
+        }
         if views == PageViews::Drawn {
             pause = (pause * 2).min(LOOK_AT_MOST_EVERY);
+        }
+    }
+}
+
+/// The page views, each woken as it comes to rest, for at most `wait`: in the kit its thread resting, under a window drawn as far as it shows.
+fn wait_for_the_views(inner: &Watched<'_>, views: PageViews, wait: Duration) {
+    for engine in inner.panes.engines(inner.engine) {
+        match views {
+            PageViews::Drawn => {
+                engine.wait_settled(wait);
+            }
+            #[cfg(any(test, feature = "testkit"))]
+            PageViews::AtRest => {
+                engine.qa().wait_resting(wait);
+            }
         }
     }
 }
@@ -170,6 +209,7 @@ fn look(inner: &Watched<'_>, views: PageViews) -> Look {
         }
     };
     off_the_session_thread(inner, &mut busy);
+    let before_views = busy.len();
     for (at, engine) in inner.panes.engines(inner.engine).iter().enumerate() {
         match views {
             PageViews::Drawn => {
@@ -186,7 +226,13 @@ fn look(inner: &Watched<'_>, views: PageViews) -> Look {
             },
         }
     }
-    Look { busy, stamp, session_at_rest }
+    let views_at_rest = busy.len() == before_views;
+    Look {
+        busy,
+        stamp,
+        session_at_rest,
+        views_at_rest,
+    }
 }
 
 /// What runs off the session thread and comes back to it, still going: each counts itself running until after it has queued what it found.

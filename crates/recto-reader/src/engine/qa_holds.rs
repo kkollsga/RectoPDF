@@ -276,6 +276,31 @@ impl Qa<'_> {
         let resting = seen == ENDED || seen == asks;
         (resting && !lock(&self.engine.shared.reader).host.has_ops()).then_some((rounds, asks))
     }
+
+    /// **Waits, at most `limit`, for the thread that draws to rest** with everything asked of it seen (what [`Self::at_rest`] asks, but the host's part):
+    /// woken as it rests, so a wait for the app at rest looks again then rather than on a timer. Says whether it rested.
+    pub fn wait_resting(&self, limit: Duration) -> bool {
+        let shared = &self.engine.shared;
+        let deadline = Instant::now() + limit;
+        loop {
+            let seen = shared.qa.rest_seen.load(Ordering::SeqCst);
+            if seen == ENDED || seen == shared.qa.asks.load(Ordering::SeqCst) {
+                return true;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            // Told as it rests; a word that falls between the look and the wait costs at most a couple of milliseconds.
+            let reader = lock(&shared.reader);
+            drop(
+                shared
+                    .settled
+                    .wait_timeout(reader, left.min(Duration::from_millis(2)))
+                    .unwrap_or_else(PoisonError::into_inner),
+            );
+        }
+    }
 }
 
 #[cfg(test)]
