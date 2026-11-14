@@ -354,6 +354,8 @@ fn the_persons_rotate_of_this_page_turns_it_where_an_agents_is_refused() {
     app.act(UiAction::PaneRead { tab: plain_tab });
     app.settle();
     control(&app, r#"{"cmd":"edit_mode","set":"on"}"#).expect("edit mode");
+    // The palette's rows are the menus as published, which edit mode names "Rotate this page".
+    app.settle();
     assert_eq!(
         control(&app, r#"{"cmd":"palette","query":"rotate this page right","run":true}"#)
             .err()

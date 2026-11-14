@@ -586,7 +586,10 @@ pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, ev
         return Err(protected_refusal());
     }
     // What starts from where a tab is, an agent can't do while that place follows a protected document's (S2's round): [`place`].
+    // Asked of the session only for an agent's command that starts from a place, so no other takes a lock more.
     if let Some(selector) = command.about()
+        && command.starts_from() != commands::FromPlace::No
+        && !actor.sees_protected()
         && access.with(|s| select(s, selector).is_ok_and(|id| place::refuses(s, actor, command.starts_from(), id)))
     {
         return Err(place::place_withheld_refusal());
