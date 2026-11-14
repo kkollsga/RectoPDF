@@ -141,6 +141,12 @@ std::thread_local! {
     static MADE: std::cell::RefCell<Vec<(u32, u64, Arc<TabMarks>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+#[cfg(test)]
+std::thread_local! {
+    /// How many sets this thread has made, for the test that a pass with nothing changed makes none.
+    static BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// **A tab's highlights made as edits, by page position, for its page view to draw:** each highlight on every position its page has; and the file's
 /// own it has taken out, for the page view's draws to leave out. None for a tab with none, which is every tab without edits: nothing is made for it.
 /// Made once for each change, and the same set given again until the next ([`SETS_KEPT`]).
@@ -182,6 +188,8 @@ pub fn forget_old_sets<L: DocLoader>(session: &Session<L>) {
 }
 
 fn make_marks<L: DocLoader>(session: &Session<L>, id: TabId, list: &recto_session::edit::PageEdits) -> Arc<TabMarks> {
+    #[cfg(test)]
+    BUILT.set(BUILT.get() + 1);
     let mut pages: Vec<(u32, Vec<Rect>)> = Vec::new();
     for (position, mark) in list.marks().on_positions(list.slots()) {
         let rects = mark.rects.iter().map(|rect| Rect {
@@ -350,5 +358,31 @@ mod tests {
         run(&mut session, r##"{"cmd":"close","tab":"active"}"##);
         forget_old_sets(&session);
         assert!(kept_for().is_empty(), "nothing of the closed tab");
+    }
+
+    /// **Failure (review of R4.3): each pass makes a tab's set of highlights again though nothing changed**, under the session's lock: at 10,000
+    /// highlights 195 us a pass, every pass. Asked twice with nothing changed, it's made once; a change makes it again, once.
+    #[test]
+    fn a_tabs_set_is_made_once_a_change() {
+        let file = recto_testpdf::TempPdf::new(
+            "once.pdf",
+            &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["Highlighted words here"]))]),
+        );
+        let mut session = Session::new(recto_agent::DrawableLoader);
+        let run = |session: &mut Session<recto_agent::DrawableLoader>, line: &str| {
+            recto_agent::run(session, recto_agent::Level::Full, &recto_agent::parse(line).unwrap()).unwrap()
+        };
+        run(&mut session, &format!(r#"{{"cmd":"open","path":{}}}"#, serde_json::json!(file.0)));
+        run(&mut session, r##"{"cmd":"highlight","tab":"active","page":1,"chars":"0-5"}"##);
+        let id = session.tabs().active().expect("a tab");
+        let built = BUILT.get();
+        let first = marks_of(&session, id).expect("a set");
+        let again = marks_of(&session, id).expect("a set");
+        assert_eq!(BUILT.get() - built, 1, "made once for two passes with nothing changed");
+        assert!(Arc::ptr_eq(&first, &again), "and the same set given");
+        run(&mut session, r##"{"cmd":"highlight","tab":"active","page":1,"chars":"7-11"}"##);
+        marks_of(&session, id).expect("a set");
+        marks_of(&session, id).expect("a set");
+        assert_eq!(BUILT.get() - built, 2, "and once again after a change");
     }
 }
