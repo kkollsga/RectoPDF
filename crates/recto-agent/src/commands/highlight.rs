@@ -421,7 +421,11 @@ mod tests {
             at: Some("3,4".into()),
             ..Default::default()
         };
-        assert_eq!(refused(page_zero), Some(Code::USAGE), "pages count from 1: page 0 isn't page 1 (review of R4.3)");
+        assert_eq!(
+            refused(page_zero),
+            Some(Code::USAGE),
+            "pages count from 1: page 0 isn't page 1 (review of R4.3)"
+        );
         let id = read(line::HighlightRemove {
             id: Some(7),
             ..Default::default()
