@@ -72,9 +72,12 @@ pub(crate) fn every_command() -> Vec<Command> {
         Command::from(crate::commands::export::Image {
             tab: tab(),
             page: 1,
-            number: 1,
-            out: "/d/x.png".into(),
+            number: Some(1),
+            out: Some("/d/x.png".into()),
             anyway: false,
+            at: None,
+            to_clipboard: false,
+            as_seen: None,
         }),
         Command::from(crate::commands::export::Snapshot {
             tab: tab(),
@@ -84,6 +87,8 @@ pub(crate) fn every_command() -> Vec<Command> {
             out: Some("/d/x.png".into()),
             scale: 2.0,
             anyway: false,
+            to_clipboard: false,
+            as_seen: None,
         }),
         Command::from(crate::commands::export::Print {
             tab: tab(),

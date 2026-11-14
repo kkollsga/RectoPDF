@@ -81,6 +81,9 @@ impl<A: SessionAccess> SessionAccess for Acting<'_, A> {
     fn print_watch(&self, actor: Actor) -> Option<&dyn crate::print::PrintWatch> {
         self.access.print_watch(actor)
     }
+    fn clipboard(&self, actor: Actor) -> Option<&dyn crate::clipboard::ClipboardSink> {
+        self.access.clipboard(actor)
+    }
 }
 
 #[cfg(test)]

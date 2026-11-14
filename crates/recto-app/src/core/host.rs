@@ -28,6 +28,28 @@ pub struct AppHost {
     pub watchers: Mutex<Option<Notifier>>,
 }
 
+/// **A command counted running until this is dropped** ([`AppHost::counted`]), as it returns or as its thread unwinds.
+struct Counted<'a> {
+    host: &'a AppHost,
+    changes: bool,
+}
+
+impl<'a> Counted<'a> {
+    fn start(host: &'a AppHost, changes: bool) -> Self {
+        host.running.fetch_add(1, Ordering::SeqCst);
+        if changes {
+            host.changing.fetch_add(1, Ordering::SeqCst);
+        }
+        Self { host, changes }
+    }
+}
+
+impl Drop for Counted<'_> {
+    fn drop(&mut self) {
+        self.host.command_ended(self.changes);
+    }
+}
+
 impl AppHost {
     /// **A command run as `origin` says it was asked:** one asked before a freeze whose turn in the person's lane has come goes through it
     /// ([`crate::queue::Origin::held_back_by_a_freeze`]), as on the session thread's queue; anything else asked now is refused past it.
@@ -69,26 +91,17 @@ impl AppHost {
         }
         // Counted first, and then looked: a hand-off that's set this flag and sees no count can't have this one slip past both looks. Past the last look, a change would be lost: what's been written is what comes back.
         let changes = !asks_only && super::command_kinds::changes(command);
-        if !asks_only {
-            self.running.fetch_add(1, Ordering::SeqCst);
-            if changes {
-                self.changing.fetch_add(1, Ordering::SeqCst);
-            }
-            if self.handing_off.load(Ordering::SeqCst) && origin.held_back_by_a_freeze() {
-                self.command_ended(changes);
-                return Err(
-                    AgentError::new(Code::BUSY, "The app is being updated, so this wasn't done.", recto_agent::exit::BUSY)
-                        .then("Try again in a moment, when it's back."),
-                );
-            }
+        // Let go as this returns, however: a command that panicked was counted running for good.
+        let _counted = (!asks_only).then(|| Counted::start(self, changes));
+        if !asks_only && self.handing_off.load(Ordering::SeqCst) && origin.held_back_by_a_freeze() {
+            return Err(
+                AgentError::new(Code::BUSY, "The app is being updated, so this wasn't done.", recto_agent::exit::BUSY)
+                    .then("Try again in a moment, when it's back."),
+            );
         }
         #[cfg(test)]
         self.core.holds.at(command.tag());
-        let result = run();
-        if !asks_only {
-            self.command_ended(changes);
-        }
-        result
+        run()
     }
 
     /// **The session's news reaches the app from the start, and watchers once the socket runs** (slow mode, 2026-11-11: with the socket's first answer late, Find came back with its hits and not the hit gone to). The app heard of Find's hits and of generated contents only once the socket's server ran and attached, so what finished before that, or all of it with the socket another session's, was heard by nobody. Given once, as the session takes it once.
@@ -414,5 +427,30 @@ impl EngineEvents for EngineHooks {
 
     fn copy_ready(&self) {
         self.listener.copy_ready();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// **Failure (found with the branch's review, F3): a command that panics is counted running for good,** as its count was let go only after it
+    /// returned, so every settle, `qa wait-settled` and a quit's wait for what's running waited out its limit after it. A command made to panic as it's
+    /// run, on a thread of its own: its count goes as it ends.
+    #[test]
+    fn a_command_that_panics_isnt_counted_running() {
+        let app = crate::testkit::headless::HeadlessApp::start();
+        let inner = std::sync::Arc::clone(app.core());
+        app.panic_next("text");
+        let ran = std::thread::spawn(move || {
+            let command = recto_agent::parse(r#"{"cmd":"text","page":1}"#).expect("a command");
+            let _ = inner.host.run_as(
+                recto_agent::Actor::Agent(recto_agent::Level::Full),
+                &command,
+                &mut Vec::new(),
+                crate::queue::Origin::Input,
+            );
+        });
+        assert!(ran.join().is_err(), "it panicked");
+        assert_eq!(app.core().host.running.load(std::sync::atomic::Ordering::SeqCst), 0, "counted running");
+        assert_eq!(app.core().host.changing.load(std::sync::atomic::Ordering::SeqCst), 0, "counted changing");
     }
 }

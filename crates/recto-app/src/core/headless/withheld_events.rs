@@ -170,10 +170,15 @@ fn agent_told(pages: usize, word: &str) -> Vec<String> {
     host_turns(&app, &mut view, true);
     // A wider window: the page showing is drawn again, at its new size.
     engine.qa().hold_tells(true);
+    let watch = DrawWatch::from_now(&app);
     view.width *= 2.0;
     view.frame_width *= 2.0;
     applied_as_the_host(&engine.set_viewport(view));
-    assert!(engine.qa().wait_for_held_tell(crate::testkit::headless::WAIT_LIMIT), "a draw's word held");
+    assert!(
+        engine.qa().wait_for_held_tell(crate::testkit::headless::WAIT_LIMIT),
+        "a draw's word held: {}",
+        watch.why(&app)
+    );
     let tab = app.tabs()[0].tab;
     if app.act(UiAction::Menu { id: "file.close".into() }).host == crate::menus::HostAction::ConfirmClose {
         app.act(UiAction::CloseAnswered {
@@ -189,6 +194,110 @@ fn agent_told(pages: usize, word: &str) -> Vec<String> {
     app.settle();
     told.push(format!("after: {:?}", watching.heard()));
     told
+}
+
+/// **What the page view was doing when a draw's word waited for at the tell's hold didn't come** (the walk's widening, 2 of 40 under `--like-ci` on
+/// 2026-11-14, cause unknown then): taken from just before what should draw, and read when the wait runs out, so the failure says why by itself.
+struct DrawWatch {
+    before: Value,
+}
+
+impl DrawWatch {
+    fn from_now(app: &HeadlessApp) -> Self {
+        Self {
+            before: app.core().engine.report().0,
+        }
+    }
+
+    /// Which of the ways a wait for a draw's word runs out it was, then what the page view and the session's mail had to say: a draw done and told
+    /// before the hold could take it (the test's order); nothing planned, the page view at rest (the change asked for no draw); or the page view still
+    /// at work (a draw slow past the wait: a starved worker, a page deadline).
+    fn why(&self, app: &HeadlessApp) -> String {
+        let now = app.core().engine.report().0;
+        let count = |report: &Value, key: &str| report["counts"][key].as_u64().unwrap_or(0);
+        let drawn = count(&now, "drawn").saturating_sub(count(&self.before, "drawn"));
+        let jobs = count(&now, "jobs").saturating_sub(count(&self.before, "jobs"));
+        let verdict = if drawn > 0 {
+            "a draw was done and told before the hold took it"
+        } else if now["settled"] == true {
+            "nothing was planned: the page view is at rest"
+        } else {
+            "the page view is still at work: a draw slow past the wait"
+        };
+        let mail = app
+            .core()
+            .host
+            .session
+            .try_with_session(|session| format!("{:?}", session.mail()))
+            .unwrap_or_else(|| "(the session is held)".into());
+        format!(
+            "{verdict} (drawn since {drawn}, jobs since {jobs}); settled {}, page {}, visible {}, jobs now {}, note {}, the renderer's counts {}; the \
+             session's mail: {mail}",
+            now["settled"], now["page"], now["visible_pages"], now["jobs"], now["note"], now["counts"]
+        )
+    }
+}
+
+/// **Failure: the record of a draw's word that didn't come names the wrong cause,** so the walk's failure says nothing true about itself. Made both
+/// ways it runs out: the hold set after the widening was drawn and told, and a hold with nothing asked to draw.
+#[test]
+fn a_draws_word_not_held_says_why() {
+    let disk = Disk::new();
+    let file = disk.pdf("plain.pdf", 2);
+    let app = disk.start();
+    app.open(&file);
+    app.settle();
+    let engine = app.core().engine.clone();
+    let mut view = window_view();
+    applied_as_the_host(&engine.set_viewport(view));
+    host_turns(&app, &mut view, true);
+    let watch = DrawWatch::from_now(&app);
+    view.width *= 2.0;
+    view.frame_width *= 2.0;
+    applied_as_the_host(&engine.set_viewport(view));
+    host_turns(&app, &mut view, true);
+    engine.qa().hold_tells(true);
+    assert!(!engine.qa().wait_for_held_tell(std::time::Duration::from_millis(50)), "nothing to hold");
+    let told_before = watch.why(&app);
+    assert!(told_before.starts_with("a draw was done and told before the hold took it"), "{told_before}");
+    let watch = DrawWatch::from_now(&app);
+    assert!(!engine.qa().wait_for_held_tell(std::time::Duration::from_millis(50)), "nothing to hold");
+    let at_rest = watch.why(&app);
+    assert!(at_rest.starts_with("nothing was planned: the page view is at rest"), "{at_rest}");
+    engine.qa().hold_tells(false);
+}
+
+/// The person's snapshot of a box on page 1 with the snapshot tool, as the bridge's mouse calls take it, then a paste of its promised SVG: each of their
+/// own, read with their password. The tool's turned off after.
+fn snapshot_and_paste(app: &HeadlessApp) {
+    let inner = app.core();
+    let tool = inner.tools.tool();
+    inner.perform(crate::core::snapshot_tool::TOGGLE_ID.into());
+    app.settle();
+    let engine = inner.panes.reading_engine(&inner.engine);
+    let at = |x: f64, y: f64| engine.points().document_point(0, x, y).expect("page 1 is laid out");
+    let (x, y) = at(30.0, 30.0);
+    let _ = tool.press(&engine, 0, x, y);
+    let (x, y) = at(300.0, 200.0);
+    let _ = tool.drag(&engine, 0, x, y);
+    let _ = tool.release(&engine, 0);
+    app.act(UiAction::SnapshotTaken);
+    app.wait_until("the snapshot's answered", || !tool.busy());
+    app.settle();
+    let offer = tool
+        .take_offer(&inner.panes.engines(&inner.engine))
+        .expect("the person's snapshot of their document");
+    let svg = app
+        .act(UiAction::Pasted {
+            serial: offer.serial,
+            uti: recto_agent::extract::UTI_SVG.into(),
+        })
+        .understood
+        .then(|| tool.wait_for_paste())
+        .flatten();
+    assert!(svg.is_some_and(|svg| !svg.is_empty()), "the paste's SVG of the person's document");
+    inner.perform(crate::core::snapshot_tool::TOGGLE_ID.into());
+    app.settle();
 }
 
 /// What an agent at Full is told by a look at the session as a whole while the person prints: `tabs`, `session show`, `sidebar`, what `status` says of
@@ -259,4 +368,41 @@ fn the_helpers_news_of_a_protected_file_doesnt_reach_a_watcher() {
             .is_some_and(|name| name.starts_with("contents_") || name.starts_with("indexing_"))),
         "the watcher heard the helpers' news of the protected file: {heard:?}"
     );
+}
+
+/// What an agent watching at Full, which hears all a lower level does, and looking at each level, is told once the person has taken a snapshot of page 1
+/// of a protected document and pasted its SVG: one snapshot and one paste, as the concern needs (three, one a level, took 2.1 to 3.5 s a run under
+/// `--like-ci`).
+fn agent_told_of_a_snapshot(pages: usize, word: &str) -> Vec<String> {
+    // The person's snapshot opens the protected file in a fresh worker: as for the print, every renderer gets a deadline it always meets.
+    recto_render_service::page_deadline_for_this_process(std::time::Duration::from_secs(20));
+    let disk = Disk::new();
+    let file = protected(&disk, pages, word);
+    let app = disk.start();
+    let mut watching = app.agent_watches(Level::Full);
+    person_unlocks(&app, &file);
+    snapshot_and_paste(&app);
+    let mut told = vec![format!("heard: {:?}", watching.heard())];
+    for level in [Level::ReadOnly, Level::Control, Level::Full] {
+        for look in [&["tabs"][..], &["session", "show"], &["sidebar"]] {
+            told.push(format!("{level:?} {look:?}: {:?}", app.recto(level, look)));
+        }
+    }
+    told
+}
+
+/// **Failure (S2's follow-up (1)): the person's own snapshot of a document they opened with its password tells an agent something of it,** by an event
+/// or a look at the session, now that it's the person's `snapshot` and `image` commands read with their password. An agent watching, and looking with
+/// `tabs`, `session show` and `sidebar` at each level, is told the same once the person has taken a box on page 1 and pasted its SVG, of a three-page
+/// protected document saying "Locked" as of a five-page one saying "Hidden".
+#[test]
+fn a_persons_snapshot_tells_an_agent_the_same_of_two_protected_documents() {
+    let (one, two) = (agent_told_of_a_snapshot(3, "Locked"), agent_told_of_a_snapshot(5, "Hidden"));
+    let differs: Vec<String> = one.iter().zip(&two).filter(|(a, b)| a != b).map(|(a, b)| format!("  {a}\n  {b}")).collect();
+    assert!(
+        differs.is_empty(),
+        "the agent was told something of the protected document:\n{}",
+        differs.join("\n")
+    );
+    assert_eq!(one.len(), two.len());
 }

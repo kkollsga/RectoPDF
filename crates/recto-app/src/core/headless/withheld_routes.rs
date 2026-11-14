@@ -135,7 +135,8 @@ fn only_the_persons_jump_to_a_place_chosen_by_itself_lets_a_withheld_place_go() 
             rect: [0.0; 4],
             target: recto_core::nav::LinkTarget::Page { page: 11, within: None },
         };
-        crate::core::reconcile::follow_link(&inner, 0, &engine, hit);
+        engine.links().clicked_for_qa(hit);
+        app.act(UiAction::LinkClicked { pane: 0 });
     });
     route("a Find hit by its row", &mut |view| person_chooses_a_hit(&app, view, "Page 17"));
     route("⌘G", &mut |_| {

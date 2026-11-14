@@ -8,7 +8,6 @@ use crate::render::image::{self, Coded, CopiedImage, Want};
 use crate::render::snapshot::{self, Format};
 use crate::render::{FileOut, LimitedOut, MemoryOut, OwnTemp, open_for_text, output_exists, publish_picture};
 use crate::{AgentError, exit};
-use recto_proto::contents::TextMode;
 use recto_render_service::{CancelHandle, DocRenderer, OutputCaps};
 use serde_json::{Value, json};
 use std::cell::RefCell;
@@ -107,6 +106,9 @@ pub(crate) fn image_to_file(path: &Path, page: u32, number: u32, out: &Path, any
     }))
 }
 
+mod drawn;
+pub(crate) use drawn::{Destination, Drawn, drawn_for};
+
 /// What `recto snapshot` was asked.
 pub(crate) struct SnapshotAsked<'a> {
     pub path: &'a Path,
@@ -118,6 +120,8 @@ pub(crate) struct SnapshotAsked<'a> {
     pub anyway: bool,
     /// The file's own highlights the tab has taken out, left out of a picture (R4.3).
     pub hidden: crate::render::Hidden,
+    /// The page's unsaved turn, which [`drawn_for`] says what a file or the answer makes of.
+    pub unsaved_quarter_turns: u8,
 }
 
 fn format_of(name: &str) -> Result<Format, AgentError> {
@@ -177,6 +181,7 @@ pub(crate) fn snapshot_command(asked: &SnapshotAsked<'_>) -> Result<Value, Agent
     let (temp, file) = OwnTemp::create(out)?;
     let written = RefCell::new(FileOut(file));
     let mut data = json!({ "page": asked.page, "rect": asked.rect, "as": format.name(), "out": out, "anyway": asked.anyway });
+    let drawn = drawn_for(Destination::FileOrAnswer, asked.unsaved_quarter_turns);
     match format {
         Format::Svg => {
             let svg = crate::render::write_svg_box(
@@ -185,17 +190,28 @@ pub(crate) fn snapshot_command(asked: &SnapshotAsked<'_>) -> Result<Value, Agent
                 page,
                 asked.rect,
                 asked.scale,
-                TextMode::Both,
+                drawn.text,
                 &OutputCaps::default(),
                 &written,
                 started,
-                0,
+                drawn.quarter_turns,
             )?;
             data["all_vector"] = json!(svg.all_vector());
             data["raster_scale"] = json!(svg.raster_scale);
         }
         _ => {
-            let (width, height) = snapshot::picture_into(&mut doc, page, asked.rect, asked.scale, format, &OutputCaps::default(), &written)?;
+            let ((width, height), _) = snapshot::pictures_into(
+                &mut doc,
+                page,
+                asked.rect,
+                asked.scale,
+                format,
+                &OutputCaps::default(),
+                &written,
+                None,
+                0,
+                drawn.quarter_turns,
+            )?;
             data["width"] = json!(width);
             data["height"] = json!(height);
             data["scale"] = json!(asked.scale);
@@ -335,11 +351,16 @@ pub fn jpeg_for_clipboard(mut bytes: Vec<u8>) -> Vec<u8> {
 
 /// The app's click on an image: what goes on the clipboard for the image at `x, y` on a page as it's shown. A JPEG goes as its own bytes, and as a PNG beside it for what can't take a JPEG; anything else as a lossless PNG. Opens a worker of its own and can wait for the larger limit, so it's for a job thread. `page` is from 0.
 pub fn image_clip(path: &Path, page: u32, x: f32, y: f32, anyway: bool, stop: &ClipStop) -> ClipOutcome {
+    image_clip_for(path, page, (x, y), (anyway, PersonsPage::default()), stop)
+}
+
+/// [`image_clip`], for the person's own page if `whose` says it's theirs: opened, and its flag read, with their password by the print's rule.
+fn image_clip_for(path: &Path, page: u32, (x, y): (f32, f32), (anyway, whose): (bool, PersonsPage<'_>), stop: &ClipStop) -> ClipOutcome {
     let run = || -> Result<ClipOutcome, AgentError> {
-        if asks_anyway(anyway, || snapshot::copy_restricted(path, None, page)) {
+        if asks_anyway(anyway, || whose.copy_restricted(path, page)) {
             return Ok(ClipOutcome::Restricted);
         }
-        let mut doc = open_for_text(path)?;
+        let mut doc = whose.open(path)?;
         stop.attach(&doc);
         let caps = OutputCaps::default();
         let list = image::list(&mut doc, path, page, &caps)?;
@@ -399,16 +420,29 @@ fn image_note(copied: &CopiedImage, left_off: &[&str]) -> String {
 
 /// The app's snapshot of a box: PNG, text, SVG and JPG, all on the clipboard at once (SPEC section 6), each as far as it fits. The PNG and JPG come from one drawing; the SVG is promised, and made by [`snapshot_svg`] only if a paste asks for it. `rect` is on the page as the file shows it, from its top left. Opens a worker of its own and can wait for the larger limit, so it's for a job thread. `page` is from 0.
 ///
-/// **The pictures are of the page as it's seen** (coordinator's decision, 2026-11-08): `quarter_turns` is how far the reader shows it turned, by an unsaved turn or the view's, and the PNG and JPG come out turned by as much, as the SVG does from [`snapshot_svg`]. The owner's rotate-all is for turning a sideways scan, and a snapshot of it mustn't come out sideways again.
+/// **The pictures are of the page as it's seen** (coordinator's decision, 2026-11-08): `unsaved_quarter_turns` is how far the page is turned by an unsaved turn, and the PNG and JPG come out as [`drawn_for`] says the clipboard has it, turned by as much, as the SVG does from [`snapshot_svg`]. The owner's rotate-all is for turning a sideways scan, and a snapshot of it mustn't come out sideways again.
 ///
 /// `hidden`: the file's own highlights the tab has taken out, left out of every picture as the page view leaves them out ([`crate::hidden_in`]).
-pub fn snapshot_clip(path: &Path, page: u32, rect: [f32; 4], (quarter_turns, hidden): (u8, Hidden), anyway: bool, stop: &ClipStop) -> ClipOutcome {
+pub fn snapshot_clip(path: &Path, page: u32, rect: [f32; 4], (unsaved_quarter_turns, hidden): (u8, Hidden), anyway: bool, stop: &ClipStop) -> ClipOutcome {
+    let drawn = drawn_for(Destination::Clipboard, unsaved_quarter_turns);
+    snapshot_clip_for(path, page, rect, (drawn, hidden), (anyway, PersonsPage::default()), stop)
+}
+
+/// [`snapshot_clip`], for the person's own page if `whose` says it's theirs: opened, and its flag read, with their password by the print's rule.
+fn snapshot_clip_for(
+    path: &Path,
+    page: u32,
+    rect: [f32; 4],
+    (drawn, hidden): (Drawn, Hidden),
+    (anyway, whose): (bool, PersonsPage<'_>),
+    stop: &ClipStop,
+) -> ClipOutcome {
     let run = || -> Result<ClipOutcome, AgentError> {
         crate::render::check_scale_and_box(DEFAULT_SCALE, Some(rect))?;
-        if asks_anyway(anyway, || snapshot::copy_restricted(path, None, page)) {
+        if asks_anyway(anyway, || whose.copy_restricted(path, page)) {
             return Ok(ClipOutcome::Restricted);
         }
-        let mut doc = open_for_text(path)?;
+        let mut doc = whose.open(path)?;
         doc.hidden.draw_for(0, hidden);
         stop.attach(&doc);
         let caps = OutputCaps::default();
@@ -424,7 +458,18 @@ pub fn snapshot_clip(path: &Path, page: u32, rect: [f32; 4], (quarter_turns, hid
         let room = MAX_CLIP_TOTAL.saturating_sub(words.map_or(0, <[u8]>::len)).min(MAX_CLIP_ITEM);
         let (png, jpg) = (RefCell::new(MemoryOut::new(room)), RefCell::new(MemoryOut::new(room)));
         // The picture is what the box is, so a failure there is the snapshot's: the rest are extras.
-        let (_, jpg_came) = snapshot::pictures_into(&mut doc, page, rect, DEFAULT_SCALE, Format::Png, &caps, &png, Some(&jpg), 0, quarter_turns)?;
+        let (_, jpg_came) = snapshot::pictures_into(
+            &mut doc,
+            page,
+            rect,
+            DEFAULT_SCALE,
+            Format::Png,
+            &caps,
+            &png,
+            Some(&jpg),
+            0,
+            drawn.quarter_turns,
+        )?;
         clip.items.push(ClipItem::Ready {
             uti: UTI_PNG,
             bytes: png.into_inner().bytes,
@@ -458,12 +503,26 @@ pub fn snapshot_clip(path: &Path, page: u32, rect: [f32; 4], (quarter_turns, hid
     }
 }
 
-/// **A snapshot's SVG, made when a paste asks for it**: `export svg --rect`'s drawing with text as outlines only, so hidden text stays out as it does from the text item, into at most `cap` bytes, turned by `quarter_turns` as [`snapshot_clip`]'s pictures are. Whether the file may be copied was settled when the snapshot was taken. Opens a worker of its own and waits for it, for as long as the paste is waiting. `page` is from 0.
+/// **A snapshot's SVG, made when a paste asks for it**: `export svg --rect`'s drawing as [`drawn_for`] says the clipboard has it (text as outlines only, so hidden text stays out as it does from the text item), into at most `cap` bytes, turned by `unsaved_quarter_turns` as [`snapshot_clip`]'s pictures are. Whether the file may be copied was settled when the snapshot was taken. Opens a worker of its own and waits for it, for as long as the paste is waiting. `page` is from 0.
 /// `hidden` as for [`snapshot_clip`].
-pub fn snapshot_svg(path: &Path, page: u32, rect: [f32; 4], quarter_turns: u8, hidden: Hidden, cap: usize) -> Result<Vec<u8>, AgentError> {
+pub fn snapshot_svg(path: &Path, page: u32, rect: [f32; 4], unsaved_quarter_turns: u8, hidden: Hidden, cap: usize) -> Result<Vec<u8>, AgentError> {
+    let drawn = drawn_for(Destination::Clipboard, unsaved_quarter_turns);
+    snapshot_svg_for(path, page, rect, (drawn, hidden), (cap, PersonsPage::default()), &ClipStop::default())
+}
+
+/// [`snapshot_svg`], for the person's own page if `whose` says it's theirs, and stopped by `stop`: a paste waits for it only so long.
+fn snapshot_svg_for(
+    path: &Path,
+    page: u32,
+    rect: [f32; 4],
+    (drawn, hidden): (Drawn, Hidden),
+    (cap, whose): (usize, PersonsPage<'_>),
+    stop: &ClipStop,
+) -> Result<Vec<u8>, AgentError> {
     crate::render::check_scale_and_box(DEFAULT_SCALE, Some(rect))?;
-    let mut doc = open_for_text(path)?;
+    let mut doc = whose.open(path)?;
     doc.hidden.draw_for(0, hidden);
+    stop.attach(&doc);
     in_memory(cap.min(MAX_CLIP_ITEM), |out| {
         crate::render::write_svg_box(
             &mut doc,
@@ -471,14 +530,159 @@ pub fn snapshot_svg(path: &Path, page: u32, rect: [f32; 4], quarter_turns: u8, h
             page,
             rect,
             DEFAULT_SCALE,
-            TextMode::Paths,
+            drawn.text,
             &OutputCaps::default(),
             out,
             Instant::now(),
-            quarter_turns,
+            drawn.quarter_turns,
         )
         .map(drop)
     })
+}
+
+/// **Whose page a clipboard snapshot reads** (PLAN, the person's snapshot of a document opened with its password): the person's own snapshot of a page of
+/// their tab's own file is opened, and its copy flag read, with the password they typed for that very file, by the print's rule ([`crate::print::key_for`],
+/// [`crate::print::copy_restricted`]); anything else as any export is, with none.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PersonsPage<'a> {
+    pub keys: Option<&'a crate::keys::PersonsKeys>,
+    /// The page is of the tab's own file, as the page view reads with the password.
+    pub own: bool,
+}
+
+impl PersonsPage<'_> {
+    fn as_printed(&self, path: &Path, page: u32) -> crate::print::PrintPage {
+        crate::print::PrintPage {
+            path: path.to_path_buf(),
+            page,
+            quarter_turns: 0,
+            hidden: None,
+            own: self.own,
+        }
+    }
+
+    fn copy_restricted(&self, path: &Path, page: u32) -> bool {
+        match self.keys {
+            Some(keys) => crate::print::copy_restricted(&self.as_printed(path, page), Some(keys)),
+            None => snapshot::copy_restricted(path, None, page),
+        }
+    }
+
+    fn open(&self, path: &Path) -> Result<DocRenderer, AgentError> {
+        let Some(keys) = self.keys else { return open_for_text(path) };
+        let file = DocRenderer::open_file(path)?;
+        let key = crate::print::key_for(&file, &self.as_printed(path, 0), Some(keys));
+        Ok(DocRenderer::with_file(
+            file,
+            path,
+            key,
+            recto_render_service::ServiceConfig::discover()?,
+            recto_render_service::Policy::default(),
+        )?)
+    }
+}
+
+/// **The page as the person's snapshot saw it** (coordinator, 2026-11-14: the clipboard's types are one copy of one moment): carried by the box and the
+/// click, as the view showed the page they were taken from, and by the paste of a box's promised SVG, as the box's answer said it. Each is refused if
+/// another page is in its place by the time it runs (the branch's review, S1: the box and click wait their turn in the person's lane, behind a page
+/// delete or move), and the SVG is drawn turned as the PNG was. Clipboard-only, as `to_clipboard`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AsSeen {
+    /// The page's unsaved turn, as it was seen: what its drawing goes by ([`drawn_for`]).
+    pub quarter_turns: u8,
+    /// From 0, in its file.
+    pub file_page: u32,
+    /// From the tab's own file, rather than a PDF added to it.
+    pub own: bool,
+}
+
+impl AsSeen {
+    /// Whether `now` is still this page of the same file: refused as moved if not. Its turn isn't the page's: a turn asked before the box was let go
+    /// is in what's copied (coordinator, 2026-11-14).
+    fn still(self, now: &ClipPage<'_>) -> Result<(), AgentError> {
+        if (self.file_page, self.own) == (now.file_page, now.whose.own) {
+            Ok(())
+        } else {
+            Err(crate::clipboard::page_moved())
+        }
+    }
+}
+
+/// **A page for the person's clipboard:** the page in its file, as the tab has it, and what the snapshot is told of the tab.
+pub(crate) struct ClipPage<'a> {
+    pub path: &'a Path,
+    /// From 0, in that file.
+    pub file_page: u32,
+    pub unsaved_quarter_turns: u8,
+    pub hidden: Hidden,
+    pub whose: PersonsPage<'a>,
+}
+
+/// What a snapshot to the clipboard comes to, as a command's answer or refusal: what's offered is given to the window's [`crate::clipboard::ClipboardSink`]
+/// first, and the answer says what went. The refusals keep the codes an agent's export has: `copy_restricted` (exit 8), `no_such_image`, and `cancelled`
+/// for one a newer one stopped.
+fn offered(sink: &dyn crate::clipboard::ClipboardSink, outcome: ClipOutcome, mut answer: Value) -> Result<Value, AgentError> {
+    match outcome {
+        ClipOutcome::Ready(clip) => {
+            answer["says"] = json!(clip.note);
+            answer["types"] = json!(clip.types());
+            sink.offer(clip);
+            Ok(answer)
+        }
+        // Refused as any export of such a file is, in the same words.
+        ClipOutcome::Restricted => refuse_unless_anyway(false, || true, Copying::File).and(Ok(answer)),
+        ClipOutcome::NoImage => Err(AgentError::new(Code::NO_SUCH_IMAGE, "There's no image there.", exit::NOT_FOUND)),
+        ClipOutcome::Stopped => Err(AgentError::new(Code::CANCELLED, "A newer snapshot took its place.", exit::FAILED)),
+        ClipOutcome::Failed(error) => Err(error),
+    }
+}
+
+/// **The person's box, to the window's clipboard** (`snapshot --to-clipboard`): PNG, text, the SVG promised and JPG at once, as [`snapshot_clip`] makes
+/// them, drawn as the clipboard has a snapshot ([`drawn_for`]). `as svg` is the promised SVG, made for the paste waiting for it, which gets its bytes.
+pub(crate) fn box_to_clipboard(
+    sink: &dyn crate::clipboard::ClipboardSink,
+    page: ClipPage<'_>,
+    rect: [f32; 4],
+    format: &str,
+    (anyway, as_seen): (bool, AsSeen),
+) -> Result<Value, AgentError> {
+    let format = format_of(format)?;
+    // Only the page it was taken from, which a move or a deletion since may have put elsewhere.
+    as_seen.still(&page)?;
+    let seen = AsSeen {
+        quarter_turns: page.unsaved_quarter_turns,
+        file_page: page.file_page,
+        own: page.whose.own,
+    };
+    let answer = json!({ "rect": rect, "as": "clipboard", "anyway": anyway, "as_seen": seen });
+    if format == Format::Svg {
+        // As the box saw it: its turn.
+        let stop = sink.begin_paste();
+        let drawn = drawn_for(Destination::Clipboard, as_seen.quarter_turns);
+        let svg = snapshot_svg_for(page.path, page.file_page, rect, (drawn, page.hidden), (MAX_CLIP_ITEM, page.whose), &stop)?;
+        let bytes = svg.len();
+        sink.made(svg);
+        return Ok(json!({ "rect": rect, "as": "svg", "bytes": bytes }));
+    }
+    let stop = sink.begin();
+    let drawn = drawn_for(Destination::Clipboard, page.unsaved_quarter_turns);
+    let outcome = snapshot_clip_for(page.path, page.file_page, rect, (drawn, page.hidden), (anyway, page.whose), &stop);
+    offered(sink, outcome, answer)
+}
+
+/// **The person's click on an image, to the window's clipboard** (`image --at x,y --to-clipboard`): the image there as itself, as [`image_clip`] takes it.
+pub(crate) fn image_to_clipboard(
+    sink: &dyn crate::clipboard::ClipboardSink,
+    page: ClipPage<'_>,
+    at: [f32; 2],
+    (anyway, as_seen): (bool, AsSeen),
+) -> Result<Value, AgentError> {
+    as_seen.still(&page)?;
+    let answer = json!({ "at": at, "as": "clipboard", "anyway": anyway });
+    let stop = sink.begin();
+    let outcome = image_clip_for(page.path, page.file_page, (at[0], at[1]), (anyway, page.whose), &stop);
+    offered(sink, outcome, answer)
 }
 
 fn snapshot_note(clip: &Clip, text: Option<&recto_index::select::BoxText>, left_off: &[&str]) -> String {
@@ -501,6 +705,116 @@ fn snapshot_note(clip: &Clip, text: Option<&recto_index::select::BoxText>, left_
 #[cfg(test)]
 mod tests {
     use super::*;
+    use recto_proto::contents::TextMode;
+
+    /// A window's clipboard that keeps what reaches it.
+    #[derive(Default)]
+    struct Kept {
+        offered: Mutex<Option<Clip>>,
+        made: Mutex<Option<Vec<u8>>>,
+    }
+
+    impl crate::clipboard::ClipboardSink for Kept {
+        fn begin(&self) -> ClipStop {
+            ClipStop::default()
+        }
+        fn begin_paste(&self) -> ClipStop {
+            ClipStop::default()
+        }
+        fn offer(&self, clip: Clip) {
+            *self.offered.lock().unwrap() = Some(clip);
+        }
+        fn made(&self, bytes: Vec<u8>) {
+            *self.made.lock().unwrap() = Some(bytes);
+        }
+    }
+
+    /// One box of `file`'s page 1, drawn to each destination: a PNG and an SVG to a new file, the person's box to the clipboard (its PNG) and the paste
+    /// of its SVG. `round` names the files.
+    fn drawings(file: &recto_testpdf::TempPdf, round: &str) -> Vec<(&'static str, Vec<u8>)> {
+        let rect = [20.0, 20.0, 300.0, 120.0];
+        let to_file = |format: &str| {
+            let out = file.folder().join(format!("{round}.{format}"));
+            snapshot_command(&SnapshotAsked {
+                path: &file.0,
+                page: 1,
+                rect,
+                format,
+                out: Some(&out),
+                scale: DEFAULT_SCALE,
+                anyway: false,
+                hidden: None,
+                unsaved_quarter_turns: 0,
+            })
+            .expect("written");
+            std::fs::read(&out).expect("read back")
+        };
+        let kept = Kept::default();
+        let page = || ClipPage {
+            path: &file.0,
+            file_page: 0,
+            unsaved_quarter_turns: 0,
+            hidden: None,
+            whose: PersonsPage { keys: None, own: true },
+        };
+        let seen = AsSeen {
+            quarter_turns: 0,
+            file_page: 0,
+            own: true,
+        };
+        box_to_clipboard(&kept, page(), rect, "png", (false, seen)).expect("the box");
+        box_to_clipboard(&kept, page(), rect, "svg", (false, seen)).expect("the paste");
+        let png = kept
+            .offered
+            .lock()
+            .unwrap()
+            .take()
+            .and_then(|clip| clip.items.first().and_then(ClipItem::bytes).map(<[u8]>::to_vec));
+        vec![
+            ("a PNG to a file", to_file("png")),
+            ("an SVG to a file", to_file("svg")),
+            ("the box's PNG to the clipboard", png.expect("a PNG offered")),
+            ("its paste's SVG", kept.made.lock().unwrap().take().expect("an SVG made")),
+        ]
+    }
+
+    /// **Failure (the branch's review, F2): a drawing of a snapshot decides its turn or its SVG's text somewhere other than [`drawn_for`],** so changing
+    /// the rule there leaves that drawing as it was (as a file's SVG did, which asked it for its text and drew no turn, and a file's picture, which never
+    /// asked). Another answer seeded for one destination changes that destination's drawings and only them.
+    #[test]
+    fn every_drawing_of_a_snapshot_goes_by_drawn_for() {
+        let file = recto_testpdf::TempPdf::new(
+            "drawn.pdf",
+            &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["Words drawn for each destination"]))]),
+        );
+        let changed = |round: &str, seed: (Destination, Drawn), was: &[(&'static str, Vec<u8>)]| {
+            drawn::seed(Some(seed));
+            let now = drawings(&file, round);
+            drawn::seed(None);
+            now.iter()
+                .zip(was)
+                .filter(|(now, was)| now.1 != was.1)
+                .map(|(now, _)| now.0)
+                .collect::<Vec<_>>()
+        };
+        let was = drawings(&file, "as-it-is");
+        let to_files = Drawn {
+            quarter_turns: 1,
+            text: TextMode::Paths,
+        };
+        assert_eq!(
+            changed("files-seeded", (Destination::FileOrAnswer, to_files), &was),
+            ["a PNG to a file", "an SVG to a file"]
+        );
+        let to_the_clipboard = Drawn {
+            quarter_turns: 1,
+            text: TextMode::Both,
+        };
+        assert_eq!(
+            changed("clipboard-seeded", (Destination::Clipboard, to_the_clipboard), &was),
+            ["the box's PNG to the clipboard", "its paste's SVG"]
+        );
+    }
 
     /// Failure: a JPEG on the clipboard carries what a file put after its end, which can be anything and no app pasting it wants; or a JPEG that isn't whole loses bytes it needs.
     #[test]

@@ -132,6 +132,13 @@ impl Linking {
         self.clicked.take()
     }
 
+    /// **A click made to have landed on `hit`, for QA:** what a press and release that didn't move on that link leave, for a test whose link's page isn't
+    /// read. Only with the `qa` feature.
+    #[cfg(any(test, feature = "qa"))]
+    pub fn clicked_for_qa(&mut self, hit: LinkHit) {
+        self.clicked = Some(hit);
+    }
+
     /// Pages held, for QA and the budgets.
     pub fn pages_held(&self) -> usize {
         self.held.len()

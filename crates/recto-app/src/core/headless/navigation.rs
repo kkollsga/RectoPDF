@@ -32,7 +32,7 @@ fn page(app: &HeadlessApp) -> u64 {
     app.session_json()["tabs"][0]["page"].as_u64().expect("a page") + 1
 }
 
-/// A click on page 1's first link (to page 9, a third of the way down), as the page view reports the hit.
+/// A click on page 1's first link (to page 9, a third of the way down), as the page view reports the hit when the mouse comes up on it.
 fn click_first_link(app: &HeadlessApp, file: &std::path::Path) {
     let read = recto_core::nav::page_links(file, &[0]).expect("the links read");
     let link = read[0].1.links[0].clone();
@@ -43,7 +43,8 @@ fn click_first_link(app: &HeadlessApp, file: &std::path::Path) {
         rect: link.rect,
         target: link.target,
     };
-    crate::core::follow_link(inner, 0, &engine, hit);
+    engine.links().clicked_for_qa(hit);
+    app.act(crate::core::controls::UiAction::LinkClicked { pane: 0 });
 }
 
 /// Failure (R2.3, C5b): a contents row, the go-to field, Back, Forward, a swipe or a link to a page does something other than the command an agent sends:

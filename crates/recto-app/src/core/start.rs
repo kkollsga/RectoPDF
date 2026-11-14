@@ -141,7 +141,7 @@ impl Inner {
             listener: Arc::clone(&listener),
             published: Mutex::new(Published::empty()),
             saver: Arc::clone(&saver),
-            on_disk: sleeper::OnDisk::new(keeper, Arc::new(sleeper::Sleeper::new(clock))),
+            on_disk: sleeper::OnDisk::new(keeper, Arc::new(sleeper::Sleeper::new(Arc::clone(&clock)))),
             qa,
             keys,
             life,
@@ -172,6 +172,7 @@ impl Inner {
             Arc::clone(&inner.core),
             Arc::downgrade(&host),
         ));
+        host.session.set_clipboard(super::snapshot_tool::sink(&inner, clock));
         update_hooks.attach(Arc::downgrade(&inner));
         if let Some(qa) = &inner.qa {
             qa.attach(Arc::downgrade(&inner));

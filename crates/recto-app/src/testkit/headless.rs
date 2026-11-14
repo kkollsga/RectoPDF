@@ -692,6 +692,12 @@ impl HeadlessApp {
         self.core().core.holds.arm(at)
     }
 
+    /// **The next of the app's steps named `at` panics there** ([`crate::testkit::holds`]), on whatever thread reaches it.
+    #[cfg(test)]
+    pub fn panic_next(&self, at: &'static str) {
+        self.core().core.holds.panic_next(at);
+    }
+
     /// Waits for `what` to be true, looking every few milliseconds.
     ///
     /// # Panics

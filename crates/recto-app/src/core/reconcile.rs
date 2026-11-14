@@ -38,26 +38,26 @@ pub struct PaneSynced {
     pub marks: super::highlight::MarksSynced,
 }
 
-/// **Follows a link a click landed on,** by Rust's rule: a page of this document at once, as a jump; a web or email address only once the sheet's been answered; Back and Forward; and anything else never, with a notice saying why.
-pub fn follow_link(inner: &Arc<Inner>, pane: usize, engine: &Engine, hit: recto_reader::links::LinkHit) {
+/// **The link a click in `pane` landed on, followed** ([`super::controls::UiAction::LinkClicked`]), by Rust's rule: a page of this document at once, as
+/// the person's jump, and Back and Forward, which come back as the command for `act` to send; a web or email address only once the sheet's been answered;
+/// and anything else never, with a notice saying why. Nothing if the click landed on no link, or the app's handing off.
+pub fn link_clicked(inner: &Arc<Inner>, pane: usize) -> Option<recto_agent::Command> {
     if inner.core.frozen.load(Ordering::SeqCst) {
-        return;
+        return None;
     }
-    let Some(tab) = inner.panes.tab_of(pane) else { return };
+    let engine = inner.panes.engine(&inner.engine, pane)?;
+    let hit = engine.links().take_clicked()?;
+    let tab = inner.panes.tab_of(pane)?;
     match hit.target {
         recto_core::nav::LinkTarget::Page { page, within } => match engine.links().position_in_same_file(hit.page, page) {
-            Some(position) => {
-                person::submit(inner, super::navigation::link_to_page(tab, position, within));
-            }
+            Some(position) => return Some(super::navigation::link_to_page(tab, position, within)),
             None => person::say(
                 inner.window.notices(),
                 &inner.core,
                 "The page this link goes to isn't in the document as it's been edited.".to_string(),
             ),
         },
-        recto_core::nav::LinkTarget::History { back } => {
-            person::submit(inner, super::navigation::step(back));
-        }
+        recto_core::nav::LinkTarget::History { back } => return Some(super::navigation::step(back)),
         recto_core::nav::LinkTarget::Web(address) => {
             inner.tools.prompts().ask_link(&address);
             inner.core.push(CoreCall::Reconcile);
@@ -65,6 +65,7 @@ pub fn follow_link(inner: &Arc<Inner>, pane: usize, engine: &Engine, hit: recto_
         recto_core::nav::LinkTarget::Refused(why) => person::say(inner.window.notices(), &inner.core, why.message().to_string()),
         recto_core::nav::LinkTarget::Nowhere => person::say(inner.window.notices(), &inner.core, "This link goes nowhere in this document.".to_string()),
     }
+    None
 }
 
 /// **Shows a tab in a pane,** or brings what's shown up to date: another tab, another list of pages, a layout, a page an agent sent it to, or the warm tabs. A tab a pane's page view hasn't held starts from its sleep file's pictures, as any wake does.

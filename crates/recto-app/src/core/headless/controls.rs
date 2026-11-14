@@ -31,8 +31,11 @@ fn place(action: &UiAction) -> (usize, usize) {
         UiAction::SaveAs { .. } => 18,
         UiAction::SettingChosen { .. } => 19,
         UiAction::Print { .. } => 20,
+        UiAction::LinkClicked { .. } => 21,
+        UiAction::SnapshotTaken => 22,
+        UiAction::Pasted { .. } => 23,
     };
-    (place, 21)
+    (place, 24)
 }
 
 /// An app with two files open, and one of every kind of control on it, every menu item among them.
@@ -98,6 +101,14 @@ fn every_kind_of_control() -> (crate::testkit::headless::HeadlessApp, Vec<UiActi
         UiAction::FindClose,
         UiAction::PageTyped { text: "2".into() },
         UiAction::Swiped { delta_x: 1.0 },
+        // A mouse-up on a page with no link clicked: nothing to follow (a click on one is below, from the caller's thread).
+        UiAction::LinkClicked { pane: 0 },
+        // The snapshot tool's release with nothing taken, and a paste of an offer there isn't: nothing to do, at once.
+        UiAction::SnapshotTaken,
+        UiAction::Pasted {
+            serial: 1,
+            uti: "public.svg-image".into(),
+        },
         UiAction::ZoomTyped {
             text: "150".into(),
             decimal: ".".into(),
@@ -200,16 +211,12 @@ fn every_control_returns_while_the_session_is_held() {
                 ] {
                     let what = format!("a link click, {target:?}");
                     let engine = core.panes.reading_engine(&core.engine);
-                    crate::core::follow_link(
-                        &core,
-                        0,
-                        &engine,
-                        recto_reader::links::LinkHit {
-                            page: 0,
-                            rect: [0.0; 4],
-                            target,
-                        },
-                    );
+                    engine.links().clicked_for_qa(recto_reader::links::LinkHit {
+                        page: 0,
+                        rect: [0.0; 4],
+                        target,
+                    });
+                    core.act(UiAction::LinkClicked { pane: 0 });
                     if returned_tx.send(what).is_err() {
                         return;
                     }

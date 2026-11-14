@@ -130,6 +130,7 @@ AnswerParts::pub fn notice(&self, words: String)
 AnswerParts::pub fn person(&self) -> Person<'a>
 AnswerParts::pub fn print_answered(&self, said: impl FnOnce(&super::printing::Printing))
 AnswerParts::pub fn say(&self, words: String)
+AnswerParts::pub fn snapshot_answered(&self, said: impl FnOnce(&super::snapshot_tool::Tool) -> bool)
 AnswerParts::pub fn take_notice(&self)
 AnswerParts::pub fn unmark_update_menu(&self)
 AnswerParts::pub fn update_menu_marked(&self) -> bool

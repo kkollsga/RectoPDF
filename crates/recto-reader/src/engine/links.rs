@@ -37,6 +37,13 @@ impl Links<'_> {
         lock(&self.engine.shared.reader).pointer.take_clicked_link()
     }
 
+    /// **A click made to have landed on `hit`, for QA:** what the mouse leaves when it comes up on a link without moving, so a test drives the window's
+    /// click (`UiAction::LinkClicked`) with a link of its own. Only with the `qa` feature.
+    #[cfg(any(test, feature = "qa"))]
+    pub fn clicked_for_qa(&self, hit: crate::links::LinkHit) {
+        lock(&self.engine.shared.reader).pointer.link_clicked_for_qa(hit);
+    }
+
     /// Where a link's page is now: see [`crate::tiles::DocView::position_in_same_file`].
     pub fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<u32> {
         lock(&self.engine.shared.reader).docs.shown()?.position_in_same_file(from, file_page)

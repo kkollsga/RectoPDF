@@ -107,11 +107,51 @@ fn prepare(app: &HeadlessApp, name: &str) {
         app.agent(Level::Full, r#"{"cmd":"page_rotate","pages":"1","degrees":90}"#).expect("an edit");
         app.settle();
     }
+    // A click on a link to page 2, half way down, as the page view says one landed when the mouse came up on it.
+    if name == "UiAction::LinkClicked" {
+        let engine = app.core().panes.reading_engine(&app.core().engine);
+        engine.links().clicked_for_qa(recto_reader::links::LinkHit {
+            page: 0,
+            rect: [0.0; 4],
+            target: recto_core::nav::LinkTarget::Page { page: 1, within: Some(0.5) },
+        });
+    }
+    // The snapshot tool's box, drawn and let go; and for a paste, a box taken and offered to the clipboard first.
+    if matches!(name, "UiAction::SnapshotTaken" | "UiAction::Pasted") {
+        draw_a_box(app);
+    }
+    if name == "UiAction::Pasted" {
+        app.act(UiAction::SnapshotTaken);
+        app.wait_until("the box taken", || !app.core().tools.tool().busy());
+        app.settle();
+        let inner = app.core();
+        inner.tools.tool().take_offer(&inner.panes.engines(&inner.engine)).expect("the box offered");
+    }
     // A hit's row, which needs hits.
     if name == "UiAction::FindChoose" {
         app.agent(Level::Full, r#"{"cmd":"find","query":"page"}"#).expect("found");
         app.settle();
     }
+}
+
+/// With the snapshot tool on, a box drawn on the first page and the button let go, as the bridge's mouse calls do: what it took is kept for `SnapshotTaken`.
+fn draw_a_box(app: &HeadlessApp) {
+    app.core().perform(crate::core::snapshot_tool::TOGGLE_ID.into());
+    app.settle();
+    let inner = app.core();
+    let engine = inner.panes.reading_engine(&inner.engine);
+    let tool = inner.tools.tool();
+    let at = |x: f64, y: f64| engine.points().document_point(0, x, y).expect("page 1 is laid out");
+    let (x, y) = at(40.0, 40.0);
+    let _ = tool.press(&engine, 0, x, y);
+    let (x, y) = at(300.0, 200.0);
+    let _ = tool.drag(&engine, 0, x, y);
+    let _ = tool.release(&engine, 0);
+}
+
+/// The number of the clipboard's offer, for a paste of it.
+fn lock_offered_serial(app: &HeadlessApp) -> u64 {
+    crate::lock(&app.core().tools.tool().offered).as_ref().map_or(0, |offered| offered.serial)
 }
 
 /// **Each kind of control, by name,** with no default, so a new kind doesn't compile here until it's said what it is, and one of each made on `app`.
@@ -168,6 +208,14 @@ pub(super) fn every_kind(app: &HeadlessApp) -> Vec<(String, UiAction)> {
         UiAction::FindChoose { row: 1 },
         UiAction::PageTyped { text: "2".into() },
         UiAction::Swiped { delta_x: 1.0 },
+        // A click that came up on a link, which [`prepare`] makes the page view say it landed on.
+        UiAction::LinkClicked { pane: 0 },
+        // The snapshot tool's release, with a box [`prepare`] drew; and a paste of the SVG a box it took promised.
+        UiAction::SnapshotTaken,
+        UiAction::Pasted {
+            serial: lock_offered_serial(app),
+            uti: recto_agent::extract::UTI_SVG.into(),
+        },
         UiAction::ZoomTyped {
             text: "150".into(),
             decimal: ".".into(),
@@ -242,6 +290,9 @@ fn kind(action: &UiAction) -> String {
         UiAction::FindChoose { .. } => "FindChoose",
         UiAction::PageTyped { .. } => "PageTyped",
         UiAction::Swiped { .. } => "Swiped",
+        UiAction::LinkClicked { .. } => "LinkClicked",
+        UiAction::SnapshotTaken => "SnapshotTaken",
+        UiAction::Pasted { .. } => "Pasted",
         UiAction::ZoomTyped { .. } => "ZoomTyped",
         UiAction::ToggleSidebar => "ToggleSidebar",
         UiAction::PaletteRun { .. } => "PaletteRun",
@@ -362,11 +413,12 @@ fn golden_lines(controls: &[(String, Did)], recent: &str) -> Vec<String> {
                 .sent
                 .iter()
                 .any(|wire| wire.starts_with(r#"{"cmd":"save","#) || wire.starts_with(r#"{"cmd":"find","query":""#) || wire.starts_with(r#"{"cmd":"print","#));
+            let snapshot = did.sent.iter().any(|wire| wire.starts_with(r#"{"cmd":"snapshot","#));
             format!(
                 "{name} | sent [{sent}] | host {:?} understood {} | heard {}",
                 did.acted.host,
                 did.acted.understood,
-                heard_line(&did.heard, saves)
+                if snapshot { heard_kinds(&did.heard) } else { heard_line(&did.heard, saves) }
             )
         })
         .collect()
@@ -381,7 +433,7 @@ fn golden_lines(controls: &[(String, Did)], recent: &str) -> Vec<String> {
 /// batches of hits are already one call; the worker lands a batch when it does, and the session thread tells of what has changed when it looks, so a batch
 /// that lands before the look before is one call with it. **And a person's print** (S2, 2026-11-14): each page done is a change to the notice's count,
 /// told 4 times on one run of a 2-page print and 6 on a 4-page one, as its pages land before or after the look. Every other control's calls were the same
-/// in all 20.
+/// in all 20 but the snapshot tool's ([`heard_kinds`]).
 fn heard_line(heard: &[&str], saves: bool) -> String {
     if heard.is_empty() {
         return "nothing".to_string();
@@ -399,6 +451,18 @@ fn heard_line(heard: &[&str], saves: bool) -> String {
         (false, count) => format!("{kind}*{count}"),
     };
     runs.iter().map(run).collect::<Vec<_>>().join(" ")
+}
+
+/// **The Listener's calls for the snapshot tool's box, as the golden holds them:** which kinds, each once as `kind+`, in no order. "Copying…" is said
+/// at once and the answer when the worker's done, and the session thread's look finds the two together or apart, before or after the host is told the
+/// clipboard's ready, as the worker is quick or not (2026-11-14: `model_changed+ copy_ready+ model_changed+` in 12 runs of 20 under `--like-ci`, and
+/// `model_changed+ copy_ready+` in 8). What it holds: the host is told the clipboard's ready, and the window's changed, and nothing else.
+fn heard_kinds(heard: &[&str]) -> String {
+    let kinds: std::collections::BTreeSet<&str> = heard.iter().copied().collect();
+    if kinds.is_empty() {
+        return "nothing".to_string();
+    }
+    kinds.iter().map(|kind| format!("{kind}+")).collect::<Vec<_>>().join(" ")
 }
 
 /// What every control did on 2026-11-13, before `Inner`'s person's methods moved into their features (R3.7): one line a control, as [`golden_lines`] makes them.

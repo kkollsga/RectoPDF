@@ -501,9 +501,9 @@
 {"cmd":"Images"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"image","page":3,"number":3,"out":"/d/x.pdf"}
-    ok image Image { tab: "active", page: 3, number: 3, out: "/d/x.pdf", anyway: false }
+    ok image Image { tab: "active", page: 3, number: Some(3), out: Some("/d/x.pdf"), anyway: false, at: None, to_clipboard: false, as_seen: None }
 {"cmd":"image","tab":"#2","page":3,"number":3,"out":"/d/x.pdf","anyway":true}
-    ok image Image { tab: "#2", page: 3, number: 3, out: "/d/x.pdf", anyway: true }
+    ok image Image { tab: "#2", page: 3, number: Some(3), out: Some("/d/x.pdf"), anyway: true, at: None, to_clipboard: false, as_seen: None }
 {"cmd":"image","page":3,"number":3,"out":"/d/x.pdf","extra":1}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"image","page":3,"number":3,"out":"/d/x.pdf","tab":{}}
@@ -535,13 +535,13 @@
 ["image"]
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 ["image","#2",3,3,"/d/x.pdf",true]
-    ok image Image { tab: "#2", page: 3, number: 3, out: "/d/x.pdf", anyway: true }
+    ok image Image { tab: "#2", page: 3, number: Some(3), out: Some("/d/x.pdf"), anyway: true, at: None, to_clipboard: false, as_seen: None }
 {"cmd":"Image"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":"png"}
-    ok snapshot Snapshot { tab: "active", page: 3, rect: [0.0, 0.0, 10.0, 10.0], format: "png", out: None, scale: 2.0, anyway: false }
+    ok snapshot Snapshot { tab: "active", page: 3, rect: [0.0, 0.0, 10.0, 10.0], format: "png", out: None, scale: 2.0, anyway: false, to_clipboard: false, as_seen: None }
 {"cmd":"snapshot","tab":"#2","page":3,"rect":[0,0,10,10],"as":"png","out":"/d/x.pdf","scale":1.5,"anyway":true}
-    ok snapshot Snapshot { tab: "#2", page: 3, rect: [0.0, 0.0, 10.0, 10.0], format: "png", out: Some("/d/x.pdf"), scale: 1.5, anyway: true }
+    ok snapshot Snapshot { tab: "#2", page: 3, rect: [0.0, 0.0, 10.0, 10.0], format: "png", out: Some("/d/x.pdf"), scale: 1.5, anyway: true, to_clipboard: false, as_seen: None }
 {"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":"png","extra":1}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":"png","tab":{}}
@@ -569,7 +569,7 @@
 {"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":"png","out":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":"png","out":null}
-    ok snapshot Snapshot { tab: "active", page: 3, rect: [0.0, 0.0, 10.0, 10.0], format: "png", out: None, scale: 2.0, anyway: false }
+    ok snapshot Snapshot { tab: "active", page: 3, rect: [0.0, 0.0, 10.0, 10.0], format: "png", out: None, scale: 2.0, anyway: false, to_clipboard: false, as_seen: None }
 {"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":"png","scale":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"snapshot","page":3,"rect":[0,0,10,10],"as":"png","scale":null}
@@ -581,7 +581,7 @@
 ["snapshot"]
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 ["snapshot","#2",3,[0,0,10,10],"png","/d/x.pdf",1.5,true]
-    ok snapshot Snapshot { tab: "#2", page: 3, rect: [0.0, 0.0, 10.0, 10.0], format: "png", out: Some("/d/x.pdf"), scale: 1.5, anyway: true }
+    ok snapshot Snapshot { tab: "#2", page: 3, rect: [0.0, 0.0, 10.0, 10.0], format: "png", out: Some("/d/x.pdf"), scale: 1.5, anyway: true, to_clipboard: false, as_seen: None }
 {"cmd":"Snapshot"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"snapshot","page":3,"rect":[0,0,10,10],"format":"png"}
@@ -1571,9 +1571,9 @@ null
 {"cmd":"view","paper":"warm"}
     ok view View { paper: Some("warm"), sidebar: None, agent_icon: None, zoom: None, layout: None, tab: None }
 {"cmd":"snapshot","page":1,"rect":[0,0,1,1],"as":"text"}
-    ok snapshot Snapshot { tab: "active", page: 1, rect: [0.0, 0.0, 1.0, 1.0], format: "text", out: None, scale: 2.0, anyway: false }
+    ok snapshot Snapshot { tab: "active", page: 1, rect: [0.0, 0.0, 1.0, 1.0], format: "text", out: None, scale: 2.0, anyway: false, to_clipboard: false, as_seen: None }
 {"cmd":"snapshot","page":1,"rect":[0,0,1,1],"as":"svg"}
-    ok snapshot Snapshot { tab: "active", page: 1, rect: [0.0, 0.0, 1.0, 1.0], format: "svg", out: None, scale: 2.0, anyway: false }
+    ok snapshot Snapshot { tab: "active", page: 1, rect: [0.0, 0.0, 1.0, 1.0], format: "svg", out: None, scale: 2.0, anyway: false, to_clipboard: false, as_seen: None }
 {"cmd":"budget_render","pages":1,"limit_mib":10}
     ok budget_render BudgetRender { tab: "active", pages: 1, first: None, scale: 2.0, fresh: false, tiles: false, samples: false, limit_mib: Some(10), retire_mib: None }
 {"cmd":"budget_render","pages":1,"retire_mib":10}

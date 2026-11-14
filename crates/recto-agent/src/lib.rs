@@ -20,6 +20,7 @@ pub mod event;
 #[cfg(test)]
 mod event_agreement;
 pub use event::{Event, edits_changed, page_changed, page_now, view_changed};
+pub mod clipboard;
 pub mod extract;
 mod file_wall;
 #[cfg(test)]
@@ -459,6 +460,11 @@ pub trait SessionAccess {
     /// **The window's watch over a print, for the actor at the window only** ([`print::PrintWatch`]): how far it's got, with Stop. A session with no window
     /// has none, and an agent's print never gets it.
     fn print_watch(&self, _actor: Actor) -> Option<&dyn print::PrintWatch> {
+        None
+    }
+    /// **The window's clipboard, for the actor at the window only** ([`clipboard::ClipboardSink`]): where the person's own snapshot goes. A session with no
+    /// window has none, and an agent's `snapshot` never gets it.
+    fn clipboard(&self, _actor: Actor) -> Option<&dyn clipboard::ClipboardSink> {
         None
     }
 }
