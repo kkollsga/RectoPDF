@@ -15,6 +15,12 @@
 # sandbox jobs' (about 0.15 and 0.22 GB) and PDFium's (3 MB) that is about 3.5 GB a lock. A cache per job or per branch, or a save on branches, puts it past
 # 10 GB again: count it against this first.
 #
+# What is left out of the saved cache (2026-11-14; the cache was 5.8 GB and its restore took 118 to 214 s a run): target/pdfium (its own cache above),
+# target/nextest (a run's junit, overwritten by the next), target/recto-evidence (a run's evidence; on CI it is under RUNNER_TEMP anyway) and
+# ~/.cargo/registry/src (the unpacked crates: cargo unpacks them again from registry/cache, in seconds). Changing `path:` changes the cache's version,
+# so no older `check-` cache matches by prefix: the first run after this is a cold build, once. Not pruned: stale test executables from the prefix
+# fallback. Cargo keeps no record of which files a run used, and atime isn't reliable here, so no rule could be shown never to delete what the next run needs.
+#
 # How long. A whole run took 12 to 15 minutes in one job (2026-11-12), and the tools' tests add about 3 when they run. A failed stage's tests run again
 # (tools/check-rerun.sh, R0.7c): at most 8 tests, no round after 240 s of a stage's rounds, and no round at all after 360 s of the whole run's
 # (CHECK_RERUN_TOTAL_SECONDS), so a badly broken branch adds at most 360 s and one round (nextest ends a test at 300 s): 11 minutes. 15 + 3 + 11 is 29;
@@ -43,6 +49,10 @@ jobs:
       # Every failure in one round trip, not only the first.
       NEXTEST_PROFILE: ci
       CARGO_TERM_COLOR: always
+      # No incremental data on CI (2026-11-14): every run starts from a restored cache of another commit, which incremental compilation can't use
+      # (it keys on the crate's own previous session in this folder, and it is written at every build and then saved and restored as bytes), so it
+      # only costs compile time and cache size here. Dependencies are never incremental; only the workspace crates are.
+      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -73,9 +83,17 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
+            !~/.cargo/registry/src
+            !target/pdfium
+            !target/nextest
+            !target/recto-evidence
           key: check-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
           restore-keys: |
             check-
+      # What the cache holds, after the restore and again before the save: sizes only, 30 lines a listing, a few seconds (tools/ci-cache-report.sh;
+      # lines start with "cache-report"). Read the two against each other and against the restore's "Cache Size" line.
+      - name: What the restored cache holds
+        run: tools/ci-cache-report.sh after-restore
       - name: Full check
         run: tools/check.sh --full
         env:
@@ -85,6 +103,9 @@ jobs:
           # launch's messages, `qa state`, threads, a sample, the slow seams, the machine, Launch Services and the command that runs it again on a Mac. Uploaded
           # with the logs below. A failed stage's tests run again 4 times here (CHECK_RERUN, set by tools/check.sh on CI) and the log has "failed N of M".
           RECTO_EVIDENCE: ${{ runner.temp }}/recto-test-logs/evidence
+      - name: What the cache holds, before it is saved
+        if: success() && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        run: tools/ci-cache-report.sh before-save
       # Before the logs and artifacts, so a failure there can't lose it.
       - name: Rust's cache, saved on main
         if: success() && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
@@ -94,6 +115,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
+            !~/.cargo/registry/src
+            !target/pdfium
+            !target/nextest
+            !target/recto-evidence
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
       # What CI saw, when it fails: run 43054237265 said only that the app had gone, so a crash, a time limit and a test looking too late
       # couldn't be told apart (2026-11-11). The quiet runs' logs above, and the system's crash reports for the app and its helpers.
