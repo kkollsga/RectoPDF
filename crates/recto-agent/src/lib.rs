@@ -24,6 +24,7 @@ pub mod find;
 pub mod generated;
 pub mod human;
 pub mod index;
+pub mod keys;
 pub mod linking;
 mod loader;
 pub mod print;
@@ -428,9 +429,10 @@ pub trait SessionAccess {
     }
     /// What the window's to do after this command, if there's a window: see [`Effect`]. A session with no window has nothing to show.
     fn effect(&self, _effect: Effect) {}
-    /// **The person's passwords, for their own Find** in a document they opened with one ([`find::FindPlan::with_keys`]): only for an actor who may see
-    /// protected documents ([`Actor::sees_protected`]), so an agent's `find` never gets them. A session with no window has none.
-    fn find_keys(&self, _actor: Actor) -> Option<find::KeyLookup> {
+    /// **The person's passwords, for their own Find and Print** in a document they opened with one ([`keys`]): only on the person's own route, which
+    /// a host builds apart from what the server reaches, and there only for an actor who may see protected documents ([`Actor::sees_protected`]), so an
+    /// agent's `find` or `print` never gets them. A session with no window has none.
+    fn persons_keys(&self, _actor: Actor) -> Option<keys::PersonsKeys> {
         None
     }
     /// How this host reads what a command needs, if it mustn't wait on a disk: see [`later`]. Every host but the window's session thread reads in place.

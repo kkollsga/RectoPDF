@@ -32,6 +32,32 @@ impl AppHost {
     /// **A command run as `origin` says it was asked:** one asked before a freeze whose turn in the person's lane has come goes through it
     /// ([`crate::queue::Origin::held_back_by_a_freeze`]), as on the session thread's queue; anything else asked now is refused past it.
     pub fn run_as(&self, actor: Actor, command: &Command, events: &mut Vec<Event>, origin: crate::queue::Origin) -> Result<Value, AgentError> {
+        self.counted(actor, command, origin, || self.run_counted(actor, command, events))
+    }
+
+    /// **A command of the person's at the window, as `origin` says it was asked:** as [`Self::run_as`] with [`Actor::Person`], counted the same, by the
+    /// person's own door, which alone carries their passwords to their own Find and Print ([`SessionHost::run_for_person`]). The server holds this host as
+    /// a [`Host`], whose `run` is [`Self::run_as`]: it can't reach this.
+    pub fn run_for_person(&self, command: &Command, events: &mut Vec<Event>, origin: crate::queue::Origin) -> Result<Value, AgentError> {
+        self.counted(Actor::Person, command, origin, || match command.route() {
+            Runs::App => self.run_app(Actor::Person, command, events),
+            Runs::Record => self.session.run(Actor::Person, command, events),
+            Runs::Session | Runs::Server => {
+                let result = self.session.run_for_person(command, events);
+                self.core.push(CoreCall::Reconcile);
+                result
+            }
+        })
+    }
+
+    /// `run`, counted for a hand-off and a quit, and refused past a freeze or while keeping the record settles, as [`Self::run_as`] says.
+    fn counted(
+        &self,
+        actor: Actor,
+        command: &Command,
+        origin: crate::queue::Origin,
+        run: impl FnOnce() -> Result<Value, AgentError>,
+    ) -> Result<Value, AgentError> {
         let asks_only = command.only_asks();
         // While keeping the record is settling, an agent's command that isn't a look is refused before it's counted, so none is ever under way then
         // (`keeping::answers_agents`).
@@ -60,7 +86,7 @@ impl AppHost {
         }
         #[cfg(test)]
         self.core.holds.at(command.tag());
-        let result = self.run_counted(actor, command, events);
+        let result = run();
         if !asks_only {
             self.command_ended(changes);
         }

@@ -13,6 +13,8 @@ use recto_agent::{
     Actor, AgentError, Command, Condition, ConditionState, DrawableLoader, Event, SessionAccess, acted_tab, check_condition, exit, with_tab_candidates,
 };
 
+#[cfg(test)]
+mod keys_tests;
 mod own_record;
 #[cfg(test)]
 mod route_tests;
@@ -66,8 +68,9 @@ pub struct SessionHost<L = DrawableLoader> {
     record: Option<RecordStore>,
     /// What a save needs beyond the session: where backups go, and the app's journals. Set once.
     saving: std::sync::OnceLock<Arc<dyn SaveSupport + Send>>,
-    /// The person's passwords, for their own Find: set by the app, and none for a session with no window.
-    find_keys: std::sync::OnceLock<recto_agent::find::KeyLookup>,
+    /// The person's passwords, for their own Find and Print: set by the app, and none for a session with no window. Only [`Self::persons_access`] puts
+    /// them in an access, and only the person's own route reaches that.
+    persons_keys: std::sync::OnceLock<recto_agent::keys::PersonsKeys>,
     /// The app's state record, which it keeps as it goes, for the record's commands. Set once, by the app.
     records: std::sync::OnceLock<Arc<dyn Records + Send + Sync>>,
     /// Where what a command asks of the window goes, set once by the app: none for a session with no window.
@@ -115,8 +118,8 @@ struct Hosted<'a, L> {
     reads_later: Option<&'a dyn recto_agent::later::ReadLater>,
     /// Whether the answer is read: not on the window's session thread, which draws what the session publishes.
     answer_read: bool,
-    /// The person's passwords, for their own Find.
-    find_keys: Option<&'a recto_agent::find::KeyLookup>,
+    /// The person's passwords, for their own Find and Print: only in an access made by [`SessionHost::persons_access`].
+    persons_keys: Option<&'a recto_agent::keys::PersonsKeys>,
     own_record: Option<own_record::OwnRecord<'a, L>>,
 }
 
@@ -168,8 +171,9 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
     fn answer_read(&self) -> bool {
         self.answer_read
     }
-    fn find_keys(&self, actor: Actor) -> Option<recto_agent::find::KeyLookup> {
-        self.find_keys.filter(|_| actor.sees_protected()).cloned()
+    /// The second lock: held only by the person's own access, and given even there only to an actor who may see a protected document.
+    fn persons_keys(&self, actor: Actor) -> Option<recto_agent::keys::PersonsKeys> {
+        self.persons_keys.filter(|_| actor.sees_protected()).cloned()
     }
     fn confinement(&self) -> Option<Arc<recto_platform::run_folders::RunFolders>> {
         self.session.confinement().folders().cloned()
@@ -207,7 +211,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             finder: Finder::new(None),
             record: None,
             saving: std::sync::OnceLock::new(),
-            find_keys: std::sync::OnceLock::new(),
+            persons_keys: std::sync::OnceLock::new(),
             records: std::sync::OnceLock::new(),
             effects: std::sync::OnceLock::new(),
             places: std::sync::OnceLock::new(),
@@ -241,17 +245,18 @@ impl<L: DocLoader + Clone> SessionHost<L> {
     /// A query, by the same step as `recto find`'s, which runs in the background, with the person's passwords: for a test that drives the Finder itself. The
     /// window's Find is the person's `find`.
     pub fn find_begin(&self, query: &str) -> Result<u64, AgentError> {
-        recto_agent::find::begin_keyed(&self.access(), query, self.find_keys.get().cloned())
+        recto_agent::find::begin_keyed(&self.persons_access(), query, self.persons_find_keys())
     }
 
-    /// The person's passwords, for their own Find in a document they opened with one, set once by the app: see [`recto_agent::find::FindPlan::with_keys`]. An agent's `find` never gets them.
-    pub fn set_find_keys(&self, keys: recto_agent::find::KeyLookup) {
-        let _ = self.find_keys.set(keys);
+    /// The person's passwords, for their own Find and Print in a document they opened with one, set once by the app ([`recto_agent::keys`]). Only the
+    /// person's own route ([`Self::run_for_person`]) carries them to a command; what the server calls never does.
+    pub fn set_persons_keys(&self, keys: recto_agent::keys::PersonsKeys) {
+        let _ = self.persons_keys.set(keys);
     }
 
-    /// Those passwords, for a plan the app makes itself.
-    pub fn find_keys(&self) -> Option<recto_agent::find::KeyLookup> {
-        self.find_keys.get().cloned()
+    /// Those passwords as Find looks them up, for a plan the app makes itself for the person's Find.
+    pub fn persons_find_keys(&self) -> Option<recto_agent::find::KeyLookup> {
+        self.persons_keys.get().map(recto_agent::keys::PersonsKeys::for_find)
     }
 
     /// The person's step kept for its hit, taken when the Finder's news says it's known: the same step as `recto find --next`'s.
@@ -325,17 +330,33 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             print_watch: self.print_watch.get().map(|watch| &**watch),
             reads_later: None,
             answer_read: true,
-            find_keys: self.find_keys.get(),
+            persons_keys: None,
             own_record: self.record.as_ref().map(|store| own_record::OwnRecord { session: &self.session, store }),
         }
     }
 
-    /// **A command on a thread that mustn't wait on a disk,** the window's session thread: what it needs from a file is read by `reads`, off this thread, and it
-    /// runs again once that's in ([`recto_agent::later`]). What it asks of the window is carried out by `effects`, there and then. Its answer isn't read, as the window draws what the session publishes, so a command that would build
-    /// a costly one doesn't (`SessionAccess::answer_read`). Otherwise as [`Host::run`].
-    pub fn run_reading_later(
+    /// **The person's own access: the only one holding their passwords** ([`recto_agent::keys`]). Every way to a command the server has
+    /// ([`Host::run`], [`Host::check`]) is by [`Self::access`], which holds none whatever actor it's given; this is reached only by the person's routes,
+    /// [`Self::run_for_person`] and [`Self::run_for_person_reading_later`], which take no actor.
+    fn persons_access(&self) -> Hosted<'_, L> {
+        Hosted {
+            persons_keys: self.persons_keys.get(),
+            ..self.access()
+        }
+    }
+
+    /// **A command of the person's, at the window,** with their passwords for their own Find and Print: the person's door, which the server can't reach
+    /// (it holds a [`Host`], and this isn't one of its methods). Otherwise as [`Host::run`] with [`Actor::Person`].
+    pub fn run_for_person(&self, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+        self.run_on(&self.persons_access(), Actor::Person, command, events)
+    }
+
+    /// **A command of the person's on a thread that mustn't wait on a disk,** the window's session thread: what it needs from a file is read by `reads`,
+    /// off this thread, and it runs again once that's in ([`recto_agent::later`]). What it asks of the window is carried out by `effects`, there and then.
+    /// Its answer isn't read, as the window draws what the session publishes, so a command that would build a costly one doesn't
+    /// (`SessionAccess::answer_read`). Otherwise as [`Self::run_for_person`].
+    pub fn run_for_person_reading_later(
         &self,
-        actor: Actor,
         command: &Command,
         events: &mut Vec<Event>,
         reads: &dyn recto_agent::later::ReadLater,
@@ -346,9 +367,9 @@ impl<L: DocLoader + Clone> SessionHost<L> {
                 reads_later: Some(reads),
                 answer_read: false,
                 effects: Some(effects),
-                ..self.access()
+                ..self.persons_access()
             },
-            actor,
+            Actor::Person,
             command,
             events,
         )

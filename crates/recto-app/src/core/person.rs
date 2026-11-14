@@ -112,7 +112,7 @@ pub(super) fn on_its_own_thread(command: Command, counted: Running, turn: Option
         let here = crate::queue::lane::hold_here(turn);
         let mut events = Vec::new();
         sent(&inner.serving, &command);
-        let result = inner.host.run_as(Actor::Person, &command, &mut events, origin);
+        let result = inner.host.run_for_person(&command, &mut events, origin);
         answered(&AnswerParts::of(&inner), &command, Origin::Input, &result);
         inner.core.push(CoreCall::Events(events));
         // Its turn passes once what it did is told, so watchers hear of it before the person's next edit; and before its count goes, so the app's
@@ -314,7 +314,7 @@ pub fn run(inner: &Arc<Inner>, reads: &mut FileReads, run: PersonCommand, events
     let result = inner
         .host
         .session
-        .run_reading_later(Actor::Person, &command, events, &later, &super::find::effects_now(inner));
+        .run_for_person_reading_later(&command, events, &later, &super::find::effects_now(inner));
     answered(&AnswerParts::of(inner), &command, origin, &result);
     result
 }
