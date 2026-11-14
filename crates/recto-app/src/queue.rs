@@ -186,6 +186,9 @@ pub struct CoreQueue {
     /// The session thread is to end once it's through what's queued. Only a headless app's quit asks this, to start again on the same disk in the same process; the app's
     /// own session thread never ends, as the process does.
     ended: AtomicBool,
+    /// **Abandoned:** a headless app's kill, and only that ([`Self::abandon`]). From here a call pushed is dropped at once, with what it holds, as nothing will
+    /// ever take it: a thread that waits on a channel a call carries (a late try's verdict) then sees it closed and ends. The app's queue is never abandoned.
+    abandoned: AtomicBool,
 }
 
 impl CoreQueue {
@@ -198,6 +201,10 @@ impl CoreQueue {
             return;
         }
         let mut calls = lock(&self.calls);
+        // Looked at under the lock `abandon` sets it under, so no call gets in after it.
+        if self.abandoned.load(Ordering::SeqCst) {
+            return;
+        }
         if let CoreCall::Page(page, failure, tab) = &call {
             // Only notes of what was drawn can go, as they're told on to watchers and no more. Many tiles of a page are one note, which is most of them, so this is hard to reach. With the session thread held up for some reason this stops them growing without end. Anything a person did always gets in.
             if calls.len() >= MAX_QUEUED_CALLS
@@ -226,8 +233,12 @@ impl CoreQueue {
 
     /// **The session thread ends now, with nothing more taken,** as a process that's killed takes nothing it was asked. Only a headless app's kill asks this.
     pub fn abandon(&self) {
-        // A flush another thread waits on among them is never marked done: it waits out its own limit, as nothing more is done.
-        drop(std::mem::take(&mut *lock(&self.calls)));
+        // A flush another thread waits on among them is never marked done: it waits out its own limit, as nothing more is done. Set under the queue's lock, so a
+        // push that got in first is taken away with the rest and one that comes after is dropped by `push`.
+        let mut calls = lock(&self.calls);
+        self.abandoned.store(true, Ordering::SeqCst);
+        drop(std::mem::take(&mut *calls));
+        drop(calls);
         self.reconcile_queued.store(false, Ordering::SeqCst);
         self.end();
     }
@@ -353,6 +364,20 @@ mod tests {
         assert!(queue.has_ended());
         assert!(queue.next_or_due(|| None).is_none(), "nothing taken");
         assert!(lock(&queue.calls).is_empty());
+    }
+
+    /// **Failure: what's pushed once the queue is abandoned is kept for good,** as nothing will ever take it: with a late try's word that it has the record's
+    /// lock, the channel its thread waits on for the verdict stays open in the queue that thread itself keeps alive, so the thread waits forever and the headless
+    /// kit's end waits on it to its limit and fails (found by R3.7 S5). Pushed after the abandon, a call is dropped at once, with whatever it holds.
+    #[test]
+    fn a_call_pushed_once_the_queue_is_abandoned_is_dropped_with_what_it_holds() {
+        let queue = CoreQueue::default();
+        queue.abandon();
+        let held = Arc::new(Flushed::default());
+        queue.push(CoreCall::Flush(Arc::clone(&held)));
+        queue.push(tap(1));
+        assert!(lock(&queue.calls).is_empty(), "nothing kept");
+        assert_eq!(Arc::strong_count(&held), 1, "what the call held is let go");
     }
 
     /// Failure (review T4): past a hand-off's last look, a tap or an open is taken, and it's lost as what's on disk is what comes back. They aren't taken while it's frozen, and what isn't a person's doing still gets through, or the session would stop answering.

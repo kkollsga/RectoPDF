@@ -63,6 +63,25 @@ fn a_late_try() -> Held {
     }
 }
 
+/// A late try that got the record's lock, held on its thread before its word to the session thread: as the app ends, the word goes to a queue that's been
+/// abandoned, and the thread, waiting to hear whether to read, must hear nothing and end.
+fn a_late_try_with_the_lock() -> Held {
+    let disk = a_saved_session();
+    let before = the_copy_before(&disk);
+    let app = disk.builder().another_keeps().start();
+    gate::hold(&[Seam::RecordLock]);
+    drop(before);
+    app.advance(TRY_EVERY_MS);
+    app.wait_until("the try held with the lock", || app.waiting(Seam::RecordLock) > 0);
+    assert!(app.core().saver.store.holds_the_record(), "the try has the lock");
+    Held {
+        case: "a late try with the lock",
+        app,
+        seam: Seam::RecordLock,
+        before: None,
+    }
+}
+
 /// A late keep's read of the saved session, held inside it on the try's thread, the lock in hand.
 fn a_late_keeps_read() -> Held {
     let disk = a_saved_session();
@@ -107,7 +126,13 @@ fn the_sleep_writer() -> Held {
 /// hooks hold the host's listener: none of the record's code calls it, and once the end has returned nothing holds it at all).
 #[test]
 fn a_thread_of_the_records_held_as_the_app_ends_writes_nothing_after_it() {
-    for held in [the_launchs_read as fn() -> Held, a_late_try, a_late_keeps_read, the_sleep_writer] {
+    for held in [
+        the_launchs_read as fn() -> Held,
+        a_late_try,
+        a_late_try_with_the_lock,
+        a_late_keeps_read,
+        the_sleep_writer,
+    ] {
         let Held { case, app, seam, before } = held();
         let host = Arc::downgrade(&app.core().listener);
         let parts = Parts::of(&app);
