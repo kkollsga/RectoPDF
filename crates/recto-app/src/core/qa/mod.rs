@@ -517,10 +517,21 @@ impl QaBridge {
                 self.core.flush(ANSWER_AFTER_CLICK);
                 return self.ask("state", "");
             }
-            "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize"
-            | "contents_scroll" | "contents_pointer" | "corner_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button"
-            | "zoom_type" | "page_type" | "find_type" | "find_key" | "find_click" | "swipe" | "context_menu" | "key_action" | "full_screen" | "minimise"
-            | "hide_app" | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" | "accessibility" => check_drive_value(verb, value)?,
+            "click_row" => {
+                check_drive_value(verb, value)?;
+                if let Some(row) = value.strip_prefix("fold:").and_then(|row| row.parse().ok()) {
+                    let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
+                    let published = lock(&inner.published);
+                    let sidebar = &published.sidebar;
+                    if let Some(words) = super::contents::fold_row_refusal(&published.contents, sidebar.active_index, sidebar.toc_open, row) {
+                        return Err(bad(words));
+                    }
+                }
+            }
+            "appearance" | "window" | "hover" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize" | "contents_scroll"
+            | "contents_pointer" | "corner_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type"
+            | "page_type" | "find_type" | "find_key" | "find_click" | "swipe" | "context_menu" | "key_action" | "full_screen" | "minimise" | "hide_app"
+            | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" | "accessibility" => check_drive_value(verb, value)?,
             "palette_type" | "palette_key" => {
                 check_drive_value(verb, value)?;
                 if !self.inner().is_some_and(|inner| inner.tools.palette().is_open()) {
@@ -825,6 +836,26 @@ mod tests {
             timeout_ms: None,
             tab: None,
         }))
+    }
+
+    /// Failure (finding 1 of the contents fixes): `recto qa click-row fold:N` on a row that isn't a section, past the contents, or on a tab row exits 0 and
+    /// does nothing, so a wrong number (an entry's, as `contents fold` takes it) passes for a fold that didn't happen. Each is refused in words before the
+    /// window is asked, and the row that is a section is not refused.
+    #[test]
+    fn click_row_fold_says_when_the_row_has_no_section_to_fold() {
+        let app = HeadlessApp::start();
+        let qa = bridge(&app);
+        app.open(&app.disk().file("a.pdf", &crate::core::headless::files::with_sections(6)));
+        let sidebar = app.sidebar();
+        let active = sidebar.active_index.expect("an active tab");
+        // The first section is the contents' first row, the next row has nothing under it.
+        let section = active + 1;
+        for row in [active, section + 1, section + sidebar.contents_count + 3] {
+            let refused = drive(&qa, "click_row", &format!("fold:{row}")).expect_err("a row with nothing to fold");
+            assert!(refused.message.contains(&format!("Row {row}")), "fold:{row}: {refused:?}");
+        }
+        let published = lock(&app.core().published);
+        assert!(super::super::contents::fold_row_refusal(&published.contents, Some(active), true, section).is_none());
     }
 
     /// Failure (review of R2.4, S2): `qa save-as` acts as the person, at Control and with no file wall, where the same through `qa as-person` needs Full
