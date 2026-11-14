@@ -703,4 +703,79 @@ mod tests {
         };
         assert_eq!(page.get(b"Annots").unwrap().as_array().unwrap().len(), 1, "the note stays");
     }
+
+    /// Every place in the app's crates that opens a renderer, outside tests: the file under `crates/`, how many it opens, and for one that draws a
+    /// tab's pages, how many times it hands that renderer the tab's set (`hidden.draw_for(`); 0 for one that reads text or structure, copies an
+    /// embedded image as it is, or draws no tab.
+    const RENDERERS: &[(&str, usize, usize, &str)] = &[
+        ("recto-agent/src/agreement.rs", 1, 0, "the agreement gate's look at the file's text"),
+        (
+            "recto-agent/src/extract.rs",
+            6,
+            3,
+            "a snapshot's picture and SVG (the agent's), the Snapshot tool's PNG and JPG, and its SVG; the rest copy an embedded image or read text",
+        ),
+        ("recto-agent/src/loader.rs", 1, 0, "a file's facts when it's opened"),
+        ("recto-agent/src/print.rs", 1, 1, "each page printed"),
+        ("recto-agent/src/render.rs", 3, 1, "`recto render`; the others are `open_for_text` itself, named and opening"),
+        ("recto-agent/src/render/image.rs", 1, 0, "the embedded images a page has"),
+        ("recto-agent/src/render/snapshot.rs", 1, 0, "whether the file allows copying"),
+        ("recto-agent/src/render/svg.rs", 1, 1, "`recto export svg`"),
+        ("recto-agent/src/search.rs", 1, 0, "the text searched"),
+        ("recto-agent/src/selecting.rs", 1, 0, "the characters a pick takes"),
+        ("recto-app/src/core/updates.rs", 1, 0, "a new version's own test page, no tab's"),
+        (
+            "recto-reader/src/engine/run.rs",
+            1,
+            1,
+            "the page view's tiles: `renderer_for` hands over the tab's set",
+        ),
+    ];
+
+    /// **Failure (second review of R4.3, S3): a new way of drawing a tab's pages skips the tab's set**, as the Snapshot tool's did, and copies or shows
+    /// a highlight the person took out. Every renderer opened in the app's crates outside tests is in [`RENDERERS`] with what it's for, and one that
+    /// draws a tab hands it the set as often as it opens one: a new one fails here until it's said which it is.
+    #[test]
+    fn every_renderer_that_draws_a_tab_is_given_its_set() {
+        fn files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    files(&path, out);
+                } else if path.extension().is_some_and(|ending| ending == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let mut found = Vec::new();
+        for krate in ["recto-agent", "recto-app", "recto-reader", "recto-ffi", "recto-session", "recto-control"] {
+            let mut paths = Vec::new();
+            files(&crates.join(krate).join("src"), &mut paths);
+            for path in paths {
+                let text = std::fs::read_to_string(&path).unwrap();
+                let code = text.split("#[cfg(test)]").next().unwrap_or_default();
+                let lines = || code.lines().filter(|line| !line.trim_start().starts_with("//"));
+                let opens = lines()
+                    .map(|line| {
+                        ["open_for_text(", "DocRenderer::new(", "DocRenderer::with_file("]
+                            .iter()
+                            .map(|call| line.matches(call).count())
+                            .sum::<usize>()
+                    })
+                    .sum::<usize>();
+                let given = lines().map(|line| line.matches("hidden.draw_for(").count()).sum::<usize>();
+                if opens > 0 {
+                    let name = path.strip_prefix(crates).unwrap().to_string_lossy().replace('\\', "/");
+                    found.push((name, opens, given));
+                }
+            }
+        }
+        found.sort();
+        let listed: Vec<(String, usize, usize)> = RENDERERS.iter().map(|(name, opens, given, _)| (name.to_string(), *opens, *given)).collect();
+        assert_eq!(
+            found, listed,
+            "a renderer opened or given the tab's set where RENDERERS doesn't say: one that draws a tab's pages hands it `hidden_in`'s set"
+        );
+    }
 }

@@ -3473,7 +3473,7 @@ fn a_snapshot_of_a_turned_page_is_copied_turned() {
     let items = clipboard_items(&run);
     assert_eq!(items[0]["type"], "public.png", "{items:?}");
     let digest = |bytes: &[u8]| sha2::Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
-    let picture = |turns: u8| match recto_agent::extract::snapshot_clip(&file.0, 0, rect, turns, false, &recto_agent::extract::ClipStop::default()) {
+    let picture = |turns: u8| match recto_agent::extract::snapshot_clip(&file.0, 0, rect, (turns, None), false, &recto_agent::extract::ClipStop::default()) {
         recto_agent::extract::ClipOutcome::Ready(clip) => digest(clip.items[0].bytes().unwrap()),
         other => panic!("{other:?}"),
     };

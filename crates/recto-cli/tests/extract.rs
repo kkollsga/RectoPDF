@@ -410,13 +410,13 @@ fn a_file_that_asks_not_to_be_copied_refuses_images_and_snapshots_unless_anyway(
     std::fs::remove_file(&png).unwrap();
     let stop = ClipStop::default();
     assert!(matches!(
-        snapshot_clip(&file.0, 0, [0.0, 0.0, 300.0, 300.0], 0, false, &stop),
+        snapshot_clip(&file.0, 0, [0.0, 0.0, 300.0, 300.0], (0, None), false, &stop),
         ClipOutcome::Restricted
     ));
     assert!(matches!(image_clip(&file.0, 0, 150.0, 260.0, false, &stop), ClipOutcome::Restricted));
     assert!(matches!(image_clip(&file.0, 0, 150.0, 260.0, true, &stop), ClipOutcome::Ready(_)));
     assert!(matches!(
-        snapshot_clip(&file.0, 0, [0.0, 0.0, 300.0, 300.0], 0, true, &stop),
+        snapshot_clip(&file.0, 0, [0.0, 0.0, 300.0, 300.0], (0, None), true, &stop),
         ClipOutcome::Ready(_)
     ));
 }
@@ -518,7 +518,7 @@ fn the_clipboard_gets_the_right_types_in_the_right_order() {
         }
     );
     assert!(matches!(image_clip(&file.0, 0, 500.0, 700.0, false, &stop), ClipOutcome::NoImage));
-    let ClipOutcome::Ready(snap) = snapshot_clip(&file.0, 0, [60.0, 50.0, 400.0, 270.0], 0, false, &stop) else {
+    let ClipOutcome::Ready(snap) = snapshot_clip(&file.0, 0, [60.0, 50.0, 400.0, 270.0], (0, None), false, &stop) else {
         panic!("the snapshot")
     };
     assert_eq!(snap.types(), vec![UTI_PNG, UTI_TEXT, UTI_SVG, UTI_JPEG], "{}", snap.note);
@@ -526,9 +526,9 @@ fn the_clipboard_gets_the_right_types_in_the_right_order() {
     assert!(matches!(snap.items[2], ClipItem::Promised { .. }), "the SVG is made when a paste asks for it");
     let jpg = snap.items[3].bytes().unwrap();
     assert_eq!(&jpg[..2], [0xFF, 0xD8], "a JPEG, from the same drawing as the PNG");
-    let svg = snapshot_svg(&file.0, 0, [60.0, 50.0, 400.0, 270.0], 0, MAX_CLIP_ITEM).unwrap();
+    let svg = snapshot_svg(&file.0, 0, [60.0, 50.0, 400.0, 270.0], 0, None, MAX_CLIP_ITEM).unwrap();
     check_document(&svg);
-    assert!(snapshot_svg(&file.0, 0, [60.0, 50.0, 400.0, 270.0], 0, 64).is_err(), "held to its cap");
+    assert!(snapshot_svg(&file.0, 0, [60.0, 50.0, 400.0, 270.0], 0, None, 64).is_err(), "held to its cap");
 }
 
 /// Failure: the clipboard's SVG carries text the page hides, as white on white or invisible OCR text, though the text item leaves it out by a copy's rules (review, 2026-11-08); a paste of the SVG would hand it over.
@@ -537,7 +537,7 @@ fn the_clipboards_svg_leaves_hidden_text_out() {
     // Visible words, and words drawn invisibly (render mode 3), as an OCR layer is.
     let content = "BT /F1 12 Tf 72 700 Td (SHOWN WORDS) Tj ET BT 3 Tr /F1 12 Tf 72 680 Td (HIDDEN WORDS) Tj ET\n";
     let file = TempPdf::new("doc.pdf", &pages(&[Page::new(content)]));
-    let svg = String::from_utf8(snapshot_svg(&file.0, 0, [60.0, 80.0, 300.0, 50.0], 0, MAX_CLIP_ITEM).unwrap()).unwrap();
+    let svg = String::from_utf8(snapshot_svg(&file.0, 0, [60.0, 80.0, 300.0, 50.0], 0, None, MAX_CLIP_ITEM).unwrap()).unwrap();
     assert!(!svg.contains("HIDDEN"), "{svg}");
     // Where the hidden words would be if it didn't: a file's SVG keeps real text, as `export svg` does by default.
     let file_svg = out_path(&file, "hidden.svg");
@@ -550,7 +550,7 @@ fn the_clipboards_svg_leaves_hidden_text_out() {
         "the page does hide words that real text would carry"
     );
     std::fs::remove_file(&file_svg).unwrap();
-    let ClipOutcome::Ready(snap) = snapshot_clip(&file.0, 0, [60.0, 80.0, 300.0, 50.0], 0, false, &ClipStop::default()) else {
+    let ClipOutcome::Ready(snap) = snapshot_clip(&file.0, 0, [60.0, 80.0, 300.0, 50.0], (0, None), false, &ClipStop::default()) else {
         panic!()
     };
     let text = String::from_utf8(snap.items[1].bytes().unwrap().to_vec()).unwrap();
@@ -606,7 +606,7 @@ fn a_snapshot_of_a_turned_page_is_turned_as_its_seen() {
     let rect = [60.0, 50.0, 340.0, 270.0];
     let stop = ClipStop::default();
     let take = |turns: u8| {
-        let ClipOutcome::Ready(snap) = snapshot_clip(&file.0, 0, rect, turns, false, &stop) else {
+        let ClipOutcome::Ready(snap) = snapshot_clip(&file.0, 0, rect, (turns, None), false, &stop) else {
             panic!("the snapshot, turned {turns}")
         };
         snap
@@ -614,7 +614,7 @@ fn a_snapshot_of_a_turned_page_is_turned_as_its_seen() {
     let flat = take(0);
     let (width, height, pixels) = png_pixels(flat.items[0].bytes().unwrap());
     assert_eq!((width, height), (680, 540), "the box at twice its size");
-    let flat_svg = snapshot_svg(&file.0, 0, rect, 0, MAX_CLIP_ITEM).unwrap();
+    let flat_svg = snapshot_svg(&file.0, 0, rect, 0, None, MAX_CLIP_ITEM).unwrap();
     assert_eq!(svg_size(&flat_svg), (340.0, 270.0));
     for turns in 1..4 {
         let snap = take(turns);
@@ -633,7 +633,7 @@ fn a_snapshot_of_a_turned_page_is_turned_as_its_seen() {
             )
         };
         assert_eq!(jpeg_size(jpg), (wanted.0 as u16, wanted.1 as u16), "the JPG turned {turns}");
-        let svg = snapshot_svg(&file.0, 0, rect, turns, MAX_CLIP_ITEM).unwrap();
+        let svg = snapshot_svg(&file.0, 0, rect, turns, None, MAX_CLIP_ITEM).unwrap();
         check_document(&svg);
         let wanted_svg = if turns % 2 == 1 { (270.0, 340.0) } else { (340.0, 270.0) };
         assert_eq!(svg_size(&svg), wanted_svg, "the SVG turned {turns}");
