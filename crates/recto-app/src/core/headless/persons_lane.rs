@@ -597,7 +597,10 @@ fn a_command_asked_as_a_hand_off_freezes_doesnt_run_after_its_last_look() {
     selects(&app, (0, 0), (0, 5));
     let (held, go) = app.hold_next("submit_looked");
     std::thread::scope(|scope| {
-        let asked = scope.spawn(|| app.act(UiAction::Menu { id: HIGHLIGHT_ID.into() }));
+        let asked = std::thread::Builder::new()
+            .name("recto-test-window".into())
+            .spawn_scoped(scope, || app.act(UiAction::Menu { id: HIGHLIGHT_ID.into() }))
+            .expect("the window's thread");
         held.recv_timeout(WAIT_LIMIT).expect("the highlight held after submit's look");
         app.core().set_frozen(true);
         assert!(app.core().hand_off_check().safe, "the hand-off's last look sees nothing under way");
