@@ -313,19 +313,12 @@ fn naming_the_plain_tab(command: &Command) -> Command {
 /// `arranged`: a fresh session each time, so what one command did can't hide what another gave. The files' folders, which differ from run to run, are
 /// said alike.
 fn told(secret: u32, level: Level, command: &Command, arranged: Arrangement) -> String {
-    let locked = TempPdf::new("locked.pdf", &secret_pdf(secret));
-    let plain = TempPdf::new("plain.pdf", &pdf(3));
-    let mut session = Session::new(crate::DrawableLoader);
-    let id = session.open(&locked.0).unwrap();
-    let other = session.open(&plain.0).unwrap();
-    session.tabs_mut().note_password_used(id);
-    session.tap(if arranged.reading_locked { id } else { other }).unwrap();
+    let (access, locked, plain) = arranged_session(secret, arranged);
     let command = if arranged.naming_locked {
         command.clone()
     } else {
         naming_the_plain_tab(command)
     };
-    let access = Mutex::new(session);
     let mut events = Vec::new();
     let result = execute(&access, Actor::Agent(level), &command, &mut events).map(|mut answer| {
         unmeasured(&mut answer);
@@ -334,6 +327,19 @@ fn told(secret: u32, level: Level, command: &Command, arranged: Arrangement) -> 
     format!("{result:?} {events:?}")
         .replace(locked.folder().to_str().unwrap(), "<locked>")
         .replace(plain.folder().to_str().unwrap(), "<plain>")
+}
+
+/// `locked.pdf` (`#1`, `secret`'s) opened with its password beside a plain tab (`#2`), the one `arranged` says being read; with the two files, which go
+/// when they're dropped.
+fn arranged_session(secret: u32, arranged: Arrangement) -> (Mutex<Session<crate::DrawableLoader>>, TempPdf, TempPdf) {
+    let locked = TempPdf::new("locked.pdf", &secret_pdf(secret));
+    let plain = TempPdf::new("plain.pdf", &pdf(3));
+    let mut session = Session::new(crate::DrawableLoader);
+    let id = session.open(&locked.0).unwrap();
+    let other = session.open(&plain.0).unwrap();
+    session.tabs_mut().note_password_used(id);
+    session.tap(if arranged.reading_locked { id } else { other }).unwrap();
+    (Mutex::new(session), locked, plain)
 }
 
 /// An answer with what's measured as it runs left out (times, the process's and a worker's memory, open handles), which differ from run to run
@@ -372,6 +378,42 @@ fn no_command_tells_an_agent_anything_of_a_protected_document() {
         }
     }
     assert!(differs.is_empty(), "told something of the protected document:\n{}", differs.join("\n"));
+}
+
+/// Failure (independent review of phase R, S1): the person's own command on a document they opened with its password is heard by a watcher with
+/// something read from it: the page it turned to, its length in an edit's news, Find at a hit, a draw. Every command, run as the person in each of
+/// [`ARRANGEMENTS`] on the two sessions whose protected document differs, is heard alike once its events are past the rule every event leaving for
+/// watchers meets ([`crate::withheld::for_agents`], applied where they leave, `recto_control::server::outlet`). What the person is told back isn't compared:
+/// it's theirs. The walk of what the person's window, its draws and the Finder announce, over the app's socket, is `recto-app`'s
+/// `an_agent_is_told_the_same_of_two_protected_documents`.
+#[test]
+fn no_persons_command_is_heard_with_anything_of_a_protected_document() {
+    let mut differs = Vec::new();
+    for command in every_command() {
+        for arranged in ARRANGEMENTS {
+            let (one, two) = (heard(1, &command, arranged), heard(2, &command, arranged));
+            if one != two {
+                differs.push(format!("{} as the person, {arranged:?}:\n  {one}\n  {two}", command.tag()));
+            }
+        }
+    }
+    assert!(differs.is_empty(), "heard something of the protected document:\n{}", differs.join("\n"));
+}
+
+/// What a watcher hears of `command` run as the person, in the arrangement [`told`] makes.
+fn heard(secret: u32, command: &Command, arranged: Arrangement) -> String {
+    let (access, locked, plain) = arranged_session(secret, arranged);
+    let command = if arranged.naming_locked {
+        command.clone()
+    } else {
+        naming_the_plain_tab(command)
+    };
+    let mut events = Vec::new();
+    let _ = execute(&access, Actor::Person, &command, &mut events);
+    crate::withheld::for_agents(&access.lock().unwrap(), None, &mut events);
+    format!("{events:?}")
+        .replace(locked.folder().to_str().unwrap(), "<locked>")
+        .replace(plain.folder().to_str().unwrap(), "<plain>")
 }
 
 /// A real PDF of `count` pages, each with its number in words.

@@ -122,7 +122,7 @@ pub fn reference_md() -> String {
         })
         .collect();
     out.push_str(&groups.join(", "));
-    out.push_str(".\n\n");
+    out.push_str(".\n\nOf a document the user opened with its password, a watcher hears only that its tab opened, showed or closed, and whether it's edited; nothing of Find while it's over one.\n\n");
     out.push_str("## Exit codes\n\n");
     write_exit_codes(&mut out);
     out.push_str("\n## Commands\n");

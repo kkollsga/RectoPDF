@@ -23,12 +23,12 @@ pub enum Event {
     TabClosed {
         tab: TabId,
     },
-    /// The place in a tab moved, 1-based. `None` for a document opened with a password, whose place an agent isn't told.
+    /// The place in a tab moved, 1-based. Never told of a document opened with a password ([`crate::withheld`]).
     PageChanged {
         tab: TabId,
-        page: Option<u32>,
+        page: u32,
     },
-    /// A tab's edits changed. `pages` is `None` for a protected document.
+    /// A tab's edits changed. `pages` is `None` for a protected document: blanked where events leave for agents ([`crate::withheld`]).
     EditsChanged {
         tab: TabId,
         pages: Option<u32>,
@@ -88,14 +88,20 @@ pub enum Event {
         panes: Vec<TabId>,
         synced: bool,
     },
-    /// Find is looking.
-    FindRunning,
-    /// Find is open, at a hit's page (1-based) if it has gone to one.
+    /// Find is looking. `tab` is the document it's searching, which isn't said on the wire: it's what [`crate::withheld`] judges the event by.
+    FindRunning {
+        tab: Option<TabId>,
+    },
+    /// Find is open, at a hit's page (1-based) if it has gone to one. `tab`, not said on the wire, is the hit's document; none for Find opened over the
+    /// document being read.
     FindOpened {
+        tab: Option<TabId>,
         page: Option<u32>,
     },
     FindClosed,
+    /// A search ended. `tab`, not said on the wire, is the document it searched.
     FindFinished {
+        tab: Option<TabId>,
         hits: u64,
     },
 }
@@ -118,7 +124,7 @@ impl Event {
             Self::ContentsGenerated { .. } => "contents_generated",
             Self::LevelChanged { .. } => "level_changed",
             Self::ViewSettingsChanged { .. } | Self::LayoutChanged { .. } | Self::ComparisonChanged { .. } => "view_changed",
-            Self::FindRunning | Self::FindOpened { .. } | Self::FindClosed => "find_changed",
+            Self::FindRunning { .. } | Self::FindOpened { .. } | Self::FindClosed => "find_changed",
             Self::FindFinished { .. } => "find_finished",
         }
     }
@@ -134,7 +140,7 @@ impl Event {
             Self::ContentsGenerating { .. } | Self::ContentsGenerated { .. } => "contents",
             Self::LevelChanged { .. } => "access",
             Self::ViewSettingsChanged { .. } | Self::LayoutChanged { .. } | Self::ComparisonChanged { .. } => "view",
-            Self::FindRunning | Self::FindOpened { .. } | Self::FindClosed | Self::FindFinished { .. } => "find",
+            Self::FindRunning { .. } | Self::FindOpened { .. } | Self::FindClosed | Self::FindFinished { .. } => "find",
         }
     }
 
@@ -164,11 +170,11 @@ impl Event {
             Self::ComparisonChanged { panes, synced } => {
                 json!({ "comparison": panes.iter().map(|tab| tab.0).collect::<Vec<_>>(), "sync": if *synced { "on" } else { "off" } })
             }
-            Self::FindRunning => json!({ "running": true }),
-            Self::FindOpened { page: None } => json!({ "open": true }),
-            Self::FindOpened { page: Some(page) } => json!({ "open": true, "page": page }),
+            Self::FindRunning { .. } => json!({ "running": true }),
+            Self::FindOpened { page: None, .. } => json!({ "open": true }),
+            Self::FindOpened { page: Some(page), .. } => json!({ "open": true, "page": page }),
             Self::FindClosed => json!({ "open": false }),
-            Self::FindFinished { hits } => json!({ "hits": hits }),
+            Self::FindFinished { hits, .. } => json!({ "hits": hits }),
         };
         out["event"] = json!(self.name());
         out
@@ -211,20 +217,21 @@ pub fn switched<L: DocLoader>(session: &Session<L>, switched: Option<TabId>, eve
     }
 }
 
-/// What watchers are told when the person moves to another page: which tab, and its page, unless it's a protected document's, whose place was read with its password.
-pub fn page_changed<L: DocLoader>(session: &Session<L>, id: TabId, page: u32) -> Event {
-    let page = (!session.tabs().withheld_from_agents(id)).then_some(page);
+/// What watchers are told when the person moves to another page: which tab, and its page. A protected document's is never told: that's decided where
+/// events leave for agents ([`crate::withheld`]), once for every event.
+pub fn page_changed(id: TabId, page: u32) -> Event {
     Event::PageChanged { tab: id, page }
 }
 
 /// The same, for the page the tab is on now: after a jump, a step back, a go-to or a link, the page the session landed on.
 pub fn page_now<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
-    page_changed(session, id, session.tabs().tab(id).map_or(1, |tab| tab.page + 1))
+    page_changed(id, session.tabs().tab(id).map_or(1, |tab| tab.page + 1))
 }
 
-/// What watchers are told when a tab's edits change, wherever they were changed from: an agent, the panel or the Edit menu.
+/// What watchers are told when a tab's edits change, wherever they were changed from: an agent, the panel or the Edit menu. A protected document's
+/// length is blanked where events leave for agents ([`crate::withheld`]).
 pub fn edits_changed<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
-    let pages = (!session.tabs().withheld_from_agents(id)).then(|| session.pages().count(id));
+    let pages = Some(session.pages().count(id));
     Event::EditsChanged {
         tab: id,
         pages,
@@ -273,7 +280,7 @@ mod tests {
             Event::TabOpened { tab, name: None },
             Event::TabActivated { tab, name: None },
             Event::TabClosed { tab },
-            Event::PageChanged { tab, page: None },
+            Event::PageChanged { tab, page: 1 },
             Event::EditsChanged {
                 tab,
                 pages: None,
@@ -304,10 +311,10 @@ mod tests {
                 panes: Vec::new(),
                 synced: false,
             },
-            Event::FindRunning,
-            Event::FindOpened { page: None },
+            Event::FindRunning { tab: None },
+            Event::FindOpened { tab: None, page: None },
             Event::FindClosed,
-            Event::FindFinished { hits: 0 },
+            Event::FindFinished { tab: None, hits: 0 },
         ];
         for event in &samples {
             match event {
@@ -327,7 +334,7 @@ mod tests {
                 | Event::ViewSettingsChanged { .. }
                 | Event::LayoutChanged { .. }
                 | Event::ComparisonChanged { .. }
-                | Event::FindRunning
+                | Event::FindRunning { .. }
                 | Event::FindOpened { .. }
                 | Event::FindClosed
                 | Event::FindFinished { .. } => {}

@@ -13,7 +13,6 @@ const GOLDEN: &[(&str, &str)] = &[
     ("tab_activated", r#"{"event":"tab_activated","tab":4,"untrusted":{"name":"b.pdf"}}"#),
     ("tab_closed", r#"{"event":"tab_closed","tab":5}"#),
     ("page_changed", r#"{"event":"page_changed","page":7,"tab":5}"#),
-    ("page_changed withheld", r#"{"event":"page_changed","page":null,"tab":5}"#),
     ("edits_changed", r#"{"edited":true,"event":"edits_changed","pages":12,"tab":5}"#),
     ("edits_changed withheld", r#"{"edited":false,"event":"edits_changed","pages":null,"tab":5}"#),
     ("saved", r#"{"event":"saved","tab":5,"writer":"lopdf"}"#),
@@ -65,8 +64,7 @@ fn made() -> Vec<(&'static str, Event)> {
             },
         ),
         ("tab_closed", Event::TabClosed { tab }),
-        ("page_changed", Event::PageChanged { tab, page: Some(7) }),
-        ("page_changed withheld", Event::PageChanged { tab, page: None }),
+        ("page_changed", Event::PageChanged { tab, page: 7 }),
         (
             "edits_changed",
             Event::EditsChanged {
@@ -124,11 +122,17 @@ fn made() -> Vec<(&'static str, Event)> {
                 synced: true,
             },
         ),
-        ("find_changed running", Event::FindRunning),
-        ("find_changed opened", Event::FindOpened { page: None }),
-        ("find_changed at a hit", Event::FindOpened { page: Some(9) }),
+        ("find_changed running", Event::FindRunning { tab: Some(n(1)) }),
+        ("find_changed opened", Event::FindOpened { tab: None, page: None }),
+        (
+            "find_changed at a hit",
+            Event::FindOpened {
+                tab: Some(n(1)),
+                page: Some(9),
+            },
+        ),
         ("find_changed closed", Event::FindClosed),
-        ("find_finished", Event::FindFinished { hits: 17 }),
+        ("find_finished", Event::FindFinished { tab: Some(n(1)), hits: 17 }),
     ]
 }
 

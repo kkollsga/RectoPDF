@@ -113,6 +113,8 @@ impl Shared {
             let indexing = self.indexer.as_ref().map(|indexer| indexer as &dyn Indexing);
             let mut said = Instant::now();
             let generation = job.generation;
+            // The document it searches: what decides whether its news may go to an agent (`recto_agent::withheld`).
+            let tab = Some(recto_session::TabId(job.plan.tab()));
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 find::run(&job.plan, &job.needle, indexing, &stop, &mut |hits, progress| {
                     let had_hits = !hits.is_empty();
@@ -122,7 +124,7 @@ impl Shared {
                     // The first hits are said at once, so the list starts as soon as there's something in it.
                     if said.elapsed() >= SAY_EVERY || (had_hits && progress.pages_with_hits == 1) {
                         said = Instant::now();
-                        self.say(vec![Event::FindRunning]);
+                        self.say(vec![Event::FindRunning { tab }]);
                     }
                 })
             }));
@@ -139,7 +141,7 @@ impl Shared {
                 inner.results.generation == generation
             };
             if current {
-                self.say(vec![Event::FindFinished { hits: progress.total }]);
+                self.say(vec![Event::FindFinished { tab, hits: progress.total }]);
             }
         }
     }

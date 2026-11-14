@@ -48,6 +48,7 @@ impl<H: Host> Loop<H> {
                 let deadline = Instant::now() + Duration::from_millis(wait.timeout_ms.min(MAX_WAIT_MS));
                 self.log.record(tag, level, "started", &json!({ "condition": format!("{:?}", wait.condition) }));
                 let generation = self.next_generation();
+                self.outlet.gate.set_listening(true);
                 self.conns[index].state = State::Waiting {
                     what: WaitFor::Condition {
                         condition: wait.condition,

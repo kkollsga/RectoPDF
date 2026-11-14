@@ -43,6 +43,7 @@ pub use tab_ref::TabRef;
 pub mod skill;
 pub mod table;
 pub mod unfit;
+pub mod withheld;
 pub use commands::updates::update_needs_app;
 pub use route::{Runs, qa_needs_app};
 #[cfg(test)]
@@ -520,7 +521,9 @@ pub fn restore_would_lose_owners_edits() -> AgentError {
     .then("Ask them to save or discard those first.")
 }
 
-/// What `session show` says, from the record and the session. No more of a document than `tabs` gives, and what the owner typed in Find only at Control, as it's not about any document. Called with the session held.
+/// What `session show` says, from the record and the session. No more of a document than `tabs` gives, and what the owner typed in Find only at Control, and
+/// not while the document being read is one they opened with its password, as what they looked for in it says what they saw there. Called with the session
+/// held.
 pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept: Value) -> Value {
     let tabs: Vec<Value> = session
         .tabs()
@@ -529,16 +532,18 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept:
         .map(|tab| {
             let notice = session.notices().said(tab.id).map(|said| json!({ "code": said.code, "message": said.message }));
             let place = session.tabs().place_to_show(tab.id);
-            // A protected document's place and length were read with its password.
+            // A protected document's place and length were read with its password, its zoom fits its pages' size, and what's said of its file is left
+            // out as `tabs` leaves it out; its layout as `view` leaves it out.
             if session.tabs().withheld_from_agents(tab.id) {
-                return json!({ "tab": tab.id.0, "protected": true, "page": null, "pages": null, "zoom": place.map(|place| place.zoom), "within_page": null, "layout": tab.spread.name(), "edited": session.lists().is_edited(tab.id), "can_undo": session.lists().undo_and_redo(tab.id).0, "can_redo": session.lists().undo_and_redo(tab.id).1, "notice": notice });
+                return json!({ "tab": tab.id.0, "protected": true, "page": null, "pages": null, "zoom": null, "within_page": null, "layout": null, "edited": session.lists().is_edited(tab.id), "can_undo": session.lists().undo_and_redo(tab.id).0, "can_redo": session.lists().undo_and_redo(tab.id).1, "notice": null });
             }
             json!({ "tab": tab.id.0, "page": tab.page + 1, "pages": session.pages().count(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.filter(|place| place.anchor_page == place.page).map(|place| place.within), "layout": tab.spread.name(), "edited": session.lists().is_edited(tab.id), "can_undo": session.lists().undo_and_redo(tab.id).0, "can_redo": session.lists().undo_and_redo(tab.id).1, "notice": notice })
         })
         .collect();
     let find = session.viewing().find();
     let mut find_json = json!({ "open": find.open, "has_text": !find.query.is_empty() || !find.draft.is_empty() });
-    if level >= Level::Control {
+    let reading_withheld = session.tabs().active().is_some_and(|id| session.tabs().withheld_from_agents(id));
+    if level >= Level::Control && !reading_withheld {
         find_json["query"] = json!(find.query);
         find_json["draft"] = json!(find.draft);
     }
@@ -3524,8 +3529,12 @@ mod protected_tests {
         }
         let shown = session_show_json(&session, Level::Full, Value::Null);
         assert!(!leaks(&shown), "{shown}");
-        assert!(!leaks(&page_changed(&session, id, 3).to_json()) && !leaks(&edits_changed(&session, id).to_json()));
-        assert_eq!(page_changed(&session, other, 3).to_json()["page"], 3, "another tab's place is said as ever");
+        let mut told = vec![page_changed(id, 3), edits_changed(&session, id)];
+        withheld::for_agents(&session, None, &mut told);
+        assert!(told.iter().all(|event| !leaks(&event.to_json())), "{told:?}");
+        let mut other_told = vec![page_changed(other, 3)];
+        withheld::for_agents(&session, None, &mut other_told);
+        assert_eq!(other_told[0].to_json()["page"], 3, "another tab's place is said as ever");
         let access = Direct(std::cell::RefCell::new(&mut session), None);
         assert!(
             matches!(check_condition(&access, Condition::PageDrawn, &TabRef::from("#1"), Some(1)), ConditionState::Failed(error) if error.code == "protected")
