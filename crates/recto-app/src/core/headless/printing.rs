@@ -26,36 +26,24 @@ const ALL: Panel = Panel {
     to_file: false,
 };
 
-/// **The panel answered, as the host answers it:** the tab showing and what was chosen. On `main` before S2 this is the bridge's `print_chosen`, word for
-/// word but for its reach into the core: it moves to the one way a person's action comes in with the change.
+/// **The panel answered, as the host answers it:** the tab showing and what was chosen, through the one way a person's action comes in.
 fn answer(app: &HeadlessApp, panel: Panel) {
-    use crate::core::printing::{Request, chosen_range, start};
-    let inner = app.core();
-    let tab = lock(&inner.published).reader.shown_tab;
-    if tab == 0 || inner.core.frozen.load(std::sync::atomic::Ordering::SeqCst) {
-        return;
-    }
-    let engine = inner.panes.reading_engine(&inner.engine);
-    let pages = engine.points().page_count();
-    let selection = panel
-        .selection_only
-        .then(|| engine.selection().hot())
-        .flatten()
-        .and_then(|(_, range)| range)
-        .map(|range| (range.start.page, range.end.page));
-    let Some(range) = chosen_range(pages, panel.all, panel.first, panel.last, selection) else {
-        return;
-    };
-    start(
-        inner,
-        Request {
-            tab: recto_session::TabId(tab),
-            range,
-            dpi: recto_agent::print::DEFAULT_DPI,
-            to_file: panel.to_file,
-            anyway: false,
-        },
-    );
+    let tab = lock(&app.core().published).reader.shown_tab;
+    let Panel {
+        all,
+        first,
+        last,
+        selection_only,
+        to_file,
+    } = panel;
+    app.act(UiAction::Print {
+        tab,
+        all,
+        first,
+        last,
+        selection_only,
+        to_file,
+    });
 }
 
 /// The notice by the page as the window shows it now: its words and its button's title.
@@ -120,7 +108,7 @@ fn print_files_left() -> Vec<String> {
 fn hold_at(page: u32) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
     let (told, held) = std::sync::mpsc::channel();
     let (go, waiting) = std::sync::mpsc::channel();
-    *lock(&AT_PAGE) = Some((page, told, waiting));
+    *lock(&AT_PAGE) = Some((page, (told, waiting)));
     (held, go)
 }
 
@@ -248,6 +236,66 @@ fn a_persons_print_does_what_it_did() {
     lines.push(format!("its Print anyway | printed {printed_anyway} | after {}", notice(&app)));
 
     assert_eq!(lines, GOLDEN, "\nnow:\n{}", lines.join("\n"));
+    assert_eq!(print_files_left(), Vec::<String>::new(), "nothing's left once each print's file went");
+}
+
+/// Failure (S2, the coordinator's word on 2026-11-14: "a person's action that fails says so"): a person's print refused before its command ran (by a
+/// quiet run's files, as here, or a page list that can't be read) says nothing, as the window's watch over it never began; or it leaves the window
+/// thinking a print's being prepared. The refusal's own words are said, and nothing is prepared or left for the host.
+#[test]
+fn a_print_refused_before_it_runs_says_its_words() {
+    let disk = Disk::new();
+    let doc = disk.pdf("a.pdf", 2);
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    let Some(outside) = crate::testkit::headless::outside_the_tests_folders("printed.pdf") else {
+        return;
+    };
+    let line = format!(r#"{{"cmd":"print","to_pdf":{}}}"#, serde_json::Value::from(outside.display().to_string()));
+    crate::core::person::submit(app.core(), recto_agent::parse(&line).expect("a print"));
+    app.settle();
+    let words = recto_session::SessionError::OutsideQuietRun.message();
+    assert_eq!(app.reader().selection_notice.map(|notice| notice.text).as_deref(), Some(words), "its own words");
+    assert!(!app.core().tools.printing().busy(), "nothing prepared or left for the host");
+    assert!(!outside.exists(), "nothing written");
+}
+
+/// Failure: an agent's `print` reaches the person's window or is reached by it: it shows "Preparing pages for printing… [Stop]" there (a person never sees
+/// an agent's words), the person's Stop stops it, its file is handed to the person's printer, or it prints a file that asks not to be copied to a PDF
+/// without `--anyway`, as the person's print on paper may. An agent's print goes to its end, its own file, with no notice and nothing for the host.
+#[test]
+fn an_agents_print_is_the_agents_alone() {
+    let disk = Disk::new();
+    let doc = disk.file("widths.pdf", &widths(2));
+    let restricted = disk.file("restricted.pdf", &locked_allowing("", 1, lopdf::encryption::Permissions::PRINTABLE));
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    let out = app.disk().files().join("agents.pdf");
+    // Stop pressed, and a hold at the first page that lets go at once: either would show on an agent's print only if the window's watch were its.
+    app.core().tools.printing().cancel();
+    let (held, go) = hold_at(1);
+    drop(go);
+    let line = format!(r#"{{"cmd":"print","to_pdf":{}}}"#, serde_json::Value::from(out.display().to_string()));
+    let answer = app.agent(recto_agent::Level::Full, &line);
+    assert!(held.try_recv().is_err(), "the window's watch heard an agent's print's pages");
+    assert!(answer.is_ok() && out.exists(), "the person's Stop doesn't stop an agent's print: {answer:?}");
+    app.settle();
+    assert_eq!(notice(&app), "-", "nothing on the person's window");
+    assert_eq!(printed(&app), "none", "nothing for the host to hand to the person's printer");
+    *lock(&AT_PAGE) = None;
+    app.open(&restricted);
+    app.settle();
+    let refused = app.recto(
+        recto_agent::Level::Full,
+        &["print", "--to-pdf", app.disk().files().join("restricted-out.pdf").to_str().expect("a path")],
+    );
+    assert_eq!(
+        refused.expect_err("refused").code,
+        recto_agent::Code::COPY_RESTRICTED,
+        "an agent's print to a PDF asks for --anyway"
+    );
 }
 
 /// Failure (S2, found on the way): the person's print of a file that asks not to be copied, which on paper goes ahead and is its pages with no such ask

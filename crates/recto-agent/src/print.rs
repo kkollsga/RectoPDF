@@ -405,28 +405,48 @@ fn print_with_caps<O: Output>(
     Ok(printed)
 }
 
-/// The app's print: pages to a file of the app's own, which the system's printing then takes, with `progress` hearing each page and able to stop it. The file is made new, readable and writable by the user alone from the moment it's made, and is the caller's to remove. Can wait for the larger limit, so it's for a job thread.
-pub fn print_to_path(pages: &[PrintPage], dpi: u32, out: &Path, progress: impl FnMut(u32, u32) -> bool) -> Result<Printed, AgentError> {
-    let config = ServiceConfig::discover()?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let file = options.open(out).map_err(|_| write_failed())?;
-    let mut written = FileOut(file);
-    let printed = print_into(&config, pages, dpi, &mut written, progress);
-    if printed.is_err() {
-        drop(written);
-        let _ = std::fs::remove_file(out);
-    }
-    printed
+/// **The window's own watch over the person's print** ([`crate::SessionAccess::print_watch`]): the line by the page saying how far it's got, with Stop. Given
+/// only for the person at the window, so an agent's print shows nothing on the person's window and the person's Stop never stops it. What the print does,
+/// and what refuses it, is the command's either way.
+pub trait PrintWatch: Send + Sync {
+    /// A print of `pages` pages of `tab` is starting. Refused, with the words the person is told, if the window is preparing one already.
+    ///
+    /// # Errors
+    ///
+    /// One print at a time is the window's.
+    fn begin(&self, tab: recto_session::TabId, pages: u32) -> Result<(), AgentError>;
+    /// `done` pages of `of` are printed. False stops the print, as Stop does.
+    fn page(&self, done: u32, of: u32) -> bool;
+    /// The print is over, however it went: what came of it is the person's answer, which the window says.
+    fn end(&self);
 }
 
-/// `recto print --to-pdf`: pages to a new PDF, through the same drawing the app prints with, whole or not at all.
-pub(crate) fn print_to_file(pages: &[PrintPage], dpi: u32, out: &Path, anyway: bool) -> Result<Value, AgentError> {
+/// A print being watched, ended however its command ends, a refusal or a panic included.
+pub(crate) struct Watched<'a>(pub &'a dyn PrintWatch);
+
+impl Drop for Watched<'_> {
+    fn drop(&mut self) {
+        self.0.end();
+    }
+}
+
+/// Who a print's file is for: anyone the folder lets read it, as any export, or the user alone, as the person's print at the window is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Readable {
+    AsAnyExport,
+    ByTheUserAlone,
+}
+
+/// `recto print --to-pdf`: pages to a new PDF, through the same drawing the app prints with, whole or not at all. `progress` hears each page, and returning
+/// false stops it.
+pub(crate) fn print_to_file(
+    pages: &[PrintPage],
+    dpi: u32,
+    out: &Path,
+    anyway: bool,
+    readable: Readable,
+    progress: impl FnMut(u32, u32) -> bool,
+) -> Result<Value, AgentError> {
     crate::saving::check_export_path(out, &["pdf"], "PDF")?;
     // An export, so a file that asks not to be copied asks "anyway", as Copy does (owner, 2026-11-08).
     if !anyway && any_copy_restricted(pages) {
@@ -441,11 +461,23 @@ pub(crate) fn print_to_file(pages: &[PrintPage], dpi: u32, out: &Path, anyway: b
     }
     let started = Instant::now();
     let config = ServiceConfig::discover()?;
-    let (temp, file) = OwnTemp::create(out)?;
+    let (temp, file) = match readable {
+        Readable::AsAnyExport => OwnTemp::create(out)?,
+        Readable::ByTheUserAlone => OwnTemp::create_private(out)?,
+    };
     let mut written = FileOut(file);
-    let printed = print_into(&config, pages, dpi, &mut written, |_, _| true)?;
+    let printed = print_into(&config, pages, dpi, &mut written, progress)?;
     drop(written);
     publish_picture(&temp.path, out)?;
+    // A link keeps the mode; a copy, where a link can't be made, is made with the folder's, so it's set again.
+    #[cfg(unix)]
+    if readable == Readable::ByTheUserAlone {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::set_permissions(out, std::fs::Permissions::from_mode(0o600)).is_err() {
+            let _ = std::fs::remove_file(out);
+            return Err(write_failed());
+        }
+    }
     drop(temp);
     Ok(json!({
         "out": out,

@@ -69,7 +69,7 @@ extension AppDelegate {
         }
     }
 
-    /// The pages the panel chose, to Rust, and the print info kept for when they're ready.
+    /// The pages the panel chose, to Rust as the person's action, and the print info kept for when they're ready.
     func startPrint(model: PrintModel, info: NSPrintInfo) {
         let settings = info.dictionary()
         let all = (settings[NSPrintInfo.AttributeKey.allPages] as? Bool) ?? true
@@ -78,7 +78,8 @@ extension AppDelegate {
         pendingPrintInfo = info
         // Saving or previewing a PDF from the panel is a print to a file, which Rust treats as an export; on paper it never asks.
         let toFile = info.jobDisposition != .spool
-        if !core.printChosen(tab: model.tab, all: all, first: UInt32(max(first, 1)), last: UInt32(max(last, 1)), selectionOnly: info.isSelectionOnly, toFile: toFile) {
+        let acted = core.act(action: .print(tab: model.tab, all: all, first: UInt32(max(first, 1)), last: UInt32(max(last, 1)), selectionOnly: info.isSelectionOnly, toFile: toFile))
+        if !acted.understood {
             pendingPrintInfo = nil
         }
     }
@@ -124,7 +125,7 @@ extension AppDelegate {
         info.bottomMargin = 0
         pendingPrintInfo = info
         let all = first == 0
-        let started = core.printChosen(tab: model.tab, all: all, first: max(first, 1), last: max(last, first), selectionOnly: false, toFile: true)
+        let started = core.act(action: .print(tab: model.tab, all: all, first: max(first, 1), last: max(last, first), selectionOnly: false, toFile: true)).understood
         if !started { pendingPrintInfo = nil }
         return started
     }

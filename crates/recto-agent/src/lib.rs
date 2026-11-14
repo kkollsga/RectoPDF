@@ -450,6 +450,11 @@ pub trait SessionAccess {
     fn confinement(&self) -> Option<std::sync::Arc<recto_platform::run_folders::RunFolders>> {
         self.with(|session| session.confinement().folders().cloned())
     }
+    /// **The window's watch over a print, for the actor at the window only** ([`print::PrintWatch`]): how far it's got, with Stop. A session with no window
+    /// has none, and an agent's print never gets it.
+    fn print_watch(&self, _actor: Actor) -> Option<&dyn print::PrintWatch> {
+        None
+    }
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Mutex<Session<L>> {

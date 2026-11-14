@@ -71,6 +71,8 @@ pub struct SessionHost<L = DrawableLoader> {
     effects: std::sync::OnceLock<Effects>,
     /// What takes in where the window's page views are, before a jump: set once by the app, none for a session with no window.
     places: std::sync::OnceLock<Places>,
+    /// The window's watch over the person's print, set once by the app: none for a session with no window.
+    print_watch: std::sync::OnceLock<Arc<dyn recto_agent::print::PrintWatch>>,
 }
 
 /// What carries a command's [`recto_agent::Effect`] to the window.
@@ -104,6 +106,8 @@ struct Hosted<'a, L> {
     records: Option<&'a (dyn Records + Send + Sync)>,
     effects: Option<&'a Effects>,
     places: Option<&'a Places>,
+    /// The window's watch over the person's print.
+    print_watch: Option<&'a dyn recto_agent::print::PrintWatch>,
     /// How what a command needs is read, on a host that mustn't wait on a disk: the window's session thread. None everywhere else.
     reads_later: Option<&'a dyn recto_agent::later::ReadLater>,
     /// Whether the answer is read: not on the window's session thread, which draws what the session publishes.
@@ -167,6 +171,9 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
     fn confinement(&self) -> Option<Arc<recto_platform::run_folders::RunFolders>> {
         self.session.confinement().folders().cloned()
     }
+    fn print_watch(&self, actor: Actor) -> Option<&dyn recto_agent::print::PrintWatch> {
+        self.print_watch.filter(|_| actor.at_the_window())
+    }
 }
 
 impl Default for SessionHost<DrawableLoader> {
@@ -201,6 +208,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             records: std::sync::OnceLock::new(),
             effects: std::sync::OnceLock::new(),
             places: std::sync::OnceLock::new(),
+            print_watch: std::sync::OnceLock::new(),
         }
     }
 
@@ -272,6 +280,11 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         let _ = self.effects.set(effects);
     }
 
+    /// The window's watch over the person's print, once, by the app. The first one set stays.
+    pub fn set_print_watch(&self, watch: Arc<dyn recto_agent::print::PrintWatch>) {
+        let _ = self.print_watch.set(watch);
+    }
+
     /// Where the window's page views are is taken in from here before a jump, once, by the app.
     pub fn set_places(&self, places: Places) {
         let _ = self.places.set(places);
@@ -306,6 +319,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             records: self.records.get().map(|records| &**records),
             effects: self.effects.get(),
             places: self.places.get(),
+            print_watch: self.print_watch.get().map(|watch| &**watch),
             reads_later: None,
             answer_read: true,
             find_keys: self.find_keys.get(),

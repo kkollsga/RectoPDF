@@ -182,6 +182,16 @@ fn sweep_once(folder: &Path) {
 impl OwnTemp {
     /// Makes a new file with a name nobody else has. `create_new` is `O_CREAT | O_EXCL`, which refuses an existing name and doesn't follow a symlink.
     pub(crate) fn create(out: &Path) -> Result<(Self, File), AgentError> {
+        Self::create_as(out, false)
+    }
+
+    /// The same, readable and writable by this user alone from the moment it's made: the person's print, which only the app and the system's printing
+    /// read (S2, 2026-11-14).
+    pub(crate) fn create_private(out: &Path) -> Result<(Self, File), AgentError> {
+        Self::create_as(out, true)
+    }
+
+    fn create_as(out: &Path, private: bool) -> Result<(Self, File), AgentError> {
         let failed = || AgentError::new(Code::WRITE_FAILED, "The picture couldn't be saved there.", exit::FAILED);
         if out.file_name().is_none() {
             return Err(failed());
@@ -192,7 +202,16 @@ impl OwnTemp {
             let attempt = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
             // Short and its own, not built from the output's name: a name near the file system's limit must still have a temp file.
             let path = out.with_file_name(format!(".recto-{}-{attempt}.partial", std::process::id()));
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            if private {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            #[cfg(not(unix))]
+            let _ = private;
+            match options.open(&path) {
                 Ok(file) => return Ok((Self { path }, file)),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(_) => return Err(failed()),

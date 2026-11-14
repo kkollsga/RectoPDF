@@ -52,6 +52,16 @@ pub enum UiAction {
     SaveAs { tab: u32, path: String },
     /// A switch in Settings.
     SettingChosen { id: String, on: bool },
+    /// The print panel answered with Print, for the tab it was opened for: all the pages or a range from 1, or just the selection's, on paper or, with
+    /// `to_file`, to a PDF the system's printing saves or previews.
+    Print {
+        tab: u32,
+        all: bool,
+        first: u32,
+        last: u32,
+        selection_only: bool,
+        to_file: bool,
+    },
 }
 
 /// What came of an action for the host: what's left for it to do, and whether the action was something to act on (a typed page or zoom that's understood).
@@ -130,6 +140,28 @@ impl Inner {
                 return Acted::DONE;
             }
             UiAction::SettingChosen { id, on } => super::updates::setting_command(&id, on),
+            UiAction::Print {
+                tab,
+                all,
+                first,
+                last,
+                selection_only,
+                to_file,
+            } => {
+                let panel = super::printing::Panel {
+                    tab,
+                    all,
+                    first,
+                    last,
+                    selection_only,
+                    to_file,
+                };
+                // Nothing to print is an answer not understood, for the host to forget what it kept for the print.
+                let Some(print) = super::printing::chosen(&self.panes.reading_engine(&self.engine), self.tools.printing(), panel) else {
+                    return Acted::NOT_UNDERSTOOD;
+                };
+                Some(print)
+            }
         };
         if let Some(command) = command {
             super::person::submit(self, command);

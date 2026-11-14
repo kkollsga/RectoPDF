@@ -1,12 +1,9 @@
-//! **Printing's calls:** the print panel's model, its answer, and the system's printing's file. The rules and the state are `recto_app::core::printing`'s.
+//! **Printing's calls:** the print panel's model, and the system's printing's file. The panel's answer is the person's action ([`crate::controls::UiAction::Print`]),
+//! which sends the `print` command as theirs; the rules and the state are `recto_app::core::printing`'s.
 
 use crate::{AppCore, CoreCall, lock};
-use recto_agent::print;
 pub use recto_app::core::printing::PrintModel;
-use recto_app::core::printing::{Request, chosen_range, start};
-use recto_session::TabId;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 
 /// What the print panel needs to know before it opens, all Rust's to say.
 #[uniffi::remote(Record)]
@@ -43,32 +40,6 @@ impl AppCore {
         }
     }
 
-    /// The print panel was answered with Print: these pages, from 1, or all of them, or the selection's, to paper or, with `to_file`, to a PDF the system's printing saves or previews, which is an export. Rust draws them off the UI thread, and `print_ready` says when the file's there. False if nothing was started, with a notice saying why.
-    pub fn print_chosen(&self, tab: u32, all: bool, first: u32, last: u32, selection_only: bool, to_file: bool) -> bool {
-        if tab == 0 || self.inner.core.frozen.load(Ordering::SeqCst) {
-            return false;
-        }
-        let model = self.print_model();
-        let selection = selection_only
-            .then(|| self.inner.panes.reading_engine(&self.inner.engine).selection().hot())
-            .flatten()
-            .and_then(|(_, range)| range)
-            .map(|range| (range.start.page, range.end.page));
-        let Some(range) = chosen_range(model.pages, all, first, last, selection) else {
-            return false;
-        };
-        start(
-            &self.inner,
-            Request {
-                tab: TabId(tab),
-                range,
-                dpi: print::DEFAULT_DPI,
-                to_file,
-                anyway: false,
-            },
-        )
-    }
-
     /// For QA's print to a PDF through the system's printing: where it should write, a new name of ours beside `out`, which is published at `out` when it's done, never over anything. None if `out` can't be written to.
     pub fn print_qa_target(&self, out: String) -> Option<String> {
         self.inner
@@ -89,10 +60,5 @@ impl AppCore {
     pub fn print_finished(&self, path: String) {
         self.inner.tools.printing().finished(&path);
         self.inner.core.push(CoreCall::Reconcile);
-    }
-
-    /// Stops a print being prepared, at the next page: the notice's Stop.
-    pub fn print_cancel(&self) {
-        self.inner.tools.printing().cancel();
     }
 }

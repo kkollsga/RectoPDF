@@ -65,9 +65,12 @@ fn on_its_own_thread(command: Command, counted: Running) {
         inner.core.push(CoreCall::Events(events));
         drop(counted);
     });
-    // The thread that didn't start took its count with it, as the closure holding it was dropped.
+    // The thread that didn't start took its count with it, as the closure holding it was dropped. It's said in the person's words, then answered as
+    // refused, so its feature can say more of its own.
     if spawned.is_err() {
-        not_started(&inner, &kept);
+        say(&inner, NOT_STARTED.to_string());
+        let refused = Err(AgentError::new(Code::NOT_STARTED, NOT_STARTED, recto_agent::exit::BUSY));
+        answered(&inner, &kept, Origin::Input, &refused);
     }
 }
 
@@ -84,11 +87,10 @@ fn spawn(run: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
         .map(drop)
 }
 
-/// A person's command whose thread couldn't be started: said in the person's words, then answered as refused, so its feature can say more of its own.
-fn not_started(inner: &Arc<Inner>, command: &Command) {
-    say(inner, NOT_STARTED.to_string());
-    let refused = Err(AgentError::new(Code::BUSY, NOT_STARTED, recto_agent::exit::BUSY));
-    answered(inner, command, Origin::Input, &refused);
+/// Whether a refusal is a person's command whose thread couldn't be started ([`NOT_STARTED`]), for a feature with words of its own for it.
+#[must_use]
+pub fn not_started(error: &AgentError) -> bool {
+    error.code == Code::NOT_STARTED
 }
 
 /// **A person's command counted as running for a hand-off** until it's dropped: as its thread ends, however it ends. A command that panicked was counted
@@ -148,6 +150,7 @@ const ANSWERED: &[fn(&Arc<Inner>, &Ran<'_>)] = &[
     super::find::answered,
     super::highlight::answered,
     super::updates::answered,
+    super::printing::answered,
 ];
 
 fn answered(inner: &Arc<Inner>, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {
@@ -320,9 +323,21 @@ mod tests {
         super::submit(app.core(), command);
         app.settle();
         let notice = app.reader().selection_notice.map(|notice| notice.text);
-        assert_eq!(notice.as_deref(), Some(super::NOT_STARTED), "the person is told");
+        // The print has words of its own for it, said over [`super::NOT_STARTED`], which a feature with none leaves.
+        assert_eq!(notice.as_deref(), Some("The print couldn't be started."), "the person is told");
         assert_eq!(app.core().life.persons_running(), 0, "nothing is left counted as running");
         assert!(!out.exists(), "nothing ran");
+        // A waiting command no feature has words for is said in the window's own.
+        app.core().dismiss_selection_notice();
+        let line = format!(
+            r#"{{"cmd":"render","page":1,"out":{}}}"#,
+            serde_json::Value::from(app.disk().files().join("out.png").display().to_string())
+        );
+        super::NO_THREAD.store(true, std::sync::atomic::Ordering::SeqCst);
+        super::submit(app.core(), recto_agent::parse(&line).expect("a render"));
+        app.settle();
+        let notice = app.reader().selection_notice.map(|notice| notice.text);
+        assert_eq!(notice.as_deref(), Some(super::NOT_STARTED), "told in the window's words");
     }
 
     /// Failure: a person's refused edit is said in an agent's words (naming `recto` commands or a level), or a refusal the session made in the person's

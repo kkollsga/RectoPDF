@@ -83,7 +83,7 @@ pub(super) fn menu_ids() -> BTreeSet<String> {
 }
 
 /// An app with two files open, a (with contents) and b, a third opened and closed so Open Recent and the palette have a file that isn't open, and a's in front.
-fn app() -> HeadlessApp {
+pub(super) fn app() -> HeadlessApp {
     let disk = Disk::new();
     // a has contents, so a section's chevron folds something.
     let (a, b, c) = (disk.file("a.pdf", &super::files::with_sections(4)), disk.pdf("b.pdf", 4), disk.pdf("c.pdf", 2));
@@ -115,7 +115,7 @@ fn prepare(app: &HeadlessApp, name: &str) {
 }
 
 /// **Each kind of control, by name,** with no default, so a new kind doesn't compile here until it's said what it is, and one of each made on `app`.
-fn every_kind(app: &HeadlessApp) -> Vec<(String, UiAction)> {
+pub(super) fn every_kind(app: &HeadlessApp) -> Vec<(String, UiAction)> {
     let rows = app.tabs();
     let row = rows[0].clone();
     let tab = row.tab;
@@ -198,6 +198,22 @@ fn every_kind(app: &HeadlessApp) -> Vec<(String, UiAction)> {
             id: crate::core::updates::AUTO_UPDATE_ROW.into(),
             on: false,
         },
+        UiAction::Print {
+            tab,
+            all: false,
+            first: 2,
+            last: 3,
+            selection_only: false,
+            to_file: false,
+        },
+        UiAction::Print {
+            tab,
+            all: true,
+            first: 1,
+            last: 1,
+            selection_only: false,
+            to_file: true,
+        },
     ];
     actions.into_iter().map(|action| (kind(&action), action)).collect()
 }
@@ -235,6 +251,8 @@ fn kind(action: &UiAction) -> String {
         },
         UiAction::SaveAs { .. } => "SaveAs",
         UiAction::SettingChosen { .. } => "SettingChosen",
+        UiAction::Print { to_file: false, .. } => "Print",
+        UiAction::Print { to_file: true, .. } => "Print(to a file)",
     };
     format!("UiAction::{name}")
 }
@@ -270,10 +288,23 @@ fn sent_by(name: &str, make: impl FnOnce(&HeadlessApp) -> UiAction) -> Did {
             let wire = command.wire();
             let again = recto_agent::parse(&wire).unwrap_or_else(|error| panic!("{name}: {wire} isn't a line an agent can send: {error:?}"));
             assert_eq!(format!("{again:?}"), format!("{command:?}"), "{name}: {wire} reads back as another command");
-            wire.replace(&app.disk().files().display().to_string(), "<files>")
+            print_file_named(&wire.replace(&app.disk().files().display().to_string(), "<files>"))
         })
         .collect();
     Did { sent, why, acted, heard }
+}
+
+/// A command's line with the file a person's print goes to named as such: a new name of the app's own in the system's temp folder, which nobody can guess
+/// and so is another on every run.
+fn print_file_named(wire: &str) -> String {
+    let Some(at) = wire.find(r#""to_pdf":""#).map(|at| at + r#""to_pdf":""#.len()) else {
+        return wire.to_string();
+    };
+    let end = wire[at..].find('"').map_or(wire.len(), |end| at + end);
+    if !wire[at..end].contains("/recto-print-") {
+        return wire.to_string();
+    }
+    format!("{}<a print file of the app's own>{}", &wire[..at], &wire[end..])
 }
 
 /// A Listener call's kind, with nothing it carried: what the golden holds of the host being told.
@@ -337,11 +368,11 @@ fn golden_lines(controls: &[(String, Did)], recent: &str) -> Vec<String> {
         .map(|(name, did)| {
             let name = name.replace(recent, "<recent>");
             let sent = did.sent.iter().map(|wire| wire.replace(recent, "<recent>")).collect::<Vec<_>>().join(" ; ");
-            // A save's steps, and a Find query's hits, arrive in changes the session thread's look finds together or apart: see [`heard_line`].
+            // A save's steps, a Find query's hits and a print's pages arrive in changes the session thread's look finds together or apart: see [`heard_line`].
             let saves = did
                 .sent
                 .iter()
-                .any(|wire| wire.starts_with(r#"{"cmd":"save","#) || wire.starts_with(r#"{"cmd":"find","query":""#));
+                .any(|wire| wire.starts_with(r#"{"cmd":"save","#) || wire.starts_with(r#"{"cmd":"find","query":""#) || wire.starts_with(r#"{"cmd":"print","#));
             format!(
                 "{name} | sent [{sent}] | host {:?} understood {} | heard {}",
                 did.acted.host,
@@ -359,7 +390,9 @@ fn golden_lines(controls: &[(String, Did)], recent: &str) -> Vec<String> {
 /// `--like-ci`, and 3 in one, each call a step's change), while the order of the kinds held in every run. **A Find query is the same** (2026-11-14: typed
 /// as "page", told 4 times in the runs seen and 3 once, under the whole suite): each call is Find's own, at the hits' version 1, 1, 2 and 6, so three
 /// batches of hits are already one call; the worker lands a batch when it does, and the session thread tells of what has changed when it looks, so a batch
-/// that lands before the look before is one call with it. Every other control's calls were the same in all 20.
+/// that lands before the look before is one call with it. **And a person's print** (S2, 2026-11-14): each page done is a change to the notice's count,
+/// told 4 times on one run of a 2-page print and 6 on a 4-page one, as its pages land before or after the look. Every other control's calls were the same
+/// in all 20.
 fn heard_line(heard: &[&str], saves: bool) -> String {
     if heard.is_empty() {
         return "nothing".to_string();
@@ -460,34 +493,6 @@ fn every_control_is_a_command_or_the_hosts_with_a_reason() {
     if let Err(differs) = against_golden(&lines) {
         panic!("{differs}");
     }
-}
-
-/// Failure (R2.3, C6): the bridge reaches past the one way a person's action comes in (`Inner::act` and the methods it calls), queuing a person's call on
-/// the session thread itself: a second way in, which the coverage test above can't see. The bridge's sources name no `CoreCall` but `Reconcile`, which asks
-/// the window to be drawn again and does nothing a person does.
-#[test]
-fn the_bridge_queues_none_of_a_persons_calls() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../recto-ffi/src");
-    let mut files = vec![root];
-    let mut named = Vec::new();
-    while let Some(path) = files.pop() {
-        if path.is_dir() {
-            files.extend(
-                std::fs::read_dir(&path)
-                    .expect("the bridge's sources")
-                    .map(|entry| entry.expect("an entry").path()),
-            );
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            let text = std::fs::read_to_string(&path).expect("a source");
-            for (at, _) in text.match_indices("CoreCall::") {
-                let call: String = text[at + "CoreCall::".len()..].chars().take_while(|c| c.is_alphanumeric()).collect();
-                if call != "Reconcile" {
-                    named.push(format!("{}: CoreCall::{call}", path.display()));
-                }
-            }
-        }
-    }
-    assert!(named.is_empty(), "{named:#?}");
 }
 
 /// Failure (the golden held a count that depends on load): a control whose changes arrive from a worker (a Find query's hits, a save's steps) is told of

@@ -416,11 +416,17 @@ impl Cmd for Print {
             anyway,
         } = self;
         let access = cx.access;
-        {
-            crate::quiet_files::check_new_file(access, to_pdf)?;
-            let list = print::print_pages(access, tab, pages.as_deref())?;
-            print::print_to_file(&list, *dpi, to_pdf, *anyway)
-        }
+        crate::quiet_files::check_new_file(access, to_pdf)?;
+        let list = print::print_pages(access, tab, pages.as_deref())?;
+        // The person's print at the window says how far it's got, with Stop; anyone else's goes to its end.
+        let Some(watch) = access.print_watch(cx.actor) else {
+            return print::print_to_file(&list, *dpi, to_pdf, *anyway, print::Readable::AsAnyExport, |_, _| true);
+        };
+        let id = access.with(|s| select(s, tab))?;
+        watch.begin(id, u32::try_from(list.len()).unwrap_or(u32::MAX))?;
+        let _watched = print::Watched(watch);
+        // The window's print is the person's: its file is theirs alone, for the system's printing.
+        print::print_to_file(&list, *dpi, to_pdf, *anyway, print::Readable::ByTheUserAlone, |done, of| watch.page(done, of))
     }
     fn human(data: &Value) -> String {
         format!(

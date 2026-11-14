@@ -266,6 +266,7 @@ Printing::pub fn qa_target_for(&self, out: PathBuf) -> Option<PathBuf>
 Printing::pub fn quitting(&self)
 Printing::pub fn selection_notice(&self) -> Option<SelectionNotice>
 Printing::pub fn take_ready(&self) -> Option<PathBuf>
+Printing::pub(crate) fn anyway(&self, serial: u64) -> Option<Command>
 Prompts (pub struct, derives Debug, Default)
 Prompts.pub(crate) link: Mutex<Option<LinkPrompt>>
 Prompts.pub(crate) passwords: Mutex<Asks>
@@ -301,6 +302,7 @@ Tools::pub fn prompts(&self) -> &crate::prompts::Prompts
 Tools::pub fn tool(&self) -> &snapshot_tool::Tool
 Tools::pub(crate) fn find_field(&self) -> &Mutex<crate::find::Field>
 Tools::pub(crate) fn palette(&self) -> &crate::palette::Palette
+Tools::pub(crate) fn printing_held(&self) -> Arc<printing::Printing>
 Tools::pub(crate) fn save_ui(&self) -> &saving::SaveUi
 Window (pub struct)
 Window::pub fn app_record(&self, notice: impl FnOnce() -> Option<String>) -> AppRecord

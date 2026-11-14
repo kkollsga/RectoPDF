@@ -1,5 +1,5 @@
 apptest crates/recto-cli/tests 200
-ffi crates/recto-ffi/src 2116
+ffi crates/recto-ffi/src 2092
 file crates/recto-index/src/corpus.rs 1686
 file crates/recto-render-service/src/host.rs 2132
 file crates/recto-render/src/pdfium/contents.rs 2885
@@ -100,7 +100,7 @@ struct crates/recto-session/src/lib.rs::TabRecord 17
 struct crates/recto-session/src/record.rs::TabEntry 19
 struct crates/recto-update/src/plan.rs::Plan 20
 type crates/recto-app/src::Inner 44
-type crates/recto-ffi/src::AppCore 135
+type crates/recto-ffi/src::AppCore 133
 type crates/recto-reader/src::Engine 46
 type crates/recto-reader/src::Reader 82
 type crates/recto-render-service/src::DocRenderer 64

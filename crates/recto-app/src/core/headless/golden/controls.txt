@@ -114,3 +114,5 @@ UiAction::CloseAnswered(DontSave) | sent [{"cmd":"discard","tab":"#2"} ; {"cmd":
 UiAction::CloseAnswered(SaveAs) | sent [] | host ShowSavePanel understood true | heard nothing
 UiAction::SaveAs | sent [{"cmd":"save","tab":"#2","out":"<files>/copy.pdf","replace":false}] | host None understood true | heard model_changed+
 UiAction::SettingChosen | sent [{"cmd":"settings","auto_update":"off"}] | host None understood true | heard model_changed
+UiAction::Print | sent [{"cmd":"print","tab":"#2","pages":"2-3","dpi":300,"to_pdf":"<a print file of the app's own>","anyway":true}] | host None understood true | heard model_changed+
+UiAction::Print(to a file) | sent [{"cmd":"print","tab":"#2","pages":"1-4","dpi":300,"to_pdf":"<a print file of the app's own>","anyway":false}] | host None understood true | heard model_changed+
