@@ -4,7 +4,7 @@
 //! `lifecycle::keeping`'s tests); and what an update writes for the installer. No wording is held: codes, exit codes, and the fields that say which sentence.
 
 use super::coverage::heard_kind;
-use super::late_lock::{handed_off_with_the_old_copy_holding, installer_sees, next_try_fails, state_but_the_launch_ok, the_copy_before};
+use super::late_lock::{StateFiles, handed_off_with_the_old_copy_holding, installer_sees, next_try_fails, state_but_the_launch_ok, the_copy_before};
 use crate::core::controls::UiAction;
 use crate::core::updates::{AUTO_UPDATE_ROW, DEV_BUILDS_ROW, UPDATE_NOW_ROW};
 use crate::lifecycle::keeping::{Keeping, TRIES, TRY_EVERY_MS};
@@ -357,33 +357,101 @@ fn the_updater_hears_of_the_launch_once_however_keeping_settles() {
     drop(copy);
 }
 
-/// Failure (the coordinator's condition on S4): the app ends while the updater is being told of a launch held back, and the tell, going on without it, writes
-/// what only a copy that keeps the record writes: a launch-ok with a tab count, or the install settled (`updates.json` or the plan changed). The tell held at
-/// the updater's look, the app ended there (as a process's end opens every seam), the tell goes on: the installer at most hears it started, with no tab count.
-#[test]
-fn an_app_ended_while_the_updater_is_told_writes_nothing_a_kept_copy_would() {
-    let (disk, bed, _plan, old_on_its_way_out) = handed_off_with_the_old_copy_holding();
+/// Every file under a folder, by its path and bytes.
+fn folder_bytes(folder: &std::path::Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    let mut found = std::collections::BTreeMap::new();
+    let mut folders = vec![folder.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                found.insert(path, bytes);
+            }
+        }
+    }
+    found
+}
+
+/// A launch an update opened, told of held back (`kept`: the old copy lets go and a late try keeps the record; or the tries run out and it's a second copy),
+/// with its first frame shown while held, and the app ended either before the tell reaches the updater's first frame or after the tell is done. Says the
+/// update folder as it was when the app ended, the disk once the tell's thread is done, the plan, and what a second copy must leave as it was, from before.
+fn told_and_ended(
+    kept: bool,
+    ended_first: bool,
+) -> (
+    std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+    Disk,
+    recto_update::plan::Plan,
+    StateFiles,
+) {
+    let (disk, bed, plan, old_on_its_way_out) = handed_off_with_the_old_copy_holding();
     let was = state_but_the_launch_ok(&disk);
     let app = disk.builder().update(&bed).another_keeps().start();
     app.core().life.update_facts.first_frame_shown(&app.core().updates);
-    for _ in 1..crate::lifecycle::keeping::TRIES_AFTER_UPDATE {
+    gate::hold(&[Seam::FirstFrame]);
+    if kept {
         next_try_fails(&app);
+        drop(old_on_its_way_out);
+        app.advance(TRY_EVERY_MS);
+        app.wait_until("the record kept", || app.core().life.keeping() == Keeping::Keeps);
+    } else {
+        for _ in 1..crate::lifecycle::keeping::TRIES_AFTER_UPDATE {
+            next_try_fails(&app);
+        }
+        app.advance(TRY_EVERY_MS);
+        app.wait_until("told it's a second copy", || app.update_status()["second_copy"] == true);
     }
-    gate::hold(&[Seam::Launch]);
-    app.advance(TRY_EVERY_MS);
-    app.wait_until("the updater's look at the launch held", || app.waiting(Seam::Launch) > 0);
-    let disk = app.kill();
-    let files = disk.update_files();
-    let launch_ok = std::fs::read_to_string(files.launch_ok()).ok();
-    let said = launch_ok.as_deref().and_then(recto_update::plan::read_launch_ok);
-    assert!(said.is_none_or(|(_, tabs)| tabs.is_none()), "no tab count: {launch_ok:?}");
-    let now = (
-        super::late_lock::record_folder(&disk),
-        std::fs::read(&files.saved).ok(),
-        std::fs::read(files.plan()).ok(),
-    );
-    assert!(now == was, "the record, updates.json and the plan as they were");
-    drop(old_on_its_way_out);
+    app.wait_until("the tell at the updater's first frame", || app.waiting(Seam::FirstFrame) > 0);
+    if !ended_first {
+        app.let_through(Seam::FirstFrame, 1);
+        app.wait_for("the installer to see it up", || installer_sees(app.disk(), &plan));
+        app.wait_until("the tell done", || {
+            !kept || recto_update::saved::Saved::read(&app.disk().update_files().saved).proven.as_deref() == Some(NEW)
+        });
+    }
+    let mut at_end = None;
+    let disk = app.kill_holding(Seam::FirstFrame, |disk| at_end = Some(folder_bytes(&disk.update_files().root)));
+    (at_end.expect("looked at as the app ended"), disk, plan, was)
+}
+
+/// Failure (review of R3.7 S4, 2026-11-14): the app ends while the updater is being told of a launch held back, on the tell's own thread, which holds the
+/// updater and not the app, and the tell goes on without it: the updater's way back to the app finds nothing, reads that as a version that can't draw a page,
+/// and writes `launch_failed`, the installer's word to roll back, over a launch that kept the record and had already settled the install (or one that came up
+/// as a second copy). The tell held at the updater's first frame and the app ended under it, in that order every time: nothing in the update folder changes
+/// after the app has ended, byte for byte, `launch_failed` included. Ended after the tell instead, the installer saw it up as it should have.
+#[test]
+fn an_app_ended_while_the_updater_is_told_writes_nothing_after_it() {
+    for kept in [true, false] {
+        for ended_first in [true, false] {
+            let (at_end, disk, plan, was) = told_and_ended(kept, ended_first);
+            let files = disk.update_files();
+            let now = folder_bytes(&files.root);
+            let case = format!("kept {kept}, ended before the first frame {ended_first}");
+            assert!(!files.launch_failed().exists(), "{case}: never told to roll back");
+            assert!(
+                now == at_end,
+                "{case}: written after the app ended: {:?}",
+                now.keys().filter(|path| at_end.get(*path) != now.get(*path)).collect::<Vec<_>>()
+            );
+            if !kept {
+                assert!(
+                    state_but_the_launch_ok(&disk) == was,
+                    "{case}: the record, updates.json and the plan as they were"
+                );
+            }
+            match (ended_first, kept) {
+                (true, _) => assert!(!files.launch_ok().exists(), "{case}: nothing said to the installer"),
+                (false, true) => assert_eq!(installer_sees(&disk, &plan), Ok(()), "{case}"),
+                (false, false) => assert_eq!(
+                    super::late_lock::launch_ok_says(&disk).map(|(_, tabs)| tabs),
+                    Some(None),
+                    "{case}: a second copy started, with no tab count"
+                ),
+            }
+        }
+    }
 }
 
 /// What an update by hand writes for the installer and the next launch, made the same on every run: the plan's fields, `updates.json` as the new version

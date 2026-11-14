@@ -123,6 +123,15 @@ impl Host for Hooks {
         self.inner.get().is_some_and(|inner| inner.strong_count() == 0)
     }
 
+    /// The app held while the updater writes for a launch or a first frame; nothing once it's [`Self::gone`]. Not attached yet, the app is being made, and
+    /// nothing has ended.
+    fn here(&self) -> Option<Box<dyn std::any::Any>> {
+        match self.inner.get() {
+            None => Some(Box::new(())),
+            Some(inner) => inner.upgrade().map(|inner| Box::new(inner) as Box<dyn std::any::Any>),
+        }
+    }
+
     fn cancelled(&self) {
         if let Some(inner) = self.inner() {
             inner.hand_off_cancelled();
@@ -322,9 +331,10 @@ impl LaunchFacts {
 /// than a late try, whose read tells it), as what this copy claims then ([`crate::lifecycle::keeping::Keeping::claims`], whatever lock a try or a read still
 /// holds), and then of a first frame shown meanwhile, with the tabs that were read. Nothing at all for a launch that wasn't held back.
 ///
-/// The thread holds the life (where what's held is) and the updater, not the app: if the app has gone by the time the updater asks whether this copy keeps the
-/// record, the updater's way back to it ([`Hooks`]' weak reference) finds nothing and it reads "doesn't keep the record", so a tell outliving its app writes only
-/// what a second copy does (`update_guards::an_app_ended_while_the_updater_is_told_writes_nothing_a_kept_copy_would`).
+/// The thread holds the life (where what's held is) and the updater, not the app. The updater holds the app through its way back to it ([`Hooks::here`]) for as
+/// long as it writes for the launch and for the first frame, and finds nothing once the app has gone, where it stops and writes nothing more: an app that ends
+/// under the tell can't leave it half-told, nor be read as a version that couldn't draw, which would tell the installer to roll back
+/// (`update_guards::an_app_ended_while_the_updater_is_told_writes_nothing_after_it`).
 pub(super) fn tell_held(life: &Arc<super::Lifecycle>, updates: &Arc<recto_update::updater::Updater>) {
     let Some(facts) = life.update_facts.take_held() else {
         return;

@@ -93,6 +93,12 @@ pub trait Host: Send + Sync {
     fn gone(&self) -> bool {
         false
     }
+    /// **The app held for as long as what's returned is kept,** and nothing once it has [`Self::gone`]: what the updater writes for a launch it's told of, and
+    /// for its first frame, is written with the app held, or not at all, so an app that ends while the updater's told can't leave it half-told, and an app
+    /// that's gone is never read as one that couldn't draw. A real app is never gone.
+    fn here(&self) -> Option<Box<dyn std::any::Any>> {
+        Some(Box::new(()))
+    }
     /// Starts the installer. A test stands in for this.
     fn start_installer(&self, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32> {
         local::spawn_detached(helper, &["install".to_owned(), plan.display().to_string()], &[], log)
@@ -375,6 +381,10 @@ impl Updater {
     /// What the host knows of this copy. Given once, before anything else asks. Reads what's remembered, says what became of an install that's just ended, and tidies up. All of it files, so never on the UI thread, and none of it holding what the UI thread asks through.
     pub fn launched(&self, mut facts: Facts) -> AtLaunch {
         recto_platform::slow::pause(recto_platform::slow::Seam::Launch);
+        // An app that's ended is told nothing more, and has nothing written for it: a kept copy's settling included.
+        let Some(_app) = self.host.here() else {
+            return AtLaunch::GoOn;
+        };
         let now = self.now_ms();
         facts.app = facts.app.canonicalize().unwrap_or(facts.app);
         let current = facts.version.clone();
@@ -710,6 +720,12 @@ impl Updater {
 
     /// The first correct frame's on the screen. **What "come up" means, which is what the installer waits for and what can send a new version back:** the state's been read and a first frame shown, and this version has drawn a page through the real renderer: our own tiny PDF, not the user's. Not the user's, as one of theirs being moved, damaged or on a dead volume says nothing of this version. And not the first frame alone, which a timer can force and a preview from a sleep file can fill without the renderer ever running. So a version whose renderer can't load, which would otherwise look fine, shows no pages for everyone, and be the one nobody can get back from, goes back. It's asked only of a version that's new here, so a normal launch costs nothing, and this waits on a worker, so it has a thread of its own.
     pub fn first_frame(&self, shown_at_ms: u64) {
+        recto_platform::slow::pause(recto_platform::slow::Seam::FirstFrame);
+        // **An app that's ended stops this here** and writes nothing: not a launch that failed to draw, which would send the installer back, nor a half of what
+        // a kept copy writes. Held to the end otherwise, so it can't end part way.
+        let Some(_app) = self.host.here() else {
+            return;
+        };
         let (version, arrived, to_prove, second_copy, kept) = {
             let mut st = lock(&self.st);
             if st.first_frame_done {

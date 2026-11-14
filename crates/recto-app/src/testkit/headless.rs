@@ -801,10 +801,26 @@ impl HeadlessApp {
     /// running; nothing queued for the session thread is taken; every held seam opens, so what waited there goes on to find it can't write; the page views end;
     /// and every thread that held the core, or the updater, lets go of it.
     fn end(&mut self) -> Disk {
+        self.end_holding(None)
+    }
+
+    /// **The app killed with what waits at `seam` still waiting,** let go only once the core has gone and `ended` has looked at the disk as it was then: so a
+    /// thread that holds neither the core nor the updater's way back to it (an update's tell, held at [`Seam::FirstFrame`]) goes on after its app has ended, in
+    /// that order every time, and what it writes after that can be seen. What waits at `seam` must not hold the core, or the end waits for it in vain.
+    #[must_use]
+    pub fn kill_holding(mut self, seam: Seam, ended: impl FnOnce(&Disk)) -> Disk {
+        self.end_holding(Some((seam, Box::new(ended))))
+    }
+
+    /// [`Self::end`], with one seam left held until the core's gone ([`Self::kill_holding`]).
+    fn end_holding(&mut self, mut holding: Option<(Seam, Box<dyn FnOnce(&Disk) + '_>)>) -> Disk {
         if let Some(inner) = self.inner.take() {
             inner.saver.store.let_go();
             inner.core.abandon();
-            recto_platform::slow::gate::open_all();
+            match &holding {
+                Some((held, _)) => Seam::ALL.into_iter().filter(|seam| seam != held).for_each(recto_platform::slow::gate::open),
+                None => recto_platform::slow::gate::open_all(),
+            }
             for engine in inner.panes.engines(&inner.engine) {
                 engine.shut_down();
             }
@@ -821,6 +837,10 @@ impl HeadlessApp {
             // and looks at whether its app has ended instead.
             let updater = Arc::downgrade(&inner.updates);
             drop(inner);
+            if let Some((seam, ended)) = holding.take() {
+                ended(self.disk.as_ref().expect("the disk"));
+                recto_platform::slow::gate::open(seam);
+            }
             let began = Instant::now();
             while updater.strong_count() > 0 {
                 assert!(
