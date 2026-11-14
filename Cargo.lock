@@ -838,6 +838,7 @@ dependencies = [
  "flate2",
  "recto-core",
  "recto-platform",
+ "recto-proto",
  "recto-testpdf",
  "serde",
  "serde_json",

@@ -21,7 +21,7 @@ use std::cell::Cell;
 /// **The file's own highlights a tab has taken out, for drawing a page of its own file,** as the worker that draws that page leaves them out: so a picture,
 /// print or SVG made from the tab never shows one the person has removed (coordinator, 2026-11-14). None for a page added from another PDF, or with
 /// none taken out.
-pub(crate) fn hidden_in<L: recto_session::DocLoader>(
+pub fn hidden_in<L: recto_session::DocLoader>(
     s: &recto_session::Session<L>,
     id: TabId,
     source: &recto_session::PageSource,
@@ -31,17 +31,7 @@ pub(crate) fn hidden_in<L: recto_session::DocLoader>(
     }
     // The whole file's set, whatever the page: a worker leaves out only what's on the page it draws, and one set for every page of the file is
     // what lets a print's pages share one worker (a set goes to it only when it's another).
-    let marks = s.lists().get(id)?.marks();
-    let mut by_page: std::collections::BTreeMap<u32, Vec<(u32, [f32; 4])>> = std::collections::BTreeMap::new();
-    for key in marks.hidden() {
-        by_page.entry(key.page).or_default().push((key.index, key.rect));
-    }
-    (!by_page.is_empty()).then(|| {
-        std::sync::Arc::new(recto_proto::hidden::HiddenAnnots {
-            generation: marks.changes(),
-            pages: by_page.into_iter().collect(),
-        })
-    })
+    s.lists().get(id)?.marks().hidden_annots()
 }
 
 /// [`hidden_in`], through the session's access.

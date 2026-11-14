@@ -177,23 +177,8 @@ fn make_marks<L: DocLoader>(session: &Session<L>, id: TabId, list: &recto_sessio
             _ => pages.push((position, rects.collect())),
         }
     }
-    let hidden = (!list.marks().hidden().is_empty())
-        .then(|| session.tabs().path_of(id))
-        .flatten()
-        .map(|file| (file, Arc::new(hidden_set(list.marks()))));
+    let hidden = list.marks().hidden_annots().and_then(|set| Some((session.tabs().path_of(id)?, set)));
     Arc::new(TabMarks { tab: id.0, pages, hidden })
-}
-
-/// The file's own highlights a list has taken out, by page of the file, as the worker that draws them takes them.
-fn hidden_set(marks: &recto_session::edit::marks::Marks) -> recto_proto::hidden::HiddenAnnots {
-    let mut by_page: std::collections::BTreeMap<u32, Vec<(u32, [f32; 4])>> = std::collections::BTreeMap::new();
-    for key in marks.hidden() {
-        by_page.entry(key.page).or_default().push((key.index, key.rect));
-    }
-    recto_proto::hidden::HiddenAnnots {
-        generation: marks.changes(),
-        pages: by_page.into_iter().collect(),
-    }
 }
 
 /// What a pane's page view has been given of highlights.

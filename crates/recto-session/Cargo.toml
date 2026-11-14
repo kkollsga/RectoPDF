@@ -12,6 +12,8 @@ workspace = true
 [dependencies]
 recto-core.workspace = true
 recto-platform.workspace = true
+# The set of a file's highlights a worker leaves out of what it draws, made once here for every drawing of a tab (R4.3, SF7).
+recto-proto.workspace = true
 crc32fast.workspace = true
 flate2.workspace = true
 serde.workspace = true

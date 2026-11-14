@@ -380,6 +380,23 @@ impl Marks {
         &self.hidden
     }
 
+    /// **The file's own highlights taken out, as the worker that draws a page of the file leaves them out**, by page of the file, at this list's
+    /// tick: the one set every drawing of the tab is given, the page view's and an agent's picture, snapshot, SVG or print alike (second review of
+    /// R4.3, SF7). `None` when none is taken out, so a tab without costs nothing.
+    pub fn hidden_annots(&self) -> Option<std::sync::Arc<recto_proto::hidden::HiddenAnnots>> {
+        if self.hidden.is_empty() {
+            return None;
+        }
+        let mut by_page: std::collections::BTreeMap<u32, Vec<(u32, [f32; 4])>> = std::collections::BTreeMap::new();
+        for key in &self.hidden {
+            by_page.entry(key.page).or_default().push((key.index, key.rect));
+        }
+        Some(std::sync::Arc::new(recto_proto::hidden::HiddenAnnots {
+            generation: self.changes,
+            pages: by_page.into_iter().collect(),
+        }))
+    }
+
     /// The tick of the last change to the highlights, what's hidden, or the pages they're on: the same tick is the same state.
     pub fn changes(&self) -> u64 {
         self.changes
@@ -833,6 +850,31 @@ mod tests {
         assert_eq!(size_of::<MarkRect>(), 16);
         assert!(size_of::<MarkStep>() <= 24, "{}", size_of::<MarkStep>());
         // A step of the history holds it boxed, so the history's own step stays small (`an_edit_step_stays_small`).
+    }
+
+    /// Failure (second review of R4.3, SF7): the set every drawing of a tab is given splits a page's removals, names another tick than the list's
+    /// (so a worker holding the old one keeps drawing it), or is made for a list with none taken out (a set and a worker message for nothing).
+    #[test]
+    fn the_set_of_what_a_tab_has_taken_out_is_by_page_at_the_lists_tick() {
+        let mut marks = Marks::default();
+        assert!(marks.hidden_annots().is_none(), "none taken out, no set");
+        let key = |page, index| FileKey {
+            source: 0,
+            page,
+            index,
+            rect: [1.0, 2.0, 3.0, 4.0],
+        };
+        marks.hidden = vec![key(3, 7), key(1, 0), key(3, 2)];
+        marks.changes = 42;
+        let set = marks.hidden_annots().expect("a set");
+        assert_eq!(set.generation, 42);
+        assert_eq!(
+            set.pages,
+            vec![
+                (1, vec![(0, [1.0, 2.0, 3.0, 4.0])]),
+                (3, vec![(7, [1.0, 2.0, 3.0, 4.0]), (2, [1.0, 2.0, 3.0, 4.0])])
+            ]
+        );
     }
 
     /// Failure: a rectangle with a NaN, an infinite or enormous edge, or no area, from a hostile journal or a bad pick, reaches the drawing or the save.
