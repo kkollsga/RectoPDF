@@ -3388,6 +3388,24 @@ mod protected_tests {
         }
     }
 
+    /// Failure (security review of phase R, S2): `session show` gives the state record's sizes and counts while a protected tab is open, and they move
+    /// with what the record holds of it (its place, length and edits). While any open tab is withheld they're left out, and what says whether the record
+    /// is kept stays; with none, all of it is given as before.
+    #[test]
+    fn session_show_gives_no_record_sizes_while_a_tab_is_withheld() {
+        let mut session = Session::new(Unlocked);
+        let id = session.open(Path::new("/d/locked.pdf")).unwrap();
+        session.open(Path::new("/d/plain.pdf")).unwrap();
+        let kept = || json!({ "kept": true, "holds_the_record": true, "beside_newer": false, "record_bytes": 812, "journal_bytes": 40, "writes": 3, "appends": 2, "wrote_bytes": 1200, "notice": null });
+        assert_eq!(session_show_json(&session, Level::Full, kept())["record"], kept(), "no tab withheld: as it was");
+        session.tabs_mut().note_password_used(id);
+        let record = session_show_json(&session, Level::Full, kept())["record"].clone();
+        for key in ["record_bytes", "journal_bytes", "writes", "appends", "wrote_bytes"] {
+            assert!(record[key].is_null(), "{key}: {record}");
+        }
+        assert_eq!((&record["kept"], &record["holds_the_record"]), (&json!(true), &json!(true)), "{record}");
+    }
+
     /// Failure (independent review of phase R, its follow-up on `session show`): `session show` gives a protected tab what `where` and `tabs` leave out,
     /// what's said of its file (a notice), whether it's edited and can be undone (an edit's taking can turn on its length), its zoom, which fits its pages'
     /// size, or its layout, which `view` leaves out; or, at Control, what the person typed in Find while it's the document being read. Of a plain tab, all

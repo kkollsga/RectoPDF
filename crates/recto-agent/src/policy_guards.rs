@@ -380,7 +380,16 @@ fn unmeasured(value: &mut Value) {
 fn no_command_tells_an_agent_anything_of_a_protected_document() {
     deadlines_met();
     let mut differs = Vec::new();
-    for command in every_command() {
+    // A synced comparison with the protected tab, which `compare`'s note and its panes' starts would tell the length of (S2): made at once, and made
+    // synced afterwards.
+    let synced = [
+        Command::from(commands::compare::Compare::Set {
+            tabs: commands::compare::Panes::new(vec![crate::TabRef::from("#1"), crate::TabRef::from("#2")]).expect("two tabs"),
+            sync: Some(commands::words::OnOff::On),
+        }),
+        Command::from(commands::compare::Compare::Sync(commands::words::OnOff::On)),
+    ];
+    for command in every_command().into_iter().chain(synced) {
         for level in LEVELS {
             for arranged in ARRANGEMENTS {
                 let (one, two) = (told(1, level, &command, arranged), told(2, level, &command, arranged));
