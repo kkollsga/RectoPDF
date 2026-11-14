@@ -15,7 +15,8 @@
 
 use crate::Code;
 use crate::TabRef;
-use crate::{Actor, AgentError, Event, Level, SessionAccess, exit, file_label, select};
+use crate::actor::Rewrite;
+use crate::{Actor, AgentError, Event, SessionAccess, exit, file_label, select};
 use recto_core::save::{AddedFile, PageRef, SaveError, SaveHooks, SaveOutcome, SaveRequest, SaveStep, Target, Writer};
 use recto_platform::FileStamp;
 use recto_session::TabId;
@@ -103,23 +104,6 @@ fn from_save(error: &SaveError) -> AgentError {
         _ => "Tell the user what failed. The edits are still here, unsaved, and the file is as it was.",
     };
     AgentError::new(Code::lower(error.code()), error.message(), exit).then(next)
-}
-
-/// A save that would drop the owner's steps about the file's highlights, which below Full isn't the agent's to make.
-fn owner_steps_at_stake() -> AgentError {
-    AgentError::new(
-        Code::OWNER_EDITS_AT_STAKE,
-        "Nothing was saved: the user has undo steps about highlights on a page this save leaves out, which it would drop.",
-        exit::PERMISSION,
-    )
-    .then("Ask them to save, or put the page back first.")
-}
-
-fn needs_full(what: &str) -> AgentError {
-    let mut error = AgentError::new(Code::PERMISSION_DENIED, format!("{what} needs Full access."), exit::PERMISSION);
-    error.next = "Run `recto permission request full`, which tells the user what to allow. Nothing else raises this.".to_string();
-    error.ask = Some("recto permission request full".into());
-    error
 }
 
 fn bad_path(message: &str) -> AgentError {
@@ -270,14 +254,14 @@ fn request_parts(snapshot: &recto_session::SaveSnapshot) -> (Vec<PageRef>, Vec<A
 
 /// **Saves a tab.** The one way an agent, the CLI or the app saves.
 pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveTo, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-    let (level, mut to) = (actor.level(), to.clone());
+    let mut to = to.clone();
     // Save As onto the tab's own file, which is a Save: a signed one's refusal then says to choose another name, not to use Save As.
     let mut onto_itself = false;
     if let SaveTo::As { out, replace } = &to {
         crate::quiet_files::check_new_file(access, out)?; // The session's own wall, beside the table's (F4).
         check_save_path(out)?;
-        if *replace && level < Level::Full {
-            return Err(needs_full("Replacing another file"));
+        if *replace {
+            actor.refuse_rewrite(Rewrite::ReplacesAnotherFile)?;
         }
         if !*replace && std::fs::symlink_metadata(out).is_ok() {
             return Err(from_save(&SaveError::TargetExists));
@@ -339,20 +323,9 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
         highlights: &highlights,
         highlights_gone: &snapshot.marks.gone,
     };
-    // The owner's steps about the file's highlights on a page this save leaves out can't be carried past it (coordinator, 2026-11-14): theirs to
-    // lose, so below Full the save isn't made. Such a save is a rewrite too, which below Full is refused anyway; this says why.
-    if level < Level::Full && access.with(|s| s.lists().get(id).is_some_and(recto_session::edit::marks::drops_owner_steps)) {
+    if let Err(refused) = refuse_for_whom(access, actor, id, &request) {
         drop(ending);
-        return Err(owner_steps_at_stake());
-    }
-    let writer = recto_core::save::writer_for_request(&request);
-    if writer == Writer::Rewrite && level < Level::Full && level >= Level::Control {
-        drop(ending);
-        return Err(needs_full(if snapshot.marks.gone.is_empty() {
-            "A save that removes pages for good"
-        } else {
-            "A save that takes a highlight out of the file for good"
-        }));
+        return Err(refused);
     }
     let target = match to {
         SaveTo::Same => Target::Same,
@@ -374,7 +347,7 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
         original: &snapshot.path,
         needed,
         kept: None,
-        level,
+        actor,
     };
     let saved = recto_core::save::save(&request, target, backups.as_deref(), &mut hooks);
     let kept = hooks.kept.take();
@@ -382,7 +355,7 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
         Ok(outcome) => outcome,
         Err(SaveError::RewriteNotAllowed) => {
             drop(ending);
-            return Err(needs_full("A save that writes the file anew"));
+            return Err(Rewrite::WritesAnew.refusal());
         }
         Err(SaveError::SignedNeedsCopy) if onto_itself => {
             drop(ending);
@@ -420,6 +393,20 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
     Ok(data)
 }
 
+/// **What this actor may not save,** once what the save would write is known: the owner's steps about the file's highlights on a page it leaves out,
+/// which can't be carried past it, and a rewrite, each below Full. (Below Control nothing saves at all: the table refuses it.)
+fn refuse_for_whom<A: SessionAccess>(access: &A, actor: Actor, id: TabId, request: &SaveRequest<'_>) -> Result<(), AgentError> {
+    access.with(|s| actor.refuse_owner_edits_at_stake(s, crate::actor::Stake::SaveDropsSteps(id)))?;
+    if recto_core::save::writer_for_request(request) == Writer::Rewrite {
+        actor.refuse_rewrite(if request.highlights_gone.is_empty() {
+            Rewrite::RemovesPages
+        } else {
+            Rewrite::TakesOutHighlight
+        })?;
+    }
+    Ok(())
+}
+
 struct Hooks<'a, A: SessionAccess> {
     access: &'a A,
     id: TabId,
@@ -430,13 +417,12 @@ struct Hooks<'a, A: SessionAccess> {
     needed: Vec<u32>,
     /// That copy, once it's made.
     kept: Option<recto_session::edit::AddedSource>,
-    level: Level,
+    actor: Actor,
 }
 
 impl<A: SessionAccess> SaveHooks for Hooks<'_, A> {
     fn may_rewrite(&self) -> bool {
-        // Writing a file anew takes what was removed out of it for good: Full only (SPEC section 5). Below Control nothing saves at all.
-        self.level >= Level::Full
+        self.actor.may_rewrite()
     }
 
     fn step(&mut self, step: SaveStep) {
@@ -489,7 +475,6 @@ fn answer<L: recto_session::DocLoader>(
     rolled_off: usize,
     saved_as: Option<&Path>,
 ) -> Value {
-    let level = actor.level();
     let mut data = crate::edit_state_json(s, actor, id);
     let name = s.tabs().path_of(id).map(|path| file_label(&path)).unwrap_or_default();
     let how = match outcome.writer {
@@ -561,9 +546,8 @@ fn answer<L: recto_session::DocLoader>(
         }
         None => Value::Null,
     };
-    // Where the backup is says something about the user's disk, so only at Full.
     data["backup_kept"] = json!(outcome.backup.is_some());
-    if level >= Level::Full {
+    if actor.sees_backup_path() {
         data["backup"] = json!(outcome.backup.as_ref().map(|path| path.display().to_string()));
     }
     data["untrusted"] = json!({ "file": name });

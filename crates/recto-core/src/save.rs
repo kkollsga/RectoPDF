@@ -269,18 +269,21 @@ pub trait SaveHooks {
     /// How it's going.
     fn step(&mut self, _step: SaveStep) {}
     /// Whether this caller may save by writing the file anew, which takes what was removed out of it for good. Asked once the writer's decided, before anything's written: an agent below Full may not.
-    fn may_rewrite(&self) -> bool {
-        true
-    }
+    /// No default: a caller that forgot would be let rewrite (review of the rules about who may do what, 2026-11-14), so each says.
+    fn may_rewrite(&self) -> bool;
     /// **The file is written, beside its target, and will be `stamp` once it's in place:** the rename keeps its number and time. Anything to note first, such as the session's `save_prepared`, goes here, and an error stops the save with nothing changed.
     fn prepared(&mut self, _written: &Path, _stamp: FileStamp) -> std::io::Result<()> {
         Ok(())
     }
 }
 
-/// No hooks.
+/// No hooks: a caller with no one to ask, such as a test of the writer or a tool, which may rewrite.
 pub struct NoHooks;
-impl SaveHooks for NoHooks {}
+impl SaveHooks for NoHooks {
+    fn may_rewrite(&self) -> bool {
+        true
+    }
+}
 
 /// **Saves the document as edited.** Checks every page against the real files, decides the writer, writes beside the target, reads the result back, lets the caller note it, and moves it into place. `backups` is where the one backup of an original goes on its first save over itself.
 pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path>, hooks: &mut dyn SaveHooks) -> Result<SaveOutcome, SaveError> {

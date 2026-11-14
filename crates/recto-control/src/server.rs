@@ -603,7 +603,7 @@ impl<H: Host> Loop<H> {
         let was = self.last_level;
         self.last_level = level;
         self.announced = None;
-        if level > was && self.pending.is_some_and(|pending| level >= pending) {
+        if level > was && self.pending.is_some_and(|pending| allowed(level, table::Access::At(pending))) {
             self.pending = None;
         }
         self.publish(&Cleared::server_own(recto_agent::event::level_changed(level, was)));
@@ -616,15 +616,15 @@ impl<H: Host> Loop<H> {
 
     /// Ends waits and watches the new level no longer allows, and answers anyone waiting for this level.
     fn settle_subscribers(&mut self, level: Level) {
-        let needed = table::by_tag("watch").map_or(Level::ReadOnly, |spec| match spec.access {
+        let needed = table::Access::At(table::by_tag("watch").map_or(Level::ReadOnly, |spec| match spec.access {
             table::Access::At(level) => level,
             _ => Level::Full,
-        });
+        }));
         for index in 0..self.conns.len() {
             match &self.conns[index].state {
                 State::Waiting {
                     what: WaitFor::Level(wanted), ..
-                } if level >= *wanted => {
+                } if allowed(level, table::Access::At(*wanted)) => {
                     let data = levels::request_answer(*wanted, level);
                     self.answer(index, "permission_request", &Ok(data));
                 }
@@ -632,13 +632,13 @@ impl<H: Host> Loop<H> {
                     what: WaitFor::Condition { .. },
                     tag,
                     ..
-                } if level < needed => {
+                } if !allowed(level, needed) => {
                     let tag = *tag;
-                    self.answer(index, tag, &Err(refusal(table::display_name(tag), level, table::Access::At(needed))));
+                    self.answer(index, tag, &Err(refusal(table::display_name(tag), level, needed)));
                 }
-                State::Watching { .. } if level < needed => {
+                State::Watching { .. } if !allowed(level, needed) => {
                     self.conns[index].closing = true;
-                    self.answer(index, "watch", &Err(refusal("watch", level, table::Access::At(needed))));
+                    self.answer(index, "watch", &Err(refusal("watch", level, needed)));
                 }
                 _ => {}
             }
@@ -667,7 +667,7 @@ impl<H: Host> Loop<H> {
     fn permission_request(&mut self, index: usize, level: Level, wanted: Level, timeout_ms: Option<u64>) {
         let tag = "permission_request";
         let data = levels::request_answer(wanted, level);
-        if level >= wanted {
+        if allowed(level, table::Access::At(wanted)) {
             self.log.record(tag, level, "granted", &json!({ "level": wanted.name() }));
             self.answer(index, tag, &Ok(data));
             return;

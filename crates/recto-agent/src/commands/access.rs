@@ -152,7 +152,7 @@ impl Cmd for Sign {
         Value::Null
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        Err(crate::refusal("sign", cx.level, Access::Nobody))
+        Err(crate::refusal("sign", cx.actor.level(), Access::Nobody))
     }
     fn human(data: &Value) -> String {
         crate::human::pretty(data)

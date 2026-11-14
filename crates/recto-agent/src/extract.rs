@@ -3,6 +3,7 @@
 //! **A file that asks not to be copied** (owner, 2026-11-08: copying images and snapshots from a copy-restricted PDF gets the same notice as text, with "Copy anyway"): refused with exit 8 and `copy_restricted` unless `--anyway`, and the app's notice offers "Copy anyway". Each use of `--anyway` that gives something goes in the activity log.
 
 use crate::Code;
+use crate::copying::{Copying, asks_anyway, refuse_unless_anyway};
 use crate::render::image::{self, Coded, CopiedImage, Want};
 use crate::render::snapshot::{self, Format};
 use crate::render::{FileOut, LimitedOut, MemoryOut, OwnTemp, open_for_text, output_exists, publish_picture};
@@ -33,17 +34,9 @@ pub const UTI_JPEG: &str = "public.jpeg";
 pub const UTI_SVG: &str = "public.svg-image";
 pub const UTI_TEXT: &str = "public.utf8-plain-text";
 
-fn restricted() -> AgentError {
-    AgentError::new(Code::COPY_RESTRICTED, "This file's permissions ask that it isn't copied.", exit::PROTECTED)
-        .then("Tell the user. `--anyway` copies it, once they've said to. Each use goes in the activity log.")
-}
-
 /// **Exports of a file that asks not to be copied ask "anyway", as Copy does** (owner, 2026-11-08: "Yes, same step" for SVG export, PNG render and print to PDF). Exit 8 and `copy_restricted` unless `anyway`. Read from the file's own flag, with no page, so a refusal costs no worker. `page` is from 0.
 pub(crate) fn refuse_if_restricted(path: &Path, page: u32, anyway: bool) -> Result<(), AgentError> {
-    if !anyway && snapshot::copy_restricted(path, None, page) {
-        return Err(restricted());
-    }
-    Ok(())
+    refuse_unless_anyway(anyway, || snapshot::copy_restricted(path, None, page), Copying::File)
 }
 
 /// Whether a file asks not to be copied, for the app's own exports, on a job thread: a print to a PDF file asks "anyway" with the notice a copy has.
@@ -76,9 +69,7 @@ pub(crate) fn image_to_file(path: &Path, page: u32, number: u32, out: &Path, any
         return Err(output_exists());
     }
     let started = Instant::now();
-    if !anyway && snapshot::copy_restricted(path, None, index) {
-        return Err(restricted());
-    }
+    refuse_unless_anyway(anyway, || snapshot::copy_restricted(path, None, index), Copying::File)?;
     let mut doc = open_for_text(path)?;
     let caps = OutputCaps::default();
     let (temp, file) = OwnTemp::create(out)?;
@@ -345,7 +336,7 @@ pub fn jpeg_for_clipboard(mut bytes: Vec<u8>) -> Vec<u8> {
 /// The app's click on an image: what goes on the clipboard for the image at `x, y` on a page as it's shown. A JPEG goes as its own bytes, and as a PNG beside it for what can't take a JPEG; anything else as a lossless PNG. Opens a worker of its own and can wait for the larger limit, so it's for a job thread. `page` is from 0.
 pub fn image_clip(path: &Path, page: u32, x: f32, y: f32, anyway: bool, stop: &ClipStop) -> ClipOutcome {
     let run = || -> Result<ClipOutcome, AgentError> {
-        if !anyway && snapshot::copy_restricted(path, None, page) {
+        if asks_anyway(anyway, || snapshot::copy_restricted(path, None, page)) {
             return Ok(ClipOutcome::Restricted);
         }
         let mut doc = open_for_text(path)?;
@@ -414,7 +405,7 @@ fn image_note(copied: &CopiedImage, left_off: &[&str]) -> String {
 pub fn snapshot_clip(path: &Path, page: u32, rect: [f32; 4], (quarter_turns, hidden): (u8, Hidden), anyway: bool, stop: &ClipStop) -> ClipOutcome {
     let run = || -> Result<ClipOutcome, AgentError> {
         crate::render::check_scale_and_box(DEFAULT_SCALE, Some(rect))?;
-        if !anyway && snapshot::copy_restricted(path, None, page) {
+        if asks_anyway(anyway, || snapshot::copy_restricted(path, None, page)) {
             return Ok(ClipOutcome::Restricted);
         }
         let mut doc = open_for_text(path)?;

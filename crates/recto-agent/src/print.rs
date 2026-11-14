@@ -501,12 +501,7 @@ pub(crate) fn print_to_file(pages: &[PrintPage], dpi: u32, to: PrintTo<'_>, anyw
         PrintTo::Window(_, keys) => keys,
     };
     // An export, so a file that asks not to be copied asks "anyway", as Copy does (owner, 2026-11-08).
-    if !anyway && any_copy_restricted(pages, keys) {
-        return Err(
-            AgentError::new(Code::COPY_RESTRICTED, "This file's permissions ask that it isn't copied.", exit::PROTECTED)
-                .then("Tell the user. `--anyway` prints it to a PDF, once they've said to. Each use goes in the activity log. Print to paper never asks."),
-        );
-    }
+    crate::copying::refuse_unless_anyway(anyway, || any_copy_restricted(pages, keys), crate::copying::Copying::PrintToPdf)?;
     // Never over anything, least of all the PDF being printed: only the lopdf writers change a PDF's bytes.
     if let PrintTo::File(out) = to
         && std::fs::symlink_metadata(out).is_ok()

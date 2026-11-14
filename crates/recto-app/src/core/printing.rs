@@ -386,7 +386,7 @@ pub fn chosen(engine: &Engine, printing: &Printing, panel: Panel) -> Option<Comm
         pages: Some(format!("{first}-{last}")),
         dpi: print::DEFAULT_DPI,
         to_pdf: None,
-        anyway: !panel.to_file,
+        anyway: recto_agent::copying::print_anyway(panel.to_file),
     }))
 }
 
