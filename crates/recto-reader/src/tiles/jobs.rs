@@ -99,6 +99,8 @@ impl JobPlan {
                     DrawKind::Preview => Self::take_surface(rect.width, rect.height)?,
                     DrawKind::Tile => Self::take_surface(TILE_EDGE, TILE_EDGE)?,
                     DrawKind::Region => loop {
+                        // Across no more than the view, but held to the longest edge too, in whole tiles: a surface past it can never be made.
+                        (rect.width, rect.height) = (rect.width.min(super::MAX_SURFACE_EDGE), rect.height.min(super::MAX_SURFACE_EDGE));
                         let surface = Self::take_surface(rect.width, rect.height)?;
                         // A surface's rows can be padded, which can take it over the cap. A row of tiles less is always under.
                         if u64::from(surface.stride()) * u64::from(rect.height) <= MAX_REGION_BYTES || rect.height <= TILE_EDGE {
@@ -142,7 +144,8 @@ impl JobPlan {
 ///
 /// **Only the system's refusal is asked again, as nothing a PDF says can ask for a surface no machine could make:** every surface a job asks for is held
 /// to a size before it's made. A tile is [`TILE_EDGE`] square (1 MiB); a preview at most `MAX_PREVIEW_BYTES` (4 MiB), or there's none; a region at most
-/// [`MAX_REGION_BYTES`] (32 MiB), a row of tiles less at a time ([`JobPlan::ready`]), across no more than the view; and a page too large to draw at the zoom is
+/// [`MAX_REGION_BYTES`] (32 MiB), a row of tiles less at a time ([`JobPlan::ready`]), across no more than the view; none has an edge past the
+/// system's 16,384 pixels (`MAX_SURFACE_EDGE`); and a page too large to draw at the zoom is
 /// a page issue before any surface is asked for (`page_plan`). So a refusal is "out of surfaces now", and worth asking again.
 ///
 /// **The wait:** 1 s after the first refusal in a row, doubling to 8 s ([`Self::FIRST_WAIT`], [`Self::LONGEST_WAIT`]), and back to 1 s once a surface is made.

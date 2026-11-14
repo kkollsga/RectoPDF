@@ -2,9 +2,9 @@
 
 use super::cache::TileKey;
 use super::sleep_draw::SleepDraws;
-use super::{DocView, DrawKind, JobPlan, MAX_PREVIEW_BYTES, PREVIEW_DIVISOR, PlanKind, Reader, SIZES_AROUND, TRY_AGAIN_AFTER};
+use super::{DocView, DrawKind, JobPlan, PREVIEW_DIVISOR, PlanKind, Reader, SIZES_AROUND, TRY_AGAIN_AFTER, preview_fits};
 use crate::selection::Urgency;
-use recto_proto::{BYTES_PER_PIXEL, MAX_SCALE, MIN_SCALE, TILE_EDGE, TileRect, device_size};
+use recto_proto::{MAX_SCALE, MIN_SCALE, TILE_EDGE, TileRect, device_size};
 use recto_render_service::plan_regions;
 use std::time::Instant;
 
@@ -284,8 +284,7 @@ impl Reader {
             return None;
         }
         let (width, height) = device_size(size.width, size.height, preview_scale).ok()?;
-        (u64::from(width) * u64::from(height) * u64::from(BYTES_PER_PIXEL) <= MAX_PREVIEW_BYTES)
-            .then_some((preview_scale, TileRect { x: 0, y: 0, width, height }))
+        preview_fits(width, height).then_some((preview_scale, TileRect { x: 0, y: 0, width, height }))
     }
 }
 

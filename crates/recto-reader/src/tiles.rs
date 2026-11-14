@@ -52,6 +52,18 @@ pub const MAX_ATTACH_PER_TURN: usize = 8;
 const HOST_ROUNDING: f64 = 1.0;
 /// A preview is at most this: past it a page is too large for a preview to be cheap.
 const MAX_PREVIEW_BYTES: u64 = 4 * 1024 * 1024;
+/// The longest edge of a surface the page view asks for: the system's stated maximum for an IOSurface's edge. Past it a surface can never be made,
+/// and a refusal is asked again (`SurfaceRetry`), so nothing a PDF says may ask for one.
+const MAX_SURFACE_EDGE: u32 = 16_384;
+
+/// **Whether a preview of this many pixels may be had:** at most [`MAX_PREVIEW_BYTES`], and no edge past [`MAX_SURFACE_EDGE`], which a page a fifth of a
+/// point wide and 260,000 tall would pass at 4 MiB (review round 1 of the measured faults). One rule for a preview drawn, one drawn for a tab off screen's
+/// place and one copied from tiles for a sleep file. A page with none is drawn in tiles, as any page is.
+fn preview_fits(width: u32, height: u32) -> bool {
+    width <= MAX_SURFACE_EDGE
+        && height <= MAX_SURFACE_EDGE
+        && u64::from(width) * u64::from(height) * u64::from(recto_proto::BYTES_PER_PIXEL) <= MAX_PREVIEW_BYTES
+}
 /// How much smaller a preview is than the fitted page. Platform report §2.5.
 const PREVIEW_DIVISOR: f64 = 4.0;
 /// A change of zoom smaller than this keeps the tiles there are.

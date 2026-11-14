@@ -14,7 +14,7 @@
 //! What's held for it is a few bytes for each page view, never one per tab: one tab's lists of at most twelve pages, and the counts.
 
 use super::wake::{MAX_LEFT_PICTURE_BYTES, MAX_SLEEP_SHOTS, in_view_of, left_place};
-use super::{DocView, DrawKind, JobPlan, MAX_PREVIEW_BYTES, PREVIEW_DIVISOR, PlanKind, Reader};
+use super::{DocView, DrawKind, JobPlan, PREVIEW_DIVISOR, PlanKind, Reader, preview_fits};
 use recto_proto::{BYTES_PER_PIXEL, MAX_SCALE, MIN_SCALE, TileRect, device_size};
 use serde_json::{Map, Value, json};
 use std::time::{Duration, Instant};
@@ -219,7 +219,7 @@ fn preview_of(reader: &Reader, doc: &DocView, page: u32) -> Option<(f32, u32, u3
     let scale = ((doc.layout.fit() * reader.viewport.backing / PREVIEW_DIVISOR) as f32).clamp(MIN_SCALE, MAX_SCALE);
     let size = doc.layout.raw_size(page);
     let (width, height) = device_size(size.width, size.height, scale).ok()?;
-    (preview_bytes(width, height) <= MAX_PREVIEW_BYTES).then_some((scale, width, height))
+    preview_fits(width, height).then_some((scale, width, height))
 }
 
 fn preview_bytes(width: u32, height: u32) -> u64 {

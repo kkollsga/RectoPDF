@@ -2,7 +2,7 @@
 
 use super::PageMap;
 use super::cache::TileKey;
-use super::{DocView, DrawKind, MAX_PREVIEW_BYTES, MAX_ZOOM, MIN_ZOOM, PREVIEW_DIVISOR, Reader};
+use super::{DocView, DrawKind, MAX_ZOOM, MIN_ZOOM, PREVIEW_DIVISOR, Reader, preview_fits};
 use crate::layout::PageBox;
 use crate::paper::PaperKind;
 use recto_platform::surface::{PixelSurface, Purge};
@@ -480,10 +480,10 @@ impl Reader {
         let step = (finest / preview_scale).round().max(1.0) as u32;
         let scale = finest / step as f32;
         let (width, height) = device_size(size.width, size.height, scale).ok()?;
-        let bytes = u64::from(width) * u64::from(height) * u64::from(BYTES_PER_PIXEL);
-        if bytes > MAX_PREVIEW_BYTES {
+        if !preview_fits(width, height) {
             return None;
         }
+        let bytes = u64::from(width) * u64::from(height) * u64::from(BYTES_PER_PIXEL);
         let mut bgra = vec![0u8; bytes as usize];
         for pixel in bgra.as_chunks_mut::<4>().0 {
             *pixel = [
