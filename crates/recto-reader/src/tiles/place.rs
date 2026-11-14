@@ -125,14 +125,16 @@ impl Place {
         self.leaves_the_band(doc, viewport, page);
     }
 
-    /// **Wakes the core when the eye line leaves the stretch of the page in which the same contents entry is current** ([`super::Band`]), by the wake a page
+    /// **Wakes the core when the eye line leaves the stretch of the page in which the same contents entry is current** (`DocView::band`), by the wake a page
     /// change has, and only once until the core sends another. The eye line is the one the page choice above uses, a third of the view down.
     fn leaves_the_band(&mut self, doc: &mut DocView, viewport: Viewport, page: u32) {
-        let Some(band) = doc.band.as_mut().filter(|band| !band.woke) else { return };
+        let Some((band_page, lo, hi, woke)) = doc.band.as_mut().filter(|band| !band.3) else {
+            return;
+        };
         let rect = doc.layout.rect(page);
         let eye = eye_line(viewport.y + viewport.height / 3.0, rect.y, rect.height);
-        if page != band.page || eye < band.lo || eye >= band.hi {
-            band.woke = true;
+        if page != *band_page || eye < *lo || eye >= *hi {
+            *woke = true;
             self.moved_page = Some(page);
         }
     }

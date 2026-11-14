@@ -622,7 +622,7 @@ fn with_band(lo: u16, hi: u16, at: f64) -> Reader {
     there.scrolled_to = seq;
     reader.set_viewport(there);
     reader.place.take_moved_page();
-    reader.docs.views.get_mut(&1).unwrap().band = Some(crate::tiles::doc::Band { page: 5, lo, hi, woke: false });
+    reader.docs.views.get_mut(&1).unwrap().band = Some((5, lo, hi, false));
     reader
 }
 
@@ -645,7 +645,7 @@ fn leaving_the_band_wakes_the_core_once_until_it_sends_another() {
     }
     assert_eq!(wakes, 1, "one wake for the crossing, whatever the steps over the edge");
     // The core sends a band for where the reader is now: it wakes again on leaving that one.
-    reader.docs.views.get_mut(&1).unwrap().band = Some(crate::tiles::doc::Band { page: 5, lo: 595, hi: 640, woke: false });
+    reader.docs.views.get_mut(&1).unwrap().band = Some((5, 595, 640, false));
     reader.set_viewport(eye_on(&reader, 5, 700.0));
     assert!(reader.place.take_moved_page().is_some(), "and leaving the new band wakes again");
 }
@@ -685,7 +685,7 @@ fn side_by_side_the_eye_line_is_down_the_page_the_reader_is_on() {
     let left = reader.docs.shown().unwrap().layout.rect(0);
     let right = reader.docs.shown().unwrap().layout.rect(1);
     assert!(left.height > right.height * 1.5, "the pages differ: {} and {}", left.height, right.height);
-    reader.docs.views.get_mut(&1).unwrap().band = Some(crate::tiles::doc::Band { page: 0, lo: 0, hi: 400, woke: false });
+    reader.docs.views.get_mut(&1).unwrap().band = Some((0, 0, 400, false));
     // An eye line 30% down the left page is more than 40% down the right one: leaving the band by the right page's reckoning, and not by the left's.
     let mut at = view(0.0);
     at.y = left.y + 0.30 * left.height - at.height / 3.0;

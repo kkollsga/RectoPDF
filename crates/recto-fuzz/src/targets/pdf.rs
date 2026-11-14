@@ -142,11 +142,19 @@ fn assert_facts_hold(facts: &DocFacts, file_bytes: u64) {
             "entry {index} has parent {}",
             entry.parent
         );
+        assert!(entry.top <= recto_core::TOP_SCALE, "entry {index} is {} down its page", entry.top);
         assert_shown_text_is_clean("a contents title", toc.title(entry));
     }
     for page in [0, facts.page_count / 2, u32::MAX] {
         if let Some(found) = toc.section_at(page) {
             assert!(found < toc.entries().len());
+        }
+        for eye in [0, 500, recto_core::TOP_SCALE] {
+            if let Some(found) = toc.current_at(page, eye, |_| true) {
+                assert!(found < toc.entries().len());
+            }
+            let band = toc.band_at(page, eye, |_| true);
+            assert!(band.lo <= band.hi || band.hi == 0, "{band:?}");
         }
         if let Some(label) = toc.labels.label(page) {
             assert!(label.len() <= recto_core::nav::MAX_LABEL_BYTES, "{} bytes", label.len());
@@ -237,38 +245,61 @@ fn through_the_session(facts: DocFacts) {
 /// Hostile numbers a structure field gets.
 const NUMBERS: &[&str] = &["0", "1", "2", "-1", "65535", "2147483647", "4294967296", "99999999999999999999", "0.5"];
 
+fn reference(take: &mut Take<'_>, count: usize) -> String {
+    match take.u8() {
+        0..=239 => format!("{} 0 R", 1 + usize::from(take.u8()) % count),
+        240..=247 => format!("{} 0 R", take.pick(NUMBERS)),
+        248..=251 => "null".to_string(),
+        _ => take.pick(NUMBERS).to_string(),
+    }
+}
+fn references(take: &mut Take<'_>, count: usize) -> String {
+    let many = take.u8() % 6;
+    (0..many).map(|_| reference(take, count)).collect::<Vec<_>>().join(" ")
+}
+fn text(take: &mut Take<'_>) -> String {
+    const TEXTS: &[&str] = &[
+        "(a)",
+        "(chapter)",
+        "()",
+        "<FEFF0041202E0042>",
+        "(\\200\\237)",
+        "<FEFFD800>",
+        "(line\\nbreak)",
+        "<EFBBBF41>",
+        "/NotAString",
+        "12",
+    ];
+    take.pick(TEXTS).to_string()
+}
+
+/// What an outline node says of where it goes: a page and a place down it from numbers a file can write, a name, an action, or nothing.
+fn outline_dest(take: &mut Take<'_>, count: usize) -> String {
+    match take.u8() % 9 {
+        0 => format!("/Dest [{} /Fit]", reference(take, count)),
+        1 => format!("/Dest {}", text(take)),
+        2 => "/Dest /chapter".to_string(),
+        3 => format!("/A << /S /GoTo /D {} >>", reference(take, count)),
+        4 => format!("/Dest {}", reference(take, count)),
+        5 => format!("/Dest [{} /XYZ {} {} 0]", reference(take, count), take.pick(NUMBERS), take.pick(NUMBERS)),
+        6 => format!("/Dest [{} /FitH {}]", reference(take, count), take.pick(NUMBERS)),
+        7 => format!(
+            "/Dest [{} /FitR {} {} {} {}]",
+            reference(take, count),
+            take.pick(NUMBERS),
+            take.pick(NUMBERS),
+            take.pick(NUMBERS),
+            take.pick(NUMBERS)
+        ),
+        _ => String::new(),
+    }
+}
+
 /// Builds a PDF out of the bytes: objects that are pieces of what the walks read, joined by references the bytes choose, some to themselves, some to nothing. Object 1 is the catalog, and it names object 2 to 6 as its pages, outline, names, form and permissions.
 pub fn build_tree(data: &[u8]) -> Vec<u8> {
     let mut take = Take(data);
     let count = 7 + usize::from(take.u8() % 64);
     // A reference to some object, or now and then to one that isn't there.
-    fn reference(take: &mut Take<'_>, count: usize) -> String {
-        match take.u8() {
-            0..=239 => format!("{} 0 R", 1 + usize::from(take.u8()) % count),
-            240..=247 => format!("{} 0 R", take.pick(NUMBERS)),
-            248..=251 => "null".to_string(),
-            _ => take.pick(NUMBERS).to_string(),
-        }
-    }
-    fn references(take: &mut Take<'_>, count: usize) -> String {
-        let many = take.u8() % 6;
-        (0..many).map(|_| reference(take, count)).collect::<Vec<_>>().join(" ")
-    }
-    fn text(take: &mut Take<'_>) -> String {
-        const TEXTS: &[&str] = &[
-            "(a)",
-            "(chapter)",
-            "()",
-            "<FEFF0041202E0042>",
-            "(\\200\\237)",
-            "<FEFFD800>",
-            "(line\\nbreak)",
-            "<EFBBBF41>",
-            "/NotAString",
-            "12",
-        ];
-        take.pick(TEXTS).to_string()
-    }
     let mut objects = Vec::with_capacity(count);
     objects.push(recto_testpdf::Object::Dict(format!(
         "<< /Type /Catalog /Pages 2 0 R /Outlines 3 0 R /Names 4 0 R /Dests {} /AcroForm 5 0 R /Perms 6 0 R /PageLabels {} /OCProperties << /OCGs [{}] >> >>",
@@ -286,14 +317,7 @@ pub fn build_tree(data: &[u8]) -> Vec<u8> {
                 reference(&mut take, count)
             )),
             1 | 7 => {
-                let dest = match take.u8() % 6 {
-                    0 => format!("/Dest [{} /Fit]", reference(&mut take, count)),
-                    1 => format!("/Dest {}", text(&mut take)),
-                    2 => "/Dest /chapter".to_string(),
-                    3 => format!("/A << /S /GoTo /D {} >>", reference(&mut take, count)),
-                    4 => format!("/Dest {}", reference(&mut take, count)),
-                    _ => String::new(),
-                };
+                let dest = outline_dest(&mut take, count);
                 recto_testpdf::Object::Dict(format!(
                     "<< /Title {} /First {} /Next {} {dest} >>",
                     text(&mut take),

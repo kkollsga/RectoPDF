@@ -218,7 +218,7 @@ fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, order: Order<'_>, eye: u16, 
     let mut children_show = vec![false; toc.entries().len()];
     let first_row = rows.len();
     // Where each entry's row is, for those shown.
-    let mut row_of: Vec<Option<usize>> = vec![None; toc.entries().len()];
+    let mut row_of: Vec<Option<u32>> = vec![None; toc.entries().len()];
     for (index, entry) in toc.entries().iter().enumerate() {
         if entry.parent != NONE && !children_show.get(entry.parent as usize).copied().unwrap_or(false) {
             continue;
@@ -227,7 +227,7 @@ fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, order: Order<'_>, eye: u16, 
         let expandable = toc.entries().get(index + 1).is_some_and(|next| next.parent == at);
         let expanded = expandable && section_open(folds, &chain, at);
         children_show[index] = expanded;
-        row_of[index] = Some(rows.len());
+        row_of[index] = u32::try_from(rows.len()).ok();
         rows.push(SidebarRow {
             kind: RowKind::Contents,
             tab: tab.id,
@@ -252,8 +252,12 @@ fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, order: Order<'_>, eye: u16, 
     }
     // The entry being read, or when a fold hides it the nearest section above it that shows: the usual outline convention.
     let mut cursor = here.map_or(NONE, |i| u32::try_from(i).unwrap_or(NONE));
-    while cursor != NONE {
-        if let Some(at) = row_of.get(cursor as usize).copied().flatten() {
+    // An entry's parent comes before it in a list this crate builds, but a list is only trusted to the length of the walk.
+    for _ in 0..toc.entries().len() {
+        if cursor == NONE {
+            break;
+        }
+        if let Some(at) = row_of.get(cursor as usize).copied().flatten().map(|at| at as usize) {
             rows[at].current = true;
             return at + 1 - first_row;
         }

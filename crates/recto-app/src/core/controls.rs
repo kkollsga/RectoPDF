@@ -86,7 +86,11 @@ impl Inner {
     pub fn act(self: &Arc<Self>, action: UiAction) -> Acted {
         let command = match action {
             UiAction::Menu { id } => return Acted::host(self.perform(id)),
-            UiAction::Row { row, adding } => super::opening::row_command(row, adding, &self.panes, &self.engine, &lock(&self.published).contents),
+            UiAction::Row { row, adding } => {
+                // The list is cloned out, so nothing else is taken under the published lock.
+                let contents = Arc::clone(&lock(&self.published).contents);
+                super::opening::row_command(row, adding, &self.panes, &self.engine, &contents)
+            }
             UiAction::PaneRead { tab } => Some(super::comparison::reading(TabId(tab))),
             UiAction::Chevron { first } => super::contents::chevron(&lock(&self.published).contents, first),
             UiAction::Open { path } => {

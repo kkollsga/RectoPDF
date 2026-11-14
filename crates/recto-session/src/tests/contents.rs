@@ -456,7 +456,11 @@ fn an_eye_line_counts_only_for_the_page_and_the_read_it_was_told_with() {
     s.mail_mut().eye_told(id, 9, 1, 0);
     assert_eq!(current_of(&s), ["C"], "a read that wasn't taken in last can't say it");
     s.mail_mut().eye_told(id, 1, 5, 0);
-    assert_eq!(current_of(&s), ["A"], "an eye line on another page says nothing of this one: the place's own, the view's top, stands");
+    assert_eq!(
+        current_of(&s),
+        ["A"],
+        "an eye line on another page says nothing of this one: the place's own, the view's top, stands"
+    );
     s.jump(id, 1, 0.31).unwrap();
     assert_eq!(
         current_of(&s),

@@ -420,6 +420,7 @@ fn read_toc_within(reader: &IndexedReader, limit: Duration) -> Option<Toc> {
             .filter_map(|(index, page)| Some((page.id(), u32::try_from(index).ok()?)))
             .collect(),
         map: &map,
+        frames: std::cell::RefCell::default(),
     };
 
     let mut titles = String::new();
@@ -480,6 +481,20 @@ fn read_toc_within(reader: &IndexedReader, limit: Duration) -> Option<Toc> {
 struct Pages<'a> {
     index: HashMap<ObjectId, u32>,
     map: &'a lopdf::PageMap,
+    /// Each page's frame, read once however many entries go to it: an outline of 100,000 entries on a few pages would otherwise read its page dictionaries
+    /// 100,000 times.
+    frames: std::cell::RefCell<HashMap<u32, nav::Frame>>,
+}
+
+impl Pages<'_> {
+    fn frame(&self, reader: &IndexedReader, page: u32) -> Option<nav::Frame> {
+        if let Some(frame) = self.frames.borrow().get(&page) {
+            return Some(*frame);
+        }
+        let frame = nav::frame_of(reader, self.map.get(page as usize)?);
+        self.frames.borrow_mut().insert(page, frame);
+        Some(frame)
+    }
 }
 
 /// What's left for following named destinations, shared across the whole outline.
@@ -528,7 +543,7 @@ fn page_of_dest(reader: &IndexedReader, root: &Dictionary, dest: &Object, pages:
             // How far down, in the frame the reader's place is in. The file's number is not believed: not a number, or off the page, is no place; and a
             // quarter-turned page's top is a shown left, which says nothing (`Frame::within`).
             let top = nav::dest_top(items)
-                .and_then(|top| nav::frame_of(reader, pages.map.get(page as usize)?).within(top))
+                .and_then(|top| pages.frame(reader, page)?.within(top))
                 .map_or(0, |within| (within * f32::from(TOP_SCALE)).round() as u16);
             Some((page, top))
         }
