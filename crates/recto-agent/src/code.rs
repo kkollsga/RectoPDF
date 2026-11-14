@@ -232,6 +232,7 @@ codes! {
     NO_PAGES_LEFT = "no_pages_left", Next::ByExit;
     NO_RECORD = "no_record", Next::ByExit;
     NO_STATE = "no_state", Next::ByExit;
+    NO_SUCH_ENTRY = "no_such_entry", Next::ByExit;
     NO_SUCH_HIGHLIGHT = "no_such_highlight", Next::Says("`recto highlights` lists this tab's unsaved highlights and their numbers.");
     NO_SUCH_HIT = "no_such_hit", Next::ByExit;
     NO_SUCH_IMAGE = "no_such_image", Next::ByExit;

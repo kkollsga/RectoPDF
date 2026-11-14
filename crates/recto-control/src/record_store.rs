@@ -2323,6 +2323,54 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// Failure (contents' current entry found by place): a sleep file of the format before entries had a place (2) is read, and a tab woken from it marks the
+    /// last entry of its page where the reader is further up. It isn't read and is removed, as is a file of no format, so the tab reads its PDF once and its next
+    /// sleep file has the places; one with entries' places comes back as it was written. Not a panic or garbage: `None`, as the wake from the PDF takes.
+    #[test]
+    fn a_sleep_file_without_entries_places_is_removed_and_one_with_them_reads_back() {
+        let (root, paths) = state();
+        let store = RecordStore::open(&paths, Flavor::App);
+        let file = root.join("doc.pdf");
+        std::fs::write(&file, b"contents").unwrap();
+        let stamp = file_stamp(&file).unwrap();
+        let line = |title, page, parent, depth| recto_core::TocLine { title, page, parent, depth };
+        let toc = recto_core::Toc::from_lines(&[line("One", 0, recto_core::NONE, 0), line("Two", 0, recto_core::NONE, 0)], false).with_tops(&[0, 400]);
+        let sleep = SleepFile {
+            file: stamp,
+            file_pages: 3,
+            pages: 3,
+            list_seq: 0,
+            renderer_only: false,
+            version: None,
+            toc,
+            usual: Some((612.0, 792.0)),
+            sizes: Vec::new(),
+            pictures: Vec::new(),
+        };
+        assert!(store.write_sleep(&file, &sleep) > 0);
+        let read = store.read_sleep(stamp, &file).expect("today's reads");
+        assert_eq!(
+            read.toc.entries().iter().map(|entry| entry.top).collect::<Vec<_>>(),
+            [0, 400],
+            "with the places"
+        );
+        let on_disk = root.join("session").join(JOURNALS).join(record::sleep_file_name(stamp, &file));
+        let written = std::fs::read(&on_disk).unwrap();
+        let (_, _, body) = record::open_sealed(recto_session::sleep::SLEEP_KIND, &written, CURRENT_VERSION).unwrap();
+        let end = body.iter().position(|byte| *byte == b'\n').unwrap();
+        let mut meta: serde_json::Value = serde_json::from_slice(&body[..end]).unwrap();
+        // As the build before this one wrote it: format 2, and no places. A literal, not `SLEEP_FORMAT - 1`, which is whatever the format is now and so passes
+        // whether or not the bump to 3 happened: this holds that the format that had no places is never read.
+        meta["sleep_format"] = 2.into();
+        meta.as_object_mut().unwrap().remove("tops");
+        let mut older = serde_json::to_vec(&meta).unwrap();
+        older.extend_from_slice(&body[end..]);
+        std::fs::write(&on_disk, record::seal(recto_session::sleep::SLEEP_KIND, 0, &older)).unwrap();
+        assert_eq!(store.read_sleep(stamp, &file), None, "the previous format isn't read");
+        assert!(!on_disk.exists(), "and it's removed");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     /// Failure: sleep files grow without end over thousands of tabs. They're held to their limit, oldest first, and that doesn't touch anything else.
     #[test]
     fn sleep_files_stay_within_their_limit() {

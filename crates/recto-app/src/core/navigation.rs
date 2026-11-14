@@ -41,31 +41,55 @@ pub fn step(back: bool) -> Command {
     if back { Back { tab }.into() } else { Forward { tab }.into() }
 }
 
-fn goto(tab: TabId, page: Option<u32>, label: Option<String>, within: Option<f64>) -> Command {
+fn goto(tab: TabId, page: Option<u32>, label: Option<String>, within: Option<f64>, entry: Option<u32>) -> Command {
     Goto {
         tab: recto_agent::TabRef::Id(tab),
         page,
         label,
         within,
+        entry,
     }
     .into()
 }
 
-/// A contents row tapped: `goto` its page, on its tab.
-pub fn contents_tapped(panes: &panes::Panes, engine: &Engine, tab: TabId, page: u32) -> Command {
+/// A contents row tapped: `goto` its page, on its tab, as far down it as the entry is and naming the entry (`goto --entry`), so the entry is the one being
+/// read when the view lands, and stays so until the reader moves on. A page the reader doesn't have (accident A5) lands on its last, which isn't the
+/// entry's page, so no entry is named there.
+pub fn contents_tapped(panes: &panes::Panes, engine: &Engine, contents: &[crate::ContentsEntry], row: &crate::SidebarRow, page: u32) -> Command {
+    let tab = TabId(row.tab);
     let showing = (0..panes.count()).any(|pane| panes.tab_of(pane) == Some(tab));
     let shown = if showing {
         panes.engine_for_tab(engine, tab).points().page_count()
     } else {
         0
     };
-    goto(tab, Some(contents_page(page, shown)), None, None)
+    let to = contents_page(page, shown);
+    let tapped = tapped_entry(contents, row);
+    goto(
+        tab,
+        Some(to),
+        None,
+        tapped.and_then(|(_, within)| within),
+        tapped.filter(|_| to == page).map(|(entry, _)| entry),
+    )
+}
+
+/// The entry a tapped row names, and how far down its page it is from 0 to 1 if it has a place, when the published entries say it and only one entry is
+/// that row. A row doesn't name its entry, so it's found by what it shows (its tab, words, page, depth and whether it folds); two the same are not told
+/// apart by a guess, and go to the page's top naming none, as an entry with no place goes to its page's top. The words are the file's, and are only
+/// compared.
+pub fn tapped_entry(contents: &[crate::ContentsEntry], row: &crate::SidebarRow) -> Option<(u32, Option<f64>)> {
+    let mut same = contents.iter().filter(|entry| {
+        entry.tab == row.tab && entry.page == row.page && entry.depth == row.depth && entry.expandable == row.expandable && *entry.text == *row.text
+    });
+    let (Some(entry), None) = (same.next(), same.next()) else { return None };
+    Some((entry.entry, (entry.top > 0).then(|| recto_core::fraction_down(entry.top))))
 }
 
 /// A link to a page of this document, clicked: `goto` that page and as far down it as the link says, from the page view's hit, with nothing read again.
 /// `position` counts from 0, with edits counted.
 pub fn link_to_page(tab: TabId, position: u32, within: Option<f32>) -> Command {
-    goto(tab, Some(position + 1), None, within.map(f64::from))
+    goto(tab, Some(position + 1), None, within.map(f64::from), None)
 }
 
 /// Return in the go-to field: `goto label`, a label the file uses or a page number, on the pane being read's tab. `None` if it's nothing to look up.
@@ -76,7 +100,7 @@ pub fn page_typed(text: &str, frozen: &AtomicBool, panes: &panes::Panes) -> Opti
     }
     let reading = panes.reading();
     let tab = panes.tab_of(reading)?;
-    Some(goto(tab, None, Some(typed.to_string()), None))
+    Some(goto(tab, None, Some(typed.to_string()), None, None))
 }
 
 /// A swipe on the page, as the system reports it: Back or Forward, as in Safari.

@@ -606,6 +606,7 @@ Docs::pub(crate) fn files_of(&self, tab: u32) -> Vec<PathBuf>
 Docs::pub(crate) fn holds(&self, tab: u32) -> bool
 Docs::pub(crate) fn hot_tab(&self) -> Option<u32>
 Docs::pub(crate) fn is_own_file(&self, tab: u32, file: &std::path::Path) -> bool
+Docs::pub(crate) fn set_band(&mut self, band: Option<(u32, u16, u16)>)
 Docs::pub(crate) fn shown(&self) -> Option<&DocView>
 DrawKind (pub enum, derives Clone, Copy, Debug, PartialEq, Eq)
 Ended (pub(super) enum, derives Clone, Copy, Debug, PartialEq, Eq)
@@ -737,6 +738,7 @@ Points::pub fn on_page(&self, x: f64, y: f64) -> Option<(recto_index::select::Pa
 Points::pub fn page_count(&self) -> u32
 Points::pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)>
 Points::pub fn page_turns(&self, page: u32) -> u8
+Points::pub fn set_band(&self, band: Option<(u32, u16, u16)>)
 Qa (pub struct, derives Clone, Copy) [qa feature only]
 Qa::pub fn follow_is_pending(&self) -> bool [qa feature only]
 Qa::pub fn hold_asks(&self, ask: Ask, on: bool) [qa feature only]
@@ -814,6 +816,7 @@ Running (pub(super) struct, derives Debug)
 SavedPlace (pub struct, derives Clone, Copy, Debug, PartialEq)
 SavedPlace.pub anchor: (u32, f64)
 SavedPlace.pub document_height: f64
+SavedPlace.pub line: (u32, f64)
 SavedPlace.pub magnification: f64
 SavedPlace.pub page: u32
 SavedPlace.pub page_size: Option<PageBox>
@@ -943,6 +946,7 @@ WorkerFigures::pub fn walled(&self) -> u32
 Zoom (pub enum, derives Clone, Copy, Debug, PartialEq)
 fn (pub(crate)) pub(crate) fn put_hidden(sets: &mut HiddenSets, tab: u32, file: PathBuf, set: Option<Arc<HiddenAnnots>>) -> Vec<u32>
 fn (pub(crate)) pub(crate) fn redraw_own_pages(reader: &mut Reader, tab: u32, file_pages: &[u32])
+fn (pub(crate)) pub(crate) fn set_band(reader: &mut Reader, band: Option<(u32, u16, u16)>)
 fn (pub(crate)) pub(crate) fn tell(host: &mut HostQueue, docs: &Docs, marks: &TabMarks, paper: PaperKind)
 fn (pub) pub fn look(paper: PaperKind) -> (u32, bool)
 fn (pub) pub fn place_stamp() -> u64

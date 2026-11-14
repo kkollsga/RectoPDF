@@ -181,7 +181,51 @@ fn measure(tabs: usize) {
             path: new.display().to_string(),
         });
     });
+    // The person scrolling down and up a page that has three contents entries on it, as a scroll the page view is told of: in the first case the top of the
+    // view crosses an entry's place every step, so each wakes the core and the sidebar's mark moves, with the tabs open as before. The call is the UI
+    // thread's part.
+    let outlined = app.disk().file("outlined.pdf", &outlined_file());
+    app.open(&outlined);
+    app.settle();
+    let at = std::cell::Cell::new(0.0);
+    let place = |thousandths: f64| {
+        let inner = app.core();
+        let engine = inner.panes.reading_engine(&inner.engine);
+        engine.points().document_point(0, 0.0, thousandths / 1000.0 * 800.0).map_or(0.0, |(_, y)| y)
+    };
+    case(&app, "scroll crossing an entry", tabs, nothing, |app, first| {
+        let to = place(if first { 100.0 } else { 400.0 });
+        app.person_scrolls(to - at.get());
+        at.set(to);
+    });
+    // Ordinary reading: the person scrolling within the stretch of the page where the same entry stays current (between 350 and 750), so no step leaves
+    // the page view's band, nothing wakes the core, and only the page view's own work is timed.
+    case(&app, "scroll within an entry", tabs, nothing, |app, first| {
+        let to = place(if first { 450.0 } else { 600.0 });
+        app.person_scrolls(to - at.get());
+        at.set(to);
+    });
     drop(app.quit());
+}
+
+/// A file of three pages, 800 points high, whose outline has three entries on its first page, at 0, 350 and 750 thousandths of the way down it.
+fn outlined_file() -> Vec<u8> {
+    let mut objects = vec![
+        recto_testpdf::Object::Dict("<< /Type /Catalog /Pages 2 0 R /Outlines 6 0 R >>".into()),
+        recto_testpdf::Object::Dict("<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 /MediaBox [0 0 600 800] >>".into()),
+        recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R >>".into()),
+        recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R >>".into()),
+        recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R >>".into()),
+        recto_testpdf::Object::Dict("<< /Type /Outlines /First 7 0 R /Last 9 0 R /Count 3 >>".into()),
+    ];
+    for (at, top) in [800, 520, 200].iter().enumerate() {
+        let next = if at < 2 { format!("/Next {} 0 R", 8 + at) } else { String::new() };
+        let prev = if at > 0 { format!("/Prev {} 0 R", 6 + at) } else { String::new() };
+        objects.push(recto_testpdf::Object::Dict(format!(
+            "<< /Title (Entry {at}) /Parent 6 0 R {next} {prev} /Dest [3 0 R /XYZ 0 {top} 0] >>"
+        )));
+    }
+    recto_testpdf::build(&objects)
 }
 
 /// Measures, and asserts nothing about time: see the module's words.

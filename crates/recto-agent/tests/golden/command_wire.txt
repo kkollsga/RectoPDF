@@ -68,6 +68,8 @@
     ok goto Goto { tab: "active", page: None, label: None, within: None }
 {"cmd":"goto","tab":"#2","page":3,"label":"iv"}
     ok goto Goto { tab: "#2", page: Some(3), label: Some("iv"), within: None }
+{"cmd":"goto","page":3,"within":0.25,"entry":2}
+    ok goto Goto { tab: "active", page: Some(3), label: None, within: Some(0.25), entry: Some(2) }
 {"cmd":"goto","extra":1}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"goto","tab":{}}

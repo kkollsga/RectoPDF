@@ -104,6 +104,10 @@
   reply {"cmd":"goto","error":{"candidates":[],"code":"usage","exit":2,"message":"`goto` takes a page number, or `goto label` what the file calls a page, and not both.","next":"`recto goto 12`, or `recto goto label iv`."},"ok":false,"v":1}
   events 
   words ""
+{"cmd":"goto","page":3,"within":0.25,"entry":2}
+  reply {"cmd":"goto","error":{"candidates":[],"code":"no_such_entry","exit":3,"message":"Entry 2 isn't one of the contents the sidebar shows on page 3.","next":"`recto contents` gives each entry's number and page (`contents --generated` when generated contents are shown)."},"ok":false,"v":1}
+  events 
+  words ""
 {"cmd":"goto","extra":1}
   refused cmd=unknown code=bad_command
 {"cmd":"goto","tab":{}}
