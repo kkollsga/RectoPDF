@@ -183,3 +183,36 @@ fn an_agent_is_told_the_same_of_two_protected_documents() {
     );
     assert_eq!(one.len(), two.len());
 }
+
+/// Failure (security review of S1): the helpers' news about a protected document's file goes to an agent: the person asks for generated contents for the
+/// protected tab they're reading, the helper is set going on its file (it stops at `needs_password` before anything's decrypted, but how long that took,
+/// how much it used and the file's key go out as `contents_generating` and `contents_generated`). It can run: the person's `contents show` reaches the
+/// generator for a protected tab. An agent watching hears none of it; the person's sidebar hears it as ever.
+#[test]
+fn the_helpers_news_of_a_protected_file_doesnt_reach_a_watcher() {
+    let disk = Disk::new();
+    let file = protected(&disk, 3, "Locked");
+    let app = disk.builder().indexing(true).start();
+    let mut watching = app.agent_watches(Level::ReadOnly);
+    person_unlocks(&app, &file);
+    drop(watching.heard());
+    app.person(r##"{"cmd":"contents_show","which":"generated","tab":"#1"}"##);
+    // Its answer is in when the tab's generated contents stand somewhere other than being made: the helper's last word is said just before.
+    let id = recto_session::TabId(app.tabs()[0].tab);
+    app.wait_until("the helper's answer", || {
+        app.core().host.session.with_session(|session| {
+            !matches!(
+                session.generated().view(id),
+                None | Some(recto_session::GeneratedView::Making | recto_session::GeneratedView::NotKept)
+            )
+        })
+    });
+    app.settle();
+    let heard = watching.heard();
+    assert!(
+        !heard.iter().any(|event| event["event"]
+            .as_str()
+            .is_some_and(|name| name.starts_with("contents_") || name.starts_with("indexing_"))),
+        "the watcher heard the helpers' news of the protected file: {heard:?}"
+    );
+}
