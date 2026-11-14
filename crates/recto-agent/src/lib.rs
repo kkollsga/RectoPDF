@@ -3387,6 +3387,41 @@ mod protected_tests {
         }
     }
 
+    /// Failure (independent review of phase R, its follow-up on `session show`): `session show` gives a protected tab what `where` and `tabs` leave out,
+    /// what's said of its file (a notice), its zoom, which fits its pages' size, or its layout, which `view` leaves out; or, at Control, what the person
+    /// typed in Find while it's the document being read. Of a plain tab, all of it is given as before.
+    #[test]
+    fn session_show_says_of_a_protected_tab_only_what_tabs_does() {
+        let mut session = Session::new(Unlocked);
+        let id = session.open(Path::new("/d/locked.pdf")).unwrap();
+        let other = session.open(Path::new("/d/plain.pdf")).unwrap();
+        session.tabs_mut().note_password_used(id);
+        let changed = |size: u64| {
+            recto_session::record::FileStatus::Changed(recto_platform::FileStamp {
+                size,
+                mtime_ns: 8,
+                device: 1,
+                inode: 2,
+            })
+        };
+        session.tap(id).unwrap();
+        for tab in [id, other] {
+            session.apply_file_status(tab, changed(8));
+            assert!(session.notices().said(tab).is_some(), "a notice to keep back");
+        }
+        session.viewing_mut().set_find(true, "secret", "");
+        let shown = |session: &Session<Unlocked>| session_show_json(session, Level::Control, Value::Null);
+        let reading_locked = shown(&session);
+        let (locked, plain) = (&reading_locked["tabs"][0], &reading_locked["tabs"][1]);
+        for key in ["notice", "zoom", "layout"] {
+            assert!(locked[key].is_null(), "{key} of the protected tab: {locked}");
+        }
+        assert!(!plain["notice"].is_null() && !plain["layout"].is_null(), "the plain tab's, as ever: {plain}");
+        assert!(reading_locked["find"].get("query").is_none(), "{}", reading_locked["find"]);
+        session.tap(other).unwrap();
+        assert_eq!(shown(&session)["find"]["query"], "secret", "Find over the plain tab, at Control");
+    }
+
     /// Failure (review O1): once the person types a protected PDF's password, what was decrypted reaches an agent: its chapter titles in `sidebar`, its length or place in `where`, `tabs`, `session show` or a comparison, its pages through `goto`, `goto label`, `links`, `follow`, `back`, `forward`, `wait` or an open with `--page`, Find's hits through `find`, or anything from `contents`, `facts`, `search` or `text`, at any level. `encrypted` isn't the gate, as a file anyone may open is encrypted too.
     #[test]
     fn nothing_decrypted_reaches_an_agent_at_any_level() {
