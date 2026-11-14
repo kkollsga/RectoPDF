@@ -1038,6 +1038,8 @@ fn a_launch_doesnt_show_a_picture_of_a_file_thats_been_replaced() {
     run.settled();
     // The system takes back what's discardable whenever it likes, the page's preview with it once its tiles cover it: the picture's made from those.
     run.ok(&["qa", "memory-pressure", "discard"]);
+    // What it asks of the app is waited for as anything is, or a hand-off on a starved machine finds it still going and refuses.
+    run.settled();
     run.hand_off();
     assert!(
         colours_in_sleep_files(&state).iter().any(|(_, colours)| colours.contains(&"red")),
@@ -1400,6 +1402,8 @@ fn a_launch_goes_up_from_the_sleep_file() {
     run.settled();
     let before = run.report();
     run.ok(&["qa", "memory-pressure", "discard"]);
+    // What it asks of the app is waited for as anything is, or a hand-off on a starved machine finds it still going and refuses.
+    run.settled();
     run.hand_off();
     assert_eq!(sleep_files(&state).len(), 1, "the hand-off wrote it");
     let red = |when: &str| {
