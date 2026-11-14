@@ -181,9 +181,8 @@ impl Cmd for SessionRestore {
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let records = cx.access.records()?;
-        if cx.level < Level::Full && cx.access.with(|session| session.lists().holds_owner_edits()) {
-            return Err(restore_would_lose_owners_edits());
-        }
+        cx.access
+            .with(|session| cx.actor.refuse_owner_edits_at_stake(session, crate::actor::Stake::Restore))?;
         // A restore forgets that a tab's place was left by following a protected one, and the stops made from it, while the record keeps that place: an
         // agent's would then read it (S2's round, D).
         if !cx.actor.sees_protected() && cx.access.with(|session| recto_session::compare::withheld_in_memory(session)) {

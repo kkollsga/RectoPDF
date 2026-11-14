@@ -3,6 +3,7 @@
 #![allow(unused_imports)]
 use super::{Cmd, Cx, row_access};
 use crate::Code;
+use crate::actor::Stake;
 use crate::human::*;
 use crate::table::*;
 use crate::*;
@@ -159,8 +160,8 @@ impl Cmd for PageInsert {
             let facts = loader.load(&to_read)?;
             access.with(|s| {
                 let id = select(s, tab)?;
-                keep_owners_undone_steps(s, id, actor.level())?;
-                note_agent_at_full(s, actor);
+                actor.refuse_owner_edits_at_stake(s, Stake::UndoneSteps(id))?;
+                actor.note_who_edits(s);
                 s.insert_pdf_with_facts(id, actor.author(), position, path, &facts, stamp)?;
                 events.push(edits_changed(s, id));
                 let mut data = edit_state_json(s, actor, id);
@@ -261,11 +262,11 @@ impl Cmd for Discard {
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { tab } = self;
-        let (access, actor, level, events) = (cx.access, cx.actor, cx.level, &mut *cx.events);
+        let (access, actor, events) = (cx.access, cx.actor, &mut *cx.events);
         access.with(|s| {
             let id = select(s, tab)?;
-            refuse_unreadable(s, id, actor, "discarded")?;
-            refuse_discard_of_owners_edits(s, id, level)?;
+            actor.refuse_losing_unread(s, id, "discarded")?;
+            actor.refuse_owner_edits_at_stake(s, Stake::Discard(id))?;
             let had_any = s.lists().summary(id).is_some();
             s.discard_edits(id);
             events.push(edits_changed(s, id));
@@ -501,7 +502,7 @@ impl Cmd for Undo {
         let (actor, events) = (cx.actor, &mut *cx.events);
         cx.access.with(|s| {
             let id = select(s, &self.tab)?;
-            note_agent_at_full(s, actor);
+            actor.note_who_edits(s);
             if !s.undo_edit_as(id, actor.author())? {
                 return Err(AgentError::new(Code::NOTHING_TO_UNDO, "There's nothing to undo on this tab.", exit::FAILED));
             }
@@ -551,7 +552,7 @@ impl Cmd for Redo {
         let (actor, events) = (cx.actor, &mut *cx.events);
         cx.access.with(|s| {
             let id = select(s, &self.tab)?;
-            note_agent_at_full(s, actor);
+            actor.note_who_edits(s);
             if !s.redo_edit_as(id, actor.author())? {
                 return Err(AgentError::new(Code::NOTHING_TO_REDO, "There's nothing to redo on this tab.", exit::FAILED));
             }
@@ -598,11 +599,11 @@ impl Cmd for ClearHistory {
         json!({ "tab": super::log_tab(&self.tab) })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        let (actor, level, events) = (cx.actor, cx.level, &mut *cx.events);
+        let (actor, events) = (cx.actor, &mut *cx.events);
         cx.access.with(|s| {
             let id = select(s, &self.tab)?;
-            refuse_unreadable(s, id, actor, "cleared")?;
-            refuse_discard_of_owners_edits(s, id, level)?;
+            actor.refuse_losing_unread(s, id, "cleared")?;
+            actor.refuse_owner_edits_at_stake(s, Stake::Discard(id))?;
             let had_any = s.lists().summary(id).is_some_and(|summary| summary.undo > 0 || summary.redo > 0);
             s.clear_history(id, recto_session::ClearReason::UserAsked);
             // Announced when there was history to clear, and only then (R2.3, by A2's rule).

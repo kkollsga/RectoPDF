@@ -5,6 +5,7 @@
 //! them without a word here. The levels' own walk is `walking_every_command_at_every_level` in `lib.rs`, and the quiet run's file wall's is in
 //! `quiet_files`.
 
+use crate::actor::Stake;
 use crate::{Actor, Command, Condition, Level, commands, execute};
 use recto_session::Session;
 use recto_testpdf::{Page, TempPdf, pages, text_lines};
@@ -835,6 +836,14 @@ fn owners_steps(access: &Mutex<Session<crate::DrawableLoader>>, id: recto_sessio
     })
 }
 
+/// The codes a refusal for the owner's edits has.
+const OWNERS_CODES: [&str; 3] = ["would_clear_redo", "would_discard_user_edits", "owner_edits_at_stake"];
+
+/// A refusal's code, words, next step and `ask`.
+fn said_by(error: &crate::AgentError) -> String {
+    format!("{} | {} | {} | {:?}", error.code, error.message, error.next, error.ask)
+}
+
 /// The owner's steps [`no_command_below_full_loses_the_owners_edits`] starts with.
 const OWNERS: usize = 5;
 
@@ -844,11 +853,16 @@ const OWNERS: usize = 5;
 /// dropped a saved highlight's steps), with the files it reads real ones (an `open`, a `page insert`
 /// reach their rules); afterwards the owner's five steps are all there, and the file is byte for byte what it was, or, for `save`, which an agent at
 /// Control may do by appending, everything that was in it is still there. A step pushed off the end of a full history is the history's own rule,
-/// held by `an_agent_cant_push_the_owners_steps_out_of_the_history` in `recto-session`.
+/// held by `an_agent_cant_push_the_owners_steps_out_of_the_history` in `recto-session`. And a refusal for the owner's edits is in the rule's own words
+/// ([`Stake`]'s, said once on `Actor`), not a command's own, which could drift from them.
 #[test]
 fn no_command_below_full_loses_the_owners_edits() {
     let other = TempPdf::new("other.pdf", &pdf(2));
-    let mut lost = Vec::new();
+    let (mut lost, mut own_words) = (Vec::new(), Vec::new());
+    let any = recto_session::TabId(1);
+    let stakes: Vec<String> = [Stake::UndoneSteps(any), Stake::Discard(any), Stake::Restore, Stake::SaveDropsSteps(any)]
+        .map(|stake| said_by(&stake.refusal()))
+        .into();
     for command in every_command() {
         // The files it reads, real ones.
         let mut asked = fields(&command);
@@ -901,9 +915,18 @@ fn no_command_below_full_loses_the_owners_edits() {
                     command.tag()
                 ));
             }
+            // Refused for the owner's edits, it's in the rule's own words: one of `Stake`'s, or the close rule's, which says what a close would lose.
+            if let Err(error) = &result
+                && OWNERS_CODES.contains(&error.code.as_str())
+                && command.tag() != "close"
+                && !stakes.contains(&said_by(error))
+            {
+                own_words.push(format!("{} at {level:?}: {error:?}", command.tag()));
+            }
         }
     }
     assert!(lost.is_empty(), "the owner's edits lost below Full:\n{}", lost.join("\n"));
+    assert!(own_words.is_empty(), "refused for the owner's edits in words of its own, not `actor::Stake`'s:\n{}", own_words.join("\n"));
 }
 
 /// **Failure (second review of R4.3): a save below Full that would drop the owner's steps is made**, losing them. The walk above saves only where

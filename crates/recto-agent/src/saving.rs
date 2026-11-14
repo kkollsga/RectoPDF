@@ -105,16 +105,6 @@ fn from_save(error: &SaveError) -> AgentError {
     AgentError::new(Code::lower(error.code()), error.message(), exit).then(next)
 }
 
-/// A save that would drop the owner's steps about the file's highlights, which below Full isn't the agent's to make.
-fn owner_steps_at_stake() -> AgentError {
-    AgentError::new(
-        Code::OWNER_EDITS_AT_STAKE,
-        "Nothing was saved: the user has undo steps about highlights on a page this save leaves out, which it would drop.",
-        exit::PERMISSION,
-    )
-    .then("Ask them to save, or put the page back first.")
-}
-
 fn needs_full(what: &str) -> AgentError {
     let mut error = AgentError::new(Code::PERMISSION_DENIED, format!("{what} needs Full access."), exit::PERMISSION);
     error.next = "Run `recto permission request full`, which tells the user what to allow. Nothing else raises this.".to_string();
@@ -339,11 +329,10 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
         highlights: &highlights,
         highlights_gone: &snapshot.marks.gone,
     };
-    // The owner's steps about the file's highlights on a page this save leaves out can't be carried past it (coordinator, 2026-11-14): theirs to
-    // lose, so below Full the save isn't made. Such a save is a rewrite too, which below Full is refused anyway; this says why.
-    if level < Level::Full && access.with(|s| s.lists().get(id).is_some_and(recto_session::edit::marks::drops_owner_steps)) {
+    // The owner's steps about the file's highlights on a page this save leaves out can't be carried past it: theirs to lose.
+    if let Err(refused) = access.with(|s| actor.refuse_owner_edits_at_stake(s, crate::actor::Stake::SaveDropsSteps(id))) {
         drop(ending);
-        return Err(owner_steps_at_stake());
+        return Err(refused);
     }
     let writer = recto_core::save::writer_for_request(&request);
     if writer == Writer::Rewrite && level < Level::Full && level >= Level::Control {

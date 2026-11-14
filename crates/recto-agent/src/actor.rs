@@ -5,9 +5,13 @@
 //! are logged; during an update's hand-off an agent's command is refused as busy (`AppHost`), and a person's action is dropped by the session thread's queue,
 //! as the window takes no input then.
 
-use crate::Level;
+mod refusals;
+
+pub(crate) use refusals::{ASK_FULL, Stake};
+
 use crate::table::Access;
-use recto_session::Author;
+use crate::{AgentError, Level};
+use recto_session::{Author, DocLoader, Session, TabId};
 
 /// Who a command is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,10 +68,50 @@ impl Actor {
         matches!(self, Self::Person)
     }
 
-    /// An agent, at Full. What only an agent at Full may push past is the owner's, as their own edits are.
+    /// **At Full,** the one line every rule below goes by: the person, and an agent the user gave Full.
+    fn at_full(self) -> bool {
+        self.level() >= Level::Full
+    }
+
+    /// **Held to the owner's-edits rule** (SPEC decision 20): an agent below Full throws away only agents' edits, never the owner's. At Full what's
+    /// lost is the holder's call.
     #[must_use]
-    pub fn is_agent_at_full(self) -> bool {
-        matches!(self, Self::Agent(Level::Full))
+    pub fn held_to_owners_edits(self) -> bool {
+        !self.at_full()
+    }
+
+    /// **Refuses what would lose the owner's edits**, if this actor is held to them and the session holds any of the owner's that `stake` would lose:
+    /// with that stake's one refusal.
+    pub(crate) fn refuse_owner_edits_at_stake<L: DocLoader>(self, session: &Session<L>, stake: Stake) -> Result<(), AgentError> {
+        if self.held_to_owners_edits() && stake.at_stake(session) {
+            return Err(stake.refusal());
+        }
+        Ok(())
+    }
+
+    /// **Says who the session's next edits are by, for its history's rule:** an agent's at Full may push the owner's steps out of a full history, and
+    /// below Full may not. The person's edits are the owner's, and say nothing of it.
+    pub(crate) fn note_who_edits<L: DocLoader>(self, session: &mut Session<L>) {
+        if let Self::Agent(_) = self {
+            session.lists_mut().set_agent_at_full(self.at_full());
+        }
+    }
+
+    /// **May lose what it can't read** (coordinator, 2026-11-13: unknown is "would lose", not "nothing to lose"): a tab whose edits couldn't be read
+    /// back is the person's to give up, as their tab says so; an agent's `discard`, `clear-history` or `close` of it is refused at every level.
+    #[must_use]
+    pub fn may_lose_unread(self) -> bool {
+        matches!(self, Self::Person)
+    }
+
+    /// **Refuses throwing away a tab's edits that couldn't be read back** ([`Self::may_lose_unread`]): every command about a tab reads its list back
+    /// first, so one still asleep is one whose journal couldn't be read, and its summary says some of what's there, not all of it. `what` is what
+    /// wasn't done, as "discarded".
+    pub(crate) fn refuse_losing_unread<L: DocLoader>(self, session: &Session<L>, id: TabId, what: &str) -> Result<(), AgentError> {
+        if self.may_lose_unread() || !session.lists().is_asleep(id) {
+            return Ok(());
+        }
+        Err(refusals::unreadable(what))
     }
 }
 
