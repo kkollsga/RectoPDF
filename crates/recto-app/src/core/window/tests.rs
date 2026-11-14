@@ -506,7 +506,7 @@ fn showing_is_open_and_not_in_the_dock() {
     assert!(!rig.window.showing(), "closed");
 }
 
-/// Failure (2026-11-14, with `a_window_made_again_from_a_late_state_puts_the_saved_place_back_only_once`): a window made again from a state read late takes
+/// Failure (2026-11-14, with `a_window_made_again_from_a_late_state_puts_the_saved_selection_back_only_once`): a window made again from a state read late takes
 /// the state's resumes, so a place the going window had already put back comes back a second time; or, the other way, one the going window hadn't put back yet
 /// (its tab not shown yet) is lost. The going window's resumes stay as they are, taken or not; the rest comes from the state.
 #[test]

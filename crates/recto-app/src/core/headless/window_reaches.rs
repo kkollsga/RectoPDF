@@ -195,11 +195,12 @@ fn the_panels_row_toggles_it_and_the_record_keeps_it() {
 }
 
 /// Failure (found by this file's restore golden, 2026-11-14): a state read late, with the window up before its patience, is taken in; the first window
-/// takes the saved selection and contents' scroll for the tab they were on, once; the window's then made again from the state, which put both back, not yet
-/// taken. The person selects something else and scrolls the contents, goes to another tab and back, and the saved selection is put over theirs and the
-/// contents go back to where the saved session had them: a restore's place came back twice. After the remake it's the person's, as on any change of tab.
+/// puts the saved selection back on the tab it was on, once; the window's then made again from the state, which put it back, not yet taken. The person
+/// selects something else, goes to another tab and back, and the saved selection is put over theirs: a restore's selection came back twice. (The saved
+/// contents' scroll went back the same way, but the first change of tab drops it unused, so no sequence a person can make applies it twice: it's held by
+/// `Window::replaced`'s own test, `a_window_made_again_keeps_the_resumes_as_the_going_one_left_them`.)
 #[test]
-fn a_window_made_again_from_a_late_state_puts_the_saved_place_back_only_once() {
+fn a_window_made_again_from_a_late_state_puts_the_saved_selection_back_only_once() {
     let app = a_saved_window().builder().hold(&[Seam::State]).start();
     the_host_decides(&app);
     app.let_state_in();
@@ -210,16 +211,10 @@ fn a_window_made_again_from_a_late_state_puts_the_saved_place_back_only_once() {
     let saved = selected();
     assert!(saved.is_some(), "the saved selection is back, once");
     inner.panes.reading_engine(&inner.engine).selection().restore((1, 0), (1, 3));
-    inner.window.contents_position(40.0, &inner.saver);
-    inner.window.contents_user_scrolled(inner.life.seconds_since_start());
     app.settle();
     let theirs = selected();
     person(&app, r##"{"cmd":"tap","tab":"#1"}"##);
     person(&app, r##"{"cmd":"tap","tab":"#2"}"##);
     assert_ne!(selected(), saved, "the saved selection put back over theirs ({theirs:?})");
-    assert!(
-        inner.window.contents_following(),
-        "the contents start afresh on the tab, as on any change of tab, not at the saved session's place"
-    );
     drop(app.quit());
 }
