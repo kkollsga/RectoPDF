@@ -601,7 +601,8 @@ if [ -x tools/doc-paths.sh ] && { [ "$mode" = --quick ] || [ "$mode" = --full ];
 fi
 # The tools' own tests, when a change touched what they test since the base (TOOLS_PATHS, tools/check-scope.sh; a full run only, and on CI the same rule
 # against CI's base, `ci_base`): the tool is held by the tool and not by someone running its test by hand. Each builds nothing and runs on a throwaway
-# repository and lock, so nothing is queued for them. On CI they took 173 s of every run's core part whatever changed (run 43195226598).
+# repository and lock, so nothing is queued for them (but new-feature-test.sh, which builds through the queue). On CI they took 173 s of every run's
+# core part whatever changed (run 43195226598).
 if [ "$mode" = --full ] && [ "$part" != window ] && [ "$part" != lifecycle ] && [ "$scope_tools" = 0 ]; then
   echo "check: the tools' tests are skipped: $scope_tools_why."
 fi
@@ -613,9 +614,9 @@ if [ "$mode" = --full ] && [ "$part" != window ] && [ "$part" != lifecycle ] && 
   # by side. A failure prints that script's output whole (without its ok lines, last 40).
   tool_out=$(mktemp -d "${TMPDIR:-/tmp}/recto-tool-test.XXXXXX")
   tool_pids="" tool_launched=""
-  for tool in ratchet hygiene check; do
+  for tool in ratchet hygiene check feature; do
     case " $scope_tools_which " in *" $tool "*) ;; *) continue ;; esac
-    case "$tool" in ratchet) tool_test=tools/ratchet-test.sh ;; hygiene) tool_test=tools/target-hygiene-test.sh ;; *) tool_test=tools/check-test.sh ;; esac
+    case "$tool" in ratchet) tool_test=tools/ratchet-test.sh ;; hygiene) tool_test=tools/target-hygiene-test.sh ;; feature) tool_test=tools/new-feature-test.sh ;; *) tool_test=tools/check-test.sh ;; esac
     [ -f "$tool_test" ] || continue
     ( started=$(date +%s); tool_rc=0; "$tool_test" > "$tool_out/$tool.out" 2>&1 || tool_rc=$?; echo "$tool_rc $(($(date +%s) - started)) $tool_test" > "$tool_out/$tool.rc" ) &
     tool_pids="$tool_pids $!" tool_launched="$tool_launched $tool"
