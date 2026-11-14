@@ -4,7 +4,6 @@ file crates/recto-core/src/save.rs 1980
 file crates/recto-index/src/corpus.rs 1686
 file crates/recto-render-service/src/host.rs 2175
 file crates/recto-render/src/pdfium/contents.rs 2885
-file crates/recto-session/src/record.rs 1540
 file crates/recto-update/src/updater.rs 2495
 fn crates/recto-agent/src/print.rs::print_with_caps 152
 fn crates/recto-agent/src/render/svg.rs::write_record 154
