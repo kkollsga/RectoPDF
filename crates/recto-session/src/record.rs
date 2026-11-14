@@ -1006,7 +1006,7 @@ pub fn journal_lines(ops: &[JournalOp]) -> Vec<u8> {
 
 /// A new journal's beginning: its header, and a base if it's been compacted.
 pub fn journal_start(header: &JournalHeader, base: Option<&EditsRecord>) -> Vec<u8> {
-    let marked = base.is_some_and(|base| !base.marks.is_empty()).then(|| JournalHeader {
+    let marked = base.is_some_and(crate::edit::marks::record_has_marks).then(|| JournalHeader {
         version: MARKED_JOURNAL_VERSION,
         ..header.clone()
     });
@@ -1030,7 +1030,7 @@ pub struct ParsedJournal {
     pub lost_lines: bool,
 }
 
-fn read_line(bytes: &[u8]) -> Option<(&[u8], usize)> {
+pub(crate) fn read_line(bytes: &[u8]) -> Option<(&[u8], usize)> {
     let end = bytes.iter().position(|byte| *byte == b'\n')?;
     let line = &bytes[..end];
     let (crc, json) = (line.get(..8)?, line.get(9..)?);

@@ -369,6 +369,37 @@ pub(super) fn saved(edits: &mut super::PageEdits) -> usize {
     gone
 }
 
+/// **Whether a journal holds anything an app from before highlights can't read** (review of R4.3, should-fix 3): highlights in its base's list, or
+/// a highlight's step in its undo or redo. Such a journal says [`crate::record::MARKED_JOURNAL_VERSION`].
+pub fn record_has_marks(base: &crate::record::EditsRecord) -> bool {
+    !base.marks.is_empty()
+        || base
+            .undo
+            .iter()
+            .chain(&base.redo)
+            .any(|entry| matches!(entry.step, crate::record::StepRecord::Mark(_)))
+}
+
+/// Whether operations about to be appended to a journal include a highlight's, which an app from before highlights can't read.
+pub fn ops_have_marks(ops: &[crate::record::JournalOp]) -> bool {
+    ops.iter().any(|op| matches!(op, crate::record::JournalOp::Mark(_)))
+}
+
+/// **A journal's bytes with its header saying the newer version,** for one an app from before highlights could read until now that is about to get
+/// a highlight's operation: its first line written again, the rest as it is. `None` if it says that version already, or its header doesn't read
+/// (which isn't this call's to judge: the append goes on as it would have).
+pub fn journal_marked(bytes: &[u8]) -> Option<Vec<u8>> {
+    let (json, used) = crate::record::read_line(bytes)?;
+    let mut header: crate::record::JournalHeader = serde_json::from_slice(json).ok()?;
+    if header.version >= crate::record::MARKED_JOURNAL_VERSION {
+        return None;
+    }
+    header.version = crate::record::MARKED_JOURNAL_VERSION;
+    let mut out = crate::record::journal_line(&serde_json::to_vec(&header).ok()?);
+    out.extend_from_slice(&bytes[used..]);
+    Some(out)
+}
+
 /// Why a change to highlights wasn't made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MarkRefusal {
@@ -826,7 +857,19 @@ mod tests {
         let read = parse_journal(&marked, MARKED_JOURNAL_VERSION).unwrap();
         let (back, _) = super::super::PageEdits::replay(3, read.base.as_ref(), &read.ops).unwrap();
         assert_eq!(back.marks().len(), 1, "and this one reads its highlight back");
+        // None in the list, but one in the history to redo: an app from before reads that step no more than the list (should-fix 3).
         edits.mark(MarkChange::Remove { ids: vec![0] }).unwrap();
+        edits.drop_history();
+        add(&mut edits, 1);
+        assert!(edits.undo());
+        assert!(edits.marks().is_empty());
+        let in_history = journal_start(&header, Some(&edits.to_record()));
+        assert_eq!(
+            parse_journal(&in_history, CURRENT_VERSION),
+            Err(RecordError::Newer(MARKED_JOURNAL_VERSION)),
+            "a highlight to redo says so"
+        );
+        edits.drop_history();
         let again = journal_start(&header, Some(&edits.to_record()));
         assert_eq!(
             parse_journal(&again, CURRENT_VERSION).unwrap().header.version,

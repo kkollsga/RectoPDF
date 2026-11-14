@@ -202,6 +202,12 @@ fn replace(path: &Path, bytes: &[u8], force: bool) -> std::io::Result<()> {
 }
 
 /// What a journal's file reads as, if it's there.
+/// A journal's good bytes with its header saying the newer version, if it doesn't yet (`recto_session::edit::marks::journal_marked`).
+fn journal_marked_at(path: &Path, good: u64) -> Option<Vec<u8>> {
+    let bytes = read_ours(path, MAX_JOURNAL_BYTES).ok()??;
+    recto_session::edit::marks::journal_marked(bytes.get(..usize::try_from(good).ok()?)?)
+}
+
 fn read_journal(path: &Path) -> Result<Option<(ParsedJournal, u64)>, RecordError> {
     let Ok(bytes) = read_ours(path, MAX_JOURNAL_BYTES) else {
         return Err(RecordError::Damaged("unreadable"));
@@ -648,17 +654,28 @@ impl RecordStore {
                 continue;
             }
             let mut lines = Vec::new();
+            let marks = recto_session::edit::marks::ops_have_marks(&append.ops);
             if known.is_none() {
-                // New: its header goes first, for as many operations as came before these.
+                // New: its header goes first, for as many operations as came before these, saying the newer version if they hold a highlight's.
                 let header = JournalHeader {
                     base_seq: append.through.saturating_sub(append.ops.len() as u64),
+                    version: if marks { record::MARKED_JOURNAL_VERSION } else { append.header.version },
                     ..append.header.clone()
                 };
                 lines.extend_from_slice(&record::journal_start(&header, None));
             }
             lines.extend_from_slice(&record::journal_lines(&append.ops));
             let path = folder.join(&name);
-            let start = known.unwrap_or(0);
+            let mut start = known.unwrap_or(0);
+            // A journal an app from before highlights reads is about to get one: its header says the newer version first, once, in one replace.
+            if let Some(marked) = known.filter(|_| marks).and_then(|good| journal_marked_at(&path, good)) {
+                if replace(&path, &marked, force).is_err() {
+                    failed = Some(io_failed("written to"));
+                    continue;
+                }
+                progress.wrote_bytes += marked.len() as u64;
+                start = marked.len() as u64;
+            }
             let result = (|| -> std::io::Result<()> {
                 let mut file = local::open_private_for_writing(&path, false)?;
                 // A torn tail from a crash, or a write that failed, is cut off, and what's good is built on.
@@ -2471,6 +2488,55 @@ mod tests {
         assert_eq!(outcome.written[0].0, TabId(1));
         let lines = std::fs::read(folder.join(&good)).unwrap();
         assert_eq!(record::parse_journal(&lines, CURRENT_VERSION).unwrap().ops.len(), 1);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Failure (review of R4.3, should-fix 3): a journal that an app from before highlights reads gets a highlight's operation and still says the old
+    /// version, so that app reads the turns before it and stops, losing the rest, where it should have left the whole journal alone; or a new journal
+    /// whose first operations are a highlight's says it. Either way, once it holds one, the header says the newer version and every operation reads.
+    #[test]
+    fn a_journal_that_gets_a_highlight_says_the_newer_version() {
+        let (root, paths) = state();
+        let store = RecordStore::open(&paths, Flavor::App);
+        let folder = root.join("session").join(JOURNALS);
+        let mark = || {
+            JournalOp::Mark(recto_session::edit::marks::MarkOp::Add {
+                pages: vec![recto_session::edit::marks::MarkPage {
+                    source: 0,
+                    page: 0,
+                    rects: vec![recto_session::edit::marks::MarkRect {
+                        x: 1.0,
+                        y: 1.0,
+                        width: 5.0,
+                        height: 5.0,
+                    }],
+                }],
+                by: record::AuthorName::Owner,
+            })
+        };
+        let read = |name: &str, newest: u32| record::parse_journal(&std::fs::read(folder.join(name)).unwrap(), newest);
+        // A turn first: an older app reads it. Then a highlight: it doesn't, and leaves the journal as it is.
+        write_ok(&store, &journal_work_for("journal-0000000000000001.log", vec![rotation()], 1));
+        assert!(read("journal-0000000000000001.log", CURRENT_VERSION).is_ok());
+        write_ok(&store, &journal_work_for("journal-0000000000000001.log", vec![mark()], 2));
+        assert_eq!(
+            read("journal-0000000000000001.log", CURRENT_VERSION).err(),
+            Some(RecordError::Newer(record::MARKED_JOURNAL_VERSION))
+        );
+        let parsed = read("journal-0000000000000001.log", record::MARKED_JOURNAL_VERSION).unwrap();
+        assert_eq!((parsed.ops.len(), parsed.lost_lines), (2, false), "both, whole");
+        write_ok(&store, &journal_work_for("journal-0000000000000001.log", vec![rotation()], 3));
+        assert_eq!(
+            read("journal-0000000000000001.log", record::MARKED_JOURNAL_VERSION).unwrap().ops.len(),
+            3,
+            "and appends go on after it"
+        );
+        // New, with a highlight among its first operations.
+        write_ok(&store, &journal_work_for("journal-0000000000000002.log", vec![rotation(), mark()], 2));
+        assert_eq!(
+            read("journal-0000000000000002.log", CURRENT_VERSION).err(),
+            Some(RecordError::Newer(record::MARKED_JOURNAL_VERSION))
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 
