@@ -128,6 +128,7 @@ AnswerParts::pub fn fail_open(&self, words: String)
 AnswerParts::pub fn find_handle<R>(&self, step: impl FnOnce(&FindHandle<'_, dyn Listener>) -> R) -> R
 AnswerParts::pub fn notice(&self, words: String)
 AnswerParts::pub fn person(&self) -> Person<'a>
+AnswerParts::pub fn print_answered(&self, said: impl FnOnce(&super::printing::Printing))
 AnswerParts::pub fn say(&self, words: String)
 AnswerParts::pub fn take_notice(&self)
 AnswerParts::pub fn unmark_update_menu(&self)
@@ -284,10 +285,9 @@ OnDisk::pub(crate) fn sleeper(&self) -> &Arc<Sleeper>
 OnDisk::pub(super) fn new(keeper: Arc<Keeper>, sleeper: Arc<Sleeper>) -> Self
 OnDisk::pub(super) fn starts_writer(&self) -> StartsWriter<'_>
 Person (pub struct, derives Clone, Copy)
-Person::pub fn print_anyway(self, serial: u64)
 Person::pub fn save(self, tab: recto_session::TabId)
 Person::pub fn snapshot_anyway(self, serial: u64)
-Person::pub fn submit(self, command: Command)
+Person::pub fn submit(self, command: Command) -> bool
 Person::pub fn submit_when_run(self, command: Command, when_run: crate::queue::WhenRun)
 Person::pub(in crate::core) fn of(app: &'a Arc<Inner>) -> Self
 Printing (pub struct, derives Default)
@@ -301,7 +301,9 @@ Printing::pub fn preparing(&self) -> bool
 Printing::pub fn qa_target_for(&self, out: PathBuf) -> Option<PathBuf>
 Printing::pub fn quitting(&self)
 Printing::pub fn selection_notice(&self) -> Option<SelectionNotice>
-Printing::pub fn take_ready(&self) -> Option<PathBuf>
+Printing::pub fn take_ready(&self) -> Option<(PathBuf, u64)>
+Printing::pub(crate) fn anyway(&self, serial: u64) -> Option<Command>
+Printing::pub(crate) fn not_asked(&self)
 Prompts (pub struct, derives Debug, Default)
 Prompts.pub(crate) link: Mutex<Option<LinkPrompt>>
 Prompts.pub(crate) passwords: Mutex<Asks>
@@ -331,6 +333,7 @@ RowParts::pub fn person(&self) -> Person<'a>
 RowParts::pub fn published<R>(&self, read: impl FnOnce(&Published) -> R) -> R
 RowParts::pub fn reading_tab(&self) -> Option<TabId>
 RowParts::pub fn reconcile(&self)
+RowParts::pub fn refused_print_anyway(&self, serial: u64) -> Option<recto_agent::Command>
 RowParts::pub fn select_all(&self)
 RowParts::pub fn selected(&self) -> Option<(u32, Option<recto_index::select::Range>)>
 RowParts::pub fn tell_host(&self)
@@ -356,6 +359,7 @@ Tools::pub fn prompts(&self) -> &crate::prompts::Prompts
 Tools::pub fn tool(&self) -> &snapshot_tool::Tool
 Tools::pub(crate) fn find_field(&self) -> &Mutex<crate::find::Field>
 Tools::pub(crate) fn palette(&self) -> &crate::palette::Palette
+Tools::pub(crate) fn printing_held(&self) -> Arc<printing::Printing>
 Tools::pub(crate) fn save_ui(&self) -> &saving::SaveUi
 Window (pub struct)
 Window::pub fn app_record(&self, notice: impl FnOnce() -> Option<String>) -> AppRecord

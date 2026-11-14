@@ -83,8 +83,11 @@ final class Bridge: AppListener, @unchecked Sendable {
     let isQuiet: Bool
     /// What the sheet over the window says, for `qa state`: its kind and words. Nothing with none.
     var sheetShowing: [String: Any]?
-    /// The print panel's answer, kept while Rust prepares the pages.
-    var pendingPrintInfo: NSPrintInfo?
+    /// Each print panel's answer Rust took, by the number the host gave it, kept while Rust prepares its pages: a print's file comes back with its number,
+    /// and is printed with that answer's printer and way, never another's.
+    var printInfos: [UInt64: NSPrintInfo] = [:]
+    /// The number the next print panel's answer is given.
+    var nextPrintSerial: UInt64 = 0
     /// The file the system's printing has now, which goes when it's done.
     var printingPath: String?
     /// The clipboard offer whose promised types this app still owes, and which they are.

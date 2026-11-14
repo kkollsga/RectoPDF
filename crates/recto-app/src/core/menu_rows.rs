@@ -172,7 +172,9 @@ pub fn by_person(parts: &RowParts<'_>, row: Row<'_>) -> HostAction {
         Row::Command { command, when_run, host } => {
             match when_run {
                 Some(when_run) => parts.person().submit_when_run(command, when_run),
-                None => parts.person().submit(command),
+                None => {
+                    parts.person().submit(command);
+                }
             }
             host
         }

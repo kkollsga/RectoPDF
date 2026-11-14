@@ -49,8 +49,9 @@ tier that can see each failure, and shots light and dark.
    (`let parts = *parts;`). When a row or an answer needs something that isn't on the list, the feature adds **one method named for the need**
    (`can_save`, `fail_open`; not `tools()` or `session()`) to `RowParts` or `AnswerParts`. That is a registration, and it shows in the listing in
    `crates/recto-app/src/core/headless/inner_guards.rs`. It never reaches a field, and never takes `Inner`. Most of today's methods serve one
-   feature each: 13 of `RowParts`' 18 (four are shared, one makes it), 9 of `AnswerParts`' 11 (`say` is shared), and `save`, `snapshot_anyway`
-   and `print_anyway` of `Person`'s 6 (each starts the person's run on a thread of its own, which holds the app). **`find_handle` on `AnswerParts`
+   feature each: 14 of `RowParts`' 19 (four are shared, one makes it), 10 of `AnswerParts`' 12 (`say` is shared), and `save` and
+   `snapshot_anyway` of `Person`'s 5 (each starts the person's run on a thread of its own, which holds the app; the print's Print anyway is its
+   command, sent with `submit`). **`find_handle` on `AnswerParts`
    is the one wide reach:** it hands an answer a `FindHandle` whose fields are `pub` (the session, the panes, the page view, the listener), so it is
    Find's alone and no other answer calls it. **A way marked `Agents::AsTheMenu` never calls `parts.person()`:** an agent's palette run executes that
    way, and nothing an agent sends may run as the person (AGENTS.md, "One action, one implementation"). A parts type that keeps gaining one
