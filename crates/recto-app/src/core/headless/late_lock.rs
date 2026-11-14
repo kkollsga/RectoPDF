@@ -644,7 +644,7 @@ fn every_writer(app: &HeadlessApp) -> Result<(), String> {
     let flushed = std::thread::Builder::new()
         .name("test-writer".into())
         .spawn(move || {
-            core.saver.write_journals_now(core.on_disk.keeper(), &core.host.session, core.on_disk.sleeper());
+            core.saver.write_journals_now(core.on_disk.keeper(), core.on_disk.sleeper());
             core.saver.flush(false, WAIT_LIMIT).map(|_| ()).map_err(|error| error.code.to_owned())
         })
         .expect("a thread")

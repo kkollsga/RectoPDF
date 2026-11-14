@@ -181,6 +181,7 @@ Keeper::pub(super) fn begin_restore(self: &Arc<Self>)
 Keeper::pub(super) fn desk(self: &Arc<Self>) -> Desk<'_>
 Keeper::pub(super) fn new(store: Arc<RecordStore>, life: Arc<Lifecycle>, host: Arc<AppHost>, core: Arc<CoreQueue>, updates: Arc<recto_update::updater::Updater>) -> Arc<Self>
 Keeper::pub(super) fn refused(self: &Arc<Self>) -> Option<StoreError>
+Keeper::pub(super) fn session(&self) -> &recto_control::host::SessionHost<recto_agent::DrawableLoader>
 Keeper::pub(super) fn store(&self) -> &Arc<RecordStore>
 Keeper::pub(super) fn try_the_lock(self: &Arc<Self>, verdict: std::sync::mpsc::Sender<Verdict>, heard: &std::sync::mpsc::Receiver<Verdict>)
 LaunchFacts (pub struct)
@@ -233,6 +234,7 @@ Lifecycle::pub(super) fn life(&self) -> crate::lifecycle::Life
 Lifecycle::pub(super) fn step_keeping(&self, event: crate::lifecycle::keeping::Event, to: &mut super::keeping::Carrier<'_>)
 Lifecycle::pub(super) fn tried(&self, got: bool, busy: impl FnOnce() -> bool, to: &mut super::keeping::Carrier<'_>)
 OnDisk (pub struct)
+OnDisk::pub(crate) fn downgrade(&self) -> LetGo
 OnDisk::pub(crate) fn keeper(&self) -> &Arc<Keeper>
 OnDisk::pub(crate) fn sleeper(&self) -> &Arc<Sleeper>
 OnDisk::pub(super) fn new(keeper: Arc<Keeper>, sleeper: Arc<Sleeper>) -> Self

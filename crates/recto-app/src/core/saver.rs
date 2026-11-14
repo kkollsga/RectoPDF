@@ -277,13 +277,14 @@ impl Saver {
 
     /// Whatever's waiting goes in its journal now, as a tab's about to go dormant, whose list can't till it's all there. With the gate, so it's one visit to the disk at a time;
     /// and by the rule every writer goes by ([`Keeper::may_write`]), before the gate and under it.
-    pub(crate) fn write_journals_now(&self, keeper: &Arc<Keeper>, session: &SessionHost<DrawableLoader>, sleeper: &Sleeper) {
+    /// The session is the keeper's own, so what's written is always the session whose keeping was asked.
+    pub(crate) fn write_journals_now(&self, keeper: &Arc<Keeper>, sleeper: &Sleeper) {
         if !keeper.may_write() {
             return;
         }
         let _gate = lock(&self.gate);
         if keeper.may_write() {
-            let _ = self.write_journals(session, sleeper, false);
+            let _ = self.write_journals(keeper.session(), sleeper, false);
         }
     }
 

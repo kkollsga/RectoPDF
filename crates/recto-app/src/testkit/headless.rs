@@ -836,6 +836,7 @@ fn end(app: &mut HeadlessApp, mut holding: Option<Holding<'_>>) -> Disk {
         // And the updater's threads end with it: an install that had handed off was waiting for its process to go, on a clock that stands still here,
         // and looks at whether its app has ended instead.
         let updater = Arc::downgrade(&inner.updates);
+        let on_disk = inner.on_disk.downgrade();
         drop(inner);
         if let Some((seam, ended)) = holding.take() {
             ended(app.disk.as_ref().expect("the disk"));
@@ -850,6 +851,7 @@ fn end(app: &mut HeadlessApp, mut holding: Option<Holding<'_>>) -> Disk {
             );
             std::thread::sleep(LOOK_EVERY); // ratchet: poll
         }
+        on_disk.wait_until_let_go(WAIT_LIMIT);
     }
     let mut disk = app.disk.take().expect("the disk");
     // The time of day moved on with this run's clock, from where it was at its launch.

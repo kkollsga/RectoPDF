@@ -43,6 +43,11 @@ impl Keeper {
         })
     }
 
+    /// The session the record is gathered from: what the journals written now are taken from ([`super::saver::Saver::write_journals_now`]).
+    pub(super) fn session(&self) -> &recto_control::host::SessionHost<recto_agent::DrawableLoader> {
+        &self.host.session
+    }
+
     /// The record's store: what the sleep files' writer writes through.
     pub(super) fn store(&self) -> &Arc<RecordStore> {
         &self.store
@@ -266,11 +271,21 @@ mod tests {
     /// the rule beside the one here) can drift from it, and a copy that doesn't keep the record, or doesn't yet, writes over the saved session; a sleep file's
     /// writer handed a `KeepsRecord` made some other way than by asking the keeper writes by whatever that says. The rule is defined here and only here (the
     /// keeper's, and the question's that asks it); the question is made only by [`super::Keeper::asks`]; and the keeping desk, whose carrier is the one way the
-    /// rule's "not kept" is stepped, only by [`super::Keeper::desk`].
+    /// rule's "not kept" is stepped, only by [`super::Keeper::desk`]; the two keeping steps the keeper's threads make (a claim, a lost lock) only by the keeper;
+    /// and the sleep files' writer's start only by `OnDisk::starts_writer`.
     #[test]
     fn who_may_write_the_record_is_said_once_and_asked_only_of_the_keeper() {
         assert_eq!(written("fn may_write("), [("core/keeper.rs".to_owned(), 2)], "where the rule is said");
         assert_eq!(written("KeepsRecord("), [("core/keeper.rs".to_owned(), 1)], "where the question is made");
         assert_eq!(written("Desk::new("), [("core/keeper.rs".to_owned(), 1)], "where the desk is made");
+        // The two keeping steps the record's own threads make, each only where the keeper decides it (its read's claim, a writer's lost lock).
+        assert_eq!(written(".claimed("), [("core/keeper.rs".to_owned(), 1)], "where a late keep's read is claimed");
+        assert_eq!(written(".lock_lost("), [("core/keeper.rs".to_owned(), 1)], "where a lost lock is stepped");
+        // The sleep files' writer's start, made only by its one constructor.
+        assert_eq!(
+            written("StartsWriter {"),
+            [("core/sleeper.rs".to_owned(), 1)],
+            "where the writer's start is made"
+        );
     }
 }

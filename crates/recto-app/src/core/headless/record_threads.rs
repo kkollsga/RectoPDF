@@ -9,7 +9,12 @@ use crate::testkit::headless::{Disk, HeadlessApp};
 use recto_platform::slow::{Seam, gate};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
+use std::time::Duration;
+
+/// How long the record's keeper, the sleeper and the host's listener may take to go once the app's end has returned: the end already waits for the threads
+/// that hold them, so this is only the moment a last reference is dropped, far inside it.
+const PARTS_GO_WITHIN: Duration = Duration::from_secs(5);
 
 /// Every file under the state folder, byte for byte: the record, its journals and sleep files, `updates.json` and the lock.
 fn state_folder(disk: &Disk) -> BTreeMap<PathBuf, Vec<u8>> {
@@ -118,12 +123,16 @@ fn the_sleep_writer() -> Held {
     }
 }
 
-/// **Failure: a thread of the record's that's still under way as the app ends writes after it, or keeps the app alive.** Holding the app, it kept the
-/// whole app (and its updater's way back to it) alive past the end, so its read went on to tell the updater of a launch, and the updater wrote for an app
-/// that had ended, which no ended process can do; and the kit's end waited on it in vain. Each of the four, held at its seam as the app's killed, then let
-/// through: the state folder (the record, its journals and sleep files, `updates.json`, the lock) is byte for byte as it was when the app ended; and the end
-/// returns only once the thread has let go, of the keeper, the sleeper and anything that leads to the host (the keeper's host holds the page views, whose
-/// hooks hold the host's listener: none of the record's code calls it, and once the end has returned nothing holds it at all).
+/// **Failure: a thread of the record's that's still under way as the app ends does something after it, or keeps the app alive.** Holding the app, it kept
+/// the whole app alive past the end and the kit's end waited on it in vain; holding only the record's keeper, it could still step the app's keeping of the
+/// record ("not kept", a claim) and set its notice after the end, or wait forever on a word the abandoned queue kept. Each of five, held at its seam as the
+/// app's killed, then let through: the launch's read, a late try without the lock and one with it, a late keep's read, and the sleep files' writer.
+///
+/// **What this test itself fails on:** how the app keeps the record and its notice changing after the end (the keeper's own check of the store's let-go);
+/// the record's keeper or the sleeper still held once the end has returned, or the host's listener (a thread that didn't end, or a cycle); and the kit's end
+/// itself, which waits for those threads and fails at its limit. **What holds the disk half:** the state folder (the record, its journals and sleep files,
+/// `updates.json`, the lock) byte for byte as it was at the end is held by the store's let-go (`RecordStore::let_go`: it writes nothing after) and the
+/// updater's `here()` (nothing written for an ended app); this test sees it, and would see a write that went round them.
 #[test]
 fn a_thread_of_the_records_held_as_the_app_ends_writes_nothing_after_it() {
     for held in [
@@ -135,7 +144,7 @@ fn a_thread_of_the_records_held_as_the_app_ends_writes_nothing_after_it() {
     ] {
         let Held { case, app, seam, before } = held();
         let host = Arc::downgrade(&app.core().listener);
-        let parts = Parts::of(&app);
+        let parts = app.core().on_disk.downgrade();
         // What the app was told last, looked at as it ended and again once its threads are gone: kept for the look only, and let go before the end's checks.
         let (life, told) = (Arc::clone(&app.core().life), Arc::clone(&app.core().host));
         let said = || (life.keeping(), crate::lock(&told.notice).clone());
@@ -148,7 +157,14 @@ fn a_thread_of_the_records_held_as_the_app_ends_writes_nothing_after_it() {
             "{case}: the app was told something after its end (how it keeps the record, or its notice)"
         );
         drop((life, told));
-        assert_eq!(host.strong_count(), 0, "{case}: something still holds the way to the host after the app's end");
+        let began = std::time::Instant::now();
+        while host.strong_count() > 0 {
+            assert!(
+                began.elapsed() < PARTS_GO_WITHIN,
+                "{case}: something still holds the way to the host after the app's end"
+            );
+            std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
+        }
         let now = state_folder(&disk);
         assert!(
             now == at_end,
@@ -158,29 +174,8 @@ fn a_thread_of_the_records_held_as_the_app_ends_writes_nothing_after_it() {
                 .filter(|path| at_end.get(*path) != now.get(*path))
                 .collect::<Vec<_>>()
         );
-        parts.gone(case);
+        parts.wait_until_let_go(PARTS_GO_WITHIN);
         drop(before);
-    }
-}
-
-/// The app's parts that its threads hold in its place: the record's keeper and the sleeper.
-struct Parts {
-    keeper: Weak<crate::core::keeper::Keeper>,
-    sleeper: Weak<crate::core::sleeper::Sleeper>,
-}
-
-impl Parts {
-    fn of(app: &HeadlessApp) -> Self {
-        Self {
-            keeper: Arc::downgrade(app.core().on_disk.keeper()),
-            sleeper: Arc::downgrade(app.core().on_disk.sleeper()),
-        }
-    }
-
-    /// Each has gone with the app, by the time its end has returned: nothing holds either (a thread still running, or a cycle back to it).
-    fn gone(&self, case: &str) {
-        assert_eq!(self.keeper.strong_count(), 0, "{case}: the record's keeper is still held after the app's end");
-        assert_eq!(self.sleeper.strong_count(), 0, "{case}: the sleeper is still held after the app's end");
     }
 }
 
@@ -198,7 +193,7 @@ fn the_records_keeper_and_the_sleeper_go_with_the_app() {
     }
     app.core().qa_session_verb("memory_pressure", "warning").expect("a QA verb").expect("pressure");
     app.settle();
-    let parts = Parts::of(&app);
+    let parts = app.core().on_disk.downgrade();
     drop(app.quit());
-    parts.gone("a quit");
+    parts.wait_until_let_go(PARTS_GO_WITHIN);
 }

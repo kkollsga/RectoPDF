@@ -545,7 +545,8 @@ impl Sleeper {
     }
 }
 
-/// **The session and the page views, borrowed from the app for one of the sleeper's calls,** which reads them and owns neither. It's for three things:
+/// **The session and the page views, borrowed from the app for the sleeper's calls,** which read them and own neither: made for a call, or once for the
+/// session thread's run inside [`GoingDormant`]. It's for three things:
 /// - **what a tab's sleep file is made from now** ([`Self::facts_and_material`], [`Self::material`]): what the session says of it, and what its page view
 ///   holds, taken against the pages the session says the tab has now ([`pages_now`]), so that no picture in it is of a page deleted, moved or turned since it
 ///   was drawn. The one place that rule is carried out, for a tab going dormant, one leaving the warm ones and one written in place;
@@ -561,8 +562,8 @@ pub struct OnHand<'a> {
     engine: &'a Engine,
 }
 
-/// Built for each of the sleeper's calls that reads the session or the page views, so it holds its three borrows and nothing else. Failure caught: a field
-/// added, of the app's or its own.
+/// Built for the sleeper's calls that read the session or the page views, so it holds its three borrows and nothing else. Failure caught: a field added,
+/// of the app's or its own.
 const _: () = assert!(std::mem::size_of::<OnHand<'static>>() == 3 * std::mem::size_of::<usize>());
 
 impl<'a> OnHand<'a> {
@@ -631,7 +632,7 @@ impl Sleeper {
         let Some(Out::GoDormant { tabs, in_place }) = self.step(Event::GoDormant { why, tabs, frozen }) else {
             return 0;
         };
-        at.saver.write_journals_now(at.on_disk.keeper(), on_hand.session, self);
+        at.saver.write_journals_now(at.on_disk.keeper(), self);
         let mut gone = 0;
         for &id in &tabs {
             // Being asked is an agent's or `recto session sleep`'s, which looks at the file straight after, and waits behind the one being written at most. The rest are the session's own, which never waits on a disk: queued, as those leaving the warm ones are (review 1 of `build/one-sleep-writer`). Being asked counts against the hour too: only a flush doesn't wait (review).
@@ -676,7 +677,8 @@ impl Sleeper {
 /// **What's kept on disk, as the app holds it:** the record's keeper ([`Keeper`]: the saved state, its lock and who may write it) and the sleeper (the sleep
 /// files and the tabs going dormant), each behind an `Arc` the threads that write them hold in the app's place (the launch's read and a late try hold the
 /// keeper; the sleep files' writer holds both). A plain holder (R3.7 S5): private fields, an accessor for each, and the one constructor of the
-/// writer's start, which needs both; no logic, lock or state of its own.
+/// writer's start, which needs both; no logic, lock or state of its own. **Why the two are paired:** the writer's start needs both, so its one constructor
+/// lives where both are, and one field for both keeps Inner within its budget of fields.
 pub struct OnDisk {
     keeper: Arc<Keeper>,
     sleeper: Arc<Sleeper>,
@@ -704,6 +706,41 @@ impl OnDisk {
         StartsWriter {
             sleeper: &self.sleeper,
             keeper: &self.keeper,
+        }
+    }
+}
+
+/// **The keeper and the sleeper, held weakly,** for the headless kit's end to wait for the threads that hold them in the app's place ([`OnDisk::downgrade`]).
+#[cfg(any(test, feature = "testkit"))]
+pub(crate) struct LetGo {
+    keeper: std::sync::Weak<Keeper>,
+    sleeper: std::sync::Weak<Sleeper>,
+}
+
+#[cfg(any(test, feature = "testkit"))]
+impl OnDisk {
+    /// Both, held weakly.
+    pub(crate) fn downgrade(&self) -> LetGo {
+        LetGo {
+            keeper: Arc::downgrade(&self.keeper),
+            sleeper: Arc::downgrade(&self.sleeper),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "testkit"))]
+impl LetGo {
+    /// Waits, up to `limit`, until nothing holds either: every thread that held them in the app's place has ended. Fails naming what's still held.
+    pub(crate) fn wait_until_let_go(&self, limit: Duration) {
+        let began = Instant::now();
+        while self.keeper.strong_count() + self.sleeper.strong_count() > 0 {
+            assert!(
+                began.elapsed() < limit,
+                "{limit:?} after the app ended, the record's keeper is still held by {} and the sleeper by {}: a thread of the record's that didn't end with it",
+                self.keeper.strong_count(),
+                self.sleeper.strong_count()
+            );
+            std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
         }
     }
 }
