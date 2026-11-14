@@ -577,13 +577,11 @@ mod tests {
         );
     }
 
-    /// **Failure (second review of R4.3, S1): a file's highlight taken out and saved is still drawn by another reader**, because the file reaches it
-    /// besides the place it was taken from: listed twice on its page and once on another, named by a reply's `/IRT` and the structure tree's `/OBJR`.
-    /// PDFium draws both pages before (yellow on each) and after the save (none on either).
-    #[test]
-    fn a_file_highlight_reached_many_ways_is_drawn_nowhere_once_saved_out() {
+    /// Two pages, and a highlight (object 6, `/Rect [50 700 150 712]`, yellow) reached every way a file can besides its place on page 1's list: listed
+    /// there twice (places 1 and 3), listed on page 2, named by a reply's `/IRT` and the structure tree's `/OBJR`, with a popup no list has.
+    fn reached_many_ways() -> Vec<u8> {
         let highlight = "<< /Type /Annot /Subtype /Highlight /Rect [50 700 150 712] /QuadPoints [50 712 150 712 50 700 150 700] /AP << /N 7 0 R >> /Popup 8 0 R /StructParent 1 >>";
-        let bytes = recto_testpdf::build(&[
+        recto_testpdf::build(&[
             recto_testpdf::Object::Dict("<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 11 0 R >>".into()),
             recto_testpdf::Object::Dict("<< /Type /Pages /Kids [3 0 R 10 0 R] /Count 2 >>".into()),
             recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [5 0 R 6 0 R 9 0 R 6 0 R] >>".into()),
@@ -602,7 +600,15 @@ mod tests {
             recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [6 0 R] >>".into()),
             recto_testpdf::Object::Dict("<< /Type /StructTreeRoot /K 12 0 R >>".into()),
             recto_testpdf::Object::Dict("<< /Type /StructElem /S /Annot /P 11 0 R /Pg 3 0 R /K << /Type /OBJR /Obj 6 0 R >> >>".into()),
-        ]);
+        ])
+    }
+
+    /// **Failure (second review of R4.3, S1): a file's highlight taken out and saved is still drawn by another reader**, because the file reaches it
+    /// besides the place it was taken from: listed twice on its page and once on another, named by a reply's `/IRT` and the structure tree's `/OBJR`.
+    /// PDFium draws both pages before (yellow on each) and after the save (none on either).
+    #[test]
+    fn a_file_highlight_reached_many_ways_is_drawn_nowhere_once_saved_out() {
+        let bytes = reached_many_ways();
         let file = TempPdf::new("reached.pdf", &bytes);
         // The highlight's own rectangle, from the top left: the reply's note draws a yellow icon of its own elsewhere.
         let both = |path: &std::path::Path| {
@@ -717,7 +723,12 @@ mod tests {
         ),
         ("recto-agent/src/loader.rs", 1, 0, "a file's facts when it's opened"),
         ("recto-agent/src/print.rs", 1, 1, "each page printed"),
-        ("recto-agent/src/render.rs", 3, 1, "`recto render`; the others are `open_for_text` itself, named and opening"),
+        (
+            "recto-agent/src/render.rs",
+            3,
+            1,
+            "`recto render`; the others are `open_for_text` itself, named and opening",
+        ),
         ("recto-agent/src/render/image.rs", 1, 0, "the embedded images a page has"),
         ("recto-agent/src/render/snapshot.rs", 1, 0, "whether the file allows copying"),
         ("recto-agent/src/render/svg.rs", 1, 1, "`recto export svg`"),
@@ -777,5 +788,28 @@ mod tests {
             found, listed,
             "a renderer opened or given the tab's set where RENDERERS doesn't say: one that draws a tab's pages hands it `hidden_in`'s set"
         );
+    }
+
+    /// **Failure (second review of R4.3, SF2): an annotation the page lists twice stays hidden after its removal is undone**: hiding both places
+    /// records the flags at each, the second already with the hidden bit the first set (they're one annotation), and putting them back in order
+    /// leaves that bit. Hidden, then the set taken back: the highlight is drawn as before.
+    #[test]
+    fn an_annotation_listed_twice_comes_back_when_its_removal_is_undone() {
+        use recto_proto::hidden::HiddenAnnots;
+        use std::sync::Arc;
+        let file = TempPdf::new("twice.pdf", &reached_many_ways());
+        let mut doc = crate::render::open_for_text(&file.0).expect("a worker");
+        let drawn = |doc: &mut recto_render_service::DocRenderer| yellow_within(doc, 0, [50.0, 80.0, 150.0, 92.0]);
+        let before = drawn(&mut doc);
+        assert!(before > 500, "drawn: {before}");
+        let rect = [50.0, 700.0, 150.0, 712.0];
+        let set = HiddenAnnots {
+            generation: 1,
+            pages: vec![(0, vec![(1, rect), (3, rect)])],
+        };
+        doc.hidden.draw_for(1, Some(Arc::new(set)));
+        assert_eq!(drawn(&mut doc), 0, "hidden at both its places");
+        doc.hidden.draw_for(1, None);
+        assert_eq!(drawn(&mut doc), before, "undone, it's drawn again");
     }
 }

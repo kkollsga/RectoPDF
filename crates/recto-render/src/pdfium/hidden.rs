@@ -35,7 +35,9 @@ impl PdfiumBackend {
         self.close_page();
         let changed = std::mem::take(&mut self.hidden.changed);
         let mut by_page: HashMap<u32, Vec<(u32, c_int)>> = HashMap::new();
-        for (page, index, flags) in changed {
+        // Last first (second review of R4.3, SF2): one annotation a page lists twice is hidden at each place, and what was recorded at the second
+        // already had the hidden bit the first set, so only the first record's flags are the ones it had.
+        for (page, index, flags) in changed.into_iter().rev() {
             by_page.entry(page).or_default().push((index, flags));
         }
         for (page, back) in by_page {
