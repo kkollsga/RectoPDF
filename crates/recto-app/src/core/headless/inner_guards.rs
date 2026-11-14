@@ -253,6 +253,13 @@ Tools::pub(crate) fn find_field(&self) -> &Mutex<crate::find::Field>
 Tools::pub(crate) fn palette(&self) -> &crate::palette::Palette
 Tools::pub(crate) fn save_ui(&self) -> &saving::SaveUi
 Window (pub struct)
+Window.pub(super) action_notice: Mutex<Option<String>>
+Window.pub(super) app: Mutex<AppState>
+Window.pub(super) contents_follow: Mutex<ContentsFollow>
+Window.pub(super) dark: AtomicBool
+Window.pub(super) notice_tab: AtomicU32
+Window.pub(super) open_failure: Mutex<Option<String>>
+Window.pub(super) panel_open: AtomicBool
 Window::pub fn app_record(&self, notice: impl FnOnce() -> Option<String>) -> AppRecord
 Window::pub fn appearance_choice(&self) -> &'static str
 Window::pub fn changed(&self, frame: Option<Vec<f64>>, screen: Option<ScreenInfo>, full_screen: bool, saver: &Saver)
@@ -285,4 +292,8 @@ Window::pub fn set_sidebar_width(&self, width: f64, core: &CoreQueue)
 Window::pub fn settings_window(&self) -> Option<SettingsWindow>
 Window::pub fn settings_window_changed(&self, place: Option<SettingsWindow>, saver: &Saver)
 Window::pub fn should_open(&self, reopened: bool) -> bool
+Window::pub(super) fn closed(&self)
+Window::pub(super) fn opened(&self)
+Window::pub(super) fn replaced(&self, held: Vec<(usize, recto_index::select::Range)>)
+Window::pub(super) fn take_selections_held(&self) -> Vec<(usize, recto_index::select::Range)>
 ";
