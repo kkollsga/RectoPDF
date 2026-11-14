@@ -439,19 +439,37 @@ pub fn sample_lightness(pixels: &[u8], stride: usize, width: u32, height: u32, h
         let row = &row[..row.len().min(stride)];
         let offset = scatter(y);
         grid += width.saturating_sub(offset).div_ceil(step);
-        let ring_row = y < ring_down || y >= height.saturating_sub(ring_down);
-        gaps_in_row(holes, y, 0, width, |from, to| {
+        // The points of the row in `[from, to)`, and how many are dark.
+        let walk = |from: usize, to: usize| {
+            let (mut seen, mut dark) = (0usize, 0usize);
             let mut x = from + (offset + step - from % step) % step;
             while x < to {
-                let Some(&[b, g, r]) = row.get(x * 4..x * 4 + 3) else { return };
-                let is_dark = luma(r, g, b) < DARK_MOST_LUMA;
-                points += 1;
-                dark += usize::from(is_dark);
-                if ring_row || x < ring_across || x >= width.saturating_sub(ring_across) {
-                    ring_points += 1;
-                    ring_dark += usize::from(is_dark);
-                }
+                let Some(&[b, g, r]) = row.get(x * 4..x * 4 + 3) else { break };
+                seen += 1;
+                dark += usize::from(luma(r, g, b) < DARK_MOST_LUMA);
                 x += step;
+            }
+            (seen, dark)
+        };
+        // A row in the ring's top or foot is all ring; any other has the ring at its two ends, so each stretch is walked in up to three parts, and no point asks where it is.
+        let ring_row = y < ring_down || y >= height.saturating_sub(ring_down);
+        let right = width.saturating_sub(ring_across).max(ring_across);
+        gaps_in_row(holes, y, 0, width, |from, to| {
+            let parts = if ring_row {
+                [(from, to, true), (0, 0, false), (0, 0, false)]
+            } else {
+                [(from, to.min(ring_across), true), (from.max(ring_across), to.min(right), false), (from.max(right), to, true)]
+            };
+            for (from, to, ring) in parts {
+                if from < to {
+                    let (seen, found) = walk(from, to);
+                    points += seen;
+                    dark += found;
+                    if ring {
+                        ring_points += seen;
+                        ring_dark += found;
+                    }
+                }
             }
         });
     }
@@ -1672,6 +1690,9 @@ mod tests {
         assert!(past.points <= 16 * 16, "a size past the bytes: {past:?}");
         let narrow = sample_lightness(&pixels, 8, 16, 16, &[]);
         assert!(narrow.points <= pixels.len() / 4, "a stride narrower than the rows: {narrow:?}");
+        // A picture a pixel wide is all ring, and each point is looked at once, not once for each end of the row.
+        let sliver = sample_lightness(&pixels, 4, 1, 16, &[]);
+        assert!(sliver.points <= 16 && sliver.ring_points == sliver.points, "a picture a pixel wide: {sliver:?}");
         let holes = [[12, 0, 3, 16], [0, 20, 16, 2], [usize::MAX - 1, 0, usize::MAX, 16]];
         let found = sample_lightness(&pixels, 64, 16, 16, &holes);
         assert!(
