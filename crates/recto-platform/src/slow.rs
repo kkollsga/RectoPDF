@@ -66,10 +66,13 @@ pub enum Seam {
     /// A late try at the record's lock, made on its own thread and not yet told to the session thread: the moment between the lock taken and the app deciding
     /// whether to keep it, which a test holds to put a quit or the person's change between them, and a sleeping disk makes late.
     RecordLock,
+    /// The updater told of the first frame, on the thread that tells it, before it looks at whether this version has come up: where a test ends the app under
+    /// it, and a starved machine starts that thread late.
+    FirstFrame,
 }
 
 impl Seam {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::State,
         Self::Remake,
         Self::Worker,
@@ -83,6 +86,7 @@ impl Seam {
         Self::Launch,
         Self::RecordWrite,
         Self::RecordLock,
+        Self::FirstFrame,
     ];
 
     /// Its name in the switch and the report.
@@ -101,6 +105,7 @@ impl Seam {
             Self::Launch => "launch",
             Self::RecordWrite => "record_write",
             Self::RecordLock => "record_lock",
+            Self::FirstFrame => "first_frame",
         }
     }
 
@@ -112,7 +117,7 @@ impl Seam {
         self as usize
     }
 
-    /// **The `ci` profile:** about how late each comes on a machine like CI's under load, or past it, as each was seen on 2026-11-11 or is the deadline it has to beat. The state past the window's second of patience (1.5 s, as the late-state stage had it: 1.2 s here and the launch's 300 ms before it on the same thread), the window remade 300 ms after it, the session thread 300 ms late after it, the launch looked at 300 ms late, a worker's answer at 60 ms where a tile here takes a few, the headings and the index past what a test's first look would give them, the socket's first answer past a client's first try, and a sleep file read and written as by a disk that's busy.
+    /// **The `ci` profile:** about how late each comes on a machine like CI's under load, or past it, as each was seen on 2026-11-11 or is the deadline it has to beat. The state past the window's second of patience (1.5 s, as the late-state stage had it: 1.2 s here and the launch's 300 ms before it on the same thread), the window remade 300 ms after it, the session thread 300 ms late after it, the launch looked at 300 ms late, a worker's answer at 60 ms where a tile here takes a few, the headings and the index past what a test's first look would give them, the socket's first answer past a client's first try, a sleep file read and written as by a disk that's busy, and the updater told of the first frame a little late.
     pub const fn ci_ms(self) -> u64 {
         match self {
             Self::State => 1200,
@@ -128,6 +133,8 @@ impl Seam {
             Self::Launch => 300,
             Self::RecordWrite => 50,
             Self::RecordLock => 50,
+            // The thread that tells the updater of the first frame started late: the installer's patience for it is minutes, so a little is enough.
+            Self::FirstFrame => 100,
         }
     }
 

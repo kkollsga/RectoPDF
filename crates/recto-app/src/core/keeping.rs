@@ -146,13 +146,13 @@ fn read_late(inner: &Arc<Inner>, appearance_then: record::Appearance) {
     assert!(!PANIC_IN_THE_LATE_READ.load(Ordering::SeqCst), "a test's panic in the late read");
     // Where a test holds the read inside it, as a slow disk does.
     recto_platform::slow::pause(recto_platform::slow::Seam::State);
-    let misreads = updates::misreads_the_record(lock(&inner.life.update_facts).facts.as_ref());
+    let misreads = inner.life.update_facts.misreads();
     let loaded = if misreads { Loaded::Nothing } else { inner.saver.store.load() };
     let _ = step(inner, KeepingEvent::Claimed);
     if !inner.life.keeping().claims() {
         return;
     }
-    if updates::tell_launch(&inner.life, &inner.updates) == recto_update::updater::AtLaunch::Exit {
+    if inner.life.update_facts.tell(&inner.updates) == recto_update::updater::AtLaunch::Exit {
         std::process::exit(0);
     }
     let loaded = updates::fall_back_if_unreadable(&inner.updates, &inner.saver.store, loaded);
@@ -319,7 +319,7 @@ fn carried(inner: &Arc<Inner>, out: Option<crate::lifecycle::Out>, mut carrier: 
     };
     crate::lifecycle::keeping::carry(out, &mut carrier);
     debug_assert!(
-        !(inner.life.keeping().settled() && lock(&inner.life.update_facts).untold()),
+        !(inner.life.keeping().settled() && inner.life.update_facts.untold()),
         "keeping settled ({:?}) with the launch still held back from the updater",
         inner.life.keeping()
     );
@@ -377,46 +377,12 @@ impl crate::lifecycle::keeping::Carry for Carrier<'_> {
     }
 
     fn tell_the_updater(&mut self) {
-        tell_the_updater(self.inner);
+        updates::tell_held(&self.inner.life, &self.inner.updates);
     }
 
     fn remake(&mut self) {
         self.host = Some(crate::lifecycle::Out::RestoreReady { with_state: true, late: true });
     }
-}
-
-/// **The updater told of a launch that was held back,** now that keeping has settled. What's held is taken here, so it can't be left held once settled; it's
-/// told on a thread of its own, as that touches files: of the launch, if it hadn't been (a second copy, or a copy that came to keep the record by another route
-/// than a late try, whose read tells it), as what this copy claims then ([`crate::lifecycle::keeping::Keeping::claims`], whatever lock a try or a read still
-/// holds), and then of a first frame shown meanwhile, with the tabs that were read. Nothing at all for a launch that wasn't held back.
-fn tell_the_updater(inner: &Arc<Inner>) {
-    let (facts, held) = {
-        let mut launch = lock(&inner.life.update_facts);
-        (launch.facts.take(), launch.held)
-    };
-    if facts.is_none() && !held {
-        return;
-    }
-    let facts = Arc::new(Mutex::new(facts));
-    let (telling, theirs) = (Arc::clone(inner), Arc::clone(&facts));
-    let told = std::thread::Builder::new()
-        .name("recto-update-frame".into())
-        .stack_size(512 * 1024)
-        .spawn(move || tell(&telling, lock(&theirs).take()));
-    // With no thread to be had, what's held isn't left held for the rest of the run: told here, as the one thing that can still tell it.
-    if told.is_err() {
-        tell(inner, lock(&facts).take());
-    }
-}
-
-/// Told, on the thread that tells it.
-fn tell(inner: &Inner, facts: Option<recto_update::updater::Facts>) {
-    if let Some(facts) = facts
-        && inner.updates.launched(facts) == recto_update::updater::AtLaunch::Exit
-    {
-        std::process::exit(0);
-    }
-    updates::first_frame_after_launch(&inner.life, &inner.updates);
 }
 
 /// **The window as it is, kept until it's made again** from a late keep's restore (`apply_restored`): its frame, focus, sidebar width and Settings, which the

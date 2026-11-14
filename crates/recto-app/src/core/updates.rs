@@ -122,6 +122,15 @@ impl Host for Hooks {
         self.inner.get().is_some_and(|inner| inner.strong_count() == 0)
     }
 
+    /// The app held while the updater writes for a launch or a first frame; nothing once it's [`Self::gone`]. Not attached yet, the app is being made, and
+    /// nothing has ended.
+    fn here(&self) -> Option<Box<dyn std::any::Any>> {
+        match self.inner.get() {
+            None => Some(Box::new(())),
+            Some(inner) => inner.upgrade().map(|inner| Box::new(inner) as Box<dyn std::any::Any>),
+        }
+    }
+
     fn cancelled(&self) {
         if let Some(inner) = self.inner() {
             inner.hand_off_cancelled();
@@ -155,7 +164,7 @@ impl Host for Hooks {
         TestLaunch { args, env, direct: false }
     }
 
-    /// Whether this copy keeps the record as the updater's told of the launch ([`tell_launch`]: after the launch's one wait for the lock, or held back until
+    /// Whether this copy keeps the record as the updater's told of the launch ([`LaunchFacts::tell`]: after the launch's one wait for the lock, or held back until
     /// whether it's kept has settled): it holds the lock and claims the record ([`crate::lifecycle::keeping::Keeping::claims`]), so a lock a try or a late read
     /// still holds once keeping's settled not to (the third read's 4a and 4c) isn't taken as keeping it. Never asking for the lock here, so a launch told it's a
     /// second copy can't take it after.
@@ -195,80 +204,175 @@ impl Host for Hooks {
     }
 }
 
-/// **What the host knows of this copy, for the updater, until the updater's told of the launch** ([`tell_launch`]): told at once when the record's lock came at
+/// **What the host knows of this copy, for the updater, until the updater's told of the launch** ([`Self::tell`]): told at once when the record's lock came at
 /// the launch, as always; held back when it didn't, until whether this copy keeps the record has settled ([`crate::lifecycle::keeping`]), with a first frame shown
 /// meanwhile, so the updater hears of the launch once, as it turned out, and a copy that keeps the record late says it came up with the tabs it read then.
+///
+/// **Its rules are its own:** the facts are told once (taken as they're told); what's held can't be left held once keeping has settled ([`Self::untold`] says
+/// whether it is); and a first frame shown while held is kept until the launch has been told and the tabs read. Its one lock is held for a copy or a swap of a few
+/// fields, never across telling the updater, which reads and writes files.
+pub struct LaunchFacts(Mutex<Launch>);
+
 #[derive(Default)]
-pub struct LaunchFacts {
-    pub facts: Option<Facts>,
+struct Launch {
+    facts: Option<Facts>,
+    /// The facts have been told (or taken to be told): what's noted after that is a launch's, told already, and noted no more.
+    told: bool,
     /// Held back: the record's lock didn't come at the launch. Until the updater's been told and has heard of the first frame.
-    pub held: bool,
+    held: bool,
     /// The first frame, shown while they were held, by the updater's wall clock. Kept here and not in the updater's own early frame
     /// ([`recto_update::updater::Updater::first_frame`] keeps one that comes before it's told of the launch, and tells it as it's told): for a late keep the updater's
     /// told of the launch before the saved session is read, so its own would be told then, with no tabs read yet, and the installer's look at whether the new
-    /// version misread the record couldn't be made. This one's told after the read is in ([`first_frame_after_launch`]), with the tabs it came up with.
-    pub first_frame_at: Option<u64>,
+    /// version misread the record couldn't be made. This one's told after the read is in ([`LaunchFacts::first_frame_after_launch`]), with the tabs it came up with.
+    first_frame_at: Option<u64>,
+}
+
+impl Launch {
+    /// The facts taken to be told, and told from now on, whoever tells them.
+    fn take_to_tell(&mut self) -> Option<Facts> {
+        let facts = self.facts.take();
+        self.told |= facts.is_some();
+        facts
+    }
 }
 
 impl LaunchFacts {
+    /// At launch: nothing known, nothing held.
+    pub(super) fn new() -> Self {
+        Self(Mutex::new(Launch::default()))
+    }
+
+    /// What this copy of the app is, from the host, before the state's read. Once told, a launch's facts stay told: noted again, nothing.
+    pub fn note(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String) {
+        let mut launch = lock(&self.0);
+        if launch.told {
+            return;
+        }
+        // Resolved where the rest of what's asked of the disk is, on the thread that reads the state.
+        launch.facts = Some(Facts {
+            version: recto_update::version::running(&version, dev_version.as_deref()),
+            app: PathBuf::from(bundle_path),
+            system: system_version,
+        });
+    }
+
+    /// Whether this launch reads nothing of the record: a test's broken release that misreads it ([`misreads_the_record`]).
+    pub(super) fn misreads(&self) -> bool {
+        misreads_the_record(lock(&self.0).facts.as_ref())
+    }
+
+    /// Held back for the record's lock: nothing of an update begins meanwhile.
+    pub(super) fn held(&self) -> bool {
+        lock(&self.0).held
+    }
+
     /// **Held back and not yet told:** what can't be once keeping has settled ([`crate::lifecycle::keeping::Keeping::settled`]), as settling is where they're
     /// taken to be told.
     #[must_use]
-    pub fn untold(&self) -> bool {
-        self.held && self.facts.is_some()
+    pub(super) fn untold(&self) -> bool {
+        let launch = lock(&self.0);
+        launch.held && launch.facts.is_some()
     }
-}
 
-/// **The updater told of the launch, or held back** (at the launch, on the thread that reads the state, before it reads): `keeps` is the answer of the launch's
-/// one wait for the record's lock ([`super::launching::read_state`]), as an app that's just quit can still be letting go of it, and a quick quit and reopen isn't
-/// a second copy. Kept: told now ([`tell_launch`]), so a version that keeps failing goes back here, and not by reading on. Not kept: what's known is held back and
-/// nothing about an update can begin (the updater has no version to go by: a check or an install is answered that it's still starting, and its timer isn't set),
-/// until keeping has settled, where it's told ([`super::keeping`]): by the late try that got the lock, before the saved session is read, as a launch is; or as a
-/// second copy once it's said the window won't be remembered. A quit or a hand-off before then tells it nothing, and nothing of the updater's is written.
-pub fn hold_or_tell(inner: &Inner, keeps: bool) -> recto_update::updater::AtLaunch {
-    if !keeps {
-        let mut launch = lock(&inner.life.update_facts);
-        if launch.facts.is_some() {
-            launch.held = true;
+    /// **The updater told of the launch, or held back** (at the launch, on the thread that reads the state, before it reads): `keeps` is the answer of the
+    /// launch's one wait for the record's lock ([`super::launching::read_state`]), as an app that's just quit can still be letting go of it, and a quick quit and
+    /// reopen isn't a second copy. Kept: told now ([`Self::tell`]), so a version that keeps failing goes back here, and not by reading on. Not kept: what's known
+    /// is held back and nothing about an update can begin (the updater has no version to go by: a check or an install is answered that it's still starting, and
+    /// its timer isn't set), until keeping has settled, where it's told ([`super::keeping`]): by the late try that got the lock, before the saved session is
+    /// read, as a launch is; or as a second copy once it's said the window won't be remembered ([`tell_held`]). A quit or a hand-off before then tells it
+    /// nothing, and nothing of the updater's is written.
+    pub(super) fn hold_or_tell(&self, keeps: bool, updates: &recto_update::updater::Updater) -> recto_update::updater::AtLaunch {
+        if !keeps {
+            let mut launch = lock(&self.0);
+            if launch.facts.is_some() {
+                launch.held = true;
+            }
+            return recto_update::updater::AtLaunch::GoOn;
         }
-        return recto_update::updater::AtLaunch::GoOn;
+        self.tell(updates)
     }
-    tell_launch(&inner.life, &inner.updates)
-}
 
-/// **The updater told of the launch** ([`recto_update::updater::Updater::launched`]) with what the host knows, once: the facts are taken, so a second telling
-/// has nothing to tell. Whether this copy keeps the record is the store's answer as it stands ([`Hooks::keeps_the_record`]). On a thread that can wait.
-pub fn tell_launch(life: &super::Lifecycle, updates: &recto_update::updater::Updater) -> recto_update::updater::AtLaunch {
-    let Some(facts) = lock(&life.update_facts).facts.take() else {
-        return recto_update::updater::AtLaunch::GoOn;
-    };
-    updates.launched(facts)
-}
+    /// **The updater told of the launch** ([`recto_update::updater::Updater::launched`]) with what the host knows, once: the facts are taken, so a second
+    /// telling has nothing to tell. Whether this copy keeps the record is the store's answer as it stands ([`Hooks::keeps_the_record`]). On a thread that can wait.
+    pub(super) fn tell(&self, updates: &recto_update::updater::Updater) -> recto_update::updater::AtLaunch {
+        let Some(facts) = lock(&self.0).take_to_tell() else {
+            return recto_update::updater::AtLaunch::GoOn;
+        };
+        updates.launched(facts)
+    }
 
-/// The updater's been told of a launch that was held back, and the tabs are read: a first frame shown meanwhile is told now. On a thread that can wait.
-pub fn first_frame_after_launch(life: &super::Lifecycle, updates: &recto_update::updater::Updater) {
-    let held = {
-        let mut launch = lock(&life.update_facts);
-        launch.held = false;
-        launch.first_frame_at.take()
-    };
-    if let Some(at) = held {
+    /// The updater's been told of a launch that was held back, and the tabs are read: a first frame shown meanwhile is told now. On a thread that can wait.
+    fn first_frame_after_launch(&self, updates: &recto_update::updater::Updater) {
+        let held = {
+            let mut launch = lock(&self.0);
+            launch.held = false;
+            launch.first_frame_at.take()
+        };
+        if let Some(at) = held {
+            tell_first_frame(updates, at);
+        }
+    }
+
+    /// The first frame's up, or there's no window to show: what "come up" means is the updater's, on the thread this is called on, unless the launch is held
+    /// back, when it's kept for then.
+    pub fn first_frame_shown(&self, updates: &recto_update::updater::Updater) {
+        let at = updates.wall_ms();
+        {
+            let mut launch = lock(&self.0);
+            if launch.held {
+                launch.first_frame_at.get_or_insert(at);
+                return;
+            }
+        }
         tell_first_frame(updates, at);
     }
+
+    /// What's held for the updater, taken in one look: the facts if they're still untold, and nothing at all for a launch that wasn't held back.
+    fn take_held(&self) -> Option<Option<Facts>> {
+        let (facts, held) = {
+            let mut launch = lock(&self.0);
+            (launch.take_to_tell(), launch.held)
+        };
+        if facts.is_none() && !held {
+            return None;
+        }
+        Some(facts)
+    }
 }
 
-/// The first frame's up, or there's no window to show: what "come up" means is the updater's, on the thread this is called on, unless the launch is held back
-/// ([`LaunchFacts`]), when it's kept for then.
-pub fn first_frame_shown(inner: &Inner) {
-    let at = inner.updates.wall_ms();
-    {
-        let mut launch = lock(&inner.life.update_facts);
-        if launch.held {
-            launch.first_frame_at.get_or_insert(at);
-            return;
-        }
+/// **The updater told of a launch that was held back,** now that keeping has settled. What's held is taken here, so it can't be left held once settled; it's
+/// told on a thread of its own, as that touches files: of the launch, if it hadn't been (a second copy, or a copy that came to keep the record by another route
+/// than a late try, whose read tells it), as what this copy claims then ([`crate::lifecycle::keeping::Keeping::claims`], whatever lock a try or a read still
+/// holds), and then of a first frame shown meanwhile, with the tabs that were read. Nothing at all for a launch that wasn't held back.
+///
+/// The thread holds the life (where what's held is) and the updater, not the app. The updater holds the app through its way back to it ([`Hooks::here`]) for as
+/// long as it writes for the launch and for the first frame, and finds nothing once the app has gone, where it stops and writes nothing more: an app that ends
+/// under the tell can't leave it half-told, nor be read as a version that couldn't draw, which would tell the installer to roll back
+/// (`update_guards::an_app_ended_while_the_updater_is_told_writes_nothing_after_it`).
+pub(super) fn tell_held(life: &Arc<super::Lifecycle>, updates: &Arc<recto_update::updater::Updater>) {
+    let Some(facts) = life.update_facts.take_held() else {
+        return;
+    };
+    let facts = Arc::new(Mutex::new(facts));
+    let (telling, by, theirs) = (Arc::clone(life), Arc::clone(updates), Arc::clone(&facts));
+    let told = std::thread::Builder::new()
+        .name("recto-update-frame".into())
+        .stack_size(512 * 1024)
+        .spawn(move || tell(&telling.update_facts, &by, lock(&theirs).take()));
+    // With no thread to be had, what's held isn't left held for the rest of the run: told here, as the one thing that can still tell it.
+    if told.is_err() {
+        tell(&life.update_facts, updates, lock(&facts).take());
     }
-    tell_first_frame(&inner.updates, at);
+}
+
+/// Told, on the thread that tells it.
+fn tell(launch: &LaunchFacts, updates: &recto_update::updater::Updater, facts: Option<Facts>) {
+    if let Some(facts) = facts
+        && updates.launched(facts) == recto_update::updater::AtLaunch::Exit
+    {
+        std::process::exit(0);
+    }
+    launch.first_frame_after_launch(updates);
 }
 
 /// The updater's told of the first frame. Then a test's broken release ends here, as a new version that crashes once it's up would.
@@ -367,7 +471,7 @@ pub fn out_of_sight_when_restored(saved: bool, decided: Option<bool>) -> bool {
 }
 
 /// What this launch reads: the record, or nothing at all for a test's broken release that misreads it.
-pub fn misreads_the_record(facts: Option<&Facts>) -> bool {
+fn misreads_the_record(facts: Option<&Facts>) -> bool {
     facts.is_some_and(|facts| recto_update::test_breakage(&facts.app, recto_update::TestBreakage::MisreadsTheRecord))
 }
 
@@ -425,225 +529,192 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
     }
 }
 
-impl Inner {
-    /// What `recto update` and `recto settings` come to. The level's been checked.
-    pub fn update_command(&self, command: &Command) -> Result<Value, AgentError> {
-        match command {
-            Command::Updates(recto_agent::commands::Updates::UpdateStatus(_)) => Ok(self.updates.report()),
-            // While the launch is held back for the record's lock (`LaunchFacts`), nothing of an update begins, by anyone's asking.
-            Command::Updates(recto_agent::commands::Updates::UpdateCheck(_) | recto_agent::commands::Updates::UpdateInstall(_))
-                if lock(&self.life.update_facts).held =>
-            {
-                Err(refused_words(&InstallRefused::Starting))
-            }
-            Command::Updates(recto_agent::commands::Updates::UpdateCheck(_)) => {
-                self.updates.check_here(Asked::ByHand);
-                Ok(self.updates.report())
-            }
-            Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: Some(zip), now })) => {
-                self.install_build(zip, *now)
-            }
-            Command::Updates(recto_agent::commands::Updates::UpdateDevBuilds(recto_agent::commands::updates::UpdateDevBuilds { set })) => {
-                if let Some(set) = set {
-                    self.set_dev_builds(set.is_on());
-                }
-                Ok(self.dev_builds_answer())
-            }
-            // The five idle minutes are the owner's rule: the plain command only says what a waiting build waits for. `--now`, the menu and Settings' button are the one call that goes.
-            Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: None, now: false }))
-                if self.updates.waiting_build_words().is_some() =>
-            {
-                let (version, words) = self.updates.waiting_build_words().unwrap_or_default();
-                Ok(json!({ "started": false, "version": version, "words": words }))
-            }
-            Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: None, .. })) => {
-                match self.updates.update_now() {
-                    Ok(version) => Ok(
-                        json!({ "started": true, "version": version, "words": format!("Updating to {version}. RectoPDF downloads and checks it first, then quits and reopens as it was. `recto update status` says how it's going.") }),
-                    ),
-                    Err(InstallRefused::NotInThisBuild) => {
-                        Err(
-                            AgentError::new(Code::DEVELOPMENT_BUILD, "A development build doesn't replace itself.", exit::FAILED)
-                                .then("`recto update check` still says whether there's a new version."),
-                        )
-                    }
-                    Err(InstallRefused::NothingOnOffer) => {
-                        Err(AgentError::new(Code::NOTHING_ON_OFFER, "There's no new version on offer.", exit::FAILED)
-                            .then("`recto update check` looks for one."))
-                    }
-                    Err(InstallRefused::Underway) => Err(
-                        AgentError::new(Code::UPDATE_UNDER_WAY, "An update or a check is already under way.", exit::BUSY)
-                            .then("`recto update status` says how it's going."),
-                    ),
-                    Err(refused) => Err(refused_words(&refused)),
-                }
-            }
-            Command::Updates(recto_agent::commands::Updates::Settings(recto_agent::commands::updates::Settings { auto_update })) => {
-                if let Some(on) = auto_update {
-                    self.set_auto_update(on.is_on());
-                }
-                Ok(self.settings_answer())
-            }
-            _ => Err(recto_agent::update_needs_app()),
+/// On the way out, at a quit or as a quiet run ends with what started it: a quiet run's copy is a test's or a script's, and the system registered it when it was started, so it's forgotten again and the one install stays the only RectoPDF in Open With. Never the one install itself. Returns at once: the tool outlives the process. Which copy is this process's own executable's bundle, known from the start: what the host tells the updater comes later, and a run can end first (CI, 2026-11-12). Whether this is a quiet run is the app's QA, there only in one (`qa`), so no caller can say a person's app is one.
+pub(crate) fn forget_a_quiet_copy(qa: Option<&super::qa::QaBridge>, updates: &recto_update::updater::Updater) {
+    let own = std::env::current_exe()
+        .ok()
+        .and_then(|program| program.canonicalize().ok())
+        .and_then(|program| recto_update::rules::bundle_of(&program));
+    if let Some(app) = own.or_else(|| updates.app())
+        && recto_update::rules::forgets_itself(qa.is_some(), &app)
+    {
+        recto_platform::registry::forget_soon(&app);
+    }
+}
+
+/// **A switch or the button in Settings, as the person chooses it** (R2.3, C8): *Update automatically* is `settings --auto-update on|off`, *Allow
+/// development builds* `update dev-builds --set on|off`, and *Update Now* `update install --now`, the commands an agent sends, run for the person by the
+/// one executor, off the UI thread ([`super::controls`]' `act` sends it). What any of them comes to is in the status, as before. Nothing for an id that isn't one.
+pub fn setting_command(id: &str, on: bool) -> Option<Command> {
+    use recto_agent::commands::updates::{Settings, UpdateDevBuilds, UpdateInstall};
+    let word = || Some(recto_agent::commands::words::OnOff::from_bool(on));
+    let command = match id {
+        AUTO_UPDATE_ROW => Command::from(Settings { auto_update: word() }),
+        DEV_BUILDS_ROW => Command::from(UpdateDevBuilds { set: word() }),
+        UPDATE_NOW_ROW => Command::from(UpdateInstall { zip: None, now: true }),
+        _ => return None,
+    };
+    Some(command)
+}
+
+/// The Settings window, as it stands: Rust's rows, words and rules ([`recto_update::updater::Updater`]'s).
+pub fn settings_model(updates: &recto_update::updater::Updater) -> SettingsModel {
+    let development = updates.source().mode == Mode::Development;
+    let hint = updates.auto_update_hint(crate::privacy::CHECK_EITHER_WAY);
+    let mut rows = vec![
+            SettingRow {
+                id: AUTO_UPDATE_ROW.to_owned(),
+                title: "Update automatically".to_owned(),
+                hint,
+                on: updates.switch_on(),
+                enabled: !development,
+            },
+            SettingRow {
+                id: DEV_BUILDS_ROW.to_owned(),
+                title: "Allow development builds".to_owned(),
+                hint: "Lets a development build replace RectoPDF, once you haven't used it for 5 minutes. Off, only releases are installed, and a development build goes back to the latest release.".to_owned(),
+                on: updates.dev_builds_on(),
+                enabled: !development,
+            },
+    ];
+    // Rust's rule: only on a development build, or while it's on.
+    rows.retain(|row| row.id != DEV_BUILDS_ROW || updates.shows_dev_builds_switch());
+    SettingsModel {
+        title: "Settings".to_owned(),
+        rows,
+        action: updates.settings_action().map(|action| SettingsAction {
+            id: UPDATE_NOW_ROW.to_owned(),
+            title: action.title,
+            hint: action.hint,
+            button: action.button,
+            enabled: action.enabled,
+        }),
+        status: updates.status_line(),
+        privacy_title: crate::privacy::STATEMENT_TITLE.to_owned(),
+        privacy_url: crate::privacy::statement_url(),
+    }
+}
+
+/// **What an update chosen from the menu came to, as an alert,** taken once: with the window showing, the margin says it, and nothing more is put up.
+pub fn take_alert(updates: &recto_update::updater::Updater, window: &super::Window) -> Option<UpdateAlert> {
+    let words = updates.menu().take_alert()?;
+    alert_for(words, window.showing())
+}
+
+/// Whether Settings has this switch or button, for QA's `settings` verb.
+pub fn has_setting(id: &str) -> bool {
+    matches!(id, AUTO_UPDATE_ROW | DEV_BUILDS_ROW | UPDATE_NOW_ROW)
+}
+
+/// **What `recto update` and `recto settings` come to,** for the person and an agent alike: the executor's one route for them ([`super::host`]). The level's been
+/// checked. What each answers, and in what words, is here; a setting changed by any route is written soon and redraws the window: the updater's own word to
+/// the host ([`Hooks::changed`]), which asks the session thread for its look and tells the host the model changed.
+pub(crate) fn command(updates: &Arc<recto_update::updater::Updater>, launch: &LaunchFacts, command: &Command) -> Result<Value, AgentError> {
+    match command {
+        Command::Updates(recto_agent::commands::Updates::UpdateStatus(_)) => Ok(updates.report()),
+        // While the launch is held back for the record's lock (`LaunchFacts`), nothing of an update begins, by anyone's asking.
+        Command::Updates(recto_agent::commands::Updates::UpdateCheck(_) | recto_agent::commands::Updates::UpdateInstall(_)) if launch.held() => {
+            Err(refused_words(&InstallRefused::Starting))
         }
-    }
-
-    /// `recto update install <zip>`: a development build handed over. Checked here, on the command's own thread, and then it waits for its moment.
-    fn install_build(&self, zip: &Path, now: bool) -> Result<Value, AgentError> {
-        let version = self.updates.install_build(zip, now).map_err(|refused| refused_words(&refused))?;
-        let report = self.updates.report();
-        let waits_ms = report["install_look_in_ms"].as_u64();
-        let team = report["build_team"].as_str().map(str::to_owned);
-        let signed = match &team {
-            Some(team) => format!("It's signed by RectoPDF's developer (team {team})."),
-            None => "It's signed on this Mac, not by RectoPDF's developer, so macOS may ask again for access to folders.".to_owned(),
-        };
-        let words = if now || waits_ms.is_none() {
-            format!("Installing development build {version} now. RectoPDF quits and reopens as it was. {signed} `recto update status` says how it's going.")
-        } else {
-            format!(
-                "Development build {version} is checked, and goes in once RectoPDF hasn't been used for 5 minutes, then reopens as it was. Choose Update to {version}… or add `--now` to go at once. {signed} `recto update status` says how it's going."
-            )
-        };
-        Ok(json!({ "started": true, "version": version, "waits_ms": waits_ms, "team": team, "words": words }))
-    }
-
-    fn set_dev_builds(&self, on: bool) {
-        self.updates.choose_dev_builds(on);
-        self.core.push(CoreCall::Reconcile);
-    }
-
-    fn dev_builds_answer(&self) -> Value {
-        let on = self.updates.dev_builds_on();
-        let back = self.updates.report()["back_to_release"] == true;
-        let words = match (on, back) {
-            (true, _) => "Allow development builds: on. `recto update install <zip>` installs one, once RectoPDF hasn't been used for 5 minutes.".to_owned(),
-            (false, true) => "Allow development builds: off. This is a development build, so the latest release goes in by itself once there is one and RectoPDF hasn't been touched for 30 minutes.".to_owned(),
-            (false, false) => "Allow development builds: off. RectoPDF installs only releases.".to_owned(),
-        };
-        json!({ "dev_builds": on, "back_to_release": back, "words": words })
-    }
-
-    fn settings_answer(&self) -> Value {
-        let on = self.updates.switch_on();
-        let words = if self.updates.source().mode == Mode::Development {
-            format!(
-                "Update automatically: {}. A local build checks only when asked, and doesn't replace itself.",
-                if on { "on" } else { "off" }
-            )
-        } else {
-            format!("Update automatically: {}.", if on { "on" } else { "off" })
-        };
-        json!({ "auto_update": on, "words": words })
-    }
-
-    /// The switch, however it's changed. Written out soon, with the rest of the state.
-    fn set_auto_update(&self, on: bool) {
-        self.updates.choose_switch(on);
-        self.core.push(CoreCall::Reconcile);
-    }
-
-    /// On the way out, at a quit or as a quiet run ends with what started it: a quiet run's copy is a test's or a script's, and the system registered it when it was started, so it's forgotten again and the one install stays the only RectoPDF in Open With. Never the one install itself. Returns at once: the tool outlives the process. Which copy is this process's own executable's bundle, known from the start: what the host tells the updater comes later, and a run can end first (CI, 2026-11-12).
-    pub fn forget_a_quiet_copy(&self) {
-        let own = std::env::current_exe()
-            .ok()
-            .and_then(|program| program.canonicalize().ok())
-            .and_then(|program| recto_update::rules::bundle_of(&program));
-        if let Some(app) = own.or_else(|| self.updates.app())
-            && recto_update::rules::forgets_itself(self.qa.is_some(), &app)
+        Command::Updates(recto_agent::commands::Updates::UpdateCheck(_)) => {
+            updates.check_here(Asked::ByHand);
+            Ok(updates.report())
+        }
+        Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: Some(zip), now })) => {
+            install_build(updates, zip, *now)
+        }
+        Command::Updates(recto_agent::commands::Updates::UpdateDevBuilds(recto_agent::commands::updates::UpdateDevBuilds { set })) => {
+            if let Some(set) = set {
+                updates.choose_dev_builds(set.is_on());
+            }
+            Ok(dev_builds_answer(updates))
+        }
+        // The five idle minutes are the owner's rule: the plain command only says what a waiting build waits for. `--now`, the menu and Settings' button are the one call that goes.
+        Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: None, now: false }))
+            if updates.waiting_build_words().is_some() =>
         {
-            recto_platform::registry::forget_soon(&app);
+            let (version, words) = updates.waiting_build_words().unwrap_or_default();
+            Ok(json!({ "started": false, "version": version, "words": words }))
         }
-    }
-
-    pub fn update_report(&self) -> Value {
-        self.updates.report()
-    }
-
-    /// With the window open, the margin says it, and nothing more is put up.
-    pub fn take_update_alert(&self) -> Option<UpdateAlert> {
-        let words = self.updates.menu().take_alert()?;
-        let app = lock(&self.window.app);
-        let in_dock = app.window.as_ref().is_some_and(|window| window.minimised);
-        alert_for(words, !app.window_closed && !in_dock)
-    }
-
-    pub fn update_timer_fired(&self) {
-        self.updates.timer_fired();
-    }
-
-    pub fn update_test_clock(&self, ahead_ms: i64) -> bool {
-        self.updates.set_test_clock(ahead_ms)
-    }
-
-    pub fn has_setting(&self, id: &str) -> bool {
-        matches!(id, AUTO_UPDATE_ROW | DEV_BUILDS_ROW | UPDATE_NOW_ROW)
-    }
-
-    pub fn settings_model(&self) -> SettingsModel {
-        let development = self.updates.source().mode == Mode::Development;
-        let hint = self.updates.auto_update_hint(crate::privacy::CHECK_EITHER_WAY);
-        let mut rows = vec![
-                SettingRow {
-                    id: AUTO_UPDATE_ROW.to_owned(),
-                    title: "Update automatically".to_owned(),
-                    hint,
-                    on: self.updates.switch_on(),
-                    enabled: !development,
-                },
-                SettingRow {
-                    id: DEV_BUILDS_ROW.to_owned(),
-                    title: "Allow development builds".to_owned(),
-                    hint: "Lets a development build replace RectoPDF, once you haven't used it for 5 minutes. Off, only releases are installed, and a development build goes back to the latest release.".to_owned(),
-                    on: self.updates.dev_builds_on(),
-                    enabled: !development,
-                },
-        ];
-        // Rust's rule: only on a development build, or while it's on.
-        rows.retain(|row| row.id != DEV_BUILDS_ROW || self.updates.shows_dev_builds_switch());
-        SettingsModel {
-            title: "Settings".to_owned(),
-            rows,
-            action: self.updates.settings_action().map(|action| SettingsAction {
-                id: UPDATE_NOW_ROW.to_owned(),
-                title: action.title,
-                hint: action.hint,
-                button: action.button,
-                enabled: action.enabled,
-            }),
-            status: self.updates.status_line(),
-            privacy_title: crate::privacy::STATEMENT_TITLE.to_owned(),
-            privacy_url: crate::privacy::statement_url(),
+        Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: None, .. })) => {
+            match updates.update_now() {
+                Ok(version) => Ok(
+                    json!({ "started": true, "version": version, "words": format!("Updating to {version}. RectoPDF downloads and checks it first, then quits and reopens as it was. `recto update status` says how it's going.") }),
+                ),
+                Err(InstallRefused::NotInThisBuild) => {
+                    Err(
+                        AgentError::new(Code::DEVELOPMENT_BUILD, "A development build doesn't replace itself.", exit::FAILED)
+                            .then("`recto update check` still says whether there's a new version."),
+                    )
+                }
+                Err(InstallRefused::NothingOnOffer) => {
+                    Err(AgentError::new(Code::NOTHING_ON_OFFER, "There's no new version on offer.", exit::FAILED).then("`recto update check` looks for one."))
+                }
+                Err(InstallRefused::Underway) => Err(
+                    AgentError::new(Code::UPDATE_UNDER_WAY, "An update or a check is already under way.", exit::BUSY)
+                        .then("`recto update status` says how it's going."),
+                ),
+                Err(refused) => Err(refused_words(&refused)),
+            }
         }
+        Command::Updates(recto_agent::commands::Updates::Settings(recto_agent::commands::updates::Settings { auto_update })) => {
+            if let Some(on) = auto_update {
+                updates.choose_switch(on.is_on());
+            }
+            Ok(settings_answer(updates))
+        }
+        _ => Err(recto_agent::update_needs_app()),
     }
+}
 
-    /// **A switch or the button in Settings, as the person chooses it** (R2.3, C8): *Update automatically* is `settings --auto-update on|off`, *Allow
-    /// development builds* `update dev-builds --set on|off`, and *Update Now* `update install --now`, the commands an agent sends, run for the person by the
-    /// one executor, off the UI thread. What any of them comes to is in the status, as before.
-    pub fn setting_chosen(self: &Arc<Self>, id: &str, on: bool) {
-        use recto_agent::commands::updates::{Settings, UpdateDevBuilds, UpdateInstall};
-        let word = || Some(recto_agent::commands::words::OnOff::from_bool(on));
-        let command = match id {
-            AUTO_UPDATE_ROW => Command::from(Settings { auto_update: word() }),
-            DEV_BUILDS_ROW => Command::from(UpdateDevBuilds { set: word() }),
-            UPDATE_NOW_ROW => Command::from(UpdateInstall { zip: None, now: true }),
-            _ => return,
-        };
-        super::person::submit(self, command);
-    }
+/// `recto update install <zip>`: a development build handed over. Checked here, on the command's own thread, and then it waits for its moment.
+fn install_build(updates: &Arc<recto_update::updater::Updater>, zip: &Path, now: bool) -> Result<Value, AgentError> {
+    let version = updates.install_build(zip, now).map_err(|refused| refused_words(&refused))?;
+    let report = updates.report();
+    let waits_ms = report["install_look_in_ms"].as_u64();
+    let team = report["build_team"].as_str().map(str::to_owned);
+    let signed = match &team {
+        Some(team) => format!("It's signed by RectoPDF's developer (team {team})."),
+        None => "It's signed on this Mac, not by RectoPDF's developer, so macOS may ask again for access to folders.".to_owned(),
+    };
+    let words = if now || waits_ms.is_none() {
+        format!("Installing development build {version} now. RectoPDF quits and reopens as it was. {signed} `recto update status` says how it's going.")
+    } else {
+        format!(
+            "Development build {version} is checked, and goes in once RectoPDF hasn't been used for 5 minutes, then reopens as it was. Choose Update to {version}… or add `--now` to go at once. {signed} `recto update status` says how it's going."
+        )
+    };
+    Ok(json!({ "started": true, "version": version, "waits_ms": waits_ms, "team": team, "words": words }))
+}
 
+fn dev_builds_answer(updates: &recto_update::updater::Updater) -> Value {
+    let on = updates.dev_builds_on();
+    let back = updates.report()["back_to_release"] == true;
+    let words = match (on, back) {
+        (true, _) => "Allow development builds: on. `recto update install <zip>` installs one, once RectoPDF hasn't been used for 5 minutes.".to_owned(),
+        (false, true) => "Allow development builds: off. This is a development build, so the latest release goes in by itself once there is one and RectoPDF hasn't been touched for 30 minutes.".to_owned(),
+        (false, false) => "Allow development builds: off. RectoPDF installs only releases.".to_owned(),
+    };
+    json!({ "dev_builds": on, "back_to_release": back, "words": words })
+}
+
+fn settings_answer(updates: &recto_update::updater::Updater) -> Value {
+    let on = updates.switch_on();
+    let words = if updates.source().mode == Mode::Development {
+        format!(
+            "Update automatically: {}. A local build checks only when asked, and doesn't replace itself.",
+            if on { "on" } else { "off" }
+        )
+    } else {
+        format!("Update automatically: {}.", if on { "on" } else { "off" })
+    };
+    json!({ "auto_update": on, "words": words })
+}
+
+impl Inner {
     /// The hand-off isn't going ahead.
     pub fn hand_off_cancelled(&self) {
         self.carry_out(self.life.step(crate::lifecycle::Event::HandOffUndone));
-    }
-
-    pub fn note_update_facts(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String) {
-        // Resolved where the rest of what's asked of the disk is, on the thread that reads the state.
-        lock(&self.life.update_facts).facts = Some(Facts {
-            version: recto_update::version::running(&version, dev_version.as_deref()),
-            app: PathBuf::from(bundle_path),
-            system: system_version,
-        });
     }
 }
 
@@ -860,6 +931,106 @@ mod tests {
         let table = text.rfind("xref\n0 5").unwrap();
         assert!(text.contains(&format!("startxref\n{table}\n")));
         assert!(text.contains("1 0 0 rg 0 0 64 64 re f"));
+    }
+
+    /// An updater on the update bed, which has heard of its own app's launch, for a [`LaunchFacts`] of a test's own to tell; and what's noted of a copy.
+    fn on_the_bed() -> (crate::testkit::headless::HeadlessApp, crate::testkit::update_bed::UpdateBed, LaunchFacts) {
+        use crate::testkit::update_bed::{OLD, UpdateBed};
+        let disk = crate::testkit::headless::Disk::new();
+        disk.install_app(OLD);
+        let bed = UpdateBed::new();
+        let app = disk.builder().update(&bed).start();
+        let launch = LaunchFacts::new();
+        launch.note(OLD.to_owned(), None, app.disk().app().display().to_string(), "15.0".to_owned());
+        // The updater's look at a launch counted from here, and never waited at.
+        recto_platform::slow::gate::hold(&[recto_platform::slow::Seam::Launch]);
+        recto_platform::slow::gate::let_through(recto_platform::slow::Seam::Launch, 1_000);
+        (app, bed, launch)
+    }
+
+    fn told() -> u64 {
+        recto_platform::slow::gate::arrived(recto_platform::slow::Seam::Launch)
+    }
+
+    /// Failure (the record's-lock retry's rules, now the part's): a launch that didn't get the lock tells the updater at once, or never, or twice; or a
+    /// launch that did is held back. Not kept: held and untold, nothing told; told once when asked, and a second telling has nothing to tell; then not
+    /// untold, so settling can't leave it held. Kept: told at once, and nothing held.
+    #[test]
+    fn a_launch_held_back_is_told_once_and_only_when_asked() {
+        let (app, _bed, launch) = on_the_bed();
+        let updates = &app.core().updates;
+        assert_eq!(launch.hold_or_tell(false, updates), recto_update::updater::AtLaunch::GoOn);
+        assert!(launch.held() && launch.untold(), "held back, untold");
+        assert_eq!(told(), 0, "nothing told while held");
+        assert_eq!(launch.tell(updates), recto_update::updater::AtLaunch::GoOn);
+        assert_eq!(launch.tell(updates), recto_update::updater::AtLaunch::GoOn);
+        assert_eq!(told(), 1, "told once");
+        assert!(!launch.untold(), "told, so settling leaves nothing held");
+
+        let kept = LaunchFacts::new();
+        kept.note(
+            crate::testkit::update_bed::OLD.to_owned(),
+            None,
+            app.disk().app().display().to_string(),
+            "15.0".to_owned(),
+        );
+        assert_eq!(kept.hold_or_tell(true, updates), recto_update::updater::AtLaunch::GoOn);
+        assert_eq!(told(), 2, "kept: told at once");
+        assert!(!kept.held() && kept.take_held().is_none(), "and nothing held");
+    }
+
+    /// Failure (review of R3.7 S4, 2026-11-14): what the host says of this copy, noted again after the launch was told, arms the facts again, so the next
+    /// telling (a late keep's read, a settling's tell) tells the updater of the launch a second time: the install settled twice, an unstarted launch counted
+    /// twice towards going back. Told once, by either way of telling, a note after that tells nothing.
+    #[test]
+    fn a_note_after_the_launch_is_told_tells_nothing_more() {
+        let (app, _bed, launch) = on_the_bed();
+        let updates = &app.core().updates;
+        let note_again = || {
+            launch.note(OLD_VERSION.to_owned(), None, app.disk().app().display().to_string(), "15.0".to_owned());
+        };
+        launch.tell(updates);
+        assert_eq!(told(), 1);
+        note_again();
+        assert_eq!(launch.tell(updates), recto_update::updater::AtLaunch::GoOn);
+        assert_eq!(told(), 1, "told once: a note after it tells nothing");
+        assert!(!launch.untold());
+
+        let held = LaunchFacts::new();
+        held.note(OLD_VERSION.to_owned(), None, app.disk().app().display().to_string(), "15.0".to_owned());
+        held.hold_or_tell(false, updates);
+        let facts = held.take_held().expect("held back");
+        tell(&held, updates, facts);
+        assert_eq!(told(), 2, "the held launch told, by the settling's tell");
+        held.note(OLD_VERSION.to_owned(), None, app.disk().app().display().to_string(), "15.0".to_owned());
+        assert!(held.take_held().is_none() && held.tell(updates) == recto_update::updater::AtLaunch::GoOn);
+        assert_eq!(told(), 2, "and a note after it tells nothing");
+    }
+
+    const OLD_VERSION: &str = crate::testkit::update_bed::OLD;
+
+    /// Failure (the record's-lock retry's rules, now the part's): a first frame shown while the launch is held back is told before the launch (so a late keep
+    /// says it came up with no tabs read), or lost; or the updater, once told of a held launch, never hears of the first frame. Kept while held, the first
+    /// time only; told, and the launch no longer held, once the held facts are told on the tell's way.
+    #[test]
+    fn a_first_frame_while_held_is_kept_until_the_launch_is_told() {
+        let (app, _bed, launch) = on_the_bed();
+        let updates = &app.core().updates;
+        launch.hold_or_tell(false, updates);
+        launch.first_frame_shown(updates);
+        let first = lock(&launch.0).first_frame_at;
+        assert!(first.is_some(), "kept while held");
+        launch.first_frame_shown(updates);
+        assert_eq!(lock(&launch.0).first_frame_at, first, "the first frame's time, not a later one");
+        let facts = launch.take_held().expect("held back");
+        assert!(facts.is_some(), "with the facts untold");
+        tell(&launch, updates, facts);
+        assert_eq!(told(), 1);
+        assert!(
+            !launch.held() && lock(&launch.0).first_frame_at.is_none(),
+            "no longer held, and the first frame told"
+        );
+        assert!(launch.take_held().is_none(), "nothing left to tell");
     }
 
     /// Failure: a time that's passed arms a timer that fires at once and again and again, or a time far off comes out as anything but itself. At rest it's one timer a day.

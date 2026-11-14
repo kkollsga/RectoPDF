@@ -479,3 +479,29 @@ fn the_records_notice_is_read_with_the_windows_locks_let_go() {
     assert_eq!((read, record.notice.as_deref()), (1, Some("other_instance")));
     assert!(record.window.is_some(), "the window's own part as it is");
 }
+
+/// Failure: a menu's update answer put up as an alert over a window that's showing, or said nowhere with the window closed or in the Dock (the rule
+/// `take_update_alert` read off the window's state in `core/updates.rs` before it moved here, 2026-11-14). Showing: open and not in the Dock; a window that
+/// has no frame yet is open.
+#[test]
+fn showing_is_open_and_not_in_the_dock() {
+    let rig = Rig::new();
+    assert!(rig.window.showing(), "at launch, with no frame yet");
+    lock(&rig.window.app).window = Some(WindowRecord {
+        frame: recto_session::record::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+        },
+        screen: None,
+        full_screen: false,
+        minimised: false,
+    });
+    assert!(rig.window.showing());
+    rig.window.minimised_changed(true, &rig.saver);
+    assert!(!rig.window.showing(), "in the Dock");
+    rig.window.minimised_changed(false, &rig.saver);
+    rig.window.closed();
+    assert!(!rig.window.showing(), "closed");
+}

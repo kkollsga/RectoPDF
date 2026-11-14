@@ -21,6 +21,7 @@ mod flow;
 mod handing;
 mod menu;
 mod now;
+mod remembered;
 mod said;
 pub mod seams;
 mod settle;
@@ -92,6 +93,12 @@ pub trait Host: Send + Sync {
     /// that's looking again ends then, writing nothing. A real app's updater ends with its process, so never there.
     fn gone(&self) -> bool {
         false
+    }
+    /// **The app held for as long as what's returned is kept,** and nothing once it has [`Self::gone`]: what the updater writes for a launch it's told of, and
+    /// for its first frame, is written with the app held, or not at all, so an app that ends while the updater's told can't leave it half-told, and an app
+    /// that's gone is never read as one that couldn't draw. A real app is never gone.
+    fn here(&self) -> Option<Box<dyn std::any::Any>> {
+        Some(Box::new(()))
     }
     /// Starts the installer. A test stands in for this.
     fn start_installer(&self, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32> {
@@ -316,18 +323,6 @@ impl Updater {
         let _ = local::ensure_private_dir(&self.files.work);
     }
 
-    /// Writes what's remembered, whatever it is by the time the last write's done, off the lock the UI thread asks through.
-    fn save(&self) {
-        let _writing = lock(&self.writing);
-        let (saved, second_copy) = {
-            let st = lock(&self.st);
-            (st.saved.clone(), st.second_copy)
-        };
-        if !second_copy {
-            saved.write(&self.files.saved);
-        }
-    }
-
     /// Whether the switch is on, by what was chosen or by what this build starts with.
     #[must_use]
     pub fn switch_on(&self) -> bool {
@@ -345,18 +340,6 @@ impl Updater {
         self.host.changed();
     }
 
-    /// Writes what's remembered on a thread of its own, as this may be the UI thread.
-    fn save_soon(self: &Arc<Self>) {
-        let me = Arc::clone(self);
-        let written = std::thread::Builder::new()
-            .name("recto-update-save".into())
-            .stack_size(128 * 1024)
-            .spawn(move || me.save());
-        if written.is_err() {
-            self.save();
-        }
-    }
-
     fn offered_here(&self, st: &St) -> Option<String> {
         if !self.source.may_replace_itself() || st.second_copy {
             return None;
@@ -372,11 +355,16 @@ impl Updater {
     /// What the host knows of this copy. Given once, before anything else asks. Reads what's remembered, says what became of an install that's just ended, and tidies up. All of it files, so never on the UI thread, and none of it holding what the UI thread asks through.
     pub fn launched(&self, mut facts: Facts) -> AtLaunch {
         recto_platform::slow::pause(recto_platform::slow::Seam::Launch);
+        // An app that's ended is told nothing more, and has nothing written for it: a kept copy's settling included.
+        let Some(_app) = self.host.here() else {
+            return AtLaunch::GoOn;
+        };
         let now = self.now_ms();
         facts.app = facts.app.canonicalize().unwrap_or(facts.app);
-        let mut saved = Saved::read(&self.files.saved);
-        let mut dirty_at_launch = false;
         let current = facts.version.clone();
+        let mut saved = Saved::read(&self.files.saved);
+        // A switch chosen before now is kept, on top of what's read, and saved with it; again as the facts are set, for one chosen while this read on.
+        let mut dirty_at_launch = remembered::chosen_before(&lock(&self.st).saved, &mut saved, &current);
         let app = facts.app.clone();
         // What's in the state folder and beside the app is the first copy's. This one reads and leaves it.
         let second_copy = !self.host.keeps_the_record();
@@ -439,6 +427,7 @@ impl Updater {
         let early = {
             let mut st = lock(&self.st);
             st.launched_ms = now;
+            dirty |= remembered::chosen_before(&st.saved, &mut saved, &current);
             st.saved = saved;
             st.facts = Some(facts);
             st.second_copy = second_copy;
@@ -705,6 +694,12 @@ impl Updater {
 
     /// The first correct frame's on the screen. **What "come up" means, which is what the installer waits for and what can send a new version back:** the state's been read and a first frame shown, and this version has drawn a page through the real renderer: our own tiny PDF, not the user's. Not the user's, as one of theirs being moved, damaged or on a dead volume says nothing of this version. And not the first frame alone, which a timer can force and a preview from a sleep file can fill without the renderer ever running. So a version whose renderer can't load, which would otherwise look fine, shows no pages for everyone, and be the one nobody can get back from, goes back. It's asked only of a version that's new here, so a normal launch costs nothing, and this waits on a worker, so it has a thread of its own.
     pub fn first_frame(&self, shown_at_ms: u64) {
+        recto_platform::slow::pause(recto_platform::slow::Seam::FirstFrame);
+        // **An app that's ended stops this here** and writes nothing: not a launch that failed to draw, which would send the installer back, nor a half of what
+        // a kept copy writes. Held to the end otherwise, so it can't end part way.
+        let Some(_app) = self.host.here() else {
+            return;
+        };
         let (version, arrived, to_prove, second_copy, kept) = {
             let mut st = lock(&self.st);
             if st.first_frame_done {
@@ -1256,6 +1251,7 @@ fn clean_code(code: &str) -> String {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+    mod remembered;
     mod second_copy;
     use super::*;
     use crate::fetch::tests::{Answer, Server};
@@ -1793,32 +1789,6 @@ mod tests {
         assert_eq!(bed.updater.menu_item().title, "Update to 0.2.0…");
         assert!(bed.updater.notice().unwrap().text.starts_with("Couldn't check"), "it says the check failed");
         assert!(lock(&bed.updater.st).saved.failures == 1, "and backs off");
-    }
-
-    /// Failure: the user's choice of off is lost with a record, or turned back on by a launch, so an app they told not to replaces itself anyway. The switch is in this updater's own file.
-    #[test]
-    fn the_switch_is_kept_in_the_updaters_own_file() {
-        let bed = Bed::new("switch-file");
-        assert!(bed.updater.switch_on(), "on, by default, in this build");
-        bed.updater.choose_switch(false);
-        let saved = bed.dir.join("state/updates.json");
-        bed.wait_for("the write", |_| Saved::read(&saved).auto_update == Some(false));
-        let again = Updater::new(&bed.dir.join("state"), bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
-        again.launched(Facts {
-            version: "0.1.0".into(),
-            app: bed.app.clone(),
-            system: "15.0".into(),
-        });
-        assert!(!again.switch_on(), "a launch knows it, whatever's in the record");
-        // And a damaged file errs towards not replacing anything.
-        local::write_private_file(&saved, b"not json").unwrap();
-        let damaged = Updater::new(&bed.dir.join("state"), bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
-        damaged.launched(Facts {
-            version: "0.1.0".into(),
-            app: bed.app.clone(),
-            system: "15.0".into(),
-        });
-        assert!(!damaged.switch_on());
     }
 
     /// Failure: a new version that can't draw counts as having come up, because a first frame showed, so every copy moves to a release that shows no pages. **`first_frame` says what "come up" means.** It proves itself with a drawing, says so to the installer at once if it can't, and counts towards going back if there's no installer to hear. A normal launch asks nothing of the renderer.

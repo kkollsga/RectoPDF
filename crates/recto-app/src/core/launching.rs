@@ -146,7 +146,7 @@ impl Inner {
 
 /// **The state read and handed to the session thread,** on a thread that can wait: at the launch ([`Inner::begin_restore`]), and once a late try has got the
 /// record's lock ([`super::keeping`]), the one way the state is read for a launch. **The lock is asked for once:** one wait of the store's patience, whose
-/// answer the updater is told ([`updates::hold_or_tell`]) and the read goes by, so a lock that comes after the wait can't be got by the read with the updater
+/// answer the updater is told ([`updates::LaunchFacts::hold_or_tell`]) and the read goes by, so a lock that comes after the wait can't be got by the read with the updater
 /// still held back (the review's blocker of 2026-11-13); it's the late try's to take. The updater's told of a copy that keeps the record before anything's read,
 /// so a version that keeps failing goes back here and not by reading on.
 pub(super) fn read_state(inner: &Arc<Inner>) {
@@ -157,9 +157,9 @@ pub(super) fn read_state(inner: &Arc<Inner>) {
 /// The launch's state, read as [`read_state`] says. A late try's read is its own ([`super::keeping`]): it tells the updater after it reads, once it has claimed
 /// the record, so a read that runs past its patience is a second copy's.
 pub(super) fn read(inner: &Arc<Inner>) -> Loaded {
-    let misreads = updates::misreads_the_record(lock(&inner.life.update_facts).facts.as_ref());
+    let misreads = inner.life.update_facts.misreads();
     let keeps = inner.saver.store.wait_for_lock();
-    if updates::hold_or_tell(inner, keeps) == recto_update::updater::AtLaunch::Exit {
+    if inner.life.update_facts.hold_or_tell(keeps, &inner.updates) == recto_update::updater::AtLaunch::Exit {
         std::process::exit(0);
     }
     recto_platform::slow::pause(recto_platform::slow::Seam::State);

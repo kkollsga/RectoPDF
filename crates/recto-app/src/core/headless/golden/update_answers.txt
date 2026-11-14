@@ -1,0 +1,177 @@
+Idle person {"cmd":"update_status"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":null,"kept":null,"last_check_ms":null,"last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":null,"second_copy":false,"status":"idle","version":"0.1.0","words":"<there>"}
+Idle person {"cmd":"update_dev_builds"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+Idle person {"cmd":"settings"} | ok {"auto_update":true,"words":"<there>"}
+Idle person {"cmd":"update_install"} | err nothing_on_offer exit 1 next true
+Idle person {"cmd":"settings","auto_update":"off"} | ok {"auto_update":false,"words":"<there>"}
+Idle person {"cmd":"update_dev_builds","set":"off"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+Idle person {"cmd":"settings","auto_update":"on"} | ok {"auto_update":true,"words":"<there>"}
+Idle person {"cmd":"update_check"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":null,"kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":null,"second_copy":false,"status":"no_releases","version":"0.1.0","words":"<there>"}
+Idle person {"cmd":"update_install","now":true} | err nothing_on_offer exit 1 next true
+Idle full {"cmd":"update_status"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":null,"kept":null,"last_check_ms":null,"last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":null,"second_copy":false,"status":"idle","version":"0.1.0","words":"<there>"}
+Idle full {"cmd":"update_dev_builds"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+Idle full {"cmd":"settings"} | ok {"auto_update":true,"words":"<there>"}
+Idle full {"cmd":"update_install"} | err nothing_on_offer exit 1 next true
+Idle full {"cmd":"settings","auto_update":"off"} | ok {"auto_update":false,"words":"<there>"}
+Idle full {"cmd":"update_dev_builds","set":"off"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+Idle full {"cmd":"settings","auto_update":"on"} | ok {"auto_update":true,"words":"<there>"}
+Idle full {"cmd":"update_check"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":null,"kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":null,"second_copy":false,"status":"no_releases","version":"0.1.0","words":"<there>"}
+Idle full {"cmd":"update_install","now":true} | err nothing_on_offer exit 1 next true
+Idle control {"cmd":"update_status"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":null,"kept":null,"last_check_ms":null,"last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":null,"second_copy":false,"status":"idle","version":"0.1.0","words":"<there>"}
+Idle control {"cmd":"update_dev_builds"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+Idle control {"cmd":"settings"} | ok {"auto_update":true,"words":"<there>"}
+Idle control {"cmd":"update_install"} | err permission_denied exit 5 next true
+Idle control {"cmd":"settings","auto_update":"off"} | err permission_denied exit 5 next true
+Idle control {"cmd":"update_dev_builds","set":"off"} | err permission_denied exit 5 next true
+Idle control {"cmd":"settings","auto_update":"on"} | err permission_denied exit 5 next true
+Idle control {"cmd":"update_check"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":null,"kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":null,"second_copy":false,"status":"no_releases","version":"0.1.0","words":"<there>"}
+Idle control {"cmd":"update_install","now":true} | err permission_denied exit 5 next true
+Offered person setup | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":"0.1.99","second_copy":false,"status":"available","version":"0.1.0","words":"<there>"}
+Offered person {"cmd":"update_status"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":"0.1.99","second_copy":false,"status":"available","version":"0.1.0","words":"<there>"}
+Offered person {"cmd":"update_dev_builds"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+Offered person {"cmd":"settings"} | ok {"auto_update":true,"words":"<there>"}
+Offered person {"cmd":"update_install"} | ok {"started":true,"version":"0.1.99","words":"<there>"}
+Offered person {"cmd":"settings","auto_update":"off"} | ok {"auto_update":false,"words":"<there>"}
+Offered person {"cmd":"update_dev_builds","set":"off"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+Offered person {"cmd":"settings","auto_update":"on"} | ok {"auto_update":true,"words":"<there>"}
+Offered person {"cmd":"update_check"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":false},"next_wake_in_ms":null,"offered":"0.1.99","second_copy":false,"status":"waiting","version":"0.1.0","words":"<there>"}
+Offered person {"cmd":"update_install","now":true} | err update_under_way exit 10 next true
+Offered full setup | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":"0.1.99","second_copy":false,"status":"available","version":"0.1.0","words":"<there>"}
+Offered full {"cmd":"update_status"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":"0.1.99","second_copy":false,"status":"available","version":"0.1.0","words":"<there>"}
+Offered full {"cmd":"update_dev_builds"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+Offered full {"cmd":"settings"} | ok {"auto_update":true,"words":"<there>"}
+Offered full {"cmd":"update_install"} | ok {"started":true,"version":"0.1.99","words":"<there>"}
+Offered full {"cmd":"settings","auto_update":"off"} | ok {"auto_update":false,"words":"<there>"}
+Offered full {"cmd":"update_dev_builds","set":"off"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+Offered full {"cmd":"settings","auto_update":"on"} | ok {"auto_update":true,"words":"<there>"}
+Offered full {"cmd":"update_check"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":false},"next_wake_in_ms":null,"offered":"0.1.99","second_copy":false,"status":"waiting","version":"0.1.0","words":"<there>"}
+Offered full {"cmd":"update_install","now":true} | err update_under_way exit 10 next true
+Offered control setup | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":"0.1.99","second_copy":false,"status":"available","version":"0.1.0","words":"<there>"}
+Offered control {"cmd":"update_status"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":"0.1.99","second_copy":false,"status":"available","version":"0.1.0","words":"<there>"}
+Offered control {"cmd":"update_dev_builds"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+Offered control {"cmd":"settings"} | ok {"auto_update":true,"words":"<there>"}
+Offered control {"cmd":"update_install"} | err permission_denied exit 5 next true
+Offered control {"cmd":"settings","auto_update":"off"} | err permission_denied exit 5 next true
+Offered control {"cmd":"update_dev_builds","set":"off"} | err permission_denied exit 5 next true
+Offered control {"cmd":"settings","auto_update":"on"} | err permission_denied exit 5 next true
+Offered control {"cmd":"update_check"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":"0.1.99","second_copy":false,"status":"available","version":"0.1.0","words":"<there>"}
+Offered control {"cmd":"update_install","now":true} | err permission_denied exit 5 next true
+BuildWaiting person setup | ok {"back_to_release":false,"dev_builds":true,"words":"<there>"}
+BuildWaiting person setup | ok {"started":true,"team":null,"version":"0.1.0.1","waits_ms":"<there>","words":"<there>"}
+BuildWaiting person {"cmd":"update_status"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":"0.1.0.1","dev_builds":true,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":null,"last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":null,"second_copy":false,"status":"build_ready","version":"0.1.0","words":"<there>"}
+BuildWaiting person {"cmd":"update_dev_builds"} | ok {"back_to_release":false,"dev_builds":true,"words":"<there>"}
+BuildWaiting person {"cmd":"settings"} | ok {"auto_update":true,"words":"<there>"}
+BuildWaiting person {"cmd":"update_install"} | ok {"started":false,"version":"0.1.0.1","words":"<there>"}
+BuildWaiting person {"cmd":"settings","auto_update":"off"} | ok {"auto_update":false,"words":"<there>"}
+BuildWaiting person {"cmd":"update_dev_builds","set":"off"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+BuildWaiting person {"cmd":"settings","auto_update":"on"} | ok {"auto_update":true,"words":"<there>"}
+BuildWaiting person {"cmd":"update_check"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":null,"kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":null,"second_copy":false,"status":"no_releases","version":"0.1.0","words":"<there>"}
+BuildWaiting person {"cmd":"update_install","now":true} | err nothing_on_offer exit 1 next true
+BuildWaiting full setup | ok {"back_to_release":false,"dev_builds":true,"words":"<there>"}
+BuildWaiting full setup | ok {"started":true,"team":null,"version":"0.1.0.1","waits_ms":"<there>","words":"<there>"}
+BuildWaiting full {"cmd":"update_status"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":"0.1.0.1","dev_builds":true,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":null,"last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":null,"second_copy":false,"status":"build_ready","version":"0.1.0","words":"<there>"}
+BuildWaiting full {"cmd":"update_dev_builds"} | ok {"back_to_release":false,"dev_builds":true,"words":"<there>"}
+BuildWaiting full {"cmd":"settings"} | ok {"auto_update":true,"words":"<there>"}
+BuildWaiting full {"cmd":"update_install"} | ok {"started":false,"version":"0.1.0.1","words":"<there>"}
+BuildWaiting full {"cmd":"settings","auto_update":"off"} | ok {"auto_update":false,"words":"<there>"}
+BuildWaiting full {"cmd":"update_dev_builds","set":"off"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+BuildWaiting full {"cmd":"settings","auto_update":"on"} | ok {"auto_update":true,"words":"<there>"}
+BuildWaiting full {"cmd":"update_check"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":null,"kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":null,"second_copy":false,"status":"no_releases","version":"0.1.0","words":"<there>"}
+BuildWaiting full {"cmd":"update_install","now":true} | err nothing_on_offer exit 1 next true
+BuildWaiting control setup | ok {"back_to_release":false,"dev_builds":true,"words":"<there>"}
+BuildWaiting control setup | ok {"started":true,"team":null,"version":"0.1.0.1","waits_ms":"<there>","words":"<there>"}
+BuildWaiting control {"cmd":"update_status"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":"0.1.0.1","dev_builds":true,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":null,"last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":null,"second_copy":false,"status":"build_ready","version":"0.1.0","words":"<there>"}
+BuildWaiting control {"cmd":"update_dev_builds"} | ok {"back_to_release":false,"dev_builds":true,"words":"<there>"}
+BuildWaiting control {"cmd":"settings"} | ok {"auto_update":true,"words":"<there>"}
+BuildWaiting control {"cmd":"update_install"} | err permission_denied exit 5 next true
+BuildWaiting control {"cmd":"settings","auto_update":"off"} | err permission_denied exit 5 next true
+BuildWaiting control {"cmd":"update_dev_builds","set":"off"} | err permission_denied exit 5 next true
+BuildWaiting control {"cmd":"settings","auto_update":"on"} | err permission_denied exit 5 next true
+BuildWaiting control {"cmd":"update_check"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":"0.1.0.1","dev_builds":true,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":null,"last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":null,"second_copy":false,"status":"build_ready","version":"0.1.0","words":"<there>"}
+BuildWaiting control {"cmd":"update_install","now":true} | err permission_denied exit 5 next true
+UnderWay person setup | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":"0.1.99","second_copy":false,"status":"available","version":"0.1.0","words":"<there>"}
+UnderWay person setup | ok {"started":true,"version":"0.1.99","words":"<there>"}
+UnderWay person {"cmd":"update_status"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":false},"next_wake_in_ms":null,"offered":"0.1.99","second_copy":false,"status":"waiting","version":"0.1.0","words":"<there>"}
+UnderWay person {"cmd":"update_dev_builds"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+UnderWay person {"cmd":"settings"} | ok {"auto_update":true,"words":"<there>"}
+UnderWay person {"cmd":"update_install"} | err update_under_way exit 10 next true
+UnderWay person {"cmd":"settings","auto_update":"off"} | ok {"auto_update":false,"words":"<there>"}
+UnderWay person {"cmd":"update_dev_builds","set":"off"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+UnderWay person {"cmd":"settings","auto_update":"on"} | ok {"auto_update":true,"words":"<there>"}
+UnderWay person {"cmd":"update_check"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":false},"next_wake_in_ms":null,"offered":"0.1.99","second_copy":false,"status":"waiting","version":"0.1.0","words":"<there>"}
+UnderWay person {"cmd":"update_install","now":true} | err update_under_way exit 10 next true
+UnderWay full setup | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":"0.1.99","second_copy":false,"status":"available","version":"0.1.0","words":"<there>"}
+UnderWay full setup | ok {"started":true,"version":"0.1.99","words":"<there>"}
+UnderWay full {"cmd":"update_status"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":false},"next_wake_in_ms":null,"offered":"0.1.99","second_copy":false,"status":"waiting","version":"0.1.0","words":"<there>"}
+UnderWay full {"cmd":"update_dev_builds"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+UnderWay full {"cmd":"settings"} | ok {"auto_update":true,"words":"<there>"}
+UnderWay full {"cmd":"update_install"} | err update_under_way exit 10 next true
+UnderWay full {"cmd":"settings","auto_update":"off"} | ok {"auto_update":false,"words":"<there>"}
+UnderWay full {"cmd":"update_dev_builds","set":"off"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+UnderWay full {"cmd":"settings","auto_update":"on"} | ok {"auto_update":true,"words":"<there>"}
+UnderWay full {"cmd":"update_check"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":false},"next_wake_in_ms":null,"offered":"0.1.99","second_copy":false,"status":"waiting","version":"0.1.0","words":"<there>"}
+UnderWay full {"cmd":"update_install","now":true} | err update_under_way exit 10 next true
+UnderWay control setup | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":"<there>","offered":"0.1.99","second_copy":false,"status":"available","version":"0.1.0","words":"<there>"}
+UnderWay control setup | ok {"started":true,"version":"0.1.99","words":"<there>"}
+UnderWay control {"cmd":"update_status"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":false},"next_wake_in_ms":null,"offered":"0.1.99","second_copy":false,"status":"waiting","version":"0.1.0","words":"<there>"}
+UnderWay control {"cmd":"update_dev_builds"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+UnderWay control {"cmd":"settings"} | ok {"auto_update":true,"words":"<there>"}
+UnderWay control {"cmd":"update_install"} | err permission_denied exit 5 next true
+UnderWay control {"cmd":"settings","auto_update":"off"} | err permission_denied exit 5 next true
+UnderWay control {"cmd":"update_dev_builds","set":"off"} | err permission_denied exit 5 next true
+UnderWay control {"cmd":"settings","auto_update":"on"} | err permission_denied exit 5 next true
+UnderWay control {"cmd":"update_check"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":"<there>","kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":false},"next_wake_in_ms":null,"offered":"0.1.99","second_copy":false,"status":"waiting","version":"0.1.0","words":"<there>"}
+UnderWay control {"cmd":"update_install","now":true} | err permission_denied exit 5 next true
+Held person {"cmd":"update_status"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":null,"kept":null,"last_check_ms":null,"last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":null,"offered":null,"second_copy":false,"status":"idle","version":null,"words":"<there>"}
+Held person {"cmd":"update_dev_builds"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+Held person {"cmd":"settings"} | ok {"auto_update":true,"words":"<there>"}
+Held person {"cmd":"update_install"} | err not_ready exit 10 next true
+Held person {"cmd":"settings","auto_update":"off"} | ok {"auto_update":false,"words":"<there>"}
+Held person {"cmd":"update_dev_builds","set":"off"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+Held person {"cmd":"settings","auto_update":"on"} | ok {"auto_update":true,"words":"<there>"}
+Held person {"cmd":"update_check"} | err not_ready exit 10 next true
+Held person {"cmd":"update_install","now":true} | err not_ready exit 10 next true
+Held full {"cmd":"update_status"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":null,"kept":null,"last_check_ms":null,"last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":null,"offered":null,"second_copy":false,"status":"idle","version":null,"words":"<there>"}
+Held full {"cmd":"update_dev_builds"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+Held full {"cmd":"settings"} | ok {"auto_update":true,"words":"<there>"}
+Held full {"cmd":"update_install"} | err busy exit 10 next true
+Held full {"cmd":"settings","auto_update":"off"} | err busy exit 10 next true
+Held full {"cmd":"update_dev_builds","set":"off"} | err busy exit 10 next true
+Held full {"cmd":"settings","auto_update":"on"} | err busy exit 10 next true
+Held full {"cmd":"update_check"} | err busy exit 10 next true
+Held full {"cmd":"update_install","now":true} | err busy exit 10 next true
+Held control {"cmd":"update_status"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":null,"kept":null,"last_check_ms":null,"last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":null,"offered":null,"second_copy":false,"status":"idle","version":null,"words":"<there>"}
+Held control {"cmd":"update_dev_builds"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+Held control {"cmd":"settings"} | ok {"auto_update":true,"words":"<there>"}
+Held control {"cmd":"update_install"} | err permission_denied exit 5 next true
+Held control {"cmd":"settings","auto_update":"off"} | err permission_denied exit 5 next true
+Held control {"cmd":"update_dev_builds","set":"off"} | err permission_denied exit 5 next true
+Held control {"cmd":"settings","auto_update":"on"} | err permission_denied exit 5 next true
+Held control {"cmd":"update_check"} | err busy exit 10 next true
+Held control {"cmd":"update_install","now":true} | err permission_denied exit 5 next true
+SecondCopy person {"cmd":"update_status"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":null,"kept":null,"last_check_ms":null,"last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":null,"offered":null,"second_copy":true,"status":"idle","version":"0.1.0","words":"<there>"}
+SecondCopy person {"cmd":"update_dev_builds"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+SecondCopy person {"cmd":"settings"} | ok {"auto_update":true,"words":"<there>"}
+SecondCopy person {"cmd":"update_install"} | err another_copy exit 1 next true
+SecondCopy person {"cmd":"settings","auto_update":"off"} | ok {"auto_update":false,"words":"<there>"}
+SecondCopy person {"cmd":"update_dev_builds","set":"off"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+SecondCopy person {"cmd":"settings","auto_update":"on"} | ok {"auto_update":true,"words":"<there>"}
+SecondCopy person {"cmd":"update_check"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":null,"kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":null,"offered":null,"second_copy":true,"status":"no_releases","version":"0.1.0","words":"<there>"}
+SecondCopy person {"cmd":"update_install","now":true} | err another_copy exit 1 next true
+SecondCopy full {"cmd":"update_status"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":null,"kept":null,"last_check_ms":null,"last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":null,"offered":null,"second_copy":true,"status":"idle","version":"0.1.0","words":"<there>"}
+SecondCopy full {"cmd":"update_dev_builds"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+SecondCopy full {"cmd":"settings"} | ok {"auto_update":true,"words":"<there>"}
+SecondCopy full {"cmd":"update_install"} | err another_copy exit 1 next true
+SecondCopy full {"cmd":"settings","auto_update":"off"} | ok {"auto_update":false,"words":"<there>"}
+SecondCopy full {"cmd":"update_dev_builds","set":"off"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+SecondCopy full {"cmd":"settings","auto_update":"on"} | ok {"auto_update":true,"words":"<there>"}
+SecondCopy full {"cmd":"update_check"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":null,"kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":null,"offered":null,"second_copy":true,"status":"no_releases","version":"0.1.0","words":"<there>"}
+SecondCopy full {"cmd":"update_install","now":true} | err another_copy exit 1 next true
+SecondCopy control {"cmd":"update_status"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":null,"kept":null,"last_check_ms":null,"last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":null,"offered":null,"second_copy":true,"status":"idle","version":"0.1.0","words":"<there>"}
+SecondCopy control {"cmd":"update_dev_builds"} | ok {"back_to_release":false,"dev_builds":false,"words":"<there>"}
+SecondCopy control {"cmd":"settings"} | ok {"auto_update":true,"words":"<there>"}
+SecondCopy control {"cmd":"update_install"} | err permission_denied exit 5 next true
+SecondCopy control {"cmd":"settings","auto_update":"off"} | err permission_denied exit 5 next true
+SecondCopy control {"cmd":"update_dev_builds","set":"off"} | err permission_denied exit 5 next true
+SecondCopy control {"cmd":"settings","auto_update":"on"} | err permission_denied exit 5 next true
+SecondCopy control {"cmd":"update_check"} | ok {"auto_update":true,"back_to_release":false,"build":"test","build_team":null,"build_waiting":null,"dev_builds":false,"failed_versions":[],"handover_dir":"<there>","install_look_in_ms":null,"kept":null,"last_check_ms":"<there>","last_update":null,"log":"<there>","menu":{"enabled":true},"next_wake_in_ms":null,"offered":null,"second_copy":true,"status":"no_releases","version":"0.1.0","words":"<there>"}
+SecondCopy control {"cmd":"update_install","now":true} | err permission_denied exit 5 next true

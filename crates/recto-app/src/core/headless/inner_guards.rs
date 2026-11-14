@@ -58,6 +58,7 @@ const BUDGETS: [(&str, usize); 7] = [
 fn what_the_apps_state_lets_other_code_reach_is_listed() {
     let types = [
         "Inner",
+        "LaunchFacts",
         "Lifecycle",
         "Serving",
         "Window",
@@ -126,19 +127,16 @@ Inner::pub fn carry_out(&self, out: Option<crate::lifecycle::Out>)
 Inner::pub fn close_answered(self: &Arc<Self>, tab: u32, choice: CloseChoice) -> HostAction
 Inner::pub fn close_prompt(&self) -> ClosePrompt
 Inner::pub fn dismiss_selection_notice(&self)
-Inner::pub fn forget_a_quiet_copy(&self)
 Inner::pub fn gather_record(&self) -> (SessionRecord, PlaceDelta)
 Inner::pub fn go_dormant(&self, tabs: &[TabId], why: Why) -> usize
 Inner::pub fn hand_off(&self, limit: Duration) -> Result<HandOffReport, HandOffError>
 Inner::pub fn hand_off_cancelled(&self)
 Inner::pub fn hand_off_check(&self) -> HandOffCheck
 Inner::pub fn hand_off_quit_now(&self) -> bool
-Inner::pub fn has_setting(&self, id: &str) -> bool
 Inner::pub fn memory_pressure(&self, critical: bool)
 Inner::pub fn menu_item_enabled(&self, id: String) -> bool
 Inner::pub fn note_input(&self)
 Inner::pub fn note_nearby(&self)
-Inner::pub fn note_update_facts(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String)
 Inner::pub fn notice_read(&self)
 Inner::pub fn perform(self: &Arc<Self>, id: String) -> HostAction
 Inner::pub fn qa_save_from(&self, written: &str) -> Result<(), AgentError>
@@ -155,8 +153,6 @@ Inner::pub fn save_as(self: &Arc<Self>, tab: u32, path: String)
 Inner::pub fn save_panel(&self) -> SavePanelModel
 Inner::pub fn save_problem_answered(&self, save_as: bool) -> super::HostAction
 Inner::pub fn set_frozen(&self, frozen: bool)
-Inner::pub fn setting_chosen(self: &Arc<Self>, id: &str, on: bool)
-Inner::pub fn settings_model(&self) -> SettingsModel
 Inner::pub fn sheet_changed(&self, open: bool)
 Inner::pub fn shown_with_state(&self)
 Inner::pub fn shutdown(&self)
@@ -167,11 +163,6 @@ Inner::pub fn state_json(&self) -> Value
 Inner::pub fn state_read(&self) -> bool
 Inner::pub fn system_pressure(&self, critical: bool)
 Inner::pub fn take_places(&self)
-Inner::pub fn take_update_alert(&self) -> Option<UpdateAlert>
-Inner::pub fn update_command(&self, command: &Command) -> Result<Value, AgentError>
-Inner::pub fn update_report(&self) -> Value
-Inner::pub fn update_test_clock(&self, ahead_ms: i64) -> bool
-Inner::pub fn update_timer_fired(&self)
 Inner::pub fn window_closed(&self)
 Inner::pub fn window_interactive(&self) -> bool
 Inner::pub fn window_opened(&self)
@@ -179,12 +170,22 @@ Inner::pub fn window_replaced(&self)
 Inner::pub(crate) fn carry_out_quit(self: &Arc<Self>, out: Option<Out>)
 Inner::pub(crate) fn carry_out_quit_answer(&self, out: Out)
 Inner::pub(super) fn starts_sleep_writer(&self) -> StartsWriter<'_>
+LaunchFacts (pub struct)
+LaunchFacts::pub fn first_frame_shown(&self, updates: &recto_update::updater::Updater)
+LaunchFacts::pub fn note(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String)
+LaunchFacts::pub(super) fn held(&self) -> bool
+LaunchFacts::pub(super) fn hold_or_tell(&self, keeps: bool, updates: &recto_update::updater::Updater) -> recto_update::updater::AtLaunch
+LaunchFacts::pub(super) fn misreads(&self) -> bool
+LaunchFacts::pub(super) fn new() -> Self
+LaunchFacts::pub(super) fn tell(&self, updates: &recto_update::updater::Updater) -> recto_update::updater::AtLaunch
+LaunchFacts::pub(super) fn untold(&self) -> bool
 Lifecycle (pub struct)
 Lifecycle.pub first_shown: Mutex<Option<Value>>
 Lifecycle.pub holding_tab: Mutex<Option<TabId>>
 Lifecycle.pub sheets: AtomicU32
 Lifecycle.pub shown_by_cap: AtomicBool
 Lifecycle.pub started: Instant
+Lifecycle.pub update_facts: updates::LaunchFacts
 Lifecycle.pub window_opened_at: Mutex<Option<Instant>>
 Lifecycle.pub(crate) clock: Arc<dyn crate::clock::Clock>
 Lifecycle.pub(crate) last_input_ms: AtomicU64
@@ -287,6 +288,7 @@ Window::pub fn set_sidebar_width(&self, width: f64, core: &CoreQueue)
 Window::pub fn settings_window(&self) -> Option<SettingsWindow>
 Window::pub fn settings_window_changed(&self, place: Option<SettingsWindow>, saver: &Saver)
 Window::pub fn should_open(&self, reopened: bool) -> bool
+Window::pub fn showing(&self) -> bool
 Window::pub(super) fn closed(&self)
 Window::pub(super) fn opened(&self)
 Window::pub(super) fn replaced(&self, held: Vec<(usize, recto_index::select::Range)>)

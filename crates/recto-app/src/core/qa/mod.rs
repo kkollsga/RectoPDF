@@ -97,7 +97,7 @@ pub fn end_with_starter(limit: Duration, owner: Option<u32>, state: Option<std::
         };
         eprintln!("recto: this quiet run ended, as {why}.");
         if let Some(inner) = ending.upgrade() {
-            inner.forget_a_quiet_copy();
+            super::updates::forget_a_quiet_copy(inner.qa.as_deref(), &inner.updates);
         }
         std::process::exit(124);
     });
@@ -495,21 +495,22 @@ impl QaBridge {
             // What the timer does, by the same call, and a test's clock. It's the same call whichever way it comes.
             "update_tick" => {
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
-                inner.update_timer_fired();
+                inner.updates.timer_fired();
                 self.core.flush(ANSWER_AFTER_CLICK);
                 return self.ask("state", "");
             }
             "update_clock" => {
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
                 let ahead = value.parse::<i64>().map_err(|_| bad("It's a number of milliseconds."))?;
-                if !inner.update_test_clock(ahead) {
+                if !inner.updates.set_test_clock(ahead) {
                     return Err(bad("Only a test run with its own update server has a clock to move."));
                 }
                 return self.ask("state", "");
             }
             "settings" => {
-                let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
-                if !matches!(value, "open" | "close" | "privacy") && !inner.has_setting(value) {
+                // Still asked first, as before: an app going away says so before the value is looked at.
+                self.inner().ok_or_else(|| bad("The app is going away."))?;
+                if !matches!(value, "open" | "close" | "privacy") && !super::updates::has_setting(value) {
                     return Err(bad(format!("`{}` isn't something `settings` takes.", cleaned(value))));
                 }
                 self.ask(verb, value)?;
@@ -611,7 +612,7 @@ impl QaBridge {
             "reader": self.engine.report().0,
             "panes": comparison,
             "session": self.inner().map_or(Value::Null, |inner| inner.state_json()),
-            "update": self.inner().map_or(Value::Null, |inner| inner.update_report()),
+            "update": self.inner().map_or(Value::Null, |inner| inner.updates.report()),
             "record": self.inner().map_or(Value::Null, |inner| inner.record_report()),
             "memory": {
                 "footprint_bytes": own,
