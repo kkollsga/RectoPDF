@@ -781,8 +781,8 @@ fn the_persons_link_keeps_a_withheld_place_withheld() {
 /// Failure (security review of S2's round): a command that starts from where a tab is says it doesn't ([`commands::Cmd::starts_from`]), so an agent's
 /// runs while that place follows a protected document's and tells it; or one that doesn't is refused for it. Each of [`every_command`], and each way of
 /// asking Find, against the reviewed list: Back and Forward start from the place to a stop on the trail; Find's steps, and folding a contents section
-/// (against what following the place opens), from the place; every other command names its pages, or none, and a Find hit chosen by its index is an
-/// absolute move, as `goto` is (the second review, D-1), which the person's lets a withheld place go by and an agent's doesn't (D-A).
+/// (against what following the place opens), from the place; every other command names its pages, or none, and a Find hit chosen by its index names
+/// its hit, and moves the tab as a jump from the place, which keeps a withheld place withheld, the person's too (the fourth review's item 1).
 #[test]
 fn what_starts_from_the_place_is_as_listed() {
     use commands::FromPlace;

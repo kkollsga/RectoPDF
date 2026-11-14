@@ -364,7 +364,7 @@ fn agent_told_beside_a_followed_tab(pages: usize, word: &str, plain_leads: bool)
 /// **The twins' answers don't turn on the machine's speed,** as in `recto-agent`'s walk: every renderer of this test's process gets a page deadline it
 /// always meets, so Find reads every page for both twins. Under `--like-ci` one twin's Find once counted a page it couldn't read in time
 /// (`failed_pages`), and the walk told them apart by it (2 of 20, 2026-11-14).
-fn deadlines_met() {
+pub(super) fn deadlines_met() {
     recto_render_service::page_deadline_for_this_process(std::time::Duration::from_secs(20));
 }
 
@@ -575,8 +575,17 @@ fn an_agent_is_told_nothing_of_a_followed_place_through_sequences() {
 /// here says the last scroll it applied, as the real host's does. Gives the app, the two tabs (plain, protected), the host's view and the first pane's
 /// page view.
 fn left_by_following_alone(pages: usize, word: &str) -> (HeadlessApp, u32, u32, recto_reader::Viewport, recto_reader::Engine) {
+    left_by_following_alone_in(|disk| disk.pdf("plain.pdf", 30), pages, word)
+}
+
+/// [`left_by_following_alone`], with the plain document `plain` writes, named `plain.pdf`.
+pub(super) fn left_by_following_alone_in(
+    plain: impl FnOnce(&Disk) -> std::path::PathBuf,
+    pages: usize,
+    word: &str,
+) -> (HeadlessApp, u32, u32, recto_reader::Viewport, recto_reader::Engine) {
     let disk = Disk::new();
-    let plain = disk.pdf("plain.pdf", 30);
+    let plain = plain(&disk);
     let locked = protected(&disk, pages, word);
     let app = disk.start();
     person_unlocks(&app, &locked);
@@ -614,7 +623,7 @@ fn left_by_following_alone(pages: usize, word: &str) -> (HeadlessApp, u32, u32, 
 }
 
 /// What an agent at Control reads of the plain tab in `session show`: its page, zoom and how far down.
-fn shown_of(app: &HeadlessApp, plain_tab: u32) -> Value {
+pub(super) fn shown_of(app: &HeadlessApp, plain_tab: u32) -> Value {
     let shown = app.recto(Level::Control, &["session", "show"]).expect("session show");
     let tab = shown["tabs"]
         .as_array()

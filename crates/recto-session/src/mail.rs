@@ -174,7 +174,8 @@ impl PageViewMail {
         }
         word.last_read = stamp;
         word.line = line;
-        // A release whose jump went another way than a send (Find's hit, brought into view by the app): the first read after it is the view's own.
+        // A release whose jump was taken without a send, which no route does now (Find's hit, which the app brings into view itself, doesn't let a place
+        // go: the fourth review's item 1): the first read after it is the view's own, so the person's place still follows their view.
         if word.released == PENDING && !jump_waiting {
             word.released = stamp;
         }

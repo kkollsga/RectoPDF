@@ -58,6 +58,7 @@ mod window_reaches;
 mod window_script;
 mod withheld_compare;
 mod withheld_events;
+mod withheld_routes;
 
 // The scaffold's template (`tools/new-feature.sh`), compiled with the tests so a change that would break what it makes fails here.
 #[path = "../../../../../tools/new-feature/headless.rs"]

@@ -374,7 +374,7 @@ fn withholding_a_place_carries_through_syncing_to_a_third_tab() {
 
 /// Failure (the second security review, D-1): the person's own scroll, page keys, Back or Forward in a tab left by following lets its place go, so where
 /// it lands, a function of where following left it, is told; or a place the page view tells of after a zoom or a change of layout does. Only an absolute
-/// move lets a withheld place go: a jump (an agent's or the person's `goto`, a contents row, a link, a Find hit chosen).
+/// move lets a withheld place go: the person's jump to a place chosen by itself (`goto`, a contents row), never a link or a Find hit (`trail::Chosen`).
 #[test]
 fn only_an_absolute_move_lets_a_withheld_place_go() {
     let (mut s, plain, _) = left_by_following();
