@@ -103,8 +103,9 @@ pub struct Viewport {
     pub scrolled_to: u64,
 }
 
-/// What the host is told to draw. In order, in one transaction.
-#[derive(Clone, Debug, PartialEq)]
+/// What the host is told to draw. In order, in one transaction. Not `Clone`: an `Attach` holds a reference to its surface that the host releases once,
+/// and a copy would release it twice.
+#[derive(Debug, PartialEq)]
 pub enum Op {
     /// Everything comes off: another tab, or pages that changed.
     Clear,
