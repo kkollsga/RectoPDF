@@ -532,10 +532,10 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept:
         .map(|tab| {
             let notice = session.notices().said(tab.id).map(|said| json!({ "code": said.code, "message": said.message }));
             let place = session.tabs().place_to_show(tab.id);
-            // A protected document's place and length were read with its password, its zoom fits its pages' size, and what's said of its file is left
-            // out as `tabs` leaves it out; its layout as `view` leaves it out.
+            // A protected document's place and length were read with its password, its zoom fits its pages' size, and what's said of its file and of its
+            // edits (whose taking can turn on its length) is left out as `tabs` leaves it out; its layout as `view` leaves it out.
             if session.tabs().withheld_from_agents(tab.id) {
-                return json!({ "tab": tab.id.0, "protected": true, "page": null, "pages": null, "zoom": null, "within_page": null, "layout": null, "edited": session.lists().is_edited(tab.id), "can_undo": session.lists().undo_and_redo(tab.id).0, "can_redo": session.lists().undo_and_redo(tab.id).1, "notice": null });
+                return json!({ "tab": tab.id.0, "protected": true, "page": null, "pages": null, "zoom": null, "within_page": null, "layout": null, "edited": null, "can_undo": null, "can_redo": null, "notice": null });
             }
             json!({ "tab": tab.id.0, "page": tab.page + 1, "pages": session.pages().count(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.filter(|place| place.anchor_page == place.page).map(|place| place.within), "layout": tab.spread.name(), "edited": session.lists().is_edited(tab.id), "can_undo": session.lists().undo_and_redo(tab.id).0, "can_redo": session.lists().undo_and_redo(tab.id).1, "notice": notice })
         })
@@ -1166,9 +1166,10 @@ fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
     let Some(tab) = tabs.tab(id) else { return Value::Null };
     let edited = lists.is_edited(id);
     let active = tabs.active() == Some(id);
-    // Its file's name is the person's, and not read from the file. Its place, length and the rest were read with its password.
+    // Its file's name is the person's, and not read from the file. Its place, length and the rest were read with its password, and whether an edit of
+    // theirs took can turn on its length (page 4 deleted only if it has one), so whether it's edited isn't said either.
     if tabs.withheld_from_agents(id) {
-        return json!({ "tab": id.0, "sel": format!("#{}", id.0), "protected": true, "protected_note": PROTECTED_NOTE, "page": null, "pages": null, "file_pages": null, "active": active, "edited": edited, "untrusted": { "name": &*tab.name } });
+        return json!({ "tab": id.0, "sel": format!("#{}", id.0), "protected": true, "protected_note": PROTECTED_NOTE, "page": null, "pages": null, "file_pages": null, "active": active, "edited": null, "untrusted": { "name": &*tab.name } });
     }
     let label = pages.label_differs(id, tab.page);
     let (can_go_back, can_go_forward) = tabs.can_go_back_and_forward(id);
@@ -1240,7 +1241,7 @@ fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
         })
         .collect();
     if active_withheld {
-        return json!({ "rows": rows, "rail_filled": 0, "toc_open": false, "place": "", "protected": true, "protected_note": PROTECTED_NOTE, "edited": model.edited, "undone_owner_steps": model.undone_owner_steps });
+        return json!({ "rows": rows, "rail_filled": 0, "toc_open": false, "place": "", "protected": true, "protected_note": PROTECTED_NOTE, "edited": null, "undone_owner_steps": null });
     }
     json!({ "rows": rows, "rail_filled": model.rail_filled, "toc_open": model.toc_open, "place": model.place, "edited": model.edited, "undone_owner_steps": model.undone_owner_steps })
 }
@@ -3388,8 +3389,9 @@ mod protected_tests {
     }
 
     /// Failure (independent review of phase R, its follow-up on `session show`): `session show` gives a protected tab what `where` and `tabs` leave out,
-    /// what's said of its file (a notice), its zoom, which fits its pages' size, or its layout, which `view` leaves out; or, at Control, what the person
-    /// typed in Find while it's the document being read. Of a plain tab, all of it is given as before.
+    /// what's said of its file (a notice), whether it's edited and can be undone (an edit's taking can turn on its length), its zoom, which fits its pages'
+    /// size, or its layout, which `view` leaves out; or, at Control, what the person typed in Find while it's the document being read. Of a plain tab, all
+    /// of it is given as before.
     #[test]
     fn session_show_says_of_a_protected_tab_only_what_tabs_does() {
         let mut session = Session::new(Unlocked);
@@ -3413,7 +3415,7 @@ mod protected_tests {
         let shown = |session: &Session<Unlocked>| session_show_json(session, Level::Control, Value::Null);
         let reading_locked = shown(&session);
         let (locked, plain) = (&reading_locked["tabs"][0], &reading_locked["tabs"][1]);
-        for key in ["notice", "zoom", "layout"] {
+        for key in ["notice", "zoom", "layout", "edited", "can_undo", "can_redo"] {
             assert!(locked[key].is_null(), "{key} of the protected tab: {locked}");
         }
         assert!(!plain["notice"].is_null() && !plain["layout"].is_null(), "the plain tab's, as ever: {plain}");

@@ -139,8 +139,16 @@ fn agent_told(pages: usize, word: &str) -> Vec<String> {
     for look in [&["tabs"][..], &["session", "show"], &["sidebar"]] {
         told.push(format!("page 4 deleted {look:?}: {:?}", app.recto(Level::Full, look)));
     }
-    app.act(UiAction::Menu { id: "file.close".into() });
+    // Closing asks about the edit where it took, and the person says not to save it: the tab goes either way.
+    let tab = app.tabs()[0].tab;
+    if app.act(UiAction::Menu { id: "file.close".into() }).host == crate::menus::HostAction::ConfirmClose {
+        app.act(UiAction::CloseAnswered {
+            tab,
+            choice: crate::saving::CloseChoice::DontSave,
+        });
+    }
     app.settle();
+    assert!(app.tabs().is_empty(), "the tab closed");
     told.push(format!("closed: {:?}", watching.heard()));
     told
 }

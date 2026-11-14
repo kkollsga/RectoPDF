@@ -28,10 +28,10 @@ pub enum Event {
         tab: TabId,
         page: u32,
     },
-    /// A tab's edits changed. `pages` is `None` for a protected document: blanked where events leave for agents ([`crate::withheld`]).
+    /// A tab's edits changed, and its length now. Never told of a document opened with a password ([`crate::withheld`]).
     EditsChanged {
         tab: TabId,
-        pages: Option<u32>,
+        pages: u32,
         edited: bool,
     },
     Saved {
@@ -228,10 +228,10 @@ pub fn page_now<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
     page_changed(id, session.tabs().tab(id).map_or(1, |tab| tab.page + 1))
 }
 
-/// What watchers are told when a tab's edits change, wherever they were changed from: an agent, the panel or the Edit menu. A protected document's
-/// length is blanked where events leave for agents ([`crate::withheld`]).
+/// What watchers are told when a tab's edits change, wherever they were changed from: an agent, the panel or the Edit menu. A protected document's are
+/// never told: that's decided where events leave for agents ([`crate::withheld`]).
 pub fn edits_changed<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
-    let pages = Some(session.pages().count(id));
+    let pages = session.pages().count(id);
     Event::EditsChanged {
         tab: id,
         pages,
@@ -281,11 +281,7 @@ mod tests {
             Event::TabActivated { tab, name: None },
             Event::TabClosed { tab },
             Event::PageChanged { tab, page: 1 },
-            Event::EditsChanged {
-                tab,
-                pages: None,
-                edited: false,
-            },
+            Event::EditsChanged { tab, pages: 1, edited: false },
             Event::Saved { tab, writer: "lopdf" },
             Event::PageDrawn { tab, page: 1 },
             Event::PageFailed { tab, page: 1, code: "x" },

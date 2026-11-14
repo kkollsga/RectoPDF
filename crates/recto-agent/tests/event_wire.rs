@@ -14,7 +14,6 @@ const GOLDEN: &[(&str, &str)] = &[
     ("tab_closed", r#"{"event":"tab_closed","tab":5}"#),
     ("page_changed", r#"{"event":"page_changed","page":7,"tab":5}"#),
     ("edits_changed", r#"{"edited":true,"event":"edits_changed","pages":12,"tab":5}"#),
-    ("edits_changed withheld", r#"{"edited":false,"event":"edits_changed","pages":null,"tab":5}"#),
     ("saved", r#"{"event":"saved","tab":5,"writer":"lopdf"}"#),
     ("page_drawn", r#"{"event":"page_drawn","page":2,"tab":5}"#),
     ("page_failed", r#"{"code":"render_failed","event":"page_failed","page":2,"tab":5}"#),
@@ -65,22 +64,7 @@ fn made() -> Vec<(&'static str, Event)> {
         ),
         ("tab_closed", Event::TabClosed { tab }),
         ("page_changed", Event::PageChanged { tab, page: 7 }),
-        (
-            "edits_changed",
-            Event::EditsChanged {
-                tab,
-                pages: Some(12),
-                edited: true,
-            },
-        ),
-        (
-            "edits_changed withheld",
-            Event::EditsChanged {
-                tab,
-                pages: None,
-                edited: false,
-            },
-        ),
+        ("edits_changed", Event::EditsChanged { tab, pages: 12, edited: true }),
         ("saved", Event::Saved { tab, writer: "lopdf" }),
         ("page_drawn", Event::PageDrawn { tab, page: 2 }),
         (

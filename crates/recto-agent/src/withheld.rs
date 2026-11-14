@@ -14,9 +14,8 @@ use recto_session::{DocLoader, Session, TabId};
 pub enum About {
     /// That a tab is open, showing or closed, under its file's name: what `tabs` says of a protected document too. Goes as it is.
     Listed(TabId),
-    /// Whether a tab is edited, which `tabs` says, and its length, which it doesn't: for a withheld tab it goes with the length blanked.
-    Edits(TabId),
-    /// Something of the tab's document: where it's read, what's drawn, its layout, how it was saved. Dropped for a withheld tab.
+    /// Something of the tab's document: where it's read, what's drawn, its layout, how it was saved, and its edits, whose taking can turn on its length
+    /// (page 4 deleted only if it has one). Dropped for a withheld tab.
     Document(TabId),
     /// Find, which searches a document: the one it names, or else the one being read. Dropped while either is withheld, as its hits and how long it
     /// looks are read from it.
@@ -30,8 +29,8 @@ pub enum About {
 pub fn about(event: &Event) -> About {
     match event {
         Event::TabOpened { tab, .. } | Event::TabActivated { tab, .. } | Event::TabClosed { tab } => About::Listed(*tab),
-        Event::EditsChanged { tab, .. } => About::Edits(*tab),
         Event::PageChanged { tab, .. }
+        | Event::EditsChanged { tab, .. }
         | Event::Saved { tab, .. }
         | Event::PageDrawn { tab, .. }
         | Event::PageFailed { tab, .. }
@@ -54,24 +53,16 @@ pub fn needs_the_session(events: &[Event]) -> bool {
     events.iter().any(|event| !matches!(about(event), About::Nothing | About::Listed(_)))
 }
 
-/// **What of `events` may go to an agent,** in place: an event about a document withheld from agents is dropped, or for its edits sent with its length
-/// blanked; the rest go as they are, in their order. `finding` is the document Find's results are about now, as its Finder holds them, so news of a search
+/// **What of `events` may go to an agent,** in place: an event about a document withheld from agents is dropped; the rest go as they are, in their
+/// order. `finding` is the document Find's results are about now, as its Finder holds them, so news of a search
 /// still going over a protected document isn't let through because the person has since gone to another tab. Allocates nothing.
 pub fn for_agents<L: DocLoader>(session: &Session<L>, finding: Option<TabId>, events: &mut Vec<Event>) {
     let withheld = |id: TabId| session.tabs().withheld_from_agents(id);
     // Asked once a batch, and only if Find's in it.
     let mut reading_withheld = None;
-    events.retain_mut(|event| match about(event) {
+    events.retain(|event| match about(event) {
         About::Nothing | About::Listed(_) => true,
         About::Document(id) => !withheld(id),
-        About::Edits(id) => {
-            if withheld(id)
-                && let Event::EditsChanged { pages, .. } = event
-            {
-                *pages = None;
-            }
-            true
-        }
         About::Find(named) => {
             let reading = *reading_withheld.get_or_insert_with(|| session.tabs().active().is_some_and(withheld) || finding.is_some_and(withheld));
             !reading && !named.is_some_and(withheld)
@@ -95,11 +86,7 @@ mod tests {
             Event::TabActivated { tab, name: None },
             Event::TabClosed { tab },
             Event::PageChanged { tab, page: 3 },
-            Event::EditsChanged {
-                tab,
-                pages: Some(9),
-                edited: true,
-            },
+            Event::EditsChanged { tab, pages: 9, edited: true },
             Event::Saved { tab, writer: "lopdf" },
             Event::PageDrawn { tab, page: 2 },
             Event::PageFailed { tab, page: 2, code: "x" },
@@ -161,9 +148,9 @@ mod tests {
     }
 
     /// Failure: an event about a document the person opened with its password goes to an agent with something read from it (its place, a page drawn,
-    /// its length, a Find over it), or an event about another document, or about none, is held back or changed, which would take from agents what
-    /// they're owed. Of every variant about the protected tab, only what `tabs` says goes, its length blanked; about the other tab, everything goes as it
-    /// was.
+    /// its length, whether an edit took, a Find over it), or an event about another document, or about none, is held back or changed, which would take
+    /// from agents what they're owed. Of every variant about the protected tab, only what `tabs` says goes (open, showing, closed); about the other tab,
+    /// everything goes as it was.
     #[test]
     fn only_what_tabs_says_goes_of_a_withheld_document() {
         let (session, a, b) = two_tabs();
@@ -176,7 +163,6 @@ mod tests {
                 r#"{"event":"tab_opened","tab":1,"untrusted":{"name":"a.pdf"}}"#,
                 r#"{"event":"tab_activated","tab":1,"untrusted":{"name":null}}"#,
                 r#"{"event":"tab_closed","tab":1}"#,
-                r#"{"edited":true,"event":"edits_changed","pages":null,"tab":1}"#,
                 r#"{"corpus":"ab","event":"indexing_started"}"#,
                 r#"{"code":null,"corpus":"ab","event":"indexing_finished","pages":null,"state":"done"}"#,
                 r#"{"event":"contents_generating","file":"cd"}"#,
@@ -218,7 +204,7 @@ mod tests {
     fn only_a_batch_about_a_document_asks_the_session() {
         let tab = TabId(1);
         for event in every_event(tab) {
-            let asks = matches!(about(&event), About::Document(_) | About::Edits(_) | About::Find(_));
+            let asks = matches!(about(&event), About::Document(_) | About::Find(_));
             assert_eq!(needs_the_session(std::slice::from_ref(&event)), asks, "{event:?}");
         }
         assert!(!needs_the_session(&[
