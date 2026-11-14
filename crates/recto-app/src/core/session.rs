@@ -66,7 +66,7 @@ pub fn apply_restored(
                     // A window that's up and taking input isn't made again from a state that comes now, so what it shows stays, its appearance with it: the host
                     // applies the state's appearance as it hears it (`restoredLate`), and the record says what the window shows. A late keep's window goes by
                     // `keeping::window_as_it_is`.
-                    let shown_as_it_is = app.window_decided && real_window.is_none() && inner.life.takes_input();
+                    let shown_as_it_is = app.window_decided && real_window.is_none() && inner.life.window_interactive();
                     if !shown_as_it_is {
                         app.appearance = saved.appearance;
                     }
@@ -108,7 +108,7 @@ pub fn apply_restored(
         Loaded::Nothing if first_time => migrate_older_settings(inner),
         _ => {}
     }
-    let (say_notice, remake) = keeping::taken_in(inner, other_instance, first_time, reads);
+    let (say_notice, remake) = keeping::Desk::of(inner).taken_in(&inner.window, other_instance, first_time, reads);
     if !say_notice {
         notice = None;
     }
@@ -121,7 +121,7 @@ pub fn apply_restored(
             inner.host.session.with_session(|session| session.wake_active());
             inner.engine.waking().note_wake(id.0, Instant::now());
         } else {
-            *lock(&inner.life.holding_tab) = Some(id);
+            inner.life.set_holding_tab(Some(id));
             reads.wanted_tab = Some(id);
             reads.start_restored(inner, id, path, stamp);
         }
@@ -133,40 +133,41 @@ pub fn apply_restored(
         start_serving(inner);
     }
     // What waited for the state: at the launch, and what the person did while a late keep's restore was read.
-    release(inner, deferred);
+    release(&inner.core, deferred, |command| person::submit(inner, command));
     ready
 }
 
 /// What the person did while a late keep's restore was read, let go once it's no longer restoring without the restore coming in (its patience ran out, or its
-/// thread ended): it runs on the window as it is. Not before the launch's state is read, when what waits is an open, which waits for that.
-fn release_held(inner: &Arc<Inner>, deferred: &mut Vec<CoreCall>) {
-    if deferred.is_empty() || !inner.life.state_read() || inner.life.keeping().restoring() {
+/// thread ended): it runs on the window as it is. Not before the launch's state is read, when what waits is an open, which waits for that. Reads the life;
+/// `submit` sends a person's command to a thread of its own (`person::submit`).
+fn release_held(life: &Lifecycle, core: &CoreQueue, deferred: &mut Vec<CoreCall>, submit: impl FnMut(recto_agent::Command)) {
+    if deferred.is_empty() || !life.state_read() || life.keeping().restoring() {
         return;
     }
-    release(inner, deferred);
+    release(core, deferred, submit);
 }
 
-/// **What waited, let go:** each call back on the queue, in the order it came; a person's command that runs on a thread of its own sent there again.
-fn release(inner: &Arc<Inner>, deferred: &mut Vec<CoreCall>) {
+/// **What waited, let go:** each call back on the queue, in the order it came; a person's command that runs on a thread of its own sent there again, by `submit`.
+fn release(core: &CoreQueue, deferred: &mut Vec<CoreCall>, mut submit: impl FnMut(recto_agent::Command)) {
     for call in deferred.drain(..) {
         match call {
-            CoreCall::Run(run) if person::on_a_thread_of_its_own(&run) => person::submit(inner, run.command),
-            call => inner.core.push(call),
+            CoreCall::Run(run) if person::on_a_thread_of_its_own(&run) => submit(run.command),
+            call => core.push(call),
         }
     }
 }
 
 /// **Whether a call waits, and holds it if it does:** an open, for the launch's state, as what's opened goes over what comes back; and anything the person
 /// does, for a late keep's restore, so what they ask for last lands on the restored session (a command, Find's step on the page, and a command that runs on a
-/// thread of its own, held when it was asked for: see `person::submit`). A command of the last kind that's no longer held goes to its own thread.
-fn hold(inner: &Arc<Inner>, call: CoreCall, deferred: &mut Vec<CoreCall>) -> Option<CoreCall> {
-    if waits(&call, inner.life.state_read(), inner.life.keeping().restoring()) {
+/// thread of its own, held when it was asked for: see `person::submit`). A command of the last kind that's no longer held goes to its own thread, by `submit`.
+fn hold(life: &Lifecycle, call: CoreCall, deferred: &mut Vec<CoreCall>, submit: impl FnOnce(recto_agent::Command)) -> Option<CoreCall> {
+    if waits(&call, life.state_read(), life.keeping().restoring()) {
         deferred.push(call);
         return None;
     }
     match call {
         CoreCall::Run(run) if person::on_a_thread_of_its_own(&run) => {
-            person::submit(inner, run.command);
+            submit(run.command);
             None
         }
         call => Some(call),
@@ -209,7 +210,7 @@ pub fn migrate_older_settings(inner: &Inner) {
 /// One pass by one thread over every other tab's file, once after a restore. A stat each, or a lookup by number if that wasn't it. It's gone as soon as it's been round, with nothing kept for a file that's as it was, and it can sit in a file on a dead volume as long as that likes.
 pub fn look_at_other_files(inner: &Arc<Inner>, active: TabId) {
     // Counted, so a test can wait for it to have been round, and not for a time.
-    inner.life.others_looking.fetch_add(1, Ordering::SeqCst);
+    inner.life.looking_at_others();
     let looking = inner;
     let inner = Arc::clone(inner);
     let spawned = std::thread::Builder::new().name("recto-look".into()).stack_size(256 * 1024).spawn(move || {
@@ -228,10 +229,10 @@ pub fn look_at_other_files(inner: &Arc<Inner>, active: TabId) {
         if changed {
             inner.core.push(CoreCall::Reconcile);
         }
-        inner.life.others_looking.fetch_sub(1, Ordering::SeqCst);
+        inner.life.others_looked_at();
     });
     if spawned.is_err() {
-        looking.life.others_looking.fetch_sub(1, Ordering::SeqCst);
+        looking.life.others_looked_at();
     }
 }
 
@@ -282,6 +283,8 @@ pub fn session_thread(inner: &Arc<Inner>) {
     let mut synced = Synced::default();
     let mut reads = FileReads::default();
     let mut deferred: Vec<CoreCall> = Vec::new();
+    // What a held person's command runs by when it's let go: on a thread of its own, as `person::submit` sends it.
+    let submit = |command| person::submit(inner, command);
     loop {
         // Parked for the queue and the state's one deadline, and nothing else.
         let Some(call) = inner.core.next_or_due(|| {
@@ -303,16 +306,15 @@ pub fn session_thread(inner: &Arc<Inner>) {
             if inner.life.due().is_some_and(|wait| wait.is_zero()) {
                 restore_patience_over(inner);
             }
-            keeping::when_due(inner, &reads);
-            release_held(inner, &mut deferred);
+            keeping::Desk::of(inner).when_due(&inner.window, &reads);
+            release_held(&inner.life, &inner.core, &mut deferred, submit);
             if inner.saver.wait_for_due().is_some_and(|wait| wait.is_zero()) {
                 inner.saver.spawn_writer();
             }
             if inner.sleeper.wait_for_due().is_some_and(|wait| wait.is_zero())
-                && let Some(due) = inner.sleeper.dormancy_due(
-                    &inner.host.session,
-                    inner.life.reads_running.load(Ordering::SeqCst) > 0 || inner.core.frozen.load(Ordering::SeqCst),
-                )
+                && let Some(due) = inner
+                    .sleeper
+                    .dormancy_due(&inner.host.session, inner.life.reads_running() > 0 || inner.core.frozen.load(Ordering::SeqCst))
             {
                 inner.go_dormant(&due, sleeper::Why::LeftAlone);
                 // With what's gone, the page view lets go of it too, and the next deadline's worked out.
@@ -320,7 +322,9 @@ pub fn session_thread(inner: &Arc<Inner>) {
             }
             continue;
         };
-        let Some(call) = hold(inner, call, &mut deferred) else { continue };
+        let Some(call) = hold(&inner.life, call, &mut deferred, submit) else {
+            continue;
+        };
         let mut events = Vec::new();
         let host = &inner.host;
         match call {
@@ -338,8 +342,8 @@ pub fn session_thread(inner: &Arc<Inner>) {
             }
             // A late try's saved session: taken in as the state is at a launch, while it's still restoring, and dropped after its patience.
             CoreCall::LateRead(read) => {
-                let Some(loaded) = keeping::late_read(inner, read) else {
-                    release_held(inner, &mut deferred);
+                let Some(loaded) = keeping::Desk::of(inner).late_read(read) else {
+                    release_held(&inner.life, &inner.core, &mut deferred, submit);
                     after_call(inner, &mut synced, &mut reads, events);
                     continue;
                 };
@@ -366,7 +370,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             CoreCall::GeneratedFinished => generated_contents::look_again(inner),
             CoreCall::GeneratedView(id, view, version) => host.session.with_session(|session| session.set_generated_view_for(id, view, version)),
             CoreCall::Find(call) => find::act(inner, call, &mut events),
-            CoreCall::TryBack(back) => keeping::try_back(inner, &reads, back),
+            CoreCall::TryBack(back) => keeping::Desk::of(inner).try_back(&inner.window, &reads, back),
             CoreCall::Run(run) => {
                 let _ = person::run(inner, &mut reads, *run, &mut events);
             }
@@ -392,7 +396,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
 
 /// **What every call on the session thread ends with,** the state's coming in too (review 1: it went on without the events it made being announced, or a flush that waited on a read being told it was done): generated contents and Find kept up with the session, the host's view made from it, flushes with nothing left to read let go, and what happened announced.
 pub fn after_call(inner: &Arc<Inner>, synced: &mut Synced, reads: &mut FileReads, mut events: Vec<Event>) {
-    keeping::look_after_call(inner, reads);
+    keeping::Desk::of(inner).look_after_call(&inner.window, reads);
     generated_contents::look_if_chosen(inner);
     find::keep_up(inner);
     reconcile(inner, synced, &mut events);
@@ -414,9 +418,80 @@ pub fn after_call(inner: &Arc<Inner>, synced: &mut Synced, reads: &mut FileReads
 
 /// Reads a file's facts off the session thread: with the password the person typed for it, if the keyring has one for that file, so a protected tab that went cold and wakes doesn't ask again; and otherwise as any file is. Whether a password was used.
 pub fn read_facts(keys: &recto_reader::engine::Keyring, path: &std::path::Path) -> (Result<DocFacts, OpenError>, bool) {
+    #[cfg(test)]
+    reads_panic::here();
     match keys.for_path(path) {
         Some(key) => (recto_core::inspect_with_password(path, &key), true),
         None => (DrawableLoader.load(path), false),
+    }
+}
+
+/// **A test's read that panics,** where the reader's loader is called, as a parser's bug on a hostile file would (each test is a process of its own).
+#[cfg(test)]
+pub(crate) mod reads_panic {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    static ON: AtomicBool = AtomicBool::new(false);
+    static PANICKED: AtomicU32 = AtomicU32::new(0);
+
+    /// Reads panic from now on, or don't.
+    pub(crate) fn set(on: bool) {
+        ON.store(on, Ordering::SeqCst);
+    }
+
+    /// How many reads have panicked.
+    pub(crate) fn panicked() -> u32 {
+        PANICKED.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn here() {
+        if ON.load(Ordering::SeqCst) {
+            PANICKED.fetch_add(1, Ordering::SeqCst);
+            panic!("a test's panic in a file's read");
+        }
+    }
+}
+
+/// **What a read's thread read, sent to the session thread however the thread ends** (the review of R3.7's life slice, 2026-11-14). Made first thing on the
+/// thread and dropped with it, so a thread that panics in the read (a parser's bug on a hostile file, a look at the file, its history) still sends one: a read
+/// that failed, as for a file that isn't a PDF. The session thread takes it as it takes any read ([`FileReads::finished`]), which is where the read stops
+/// being counted, so the count still covers the thread and the queue until the result is taken in, and a hand-off, the sleeper and a tap of the same tab
+/// aren't held by a read that's gone. A file opened next, waiting its turn behind this one (`done`), is let go as the thread ends either way.
+struct ReadComesBack {
+    core: Arc<CoreQueue>,
+    /// What's being read, until what was read is sent.
+    what: Option<Reading>,
+    done: Option<Arc<Flushed>>,
+}
+
+impl ReadComesBack {
+    fn new(core: Arc<CoreQueue>, what: Reading, done: Option<Arc<Flushed>>) -> Self {
+        Self { core, what: Some(what), done }
+    }
+
+    /// What was read, sent; then a file waiting its turn behind it is let go, as before.
+    fn send(mut self, read: FileRead) {
+        self.what = None;
+        self.core.push(CoreCall::Read(Box::new(read)));
+    }
+}
+
+impl Drop for ReadComesBack {
+    fn drop(&mut self) {
+        // The thread ended without sending what it read: it failed, and the tab or the open it was for goes on as for any file that couldn't be read.
+        if let Some(what) = self.what.take() {
+            self.core.push(CoreCall::Read(Box::new(FileRead {
+                what,
+                loaded: Err(OpenError::NotPdf),
+                stamp: None,
+                status: None,
+                history: None,
+                unlocked: false,
+            })));
+        }
+        if let Some(done) = self.done.take() {
+            done.finished();
+        }
     }
 }
 
@@ -446,27 +521,28 @@ impl FileReads {
         if !self.running.insert(what.clone()) {
             return;
         }
-        inner.life.reads_running.fetch_add(1, Ordering::SeqCst);
+        inner.life.read_started();
         let core = Arc::clone(&inner.core);
         let keys = Arc::clone(&inner.keys);
         let spawned = std::thread::Builder::new().name("recto-read".into()).stack_size(1024 * 1024).spawn(move || {
+            let comes_back = ReadComesBack::new(core, what.clone(), None);
             let status = look_at_file(&path, stamp);
             let path = if let FileStatus::Moved(moved, _) = &status { moved.clone() } else { path };
             let stamp = recto_platform::file_stamp(&path).ok();
             let (loaded, unlocked) = read_facts(&keys, &path);
-            core.push(CoreCall::Read(Box::new(FileRead {
+            comes_back.send(FileRead {
                 what,
                 loaded,
                 stamp,
                 status: Some(status),
                 history: None,
                 unlocked,
-            })));
+            });
         });
         if spawned.is_err() {
             self.running.remove(&Reading::Restored(id));
-            inner.life.reads_running.fetch_sub(1, Ordering::SeqCst);
-            *lock(&inner.life.holding_tab) = None;
+            inner.life.read_finished();
+            inner.life.set_holding_tab(None);
             inner.host.session.with_session(|session| session.wake_active());
         }
     }
@@ -490,7 +566,8 @@ impl FileReads {
         let saver = Arc::clone(&inner.saver);
         let inner_for_read = Arc::clone(inner);
         let spawned = std::thread::Builder::new().name("recto-read".into()).stack_size(1024 * 1024).spawn(move || {
-            while inner_for_read.life.qa_hold_reads.load(Ordering::SeqCst) {
+            let comes_back = ReadComesBack::new(core, reading.clone(), done);
+            while inner_for_read.life.reads_held() {
                 std::thread::sleep(Duration::from_millis(10));
             }
             let stamp = recto_platform::file_stamp(&path).ok();
@@ -507,21 +584,18 @@ impl FileReads {
             if let Some(before) = before {
                 before.wait(OPEN_ORDER_WAIT);
             }
-            core.push(CoreCall::Read(Box::new(FileRead {
+            comes_back.send(FileRead {
                 what: reading,
                 loaded,
                 stamp,
                 status: None,
                 history,
                 unlocked,
-            })));
-            if let Some(done) = done {
-                done.finished();
-            }
+            });
         });
         if spawned.is_ok() {
             self.running.insert(what);
-            inner.life.reads_running.fetch_add(1, Ordering::SeqCst);
+            inner.life.read_started();
         } else {
             *lock(&inner.window.open_failure) = Some(TOO_MANY_READS.to_string());
         }
@@ -537,7 +611,7 @@ impl FileReads {
     /// Takes a read in, and says the person's command it was for, if one's to run again now.
     pub fn finished(&mut self, inner: &Arc<Inner>, read: FileRead) -> Option<crate::queue::PersonCommand> {
         self.running.remove(&read.what);
-        inner.life.reads_running.fetch_sub(1, Ordering::SeqCst);
+        inner.life.read_finished();
         let host = &inner.host;
         // Read with a password: the tab's marked before anything read takes its place, so no agent can see it.
         if read.unlocked
@@ -552,7 +626,7 @@ impl FileReads {
                 }
                 host.session.with_session(|session| session.sleeper().give_woken(tab, read.loaded, read.stamp));
                 // The tab it's for may have been left already.
-                if lock(&inner.life.holding_tab).take().is_some() || self.wanted_tab == Some(tab) {
+                if inner.life.take_holding_tab().is_some() || self.wanted_tab == Some(tab) {
                     self.wanted_tab = None;
                     host.session.with_session(|session| {
                         if session.tabs().active() == Some(tab) {
@@ -597,7 +671,7 @@ pub fn restore_patience_over(inner: &Arc<Inner>) {
         inner.carry_out(inner.life.step(crate::lifecycle::Event::PatienceOver { may_be_reopened_by_update }));
     }
     // A tab's file not answering: on to what's on the record. The page says it isn't answering.
-    if lock(&inner.life.holding_tab).take().is_some() {
+    if inner.life.take_holding_tab().is_some() {
         host.session.with_session(|session| session.wake_active());
     }
 }

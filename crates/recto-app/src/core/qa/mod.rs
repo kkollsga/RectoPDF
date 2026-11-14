@@ -104,7 +104,7 @@ pub fn end_with_starter(limit: Duration, owner: Option<u32>, state: Option<std::
 }
 
 fn updates_takes_input(inner: &Inner) -> bool {
-    inner.life.takes_input()
+    inner.life.window_interactive()
 }
 
 /// How long the UI thread may take with a QA request before the answer is that it's stuck.
@@ -651,7 +651,7 @@ impl QaBridge {
             // The app at rest, as the one definition has it (`crate::settled`): the session thread through what's queued with nothing due now, what comes back
             // to it done, and every page view drawn with its last job's end told, seen twice with nothing handed on between.
             let at_rest = match self.inner() {
-                Some(inner) => crate::settled::wait(&inner, crate::settled::PageViews::Drawn, left(), || {}),
+                Some(inner) => crate::settled::wait(&crate::settled::watched!(inner), crate::settled::PageViews::Drawn, left(), || {}),
                 None if self.core.flush(left()) && self.engines().iter().all(|engine| engine.wait_settled(left())) => Ok(()),
                 None => Err(vec!["the page view".to_string()]),
             };

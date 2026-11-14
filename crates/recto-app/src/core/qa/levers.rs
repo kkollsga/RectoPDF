@@ -7,7 +7,6 @@ use crate::queue::CoreCall;
 use recto_agent::AgentError;
 use recto_agent::Code;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 impl Inner {
@@ -84,7 +83,7 @@ impl Inner {
                 Ok(())
             }
             "hold_reads" => {
-                self.life.qa_hold_reads.store(value == "on", Ordering::SeqCst);
+                self.life.hold_reads(value == "on");
                 Ok(())
             }
             _ => return None,

@@ -10,7 +10,6 @@ use crate::lifecycle::keeping::{Keeping, RESTORING_PATIENCE_MS, TRIES, TRIES_AFT
 use crate::testkit::headless::HeadlessApp;
 use recto_agent::Level;
 use recto_platform::slow::Seam;
-use std::sync::atomic::Ordering;
 
 /// The clock moved on to the next try, and that try made (and failed).
 fn next_try_fails(app: &HeadlessApp) {
@@ -41,10 +40,10 @@ fn the_last_try_back_with_a_persons_command_under_way_still_settles() {
     drop(old_on_its_way_out);
     app.advance(TRY_EVERY_MS);
     app.wait_until("the last try held with the lock", || app.waiting(Seam::RecordLock) > 0);
-    app.core().life.persons_running.fetch_add(1, Ordering::SeqCst);
+    let person = app.core().life.person_running();
     app.let_through(Seam::RecordLock, 1);
     app.wait_until("settled not kept", || app.core().life.keeping() == Keeping::NotKept);
-    app.core().life.persons_running.fetch_sub(1, Ordering::SeqCst);
+    drop(person);
     a_second_copy_that_started(&app, &plan);
     app.wait_until("the updater no longer held back", || !updater_held(&app));
     assert!(!app.core().saver.store.holds_the_record(), "the lock given back");
@@ -118,7 +117,7 @@ fn a_lock_given_back_is_free_before_the_next_try_can_start() {
     drop(before);
     app.advance(TRY_EVERY_MS);
     app.wait_until("the try held with the lock", || app.waiting(Seam::RecordLock) > 0);
-    app.core().life.persons_running.fetch_add(1, Ordering::SeqCst);
+    let person = app.core().life.person_running();
     app.let_through(Seam::RecordLock, 1);
     app.wait_until("given back, for the next try", || tries(&app) == Some(1));
     assert!(app.core().core.flush(crate::testkit::headless::WAIT_LIMIT), "the session thread at rest");
@@ -126,7 +125,7 @@ fn a_lock_given_back_is_free_before_the_next_try_can_start() {
         !app.core().saver.store.holds_the_record(),
         "the lock is free by the time the session thread is at rest"
     );
-    app.core().life.persons_running.fetch_sub(1, Ordering::SeqCst);
+    drop(person);
     recto_platform::slow::gate::open(Seam::RecordLock);
     app.advance(TRY_EVERY_MS);
     app.wait_until("the record kept at the next try", || app.core().life.keeping() == Keeping::Keeps);

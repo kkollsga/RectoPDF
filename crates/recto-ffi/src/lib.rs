@@ -717,7 +717,7 @@ impl AppCore {
 
     /// The reader scrolled the contents themselves.
     pub fn contents_user_scrolled(&self) {
-        self.inner.window.contents_user_scrolled(self.inner.life.started.elapsed().as_secs_f64());
+        self.inner.window.contents_user_scrolled(self.inner.life.seconds_since_start());
     }
 
     /// The pointer came into the contents or left them.
@@ -728,7 +728,7 @@ impl AppCore {
     /// The place being read is now on this row. What to do about it.
     pub fn contents_reached(&self, row: Option<u32>, scroll_y: f64, height: f64, reduce_motion: bool) -> ContentsMove {
         let rows = lock(&self.inner.published).sidebar.contents_count;
-        let now = self.inner.life.started.elapsed().as_secs_f64();
+        let now = self.inner.life.seconds_since_start();
         match self
             .inner
             .window
@@ -1117,7 +1117,7 @@ impl AppCore {
 
     /// Whether the state's been read and taken in. A window that went up without it, past the patience, is made again from it once it has: see the host's `restoreReady`.
     pub fn state_read(&self) -> bool {
-        self.inner.state_read()
+        self.inner.life.state_read()
     }
 
     /// What the host shows has been made from the state that was read.
@@ -1127,7 +1127,7 @@ impl AppCore {
 
     /// Whether the window takes what a person does: once it's been made from the state, or once the state's been waited for long enough. Until then it's shown and takes nothing, as it's made again from the state when that comes, and what was done to it would go with it.
     pub fn window_interactive(&self) -> bool {
-        self.inner.window_interactive()
+        self.inner.life.window_interactive()
     }
 
     /// Whether a state that's come in late has the window made again from it now: Rust's rule, [`recto_app::lifecycle::Life::may_remake_window`].
@@ -1180,17 +1180,17 @@ impl AppCore {
 
     /// Whether what the window would show now is right: the place on the layers, or nothing to wait for. Then, or once the patience is over, it shows. A short lock, asked only until it's showing.
     pub fn ready_to_show(&self) -> bool {
-        self.inner.ready_to_show()
+        self.inner.life.ready_to_show(&self.inner.host.session, &self.inner.engine)
     }
 
     /// The window has just been put on the screen, showing this, and `why`: `ready` when `ready_to_show` said yes, `patience` when the host's timer ran out. For QA to see what the first frame was.
     pub fn window_shown(&self, home: bool, tile_layers: u32, why: String) {
-        for engine in self.inner.panes.engines(&self.inner.engine) {
+        let inner = Arc::clone(&self.inner);
+        for engine in inner.panes.engines(&inner.engine) {
             engine.waking().window_up();
         }
-        self.inner.record_window_shown(home, tile_layers, &why);
+        inner.life.record_window_shown(home, tile_layers, &why, &inner.host.session, &inner.engine);
         // The installer's waiting for this, off this thread, as it writes a small file and may start a worker, and only for a version that's new here.
-        let inner = Arc::clone(&self.inner);
         let _ = std::thread::Builder::new()
             .name("recto-update-frame".into())
             .stack_size(UPDATE_FRAME_STACK)
@@ -1242,7 +1242,7 @@ impl AppCore {
 
     /// A sheet or panel opened over the window, or closed. An update waits for it.
     pub fn sheet_changed(&self, open: bool) {
-        self.inner.sheet_changed(open);
+        self.inner.life.sheet_changed(open);
     }
 
     /// The user touched the app. One number stored, on each event, with no timer: an automatic update asks how long it's been.
@@ -1252,7 +1252,7 @@ impl AppCore {
 
     /// The pointer moved over the app, or something else that shows someone's there and isn't an action. Owner, 2026-11-07: "hasn't touched". One number stored, and it's only pressed keys and clicks that say a notice has been read.
     pub fn note_user_nearby(&self) {
-        self.inner.note_nearby();
+        self.inner.life.note_nearby();
     }
 
     /// Seconds since the app was last touched, for QA.

@@ -70,7 +70,7 @@ pub fn notice(inner: &Inner, words: &str) {
 pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, shown: &PaneSnapshot) -> Option<(TabId, Stop, u64)> {
     let id = shown.id;
     // Its file's being looked at: nothing goes on the page until that's known.
-    let holding = *lock(&inner.life.holding_tab) == Some(id) && synced.tab.is_none();
+    let holding = inner.life.holding_tab() == Some(id) && synced.tab.is_none();
     if holding {
         return None;
     }
@@ -174,7 +174,7 @@ fn show_in_panes(inner: &Inner, synced: &mut Synced, panes: &[PaneSnapshot], pap
 pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     #[cfg(any(test, feature = "testkit"))]
     inner.serving.place_seams.look_began();
-    let nothing_held = lock(&inner.life.holding_tab).is_none();
+    let nothing_held = inner.life.holding_tab().is_none();
     // A tab about to be shown in a pane that wasn't: its file's looked at first, so nothing of a version that's been replaced goes up, held or not.
     let panes_now = inner.host.session.with_session(|session| session.panes());
     for (pane, id) in panes_now.iter().enumerate() {
@@ -225,7 +225,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let save = save_state_now(inner, &facts.reading);
     let problem = facts.reading_pane().and_then(|shown| shown.problem.clone());
     // The contents follow the tab being read, whichever pane it's in.
-    let holding_now = *lock(&inner.life.holding_tab);
+    let holding_now = inner.life.holding_tab();
     if synced.active != active && active.is_some() && holding_now != active {
         let mut follow = lock(&inner.window.contents_follow);
         follow.new_contents();
@@ -328,7 +328,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             note,
             selection_notice,
             pane_views: crate::pane_views(&facts.panes, active, comparing, &engine_notes),
-            holding: lock(&inner.life.holding_tab).is_some(),
+            holding: inner.life.holding_tab().is_some(),
             first_pane_empty: synced.panes.first().is_none_or(|pane| pane.tab.is_none()),
             sidebar_width: lock(&inner.window.app).sidebar_width,
             save: crate::SaveFacts {

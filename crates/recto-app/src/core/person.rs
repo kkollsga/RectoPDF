@@ -47,7 +47,7 @@ pub(crate) fn on_a_thread_of_its_own(run: &PersonCommand) -> bool {
 /// A person's command that may hold its thread for long, as the window's Save always ran: through the host, counted for a hand-off, and what it did told.
 fn on_its_own_thread(command: Command, counted: Running) {
     let spawned = std::thread::Builder::new().name("recto-person".into()).stack_size(1024 * 1024).spawn(move || {
-        let inner = Arc::clone(&counted.0);
+        let inner = Arc::clone(&counted.inner);
         let mut events = Vec::new();
         sent(&inner.serving, &command);
         let result = recto_control::host::Host::run(&*inner.host, Actor::Person, &command, &mut events);
@@ -61,18 +61,18 @@ fn on_its_own_thread(command: Command, counted: Running) {
 
 /// **A person's command counted as running for a hand-off** until it's dropped: as its thread ends, however it ends. A command that panicked was counted
 /// running for good, so a hand-off waited on it to the end of its patience and the tests' settle never settled (review, 2026-11-13).
-struct Running(Arc<Inner>);
+/// The life's count goes first as it's dropped (fields drop in the order they're declared), then the app, as when this let go of the count itself.
+struct Running {
+    _counted: super::life::PersonRunning,
+    inner: Arc<Inner>,
+}
 
 impl Running {
     fn start(inner: Arc<Inner>) -> Self {
-        inner.life.persons_running.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Self(inner)
-    }
-}
-
-impl Drop for Running {
-    fn drop(&mut self) {
-        self.0.life.persons_running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        Self {
+            _counted: inner.life.person_running(),
+            inner,
+        }
     }
 }
 
@@ -266,7 +266,7 @@ mod tests {
             panic!("a command that panics");
         });
         assert!(thread.join().is_err(), "it panicked");
-        assert_eq!(inner.life.persons_running.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(inner.life.persons_running(), 0);
     }
     use recto_session::SessionError;
 

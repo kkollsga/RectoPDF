@@ -218,47 +218,54 @@ fn run(shared: &Shared) {
         // A renderer this job opened with a password for another tab's file goes now, not when the thread next comes round, which may be a long rest.
         let_go_of_unwanted(shared, &mut renderers, &wanted);
         publish_workers(shared, &mut renderers);
-        let drawn = match (&job.kind, &outcome) {
-            (
-                JobKind::Draw {
-                    what: DrawKind::Tile | DrawKind::Region,
-                    ..
-                },
-                Outcome::Drawn { .. },
-            ) => Some(None),
-            (JobKind::Draw { .. }, Outcome::PageFailed { .. }) => Some(Some("page_failed")),
-            _ => None,
-        };
-        let (tab, page) = (job.tab, job.position);
-        let mut reader = lock(&shared.reader);
-        if file_changed {
-            reader.file_changed(tab);
-        }
-        // What a text job read isn't about what's selected now, if that's gone with the file.
-        let outcome = if file_changed && matches!(job.kind, JobKind::Text { .. }) {
-            Outcome::Cancelled
-        } else {
-            outcome
-        };
-        reader.finish(job, outcome);
-        take_pending_follow(shared, &mut reader);
-        let has_ops = reader.host.has_ops();
-        let note = reader.note().map(str::to_string);
-        let selecting = selecting_news(&mut reader);
-        // Its end is told with the view let go: until this thread takes the view again, the view isn't settled, as what's told may queue the session's work.
-        reader.work.telling = true;
-        drop(reader);
-        shared.before_telling();
-        note_change(shared, note);
-        tell_selecting(shared, selecting);
-        if let Some(failure) = drawn {
-            shared.events.page_drawn(tab, page, failure);
-        }
-        if has_ops {
-            signal_ops(shared);
-        }
-        shared.settled.notify_all();
+        job_ended(shared, job, outcome, file_changed);
     }
+}
+
+/// **A job's end:** taken into the view under its lock (a file found changed first, and a text job's read dropped with it), then told with the lock let go:
+/// the note, the selection's notice, the page drawn, and the host's word that there are layers. Until this thread takes the view again, the view isn't
+/// settled (`Work::telling`), as what's told may queue the session's work.
+fn job_ended(shared: &Shared, job: Job, outcome: Outcome, file_changed: bool) {
+    let drawn = match (&job.kind, &outcome) {
+        (
+            JobKind::Draw {
+                what: DrawKind::Tile | DrawKind::Region,
+                ..
+            },
+            Outcome::Drawn { .. },
+        ) => Some(None),
+        (JobKind::Draw { .. }, Outcome::PageFailed { .. }) => Some(Some("page_failed")),
+        _ => None,
+    };
+    let (tab, page) = (job.tab, job.position);
+    let mut reader = lock(&shared.reader);
+    if file_changed {
+        reader.file_changed(tab);
+    }
+    // What a text job read isn't about what's selected now, if that's gone with the file.
+    let outcome = if file_changed && matches!(job.kind, JobKind::Text { .. }) {
+        Outcome::Cancelled
+    } else {
+        outcome
+    };
+    reader.finish(job, outcome);
+    take_pending_follow(shared, &mut reader);
+    let has_ops = reader.host.has_ops();
+    let note = reader.note().map(str::to_string);
+    let selecting = selecting_news(&mut reader);
+    // Its end is told with the view let go: until this thread takes the view again, the view isn't settled, as what's told may queue the session's work.
+    reader.work.telling = true;
+    drop(reader);
+    shared.before_telling();
+    note_change(shared, note);
+    tell_selecting(shared, selecting);
+    if let Some(failure) = drawn {
+        shared.events.page_drawn(tab, page, failure);
+    }
+    if has_ops {
+        signal_ops(shared);
+    }
+    shared.settled.notify_all();
 }
 
 /// **What's been asked of the renderers since the thread last came round** ([`Renew`]): one with the wrong version open is dropped, which kills its worker and

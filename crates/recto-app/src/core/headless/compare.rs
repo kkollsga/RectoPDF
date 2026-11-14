@@ -121,15 +121,13 @@ fn a_tap_after_a_command_click_still_being_read_wins() {
     }
     cold(&app, 1);
     let inner = app.core();
-    inner.life.qa_hold_reads.store(true, std::sync::atomic::Ordering::SeqCst);
+    inner.life.hold_reads(true);
     app.act(command_click(&app, 1));
-    app.wait_until("the cold tab's read to be under way", || {
-        inner.life.reads_running.load(std::sync::atomic::Ordering::SeqCst) > 0
-    });
+    app.wait_until("the cold tab's read to be under way", || inner.life.reads_running() > 0);
     let row = app.tabs().into_iter().find(|row| row.tab == 3).expect("its row");
     app.act(UiAction::Row { row, adding: false });
     app.wait_until("the tap taken", || app.reader().shown_tab == 3);
-    inner.life.qa_hold_reads.store(false, std::sync::atomic::Ordering::SeqCst);
+    inner.life.hold_reads(false);
     app.settle();
     assert_eq!(app.reader().shown_tab, 3, "the tab tapped is in front");
     assert!(app.session_json()["comparison"].is_null(), "and alone: {}", app.session_json()["comparison"]);

@@ -29,55 +29,9 @@ impl Inner {
         self.core.push(CoreCall::RestorePatienceOver);
     }
 
-    /// Whether the state's been read and taken in. A window that went up without it, past the patience, is made again from it once it has: see the host's `restoreReady`.
-    pub fn state_read(&self) -> bool {
-        self.life.state_read()
-    }
-
-    /// The page checks as they are now, gathered for [`showing::decide`]. The UI thread asks, and doesn't wait for the session.
-    fn page_checks(&self) -> showing::PageChecks {
-        let active = self.host.session.try_with_session(|session| session.tabs().active().is_some());
-        showing::PageChecks {
-            state_read: self.state_read(),
-            holding_tab: lock(&self.life.holding_tab).is_some(),
-            session_free: active.is_some(),
-            has_tab: active.unwrap_or(false),
-            on_place: self.engine.waking().is_on_place(),
-            showable: self.engine.waking().is_showable(),
-        }
-    }
-
-    /// Whether the window may be shown now, by [`showing::decide`]; what it said is kept for the record.
-    pub fn ready_to_show(&self) -> bool {
-        let opened = lock(&self.life.window_opened_at).map(|at| at.elapsed());
-        let decision = showing::decide(opened, self.life.started.elapsed(), self.page_checks());
-        self.life.shown_by_cap.store(decision == showing::Show::Cap, Ordering::Relaxed);
-        decision != showing::Show::Wait
-    }
-
-    /// **What the window's first showing had on it, and why it was shown.** `why` is `ready` (the page checks passed), `cap` (Rust's cap ran out: the host asked and was told yes) or `patience` (the host's timer showed it). The rest is how the page checks were at the show, written once per window.
-    pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str) {
-        let report = self.engine.report().0;
-        let checks = self.page_checks();
-        let why = if why == "ready" && self.life.shown_by_cap.load(Ordering::Relaxed) {
-            "cap"
-        } else {
-            why
-        };
-        let opened = lock(&self.life.window_opened_at).map(|at| at.elapsed());
-        *lock(&self.life.first_shown) = Some(json!({
-            "home": home, "page": report["page"], "scroll_y": report["scroll_y"], "scroll_x": report["scroll_x"], "magnification": report["magnification"], "settled": report["settled"], "tab": report["tab"],
-            "tile_layers": tile_layers, "ms_from_start": self.life.started.elapsed().as_secs_f64() * 1000.0,
-            "why": why,
-            "ms_since_window_opened": opened.map(|opened| opened.as_secs_f64() * 1000.0),
-            "patience_ms": SHOW_PATIENCE.as_millis() as u64,
-            "when_shown": { "state_read": checks.state_read, "holding_tab": checks.holding_tab, "session_free": checks.session_free, "has_tab": checks.has_tab, "on_place": checks.on_place, "showable": checks.showable },
-        }));
-    }
-
     /// The window opened: its page views have somewhere to draw again, what was selected on the window it replaced comes back, and the contents go back to where they were.
     pub fn window_opened(&self) {
-        *lock(&self.life.window_opened_at) = Some(Instant::now());
+        self.life.window_opened();
         let engines = self.panes.engines(&self.engine);
         for engine in &engines {
             engine.window_opened();

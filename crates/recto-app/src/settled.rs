@@ -26,7 +26,13 @@
 //! (the kit takes the page views' layer changes as the window would), then the two looks; otherwise a short pause and again. It answers only on two clean
 //! looks, so never early; and every wait in it is bounded by the caller's limit, past which it says what was still under way, so it can't hang.
 
-use crate::core::Inner;
+use crate::core::Lifecycle;
+use crate::core::saver::Saver;
+use crate::core::sleeper::Sleeper;
+use crate::core::{AppHost, Tools};
+use crate::panes::Panes;
+use crate::queue::CoreQueue;
+use recto_reader::Engine;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -45,6 +51,36 @@ pub enum PageViews {
     AtRest,
 }
 
+/// **The parts of the app whose rest this looks at,** and nothing else of it: borrowed for one wait by whoever asks (the kit's `settle`, `qa wait`), each
+/// field the app's own part of the same name.
+pub struct Watched<'a> {
+    pub core: &'a CoreQueue,
+    pub life: &'a Lifecycle,
+    pub tools: &'a Tools,
+    pub sleeper: &'a Sleeper,
+    pub saver: &'a Saver,
+    pub host: &'a AppHost,
+    pub panes: &'a Panes,
+    pub engine: &'a Engine,
+}
+
+/// The parts of `$inner` (the app's core, or what derefs to it) that [`Watched`] borrows: written once, for each caller.
+macro_rules! watched {
+    ($inner:expr) => {
+        $crate::settled::Watched {
+            core: &$inner.core,
+            life: &$inner.life,
+            tools: &$inner.tools,
+            sleeper: &$inner.sleeper,
+            saver: &$inner.saver,
+            host: &$inner.host,
+            panes: &$inner.panes,
+            engine: &$inner.engine,
+        }
+    };
+}
+pub(crate) use watched;
+
 /// One look: what's under way, in words, or nothing; and the counts that move whenever work is handed on, for the next look to compare.
 struct Look {
     busy: Vec<String>,
@@ -57,7 +93,7 @@ struct Look {
 /// # Errors
 ///
 /// Past `limit`, with what was still under way at the last look.
-pub fn wait(inner: &Inner, views: PageViews, limit: Duration, mut host: impl FnMut()) -> Result<(), Vec<String>> {
+pub fn wait(inner: &Watched<'_>, views: PageViews, limit: Duration, mut host: impl FnMut()) -> Result<(), Vec<String>> {
     let began = Instant::now();
     loop {
         let left = limit.saturating_sub(began.elapsed());
@@ -68,7 +104,7 @@ pub fn wait(inner: &Inner, views: PageViews, limit: Duration, mut host: impl FnM
         }
         if views == PageViews::Drawn {
             // Waited for where it's cheap to: each view's own condition, woken as its jobs end.
-            for engine in inner.panes.engines(&inner.engine) {
+            for engine in inner.panes.engines(inner.engine) {
                 engine.wait_settled(limit.saturating_sub(began.elapsed()));
             }
         }
@@ -96,11 +132,11 @@ pub fn wait(inner: &Inner, views: PageViews, limit: Duration, mut host: impl FnM
 
 /// **What's under way now,** in words, from one look: nothing when everything is at rest at this look (one look is not yet settled: see [`wait`]).
 #[must_use]
-pub fn under_way(inner: &Inner, views: PageViews) -> Vec<String> {
+pub fn under_way(inner: &Watched<'_>, views: PageViews) -> Vec<String> {
     look(inner, views).busy
 }
 
-fn look(inner: &Inner, views: PageViews) -> Look {
+fn look(inner: &Watched<'_>, views: PageViews) -> Look {
     let mut busy = Vec::new();
     let mut stamp = Vec::new();
     match inner.core.at_rest() {
@@ -108,7 +144,7 @@ fn look(inner: &Inner, views: PageViews) -> Look {
         Err(what) => busy.push(what.to_string()),
     }
     off_the_session_thread(inner, &mut busy);
-    for (at, engine) in inner.panes.engines(&inner.engine).iter().enumerate() {
+    for (at, engine) in inner.panes.engines(inner.engine).iter().enumerate() {
         match views {
             PageViews::Drawn => {
                 if !engine.wait_settled(Duration::ZERO) {
@@ -128,15 +164,15 @@ fn look(inner: &Inner, views: PageViews) -> Look {
 }
 
 /// What runs off the session thread and comes back to it, still going: each counts itself running until after it has queued what it found.
-fn off_the_session_thread(inner: &Inner, busy: &mut Vec<String>) {
+fn off_the_session_thread(inner: &Watched<'_>, busy: &mut Vec<String>) {
     if crate::lock(&inner.tools.prompts().passwords).trying() {
         busy.push("a password being tried".to_string());
     }
-    let reads = inner.life.reads_running.load(Ordering::SeqCst);
+    let reads = inner.life.reads_running();
     if reads > 0 {
         busy.push(format!("{reads} file(s) being read"));
     }
-    let persons = inner.life.persons_running.load(Ordering::SeqCst);
+    let persons = inner.life.persons_running();
     if persons > 0 {
         busy.push(format!("{persons} of the person's command(s) on a thread of their own"));
     }
@@ -145,7 +181,7 @@ fn off_the_session_thread(inner: &Inner, busy: &mut Vec<String>) {
     if saves > 0 {
         busy.push(format!("{saves} of the window's save(s)"));
     }
-    if inner.life.others_looking.load(Ordering::SeqCst) > 0 {
+    if inner.life.others_looking() {
         busy.push("the other tabs' files being looked at".to_string());
     }
     let looks = inner.sleeper.looks_running();
@@ -182,7 +218,7 @@ mod tests {
         gate::hold(&[Seam::Due]);
         app.advance(crate::lifecycle::keeping::TRY_EVERY_MS);
         app.wait_until("the session thread woken for its due try", || app.waiting(Seam::Due) > 0);
-        let busy = under_way(app.core(), PageViews::AtRest);
+        let busy = under_way(&crate::settled::watched!(app.core()), PageViews::AtRest);
         gate::open(Seam::Due);
         app.settle();
         drop(before);
@@ -229,7 +265,7 @@ mod tests {
             drawn = engine.wait_settled(Duration::from_millis(5));
             assert!(began.elapsed() < WAIT_LIMIT, "the page view never came to rest: {}", engine.report().0);
         }
-        let busy = under_way(app.core(), PageViews::Drawn);
+        let busy = under_way(&crate::settled::watched!(app.core()), PageViews::Drawn);
         drop(held);
         host_turns(&app, &mut view, true);
         app.settle();
