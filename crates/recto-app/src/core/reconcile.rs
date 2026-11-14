@@ -75,7 +75,11 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
         return None;
     }
     if synced.tab != Some(id) || synced.pages != shown.pages || synced.map != shown.map {
-        let back = inner.queue_those_leaving(id);
+        let back = inner
+            .sleeper
+            .queue_those_leaving(&sleeper::OnHand::new(&inner.host.session, &inner.panes, &inner.engine), id, || {
+                inner.start_sleep_writer()
+            });
         // Whichever way it's been asked for, the first frame's what its sleep file has, or what was waiting to be one, if nothing's held of this tab.
         if !engine.waking().holds(id.0) {
             engine.waking().note_wake(id.0, Instant::now());
@@ -377,7 +381,9 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     // What's left alone comes due from here, and what's off screen may be over its budget.
     inner.check_woken_files();
     inner.rearm_dormancy();
-    inner.look_at_budget();
+    inner
+        .sleeper
+        .look_at_budget(&sleeper::OnHand::new(&inner.host.session, &inner.panes, &inner.engine), &inner.core);
     // Whatever just happened may be something to keep. Nothing's written unless it really differs when its time comes.
     let (retired, journal_work) = inner
         .host

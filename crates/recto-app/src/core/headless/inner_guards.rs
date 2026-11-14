@@ -124,7 +124,6 @@ Inner::pub fn hand_off_check(&self) -> HandOffCheck
 Inner::pub fn hand_off_quit_now(&self) -> bool
 Inner::pub fn has_setting(&self, id: &str) -> bool
 Inner::pub fn link_prompt_answered(&self, id: u64, open: bool) -> Option<String>
-Inner::pub fn look_at_budget(&self)
 Inner::pub fn memory_pressure(&self, critical: bool)
 Inner::pub fn menu_item_enabled(&self, id: String) -> bool
 Inner::pub fn note_input(&self)

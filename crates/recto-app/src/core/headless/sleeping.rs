@@ -1022,8 +1022,14 @@ fn a_copy_letting_the_record_go_writes_no_sleep_file() {
         .with_session(|session| session.tabs().active())
         .expect("a tab on screen");
     assert_eq!(
-        app.core()
-            .write_sleep_for(on_screen, crate::sleep_writer::By::Asked(recto_agent::Actor::Person)),
+        app.core().sleeper.write_sleep_for(
+            &crate::core::sleeper::OnHand::new(&app.core().host.session, &app.core().panes, &app.core().engine),
+            &app.core().saver.store,
+            &crate::core::keeping::asks(app.core()),
+            on_screen,
+            crate::sleep_writer::By::Asked(recto_agent::Actor::Person),
+            None
+        ),
         None
     );
     assert_eq!(record_folder(app.disk()), on_disk, "a sleep file written into a record this copy doesn't keep");

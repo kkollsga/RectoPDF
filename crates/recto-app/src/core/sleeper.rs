@@ -7,8 +7,13 @@
 use super::keeping::KeepsRecord;
 use super::{CoreCall, Inner, lock};
 use crate::clock::Clock;
+use crate::panes::Panes;
+use crate::queue::CoreQueue;
+use recto_agent::DrawableLoader;
+use recto_control::host::SessionHost;
 use recto_control::record_store::RecordStore;
 use recto_platform::surface::PixelSurface;
+use recto_reader::Engine;
 use recto_reader::layout::PageBox;
 use recto_reader::paper::PaperKind;
 use recto_reader::{SleepMaterial, SleepShot, SleepView};
@@ -312,6 +317,156 @@ impl Sleeper {
     }
 }
 
+impl Sleeper {
+    /// Writes a tab's sleep file from what's known of it now, if that's anything new, waiting behind the one being written: as being asked has it (`until`
+    /// none), or a flush (only until `until`, counted as skipped past it). Says what came of it, if anything was decided.
+    pub(super) fn write_sleep_for(
+        &self,
+        on_hand: &OnHand<'_>,
+        store: &RecordStore,
+        keeps: &KeepsRecord<'_>,
+        id: TabId,
+        by: By,
+        until: Option<Instant>,
+    ) -> Option<Outcome> {
+        let (facts, material) = on_hand.facts_and_material(id)?;
+        // What's queued for it is older than this.
+        self.leaving.forget(id);
+        self.write_with_material(store, keeps, facts, material, by, until)
+    }
+
+    /// **The sleep files a flush writes** (a quit's, a hand-off's, `session save`'s), the state already written. **The tab on screen's first**, the next launch's
+    /// first frame, waiting for another being written only until `until` and counted as skipped past it (a quit waited its 5 s behind sleep files queued for a
+    /// slow disk and went without the state, slow mode 2026-11-11); **then what's waiting in the cool-down**, hurried and waited for within what's left of the
+    /// time, a writer started for it by `start_writer` if there's none. The other way round, on a slow disk the queued files used the limit and the one file the
+    /// next launch needs was skipped (review, 2026-11-13).
+    /// **Asked for by an agent** (`session save`), the cool-down is left alone (what waits stays waiting) and the tab on screen's file is held to the agent's
+    /// share of the hour: an agent's save in a loop cut every cool-down short on demand. What came of that write is kept under the agent's ticket, for its
+    /// answer to say if its share cut it short.
+    pub(super) fn sleep_at_flush(
+        &self,
+        on_hand: &OnHand<'_>,
+        store: &RecordStore,
+        keeps: &KeepsRecord<'_>,
+        asked: Option<app::Asked>,
+        until: Instant,
+        start_writer: impl FnOnce(),
+    ) {
+        let agent = asked.filter(|asked| matches!(asked.by, recto_agent::Actor::Agent(_)));
+        if let Some(id) = on_hand.session.with_session(|session| session.tabs().active()) {
+            let outcome = self.write_sleep_for(on_hand, store, keeps, id, agent.map_or(By::Flush, |asked| By::Asked(asked.by)), Some(until));
+            if let Some(asked) = agent {
+                self.answer(asked, outcome);
+            }
+        }
+        if agent.is_none() {
+            self.drain_leaving(until, start_writer);
+        }
+    }
+
+    /// **Tabs pushed out of the warm ones, their sleep files queued,** with their pictures copied just before the page view lets go of them: a quick copy of each, of those whose time's come, queued as it's made, so what's held is the queue's cap and the one being copied. Packing a photograph takes long enough to hold up whatever's asked for next, so the one writer does that ([`crate::sleep_queue`]). Each waits [`crate::sleeper::LEAVING_WAIT_MS`] first (the cool-down on the write). A flush hurries what's waiting and waits for it for what's left of its time, then writes the tab on screen's file.
+    /// `shown` is the tab being shown: what's queued for it was copied as it left, so it's taken back, not written, and said for its first frame
+    /// ([`give_sleep_view`]); it's queued again when it next leaves.
+    /// A writer's started by `start_writer` if the queue says there's none.
+    pub(super) fn queue_those_leaving(&self, on_hand: &OnHand<'_>, shown: TabId, start_writer: impl FnOnce()) -> Option<(SleepFacts, SleepMaterial)> {
+        let back = self.leaving.take_back(shown);
+        let left = on_hand.session.with_session(|session| session.sleeper().take_left_warm());
+        let now = self.millis();
+        let mut start = false;
+        for (facts, pushed_by) in left {
+            if let Some(material) = on_hand.material(facts.id) {
+                start |= self.leaving.push(facts, material, Leaves::PushedOut(pushed_by), now);
+            }
+        }
+        if start {
+            start_writer();
+        }
+        back
+    }
+
+    /// A tab going dormant by itself: its sleep file, from what's on hand now, queued for the one writer, started by `start_writer` if there's none.
+    pub(super) fn queue_sleep_for(&self, on_hand: &OnHand<'_>, id: TabId, start_writer: impl FnOnce()) {
+        let Some((facts, material)) = on_hand.facts_and_material(id) else {
+            return;
+        };
+        if self.leaving.push(facts, material, Leaves::Dormant, self.millis()) {
+            start_writer();
+        }
+    }
+
+    /// The documents off screen against their budget. At most once a second, and only with something off screen, which most of the time there's little of.
+    /// Tabs it says are over go to the session thread through `core`.
+    pub(super) fn look_at_budget(&self, on_hand: &OnHand<'_>, core: &CoreQueue) {
+        let (warm, active) = on_hand
+            .session
+            .with_session(|session| (session.dormant().oldest_first(), session.tabs().active()));
+        // A change of tab is when a document comes to be off screen, so that's looked at straight away.
+        if self
+            .step(Event::LookAtBudget {
+                active,
+                off_screen: !warm.is_empty(),
+            })
+            .is_none()
+        {
+            return;
+        }
+        let costs: Vec<(TabId, u64)> = warm
+            .iter()
+            .map(|id| {
+                (
+                    *id,
+                    on_hand.engine_for(*id).workers().bytes(id.0)
+                        + on_hand
+                            .session
+                            .with_session(|session| session.lists().get(*id).map_or(0, |list| list.history_bytes() as u64)),
+                )
+            })
+            .collect();
+        if let Some(Out::SleepTabs(over, why)) = self.step(Event::Costs(costs)) {
+            core.push(CoreCall::SleepTabs(over, why));
+        }
+    }
+}
+
+/// **What a tab's sleep file is made from now:** what the session says of it, and what its page view holds, taken against the pages the session says the tab
+/// has now ([`pages_now`]), so that no picture in it is of a page deleted, moved or turned since it was drawn. The one place that rule is carried out, for a
+/// tab going dormant, one leaving the warm ones and one written in place. Borrowed from the app for one call, holding nothing of its own.
+pub struct OnHand<'a> {
+    session: &'a SessionHost<DrawableLoader>,
+    panes: &'a Panes,
+    engine: &'a Engine,
+}
+
+/// Built for each call that queues or writes a sleep file, so it holds its borrows and nothing else. Failure caught: a field of its own added.
+const _: () = assert!(std::mem::size_of::<OnHand<'static>>() == 3 * std::mem::size_of::<usize>());
+
+impl<'a> OnHand<'a> {
+    /// From the app's session, its panes and its first page view.
+    pub(super) fn new(session: &'a SessionHost<DrawableLoader>, panes: &'a Panes, engine: &'a Engine) -> Self {
+        Self { session, panes, engine }
+    }
+
+    /// The page view holding a tab: the pane's showing it, or pane 0's, which holds the warm tabs.
+    fn engine_for(&self, id: TabId) -> Engine {
+        self.panes.engine_for_tab(self.engine, id)
+    }
+
+    /// What the session says of a tab's sleep file and its pages now, in one look, and what its page view has of those pages.
+    fn facts_and_material(&self, id: TabId) -> Option<(SleepFacts, SleepMaterial)> {
+        let (facts, now) = self
+            .session
+            .with_session(|session| Some((session.dormant().sleep_facts(id)?, pages_now(session, id)?)))?;
+        let material = self.engine_for(id).waking().sleep_material(id.0, &now)?;
+        Some((facts, material))
+    }
+
+    /// What a tab's page view has of its pages as the session says they are now, for facts already in hand (a tab leaving the warm ones).
+    fn material(&self, id: TabId) -> Option<SleepMaterial> {
+        let now_pages = self.session.with_session(|session| pages_now(session, id))?;
+        self.engine_for(id).waking().sleep_material(id.0, &now_pages)
+    }
+}
+
 impl Inner {
     /// Works out the next deadline, after anything that can have changed it. A look at the few tabs that hold anything.
     ///
@@ -343,14 +498,17 @@ impl Inner {
             return 0;
         };
         self.saver.write_journals_now(self);
+        let on_hand = OnHand::new(&self.host.session, &self.panes, &self.engine);
         let mut gone = 0;
         for &id in &tabs {
             // Being asked is an agent's or `recto session sleep`'s, which looks at the file straight after, and waits behind the one being written at most. The rest are the session's own, which never waits on a disk: queued, as those leaving the warm ones are (review 1 of `build/one-sleep-writer`). Being asked counts against the hour too: only a flush doesn't wait (review).
             if let (true, Why::Asked(asked)) = (in_place, why) {
-                let outcome = self.write_sleep_for(id, By::Asked(asked.by));
+                let outcome = self
+                    .sleeper
+                    .write_sleep_for(&on_hand, &self.saver.store, &super::keeping::asks(self), id, By::Asked(asked.by), None);
                 self.sleeper.answer(asked, outcome);
             } else {
-                self.queue_sleep_for(id);
+                self.sleeper.queue_sleep_for(&on_hand, id, || self.start_sleep_writer());
             }
             let list = self.host.session.with_session(|session| session.dormant().list_to_sleep(id));
             // Compacted, and read back. If that doesn't say it's all there, the list stays in memory, and it's looked at again next time it's left alone.
@@ -367,44 +525,6 @@ impl Inner {
         }
         let _ = self.sleeper.step(Event::WentDormant { why, gone });
         gone
-    }
-
-    /// Writes a tab's sleep file from what's known of it now, if that's anything new, waiting behind the one being written: as being asked has it, or a flush.
-    /// Says what came of it, if anything was decided.
-    pub(super) fn write_sleep_for(&self, id: TabId, by: By) -> Option<Outcome> {
-        self.write_sleep_now_for(id, by, None)
-    }
-
-    /// **The sleep files a flush writes** (a quit's, a hand-off's, `session save`'s), the state already written. **The tab on screen's first**, the next launch's
-    /// first frame, waiting for another being written only until `until` and counted as skipped past it (a quit waited its 5 s behind sleep files queued for a
-    /// slow disk and went without the state, slow mode 2026-11-11); **then what's waiting in the cool-down**, hurried and waited for within what's left of the
-    /// time. The other way round, on a slow disk the queued files used the limit and the one file the next launch needs was skipped (review, 2026-11-13).
-    /// **Asked for by an agent** (`session save`), the cool-down is left alone (what waits stays waiting) and the tab on screen's file is held to the agent's
-    /// share of the hour: an agent's save in a loop cut every cool-down short on demand. What came of that write is kept under the agent's ticket, for its
-    /// answer to say if its share cut it short.
-    pub(super) fn sleep_at_flush(&self, asked: Option<app::Asked>, until: Instant) {
-        let agent = asked.filter(|asked| matches!(asked.by, recto_agent::Actor::Agent(_)));
-        if let Some(id) = self.host.session.with_session(|session| session.tabs().active()) {
-            let outcome = self.write_sleep_now_for(id, agent.map_or(By::Flush, |asked| By::Asked(asked.by)), Some(until));
-            if let Some(asked) = agent {
-                self.sleeper.answer(asked, outcome);
-            }
-        }
-        if agent.is_none() {
-            self.sleeper.drain_leaving(until, || self.start_sleep_writer());
-        }
-    }
-
-    fn write_sleep_now_for(&self, id: TabId, by: By, until: Option<Instant>) -> Option<Outcome> {
-        let (facts, now) = self
-            .host
-            .session
-            .with_session(|session| Some((session.dormant().sleep_facts(id)?, pages_now(session, id)?)))?;
-        let material = self.panes.engine_for_tab(&self.engine, id).waking().sleep_material(id.0, &now)?;
-        // What's queued for it is older than this.
-        self.sleeper.leaving.forget(id);
-        self.sleeper
-            .write_with_material(&self.saver.store, &super::keeping::asks(self), facts, material, by, until)
     }
 
     /// The queue's said there's no writer: one's started.
@@ -551,50 +671,6 @@ impl Sleeper {
 }
 
 impl Inner {
-    /// **Tabs pushed out of the warm ones, their sleep files queued,** with their pictures copied just before the page view lets go of them: a quick copy of each, of those whose time's come, queued as it's made, so what's held is the queue's cap and the one being copied. Packing a photograph takes long enough to hold up whatever's asked for next, so the one writer does that ([`crate::sleep_queue`]). Each waits [`crate::sleeper::LEAVING_WAIT_MS`] first (the cool-down on the write). A flush hurries what's waiting and waits for it for what's left of its time, then writes the tab on screen's file.
-    /// `shown` is the tab being shown: what's queued for it was copied as it left, so it's taken back, not written, and said for its first frame
-    /// ([`Self::give_sleep_view`]); it's queued again when it next leaves.
-    pub(super) fn queue_those_leaving(&self, shown: TabId) -> Option<(SleepFacts, SleepMaterial)> {
-        let back = self.sleeper.leaving.take_back(shown);
-        let left = self.host.session.with_session(|session| session.sleeper().take_left_warm());
-        let now = self.sleeper.millis();
-        let mut start = false;
-        for (facts, pushed_by) in left {
-            let Some(now_pages) = self.host.session.with_session(|session| pages_now(session, facts.id)) else {
-                continue;
-            };
-            if let Some(material) = self
-                .panes
-                .engine_for_tab(&self.engine, facts.id)
-                .waking()
-                .sleep_material(facts.id.0, &now_pages)
-            {
-                start |= self.sleeper.leaving.push(facts, material, Leaves::PushedOut(pushed_by), now);
-            }
-        }
-        if start {
-            self.start_sleep_writer();
-        }
-        back
-    }
-
-    /// A tab going dormant by itself: its sleep file, from what's on hand now, queued for the one writer.
-    fn queue_sleep_for(&self, id: TabId) {
-        let Some((facts, now)) = self
-            .host
-            .session
-            .with_session(|session| Some((session.dormant().sleep_facts(id)?, pages_now(session, id)?)))
-        else {
-            return;
-        };
-        let Some(material) = self.panes.engine_for_tab(&self.engine, id).waking().sleep_material(id.0, &now) else {
-            return;
-        };
-        if self.sleeper.leaving.push(facts, material, Leaves::Dormant, self.sleeper.millis()) {
-            self.start_sleep_writer();
-        }
-    }
-
     /// Tabs just woken from their sleep files: nothing's asked of the PDF on the way, as it may be on a disk that's gone away. Each is looked at on a thread of its own, and if it's turned out to be something else, it's read after all.
     pub fn check_woken_files(&self) {
         let woken = self.host.session.with_session(|session| session.dormancy_mut().take_woken_from_file());
@@ -664,41 +740,6 @@ impl Inner {
                 handed_back,
             },
         );
-    }
-
-    /// The documents off screen against their budget. At most once a second, and only with something off screen, which most of the time there's little of.
-    pub fn look_at_budget(&self) {
-        let (warm, active) = self
-            .host
-            .session
-            .with_session(|session| (session.dormant().oldest_first(), session.tabs().active()));
-        // A change of tab is when a document comes to be off screen, so that's looked at straight away.
-        if self
-            .sleeper
-            .step(Event::LookAtBudget {
-                active,
-                off_screen: !warm.is_empty(),
-            })
-            .is_none()
-        {
-            return;
-        }
-        let costs: Vec<(TabId, u64)> = warm
-            .iter()
-            .map(|id| {
-                (
-                    *id,
-                    self.panes.engine_for_tab(&self.engine, *id).workers().bytes(id.0)
-                        + self
-                            .host
-                            .session
-                            .with_session(|session| session.lists().get(*id).map_or(0, |list| list.history_bytes() as u64)),
-                )
-            })
-            .collect();
-        if let Some(Out::SleepTabs(over, why)) = self.sleeper.step(Event::Costs(costs)) {
-            self.core.push(CoreCall::SleepTabs(over, why));
-        }
     }
 
     /// The system's memory pressure, from the host's dispatch source (and `qa memory-pressure system-warning`): acted on, or in a quiet run only counted ([`crate::pressure::heard`]). A quiet run is the one with a QA bridge.
