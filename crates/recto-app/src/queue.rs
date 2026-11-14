@@ -216,6 +216,15 @@ enum Doing {
     Parked { until: Option<Instant> },
 }
 
+/// A way back to the session thread's queue held ([`CoreQueue::way_back`]): let go as it's dropped.
+pub(crate) struct WayBack(Arc<CoreQueue>);
+
+impl Drop for WayBack {
+    fn drop(&mut self) {
+        self.0.way_back_let_go();
+    }
+}
+
 /// The session thread's queue. A parked thread at rest, so an open app takes no wake-ups for it.
 #[derive(Default)]
 pub struct CoreQueue {
@@ -279,6 +288,9 @@ impl CoreQueue {
     pub fn end(&self) {
         self.ended.store(true, Ordering::SeqCst);
         self.nudge();
+        // A wait for the thread to park, or park again, ends with it.
+        let _calls = lock(&self.calls);
+        self.parked.notify_all();
     }
 
     /// **The session thread ends now, with nothing more taken,** as a process that's killed takes nothing it was asked. Only a headless app's kill asks this.
@@ -312,6 +324,13 @@ impl CoreQueue {
     /// A thread off the session thread takes a way back to this queue, counted till it lets go ([`Self::way_back_let_go`]).
     pub(crate) fn way_back_taken(&self) {
         self.ways_back.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// **A way back to this queue, taken now and let go when the guard goes,** however the thread that holds it ends, a panic included: taken before a
+    /// thread off the session thread starts, and dropped after its last word is queued, so the app's settled counts it till then ([`crate::settled`]).
+    pub(crate) fn way_back(self: &Arc<Self>) -> WayBack {
+        self.way_back_taken();
+        WayBack(Arc::clone(self))
     }
 
     /// A way back taken by [`Self::way_back_taken`] is let go.
@@ -547,7 +566,7 @@ mod tests {
         let waiter = {
             let queue = Arc::clone(&queue);
             std::thread::spawn(move || {
-                let _ = said.send(queue.wait_parked(Duration::from_secs(2)));
+                let _ = said.send(queue.wait_parked(crate::testkit::headless::WAIT_LIMIT));
             })
         };
         until_a_park_wait(&queue, waits);
@@ -561,7 +580,7 @@ mod tests {
         let waiter = {
             let queue = Arc::clone(&queue);
             std::thread::spawn(move || {
-                let _ = said.send(queue.wait_next_park(parks, Duration::from_secs(2)));
+                let _ = said.send(queue.wait_next_park(parks, crate::testkit::headless::WAIT_LIMIT));
             })
         };
         until_a_park_wait(&queue, waits);
@@ -572,6 +591,41 @@ mod tests {
         drop(take);
         queue.end();
         session.join().expect("the session thread");
+    }
+
+    /// Failure (second review of `build/settled-gaps`, 2026-11-14): a way back held by a thread that panicked was never let go, so every settle and `qa
+    /// wait` in the process waited out its limit after it. Held by a thread that panics: let go all the same.
+    #[test]
+    fn a_way_back_is_let_go_when_its_thread_panics() {
+        let queue = Arc::new(CoreQueue::default());
+        let way_back = queue.way_back();
+        assert_eq!(queue.ways_back_held(), 1);
+        let ended = std::thread::spawn(move || {
+            let _held = way_back;
+            panic!("a look that met a hostile file");
+        })
+        .join();
+        assert!(ended.is_err(), "it panicked");
+        assert_eq!(queue.ways_back_held(), 0, "let go as the thread unwound");
+    }
+
+    /// Failure (second review of `build/settled-gaps`, 2026-11-14): a wait for the session thread to park, begun before the queue ended, wasn't told of the
+    /// end and waited out its limit, though its word is that it returns once the thread has ended. Begun on a thread that never parks, then ended: told.
+    #[test]
+    fn a_wait_for_the_session_thread_ends_when_the_queue_does() {
+        let queue = Arc::new(CoreQueue::default());
+        let waits = queue.park_waits.load(Ordering::SeqCst);
+        let (said, heard) = std::sync::mpsc::channel();
+        let waiter = {
+            let queue = Arc::clone(&queue);
+            std::thread::spawn(move || {
+                let _ = said.send(queue.wait_parked(crate::testkit::headless::WAIT_LIMIT));
+            })
+        };
+        until_a_park_wait(&queue, waits);
+        queue.end();
+        assert!(heard.recv().expect("an answer"), "the wait ran out its limit: the end wasn't told");
+        waiter.join().expect("the waiter");
     }
 
     /// Failure (the settled audit, 2026-11-14, gap 3): "settled" answered while the session thread had a deadline due now and hadn't acted on it, because

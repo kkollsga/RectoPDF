@@ -130,7 +130,7 @@ impl LookSlots {
         let slots = std::sync::Arc::clone(self);
         // Its way back to the session thread is counted from here till it has said what it found, the usual way if the frame has stopped waiting: what
         // the app's settled goes by ([`crate::settled`]). Its slot goes before it answers the frame, as the next look at this tab may be asked for at once.
-        core.way_back_taken();
+        let way_back = core.way_back();
         let looking = std::thread::Builder::new().name("recto-look".into()).stack_size(256 * 1024).spawn(move || {
             let status = look_at_file(&path, stamp);
             // A look asked for meanwhile may be about a change made after this one looked: the files showing are looked at again.
@@ -144,10 +144,9 @@ impl LookSlots {
             }
             #[cfg(test)]
             after_answering();
-            core_for_look.way_back_let_go();
+            drop(way_back);
         });
         if looking.is_err() {
-            core.way_back_let_go();
             self.finish(id);
             return;
         }
