@@ -29,14 +29,16 @@ impl<L: DocLoader + Clone> Records for OwnRecord<'_, L> {
     }
 
     /// No pictures for a tab here, and no journals kept as it goes, so all it can let go of is what it's read.
-    fn put_to_sleep(&self, tab: TabId) -> Result<Slept, AgentError> {
+    fn put_to_sleep(&self, tab: TabId, _actor: recto_agent::Actor) -> Result<Slept, AgentError> {
         Ok(self.with(|session| Slept {
             dormant: session.sleeper().go_dormant(tab),
             list_asleep: session.lists().is_asleep(tab),
+            note: None,
         }))
     }
 
-    fn save(&self) -> Result<Saved, AgentError> {
+    /// No sleep files here, so whoever asks, it's the same.
+    fn save(&self, _actor: recto_agent::Actor) -> Result<Saved, AgentError> {
         let started = std::time::Instant::now();
         let (record, checkpoints, lists, edited, retired) = self.with(|session| {
             // What's been discarded goes, or it would come back at the next restore.
@@ -66,6 +68,7 @@ impl<L: DocLoader + Clone> Records for OwnRecord<'_, L> {
             wrote_bytes: self.store.wrote_bytes(),
             total_us: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
             timings: None,
+            note: None,
         })
     }
 

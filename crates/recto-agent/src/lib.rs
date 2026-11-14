@@ -4,6 +4,7 @@
 //! This crate holds no state of its own. A caller brings a session through [`SessionAccess`], and [`execute`] takes the session only for as long as each step needs it: reading a file or drawing
 //! a page happens outside, so one slow PDF never stalls another client. [`table`] is the one list of commands, and the CLI grammar, `recto help`, `SKILL.md` and the level checks all come from it.
 
+mod acting;
 pub mod actor;
 pub mod code;
 pub use code::Code;
@@ -542,6 +543,8 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept:
 
 /// **The one executor:** runs one command for whoever asked, `actor`, noting what happened in `events`. The person's actions at the window and an agent's commands both come here; what tells them apart is [`Actor`]'s. Commands that only a long-running session can answer say so.
 pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    // Each look this command takes at the session is said to be its actor's: see [`acting`].
+    let access = &acting::Acting::new(access, actor);
     let needed = command.access();
     if !actor.may(needed) {
         return Err(refusal(table::display_name(command.tag()), actor.level(), needed));

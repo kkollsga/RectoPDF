@@ -425,7 +425,7 @@ fn edits_on_another_version_stay_known_under_other_notices_and_make_no_sleep_fil
     bed.s.tap(b).unwrap();
     assert_eq!(bed.s.tier(a), Tier::Warm);
     assert_known_not_to_fit(&bed, a, "left");
-    assert!(bed.s.sleeper().take_left_warm().iter().all(|facts| facts.id != a));
+    assert!(bed.s.sleeper().take_left_warm().iter().all(|(facts, _)| facts.id != a));
 }
 
 /// Failure (F7): a list with only undo history (nothing unsaved) went through the block for edits that don't fit: the tab then said "Your unsaved edits are

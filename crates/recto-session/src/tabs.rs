@@ -282,6 +282,7 @@ impl<L: DocLoader> Session<L> {
         self.mail.forget(id);
         self.generated.forget(id);
         self.warm.forget(id);
+        self.dormancy.not_leaving(id);
         // Out of a comparison too. With one left it's that one alone, and the reader goes to another pane rather than the next tab along.
         let mut next_pane = None;
         if let Some(comparison) = &mut self.comparison

@@ -807,6 +807,7 @@ ReaderCounts.pub jobs: u64
 ReaderCounts.pub viewport_steps: u64
 ReaderReport (pub struct)
 ReaderReport.(pub Value)
+Renew (pub(crate) enum, derives Clone, Copy, Debug, PartialEq, Eq)
 Running (pub(super) struct, derives Debug)
 SavedPlace (pub struct, derives Clone, Copy, Debug, PartialEq)
 SavedPlace.pub anchor: (u32, f64)
@@ -859,7 +860,9 @@ SleepShot.pub page: u32
 SleepShot.pub paper: PaperKind
 SleepShot.pub scale: f32
 SleepShot.pub surface: PixelSurface
+SleepSource (pub enum, derives Clone, Copy, Debug, PartialEq, Eq)
 SleepView (pub struct, derives Debug, Default)
+SleepView.pub handed_back: bool
 SleepView.pub pictures: Vec<SleepShot>
 SleepView.pub sizes: Vec<(u32, PageBox)>
 SleepView.pub usual: Option<PageBox>
@@ -898,7 +901,7 @@ WakeReport (pub struct, derives Clone, Copy, Debug, Default)
 WakeReport.pub bare_with_picture: u16
 WakeReport.pub blank_frames: u32
 WakeReport.pub first_frame_us: Option<u64>
-WakeReport.pub from_sleep: bool
+WakeReport.pub from_sleep: Option<SleepSource>
 WakeReport.pub had: WakeStock
 WakeReport.pub sharp_us: Option<u64>
 WakeReport.pub sleep_in_view: u16
@@ -916,7 +919,7 @@ Work::pub(crate) fn hold_drawing(&mut self, on: bool)
 Work::pub(crate) fn note_started(&mut self, job: &Job, cancel: Option<CancelHandle>)
 Work::pub(crate) fn set_cancel(&mut self, cancel: CancelHandle)
 Work::pub(crate) fn take_keyless(&mut self) -> Vec<PathBuf>
-Work::pub(crate) fn take_reopen_files(&mut self) -> Vec<PathBuf>
+Work::pub(crate) fn take_renewals(&mut self) -> Vec<(PathBuf, Renew)>
 Work::pub(crate) fn wanted_files(&self) -> Arc<Vec<PathBuf>>
 WorkerFigures (pub struct, derives Clone, Copy)
 WorkerFigures::pub fn bytes(&self, tab: u32) -> u64

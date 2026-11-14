@@ -552,9 +552,8 @@ fn another_version_of_the_file_takes_every_picture_of_the_old_one() {
     assert!(reader.cache.entries.is_empty(), "every picture and tile of it goes");
     assert!(reader.sleep_material(1, &on(version(2))).unwrap().pictures.is_empty());
     assert!(reader.host.take_ops().contains(&Op::Clear), "and off the screen");
-    assert_eq!(
-        reader.work.take_reopen_files(),
-        [PathBuf::from("/d/a.pdf")],
+    assert!(
+        reader.work.take_renewals().contains(&(PathBuf::from("/d/a.pdf"), crate::tiles::Renew::Reopen)),
         "and a worker that has the old one open goes, or it goes on drawing that"
     );
 }
@@ -607,6 +606,7 @@ fn nothing_drawn_of_an_old_version_is_shown_or_kept() {
         1,
         SleepView {
             version: Some(7),
+            handed_back: false,
             usual: Some(letter()),
             sizes: Vec::new(),
             pictures: vec![shot],
@@ -948,4 +948,31 @@ fn a_failed_page_let_go_at_the_cap_is_asked_for_once_when_its_back() {
         run(&mut reader, &mut asked);
     }
     assert_eq!(asked, 1, "asked for once on its way back, and remembered again");
+}
+
+/// Failure (a whole-suite run, 2026-11-13, and the sleep branch's second review): a tab put to sleep and woken from its sleep file while its worker lived
+/// never had the file's length said again, as a worker says it once, so the session never checked the tab's sleep file and wrote it none after. It was asked
+/// for only when a view was let go of, which a sleep and a wake in one look never do. A tab shown asks for its own file's length again, its view kept or
+/// not, once however often it's shown before the thread that draws comes round, and the ask is gone once taken, so what's held is bounded by the files.
+#[test]
+fn a_tab_shown_has_its_files_length_said_again_once() {
+    let b = PageMap {
+        files: vec![PathBuf::from("/d/b.pdf")],
+        ..map()
+    };
+    let mut reader = Reader::new();
+    reader.set_viewport(view(0.0));
+    reader.activate(1, 5, 0, map(), &[], None, Spread::Single);
+    reader.activate(2, 5, 0, b.clone(), &[1], None, Spread::Single);
+    reader.activate(1, 5, 0, map(), &[2], None, Spread::Single);
+    assert_eq!(
+        reader.work.take_renewals(),
+        [
+            (PathBuf::from("/d/a.pdf"), crate::tiles::Renew::TellLength(1)),
+            (PathBuf::from("/d/b.pdf"), crate::tiles::Renew::TellLength(2))
+        ],
+        "each file shown asked once, a's view kept throughout"
+    );
+    reader.set_warm(&[]);
+    assert!(reader.work.take_renewals().is_empty(), "taken, it's gone, and letting a view go asks nothing");
 }
