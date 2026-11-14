@@ -1099,7 +1099,25 @@ mod tests {
             edits.mark(one(0, page, vec![rect(); 40])).unwrap();
         }
         let ids: Vec<u32> = edits.marks().iter().map(|mark| mark.id).collect();
-        let changes = [MarkChange::Remove { ids }, one(0, 1, vec![rect(); 7])];
+        let kept = ids[3];
+        let file = |page: u32, index: u32, lines: usize| FileMark {
+            key: FileKey {
+                source: 0,
+                page,
+                index,
+                rect: [1.0, 2.0, 3.0, 4.0],
+            },
+            rects: vec![rect(); lines].into_boxed_slice(),
+        };
+        // The file's own taken out with a highlight made as an edit (second review of R4.3): `RemoveFile`, whose inverse is `RestoreFile`.
+        let changes = [
+            MarkChange::Remove { ids: ids[..3].to_vec() },
+            one(0, 1, vec![rect(); 7]),
+            MarkChange::RemoveFile {
+                files: vec![file(0, 2, 5), file(2, 0, 9)],
+                ids: vec![kept],
+            },
+        ];
         for change in changes {
             let step = edits.marks.clone().step_for(change.clone(), Author::Agent).unwrap();
             let predicted = super::super::Step::Mark(Box::new(step)).inverse_held_bytes(&edits.marks);
@@ -1107,11 +1125,17 @@ mod tests {
             edits.mark(change).unwrap();
             assert_eq!(edits.history.bytes - before, predicted, "what it was asked against is what it holds");
         }
-        for _ in 0..2 {
+        for _ in 0..3 {
             let top = edits.history.undo.last().unwrap();
             let predicted = edits.history.bytes - top.step.held_bytes() + top.step.inverse_held_bytes(&edits.marks);
             assert!(edits.undo());
             assert_eq!(edits.history.bytes, predicted, "an undo, as try_undo asks");
+        }
+        for _ in 0..3 {
+            let top = edits.history.redo.last().unwrap();
+            let predicted = edits.history.bytes - top.step.held_bytes() + top.step.inverse_held_bytes(&edits.marks);
+            assert!(edits.redo());
+            assert_eq!(edits.history.bytes, predicted, "a redo, as try_redo asks");
         }
     }
 
