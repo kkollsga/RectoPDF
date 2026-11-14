@@ -362,16 +362,19 @@ fn a_paste_waits_at_most_its_patience_and_never_for_the_session() {
     let (release, holder) = session_held(&app);
     let core = std::sync::Arc::clone(app.core());
     let serial = offer.serial;
-    let ui = std::thread::spawn(move || {
-        let tool = core.tools.tool();
-        core.act(UiAction::Pasted {
-            serial,
-            uti: extract::UTI_SVG.into(),
+    let ui = std::thread::Builder::new()
+        .name("test-ui".into())
+        .spawn(move || {
+            let tool = core.tools.tool();
+            core.act(UiAction::Pasted {
+                serial,
+                uti: extract::UTI_SVG.into(),
+            })
+            .understood
+            .then(|| tool.wait_for_paste())
+            .flatten()
         })
-        .understood
-        .then(|| tool.wait_for_paste())
-        .flatten()
-    });
+        .expect("a thread");
     app.wait_until("the paste's command is under way", || app.core().tools.tool().paste_running());
     app.advance(snapshot_tool::PASTE_PATIENCE_MS);
     app.wait_until("the paste gave up, the session still held", || ui.is_finished());
