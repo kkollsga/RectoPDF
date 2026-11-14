@@ -1292,7 +1292,7 @@ impl AppCore {
 
     /// The timer's gone off. Quick: what it starts is on a thread of its own.
     pub fn update_timer_fired(&self) {
-        self.inner.update_timer_fired();
+        self.inner.updates.timer_fired();
     }
 
     /// The Settings window, as it stands.

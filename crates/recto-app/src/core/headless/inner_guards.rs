@@ -173,9 +173,6 @@ Inner::pub fn system_pressure(&self, critical: bool)
 Inner::pub fn take_places(&self)
 Inner::pub fn take_update_alert(&self) -> Option<UpdateAlert>
 Inner::pub fn update_command(&self, command: &Command) -> Result<Value, AgentError>
-Inner::pub fn update_report(&self) -> Value
-Inner::pub fn update_test_clock(&self, ahead_ms: i64) -> bool
-Inner::pub fn update_timer_fired(&self)
 Inner::pub fn window_closed(&self)
 Inner::pub fn window_interactive(&self) -> bool
 Inner::pub fn window_opened(&self)

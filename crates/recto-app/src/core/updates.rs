@@ -635,24 +635,12 @@ impl Inner {
         }
     }
 
-    pub fn update_report(&self) -> Value {
-        self.updates.report()
-    }
-
     /// With the window open, the margin says it, and nothing more is put up.
     pub fn take_update_alert(&self) -> Option<UpdateAlert> {
         let words = self.updates.menu().take_alert()?;
         let app = lock(&self.window.app);
         let in_dock = app.window.as_ref().is_some_and(|window| window.minimised);
         alert_for(words, !app.window_closed && !in_dock)
-    }
-
-    pub fn update_timer_fired(&self) {
-        self.updates.timer_fired();
-    }
-
-    pub fn update_test_clock(&self, ahead_ms: i64) -> bool {
-        self.updates.set_test_clock(ahead_ms)
     }
 
     pub fn has_setting(&self, id: &str) -> bool {

@@ -495,14 +495,14 @@ impl QaBridge {
             // What the timer does, by the same call, and a test's clock. It's the same call whichever way it comes.
             "update_tick" => {
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
-                inner.update_timer_fired();
+                inner.updates.timer_fired();
                 self.core.flush(ANSWER_AFTER_CLICK);
                 return self.ask("state", "");
             }
             "update_clock" => {
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
                 let ahead = value.parse::<i64>().map_err(|_| bad("It's a number of milliseconds."))?;
-                if !inner.update_test_clock(ahead) {
+                if !inner.updates.set_test_clock(ahead) {
                     return Err(bad("Only a test run with its own update server has a clock to move."));
                 }
                 return self.ask("state", "");
@@ -611,7 +611,7 @@ impl QaBridge {
             "reader": self.engine.report().0,
             "panes": comparison,
             "session": self.inner().map_or(Value::Null, |inner| inner.state_json()),
-            "update": self.inner().map_or(Value::Null, |inner| inner.update_report()),
+            "update": self.inner().map_or(Value::Null, |inner| inner.updates.report()),
             "record": self.inner().map_or(Value::Null, |inner| inner.record_report()),
             "memory": {
                 "footprint_bytes": own,

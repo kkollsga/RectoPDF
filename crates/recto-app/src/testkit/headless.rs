@@ -627,15 +627,15 @@ impl HeadlessApp {
         self.core().note_input();
     }
 
-    /// The updater's one timer went off, as the host's does when [`Inner::update_timer_fired`] is due.
+    /// The updater's one timer went off, as the host's does when [`recto_update::updater::Updater::timer_fired`] is due.
     pub fn update_tick(&self) {
-        self.core().update_timer_fired();
+        self.core().updates.timer_fired();
     }
 
     /// `recto update status`'s answer, as `update status` gives it.
     #[must_use]
     pub fn update_status(&self) -> Value {
-        self.core().update_report()
+        self.core().updates.report()
     }
 
     /// Waits for `update status` to say `status`.
