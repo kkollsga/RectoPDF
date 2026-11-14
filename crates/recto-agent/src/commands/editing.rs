@@ -26,6 +26,7 @@ impl Cmd for PageMove {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
@@ -73,6 +74,7 @@ impl Cmd for PageDelete {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
@@ -117,6 +119,7 @@ impl Cmd for PageInsert {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
@@ -184,6 +187,7 @@ impl Cmd for Edits {
     // It says what's on the pages: a list that can't be read back is refused as a page read is, not answered as no runs (R3.5a).
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
@@ -225,6 +229,7 @@ impl Cmd for Discard {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
@@ -403,6 +408,7 @@ impl Cmd for PageRotate {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
@@ -456,6 +462,7 @@ impl Cmd for Undo {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
@@ -502,6 +509,7 @@ impl Cmd for Redo {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
@@ -548,6 +556,7 @@ impl Cmd for ClearHistory {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)

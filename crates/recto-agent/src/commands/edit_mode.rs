@@ -69,6 +69,7 @@ impl Cmd for EditMode {
     const READS_PAGES: bool = false;
     // It reads nothing of a document, the one being read included.
     const PROTECTED_OK: bool = true;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         None

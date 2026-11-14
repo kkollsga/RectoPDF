@@ -30,6 +30,7 @@ impl Cmd for ContentsFold {
     const READS_PAGES: bool = false;
     // Which entries have sections under them is the shape of a document's contents.
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
@@ -158,6 +159,7 @@ impl Cmd for ContentsShow {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     // Generated ones not shown yet are looked for: the file's key, and the folder they're kept in.
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
@@ -238,6 +240,7 @@ impl Cmd for ContentsStop {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)

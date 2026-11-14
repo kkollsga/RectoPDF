@@ -19,6 +19,7 @@ impl Cmd for PermissionShow {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         None
@@ -55,6 +56,7 @@ impl Cmd for PermissionRequest {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         None
@@ -90,6 +92,7 @@ impl Cmd for Log {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         None
@@ -122,6 +125,7 @@ impl Cmd for Sign {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         None
@@ -154,6 +158,7 @@ impl Cmd for LevelChanged {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         None
