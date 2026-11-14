@@ -82,7 +82,7 @@ Each of these is in the repo (cited) and in no section of the guide:
 - **Decisions**: behaviour decisions checked against the owner's written rules first (the pilot's scope cut on undo past a Save, reversed by its
   review against the owner's rule of 2026-11-07); a denied permission goes to the owner.
 - **Per-action cost counted, not timed** (`build/publish-per-tab`: 93 to 615 µs per undo at 1,000 tabs, past every check and two reviews).
-- **What is unsolved** (§5 below).
+- **What is unsolved** (now the guide's §0.3).
 
 ## 5. The redesign we had to do, the day-one decision that avoids it, and where the guide says it
 
@@ -130,14 +130,40 @@ Out of reach from this repo, kept as written, tidied for wording and de-duplicat
 
 ## 7. Length
 
-Old: 1,713 lines. The rewrite's count is in its hand-back. Added sections, each justified:
-- §0.2 checklist (moved from §14 and expanded with reasons: the day-one path the owner asked for).
-- §0.3 what isn't solved (so a reader doesn't take an unsolved target as done).
-- §2.11 to §2.14 (the skeleton decisions phase R paid for; rows 4 to 8, 15, 16, 18).
-- §5.6 to §5.8 (agents and decisions; rows 24, 25).
-- §6.7, §6.10 (settled, policy walks; rows 13 to 15).
-- §7 restructuring safely (what to do when it slips anyway).
-Cut or merged: old §14 (into §0.2), the unnumbered tail (each item into a numbered section), three tellings of the suite-count story into one.
+| | Lines | Lines at one 120-column wrap | Words |
+|---|---:|---:|---:|
+| Before | 1,713 | 1,811 (its tail sections were unwrapped) | 22,643 |
+| After | 1,941 | 1,941 | 25,421 |
+
+The rewrite is about 12% longer in words. The coordinator asked for no longer if possible; folding the tail in and cutting duplicates
+paid for about a third of what was added. What was added, each for its row in §5:
+- §0.2 the first week, in order (about 1,000 words; replaces old §14's 28 lines): the day-one path the owner asked for, each item with the
+  incident that earned it.
+- §0.3 what isn't solved yet (about 300): so a reader doesn't take an unsolved target as done.
+- §2.11 to §2.14 (about 1,900): parts and capabilities, registries and extension points, time and order as inputs, budgets with headroom
+  (rows 4 to 8, 15, 16, 18). These are the decisions whose absence cost the most.
+- §5.6 to §5.8 (about 800): scaling agents, process reviews and reported numbers, decisions and permissions (rows 24, 25).
+- §6.7 and §6.10 (about 450): one definition of settled, policy walks and their fixtures (rows 13 to 15).
+- §7 restructuring safely (about 650): what to do when it slips anyway.
+Cut or merged: old §14 (into §0.2); the 13 unnumbered tail sections (each into a numbered section: suites run rarely into §6.8, evidence
+and red `main` into §6.9, waiting tests into §6.3, "right only when fast" into §2.13, purgeable memory into §3.3, sandbox library setup
+and the Dock tile into §8.3, a branch's added objects and `git stash` into §12.1, visual claims into §5.3 and §6.4, write paths into
+§6.10, a fresh worker per stage into §5.6, a reported test that doesn't exist into §5.3); the suite-count story told three times now
+once; the Windows section's message and watch rules now point to §10.5 and §10.9; §10's bundle and patch steps point to §9.2; R10's
+budget list points to §3.1.
+
+**Sections.** §0 Start here (0.1 short version, 0.2 first week, 0.3 not solved). Part I: §1 Research (1.1 to 1.5); §2 The skeleton (2.1
+to 2.14); §3 Performance and memory (3.1 to 3.6); §4 The agent interface (4.1 to 4.3). Part II: §5 People and agents (5.1 roles, 5.2
+the brief, 5.3 reviewing and merging, 5.4 pace and parallel work, 5.5 a feature's time and fixes held by tools, 5.6 choosing and scaling
+agents, 5.7 process reviews and reported numbers, 5.8 decisions and permissions); §6 Testing (6.1 the loop and the tools, 6.2 a good
+test, 6.3 slower machines, 6.4 no manual tests, 6.5 no bugs left behind, 6.6 tiers and budgets, 6.7 settled, 6.8 suites run rarely, 6.9
+evidence and a red `main`, 6.10 policy walks). Part III: §7 Restructuring safely. Reference: §8 the Mac, §9 Windows, §10 several
+computers, §11 design, §12 git and releases, §13 the user, §14 the repo's files and the tools to rebuild.
+
+**Citations.** Kept stable: §1 to §4 and their subsections, §2.1 to §2.10 (cited as "guide 2.8" and "§2.9" in code, tools and
+`AGENTS.md`; §2.8 to §2.10 in `docs/FEATURES.md`), §5.5 and §6.6 (`docs/PROCESS.md`, `docs/PLAN.md`), §6.2 and §6.3 (research). Changed:
+`docs/SIGNOFF.md` §14 to §0.2; `docs/research/2026-11-06-platform-architecture.md` §8.4 to §9.4 (Windows moved from §8 to §9, as the Mac
+went from §7 to §8 to make room for §7).
 
 ## 8. Sources disagreeing with the lesson list it was briefed with
 
