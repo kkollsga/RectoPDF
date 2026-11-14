@@ -205,6 +205,9 @@ impl<L: DocLoader> Session<L> {
             .unwrap_or(tabs[0]);
         // Synced scroll stays on through a change of tabs, starting again from where each is now.
         let synced = self.comparison.as_ref().is_some_and(|was| was.synced);
+        for id in tabs {
+            self.mail.compared(*id);
+        }
         self.comparison = Some(comparison);
         if synced {
             self.set_compare_synced(true);
@@ -278,6 +281,7 @@ impl<L: DocLoader> Session<L> {
         }
         let page = self.tabs.tab(id).map_or(0, |tab| tab.page);
         comparison.add(id, page)?;
+        self.mail.compared(id);
         self.sleeper().wake_list(id);
         self.comparison = Some(comparison);
         self.activate(id);
@@ -388,7 +392,8 @@ pub(crate) fn let_go_of_place<L: DocLoader>(session: &mut Session<L>, id: TabId)
         tab.place_dirty = true;
     }
     let live = session.warm.contains(id);
-    session.mail.release(id, live);
+    let compared = session.comparison.as_ref().is_some_and(|comparison| comparison.contains(id));
+    session.mail.release(id, live, compared);
 }
 
 /// **Whether `back` (or forward) in a tab would land on a stop made from a place withheld from agents** (S2's round): such a stop is where following left

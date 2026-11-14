@@ -22,14 +22,20 @@ struct ViewWord {
     /// thousandths down it, or a page of `NONE` before any read.
     line: (u32, u16),
     /// **The draws of the tab the mail drops** (the second review, S-3): those asked before the place clock came here, as they were asked of the view
-    /// while it was where a withheld place had it ([`PageViewMail::release`]); every one while it's [`PENDING`]; none while 0.
+    /// while it was where a withheld place had it ([`PageViewMail::release`]); every one while it's [`PENDING`]; none while 0. Back to 0 once a draw
+    /// asked at or past it is told, as the view has arrived (the fourth review's item 3), unless [`Self::compared`].
     released: u64,
+    /// **The tab was side by side when its place was let go, or has been since** (the fourth review's items 3 and 5): a tab can be held by two page views
+    /// for the length of one look while a comparison's tabs shift, so a job of the other view's can be told late, and the cutoff isn't reset for it: it
+    /// lives until the tab goes dormant or closes. In the word's padding.
+    compared: bool,
 }
 
 // size: one for each tab a page view has told of or been sent a jump on (hot and warm, a few), none for a cold tab. 40 bytes until 2026-11-14, 48 with the
 // line; the entry a jump went to is in what was the padding of the jump's (`Sent`, 24 bytes as `(Stop, u64)` was). 56 with `released` (the second
 // review's S-3, the coordinator's choice of 2026-11-14: a draw's stamp needs a whole clock, and the padding held 4 bytes). Held there, so a field added is
 // a deliberate change.
+// The fourth review's item 3 put `compared` in the padding.
 const _: () = assert!(size_of::<ViewWord>() == 56, "a page view's word on a tab grew");
 
 /// [`ViewWord::released`] while the jump that lets a withheld place go hasn't been sent: every draw of the tab is from where it was.
@@ -138,6 +144,7 @@ impl PageViewMail {
                     jump_on_its_way: None,
                     line: (crate::NONE, 0),
                     released: 0,
+                    compared: false,
                 });
                 self.words.len() - 1
             }
@@ -219,23 +226,48 @@ impl PageViewMail {
     /// it: a draw's end announced after the release would say which pages were around that place (`wait page-drawn`, a watcher's `page_drawn`).
     ///
     /// `live`: a page view may hold the tab (it's warm). A cold tab's has no view to have drawn anything, and gets no word here, so it costs nothing
-    /// in the mail; one it has already, from before it went cold, is cut off all the same.
-    pub(crate) fn release(&mut self, tab: TabId, live: bool) {
+    /// in the mail; one it has already, from before it went cold, is cut off all the same. `compared`: the tab is side by side ([`ViewWord::compared`]).
+    pub(crate) fn release(&mut self, tab: TabId, live: bool, compared: bool) {
         if !live && !self.words.iter().any(|word| word.tab == tab) {
             return;
         }
-        self.word(tab).released = PENDING;
+        let word = self.word(tab);
+        word.released = PENDING;
+        word.compared = compared;
         self.cutoffs = true;
     }
 
-    /// Whether a draw of `tab` asked when the place clock was at `asked` is told: not if it was asked of the view before a release of the tab's.
-    fn draw_is_told(&self, tab: TabId, asked: u64) -> bool {
-        !self.cutoffs
-            || self
-                .words
-                .iter()
-                .find(|word| word.tab == tab)
-                .is_none_or(|word| word.released != PENDING && asked >= word.released)
+    /// **A tab has been put side by side:** if its cutoff is still on, it isn't reset ([`ViewWord::compared`]). Nothing for a tab with none.
+    pub(crate) fn compared(&mut self, tab: TabId) {
+        if let Some(word) = self.words.iter_mut().find(|word| word.tab == tab && word.released != 0) {
+            word.compared = true;
+        }
+    }
+
+    /// **Whether a draw of `tab` asked when the place clock was at `asked` is told:** not if it was asked of the view before a release of the tab's. The
+    /// first one asked at or past the release is of the view where the person's jump took it, as a draw planned while a jump is on its way is stamped
+    /// before that jump's first send (`recto_reader::tiles::place::asked_now`), and each view tells its draws in the order it planned them, one at a time,
+    /// so the release's own draws from before it have all been told: the cutoff goes (the fourth review's item 3), and a later jump's draws are told as
+    /// for a tab never withheld. Not for a tab that's been side by side ([`ViewWord::compared`]). Once no tab has one, a draw looks no more.
+    fn draw_is_told(&mut self, tab: TabId, asked: u64) -> bool {
+        if !self.cutoffs {
+            return true;
+        }
+        let Some(word) = self.words.iter_mut().find(|word| word.tab == tab) else {
+            return true;
+        };
+        match word.released {
+            0 => true,
+            PENDING => false,
+            at if asked < at => false,
+            _ => {
+                if !word.compared {
+                    word.released = 0;
+                    self.cutoffs = self.words.iter().any(|word| word.released != 0);
+                }
+                true
+            }
+        }
     }
 
     pub(crate) fn set_place_lost(&mut self, lost: bool) {
@@ -343,11 +375,38 @@ mod tests {
     #[test]
     fn a_cold_tab_gets_no_cutoff_and_the_last_cutoff_goes_with_its_word() {
         let mut mail = PageViewMail::new();
-        mail.release(TabId(1), false);
+        mail.release(TabId(1), false, false);
         assert!(!mail.holds_view_word_of(TabId(1)) && !mail.cutoffs, "a cold tab costs nothing here");
-        mail.release(TabId(2), true);
+        mail.release(TabId(2), true, false);
         assert!(mail.cutoffs);
         mail.forget_view_word(TabId(2));
         assert!(!mail.cutoffs, "no tab has a cutoff, so no draw looks for one");
+    }
+
+    /// Failure (the fourth review, item 3): a tab's cutoff is never reset after its view arrives, so in a tab once let go every later jump's draws planned
+    /// while it's on its way are dropped, and `wait page-drawn` there can miss for good; or it's reset by a draw from before the release, or for a tab that
+    /// was side by side, which a second view can hold for a look. Draws before the send and from before it are dropped; the first asked at or past it is
+    /// told and ends the cutoff, so a later one stamped before it (a later jump's gap) is told too, and the search stops; a compared tab keeps its cutoff.
+    #[test]
+    fn a_cutoff_ends_with_the_first_draw_after_the_release_unless_compared() {
+        let note = |tab: u32| DrawNote {
+            tab: TabId(tab),
+            page: 0,
+            failure: None,
+        };
+        let mut mail = PageViewMail::new();
+        for (tab, compared) in [(1, false), (2, true)] {
+            mail.release(TabId(tab), true, compared);
+            let mut part = crate::parts::PartMut(&mut mail);
+            assert!(!part.note_drawn_asked(note(tab), 50), "before the send");
+            part.jump_sent(TabId(tab), Stop::new(3, 0.0), 100);
+            assert!(!part.note_drawn_asked(note(tab), 99), "asked before the send");
+            assert!(part.note_drawn_asked(note(tab), 100), "asked where the jump went");
+        }
+        let mut part = crate::parts::PartMut(&mut mail);
+        assert!(part.note_drawn_asked(note(1), 60), "a later jump's gap, in a tab whose cutoff ended");
+        assert!(!part.note_drawn_asked(note(2), 60), "a compared tab's cutoff lives on");
+        mail.forget_view_word(TabId(2));
+        assert!(!mail.cutoffs, "no tab has a cutoff now");
     }
 }

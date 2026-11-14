@@ -604,8 +604,15 @@ pub(super) fn left_by_following_alone_in(
     let inner = std::sync::Arc::clone(app.core());
     assert_eq!(inner.panes.tab_of(0).map(|id| id.0), Some(plain_tab), "the plain one alone in the first pane");
     assert_eq!(inner.panes.count(), 1);
-    let engine = inner.engine.clone();
-    let at = engine.places().1.into_iter().find(|(id, _)| *id == plain_tab).expect("its place").1;
+    let (view, engine) = shown_by_the_host(&app, plain_tab);
+    (app, plain_tab, locked_tab, view, engine)
+}
+
+/// The host's view of the first pane's tab `tab` at its place as the page view has it, applied and drawn, as the host's UI thread gives it: the view and
+/// the first pane's page view. Settled.
+fn shown_by_the_host(app: &HeadlessApp, tab: u32) -> (recto_reader::Viewport, recto_reader::Engine) {
+    let engine = app.core().engine.clone();
+    let at = engine.places().1.into_iter().find(|(id, _)| *id == tab).expect("its place").1;
     let mut view = recto_reader::Viewport {
         x: 0.0,
         y: at.y,
@@ -618,8 +625,8 @@ pub(super) fn left_by_following_alone_in(
         scrolled_to: 0,
     };
     crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
-    crate::testkit::headless::host_turns(&app, &mut view, true);
-    (app, plain_tab, locked_tab, view, engine)
+    crate::testkit::headless::host_turns(app, &mut view, true);
+    (view, engine)
 }
 
 /// What an agent at Control reads of the plain tab in `session show`: its page, zoom and how far down.
@@ -678,45 +685,135 @@ fn a_warm_page_view_doesnt_tell_the_place_the_persons_jump_let_go() {
 /// and the arrival and zooms the view where it was. Twins whose protected documents differ in length hear the same: the page the person went to.
 #[test]
 fn nothing_drawn_before_the_view_arrives_at_the_persons_jump_is_heard() {
-    let heard_of = |pages: usize, word: &str| {
-        let (app, _, _, view, engine) = left_by_following_alone(pages, word);
-        let mut watching = app.agent_watches(Level::Control);
-        assert!(app.act(UiAction::PageTyped { text: "20".into() }).understood);
-        assert!(app.core().core.flush(crate::testkit::headless::WAIT_LIMIT), "the look sent the jump");
-        // The host's UI thread hasn't scrolled there: it zooms the view where it is, and what's there is drawn at the new size. Where the jump goes is
-        // kept for when it does.
-        let mut pinched = recto_reader::Viewport {
-            magnification: view.magnification * 1.5,
-            ..view
+    for hold in [false, true] {
+        let heard_of = |pages: usize, word: &str| {
+            let (app, _, _, view, engine) = left_by_following_alone(pages, word);
+            let mut watching = app.agent_watches(Level::Control);
+            let _ = jump_with_a_pinch_in_its_gap(&app, view, &engine, "20", hold);
+            pages_heard(&mut watching)
+                .into_iter()
+                .filter(|event| event["event"] == "page_drawn")
+                .collect::<Vec<_>>()
         };
-        let sent = std::cell::Cell::new(None);
-        let take = |ops: Vec<recto_reader::Op>| {
-            crate::testkit::headless::applied_as_the_host(&ops);
-            for op in ops {
-                if let recto_reader::Op::ScrollTo { y, seq } = op {
-                    sent.set(Some((y, seq)));
-                }
+        let (five, nine) = (heard_of(5, "Locked"), heard_of(9, "Sealed"));
+        assert_eq!(
+            five, nine,
+            "pages drawn where following left the tab were heard (the gap's news held across the arrival: {hold})"
+        );
+        assert!(!five.is_empty(), "the page gone to is drawn, and heard");
+    }
+}
+
+/// **The person types `page` in the go-to field, and the host's UI thread zooms the view where it is before it scrolls where the jump sent it** (a pinch
+/// in the gap): what's there is drawn at the new size, planned while the jump is on its way. With `hold`, the view's news of that draw is held until the
+/// view has arrived (`qa().hold_tells`), so it's told after the arrival and among the first of what's drawn there (the fourth review's item 3). Then the
+/// host scrolls there and draws. Settled. Gives the host's view as it's left.
+fn jump_with_a_pinch_in_its_gap(
+    app: &HeadlessApp,
+    view: recto_reader::Viewport,
+    engine: &recto_reader::Engine,
+    page: &str,
+    hold: bool,
+) -> recto_reader::Viewport {
+    assert!(app.act(UiAction::PageTyped { text: page.into() }).understood);
+    assert!(app.core().core.flush(crate::testkit::headless::WAIT_LIMIT), "the look sent the jump");
+    // The window made wider as well, which lays the pages out again where the view is: a zoom alone waits for the jump's arrival.
+    let mut pinched = recto_reader::Viewport {
+        magnification: view.magnification * 1.5,
+        width: view.width * 1.5,
+        frame_width: view.frame_width * 1.5,
+        ..view
+    };
+    let sent = std::cell::Cell::new(None);
+    let take = |ops: Vec<recto_reader::Op>| {
+        crate::testkit::headless::applied_as_the_host(&ops);
+        for op in ops {
+            if let recto_reader::Op::ScrollTo { y, seq } = op {
+                sent.set(Some((y, seq)));
             }
-        };
-        take(engine.set_viewport(pinched));
+        }
+    };
+    // The jump is on its way to the host before the pinch: the look's sent it (a command's look can come after the flush).
+    app.wait_until("the jump's scroll, sent the host", || {
+        take(engine.drain());
+        sent.get().is_some()
+    });
+    engine.qa().hold_tells(hold);
+    take(engine.set_viewport(pinched));
+    if hold {
+        assert!(
+            engine.qa().wait_for_held_tell(crate::testkit::headless::WAIT_LIMIT),
+            "a draw in the gap, its news held"
+        );
+        take(engine.drain());
+        engine.applied();
+    } else {
         app.wait_until("the view drew where it was", || {
             take(engine.drain());
             engine.applied();
             engine.qa().at_rest().is_some()
         });
         app.settle();
-        let (y, seq) = sent.get().expect("the jump's scroll, for the host");
-        (pinched.y, pinched.scrolled_to) = (y, seq);
-        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(pinched));
-        crate::testkit::headless::host_turns(&app, &mut pinched, true);
-        pages_heard(&mut watching)
+    }
+    let (y, seq) = sent.get().expect("the jump's scroll, for the host");
+    (pinched.y, pinched.scrolled_to) = (y, seq);
+    crate::testkit::headless::applied_as_the_host(&engine.set_viewport(pinched));
+    engine.qa().hold_tells(false);
+    crate::testkit::headless::host_turns(app, &mut pinched, true);
+    pinched
+}
+
+/// Failure (the fourth security review, item 3): the cutoff a release set was never reset, so in a tab whose place the person let go, every later jump's
+/// draws planned while it's on its way (stamped before every send) were dropped for as long as the tab was hot or warm, and an agent's `wait page-drawn`
+/// there could miss for good. After the release and its arrival, a later jump with a pinch in its gap is heard as in a tab never withheld: the same pages
+/// as the same steps in a control app whose plain tab never followed anything.
+#[test]
+fn a_later_jump_in_a_tab_once_let_go_is_heard_as_in_a_tab_never_withheld() {
+    let heard = |withheld: bool| {
+        let (app, view, engine) = if withheld {
+            let (app, _, _, view, engine) = left_by_following_alone(5, "Locked");
+            (app, view, engine)
+        } else {
+            let disk = Disk::new();
+            let plain = disk.pdf("plain.pdf", 30);
+            let app = disk.start();
+            app.open(&plain);
+            let tab = app.tabs()[0].tab;
+            let (view, engine) = shown_by_the_host(&app, tab);
+            (app, view, engine)
+        };
+        let plain_tab = app.tabs().into_iter().find(|row| row.text == "plain").expect("plain").tab;
+        // The person's own jump: in the first app it lets the place go, and the view arrives there.
+        let view = jump_with_a_pinch_in_its_gap(&app, view, &engine, "10", false);
+        let mut watching = app.agent_watches(Level::Control);
+        let _ = jump_with_a_pinch_in_its_gap(&app, view, &engine, "20", false);
+        let mut pages: Vec<Value> = heard(&mut watching)
             .into_iter()
-            .filter(|event| event["event"] == "page_drawn")
-            .collect::<Vec<_>>()
+            .filter(|event| event["event"] == "page_drawn" && event["tab"] == plain_tab)
+            .map(|event| event["page"].clone())
+            .collect();
+        pages.dedup();
+        (
+            withheld.then(|| {
+                app.core()
+                    .host
+                    .session
+                    .with_session(|s| recto_session::compare::place_withheld(s, recto_session::TabId(plain_tab)))
+            }),
+            pages,
+        )
     };
-    let (five, nine) = (heard_of(5, "Locked"), heard_of(9, "Sealed"));
-    assert_eq!(five, nine, "pages drawn where following left the tab were heard");
-    assert!(!five.is_empty(), "the page gone to is drawn, and heard");
+    let ((let_go, once_let_go), (_, never_withheld)) = (heard(true), heard(false));
+    assert_eq!(let_go, Some(false), "the person's go-to let the place go");
+    assert_eq!(
+        once_let_go, never_withheld,
+        "a later jump's draws in a tab once let go, against one never withheld"
+    );
+    // What's drawn in the gap is where the view was, laid out again for the wider window: pages before the one gone to.
+    assert!(
+        once_let_go.iter().any(|page| page.as_u64().is_some_and(|page| page < 20)),
+        "what's drawn in the later jump's gap is heard: {once_let_go:?}"
+    );
 }
 
 /// Failure (the third security review; the coordinator's D-A): a menu id an agent runs (`recto palette --run`) lets the place of a tab left by following
