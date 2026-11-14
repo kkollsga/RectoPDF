@@ -479,3 +479,28 @@ fn a_hand_off_waits_for_the_persons_print_to_be_handed_over() {
     app.settle();
     assert!(app.core().hand_off_check().safe, "nothing in flight once it's done");
 }
+
+/// Failure (review of S2): a print's file the host never took is left in the temp folder for good when the next print's file takes its place, as two
+/// prints answered in a row with nothing handing the first to the system did. The first goes as the second comes; once the second is done with, nothing's
+/// left.
+#[test]
+fn a_print_file_the_host_never_took_goes_when_the_next_comes() {
+    let disk = Disk::new();
+    let doc = disk.file("widths.pdf", &widths(1));
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    answer(&app, ALL);
+    app.settle();
+    let first = print_files_left();
+    answer(&app, ALL);
+    app.settle();
+    let after = print_files_left();
+    assert_eq!(after.len(), 1, "one file, the second's: {first:?} then {after:?}");
+    assert!(
+        first.iter().all(|name| !after.contains(name)),
+        "the first's file went: {first:?} then {after:?}"
+    );
+    assert_ne!(printed(&app), "none");
+    assert_eq!(print_files_left(), Vec::<String>::new(), "nothing's left");
+}

@@ -435,7 +435,10 @@ pub fn answered(inner: &Arc<Inner>, ran: &person::Ran<'_>) {
             if let Some(note) = scaled_down(answer).scaled_down_note() {
                 printing.say(note, false);
             }
-            *lock(&printing.ready) = Some((asked.to_pdf.clone(), asked_by));
+            // A file the host never took goes as this one takes its place: nothing else would ever remove it.
+            if let Some((untaken, _)) = lock(&printing.ready).replace((asked.to_pdf.clone(), asked_by)) {
+                remove_if_ours(&untaken, &print_folder(), std::process::id());
+            }
         }
         Err(error) => match said_as(error) {
             Told::Anyway => {
