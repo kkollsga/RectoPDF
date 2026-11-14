@@ -310,8 +310,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             if inner.sleeper.wait_for_due().is_some_and(|wait| wait.is_zero())
                 && let Some(due) = inner.sleeper.dormancy_due(
                     &inner.host.session,
-                    inner.life.reads_running.load(Ordering::SeqCst) > 0,
-                    inner.core.frozen.load(Ordering::SeqCst),
+                    inner.life.reads_running.load(Ordering::SeqCst) > 0 || inner.core.frozen.load(Ordering::SeqCst),
                 )
             {
                 inner.go_dormant(&due, sleeper::Why::LeftAlone);

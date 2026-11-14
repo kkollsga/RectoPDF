@@ -522,11 +522,10 @@ impl Sleeper {
         let _ = self.step(Event::Rearm { in_seconds });
     }
 
-    /// It's come due, on the session thread. Whatever's due goes dormant, unless a file's being read (`reading`) or a hand-off has the app frozen (`frozen`),
-    /// when it looks again shortly.
+    /// It's come due, on the session thread. Whatever's due goes dormant, unless the app's `busy` (a file's being read, or a hand-off has it frozen), when it
+    /// looks again shortly.
     /// **Real time:** which are due is the session's, by its own clock (`seconds_now`).
-    pub(super) fn dormancy_due(&self, session: &SessionHost<DrawableLoader>, reading: bool, frozen: bool) -> Option<Vec<TabId>> {
-        let busy = reading || frozen;
+    pub(super) fn dormancy_due(&self, session: &SessionHost<DrawableLoader>, busy: bool) -> Option<Vec<TabId>> {
         self.step(Event::DueNow { busy })?;
         let after = self.after_seconds();
         Some(session.with_session(|session| session.dormant().due(after)))
