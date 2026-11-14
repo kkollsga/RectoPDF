@@ -85,7 +85,9 @@ pub fn apply_restored(
         start_serving(inner);
     }
     // What waited for the state: at the launch, and what the person did while a late keep's restore was read.
-    release(&inner.core, deferred, |command| person::submit(inner, command));
+    release(&inner.core, deferred, |command| {
+        person::submit(inner, command);
+    });
     ready
 }
 
@@ -236,7 +238,9 @@ pub fn session_thread(inner: &Arc<Inner>) {
     let mut reads = FileReads::default();
     let mut deferred: Vec<CoreCall> = Vec::new();
     // What a held person's command runs by when it's let go: on a thread of its own, as `person::submit` sends it.
-    let submit = |command| person::submit(inner, command);
+    let submit = |command| {
+        person::submit(inner, command);
+    };
     // What a tab's going dormant reaches beyond the sleeper, for the run: borrowed from the app, which outlives this thread's loop.
     let going_dormant = sleeper::GoingDormant::new(
         sleeper::OnHand::new(&inner.host.session, &inner.panes, &inner.engine),

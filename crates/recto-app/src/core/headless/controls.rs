@@ -30,8 +30,9 @@ fn place(action: &UiAction) -> (usize, usize) {
         UiAction::CloseAnswered { .. } => 17,
         UiAction::SaveAs { .. } => 18,
         UiAction::SettingChosen { .. } => 19,
+        UiAction::Print { .. } => 20,
     };
-    (place, 20)
+    (place, 21)
 }
 
 /// An app with two files open, and one of every kind of control on it, every menu item among them.
@@ -139,6 +140,16 @@ fn every_kind_of_control() -> (crate::testkit::headless::HeadlessApp, Vec<UiActi
         UiAction::SettingChosen {
             id: crate::core::updates::AUTO_UPDATE_ROW.into(),
             on: false,
+        },
+        // The print panel's answer is the person's `print`, on a thread of its own (S2).
+        UiAction::Print {
+            tab,
+            all: true,
+            first: 1,
+            last: 1,
+            selection_only: false,
+            to_file: false,
+            serial: 1,
         },
         UiAction::Row { row, adding: false },
     ]);

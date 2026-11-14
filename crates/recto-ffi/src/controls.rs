@@ -48,6 +48,18 @@ pub enum UiAction {
     SaveAs { tab: u32, path: String },
     /// A switch in Settings.
     SettingChosen { id: String, on: bool },
+    /// The print panel answered with Print, for the tab it was opened for: all the pages or a range from 1, or just the selection's, on paper or, with
+    /// `to_file`, to a PDF the system's printing saves or previews.
+    Print {
+        tab: u32,
+        all: bool,
+        first: u32,
+        last: u32,
+        selection_only: bool,
+        to_file: bool,
+        /// The host's own number for this answer, which the file it makes comes back with.
+        serial: u64,
+    },
 }
 
 /// What came of an action for the host: what's left for it to do, and whether the action was something to act on (a typed page or zoom that's understood).

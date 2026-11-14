@@ -141,10 +141,13 @@ const MAX_SWEPT_FOLDERS: usize = 16;
 /// Entries of a folder looked at in one sweep: a folder's listing comes from outside, and a temp file left in a huge one waits for a sweep that reaches it.
 const MAX_SWEPT_ENTRIES: usize = 4096;
 
-/// The process a render temp file's name says made it: `.recto-<pid>-<n>.partial`, as [`OwnTemp::create`] names them, and nothing else.
+/// The process a render temp file's name says made it: `.recto-<pid>-<n>.partial`, as [`OwnTemp::create`] names them, or `.recto-<pid>-<n>-<hex>.partial`,
+/// as [`OwnTemp::create_private`] does, and nothing else.
 fn temp_maker(name: &str) -> Option<u32> {
-    let (pid, attempt) = name.strip_prefix(".recto-")?.strip_suffix(".partial")?.split_once('-')?;
+    let (pid, rest) = name.strip_prefix(".recto-")?.strip_suffix(".partial")?.split_once('-')?;
+    let (attempt, unguessable) = rest.split_once('-').unwrap_or((rest, "0"));
     attempt.parse::<u32>().ok()?;
+    u64::from_str_radix(unguessable, 16).ok()?;
     pid.parse().ok()
 }
 
@@ -182,6 +185,16 @@ fn sweep_once(folder: &Path) {
 impl OwnTemp {
     /// Makes a new file with a name nobody else has. `create_new` is `O_CREAT | O_EXCL`, which refuses an existing name and doesn't follow a symlink.
     pub(crate) fn create(out: &Path) -> Result<(Self, File), AgentError> {
+        Self::create_as(out, false)
+    }
+
+    /// The same, readable and writable by this user alone from the moment it's made: the person's print, which only the app and the system's printing
+    /// read (S2, 2026-11-14).
+    pub(crate) fn create_private(out: &Path) -> Result<(Self, File), AgentError> {
+        Self::create_as(out, true)
+    }
+
+    fn create_as(out: &Path, private: bool) -> Result<(Self, File), AgentError> {
         let failed = || AgentError::new(Code::WRITE_FAILED, "The picture couldn't be saved there.", exit::FAILED);
         if out.file_name().is_none() {
             return Err(failed());
@@ -190,9 +203,25 @@ impl OwnTemp {
         sweep_once(folder);
         for _ in 0..64 {
             let attempt = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-            // Short and its own, not built from the output's name: a name near the file system's limit must still have a temp file.
-            let path = out.with_file_name(format!(".recto-{}-{attempt}.partial", std::process::id()));
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
+            // Short and its own, not built from the output's name: a name near the file system's limit must still have a temp file. A private one's name
+            // can't be worked out, as its final name can't: 64 bits from the system's random source.
+            let path = if private {
+                out.with_file_name(format!(
+                    ".recto-{}-{attempt}-{:016x}.partial",
+                    std::process::id(),
+                    recto_platform::local::random_u64()
+                ))
+            } else {
+                out.with_file_name(format!(".recto-{}-{attempt}.partial", std::process::id()))
+            };
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            if private {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&path) {
                 Ok(file) => return Ok((Self { path }, file)),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(_) => return Err(failed()),
@@ -831,6 +860,32 @@ pub(crate) fn without_time_taken(message: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    /// Failure (review of S2): the person's print's half-written file has a name anyone can work out from the app's process number and a count, so an agent
+    /// could open the print of a file that asks not to be copied while it's prepared; or it's readable by others; or a name of its kind isn't known as a run's
+    /// own, so a run that died leaves it. Two made for the same place: other names, each the user's alone, each known as this run's.
+    #[test]
+    fn a_private_temp_has_a_name_nobody_can_work_out() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = recto_testpdf::TempDir::new("private-temp-");
+        std::fs::create_dir_all(&folder).unwrap();
+        let out = folder.join("print.pdf");
+        let (one, _file) = OwnTemp::create_private(&out).unwrap();
+        let (two, _file) = OwnTemp::create_private(&out).unwrap();
+        let name = |temp: &OwnTemp| temp.path.file_name().unwrap().to_str().unwrap().to_string();
+        assert_ne!(name(&one), name(&two));
+        for temp in [&one, &two] {
+            let parts = name(temp).trim_start_matches(".recto-").trim_end_matches(".partial").split('-').count();
+            assert_eq!(parts, 3, "{} is more than the process's number and a count", name(temp));
+            assert_eq!(temp_maker(&name(temp)), Some(std::process::id()), "{} is known as this run's", name(temp));
+            assert_eq!(
+                std::fs::metadata(&temp.path).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "{} is the user's alone",
+                name(temp)
+            );
+        }
+    }
+
     use super::*;
     use recto_testpdf::{Page, TempPdf, busy_page, pages, text_lines};
     use std::time::{Duration, Instant};

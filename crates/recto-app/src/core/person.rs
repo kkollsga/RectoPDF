@@ -18,10 +18,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// **A person's command, from the window:** on the session thread, as a tap always was, or on a thread of its own if it may hold its thread for long
-/// ([`recto_agent::commands::Cmd::WAITS`]), or isn't the session's to answer. Past a hand-off's last look nothing a person does is taken, as before. Never waits.
-pub fn submit(inner: &Arc<Inner>, command: Command) {
+/// ([`recto_agent::commands::Cmd::WAITS`]), or isn't the session's to answer. Past a hand-off's last look nothing a person does is taken, as before, and
+/// this says false, for a control that has kept something for it (a print). Never waits.
+pub fn submit(inner: &Arc<Inner>, command: Command) -> bool {
     if inner.core.frozen.load(std::sync::atomic::Ordering::SeqCst) {
-        return;
+        return false;
     }
     if command.waits() || command.route() != Runs::Session {
         // Counted first, and then looked: a late try at the record's lock decides on keeping it (and restoring) only with none counted, under the life's lock
@@ -31,16 +32,17 @@ pub fn submit(inner: &Arc<Inner>, command: Command) {
         if inner.life.keeping().restoring() {
             drop(counted);
             inner.core.push(CoreCall::Run(PersonCommand::input(command)));
-            return;
+            return true;
         }
         on_its_own_thread(command, counted);
     } else {
         inner.core.push(CoreCall::Run(PersonCommand::input(command)));
     }
+    true
 }
 
 /// **What a person may start from a menu row or an answer, as the person:** a command, and the feature's own runs that take a thread of their own (a
-/// Save with the window's progress, a refused snapshot or print taken anyway). Each starts on its own thread, which holds the app to run it and to answer
+/// Save with the window's progress, a refused snapshot taken anyway). Each starts on its own thread, which holds the app to run it and to answer
 /// how it went, so this holds the app; its field is private to this file, so a row or an answer can do these and nothing more of the app through it.
 #[derive(Clone, Copy)]
 pub struct Person<'a> {
@@ -53,9 +55,9 @@ impl<'a> Person<'a> {
         Self { app }
     }
 
-    /// A command as the person's ([`submit`]).
-    pub fn submit(self, command: Command) {
-        submit(self.app, command);
+    /// A command as the person's ([`submit`]), saying whether it was taken: false past a hand-off's last look.
+    pub fn submit(self, command: Command) -> bool {
+        submit(self.app, command)
     }
 
     /// A command as the person's, made what it is by the session as it is when it runs ([`submit_when_run`]).
@@ -72,11 +74,6 @@ impl<'a> Person<'a> {
     pub fn snapshot_anyway(self, serial: u64) {
         super::snapshot_tool::anyway(self.app, serial);
     }
-
-    /// Printing's own: a notice's Print anyway, for the person's print it refused ([`super::printing::anyway`]).
-    pub fn print_anyway(self, serial: u64) {
-        super::printing::anyway(self.app, serial);
-    }
 }
 
 /// Whether a person's command, as it's queued, is one that runs on a thread of its own: one that may wait, or isn't the session's to answer. Only a command
@@ -85,9 +82,19 @@ pub(crate) fn on_a_thread_of_its_own(run: &PersonCommand) -> bool {
     run.origin == Origin::Input && run.fetched.is_none() && (run.command.waits() || run.command.route() != Runs::Session)
 }
 
+/// What the person is told when their command's thread couldn't be started, before its feature's own words, if it has any.
+pub const NOT_STARTED: &str = "That couldn't be started. Try again in a moment.";
+
+/// A test's: the next person's command that runs on a thread of its own finds it can't start one.
+#[cfg(test)]
+static NO_THREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// A person's command that may hold its thread for long, as the window's Save always ran: through the host, counted for a hand-off, and what it did told.
+/// A thread that can't be started is said, as a refusal of the command: the person is never left with a click that did nothing.
 fn on_its_own_thread(command: Command, counted: Running) {
-    let spawned = std::thread::Builder::new().name("recto-person".into()).stack_size(1024 * 1024).spawn(move || {
+    let inner = Arc::clone(&counted.inner);
+    let kept = command.clone();
+    let spawned = spawn(move || {
         let inner = Arc::clone(&counted.inner);
         let mut events = Vec::new();
         sent(&inner.serving, &command);
@@ -96,8 +103,32 @@ fn on_its_own_thread(command: Command, counted: Running) {
         inner.core.push(CoreCall::Events(events));
         drop(counted);
     });
-    // The thread that didn't start took its count with it, as the closure holding it was dropped.
-    drop(spawned);
+    // The thread that didn't start took its count with it, as the closure holding it was dropped. It's said in the person's words, then answered as
+    // refused, so its feature can say more of its own.
+    if spawned.is_err() {
+        say(inner.window.notices(), &inner.core, NOT_STARTED.to_string());
+        let refused = Err(AgentError::new(Code::NOT_STARTED, NOT_STARTED, recto_agent::exit::BUSY));
+        answered(&AnswerParts::of(&inner), &kept, Origin::Input, &refused);
+    }
+}
+
+/// A person's command's own thread, started: or, for a test that said so ([`NO_THREAD`]), not, as when the system has none to give.
+fn spawn(run: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
+    #[cfg(test)]
+    if NO_THREAD.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        return Err(std::io::Error::other("no thread, for a test"));
+    }
+    std::thread::Builder::new()
+        .name("recto-person".into())
+        .stack_size(1024 * 1024)
+        .spawn(run)
+        .map(drop)
+}
+
+/// Whether a refusal is a person's command whose thread couldn't be started ([`NOT_STARTED`]), for a feature with words of its own for it.
+#[must_use]
+pub fn not_started(error: &AgentError) -> bool {
+    error.code == Code::NOT_STARTED
 }
 
 /// **A person's command counted as running for a hand-off** until it's dropped: as its thread ends, however it ends. A command that panicked was counted
@@ -157,6 +188,7 @@ const ANSWERED: &[fn(&AnswerParts<'_>, &Ran<'_>)] = &[
     super::find::answered,
     super::highlight::answered,
     super::updates::answered,
+    super::printing::answered,
 ];
 
 fn answered(parts: &AnswerParts<'_>, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {
@@ -311,6 +343,40 @@ mod tests {
         assert_eq!(inner.life.persons_running(), 0);
     }
     use recto_session::SessionError;
+
+    /// Failure (S2, the coordinator's word on 2026-11-14: "a person's action that fails says so"): a person's command that may wait, as a print, whose
+    /// thread can't be started is dropped with nothing said, so the person clicked and nothing happened. Its thread made to fail: the person is told, in
+    /// words Rust owns, and nothing is left counted as running.
+    #[test]
+    fn a_persons_command_whose_thread_cant_start_says_so() {
+        let app = crate::testkit::headless::HeadlessApp::start();
+        let doc = app.disk().pdf("a.pdf", 1);
+        app.open(&doc);
+        app.settle();
+        let out = app.disk().files().join("out.pdf");
+        let line = format!(r#"{{"cmd":"print","to_pdf":{}}}"#, serde_json::Value::from(out.display().to_string()));
+        let command = recto_agent::parse(&line).expect("a print");
+        assert!(command.waits(), "a command that runs on a thread of its own");
+        super::NO_THREAD.store(true, std::sync::atomic::Ordering::SeqCst);
+        super::submit(app.core(), command);
+        app.settle();
+        let notice = app.reader().selection_notice.map(|notice| notice.text);
+        // The print has words of its own for it, said over [`super::NOT_STARTED`], which a feature with none leaves.
+        assert_eq!(notice.as_deref(), Some("The print couldn't be started."), "the person is told");
+        assert_eq!(app.core().life.persons_running(), 0, "nothing is left counted as running");
+        assert!(!out.exists(), "nothing ran");
+        // A waiting command no feature has words for is said in the window's own.
+        app.core().dismiss_selection_notice();
+        let line = format!(
+            r#"{{"cmd":"render","page":1,"out":{}}}"#,
+            serde_json::Value::from(app.disk().files().join("out.png").display().to_string())
+        );
+        super::NO_THREAD.store(true, std::sync::atomic::Ordering::SeqCst);
+        super::submit(app.core(), recto_agent::parse(&line).expect("a render"));
+        app.settle();
+        let notice = app.reader().selection_notice.map(|notice| notice.text);
+        assert_eq!(notice.as_deref(), Some(super::NOT_STARTED), "told in the window's words");
+    }
 
     /// **Failure (a guard before the answers were given the app's parts and not the app, `build/registries`):** what a person is shown after a command of
     /// theirs ran changes: a refusal said in other words or by another line (the page's notice, or the open failure under the field), one said where it
