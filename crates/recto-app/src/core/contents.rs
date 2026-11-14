@@ -46,7 +46,8 @@ pub fn fold_row_refusal(contents: &[crate::ContentsEntry], active: Option<u32>, 
             "Row {row} is past the last contents row ({}). `fold:N` counts rows down the sidebar; `recto contents fold ENTRY` takes the entry's number.",
             first + u32::try_from(contents.len()).unwrap_or(u32::MAX).saturating_sub(1)
         )),
-        Some(entry) if !entry.expandable => Some(format!("Row {row} has no sections under it, so it has nothing to fold or open.")),
+        // The chevron's own rule, so the verb and the window agree on what folds.
+        Some(_) if chevron(contents, row - first).is_none() => Some(format!("Row {row} has no sections under it, so it has nothing to fold or open.")),
         Some(_) => None,
     }
 }

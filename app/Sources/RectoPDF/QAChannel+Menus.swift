@@ -3,8 +3,9 @@ import CryptoKit
 import QuartzCore
 
 extension AppDelegate {
-    /// What `installMenu` marks every item it makes with, so `qa state` can say which items are AppKit's own (AutoFill, Passwords…) by what ours aren't.
-    static let builtItem = NSUserInterfaceItemIdentifier("recto.menu")
+    /// What `installMenu` marks every item it makes with (its id after this prefix, so no two share one identifier), so `qa state` can say which items are AppKit's own (AutoFill, Passwords…) by what ours aren't.
+    static func builtItem(_ id: String) -> NSUserInterfaceItemIdentifier { NSUserInterfaceItemIdentifier(builtPrefix + id) }
+    static let builtPrefix = "recto.menu."
 }
 
 /// The menu bar, the right-click menu and the keys the window answers.
@@ -75,7 +76,7 @@ extension QAChannel {
                     // A submenu's items follow its own, as Open Recent's files do.
                     item.submenu?.update()
                     return [item] + (item.submenu?.items.filter { !$0.isSeparatorItem && !$0.isHidden } ?? [])
-                }.map { ["id": ($0.representedObject as? String) ?? "", "title": $0.title, "key": $0.keyEquivalent, "mask": $0.keyEquivalentModifierMask.rawValue, "checked": $0.state == .on, "enabled": $0.isEnabled, "system": $0.identifier != AppDelegate.builtItem] as [String: Any] }]
+                }.map { ["id": ($0.representedObject as? String) ?? "", "title": $0.title, "key": $0.keyEquivalent, "mask": $0.keyEquivalentModifierMask.rawValue, "checked": $0.state == .on, "enabled": $0.isEnabled, "system": !($0.identifier?.rawValue.hasPrefix(AppDelegate.builtPrefix) ?? false)] as [String: Any] }]
             },
         ]
     }
