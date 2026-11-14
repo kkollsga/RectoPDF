@@ -148,6 +148,8 @@ pub fn allowed(have: Level, needed: Access) -> bool {
 
 #[cfg(test)]
 mod pins_tests;
+#[cfg(test)]
+mod scan_tests;
 
 #[cfg(test)]
 mod tests {
