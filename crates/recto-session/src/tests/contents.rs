@@ -364,3 +364,119 @@ fn the_current_entry_is_the_last_at_or_above_the_place_own_and_generated() {
     s.jump(id, 1, 0.0).unwrap();
     assert_eq!(current(&s), ["C"]);
 }
+
+/// A session on a file whose page 2 holds three entries (at 0, 300 and 600 thousandths) and page 3 one, which is on page 2.
+fn reading_page_two() -> (Session<ThreeToAPage>, TabId) {
+    let mut s = Session::new(ThreeToAPage);
+    let id = s.open(Path::new("/d/a.pdf")).unwrap();
+    s.jump(id, 1, 0.0).unwrap();
+    // The page view has taken the jump and arrived: what it says from here is the reader's own.
+    s.mail_mut().take_jump(id);
+    (s, id)
+}
+
+struct ThreeToAPage;
+impl DocLoader for ThreeToAPage {
+    fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
+        let line = |title, page| TocLine {
+            title,
+            page,
+            parent: NONE,
+            depth: 0,
+        };
+        let toc = Toc::from_lines(&[line("A", 1), line("B", 1), line("C", 1), line("D", 2)], false).with_tops(&[0, 300, 600, 0]);
+        Ok(DocFacts {
+            page_count: 10,
+            byte_len: 1,
+            encrypted: false,
+            version: "1.7".into(),
+            title: None,
+            toc,
+            renderer_only: false,
+        })
+    }
+}
+
+fn current_of<L: DocLoader>(s: &Session<L>) -> Vec<String> {
+    s.sidebar()
+        .rows
+        .iter()
+        .filter(|row| row.kind == RowKind::Contents && row.current)
+        .map(|row| row.text.to_string())
+        .collect()
+}
+
+/// The page view's read of a tab on page 2 (stamped `stamp`): the view's top is `top` of the way down, and its eye line `eye` thousandths down.
+fn view_reads(s: &mut Session<ThreeToAPage>, id: TabId, stamp: u64, top: f64, eye: u16) {
+    let place = PlaceRecord {
+        page: 1,
+        anchor_page: 1,
+        within: top,
+        x: 0.0,
+        y: 0.0,
+        document_height: 1.0,
+        zoom: 1.0,
+        page_width: 0.0,
+        page_height: 0.0,
+    };
+    assert!(s.view_told_of(id, place, stamp));
+    s.mail_mut().eye_told(id, stamp, 1, eye);
+}
+
+/// Failure (the review of finding 3): current by place updates only on a jump, so reading down a page by scroll leaves the mark on the first entry to the
+/// foot of the page. The view reports places, not jumps, and each read moves the mark by its eye line, which is not the view's top (`within` keeps
+/// meaning the top: Back and a restart use it). The band says where the mark next changes, and goes on following it.
+#[test]
+fn reading_down_a_page_by_scroll_marks_a_then_b_then_c_by_the_eye_line() {
+    let (mut s, id) = reading_page_two();
+    assert_eq!(current_of(&s), ["A"]);
+    // The view's top is a third of the eye line's way up: its top at 0.20 puts the eye line at 0.45.
+    view_reads(&mut s, id, 1, 0.20, 450);
+    assert_eq!(current_of(&s), ["B"], "the eye line passed B though the view's top hasn't");
+    let band = reading_band(&s, id).expect("a band");
+    assert_eq!((band.page, band.lo, band.hi), (1, 300 - recto_core::TOP_SLACK, 600 - recto_core::TOP_SLACK));
+    view_reads(&mut s, id, 2, 0.45, 700);
+    assert_eq!(current_of(&s), ["C"]);
+    assert_eq!(
+        reading_band(&s, id).map(|band| band.hi),
+        Some(recto_core::TOP_SCALE + 1),
+        "no entry below C on the page"
+    );
+    view_reads(&mut s, id, 3, 0.0, 100);
+    assert_eq!(current_of(&s), ["A"], "back up the page");
+}
+
+/// Failure: an eye line told for another page than the tab's (the other page of a spread, or a read from before a move), or older than a jump the view was
+/// sent, or from a read older than the one taken in, is taken for where the reader is now.
+#[test]
+fn an_eye_line_counts_only_for_the_page_and_the_read_it_was_told_with() {
+    let (mut s, id) = reading_page_two();
+    view_reads(&mut s, id, 1, 0.0, 700);
+    assert_eq!(current_of(&s), ["C"]);
+    s.mail_mut().eye_told(id, 9, 1, 0);
+    assert_eq!(current_of(&s), ["C"], "a read that wasn't taken in last can't say it");
+    s.mail_mut().eye_told(id, 1, 5, 0);
+    assert_eq!(current_of(&s), ["A"], "an eye line on another page says nothing of this one: the place's own, the view's top, stands");
+    s.jump(id, 1, 0.31).unwrap();
+    assert_eq!(
+        current_of(&s),
+        ["B"],
+        "a jump sent is where the reader is, whatever the last read's eye line was"
+    );
+    s.go_to(id, 2).unwrap();
+    assert_eq!(current_of(&s), ["D"], "on another page the old eye line is none");
+}
+
+/// Failure: a page with an unsaved turn is read by tops that are in the file's frame, so the wrong entry is current there, or the band (and so every
+/// scroll step's wake) comes from tops that mean nothing. Every entry reads as at the page's top, and the band is the whole page.
+#[test]
+fn a_page_with_an_unsaved_turn_is_unplaced_and_has_no_band_to_leave() {
+    let (mut s, id) = reading_page_two();
+
+    view_reads(&mut s, id, 1, 0.0, 100);
+    if s.lists().is_edited(id) {
+        assert_eq!(current_of(&s), ["C"], "unplaced: the last of the page wherever the eye line is");
+        let band = reading_band(&s, id).expect("a band");
+        assert_eq!((band.lo, band.hi), (0, recto_core::TOP_SCALE + 1));
+    }
+}

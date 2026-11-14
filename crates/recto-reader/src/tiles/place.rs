@@ -13,6 +13,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// one process means anything, never a stamp's value:** two headless apps in one test share the clock, so a test never asserts a stamp's number.
 static PLACE_CLOCK: AtomicU64 = AtomicU64::new(0);
 
+/// How far down a page an eye line at `eye_y` is, in thousandths, held to the page: its rect starts at `top` and is `height` tall, as shown.
+pub(super) fn eye_line(eye_y: f64, top: f64, height: f64) -> u16 {
+    (((eye_y - top) / height.max(1.0)).clamp(0.0, 1.0) * f64::from(recto_core::TOP_SCALE)).round() as u16
+}
+
 /// Moves the place clock on, saying where it's come to.
 pub(super) fn tick() -> u64 {
     PLACE_CLOCK.fetch_add(1, Ordering::SeqCst) + 1
@@ -115,6 +120,19 @@ impl Place {
         doc.place.scroll_x = viewport.x;
         if self.last_view_page != Some(page) {
             self.last_view_page = Some(page);
+            self.moved_page = Some(page);
+        }
+        self.leaves_the_band(doc, viewport, page);
+    }
+
+    /// **Wakes the core when the eye line leaves the stretch of the page in which the same contents entry is current** ([`super::Band`]), by the wake a page
+    /// change has, and only once until the core sends another. The eye line is the one the page choice above uses, a third of the view down.
+    fn leaves_the_band(&mut self, doc: &mut DocView, viewport: Viewport, page: u32) {
+        let Some(band) = doc.band.as_mut().filter(|band| !band.woke) else { return };
+        let rect = doc.layout.rect(page);
+        let eye = eye_line(viewport.y + viewport.height / 3.0, rect.y, rect.height);
+        if page != band.page || eye < band.lo || eye >= band.hi {
+            band.woke = true;
             self.moved_page = Some(page);
         }
     }

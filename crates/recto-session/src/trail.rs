@@ -201,17 +201,21 @@ impl<L: DocLoader> Session<L> {
     }
 }
 
+/// The jump a tab's page view hasn't taken, or was sent and no read since has told of, while the tab is still on the page it goes to: where the session has
+/// sent the reader.
+pub(crate) fn jump_here<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> Option<trail::Stop> {
+    let on_page = |stop: &trail::Stop| stop.page == tab.page;
+    session
+        .mail
+        .waiting_jump(tab.id)
+        .filter(on_page)
+        .or_else(|| session.mail.jump_on_its_way(tab.id).filter(on_page))
+}
+
 /// [`Session::here`] for a tab in hand, so a walk over every tab needn't look each up again.
 pub(crate) fn here_of<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> trail::Stop {
-    let id = tab.id;
     // Only while it's still where the tab is: a move since that sent the page view no jump of its own, as Find's step, is the newer.
-    let on_page = |stop: &trail::Stop| stop.page == tab.page;
-    if let Some(jump) = session
-        .mail
-        .waiting_jump(id)
-        .filter(on_page)
-        .or_else(|| session.mail.jump_on_its_way(id).filter(on_page))
-    {
+    if let Some(jump) = jump_here(session, tab) {
         return trail::Stop::new(jump.page, f64::from(jump.within));
     }
     let within = tab

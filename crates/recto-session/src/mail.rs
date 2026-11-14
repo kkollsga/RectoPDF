@@ -16,6 +16,9 @@ struct ViewWord {
     last_read: u64,
     /// The jump sent the view and the place clock the send came to, while no read at or past it has been taken in: where the session has sent the reader.
     jump_on_its_way: Option<(Stop, u64)>,
+    /// Where the reader's eye line was in that read: the page (as the session counts them) and how far down it, in thousandths. The place's own `within` is
+    /// the view's top and means what it always did; this is a separate word, told with the read.
+    eye: Option<(u32, u16)>,
 }
 
 /// What passes between the session and the page view outside a call. What's public here notes a draw, or takes or says what's waiting for the view;
@@ -74,6 +77,7 @@ impl PageViewMail {
                     tab,
                     last_read: 0,
                     jump_on_its_way: None,
+                    eye: None,
                 });
                 self.words.len() - 1
             }
@@ -98,10 +102,22 @@ impl PageViewMail {
             return false;
         }
         word.last_read = stamp;
+        // A read says where the eye was only if [`PartMut::eye_told`] says so, after it: an older read's eye isn't this one's.
+        word.eye = None;
         if word.jump_on_its_way.is_some_and(|(_, sent)| sent <= stamp) {
             word.jump_on_its_way = None;
         }
         true
+    }
+
+    /// Where the reader's eye line was in the read last taken in for a tab, if it's on `page`: how far down it, in thousandths.
+    pub(crate) fn eye_of(&self, tab: TabId, page: u32) -> Option<u16> {
+        self.words
+            .iter()
+            .find(|word| word.tab == tab)
+            .and_then(|word| word.eye)
+            .filter(|(on, _)| *on == page)
+            .map(|(_, top)| top)
     }
 
     /// The tab's moved on, to another page or other pages: the jump it was sent is no longer where the reader is.
@@ -177,6 +193,15 @@ impl crate::parts::PartMut<'_, PageViewMail> {
         }
         let word = self.0.word(tab);
         word.jump_on_its_way = (word.last_read < stamp).then_some((to, stamp));
+    }
+
+    /// **Where the reader's eye line was in the read just taken in for a tab** (stamped `stamp`, as [`crate::Session::view_told_of`] took it): on `page`, as the
+    /// session counts pages, `top` thousandths down it. Told apart from the place, whose `within` is the view's top and means what it always did. Only the
+    /// read taken in last can say it; a stamp that isn't that one's is ignored.
+    pub fn eye_told(&mut self, tab: TabId, stamp: u64, page: u32, top: u16) {
+        if let Some(word) = self.0.words.iter_mut().find(|word| word.tab == tab && word.last_read == stamp) {
+            word.eye = Some((page, top.min(recto_core::TOP_SCALE)));
+        }
     }
 
     /// Whether the last edit removed the page the reader was on, so its place moved to the nearest one. Asking clears it.

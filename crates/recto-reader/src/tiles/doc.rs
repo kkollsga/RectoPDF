@@ -99,10 +99,27 @@ pub(crate) struct DocView {
     pub(super) map: PageMap,
     pub(super) place: DocPlace,
     pub(super) drawing: DocDrawing,
+    /// Where the contents' current entry changes on the page being read, as the core last said, and whether the view has told it since. See [`Band`].
+    pub(super) band: Option<Band>,
 }
 
-// size: one for each hot and warm tab. 672 bytes on 2026-11-13, before and after it was cut into its place and its drawing; held there, so a field added to it, or to its layout or page map, is a deliberate change.
-const _: () = assert!(size_of::<DocView>() <= 672, "a tab the page view holds grew");
+/// **The stretch of a page in which the same contents entry is current,** as the core computed it for the page being read: the page, and the eye line's
+/// thousandths of it from `lo` up to but not including `hi`. The core sets one with each pass for the tab shown. A scroll step that leaves it wakes the core
+/// once (`woke`), by the wake a page change already has, and no step after it does until the core sends a new band. So the compare on a scroll step is a layout
+/// lookup and two integer compares, on the view's own thread, under the lock the step already holds. Fractions of a page don't change with zoom, spread or
+/// window size, so a layout change needs no new band; a stale one (the contents changed, or a page moved by an edit) costs at most one wake the core answers
+/// with a new band, and can't hide a change for longer than the pass that follows what made it stale, which is sent with every pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Band {
+    pub(super) page: u32,
+    pub(super) lo: u16,
+    pub(super) hi: u16,
+    pub(super) woke: bool,
+}
+
+// size: one for each hot and warm tab. 672 bytes on 2026-11-13, before and after it was cut into its place and its drawing; 680 with the contents' band
+// (2026-11-14, 8 bytes a tab held by the page view: the shown tab's is the only one set). Held there, so a field added to it, or to its layout or page map, is a deliberate change.
+const _: () = assert!(size_of::<DocView>() <= 680, "a tab the page view holds grew");
 
 /// Where the reader is in a tab, and how it's shown.
 #[derive(Debug)]
@@ -195,6 +212,7 @@ impl DocView {
                 versions: HashMap::new(),
                 left_pictures: None,
             },
+            band: None,
         }
     }
 }
