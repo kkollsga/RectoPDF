@@ -664,7 +664,7 @@ fn went_to<A: crate::SessionAccess>(access: &A, tab: u32, hit: &Hit, going: Goin
                 }
             }
             // A step lands where it does from the place, so the place stays withheld, with or without its jump; a hit chosen by its index is an absolute
-            // move, which let it go (D-1).
+            // move, which lets it go when it's the person's (D-1), and an agent's doesn't ([`recto_session::Session::jump_as`], D-A).
             if from_withheld && stepped {
                 recto_session::compare::withhold_place(s, id);
                 s.viewing_mut().withhold_find_current();

@@ -520,7 +520,7 @@ fn agent_told_through_sequences(pages: usize, word: &str) -> Vec<String> {
     app.act(UiAction::PaneRead { tab: plain_tab });
     app.settle();
     told.extend(look(&app, &mut watching, "separate"));
-    // A draw of the plain tab's pages, ended and its word held, then a goto that lets its place go, then the word.
+    // A draw of the plain tab's pages, ended and its word held, then an agent's goto, which keeps its place withheld (D-A), then the word.
     let (mut view, engine) = first_pane_shown(&app, plain_tab, 1.0);
     crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
     crate::testkit::headless::host_turns(&app, &mut view, true);
