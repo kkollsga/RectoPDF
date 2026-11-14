@@ -517,6 +517,21 @@ pub fn forget_a_quiet_copy(quiet: bool, updates: &recto_update::updater::Updater
     }
 }
 
+/// **A switch or the button in Settings, as the person chooses it** (R2.3, C8): *Update automatically* is `settings --auto-update on|off`, *Allow
+/// development builds* `update dev-builds --set on|off`, and *Update Now* `update install --now`, the commands an agent sends, run for the person by the
+/// one executor, off the UI thread ([`super::controls`]' `act` sends it). What any of them comes to is in the status, as before. Nothing for an id that isn't one.
+pub fn setting_command(id: &str, on: bool) -> Option<Command> {
+    use recto_agent::commands::updates::{Settings, UpdateDevBuilds, UpdateInstall};
+    let word = || Some(recto_agent::commands::words::OnOff::from_bool(on));
+    let command = match id {
+        AUTO_UPDATE_ROW => Command::from(Settings { auto_update: word() }),
+        DEV_BUILDS_ROW => Command::from(UpdateDevBuilds { set: word() }),
+        UPDATE_NOW_ROW => Command::from(UpdateInstall { zip: None, now: true }),
+        _ => return None,
+    };
+    Some(command)
+}
+
 /// Whether Settings has this switch or button, for QA's `settings` verb.
 pub fn has_setting(id: &str) -> bool {
     matches!(id, AUTO_UPDATE_ROW | DEV_BUILDS_ROW | UPDATE_NOW_ROW)
@@ -683,21 +698,6 @@ impl Inner {
             privacy_title: crate::privacy::STATEMENT_TITLE.to_owned(),
             privacy_url: crate::privacy::statement_url(),
         }
-    }
-
-    /// **A switch or the button in Settings, as the person chooses it** (R2.3, C8): *Update automatically* is `settings --auto-update on|off`, *Allow
-    /// development builds* `update dev-builds --set on|off`, and *Update Now* `update install --now`, the commands an agent sends, run for the person by the
-    /// one executor, off the UI thread. What any of them comes to is in the status, as before.
-    pub fn setting_chosen(self: &Arc<Self>, id: &str, on: bool) {
-        use recto_agent::commands::updates::{Settings, UpdateDevBuilds, UpdateInstall};
-        let word = || Some(recto_agent::commands::words::OnOff::from_bool(on));
-        let command = match id {
-            AUTO_UPDATE_ROW => Command::from(Settings { auto_update: word() }),
-            DEV_BUILDS_ROW => Command::from(UpdateDevBuilds { set: word() }),
-            UPDATE_NOW_ROW => Command::from(UpdateInstall { zip: None, now: true }),
-            _ => return,
-        };
-        super::person::submit(self, command);
     }
 
     /// The hand-off isn't going ahead.

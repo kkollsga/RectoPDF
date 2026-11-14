@@ -478,7 +478,10 @@ fn settings_offers_update_now_for_a_waiting_build() {
         serde_json::json!({ "title": format!("Update to {DEV}…"), "enabled": true })
     );
     // The button is the menu's call and `--now`'s: it goes at once.
-    app.core().setting_chosen(crate::core::updates::UPDATE_NOW_ROW, true);
+    app.act(crate::core::controls::UiAction::SettingChosen {
+        id: crate::core::updates::UPDATE_NOW_ROW.to_owned(),
+        on: true,
+    });
     let (plan, disk) = app.handed_off(&bed);
     assert_eq!(plan.to, DEV);
     disk.install(&plan, Installed::Swapped);

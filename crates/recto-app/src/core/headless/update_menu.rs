@@ -105,10 +105,20 @@ fn the_menus_update_whose_offer_has_gone_checks() {
 fn settings_choices_are_the_agents_commands_and_the_button_alone_does_no_more() {
     let (app, _bed) = running(false);
     window_shut(&app, true);
-    let lines = sent(&app, |app| app.core().setting_chosen(UPDATE_NOW_ROW, true));
+    let lines = sent(&app, |app| {
+        app.act(UiAction::SettingChosen {
+            id: UPDATE_NOW_ROW.to_owned(),
+            on: true,
+        });
+    });
     assert_eq!(lines, [INSTALL_NOW]);
     assert!(app.core().take_update_alert().is_none(), "nothing alerted");
-    let lines = sent(&app, |app| app.core().setting_chosen(AUTO_UPDATE_ROW, false));
+    let lines = sent(&app, |app| {
+        app.act(UiAction::SettingChosen {
+            id: AUTO_UPDATE_ROW.to_owned(),
+            on: false,
+        });
+    });
     assert_eq!(lines, [r#"{"cmd":"settings","auto_update":"off"}"#]);
     let (agent, _agent_bed) = running(false);
     agent.agent(Level::Full, r#"{"cmd":"settings","auto_update":"off"}"#).expect("set");

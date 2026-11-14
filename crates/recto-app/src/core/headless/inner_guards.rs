@@ -157,7 +157,6 @@ Inner::pub fn save_as(self: &Arc<Self>, tab: u32, path: String)
 Inner::pub fn save_panel(&self) -> SavePanelModel
 Inner::pub fn save_problem_answered(&self, save_as: bool) -> super::HostAction
 Inner::pub fn set_frozen(&self, frozen: bool)
-Inner::pub fn setting_chosen(self: &Arc<Self>, id: &str, on: bool)
 Inner::pub fn settings_model(&self) -> SettingsModel
 Inner::pub fn sheet_changed(&self, open: bool)
 Inner::pub fn shown_with_state(&self)
