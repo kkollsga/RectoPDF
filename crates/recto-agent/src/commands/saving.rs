@@ -28,6 +28,7 @@ impl Cmd for Save {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)

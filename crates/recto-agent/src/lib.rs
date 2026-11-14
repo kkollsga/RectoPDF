@@ -556,11 +556,8 @@ pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, ev
         return execute_held(access, actor, command, events);
     }
     // A protected document the person opened with its password gives an agent nothing read from it: agent report §5.5. Closing it, tapping its row or asking where it is reads nothing of it, and what they answer leaves it out and says why. Asked before the tab is touched, woken or held.
-    // Find has no tab of its own: it's in the document being read, so that's the one asked about.
-    let about = command
-        .tab_selector()
-        .or_else(|| matches!(command, Command::Move(commands::Move::Find(_))).then_some(&tab_ref::ACTIVE));
-    if let Some(selector) = about
+    // Whose document it reads is the command's to say ([`commands::Cmd::ABOUT`]): Find's is the document being read, though it names no tab.
+    if let Some(selector) = command.about()
         && !command.protected_ok()
         && !actor.sees_protected()
         && access.with(|s| select(s, selector).is_ok_and(|id| s.tabs().withheld_from_agents(id)))

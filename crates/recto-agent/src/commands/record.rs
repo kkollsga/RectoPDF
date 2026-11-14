@@ -22,6 +22,7 @@ impl Cmd for SessionShow {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         None
@@ -59,6 +60,7 @@ impl Cmd for SessionSleep {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
@@ -98,6 +100,7 @@ impl Cmd for SessionSave {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         None
@@ -148,6 +151,7 @@ impl Cmd for SessionRestore {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         None
@@ -202,6 +206,7 @@ impl Cmd for SessionCheck {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         None

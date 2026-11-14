@@ -22,6 +22,7 @@ impl Cmd for UpdateStatus {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         None
@@ -55,6 +56,7 @@ impl Cmd for UpdateCheck {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         None
@@ -94,6 +96,7 @@ impl Cmd for UpdateInstall {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         None
@@ -181,6 +184,7 @@ impl Cmd for UpdateDevBuilds {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         None
@@ -249,6 +253,7 @@ impl Cmd for Settings {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         None
