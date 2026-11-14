@@ -806,11 +806,14 @@ impl HeadlessApp {
     }
 }
 
+/// A seam left held as the app ends, and what looks at the disk once the core's gone, before it's let go.
+type Holding<'a> = (Seam, Box<dyn FnOnce(&Disk) + 'a>);
+
 /// **Lets go of the core, as a process ending does,** whether by a quit's way out or a kill: from this moment nothing more is written, whatever's still running;
 /// nothing queued for the session thread is taken; every held seam opens (but the one `holding` names, let go only once the core's gone and its look at the disk
 /// made: [`HeadlessApp::kill_holding`]), so what waited there goes on to find it can't write; the page views end; and every thread that held the core, or the
 /// updater, lets go of it.
-fn end(app: &mut HeadlessApp, mut holding: Option<(Seam, Box<dyn FnOnce(&Disk) + '_>)>) -> Disk {
+fn end(app: &mut HeadlessApp, mut holding: Option<Holding<'_>>) -> Disk {
     if let Some(inner) = app.inner.take() {
         inner.saver.store.let_go();
         inner.core.abandon();
