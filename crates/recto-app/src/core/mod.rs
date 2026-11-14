@@ -267,7 +267,7 @@ pub fn hand_off_check(host: &AppHost) -> HandOffCheck {
 
 impl Inner {
     pub fn hand_off_check(&self) -> HandOffCheck {
-        let busy = running::Running::now(self).busy();
+        let busy = running::Running::now(&self.life, &self.host, &self.tools).busy();
         let last = self.life.last_input_ms();
         let now = self.life.now_ms();
         HandOffCheck {

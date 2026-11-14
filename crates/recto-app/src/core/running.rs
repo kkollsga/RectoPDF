@@ -3,7 +3,7 @@
 //! a named subset of the same counts. So a command that's counted in one place for a while and in another after (a Save, counted the person's as it's
 //! asked, then a save of the window's as its thread starts, then a command as it runs) is never in neither for either.
 
-use super::{BusyItem, CoreQueue, Inner};
+use super::{AppHost, BusyItem, CoreQueue, Lifecycle, Tools};
 use std::sync::atomic::Ordering;
 
 /// What's under way now, by each part's own count.
@@ -26,16 +26,16 @@ pub struct Running {
 }
 
 impl Running {
-    /// What's under way in `inner` now.
-    pub fn now(inner: &Inner) -> Self {
+    /// What's under way now, from the app's life, its host and its tools.
+    pub fn now(life: &Lifecycle, host: &AppHost, tools: &Tools) -> Self {
         Self {
-            sheets: inner.life.sheets_open(),
-            commands: inner.host.running.load(Ordering::SeqCst),
-            changing: inner.host.changing.load(Ordering::SeqCst),
-            persons: inner.life.persons_running(),
-            reads: inner.life.reads_running(),
-            saves: inner.tools.save_ui().running.load(Ordering::SeqCst),
-            printing: inner.tools.printing().busy(),
+            sheets: life.sheets_open(),
+            commands: host.running.load(Ordering::SeqCst),
+            changing: host.changing.load(Ordering::SeqCst),
+            persons: life.persons_running(),
+            reads: life.reads_running(),
+            saves: tools.save_ui().running.load(Ordering::SeqCst),
+            printing: tools.printing().busy(),
         }
     }
 

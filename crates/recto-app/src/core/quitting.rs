@@ -81,7 +81,7 @@ impl Inner {
                 let wait_until = inner.life.now_ms().saturating_add(crate::listener::QUIT_PATIENCE_MS.saturating_sub(FLUSH_MS));
                 loop {
                     let parks = inner.core.parks();
-                    if !super::running::Running::now(&inner).changes_what_a_quit_writes() {
+                    if !super::running::Running::now(&inner.life, &inner.host, &inner.tools).changes_what_a_quit_writes() {
                         break;
                     }
                     let left = wait_until.saturating_sub(inner.life.now_ms());
