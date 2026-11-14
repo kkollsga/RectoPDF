@@ -373,6 +373,10 @@ pub fn chosen(engine: &Engine, printing: &Printing, panel: Panel) -> Option<Comm
         .and_then(|(_, range)| range)
         .map(|range| (range.start.page, range.end.page));
     let (first, last) = chosen_range(engine.points().page_count(), panel.all, panel.first, panel.last, selection)?;
+    // FOR THE OWNER, NOT DECIDED (PLAN, "the person can't print a document they opened with its password", point 6): Save as PDF or Open in Preview
+    // from the system's panel (`panel.to_file`) of a document the person opened with its password makes an unencrypted copy of it, with only the copy
+    // flag's "Print anyway" step. Recommended, and built: no step of its own. If the owner says otherwise, the notice goes here, said as the copy flag's
+    // is (`Printing::say`), before anything is asked.
     if !printing.ask(last - first + 1, panel.serial) {
         printing.say("A print is already being prepared.", false);
         return None;
