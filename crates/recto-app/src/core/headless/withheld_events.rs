@@ -139,7 +139,18 @@ fn agent_told(pages: usize, word: &str) -> Vec<String> {
     for look in [&["tabs"][..], &["session", "show"], &["sidebar"]] {
         told.push(format!("page 4 deleted {look:?}: {:?}", app.recto(Level::Full, look)));
     }
+    // The person goes to its last page, and closes the tab while that page's draw is done and its word not yet told, so the word comes after the close.
     // Closing asks about the edit where it took, and the person says not to save it: the tab goes either way.
+    let engine = app.core().engine.clone();
+    let mut view = window_view();
+    app.act(UiAction::PageTyped { text: "5".into() });
+    host_turns(&app, &mut view, true);
+    // A wider window: the page showing is drawn again, at its new size.
+    engine.qa().hold_tells(true);
+    view.width *= 2.0;
+    view.frame_width *= 2.0;
+    applied_as_the_host(&engine.set_viewport(view));
+    assert!(engine.qa().wait_for_held_tell(crate::testkit::headless::WAIT_LIMIT), "a draw's word held");
     let tab = app.tabs()[0].tab;
     if app.act(UiAction::Menu { id: "file.close".into() }).host == crate::menus::HostAction::ConfirmClose {
         app.act(UiAction::CloseAnswered {
@@ -147,8 +158,9 @@ fn agent_told(pages: usize, word: &str) -> Vec<String> {
             choice: crate::saving::CloseChoice::DontSave,
         });
     }
+    app.wait_until("the tab closed", || app.tabs().is_empty());
+    engine.qa().hold_tells(false);
     app.settle();
-    assert!(app.tabs().is_empty(), "the tab closed");
     told.push(format!("closed: {:?}", watching.heard()));
     told
 }
@@ -158,7 +170,8 @@ fn agent_told(pages: usize, word: &str) -> Vec<String> {
 /// it runs) or a look at the session as a whole: an agent watching every group at every level, and looking with `tabs`, `session show` and `sidebar`,
 /// is told the same while the person opens, draws, turns to page 2 and 4, scrolls, Finds, deletes page 4 and closes a three-page protected document saying
 /// "Locked" as a five-page one saying "Hidden", where page 4 is past the end of one, so the delete takes in only the other (its `edited`, its undo, its
-/// `edits_changed` would tell), and Find finds three hits in one and none in the other.
+/// `edits_changed` would tell), Find finds three hits in one and none in the other, and the close comes while the draw of the last page (3 in one, 4 in
+/// the other) is done and its word not yet told, so a `page_drawn` about a tab that's gone would tell.
 #[test]
 fn an_agent_is_told_the_same_of_two_protected_documents() {
     let (one, two) = (agent_told(3, "Locked"), agent_told(5, "Hidden"));

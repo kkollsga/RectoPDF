@@ -199,6 +199,23 @@ mod tests {
         assert!(events.is_empty(), "a is being read: {events:?}");
     }
 
+    /// Failure (security review of S1): news about a protected tab that comes after it's closed (a draw done before the close and told after it, Find's
+    /// news from a search still over it) goes to an agent: a closed tab isn't withheld by the session's rule, which is about open tabs, and the boundary
+    /// decides when the news is sent. A tab that isn't open is withheld here, for its document's news and for Find's; that it closed still goes.
+    #[test]
+    fn news_about_a_closed_protected_tab_is_held_back() {
+        let (mut session, a, _) = two_tabs();
+        session.close(a).expect("a closed");
+        let mut events = vec![
+            Event::TabClosed { tab: a },
+            Event::PageDrawn { tab: a, page: 7 },
+            Event::FindRunning { tab: Some(a) },
+            Event::FindFinished { tab: Some(a), hits: 3 },
+        ];
+        for_agents(&session, None, &mut events);
+        assert_eq!(events, [Event::TabClosed { tab: a }]);
+    }
+
     /// Failure: a batch with nothing about a document takes the session's lock to be let through, on the session thread for every page drawn.
     #[test]
     fn only_a_batch_about_a_document_asks_the_session() {
