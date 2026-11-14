@@ -379,7 +379,9 @@ mod tests {
         view.y += 300.0;
         applied_as_the_host(&engine.set_viewport(view));
         assert!(engine.qa().wait_for_held_tell(WAIT_LIMIT), "a job's end held before its word");
-        let turns = app.core().core.at_rest().expect("the session thread at rest");
+        // The scroll's own look at the session (a page moved) taken first; one that comes after this only sends the test down the not-settled path.
+        app.wait_until("the session thread at rest", || app.core().core.at_rest().is_ok());
+        let turns = app.core().core.at_rest().unwrap_or(0);
         let core = std::sync::Arc::clone(app.core());
         let (said, heard) = std::sync::mpsc::channel();
         let waiting = std::thread::Builder::new()
