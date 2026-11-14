@@ -148,6 +148,18 @@ fn script_lines() -> Vec<String> {
     script.launched("lock late, kept", &app, Some(app.disk()));
     next_try_fails(&app);
     script.step("lock late, kept", "a try that fails", &app, Some(app.disk()));
+    // A hand-off while it tries: stopped, and taken up again where it was as the hand-off is undone (it can't write a record it doesn't keep).
+    let handed = app.core().hand_off(std::time::Duration::from_secs(5));
+    script.step(
+        "lock late, kept",
+        if handed.is_ok() {
+            "a hand-off while it tries, written"
+        } else {
+            "a hand-off while it tries, refused and undone"
+        },
+        &app,
+        Some(app.disk()),
+    );
     drop(before);
     app.advance(TRY_EVERY_MS);
     app.wait_until("kept", || app.core().life.keeping() == Keeping::Keeps);
