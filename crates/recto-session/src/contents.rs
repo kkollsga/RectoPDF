@@ -353,3 +353,75 @@ fn section_open(folds: Option<&[(u32, bool)]>, chain: &HashSet<u32>, entry: u32)
         .and_then(|folds| folds.iter().rev().find(|(at, _)| *at == entry))
         .map_or_else(|| chain.contains(&entry), |(_, open)| *open)
 }
+
+/// What a tap on the contents' note does. The note is Rust's: its words and what it does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentsAction {
+    Generate,
+    ShowGenerated,
+    ShowOwn,
+    /// Stop making them.
+    Stop,
+}
+
+impl ContentsAction {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Generate => "contents.generate",
+            Self::ShowGenerated => "contents.show_generated",
+            Self::ShowOwn => "contents.show_own",
+            Self::Stop => "contents.stop",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        [Self::Generate, Self::ShowGenerated, Self::ShowOwn, Self::Stop]
+            .into_iter()
+            .find(|action| action.id() == id)
+    }
+}
+
+/// The note over a tab's contents: a short line at rest, and what it means on hover. `None` for contents that are fine and shown as they are. Owner, 2026-11-06: "the left sidebar menu is a bit too complicated (visually noisy)", so it's one quiet line, and the rest waits for the pointer.
+pub fn contents_note(
+    verdict: ContentsVerdict,
+    view: Option<&GeneratedView>,
+    choose_generated: bool,
+    own_entries: usize,
+) -> Option<(&'static str, &'static str, Option<ContentsAction>)> {
+    const MADE: &str =
+        "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.";
+    match view {
+        Some(GeneratedView::Ready(_)) if choose_generated => Some((
+            "Generated contents",
+            if own_entries > 0 {
+                "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong. Click to show the file's own."
+            } else {
+                MADE
+            },
+            (own_entries > 0).then_some(ContentsAction::ShowOwn),
+        )),
+        Some(GeneratedView::Ready(_)) => Some(("Show generated contents", MADE, Some(ContentsAction::ShowGenerated))),
+        Some(GeneratedView::Making) => Some((
+            "Generating contents\u{2026}",
+            "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.",
+            Some(ContentsAction::Stop),
+        )),
+        Some(GeneratedView::Failed(words)) => Some(("Couldn't generate contents", words, Some(ContentsAction::Generate))),
+        Some(GeneratedView::NoneFound) => Some((
+            "No headings found",
+            "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.",
+            None,
+        )),
+        _ if verdict.offers() || choose_generated => Some((
+            "Generate contents",
+            match verdict {
+                ContentsVerdict::Missing => {
+                    "This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed."
+                }
+                _ => "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.",
+            },
+            Some(ContentsAction::Generate),
+        )),
+        _ => None,
+    }
+}
