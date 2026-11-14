@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// **What the page view's thread last said of its workers, for whoever asks from outside, and the system's ask that idle ones go:** one part of the
 /// engine's shared state. The thread writes it ([`Seen::publish`], [`Seen::restarted`]) and takes the ask ([`Seen::take_idle_ask`]); [`WorkerFigures`]
-/// reads it. The two lists are under one lock, taken after the page view's when both are (as [`WorkerFigures::bytes`] does), and never held across a
-/// call to the kernel; the counts are atomics, so nothing waits for them.
+/// reads it. The two lists are under one lock, which is never held with the page view's ([`WorkerFigures::bytes`] reads the tab's files under the page
+/// view's lock and lets it go before it takes this one) nor across a call to the kernel; the counts are atomics, so nothing waits for them.
 #[derive(Default)]
 pub(super) struct Seen {
     lists: Mutex<SeenLists>,
@@ -33,8 +33,10 @@ impl Seen {
     /// The workers running now, by the file each has open, and how many of them said their walls were up.
     pub(super) fn publish(&self, by_file: Vec<(PathBuf, u32)>, walled: u32) {
         self.walled.store(walled, Ordering::Relaxed);
+        // Built before the lock is taken, as the pids always were: the lock is held for two moves.
+        let pids = by_file.iter().map(|(_, pid)| *pid).collect();
         let mut lists = lock(&self.lists);
-        lists.pids = by_file.iter().map(|(_, pid)| *pid).collect();
+        lists.pids = pids;
         lists.by_file = by_file;
     }
 
