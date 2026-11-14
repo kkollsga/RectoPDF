@@ -16,7 +16,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::time::{Duration, Instant};
 
-use super::look::{Looks, NoLook, page_look};
+use super::look::{Looks, tile_look};
 use super::{Changed, Shared, lock, note_change, selecting_news, signal_ops, take_pending_follow, tell_selecting};
 
 /// Files that can be being opened at once. Past this, more that aren't answering wait for one that is.
@@ -460,20 +460,19 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                         // Replaced as this was drawn, so it's of the new file, and no look of the old one's may go for it.
                         seen_replaced(open);
                         // What's drawn for a tab off screen with its look or size refused for want of a worker goes nowhere: a picture put on dark paper by a look decided without them isn't the page's.
-                        let look = match page_look(
+                        // A look gone stale or to be tried again goes nowhere either: the tile isn't handed on, and what's shown of the page stays.
+                        let look = tile_look(
                             &mut open.doc,
                             &mut open.looks,
                             job.source_page,
                             job.generation,
-                            whole.map(|rect| (surface, rect)),
-                            tile,
-                        ) {
-                            Ok(look) => Some(look),
-                            // A look to be tried again at the page's next job goes nowhere either, as one gone stale doesn't: the tile isn't handed on, and what's shown of the page stays.
-                            Err(NoLook::Stale | NoLook::Again) => None,
-                            Err(NoLook::Unstarted { heavy }) => return Outcome::Unstarted { heavy },
-                        };
-                        let size = match look.as_ref().map(|_| open.doc.page_size(job.source_page)) {
+                            (whole.map(|rect| (surface, rect)), tile),
+                            Instant::now(),
+                        );
+                        if let Err(Outcome::Unstarted { heavy }) = look {
+                            return Outcome::Unstarted { heavy };
+                        }
+                        let size = match look.as_ref().ok().map(|_| open.doc.page_size(job.source_page)) {
                             Some(Err(RenderFailure::WouldStart { heavy })) => return Outcome::Unstarted { heavy },
                             size => size.and_then(Result::ok),
                         };
@@ -482,7 +481,10 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                         if seen_replaced(open) {
                             return Outcome::Cancelled;
                         }
-                        let Some(look) = look else { return Outcome::Cancelled };
+                        let look = match look {
+                            Ok(look) => look,
+                            Err(outcome) => return outcome,
+                        };
                         // What keeps no surface comes down to its one colour. With the lower-resolution version, the surface is kept whatever's in it.
                         let colour_only = *what == DrawKind::Tile && low_res.is_none();
                         let dark = look.in_tile(page, drawn);

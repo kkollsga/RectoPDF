@@ -3,12 +3,15 @@
 use super::*;
 use recto_render_service::{KillReason, LowResWhy, Tile, TileKind};
 use std::collections::VecDeque;
+use std::time::Duration;
 
-/// A renderer for one letter page, black all over, as a dark slide is, with images or none as a test says, whose small pictures come out as a test lists them, and drawn black once the list is done.
+/// A renderer for one letter page, black all over, as a dark slide is, with images or none as a test says, whose small pictures come out as a test lists them, and drawn black once the list is done; or, with `fails_until`, fail for a reason that may pass until the test's clock, `now`, gets there.
 struct StandIn {
     boxes: Option<Vec<[u16; 4]>>,
     draws: VecDeque<Result<(), RenderFailure>>,
     drawn: usize,
+    now: Instant,
+    fails_until: Option<Instant>,
 }
 
 impl StandIn {
@@ -17,6 +20,17 @@ impl StandIn {
             boxes,
             draws: draws.into_iter().collect(),
             drawn: 0,
+            now: Instant::now(),
+            fails_until: None,
+        }
+    }
+
+    /// A page with no images whose small picture fails for a reason that may pass until `after` has gone by on the test's clock, which starts at `start`.
+    fn failing_for(start: Instant, after: Option<Duration>) -> Self {
+        Self {
+            now: start,
+            fails_until: Some(after.map_or(start + Duration::from_secs(86_400), |after| start + after)),
+            ..Self::new(Some(Vec::new()), [])
         }
     }
 }
@@ -40,6 +54,9 @@ impl LookSource for StandIn {
 
     fn render_tile(&mut self, _request: &TileRequest, surface: &PixelSurface) -> Result<TileResult, RenderFailure> {
         self.drawn += 1;
+        if self.fails_until.is_some_and(|until| self.now < until) {
+            not_drawable_now()?;
+        }
         self.draws.pop_front().unwrap_or(Ok(()))?;
         surface
             .with_pixels(|pixels| pixels.as_chunks_mut::<4>().0.iter_mut().for_each(|pixel| *pixel = [0, 0, 0, 0xFF]))
@@ -61,36 +78,77 @@ fn not_drawable_now() -> Result<(), RenderFailure> {
     })
 }
 
-/// The page's look, as a tile drawn for part of it asks, with no picture of the whole page at hand.
-fn asked(doc: &mut StandIn, looks: &mut Looks) -> Result<Arc<PageLook>, NoLook> {
-    page_look(doc, looks, 0, 1, None, None)
+/// The page's look, as a tile drawn for part of it asks, with no picture of the whole page at hand, `after` into the test's clock from `start`.
+fn asked_at(doc: &mut StandIn, looks: &mut Looks, start: Instant, after: Duration) -> Result<Arc<PageLook>, NoLook> {
+    doc.now = start + after;
+    page_look(doc, looks, 0, 1, None, None, doc.now)
 }
 
-/// Failure (review of 2026-11-13, S2): on a page with no images, the small picture its look is decided from fails for a reason that may pass (the larger limit busy for a moment), and the page takes a page of text's look and keeps it, so a dark slide is turned over, and stays light, for as long as its renderer lives. It's tried again: nothing's kept, the job's told to try again, and at the next job the page is decided from its picture, dark, and that's kept, so the job after draws nothing more. Seen failing with a passing failure kept as a final one.
+/// The same, asked now.
+fn asked(doc: &mut StandIn, looks: &mut Looks) -> Result<Arc<PageLook>, NoLook> {
+    page_look(doc, looks, 0, 1, None, None, Instant::now())
+}
+
+fn seconds(tenths: u64) -> Duration {
+    Duration::from_millis(tenths * 100)
+}
+
+/// Failure (second review of 2026-11-14, S1): on a page with no images, the small picture its look is decided from fails for a reason that may pass, a surface that can't be made under memory pressure, say, for 4 s, and the three tries are used up in milliseconds, three tiles drawn one after another and thrown away, so the page takes a page of text's look and keeps it: a dark slide turned light for the renderer's life. Tries are spaced by the page view's wait: asked every tenth of a second, the page is tried at 0, 3 and 6 s, nothing's drawn between, and at 6 s, the failure gone, it's decided dark and kept. Seen failing with every ask counted as a try (undecided, a page of text, at the third ask).
 #[test]
-fn a_small_picture_that_fails_for_a_moment_is_tried_again_and_the_page_decided_then() {
-    let (mut doc, mut looks) = (StandIn::new(Some(Vec::new()), [not_drawable_now()]), Looks::default());
-    assert_eq!(asked(&mut doc, &mut looks), Err(NoLook::Again));
-    assert!(looks.decided.is_empty(), "nothing kept: {looks:?}");
-    assert_eq!(*asked(&mut doc, &mut looks).unwrap(), PageLook::dark_page(), "decided at the next job");
-    assert_eq!(*asked(&mut doc, &mut looks).unwrap(), PageLook::dark_page());
-    assert_eq!(doc.drawn, 2, "kept once decided");
+fn a_small_picture_that_fails_for_a_few_seconds_is_tried_again_spaced_and_decided_then() {
+    let start = Instant::now();
+    let (mut doc, mut looks) = (StandIn::failing_for(start, Some(Duration::from_secs(4))), Looks::default());
+    let mut tried_at = Vec::new();
+    for tenth in 0..60 {
+        let drawn = doc.drawn;
+        assert_eq!(asked_at(&mut doc, &mut looks, start, seconds(tenth)), Err(NoLook::Again), "at {tenth} tenths");
+        if doc.drawn > drawn {
+            tried_at.push(tenth);
+        }
+        assert!(doc.drawn - drawn <= 1, "drawn more than once at {tenth} tenths");
+        assert!(looks.decided.is_empty(), "nothing kept at {tenth} tenths: {looks:?}");
+    }
+    assert_eq!(tried_at, [0, 30], "tried once at each 3 s");
+    assert_eq!(*asked_at(&mut doc, &mut looks, start, seconds(60)).unwrap(), PageLook::dark_page(), "decided at 6 s");
+    assert_eq!(*asked_at(&mut doc, &mut looks, start, seconds(61)).unwrap(), PageLook::dark_page());
+    assert_eq!(doc.drawn, 3, "a draw a try, and none once decided");
     assert!(looks.tries.is_empty(), "its tries go once it's decided: {looks:?}");
 }
 
-/// Failure: a page whose small picture can never be had for a reason that may pass (a Mac short of memory for as long as it's looked at) is tried again for ever, each try a tile drawn and thrown away, and is never shown. After [`LOOK_TRIES`] it takes what a page whose picture can't be had takes, and keeps it: a page of text's look with no images, dimmed with images.
+/// Failure: a page whose small picture can never be had for a reason that may pass (a Mac short of memory for as long as it's looked at) is tried again for ever, each try a tile drawn and thrown away, and is never shown; or its tries go in a moment. Asked every tenth of a second, it's tried at 0, 3 and 6 s and then takes what a page whose picture can't be had takes, and keeps it: a page of text's look with no images, dimmed with images. Seen failing with every ask counted as a try (undecided at the third ask, a fifth of a second in).
 #[test]
-fn a_page_whose_small_picture_keeps_failing_still_draws() {
+fn a_page_whose_small_picture_keeps_failing_still_draws_after_three_spaced_tries() {
     for (boxes, expected) in [(Some(Vec::new()), PageLook::text()), (Some(vec![[0, 0, 32_768, 32_768]]), PageLook::unknown())] {
-        let mut doc = StandIn::new(boxes.clone(), std::iter::repeat_with(not_drawable_now).take(10));
+        let start = Instant::now();
+        let mut doc = StandIn {
+            boxes: boxes.clone(),
+            ..StandIn::failing_for(start, None)
+        };
         let mut looks = Looks::default();
-        for _ in 1..LOOK_TRIES {
-            assert_eq!(asked(&mut doc, &mut looks), Err(NoLook::Again), "{boxes:?}");
+        for tenth in 0..60 {
+            assert_eq!(asked_at(&mut doc, &mut looks, start, seconds(tenth)), Err(NoLook::Again), "{boxes:?} at {tenth} tenths");
         }
-        assert_eq!(*asked(&mut doc, &mut looks).unwrap(), expected, "{boxes:?}");
-        assert_eq!(*asked(&mut doc, &mut looks).unwrap(), expected, "{boxes:?}");
+        assert_eq!(doc.drawn, 2, "{boxes:?}: two tries in the first 6 s");
+        assert_eq!(*asked_at(&mut doc, &mut looks, start, seconds(60)).unwrap(), expected, "{boxes:?}");
+        assert_eq!(*asked_at(&mut doc, &mut looks, start, seconds(70)).unwrap(), expected, "{boxes:?}");
         assert_eq!(doc.drawn, usize::from(LOOK_TRIES), "kept: {boxes:?}");
     }
+}
+
+/// Failure: the step that maps a look to what a tile drawn for dark paper does hands a tile on, or keeps a look, by an answer that isn't the page's: a look to be tried again shown as undecided, a dark slide light. A look to be tried again ends the job as [`Outcome::LookLater`], which holds the page in the page view, with nothing kept; asked again before its time it ends the same way with nothing drawn; a look decided is gone by. Seen failing with `NoLook::Again` mapped to a shown, undecided look.
+#[test]
+fn a_look_to_be_tried_again_is_never_handed_on_or_kept() {
+    let start = Instant::now();
+    let (mut doc, mut looks) = (StandIn::failing_for(start, Some(Duration::from_secs(1))), Looks::default());
+    let at = |doc: &mut StandIn, looks: &mut Looks, tenths| {
+        doc.now = start + seconds(tenths);
+        tile_look(doc, looks, 0, 1, (None, None), doc.now)
+    };
+    assert!(matches!(at(&mut doc, &mut looks, 0), Err(Outcome::LookLater)), "the try that failed");
+    assert!(matches!(at(&mut doc, &mut looks, 10), Err(Outcome::LookLater)), "asked before its time");
+    assert!(looks.decided.is_empty(), "nothing kept: {looks:?}");
+    assert_eq!(doc.drawn, 1, "nothing drawn before its time");
+    assert_eq!(*at(&mut doc, &mut looks, 30).unwrap(), PageLook::dark_page(), "decided at its time");
 }
 
 /// Failure: a picture that can't be had for good (a page that stopped its worker) is tried again at every job, a tile thrown away each time. It takes [`PageLook::undecided`] at once and keeps it, as before.
@@ -121,7 +179,7 @@ fn a_picture_of_the_whole_page_at_hand_decides_with_nothing_drawn() {
         height: 198,
     };
     assert_eq!(
-        *page_look(&mut doc, &mut looks, 0, 1, Some((&preview, rect)), None).unwrap(),
+        *page_look(&mut doc, &mut looks, 0, 1, Some((&preview, rect)), None, Instant::now()).unwrap(),
         PageLook::dark_page()
     );
     assert_eq!(doc.drawn, 0);

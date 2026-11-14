@@ -3,19 +3,21 @@
 //! What it asks of a renderer is [`LookSource`], which [`DocRenderer`] is, and a test's stand-in can be.
 
 use crate::paper::PageLook;
+use crate::tiles::{Outcome, TRY_AGAIN_AFTER};
 use recto_platform::surface::PixelSurface;
 use recto_proto::TileRect;
 use recto_render_service::{DocRenderer, RenderFailure, TileRequest, TileResult};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Pages whose look is remembered. Many more than the tiles and previews kept, so a page can't have tiles on the screen from before it was forgotten. Each is at most 64 boxes.
 const MAX_LOOKS: usize = 4096;
 /// The longest side of the picture of a page that's drawn to judge it, if there's no preview to use. Enough to see paper between lines of text, and a mebibyte of memory for a moment.
 const LOOK_PICTURE_EDGE: f32 = 512.0;
-/// The same, for a page with no images, when nothing drawn so far covers the page (a wake onto a sleep picture, zoomed out past a preview, looks forgotten, a tab switched back to after its renderer went): all that's asked of it is whether its background is dark, which a picture this small answers as the look picture does (the survey's `sizes`, 0 pages apart at 128), for a fraction of the draw.
+/// The same, for a page with no images, when nothing drawn so far covers the page (a wake onto a sleep picture, which stands for the page's preview; zoomed out past where a preview is drawn, with the page in more than one tile; the looks forgotten while the preview is kept; a preview drawn only at a lower resolution, which isn't taken for a picture of the page): all that's asked of it is whether its background is dark, which a picture this small answers as the look picture does (the survey's `sizes`, 0 pages apart at 128), for a fraction of the draw.
 const IMAGELESS_LOOK_EDGE: f32 = 128.0;
-/// **How many times a page's picture may fail for a reason that may pass before the page takes [`PageLook::undecided`] and keeps it** (review of 2026-11-13, S2). Each try is the page's next job, the tile it was for thrown away meanwhile, so nothing's shown by a look that isn't the page's: the sleep picture or the preview stays. Three: a heavy page whose larger limit is busy for a moment gets it, and a page that can never be drawn small (a Mac short of memory for as long as it's looked at) still draws, after three tiles' worth of work.
+/// **How many times a page's picture may fail for a reason that may pass before the page takes [`PageLook::undecided`] and keeps it** (review of 2026-11-13, S2), the tries spaced by the page view's own wait for a page that couldn't be drawn for a reason that may pass, `TRY_AGAIN_AFTER`, 3 s (second review, 2026-11-14: counted per job, three back-to-back tile draws used them up in milliseconds, under just the memory pressure that makes a surface fail, and a dark slide turned light for the renderer's life). After a try fails the job ends as [`Outcome::LookLater`]: its tile isn't shown, nothing's kept, and the page view asks nothing of the page till the wait is over, so no tile's drawn to be thrown away meanwhile; what's shown of the page stays, the sleep picture or the preview, with no note, as nothing's failed. A try asked before its time, as by a second tab on the same file, isn't one: nothing's drawn for it and the job ends the same way. Three tries over at least 6 s: a heavy page whose larger limit is busy for a moment, or a Mac short of memory for a few seconds, gets it, and a page that can never be drawn small still draws, after three tiles' worth of work.
 const LOOK_TRIES: u8 = 3;
 
 /// What the look is decided with: a file's renderer, or a test's stand-in for one.
@@ -50,11 +52,19 @@ impl LookSource for DocRenderer {
     }
 }
 
-/// What's been decided about a file's pages on dark paper, and the pages whose picture has failed for a reason that may pass, how many times. Of the file that's open now: a replacement clears it before anything goes by it.
+/// What's been decided about a file's pages on dark paper, and the pages whose picture has failed for a reason that may pass, how many times and when it may be tried next. Of the file that's open now: a replacement clears it before anything goes by it.
 #[derive(Debug, Default)]
 pub(super) struct Looks {
     decided: HashMap<u32, Arc<PageLook>>,
-    tries: HashMap<u32, u8>,
+    tries: HashMap<u32, Tries>,
+}
+
+/// A page's tries at a picture that failed for a reason that may pass.
+#[derive(Clone, Copy, Debug)]
+struct Tries {
+    made: u8,
+    /// Not tried again before this.
+    next: Instant,
 }
 
 impl Looks {
@@ -74,14 +84,22 @@ impl Looks {
         look
     }
 
-    /// One more failure of a page's picture that may pass: whether it may be tried again, rather than the page taking what a page with no picture takes.
-    fn try_again(&mut self, page: u32) -> bool {
-        if self.tries.len() >= MAX_LOOKS {
+    /// Whether a page's next try is still to wait at `now`.
+    fn waiting(&self, page: u32, now: Instant) -> bool {
+        self.tries.get(&page).is_some_and(|tries| now < tries.next)
+    }
+
+    /// A failure of a page's picture that may pass, at `now`: whether it may be tried again, rather than the page taking what a page with no picture takes. It counts as a try only once the last one's wait is over.
+    fn try_again(&mut self, page: u32, now: Instant) -> bool {
+        if self.tries.len() >= MAX_LOOKS && !self.tries.contains_key(&page) {
             self.tries.clear();
         }
-        let tries = self.tries.entry(page).or_insert(0);
-        *tries = tries.saturating_add(1);
-        *tries < LOOK_TRIES
+        let tries = self.tries.entry(page).or_insert(Tries { made: 0, next: now });
+        if now >= tries.next {
+            tries.made = tries.made.saturating_add(1);
+            tries.next = now + TRY_AGAIN_AFTER;
+        }
+        tries.made < LOOK_TRIES
     }
 }
 
@@ -92,7 +110,7 @@ pub(super) enum NoLook {
     Stale,
     /// What it's decided from wasn't asked, as the job may use only the worker that's there ([`recto_render_service::Workers::OnlyTheOneThere`]) and that one couldn't, a heavy one if `heavy`.
     Unstarted { heavy: bool },
-    /// The picture it's decided from failed for a reason that may pass ([`RenderFailure::NotDrawableNow`], or a surface that couldn't be made or read): the page is tried again at its next job, at most [`LOOK_TRIES`] times.
+    /// The picture it's decided from failed for a reason that may pass ([`RenderFailure::NotDrawableNow`], or a surface that couldn't be made or read), or the page is waiting to be tried again: it's tried again once its wait is over, at most [`LOOK_TRIES`] times.
     Again,
 }
 
@@ -105,7 +123,23 @@ enum Picture {
     Final,
 }
 
-/// The look of a page: known, or decided now from what's on hand, a preview if this job's drawn one, otherwise a small picture drawn for it. A page with no images is decided too, as its background may be dark (owner, 2026-11-13: a page already dark is never turned over), from the preview or, if this job's tile covers the whole page, from that, and only with neither from a picture [`IMAGELESS_LOOK_EDGE`] long. Only a look decided from answers is kept: one whose image boxes, size or picture were refused for want of a worker isn't decided at all, as `None` for its images would judge the page whole, which a page with a photograph isn't; one whose picture failed for a reason that may pass is tried again ([`NoLook::Again`]); a picture that can't be had at all gives [`PageLook::undecided`], kept.
+/// **What a tile drawn for dark paper does with its page's look** ([`page_look`]): goes by it, or ends as the outcome given, its tile not handed on and nothing kept: [`Outcome::Cancelled`] for a job gone stale, [`Outcome::LookLater`] for a look to be tried again, which holds the page till then, and [`Outcome::Unstarted`] for want of a worker.
+pub(super) fn tile_look(
+    doc: &mut impl LookSource,
+    looks: &mut Looks,
+    page: u32,
+    generation: u64,
+    pictures: (Option<(&PixelSurface, TileRect)>, Option<(&PixelSurface, TileRect, f32)>),
+    now: Instant,
+) -> Result<Arc<PageLook>, Outcome> {
+    page_look(doc, looks, page, generation, pictures.0, pictures.1, now).map_err(|no| match no {
+        NoLook::Stale => Outcome::Cancelled,
+        NoLook::Again => Outcome::LookLater,
+        NoLook::Unstarted { heavy } => Outcome::Unstarted { heavy },
+    })
+}
+
+/// The look of a page: known, or decided now from what's on hand, a preview if this job's drawn one, otherwise a small picture drawn for it. A page with no images is decided too, as its background may be dark (owner, 2026-11-13: a page already dark is never turned over), from the preview or, if this job's tile covers the whole page, from that, and only with neither from a picture [`IMAGELESS_LOOK_EDGE`] long. Only a look decided from answers is kept: one whose image boxes, size or picture were refused for want of a worker isn't decided at all, as `None` for its images would judge the page whole, which a page with a photograph isn't; one whose picture failed for a reason that may pass is tried again once its wait is over, `now` being when this is asked ([`NoLook::Again`], [`LOOK_TRIES`]); a picture that can't be had at all gives [`PageLook::undecided`], kept.
 pub(super) fn page_look(
     doc: &mut impl LookSource,
     looks: &mut Looks,
@@ -113,6 +147,7 @@ pub(super) fn page_look(
     generation: u64,
     whole: Option<(&PixelSurface, TileRect)>,
     tile: Option<(&PixelSurface, TileRect, f32)>,
+    now: Instant,
 ) -> Result<Arc<PageLook>, NoLook> {
     // The places of its images are what a look was decided from, and they may not come out the same twice, so neither of a page's tiles may go by an old answer.
     if doc.take_image_places_cleared() {
@@ -139,6 +174,8 @@ pub(super) fn page_look(
     });
     let picture = match at_hand {
         Some((surface, rect)) => decide(surface, rect),
+        // Nothing's drawn for a page still waiting to be tried again.
+        None if looks.waiting(page, now) => return Err(NoLook::Again),
         None => match small_picture(doc, page, generation, image_less)? {
             Ok((surface, drawn)) => decide(&surface, drawn),
             Err(failed) => failed,
@@ -146,7 +183,7 @@ pub(super) fn page_look(
     };
     let look = match picture {
         Picture::Decided(look) => look,
-        Picture::Passing if looks.try_again(page) => return Err(NoLook::Again),
+        Picture::Passing if looks.try_again(page, now) => return Err(NoLook::Again),
         Picture::Passing | Picture::Final => PageLook::undecided(image_less),
     };
     Ok(looks.keep(page, look))
