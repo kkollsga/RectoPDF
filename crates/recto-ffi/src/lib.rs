@@ -24,6 +24,7 @@ pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSe
 pub use recto_app::PaneView;
 pub use recto_app::RecentFile;
 pub use recto_app::SelectionNotice;
+pub use recto_app::core::WindowPlacement;
 use recto_app::core::controls::UiAction;
 use recto_app::core::*;
 pub use recto_app::hand_off::{BusyItem, HandOffCheck, HandOffError, HandOffReport};
@@ -34,12 +35,11 @@ pub use recto_app::reader_view::ReaderView;
 pub use recto_app::records::{HighlightRect, ReaderOp, ScreenInfo};
 pub use recto_app::{RowKind, SidebarRow, SidebarView};
 use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Viewport};
-use recto_session::record::{self, Appearance, FocusView, Rect, ScreenNow, ScreenRecord, SettingsWindow, WindowRecord, place_window};
+use recto_session::record::{self, SettingsWindow};
 use recto_session::{CONTENTS_ROW_HEIGHT, ContentsRowChange, ContentsView, FollowMove, TAB_ROW_HEIGHT, TabId, row_full_text, sidebar_heights_with_note};
 use serde_json::json;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -97,7 +97,7 @@ pub struct ScreenInfo {
 }
 
 /// Where a new window goes, as Rust's rule has it.
-#[derive(Clone, Copy, Debug, PartialEq, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct WindowPlacement {
     /// There's a place to go: otherwise it's a new window, wherever the host starts one.
     pub saved: bool,
@@ -717,19 +717,23 @@ impl AppCore {
 
     /// The reader scrolled the contents themselves.
     pub fn contents_user_scrolled(&self) {
-        lock(&self.inner.window.contents_follow).user_scrolled(self.inner.life.started.elapsed().as_secs_f64());
+        self.inner.window.contents_user_scrolled(self.inner.life.started.elapsed().as_secs_f64());
     }
 
     /// The pointer came into the contents or left them.
     pub fn contents_pointer(&self, inside: bool) {
-        lock(&self.inner.window.contents_follow).pointer(inside);
+        self.inner.window.contents_pointer(inside);
     }
 
     /// The place being read is now on this row. What to do about it.
     pub fn contents_reached(&self, row: Option<u32>, scroll_y: f64, height: f64, reduce_motion: bool) -> ContentsMove {
         let rows = lock(&self.inner.published).sidebar.contents_count;
         let now = self.inner.life.started.elapsed().as_secs_f64();
-        match lock(&self.inner.window.contents_follow).reached(row, ContentsView { scroll_y, height, rows }, now, reduce_motion) {
+        match self
+            .inner
+            .window
+            .contents_reached(row, ContentsView { scroll_y, height, rows }, now, reduce_motion)
+        {
             FollowMove::Stay => ContentsMove::Stay,
             FollowMove::SetTo(y) => ContentsMove::SetTo { y },
             FollowMove::Move => ContentsMove::Move,
@@ -738,17 +742,17 @@ impl AppCore {
 
     /// One frame of a move: where the scroll goes next, or nothing when it's over and the frames should stop. An atomic-sized lock and some arithmetic.
     pub fn contents_step(&self, position: f64, dt: f64) -> Option<f64> {
-        lock(&self.inner.window.contents_follow).step(position, dt)
+        self.inner.window.contents_step(position, dt)
     }
 
     /// The contents' area changed height.
     pub fn contents_view_changed(&self) {
-        lock(&self.inner.window.contents_follow).view_changed();
+        self.inner.window.contents_view_changed();
     }
 
     /// Rows closed or opened. Says how many points to move the scroll by with no animation, or nothing if the rows are to change in view, where the host fades them over.
     pub fn contents_row_change(&self, scroll_y: f64, from: u32, removed: u32, inserted: u32, place_shift: i32) -> Option<f64> {
-        lock(&self.inner.window.contents_follow).row_change(
+        self.inner.window.contents_row_change(
             ContentsRowChange {
                 from,
                 removed,
@@ -761,15 +765,15 @@ impl AppCore {
 
     /// Rows above changed, and the host moved its scroll by this many points to match.
     pub fn contents_shifted(&self, by: f64) {
-        lock(&self.inner.window.contents_follow).shifted(by);
+        self.inner.window.contents_shifted(by);
     }
 
     pub fn contents_is_following(&self) -> bool {
-        lock(&self.inner.window.contents_follow).is_following()
+        self.inner.window.contents_following()
     }
 
     pub fn contents_is_moving(&self) -> bool {
-        lock(&self.inner.window.contents_follow).is_moving()
+        self.inner.window.contents_moving()
     }
 
     pub fn reader(&self) -> ReaderView {
@@ -830,8 +834,7 @@ impl AppCore {
     }
 
     pub fn set_dark_appearance(&self, dark: bool) {
-        self.inner.window.dark.store(dark, Ordering::SeqCst);
-        self.inner.core.push(CoreCall::Reconcile);
+        self.inner.window.set_dark(dark, &self.inner.core);
     }
 
     /// What hovering over a row reveals: its full text, clean and bounded, and what it is.
@@ -850,7 +853,7 @@ impl AppCore {
 
     /// **The password sheet was answered:** for the prompt with this id, with what was typed, or nothing for Cancel. The answer goes to that prompt's file, whatever's waiting by now, and none if it's gone. It's tried on a thread of its own, as reading a file can wait on its disk, and kept nowhere but the open tab's keyring. The `String` UniFFI made is overwritten here, so Rust holds one copy.
     pub fn password_answered(&self, id: u64, password: Option<String>) {
-        self.inner.password_answered(id, password);
+        self.inner.tools.prompts().password_answered(id, password, &self.inner.core, &self.inner.window);
     }
 
     /// **Files opened lately, newest first,** for ⌘K and anything else that offers them. From what the session thread last published: it never waits.
@@ -861,8 +864,8 @@ impl AppCore {
     /// The sidebar's panel as it stands.
     pub fn panel(&self) -> PanelModel {
         let reader = lock(&self.inner.published).reader.clone();
-        let mut panel = menus::panel(self.inner.window.panel_open.load(Ordering::SeqCst), reader.edit_mode, reader.can_rotate);
-        recto_app::snapshot_menu::add_to_panel(&mut panel, self.inner.tools.tool.is_on(), reader.edit_mode);
+        let mut panel = menus::panel(self.inner.window.panel_open(), reader.edit_mode, reader.can_rotate);
+        recto_app::snapshot_menu::add_to_panel(&mut panel, self.inner.tools.tool().is_on(), reader.edit_mode);
         panel
     }
 
@@ -942,8 +945,8 @@ impl AppCore {
             self.focus_moved(tab);
         }
         // With the snapshot tool on, a press is the tool's, not a selection's.
-        if self.inner.tools.tool.is_on() {
-            return self.inner.tools.tool.press(&engine, pane as usize, x, y);
+        if self.inner.tools.tool().is_on() {
+            return self.inner.tools.tool().press(&engine, pane as usize, x, y);
         }
         engine.selection().press(x, y, clicks, shift).into_iter().map(ReaderOp::from).collect()
     }
@@ -952,8 +955,8 @@ impl AppCore {
         let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else {
             return Vec::new();
         };
-        if self.inner.tools.tool.is_drawing() {
-            return self.inner.tools.tool.drag(&engine, pane as usize, x, y);
+        if self.inner.tools.tool().is_drawing() {
+            return self.inner.tools.tool().drag(&engine, pane as usize, x, y);
         }
         engine.selection().drag(x, y).into_iter().map(ReaderOp::from).collect()
     }
@@ -963,8 +966,8 @@ impl AppCore {
         let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else {
             return Vec::new();
         };
-        if self.inner.tools.tool.is_drawing() {
-            return self.inner.tools.tool.release(&self.inner, &engine, pane as usize);
+        if self.inner.tools.tool().is_drawing() {
+            return self.inner.tools.tool().release(&self.inner, &engine, pane as usize);
         }
         let ops = engine.selection().release().into_iter().map(ReaderOp::from).collect();
         if let Some(hit) = engine.links().take_clicked() {
@@ -982,7 +985,7 @@ impl AppCore {
             };
         };
         // The snapshot tool's pointer is a crosshair wherever it is, and a link isn't followed while it's on.
-        if self.inner.tools.tool.is_on() {
+        if self.inner.tools.tool().is_on() {
             return linking::PointerLook {
                 cursor: "crosshair".into(),
                 hint: None,
@@ -1009,7 +1012,7 @@ impl AppCore {
 
     /// The sheet asking about a web or email address was answered, by its id. With Open, the address comes back for the host to hand to the system, exactly as the sheet showed it; with Cancel, nothing does.
     pub fn link_prompt_answered(&self, id: u64, open: bool) -> Option<String> {
-        self.inner.link_prompt_answered(id, open)
+        self.inner.tools.prompts().link_answered(id, open, &self.inner.core)
     }
 
     /// What the go-to field starts with, and its tooltip.
@@ -1024,7 +1027,7 @@ impl AppCore {
     /// Whether the pointer's over text, for the I-beam. A page not read yet says no, and its text is read when there's nothing better to do.
     pub fn pointer_is_over_text(&self, pane: u32, x: f64, y: f64) -> bool {
         // The snapshot tool's pointer is a crosshair wherever it is.
-        if self.inner.tools.tool.is_on() {
+        if self.inner.tools.tool().is_on() {
             return false;
         }
         self.inner
@@ -1090,29 +1093,17 @@ impl AppCore {
 
     /// The window went into the Dock or came out of it. Off the window's delegate, or QA.
     pub fn window_minimised_changed(&self, minimised: bool) {
-        if let Some(window) = lock(&self.inner.window.app).window.as_mut() {
-            window.minimised = minimised;
-        }
-        self.inner.saver.view_changed();
+        self.inner.window.minimised_changed(minimised, &self.inner.saver);
     }
 
     /// The app was hidden or shown again, by the system's notices, or QA. Going out of sight writes what's changed, as going to the background does.
     pub fn app_hidden_changed(&self, hidden: bool) {
-        lock(&self.inner.window.app).app_hidden = hidden;
-        if hidden {
-            self.inner.saver.write_soon();
-        } else {
-            self.inner.saver.view_changed();
-        }
+        self.inner.window.hidden_changed(hidden, &self.inner.saver);
     }
 
     /// Whether this launch hides the app as soon as it's up: an update arriving to an app that was hidden. Any other launch shows it, and the record's told so.
     pub fn app_comes_back_hidden(&self) -> bool {
-        let mut app = lock(&self.inner.window.app);
-        let hidden = updates::stays_out_of_sight(app.app_hidden, self.inner.updates.reopened_by_update());
-        app.app_hidden = hidden;
-        app.hidden_decided = true;
-        hidden
+        self.inner.window.comes_back_hidden(self.inner.updates.reopened_by_update())
     }
 
     pub fn window_opened(&self) {
@@ -1121,7 +1112,7 @@ impl AppCore {
 
     /// Whether this launch opens a window. Any launch does but an update's arrival, which leaves things as they were: a window closed stays closed, rather than appearing behind whatever the user's doing.
     pub fn window_should_open(&self) -> bool {
-        self.inner.window_should_open()
+        self.inner.window.should_open(self.inner.updates.reopened_by_update())
     }
 
     /// Whether the state's been read and taken in. A window that went up without it, past the patience, is made again from it once it has: see the host's `restoreReady`.
@@ -1155,12 +1146,12 @@ impl AppCore {
 
     /// The UI thread has woken, or (`block`) a block of the host's begins on it. True if no stretch was under way and this began one, which `main_idle` ends.
     pub fn main_busy(&self, block: bool) -> bool {
-        self.inner.window.watchdog.enter(block)
+        self.inner.window.main_busy(block)
     }
 
     /// The UI thread is about to sleep.
     pub fn main_idle(&self) {
-        self.inner.window.watchdog.idle();
+        self.inner.window.main_idle();
     }
 
     /// The answer to a QA request, as JSON. `ok` false makes it a failure, with `json` as the words.
@@ -1208,170 +1199,45 @@ impl AppCore {
 
     /// Where the new window goes, on the screens there are now. Rust's rule, from what was saved. In a quiet run it keeps its place off every screen, and only its size comes back.
     pub fn window_placement(&self, screens: Vec<ScreenInfo>) -> WindowPlacement {
-        let app = {
-            let mut app = lock(&self.inner.window.app);
-            // In the Dock across an update, as it was. Any other launch shows it, and the record's told so.
-            let arrived = self.inner.updates.reopened_by_update();
-            if let Some(window) = app.window.as_mut() {
-                window.minimised = updates::stays_out_of_sight(window.minimised, arrived);
-            }
-            app.minimised_decided = true;
-            app.clone()
-        };
-        let minimised = app.window.as_ref().is_some_and(|window| window.minimised);
-        let activate = app.focus.app_frontmost;
-        let focus_sidebar = app.focus.view == FocusView::Sidebar;
-        let in_background = updates::opens_in_background(self.inner.updates.reopened_by_update(), activate);
-        let Some(saved) = app.window else {
-            return WindowPlacement {
-                saved: false,
-                x: 0.0,
-                y: 0.0,
-                width: 0.0,
-                height: 0.0,
-                full_screen: false,
-                activate,
-                focus_sidebar,
-                in_background,
-                full_screen_when_active: false,
-                minimised: false,
-            };
-        };
-        if self.qa_mode {
-            return WindowPlacement {
-                saved: true,
-                x: -40_000.0,
-                y: -40_000.0,
-                width: saved.frame.width.max(record::WINDOW_MIN.0),
-                height: saved.frame.height.max(record::WINDOW_MIN.1),
-                full_screen: saved.full_screen,
-                activate,
-                focus_sidebar,
-                in_background: false,
-                full_screen_when_active: false,
-                minimised,
-            };
-        }
-        let now: Vec<ScreenNow> = screens
-            .into_iter()
-            .map(|screen| ScreenNow {
-                id: screen.id,
-                name: screen.name,
-                frame: Rect {
-                    x: screen.x,
-                    y: screen.y,
-                    width: screen.width,
-                    height: screen.height,
-                },
-                visible: Rect {
-                    x: screen.visible_x,
-                    y: screen.visible_y,
-                    width: screen.visible_width,
-                    height: screen.visible_height,
-                },
-            })
-            .collect();
-        let place = place_window(&saved, &now);
-        let (full_screen, full_screen_when_active) = updates::full_screen_on_showing(place.full_screen, in_background);
-        WindowPlacement {
-            saved: true,
-            x: place.frame.x,
-            y: place.frame.y,
-            width: place.frame.width,
-            height: place.frame.height,
-            full_screen,
-            activate,
-            focus_sidebar,
-            in_background,
-            full_screen_when_active,
-            minimised,
-        }
+        self.inner.window.placement(screens, self.inner.updates.reopened_by_update(), self.qa_mode)
     }
 
     /// The window moved, resized or went full screen. Off a window's delegate, so at most as often as those.
     pub fn window_changed(&self, frame: Option<Vec<f64>>, screen: Option<ScreenInfo>, full_screen: bool) {
-        let mut app = lock(&self.inner.window.app);
-        let saved = app.window.get_or_insert(WindowRecord {
-            frame: Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 1440.0,
-                height: 900.0,
-            },
-            screen: None,
-            full_screen: false,
-            minimised: false,
-        });
-        // Its frame in full screen isn't where leaving full screen takes it.
-        if let Some([x, y, width, height]) = frame.as_deref() {
-            saved.frame = Rect {
-                x: *x,
-                y: *y,
-                width: *width,
-                height: *height,
-            };
-            saved.screen = screen.map(|screen| ScreenRecord {
-                id: screen.id,
-                name: recto_core::clean_line(&screen.name),
-                frame: Rect {
-                    x: screen.x,
-                    y: screen.y,
-                    width: screen.width,
-                    height: screen.height,
-                },
-            });
-        }
-        saved.full_screen = full_screen;
-        drop(app);
-        self.inner.saver.view_changed();
+        self.inner.window.changed(frame, screen, full_screen, &self.inner.saver);
     }
 
     /// The sidebar's edge was dragged, or QA said so. Rust holds it to its limits.
     pub fn set_sidebar_width(&self, width: f64) {
-        lock(&self.inner.window.app).sidebar_width = record::sidebar_width(width);
-        self.inner.core.push(CoreCall::Reconcile);
+        self.inner.window.set_sidebar_width(width, &self.inner.core);
     }
 
     /// Where the contents are scrolled to now.
     pub fn contents_position(&self, y: f64) {
-        lock(&self.inner.window.app).contents_y = y.is_finite().then_some(y);
-        self.inner.saver.view_changed();
+        self.inner.window.contents_position(y, &self.inner.saver);
     }
 
     /// What has the keyboard.
     pub fn focus_changed(&self, view: String) {
-        if let Some(view) = FocusView::from_name(&view) {
-            lock(&self.inner.window.app).focus.view = view;
-            self.inner.saver.view_changed();
-        }
+        self.inner.window.focus_changed(&view, &self.inner.saver);
     }
 
     pub fn focus_view(&self) -> String {
-        lock(&self.inner.window.app).focus.view.name().to_string()
+        self.inner.window.focus_view().to_string()
     }
 
     /// The app became the active one or stopped, and the window key or not. Going to the background writes what's changed: from there, nobody's watching.
     pub fn frontmost_changed(&self, app: bool, window_key: bool) {
-        self.inner.frontmost_changed(app, window_key);
+        self.inner.window.frontmost_changed(app, window_key, &self.inner.saver, &self.inner.core);
     }
 
     /// Light or dark as chosen, or `system`.
     pub fn appearance_choice(&self) -> String {
-        match lock(&self.inner.window.app).appearance {
-            Appearance::System => "system",
-            Appearance::Light => "light",
-            Appearance::Dark => "dark",
-        }
-        .to_string()
+        self.inner.window.appearance_choice().to_string()
     }
 
     pub fn set_appearance_choice(&self, choice: String) {
-        lock(&self.inner.window.app).appearance = match choice.as_str() {
-            "light" => Appearance::Light,
-            "dark" => Appearance::Dark,
-            _ => Appearance::System,
-        };
-        self.inner.saver.view_changed();
+        self.inner.window.set_appearance_choice(&choice, &self.inner.saver);
     }
 
     /// A sheet or panel opened over the window, or closed. An update waits for it.
@@ -1446,22 +1312,24 @@ impl AppCore {
 
     /// The Settings window opened, moved or closed. It's part of what comes back.
     pub fn settings_window_changed(&self, open: bool, x: f64, y: f64) {
-        self.inner.settings_window_changed(open.then_some(SettingsWindow { x, y }));
+        self.inner
+            .window
+            .settings_window_changed(open.then_some(SettingsWindow { x, y }), &self.inner.saver);
     }
 
     /// Whether the Settings window was open.
     pub fn settings_window_was_open(&self) -> bool {
-        self.inner.settings_window().is_some()
+        self.inner.window.settings_window().is_some()
     }
 
     /// Where the Settings window goes on the screens there are now: where it was, if that's still on one. Otherwise wherever the host starts one.
     pub fn settings_window_place(&self, screens: Vec<ScreenInfo>) -> Option<Vec<f64>> {
-        updates::settings_place(self.inner.settings_window(), &screens)
+        updates::settings_place(self.inner.window.settings_window(), &screens)
     }
 
     /// Whether this launch comes up behind what the user's doing: see [`WindowPlacement::in_background`].
     pub fn opens_in_background(&self) -> bool {
-        updates::opens_in_background(self.inner.updates.reopened_by_update(), lock(&self.inner.window.app).focus.app_frontmost)
+        self.inner.window.opens_in_background(self.inner.updates.reopened_by_update())
     }
 
     /// A quit was asked for, by the menu or the system. Everything's written, on a thread of its own, and `quit_answer` says what to do. Mac apps with Resume don't ask on the way out, and neither does this, as unsaved edits come back: closing a tab with them is where Don't Save, Cancel or Save belongs. It asks only if they couldn't be kept.

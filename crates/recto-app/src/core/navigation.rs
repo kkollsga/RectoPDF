@@ -84,17 +84,17 @@ pub fn swiped(delta_x: f64) -> Option<Command> {
     linking::swipe_goes_back(delta_x).map(step)
 }
 
-impl Inner {
+impl crate::prompts::Prompts {
     /// The sheet asking about a web or email address was answered, by its id: with Open, the address, exactly as the sheet showed it; with Cancel, nothing.
-    pub fn link_prompt_answered(&self, id: u64, open: bool) -> Option<String> {
-        let mut asked = lock(&self.tools.prompts.link);
+    pub fn link_answered(&self, id: u64, open: bool, core: &CoreQueue) -> Option<String> {
+        let mut asked = lock(&self.link);
         // An answer is to the sheet that was shown: a later link's asking is left for its own answer.
         if asked.as_ref().is_none_or(|prompt| prompt.id != id) {
             return None;
         }
         let prompt = asked.take();
         drop(asked);
-        self.core.push(CoreCall::Reconcile);
+        core.push(CoreCall::Reconcile);
         prompt.filter(|_| open).map(|prompt| prompt.address)
     }
 }

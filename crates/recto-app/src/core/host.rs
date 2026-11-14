@@ -216,7 +216,7 @@ impl AppHost {
             let id = first.id.as_str();
             let host = match palette::as_command(id, &inner.recent_files()) {
                 Some(direct) => {
-                    inner.tools.palette.close();
+                    inner.tools.palette().close();
                     self.run_counted(actor, &direct, events)?;
                     HostAction::None
                 }
@@ -266,7 +266,7 @@ impl AppHost {
         }
         match ran {
             super::menu_rows::ForAgent::Command(direct) => {
-                inner.tools.palette.close();
+                inner.tools.palette().close();
                 self.run_counted(actor, &direct, events)?;
                 Ok(HostAction::None)
             }
@@ -277,7 +277,7 @@ impl AppHost {
                     return Err(recto_agent::refusal(&format!("palette --run for {id}"), actor.level(), needs)
                         .then("Run that command itself, if it has one, at the level it needs."));
                 }
-                inner.tools.palette.close();
+                inner.tools.palette().close();
                 if inner.core.frozen.load(Ordering::SeqCst) || !super::updates::takes_input_now(inner.window_interactive(), id) {
                     return Ok(HostAction::None);
                 }

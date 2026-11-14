@@ -73,7 +73,10 @@ fn an_agents_palette_run_never_runs_as_the_person() {
     });
     app.settle();
     let id = app.reader().password_prompt.expect("it asks for its password").id;
-    app.core().password_answered(id, Some("right".into()));
+    app.core()
+        .tools
+        .prompts()
+        .password_answered(id, Some("right".into()), &app.core().core, &app.core().window);
     app.settle();
     app.person(r#"{"cmd":"edit_mode","set":"on"}"#);
     app.settle();

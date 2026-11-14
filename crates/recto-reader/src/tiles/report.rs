@@ -53,6 +53,8 @@ impl Reader {
             "paper": match self.paper { PaperKind::White => "white", PaperKind::Dark => "dark" },
             "settled": self.is_settled(),
             "surfaces": self.work.surfaces.report(),
+            // Pages in the tab shown waiting for their look on dark paper to be tried again: not settled, and not failed.
+            "looks_held": doc.map_or(0, |doc| doc.drawing.issues.values().filter(|issue| issue.message.is_none()).count()),
             "note": self.note,
             "low_res_pages": low_res_pages,
             "tiles": {

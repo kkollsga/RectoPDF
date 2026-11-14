@@ -69,7 +69,7 @@ const PREVIEW_DIVISOR: f64 = 4.0;
 /// A change of zoom smaller than this keeps the tiles there are.
 const SCALE_SLACK: f64 = 0.005;
 /// How soon a page that's only lower-resolution for lack of something passing may be tried again. It's only looked at when something else happens, so this costs nothing at rest.
-const TRY_AGAIN_AFTER: Duration = Duration::from_secs(3);
+pub(crate) const TRY_AGAIN_AFTER: Duration = Duration::from_secs(3);
 /// Pages remembered as heavy or not.
 const MAX_HEAVY_REMEMBERED: usize = 4096;
 /// Pages remembered as drawn at least once, which only the QA count of blank steps on pages seen before goes by. A file can claim 8 million pages, and a long scroll draws page after page, so past this they're all forgotten at once, as `heavy` is. **What that costs is the count's accuracy:** a page drawn before then counts as never seen until it's drawn again. As many as the layout keeps sizes for, far past any book read through in one sitting, and about 0.6 MiB a held tab at the most.
@@ -729,7 +729,8 @@ impl Reader {
         self.refresh(MAX_ATTACH_PER_TURN);
     }
 
-    fn note_issue(&mut self, tab: u32, page: u32, message: String, may_pass: bool) {
+    /// Keeps a page's problem, in words the person reads, or with none for a page waiting for its look ([`Outcome::LookLater`]), which isn't a problem: it holds the page as one that may pass does, and nothing's said of it.
+    fn note_issue(&mut self, tab: u32, page: u32, message: impl Into<Option<String>>, may_pass: bool) {
         // What the view is on, and the pages around it whose sizes are asked for, keep theirs past the cap: those are the pages that would be asked for again at once.
         let near = self.docs.shown().filter(|doc| doc.tab == tab).map(|doc| {
             let visible = self.visible_pages(doc);
@@ -742,7 +743,7 @@ impl Reader {
             doc.drawing.issues.insert(
                 page,
                 Issue {
-                    message,
+                    message: message.into(),
                     try_again_at: may_pass.then(|| Instant::now() + TRY_AGAIN_AFTER),
                 },
             );
@@ -824,6 +825,7 @@ impl Reader {
             (_, Outcome::PageFailed { message, may_pass }) => {
                 self.note_issue(tab, position, message, may_pass);
             }
+            (_, Outcome::LookLater) => self.note_issue(tab, position, None::<String>, true),
             (_, Outcome::DocumentFailed { message, needs_key }) => {
                 if let Some(doc) = self.docs.views.get_mut(&tab) {
                     doc.drawing.problem = Some(message);
@@ -882,7 +884,11 @@ impl Reader {
             return false;
         }
         for page in self.visible_pages(doc) {
-            if doc.drawing.issues.contains_key(&page) {
+            // A page waiting for its look will change: it isn't settled. One with a problem is as it'll be.
+            if let Some(issue) = doc.drawing.issues.get(&page) {
+                if issue.message.is_none() {
+                    return false;
+                }
                 continue;
             }
             if !doc.layout.is_known(page) {

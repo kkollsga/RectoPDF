@@ -73,7 +73,10 @@ fn opened_by_the_person(app: &HeadlessApp, file: &std::path::Path, password: Opt
     let prompt = app.reader().password_prompt;
     match (prompt, password) {
         (Some(prompt), Some(password)) => {
-            app.core().password_answered(prompt.id, Some(password.into()));
+            app.core()
+                .tools
+                .prompts()
+                .password_answered(prompt.id, Some(password.into()), &app.core().core, &app.core().window);
             app.settle();
             assert!(app.reader().password_prompt.is_none(), "the password opened it");
         }
@@ -218,7 +221,10 @@ fn opened_for_one_reader(app: &HeadlessApp, file: &std::path::Path, password: &s
     drawn(app);
     app.settle();
     let prompt = app.reader().password_prompt.expect("its password is asked for, as PDFium needs one");
-    app.core().password_answered(prompt.id, Some(password.into()));
+    app.core()
+        .tools
+        .prompts()
+        .password_answered(prompt.id, Some(password.into()), &app.core().core, &app.core().window);
     app.settle();
     drawn(app);
     assert!(app.reader().password_prompt.is_none(), "the password opened it");

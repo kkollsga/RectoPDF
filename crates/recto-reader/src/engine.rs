@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 mod keys;
 mod links;
+mod look;
 mod points;
 mod qa_holds;
 mod run;

@@ -319,7 +319,7 @@ impl HostPlay {
             if !self.launch_done {
                 self.launch_done = true;
                 let with_state = inner.state_read();
-                if inner.window_should_open() {
+                if inner.window.should_open(inner.updates.reopened_by_update()) {
                     inner.window_opened();
                 } else {
                     inner.window_closed();
@@ -332,7 +332,7 @@ impl HostPlay {
                 self.remade += 1;
                 // The window made again from the state: the old one goes without counting as the person closing it (`windowDidClose` while replacing), and the
                 // new one opens.
-                if !crate::lock(&inner.window.app).window_closed {
+                if !inner.window.is_closed() {
                     inner.window_replaced();
                     inner.window_opened();
                 }
@@ -565,7 +565,7 @@ impl HeadlessApp {
     fn under_way(&self) -> Vec<String> {
         let inner = self.core();
         let mut busy = Vec::new();
-        if crate::lock(&inner.tools.prompts.passwords).trying() {
+        if crate::lock(&inner.tools.prompts().passwords).trying() {
             busy.push("a password being tried".to_string());
         }
         let reads = inner.life.reads_running.load(Ordering::SeqCst);
@@ -577,7 +577,7 @@ impl HeadlessApp {
             busy.push(format!("{persons} of the person's command(s) on a thread of their own"));
         }
         // The window's Save and Save As run on a thread of their own, and what they did is announced once they're through.
-        let saves = inner.tools.save_ui.running.load(Ordering::SeqCst);
+        let saves = inner.tools.save_ui().running.load(Ordering::SeqCst);
         if saves > 0 {
             busy.push(format!("{saves} of the window's save(s)"));
         }

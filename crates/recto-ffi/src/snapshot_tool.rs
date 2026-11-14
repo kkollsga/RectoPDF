@@ -20,7 +20,7 @@ pub struct ClipboardOffer {
 impl AppCore {
     /// What a copy has for the clipboard, a snapshot's or the selection's text, as one offer: the types in order, and which are made only when a paste asks. `copy_ready` says when. The bytes come one type at a time from `clipboard_data`, so no more than one is copied across at once.
     pub fn take_clipboard(&self) -> Option<ClipboardOffer> {
-        let tool = &self.inner.tools.tool;
+        let tool = self.inner.tools.tool();
         let mut offered = lock(&tool.ready).take().or_else(|| {
             self.inner
                 .panes
@@ -49,7 +49,7 @@ impl AppCore {
 
     /// One type's bytes for the offer with this number, once. A type made with the copy is handed over and dropped from here. A promised one is made now, as a paste asks for it, which takes a worker and can take seconds: the system asks on the UI thread and waits for the answer, which is the one time the UI thread waits here, and only for a paste of that type from another app. Nothing for an offer replaced since, or on the way out.
     pub fn clipboard_data(&self, serial: u64, uti: String) -> Option<Vec<u8>> {
-        match self.inner.tools.tool.data(serial, &uti)? {
+        match self.inner.tools.tool().data(serial, &uti)? {
             Data::Ready(bytes) => Some(bytes),
             Data::Make(promise, cap) => extract::snapshot_svg(&promise.path, promise.page, promise.rect, promise.turns, cap).ok(),
         }
@@ -57,7 +57,7 @@ impl AppCore {
 
     /// The clipboard has something else on it now: what this offer promised is let go.
     pub fn clipboard_released(&self, serial: u64) {
-        let mut offered = lock(&self.inner.tools.tool.offered);
+        let mut offered = lock(&self.inner.tools.tool().offered);
         if offered.as_ref().is_some_and(|offered| offered.serial == serial) {
             offered.take();
         }

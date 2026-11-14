@@ -901,8 +901,8 @@ fn a_tab_closed_while_it_waits_in_its_cool_down_leaves_nothing() {
 fn going_to_the_background_and_memory_pressure_write_what_waits_now() {
     let wait = crate::sleeper::LEAVING_WAIT_MS;
     let (app, a, _view) = a_pushed_out_and_waiting(Disk::new(), wait);
-    app.core().frontmost_changed(true, true);
-    app.core().frontmost_changed(false, false);
+    app.core().window.frontmost_changed(true, true, &app.core().saver, &app.core().core);
+    app.core().window.frontmost_changed(false, false, &app.core().saver, &app.core().core);
     app.wait_until("written on going to the background, the clock standing still", || {
         sleep_files_on_disk(&app).contains(&sleep_file_of(&app, a))
     });
@@ -934,8 +934,8 @@ fn going_to_the_background_after_a_sleep_writer_panicked_writes_what_waits() {
     });
     let a = tab_named(&app, "a.pdf");
     assert!(!sleep_files_on_disk(&app).contains(&sleep_file_of(&app, a)), "written before its wait");
-    app.core().frontmost_changed(true, true);
-    app.core().frontmost_changed(false, false);
+    app.core().window.frontmost_changed(true, true, &app.core().saver, &app.core().core);
+    app.core().window.frontmost_changed(false, false, &app.core().saver, &app.core().core);
     app.wait_until("written on going to the background, with no writer left to take a word", || {
         sleep_files_on_disk(&app).contains(&sleep_file_of(&app, a))
     });

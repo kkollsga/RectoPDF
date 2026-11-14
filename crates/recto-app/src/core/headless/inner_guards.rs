@@ -2,7 +2,7 @@
 //! each of its parts, and what each lets other code reach. What every control sends and the host is told is held by the coverage test's golden
 //! (`coverage.rs`); what a person's action allocates on the window's thread, by `tests/inner_allocations.rs`, in a binary of its own for its allocator.
 
-use crate::core::{AppState, Inner, Lifecycle, Published, Serving, Tools, WindowParts};
+use crate::core::{AppState, Inner, Lifecycle, Published, Serving, Tools, Window};
 use std::mem::size_of;
 
 /// Failure: the app's state or one of its parts grows (a field, a lock or a buffer added, a part given its own `Arc` of the queue), which nothing else sees,
@@ -18,7 +18,7 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
         ("Inner", size_of::<Inner>()),
         ("Lifecycle", size_of::<Lifecycle>()),
         ("Serving", size_of::<Serving>()),
-        ("WindowParts", size_of::<WindowParts>()),
+        ("Window", size_of::<Window>()),
         ("Tools", size_of::<Tools>()),
         ("Published", size_of::<Published>()),
         ("AppState", size_of::<AppState>()),
@@ -36,16 +36,17 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
 
 /// The budgets, in bytes: the sizes on 2026-11-13, before the moves, with Inner's 16 bytes more from main's merge that evening (`Panes`' plan keeping when
 /// its zoom was asked, R3.6a), and Lifecycle's 48 more from the record's-lock retry: the launch held back from the updater (`LaunchFacts`' `held` and the
-/// first frame's time beside the facts), the window `touched` since the launch, and the keeping state the life holds (`lifecycle::keeping`); and Inner's 184
+/// first frame's time beside the facts), the window `touched` since the launch, and the keeping state the life holds (`lifecycle::keeping`); Inner's 184
 /// more from the sleep branch's sleeper, held inline: the cool-down queue (`sleep_queue::Leaving`, where `main` had the queue under its lock alone) with its
 /// condition variable, its wait, its writer's panic seam, a test's hold and the queue's own counts, the answer slots an agent's asked sleep waits on, the
-/// ticket counter, and the hurry going to the background asks for. One of each per app, not per tab or page view.
+/// ticket counter, and the hurry going to the background asks for; and Tools' and Inner's 8 more for Find's fingerprint of what the host was last told it
+/// draws (`find::Field`, R3.7 S2's fix: Find announced with nothing changed). One of each per app, not per tab or page view.
 const BUDGETS: [(&str, usize); 7] = [
-    ("Inner", 5064),
+    ("Inner", 5072),
     ("Lifecycle", 344),
     ("Serving", 1064),
-    ("WindowParts", 464),
-    ("Tools", 1440),
+    ("Window", 464),
+    ("Tools", 1448),
     ("Published", 808),
     ("AppState", 248),
 ];
@@ -55,8 +56,21 @@ const BUDGETS: [(&str, usize); 7] = [
 /// the commit that means it, so each widening and narrowing is in a diff.
 #[test]
 fn what_the_apps_state_lets_other_code_reach_is_listed() {
-    let types = ["Inner", "Lifecycle", "Serving", "WindowParts", "Tools", "Published", "AppState"];
-    let files = recto_testpdf::surface::rust_files(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core"));
+    let types = [
+        "Inner",
+        "Lifecycle",
+        "Serving",
+        "Window",
+        "Tools",
+        "Printing",
+        "Prompts",
+        "Published",
+        "AppState",
+    ];
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    // The core's files, and the prompts' own, whose type the tools hand to the bridge.
+    let mut files = recto_testpdf::surface::rust_files(&src.join("core"));
+    files.push(src.join("prompts.rs"));
     let now = recto_testpdf::surface::listing(
         &files,
         recto_testpdf::surface::Scope {
@@ -69,7 +83,8 @@ fn what_the_apps_state_lets_other_code_reach_is_listed() {
     }
 }
 
-/// What the app's state and its parts let other code reach, sorted. Each change is deliberate: see [`what_the_apps_state_lets_other_code_reach_is_listed`].
+/// What the app's state and its parts let other code reach, sorted, with printing's (R3.7, S2: its two `pub` fields the bridge reaches become methods) and the
+/// prompts' (the bridge answers a sheet; the queue of passwords and the link's sheet are the app's). Each change is deliberate: see [`what_the_apps_state_lets_other_code_reach_is_listed`].
 const SURFACE: &str = r"
 AppState (pub struct, derives Clone, Debug)
 AppState.pub app_hidden: bool
@@ -99,12 +114,11 @@ Inner.pub saver: Arc<Saver>
 Inner.pub serving: Serving
 Inner.pub tools: Tools
 Inner.pub updates: Arc<recto_update::updater::Updater>
-Inner.pub window: WindowParts
+Inner.pub window: Window
 Inner.pub(crate) keys: Arc<recto_reader::engine::Keyring>
 Inner.pub(crate) listener: Arc<dyn crate::Listener>
 Inner.pub(crate) sleeper: sleeper::Sleeper
 Inner::pub fn act(self: &Arc<Self>, action: UiAction) -> Acted
-Inner::pub fn app_record(&self) -> AppRecord
 Inner::pub fn bar_now(&self) -> Vec<crate::menus::MenuModel>
 Inner::pub fn begin_restore(self: &Arc<Self>)
 Inner::pub fn can_save(&self) -> bool
@@ -115,7 +129,6 @@ Inner::pub fn close_prompt(&self) -> ClosePrompt
 Inner::pub fn dismiss_selection_notice(&self)
 Inner::pub fn dormancy_due(&self) -> Option<Vec<TabId>>
 Inner::pub fn forget_a_quiet_copy(&self)
-Inner::pub fn frontmost_changed(&self, app: bool, window_key: bool)
 Inner::pub fn gather_record(&self) -> (SessionRecord, PlaceDelta)
 Inner::pub fn go_dormant(&self, tabs: &[TabId], why: Why) -> usize
 Inner::pub fn hand_off(&self, limit: Duration) -> Result<HandOffReport, HandOffError>
@@ -123,7 +136,6 @@ Inner::pub fn hand_off_cancelled(&self)
 Inner::pub fn hand_off_check(&self) -> HandOffCheck
 Inner::pub fn hand_off_quit_now(&self) -> bool
 Inner::pub fn has_setting(&self, id: &str) -> bool
-Inner::pub fn link_prompt_answered(&self, id: u64, open: bool) -> Option<String>
 Inner::pub fn look_at_budget(&self)
 Inner::pub fn memory_pressure(&self, critical: bool)
 Inner::pub fn menu_item_enabled(&self, id: String) -> bool
@@ -131,7 +143,6 @@ Inner::pub fn note_input(&self)
 Inner::pub fn note_nearby(&self)
 Inner::pub fn note_update_facts(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String)
 Inner::pub fn notice_read(&self)
-Inner::pub fn password_answered(&self, id: u64, password: Option<String>)
 Inner::pub fn perform(self: &Arc<Self>, id: String) -> HostAction
 Inner::pub fn qa_save_from(&self, written: &str) -> Result<(), AgentError>
 Inner::pub fn qa_session_verb(&self, verb: &str, value: &str) -> Option<Result<(), AgentError>>
@@ -150,8 +161,6 @@ Inner::pub fn save_problem_answered(&self, save_as: bool) -> super::HostAction
 Inner::pub fn set_frozen(&self, frozen: bool)
 Inner::pub fn setting_chosen(self: &Arc<Self>, id: &str, on: bool)
 Inner::pub fn settings_model(&self) -> SettingsModel
-Inner::pub fn settings_window(&self) -> Option<SettingsWindow>
-Inner::pub fn settings_window_changed(&self, place: Option<SettingsWindow>)
 Inner::pub fn sheet_changed(&self, open: bool)
 Inner::pub fn shown_with_state(&self)
 Inner::pub fn shutdown(&self)
@@ -171,9 +180,13 @@ Inner::pub fn window_closed(&self)
 Inner::pub fn window_interactive(&self) -> bool
 Inner::pub fn window_opened(&self)
 Inner::pub fn window_replaced(&self)
-Inner::pub fn window_should_open(&self) -> bool
 Inner::pub(crate) fn carry_out_quit(self: &Arc<Self>, out: Option<Out>)
 Inner::pub(crate) fn carry_out_quit_answer(&self, out: Out)
+Inner::pub(super) fn give_sleep_view(&self, engine: &recto_reader::Engine, id: TabId, back: Option<(SleepFacts, SleepMaterial)>)
+Inner::pub(super) fn queue_those_leaving(&self, shown: TabId) -> Option<(SleepFacts, SleepMaterial)>
+Inner::pub(super) fn sleep_at_flush(&self, asked: Option<app::Asked>, until: Instant)
+Inner::pub(super) fn start_sleep_writer(&self)
+Inner::pub(super) fn write_sleep_for(&self, id: TabId, by: By) -> Option<Outcome>
 Lifecycle (pub struct)
 Lifecycle.pub first_shown: Mutex<Option<Value>>
 Lifecycle.pub holding_tab: Mutex<Option<TabId>>
@@ -197,6 +210,23 @@ Lifecycle::pub(crate) fn remade(&self) -> bool
 Lifecycle::pub(crate) fn shown_with_state(&self) -> bool
 Lifecycle::pub(crate) fn takes_input(&self) -> bool
 Lifecycle::pub(crate) fn told_to_quit(&self) -> bool
+Printing (pub struct, derives Default)
+Printing::pub fn busy(&self) -> bool
+Printing::pub fn cancel(&self)
+Printing::pub fn dismiss_notice(&self)
+Printing::pub fn finished(&self, path: &str)
+Printing::pub fn has_ready(&self) -> bool
+Printing::pub fn notice(&self) -> Option<String>
+Printing::pub fn qa_target_for(&self, out: PathBuf) -> Option<PathBuf>
+Printing::pub fn quitting(&self)
+Printing::pub fn selection_notice(&self) -> Option<SelectionNotice>
+Printing::pub fn take_ready(&self) -> Option<PathBuf>
+Prompts (pub struct, derives Debug, Default)
+Prompts.pub(crate) link: Mutex<Option<LinkPrompt>>
+Prompts.pub(crate) passwords: Mutex<Asks>
+Prompts::pub fn link_answered(&self, id: u64, open: bool, core: &CoreQueue) -> Option<String>
+Prompts::pub fn password_answered(&self, id: u64, password: Option<String>, core: &Arc<CoreQueue>, window: &Window)
+Prompts::pub(crate) fn ask_link(&self, address: &str)
 Published (pub struct)
 Published.pub contents: Arc<Vec<ContentsEntry>>
 Published.pub pane_tocs: Vec<Option<Arc<recto_core::Toc>>>
@@ -216,23 +246,57 @@ Serving.pub(crate) socket: bool
 Serving.pub(crate) stopper: Mutex<Option<Stopper>>
 Serving.pub(crate) waiting_server: Mutex<Option<Server>>
 Tools (pub struct)
-Tools.pub chrome: crate::chrome::Chrome
-Tools.pub folds: crate::sidebar_access::Folds
-Tools.pub printing: printing::Printing
-Tools.pub tool: snapshot_tool::Tool
-Tools.pub(crate) find_field: Mutex<crate::find::Field>
-Tools.pub(crate) palette: crate::palette::Palette
-Tools.pub(crate) prompts: crate::prompts::Prompts
-Tools.pub(crate) save_ui: saving::SaveUi
+Tools::pub fn chrome(&self) -> &crate::chrome::Chrome
+Tools::pub fn folds(&self) -> &crate::sidebar_access::Folds
 Tools::pub fn new(save_step: &Arc<AtomicU8>) -> Self
-WindowParts (pub struct)
-WindowParts.pub app: Mutex<AppState>
-WindowParts.pub contents_follow: Mutex<ContentsFollow>
-WindowParts.pub dark: AtomicBool
-WindowParts.pub panel_open: AtomicBool
-WindowParts.pub watchdog: Watchdog
-WindowParts.pub(crate) action_notice: Mutex<Option<String>>
-WindowParts.pub(crate) notice_tab: AtomicU32
-WindowParts.pub(crate) open_failure: Mutex<Option<String>>
-WindowParts::pub fn new(watchdog: Watchdog) -> Self
+Tools::pub fn printing(&self) -> &printing::Printing
+Tools::pub fn prompts(&self) -> &crate::prompts::Prompts
+Tools::pub fn tool(&self) -> &snapshot_tool::Tool
+Tools::pub(crate) fn find_field(&self) -> &Mutex<crate::find::Field>
+Tools::pub(crate) fn palette(&self) -> &crate::palette::Palette
+Tools::pub(crate) fn save_ui(&self) -> &saving::SaveUi
+Window (pub struct)
+Window.pub(super) action_notice: Mutex<Option<String>>
+Window.pub(super) app: Mutex<AppState>
+Window.pub(super) contents_follow: Mutex<ContentsFollow>
+Window.pub(super) dark: AtomicBool
+Window.pub(super) notice_tab: AtomicU32
+Window.pub(super) open_failure: Mutex<Option<String>>
+Window.pub(super) panel_open: AtomicBool
+Window::pub fn app_record(&self, notice: impl FnOnce() -> Option<String>) -> AppRecord
+Window::pub fn appearance_choice(&self) -> &'static str
+Window::pub fn changed(&self, frame: Option<Vec<f64>>, screen: Option<ScreenInfo>, full_screen: bool, saver: &Saver)
+Window::pub fn comes_back_hidden(&self, reopened: bool) -> bool
+Window::pub fn contents_following(&self) -> bool
+Window::pub fn contents_moving(&self) -> bool
+Window::pub fn contents_pointer(&self, inside: bool)
+Window::pub fn contents_position(&self, y: f64, saver: &Saver)
+Window::pub fn contents_reached(&self, row: Option<u32>, view: ContentsView, now: f64, reduce_motion: bool) -> FollowMove
+Window::pub fn contents_row_change(&self, change: ContentsRowChange, scroll_y: f64) -> Option<f64>
+Window::pub fn contents_shifted(&self, by: f64)
+Window::pub fn contents_step(&self, position: f64, dt: f64) -> Option<f64>
+Window::pub fn contents_user_scrolled(&self, now: f64)
+Window::pub fn contents_view_changed(&self)
+Window::pub fn focus_changed(&self, view: &str, saver: &Saver)
+Window::pub fn focus_view(&self) -> &'static str
+Window::pub fn frontmost_changed(&self, app: bool, window_key: bool, saver: &Saver, core: &CoreQueue)
+Window::pub fn hidden_changed(&self, hidden: bool, saver: &Saver)
+Window::pub fn is_closed(&self) -> bool
+Window::pub fn main_busy(&self, block: bool) -> bool
+Window::pub fn main_idle(&self)
+Window::pub fn minimised_changed(&self, minimised: bool, saver: &Saver)
+Window::pub fn new(watchdog: Watchdog) -> Self
+Window::pub fn opens_in_background(&self, reopened: bool) -> bool
+Window::pub fn panel_open(&self) -> bool
+Window::pub fn placement(&self, screens: Vec<ScreenInfo>, reopened: bool, quiet: bool) -> WindowPlacement
+Window::pub fn set_appearance_choice(&self, choice: &str, saver: &Saver)
+Window::pub fn set_dark(&self, dark: bool, core: &CoreQueue)
+Window::pub fn set_sidebar_width(&self, width: f64, core: &CoreQueue)
+Window::pub fn settings_window(&self) -> Option<SettingsWindow>
+Window::pub fn settings_window_changed(&self, place: Option<SettingsWindow>, saver: &Saver)
+Window::pub fn should_open(&self, reopened: bool) -> bool
+Window::pub(super) fn closed(&self)
+Window::pub(super) fn opened(&self)
+Window::pub(super) fn replaced(&self, held: Vec<(usize, recto_index::select::Range)>)
+Window::pub(super) fn take_selections_held(&self) -> Vec<(usize, recto_index::select::Range)>
 ";

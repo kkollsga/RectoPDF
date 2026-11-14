@@ -90,7 +90,8 @@ const _: () = assert!(size_of::<Docs>() <= 56, "the tabs the page view holds gre
 
 #[derive(Clone, Debug)]
 pub(super) struct Issue {
-    pub(super) message: String,
+    /// What the person's told, or `None` for a page waiting for its look on dark paper, which hasn't failed and isn't spoken of.
+    pub(super) message: Option<String>,
     /// When it may have passed. `None` holds until the zoom changes or someone asks again.
     pub(super) try_again_at: Option<Instant>,
 }

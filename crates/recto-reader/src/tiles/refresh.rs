@@ -225,8 +225,8 @@ impl Reader {
                 return Some(problem.clone());
             }
             for page in self.visible_pages(doc) {
-                if let Some(issue) = doc.drawing.issues.get(&page) {
-                    return Some(issue.message.clone());
+                if let Some(message) = doc.drawing.issues.get(&page).and_then(|issue| issue.message.as_ref()) {
+                    return Some(message.clone());
                 }
                 let low = self
                     .cache
@@ -280,7 +280,9 @@ impl Reader {
         let (mut blank, mut blank_seen) = (false, false);
         for page in self.visible_pages(doc) {
             let has_something = self.cache.attached.get(&page).is_some_and(|ids| !ids.is_empty());
-            if !has_something && !doc.drawing.issues.contains_key(&page) && self.shows_a_pixel(doc, page) {
+            // A page with a problem has its words on it; one waiting for its look with nothing on it is bare.
+            let failed = doc.drawing.issues.get(&page).is_some_and(|issue| issue.message.is_some());
+            if !has_something && !failed && self.shows_a_pixel(doc, page) {
                 blank = true;
                 blank_seen |= doc.drawing.seen.contains(&page);
             }
