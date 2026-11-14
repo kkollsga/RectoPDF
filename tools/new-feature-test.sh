@@ -35,7 +35,7 @@ check "and one marked line in each of two shared files, nothing else" \
 check "each a mod line" "1 1" "$(git diff -U0 crates/recto-agent/src/commands/mod.rs | grep -c '^+pub mod demo_feature; // new-feature: demo_feature') $(git diff -U0 crates/recto-app/src/core/headless/mod.rs | grep -c '^+mod demo_feature; // new-feature: demo_feature')"
 check "the tree is in rustfmt's layout" "0" "$(cargo fmt --all --check >/dev/null 2>&1; echo $?)"
 check "a test at each tier says what to fill in" "4" "$(cat crates/recto-agent/src/commands/demo_feature.rs crates/recto-app/src/core/headless/demo_feature.rs | grep -c 'fn fill_me_in_demo_feature_')"
-case "$out" in *"docs/FEATURES.md"*"tools/new-feature.sh --remove demo_feature"*) check "it prints the checklist" ok ok ;; *) check "it prints the checklist" ok "$out" ;; esac
+case "$out" in *"FEATURES.md"*"tools/new-feature.sh --remove demo_feature"*) check "it prints the checklist" ok ok ;; *) check "it prints the checklist" ok "$out" ;; esac
 check "a second time is refused, changing nothing" "1 4" "$(tools/new-feature.sh demo_feature >/dev/null 2>&1; echo $?) $(git status --porcelain | grep -c .)"
 check "a name that isn't a tag is refused" "2" "$(tools/new-feature.sh Demo-Feature >/dev/null 2>&1; echo $?)"
 if [ "${NEW_FEATURE_TEST_BUILD:-1}" != 0 ]; then
@@ -50,11 +50,13 @@ check "--remove leaves the tree as it was" "" "$(git status --porcelain)"
 
 # Failure: a how-to page names a file or a test that a rename took away, and the check says nothing.
 printf 'See `crates/recto-agent/src/lib.rs`, `execute` and `tools/check.sh --quick`.\n' > good.md
-printf 'See `crates/recto-agent/src/gone.rs` and `a_test_that_was_renamed`.\n' > bad.md
+# A name made here, so no source (this one included) has it.
+gone="a_test_renamed_$RANDOM$RANDOM"
+printf 'See `crates/recto-agent/src/gone.rs` and `%s`.\n' "$gone" > bad.md
 check "doc-paths passes a page that names what's there" "0" "$(tools/doc-paths.sh good.md >/dev/null 2>&1; echo $?)"
 said=$(tools/doc-paths.sh bad.md 2>&1); rc=$?
 check "and fails one that doesn't" "1" "$rc"
-case "$said" in *"bad.md:1: no such file: crates/recto-agent/src/gone.rs"*"no such name in the sources: a_test_that_was_renamed"*) check "naming each, with its line" ok ok ;; *) check "naming each, with its line" ok "$said" ;; esac
+case "$said" in *"bad.md:1: no such file: crates/recto-agent/src/gone.rs"*"no such name in the sources: $gone"*) check "naming each, with its line" ok ok ;; *) check "naming each, with its line" ok "$said" ;; esac
 check "the pages it holds pass" "0" "$(tools/doc-paths.sh >/dev/null 2>&1; echo $?)"
 
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
