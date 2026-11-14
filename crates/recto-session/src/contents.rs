@@ -125,16 +125,7 @@ impl<L: DocLoader> Session<L> {
 
     /// The contents the sidebar shows for a tab: its generated ones if they're chosen and ready, or its own.
     fn shown_contents(&self, id: TabId) -> Option<Arc<Toc>> {
-        self.shown_contents_of(self.tabs.tab(id)?)
-    }
-
-    /// [`Self::shown_contents`] for a tab in hand, so a walk over every tab needn't look each up again.
-    fn shown_contents_of(&self, tab: &TabRecord) -> Option<Arc<Toc>> {
-        let own = self.warm.toc(tab.id)?;
-        Some(match (tab.generated_contents, self.generated.view(tab.id)) {
-            (true, Some(GeneratedView::Ready(generated))) => Arc::clone(generated),
-            _ => Arc::clone(own),
-        })
+        shown_contents_of(self, self.tabs.tab(id)?)
     }
 
     /// What's thought of a tab's own contents, once they've been read.
@@ -142,6 +133,16 @@ impl<L: DocLoader> Session<L> {
         let known = self.warm.contains(id);
         self.tabs.tab(id).filter(|_| known).map(|tab| tab.contents_verdict)
     }
+}
+
+/// The contents the sidebar shows for a tab in hand: its generated ones if they're chosen and ready, or its own. A tab in hand, so a walk over every tab
+/// needn't look each up again.
+fn shown_contents_of<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> Option<Arc<Toc>> {
+    let own = session.warm.toc(tab.id)?;
+    Some(match (tab.generated_contents, session.generated.view(tab.id)) {
+        (true, Some(GeneratedView::Ready(generated))) => Arc::clone(generated),
+        _ => Arc::clone(own),
+    })
 }
 
 /// Thousandths down a page, from a fraction of it.
@@ -201,7 +202,7 @@ pub fn reading_band<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> Opti
     if !tab.toc_open {
         return None;
     }
-    let toc = session.shown_contents_of(tab)?;
+    let toc = shown_contents_of(session, tab)?;
     let order = session.lists.order(tab.id);
     let (at_page, top) = reading_line(session, tab);
     let page = original_page(at_page, order)?;
