@@ -389,3 +389,35 @@ fn the_entry_clicked_is_current_with_another_at_its_place_or_none_placed() {
         assert_eq!(app.sidebar().contents_current, Some(0), "{case}: the one clicked");
     }
 }
+
+/// **Failure: `recto contents` gives an entry's place from the file's own frame on a page with an unsaved turn, where a click on its row goes to the page's top.**
+/// Its help says `goto <page> --within <place/1000> --entry <entry>` goes where a click on the row goes, which on such a page it didn't: the listing said 350
+/// and the click went to 0. For every entry, on the file as it opens and again after page 1 is turned and not saved, the place the listing gives is the
+/// place the click on its row takes (what `tapped_entry` hands `goto`; 0 is the page's top), so the same `goto` lands in the same place.
+#[test]
+fn the_place_contents_lists_is_where_a_click_on_the_row_goes() {
+    use crate::core::navigation::tapped_entry;
+    let disk = crate::testkit::headless::Disk::new();
+    let file = disk.file("several.pdf", &several_to_a_page());
+    let app = disk.start();
+    app.open(&file);
+    app.settle();
+    let listed = |app: &HeadlessApp| -> Vec<u64> {
+        let said = app.recto(recto_agent::Level::Control, &["contents"]).expect("the contents");
+        said["entries"].as_array().expect("entries").iter().map(|entry| entry["place"].as_u64().expect("a place")).collect()
+    };
+    let clicked = |app: &HeadlessApp| -> Vec<u64> {
+        let entries = rows(app);
+        entries
+            .iter()
+            .map(|entry| tapped_entry(&entries, &host_row(entry)).map_or(u64::MAX, |(_, within)| within.map_or(0, |within| (within * 1000.0).round() as u64)))
+            .collect()
+    };
+    let before = listed(&app);
+    assert_eq!(before, clicked(&app), "as the file opens, the listing and the click agree");
+    assert_eq!(before[..3], [0, 350, 750], "and the places are the file's on an unturned page");
+    app.person(r##"{"cmd":"page_rotate","tab":"active","pages":"1","degrees":90}"##);
+    app.settle();
+    assert_eq!(listed(&app), clicked(&app), "on a page with an unsaved turn too");
+    assert_eq!(listed(&app)[..3], [0, 0, 0], "where every entry of the turned page is at its top");
+}

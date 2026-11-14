@@ -185,9 +185,21 @@ fn reading_here<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> Here {
 
 /// Which pages of the file have entries whose places mean something: not those with an unsaved turn (or any page, with the view turned), whose frame isn't the
 /// file's, where every entry reads as at its page's top.
-struct Placed {
+pub struct Placed {
     all_turned: bool,
     turned: HashSet<u32>,
+}
+
+/// **How far down its page an entry is, in thousandths, as a click on it and `recto contents` both say:** the file's place, or 0, the page's top, for an
+/// entry with no page or on a page whose places mean nothing (an unsaved turn, or the view turned). The one answer, for every caller.
+pub fn entry_place(entry: &recto_core::TocEntry, placed: &Placed) -> u16 {
+    if entry.page != NONE && placed.page(entry.page) { entry.top } else { 0 }
+}
+
+/// The tab's pages whose entries' places mean something, as its edits and view stand. `None` for a tab that isn't open.
+pub fn placed_of<L: DocLoader>(session: &Session<L>, id: TabId) -> Option<Placed> {
+    let tab = session.tabs.tab(id)?;
+    Some(Placed::of(tab, session.lists.order(id)))
 }
 
 impl Placed {
@@ -207,7 +219,8 @@ impl Placed {
         }
     }
 
-    fn page(&self, page: u32) -> bool {
+    /// Whether the places of the entries on this page of the file mean anything.
+    pub fn page(&self, page: u32) -> bool {
         !self.all_turned && !self.turned.contains(&page)
     }
 }
@@ -280,7 +293,7 @@ fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, order: Order<'_>, reading: &
             notice: None,
             action: None,
             entry: at,
-            top: if entry.page != NONE && placed.page(entry.page) { entry.top } else { 0 },
+            top: entry_place(entry, &placed),
             expandable,
             expanded,
         });
