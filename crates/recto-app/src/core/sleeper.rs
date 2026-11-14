@@ -450,17 +450,22 @@ impl Inner {
         } else {
             sleep = crate::sleep_writer::with_older_pictures(sleep, there, &in_view);
         }
-        // An agent's file, measured as it would be written: written only if it fits what's left of agents' share, or else its facts alone if those fit
-        // and the tab has no file, or nothing. Packed twice so (the store packs again), for agents' files only, which their share keeps to a few dozen an hour.
+        // An agent's file, packed and measured as it's written: written only if it fits what's left of agents' share, or else its facts alone if those
+        // fit and the tab has no file, or nothing. The bytes measured are the bytes handed to the store, so the share counts what reaches the drive and
+        // nothing's packed twice (a photograph's page takes milliseconds, on the session thread for an agent's `session sleep`).
+        let mut measured = None;
         while by.agent() {
-            let bytes = recto_session::sleep::encode_sleep(&sleep).len() as u64;
+            let packed = recto_session::sleep::encode_sleep(&sleep);
             let pictures = !sleep.pictures.is_empty();
             match self.sleeper.step(Event::AgentSize {
-                bytes,
+                bytes: packed.len() as u64,
                 pictures,
                 there: had_file,
             }) {
-                None => break,
+                None => {
+                    measured = Some(packed);
+                    break;
+                }
                 Some(Out::ShareCut(Write::FactsOnly)) if pictures => {
                     (write, cut_for_share) = (Write::FactsOnly, true);
                     sleep.pictures.clear();
@@ -473,7 +478,14 @@ impl Inner {
                 }
             }
         }
-        let bytes = self.saver.store.write_sleep(&path, &sleep);
+        let bytes = match &measured {
+            Some(packed) => self.saver.store.write_sleep_bytes(&path, sleep.file, packed),
+            None => self.saver.store.write_sleep(&path, &sleep),
+        };
+        debug_assert!(
+            measured.as_ref().is_none_or(|packed| bytes == 0 || bytes == packed.len() as u64),
+            "an agent's file is written as measured"
+        );
         let _ = self.sleeper.step(Event::Wrote { id, bytes });
         Some(Outcome { write, cut_for_share })
     }
