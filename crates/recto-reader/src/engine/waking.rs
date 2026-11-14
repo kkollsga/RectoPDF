@@ -50,9 +50,14 @@ impl Wake<'_> {
         lock(&self.engine.shared.reader).sleep_material(tab, now)
     }
 
-    /// Whether a window can go up with what's on the layers.
-    pub fn is_showable(&self) -> bool {
-        lock(&self.engine.shared.reader).is_showable()
+    /// **Why a window can't go up with what's on the layers,** or none when it can: the page view's first reason, and ops waiting that the host hasn't been
+    /// told of said as such, as a telling missed would leave them ([`crate::tiles::NotShowable::OpsUntold`]).
+    pub fn not_showable(&self) -> Option<crate::tiles::NotShowable> {
+        let reason = lock(&self.engine.shared.reader).not_showable();
+        if reason == Some(crate::tiles::NotShowable::OpsWaiting) && !self.engine.shared.ops_signalled.load(std::sync::atomic::Ordering::SeqCst) {
+            return Some(crate::tiles::NotShowable::OpsUntold);
+        }
+        reason
     }
 
     /// Whether the place is on the layers, and nothing's on its way. A short lock, asked only until the window is showing.

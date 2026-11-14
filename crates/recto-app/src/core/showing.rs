@@ -5,6 +5,7 @@
 use std::time::Duration;
 
 use super::{RESTORE_PATIENCE, SHOW_PATIENCE};
+use recto_reader::tiles::NotShowable;
 
 /// What the page needs, each answered by Rust's state when the window asks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -19,6 +20,8 @@ pub struct PageChecks {
     pub has_tab: bool,
     pub on_place: bool,
     pub showable: bool,
+    /// Why it isn't showable, the page view's first reason: none when it is.
+    pub not_showable: Option<NotShowable>,
 }
 
 impl PageChecks {
@@ -40,7 +43,7 @@ impl PageChecks {
         .filter_map(|(holds, name)| holds.then_some(name))
     }
 
-    /// The six checks as bits of one byte, in the order of the fields, for an ask kept in the app's state.
+    /// The six yes-or-no checks as bits of one byte, in the order of the fields, for an ask kept in the app's state.
     const fn bits(self) -> u8 {
         self.state_read as u8
             | (self.holding_tab as u8) << 1
@@ -50,9 +53,10 @@ impl PageChecks {
             | (self.showable as u8) << 5
     }
 
-    /// The checks [`Self::bits`] made a byte of.
-    const fn from_bits(bits: u8) -> Self {
+    /// The checks [`Self::bits`] made a byte of, with why the page isn't showable.
+    const fn from_bits(bits: u8, not_showable: Option<NotShowable>) -> Self {
         Self {
+            not_showable,
             state_read: bits & 1 != 0,
             holding_tab: bits & 1 << 1 != 0,
             session_free: bits & 1 << 2 != 0,
@@ -70,14 +74,15 @@ pub struct Asked {
     /// Microseconds since the window was put up, at most `u32::MAX`; 0 with none put up.
     pub micros: u32,
     checks: u8,
+    not_showable: u8,
     pub said: Show,
 }
 
 impl Asked {
     /// The page checks as they were.
     #[must_use]
-    pub const fn checks(self) -> PageChecks {
-        PageChecks::from_bits(self.checks)
+    pub fn checks(self) -> PageChecks {
+        PageChecks::from_bits(self.checks, NotShowable::from_code(self.not_showable))
     }
 }
 
@@ -99,6 +104,7 @@ impl Asks {
         let asked = Asked {
             micros,
             checks: checks.bits(),
+            not_showable: NotShowable::code(checks.not_showable),
             said,
         };
         self.count = self.count.saturating_add(1);
@@ -280,7 +286,7 @@ mod tests {
     #[test]
     fn each_check_keeps_its_own_bit() {
         for at in 0..6 {
-            let checks = PageChecks::from_bits(1 << at);
+            let checks = PageChecks::from_bits(1 << at, None);
             assert_eq!(checks.bits(), 1 << at);
             let set = [
                 checks.state_read,

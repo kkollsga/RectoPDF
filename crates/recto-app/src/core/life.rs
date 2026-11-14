@@ -305,13 +305,15 @@ impl Lifecycle {
     /// thread asks and doesn't wait for it, and the page view's word on its place.
     fn page_checks(&self, session: &SessionHost<DrawableLoader>, engine: &recto_reader::Engine) -> showing::PageChecks {
         let active = session.try_with_session(|session| session.tabs().active().is_some());
+        let not_showable = engine.waking().not_showable();
         showing::PageChecks {
             state_read: self.state_read(),
             holding_tab: self.holding_tab().is_some(),
             session_free: active.is_some(),
             has_tab: active.unwrap_or(false),
             on_place: engine.waking().is_on_place(),
-            showable: engine.waking().is_showable(),
+            showable: not_showable.is_none(),
+            not_showable,
         }
     }
 
@@ -458,7 +460,7 @@ impl Drop for PersonRunning {
 
 /// The page checks, for the record.
 fn checks_report(checks: showing::PageChecks) -> Value {
-    json!({ "state_read": checks.state_read, "holding_tab": checks.holding_tab, "session_free": checks.session_free, "has_tab": checks.has_tab, "on_place": checks.on_place, "showable": checks.showable })
+    json!({ "state_read": checks.state_read, "holding_tab": checks.holding_tab, "session_free": checks.session_free, "has_tab": checks.has_tab, "on_place": checks.on_place, "showable": checks.showable, "not_showable": checks.not_showable.map(recto_reader::tiles::NotShowable::name) })
 }
 
 /// One ask of the page checks, for the record: when, what the rule said, which checks held the window, and all of them.

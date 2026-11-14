@@ -351,14 +351,110 @@ impl Waking {
     }
 }
 
-impl Reader {
-    /// Whether every visible page is showing something, at the place, with nothing on its way to the host: what a window can go up with. It'll sharpen from there.
-    pub fn is_showable(&self) -> bool {
-        if self.place.jump.is_some() || !self.host.ops.is_empty() || self.host.unapplied || self.viewport.height <= 0.0 {
-            return false;
+/// **Why a window can't go up yet with what's on the layers,** the first reason [`Reader::not_showable`] finds, for the record of the window's first
+/// showing: a page not ready because it's still being drawn is a slow page, and one whose tiles wait for a host nobody told is a missed wake.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotShowable {
+    /// Still being sent to its place.
+    Jump,
+    /// Ops wait for the host to take, and it's been told of them.
+    OpsWaiting,
+    /// Ops wait for the host to take, and it hasn't been told (the engine's word, [`crate::engine::waking::Wake::not_showable`]): for a moment as they're
+    /// told, or for good if a telling was missed.
+    OpsUntold,
+    /// Given to the host, and not yet said to be applied.
+    Unapplied,
+    /// The view has no height yet.
+    NoViewport,
+    /// No document is shown.
+    NoDocument,
+    /// The document has a problem, which the page says.
+    Problem,
+    /// A page in view has nothing on it, and the thread that draws is at work.
+    Drawing,
+    /// A page in view has nothing on it, and nothing's drawing.
+    NotCovered,
+}
+
+impl NotShowable {
+    const ALL: [Self; 9] = [
+        Self::Jump,
+        Self::OpsWaiting,
+        Self::OpsUntold,
+        Self::Unapplied,
+        Self::NoViewport,
+        Self::NoDocument,
+        Self::Problem,
+        Self::Drawing,
+        Self::NotCovered,
+    ];
+
+    /// The word the record keeps.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Jump => "jump",
+            Self::OpsWaiting => "ops_waiting",
+            Self::OpsUntold => "ops_untold",
+            Self::Unapplied => "unapplied",
+            Self::NoViewport => "no_viewport",
+            Self::NoDocument => "no_document",
+            Self::Problem => "problem",
+            Self::Drawing => "drawing",
+            Self::NotCovered => "not_covered",
         }
-        let Some(doc) = self.docs.shown() else { return false };
-        doc.drawing.problem.is_none() && self.pages_all_covered(doc)
+    }
+
+    /// A byte for it, never 0, which is none: for a record kept in a few bytes.
+    #[must_use]
+    pub const fn code(reason: Option<Self>) -> u8 {
+        match reason {
+            None => 0,
+            Some(reason) => reason as u8 + 1,
+        }
+    }
+
+    /// What [`Self::code`] made a byte of.
+    #[must_use]
+    pub fn from_code(code: u8) -> Option<Self> {
+        Self::ALL.get(usize::from(code.checked_sub(1)?)).copied()
+    }
+}
+
+impl Reader {
+    /// Whether every visible page is showing something, at the place, with nothing on its way to the host: what a window can go up with. It'll sharpen from
+    /// there. The engine asks why not ([`Self::not_showable`]); the tests ask this.
+    #[cfg(test)]
+    pub fn is_showable(&self) -> bool {
+        self.not_showable().is_none()
+    }
+
+    /// **Why the window can't go up with what's on the layers,** the first reason found; none when it can ([`Self::is_showable`]).
+    pub fn not_showable(&self) -> Option<NotShowable> {
+        if self.place.jump.is_some() {
+            return Some(NotShowable::Jump);
+        }
+        if !self.host.ops.is_empty() {
+            return Some(NotShowable::OpsWaiting);
+        }
+        if self.host.unapplied {
+            return Some(NotShowable::Unapplied);
+        }
+        if self.viewport.height <= 0.0 {
+            return Some(NotShowable::NoViewport);
+        }
+        let Some(doc) = self.docs.shown() else { return Some(NotShowable::NoDocument) };
+        if doc.drawing.problem.is_some() {
+            return Some(NotShowable::Problem);
+        }
+        if self.pages_all_covered(doc) {
+            return None;
+        }
+        Some(if self.work.running.is_some() {
+            NotShowable::Drawing
+        } else {
+            NotShowable::NotCovered
+        })
     }
 
     /// Whether every page that's really in view has something on it. A sliver of the page before, a few points at the top of the view, isn't what a frame's blank for: it has no picture if it wasn't drawn when the tab was left, and it comes a moment later with the rest.

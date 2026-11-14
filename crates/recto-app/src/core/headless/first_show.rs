@@ -37,4 +37,7 @@ fn a_show_by_patience_names_the_check_that_held_it() {
         "gathered after the show, with the lock let go: {shown:#}"
     );
     assert!(shown.get("when_shown").is_none(), "the old name, which read as what was decided on: {shown:#}");
+    // A page not ready says why, the page view's own reason: a slow page and a missed wake read differently.
+    assert_eq!(shown["after_layout"]["showable"], false, "nothing drawn in the kit: {shown:#}");
+    assert!(shown["after_layout"]["not_showable"].is_string(), "{shown:#}");
 }
