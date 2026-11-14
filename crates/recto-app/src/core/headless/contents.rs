@@ -124,8 +124,8 @@ fn generated_with_a_section(app: &HeadlessApp) -> u32 {
     id.0
 }
 
-/// Failure (finding 1 of the contents fixes): the window's chevron does nothing on generated contents while `contents fold` folds them, so a QA verb that
-/// calls the control's method would be silent where the agent's command is not.
+/// A guard, not the proof of a fix (it passes on `main`): the window's chevron folds generated contents as `contents fold` does. Failure: it does nothing
+/// on generated contents, so a QA verb that calls the control's method would be silent where the agent's command is not.
 #[test]
 fn the_chevron_folds_generated_contents() {
     let twins = Twins::with_generating(&[("a.pdf", with_sections(6))]);

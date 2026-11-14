@@ -1119,18 +1119,25 @@ fn the_menu_bar_and_the_agent_icon() {
         .collect();
     // The Go menu has Back, Forward and Go to Page…, as SPEC lists the menus.
     assert_eq!(titles, ["RectoPDF", "File", "Edit", "View", "Go", "Tools"], "{state}");
-    // Every item is ours with an id, or marked as the system's (AppKit adds AutoFill and Passwords… to an Edit menu): an item of ours with no id is a bug, and
-    // no longer hides among the system's.
-    for item in state["app"]["menu_bar"]
+    // What AppKit adds to a menu (AutoFill and Passwords… in an Edit menu) says it is the system's; every item with an id is ours, and not the system's: an
+    // item of ours that lost its id or its tag fails here instead of hiding among the system's. AppKit may add none, so none is not required.
+    let items: Vec<&Value> = state["app"]["menu_bar"]
         .as_array()
         .unwrap()
         .iter()
         .flat_map(|menu| menu["items"].as_array().unwrap())
-    {
-        let system = item["system"].as_bool().unwrap_or_else(|| panic!("an item without `system`: {item}"));
-        assert!(
-            system || !item["id"].as_str().unwrap().is_empty(),
-            "an item of ours has no id: {item} in {state}"
+        .collect();
+    let ours: Vec<&&Value> = items.iter().filter(|item| !item["id"].as_str().unwrap().is_empty()).collect();
+    assert!(!ours.is_empty(), "no item of ours has an id: {state}");
+    for item in &items {
+        let (id, system) = (
+            item["id"].as_str().unwrap(),
+            item["system"].as_bool().unwrap_or_else(|| panic!("an item without `system`: {item}")),
+        );
+        assert_eq!(
+            system,
+            id.is_empty(),
+            "an item with an id is ours, one without is the system's: {item} in {state}"
         );
         assert!(item["mask"].is_u64(), "an item without its modifier mask: {item}");
     }
