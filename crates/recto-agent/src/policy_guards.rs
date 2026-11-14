@@ -396,10 +396,14 @@ fn owners_steps(access: &Mutex<Session<crate::DrawableLoader>>, id: recto_sessio
     })
 }
 
+/// The owner's steps [`no_command_below_full_loses_the_owners_edits`] starts with.
+const OWNERS: usize = 5;
+
 /// Failure (SPEC decision 20, R4.2 L1): an agent below Full throws away some of the owner's unsaved edits, by a command added later or a rule
 /// forgotten in one: a step of theirs, done or undone, gone from the history, or their file's bytes changed. Every command runs at ReadOnly and
-/// Control, each on a fresh session whose owner has turned three pages and undone one, with the files it reads real ones (an `open`, a `page insert`
-/// reach their rules); afterwards the owner's three steps are all there, and the file is byte for byte what it was, or, for `save`, which an agent at
+/// Control, each on a fresh session whose owner has turned three pages and highlighted two, and undone a turn and a highlight (R4.3: a save once
+/// dropped a saved highlight's steps), with the files it reads real ones (an `open`, a `page insert`
+/// reach their rules); afterwards the owner's five steps are all there, and the file is byte for byte what it was, or, for `save`, which an agent at
 /// Control may do by appending, everything that was in it is still there. A step pushed off the end of a full history is the history's own rule,
 /// held by `an_agent_cant_push_the_owners_steps_out_of_the_history` in `recto-session`.
 #[test]
@@ -420,27 +424,39 @@ fn no_command_below_full_loses_the_owners_edits() {
             let bytes = std::fs::read(&file.0).unwrap();
             let access = opened(&file.0);
             let id = access.lock().unwrap().tabs().active().expect("the owner's tab");
-            for page in ["1", "2", "3"] {
-                let turn = Command::from(commands::editing::PageRotate {
+            // Turns and highlights (review of R4.3): the owner's highlight is highlight 0, the one `highlight remove --id 0` names, and a turn and
+            // a highlight are undone.
+            let turn = |page: &str| {
+                Command::from(commands::editing::PageRotate {
                     tab: "#1".into(),
                     pages: page.into(),
                     degrees: 90,
-                });
-                execute(&access, Actor::Person, &turn, &mut Vec::new()).expect("the owner's turn");
+                })
+            };
+            let highlight = |page: u32| {
+                Command::from(commands::highlight::Highlight {
+                    tab: "#1".into(),
+                    page: Some(page),
+                    to_page: None,
+                    chars: Some("0-3".into()),
+                    at: None,
+                    to: None,
+                    unit: None,
+                })
+            };
+            for step in [turn("1"), turn("2"), highlight(4), turn("3"), highlight(1)] {
+                execute(&access, Actor::Person, &step, &mut Vec::new()).expect("the owner's step");
             }
-            execute(
-                &access,
-                Actor::Person,
-                &Command::from(commands::editing::Undo { tab: "#1".into() }),
-                &mut Vec::new(),
-            )
-            .expect("the owner's undo");
-            assert_eq!(owners_steps(&access, id), 3, "the owner's three steps, one undone");
+            for _ in 0..2 {
+                let undo = Command::from(commands::editing::Undo { tab: "#1".into() });
+                execute(&access, Actor::Person, &undo, &mut Vec::new()).expect("the owner's undo");
+            }
+            assert_eq!(owners_steps(&access, id), OWNERS, "the owner's five steps, two undone");
             let result = execute(&access, Actor::Agent(level), &command, &mut Vec::new());
             let after = owners_steps(&access, id);
             let now = std::fs::read(&file.0).unwrap();
             let kept = if command.tag() == "save" { now.starts_with(&bytes) } else { now == bytes };
-            if after != 3 || !kept {
+            if after != OWNERS || !kept {
                 lost.push(format!(
                     "{} at {level:?}: {result:?}\n  the owner's steps now {after}, the file kept: {kept}",
                     command.tag()
