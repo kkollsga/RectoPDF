@@ -443,6 +443,24 @@ fn every_export_is_in_the_table_and_reaches_the_person_only_through_act() {
     assert!(KNOWN.len() <= 2, "a new known exception: fix it instead");
 }
 
+/// Failure (R2.3, C6; kept beside the table, review of S2, S3): the bridge reaches past the one way a person's action comes in, queuing a person's call on
+/// the session thread itself, anywhere in its text, an export or not and however deep: the table's check reads an export's body and what it calls of its
+/// own one level down, and this reads everything. The bridge's sources name no `CoreCall` but `Reconcile`, which asks the window to be drawn again and does
+/// nothing a person does.
+#[test]
+fn the_bridge_queues_none_of_a_persons_calls() {
+    let mut named = Vec::new();
+    for (file, text) in bridge_sources() {
+        for (at, _) in text.match_indices("CoreCall::") {
+            let call: String = text[at + "CoreCall::".len()..].chars().take_while(|c| c.is_alphanumeric()).collect();
+            if call != "Reconcile" {
+                named.push(format!("{file}: CoreCall::{call}"));
+            }
+        }
+    }
+    assert!(named.is_empty(), "{named:#?}");
+}
+
 /// **What uniffi really exports, by the bridge's static library,** where one is built from these sources: its `uniffi_recto_ffi_fn_` symbols, the
 /// `AppCore` methods and constructors and the free functions. None if there's no library, `nm` can't read it, or it's older than a source.
 fn exported_by_the_library(sources: &[(String, String)]) -> Option<BTreeSet<String>> {
