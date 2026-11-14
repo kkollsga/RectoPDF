@@ -61,80 +61,6 @@ fn tabs_leaving_with_their_sleep_files_held_have_one_writer_and_a_capped_queue()
     drop(app.quit());
 }
 
-/// Failure (2026-11-14, five tests at load 15 to 77): the kit's page views told the kernel it may empty what they keep off the layers, which it does under
-/// memory pressure at moments no test chooses, so a test coming back to a page, or writing a sleep file, found its picture gone one run in twenty. In the
-/// kit the system takes only when a test says (`qa memory-pressure discard`, [`recto_reader::Engine::empty_discardable`]): a tab left keeps what it drew
-/// flagged discardable and the kernel not told, and a test's own take still empties it.
-#[test]
-fn in_the_kit_the_system_takes_only_when_a_test_says() {
-    let disk = Disk::new();
-    let (a, b) = (disk.pdf("a.pdf", 3), disk.pdf("b.pdf", 3));
-    let app = disk.start();
-    let engine = app.core().engine.clone();
-    for doc in [&a, &b] {
-        app.open(doc);
-        let mut view = window_view();
-        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
-        host_turns(&app, &mut view, true);
-    }
-    assert_eq!(
-        engine.qa().marked_for_the_system(),
-        0,
-        "the kernel may empty what a's left with whenever it likes"
-    );
-    assert!(engine.empty_discardable() > 0, "a's tiles, kept and discardable, emptied when the test says");
-    drop(app.quit());
-}
-
-/// The sleep files in the app's state folder, each with its bytes and when it was last written.
-fn sleep_files_of(app: &crate::testkit::headless::HeadlessApp) -> Vec<(std::path::PathBuf, Vec<u8>, std::time::SystemTime)> {
-    let folder = app.core().saver.store.main_folder().join("journals");
-    let mut files: Vec<_> = std::fs::read_dir(&folder)
-        .expect("the journals")
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("sleep-")))
-        .map(|path| {
-            let modified = std::fs::metadata(&path).and_then(|meta| meta.modified()).expect("its time");
-            (path.clone(), std::fs::read(&path).expect("its bytes"), modified)
-        })
-        .collect();
-    files.sort();
-    files
-}
-
-/// The app started on `disk`, its tab on screen drawn in a window as the host has it.
-fn started_and_drawn(disk: Disk) -> crate::testkit::headless::HeadlessApp {
-    let app = disk.start();
-    let mut view = window_view();
-    crate::testkit::headless::applied_as_the_host(&app.core().engine.set_viewport(view));
-    host_turns(&app, &mut view, true);
-    app
-}
-
-/// Failure (decision 24: "the file's not rewritten when nothing's changed"): a quit rewrites the tab on screen's sleep file with nothing changed, a write
-/// to the drive at every quit for nothing. The real app's `a_launch_goes_up_from_the_sleep_file` held this until the kernel, emptying a preview under
-/// memory pressure (load 77, 2026-11-14), made its picture come from the tiles and the file change honestly; here the system takes nothing unless a test
-/// says. A launch woken from the tab's sleep file, drawn, and quit leaves the file's bytes and time as they were.
-#[test]
-fn a_quit_with_nothing_changed_writes_nothing() {
-    let disk = Disk::new();
-    let doc = disk.pdf("a.pdf", 9);
-    let app = started_and_drawn(disk);
-    app.open(&doc);
-    let mut view = window_view();
-    host_turns(&app, &mut view, true);
-    let (_, disk) = app.quit();
-    let app = started_and_drawn(disk);
-    let written = sleep_files_of(&app);
-    assert_eq!(written.len(), 1, "the quit wrote the tab on screen's");
-    assert_eq!(app.core().engine.report().0["last_wake"]["had"], "sleep_file", "woken from it");
-    let (_, disk) = app.quit();
-    let app = disk.start();
-    assert_eq!(sleep_files_of(&app), written, "nothing changed, and a quit wrote its file again");
-    drop(app.quit());
-}
-
 /// Whether the tab on screen has a sleep file in the state folder.
 fn active_has_a_sleep_file(app: &crate::testkit::headless::HeadlessApp) -> bool {
     let core = app.core();
@@ -172,7 +98,7 @@ fn a_flush_counts_the_tab_on_screens_sleep_file_it_skipped_and_writes_it_given_t
 /// The view the host would have, at the top of the document, the page at its fit: a small window at one pixel a point, so each picture is a tenth of a
 /// Retina window's and a test's every show and draw is quick under CI's limits (the file's tests took about 60 s of test time under `--like-ci` in a
 /// 1168 by 900 Retina window, 2026-11-14). What's decided doesn't depend on a picture's size, except where a test says so ([`retina_view`]).
-fn window_view() -> recto_reader::Viewport {
+pub(super) fn window_view() -> recto_reader::Viewport {
     recto_reader::Viewport {
         x: 0.0,
         y: 0.0,
