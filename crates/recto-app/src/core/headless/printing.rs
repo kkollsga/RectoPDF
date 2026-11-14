@@ -331,3 +331,29 @@ fn an_agent_cant_find_the_persons_print_file() {
     }
     assert_ne!(printed(&app), "none", "the print went ahead");
 }
+
+/// Failure (S2, the coordinator's word on 2026-11-14): a print that fails after its first page, as when a page's file has gone, leaves its half-written file in
+/// the temp folder, gives the host a file of the pages it got through, or says nothing. A tab of two files' pages, the second's file taken away once the
+/// first page is printed: the refusal's words are said, nothing's for the host, and nothing's left.
+#[test]
+fn a_print_that_fails_mid_way_leaves_nothing() {
+    use recto_agent::Level;
+    let disk = Disk::new();
+    let (first, second) = (disk.file("first.pdf", &widths(1)), disk.pdf("second.pdf", 1));
+    let app = disk.start();
+    app.open(&first);
+    app.settle();
+    app.recto(Level::Full, &["page", "insert", second.to_str().expect("a path"), "--at", "2"])
+        .expect("its page added");
+    app.settle();
+    let (held, go) = hold_at(1);
+    answer(&app, ALL);
+    held.recv_timeout(WAIT_LIMIT).expect("the print held after its first page");
+    std::fs::remove_file(&second).expect("the second file taken away");
+    drop(go);
+    app.settle();
+    let said = notice(&app);
+    assert!(said != "-" && !said.contains("Preparing"), "the failure is said: {said}");
+    assert_eq!(printed(&app), "none", "nothing for the host");
+    assert_eq!(print_files_left(), Vec::<String>::new(), "nothing's left");
+}
