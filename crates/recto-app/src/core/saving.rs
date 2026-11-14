@@ -78,9 +78,10 @@ pub fn start_save(inner: &Arc<super::Inner>, tab: TabId, out: Option<std::path::
         let inner = Arc::clone(&inner);
         move || {
             run_save(&inner, tab, out, close_after, answered);
-            inner.tools.save_ui().running.fetch_sub(1, Ordering::SeqCst);
             inner.tools.save_ui().step.store(0, Ordering::SeqCst);
             inner.core.push(super::CoreCall::Reconcile);
+            // Counted running until what it came to is queued, as the app's settled goes by the count ([`crate::settled`]).
+            inner.tools.save_ui().running.fetch_sub(1, Ordering::SeqCst);
         }
     });
     if spawned.is_err() {

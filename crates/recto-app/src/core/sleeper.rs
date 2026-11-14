@@ -89,6 +89,18 @@ impl LookSlots {
         true
     }
 
+    /// **The look's done, and what it found is queued:** if another look was asked for meanwhile, the files showing are looked at again, as the one under way
+    /// may have looked before the file changed. Asked for with the slot still held, so the look counts as under way ([`Self::running`]) until everything it
+    /// comes to is queued for the session thread, which is what the app's settled goes by ([`crate::settled`]): it was let go first, and a look counted done
+    /// with its word not yet queued could be read as at rest.
+    pub fn finish_and_look_again(&self, id: TabId, core: &CoreQueue) {
+        let mut running = lock(&self.running);
+        if running.iter().any(|(tab, again)| *tab == id && *again) {
+            core.push(CoreCall::LookAtShown);
+        }
+        running.retain(|(tab, _)| *tab != id);
+    }
+
     /// The look's done, however it ended: whether another was asked for meanwhile, which the caller asks for again.
     pub fn finish(&self, id: TabId) -> bool {
         let mut running = lock(&self.running);
@@ -117,15 +129,12 @@ impl LookSlots {
         let slots = std::sync::Arc::clone(self);
         let looking = std::thread::Builder::new().name("recto-look".into()).stack_size(256 * 1024).spawn(move || {
             let status = look_at_file(&path, stamp);
-            // A look asked for meanwhile may be about a change made after this one looked: the files showing are looked at again.
-            if slots.finish(id) {
-                core_for_look.push(CoreCall::LookAtShown);
-            }
             let other = look_is_news(&status, stamp, says_something);
             // Too late for the frame: it's said the usual way.
             if send.try_send((other, status.clone())).is_err() && other {
                 core_for_look.push(CoreCall::WokenFileIsOther(id, status, stamp));
             }
+            slots.finish_and_look_again(id, &core_for_look);
         });
         if looking.is_err() {
             self.finish(id);
@@ -151,10 +160,7 @@ impl LookSlots {
             if look_is_news(&status, stamp, says_something) {
                 core.push(CoreCall::WokenFileIsOther(id, status, stamp));
             }
-            // A look asked for meanwhile may be about a change made after this one looked: the files showing are looked at again.
-            if slots.finish(id) {
-                core.push(CoreCall::LookAtShown);
-            }
+            slots.finish_and_look_again(id, &core);
         });
         if spawned.is_err() {
             self.finish(id);
