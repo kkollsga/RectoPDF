@@ -21,6 +21,7 @@ pub mod event;
 mod event_agreement;
 pub use event::{Event, edits_changed, page_changed, page_now, view_changed};
 pub mod extract;
+mod file_wall;
 pub mod find;
 pub mod generated;
 pub mod human;

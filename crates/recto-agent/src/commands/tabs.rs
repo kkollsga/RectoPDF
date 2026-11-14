@@ -299,7 +299,8 @@ pub(crate) const ROWS_CLOSE: &[Spec] = &[Spec {
 }];
 
 fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u32>, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-    require_absolute(path)?;
+    // Before anything looks at the file: the walls, and the path they say to read it by.
+    let to_read = crate::file_wall::to_read(access, path)?;
     let wrong_page = |pages: u32| {
         AgentError::new(
             Code::NO_SUCH_PAGE,
@@ -309,10 +310,6 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
         .then("Open it with a page it has, or with no `--page`.")
     };
     let fits = |pages: u32| page.is_none_or(|page| page >= 1 && page <= pages);
-    // The file is read where the session's rule looked, and not wherever its name leads by the time the read starts; the tab keeps the name (F3).
-    let to_read = access
-        .with(|s| s.confinement().to_read(path))
-        .ok_or_else(|| crate::quiet_files::outside_the_run(path))?;
     // A host that mustn't wait on a disk has the file looked at and read off its thread, and this runs again once it's in: unless a tab has it by this name, as
     // the window has always gone to that tab without reading the file. Everywhere else it's looked at here.
     let fetched = match access.reads_later() {

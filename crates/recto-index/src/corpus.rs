@@ -94,10 +94,8 @@ impl std::fmt::Debug for CorpusKey {
 impl CorpusKey {
     /// A file's key as it is now. Costs a look at the file and two small reads. Only a plain file: opening a pipe would wait for a writer for ever.
     pub fn of_file(path: &Path) -> io::Result<Self> {
-        if !fs::metadata(path)?.is_file() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a plain file"));
-        }
-        let file = File::open(path)?;
+        // Through the file wall, as every open of a document by its path is: a pipe, a device, `/dev` and a file with no name are refused.
+        let file = recto_platform::document_file::open_regular(path).map_err(recto_platform::document_file::Refused::into_io)?;
         let identity = recto_platform::file_identity(&file)?;
         let (head, tail) = sample_ranges(identity.size);
         let mut samples = vec![0; (head.end - head.start + tail.end - tail.start) as usize];
@@ -167,7 +165,8 @@ pub fn times_tell_versions_apart(file_system: &str) -> bool {
 
 /// Whether this file's on a file system where a key can be trusted.
 pub fn can_be_indexed(path: &Path) -> bool {
-    File::open(path)
+    recto_platform::document_file::open(path)
+        .map_err(recto_platform::document_file::Refused::into_io)
         .and_then(|file| local::file_system_name(&file))
         .is_ok_and(|name| times_tell_versions_apart(&name))
 }

@@ -208,6 +208,11 @@ pub mod fresh;
 /// A quiet run's own folders, the only places a session on a test state folder opens or writes a file.
 pub mod run_folders;
 
+/// The file wall: the one way a path becomes a document's open file.
+pub mod document_file;
+#[cfg(all(test, unix))]
+mod document_file_scan;
+
 /// A password the person typed, held so its bytes are overwritten when it goes, and the file identity it's kept by.
 pub mod secret;
 pub use secret::{MAX_PASSWORD_BYTES, Password};
