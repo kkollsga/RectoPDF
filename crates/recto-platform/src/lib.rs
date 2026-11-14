@@ -210,8 +210,6 @@ pub mod run_folders;
 
 /// The file wall: the one way a path becomes a document's open file.
 pub mod document_file;
-#[cfg(all(test, unix))]
-mod document_file_scan;
 
 /// A password the person typed, held so its bytes are overwritten when it goes, and the file identity it's kept by.
 pub mod secret;
