@@ -240,8 +240,8 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
             continue;
         };
         // Its first page already says so, and the same goes for the rest: the permissions are the file's. Before anything else is read.
-        if text.copy_restricted() && !pick.anyway && !rects {
-            return Err(copy_restricted());
+        if !rects {
+            crate::copying::refuse_unless_anyway(pick.anyway, || text.copy_restricted(), crate::copying::Copying::Text)?;
         }
         edges.insert(page, text.edge_lines().to_vec());
         for other in neighbour_pages(page, pages) {
@@ -301,7 +301,7 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
         page += 1;
     }
     copied.finish();
-    let withheld = copied.restricted && !pick.anyway;
+    let withheld = crate::copying::asks_anyway(pick.anyway, || copied.restricted);
     let stopped_at = copied.stopped_at.or(ran_out);
     let mut note = Vec::new();
     if withheld {
@@ -345,16 +345,6 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
 
 fn round(value: f32) -> f64 {
     (f64::from(value) * 100.0).round() / 100.0
-}
-
-/// The refusal of a copy the file's permissions ask not to be made, until the user says to.
-fn copy_restricted() -> AgentError {
-    AgentError::new(
-        Code::COPY_RESTRICTED,
-        "This file's permissions ask that its text isn't copied.",
-        exit::PROTECTED,
-    )
-    .then("Tell the user. `--anyway` copies it, once they've said to. Each use goes in the activity log.")
 }
 
 #[cfg(test)]

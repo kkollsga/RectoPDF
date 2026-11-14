@@ -128,7 +128,15 @@ fn is_change(cmd: &str, outcome: &str) -> bool {
 
 /// Text, a picture or an export given past what a file's permissions ask. Only an answer that worked gave anything. Exports ask the same step as Copy (owner, 2026-11-08).
 fn is_override(cmd: &str, outcome: &str, details: &Value) -> bool {
-    outcome == "ok" && matches!(cmd, "select" | "copy" | "image" | "snapshot" | "render" | "export_svg" | "print") && details["anyway"] == true
+    outcome == "ok" && details["anyway"] == true && takes_anyway(cmd)
+}
+
+/// **The commands that take `--anyway`,** as the table has them: each copies or exports a document that may ask not to be, so one added later is
+/// logged without a word here.
+fn takes_anyway(cmd: &str) -> bool {
+    recto_agent::table::TABLE
+        .iter()
+        .any(|spec| spec.tag == cmd && spec.args.iter().any(|arg| arg.key == "anyway"))
 }
 
 /// The refusals an agent can repeat for nothing: a level too low, a terminal it hasn't, the owner's edits, signing, a busy session.
@@ -574,6 +582,19 @@ mod tests {
         let rows = seen["entries"].as_array().unwrap();
         assert_eq!(rows.iter().filter(|row| row["details"]["anyway"] == true).count(), 4, "`recto log` shows them");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Failure: a command that takes `--anyway` is missing from the ones whose use of it gets a line of its own, or one that doesn't is in: the list
+    /// the table gives is the one these lines were kept for by hand (select, copy, image, snapshot, render, export_svg, print).
+    #[test]
+    fn the_commands_whose_anyway_is_logged_are_those_that_take_it() {
+        let mut taking: Vec<&str> = recto_agent::table::TABLE.iter().map(|spec| spec.tag).filter(|tag| takes_anyway(tag)).collect();
+        taking.sort_unstable();
+        taking.dedup();
+        assert_eq!(taking.len(), 7, "{taking:?}");
+        for tag in ["select", "copy", "image", "snapshot", "render", "export_svg", "print"] {
+            assert!(taking.contains(&tag), "{tag}: {taking:?}");
+        }
     }
 
     /// Failure: an image or a snapshot taken past a file's permissions leaves no line of its own, though the owner decided they get the same notice as text (2026-11-08) and each use of `--anyway` goes in the log.

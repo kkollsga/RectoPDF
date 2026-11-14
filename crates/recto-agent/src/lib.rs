@@ -15,6 +15,7 @@ pub mod effect;
 pub mod later;
 pub use effect::Effect;
 pub mod commands;
+pub mod copying;
 pub mod event;
 #[cfg(test)]
 mod event_agreement;
