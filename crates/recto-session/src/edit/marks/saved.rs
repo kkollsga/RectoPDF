@@ -453,6 +453,49 @@ mod tests {
         edits.rebase_on_saved(pages, None, Some(&saved)).unwrap().rolled_off
     }
 
+    /// **Failure (second review of R4.3, SF4): a step in the history of a page a move put elsewhere names its old page after the save**, which wrote
+    /// the pages in their new order: a highlight made as an edit (`Rebase::moved`) or a file highlight taken out (`Rebase::file`) comes back on the
+    /// page that's now where its page was. The file's page 3 moved to the front, a highlight on it and one of its own taken out, both undone; after
+    /// the save page 3 is the file's first page, and redo and undo of each are there.
+    #[test]
+    fn steps_on_a_moved_page_follow_it_through_a_save() {
+        let mut edits = PageEdits::new(3);
+        edits.move_pages(2, 1, 0).unwrap();
+        add(&mut edits, 2);
+        let removal = MarkChange::RemoveFile {
+            files: vec![FileMark {
+                key: FileKey {
+                    source: 0,
+                    page: 2,
+                    index: 0,
+                    rect: [1.0, 2.0, 3.0, 4.0],
+                },
+                rects: Box::new([rect()]),
+            }],
+            ids: Vec::new(),
+        };
+        edits.mark(removal).unwrap();
+        assert!(edits.undo() && edits.undo(), "both to redo");
+        save(&mut edits, 0, Vec::new());
+        assert_eq!(
+            edits.slots().iter().map(|slot| slot.page).collect::<Vec<_>>(),
+            vec![0, 1, 2],
+            "the file's order now"
+        );
+        assert!(edits.redo(), "the highlight");
+        let mark = edits.marks().iter().next().expect("a highlight");
+        assert_eq!((mark.source, mark.page), (0, 0), "on the moved page, the file's first now");
+        assert!(edits.redo(), "the removal");
+        assert_eq!(edits.marks().hidden()[0].page, 0, "of the moved page's own highlight");
+        assert!(edits.undo() && edits.undo());
+        assert!(edits.marks().is_empty(), "and undo takes both away");
+        assert!(edits.redo() && edits.redo());
+        assert_eq!(
+            (edits.marks().iter().next().map(|mark| mark.page), edits.marks().hidden()[0].page),
+            (Some(0), 0)
+        );
+    }
+
     /// **Failure (review of R4.3, S2): a save throws away the steps that take a saved highlight out**, so ⌘Z after Save skips the person's
     /// highlight, and an agent's `recto save` throws away the owner's steps. After a save, undo takes the highlight out of the file (hidden now, so
     /// something to save, by a rewrite), redo puts it back, and the history's bytes are what it holds.
