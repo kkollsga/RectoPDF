@@ -145,6 +145,23 @@ impl Command {
         }
     }
 
+    /// The tab whose document this reads, which `execute` asks about for a protected one: see [`crate::commands::Cmd::ABOUT`].
+    pub(crate) fn about(&self) -> Option<&crate::TabRef> {
+        match self {
+            Self::Measure(command) => command.about(),
+            Self::Edit(command) => command.about(),
+            Self::Move(command) => command.about(),
+            Self::Read(command) => command.about(),
+            Self::Start(command) => command.about(),
+            Self::Waits(command) => command.about(),
+            Self::Rights(command) => command.about(),
+            Self::Session(command) => command.about(),
+            Self::Qa(command) => command.about(),
+            Self::Record(command) => command.about(),
+            Self::Updates(command) => command.about(),
+        }
+    }
+
     /// What goes in the activity log about this command's arguments. Numbers and cleaned file names, and never anything that could hold document text: a tab's name as typed or a search's words aren't kept.
     pub fn log_details(&self) -> Value {
         match self {

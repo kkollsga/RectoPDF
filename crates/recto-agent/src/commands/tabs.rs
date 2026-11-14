@@ -27,6 +27,7 @@ impl Cmd for Open {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         None
@@ -62,6 +63,7 @@ impl Cmd for Tap {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = true;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
@@ -103,6 +105,7 @@ impl Cmd for Recent {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         None
@@ -148,6 +151,7 @@ impl Cmd for RecentClear {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         None
@@ -191,6 +195,7 @@ impl Cmd for Close {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = true;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)

@@ -36,6 +36,11 @@ pub mod updates;
 pub mod view;
 pub mod words;
 
+// The scaffold's template (`tools/new-feature.sh`), compiled with the tests so a change that would break what it makes fails here.
+#[cfg(test)]
+#[path = "../../../../tools/new-feature/command.rs"]
+pub mod scaffold_template;
+
 use crate::Code;
 use crate::table::{self, Access, Spec};
 use crate::{Actor, AgentError, Command, Event, Level, Runs, SessionAccess, TabRef};
@@ -54,6 +59,11 @@ pub trait Cmd {
     const READS_PAGES: bool;
     /// It reads nothing of a document, so it may act on one the user opened with its password (closing it, asking where it is).
     const PROTECTED_OK: bool;
+    /// **Whose document it reads, for the protected gate** in [`crate::execute`], for a command the session answers (`Runs::Session`; the app's own
+    /// commands, `run_app`, have no protected gate today): the tab it names, the document being read whatever it names, or no
+    /// document's. One that would read the document being read and answered `Nothing` would give an agent what the person opened with a password, so
+    /// it has no default, and the walk in `policy_guards` runs every command with that document being read.
+    const ABOUT: About;
     /// Run for the person at the window, it may hold its thread for long: it writes a file, draws, reads pages or a file in place, waits on a worker, a helper,
     /// the network or the clock, or on the window's session thread itself. The window runs such a command on a thread of its own, never on its session thread,
     /// which the person's every tap goes through (R2.3). One that forgot could stop the window answering.
@@ -70,6 +80,26 @@ pub trait Cmd {
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError>;
     /// Its answer in plain words, for a person at a terminal.
     fn human(data: &Value) -> String;
+}
+
+/// Whose document a command reads, for the protected gate: see [`Cmd::ABOUT`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum About {
+    /// The tab it names ([`Cmd::tab`]); none if it names none.
+    Its,
+    /// The document being read, the active tab, whatever it names: Find.
+    Reading,
+    /// No document's: what it answers about tabs (a list, the sidebar, a comparison) leaves a protected one's out itself.
+    Nothing,
+}
+
+/// The tab a command's [`Cmd::ABOUT`] comes to: the one `execute` asks about before anything of it is read.
+pub(crate) fn about_tab<C: Cmd>(command: &C) -> Option<&TabRef> {
+    match C::ABOUT {
+        About::Its => command.tab(),
+        About::Reading => Some(&crate::tab_ref::ACTIVE),
+        About::Nothing => None,
+    }
 }
 
 /// Whether a command only asks about the state, so an update needn't wait for it. Declared by each command the app or a host's record answers, with no default: one that forgot could be refused mid-hand-off, or be run past the hand-off's last look and lose what it did.
@@ -223,6 +253,12 @@ macro_rules! family {
             pub fn tab(&self) -> Option<&TabRef> {
                 match self {
                     $(Self::$variant(command) => $crate::commands::Cmd::tab(command),)*
+                }
+            }
+
+            pub fn about(&self) -> Option<&TabRef> {
+                match self {
+                    $(Self::$variant(command) => $crate::commands::about_tab(command),)*
                 }
             }
 

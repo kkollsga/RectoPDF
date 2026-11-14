@@ -44,6 +44,8 @@ pub mod unfit;
 pub use commands::updates::update_needs_app;
 pub use route::{Runs, qa_needs_app};
 #[cfg(test)]
+mod policy_guards;
+#[cfg(test)]
 mod registry_golden;
 
 use recto_session::{Author, DocLoader, DrawNote, PageSource, RowKind, Session, SessionError, TabId};
@@ -556,11 +558,8 @@ pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, ev
         return execute_held(access, actor, command, events);
     }
     // A protected document the person opened with its password gives an agent nothing read from it: agent report §5.5. Closing it, tapping its row or asking where it is reads nothing of it, and what they answer leaves it out and says why. Asked before the tab is touched, woken or held.
-    // Find has no tab of its own: it's in the document being read, so that's the one asked about.
-    let about = command
-        .tab_selector()
-        .or_else(|| matches!(command, Command::Move(commands::Move::Find(_))).then_some(&tab_ref::ACTIVE));
-    if let Some(selector) = about
+    // Whose document it reads is the command's to say ([`commands::Cmd::ABOUT`]): Find's is the document being read, though it names no tab.
+    if let Some(selector) = command.about()
         && !command.protected_ok()
         && !actor.sees_protected()
         && access.with(|s| select(s, selector).is_ok_and(|id| s.tabs().withheld_from_agents(id)))
@@ -1237,6 +1236,7 @@ fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy_guards::every_command;
 
     /// Failure (R2.5): a refused file name is taken for the page failing to draw, so a wait on the page hears it failed; or a page that couldn't be drawn is
     /// taken for a refused file name, and nobody waiting hears of it. Routed by named codes: the output's own refusals, and nothing else.
@@ -1657,222 +1657,6 @@ mod tests {
             parse(r#"{"cmd":"tabs"}"#),
             Ok(Command::Read(crate::commands::Read::Tabs(crate::commands::reading::Tabs { .. })))
         ));
-    }
-
-    fn every_command() -> Vec<Command> {
-        let tab = || crate::TabRef::from("#1");
-        vec![
-            Command::from(crate::commands::tabs::Open {
-                path: "/d/a.pdf".into(),
-                page: None,
-            }),
-            Command::from(crate::commands::reading::Tabs { from: None, limit: None }),
-            Command::from(crate::commands::reading::Sidebar {}),
-            Command::from(crate::commands::tabs::Tap { tab: tab() }),
-            Command::from(crate::commands::linking::Goto {
-                tab: tab(),
-                page: Some(1),
-                label: None,
-                within: None,
-            }),
-            Command::from(crate::commands::linking::Links { tab: tab(), page: 1 }),
-            Command::from(crate::commands::linking::Follow { tab: tab(), page: 1, link: 1 }),
-            Command::from(crate::commands::linking::Back { tab: tab() }),
-            Command::from(crate::commands::linking::Forward { tab: tab() }),
-            Command::from(crate::commands::tabs::Recent {}),
-            Command::from(crate::commands::tabs::RecentClear {}),
-            Command::from(crate::commands::tabs::Close { tab: tab() }),
-            Command::from(crate::commands::measure::Budget {}),
-            Command::from(crate::commands::compare::Compare::Look),
-            Command::from(crate::commands::compare::Compare::Off),
-            Command::from(crate::commands::export::Render {
-                tab: tab(),
-                page: 1,
-                scale: 2.0,
-                out: "/d/x.png".into(),
-                anyway: false,
-            }),
-            Command::from(crate::commands::export::ExportSvg {
-                tab: tab(),
-                page: 1,
-                out: "/d/x.svg".into(),
-                rect: None,
-                text: None,
-                scale: 2.0,
-                strip_metadata: false,
-                anyway: false,
-            }),
-            Command::from(crate::commands::export::Images { tab: tab(), page: 1 }),
-            Command::from(crate::commands::export::Image {
-                tab: tab(),
-                page: 1,
-                number: 1,
-                out: "/d/x.png".into(),
-                anyway: false,
-            }),
-            Command::from(crate::commands::export::Snapshot {
-                tab: tab(),
-                page: 1,
-                rect: [0.0, 0.0, 10.0, 10.0],
-                format: "png".into(),
-                out: Some("/d/x.png".into()),
-                scale: 2.0,
-                anyway: false,
-            }),
-            Command::from(crate::commands::export::Print {
-                tab: tab(),
-                pages: None,
-                dpi: 300,
-                to_pdf: "/d/x.pdf".into(),
-                anyway: false,
-            }),
-            Command::from(crate::commands::text::Text { tab: tab(), page: 1 }),
-            Command::from(crate::commands::text::Select {
-                tab: tab(),
-                page: Some(1),
-                to_page: None,
-                chars: None,
-                at: None,
-                to: None,
-                unit: None,
-                all: false,
-                anyway: false,
-            }),
-            Command::from(crate::commands::text::Copy {
-                tab: tab(),
-                page: Some(1),
-                to_page: None,
-                chars: None,
-                at: None,
-                to: None,
-                unit: None,
-                all: false,
-                anyway: false,
-            }),
-            budget_command(None, None),
-            Command::from(crate::commands::measure::BudgetViewport {
-                tab: tab(),
-                viewport: "10x10".into(),
-                first: None,
-                scale: 2.0,
-                strategy: None,
-            }),
-            Command::from(crate::commands::reading::Where { tab: tab() }),
-            Command::from(crate::commands::reading::Facts { tab: tab() }),
-            Command::from(crate::commands::reading::Contents {
-                tab: tab(),
-                from: None,
-                limit: None,
-                depth: None,
-                generated: false,
-            }),
-            Command::from(crate::commands::text::Search {
-                tab: tab(),
-                query: "x".into(),
-                pages: None,
-                limit: None,
-                scan: false,
-                regex: false,
-                rank: false,
-                context: None,
-            }),
-            Command::from(crate::commands::finding::Find::from(crate::commands::finding::FindAsk::Query("x".into()))),
-            Command::from(crate::commands::text::Index { tab: tab(), agent: false }),
-            Command::from(crate::commands::view::Palette {
-                query: Some("zoom".into()),
-                run: false,
-                limit: None,
-            }),
-            Command::from(crate::commands::text::IndexStatus { tab: tab() }),
-            Command::from(crate::commands::text::IndexClear { tab: tab(), all: false }),
-            Command::from(crate::commands::reading::Signatures { tab: tab() }),
-            Command::from(crate::commands::editing::Edits { tab: tab() }),
-            Command::from(crate::commands::editing::PageMove {
-                tab: tab(),
-                pages: "1".into(),
-                to: 1,
-            }),
-            Command::from(crate::commands::editing::PageRotate {
-                tab: tab(),
-                pages: "1".into(),
-                degrees: 90,
-            }),
-            Command::from(crate::commands::editing::PageDelete { tab: tab(), pages: "1".into() }),
-            Command::from(crate::commands::editing::PageInsert {
-                tab: tab(),
-                path: "/d/b.pdf".into(),
-                at: 1,
-            }),
-            Command::from(crate::commands::editing::Undo { tab: tab() }),
-            Command::from(crate::commands::editing::Redo { tab: tab() }),
-            Command::from(crate::commands::editing::Discard { tab: tab() }),
-            Command::from(crate::commands::editing::ClearHistory { tab: tab() }),
-            Command::from(crate::commands::edit_mode::EditMode {
-                set: commands::words::OnOff::On,
-            }),
-            Command::from(crate::commands::contents::ContentsFold { entry: 0, tab: tab() }),
-            Command::from(crate::commands::contents::ContentsShow {
-                which: commands::contents::Which::Generated,
-                tab: tab(),
-            }),
-            Command::from(crate::commands::contents::ContentsStop { tab: tab() }),
-            Command::from(crate::commands::record::SessionSleep { tab: tab() }),
-            Command::from(crate::commands::saving::Save {
-                tab: tab(),
-                out: None,
-                replace: false,
-            }),
-            Command::from(commands::access::Sign {}),
-            Command::from(commands::session::Status {}),
-            Command::from(commands::access::PermissionShow {}),
-            Command::from(commands::access::PermissionRequest {
-                level: Level::Full,
-                timeout_ms: None,
-            }),
-            Command::from(commands::access::LevelChanged {}),
-            Command::from(commands::sync::Wait {
-                condition: Condition::TabOpen,
-                tab: tab(),
-                page: None,
-                timeout_ms: 1,
-            }),
-            Command::from(commands::sync::Watch {
-                events: None,
-                timeout_ms: None,
-                count: None,
-            }),
-            Command::from(commands::sync::WatchStop {}),
-            Command::from(commands::access::Log { last: None }),
-            Command::from(crate::commands::view::View {
-                paper: None,
-                sidebar: None,
-                agent_icon: None,
-                zoom: None,
-                layout: None,
-                tab: None,
-            }),
-            Command::from(crate::commands::qa::QaRead {
-                verb: "state".into(),
-                out: None,
-                timeout_ms: None,
-            }),
-            Command::from(crate::commands::qa::QaDrive {
-                verb: "zoom".into(),
-                value: "1".into(),
-                timeout_ms: None,
-                tab: None,
-            }),
-            Command::from(commands::session::Stop {}),
-            Command::from(crate::commands::record::SessionShow {}),
-            Command::from(crate::commands::record::SessionSave {}),
-            Command::from(crate::commands::record::SessionRestore {}),
-            Command::from(crate::commands::record::SessionCheck {}),
-            Command::from(commands::updates::UpdateStatus {}),
-            Command::from(commands::updates::UpdateCheck {}),
-            Command::from(commands::updates::UpdateInstall { zip: None, now: false }),
-            Command::from(commands::updates::UpdateDevBuilds { set: None }),
-            Command::from(commands::updates::Settings { auto_update: None }),
-        ]
     }
 
     /// Failure: an agent below Full can install an update, or turn on what would install one for it, or can't read how things stand at Read-only. The owner's bar: installing needs Full. A session with no app says it's not a matter of level.
