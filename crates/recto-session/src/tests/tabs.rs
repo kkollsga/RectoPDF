@@ -275,7 +275,7 @@ fn a_tab_opened_with_a_password_is_marked_kept_and_asks_again_when_its_key_is_go
         .unwrap();
     assert!(s.tabs().withheld_from_agents(locked));
     let record = s.to_record();
-    assert_eq!(record.tabs.iter().map(|tab| tab.withheld.password).collect::<Vec<_>>(), [false, true]);
+    assert_eq!(record.tabs.iter().map(|tab| tab.password).collect::<Vec<_>>(), [false, true]);
     let mut again = Session::new(Locked);
     again.restore(&record, HashMap::new()).unwrap();
     assert!(

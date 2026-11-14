@@ -31,8 +31,10 @@ fn use_a_record(bytes: &[u8]) {
         let _ = session.go_to(id, u32::MAX);
         let _ = session.undo_edit(id);
     }
-    // Writing it back gives what reads the same.
-    let again = record::encode_record(&session.to_record(), read.seq);
+    // Writing it back gives what reads the same, and withholds no tab's place it didn't name (the third review, D-C: a list read as hostile).
+    let written = session.to_record();
+    assert!(written.withheld_places.iter().all(|id| read.record.withheld_places.contains(id)));
+    let again = record::encode_record(&written, read.seq);
     record::decode_record(&again, CURRENT_VERSION).expect("what the session writes reads");
     let _ = session.sidebar();
 }
@@ -131,10 +133,11 @@ fn use_a_log(bytes: &[u8]) {
             contents_folds: Vec::new(),
             back: Vec::new(),
             forward: Vec::new(),
-            withheld: Default::default(),
+            password: false,
         }],
         comparison: None,
         recent: Vec::new(),
+        withheld_places: Vec::new(),
     };
     record::apply_places_log(&mut main, 1, bytes);
     record::validate_record(&main).expect("a log can't break a record");

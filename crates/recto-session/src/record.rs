@@ -756,28 +756,14 @@ pub struct TabEntry {
     /// Contents sections the reader opened or closed against what following the place does, as `(entry, open)`. At most [`MAX_CONTENTS_FOLDS`].
     #[serde(default, deserialize_with = "capped::<_, _, MAX_CONTENTS_FOLDS>")]
     pub contents_folds: Vec<(u32, bool)>,
-    /// What of it is kept from agents ([`Withheld`]), its two fields at this level of the record as before.
-    #[serde(flatten)]
-    pub withheld: Withheld,
+    /// Its file was opened with a password the person typed, so what's here of it (its length, its place) was read with one, and none of it goes to an agent. The password itself is never anywhere in the record. Added after version 1, so an older record has none.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub password: bool,
     /// Back and forward: places to go back to, oldest first, and to go forward to, the nearest last. See [`crate::trail`]. Read up to [`MAX_TRAIL_READ`], and held to [`crate::trail::MAX_TRAIL`] when taken in.
     #[serde(default, deserialize_with = "capped::<_, _, MAX_TRAIL_READ>", skip_serializing_if = "Vec::is_empty")]
     pub back: Vec<crate::trail::Stop>,
     #[serde(default, deserialize_with = "capped::<_, _, MAX_TRAIL_READ>", skip_serializing_if = "Vec::is_empty")]
     pub forward: Vec<crate::trail::Stop>,
-}
-
-/// **What of a tab is kept from agents, as the record has it** (SPEC: nothing read from a file opened with a password goes to an agent, not its length
-/// or place). Flattened into [`TabEntry`], so each field is where it was, left out when false: a record without them is byte for byte as before.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Withheld {
-    /// Its file was opened with a password the person typed, so what's here of it (its length, its place) was read with one, and none of it goes to an agent. The password itself is never anywhere in the record. Added after version 1, so an older record has none.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub password: bool,
-    /// **Its place is withheld from agents on its own account:** it was left by following a protected document in a synced comparison and hasn't been
-    /// moved by a jump since (`compare::place_withheld`). Kept so a restart doesn't give an agent where following left it (the second review, S-4). Left
-    /// out when false, so a record without it is byte for byte as before, and an older app ignores it (no new version: a field with a default).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub place_withheld: bool,
 }
 
 /// Most stops read from a record each way: past the trail's own cap, so a record from a build with a longer one still reads, and short enough that a forged one can't make it large.
@@ -808,6 +794,14 @@ pub struct SessionRecord {
     /// Files opened lately, newest first: File > Open Recent and ⌘K. Read up to [`MAX_RECENT_READ`], and held to [`crate::MAX_RECENT`] when taken in; a path that couldn't be a file's is left out.
     #[serde(default, deserialize_with = "capped::<_, _, MAX_RECENT_READ>", skip_serializing_if = "Vec::is_empty")]
     pub recent: Vec<PathField>,
+    /// **The tabs whose place is withheld from agents on their own account,** by id as `active` and the comparison name them: each was left by following a
+    /// protected document in a synced comparison and the person hasn't moved it by a jump since (`compare::place_withheld`). Kept so a restart doesn't give
+    /// an agent where following left it (the second review, S-4). Read up to [`crate::MAX_TABS`]; an id that names no tab is nothing, and one named twice
+    /// is one. Part of the bare record ([`without_what_deltas_carry`]), so a change to it is written whole, never as a line of places alone. Left out when
+    /// empty, so a record with nothing withheld is byte for byte as before, and an older app ignores it (no new version: a field with a default). Here and
+    /// not in each tab entry, which is at its fields' budget (the third review, D-C).
+    #[serde(default, deserialize_with = "capped::<_, _, { crate::MAX_TABS }>", skip_serializing_if = "Vec::is_empty")]
+    pub withheld_places: Vec<u32>,
 }
 
 /// Most recent files read from a record: past the list's own cap, so a record from a build with a longer one still reads.
@@ -1515,7 +1509,7 @@ mod tests {
             contents_folds: Vec::new(),
             back: Vec::new(),
             forward: Vec::new(),
-            withheld: Withheld::default(),
+            password: false,
         }
     }
 
@@ -1530,6 +1524,7 @@ mod tests {
             tabs,
             comparison: None,
             recent: Vec::new(),
+            withheld_places: Vec::new(),
         }
     }
 

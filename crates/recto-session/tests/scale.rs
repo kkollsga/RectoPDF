@@ -13,12 +13,15 @@ struct Counting;
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 /// Allocations made, freed or not: what a pin on a path's allocations counts.
 static MADE: AtomicUsize = AtomicUsize::new(0);
+/// Bytes asked for, freed or not: what a pin on how much a path takes at its peak counts from above.
+static ASKED: AtomicUsize = AtomicUsize::new(0);
 
 // SAFETY: forwards every call to the system allocator unchanged and only adds a counter.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         LIVE.fetch_add(layout.size(), Ordering::Relaxed);
         MADE.fetch_add(1, Ordering::Relaxed);
+        ASKED.fetch_add(layout.size(), Ordering::Relaxed);
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -174,5 +177,30 @@ fn the_sidebar_allocates_nothing_a_tab_and_the_record_no_more_a_tab_than_it_did(
         record_made[1] <= RECORD_ALLOCATIONS_A_TAB,
         "the record makes {} allocations a tab, from {RECORD_ALLOCATIONS_A_TAB}",
         record_made[1]
+    );
+}
+
+/// Failure (the third review, D-C; rules 1 and 6): a key a tab entry in the record doesn't have is kept whole while the entry is read, as a flattened
+/// field has serde buffer every key it doesn't know, so a forged record grows in memory by many times what it says before any cap is met. A tab entry
+/// with a key of its own holding 1 MiB of numbers is read past: it asks for no more than 64 KiB more than the same record without it.
+#[test]
+fn an_unknown_key_in_a_tab_entry_is_read_past_and_not_kept() {
+    let _alone = MEASURING.lock().unwrap();
+    let (_, session) = live_with(1);
+    let plain = serde_json::to_string(&session.to_record()).unwrap();
+    // A list of half a million numbers, 1 MiB of text: kept, each is a value of serde's own, tens of bytes.
+    let forged = plain.replacen("\"page_count\":", &format!("\"forged\":[{}0],\"page_count\":", "0,".repeat(1 << 19)), 1);
+    assert_ne!(plain, forged, "the forged key went in a tab entry");
+    let asked = |body: &str| {
+        let before = ASKED.load(Ordering::Relaxed);
+        let read: recto_session::record::SessionRecord = serde_json::from_str(body).expect("it reads");
+        let asked = ASKED.load(Ordering::Relaxed) - before;
+        drop(read);
+        asked
+    };
+    let (plain_asked, forged_asked) = (asked(&plain), asked(&forged));
+    assert!(
+        forged_asked <= plain_asked + 64 * 1024,
+        "a tab entry with a 1 MiB key of its own asked for {forged_asked} bytes, against {plain_asked} without it"
     );
 }

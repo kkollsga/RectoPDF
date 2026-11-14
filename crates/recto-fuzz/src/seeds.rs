@@ -345,11 +345,22 @@ fn record_seeds() -> Vec<Vec<u8>> {
             1,
         )
         .into_bytes();
+    // Tabs whose place is withheld from agents (the third review, D-C): one that's there, one named twice and one that names no tab, and a stop on a
+    // trail marked as made from such a place.
+    let withheld = String::from_utf8_lossy(&body)
+        .replacen("\"next_id\"", "\"withheld_places\":[1,1,99999],\"next_id\"", 1)
+        .replacen(
+            "\"page_count\"",
+            "\"back\":[{\"page\":2,\"within\":0.5,\"withheld\":true,\"mark_only\":true}],\"page_count\"",
+            1,
+        )
+        .into_bytes();
     vec![
         record,
         journal,
         body,
         compared,
+        withheld,
         lines,
         br#"{"seq":1,"active":1,"places":[[1,3,{"page":3,"anchor_page":3,"within":0.5,"x":0,"y":10,"document_height":900,"zoom":1.5}]]}"#.to_vec(),
     ]

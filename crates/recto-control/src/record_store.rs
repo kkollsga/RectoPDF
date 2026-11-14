@@ -540,6 +540,7 @@ impl RecordStore {
                 tabs: Vec::new(),
                 comparison: None,
                 recent: Vec::new(),
+                withheld_places: Vec::new(),
             },
         };
         // What the disk has, so what loading the journals changes in it does get written.
@@ -1324,7 +1325,7 @@ fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress
             contents_folds: Vec::new(),
             back: Vec::new(),
             forward: Vec::new(),
-            withheld: Default::default(),
+            password: false,
         });
         taken_tabs.push(true);
         if record.active.is_none() {
@@ -1478,11 +1479,12 @@ mod tests {
                     contents_folds: Vec::new(),
                     back: Vec::new(),
                     forward: Vec::new(),
-                    withheld: Default::default(),
+                    password: false,
                 })
                 .collect(),
             comparison: None,
             recent: Vec::new(),
+            withheld_places: Vec::new(),
         }
     }
 
@@ -1528,6 +1530,39 @@ mod tests {
         drop(store);
         let again = RecordStore::open(&paths, Flavor::App);
         assert_eq!(loaded_record(&again), record);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Failure (the third review, D-C, fail closed): a tab's place withheld from agents is said only by a line of places, which a log that's damaged or
+    /// cut, or one written with a whole record that doesn't have it, loses, so a restart reads the tab as not withheld though it was at the last write.
+    /// The list is in the bare record: setting it beside a move of a place, which alone would be a line, writes the record whole, and taking it away
+    /// does too; read back, it's what was last written.
+    #[test]
+    fn a_change_to_what_is_withheld_is_written_whole() {
+        let (root, paths) = state();
+        let store = RecordStore::open(&paths, Flavor::App);
+        let mut record = sample(3);
+        let whole = store.write_record(&record, &PlaceDelta::default(), false).unwrap();
+        record.tabs[0].page = 3;
+        record.tabs[0].place = Some(place());
+        record.withheld_places = vec![1];
+        let delta = PlaceDelta {
+            places: vec![(1, 3, Some(place()))],
+            active: Some(1),
+            ..PlaceDelta::default()
+        };
+        let wrote = store.write_record(&record, &delta, false).unwrap();
+        assert!(wrote >= whole, "{wrote} bytes, against {whole} for the whole record: a line");
+        drop(store);
+        let again = RecordStore::open(&paths, Flavor::App);
+        assert_eq!(loaded_record(&again).withheld_places, [1]);
+        record.withheld_places.clear();
+        assert!(
+            again.write_record(&record, &PlaceDelta::default(), false).unwrap() >= whole - 16,
+            "let go: whole too"
+        );
+        drop(again);
+        assert!(loaded_record(&RecordStore::open(&paths, Flavor::App)).withheld_places.is_empty());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
