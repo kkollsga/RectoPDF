@@ -121,7 +121,7 @@ pub fn apply_restored(
             inner.host.session.with_session(|session| session.wake_active());
             inner.engine.waking().note_wake(id.0, Instant::now());
         } else {
-            *lock(&inner.life.holding_tab) = Some(id);
+            inner.life.set_holding_tab(Some(id));
             reads.wanted_tab = Some(id);
             reads.start_restored(inner, id, path, stamp);
         }
@@ -209,7 +209,7 @@ pub fn migrate_older_settings(inner: &Inner) {
 /// One pass by one thread over every other tab's file, once after a restore. A stat each, or a lookup by number if that wasn't it. It's gone as soon as it's been round, with nothing kept for a file that's as it was, and it can sit in a file on a dead volume as long as that likes.
 pub fn look_at_other_files(inner: &Arc<Inner>, active: TabId) {
     // Counted, so a test can wait for it to have been round, and not for a time.
-    inner.life.others_looking.fetch_add(1, Ordering::SeqCst);
+    inner.life.looking_at_others();
     let looking = inner;
     let inner = Arc::clone(inner);
     let spawned = std::thread::Builder::new().name("recto-look".into()).stack_size(256 * 1024).spawn(move || {
@@ -228,10 +228,10 @@ pub fn look_at_other_files(inner: &Arc<Inner>, active: TabId) {
         if changed {
             inner.core.push(CoreCall::Reconcile);
         }
-        inner.life.others_looking.fetch_sub(1, Ordering::SeqCst);
+        inner.life.others_looked_at();
     });
     if spawned.is_err() {
-        looking.life.others_looking.fetch_sub(1, Ordering::SeqCst);
+        looking.life.others_looked_at();
     }
 }
 
@@ -446,7 +446,7 @@ impl FileReads {
         if !self.running.insert(what.clone()) {
             return;
         }
-        inner.life.reads_running.fetch_add(1, Ordering::SeqCst);
+        inner.life.read_started();
         let core = Arc::clone(&inner.core);
         let keys = Arc::clone(&inner.keys);
         let spawned = std::thread::Builder::new().name("recto-read".into()).stack_size(1024 * 1024).spawn(move || {
@@ -465,8 +465,8 @@ impl FileReads {
         });
         if spawned.is_err() {
             self.running.remove(&Reading::Restored(id));
-            inner.life.reads_running.fetch_sub(1, Ordering::SeqCst);
-            *lock(&inner.life.holding_tab) = None;
+            inner.life.read_finished();
+            inner.life.set_holding_tab(None);
             inner.host.session.with_session(|session| session.wake_active());
         }
     }
@@ -490,7 +490,7 @@ impl FileReads {
         let saver = Arc::clone(&inner.saver);
         let inner_for_read = Arc::clone(inner);
         let spawned = std::thread::Builder::new().name("recto-read".into()).stack_size(1024 * 1024).spawn(move || {
-            while inner_for_read.life.qa_hold_reads.load(Ordering::SeqCst) {
+            while inner_for_read.life.reads_held() {
                 std::thread::sleep(Duration::from_millis(10));
             }
             let stamp = recto_platform::file_stamp(&path).ok();
@@ -521,7 +521,7 @@ impl FileReads {
         });
         if spawned.is_ok() {
             self.running.insert(what);
-            inner.life.reads_running.fetch_add(1, Ordering::SeqCst);
+            inner.life.read_started();
         } else {
             *lock(&inner.window.open_failure) = Some(TOO_MANY_READS.to_string());
         }
@@ -537,7 +537,7 @@ impl FileReads {
     /// Takes a read in, and says the person's command it was for, if one's to run again now.
     pub fn finished(&mut self, inner: &Arc<Inner>, read: FileRead) -> Option<crate::queue::PersonCommand> {
         self.running.remove(&read.what);
-        inner.life.reads_running.fetch_sub(1, Ordering::SeqCst);
+        inner.life.read_finished();
         let host = &inner.host;
         // Read with a password: the tab's marked before anything read takes its place, so no agent can see it.
         if read.unlocked
@@ -552,7 +552,7 @@ impl FileReads {
                 }
                 host.session.with_session(|session| session.sleeper().give_woken(tab, read.loaded, read.stamp));
                 // The tab it's for may have been left already.
-                if lock(&inner.life.holding_tab).take().is_some() || self.wanted_tab == Some(tab) {
+                if inner.life.take_holding_tab().is_some() || self.wanted_tab == Some(tab) {
                     self.wanted_tab = None;
                     host.session.with_session(|session| {
                         if session.tabs().active() == Some(tab) {
@@ -597,7 +597,7 @@ pub fn restore_patience_over(inner: &Arc<Inner>) {
         inner.carry_out(inner.life.step(crate::lifecycle::Event::PatienceOver { may_be_reopened_by_update }));
     }
     // A tab's file not answering: on to what's on the record. The page says it isn't answering.
-    if lock(&inner.life.holding_tab).take().is_some() {
+    if inner.life.take_holding_tab().is_some() {
         host.session.with_session(|session| session.wake_active());
     }
 }

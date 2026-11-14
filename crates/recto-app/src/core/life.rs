@@ -10,43 +10,44 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// **Where the app is in its life:** launch, the state's coming in, the window going up, the person's last touch, and a hand-off with what it waits for. What step
-/// R1.4 makes a state machine on the clock.
+/// R1.4 makes a state machine on the clock. Its fields are its own (but the launch facts, which are a part with private fields of their own): what other code
+/// counts, notes or asks of them is a method here, each an atomic or a short lock of its own field.
 pub struct Lifecycle {
     /// What the host knows of this copy, for the thread that reads the state, held back while the record's lock hasn't come ([`updates::LaunchFacts`]).
     pub update_facts: updates::LaunchFacts,
     /// What the bridge's own readings go by: the first frame's time, its show patience and the contents' follow. The core's go by [`Self::clock`].
-    pub started: Instant,
+    started: Instant,
     /// The host's clock, a test's fake one: what the idle time and the window's patience for input go by (step R1.4).
-    pub(crate) clock: Arc<dyn crate::clock::Clock>,
+    clock: Arc<dyn crate::clock::Clock>,
     /// **The state's coming in, the window's patience for it, what's shown and a hand-off's freeze, as one state machine** ([`crate::lifecycle::Life`]). The lock is
     /// held only inside [`Self::step`] and the queries beside it, for a copy or a transition of a few bytes: never across carrying out an `Out`, a listener call, a
     /// queue push, another lock or any I/O. So it's taken on the UI thread too, bounded. The time since input isn't in it: what the UI thread sets on every event
     /// is an atomic store ([`Self::last_input_ms`]), passed to what asks as a value.
     pub(super) life: Mutex<crate::lifecycle::Life>,
     /// Reading the file a restored active tab is on. Nothing's drawn until it's looked at, so the wrong thing can't show.
-    pub holding_tab: Mutex<Option<TabId>>,
+    holding_tab: Mutex<Option<TabId>>,
     /// In a QA run, files being read wait here, as they would for a slow disk.
-    pub(crate) qa_hold_reads: AtomicBool,
+    qa_hold_reads: AtomicBool,
     /// Files being read now, which a hand-off waits for.
-    pub(crate) reads_running: AtomicU32,
+    reads_running: AtomicU32,
     /// The one pass over the other tabs' files after a restore, while it's under way: what a test waits for, as nothing else does.
-    pub(crate) others_looking: AtomicU32,
+    others_looking: AtomicU32,
     /// A person's commands on threads of their own (`person::submit`), to the end of what came of them: what a test waits for. The host counts them for a
     /// hand-off as it counts any command.
-    pub(crate) persons_running: AtomicU32,
+    persons_running: AtomicU32,
     /// Sheets and panels over the window now, which a hand-off waits for.
-    pub sheets: AtomicU32,
+    sheets: AtomicU32,
     /// When the user last touched the app, in milliseconds of `clock`. One number, set by what the event monitor calls, with no timer.
-    pub(crate) last_input_ms: AtomicU64,
+    last_input_ms: AtomicU64,
     /// The person has touched the app since the launch: a click, a key, a scroll or a pinch, which moving or resizing the window begins with. Not the pointer only
     /// passing over it.
-    pub(super) touched: AtomicBool,
+    touched: AtomicBool,
     /// What the window's first showing had on it.
-    pub first_shown: Mutex<Option<Value>>,
+    first_shown: Mutex<Option<Value>>,
     /// When the window was last put up, for how long the patience had run when it was shown.
-    pub window_opened_at: Mutex<Option<Instant>>,
+    window_opened_at: Mutex<Option<Instant>>,
     /// Whether the last yes `ready_to_show` gave was the cap's, for the record to say so.
-    pub shown_by_cap: AtomicBool,
+    shown_by_cap: AtomicBool,
 }
 
 // `new` is public for the bridge, which builds the app; launch is no default state.
@@ -198,8 +199,110 @@ impl Lifecycle {
         }));
     }
 
+    /// Seconds since the process started, by the instant the bridge's own readings go by (the contents' follow; not the app's clock).
+    pub fn seconds_since_start(&self) -> f64 {
+        self.started.elapsed().as_secs_f64()
+    }
+
+    /// When the user last touched the app, or was near it, in milliseconds of the clock.
+    pub(crate) fn last_input_ms(&self) -> u64 {
+        self.last_input_ms.load(Ordering::Relaxed)
+    }
+
+    /// Sheets and panels over the window now.
+    pub(crate) fn sheets_open(&self) -> u32 {
+        self.sheets.load(Ordering::SeqCst)
+    }
+
+    /// The window was put up now: what its showing's patience is counted from.
+    pub(crate) fn window_opened(&self) {
+        *lock(&self.window_opened_at) = Some(Instant::now());
+    }
+
+    /// What the window's first showing had on it, read under its short lock.
+    pub(crate) fn first_shown<R>(&self, read: impl FnOnce(&Option<Value>) -> R) -> R {
+        read(&lock(&self.first_shown))
+    }
+
+    /// The restored active tab whose file is being read, if one is: nothing's drawn of it until it's looked at.
+    pub(crate) fn holding_tab(&self) -> Option<TabId> {
+        *lock(&self.holding_tab)
+    }
+
+    /// The restored active tab whose file is being read, or none.
+    pub(crate) fn set_holding_tab(&self, tab: Option<TabId>) {
+        *lock(&self.holding_tab) = tab;
+    }
+
+    /// The tab held for its read, taken: none is held from here.
+    pub(crate) fn take_holding_tab(&self) -> Option<TabId> {
+        lock(&self.holding_tab).take()
+    }
+
+    /// In a QA run, whether files being read wait, as for a slow disk.
+    pub(crate) fn hold_reads(&self, hold: bool) {
+        self.qa_hold_reads.store(hold, Ordering::SeqCst);
+    }
+
+    /// Whether files being read wait now ([`Self::hold_reads`]).
+    pub(crate) fn reads_held(&self) -> bool {
+        self.qa_hold_reads.load(Ordering::SeqCst)
+    }
+
+    /// A file's read started, on a thread of its own: a hand-off waits for it until [`Self::read_finished`].
+    pub(crate) fn read_started(&self) {
+        self.reads_running.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// A file's read is in, or never started.
+    pub(crate) fn read_finished(&self) {
+        self.reads_running.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// Files being read now.
+    pub(crate) fn reads_running(&self) -> u32 {
+        self.reads_running.load(Ordering::SeqCst)
+    }
+
+    /// The one pass over the other tabs' files after a restore has started, on a thread of its own, until [`Self::others_looked_at`].
+    pub(crate) fn looking_at_others(&self) {
+        self.others_looking.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// That pass has been round, or never started.
+    pub(crate) fn others_looked_at(&self) {
+        self.others_looking.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// Whether that pass is under way: what a test's settle waits for, as nothing else does.
+    #[cfg(any(test, feature = "testkit"))]
+    pub(crate) fn others_looking(&self) -> bool {
+        self.others_looking.load(Ordering::SeqCst) > 0
+    }
+
+    /// **A person's command counted as running** until the guard's dropped, however its thread ends, a panic included ([`PersonRunning`]).
+    pub(crate) fn person_running(self: &Arc<Self>) -> PersonRunning {
+        self.persons_running.fetch_add(1, Ordering::SeqCst);
+        PersonRunning(Arc::clone(self))
+    }
+
+    /// A person's commands running on threads of their own now.
+    pub(crate) fn persons_running(&self) -> u32 {
+        self.persons_running.load(Ordering::SeqCst)
+    }
+
     /// Whether the host's been told to quit for a hand-off that's written.
     pub(crate) fn told_to_quit(&self) -> bool {
         self.life().hand_off() == crate::lifecycle::HandOff::Quitting
+    }
+}
+
+/// **A person's command counted as running, until this is dropped** ([`Lifecycle::person_running`]): as its thread ends, however it ends. A command that panicked
+/// was counted running for good, so a hand-off waited on it to the end of its patience (review, 2026-11-13).
+pub(crate) struct PersonRunning(Arc<Lifecycle>);
+
+impl Drop for PersonRunning {
+    fn drop(&mut self) {
+        self.0.persons_running.fetch_sub(1, Ordering::SeqCst);
     }
 }

@@ -254,13 +254,13 @@ pub fn hand_off_check(host: &AppHost) -> HandOffCheck {
 impl Inner {
     pub fn hand_off_check(&self) -> HandOffCheck {
         let busy = hand_off_check_parts(
-            self.life.reads_running.load(Ordering::SeqCst),
-            self.life.sheets.load(Ordering::SeqCst),
+            self.life.reads_running(),
+            self.life.sheets_open(),
             self.host.running.load(Ordering::SeqCst),
             self.tools.save_ui().running.load(Ordering::SeqCst),
             self.tools.printing().busy(),
         );
-        let last = self.life.last_input_ms.load(Ordering::Relaxed);
+        let last = self.life.last_input_ms();
         let now = self.life.now_ms();
         HandOffCheck {
             safe: busy.is_empty(),
@@ -343,7 +343,8 @@ impl Inner {
     /// What QA reads of how a restore and the record went, none of it what the user sees.
     pub fn record_report(&self) -> Value {
         let (writes, appends) = self.saver.store.writes();
-        json!({ "first_shown": *lock(&self.life.first_shown), "remade": self.life.remade(), "sleep": self.sleeper.report(), "writes": writes, "appends": appends, "wrote_bytes": self.saver.store.wrote_bytes(), "failed": self.saver.has_failed() })
+        // Built under the first showing's short lock, as it always was.
+        self.life.first_shown(|first_shown| json!({ "first_shown": first_shown, "remade": self.life.remade(), "sleep": self.sleeper.report(), "writes": writes, "appends": appends, "wrote_bytes": self.saver.store.wrote_bytes(), "failed": self.saver.has_failed() }))
     }
 
     /// The person touched the app: the life notes it ([`Lifecycle::note_input`]), and a notice they've moved on from goes.

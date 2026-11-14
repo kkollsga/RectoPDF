@@ -63,7 +63,7 @@ impl Inner {
     pub fn can_save(&self) -> bool {
         let reader = lock(&self.published).reader.clone();
         // Not under a sheet: the close prompt's own Save is how to save then.
-        !reader.home && reader.edited && reader.save_enabled && self.life.sheets.load(Ordering::SeqCst) == 0
+        !reader.home && reader.edited && reader.save_enabled && self.life.sheets_open() == 0
     }
 
     /// The menu bar as it stands, as recto-app's lists: what `AppCore::menu_bar` converts, and the palette lists.

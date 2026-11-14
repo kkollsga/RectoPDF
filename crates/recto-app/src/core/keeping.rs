@@ -228,7 +228,7 @@ pub(super) fn try_back(inner: &Arc<Inner>, reads: &FileReads, back: TryBack) {
 /// Something under way that a late try's restore would replace or lose: a person's command on its own thread (its change isn't in to be looked at), or a
 /// hand-off.
 fn busy(life: &Lifecycle, host: &AppHost) -> bool {
-    life.persons_running.load(Ordering::SeqCst) > 0 || host.handing_off.load(Ordering::SeqCst)
+    life.persons_running() > 0 || host.handing_off.load(Ordering::SeqCst)
 }
 
 /// **Whether an agent's command is answered while keeping the record is settling** (trying or restoring, [`crate::lifecycle::keeping::Keeping::refuses_agents_changes`]):

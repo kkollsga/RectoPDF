@@ -571,11 +571,11 @@ impl HeadlessApp {
         if crate::lock(&inner.tools.prompts().passwords).trying() {
             busy.push("a password being tried".to_string());
         }
-        let reads = inner.life.reads_running.load(Ordering::SeqCst);
+        let reads = inner.life.reads_running();
         if reads > 0 {
             busy.push(format!("{reads} file(s) being read"));
         }
-        let persons = inner.life.persons_running.load(Ordering::SeqCst);
+        let persons = inner.life.persons_running();
         if persons > 0 {
             busy.push(format!("{persons} of the person's command(s) on a thread of their own"));
         }
@@ -584,7 +584,7 @@ impl HeadlessApp {
         if saves > 0 {
             busy.push(format!("{saves} of the window's save(s)"));
         }
-        if inner.life.others_looking.load(Ordering::SeqCst) > 0 {
+        if inner.life.others_looking() {
             busy.push("the other tabs' files being looked at".to_string());
         }
         let looks = inner.sleeper.looks_running();

@@ -324,7 +324,7 @@ impl Inner {
     /// It's come due, on the session thread. Whatever's due goes dormant, unless a file's being read, when it looks again shortly.
     /// **Real time:** which are due is the session's, by its own clock (`seconds_now`).
     pub fn dormancy_due(&self) -> Option<Vec<TabId>> {
-        let busy = self.life.reads_running.load(Ordering::SeqCst) > 0 || self.core.frozen.load(Ordering::SeqCst);
+        let busy = self.life.reads_running() > 0 || self.core.frozen.load(Ordering::SeqCst);
         self.sleeper.step(Event::DueNow { busy })?;
         let after = self.sleeper.after_seconds();
         Some(self.host.session.with_session(|session| session.dormant().due(after)))

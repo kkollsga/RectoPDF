@@ -853,18 +853,17 @@ fn eight_agents_looping_changes_and_saves_dont_stop_the_tries() {
 /// keeps the record and the saved session comes back.
 #[test]
 fn a_try_back_with_a_persons_command_under_way_gives_the_lock_back_for_the_next() {
-    use std::sync::atomic::Ordering;
     let disk = a_saved_session();
     let before = the_copy_before(&disk);
     let app = disk.builder().another_keeps().hold(&[Seam::RecordLock]).start();
     drop(before);
     app.advance(TRY_EVERY_MS);
     app.wait_until("the try held with the lock", || app.waiting(Seam::RecordLock) > 0);
-    app.core().life.persons_running.fetch_add(1, Ordering::SeqCst);
+    let person = app.core().life.person_running();
     app.let_through(Seam::RecordLock, 1);
     app.wait_until("given back", || tries(&app) == Some(1) && !app.core().saver.store.holds_the_record());
     assert_eq!(app.reader().note, None, "nothing said");
-    app.core().life.persons_running.fetch_sub(1, Ordering::SeqCst);
+    drop(person);
     recto_platform::slow::gate::open(Seam::RecordLock);
     app.advance(TRY_EVERY_MS);
     app.wait_until("the record kept at the next try", || app.core().life.keeping() == Keeping::Keeps);

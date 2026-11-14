@@ -29,15 +29,15 @@ fn the_session_thread_answers_while_a_persons_command_waits_for_its_read() {
     ];
     for (what, line, done) in cases {
         assert!(!done(&app), "{what}: not done before");
-        inner.life.qa_hold_reads.store(true, Ordering::SeqCst);
+        inner.life.hold_reads(true);
         app.person(line);
-        app.wait_until("the read to be under way", || inner.life.reads_running.load(Ordering::SeqCst) > 0);
+        app.wait_until("the read to be under way", || inner.life.reads_running() > 0);
         let paper = if app.reader().paper == "dark" { "white" } else { "dark" };
         app.person(&format!(r#"{{"cmd":"view","paper":"{paper}"}}"#));
         app.wait_until("a later call taken while the read is held", || app.reader().paper == paper);
-        assert!(inner.life.reads_running.load(Ordering::SeqCst) > 0, "{what}: with the read still held");
+        assert!(inner.life.reads_running() > 0, "{what}: with the read still held");
         assert!(!done(&app), "{what}: nothing done before the read's in");
-        inner.life.qa_hold_reads.store(false, Ordering::SeqCst);
+        inner.life.hold_reads(false);
         app.settle();
         assert!(done(&app), "{what}: done once it's in");
     }

@@ -717,7 +717,7 @@ impl AppCore {
 
     /// The reader scrolled the contents themselves.
     pub fn contents_user_scrolled(&self) {
-        self.inner.window.contents_user_scrolled(self.inner.life.started.elapsed().as_secs_f64());
+        self.inner.window.contents_user_scrolled(self.inner.life.seconds_since_start());
     }
 
     /// The pointer came into the contents or left them.
@@ -728,7 +728,7 @@ impl AppCore {
     /// The place being read is now on this row. What to do about it.
     pub fn contents_reached(&self, row: Option<u32>, scroll_y: f64, height: f64, reduce_motion: bool) -> ContentsMove {
         let rows = lock(&self.inner.published).sidebar.contents_count;
-        let now = self.inner.life.started.elapsed().as_secs_f64();
+        let now = self.inner.life.seconds_since_start();
         match self
             .inner
             .window

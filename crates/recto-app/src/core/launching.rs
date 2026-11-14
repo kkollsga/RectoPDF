@@ -35,7 +35,7 @@ impl Inner {
         let active = self.host.session.try_with_session(|session| session.tabs().active().is_some());
         showing::PageChecks {
             state_read: self.life.state_read(),
-            holding_tab: lock(&self.life.holding_tab).is_some(),
+            holding_tab: self.life.holding_tab().is_some(),
             session_free: active.is_some(),
             has_tab: active.unwrap_or(false),
             on_place: self.engine.waking().is_on_place(),
@@ -45,7 +45,7 @@ impl Inner {
 
     /// The window opened: its page views have somewhere to draw again, what was selected on the window it replaced comes back, and the contents go back to where they were.
     pub fn window_opened(&self) {
-        *lock(&self.life.window_opened_at) = Some(Instant::now());
+        self.life.window_opened();
         let engines = self.panes.engines(&self.engine);
         for engine in &engines {
             engine.window_opened();
