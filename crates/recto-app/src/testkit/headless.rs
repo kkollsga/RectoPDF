@@ -677,6 +677,13 @@ impl HeadlessApp {
         &self.clock
     }
 
+    /// **The next of the app's steps named `at` held there** ([`crate::testkit::holds`]): what tells it's held, and what lets it go (dropped, it goes too).
+    #[cfg(test)]
+    #[must_use]
+    pub fn hold_next(&self, at: &'static str) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        self.core().core.holds.arm(at)
+    }
+
     /// Waits for `what` to be true, looking every few milliseconds.
     ///
     /// # Panics

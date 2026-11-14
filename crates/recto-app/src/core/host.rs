@@ -53,7 +53,7 @@ impl AppHost {
             }
         }
         #[cfg(test)]
-        super::person::held_at(command.tag());
+        self.core.holds.at(command.tag());
         let result = self.run_counted(actor, command, events);
         if !asks_only {
             self.command_ended();

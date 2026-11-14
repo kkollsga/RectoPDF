@@ -60,7 +60,7 @@ impl SaveSupport for AppSaving {
     fn step(&self, _tab: TabId, step: SaveStep) {
         #[cfg(test)]
         if matches!(step, SaveStep::Writing) {
-            super::person::held_at("save_writing");
+            self.core.holds.at("save_writing");
         }
         let value = match step {
             SaveStep::Checking => 1,

@@ -517,7 +517,7 @@ fn a_turn_asked_after_a_print_isnt_printed() {
     let app = disk.start();
     app.open(&doc);
     app.settle();
-    let (held, go) = crate::core::person::hold("print");
+    let (held, go) = app.hold_next("print");
     answer(&app, ALL);
     held.recv_timeout(WAIT_LIMIT).expect("the print held before it reads its pages");
     app.act(UiAction::Menu { id: "rotate.right".into() });

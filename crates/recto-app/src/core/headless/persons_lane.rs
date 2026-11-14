@@ -4,7 +4,6 @@
 
 use crate::core::controls::UiAction;
 use crate::core::highlight::{HIGHLIGHT_ID, REMOVE_ID};
-use crate::core::person::hold;
 use crate::menus::HostAction;
 use crate::testkit::headless::{Disk, HeadlessApp, WAIT_LIMIT};
 use recto_agent::Level;
@@ -60,7 +59,7 @@ fn with_a_step_before() -> HeadlessApp {
 /// **The person's Highlight, held while its pages are read,** with `then` done meanwhile, then let go and settled.
 fn while_a_highlight_is_read(app: &HeadlessApp, id: &str, tag: &'static str, then: impl FnOnce()) {
     selects(app, (0, 0), (0, 5));
-    let (held, go) = hold(tag);
+    let (held, go) = app.hold_next(tag);
     menu(app, id);
     held.recv_timeout(WAIT_LIMIT).expect("the highlight held as its pages are read");
     then();
@@ -122,7 +121,7 @@ fn an_undo_chosen_while_a_refused_highlight_landed_does_nothing() {
     let app = disk.start();
     app.open(&doc);
     selects(&app, (0, 0), (0, 0));
-    let (held, go) = hold("highlight");
+    let (held, go) = app.hold_next("highlight");
     menu(&app, HIGHLIGHT_ID);
     held.recv_timeout(WAIT_LIMIT).expect("held");
     menu(&app, "edit.undo");
@@ -217,7 +216,7 @@ fn every_order_asked_is_the_order_done() {
 fn an_undo_after_a_refused_highlight_undoes_the_step_before() {
     let app = with_a_step_before();
     selects(&app, (0, 0), (0, 0));
-    let (held, go) = hold("highlight");
+    let (held, go) = app.hold_next("highlight");
     menu(&app, HIGHLIGHT_ID);
     held.recv_timeout(WAIT_LIMIT).expect("held");
     menu(&app, "edit.undo");
@@ -256,7 +255,7 @@ fn a_save_being_written_holds_up_no_edit_in_another_tab() {
     app.open(&a);
     menu(&app, "rotate.right");
     app.settle();
-    let (held, go) = hold("save_writing");
+    let (held, go) = app.hold_next("save_writing");
     menu(&app, "file.save");
     held.recv_timeout(WAIT_LIMIT).expect("the save held as it writes");
     app.act(UiAction::Open { path: b.display().to_string() });
@@ -371,7 +370,7 @@ fn a_close_asks_while_an_edit_of_its_tab_is_landing() {
     let tab_of = |app: &HeadlessApp| app.reader().shown_tab;
     let first = tab_of(&app);
     selects(&app, (0, 0), (0, 5));
-    let (held, go) = hold("highlight");
+    let (held, go) = app.hold_next("highlight");
     menu(&app, HIGHLIGHT_ID);
     held.recv_timeout(WAIT_LIMIT).expect("held");
     assert_eq!(menu(&app, "file.close"), HostAction::ConfirmClose, "asked, its highlight still landing");
@@ -394,7 +393,7 @@ fn a_close_asks_only_for_an_edit_that_lands_later() {
     let app = disk.start();
     app.open(&doc);
     let out = app.disk().files().join("printed.pdf");
-    let (held, go) = hold("print");
+    let (held, go) = app.hold_next("print");
     app.person(&format!(r#"{{"cmd":"print","to_pdf":{}}}"#, Value::from(out.display().to_string())));
     held.recv_timeout(WAIT_LIMIT).expect("the print held before it reads its pages");
     assert_eq!(menu(&app, "file.close"), HostAction::None, "Print then ⌘W: closed without asking, as on main");
@@ -415,7 +414,7 @@ fn close_prompt_answered(choice: crate::saving::CloseChoice, refused: bool) -> (
     app.open(&doc);
     let tab = app.reader().shown_tab;
     selects(&app, (0, 0), (0, if refused { 0 } else { 5 }));
-    let (held, go) = hold("highlight");
+    let (held, go) = app.hold_next("highlight");
     menu(&app, HIGHLIGHT_ID);
     held.recv_timeout(WAIT_LIMIT).expect("held");
     assert_eq!(menu(&app, "file.close"), HostAction::ConfirmClose, "asked: the highlight is landing");
@@ -492,7 +491,7 @@ fn a_quit_with_edits_waiting_runs_them_before_it_writes() {
 /// first go, and the app, quitting.
 fn two_highlights_and_an_undo_parked_and_a_quit(app: &HeadlessApp) -> std::sync::mpsc::Sender<()> {
     selects(app, (0, 0), (0, 5));
-    let (held, go) = hold("highlight");
+    let (held, go) = app.hold_next("highlight");
     menu(app, HIGHLIGHT_ID);
     held.recv_timeout(WAIT_LIMIT).expect("the first highlight held");
     selects(app, (1, 0), (1, 5));

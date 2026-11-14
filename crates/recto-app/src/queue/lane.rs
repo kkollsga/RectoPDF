@@ -249,6 +249,9 @@ pub struct HeldHere(());
 #[must_use]
 pub fn hold_here(turn: Option<Turn>) -> HeldHere {
     let before = HERE.with(|here| here.replace(turn));
+    // A thread runs one of the person's commands at a time: a turn already held here would be a command started inside another's, whose turn this
+    // would pass early.
+    debug_assert!(before.is_none(), "a person's turn is already held on this thread");
     drop(before);
     HeldHere(())
 }

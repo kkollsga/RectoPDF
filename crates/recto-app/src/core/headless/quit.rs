@@ -200,7 +200,7 @@ fn quit_answers(app: &HeadlessApp) -> usize {
 fn a_highlight_in_flight(app: &HeadlessApp, doc: &std::path::Path) -> std::sync::mpsc::Sender<()> {
     app.open(doc);
     app.core().panes.reading_engine(&app.core().engine).selection().restore((0, 0), (0, 5));
-    let (held, go) = crate::core::person::hold("highlight");
+    let (held, go) = app.hold_next("highlight");
     app.act(crate::core::controls::UiAction::Menu {
         id: crate::core::highlight::HIGHLIGHT_ID.into(),
     });
@@ -290,7 +290,7 @@ fn an_agents_edit_landing_after_the_quit_is_asked_comes_back() {
     let doc = disk.pdf("a.pdf", 2);
     let app = disk.start();
     app.open(&doc);
-    let (held, go) = crate::core::person::hold("highlight");
+    let (held, go) = app.hold_next("highlight");
     std::thread::scope(|scope| {
         let agent = std::thread::Builder::new()
             .name("recto-test-agent".into())

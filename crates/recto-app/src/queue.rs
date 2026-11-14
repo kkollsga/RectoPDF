@@ -281,6 +281,10 @@ pub struct CoreQueue {
     abandoned: AtomicBool,
     /// The person's lane: their edits in the order they asked for them ([`lane`]).
     lane: lane::Lane,
+    /// A test's hold on the next of the app's steps with a name ([`crate::testkit::holds`]): on the queue every step that's held can reach, so it's the
+    /// app's and not the process's.
+    #[cfg(test)]
+    pub(crate) holds: crate::testkit::holds::Holds,
 }
 
 impl CoreQueue {
