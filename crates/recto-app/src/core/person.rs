@@ -98,10 +98,12 @@ pub(super) fn on_its_own_thread(command: Command, counted: Running, turn: Option
     let kept = command.clone();
     let spawned = spawn(move || {
         let inner = Arc::clone(&counted.inner);
+        // Holding a turn in the person's lane, it was asked before any freeze there is now, and goes through it.
+        let origin = if turn.is_some() { Origin::TurnCame } else { Origin::Input };
         let here = crate::queue::lane::hold_here(turn);
         let mut events = Vec::new();
         sent(&inner.serving, &command);
-        let result = recto_control::host::Host::run(&*inner.host, Actor::Person, &command, &mut events);
+        let result = inner.host.run_as(Actor::Person, &command, &mut events, origin);
         answered(&AnswerParts::of(&inner), &command, Origin::Input, &result);
         inner.core.push(CoreCall::Events(events));
         // Its turn passes once what it did is told, so watchers hear of it before the person's next edit; and before its count goes, so the app's

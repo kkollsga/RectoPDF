@@ -125,6 +125,17 @@ pub enum Origin {
 }
 
 impl Origin {
+    /// **Whether a hand-off's or a quit's freeze holds it back:** what the person just did, and only that. The end of something under way, and what was
+    /// asked before the freeze and has its turn now, go through, in the order asked (review of the lane, D4 and D5): the session thread's queue asks this
+    /// of a person's command ([`CoreCall::is_user_action`]), and the app's host of one on a thread of its own.
+    #[must_use]
+    pub fn held_back_by_a_freeze(self) -> bool {
+        match self {
+            Self::Input => true,
+            Self::Finishing | Self::TurnCame => false,
+        }
+    }
+
     /// Whether it's what the person did, as their words and the window's own steps before it go by: the person's input, now or on its turn.
     #[must_use]
     pub fn is_persons_input(self) -> bool {
@@ -140,11 +151,7 @@ impl CoreCall {
     pub fn is_user_action(&self) -> bool {
         match self {
             Self::Find(call) => call.is_user_action(),
-            // Its turn come in the person's lane, it was asked before the freeze: let through, in order ([`Origin::TurnCame`]).
-            Self::Run(run) => match run.origin {
-                Origin::Input => true,
-                Origin::Finishing | Origin::TurnCame => false,
-            },
+            Self::Run(run) => run.origin.held_back_by_a_freeze(),
             // A password tried on its own thread: dropped, its prompt would wait for good. Its file's read as a `Read` is.
             Self::Unlocked(..)
             | Self::Reconcile
@@ -350,7 +357,7 @@ impl CoreQueue {
         drop(calls);
         // Outside the lock: a person's turn among them passes as it's dropped, and may start the next, which the abandoned queue then drops.
         drop(taken);
-        self.lane.clear();
+        self.lane.drop_parked();
         self.reconcile_queued.store(false, Ordering::SeqCst);
         self.end();
     }

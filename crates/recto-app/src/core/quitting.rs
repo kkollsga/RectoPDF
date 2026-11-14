@@ -84,6 +84,8 @@ impl Inner {
                     }
                     let left = until.saturating_sub(inner.life.now_ms());
                     if left == 0 {
+                        // What's still parked goes together, so no later edit of the person's is had without an earlier one (review of the lane, D4).
+                        inner.core.lane().drop_parked();
                         break;
                     }
                     inner.core.wait_next_park(parks, Duration::from_millis(left));

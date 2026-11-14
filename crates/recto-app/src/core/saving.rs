@@ -116,7 +116,6 @@ pub fn start_save(inner: &Arc<super::Inner>, tab: TabId, out: Option<std::path::
 /// The save of the tab the action was for, whichever is showing by now. A Save As's sheet has already asked whether to replace a file that's there, so one
 /// that's there was agreed to; it's looked at here, off the UI thread (review).
 fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, close_after: bool, answered: std::time::SystemTime) {
-    use recto_control::host::Host;
     let replace = match out.as_deref().map(|out| replace_answered(out, answered)) {
         Some(Err(())) => {
             inner.tools.save_ui().set_problem(Some(app::appeared_after_answer()));
@@ -132,7 +131,11 @@ fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
     });
     let mut events = Vec::new();
     super::person::sent(&inner.serving, &command);
-    match inner.host.run(recto_agent::Actor::Person, &command, &mut events) {
+    // It holds its turn in the person's lane, so it was asked before any freeze there is now, and goes through it.
+    match inner
+        .host
+        .run_as(recto_agent::Actor::Person, &command, &mut events, crate::queue::Origin::TurnCame)
+    {
         Ok(data) => {
             let notes: Vec<&str> = data["notes"]
                 .as_array()

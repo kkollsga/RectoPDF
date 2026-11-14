@@ -199,9 +199,10 @@ impl Lane {
         }
     }
 
-    /// **The queue's end** (a headless app's kill): what's parked goes, with what it holds (the app's count of it), and nothing more starts, as the queue
-    /// takes nothing more.
-    pub(super) fn clear(&self) {
+    /// **What's parked goes, all of it together,** with what it holds (the app's count of it): at the queue's end (a headless app's kill), as the queue
+    /// takes nothing more; and as a quit's patience ends with it still parked, so no later edit is had without an earlier one (review of the lane, D4).
+    /// What's under way goes on; what was parked behind it never starts.
+    pub fn drop_parked(&self) {
         let parked = {
             let mut state = lock(&self.state);
             let parked = std::mem::take(&mut state.parked);

@@ -487,3 +487,61 @@ fn a_quit_with_edits_waiting_runs_them_before_it_writes() {
     );
     drop(app.quit());
 }
+
+/// The highlight held as the person's first, with a second highlight (on page 2) and a ⌘Z asked behind it, both parked, and a quit asked: what lets the
+/// first go, and the app, quitting.
+fn two_highlights_and_an_undo_parked_and_a_quit(app: &HeadlessApp) -> std::sync::mpsc::Sender<()> {
+    selects(app, (0, 0), (0, 5));
+    let (held, go) = hold("highlight");
+    menu(app, HIGHLIGHT_ID);
+    held.recv_timeout(WAIT_LIMIT).expect("the first highlight held");
+    selects(app, (1, 0), (1, 5));
+    menu(app, HIGHLIGHT_ID);
+    menu(app, "edit.undo");
+    flush(app);
+    assert_eq!(app.core().core.lane().parked(), 2, "the second highlight and the undo wait their turn");
+    app.core().quit_requested();
+    go
+}
+
+fn quit_answers(app: &HeadlessApp) -> usize {
+    app.heard().iter().filter(|heard| matches!(heard, crate::testkit::Heard::QuitAnswer(_))).count()
+}
+
+/// **Failure (review of the lane, D4): a quit with edits parked ran a later one without an earlier one.** After the freeze the parked highlight was
+/// refused as busy, silently, and the ⌘Z parked behind it ran and undid the first highlight: H1, H2, ⌘Z, ⌘Q came back with neither. Everything parked
+/// was asked before the quit and passes the freeze in order: at the next launch H1 is there and H2 undone, to redo.
+#[test]
+fn a_quit_runs_every_edit_parked_in_order() {
+    let app = with_a_step_before();
+    let go = two_highlights_and_an_undo_parked_and_a_quit(&app);
+    drop(go);
+    app.wait_until("the quit's answer", || quit_answers(&app) == 1);
+    let disk = app.quit_anyway();
+    let app = disk.start();
+    app.settle();
+    assert_eq!(highlights(&app), (1, 0), "the first highlight there, the second undone");
+    assert_eq!(undo_redo(&app), (true, true), "the second to redo");
+    drop(app.quit());
+}
+
+/// Failure (D4): past the quit's patience, some of what's parked runs after the record's written and some doesn't, so a later edit can be had without
+/// an earlier one. Everything still parked is dropped together as the patience ends: nothing is undone at the next launch.
+#[test]
+fn past_the_quits_patience_whats_parked_is_dropped_together() {
+    let app = with_a_step_before();
+    let go = two_highlights_and_an_undo_parked_and_a_quit(&app);
+    app.wait_until("the quit's answer, past its patience", || {
+        app.advance(crate::listener::QUIT_PATIENCE_MS);
+        quit_answers(&app) == 1
+    });
+    assert_eq!(app.core().core.lane().parked(), 0, "what was parked is dropped");
+    drop(go);
+    app.wait_until("the first highlight's thread done", || app.core().life.persons_running() == 0);
+    let disk = app.quit_anyway();
+    let app = disk.start();
+    app.settle();
+    assert!(highlights(&app).0 <= 1, "at most the first");
+    assert!(!undo_redo(&app).1, "nothing undone: the undo went with the highlight asked before it");
+    drop(app.quit());
+}
