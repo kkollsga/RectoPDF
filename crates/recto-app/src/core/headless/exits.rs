@@ -187,7 +187,7 @@ fn every_edit_survives_the_window_closing() {
     let before = edits(&app);
     app.core().window_closed();
     app.settle();
-    assert!(crate::lock(&app.core().window.app).window_closed);
+    assert!(app.core().window.is_closed());
     assert_eq!(edits(&app), before, "with the window closed");
     app.core().window_opened();
     app.settle();

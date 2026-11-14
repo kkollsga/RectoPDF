@@ -10,11 +10,11 @@ use recto_platform::slow::Seam;
 /// being read (the selection put back on the tab it was on).
 fn window_state(app: &HeadlessApp) -> String {
     let inner = app.core();
-    let state = format!("{:?}", *crate::lock(&inner.window.app));
+    let state = format!("{:?}", *inner.window.state_for_tests());
     let selection = inner.panes.reading_engine(&inner.engine).selection().hot();
     format!(
         "{state} | dark={} panel={} following={} moving={} selection={selection:?} notice={:?}",
-        inner.window.dark.load(std::sync::atomic::Ordering::SeqCst),
+        inner.window.is_dark(),
         inner.window.panel_open(),
         inner.window.contents_following(),
         inner.window.contents_moving(),

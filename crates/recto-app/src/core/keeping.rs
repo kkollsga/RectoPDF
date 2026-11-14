@@ -84,7 +84,7 @@ impl<'a> Desk<'a> {
     fn as_done(&self, window: &Window, reads: &FileReads) -> u64 {
         let mut record = self.host.session.with_session(|session| session.to_record());
         record.view.sidebar_hidden = false;
-        let appearance = lock(&window.app).appearance;
+        let appearance = window.appearance();
         let mut opening: Vec<&std::path::Path> = reads
             .running
             .iter()
@@ -162,7 +162,7 @@ impl<'a> Desk<'a> {
             let now_as = self.as_done(window, reads);
             let _ = self.step(KeepingEvent::Looked { now_as });
         }
-        let appearance_then = lock(&window.app).appearance;
+        let appearance_then = window.appearance();
         // Decided with nothing of the person's under way, looked at under the life's lock as `person::submit` looks the other way round.
         let _ = self.carried(Some((&back.verdict, appearance_then)), |carrier| {
             self.life.tried(back.got, || busy(self.life, self.host), carrier);

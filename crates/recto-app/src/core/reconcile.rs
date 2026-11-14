@@ -91,15 +91,7 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
         );
         synced.spread = Some(shown.spread);
         // What was selected comes back on the tab it was on, once.
-        let selection = {
-            let mut app = lock(&inner.window.app);
-            if app.selection_resume.as_ref().is_some_and(|(tab, _)| *tab == id) {
-                app.selection_resume.take().map(|(_, selection)| selection)
-            } else {
-                None
-            }
-        };
-        if let Some(selection) = selection {
+        if let Some(selection) = inner.window.take_selection_resume(id) {
             engine
                 .selection()
                 .restore((selection.from_page, selection.from_char), (selection.to_page, selection.to_char));
@@ -150,7 +142,7 @@ fn send_jump(engine: &Engine, shown: &PaneSnapshot) -> Option<(TabId, Stop, u64)
 fn show_in_panes(inner: &Inner, synced: &mut Synced, panes: &[PaneSnapshot], paper: PaperKind) -> bool {
     let count = panes.len().max(1);
     if synced.count != count {
-        let window_open = !lock(&inner.window.app).window_closed;
+        let window_open = !inner.window.is_closed();
         inner.panes.set_count(&inner.engine, count, paper, window_open);
         synced.count = count;
     }
@@ -207,7 +199,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         facts
     });
     // The paper first, so what's asked for next is drawn right.
-    let look = crate::paper_look(facts.chosen_paper, inner.window.dark.load(Ordering::SeqCst));
+    let look = crate::paper_look(facts.chosen_paper, inner.window.is_dark());
     let paper = look.kind;
     if synced.paper != Some(paper) {
         synced.paper = Some(paper);
@@ -228,13 +220,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     // The contents follow the tab being read, whichever pane it's in.
     let holding_now = inner.life.holding_tab();
     if synced.active != active && active.is_some() && holding_now != active {
-        let mut follow = lock(&inner.window.contents_follow);
-        follow.new_contents();
-        let mut app = lock(&inner.window.app);
-        match app.contents_resume.take() {
-            Some((tab, scroll)) if Some(tab) == active => follow.resume_at(scroll.y, scroll.following),
-            _ => {}
-        }
+        inner.window.follow_tab(active);
         synced.active = active;
     }
     let panes_changed = show_in_panes(inner, synced, &facts.panes, paper);
@@ -331,7 +317,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             pane_views: crate::pane_views(&facts.panes, active, comparing, &engine_notes),
             holding: inner.life.holding_tab().is_some(),
             first_pane_empty: synced.panes.first().is_none_or(|pane| pane.tab.is_none()),
-            sidebar_width: lock(&inner.window.app).sidebar_width,
+            sidebar_width: inner.window.sidebar_width(),
             save: crate::SaveFacts {
                 off: save.off,
                 note: save.note,

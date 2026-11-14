@@ -5,7 +5,7 @@
 //! What the window does around a person's command, beyond the command, is each feature's, one line each in the lists below: before it runs ([`BEFORE`]), and
 //! once it has ([`ANSWERED`]), as the words a refusal is said in, a password asked for or a list kept at once.
 
-use super::{FileReads, Inner, lock};
+use super::{FileReads, Inner};
 use crate::queue::{CoreCall, Origin, PersonCommand, Reading};
 use recto_agent::Code;
 use recto_agent::Runs;
@@ -81,7 +81,7 @@ impl Running {
 #[allow(unused_variables)]
 pub fn sent(serving: &super::Serving, command: &Command) {
     #[cfg(any(test, feature = "testkit"))]
-    if let Some(sent) = lock(&serving.heard).sent.as_mut() {
+    if let Some(sent) = crate::lock(&serving.heard).sent.as_mut() {
         sent.push(command.clone());
     }
 }

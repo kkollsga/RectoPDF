@@ -139,7 +139,7 @@ const STEPS: &[(&str, Step)] = &[
         {
             // What the state said, taken in after this window went up: its frame, width and look are the new window's; what the host chose of what's out
             // of sight (hidden, closed, the Dock) since is kept.
-            let mut app = lock(&inner.window.app);
+            let mut app = inner.window.state_for_tests();
             let mut state = app.clone();
             state.sidebar_width = 333.0;
             state.appearance = recto_session::record::Appearance::Dark;
@@ -170,12 +170,12 @@ fn state(inner: &Inner) -> std::collections::BTreeMap<String, String> {
         &serde_json::to_value(inner.window.app_record(|| lock(&inner.host.notice).clone())).expect("the record as JSON"),
         &mut state,
     );
-    let app = lock(&inner.window.app);
+    let app = inner.window.state_for_tests();
     for (name, value) in [
         ("decided.hidden", app.hidden_decided),
         ("decided.minimised", app.minimised_decided),
         ("decided.window", app.window_decided),
-        ("dark", inner.window.dark.load(std::sync::atomic::Ordering::SeqCst)),
+        ("dark", inner.window.is_dark()),
     ] {
         state.insert(name.to_string(), value.to_string());
     }

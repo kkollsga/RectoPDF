@@ -107,21 +107,21 @@ fn what_the_apps_state_lets_other_code_reach_is_listed() {
 /// prompts' (the bridge answers a sheet; the queue of passwords and the link's sheet are the app's). Each change is deliberate: see [`what_the_apps_state_lets_other_code_reach_is_listed`].
 const SURFACE: &str = r"
 AppState (pub struct, derives Clone, Debug)
-AppState.pub app_hidden: bool
-AppState.pub appearance: Appearance
-AppState.pub contents_resume: Option<(TabId, ContentsScroll)>
-AppState.pub contents_y: Option<f64>
-AppState.pub focus: FocusRecord
-AppState.pub from_state: Option<Box<AppState>>
-AppState.pub hidden_decided: bool
-AppState.pub minimised_decided: bool
-AppState.pub selection_resume: Option<(TabId, record::Selection)>
-AppState.pub selections_held: Vec<(usize, recto_index::select::Range)>
-AppState.pub settings_window: Option<SettingsWindow>
-AppState.pub sidebar_width: f64
-AppState.pub window: Option<WindowRecord>
-AppState.pub window_closed: bool
-AppState.pub window_decided: bool
+AppState.pub(super) app_hidden: bool
+AppState.pub(super) appearance: Appearance
+AppState.pub(super) contents_resume: Option<(TabId, ContentsScroll)>
+AppState.pub(super) contents_y: Option<f64>
+AppState.pub(super) focus: FocusRecord
+AppState.pub(super) from_state: Option<Box<AppState>>
+AppState.pub(super) hidden_decided: bool
+AppState.pub(super) minimised_decided: bool
+AppState.pub(super) selection_resume: Option<(TabId, record::Selection)>
+AppState.pub(super) selections_held: Vec<(usize, recto_index::select::Range)>
+AppState.pub(super) settings_window: Option<SettingsWindow>
+AppState.pub(super) sidebar_width: f64
+AppState.pub(super) window: Option<WindowRecord>
+AppState.pub(super) window_closed: bool
+AppState.pub(super) window_decided: bool
 Inner (pub struct)
 Inner.pub core: Arc<CoreQueue>
 Inner.pub engine: Engine
@@ -303,10 +303,6 @@ Tools::pub(crate) fn find_field(&self) -> &Mutex<crate::find::Field>
 Tools::pub(crate) fn palette(&self) -> &crate::palette::Palette
 Tools::pub(crate) fn save_ui(&self) -> &saving::SaveUi
 Window (pub struct)
-Window.pub(super) app: Mutex<AppState>
-Window.pub(super) contents_follow: Mutex<ContentsFollow>
-Window.pub(super) dark: AtomicBool
-Window.pub(super) panel_open: AtomicBool
 Window::pub fn app_record(&self, notice: impl FnOnce() -> Option<String>) -> AppRecord
 Window::pub fn appearance_choice(&self) -> &'static str
 Window::pub fn changed(&self, frame: Option<Vec<f64>>, screen: Option<ScreenInfo>, full_screen: bool, saver: &Saver)
@@ -341,11 +337,18 @@ Window::pub fn settings_window_changed(&self, place: Option<SettingsWindow>, sav
 Window::pub fn should_open(&self, reopened: bool) -> bool
 Window::pub fn showing(&self) -> bool
 Window::pub(in crate::core) fn as_it_is(&self) -> AppState
+Window::pub(in crate::core) fn follow_tab(&self, active: Option<TabId>)
 Window::pub(in crate::core) fn restore(&self, restoring: &Restoring<'_>, interactive: impl FnOnce() -> bool)
+Window::pub(super) fn appearance(&self) -> Appearance
 Window::pub(super) fn closed(&self)
+Window::pub(super) fn frontmost(&self) -> bool
+Window::pub(super) fn is_dark(&self) -> bool
 Window::pub(super) fn notices(&self) -> &Notices
 Window::pub(super) fn opened(&self)
 Window::pub(super) fn replaced(&self, held: Vec<(usize, recto_index::select::Range)>)
 Window::pub(super) fn shows_tab(&self, tab: u32) -> bool
+Window::pub(super) fn sidebar_width(&self) -> f64
+Window::pub(super) fn take_selection_resume(&self, tab: TabId) -> Option<record::Selection>
 Window::pub(super) fn take_selections_held(&self) -> Vec<(usize, recto_index::select::Range)>
+Window::pub(super) fn toggle_panel(&self)
 ";
