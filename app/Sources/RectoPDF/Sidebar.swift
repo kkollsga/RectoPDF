@@ -692,6 +692,7 @@ final class TabTable: NSTableView {
         find.update(core.findView(), layout: next)
         placeLists()
         table.reloadData()
+        find.takeFocusIfWanted()
         if heightChanged {
             core.contentsViewChanged()
             revealPlace()
