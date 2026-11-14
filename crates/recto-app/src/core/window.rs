@@ -4,8 +4,10 @@
 
 mod notices;
 mod placement;
+mod restore;
 pub(super) use notices::Notices;
 pub use placement::WindowPlacement;
+pub(super) use restore::Restoring;
 
 use super::saver::Saver;
 use super::updates;

@@ -225,7 +225,7 @@ impl<'a> Desk<'a> {
 #[derive(Debug)]
 pub enum Verdict {
     /// Keep it: read the saved session, as a launch does. With the appearance the window had then, so one the person chooses while it's read is kept
-    /// ([`window_as_it_is`]).
+    /// ([`Window::restore`]).
     Read(record::Appearance),
 }
 
@@ -337,21 +337,4 @@ impl crate::lifecycle::keeping::Carry for Carrier<'_> {
     fn remake(&mut self) {
         self.host = Some(crate::lifecycle::Out::RestoreReady { with_state: true, late: true });
     }
-}
-
-/// **The window as it is, kept until it's made again** from a late keep's restore (`apply_restored`): its frame, focus, sidebar width and Settings, which the
-/// restore put in `from_state` for the window made again ([`Inner::window_replaced`]), so if the person touches it first and it isn't made again, the record says
-/// what the real window is. And the appearance, if the person chose one while the saved session was read (it isn't `appearance_then`, what it was as the try
-/// was kept): what they chose last wins over what was saved, in the record and in the window made again.
-pub(super) fn window_as_it_is(app: &mut AppState, real: &AppState, appearance_then: Option<record::Appearance>) {
-    if appearance_then.is_some_and(|then| then != real.appearance) {
-        app.appearance = real.appearance;
-        if let Some(state) = app.from_state.as_mut() {
-            state.appearance = real.appearance;
-        }
-    }
-    app.window.clone_from(&real.window);
-    app.focus = real.focus;
-    app.sidebar_width = real.sidebar_width;
-    app.settings_window = real.settings_window;
 }

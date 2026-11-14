@@ -78,6 +78,7 @@ fn what_the_apps_state_lets_other_code_reach_is_listed() {
         "Serving",
         "Window",
         "Notices",
+        "Restoring",
         "Tools",
         "Printing",
         "Prompts",
@@ -281,6 +282,8 @@ Published.pub recent_key: Option<(u64, u64)>
 Published.pub sidebar: Arc<crate::SidebarView>
 Published.pub tabs: Arc<Vec<crate::SidebarRow>>
 Published::pub fn empty() -> Self
+Restoring (pub struct)
+Restoring::pub(in crate::core) fn new(record: &'a SessionRecord, real: Option<&'a AppState>, appearance_then: Option<Appearance>) -> Self
 Serving (pub struct)
 Serving.pub paths: Option<StatePaths>
 Serving.pub(crate) announcer: Mutex<Option<Announcer>>
@@ -337,6 +340,8 @@ Window::pub fn settings_window(&self) -> Option<SettingsWindow>
 Window::pub fn settings_window_changed(&self, place: Option<SettingsWindow>, saver: &Saver)
 Window::pub fn should_open(&self, reopened: bool) -> bool
 Window::pub fn showing(&self) -> bool
+Window::pub(in crate::core) fn as_it_is(&self) -> AppState
+Window::pub(in crate::core) fn restore(&self, restoring: &Restoring<'_>, interactive: impl FnOnce() -> bool)
 Window::pub(super) fn closed(&self)
 Window::pub(super) fn notices(&self) -> &Notices
 Window::pub(super) fn opened(&self)

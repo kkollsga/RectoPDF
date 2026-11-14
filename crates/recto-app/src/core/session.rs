@@ -20,12 +20,9 @@ pub fn apply_restored(
     // This goes for `session restore` too: nothing drawn stays from before.
     if synced.panes.iter_mut().any(|pane| pane.tab.take().is_some()) {
         inner.engine.deactivate();
-        inner.panes.set_count(
-            &inner.engine,
-            1,
-            synced.paper.unwrap_or(PaperKind::White),
-            !lock(&inner.window.app).window_closed,
-        );
+        inner
+            .panes
+            .set_count(&inner.engine, 1, synced.paper.unwrap_or(PaperKind::White), !inner.window.is_closed());
         synced.count = 1;
         synced.panes.truncate(1);
     }
@@ -36,8 +33,8 @@ pub fn apply_restored(
     host.session.with_session(|session| session.journals_mut().set_journaling(holds_the_record));
     let first_time = !inner.life.state_read();
     let other_instance = matches!(loaded, Loaded::OtherInstance);
-    // A late keep's restore: the window keeps its own until it's made again from what was saved (`keeping::window_as_it_is`).
-    let real_window = inner.life.keeping().restoring().then(|| lock(&inner.window.app).clone());
+    // A late keep's restore: the window keeps its own until it's made again from what was saved (`Window::restore`).
+    let real_window = inner.life.keeping().restoring().then(|| inner.window.as_it_is());
     match loaded {
         Loaded::Restored(restored) => {
             let restored = *restored;
@@ -48,53 +45,8 @@ pub fn apply_restored(
             }
             if application.is_ok() {
                 let saved = &restored.record.app;
-                if let Some(paper_set) = saved.sidebar_width {
-                    lock(&inner.window.app).sidebar_width = record::sidebar_width(paper_set);
-                }
-                inner.window.panel_open.store(saved.panel_open, Ordering::SeqCst);
-                {
-                    let mut app = lock(&inner.window.app);
-                    app.settings_window = saved.settings_window;
-                    app.window_closed = updates::out_of_sight_when_restored(saved.window_closed, app.window_decided.then_some(app.window_closed));
-                    // Once the host's shown or hidden things without the state, what it did is how things are, and the record says that, not what was saved.
-                    app.app_hidden = updates::out_of_sight_when_restored(saved.app_hidden, app.hidden_decided.then_some(app.app_hidden));
-                    let minimised_now = app.minimised_decided.then(|| app.window.as_ref().is_some_and(|window| window.minimised));
-                    app.window = saved.window.clone();
-                    if let Some(window) = app.window.as_mut() {
-                        window.minimised = updates::out_of_sight_when_restored(window.minimised, minimised_now);
-                    }
-                    // A window that's up and taking input isn't made again from a state that comes now, so what it shows stays, its appearance with it: the host
-                    // applies the state's appearance as it hears it (`restoredLate`), and the record says what the window shows. A late keep's window goes by
-                    // `keeping::window_as_it_is`.
-                    let shown_as_it_is = app.window_decided && real_window.is_none() && inner.life.window_interactive();
-                    if !shown_as_it_is {
-                        app.appearance = saved.appearance;
-                    }
-                    app.focus = saved.focus;
-                    let active = restored.record.active.map(TabId);
-                    app.contents_resume = active.zip(saved.contents_scroll);
-                    app.selection_resume = active.and_then(|id| {
-                        restored
-                            .record
-                            .tabs
-                            .iter()
-                            .find(|tab| tab.id == id.0)?
-                            .selection
-                            .map(|selection| (id, selection))
-                    });
-                    app.contents_y = saved.contents_scroll.map(|scroll| scroll.y);
-                    // Taken in with a window already up without it: the window made again from it goes by what it said.
-                    if app.window_decided {
-                        let state = AppState {
-                            from_state: None,
-                            ..app.clone()
-                        };
-                        app.from_state = Some(Box::new(state));
-                    }
-                    if let Some(real) = &real_window {
-                        keeping::window_as_it_is(&mut app, real, appearance_then);
-                    }
-                }
+                let restoring = window::Restoring::new(&restored.record, real_window.as_ref(), appearance_then);
+                inner.window.restore(&restoring, || inner.life.window_interactive());
                 // A code this build doesn't know has no words, and goes.
                 *lock(&host.notice) = saved.notice.clone().filter(|code| record::notices::words(code).is_some());
                 holding = host.session.with_session(|session| {
