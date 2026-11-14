@@ -65,7 +65,8 @@ pub struct Promise {
 pub struct Offered {
     pub serial: u64,
     pub items: Vec<ClipItem>,
-    promise: Option<Promise>,
+    /// Boxed, so the tool's state stays its size whatever a promise holds (the app's state has a budget: `inner_guards`).
+    promise: Option<Box<Promise>>,
 }
 
 /// **The one-at-a-time rule**, apart from threads so it's tested alone: the job running, by its stop, and the newest one waiting.
@@ -279,7 +280,7 @@ impl Tool {
                 if self.quitting.load(Ordering::SeqCst) {
                     return None;
                 }
-                Some(Data::Make(current.promise.clone()?, cap))
+                Some(Data::Make(*current.promise.clone()?, cap))
             }
         }
     }
@@ -407,7 +408,11 @@ fn publish(inner: &Inner, job: Job, outcome: ClipOutcome, source: Option<Source>
             .into_iter()
             .filter(|item| matches!(item, ClipItem::Ready { .. }) || promise.is_some())
             .collect();
-        *lock(&tool.ready) = Some(Offered { serial: 0, items, promise });
+        *lock(&tool.ready) = Some(Offered {
+            serial: 0,
+            items,
+            promise: promise.map(Box::new),
+        });
         inner.listener.copy_ready();
     }
 }
@@ -579,7 +584,7 @@ mod tests {
                 },
                 ClipItem::Promised { uti: extract::UTI_SVG, cap: 9 },
             ],
-            promise: Some(promise.clone()),
+            promise: Some(Box::new(promise.clone())),
         });
         assert_eq!(tool.data(6, extract::UTI_PNG), None, "an older offer");
         assert_eq!(tool.data(7, extract::UTI_PNG), Some(Data::Ready(vec![1])));
