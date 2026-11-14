@@ -7,6 +7,23 @@ use super::headless::{HeadlessApp, WAIT_LIMIT};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
+/// [`PlaceSeams`]'s count of one call: not asked, asked for the next call, counting it, counted; in the top two bits of its word, and the count below.
+#[cfg(all(test, debug_assertions))]
+const IDLE: u64 = 0;
+const ARMED: u64 = 1;
+const COUNTING: u64 = 2;
+const COUNTED: u64 = 3;
+const STATE_SHIFT: u32 = 62;
+const COUNT_MASK: u64 = (1 << STATE_SHIFT) - 1;
+
+/// The session thread's searches so far ([`recto_session::searched`]), in a debug build; nothing to count in a release build.
+fn searched_now() -> u64 {
+    #[cfg(debug_assertions)]
+    return recto_session::searched::records();
+    #[cfg(not(debug_assertions))]
+    0
+}
+
 type Then = Mutex<Option<(std::thread::ThreadId, Box<dyn FnOnce() + Send>)>>;
 
 /// **What a test asked of the reads of the views' places and their take-in,** and the looks counted: in [`crate::core::Serving`], test builds only.
@@ -21,10 +38,10 @@ pub struct PlaceSeams {
     /// Looks begun, and looks done (the jumps they sent said to the session).
     looks_begun: AtomicU64,
     looks_done: AtomicU64,
-    /// The records the session thread's searches for a tab had looked at when its last look ended ([`recto_session::searched`], a debug build's): what
-    /// an action's walks over the tabs cost, counted, between two looks.
-    #[cfg(debug_assertions)]
-    searched_at_look_end: AtomicU64,
+    /// A test's count of one call ([`Self::count_the_next_call`]), in one word: its state in the top two bits ([`IDLE`], [`ARMED`] for the next call the
+    /// session thread takes, [`COUNTING`] it until the end of the look after it, [`COUNTED`]), and below them the session thread's records at the call's
+    /// start, then what the call and its look searched.
+    call_count: AtomicU64,
     /// The most looks that may begin; one past it waits at its start until this is lifted.
     looks_allowed: Mutex<Option<u64>>,
     lifted: Condvar,
@@ -68,16 +85,37 @@ impl PlaceSeams {
         self.looks_done.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// The look has ended, everything after the publish too: the session thread's searches so far are noted, in a debug build.
+    /// The look has ended, everything after the publish too: a call being counted ([`Self::count_the_next_call`]) is counted to here.
     pub(crate) fn look_ended(&self) {
-        #[cfg(debug_assertions)]
-        self.searched_at_look_end.store(recto_session::searched::records(), Ordering::SeqCst);
+        // Only this thread moves it on from counting.
+        let word = self.call_count.load(Ordering::SeqCst);
+        if word >> STATE_SHIFT == COUNTING {
+            let searched = searched_now().saturating_sub(word & COUNT_MASK) & COUNT_MASK;
+            self.call_count.store(COUNTED << STATE_SHIFT | searched, Ordering::SeqCst);
+        }
     }
 
-    /// The records the session thread's searches for a tab had looked at when its last look ended.
+    /// The session thread takes a call: if a test armed it, its searches are counted from here to the end of the look after it.
+    pub(crate) fn call_taken(&self) {
+        let start = searched_now() & COUNT_MASK;
+        let _ = self
+            .call_count
+            .compare_exchange(ARMED << STATE_SHIFT, COUNTING << STATE_SHIFT | start, Ordering::SeqCst, Ordering::SeqCst);
+    }
+
+    /// **The next call the session thread takes is counted, alone:** the records its searches look at, and its look's, and nothing that comes before or after
+    /// it (a page's word, a deadline, the test's own flush). Read with [`Self::searched_by_the_counted_call`] once its look has ended.
     #[cfg(all(test, debug_assertions))]
-    pub(crate) fn searched_at_look_end(&self) -> u64 {
-        self.searched_at_look_end.load(Ordering::SeqCst)
+    pub(crate) fn count_the_next_call(&self) {
+        self.call_count.store(ARMED << STATE_SHIFT, Ordering::SeqCst);
+    }
+
+    /// What the counted call and its look searched; `None` until its look has ended.
+    #[cfg(all(test, debug_assertions))]
+    pub(crate) fn searched_by_the_counted_call(&self) -> Option<u64> {
+        let word = self.call_count.load(Ordering::SeqCst);
+        (word >> STATE_SHIFT == COUNTED && self.call_count.compare_exchange(word, IDLE, Ordering::SeqCst, Ordering::SeqCst).is_ok())
+            .then_some(word & COUNT_MASK)
     }
 
     /// How many looks are done.

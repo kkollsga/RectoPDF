@@ -289,6 +289,8 @@ pub fn session_thread(inner: &Arc<Inner>) {
         let Some(call) = hold(&inner.life, call, &mut deferred, submit) else {
             continue;
         };
+        #[cfg(any(test, feature = "testkit"))]
+        inner.serving.place_seams.call_taken();
         let mut events = Vec::new();
         let host = &inner.host;
         match call {

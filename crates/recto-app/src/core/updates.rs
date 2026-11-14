@@ -225,6 +225,9 @@ struct Launch {
     /// told of the launch before the saved session is read, so its own would be told then, with no tabs read yet, and the installer's look at whether the new
     /// version misread the record couldn't be made. This one's told after the read is in ([`LaunchFacts::first_frame_after_launch`]), with the tabs it came up with.
     first_frame_at: Option<u64>,
+    /// Tellings of the launch out on a thread of their own, not yet back from the updater ([`TellingTheLaunch`]): the app isn't at rest meanwhile, as what
+    /// `update status` says is about to change ([`crate::settled`]).
+    telling: u32,
 }
 
 impl Launch {
@@ -327,6 +330,11 @@ impl LaunchFacts {
         tell_first_frame(updates, at);
     }
 
+    /// Tellings of the launch out on their own threads ([`tell_held`]): under way, for the app's settled.
+    pub(crate) fn telling(&self) -> u32 {
+        lock(&self.0).telling
+    }
+
     /// What's held for the updater, taken in one look: the facts if they're still untold, and nothing at all for a launch that wasn't held back.
     fn take_held(&self) -> Option<Option<Facts>> {
         let (facts, held) = {
@@ -354,24 +362,46 @@ pub(super) fn tell_held(life: &Arc<super::Lifecycle>, updates: &Arc<recto_update
         return;
     };
     let facts = Arc::new(Mutex::new(facts));
+    // Counted from before the thread starts until the updater has the launch: a failed spawn drops the closure, and the guard with it.
+    let counted = TellingTheLaunch::begin(life);
     let (telling, by, theirs) = (Arc::clone(life), Arc::clone(updates), Arc::clone(&facts));
     let told = std::thread::Builder::new()
         .name("recto-update-frame".into())
         .stack_size(512 * 1024)
-        .spawn(move || tell(&telling.update_facts, &by, lock(&theirs).take()));
+        .spawn(move || tell(&telling.update_facts, &by, lock(&theirs).take(), Some(counted)));
     // With no thread to be had, what's held isn't left held for the rest of the run: told here, as the one thing that can still tell it.
     if told.is_err() {
-        tell(&life.update_facts, updates, lock(&facts).take());
+        tell(&life.update_facts, updates, lock(&facts).take(), None);
     }
 }
 
-/// Told, on the thread that tells it.
-fn tell(launch: &LaunchFacts, updates: &recto_update::updater::Updater, facts: Option<Facts>) {
+/// **A telling of the launch out on its own thread, counted until the updater has it,** however that thread ends, a panic in `launched` included (dropped,
+/// it's let go): so the app's settled, and `qa wait`, wait for `update status` to say what the launch made it, and never wait out their limit for a thread
+/// that's gone. The same shape as the session queue's way back ([`crate::queue::CoreQueue::way_back`]).
+pub(crate) struct TellingTheLaunch(Arc<super::Lifecycle>);
+
+impl TellingTheLaunch {
+    pub(crate) fn begin(life: &Arc<super::Lifecycle>) -> Self {
+        lock(&life.update_facts.0).telling += 1;
+        Self(Arc::clone(life))
+    }
+}
+
+impl Drop for TellingTheLaunch {
+    fn drop(&mut self) {
+        let mut launch = lock(&self.0.update_facts.0);
+        launch.telling = launch.telling.saturating_sub(1);
+    }
+}
+
+/// Told, on the thread that tells it: the launch, then the count of it let go (`counted`), then a first frame shown meanwhile, which may wait for the tabs.
+fn tell(launch: &LaunchFacts, updates: &recto_update::updater::Updater, facts: Option<Facts>, counted: Option<TellingTheLaunch>) {
     if let Some(facts) = facts
         && updates.launched(facts) == recto_update::updater::AtLaunch::Exit
     {
         std::process::exit(0);
     }
+    drop(counted);
     launch.first_frame_after_launch(updates);
 }
 
@@ -994,7 +1024,7 @@ mod tests {
         held.note(OLD_VERSION.to_owned(), None, app.disk().app().display().to_string(), "15.0".to_owned());
         held.hold_or_tell(false, updates);
         let facts = held.take_held().expect("held back");
-        tell(&held, updates, facts);
+        tell(&held, updates, facts, None);
         assert_eq!(told(), 2, "the held launch told, by the settling's tell");
         held.note(OLD_VERSION.to_owned(), None, app.disk().app().display().to_string(), "15.0".to_owned());
         assert!(held.take_held().is_none() && held.tell(updates) == recto_update::updater::AtLaunch::GoOn);
@@ -1018,7 +1048,7 @@ mod tests {
         assert_eq!(lock(&launch.0).first_frame_at, first, "the first frame's time, not a later one");
         let facts = launch.take_held().expect("held back");
         assert!(facts.is_some(), "with the facts untold");
-        tell(&launch, updates, facts);
+        tell(&launch, updates, facts, None);
         assert_eq!(told(), 1);
         assert!(
             !launch.held() && lock(&launch.0).first_frame_at.is_none(),

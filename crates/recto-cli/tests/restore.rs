@@ -1036,6 +1036,11 @@ fn a_launch_doesnt_show_a_picture_of_a_file_thats_been_replaced() {
     std::fs::write(&file, pages(&[page_of(RED)])).unwrap();
     run.ok(&["open", file.to_str().unwrap()]);
     run.settled();
+    // The system takes back what's discardable whenever it likes, the page's preview with it once its tiles cover it: the picture's made from those.
+    let emptied = run.ok(&["qa", "memory-pressure", "discard"])["emptied"].as_u64().unwrap();
+    assert!(emptied > 0, "the system took nothing, so this doesn't test a picture made from the tiles");
+    // What it asks of the app is waited for as anything is, or a hand-off on a starved machine finds it still going and refuses.
+    run.settled();
     run.hand_off();
     assert!(
         colours_in_sleep_files(&state).iter().any(|(_, colours)| colours.contains(&"red")),
@@ -1377,21 +1382,42 @@ fn pressure_and_the_budget_do_what_being_left_alone_does() {
     });
 }
 
-/// Failure (decision 24): a launch or a hand-off waits for sharp pages before there's a window, which on a heavy page is most of a second; or its first frame's anything but the place with something on every page. It goes up from the sleep file with the picture on, and the file's not rewritten when nothing's changed.
+/// Failure (decision 24): a launch or a hand-off waits for sharp pages before there's a window, which on a heavy page is most of a second; or its first frame's anything but the place with something on every page. It goes up from the sleep file with the picture on.
+///
+/// With the system having taken back what's discardable before the hand-off, as it does under memory pressure whenever it likes (load 77, 2026-11-14), so
+/// the picture is made from the page's tiles: the file has a right picture of the page and the launch goes up from it. A quit may then write it once more,
+/// its picture now from the page's preview, and what it holds is still a right picture. That a quit with nothing changed writes nothing is held in process,
+/// where the system takes only when a test says: `recto-app`'s `a_quit_with_nothing_changed_writes_nothing`.
 #[test]
 fn a_launch_goes_up_from_the_sleep_file() {
     let state = State::at(Level::Full);
     let Some(run) = Run::on(&state) else { return };
+    run.ok(&["qa", "appearance", "light"]);
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
-    let file = text_document(&folder, "doc.pdf", 9);
+    let file = folder.join("doc.pdf");
+    std::fs::write(&file, pages(&(0..9).map(|_| page_of(RED)).collect::<Vec<_>>())).unwrap();
     run.ok(&["open", file.to_str().unwrap()]);
     run.settled();
     run.ok(&["goto", "4"]);
     run.settled();
     let before = run.report();
+    let emptied = run.ok(&["qa", "memory-pressure", "discard"])["emptied"].as_u64().unwrap();
+    assert!(emptied > 0, "the system took nothing, so this doesn't test a picture made from the tiles");
+    // What it asks of the app is waited for as anything is, or a hand-off on a starved machine finds it still going and refuses.
+    run.settled();
     run.hand_off();
     assert_eq!(sleep_files(&state).len(), 1, "the hand-off wrote it");
+    let red = |when: &str| {
+        let colours = colours_in_sleep_files(&state);
+        assert!(
+            colours
+                .iter()
+                .all(|(_, colours)| !colours.is_empty() && colours.iter().all(|colour| *colour == "red")),
+            "{when}: a red picture of each page it has one of: {colours:?}"
+        );
+    };
+    red("its picture made from the tiles");
     let written = std::fs::read(&sleep_files(&state)[0]).unwrap();
     let run = Run::on(&state).unwrap();
     run.settled();
@@ -1414,11 +1440,9 @@ fn a_launch_goes_up_from_the_sleep_file() {
     );
     assert_eq!(after["reader"]["last_wake"]["blank_frames"], 0);
     assert_eq!(after["record"]["sleep"]["woken_from_file"], 1);
-    // Nothing's changed, so a quit writes nothing to it.
-    let modified = std::fs::metadata(&sleep_files(&state)[0]).unwrap().modified().unwrap();
     run.quit();
-    assert_eq!(std::fs::metadata(&sleep_files(&state)[0]).unwrap().modified().unwrap(), modified);
-    assert_eq!(std::fs::read(&sleep_files(&state)[0]).unwrap(), written);
+    assert_eq!(sleep_files(&state).len(), 1);
+    red("after the quit");
 }
 
 /// What a Save would write, for this test: the document's pages, as lopdf has them.

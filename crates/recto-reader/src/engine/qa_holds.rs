@@ -208,6 +208,20 @@ impl Qa<'_> {
         }
     }
 
+    /// **The system takes only when a test says,** from now on, for every page view in this process: what's kept off the layers is flagged discardable
+    /// as in the app, but the kernel isn't told, so it can't empty it under memory pressure at a moment no test chose, and a test about its taking says
+    /// when ([`Engine::empty_discardable`]). The headless kit calls it at its start (2026-11-14: five tests failed at random at load 15 to 77 from
+    /// the kernel's purge). One switch for the process, as the system is one.
+    pub fn system_takes_only_when_told(&self) {
+        crate::tiles::system_takes_only_when_told();
+    }
+
+    /// How many surfaces this view keeps that the kernel was told it may empty whenever it likes, or has emptied: none, once
+    /// [`Self::system_takes_only_when_told`] (and before a test empties them).
+    pub fn marked_for_the_system(&self) -> usize {
+        lock(&self.engine.shared.reader).cache.marked_for_the_system()
+    }
+
     /// Whether synced scroll's place is left pending for this view's own thread, so a test that forces the busy ordering can see that the follow really
     /// was left and the round didn't quietly become the free one.
     pub fn follow_is_pending(&self) -> bool {

@@ -60,6 +60,10 @@ impl PixelSurface {
     pub fn reclaim(&self) -> Purge {
         Purge::Emptied
     }
+    #[doc(hidden)]
+    pub fn is_marked_discardable(&self) -> bool {
+        false
+    }
     pub fn was_emptied(&self) -> bool {
         true
     }

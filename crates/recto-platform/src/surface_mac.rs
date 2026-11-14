@@ -242,6 +242,15 @@ impl PixelSurface {
         unsafe { IOSurfaceSetPurgeable(self.raw.as_ptr(), PURGEABLE_EMPTY, &raw mut old) };
     }
 
+    /// Whether it's marked discardable now, so the OS may take it at any moment, without changing anything: for a test that the OS is left nothing to take.
+    #[doc(hidden)]
+    pub fn is_marked_discardable(&self) -> bool {
+        let mut old = 0;
+        // SAFETY: the surface is live, and `old` is valid for writes.
+        let rc = unsafe { IOSurfaceSetPurgeable(self.raw.as_ptr(), PURGEABLE_KEEP_CURRENT, &raw mut old) };
+        rc == 0 && old == PURGEABLE_VOLATILE
+    }
+
     /// Whether the OS has already taken its memory, without changing anything.
     pub fn was_emptied(&self) -> bool {
         let mut old = 0;

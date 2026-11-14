@@ -17,6 +17,33 @@ pub(super) const MAX_KEPT_PREVIEWS: usize = 128;
 /// Entries of any kind, since a blank tile has no surface but is still remembered.
 pub(super) const MAX_ENTRIES: usize = 4096;
 
+/// **Lets the system take a surface off every layer** whenever it needs the pages: the one way the page view marks one discardable.
+///
+/// In tests the system takes nothing by itself ([`system_takes_only_when_told`]): the surface is flagged in the cache as in the app, but the kernel isn't
+/// told, and a test that's about the system taking it says when, with [`TileCache::empty_discardable`], which is what the kernel's purge does. Told, the
+/// kernel purges under memory pressure at moments no test chooses, and every test that comes back to something kept failed at random on a loaded
+/// machine: five on 2026-11-14 at load 15 to 77, with `discards_lost` 286 in one (`a_sweep_over_seen_pages_has_no_blank_step`) and the system down to 3
+/// purgeable pages. That the real marking empties and reclaims as [`Purge`] says is held where it's made, in `recto-render-service`'s surface tests, and
+/// the real app's tests run with it.
+pub(super) fn let_system_take(surface: &PixelSurface) {
+    #[cfg(any(test, feature = "qa"))]
+    if SYSTEM_TAKES_ONLY_WHEN_TOLD.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    surface.set_discardable();
+}
+
+/// Whether the kernel is left out of [`let_system_take`]: from the start in this crate's tests, and once [`system_takes_only_when_told`] is called in a
+/// build with the `qa` feature. One for the process, as the system it stands for is. A release app has no such switch.
+#[cfg(any(test, feature = "qa"))]
+static SYSTEM_TAKES_ONLY_WHEN_TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(cfg!(test));
+
+/// For QA (`Engine::qa`): from now on, in this process, the system takes what's kept only when a test empties it ([`TileCache::empty_discardable`]).
+#[cfg(any(test, feature = "qa"))]
+pub(crate) fn system_takes_only_when_told() {
+    SYSTEM_TAKES_ONLY_WHEN_TOLD.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct TileKey {
     pub(super) tab: u32,
@@ -220,6 +247,16 @@ impl TileCache {
             }
         }
         emptied
+    }
+
+    /// For QA ([`crate::engine::Qa::marked_for_the_system`]): the surfaces kept that the kernel was told it may empty, those it has emptied already among them.
+    #[cfg(any(test, feature = "qa"))]
+    pub(crate) fn marked_for_the_system(&self) -> usize {
+        self.entries
+            .values()
+            .filter_map(|entry| entry.surface.as_ref())
+            .filter(|surface| surface.is_marked_discardable() || surface.was_emptied())
+            .count()
     }
 
     /// Everything drawn of a tab goes, told to `host`.

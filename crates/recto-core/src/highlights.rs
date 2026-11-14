@@ -302,6 +302,50 @@ mod tests {
         assert_eq!((quads.found[0].rects.len(), quads.truncated), (1, true), "a second quadrilateral");
     }
 
+    /// Failure (review of R4.3, the weak-test review): a cap one too low or one too high, in the code or in the constants a read really uses. Each of the
+    /// three limits is held at itself (everything kept, nothing said cut) and at itself plus one (the limit kept, the cut said), on the limits the
+    /// app keeps and not only small ones set by the test, so `MAX_PAGE_ANNOTS`, `MAX_PAGE_HIGHLIGHTS` and `MAX_QUADS` off by one either way fail.
+    #[test]
+    fn each_limit_is_held_at_itself_and_said_at_itself_plus_one() {
+        assert_eq!(
+            (MAX_PAGE_ANNOTS, MAX_PAGE_HIGHLIGHTS, MAX_QUADS),
+            (8192, 256, 256),
+            "the limits the module documents"
+        );
+        let keep = Limits::default();
+        let quad = "50 720 150 720 50 708 150 708 ";
+        // Highlights: `max` of them are all kept, one more is cut and said.
+        let many = |count: usize| vec![ONE; count];
+        let at = highlights_of(&page_with(&many(keep.highlights), ""), 0, keep);
+        assert_eq!((at.found.len(), at.truncated), (keep.highlights, false), "highlights at the limit");
+        let past = highlights_of(&page_with(&many(keep.highlights + 1), ""), 0, keep);
+        assert_eq!((past.found.len(), past.truncated), (keep.highlights, true), "highlights at the limit plus one");
+        // Annotations looked at: the last one looked at is read (a highlight), the one after isn't, and it's said.
+        let filler = |count: usize| vec!["<< >>"; count];
+        let mut at_annots = filler(keep.annots - 1);
+        at_annots.push(ONE);
+        let at = highlights_of(&page_with(&at_annots, ""), 0, keep);
+        assert_eq!((at.found.len(), at.truncated), (1, false), "annotations at the limit: the last is read");
+        let mut past_annots = filler(keep.annots);
+        past_annots.push(ONE);
+        let past = highlights_of(&page_with(&past_annots, ""), 0, keep);
+        assert_eq!(
+            (past.found.len(), past.truncated),
+            (0, true),
+            "annotations at the limit plus one: the last isn't looked at"
+        );
+        // Quadrilaterals of one highlight.
+        let quads = |count: usize| format!("<< /Subtype /Highlight /QuadPoints [{}] >>", quad.repeat(count));
+        let at = highlights_of(&page_with(&[&quads(keep.quads)], ""), 0, keep);
+        assert_eq!((at.found[0].rects.len(), at.truncated), (keep.quads, false), "quadrilaterals at the limit");
+        let past = highlights_of(&page_with(&[&quads(keep.quads + 1)], ""), 0, keep);
+        assert_eq!(
+            (past.found[0].rects.len(), past.truncated),
+            (keep.quads, true),
+            "quadrilaterals at the limit plus one"
+        );
+    }
+
     /// Failure (review of R4.3): a page's read has no time limit, as a read of links has, so a page of costly annotations holds an agent's
     /// `recto highlights` and a removal's look for as long as it takes. Held with the time already up: nothing's read, and it says it was cut short.
     #[test]

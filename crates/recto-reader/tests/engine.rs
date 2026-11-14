@@ -1,4 +1,6 @@
-//! The engine on the real worker: what the app does, with no window. A pretend host applies what it's told and looks at the surfaces.
+//! The engine on the real worker: what the app does, with no window. A pretend host applies what it's told and looks at the surfaces. Each engine is told
+//! the system takes back what's discardable only when a test says (`Engine::qa().system_takes_only_when_told`): the host here reads surfaces after they've
+//! left their layers, which the kernel may empty under memory pressure.
 
 use recto_platform::local::process_counters;
 use recto_reader::engine::EngineEvents;
@@ -87,6 +89,7 @@ fn document(pages_of_text: usize) -> TempPdf {
 fn started(file: &TempPdf, count: u32) -> (Engine, Arc<Events>) {
     let events = Arc::new(Events::default());
     let engine = Engine::new(EngineConfig::default(), events.clone());
+    engine.qa().system_takes_only_when_told();
     engine.set_viewport(view(0.0));
     engine.activate(
         1,
@@ -317,6 +320,9 @@ fn a_replaced_file_gets_its_pages_looked_at_again_on_dark_paper() {
         .iter()
         .filter_map(|op| if let Op::Attach { rgb, surface: 0, .. } = op { *rgb } else { None })
         .collect();
+    // What was on a layer in an early turn and off it by now is discardable: the kernel mustn't be able to empty what's read here (2026-11-14, a full check
+    // at load 8 to 13: one tile read [0, 0, 0]).
+    assert_eq!(engine.qa().marked_for_the_system(), 0, "the kernel may empty a surface this reads");
     let surfaces = corners(&ops);
     assert!(!colours.is_empty() || !surfaces.is_empty(), "something was drawn: {ops:?}");
     assert!(
@@ -340,6 +346,7 @@ fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
     assert!(std::process::Command::new("/usr/bin/mkfifo").arg(&dead).status().unwrap().success());
     let events = Arc::new(Events::default());
     let engine = Engine::new(EngineConfig::default(), events);
+    engine.qa().system_takes_only_when_told();
     engine.set_viewport(view(0.0));
     engine.activate(
         1,
@@ -473,6 +480,7 @@ fn a_worker_holding_a_lot_is_let_go_at_rest() {
         },
         events,
     );
+    engine.qa().system_takes_only_when_told();
     engine.set_viewport(view(0.0));
     engine.activate(
         1,
@@ -650,6 +658,7 @@ fn copy_ready_comes_with_no_lock_of_the_page_views_held() {
     let file = document(2);
     let events = Arc::new(PullsInCopyReady::default());
     let engine = Engine::new(EngineConfig::default(), events.clone());
+    engine.qa().system_takes_only_when_told();
     let _ = events.engine.set(engine.clone());
     engine.set_viewport(view(0.0));
     engine.activate(
@@ -836,6 +845,7 @@ fn a_page_from_an_added_pdf_that_changed_isnt_drawn() {
     std::fs::write(&added.0, pages(&[Page::new(text_lines(&["Something else entirely, at the same page number"]))])).unwrap();
     let events = Arc::new(Events::default());
     let engine = Engine::new(EngineConfig::default(), events);
+    engine.qa().system_takes_only_when_told();
     engine.set_viewport(view(0.0));
     let map = PageMap {
         files: vec![own.0.clone(), added.0.clone()],
@@ -860,6 +870,7 @@ fn a_page_from_an_added_pdf_that_changed_isnt_drawn() {
     let fresh = TempPdf::new("added2.pdf", &pages(&[Page::new(text_lines(&["Added page as it was"]))]));
     let stamp = recto_platform::file_stamp(&fresh.0).unwrap();
     let engine = Engine::new(EngineConfig::default(), Arc::new(Events::default()));
+    engine.qa().system_takes_only_when_told();
     engine.set_viewport(view(0.0));
     engine.activate(
         1,
@@ -991,6 +1002,7 @@ fn a_tab_whose_worker_has_gone_gets_no_worker_started_for_its_place() {
         },
         events,
     );
+    engine.qa().system_takes_only_when_told();
     engine.set_viewport(view(0.0));
     engine.activate(
         1,
@@ -1040,6 +1052,7 @@ fn engine_with(file: &TempPdf, count: u32, policy: recto_render_service::Policy,
         },
         Arc::new(Events::default()),
     );
+    engine.qa().system_takes_only_when_told();
     engine.set_viewport(view(0.0));
     engine.activate(
         1,
@@ -1561,6 +1574,7 @@ fn a_password_draws_its_own_tabs_file_and_never_a_page_added_from_it() {
             },
             Arc::new(Events::default()),
         );
+        engine.qa().system_takes_only_when_told();
         engine.set_viewport(view(0.0));
         if own_tab_first {
             engine.activate(1, 1, 0, tab_map(&protected), &[], None, recto_reader::layout::Spread::Single);
@@ -1623,6 +1637,7 @@ fn a_link_to_a_protected_file_added_to_another_document_is_refused_too() {
             },
             Arc::new(Events::default()),
         );
+        engine.qa().system_takes_only_when_told();
         engine.set_viewport(view(0.0));
         engine.activate(1, 1, 0, tab_map(&protected), &[], None, recto_reader::layout::Spread::Single);
         engine.set_viewport(view(0.0));

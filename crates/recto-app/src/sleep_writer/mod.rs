@@ -12,6 +12,12 @@
 //! **What isn't here, and why:** which tabs are due to go dormant is the session's, by its own clock (`Session::seconds_now`, a real `Instant`, which every
 //! `touch` goes by): the session crate is outside this step. The machine gets how long until the next is due, and says when to ask which. What's queued for the
 //! one writer, and its caps, is [`crate::sleep_queue::LeavingQueue`], already a value of its own with its own short lock and tests.
+//!
+//! **A picture's source taken by the OS can cost one rewrite** (decided 2026-11-14): the store writes nothing when the bytes are those already there, so a
+//! flush with nothing changed writes nothing. But a page in view whose preview the system took back under memory pressure is pictured from its tiles, and
+//! those bytes differ, so the next flush (a quit, a hand-off) rewrites the tab's sleep file once, counted against the hour's cap like any other write:
+//! 5,179 to 5,275 bytes in the real app's `a_launch_goes_up_from_the_sleep_file` with the purge forced, 615 to 614 in the kit. The picture is still a right
+//! one; nothing is added to avoid the write.
 
 use crate::pressure::{self, Heard, Source};
 use crate::sleeper::{self as rules, BudgetLook, DORMANT_AFTER_SECONDS, Hour, LIVE_BUDGET_BYTES, SLEEP_WRITE_EVERY_SECONDS, Why, Written};

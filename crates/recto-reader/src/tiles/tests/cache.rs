@@ -24,6 +24,35 @@ fn previews_outlive_their_tiles() {
     assert_eq!(reader.counts().blank_seen_steps, 0);
 }
 
+/// Failure (2026-11-14, three tests at load 15 to 77): this crate's tests leave what they keep for the kernel to take, which it does under memory pressure at
+/// moments no test chooses, so a test that comes back to a page finds its preview gone (`discards_lost` 286, a seen page blank) one run in twenty. Here the
+/// system takes nothing by itself: what's kept off the layers is flagged discardable as in the app and not marked so for the kernel, and a test's own take
+/// ([`TileCache::empty_discardable`], what the kernel's purge does) still empties it and is still found at the way back.
+#[test]
+fn in_these_tests_the_system_takes_only_when_a_test_says() {
+    let mut reader = reader_on(30);
+    settle(&mut reader);
+    reader.set_viewport(view(5000.0));
+    settle(&mut reader);
+    let kept: Vec<&PixelSurface> = reader
+        .cache
+        .entries
+        .values()
+        .filter(|entry| entry.discardable)
+        .filter_map(|entry| entry.surface.as_ref())
+        .collect();
+    assert!(!kept.is_empty(), "something kept off the layers, discardable");
+    assert!(
+        kept.iter().all(|surface| !surface.is_marked_discardable()),
+        "the kernel may take {} of {} kept surfaces whenever it likes",
+        kept.iter().filter(|surface| surface.is_marked_discardable()).count(),
+        kept.len()
+    );
+    assert!(reader.cache.empty_discardable() > 0);
+    reader.set_viewport(view(0.0));
+    assert!(reader.counts().discards_lost > 0, "what the test took is found gone on the way back");
+}
+
 /// Failure: three panes of a comparison keep three times what one view keeps off screen. Shared, each keeps its share, and what's over goes at once.
 #[test]
 fn panes_share_the_caps_on_what_is_kept() {
