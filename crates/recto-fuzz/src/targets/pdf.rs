@@ -92,6 +92,12 @@ fn read(bytes: &[u8]) {
         if let Ok(read) = page_links_bytes(Arc::clone(&shared), &[0, 1, 2, 7, u32::MAX]) {
             assert_links_hold(&read);
         }
+        // A file's highlights (R4.3): bounded, and every rectangle finite, of some area and inside its page.
+        for page in [0, 1, u32::MAX] {
+            if let Ok(read) = recto_core::highlights::page_highlights_bytes(Arc::clone(&shared), page) {
+                assert_highlights_hold(&read);
+            }
+        }
         // The agreement gate's half: bounded, a size for each page compared and no more, and every size a real one.
         if let Ok(view) = recto_core::agreement::structure_view_bytes(Arc::clone(&shared)) {
             assert_eq!(view.sizes.len(), recto_core::agreement::compared_pages(view.page_count).len());
@@ -158,6 +164,28 @@ fn assert_facts_hold(facts: &DocFacts, file_bytes: u64) {
 }
 
 /// Links: within their caps, boxes real, addresses only of the kinds that may be offered, and a page a link goes to one there is.
+fn assert_highlights_hold(read: &recto_core::highlights::PageHighlights) {
+    use recto_core::highlights::{MAX_PAGE_HIGHLIGHTS, MAX_QUADS};
+    assert!(read.found.len() <= MAX_PAGE_HIGHLIGHTS);
+    let (width, height) = read.frame.shown_size().unwrap_or((0.0, 0.0));
+    for found in &read.found {
+        assert!(!found.rects.is_empty() && found.rects.len() <= MAX_QUADS);
+        for [x, y, w, h] in &found.rects {
+            assert!(
+                [*x, *y, *w, *h].iter().all(|edge| edge.is_finite()) && *w > 0.0 && *h > 0.0,
+                "{:?}",
+                found.rects
+            );
+            assert!(
+                *x >= 0.0 && *y >= 0.0 && x + w <= width * 1.0001 && y + h <= height * 1.0001,
+                "{:?} on {width} by {height}",
+                found.rects
+            );
+        }
+        assert!(found.rgb.is_none_or(|rgb| rgb <= 0xFF_FF_FF));
+    }
+}
+
 fn assert_links_hold(read: &[(u32, recto_core::nav::PageLinks)]) {
     use recto_core::nav::{LinkTarget, MAX_PAGE_LINKS, MAX_PAGES_PER_READ, MAX_URI_BYTES};
     assert!(read.len() <= MAX_PAGES_PER_READ);

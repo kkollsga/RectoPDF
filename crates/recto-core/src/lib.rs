@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 pub mod agreement;
 mod effects;
+pub mod highlights;
 pub mod nav;
 pub mod save;
 mod save_error;
