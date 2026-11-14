@@ -150,7 +150,10 @@ fn the_host_is_told_with_the_field_let_go() {
     rig.with(&listener, |find| {
         find.keep_up();
         // The Finder's news, with something new in the hits, as it has when it comes: the host's told only of a change.
-        rig.session.finder().with_results(&mut |results| results.version += 1);
+        rig.session.finder().with_results(&mut |results| {
+            let (generation, progress) = (results.generation, results.progress);
+            results.add(generation, Vec::new(), &progress);
+        });
         find.act(FindCall::News, &mut events);
     });
     assert_eq!(listener.count(&Heard::ModelChanged), 2, "{:?}", listener.heard());

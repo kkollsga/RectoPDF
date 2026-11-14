@@ -312,8 +312,9 @@ pub struct Results {
     pub end: Option<End>,
     /// The hit gone to last, if any.
     pub current: Option<usize>,
-    /// Goes up with every change, so a host knows to pull.
-    pub version: u64,
+    /// Goes up with every change, so a host knows to pull: read by [`Self::version`], moved only by `Results`' own methods, each of which changes what's
+    /// drawn of Find (held by the test that walks them all).
+    version: u64,
     /// Which run this is. Answers from an older one are dropped.
     pub generation: u64,
     /// What these hits are about, for knowing when they're about something else.
@@ -392,6 +393,12 @@ impl Results {
         self.progress = progress;
         self.took = self.began.map(|began| began.elapsed());
         self.version += 1;
+    }
+
+    /// Goes up with every change to the hits, the line under the field, whether it runs and the hit gone to: when a host pulls them again.
+    #[must_use]
+    pub fn version(&self) -> u64 {
+        self.version
     }
 
     pub fn running(&self) -> bool {
@@ -1042,5 +1049,91 @@ mod tests {
         );
         assert!(results.status().starts_with("No text to search"));
         assert_eq!(page_label(1203), "Page 1,204");
+    }
+
+    /// The names of `Results`' methods that take `&mut self`, read from this file: every one of them is a change to what a host draws of Find, or nothing.
+    fn mutating_methods() -> Vec<String> {
+        let source = include_str!("find.rs");
+        let block = source.split("\nimpl Results {\n").nth(1).expect("`impl Results` in find.rs");
+        let block = &block[..block.find("\n}\n").expect("the end of `impl Results`")];
+        block
+            .lines()
+            .filter_map(|line| {
+                let line = line.strip_prefix("    ")?;
+                let line = line.strip_prefix("pub ").or_else(|| line.strip_prefix("pub(crate) ")).unwrap_or(line);
+                let (name, rest) = line.strip_prefix("fn ")?.split_once('(')?;
+                rest.starts_with("&mut self").then(|| name.split('<').next().unwrap_or(name).to_string())
+            })
+            .collect()
+    }
+
+    /// Failure (the review of R3.7's S2): a method that changes the hits, the line under the field, whether a query runs or the hit gone to doesn't move
+    /// `version`, so the window, which Find now tells only when its fingerprint of what's drawn changes (the version among it), keeps showing what was; or
+    /// one moves it with nothing changed, so the window pulls for nothing. Every `&mut self` method of `Results`, read from the source so a new one can't be
+    /// left out, is called once where it changes something and once where it can't.
+    #[test]
+    fn every_change_to_the_results_moves_their_version_and_nothing_else_does() {
+        let session = std::sync::Mutex::new(Session::new(TenPages));
+        let tab = session.lock().unwrap().open(std::path::Path::new("/d/ten.pdf")).unwrap().0;
+        let find_plan = plan(&session.lock().unwrap(), TabId(tab)).expect("a plan");
+        let basis = find_plan.basis();
+        // Running, with two hits and the first gone to.
+        let running = || {
+            let mut results = Results::default();
+            let generation = results.begin(tab, "word", 10);
+            results.add(generation, vec![found_on(2), found_on(5)], &Progress::default());
+            results.choose(0);
+            results
+        };
+        // Each method: a call that changes something, and one that can't (`None` for a method that always changes what's drawn).
+        type Call = Box<dyn Fn(&mut Results)>;
+        let table: Vec<(&str, Call, Option<Call>)> = vec![
+            ("begin_on", Box::new(move |r| drop(r.begin_on(&find_plan, "word"))), None),
+            ("begin", Box::new(move |r| drop(r.begin(tab, "other", 10))), None),
+            ("refused", Box::new(move |r| r.refused(tab, "word", basis, "No.".into())), None),
+            ("clear", Box::new(Results::clear), None),
+            (
+                "add",
+                Box::new(|r| r.add(r.generation, vec![found_on(7)], &Progress::default())),
+                Some(Box::new(|r| r.add(r.generation + 1, vec![found_on(7)], &Progress::default()))),
+            ),
+            (
+                "finish",
+                Box::new(|r| r.finish(r.generation, End::Finished, Progress::default())),
+                Some(Box::new(|r| r.finish(r.generation + 1, End::Finished, Progress::default()))),
+            ),
+            (
+                "step",
+                Box::new(|r| drop(r.step(true, (0, 0)))),
+                // From the last hit while the query runs: it waits for one past it, and nothing's gone to.
+                Some(Box::new(|r| {
+                    r.current = Some(1);
+                    drop(r.step(true, (0, 0)));
+                })),
+            ),
+            ("choose", Box::new(|r| drop(r.choose(1))), Some(Box::new(|r| drop(r.choose(9))))),
+            (
+                "choose_place",
+                Box::new(|r| drop(r.choose_place((5, 0)))),
+                Some(Box::new(|r| drop(r.choose_place((9, 9))))),
+            ),
+        ];
+        let mut named: Vec<&str> = table.iter().map(|(name, ..)| *name).collect();
+        let mut found = mutating_methods();
+        named.sort_unstable();
+        found.sort_unstable();
+        assert_eq!(found, named, "every `&mut self` method of `Results` has a row");
+        for (name, changes, cannot) in &table {
+            let mut results = running();
+            let was = results.version();
+            changes(&mut results);
+            assert!(results.version() > was, "{name}: a change that didn't move the version");
+            if let Some(cannot) = cannot {
+                let mut results = running();
+                let was = results.version();
+                cannot(&mut results);
+                assert_eq!(results.version(), was, "{name}: nothing changed, and the version moved");
+            }
+        }
     }
 }

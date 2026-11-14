@@ -248,7 +248,7 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
                 (None, true) => results.status(),
                 _ => String::new(),
             };
-            out.version = results.version;
+            out.version = results.version();
             out.running = results.running();
             if open {
                 let rows = results.rows();
@@ -359,7 +359,7 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
     /// let go before the next and before the host's told.
     fn tell(&self) {
         let mut version = 0;
-        self.session.finder().with_results(&mut |results| version = results.version);
+        self.session.finder().with_results(&mut |results| version = results.version());
         let changed = lock(self.field).tells(version);
         if changed {
             self.listener.model_changed();
