@@ -521,3 +521,87 @@ fn a_file_that_asks_not_to_be_copied_asks_anyway_of_every_copy() {
     }
     assert!(tried.len() >= 7, "the commands that copy: {tried:?}");
 }
+
+/// What writes a file over one that's there, as a line of source can say it: `fs::write(` (with or without `std::`), `File::create(`, and an
+/// `OpenOptions` set to `.truncate(true)` or `.create(true)`. Not seen: an aliased import (`use std::fs::write as put`), a call through a helper in
+/// another crate, or a builder whose `create`/`truncate` takes a variable.
+const WRITES_OVER: &[&str] = &["fs::write(", "File::create(", ".truncate(true)", ".create(true)"];
+
+/// A source's lines outside test items: an item under `#[cfg(test)]` is left out to its end, braces counted as written (as `tests/codes.rs` reads them).
+fn production_lines(source: &str) -> Vec<(usize, &str)> {
+    let mut lines = Vec::new();
+    let mut skipping: Option<(bool, i64)> = None;
+    for (at, line) in source.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if skipping.is_none() {
+            if trimmed.starts_with("#[cfg(test)]") {
+                skipping = Some((false, 0));
+                if trimmed.trim_end() == "#[cfg(test)]" {
+                    continue;
+                }
+            } else {
+                lines.push((at, line));
+                continue;
+            }
+        }
+        let Some((opened, depth)) = skipping.as_mut() else { continue };
+        if !*opened && trimmed.starts_with("#[") {
+            continue;
+        }
+        for c in line.chars() {
+            match c {
+                '{' => {
+                    *opened = true;
+                    *depth += 1;
+                }
+                '}' => *depth -= 1,
+                _ => {}
+            }
+        }
+        if (*opened && *depth <= 0) || (!*opened && line.trim_end().ends_with(';')) {
+            skipping = None;
+        }
+    }
+    lines
+}
+
+/// Failure (AGENTS.md rule 5, R4.2 W1): code in `recto-agent` writes a file its own way, which can go over a file that's there, the person's own
+/// included. The early word, before any walk: no production line of the crate's sources writes a file but through `OwnTemp` and `publish` (or a save
+/// through the lopdf writers), which never replace anything. [`no_command_writes_over_a_file_thats_there`] is the guard that counts: it holds what a
+/// command does, whatever its code says.
+#[test]
+fn nothing_in_the_crate_writes_a_file_but_through_its_one_way() {
+    let mut folders = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    let (mut read, mut found) = (0, Vec::new());
+    while let Some(folder) = folders.pop() {
+        for path in std::fs::read_dir(&folder).unwrap().map(|entry| entry.unwrap().path()) {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if name != "tests" {
+                    folders.push(path);
+                }
+                continue;
+            }
+            // Test-only files: this one, and those registered under `#[cfg(test)]` or named for tests.
+            if !name.ends_with(".rs") || name.ends_with("tests.rs") || matches!(name.as_str(), "policy_guards.rs" | "registry_golden.rs" | "event_agreement.rs")
+            {
+                continue;
+            }
+            read += 1;
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (at, line) in production_lines(&text) {
+                let code = line.split("//").next().unwrap_or_default();
+                if WRITES_OVER.iter().any(|form| code.contains(form)) {
+                    found.push(format!("{}:{}: {}", path.display(), at + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(read > 50, "the crate's sources were read: {read} files");
+    assert!(
+        found.is_empty(),
+        "a file written its own way, which can go over one that's there; make it with `render::OwnTemp::create` and put it in place with \
+         `render::publish_picture`, which never replace anything:\n{}",
+        found.join("\n")
+    );
+}
