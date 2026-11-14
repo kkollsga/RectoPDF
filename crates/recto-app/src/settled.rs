@@ -285,9 +285,11 @@ mod tests {
     }
 
     /// Failure (the settled audit, 2026-11-14, gap 2): `qa wait` flushed the session thread's queue and then waited for the page views, so a job that ended
-    /// during that wait told the session its word (a page's note, a look) after the flush, and `qa wait` answered settled with it queued and not taken. Forced:
-    /// a page view's job ends held before its word ([`recto_reader::engine::Qa::hold_tells`]), the session thread held, and the word let go into its queue;
-    /// the page view now says settled, as `qa wait` last asked it, and the one definition must not.
+    /// during that wait told the session its word (a page's note, a look) after the flush, and `qa wait` answered settled with it queued and not taken.
+    /// Forced, as `qa wait` asks it ([`super::wait`] with a host that draws), from a thread of its own: its flush taken, then a page view's job ends held
+    /// before its word ([`recto_reader::engine::Qa::hold_tells`]), the session thread held, and the word let go into its queue while the test plays the
+    /// host. Settled must not be said with the session thread not through that word: here it's never through it inside the wait's limit, so the wait says
+    /// what was still under way.
     #[test]
     fn a_page_views_word_the_session_hasnt_taken_isnt_settled() {
         let app = HeadlessApp::start();
@@ -311,23 +313,34 @@ mod tests {
         view.y += 300.0;
         applied_as_the_host(&engine.set_viewport(view));
         assert!(engine.qa().wait_for_held_tell(WAIT_LIMIT), "a job's end held before its word");
+        let turns = app.core().core.at_rest().expect("the session thread at rest");
+        let core = std::sync::Arc::clone(app.core());
+        let (said, heard) = std::sync::mpsc::channel();
+        let waiting = std::thread::Builder::new()
+            .name("test-qa-wait".into())
+            .spawn(move || {
+                let answer = super::wait(&super::watched!(core), PageViews::Drawn, Duration::from_millis(500), || {});
+                let _ = said.send((answer, core.core.at_rest().is_ok()));
+            })
+            .expect("a thread");
+        app.wait_until("the wait's flush taken", || app.core().core.at_rest().is_ok_and(|now| now > turns));
         let held = app.hold_session_thread();
         engine.qa().hold_tells(false);
-        let mut drawn = false;
-        let began = std::time::Instant::now();
-        while !drawn {
+        // The host's turns, as the window takes the page view's layers, until the wait answers.
+        let (answer, session_at_rest) = loop {
             applied_as_the_host(&engine.drain());
             engine.applied();
-            drawn = engine.wait_settled(Duration::from_millis(5));
-            assert!(began.elapsed() < WAIT_LIMIT, "the page view never came to rest: {}", engine.report().0);
-        }
-        let busy = under_way(&crate::settled::watched!(app.core()), PageViews::Drawn);
+            if let Ok(said) = heard.recv_timeout(Duration::from_millis(5)) {
+                break said;
+            }
+        };
         drop(held);
+        waiting.join().expect("the wait's thread");
         host_turns(&app, &mut view, true);
         app.settle();
-        assert!(
-            busy.iter().any(|what| what.contains("session thread")),
-            "settled with the page view's word not taken by the session: {busy:?}"
-        );
+        match answer {
+            Ok(()) => assert!(session_at_rest, "settled with the page view's word not taken by the session thread"),
+            Err(busy) => assert!(busy.iter().any(|what| what.contains("session thread")), "{busy:?}"),
+        }
     }
 }
