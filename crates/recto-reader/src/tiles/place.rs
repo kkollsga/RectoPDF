@@ -71,6 +71,16 @@ pub fn place_stamp() -> u64 {
     PLACE_CLOCK.load(Ordering::SeqCst)
 }
 
+/// What a job planned now carries as its `asked` ([`super::Job::asked`]): the place clock, or, while a jump sent to the host hasn't arrived, a stamp
+/// before every send, 0. **Until the host arrives where a jump sent it, the view is still where it was,** and what's planned is planned from there; the
+/// jump's send moved the clock on, so stamped with the clock such a draw would count as asked after the send, and a jump that let a place withheld from
+/// agents go would be followed by news of the pages around where it was (the third review: refreshes in that gap were told as `page_drawn` around the
+/// old place). Stamped 0, the session's mail drops it for a tab whose place was let go ([`recto_session`]'s `draw_is_told`), and tells it for every
+/// other tab as before, whose cutoff is 0. One branch a plan.
+pub(super) fn asked_now(place: &Place) -> u64 {
+    if place.jump.is_some() { 0 } else { place_stamp() }
+}
+
 /// Built only in the tiles module ([`Place::new`]), as each of [`Reader`]'s parts is (see there): the engine reaches it through `Reader`'s field for the three takes below.
 #[derive(Debug)]
 pub(crate) struct Place {

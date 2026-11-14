@@ -129,8 +129,9 @@ fn an_agent_cant_make_a_synced_comparison_with_a_protected_pane() {
 }
 
 /// Failure (S2, 3b): a plain tab left by following a protected one keeps the page it was left on, which says how far the protected one goes, and an
-/// agent reads it once the person turns synced scroll off. Its place stays withheld until it's next set otherwise; an agent's `goto` on it sets it, and
-/// says it again. A tab that never moved while it followed was never placed by it, and says its place.
+/// agent reads it once the person turns synced scroll off. Its place stays withheld until the person next sets it themselves; an agent's `goto` on it
+/// moves it and keeps it withheld (the third review's D-A), and the person's own page typed in sets it, and it's said again. A tab that never moved while
+/// it followed was never placed by it, and says its place.
 #[test]
 fn a_tab_left_by_following_a_protected_one_keeps_its_place_withheld_until_moved() {
     let page_of = |app: &HeadlessApp, tab: u32| app.recto(Level::ReadOnly, &["where", "--tab", &format!("#{tab}")]).expect("where")["page"].clone();
@@ -145,9 +146,22 @@ fn a_tab_left_by_following_a_protected_one_keeps_its_place_withheld_until_moved(
     assert_eq!(page_of(&app, plain_tab), Value::Null, "left where following put it");
     command_click(&app, plain_tab);
     assert_eq!(page_of(&app, plain_tab), Value::Null, "and after the comparison ends");
-    control(&app, &format!(r##"{{"cmd":"goto","tab":"#{plain_tab}","page":3}}"##)).expect("goto");
+    let goto = control(&app, &format!(r##"{{"cmd":"goto","tab":"#{plain_tab}","page":3}}"##)).expect("goto");
     app.settle();
-    assert_eq!(page_of(&app, plain_tab), 3, "an agent's goto set its place");
+    assert_eq!(
+        (goto["page"].clone(), goto["place_withheld"].clone()),
+        (Value::Null, Value::Bool(true)),
+        "{goto}"
+    );
+    assert_eq!(page_of(&app, plain_tab), Value::Null, "an agent's goto kept it withheld");
+    app.act(UiAction::Row {
+        row: app.tabs().into_iter().find(|row| row.tab == plain_tab).expect("its row"),
+        adding: false,
+    });
+    app.settle();
+    assert!(app.act(UiAction::PageTyped { text: "4".into() }).understood);
+    app.settle();
+    assert_eq!(page_of(&app, plain_tab), 4, "the person's own page typed in set its place");
 }
 
 /// **What an agent is told while the person compares a plain document with a protected one of `pages` pages that says `word`:** side by side; synced, the protected one
@@ -431,8 +445,9 @@ fn first_pane_shown(app: &HeadlessApp, tab: u32, zoom: f64) -> (recto_reader::Vi
 /// **What an agent is told through sequences of commands beside a protected document of `pages` pages saying `word`** (the second security review): the
 /// plain tab `P` left by following it to its end; then side by side with a third plain tab `C` instead, which an agent at Control asks to sync and the
 /// person syncs, and scrolls, `P` following (S-1); then, with `P` read, an agent's zoom, a draw of `P`'s pages ended and its word held, and an agent's
-/// `goto 8` on `P` (the page following, then the third, left it on beside five pages, another beside nine) before the word is let go (S-3); then what's offered and said
-/// of `P`'s place and trail (S-2, D-2). At each step, what an agent at Control and Read-only reads and a watcher heard.
+/// `goto 8` on `P` (the page following, then the third, left it on beside five pages, another beside nine) before the word is let go (S-3), which keeps
+/// its place withheld (D-A); then what's offered and said of `P`'s place and trail (S-2, D-2). At each step, what an agent at Control and Read-only reads
+/// and a watcher heard.
 fn agent_told_through_sequences(pages: usize, word: &str) -> Vec<String> {
     use recto_control::host::Host;
     let disk = Disk::new();
@@ -530,9 +545,8 @@ fn agent_told_through_sequences(pages: usize, word: &str) -> Vec<String> {
             Some(page),
         )
     };
-    told.push(format!("drawn around where following left it: {:?}", [7, 9, 11, 13].map(drawn)));
-    // The drop is of the word, not the drawing: the page gone to is drawn, and said to be.
-    app.wait_until("the page gone to is drawn", || matches!(drawn(8), recto_agent::ConditionState::Met(_)));
+    // Withheld still, so no page's drawing is the agent's to wait for, the one it went to included.
+    told.push(format!("drawn around where following left it: {:?}", [7, 8, 9, 11, 13].map(drawn)));
     told.extend(look(&app, &mut watching, "after the goto"));
     told
 }
@@ -541,7 +555,7 @@ fn agent_told_through_sequences(pages: usize, word: &str) -> Vec<String> {
 /// follows it unwithheld, or which it follows with its mark let go; an agent syncs them; a draw asked before an agent's `goto` lets the place go is told
 /// after it (`page_drawn` around where following left it, `wait page-drawn`); the place the page view said before it is kept on the page the goto went to
 /// (`session show`'s zoom and how far down); Back is offered after a jump elsewhere and not after one to the same place. Twins whose protected documents
-/// differ in length and words, so following leaves the plain tab on page 8 in one, are told and hear the same; and the person's page is still drawn.
+/// differ in length and words, so following leaves the plain tab on page 8 in one, are told and hear the same.
 #[test]
 fn an_agent_is_told_nothing_of_a_followed_place_through_sequences() {
     deadlines_met();
@@ -553,4 +567,186 @@ fn an_agent_is_told_nothing_of_a_followed_place_through_sequences() {
         differs.join("\n")
     );
     assert_eq!(one.len(), two.len());
+}
+
+/// The person has a 30-page plain document left by following a protected one of `pages` pages that says `word` to its end, on its own in the first pane,
+/// with the host's view of it where following left it and drawn there; the protected one in another tab. The protected one was compared in the second
+/// pane, so the first pane's page view is given no view by the person's scroll there, whose `scrolled_to` says every jump has arrived: the host's view
+/// here says the last scroll it applied, as the real host's does. Gives the app, the two tabs (plain, protected), the host's view and the first pane's
+/// page view.
+fn left_by_following_alone(pages: usize, word: &str) -> (HeadlessApp, u32, u32, recto_reader::Viewport, recto_reader::Engine) {
+    let disk = Disk::new();
+    let plain = disk.pdf("plain.pdf", 30);
+    let locked = protected(&disk, pages, word);
+    let app = disk.start();
+    person_unlocks(&app, &locked);
+    app.open(&plain);
+    let tab = |name: &str| app.tabs().into_iter().find(|row| row.text == name).expect(name).tab;
+    let (plain_tab, locked_tab) = (tab("plain"), tab("protected"));
+    command_click(&app, locked_tab);
+    app.act(UiAction::Menu { id: "compare.synced".into() });
+    app.act(UiAction::PaneRead { tab: locked_tab });
+    app.settle();
+    person_scrolls(&app, locked_tab, 1.0);
+    app.act(UiAction::Menu { id: "compare.separate".into() });
+    app.settle();
+    // The protected one out of the comparison: the plain one alone.
+    command_click(&app, locked_tab);
+    let inner = std::sync::Arc::clone(app.core());
+    assert_eq!(inner.panes.tab_of(0).map(|id| id.0), Some(plain_tab), "the plain one alone in the first pane");
+    assert_eq!(inner.panes.count(), 1);
+    let engine = inner.engine.clone();
+    let at = engine.places().1.into_iter().find(|(id, _)| *id == plain_tab).expect("its place").1;
+    let mut view = recto_reader::Viewport {
+        x: 0.0,
+        y: at.y,
+        width: 292.0,
+        height: 225.0,
+        frame_width: 292.0,
+        magnification: at.magnification,
+        backing: 1.0,
+        live: false,
+        scrolled_to: 0,
+    };
+    crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
+    crate::testkit::headless::host_turns(&app, &mut view, true);
+    (app, plain_tab, locked_tab, view, engine)
+}
+
+/// What an agent at Control reads of the plain tab in `session show`: its page, zoom and how far down.
+fn shown_of(app: &HeadlessApp, plain_tab: u32) -> Value {
+    let shown = app.recto(Level::Control, &["session", "show"]).expect("session show");
+    let tab = shown["tabs"]
+        .as_array()
+        .expect("tabs")
+        .iter()
+        .find(|tab| tab["tab"] == plain_tab)
+        .cloned()
+        .expect("the plain tab");
+    serde_json::json!([tab["page"], tab["zoom"], tab["within_page"]])
+}
+
+/// Failure (the third security review, D-B 1): the person's own `goto` lets the place of a tab left by following go, and before the session thread's look
+/// sends the page view the jump, the person goes to another tab: the page view still has the plain tab where following left it, says that place at the
+/// next read and then keeps the tab warm there in the background, and it's taken in, on the page the person went to; so `session show` gives its zoom and
+/// how far down only when that page is where following left the tab. Twins whose protected documents differ in length, the person going in both to the
+/// page following left the first twin on, are told the same, and nothing of the old place.
+#[test]
+fn a_warm_page_view_doesnt_tell_the_place_the_persons_jump_let_go() {
+    let told = |pages: usize, word: &str, to: Option<u32>| {
+        let (app, plain_tab, locked_tab, _, _) = left_by_following_alone(pages, word);
+        let left_on = app
+            .core()
+            .host
+            .session
+            .with_session(|s| s.tabs().tab(recto_session::TabId(plain_tab)).expect("plain").page + 1);
+        let to = to.unwrap_or(left_on);
+        let held = app.hold_session_thread_aside();
+        let host = &app.core().host;
+        let person = |line: String| host.run_counted(recto_agent::Actor::Person, &recto_agent::parse(&line).expect("a command"), &mut Vec::new());
+        person(format!(r##"{{"cmd":"goto","tab":"#{plain_tab}","page":{to}}}"##)).expect("the person's goto");
+        person(format!(r##"{{"cmd":"tap","tab":"#{locked_tab}"}}"##)).expect("the person's tap");
+        held.let_go();
+        app.settle();
+        // Looked at again, as every look reads the views.
+        app.core().take_places();
+        (shown_of(&app, plain_tab), to, left_on)
+    };
+    let (five, to, left_on) = told(5, "Locked", None);
+    let (nine, _, left_on_too) = told(9, "Sealed", Some(to));
+    assert_ne!(left_on, left_on_too, "following left the twins on different pages");
+    assert_eq!(five, nine, "the old place told on the page the person went to");
+    assert_eq!(
+        five,
+        serde_json::json!([to, null, null]),
+        "the page the person went to, and nothing of the place before it"
+    );
+}
+
+/// Failure (the third security review, D-B 2): the cutoff for a draw's news after the person's own jump lets a withheld place go was the jump's send, but
+/// the view stays where it was until the host arrives there: what the host's view asks for in that gap (a pinch, a resize) is planned at the old place
+/// with a stamp after the send, and its `page_drawn` names the pages around where following left the tab. The host here holds its turn between the send
+/// and the arrival and zooms the view where it was. Twins whose protected documents differ in length hear the same: the page the person went to.
+#[test]
+fn nothing_drawn_before_the_view_arrives_at_the_persons_jump_is_heard() {
+    let heard_of = |pages: usize, word: &str| {
+        let (app, _, _, view, engine) = left_by_following_alone(pages, word);
+        let mut watching = app.agent_watches(Level::Control);
+        assert!(app.act(UiAction::PageTyped { text: "20".into() }).understood);
+        assert!(app.core().core.flush(crate::testkit::headless::WAIT_LIMIT), "the look sent the jump");
+        // The host's UI thread hasn't scrolled there: it zooms the view where it is, and what's there is drawn at the new size. Where the jump goes is
+        // kept for when it does.
+        let mut pinched = recto_reader::Viewport {
+            magnification: view.magnification * 1.5,
+            ..view
+        };
+        let sent = std::cell::Cell::new(None);
+        let take = |ops: Vec<recto_reader::Op>| {
+            crate::testkit::headless::applied_as_the_host(&ops);
+            for op in ops {
+                if let recto_reader::Op::ScrollTo { y, seq } = op {
+                    sent.set(Some((y, seq)));
+                }
+            }
+        };
+        take(engine.set_viewport(pinched));
+        app.wait_until("the view drew where it was", || {
+            take(engine.drain());
+            engine.applied();
+            engine.qa().at_rest().is_some()
+        });
+        app.settle();
+        let (y, seq) = sent.get().expect("the jump's scroll, for the host");
+        (pinched.y, pinched.scrolled_to) = (y, seq);
+        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(pinched));
+        crate::testkit::headless::host_turns(&app, &mut pinched, true);
+        pages_heard(&mut watching)
+            .into_iter()
+            .filter(|event| event["event"] == "page_drawn")
+            .collect::<Vec<_>>()
+    };
+    let (five, nine) = (heard_of(5, "Locked"), heard_of(9, "Sealed"));
+    assert_eq!(five, nine, "pages drawn where following left the tab were heard");
+    assert!(!five.is_empty(), "the page gone to is drawn, and heard");
+}
+
+/// Failure (the third security review; the coordinator's D-A): a menu id an agent runs (`recto palette --run`) lets the place of a tab left by following
+/// a protected one go, as the person's own would: Go to Page's way, a contents row's, Back's, a Find hit's. Every menu id, run for an agent at Full by
+/// the palette's way on the plain tab being read, on twins whose protected documents differ in length: after each the plain tab's place is still
+/// withheld while it's open, and what each run says is the same. What closes or empties goes last.
+#[test]
+fn no_menu_id_an_agent_runs_lets_a_withheld_place_go() {
+    deadlines_met();
+    let ids = super::menu_agents::every_id();
+    let (last, first): (Vec<&String>, Vec<&String>) = ids.iter().partition(|id| matches!(id.as_str(), "file.close" | "recent.clear" | "app.quit"));
+    let twins = [5, 9].map(|pages| {
+        let (app, plain_tab, locked_tab) = synced_beside_protected(pages);
+        person_scrolls(&app, locked_tab, 1.0);
+        app.act(UiAction::Menu { id: "compare.separate".into() });
+        app.act(UiAction::PaneRead { tab: plain_tab });
+        app.settle();
+        (app, plain_tab)
+    });
+    let mut differs = Vec::new();
+    let mut let_go = None;
+    for id in first.into_iter().chain(last) {
+        let [one, two] = [&twins[0], &twins[1]].map(|(app, plain_tab)| {
+            let core = app.core();
+            let ran = core.host.run_menu_id(recto_agent::Actor::Agent(Level::Full), core, id, None, &mut Vec::new());
+            app.settle();
+            let kept = core.host.session.with_session(|s| {
+                let plain = recto_session::TabId(*plain_tab);
+                s.tabs().tab(plain).is_none() || recto_session::compare::place_withheld(s, plain)
+            });
+            (format!("{:?}", ran.map_err(|error| error.code)), kept)
+        });
+        if one.0 != two.0 {
+            differs.push(format!("{id}:\n  {}\n  {}", one.0, two.0));
+        }
+        if !(one.1 && two.1) && let_go.is_none() {
+            let_go = Some(id.clone());
+        }
+    }
+    assert_eq!(let_go, None, "the first menu id an agent ran that let the withheld place go");
+    assert!(differs.is_empty(), "told something of the protected document:\n{}", differs.join("\n"));
 }

@@ -10,7 +10,7 @@ use serde_json::json;
 const NOTICE_IDS: [&str; 3] = ["print.anyway.1", "tools.copy_anyway.1", "print.stop"];
 
 /// Every menu id there is, the notices' included.
-fn every_id() -> Vec<String> {
+pub(super) fn every_id() -> Vec<String> {
     let mut ids: Vec<String> = super::coverage::menu_ids().into_iter().collect();
     ids.extend(NOTICE_IDS.map(str::to_string));
     ids

@@ -277,12 +277,18 @@ impl<L: DocLoader> Session<L> {
     }
 
     /// A jump, by the person or an agent. An agent's marks give way to the person's: see [`trail`].
+    ///
+    /// **Who lets a withheld place go, stated once** (the third review; the coordinator's D-A of 2026-11-14): only the person's own jump, an absolute
+    /// place they chose, lets it go, with what came of it, to the page it's on too, so a jump there says nothing a jump elsewhere wouldn't (D-1, S-2). An
+    /// agent's jump moves the tab as ever and leaves its place withheld: every route an agent has to a jump (`goto` by page, label or entry, `open
+    /// --page`, a link it follows, a Find hit by its index, a palette or menu row) comes here as [`Author::Agent`], so no guess of an agent's can be
+    /// checked against where following left the tab, by what it's told or what's drawn after, for as long as the place is withheld.
     pub fn jump_as(&mut self, id: TabId, page: u32, within: f64, by: Author) -> Result<(), SessionError> {
         let here = marked_here(self, id).ok_or(SessionError::NoSuchTab)?;
         let to = trail::Stop::new(page.min(self.pages().count(id).saturating_sub(1)), within);
-        // An absolute place: a withheld one is let go, with what came of it, to the page it's on too, so a jump there says nothing a jump elsewhere
-        // wouldn't (D-1, S-2).
-        compare::let_go_of_place(self, id);
+        if by == Author::Owner {
+            compare::let_go_of_place(self, id);
+        }
         let tab = self.tabs.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
         tab.reading.trail.get_or_insert_default().jumped(here, to, by == Author::Agent);
         self.land(id, to)

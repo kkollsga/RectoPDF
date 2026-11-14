@@ -111,7 +111,7 @@ impl Reader {
                 file,
                 source_page,
                 generation,
-                asked: super::place::place_stamp(),
+                asked: super::place::asked_now(&self.place),
                 kind: PlanKind::Size,
             }));
         }
@@ -132,7 +132,7 @@ impl Reader {
                 file,
                 source_page,
                 generation,
-                asked: super::place::place_stamp(),
+                asked: super::place::asked_now(&self.place),
                 kind: PlanKind::Links,
             });
         }
@@ -189,7 +189,7 @@ impl Reader {
                 file,
                 source_page,
                 generation,
-                asked: super::place::place_stamp(),
+                asked: super::place::asked_now(&self.place),
                 kind: PlanKind::Traits,
             }));
         }
@@ -205,7 +205,7 @@ impl Reader {
                 file,
                 source_page,
                 generation,
-                asked: super::place::place_stamp(),
+                asked: super::place::asked_now(&self.place),
                 kind: PlanKind::Draw {
                     scale: preview_scale,
                     rect,
@@ -229,7 +229,7 @@ impl Reader {
                 file,
                 source_page,
                 generation,
-                asked: super::place::place_stamp(),
+                asked: super::place::asked_now(&self.place),
                 kind: PlanKind::Draw {
                     scale,
                     rect,
@@ -254,7 +254,7 @@ impl Reader {
             file,
             source_page,
             generation,
-            asked: super::place::place_stamp(),
+            asked: super::place::asked_now(&self.place),
             kind: PlanKind::Draw {
                 scale,
                 rect,
@@ -279,7 +279,7 @@ impl Reader {
             file,
             source_page,
             generation,
-            asked: super::place::place_stamp(),
+            asked: super::place::asked_now(&self.place),
             kind: PlanKind::Text { check: wanted.check },
         })
     }

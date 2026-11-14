@@ -202,19 +202,7 @@ impl AppHost {
                 .filter(|tab| session.tabs().withheld_from_agents(tab.id))
                 .map(|tab| tab.id.0)
                 .collect();
-            let reading = session.tabs().active();
-            let hidden_commands = [(true, "go.back"), (false, "go.forward")]
-                .into_iter()
-                .filter(|(back, _)| {
-                    // A protected document's are refused as `protected` by their command, as every command about it is.
-                    reading.is_some_and(|id| {
-                        !session.tabs().withheld_from_agents(id)
-                            && recto_agent::place::refuses(session, actor, recto_agent::commands::FromPlace::Trail { back: *back }, id)
-                    })
-                })
-                .map(|(_, menu)| menu)
-                .collect();
-            (hidden_tabs, hidden_commands)
+            (hidden_tabs, recto_agent::place::trail_rows_hidden(session, actor))
         });
         let whom = crate::palette::ForWhom {
             hidden_tabs,

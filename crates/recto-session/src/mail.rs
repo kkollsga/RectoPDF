@@ -161,7 +161,15 @@ impl PageViewMail {
     pub(crate) fn view_told_of(&mut self, tab: TabId, stamp: u64, line: (u32, u16), anchor: (u32, f64)) -> bool {
         let jump_waiting = self.jumps.iter().any(|(id, ..)| *id == tab);
         let word = self.word(tab);
-        if stamp < word.last_read {
+        // **Nothing a view says of where it was before the person's jump let a withheld place go is taken in** (the third review, D-B): while the jump
+        // waits to be sent, a view that holds the tab is where following left it (a page view keeping it warm in the background, the person having gone
+        // to another tab before the look), and once it's sent, a read stamped before the send is of then. Taken in, it would be the place kept on the
+        // page the jump went to, and its zoom and how far down given an agent only when that page is where following left the tab.
+        let before_release = match word.released {
+            PENDING => jump_waiting,
+            at => stamp < at,
+        };
+        if stamp < word.last_read || before_release {
             return false;
         }
         word.last_read = stamp;
@@ -208,7 +216,13 @@ impl PageViewMail {
     /// **A withheld place of the tab's has been let go** ([`crate::compare::let_go_of_place`]): every draw of it is dropped as it's told until the jump
     /// that goes with the release is sent, and from then those asked before the send, as they were asked of a view that was where the withheld place had
     /// it: a draw's end announced after the release would say which pages were around that place (`wait page-drawn`, a watcher's `page_drawn`).
-    pub(crate) fn release(&mut self, tab: TabId) {
+    ///
+    /// `live`: a page view may hold the tab (it's warm). A cold tab's has no view to have drawn anything, and gets no word here, so it costs nothing
+    /// in the mail; one it has already, from before it went cold, is cut off all the same.
+    pub(crate) fn release(&mut self, tab: TabId, live: bool) {
+        if !live && !self.words.iter().any(|word| word.tab == tab) {
+            return;
+        }
         self.word(tab).released = PENDING;
         self.cutoffs = true;
     }
@@ -315,5 +329,24 @@ impl crate::parts::PartMut<'_, PageViewMail> {
     /// Whether the last edit removed the page the reader was on, so its place moved to the nearest one. Asking clears it.
     pub fn take_place_lost(&mut self) -> bool {
         std::mem::take(&mut self.0.place_lost)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure (the third review, D-D): letting go of a cold tab's withheld place makes it a view word, which nothing takes away again (a cold tab's word
+    /// goes only as it goes dormant, which it has), so the mail holds a word for a tab no page view holds, and every later draw of any tab searches the
+    /// words for a cutoff. A cold tab gets none; a warm tab's cutoff goes with its word, and with the last one the search does too.
+    #[test]
+    fn a_cold_tab_gets_no_cutoff_and_the_last_cutoff_goes_with_its_word() {
+        let mut mail = PageViewMail::new();
+        mail.release(TabId(1), false);
+        assert!(!mail.holds_view_word_of(TabId(1)) && !mail.cutoffs, "a cold tab costs nothing here");
+        mail.release(TabId(2), true);
+        assert!(mail.cutoffs);
+        mail.forget_view_word(TabId(2));
+        assert!(!mail.cutoffs, "no tab has a cutoff, so no draw looks for one");
     }
 }

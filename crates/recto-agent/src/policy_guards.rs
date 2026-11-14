@@ -452,8 +452,10 @@ enum Followed {
     Following,
     /// The same, then synced scroll off: left where following put it.
     Left,
-    /// Left, then an agent's `goto 1` on it, which lets its place go and leaves the followed place on its trail for Back.
+    /// Left, then an agent's `goto 1` on it, which moves it and keeps its place withheld (D-A), and leaves the followed place on its trail for Back.
     LeftThenJumped,
+    /// Left, then the person's own `goto 1` on it, which lets its place go (the one release there is) and leaves the followed place on its trail.
+    PersonJumped,
     /// That, then the person's Back onto the followed place.
     PersonWentBack,
     /// Left, with a stop the person made before it followed, and then the person's Back to that stop, leaving the followed place on the way forward.
@@ -463,17 +465,18 @@ enum Followed {
     SyncedWithAThird,
     /// Left, with the page view's exact place on the page following left it on (how far down it the protected document was) and the tab in the
     /// background behind the protected one, then an agent's `goto 9`: the page following left it on in the first twin, another in the second (the second
-    /// review, S-2 and D-2: what's kept of the old place, and what the trail says).
+    /// review, S-2 and D-2: what's kept of the old place, and what the trail says; the third's D-A: the place stays withheld).
     InTheBackgroundThenJumpedToPageNine,
     /// Left, with the page view's place, then the session written to its record and restored from it, as a restart or an update's hand-off has it (the
     /// second review, S-4).
     Restarted,
 }
 
-const FOLLOWED: [Followed; 8] = [
+const FOLLOWED: [Followed; 9] = [
     Followed::Following,
     Followed::Left,
     Followed::LeftThenJumped,
+    Followed::PersonJumped,
     Followed::PersonWentBack,
     Followed::PersonWentBackFromIt,
     Followed::SyncedWithAThird,
@@ -538,6 +541,9 @@ fn following_session(secret: u32, followed: Followed) -> (Mutex<Session<crate::D
     }
     if matches!(followed, Followed::LeftThenJumped | Followed::PersonWentBack) {
         session.jump_as(other, 0, 0.0, recto_session::Author::Agent).unwrap();
+    }
+    if matches!(followed, Followed::PersonJumped) {
+        session.jump_as(other, 0, 0.0, recto_session::Author::Owner).unwrap();
     }
     if matches!(followed, Followed::PersonWentBack | Followed::PersonWentBackFromIt) {
         assert!(session.step_as(other, true, recto_session::Author::Owner).unwrap());
@@ -658,11 +664,89 @@ fn no_command_tells_an_agent_where_a_tab_that_followed_a_protected_one_is() {
     assert!(differs.is_empty(), "told where the plain tab is:\n{}", differs.join("\n"));
 }
 
+/// Every command of the walks, naming `#1`: [`every_command`] and the ones [`no_command_tells_an_agent_where_a_tab_that_followed_a_protected_one_is`]
+/// adds (a goto to the followed page, each command whose page can be left out, Find's steps and its hit by index).
+fn the_walks_commands() -> Vec<Command> {
+    let tab = || crate::TabRef::from("#1");
+    let pick = |all: bool| commands::text::Select {
+        tab: tab(),
+        page: None,
+        to_page: None,
+        chars: None,
+        at: None,
+        to: None,
+        unit: None,
+        all,
+        anyway: false,
+    };
+    let mut walk = every_command();
+    walk.extend([
+        Command::from(commands::linking::Goto {
+            tab: "#1".into(),
+            page: Some(9),
+            label: None,
+            within: None,
+            entry: None,
+        }),
+        Command::from(commands::highlight::Highlights { tab: tab(), page: None }),
+        Command::from(pick(false)),
+        Command::from(commands::finding::Find::from(commands::finding::FindAsk::Hit(0))),
+    ]);
+    walk.extend(
+        [(true, false), (false, false), (true, true)]
+            .map(|(forward, jump)| Command::from(commands::finding::Find::from(commands::finding::FindAsk::Step { forward, jump }))),
+    );
+    walk
+}
+
+/// Failure (the third security review; the coordinator's D-A): some command an agent sends lets the place of a tab left by following a protected one
+/// go (its `goto`, `open --page`, a link, a Find hit by its index, a contents entry), and with it what follows a release (the page view's old place told
+/// again, the draws before it arrives, how many of a page's tiles are drawn again) can be set against the agent's own guess, again and again. Every
+/// command of the walks, run one after another by an agent at Full on one session, naming the plain tab, on twins that differ only in where following
+/// left it: each answer and what's heard is the same, and after each the plain tab's place is still withheld, as long as it's open. Destructive ones
+/// (a close, a stop, a restore) go last, so the rest run on the tab.
+#[test]
+fn no_agent_command_lets_a_withheld_place_go() {
+    deadlines_met();
+    let (last, first): (Vec<Command>, Vec<Command>) = the_walks_commands()
+        .into_iter()
+        .map(|command| naming_the_plain_tab(&command))
+        .partition(|command| matches!(command.tag(), "close" | "stop" | "session_restore"));
+    let twins = [1, 2].map(|secret| following_session(secret, Followed::Left));
+    let plain = recto_session::TabId(2);
+    let mut differs = Vec::new();
+    let mut let_go = None;
+    for command in first.iter().chain(&last) {
+        let [one, two] = [&twins[0], &twins[1]].map(|(access, locked, plain_file)| {
+            let mut events = Vec::new();
+            let result = execute(access, Actor::Agent(Level::Full), command, &mut events);
+            let session = access.lock().unwrap();
+            crate::withheld::for_agents(&session, None, &mut events);
+            let kept = session
+                .tabs()
+                .tab(plain)
+                .is_none_or(|_| recto_session::compare::place_withheld(&session, plain));
+            let told = format!("{} {events:?}", said(result))
+                .replace(locked.folder().to_str().unwrap(), "<locked>")
+                .replace(plain_file.folder().to_str().unwrap(), "<plain>");
+            (told, kept)
+        });
+        if one.0 != two.0 {
+            differs.push(format!("{}:\n  {}\n  {}", command.tag(), one.0, two.0));
+        }
+        if !(one.1 && two.1) && let_go.is_none() {
+            let_go = Some(command.tag());
+        }
+    }
+    assert_eq!(let_go, None, "the first agent's command that let the withheld place go");
+    assert!(differs.is_empty(), "told where the plain tab is:\n{}", differs.join("\n"));
+}
+
 /// Failure (security review of S2's round): a command that starts from where a tab is says it doesn't ([`commands::Cmd::starts_from`]), so an agent's
 /// runs while that place follows a protected document's and tells it; or one that doesn't is refused for it. Each of [`every_command`], and each way of
 /// asking Find, against the reviewed list: Back and Forward start from the place to a stop on the trail; Find's steps, and folding a contents section
 /// (against what following the place opens), from the place; every other command names its pages, or none, and a Find hit chosen by its index is an
-/// absolute move, which lets a withheld place go as `goto` does (the second review, D-1).
+/// absolute move, as `goto` is (the second review, D-1), which the person's lets a withheld place go by and an agent's doesn't (D-A).
 #[test]
 fn what_starts_from_the_place_is_as_listed() {
     use commands::FromPlace;

@@ -61,7 +61,7 @@ pub fn place_withheld_refusal() -> AgentError {
         "This tab's place follows a document the user opened with its password, so nothing that starts from where it is can be done by an agent.",
         exit::PROTECTED,
     )
-    .then("`recto goto` a page first.")
+    .then("Its place is given again once the user has gone to a page in that tab themselves. Nothing an agent does gives it back.")
 }
 
 /// **The gate:** whether `actor`'s command that starts `from` the place of tab `id` is refused: an agent's, while the tab's place is withheld, or Back or
@@ -87,6 +87,20 @@ pub(crate) fn trail_offers<L: DocLoader>(session: &Session<L>, actor: Actor, id:
     let (back, forward) = session.tabs().can_go_back_and_forward(id);
     let refused = |back| refuses(session, actor, FromPlace::Trail { back }, id);
     (back && !refused(true), forward && !refused(false))
+}
+
+/// **The palette's Back and Forward rows left out for `actor`,** by their menu ids: an agent's while the gate would refuse its own `back` or `forward` in
+/// the tab being read ([`refuses`]), so whether they're listed says nothing of a withheld place (D-2). A protected document's are refused as
+/// `protected` by their command, as every command about it is, and listed. The gate's rule, asked here for the app's palette.
+pub fn trail_rows_hidden<L: DocLoader>(session: &Session<L>, actor: Actor) -> Vec<&'static str> {
+    let Some(id) = session.tabs().active().filter(|id| !session.tabs().withheld_from_agents(*id)) else {
+        return Vec::new();
+    };
+    [(true, "go.back"), (false, "go.forward")]
+        .into_iter()
+        .filter(|(back, _)| refuses(session, actor, FromPlace::Trail { back: *back }, id))
+        .map(|(_, menu)| menu)
+        .collect()
 }
 
 /// The state record's sizes and counts, which an answer gives as the host says them.
@@ -266,8 +280,9 @@ mod tests {
         ("model.rs", "pane_snapshot", "what a pane's page view is given to show: the person's window"),
         (
             "core/places.rs",
-            "take_in",
-            "what the page views say, taken into the session; its `page_changed` is judged where events leave",
+            "take_in:tab.page",
+            "the page the session has, against which a view's word is its own, and its `page_changed`, judged where events leave; only `tab.page`, so a \
+             write of `reading.place` here isn't let through (the third review)",
         ),
         (
             "core/places.rs",
@@ -331,6 +346,15 @@ mod tests {
         found
     }
 
+    /// Whether an entry `named` allows a read in `function` of a line's `words`: the function's name, or `name:read`, which allows only lines whose one
+    /// read of [`READS`] is `read`.
+    fn allows(named: &str, function: &str, words: &str) -> bool {
+        match named.split_once(':') {
+            None => named == function,
+            Some((name, only)) => name == function && READS.iter().all(|read| *read == only || !words.contains(read)),
+        }
+    }
+
     /// The reads in a crate's production sources not on `allowed`, and which entries of `allowed` were met: a folder named `tests`, `headless` or
     /// `testkit` and files named for tests are test-only, and so are `skip`.
     fn unlisted(root: &std::path::Path, crate_name: &str, allowed: &[(&str, &str, &str)], skip: &[&str]) -> (usize, Vec<String>, Vec<usize>) {
@@ -352,7 +376,10 @@ mod tests {
                 read += 1;
                 let file = path.strip_prefix(&root).unwrap().to_string_lossy().replace("commands/", "");
                 for (line, function, words) in place_reads(&std::fs::read_to_string(&path).unwrap()) {
-                    match allowed.iter().position(|(allowed, named, _)| *allowed == file && *named == function) {
+                    match allowed
+                        .iter()
+                        .position(|(allowed, named, _)| *allowed == file && allows(named, &function, &words))
+                    {
                         Some(at) => used.push(at),
                         None => found.push(format!("{crate_name}/{file}:{line} in `{function}`: {words}")),
                     }
@@ -412,6 +439,19 @@ mod tests {
             assert_eq!((read_files, found.len()), (1, 1), "{read}: {found:?}");
         }
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Failure (the third review): an entry that lets a function read only the page (`take_in:tab.page`) lets every read in it through, so a later write
+    /// of the page view's place there, which a release must not take in, goes unseen.
+    #[test]
+    fn an_entry_for_one_read_lets_only_that_read_through() {
+        assert!(allows("take_in:tab.page", "take_in", "let was = session.tabs().tab(id).map(|tab| tab.page);"));
+        assert!(!allows("take_in:tab.page", "take_in", "tab.reading.place = Some(place);"));
+        assert!(!allows("take_in:tab.page", "other", "tab.page"));
+        assert!(
+            allows("take_in", "take_in", "tab.reading.place = Some(place);"),
+            "a whole function's entry, as before"
+        );
     }
 
     /// Failure: the scan misses a read it names, or one after a test module, as another scan in this crate once lost a renderer by stopping at the first
