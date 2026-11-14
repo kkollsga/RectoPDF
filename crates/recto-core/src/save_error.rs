@@ -17,12 +17,14 @@ pub enum SaveError {
     EditsDontMatch { file_pages: u32 },
     /// A PDF whose pages were added has changed, gone, or can't be told apart from another version of itself.
     AddedFileChanged { name: String },
-    /// Pages from a password-protected PDF can't go into another file yet.
-    AddedFileProtected { name: String },
+    /// Pages from an encrypted PDF can't go into another file yet. `password`: it needs one to open; otherwise anyone may open it (permissions only), and
+    /// the words don't say a password protects it.
+    AddedFileProtected { name: String, password: bool },
     /// A page from an added PDF couldn't be copied: something it uses can't be read.
     AddedFileUnreadable { name: String },
-    /// The file is password-protected, and writing those isn't supported.
-    Protected,
+    /// The file is encrypted, and writing those isn't supported. `password`: it needs one to open; otherwise anyone may open it (permissions only, as
+    /// many government and UN reports are), and the words don't say a password protects it.
+    Protected { password: bool },
     /// The file's structure is damaged in a way the writer won't build on.
     Damaged,
     /// The document is certified, and these edits change its pages.
@@ -67,7 +69,7 @@ impl SaveError {
             Self::AddedFileChanged { .. } => "added_file_changed",
             Self::AddedFileProtected { .. } => "added_file_protected",
             Self::AddedFileUnreadable { .. } => "added_file_unreadable",
-            Self::Protected => "protected",
+            Self::Protected { .. } => "protected",
             Self::Damaged => "damaged",
             Self::BreaksCertification => "breaks_certification",
             Self::LockedBySignature => "locked_by_signature",
@@ -95,9 +97,15 @@ impl SaveError {
             Self::Unreadable => "This file couldn't be read during the save, so nothing was written.".into(),
             Self::EditsDontMatch { file_pages } => format!("These edits don't fit the file as it is on disk, which has {file_pages} pages. Nothing was written."),
             Self::AddedFileChanged { name } => format!("“{name}”, whose pages were added, has changed or moved since, so its pages can't be saved from it. Nothing was written."),
-            Self::AddedFileProtected { name } => format!("“{name}” is password-protected, and its pages can't be saved into another file yet. Nothing was written."),
+            Self::AddedFileProtected { name, password: true } => {
+                format!("“{name}” is password-protected, and its pages can't be saved into another file yet. Nothing was written.")
+            }
+            Self::AddedFileProtected { name, password: false } => {
+                format!("“{name}” is encrypted, and its pages can't be saved into another file yet. Nothing was written.")
+            }
             Self::AddedFileUnreadable { name } => format!("Part of the pages added from “{name}” can't be read, so they can't be saved. Nothing was written."),
-            Self::Protected => "This PDF is password-protected, and saving protected files isn't supported yet. Nothing was written.".into(),
+            Self::Protected { password: true } => "This PDF is password-protected, and saving protected files isn't supported yet. Nothing was written.".into(),
+            Self::Protected { password: false } => "This PDF is encrypted, and saving encrypted files isn't supported yet. Nothing was written.".into(),
             Self::Damaged => "This file's structure is damaged, so it can't be saved over safely. Nothing was written.".into(),
             Self::BreaksCertification => "This document is certified, and changing its pages would break that, so it isn't saved over. Nothing was written, and the original keeps its signature.".into(),
             Self::LockedBySignature => "A signature on this document locks it against changes, and changing its pages would break that, so it isn't saved. Nothing was written, and the original keeps its signature.".into(),
@@ -117,6 +125,15 @@ impl SaveError {
     }
 }
 
+/// Why a save couldn't open a file: one that needs a password (the save is given none) says so, as its words must; anything else is damage the writer
+/// won't build on. A file that opens with no password and is encrypted all the same is refused after opening, as anyone may open it.
+pub(crate) fn refused_on_open(error: lopdf::IndexedReaderError) -> SaveError {
+    match error {
+        lopdf::IndexedReaderError::PasswordRequired | lopdf::IndexedReaderError::InvalidPassword => SaveError::Protected { password: true },
+        _ => SaveError::Damaged,
+    }
+}
+
 pub(crate) fn from_append(error: AppendError) -> SaveError {
     match error {
         AppendError::RecoveredIndex
@@ -126,7 +143,8 @@ pub(crate) fn from_append(error: AppendError) -> SaveError {
         | AppendError::HeaderNotAtStart { .. }
         | AppendError::ChainFull { .. }
         | AppendError::OffsetTooLarge { .. } => SaveError::Damaged,
-        AppendError::Encrypted => SaveError::Protected,
+        // The writer runs on a file the save opened with no password, so one it finds encrypted is one anyone may open.
+        AppendError::Encrypted => SaveError::Protected { password: false },
         AppendError::TargetChanged { .. } | AppendError::TargetIdentityUnknown => SaveError::ChangedSinceOpened,
         AppendError::TargetExists { .. } => SaveError::TargetExists,
         AppendError::TargetNotAFile { .. } => SaveError::NotAFile,
@@ -156,7 +174,7 @@ pub(crate) fn from_rewrite(error: RewriteError) -> SaveError {
         | RewriteError::UnreadableObject { .. }
         | RewriteError::OffsetTooLarge { .. }
         | RewriteError::PageOutOfRange { .. } => SaveError::Damaged,
-        RewriteError::Encrypted => SaveError::Protected,
+        RewriteError::Encrypted => SaveError::Protected { password: false },
         RewriteError::SignedNeedsConsent { .. } | RewriteError::SignedFileCannotBeReplaced { .. } => SaveError::SignedNeedsCopy,
         RewriteError::NoPagesLeft => SaveError::NoPagesLeft,
         RewriteError::TooManyObjects { .. }

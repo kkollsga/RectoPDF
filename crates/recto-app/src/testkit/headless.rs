@@ -607,6 +607,7 @@ impl HeadlessApp {
             if engine.same_as(&reading) {
                 self.note_scrolls_sent(&ops);
             }
+            applied_as_the_host(&ops);
             engine.applied();
         }
     }
@@ -840,6 +841,75 @@ impl Drop for HeadlessApp {
         if self.inner.is_some() && !std::thread::panicking() {
             drop(self.end());
         }
+    }
+}
+
+/// **What the host does with a surface it's handed:** each `Attach` carries one reference to its surface for the host, which the window takes as its
+/// layer's contents and lets go of with the layer (`PageArea.swift`). A stand-in for the host that drops the ops without this keeps every surface ever
+/// drawn alive for the rest of the process: 2026-11-13, the scripted hour of `switching_tabs_writes` ran the system out of IOSurfaces after about 1,300 s
+/// of its clock and five apps before it, a preview couldn't be made, and the page view stopped drawing (`IOSurfaceCreate` "out of memory"). Every test
+/// that takes ops in place of the host passes them here once it's done with them.
+pub fn applied_as_the_host(ops: &[recto_reader::Op]) {
+    for op in ops {
+        if let recto_reader::Op::Attach { surface, .. } = op {
+            recto_platform::surface::PixelSurface::release_for_host(*surface);
+        }
+    }
+}
+
+/// **Stands in for the host's UI thread,** which the kit has none of, for every test that draws: takes what the page view says, scrolls where it's sent and says where it is now, until the session thread has nothing queued and nothing comes, and (with `settled`) everything's drawn, a tab off screen's place included. Bounded.
+pub fn host_turns(app: &HeadlessApp, view: &mut recto_reader::Viewport, settled: bool) {
+    let engine = &app.core().engine;
+    let began = std::time::Instant::now();
+    loop {
+        assert!(app.core().core.flush(WAIT_LIMIT), "the session thread took what was queued");
+        let mut ops = engine.drain();
+        applied_as_the_host(&ops);
+        engine.applied();
+        let mut quiet = ops.is_empty();
+        while let Some(op) = ops.pop() {
+            if let recto_reader::Op::ScrollTo { y, seq } = op {
+                view.y = y;
+                view.scrolled_to = seq;
+                ops = engine.set_viewport(*view);
+                applied_as_the_host(&ops);
+                engine.applied();
+                quiet = false;
+            }
+        }
+        // Drawing for a tab off screen's place isn't what settling waits for, so it's waited for here too.
+        if quiet && (!settled || (engine.wait_settled(std::time::Duration::from_millis(20)) && engine.report().0["sleep_draws"]["under_way"] == false)) {
+            return;
+        }
+        assert!(began.elapsed() < WAIT_LIMIT, "the page view didn't come to rest: {}", engine.report().0);
+    }
+}
+
+#[cfg(test)]
+mod host_stand_in_tests {
+    /// Failure (2026-11-13, `switching_tabs_writes`): the kit's stand-in for the host dropped what the page view handed it, so each `Attach`'s reference to
+    /// its surface was never let go, and a long headless run ran the system out of IOSurfaces. Taken as the host takes it, a surface handed over is held
+    /// by its maker alone again.
+    #[test]
+    fn a_surface_handed_to_the_stand_in_host_is_let_go() {
+        let surface = recto_platform::surface::PixelSurface::create(16, 16).expect("a surface");
+        let before = surface.reference_count();
+        let handed = recto_reader::Op::Attach {
+            id: 1,
+            page: 0,
+            x: 0.0,
+            y: 0.0,
+            width: 16.0,
+            height: 16.0,
+            surface: surface.retained_for_host(),
+            rgb: None,
+            crop_width: 16.0,
+            crop_height: 16.0,
+            below: false,
+        };
+        assert_eq!(surface.reference_count(), before + 1, "the host's reference");
+        super::applied_as_the_host(&[handed]);
+        assert_eq!(surface.reference_count(), before, "let go, as the window lets go of a layer's contents");
     }
 }
 

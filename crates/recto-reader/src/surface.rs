@@ -605,6 +605,7 @@ Docs::pub(crate) fn expected_stamp(&self, tab: u32, file: &std::path::Path) -> O
 Docs::pub(crate) fn files_of(&self, tab: u32) -> Vec<PathBuf>
 Docs::pub(crate) fn holds(&self, tab: u32) -> bool
 Docs::pub(crate) fn hot_tab(&self) -> Option<u32>
+Docs::pub(crate) fn is_a_held_tabs_own_file(&self, file: &std::path::Path) -> bool
 Docs::pub(crate) fn is_own_file(&self, tab: u32, file: &std::path::Path) -> bool
 Docs::pub(crate) fn shown(&self) -> Option<&DocView>
 DrawKind (pub enum, derives Clone, Copy, Debug, PartialEq, Eq)
@@ -658,6 +659,8 @@ EngineConfig.pub policy: Option<Policy>
 EngineConfig.pub service: Option<ServiceConfig>
 Entry (pub(super) struct, derives Debug)
 HostQueue (pub(crate) struct, derives Debug)
+HostQueue: Drop (trait impl)
+HostQueue: Drop::fn drop(&mut self)
 HostQueue::pub(crate) fn has_ops(&self) -> bool
 Issue (pub(super) struct, derives Clone, Debug)
 Job (pub struct, derives Debug)
@@ -693,7 +696,7 @@ Looks (pub(super) struct, derives Debug, Default)
 LowResNote (pub(super) struct, derives Debug)
 Next (pub(super) enum, derives Clone, Copy, Debug, PartialEq, Eq)
 NoLook (pub(super) enum, derives Debug, PartialEq, Eq)
-Op (pub enum, derives Clone, Debug, PartialEq)
+Op (pub enum, derives Debug, PartialEq)
 OpenDoc (private struct)
 Outcome (pub enum, derives Debug)
 Owed (pub(super) struct, derives Debug)
@@ -867,6 +870,10 @@ SleepView.pub pictures: Vec<SleepShot>
 SleepView.pub sizes: Vec<(u32, PageBox)>
 SleepView.pub usual: Option<PageBox>
 SleepView.pub version: Option<u64>
+SurfaceRetry (pub(crate) struct, derives Debug, Default)
+SurfaceRetry::pub(crate) fn clear(&mut self)
+SurfaceRetry::pub(crate) fn refused(&mut self) -> std::time::Duration
+SurfaceRetry::pub(crate) fn report(&self) -> serde_json::Value
 TabNow (pub(super) struct, derives Clone, Copy, Debug, Default, PartialEq, Eq)
 TileCache (pub(crate) struct, derives Debug)
 TileCache::pub(crate) fn empty_discardable(&mut self) -> usize
@@ -915,6 +922,7 @@ Waking::pub(crate) fn give_sleep(&mut self, tab: u32, view: SleepView)
 Waking::pub(crate) fn last_wake(&self) -> Option<WakeReport>
 Waking::pub(crate) fn window_up(&mut self)
 Work (pub(crate) struct, derives Debug)
+Work.pub(crate) surfaces: SurfaceRetry
 Work::pub(crate) fn hold_drawing(&mut self, on: bool)
 Work::pub(crate) fn note_started(&mut self, job: &Job, cancel: Option<CancelHandle>)
 Work::pub(crate) fn set_cancel(&mut self, cancel: CancelHandle)

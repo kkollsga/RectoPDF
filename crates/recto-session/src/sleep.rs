@@ -14,6 +14,13 @@ use std::io::{Read, Write};
 /// What a sleep file says it is.
 pub const SLEEP_KIND: &str = "recto-sleep";
 
+/// **The sleep file's own format,** apart from the record's version in its header, as nothing else in one says when it was written. A file of an older
+/// format is never read, and is removed at its first read, as any that doesn't read is: it can always be rebuilt from the PDF. 1, with no field, was
+/// written up to 2026-11-14 (0.1.0 included), and could hold a picture of a page added from a file only the renderer needed a password for, drawn with the
+/// password the person typed for that file's own tab, which no page is drawn with since. One of a newer format is read: what it adds, this build passes
+/// over. Costs one wake from the PDF per tab, once, after the update.
+pub const SLEEP_FORMAT: u32 = 2;
+
 /// Pictures in one file: enough for the pages one window shows at an ordinary zoom, side by side too, where a view has twice the pages, each a quarter of the pixels. A view of more than this comes up with those and sharpens. An older build reads a file with more as damaged, and rebuilds it from the PDF.
 pub const MAX_SLEEP_PICTURES: usize = 12;
 /// The most one picture can be, unpacked. As a preview is.
@@ -77,6 +84,9 @@ struct PictureLine {
 
 #[derive(Serialize, Deserialize)]
 struct Meta {
+    /// [`SLEEP_FORMAT`]: none in a file written before it was said, which reads as 0.
+    #[serde(default)]
+    sleep_format: u32,
     file: FileRecord,
     file_pages: u32,
     pages: u32,
@@ -216,6 +226,7 @@ pub fn encode_sleep(sleep: &SleepFile) -> Vec<u8> {
         .map(|range| (range.start, range.first, range.style.code(), range.prefix.to_string()))
         .collect();
     let meta = Meta {
+        sleep_format: SLEEP_FORMAT,
         file: sleep.file.into(),
         file_pages: sleep.file_pages,
         pages: sleep.pages,
@@ -245,6 +256,9 @@ pub fn decode_sleep(bytes: &[u8], newest: u32) -> Result<SleepFile, RecordError>
     let (_, _, body) = open_sealed(SLEEP_KIND, bytes, newest)?;
     let end = body.iter().position(|byte| *byte == b'\n').ok_or(bad("no first line"))?;
     let meta: Meta = serde_json::from_slice(&body[..end]).map_err(|_| bad("a first line that doesn't read"))?;
+    if meta.sleep_format < SLEEP_FORMAT {
+        return Err(bad("an older format"));
+    }
     if meta.file_pages as usize > crate::edit::MAX_PAGES || meta.pages as usize > crate::edit::MAX_PAGES || meta.pages == 0 || meta.file_pages == 0 {
         return Err(bad("too many pages"));
     }
@@ -605,5 +619,26 @@ mod tests {
         // A title is cleaned as it's made, so only a forged file can bring one that isn't.
         let back = forge(&encode_sleep(&sample()), &|meta| meta["toc"][0][0] = raw.clone().into()).unwrap();
         assert_eq!(back.toc.title(&back.toc.entries()[0]), "Chapter 1");
+    }
+    /// Failure (the second review of the measured faults): a sleep file written before 2026-11-14 can hold a picture of a page added from a file only the
+    /// renderer needed a password for, drawn with the password the person typed for that file's own tab, and the files written since look the same: one
+    /// would still be woken from and its picture shown. A file of an older format than [`SLEEP_FORMAT`] isn't read, as one that doesn't read isn't, and so
+    /// is removed and rebuilt from the PDF; one of a newer format is read, as what it adds an older build passes over.
+    #[test]
+    fn a_sleep_file_of_an_older_format_is_never_read() {
+        let good = encode_sleep(&sample());
+        assert!(
+            forge(&good, &|meta| drop(meta.as_object_mut().unwrap().remove("sleep_format"))).is_err(),
+            "one written before the format was said, as every file up to 2026-11-14 was, isn't read"
+        );
+        assert!(
+            forge(&good, &|meta| meta["sleep_format"] = (SLEEP_FORMAT - 1).into()).is_err(),
+            "nor one of an older format"
+        );
+        assert_eq!(
+            forge(&good, &|meta| meta["sleep_format"] = (SLEEP_FORMAT + 1).into()).unwrap(),
+            sample(),
+            "a newer one is"
+        );
     }
 }

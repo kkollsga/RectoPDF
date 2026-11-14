@@ -2,9 +2,9 @@
 
 use super::cache::TileKey;
 use super::sleep_draw::SleepDraws;
-use super::{DocView, DrawKind, JobPlan, MAX_PREVIEW_BYTES, PREVIEW_DIVISOR, PlanKind, Reader, SIZES_AROUND, TRY_AGAIN_AFTER};
+use super::{DocView, DrawKind, JobPlan, PREVIEW_DIVISOR, PlanKind, Reader, SIZES_AROUND, TRY_AGAIN_AFTER, preview_fits};
 use crate::selection::Urgency;
-use recto_proto::{BYTES_PER_PIXEL, MAX_SCALE, MIN_SCALE, TILE_EDGE, TileRect, device_size};
+use recto_proto::{MAX_SCALE, MIN_SCALE, TILE_EDGE, TileRect, device_size};
 use recto_render_service::plan_regions;
 use std::time::Instant;
 
@@ -31,11 +31,12 @@ impl Reader {
             })
     }
 
-    /// Whether what's on screen wants something that isn't there yet: a tile, or the text under a selection being made.
+    /// Whether what's on screen wants something that isn't there yet: a tile, or the text under a selection being made. A document that failed whole
+    /// (it needs its password, say) wants nothing until it's opened again, as nothing's planned for it, so it doesn't hold up a tab left owed pictures.
     pub(super) fn view_needs_something(&self) -> bool {
         let Some(doc) = self.docs.shown() else { return false };
         let scale = doc.drawing.tile_scale;
-        if scale <= 0.0 {
+        if scale <= 0.0 || doc.drawing.problem.is_some() {
             return false;
         }
         let visible: Vec<u32> = self.visible_pages(doc).collect();
@@ -284,8 +285,7 @@ impl Reader {
             return None;
         }
         let (width, height) = device_size(size.width, size.height, preview_scale).ok()?;
-        (u64::from(width) * u64::from(height) * u64::from(BYTES_PER_PIXEL) <= MAX_PREVIEW_BYTES)
-            .then_some((preview_scale, TileRect { x: 0, y: 0, width, height }))
+        preview_fits(width, height).then_some((preview_scale, TileRect { x: 0, y: 0, width, height }))
     }
 }
 
