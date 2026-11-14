@@ -165,6 +165,11 @@ impl Inner {
                 inner.take_places();
             }
         }));
+        host.session.set_print_watch(super::printing::watch(
+            inner.tools.printing_held(),
+            Arc::clone(&inner.core),
+            Arc::downgrade(&host),
+        ));
         update_hooks.attach(Arc::downgrade(&inner));
         if let Some(qa) = &inner.qa {
             qa.attach(Arc::downgrade(&inner));

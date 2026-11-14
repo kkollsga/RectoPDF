@@ -39,6 +39,15 @@ pub fn real_home() -> Option<PathBuf> {
     Some(PathBuf::from(OsStr::from_bytes(home.to_bytes())))
 }
 
+/// **64 bits from the system's random source** (`arc4random_buf`, which the kernel seeds): for a name nobody outside this process can work out.
+#[must_use]
+pub fn random_u64() -> u64 {
+    let mut value = 0u64;
+    // SAFETY: the pointer and length describe `value`, which arc4random_buf fills whole.
+    unsafe { libc::arc4random_buf((&raw mut value).cast(), std::mem::size_of::<u64>()) };
+    value
+}
+
 /// This user's own temp folder, from the OS rather than `$TMPDIR`, which a run can point anywhere.
 pub fn system_temp_dir() -> Option<PathBuf> {
     // _CS_DARWIN_USER_TEMP_DIR, from <unistd.h>.

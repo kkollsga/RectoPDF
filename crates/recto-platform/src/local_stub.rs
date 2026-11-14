@@ -19,6 +19,13 @@ pub fn real_home() -> Option<PathBuf> {
     None
 }
 
+/// 64 bits no one outside this process can work out. Off a Mac, std's per-process random keys, which the OS seeds: nothing that runs here prints.
+#[must_use]
+pub fn random_u64() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    std::hash::RandomState::new().build_hasher().finish()
+}
+
 pub fn system_temp_dir() -> Option<PathBuf> {
     None
 }

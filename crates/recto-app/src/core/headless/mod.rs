@@ -11,6 +11,7 @@ mod coverage;
 mod editing;
 mod encrypted_sleep;
 mod exits;
+mod exports;
 pub(crate) mod files;
 mod find;
 mod finding;
@@ -32,6 +33,7 @@ mod passwords;
 // The count it reads is a debug build's only.
 #[cfg(debug_assertions)]
 mod per_tab_work;
+mod printing;
 mod protected_save;
 mod quiet_files;
 mod quit;

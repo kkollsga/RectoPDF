@@ -19,7 +19,7 @@ pub struct Tools {
     /// The window's marks: what the pointer is over or holds.
     chrome: crate::chrome::Chrome,
     /// A print being prepared, or waiting for the host to hand to the system.
-    printing: printing::Printing,
+    printing: Arc<printing::Printing>,
     /// ⌘K's palette, on the UI thread.
     palette: crate::palette::Palette,
     /// The Find field as the session thread last set it, for the UI thread.
@@ -35,7 +35,7 @@ impl Tools {
             tool: snapshot_tool::Tool::default(),
             folds: crate::sidebar_access::Folds::default(),
             chrome: crate::chrome::Chrome::default(),
-            printing: printing::Printing::default(),
+            printing: Arc::default(),
             palette: crate::palette::Palette::default(),
             find_field: Mutex::new(crate::find::Field::default()),
         }
@@ -69,6 +69,11 @@ impl Tools {
     /// A print being prepared, or waiting for the host.
     pub fn printing(&self) -> &printing::Printing {
         &self.printing
+    }
+
+    /// The same, held, for the window's watch over the person's print ([`printing::watch`]).
+    pub(crate) fn printing_held(&self) -> Arc<printing::Printing> {
+        Arc::clone(&self.printing)
     }
 
     /// ⌘K's palette.

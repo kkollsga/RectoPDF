@@ -1,7 +1,7 @@
 //! **What a feature's answer to a person's command may read of the app and do in it** ([`super::person`]'s list of answers): the argument every answer is
 //! given, in place of the app, on the thread the command ran on. Its fields are private, so what an answer may do is the list of methods below, each named
 //! for the need; an answer that needs something else adds one method here, named for that need, which the listing in `headless/inner_guards.rs` shows to a
-//! reviewer (docs/FEATURES.md, step 6). Of its 11 methods (2026-11-14), `say` is shared by four answers and the other nine serve one feature each.
+//! reviewer (docs/FEATURES.md, step 6). Of its 12 methods (2026-11-14), `say` is shared by four answers and the other ten serve one feature each (`print_answered` printing's).
 //! **[`AnswerParts::find_handle`] is the one wide reach:** Find's own, it hands the answer a `FindHandle` whose fields are `pub` (the session, the panes,
 //! the page view, the listener), so any answer that calls it can reach those; only Find's does, and narrowing it to what Find's answer needs is in PLAN.
 //! What starts on a thread of its own as the person is [`AnswerParts::person`]'s.
@@ -99,6 +99,14 @@ impl<'a> AnswerParts<'a> {
     /// The person's update command no longer the menu's.
     pub fn unmark_update_menu(&self) {
         self.updates.menu().unmark();
+    }
+
+    /// Printing's own: what came of the person's print, said to its state, then the window published again and the host told, so the host takes a file
+    /// that's ready ([`super::printing::answered`]).
+    pub fn print_answered(&self, said: impl FnOnce(&super::printing::Printing)) {
+        said(self.tools.printing());
+        self.core.push(super::CoreCall::Reconcile);
+        self.listener.model_changed();
     }
 
     /// What the person may start on a thread of its own.

@@ -78,6 +78,9 @@ impl<A: SessionAccess> SessionAccess for Acting<'_, A> {
     fn confinement(&self) -> Option<std::sync::Arc<recto_platform::run_folders::RunFolders>> {
         self.access.confinement()
     }
+    fn print_watch(&self, actor: Actor) -> Option<&dyn crate::print::PrintWatch> {
+        self.access.print_watch(actor)
+    }
 }
 
 #[cfg(test)]

@@ -264,6 +264,7 @@ codes! {
     NOT_RECTOPDF = "not_rectopdf", Next::ByExit;
     NOT_RUNNING = "not_running", Next::Says("Start it with `recto serve --background`.");
     NOT_SIDE_BY_SIDE = "not_side_by_side", Next::ByExit;
+    NOT_STARTED = "not_started", Next::Says("Try again in a moment.");
     NOT_THE_SHOWN_TAB = "not_the_shown_tab", Next::ByExit;
     NOT_WRITABLE = "not_writable", Next::ByExit;
     NOTHING_BACK = "nothing_back", Next::ByExit;
