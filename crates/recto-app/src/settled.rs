@@ -196,6 +196,15 @@ fn off_the_session_thread(inner: &Watched<'_>, busy: &mut Vec<String>) {
     if inner.tools.printing().preparing() {
         busy.push("a print's pages being prepared".to_string());
     }
+    // A look at where a tab's generated contents stand, holding its way back to the session thread till it's queued what it found.
+    if inner.tools.contents_looks().load(Ordering::SeqCst) > 0 {
+        busy.push("a look at generated contents".to_string());
+    }
+    // An agent's command in flight on another connection (`qa` commands only ask, so `qa wait` never counts itself).
+    let commands = inner.host.running.load(Ordering::SeqCst);
+    if commands > 0 {
+        busy.push(format!("{commands} command(s) in flight"));
+    }
     // A first edit's look at the file's signatures reads the whole file, then has the session look again for Save's state.
     let signatures = inner.tools.save_ui().signature_looks();
     if signatures > 0 {

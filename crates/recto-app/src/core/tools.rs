@@ -2,7 +2,7 @@
 //! chrome's marks, printing, ⌘K and Find's field. Each is its feature's own type, in its own file; this only holds them.
 
 use super::{printing, saving, snapshot_tool};
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicU8, AtomicUsize};
 use std::sync::{Arc, Mutex};
 
 /// **The window's features with state of their own:** the sheets that ask, saving's, the snapshot tool, the sidebar's folds, the chrome's marks, printing, ⌘K and
@@ -24,6 +24,8 @@ pub struct Tools {
     palette: crate::palette::Palette,
     /// The Find field as the session thread last set it, for the UI thread.
     find_field: Mutex<crate::find::Field>,
+    /// Looks at where a tab's generated contents stand, each on a thread of its own, until what it found is queued ([`super::generated_contents`]).
+    contents_looks: Arc<AtomicUsize>,
 }
 
 impl Tools {
@@ -38,7 +40,13 @@ impl Tools {
             printing: printing::Printing::default(),
             palette: crate::palette::Palette::default(),
             find_field: Mutex::new(crate::find::Field::default()),
+            contents_looks: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Looks at generated contents under way, counted by their way back to the session thread ([`super::generated_contents`]).
+    pub(crate) fn contents_looks(&self) -> &Arc<AtomicUsize> {
+        &self.contents_looks
     }
 
     /// The sheets that ask: a password, or whether to open a link.
