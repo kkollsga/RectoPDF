@@ -12,7 +12,7 @@
 //! turned by the page's own `/Rotate` ([`crate::nav::Frame`], the frame links are drawn in). A save puts them back into the page's own coordinates by
 //! the same frame read from the file being written, so a rotated or cropped page gets its highlight where it was shown.
 
-use super::{Dictionary, IndexedReader, Object, PageRef, SaveError, Sink};
+use super::{Dictionary, IndexedReader, Object, ObjectId, PageRef, SaveError, Sink};
 use crate::nav::Frame;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -76,6 +76,9 @@ pub(super) struct Highlights {
     gone: BTreeMap<u32, Vec<u32>>,
     /// How long the file being saved is, for a refusal to say.
     file_pages: u32,
+    /// What a removal may never name, sorted: the file's pages and its catalog, which a hostile file can dress as a highlight or a popup. Only
+    /// when something is taken out.
+    structural: Vec<ObjectId>,
     /// What's been written, as the plan writes it.
     written: RefCell<MarksWritten>,
 }
@@ -87,7 +90,11 @@ impl Highlights {
     pub(super) fn of(request: &super::SaveRequest<'_>, reader: &IndexedReader, map: &lopdf::PageMap, file_pages: u32) -> Result<Self, SaveError> {
         let mut out = Self::within(request.highlights, request.pages.len(), MAX_PER_PAGE)?;
         out.file_pages = file_pages;
-        out.gone = gone_checked(request.highlights_gone, request.pages, reader, map, MAX_GONE).map_err(|error| match error {
+        if !request.highlights_gone.is_empty() {
+            out.structural = map.iter().map(|entry| entry.id()).chain(super::catalog_id(reader)).collect();
+            out.structural.sort_unstable();
+        }
+        out.gone = gone_checked(request.highlights_gone, request.pages, (reader, map, &out.structural), MAX_GONE).map_err(|error| match error {
             SaveError::EditsDontMatch { .. } => SaveError::EditsDontMatch { file_pages },
             other => other,
         })?;
@@ -156,8 +163,13 @@ impl Highlights {
         }
         let mut annots = annots_of(reader, page);
         if let Some(gone) = gone {
-            let removed = take_out(reader, &mut annots, gone);
+            let (removed, objects) = take_out(reader, &mut annots, gone, &self.structural);
             self.written.borrow_mut().removed.extend(removed.into_iter().map(|index| (at, index)));
+            // However else the file reaches them (the same entry twice, another page's list, a reply's `/IRT`, the structure tree's `/OBJR`, a
+            // `/Popup` no list has), they're gone from the new file, and every reference to them with them (second review of R4.3, S1).
+            for id in objects {
+                writer.remove(id)?;
+            }
         }
         for (asked, rects) in highlights.into_iter().flatten() {
             if writer.taken() > cap {
@@ -211,8 +223,7 @@ fn annotation_at(reader: &IndexedReader, item: &Object) -> Option<Dictionary> {
 fn gone_checked(
     gone: &[GoneHighlight],
     pages: &[PageRef],
-    reader: &IndexedReader,
-    map: &lopdf::PageMap,
+    (reader, map, structural): (&IndexedReader, &lopdf::PageMap, &[ObjectId]),
     most: usize,
 ) -> Result<BTreeMap<u32, Vec<u32>>, SaveError> {
     let refused = SaveError::EditsDontMatch { file_pages: 0 };
@@ -227,11 +238,12 @@ fn gone_checked(
             return Err(refused);
         };
         let annots = annots_of(reader, &dict);
-        let found = annots
-            .get(asked.index as usize)
-            .and_then(|item| annotation_at(reader, item))
-            .ok_or(refused.clone())?;
-        let is_highlight = matches!(found.get(b"Subtype"), Ok(Object::Name(kind)) if kind == b"Highlight");
+        let item = annots.get(asked.index as usize).ok_or(refused.clone())?;
+        let found = annotation_at(reader, item).ok_or(refused.clone())?;
+        let is_highlight = match item {
+            Object::Reference(id) => removable(&found, b"Highlight", *id, structural),
+            _ => is_kind(&found, b"Highlight"),
+        };
         let rect = numbers_of(found.get(b"Rect").ok()).ok_or(refused.clone())?;
         let close = rect
             .iter()
@@ -251,30 +263,59 @@ fn gone_checked(
 
 /// Takes the items at `indexes` out of a page's list, and any popup in the list whose `/Parent` is one of them: a popup is the highlight's own
 /// note, and its `/Parent` would keep the highlight reachable in the new file. Gives the places in the list as it was of everything taken out,
-/// ascending, for what names a later item by its place to be counted down.
-fn take_out(reader: &IndexedReader, annots: &mut Vec<Object>, indexes: &[u32]) -> Vec<u32> {
-    let ids: Vec<lopdf::ObjectId> = indexes
-        .iter()
-        .filter_map(|index| match annots.get(*index as usize) {
-            Some(Object::Reference(id)) => Some(*id),
-            _ => None,
-        })
-        .collect();
+/// ascending, for what names a later item by its place to be counted down; and the objects the file has to lose with them, however else it reaches
+/// them: each highlight that's an object of its own, and its popup, by its `/Popup` or in the list.
+fn take_out(reader: &IndexedReader, annots: &mut Vec<Object>, indexes: &[u32], structural: &[ObjectId]) -> (Vec<u32>, Vec<ObjectId>) {
+    let mut objects: Vec<ObjectId> = Vec::new();
+    for item in indexes.iter().filter_map(|index| annots.get(*index as usize)) {
+        if let Object::Reference(id) = item {
+            objects.push(*id);
+        }
+        let popup = annotation_at(reader, item).and_then(|annot| annot.get(b"Popup").ok().and_then(|popup| popup.as_reference().ok()));
+        if let Some(popup) =
+            popup.filter(|popup| matches!(reader.resolve_object(*popup), Ok(Object::Dictionary(dict)) if removable(&dict, b"Popup", *popup, structural)))
+        {
+            objects.push(popup);
+        }
+    }
+    let highlights: Vec<ObjectId> = objects.clone();
     let mut out = Vec::new();
     let mut at = 0u32;
     annots.retain(|item| {
-        let popup_of_one = annotation_at(reader, item).is_some_and(|annot| {
-            matches!(annot.get(b"Subtype"), Ok(Object::Name(kind)) if kind == b"Popup")
-                && matches!(annot.get(b"Parent"), Ok(Object::Reference(parent)) if ids.contains(parent))
-        });
+        let popup_of_one = annotation_at(reader, item)
+            .is_some_and(|annot| is_kind(&annot, b"Popup") && matches!(annot.get(b"Parent"), Ok(Object::Reference(parent)) if highlights.contains(parent)));
         let goes = indexes.contains(&at) || popup_of_one;
         if goes {
             out.push(at);
+            if let Object::Reference(id) = item
+                && popup_of_one
+                && annotation_at(reader, item).is_some_and(|annot| removable(&annot, b"Popup", *id, structural))
+            {
+                objects.push(*id);
+            }
         }
         at += 1;
         !goes
     });
-    out
+    objects.sort_unstable();
+    objects.dedup();
+    (out, objects)
+}
+
+/// Whether an annotation is of this `/Subtype`.
+fn is_kind(annot: &Dictionary, kind: &[u8]) -> bool {
+    matches!(annot.get(b"Subtype"), Ok(Object::Name(name)) if name == kind)
+}
+
+/// **Whether an object may be taken out of the file as a highlight or its popup:** an annotation of that `/Subtype` (no `/Type`, or `/Annot`), and
+/// none of what a document is made of (a page, the catalog), which a hostile file can dress as one (second review of R4.3, S1).
+fn removable(annot: &Dictionary, kind: &[u8], id: ObjectId, structural: &[ObjectId]) -> bool {
+    let an_annotation = match annot.get(b"Type") {
+        Ok(Object::Name(name)) => name == b"Annot",
+        Ok(_) => false,
+        Err(_) => true,
+    };
+    is_kind(annot, kind) && an_annotation && structural.binary_search(&id).is_err()
 }
 
 /// The first `/Highlight` among a page's first `within` items, by its place and `/Rect`: what a fuzzer's removal can name.

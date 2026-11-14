@@ -12,6 +12,7 @@ disallowed-methods = [
     { path = "lopdf::xref::XrefEntry::write_xref_entry", reason = "Cross-reference data is written by the fork's atomic writers only." },
     { path = "lopdf::xref::XrefSection::write_xref_section", reason = "Cross-reference data is written by the fork's atomic writers only." },
     { path = "lopdf::IndexedReader::copy_revision_to", reason = "Never over an original: a revision copy takes any Write." },
-    # Nothing reports when a kept page still uses a removed object, so a save removes pages, never objects (the streaming rewrite's review).
+    # Nothing reports when a kept page still uses a removed object, so a save removes pages, never objects (the streaming rewrite's review). The one
+# exception is a file's highlight and its popup taken out (recto-core save.rs, RewriteSink::remove): annotations no page's content can use.
     { path = "lopdf::RewriteChanges::remove_object", reason = "Remove pages with remove_page: nothing reports a kept page using a removed object." },
 ]

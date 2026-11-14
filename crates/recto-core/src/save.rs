@@ -2,7 +2,7 @@
 //! SPEC section 6). Adding things appends to the file, with `append_atomically`, so every byte that was there stays, a signature
 //! included. Removing things rewrites it, with `rewrite_atomically`, so what's removed is really gone. Never `Writer::write_object`,
 //! an eager `Document` save, `IncrementalDocument` or `copy_revision_to` over the original: `clippy.toml` refuses them by name, and
-//! `RewriteChanges::remove_object` too, as nothing reports a kept page that still uses a removed object.
+//! `RewriteChanges::remove_object` too, as nothing reports a kept page that still uses a removed object (but for a file's highlight taken out).
 //!
 //! **Which edit needs which writer, and why.**
 //! - A turn is a new version of the page with its `/Rotate`: an addition.
@@ -1282,6 +1282,8 @@ trait Sink<'c> {
     fn taken(&self) -> u64;
     /// An update has to hold something; a rewrite doesn't.
     fn needs_something(&self) -> bool;
+    /// Takes an object out of the file, with every reference to it: a file's highlight or its popup (`annotate`). Only a rewrite can.
+    fn remove(&mut self, id: ObjectId) -> Result<(), SaveError>;
 }
 
 struct AppendSink<'w, 'r, W: lopdf::AppendOutput> {
@@ -1309,6 +1311,9 @@ impl<'c, W: lopdf::AppendOutput> Sink<'c> for AppendSink<'_, '_, W> {
     }
     fn needs_something(&self) -> bool {
         true
+    }
+    fn remove(&mut self, _id: ObjectId) -> Result<(), SaveError> {
+        Err(SaveError::RewriteNotAllowed)
     }
 }
 
@@ -1350,6 +1355,14 @@ impl<'c> Sink<'c> for RewriteSink<'_, '_, 'c> {
     }
     fn needs_something(&self) -> bool {
         false
+    }
+    // `clippy.toml` refuses `remove_object` because nothing reports a kept page still using what it removes. What's removed here is only ever an
+    // annotation (`annotate::removable`: a highlight or its popup, never a page or the catalog), which no page's content can draw or name: only lists
+    // and keys reach it, and the fork drops every one of those (second review of R4.3, S1).
+    #[expect(clippy::disallowed_methods, reason = "a highlight or its popup, which no page's content uses: see above")]
+    fn remove(&mut self, id: ObjectId) -> Result<(), SaveError> {
+        self.changes.remove_object(id);
+        Ok(())
     }
 }
 

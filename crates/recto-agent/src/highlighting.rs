@@ -337,8 +337,12 @@ mod tests {
     }
 
     fn drawn_by(doc: &mut recto_render_service::DocRenderer) -> (u32, u32, Vec<u8>) {
+        drawn_at(doc, 0)
+    }
+
+    fn drawn_at(doc: &mut recto_render_service::DocRenderer, page: u32) -> (u32, u32, Vec<u8>) {
         let (mut size, mut pixels, mut row) = ((0, 0), Vec::new(), Vec::new());
-        draw_whole_page(doc, 0, 1.0, 0, &OutputCaps::default(), &mut None, |event| {
+        draw_whole_page(doc, page, 1.0, 0, &OutputCaps::default(), &mut None, |event| {
             match event {
                 PageEvent::Begin { width, height } => {
                     size = (width, height);
@@ -437,12 +441,25 @@ mod tests {
 
     /// Pixels a highlight's yellow is on: the blue taken down, the red left.
     fn yellow(doc: &mut recto_render_service::DocRenderer) -> usize {
-        let (_, _, pixels) = drawn_by(doc);
+        yellow_at(doc, 0)
+    }
+
+    fn yellow_at(doc: &mut recto_render_service::DocRenderer, page: u32) -> usize {
+        yellow_within(doc, page, [0.0, 0.0, f32::MAX, f32::MAX])
+    }
+
+    /// [`yellow`]'s pixels inside `[left, top, right, bottom]` of a page, in points from its top left: one highlight's, and not a note's icon.
+    fn yellow_within(doc: &mut recto_render_service::DocRenderer, page: u32, [left, top, right, bottom]: [f32; 4]) -> usize {
+        let (width, _, pixels) = drawn_at(doc, page);
         pixels
             .as_chunks::<4>()
             .0
             .iter()
-            .filter(|pixel| pixel[0] < 160 && pixel[2] > 200 && pixel[1] > 150)
+            .enumerate()
+            .filter(|(at, pixel)| {
+                let (x, y) = ((at % width as usize) as f32 + 0.5, (at / width as usize) as f32 + 0.5);
+                x > left && x < right && y > top && y < bottom && pixel[0] < 160 && pixel[2] > 200 && pixel[1] > 150
+            })
             .count()
     }
 
@@ -568,5 +585,63 @@ mod tests {
             0,
             "saved, it's gone from the file"
         );
+    }
+
+    /// **Failure (second review of R4.3, S1): a file's highlight taken out and saved is still drawn by another reader**, because the file reaches it
+    /// besides the place it was taken from: listed twice on its page and once on another, named by a reply's `/IRT` and the structure tree's `/OBJR`.
+    /// PDFium draws both pages before (yellow on each) and after the save (none on either).
+    #[test]
+    fn a_file_highlight_reached_many_ways_is_drawn_nowhere_once_saved_out() {
+        let highlight = "<< /Type /Annot /Subtype /Highlight /Rect [50 700 150 712] /QuadPoints [50 712 150 712 50 700 150 700] /AP << /N 7 0 R >> /Popup 8 0 R /StructParent 1 >>";
+        let bytes = recto_testpdf::build(&[
+            recto_testpdf::Object::Dict("<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 11 0 R >>".into()),
+            recto_testpdf::Object::Dict("<< /Type /Pages /Kids [3 0 R 10 0 R] /Count 2 >>".into()),
+            recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [5 0 R 6 0 R 9 0 R 6 0 R] >>".into()),
+            recto_testpdf::Object::Stream {
+                dict: String::new(),
+                data: text_lines(&["Words"]),
+            },
+            recto_testpdf::Object::Dict("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] >>".into()),
+            recto_testpdf::Object::Dict(highlight.into()),
+            recto_testpdf::Object::Stream {
+                dict: "/Type /XObject /Subtype /Form /BBox [50 700 150 712]".into(),
+                data: b"1 0.88 0.3 rg 50 700 100 12 re f".to_vec(),
+            },
+            recto_testpdf::Object::Dict("<< /Type /Annot /Subtype /Popup /Rect [200 700 300 760] /Parent 6 0 R >>".into()),
+            recto_testpdf::Object::Dict("<< /Type /Annot /Subtype /Text /Rect [20 20 40 40] /IRT 6 0 R /Contents (A reply) >>".into()),
+            recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [6 0 R] >>".into()),
+            recto_testpdf::Object::Dict("<< /Type /StructTreeRoot /K 12 0 R >>".into()),
+            recto_testpdf::Object::Dict("<< /Type /StructElem /S /Annot /P 11 0 R /Pg 3 0 R /K << /Type /OBJR /Obj 6 0 R >> >>".into()),
+        ]);
+        let file = TempPdf::new("reached.pdf", &bytes);
+        // The highlight's own rectangle, from the top left: the reply's note draws a yellow icon of its own elsewhere.
+        let both = |path: &std::path::Path| {
+            let mut doc = crate::render::open_for_text(path).expect("a worker");
+            [0, 1].map(|page| yellow_within(&mut doc, page, [50.0, 80.0, 150.0, 92.0]))
+        };
+        let before = both(&file.0);
+        assert!(before.iter().all(|shown| *shown > 500), "drawn on both pages before: {before:?}");
+        let mut session = Session::new(crate::DrawableLoader);
+        let run = |session: &mut Session<crate::DrawableLoader>, command: Command| run_command(session, Level::Full, &command);
+        run(
+            &mut session,
+            Command::from(crate::commands::tabs::Open {
+                path: file.0.clone(),
+                page: None,
+            }),
+        )
+        .unwrap();
+        let remove = crate::commands::highlight::HighlightRemove {
+            tab: TabRef::default(),
+            what: crate::commands::highlight::RemoveWhat::At { page: 1, x: 100.0, y: 86.0 },
+        };
+        run(&mut session, Command::from(remove)).expect("taken out");
+        let save = crate::commands::saving::Save {
+            tab: TabRef::default(),
+            out: None,
+            replace: false,
+        };
+        run(&mut session, Command::from(save)).expect("saved");
+        assert_eq!(both(&file.0), [0, 0], "drawn on neither page once it's saved out");
     }
 }

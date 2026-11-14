@@ -2080,3 +2080,97 @@ fn the_fuzzers_highlights_path_writes_and_takes_one_out() {
     assert_eq!(save::highlights_in_memory(&with_file_highlights()), Ok(1));
     assert_eq!(save::highlights_in_memory(&marked(&["A", "B", "C"])), Ok(3));
 }
+
+/// Two pages, and a highlight (object 6) reached every other way a file can reach it besides its place on page 1's list: listed there twice, listed on
+/// page 2 too, named by a reply's `/IRT` and by the structure tree's `/OBJR`, with a popup (object 8) its `/Popup` names that no list has. Its
+/// `/Rect` is `[50 700 150 712]`, at place 1 of page 1's `/Annots [link, highlight, reply, highlight]`.
+fn with_a_highlight_reached_many_ways() -> Vec<u8> {
+    build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 11 0 R >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R 10 0 R] /Count 2 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [5 0 R 6 0 R 9 0 R 6 0 R] >>".into()),
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["Words"]),
+        },
+        Raw::Dict("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Highlight /Rect [50 700 150 712] /QuadPoints [50 712 150 712 50 700 150 700] /AP << /N 7 0 R >> /Popup 8 0 R /Contents (GONENOTE) /StructParent 1 >>".into()),
+        Raw::Stream {
+            dict: "/Type /XObject /Subtype /Form /BBox [50 700 150 712]".into(),
+            data: b"GONEAPPEARANCE 1 1 0 rg 50 700 100 12 re f".to_vec(),
+        },
+        Raw::Dict("<< /Type /Annot /Subtype /Popup /Rect [200 700 300 760] /Parent 6 0 R /NM (POPUPMARK) >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Text /Rect [20 20 40 40] /IRT 6 0 R /Contents (REPLYNOTE) >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [6 0 R] >>".into()),
+        Raw::Dict("<< /Type /StructTreeRoot /K 12 0 R >>".into()),
+        Raw::Dict("<< /Type /StructElem /S /Annot /P 11 0 R /Pg 3 0 R /K << /Type /OBJR /Obj 6 0 R >> >>".into()),
+    ])
+}
+
+/// **Failure (second review of R4.3, S1): a highlight taken out stays in the file's bytes** (SPEC: nothing is left recoverable after it's said to be
+/// removed). Taking it out of the one list it was asked from leaves it reachable through its second entry there, page 2's list, a reply's `/IRT`
+/// or the structure tree's `/OBJR`, so the rewrite writes it, its note, its appearance and its popup into the new file. However it was reached,
+/// it's gone, with its appearance, note and popup; the reply stays as a note of its own, without its `/IRT`; and no page lists a highlight.
+#[test]
+fn a_file_highlight_taken_out_is_gone_however_the_file_reached_it() {
+    let dir = Dir::new();
+    let path = dir.write("reached.pdf", &with_a_highlight_reached_many_ways());
+    let order = own(&[(0, 0), (1, 0)]);
+    let gone = [save::GoneHighlight {
+        position: 0,
+        index: 1,
+        rect: [50.0, 700.0, 150.0, 712.0],
+    }];
+    let asked = SaveRequest {
+        highlights_gone: &gone,
+        ..request(&path, 2, &order, &[])
+    };
+    save::save(&asked, Target::Same, None, &mut save::NoHooks).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    for mark in ["GONENOTE", "GONEAPPEARANCE", "POPUPMARK", "/Highlight", "/IRT", "/Popup"] {
+        assert!(!contains(&bytes, mark), "{mark} is still in the file");
+    }
+    assert!(contains(&bytes, "REPLYNOTE"), "the reply stays, a note of its own");
+    let kinds = |page| annotations_of(&path, page).into_iter().map(|(kind, ..)| kind).collect::<Vec<_>>();
+    assert_eq!(kinds(0), vec![b"Link".to_vec(), b"Text".to_vec()]);
+    assert!(kinds(1).is_empty(), "page 2 listed it too");
+}
+
+/// **Failure (second review of R4.3, S1): a removal takes out what a document is made of**, as a hostile file dresses its page as a highlight in its
+/// own list, or names its catalog (with no `/Type`) as a highlight's popup: the save removes the page, or the catalog, with every reference to it.
+/// The page is refused, the file as it was; the highlight whose "popup" is the catalog goes, and the catalog and both pages stay.
+#[test]
+fn a_page_or_catalog_dressed_as_an_annotation_is_never_taken_out() {
+    let dir = Dir::new();
+    let bytes = build(&[
+        Raw::Dict("<< /Pages 2 0 R /Subtype /Popup >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".into()),
+        Raw::Dict("<< /Type /Page /Subtype /Highlight /Rect [50 700 150 712] /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [3 0 R 5 0 R] >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".into()),
+        Raw::Dict("<< /Subtype /Highlight /Rect [50 600 150 612] /Popup 1 0 R /Contents (GONENOTE) >>".into()),
+    ]);
+    let path = dir.write("dressed.pdf", &bytes);
+    let order = own(&[(0, 0), (1, 0)]);
+    let asked = |gone| SaveRequest {
+        highlights_gone: gone,
+        ..request(&path, 2, &order, &[])
+    };
+    let page = [save::GoneHighlight {
+        position: 0,
+        index: 0,
+        rect: [50.0, 700.0, 150.0, 712.0],
+    }];
+    let saved = save::save(&asked(&page), Target::Same, None, &mut save::NoHooks);
+    assert!(matches!(saved, Err(SaveError::EditsDontMatch { .. })), "{saved:?}");
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    let highlight = [save::GoneHighlight {
+        position: 0,
+        index: 1,
+        rect: [50.0, 600.0, 150.0, 612.0],
+    }];
+    let saved = save::save(&asked(&highlight), Target::Same, None, &mut save::NoHooks);
+    assert!(saved.is_ok(), "{saved:?}");
+    assert!(!contains(&std::fs::read(&path).unwrap(), "GONENOTE"));
+    let reader = IndexedReader::open(FileSource::open(&path).unwrap()).unwrap();
+    assert_eq!(reader.page_map().unwrap().len(), 2, "the catalog and both pages stay");
+}
