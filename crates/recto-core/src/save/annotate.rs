@@ -33,13 +33,15 @@ pub struct NewHighlight<'a> {
 #[derive(Default)]
 pub(super) struct Highlights {
     by_position: BTreeMap<u32, Vec<Box<[[f32; 4]]>>>,
+    /// How long the file being saved is, for a refusal to say.
+    file_pages: u32,
 }
 
 impl Highlights {
     /// The request's highlights, each checked: on a page the document has, with sound rectangles. One that isn't refuses the save, since an edit
     /// list that says such a thing isn't the one that was made.
-    pub(super) fn of(highlights: &[NewHighlight<'_>], pages: usize) -> Result<Self, SaveError> {
-        Self::within(highlights, pages, MAX_PER_PAGE)
+    pub(super) fn of(highlights: &[NewHighlight<'_>], pages: usize, file_pages: u32) -> Result<Self, SaveError> {
+        Self::within(highlights, pages, MAX_PER_PAGE).map(|out| Self { file_pages, ..out })
     }
 
     /// [`Self::of`], with the limit a page's highlights have set small for a test.
@@ -70,20 +72,27 @@ impl Highlights {
     /// **Puts the page's highlights on it:** each annotation and its appearance written as new objects, and the page's `/Annots` a list of what it had
     /// and these after. A list the page names by reference is read through `reader`, whose page it is, and written into the page itself, so a list
     /// another page shares is never changed. Nothing for a page with none.
+    ///
+    /// **Refuses rather than leaves one out** (review of R4.3): a highlight whose rectangles come to no finite place on this page's frame, as a hostile
+    /// box can make them, stops the save, which would otherwise say done with that highlight missing from the file. And the save's bound on what it
+    /// appends is asked before each annotation, so one page's thousands of highlights can't write gigabytes before it's looked at.
     pub(super) fn dress<'c>(
         &self,
         position: usize,
         frame: Frame,
         reader: &IndexedReader,
         page: &mut Dictionary,
-        writer: &mut impl Sink<'c>,
+        (writer, cap): (&mut impl Sink<'c>, u64),
     ) -> Result<(), SaveError> {
         let Some(highlights) = u32::try_from(position).ok().and_then(|position| self.by_position.get(&position)) else {
             return Ok(());
         };
         let mut annots = annots_of(reader, page);
         for rects in highlights {
-            let Some(made) = annotation(frame, rects) else { continue };
+            if writer.taken() > cap {
+                return Err(SaveError::TooLarge);
+            }
+            let made = annotation(frame, rects).ok_or(SaveError::EditsDontMatch { file_pages: self.file_pages })?;
             let appearance = writer.add(Object::Stream(made.appearance))?;
             let mut annotation = made.annotation;
             let mut ap = Dictionary::new();
@@ -261,14 +270,17 @@ mod tests {
     #[test]
     fn what_a_save_is_asked_to_write_is_checked() {
         let good = [[1.0, 1.0, 5.0, 5.0]];
-        assert!(Highlights::of(&[NewHighlight { position: 0, rects: &good }], 1).is_ok());
+        assert!(Highlights::of(&[NewHighlight { position: 0, rects: &good }], 1, 1).is_ok());
         let bad: [&[[f32; 4]]; 4] = [&[], &[[f32::NAN, 1.0, 5.0, 5.0]], &[[1.0, 1.0, MAX_EDGE * 2.0, 5.0]], &[[1.0, 1.0, 0.0, 5.0]]];
         for rects in bad {
-            assert!(Highlights::of(&[NewHighlight { position: 0, rects }], 1).is_err(), "{rects:?}");
+            assert!(Highlights::of(&[NewHighlight { position: 0, rects }], 1, 1).is_err(), "{rects:?}");
         }
-        assert!(Highlights::of(&[NewHighlight { position: 1, rects: &good }], 1).is_err(), "a page past the end");
+        assert!(
+            Highlights::of(&[NewHighlight { position: 1, rects: &good }], 1, 1).is_err(),
+            "a page past the end"
+        );
         let many = vec![[1.0, 1.0, 5.0, 5.0]; MAX_RECTS + 1];
-        assert!(Highlights::of(&[NewHighlight { position: 0, rects: &many }], 1).is_err());
+        assert!(Highlights::of(&[NewHighlight { position: 0, rects: &many }], 1, 1).is_err());
         let three = [NewHighlight { position: 0, rects: &good }; 3];
         assert!(Highlights::within(&three[..2], 1, 2).is_ok());
         assert!(matches!(Highlights::within(&three, 1, 2), Err(SaveError::TooLarge)));

@@ -1046,7 +1046,7 @@ impl Plan {
             missing,
             append_cap: sizes.saturating_mul(2).saturating_add(64 * 1024 * 1024),
             fields_left_out,
-            highlights: annotate::Highlights::of(request.highlights, request.pages.len())?,
+            highlights: annotate::Highlights::of(request.highlights, request.pages.len(), request.file_pages)?,
         })
     }
 
@@ -1083,7 +1083,7 @@ impl Plan {
                     if turned || self.highlights.on(ids.len()) {
                         let mut dict = page_dict(reader, id)?;
                         dict.set("Rotate", Object::Integer(*degrees));
-                        self.highlights.dress(ids.len(), frame_of(reader, entry), reader, &mut dict, writer)?;
+                        self.highlights.dress(ids.len(), frame_of(reader, entry), reader, &mut dict, (writer, cap))?;
                         writer.put(id, Object::Dictionary(dict))?;
                     }
                     ids.push(id);
@@ -1107,7 +1107,7 @@ impl Plan {
                 dict.set("Parent", Object::Reference(tree));
                 dict.set("Rotate", Object::Integer(*degrees));
                 // A page the tree lists twice is one object in the file, and can't take one new version for each place: the second is a copy of it.
-                self.highlights.dress(ids.len(), frame_of(reader, entry), reader, &mut dict, writer)?;
+                self.highlights.dress(ids.len(), frame_of(reader, entry), reader, &mut dict, (writer, cap))?;
                 if used_own.insert(id) {
                     writer.put(id, Object::Dictionary(dict))?;
                     ids.push(id);
@@ -1151,7 +1151,7 @@ impl Plan {
                     dict.set("Parent", Object::Reference(tree));
                 }
                 dict.set("Rotate", Object::Integer(*degrees));
-                self.highlights.dress(ids.len(), frame_of(source, entry), source, &mut dict, writer)?;
+                self.highlights.dress(ids.len(), frame_of(source, entry), source, &mut dict, (writer, cap))?;
                 if used_copy[at].insert(entry.id().0) {
                     writer.put(new_id, Object::Dictionary(dict))?;
                     ids.push(new_id);

@@ -1786,3 +1786,28 @@ fn a_highlight_on_a_signed_file_is_appended_and_a_certified_one_refused() {
     );
     assert_eq!(std::fs::read(&certified).unwrap(), before);
 }
+
+/// Failure (review of R4.3): a highlight whose lines come to no finite place on its page, as a hostile page box makes them, is left out of what's
+/// written while the save says it's done, so the person's highlight is lost and counted saved. The save refuses and the file stays as it was.
+#[test]
+fn a_highlight_that_cant_be_placed_refuses_the_save() {
+    let dir = Dir::new();
+    let huge = "300000000000000000000000000000000000000.0";
+    let mut page = Page::new(text_lines(&["Words"]));
+    page.page_extra = format!("/MediaBox [-{huge} -{huge} {huge} {huge}]");
+    let path = dir.write("huge.pdf", &pages(&[page]));
+    let before = std::fs::read(&path).unwrap();
+    let line = [[10.0, 10.0, 100.0, 12.0]];
+    let highlights = [save::NewHighlight { position: 0, rects: &line }];
+    let order = own(&[(0, 0)]);
+    let asked = SaveRequest {
+        highlights: &highlights,
+        ..request(&path, 1, &order, &[])
+    };
+    let saved = save::save(&asked, Target::Same, None, &mut save::NoHooks);
+    assert!(
+        matches!(saved, Err(SaveError::EditsDontMatch { .. })),
+        "refused, not done without it: {saved:?}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}

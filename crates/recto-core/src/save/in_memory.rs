@@ -187,3 +187,41 @@ pub fn signatures_and_keep_in_memory(bytes: &[u8], pages: &[u32]) -> Result<usiz
         .map_err(from_rewrite)?;
     Ok(copy.page_map().map(|map| map.len()).unwrap_or(0))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure (review of R4.3): a page's highlights are all written before the bound on what a save appends is looked at, so one page of thousands
+    /// writes far past it into the temporary file before the save refuses. Held at a bound set small: what's written stops within one highlight of it.
+    #[test]
+    fn the_bound_on_what_a_save_appends_is_asked_between_a_pages_highlights() {
+        let target = recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["one"]))]);
+        let (reader, map) = open_bytes_for_save(&target).unwrap();
+        let order = [PageRef {
+            source: 0,
+            page: 0,
+            quarter_turns: 0,
+        }];
+        let lines = [[10.0, 10.0, 100.0, 12.0]; 40];
+        let highlights = vec![NewHighlight { position: 0, rects: &lines }; 200];
+        let request = SaveRequest {
+            path: Path::new("target.pdf"),
+            stamp: None,
+            file_pages: 1,
+            pages: &order,
+            added: &[],
+            highlights: &highlights,
+        };
+        let mut plan = Plan::make(&reader, &map, &request, &[], signature_facts(&reader), Writer::Append, MAX_COPY_WORK).unwrap();
+        const CAP: u64 = 8 * 1024;
+        plan.append_cap = CAP;
+        let mut out = Vec::new();
+        let mut writer = AppendWriter::new(&reader, &mut out).unwrap();
+        let began = writer.position();
+        let written = plan.write(&reader, &[], &mut AppendSink { writer: &mut writer, began });
+        assert_eq!(written, Err(SaveError::TooLarge));
+        let taken = writer.position() - began;
+        assert!(taken < CAP + 8 * 1024, "{taken} bytes written against a bound of {CAP}");
+    }
+}
