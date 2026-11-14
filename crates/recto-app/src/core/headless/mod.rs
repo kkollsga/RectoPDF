@@ -14,6 +14,7 @@ mod exits;
 mod exports;
 pub(crate) mod files;
 mod find;
+mod find_announces;
 mod finding;
 mod first_show;
 mod highlight;
