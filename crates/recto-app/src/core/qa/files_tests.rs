@@ -385,10 +385,7 @@ fn every_qa_verb_that_writes_refuses_a_path_outside_the_tests_files() {
     }
     // A verb with a file in it that these lists don't name is one whose wall nobody has decided.
     let with_a_file: std::collections::BTreeSet<&str> = app_rows()
-        .filter(|spec| {
-            spec.args.iter().any(|arg| arg.kind == Kind::Path)
-                || FILE_IN_A_VALUE.iter().any(|(name, _, _)| *name == spec.name)
-        })
+        .filter(|spec| spec.args.iter().any(|arg| arg.kind == Kind::Path) || FILE_IN_A_VALUE.iter().any(|(name, _, _)| *name == spec.name))
         .map(verb_of)
         .filter(|verb| *verb != "compare_budget")
         .collect();

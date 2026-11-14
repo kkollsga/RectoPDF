@@ -307,7 +307,11 @@ mod tests {
     /// app keeps and not only small ones set by the test, so `MAX_PAGE_ANNOTS`, `MAX_PAGE_HIGHLIGHTS` and `MAX_QUADS` off by one either way fail.
     #[test]
     fn each_limit_is_held_at_itself_and_said_at_itself_plus_one() {
-        assert_eq!((MAX_PAGE_ANNOTS, MAX_PAGE_HIGHLIGHTS, MAX_QUADS), (8192, 256, 256), "the limits the module documents");
+        assert_eq!(
+            (MAX_PAGE_ANNOTS, MAX_PAGE_HIGHLIGHTS, MAX_QUADS),
+            (8192, 256, 256),
+            "the limits the module documents"
+        );
         let keep = Limits::default();
         let quad = "50 720 150 720 50 708 150 708 ";
         // Highlights: `max` of them are all kept, one more is cut and said.
@@ -325,13 +329,21 @@ mod tests {
         let mut past_annots = filler(keep.annots);
         past_annots.push(ONE);
         let past = highlights_of(&page_with(&past_annots, ""), 0, keep);
-        assert_eq!((past.found.len(), past.truncated), (0, true), "annotations at the limit plus one: the last isn't looked at");
+        assert_eq!(
+            (past.found.len(), past.truncated),
+            (0, true),
+            "annotations at the limit plus one: the last isn't looked at"
+        );
         // Quadrilaterals of one highlight.
         let quads = |count: usize| format!("<< /Subtype /Highlight /QuadPoints [{}] >>", quad.repeat(count));
         let at = highlights_of(&page_with(&[&quads(keep.quads)], ""), 0, keep);
         assert_eq!((at.found[0].rects.len(), at.truncated), (keep.quads, false), "quadrilaterals at the limit");
         let past = highlights_of(&page_with(&[&quads(keep.quads + 1)], ""), 0, keep);
-        assert_eq!((past.found[0].rects.len(), past.truncated), (keep.quads, true), "quadrilaterals at the limit plus one");
+        assert_eq!(
+            (past.found[0].rects.len(), past.truncated),
+            (keep.quads, true),
+            "quadrilaterals at the limit plus one"
+        );
     }
 
     /// Failure (review of R4.3): a page's read has no time limit, as a read of links has, so a page of costly annotations holds an agent's

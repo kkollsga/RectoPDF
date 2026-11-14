@@ -481,7 +481,9 @@ fn a_call_queued_two_functions_deep_is_seen_by_the_search_and_not_the_table() {
         "        self.inner.tools.printing().finished(&path);",
         "        self.inner.tools.printing().finished(&path);\n        seed_a(&self.inner);",
     );
-    printing.push_str("\nfn seed_a(inner: &Inner) {\n    seed_b(inner);\n}\n\nfn seed_b(inner: &Inner) {\n    inner.core.push(CoreCall::Find(String::new()));\n}\n");
+    printing.push_str(
+        "\nfn seed_a(inner: &Inner) {\n    seed_b(inner);\n}\n\nfn seed_b(inner: &Inner) {\n    inner.core.push(CoreCall::Find(String::new()));\n}\n",
+    );
     assert_eq!(
         persons_calls_queued_by(&sources).len(),
         1,
@@ -489,7 +491,10 @@ fn a_call_queued_two_functions_deep_is_seen_by_the_search_and_not_the_table() {
         persons_calls_queued_by(&sources)
     );
     let said = wrong(&bridge_methods(&sources), &walked());
-    assert!(said.is_empty(), "the table's check reads one level down only; if it follows further now, this test and the search can go: {said:#?}");
+    assert!(
+        said.is_empty(),
+        "the table's check reads one level down only; if it follows further now, this test and the search can go: {said:#?}"
+    );
 }
 
 /// **What uniffi really exports, by the bridge's static library,** where one is built from these sources: its `uniffi_recto_ffi_fn_` symbols, the
