@@ -90,3 +90,52 @@ fn the_windows_contents_controls_are_the_agents_commands() {
         twins.assert_same(&format!("{action:?} and {line}"), &[]);
     }
 }
+
+/// Generated contents with a section in them, shown on the active tab, as the helper's look would leave them.
+fn generated_with_a_section(app: &HeadlessApp) -> u32 {
+    let lines = [
+        recto_core::TocLine {
+            title: "Part",
+            page: 0,
+            parent: recto_core::NONE,
+            depth: 0,
+        },
+        recto_core::TocLine {
+            title: "Sub",
+            page: 1,
+            parent: 0,
+            depth: 1,
+        },
+        recto_core::TocLine {
+            title: "Next",
+            page: 2,
+            parent: recto_core::NONE,
+            depth: 0,
+        },
+    ];
+    let made = Arc::new(recto_core::Toc::from_lines(&lines, false));
+    let id = TabId(app.reader().shown_tab);
+    app.core().host.session.with_session(|session| {
+        session.set_generated_view(id, GeneratedView::Ready(made));
+        session.tabs_mut().choose_generated(id, true);
+    });
+    app.send(CoreCall::Reconcile);
+    app.settle();
+    id.0
+}
+
+/// Failure (finding 1 of the contents fixes): the window's chevron does nothing on generated contents while `contents fold` folds them, so a QA verb that
+/// calls the control's method would be silent where the agent's command is not.
+#[test]
+fn the_chevron_folds_generated_contents() {
+    let twins = Twins::with_generating(&[("a.pdf", with_sections(6))]);
+    let tab = generated_with_a_section(&twins.person);
+    generated_with_a_section(&twins.agent);
+    let (first, entry) = chevron(&twins.person);
+    let fold = format!(r##"{{"cmd":"contents_fold","entry":{entry},"tab":"#{tab}"}}"##);
+    let rows = |app: &HeadlessApp| crate::lock(&app.core().published).contents.len();
+    let before = rows(&twins.person);
+    twins.both(UiAction::Chevron { first }, &fold);
+    assert_ne!(rows(&twins.person), before, "the chevron folded nothing");
+    assert_eq!(rows(&twins.person), rows(&twins.agent), "the same rows as the command leaves");
+}
