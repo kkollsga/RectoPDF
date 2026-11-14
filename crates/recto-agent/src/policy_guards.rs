@@ -320,11 +320,8 @@ fn told(secret: u32, level: Level, command: &Command, arranged: Arrangement) -> 
         naming_the_plain_tab(command)
     };
     let mut events = Vec::new();
-    let result = execute(&access, Actor::Agent(level), &command, &mut events).map(|mut answer| {
-        unmeasured(&mut answer);
-        answer
-    });
-    format!("{result:?} {events:?}")
+    let result = execute(&access, Actor::Agent(level), &command, &mut events);
+    format!("{} {events:?}", said(result))
         .replace(locked.folder().to_str().unwrap(), "<locked>")
         .replace(plain.folder().to_str().unwrap(), "<plain>")
 }
@@ -340,6 +337,21 @@ fn arranged_session(secret: u32, arranged: Arrangement) -> (Mutex<Session<crate:
     session.tabs_mut().note_password_used(id);
     session.tap(if arranged.reading_locked { id } else { other }).unwrap();
     (Mutex::new(session), locked, plain)
+}
+
+/// What an answer or a refusal says, with what's measured as it runs left out: from an answer, [`unmeasured`]; from a refusal's words, how long it took,
+/// which a slow refusal says ([`crate::render::without_time_taken`]).
+fn said(result: Result<Value, crate::AgentError>) -> String {
+    let result = result
+        .map(|mut answer| {
+            unmeasured(&mut answer);
+            answer
+        })
+        .map_err(|mut refused| {
+            refused.message = crate::render::without_time_taken(&refused.message).to_owned();
+            refused
+        });
+    format!("{result:?}")
 }
 
 /// An answer with what's measured as it runs left out (times, the process's and a worker's memory, open handles), which differ from run to run
@@ -872,4 +884,17 @@ fn the_scan_sees_each_form_it_names() {
     }
     let made_new = "fn f() {\n    let _ = OpenOptions::new()\n        .write(true)\n        .create_new(true)\n        .open(out);\n}\n";
     assert!(writes_over("x.rs", made_new).is_empty(), "create_new on the next line makes it new");
+}
+
+/// Failure (seen once under load, 2026-11-14): the walk above told the twins apart on how long a refusal took ("The picture couldn't be saved there." on
+/// one, "... That took 183 ms." on the other), which a slow refusal adds to its words and isn't the document. A refusal whose time is on one twin only is
+/// said alike, and one whose words really differ still isn't.
+#[test]
+fn a_refusals_time_is_left_out_and_its_words_are_not() {
+    let refused = |message: &str| -> Result<Value, crate::AgentError> { Err(crate::AgentError::new(crate::Code::WRITE_FAILED, message, 1)) };
+    let words = "The picture couldn't be saved there.";
+    let slow = crate::render::with_time_taken_of(crate::AgentError::new(crate::Code::WRITE_FAILED, words, 1), 183);
+    assert_ne!(slow.message, words, "a slow refusal says how long it took");
+    assert_eq!(said(Err(slow)), said(refused(words)));
+    assert_ne!(said(refused(words)), said(refused("The picture couldn't be saved here.")));
 }
