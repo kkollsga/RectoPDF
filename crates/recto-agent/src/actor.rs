@@ -28,7 +28,7 @@ impl Actor {
     #[must_use]
     pub fn may(self, needed: Access) -> bool {
         match self {
-            Self::Agent(level) => crate::allowed(level, needed),
+            Self::Agent(level) => allowed(level, needed),
             Self::Person => !matches!(needed, Access::Nobody),
         }
     }
@@ -124,6 +124,26 @@ impl Actor {
     pub(crate) fn refuse_rewrite(self, rewrite: Rewrite) -> Result<(), AgentError> {
         if self.may_rewrite() { Ok(()) } else { Err(rewrite.refusal()) }
     }
+
+    /// **Sees the user's own words and the paths of their files**: what they typed in Find, the paths of files recently open. At Control: below it an
+    /// agent reads what it's given, not what the user looked for or where their files are.
+    #[must_use]
+    pub fn sees_users_words_and_paths(self) -> bool {
+        self.level() >= Level::Control
+    }
+
+    /// **Sees where a save's backup is,** which says something about the user's disk: at Full.
+    #[must_use]
+    pub fn sees_backup_path(self) -> bool {
+        self.at_full()
+    }
+}
+
+/// **Whether an agent at `have` may run a command that needs `needed`.** Which command needs what is the table's ([`crate::table`]); this is the one
+/// comparison of levels it's decided by. What's the user's alone or no one's isn't an agent's at any level.
+#[must_use]
+pub fn allowed(have: Level, needed: Access) -> bool {
+    matches!(needed, Access::At(level) if have >= level)
 }
 
 #[cfg(test)]
@@ -140,7 +160,7 @@ mod tests {
         let levels = [Level::Off, Level::ReadOnly, Level::Control, Level::Full];
         for needed in levels.map(Access::At).into_iter().chain([Access::UserOnly, Access::Nobody]) {
             for have in levels {
-                assert_eq!(Actor::Agent(have).may(needed), crate::allowed(have, needed), "{have:?} for {needed:?}");
+                assert_eq!(Actor::Agent(have).may(needed), allowed(have, needed), "{have:?} for {needed:?}");
             }
             assert_eq!(Actor::Person.may(needed), !matches!(needed, Access::Nobody), "the person for {needed:?}");
         }

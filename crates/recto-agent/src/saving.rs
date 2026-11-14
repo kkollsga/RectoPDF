@@ -16,7 +16,7 @@
 use crate::Code;
 use crate::TabRef;
 use crate::actor::Rewrite;
-use crate::{Actor, AgentError, Event, Level, SessionAccess, exit, file_label, select};
+use crate::{Actor, AgentError, Event, SessionAccess, exit, file_label, select};
 use recto_core::save::{AddedFile, PageRef, SaveError, SaveHooks, SaveOutcome, SaveRequest, SaveStep, Target, Writer};
 use recto_platform::FileStamp;
 use recto_session::TabId;
@@ -474,7 +474,6 @@ fn answer<L: recto_session::DocLoader>(
     rolled_off: usize,
     saved_as: Option<&Path>,
 ) -> Value {
-    let level = actor.level();
     let mut data = crate::edit_state_json(s, actor, id);
     let name = s.tabs().path_of(id).map(|path| file_label(&path)).unwrap_or_default();
     let how = match outcome.writer {
@@ -546,9 +545,8 @@ fn answer<L: recto_session::DocLoader>(
         }
         None => Value::Null,
     };
-    // Where the backup is says something about the user's disk, so only at Full.
     data["backup_kept"] = json!(outcome.backup.is_some());
-    if level >= Level::Full {
+    if actor.sees_backup_path() {
         data["backup"] = json!(outcome.backup.as_ref().map(|path| path.display().to_string()));
     }
     data["untrusted"] = json!({ "file": name });

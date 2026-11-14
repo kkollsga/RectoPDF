@@ -129,8 +129,8 @@ impl Cmd for Recent {
         Value::Null
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        let (access, level) = (cx.access, cx.actor.level());
-        Ok(access.with(|s| recent_json(s, level)))
+        let (access, actor) = (cx.access, cx.actor);
+        Ok(access.with(|s| recent_json(s, actor)))
     }
     fn human(data: &Value) -> String {
         match data["files"].as_array().filter(|files| !files.is_empty()) {

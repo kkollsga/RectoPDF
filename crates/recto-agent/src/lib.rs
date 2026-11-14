@@ -398,10 +398,7 @@ pub fn refusal(command_name: &str, have: Level, needed: Access) -> AgentError {
     }
 }
 
-/// Whether a level may run a command.
-pub fn allowed(have: Level, needed: Access) -> bool {
-    matches!(needed, Access::At(level) if have >= level)
-}
+pub use actor::allowed;
 
 /// A way to reach the session. In one process that's a plain reference; on the socket it's a lock taken only as long as each step needs.
 pub trait SessionAccess {
@@ -523,7 +520,6 @@ pub fn only_the_user_quits() -> AgentError {
 /// not while the document being read is one they opened with its password, as what they looked for in it says what they saw there. Called with the session
 /// held.
 pub fn session_show_json<L: DocLoader>(session: &Session<L>, actor: Actor, kept: Value) -> Value {
-    let level = actor.level();
     let tabs: Vec<Value> = session
         .tabs()
         .iter()
@@ -546,7 +542,7 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, actor: Actor, kept:
     let find = session.viewing().find();
     let mut find_json = json!({ "open": find.open, "has_text": !find.query.is_empty() || !find.draft.is_empty() });
     let reading_withheld = session.tabs().active().is_some_and(|id| session.tabs().withheld_from_agents(id));
-    if level >= Level::Control && !reading_withheld {
+    if actor.sees_users_words_and_paths() && !reading_withheld {
         find_json["query"] = json!(find.query);
         find_json["draft"] = json!(find.draft);
     }
@@ -1093,7 +1089,8 @@ pub fn condition_topics(condition: Condition) -> &'static [&'static str] {
 }
 
 /// Files opened lately, newest first. A name comes from outside, so it's under `untrusted`. The command needs Control, the coordinator's decision (review O7): names of files someone's closed say what they've been reading. Paths are held to Control here too, whatever the row says.
-fn recent_json<L: DocLoader>(session: &Session<L>, level: Level) -> Value {
+fn recent_json<L: DocLoader>(session: &Session<L>, actor: Actor) -> Value {
+    let paths_shown = actor.sees_users_words_and_paths();
     let files: Vec<Value> = session
         .recent_files()
         .iter()
@@ -1101,13 +1098,13 @@ fn recent_json<L: DocLoader>(session: &Session<L>, level: Level) -> Value {
         .map(|(at, file)| {
             let mut out =
                 json!({ "file": at + 1, "open_tab": file.open.map(|id| format!("#{}", id.0)), "untrusted": { "name": recto_core::clean_line(&file.name) } });
-            if level >= Level::Control {
+            if paths_shown {
                 out["untrusted"]["path"] = json!(file.path.to_string_lossy());
             }
             out
         })
         .collect();
-    json!({ "count": files.len(), "files": files, "paths_shown": level >= Level::Control })
+    json!({ "count": files.len(), "files": files, "paths_shown": paths_shown })
 }
 
 /// Puts each hit's page label on it, under `untrusted` as it's the file's words, where the file calls the page something other than its number, as Find shows it.
