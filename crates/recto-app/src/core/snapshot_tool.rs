@@ -127,7 +127,8 @@ pub struct Promise {
     pub tab: u32,
     pub position: u32,
     pub rect: [f32; 4],
-    pub as_seen: Option<extract::AsSeen>,
+    /// As the box's answer said it, read back typed: a box whose answer doesn't say it promises no SVG (fails closed).
+    pub as_seen: extract::AsSeen,
 }
 
 /// What's on its way to the clipboard, or on it.
@@ -619,14 +620,15 @@ fn publish(tool: &Tool, job: Job, result: &Result<Value, AgentError>, made: Opti
     let serial = tool.say(text, offers);
     *lock(&tool.refused) = offers.then_some((serial, job));
     let (Ok(_), Some(clip)) = (result, made) else { return false };
-    let promise = match job.wanted {
-        Wanted::Box { rect } => Some(Promise {
+    // A box's SVG is promised only with the page it saw, which the paste is held to: none that reads, no promise.
+    let promise = match (job.wanted, result) {
+        (Wanted::Box { rect }, Ok(answer)) => serde_json::from_value(answer["as_seen"].clone()).ok().map(|as_seen| Promise {
             tab: job.tab,
             position: job.position,
             rect,
-            as_seen: result.as_ref().ok().and_then(|answer| serde_json::from_value(answer["as_seen"].clone()).ok()),
+            as_seen,
         }),
-        Wanted::Image { .. } => None,
+        _ => None,
     };
     let items = clip
         .items
@@ -659,7 +661,7 @@ pub(super) fn pasted(inner: &Arc<Inner>, serial: u64, uti: &str) -> bool {
         scale: extract::DEFAULT_SCALE,
         anyway: false,
         to_clipboard: true,
-        as_seen: promise.as_seen,
+        as_seen: Some(promise.as_seen),
     });
     if !super::person::submit(inner, command) {
         lock(&tool.paste.state).running = false;
@@ -841,6 +843,43 @@ mod tests {
         assert!(!tool.toggle() && !tool.is_on());
     }
 
+    /// **Failure (the branch's review): a box's answer whose page as seen can't be read still promises its SVG,** with nothing to hold the paste to the
+    /// box's page and turn, so the guard against another page's SVG was dropped without a word. It fails closed: the SVG isn't offered; the rest is.
+    #[test]
+    fn a_box_whose_page_as_seen_cant_be_read_promises_no_svg() {
+        let tool = Tool::default();
+        let job = Job {
+            wanted: Wanted::Box { rect: [0.0, 0.0, 9.0, 9.0] },
+            ..job(0.0)
+        };
+        let clip = || Clip {
+            items: vec![
+                ClipItem::Ready {
+                    uti: extract::UTI_PNG,
+                    bytes: vec![1],
+                },
+                ClipItem::Promised { uti: extract::UTI_SVG, cap: 9 },
+            ],
+            note: String::new(),
+        };
+        let types = |answer: Value| {
+            assert!(publish(&tool, job, &Ok(answer), Some(clip())), "something's ready");
+            let offered = lock(&tool.ready).take().expect("offered");
+            offered.items.iter().map(ClipItem::uti).collect::<Vec<_>>()
+        };
+        let seen = serde_json::to_value(PAGE_1).expect("as JSON");
+        assert_eq!(
+            types(serde_json::json!({ "says": "Copied.", "as_seen": seen })),
+            [extract::UTI_PNG, extract::UTI_SVG]
+        );
+        assert_eq!(types(serde_json::json!({ "says": "Copied." })), [extract::UTI_PNG], "no page as seen, no SVG");
+        assert_eq!(
+            types(serde_json::json!({ "says": "Copied.", "as_seen": { "file_page": "one" } })),
+            [extract::UTI_PNG],
+            "one that doesn't read, no SVG"
+        );
+    }
+
     /// Failure: the clipboard hands a type's bytes to an offer that's been replaced, or twice, so they're held after the host has them; or a promised SVG is made on the way out, holding up a quit for a worker; or a text copy isn't one offer like a snapshot's.
     #[test]
     fn an_offers_bytes_go_once_to_that_offer() {
@@ -849,7 +888,7 @@ mod tests {
             tab: 1,
             position: 0,
             rect: [0.0, 0.0, 1.0, 1.0],
-            as_seen: None,
+            as_seen: PAGE_1,
         };
         *lock(&tool.offered) = Some(Offered {
             serial: 7,
