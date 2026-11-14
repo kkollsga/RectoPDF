@@ -157,8 +157,14 @@ fn a_pdf_that_needed_a_password_never_gets_a_sleep_file() {
     opened_by_the_person(&app, &typed, Some("right"));
     opened_by_the_person(&app, &unanswered, None);
     opened_by_the_person(&app, &plain, None);
-    let refused = app.recto(recto_agent::Level::Full, &["page", "insert", typed.to_str().unwrap(), "--at", "1"]);
-    assert!(refused.is_err(), "a page from a file that needs a password isn't added: {refused:?}");
+    let refused = app
+        .recto(recto_agent::Level::Full, &["page", "insert", typed.to_str().unwrap(), "--at", "1"])
+        .expect_err("a page from a file that needs a password isn't added");
+    assert_eq!(
+        (refused.code.as_str(), refused.exit),
+        ("password_needed", recto_agent::exit::PROTECTED),
+        "and it's refused for needing the password, not for something else: {refused:?}"
+    );
     opened_by_the_person(&app, &other, None);
     app.core().qa_session_verb("memory_pressure", "warning").expect("a QA verb").expect("pressure");
     app.settle();

@@ -1179,7 +1179,11 @@ fn a_protected_pdfs_pages_never_reach_a_sleep_file() {
     run.ok(&["open", plain.to_str().unwrap()]);
     run.settled();
     let (refused, code) = state.json(&["page", "insert", locked.to_str().unwrap(), "--at", "1"]);
-    assert_ne!(code, 0, "a page that needs a password isn't added: {refused}");
+    assert_eq!(
+        (code, &refused["error"]["code"]),
+        (8, &json!("password_needed")),
+        "a page that needs a password isn't added, and that's why: {refused}"
+    );
     assert_eq!(run.ok(&["edits"])["pages"], 2);
     // The tab's own file, opened by the person with its password.
     run.ok(&["qa", "as-person", &format!("open \"{}\"", locked.to_str().unwrap())]);
