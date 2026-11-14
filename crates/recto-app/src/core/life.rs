@@ -156,6 +156,15 @@ impl Lifecycle {
         self.life().keeping()
     }
 
+    /// **A thread of keeping's is out:** a try at the record's lock not yet back, or a late keep's saved session being read while its restore's patience
+    /// lasts, which what the person does meanwhile waits on (held on the session thread till the restore's in). What the app's settled waits for
+    /// ([`crate::settled`]). Bounded in the real app: a try is one look at the lock's file, and the read is waited on for the restore's patience at most
+    /// ([`crate::lifecycle::keeping::RESTORING_PATIENCE_MS`]); once that's over (`LettingGo`) nothing waits on it, and the seconds between tries are a
+    /// deadline due later, never waited for. Every state says, with no default, so a new one can't be left out.
+    pub(crate) fn keeping_thread_out(&self) -> bool {
+        thread_out(self.keeping())
+    }
+
     /// How long until the next try at the record's lock, while a launch that didn't get it tries again.
     pub(super) fn keeping_due(&self) -> Option<Duration> {
         let now = self.now_ms();
@@ -326,8 +335,7 @@ impl Lifecycle {
         self.others_looking.fetch_sub(1, Ordering::SeqCst);
     }
 
-    /// Whether that pass is under way: what a test's settle waits for, as nothing else does.
-    #[cfg(any(test, feature = "testkit"))]
+    /// Whether that pass is under way: what the app's settled waits for (the kit's settle and `qa wait`, [`crate::settled`]), as nothing else does.
     pub(crate) fn others_looking(&self) -> bool {
         self.others_looking.load(Ordering::SeqCst) > 0
     }
@@ -356,5 +364,55 @@ pub(crate) struct PersonRunning(Arc<Lifecycle>);
 impl Drop for PersonRunning {
     fn drop(&mut self) {
         self.0.persons_running.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Whether keeping, in this state, has a thread out ([`Lifecycle::keeping_thread_out`]).
+fn thread_out(keeping: crate::lifecycle::keeping::Keeping) -> bool {
+    use crate::lifecycle::keeping::Keeping;
+    match keeping {
+        Keeping::Trying { asking, .. } | Keeping::Stopped { asking, .. } => asking,
+        Keeping::Restoring { .. } => true,
+        Keeping::NotAsked | Keeping::Keeps | Keeping::LettingGo | Keeping::NotKept => false,
+    }
+}
+
+#[cfg(test)]
+mod keeping_thread_tests {
+    use crate::lifecycle::keeping::Keeping;
+
+    /// Failure (review of `build/settled-gaps`, 2026-11-14): settled answered with a try at the record's lock out, or a late keep's read out that the
+    /// person's commands were held for. Every state of keeping, each with whether a thread is out: a try that's out (trying or stopped), a restore's read
+    /// (claimed or not); not one let go after its patience, and none for the rest. A state added to `Keeping` fails to compile in `thread_out` until it says.
+    #[test]
+    fn every_keeping_state_says_whether_a_thread_is_out() {
+        let trying = |asking| Keeping::Trying {
+            since_ms: 0,
+            tries: 1,
+            as_read: 0,
+            asking,
+            by_update: false,
+        };
+        let stopped = |asking| Keeping::Stopped {
+            since_ms: 0,
+            tries: 1,
+            as_read: 0,
+            asking,
+            by_update: false,
+        };
+        for (state, out) in [
+            (Keeping::NotAsked, false),
+            (Keeping::Keeps, false),
+            (trying(false), false),
+            (trying(true), true),
+            (stopped(false), false),
+            (stopped(true), true),
+            (Keeping::Restoring { since_ms: 0, claimed: false }, true),
+            (Keeping::Restoring { since_ms: 0, claimed: true }, true),
+            (Keeping::LettingGo, false),
+            (Keeping::NotKept, false),
+        ] {
+            assert_eq!(super::thread_out(state), out, "{state:?}");
+        }
     }
 }

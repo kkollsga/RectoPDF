@@ -371,12 +371,18 @@ pub(crate) struct Work {
     pub(super) gave_up: bool,
     /// For QA: nothing's drawn, so a first frame stays to be looked at.
     pub(super) hold_drawing: bool,
+    /// **The thread that draws has let go of the view to tell what came of its last turn** (a job's end, a file's length, a change the view made), and hasn't
+    /// taken the view again since: what it tells may queue work for the session (a look, a page's note, a file's length), so whoever waits for the view
+    /// settled waits for this too ([`crate::Engine::wait_settled`]). Set with the lock held as it's let go, cleared the next time that thread takes it: so a
+    /// view seen settled under the lock has told everything. A byte of room `Work` had.
+    pub(super) telling: bool,
     pub(super) wanted_files: Arc<Vec<PathBuf>>,
     /// Surfaces the system refused a page in view, and whether one's waited for now ([`SurfaceRetry`]): the thread that draws notes them, and QA reads them.
     pub(crate) surfaces: SurfaceRetry,
 }
 
 // size: held at what it was on 2026-11-13 (macOS, debug and release alike) before R3.6 moved `Reader`'s methods onto its parts, so the move, or a field added later, can't grow it unseen.
+// 128 exactly on 2026-11-14 with `telling`, which took a byte of padding: the bound is today's size, so the next field that doesn't fit fails here.
 #[cfg(target_os = "macos")]
 const _: () = assert!(size_of::<Work>() <= 128, "what's asked of the renderer grew");
 
@@ -391,7 +397,19 @@ impl Work {
             renew: Vec::new(),
             keyless: Vec::new(),
             hold_drawing: false,
+            telling: false,
         }
+    }
+
+    /// The thread that draws lets go of the view to tell what came of its turn (`true`), or has taken it again (`false`): what [`Self::telling`] says. Says
+    /// whether it was telling, so whoever waits for the view settled is told it's through ([`crate::Engine::wait_settled`]).
+    pub(crate) fn set_telling(&mut self, on: bool) -> bool {
+        std::mem::replace(&mut self.telling, on)
+    }
+
+    /// Whether the thread that draws is telling what came of its last turn, with the view let go.
+    pub(crate) fn telling(&self) -> bool {
+        self.telling
     }
 
     pub(super) fn fresh_generation(&mut self) -> u64 {

@@ -308,6 +308,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             if inner.core.has_ended() {
                 return;
             }
+            recto_platform::slow::pause(recto_platform::slow::Seam::Due);
             // A launch an update may have opened has waited for the state as long as it does.
             if inner.life.due().is_some_and(|wait| wait.is_zero()) {
                 restore_patience_over(inner);

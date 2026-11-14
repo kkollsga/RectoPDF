@@ -659,16 +659,25 @@ impl QaBridge {
             std::thread::sleep(ANIMATION_POLL.min(left()));
         }
         loop {
-            // What's been asked of the session thread comes first: an `open` it hasn't reached yet isn't settled, it's not started.
-            if !(self.core.flush(left()) && self.engines().iter().all(|engine| engine.wait_settled(left()))) {
-                return Err(AgentError::new(Code::TIMED_OUT, "The page view didn't settle in time.", exit::TIMED_OUT)
-                    .then("`recto qa state` shows what it's still waiting for."));
+            // The app at rest, as the one definition has it (`crate::settled`): the session thread through what's queued with nothing due now, what comes back
+            // to it done, and every page view drawn with its last job's end told, seen twice with nothing handed on between.
+            let at_rest = match self.inner() {
+                Some(inner) => crate::settled::wait(&crate::settled::watched!(inner), crate::settled::PageViews::Drawn, left(), || {}),
+                None if self.core.flush(left()) && self.engines().iter().all(|engine| engine.wait_settled(left())) => Ok(()),
+                None => Err(vec!["the page view".to_string()]),
+            };
+            if let Err(busy) = at_rest {
+                return Err(AgentError::new(
+                    Code::TIMED_OUT,
+                    format!("The app didn't settle in time: still under way, {}.", busy.join("; ")),
+                    exit::TIMED_OUT,
+                )
+                .then("`recto qa state` shows what it's still waiting for."));
             }
             let running = self.ask("animations", "")?;
-            // A snapshot on its way to the clipboard is about to change what `qa copied` and the notice say.
-            // A snapshot on its way to the clipboard, or a print's pages being drawn or handed to the system, is about to change what's shown.
-            let snapshot_busy = self.inner().is_some_and(|inner| inner.tools.tool().busy() || inner.tools.printing().busy());
-            if running.as_array().is_none_or(Vec::is_empty) && !snapshot_busy {
+            // The host's part of a print, a file handed to the system, is about to change what's shown; its pages being prepared are the definition's.
+            let printing = self.inner().is_some_and(|inner| inner.tools.printing().busy());
+            if running.as_array().is_none_or(Vec::is_empty) && !printing {
                 return Ok(
                     json!({ "settled": true, "waited_ms": started.elapsed().as_millis() as u64, "animations_waited_ms": animations_waited.as_millis() as u64 }),
                 );

@@ -60,6 +60,12 @@ pub struct Printing {
 }
 
 impl Printing {
+    /// Pages being prepared, on the print's own thread: Rust's part, which the app's settled waits for ([`crate::settled`]). The host's part, the file handed
+    /// to the system, is in [`Self::busy`].
+    pub fn preparing(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
     pub fn busy(&self) -> bool {
         self.running.load(Ordering::SeqCst) || lock(&self.ready).is_some() || self.handing.load(Ordering::SeqCst)
     }
@@ -290,6 +296,8 @@ pub fn start(inner: &Arc<Inner>, request: Request) -> bool {
     inner.host.running.fetch_add(1, Ordering::SeqCst);
     inner.core.push(CoreCall::Reconcile);
     let runner = Arc::clone(inner);
+    // Counted by its way back to the session thread till its last word is queued, however it ends ([`crate::settled`]).
+    let way_back = inner.core.way_back();
     let spawned = std::thread::Builder::new().name("recto-print".into()).stack_size(STACK).spawn(move || {
         let printing = runner.tools.printing();
         let pages = format!("{first}-{last}");
@@ -335,10 +343,14 @@ pub fn start(inner: &Arc<Inner>, request: Request) -> bool {
                 lock(&printing.qa_target).take();
             }
         }
+        // Done before it's told: the notice the window is made from next reads it ([`Printing::selection_notice`]).
         printing.running.store(false, Ordering::SeqCst);
         runner.host.running.fetch_sub(1, Ordering::SeqCst);
         runner.core.push(CoreCall::Reconcile);
         runner.listener.model_changed();
+        #[cfg(test)]
+        after_telling();
+        drop(way_back);
     });
     if spawned.is_err() {
         printing.running.store(false, Ordering::SeqCst);
@@ -347,6 +359,19 @@ pub fn start(inner: &Arc<Inner>, request: Request) -> bool {
         return false;
     }
     true
+}
+
+/// A test's: the next print's thread says it has told what came of it, then waits to be let go, so what was published then can be looked at.
+#[cfg(test)]
+static AFTER_TELLING: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>> = Mutex::new(None);
+
+/// Where a print's thread waits, once it has told what came of it, while a test holds it there ([`AFTER_TELLING`]).
+#[cfg(test)]
+fn after_telling() {
+    if let Some((told, go)) = lock(&AFTER_TELLING).take() {
+        let _ = told.send(());
+        let _ = go.recv_timeout(crate::testkit::headless::WAIT_LIMIT);
+    }
 }
 
 /// How a print that didn't go is said.
@@ -372,6 +397,40 @@ fn said_as(error: &recto_agent::AgentError) -> Told {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure (second review of `build/settled-gaps`, 2026-11-14): a print's thread told the session what came of it before it said it was done, so the
+    /// look the window is made from could read it still preparing and keep "Preparing pages for printing… [Stop]" on screen, hiding a refused print's "Print
+    /// anyway", with nothing to look again. Held just after it has told: the window made from that word shows no print being prepared.
+    #[test]
+    fn the_window_made_after_a_print_ends_shows_it_ended() {
+        use crate::testkit::headless::{HeadlessApp, WAIT_LIMIT};
+        let app = HeadlessApp::start();
+        let doc = app.disk().pdf("a.pdf", 2);
+        app.open(&doc);
+        let tab = app.core().host.session.with_session(|session| session.tabs().active()).expect("a tab");
+        let (told, held) = std::sync::mpsc::channel();
+        let (go, waiting) = std::sync::mpsc::channel();
+        *lock(&AFTER_TELLING) = Some((told, waiting));
+        assert!(start(
+            app.core(),
+            Request {
+                tab,
+                range: (1, 1),
+                dpi: 72,
+                to_file: false,
+                anyway: false,
+            }
+        ));
+        held.recv_timeout(WAIT_LIMIT).expect("the print told what came of it");
+        assert!(app.core().core.flush(WAIT_LIMIT), "the session thread took the word");
+        let notice = app.reader().selection_notice.map(|notice| notice.text);
+        drop(go);
+        app.settle();
+        assert!(
+            !notice.as_deref().is_some_and(|text| text.starts_with("Preparing")),
+            "the window made after the print ended says it's still preparing: {notice:?}"
+        );
+    }
 
     /// Failure: QA's print to a PDF writes over a file that's there, writes to a relative place, or takes a name of ours a file already has, as the bridge's
     /// `print_qa_target` refused before it moved here (R3.7, S2): the target is a new name beside `out`, kept for the print's end to publish, and nothing else.

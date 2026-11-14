@@ -210,6 +210,7 @@ Lifecycle::pub(crate) fn due(&self) -> Option<Duration>
 Lifecycle::pub(crate) fn first_shown(&self) -> Option<Value>
 Lifecycle::pub(crate) fn hold_reads(&self, hold: bool)
 Lifecycle::pub(crate) fn holding_tab(&self) -> Option<TabId>
+Lifecycle::pub(crate) fn keeping_thread_out(&self) -> bool
 Lifecycle::pub(crate) fn last_input_ms(&self) -> u64
 Lifecycle::pub(crate) fn looking_at_others(&self)
 Lifecycle::pub(crate) fn now_ms(&self) -> u64
@@ -246,6 +247,7 @@ Printing::pub fn dismiss_notice(&self)
 Printing::pub fn finished(&self, path: &str)
 Printing::pub fn has_ready(&self) -> bool
 Printing::pub fn notice(&self) -> Option<String>
+Printing::pub fn preparing(&self) -> bool
 Printing::pub fn qa_target_for(&self, out: PathBuf) -> Option<PathBuf>
 Printing::pub fn quitting(&self)
 Printing::pub fn selection_notice(&self) -> Option<SelectionNotice>

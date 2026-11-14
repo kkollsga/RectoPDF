@@ -84,7 +84,7 @@ struct Shared {
     /// For QA ([`Qa`]): a busy view made to last, and asks held between their tick and the lock. Only with the `qa` feature (or in this crate's tests): a
     /// release app has no such field.
     #[cfg(any(test, feature = "qa"))]
-    qa: qa_holds::QaHolds,
+    qa: Box<qa_holds::QaHolds>,
     hidden: Mutex<crate::tiles::HiddenSets>, // The file's highlights each tab shown has taken out, unsaved: `Selection::show_hidden`.
 }
 
@@ -189,7 +189,7 @@ impl Engine {
             pending: Mutex::new(Pending::default()),
             applied: Applied::default(),
             #[cfg(any(test, feature = "qa"))]
-            qa: qa_holds::QaHolds::default(),
+            qa: Box::default(),
             hidden: Mutex::default(),
         });
         Self {
@@ -203,6 +203,7 @@ impl Engine {
         if self.shared.stopping.load(Ordering::SeqCst) {
             return;
         }
+        self.shared.asked_of_thread();
         let mut thread = lock(&self.thread);
         match &*thread {
             Some(running) => running.unpark(),
@@ -518,18 +519,21 @@ impl Engine {
         lock(&self.shared.reader).report()
     }
 
-    /// Blocks until everything visible is settled, or the time runs out. Never for the UI thread. Drawing for a tab off screen's place isn't waited for: it's nothing visible, and how long it takes is a file's to say. `qa state`'s `reader.sleep_draws.under_way` says whether it's going.
+    /// Blocks until everything visible is settled and the thread that draws has told what came of its last turn, or the time runs out. Never for the UI thread. Drawing for a tab off screen's place isn't waited for: it's nothing visible, and how long it takes is a file's to say. `qa state`'s `reader.sleep_draws.under_way` says whether it's going.
     pub fn wait_settled(&self, limit: Duration) -> bool {
         let deadline = Instant::now() + limit;
         let mut reader = lock(&self.shared.reader);
         loop {
-            if reader.is_settled() {
+            // And everything the thread that draws had to tell of its last turn told: what it tells may queue the session's work (`Work::telling`).
+            if reader.is_settled() && !reader.work.telling() {
                 return true;
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return false;
             }
+            #[cfg(test)]
+            self.shared.qa.settled_waits.fetch_add(1, Ordering::SeqCst);
             reader = self.shared.settled.wait_timeout(reader, left).unwrap_or_else(PoisonError::into_inner).0;
         }
     }
@@ -1547,6 +1551,75 @@ mod tests {
         assert_eq!(report["surfaces"]["refused"], 3, "{report}");
         assert_eq!(report["surfaces"]["retry_pending"], false, "{report}");
         assert!(report["tiles"]["attached"].as_u64().unwrap() >= 1, "{report}");
+        engine.shut_down();
+    }
+
+    /// Failure (the settled audit, 2026-11-14, gap 1): [`Engine::wait_settled`] said settled between a job's end and the thread that draws telling what came
+    /// of it, with the view let go and nothing told yet: the session's look it asks for (a note, a page moved), a page's note, a file's length, the host's word
+    /// that there are layers. `qa wait` and the kit's stand-in for the host then answered before the session had any of it queued. Forced: every job's end
+    /// held there ([`Qa::hold_tells`]), the host taking what it has meanwhile; at none of them is the view settled, and once they've all been told it is.
+    #[test]
+    fn a_view_isnt_settled_until_its_last_jobs_end_is_told() {
+        let file = recto_testpdf::TempPdf::new(
+            "told.pdf",
+            &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["A page whose drawing is told"]))]),
+        );
+        let engine = Engine::new(EngineConfig::default(), Arc::new(Quiet));
+        engine.qa().hold_tells(true);
+        engine.activate(
+            1,
+            1,
+            0,
+            PageMap {
+                files: vec![file.0.clone()],
+                ..PageMap::default()
+            },
+            &[],
+            None,
+            crate::layout::Spread::Single,
+        );
+        let release = |ops: Vec<Op>| {
+            for op in ops {
+                if let Op::Attach { surface, .. } = op {
+                    recto_platform::surface::PixelSurface::release_for_host(surface);
+                }
+            }
+        };
+        release(engine.set_viewport(crate::tiles::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 900.0,
+            frame_width: 800.0,
+            magnification: 1.0,
+            backing: 2.0,
+            live: false,
+            scrolled_to: u64::MAX,
+        }));
+        let (began, mut held) = (Instant::now(), 0);
+        loop {
+            if engine.qa().wait_for_held_tell(Duration::from_millis(5)) {
+                held += 1;
+                // Meanwhile the host takes what the view has, as the window would.
+                release(engine.drain());
+                engine.applied();
+                assert!(
+                    !engine.wait_settled(Duration::ZERO),
+                    "settled with job end {held} not yet told: {}",
+                    engine.report().0
+                );
+                engine.qa().let_a_tell_go();
+                continue;
+            }
+            release(engine.drain());
+            engine.applied();
+            if engine.wait_settled(Duration::from_millis(5)) {
+                break;
+            }
+            assert!(began.elapsed() < Duration::from_secs(20), "the page was never drawn: {}", engine.report().0);
+        }
+        assert!(held > 0, "no job's end was held: {}", engine.report().0);
+        assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap_or(0) >= 1, "{}", engine.report().0);
         engine.shut_down();
     }
 

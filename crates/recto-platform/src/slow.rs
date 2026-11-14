@@ -69,10 +69,14 @@ pub enum Seam {
     /// The updater told of the first frame, on the thread that tells it, before it looks at whether this version has come up: where a test ends the app under
     /// it, and a starved machine starts that thread late.
     FirstFrame,
+    /// The session thread woken for one of its deadlines that's due now (the record's write, a tab's dormancy, a try at the record's lock, the launch's
+    /// patience), before it acts on it: late, as a starved machine schedules the thread late after its timer; and held by a test, so "due now and not yet
+    /// done" can be looked at every time.
+    Due,
 }
 
 impl Seam {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::State,
         Self::Remake,
         Self::Worker,
@@ -87,6 +91,7 @@ impl Seam {
         Self::RecordWrite,
         Self::RecordLock,
         Self::FirstFrame,
+        Self::Due,
     ];
 
     /// Its name in the switch and the report.
@@ -106,6 +111,7 @@ impl Seam {
             Self::RecordWrite => "record_write",
             Self::RecordLock => "record_lock",
             Self::FirstFrame => "first_frame",
+            Self::Due => "due",
         }
     }
 
@@ -135,6 +141,8 @@ impl Seam {
             Self::RecordLock => 50,
             // The thread that tells the updater of the first frame started late: the installer's patience for it is minutes, so a little is enough.
             Self::FirstFrame => 100,
+            // A thread woken by its timer and scheduled late: a little, as a deadline comes due a few times a minute at most.
+            Self::Due => 20,
         }
     }
 

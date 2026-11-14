@@ -627,7 +627,7 @@ fn a_write_due_while_the_saved_session_is_read_back_writes_nothing_over_it() {
     app.wait_until("the saved session's read held at its seam", || app.waiting(Seam::State) > 0);
     assert!(app.core().life.keeping().restoring());
     app.core().saver.write_soon();
-    app.settle();
+    settled_but_the_held_thread(&app);
     assert_eq!(record_folder(app.disk()), on_disk, "nothing written while it's read back");
     app.let_through(Seam::State, 1);
     app.wait_until("the record kept", || app.core().life.keeping() == Keeping::Keeps);
@@ -651,8 +651,22 @@ fn every_writer(app: &HeadlessApp) -> Result<(), String> {
         .join()
         .expect("the writer answered");
     app.core().saver.write_soon();
-    app.settle();
+    settled_but_the_held_thread(app);
     flushed
+}
+
+/// **Settled, but for the try or the late keep's read the test holds at its seam** on purpose, which the app's settle waits for ([`crate::settled`]): the
+/// session thread through what's queued and at rest, the record's writer through, and nothing else under way.
+fn settled_but_the_held_thread(app: &HeadlessApp) {
+    assert!(app.core().core.flush(WAIT_LIMIT), "the session thread took what was queued");
+    app.wait_for("settled but for the held try or read", || {
+        let busy = crate::settled::under_way(&crate::settled::watched!(app.core()), crate::settled::PageViews::AtRest);
+        if busy.iter().all(|what| what.contains("record's lock")) {
+            Ok(())
+        } else {
+            Err(format!("{busy:?}"))
+        }
+    });
 }
 
 /// Failure (review, 2026-11-13, route 3, and S1: the try no longer holds the saver's gate): a writer of the record writes the window as it is (empty) at the
@@ -908,7 +922,7 @@ fn a_late_keeps_read_that_never_comes_back_or_panics_ends_the_restore() {
             assert!(app.core().life.keeping().restoring());
             let c = app.disk().pdf("c.pdf", 2);
             let _ = app.act(crate::core::controls::UiAction::Open { path: c.display().to_string() });
-            app.settle();
+            settled_but_the_held_thread(&app);
             assert!(tab_names(&app).is_empty(), "the person's open waits for the restore");
             app.advance(crate::lifecycle::keeping::RESTORING_PATIENCE_MS);
         }
@@ -963,7 +977,7 @@ fn let_the_restore_in(app: &HeadlessApp) {
 fn a_palette_row_run_while_the_saved_session_is_read_lands_on_it() {
     let app = restoring_held(a_saved_session());
     app.person(r#"{"cmd":"palette","query":"dark paper","run":true}"#);
-    app.settle();
+    settled_but_the_held_thread(&app);
     let_the_restore_in(&app);
     assert_eq!(tab_names(&app), ["a", "b"]);
     let paper = app.core().host.session.with_session(|session| session.viewing().view().paper);

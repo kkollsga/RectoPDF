@@ -29,7 +29,6 @@ use recto_update::plan::Plan;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 /// The longest any one wait in the kit is given before the test fails with what it saw. Far past anything the product takes on a loaded machine, and short enough
@@ -534,71 +533,25 @@ impl HeadlessApp {
         self.agent(level, &line)
     }
 
-    /// **Waits for the app to be at rest:** everything queued for the session thread taken, every file being read in, every password being tried and every look at
-    /// files done, the record's writer through, and the page views' layer changes taken as the host takes them. Bounded, and never a fixed sleep.
+    /// **Waits for the app to be at rest,** as the app's one definition says ([`crate::settled`]): the session thread through what's queued and parked with
+    /// none of its deadlines due now, nothing that comes back to it still going (files being read, a password, a look, the record's writer running or owed,
+    /// Find), and every page view's thread resting with its last job's end told; seen twice with nothing handed on between. The page views' layer changes
+    /// are taken each round as the host takes them. Bounded, and never a fixed sleep.
     ///
     /// # Panics
     ///
     /// Past [`WAIT_LIMIT`], naming what was still under way.
     pub fn settle(&self) {
-        let began = Instant::now();
-        loop {
-            let left = WAIT_LIMIT.saturating_sub(began.elapsed());
-            assert!(
-                self.core().core.flush(left),
-                "settle: the session thread didn't take what was queued, with the files being read, in {WAIT_LIMIT:?}; still under way: {:?}",
-                self.under_way()
-            );
-            self.take_ops();
-            let busy = self.under_way();
-            if busy.is_empty() {
-                // What finished just now queued what came of it, and that's taken too.
-                assert!(
-                    self.core().core.flush(left),
-                    "settle: the session thread didn't take the last of what was queued"
-                );
-                return;
-            }
-            assert!(began.elapsed() < WAIT_LIMIT, "settle: still under way after {WAIT_LIMIT:?}: {busy:?}");
-            std::thread::sleep(LOOK_EVERY); // ratchet: poll
+        if let Err(busy) = crate::settled::wait(&crate::settled::watched!(self.core()), crate::settled::PageViews::AtRest, WAIT_LIMIT, || {
+            self.take_ops()
+        }) {
+            panic!("settle: still under way after {WAIT_LIMIT:?}: {busy:?}");
         }
     }
 
-    /// What's still going on off the session thread, in words, for a wait's failure.
+    /// What's still under way, in words, for a wait's failure: one look of [`crate::settled`].
     fn under_way(&self) -> Vec<String> {
-        let inner = self.core();
-        let mut busy = Vec::new();
-        if crate::lock(&inner.tools.prompts().passwords).trying() {
-            busy.push("a password being tried".to_string());
-        }
-        let reads = inner.life.reads_running();
-        if reads > 0 {
-            busy.push(format!("{reads} file(s) being read"));
-        }
-        let persons = inner.life.persons_running();
-        if persons > 0 {
-            busy.push(format!("{persons} of the person's command(s) on a thread of their own"));
-        }
-        // The window's Save and Save As run on a thread of their own, and what they did is announced once they're through.
-        let saves = inner.tools.save_ui().running.load(Ordering::SeqCst);
-        if saves > 0 {
-            busy.push(format!("{saves} of the window's save(s)"));
-        }
-        if inner.life.others_looking() {
-            busy.push("the other tabs' files being looked at".to_string());
-        }
-        let looks = inner.on_disk.sleeper().looks_running();
-        if looks > 0 {
-            busy.push(format!("{looks} look(s) at a woken tab's file"));
-        }
-        if inner.saver.is_writing() {
-            busy.push("the record being written".to_string());
-        }
-        // Its thread goes once it's said how its last query ended, which the session thread takes as Find's news.
-        if inner.host.session.finder().has_thread() {
-            busy.push("Find looking".to_string());
-        }
-        busy
+        crate::settled::under_way(&crate::settled::watched!(self.core()), crate::settled::PageViews::AtRest)
     }
 
     /// The page views' layer changes, taken and applied as the host's UI thread does on `ops_ready`, so what's drawn and let go goes as it would.
@@ -881,7 +834,7 @@ pub fn applied_as_the_host(ops: &[recto_reader::Op]) {
     }
 }
 
-/// **Stands in for the host's UI thread,** which the kit has none of, for every test that draws: takes what the page view says, scrolls where it's sent and says where it is now, until the session thread has nothing queued and nothing comes, and (with `settled`) everything's drawn, a tab off screen's place included. Bounded.
+/// **Stands in for the host's UI thread,** which the kit has none of, for every test that draws: takes what the page view says, scrolls where it's sent and says where it is now, until the session thread has nothing queued and nothing comes, and (with `settled`) everything's drawn, a tab off screen's place included, and the app settled by its one definition ([`HeadlessApp::settle`]). Bounded.
 pub fn host_turns(app: &HeadlessApp, view: &mut recto_reader::Viewport, settled: bool) {
     let engine = &app.core().engine;
     let began = std::time::Instant::now();
@@ -903,6 +856,10 @@ pub fn host_turns(app: &HeadlessApp, view: &mut recto_reader::Viewport, settled:
         }
         // Drawing for a tab off screen's place isn't what settling waits for, so it's waited for here too.
         if quiet && (!settled || (engine.wait_settled(std::time::Duration::from_millis(20)) && engine.report().0["sleep_draws"]["under_way"] == false)) {
+            // And settled as the app's one definition has it, the rest of the app included: this only adds the host's turns and the drawing.
+            if settled {
+                app.settle();
+            }
             return;
         }
         assert!(began.elapsed() < WAIT_LIMIT, "the page view didn't come to rest: {}", engine.report().0);

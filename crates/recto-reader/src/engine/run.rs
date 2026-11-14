@@ -43,6 +43,7 @@ pub(super) fn run_guarded(shared: &Shared) {
     loop {
         // Everything shared is behind locks that don't care about poison, and is brought back into line below.
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(shared))).is_ok() {
+            shared.thread_ended();
             return;
         }
         panics_in_a_row = if last_panic.is_some_and(|last| last.elapsed() < PANICS_FORGOTTEN_AFTER) {
@@ -57,6 +58,8 @@ pub(super) fn run_guarded(shared: &Shared) {
         let has_ops = reader.host.has_ops();
         let note = reader.note().map(str::to_string);
         let selecting = selecting_news(&mut reader);
+        // Told with the view let go: whoever waits for it settled waits for this too, until the thread takes it again or has gone.
+        reader.work.set_telling(!give_up);
         drop(reader);
         note_change(shared, note);
         tell_selecting(shared, selecting);
@@ -67,6 +70,7 @@ pub(super) fn run_guarded(shared: &Shared) {
             signal_ops(shared);
         }
         if give_up {
+            shared.thread_ended();
             return;
         }
     }
@@ -74,12 +78,26 @@ pub(super) fn run_guarded(shared: &Shared) {
 
 /// **Nothing to start:** at rest as ever, or, when there was a plan whose surface the system refused, a wait before it's asked again, only while it's planned
 /// (`SurfaceRetry`, in `tiles/jobs.rs`). Workers are let go in the wait as at rest: memory pressure and a refused surface come together.
-fn rest_or_wait_for_a_surface(planned: bool, shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, resting_since: &mut Option<Instant>) {
-    let retry = if planned {
-        Some(lock(&shared.reader).work.surfaces.refused())
-    } else {
-        lock(&shared.reader).work.surfaces.clear();
-        None
+fn rest_or_wait_for_a_surface(
+    planned: bool,
+    seen: u64,
+    shared: &Shared,
+    renderers: &mut HashMap<PathBuf, OpenDoc>,
+    policy: &Policy,
+    resting_since: &mut Option<Instant>,
+) {
+    let retry = {
+        let mut reader = lock(&shared.reader);
+        // What this turn told is told: the view taken again. Resting is said under the view's lock, which whoever waits for it to rest looks under
+        // (`Qa::wait_resting`), and told as it rests ([`rest`]), so the word can't fall between their look and their wait.
+        all_told(shared, &mut reader);
+        shared.rests(seen);
+        if planned {
+            Some(reader.work.surfaces.refused())
+        } else {
+            reader.work.surfaces.clear();
+            None
+        }
     };
     rest(shared, renderers, policy, resting_since, retry);
 }
@@ -96,10 +114,16 @@ fn run(shared: &Shared) {
             // Dropping them kills each worker and closes its file.
             renderers.clear();
             publish_workers(shared, &mut renderers);
+            // Nothing more is told: whoever waits for the view isn't left waiting on the last turn's word.
+            all_told(shared, &mut lock(&shared.reader));
+            shared.settled.notify_all();
             return;
         }
+        let seen = shared.round_begins();
         let (plan, changed) = {
             let mut reader = lock(&shared.reader);
+            // What the last turn told is told: the view taken again.
+            all_told(shared, &mut reader);
             let files = reader.work.wanted_files();
             if !Arc::ptr_eq(&files, &wanted) {
                 wanted = files;
@@ -107,14 +131,17 @@ fn run(shared: &Shared) {
             let told = renew(&mut reader, &mut renderers, &mut openings);
             // Said with the page view's lock let go, as a job's saying is.
             if !told.is_empty() {
+                reader.work.set_telling(true);
                 drop(reader);
                 for (tab, pages, version) in told {
                     shared.events.file_length(tab, pages, version);
                 }
                 reader = lock(&shared.reader);
+                all_told(shared, &mut reader);
             }
             // What the UI thread left is told of as any way of applying it tells it: the selection's notice gone with a selection another pane took, say.
             let changed = take_pending_follow(shared, &mut reader).then(|| Changed::of(&mut reader));
+            reader.work.set_telling(changed.is_some());
             (reader.next_plan(), changed)
         };
         if let Some(changed) = changed {
@@ -127,7 +154,7 @@ fn run(shared: &Shared) {
         openings.retain(|path, _| wanted.contains(path));
         publish_workers(shared, &mut renderers);
         let Some(job) = job else {
-            rest_or_wait_for_a_surface(planned, shared, &mut renderers, &policy, &mut resting_since);
+            rest_or_wait_for_a_surface(planned, seen, shared, &mut renderers, &policy, &mut resting_since);
             continue;
         };
         // **A job for a tab off screen's place ([`SleepDraws`]) starts no worker:** it's done by the one its file has, or not at all. Nor does it put off a big worker's rest, which goes on between its jobs as it does with none.
@@ -140,7 +167,11 @@ fn run(shared: &Shared) {
             resting_since = None;
             Workers::MayStart
         };
-        lock(&shared.reader).work.note_started(&job, None);
+        {
+            let mut reader = lock(&shared.reader);
+            all_told(shared, &mut reader);
+            reader.work.note_started(&job, None);
+        }
         if matches!(job.kind, JobKind::Links) {
             read_links(shared, &renderers, job);
             continue;
@@ -195,44 +226,62 @@ fn run(shared: &Shared) {
         // A renderer this job opened with a password for another tab's file goes now, not when the thread next comes round, which may be a long rest.
         let_go_of_unwanted(shared, &mut renderers, &wanted);
         publish_workers(shared, &mut renderers);
-        let drawn = match (&job.kind, &outcome) {
-            (
-                JobKind::Draw {
-                    what: DrawKind::Tile | DrawKind::Region,
-                    ..
-                },
-                Outcome::Drawn { .. },
-            ) => Some(None),
-            (JobKind::Draw { .. }, Outcome::PageFailed { .. }) => Some(Some("page_failed")),
-            _ => None,
-        };
-        let (tab, page) = (job.tab, job.position);
-        let mut reader = lock(&shared.reader);
-        if file_changed {
-            reader.file_changed(tab);
-        }
-        // What a text job read isn't about what's selected now, if that's gone with the file.
-        let outcome = if file_changed && matches!(job.kind, JobKind::Text { .. }) {
-            Outcome::Cancelled
-        } else {
-            outcome
-        };
-        reader.finish(job, outcome);
-        take_pending_follow(shared, &mut reader);
-        let has_ops = reader.host.has_ops();
-        let note = reader.note().map(str::to_string);
-        let selecting = selecting_news(&mut reader);
-        drop(reader);
-        note_change(shared, note);
-        tell_selecting(shared, selecting);
-        if let Some(failure) = drawn {
-            shared.events.page_drawn(tab, page, failure);
-        }
-        if has_ops {
-            signal_ops(shared);
-        }
+        job_ended(shared, job, outcome, file_changed);
+    }
+}
+
+/// **What the thread told of its last turn is told,** said with the view's lock held: whoever waits for the view settled is woken, as it may be settled
+/// now, and the thread may go straight on to work that settles nothing in view (drawing for a tab off screen's place), which tells nobody till it ends.
+pub(super) fn all_told(shared: &Shared, reader: &mut crate::tiles::Reader) {
+    if reader.work.set_telling(false) {
         shared.settled.notify_all();
     }
+}
+
+/// **A job's end:** taken into the view under its lock (a file found changed first, and a text job's read dropped with it), then told with the lock let go:
+/// the note, the selection's notice, the page drawn, and the host's word that there are layers. Until this thread takes the view again, the view isn't
+/// settled (`Work::telling`), as what's told may queue the session's work.
+fn job_ended(shared: &Shared, job: Job, outcome: Outcome, file_changed: bool) {
+    let drawn = match (&job.kind, &outcome) {
+        (
+            JobKind::Draw {
+                what: DrawKind::Tile | DrawKind::Region,
+                ..
+            },
+            Outcome::Drawn { .. },
+        ) => Some(None),
+        (JobKind::Draw { .. }, Outcome::PageFailed { .. }) => Some(Some("page_failed")),
+        _ => None,
+    };
+    let (tab, page) = (job.tab, job.position);
+    let mut reader = lock(&shared.reader);
+    if file_changed {
+        reader.file_changed(tab);
+    }
+    // What a text job read isn't about what's selected now, if that's gone with the file.
+    let outcome = if file_changed && matches!(job.kind, JobKind::Text { .. }) {
+        Outcome::Cancelled
+    } else {
+        outcome
+    };
+    reader.finish(job, outcome);
+    take_pending_follow(shared, &mut reader);
+    let has_ops = reader.host.has_ops();
+    let note = reader.note().map(str::to_string);
+    let selecting = selecting_news(&mut reader);
+    // Its end is told with the view let go: until this thread takes the view again, the view isn't settled, as what's told may queue the session's work.
+    reader.work.set_telling(true);
+    drop(reader);
+    shared.before_telling();
+    note_change(shared, note);
+    tell_selecting(shared, selecting);
+    if let Some(failure) = drawn {
+        shared.events.page_drawn(tab, page, failure);
+    }
+    if has_ops {
+        signal_ops(shared);
+    }
+    shared.settled.notify_all();
 }
 
 /// **What's been asked of the renderers since the thread last came round** ([`Renew`]): one with the wrong version open is dropped, which kills its worker and

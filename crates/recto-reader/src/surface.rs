@@ -740,10 +740,15 @@ Points::pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)>
 Points::pub fn page_turns(&self, page: u32) -> u8
 Points::pub fn set_band(&self, band: Option<(u32, u16, u16)>)
 Qa (pub struct, derives Clone, Copy) [qa feature only]
+Qa::pub fn at_rest(&self) -> Option<(u64, u64)> [qa feature only]
 Qa::pub fn follow_is_pending(&self) -> bool [qa feature only]
 Qa::pub fn hold_asks(&self, ask: Ask, on: bool) [qa feature only]
 Qa::pub fn hold_busy(&self, on: bool) [qa feature only]
+Qa::pub fn hold_tells(&self, on: bool) [qa feature only]
+Qa::pub fn let_a_tell_go(&self) [qa feature only]
 Qa::pub fn wait_for_held_asks(&self, count: u32) -> bool [qa feature only]
+Qa::pub fn wait_for_held_tell(&self, limit: Duration) -> bool [qa feature only]
+Qa::pub fn wait_resting(&self, limit: Duration) -> bool [qa feature only]
 QaHolds (pub(super) struct, derives Default) [qa feature only]
 RawPicture (pub struct, derives Clone, Debug, PartialEq)
 RawPicture.pub bgra: Vec<u8>
@@ -884,6 +889,7 @@ TabMarks.pub hidden: Option<(PathBuf, Arc<HiddenAnnots>)>
 TabMarks.pub pages: Vec<(u32, Vec<Rect>)>
 TabMarks.pub tab: u32
 TabNow (pub(super) struct, derives Clone, Copy, Debug, Default, PartialEq, Eq)
+Tells (private struct, derives Default) [qa feature only]
 TileCache (pub(crate) struct, derives Debug)
 TileCache::pub(crate) fn empty_discardable(&mut self) -> usize
 TileCache::pub(crate) fn set_share(&mut self, views: usize, host: &mut HostQueue)
@@ -935,8 +941,10 @@ Work.pub(crate) surfaces: SurfaceRetry
 Work::pub(crate) fn hold_drawing(&mut self, on: bool)
 Work::pub(crate) fn note_started(&mut self, job: &Job, cancel: Option<CancelHandle>)
 Work::pub(crate) fn set_cancel(&mut self, cancel: CancelHandle)
+Work::pub(crate) fn set_telling(&mut self, on: bool) -> bool
 Work::pub(crate) fn take_keyless(&mut self) -> Vec<PathBuf>
 Work::pub(crate) fn take_renewals(&mut self) -> Vec<(PathBuf, Renew)>
+Work::pub(crate) fn telling(&self) -> bool
 Work::pub(crate) fn wanted_files(&self) -> Arc<Vec<PathBuf>>
 WorkerFigures (pub struct, derives Clone, Copy)
 WorkerFigures::pub fn bytes(&self, tab: u32) -> u64
