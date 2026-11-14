@@ -13,7 +13,7 @@ use recto_control::host::Host;
 /// **These tests are about the keys, not about how fast a starved worker opens:** every renderer of the test's process gets a page deadline it always
 /// meets, as the comparison walks do. Under `--like-ci` a print's fresh worker was once killed at the 5 s deadline during its Open of a protected file
 /// ("This file took too long to open.", 1 of 20, 2026-11-14): a product fault of its own, in PLAN.
-fn deadlines_met() {
+pub(super) fn deadlines_met() {
     recto_render_service::page_deadline_for_this_process(std::time::Duration::from_secs(20));
 }
 

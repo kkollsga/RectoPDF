@@ -122,7 +122,7 @@ fn compares_who(line: &str) -> bool {
 
 /// The files under `src` that are tests: a module declared under `#[cfg(test)]` or `#[cfg(any(test, ...))]`, with everything under it, wherever
 /// it's declared. What's left is production code, of which [`production_lines`] then leaves out the test items inside a file.
-fn test_files(src: &Path, files: &[PathBuf]) -> BTreeSet<PathBuf> {
+pub(crate) fn test_files(src: &Path, files: &[PathBuf]) -> BTreeSet<PathBuf> {
     let mut test_dirs = Vec::new();
     let mut tests = BTreeSet::new();
     for file in files {
@@ -154,7 +154,7 @@ fn test_files(src: &Path, files: &[PathBuf]) -> BTreeSet<PathBuf> {
 }
 
 /// Every `.rs` file under `folder`.
-fn sources(folder: &Path) -> Vec<PathBuf> {
+pub(crate) fn sources(folder: &Path) -> Vec<PathBuf> {
     let (mut folders, mut files) = (vec![folder.to_path_buf()], Vec::new());
     while let Some(folder) = folders.pop() {
         for path in std::fs::read_dir(&folder).unwrap().map(|entry| entry.unwrap().path()) {

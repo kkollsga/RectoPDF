@@ -29,6 +29,7 @@ serde_json.workspace = true
 recto-testpdf = { workspace = true, optional = true }
 
 [dev-dependencies]
+recto-platform = { workspace = true, features = ["test-seams"] }
 # The page view's QA seams (`Engine::hold_busy`) for the headless tests, as `testkit` has them for other crates' tests.
 recto-reader = { workspace = true, features = ["qa"] }
 # Tests read a refusal's code as the wire does.

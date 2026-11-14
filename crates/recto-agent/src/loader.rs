@@ -36,12 +36,11 @@ impl DocLoader for DrawableLoader {
 }
 
 fn renderer_facts(path: &Path) -> Result<DocFacts, OpenError> {
-    let meta = std::fs::metadata(path).map_err(|_| OpenError::NotPdf)?;
-    if !meta.is_file() {
-        return Err(OpenError::NotPdf);
-    }
+    // Through the file wall, looked at first so a pipe isn't waited on, as the structure reader did; its length from the file that was opened.
+    let file = recto_platform::document_file::open_regular(path).map_err(|_| OpenError::NotPdf)?;
+    let meta = file.metadata().map_err(|_| OpenError::NotPdf)?;
     let config = ServiceConfig::discover().map_err(|_| OpenError::NotPdf)?;
-    let mut doc = DocRenderer::new(path, None, config, Policy::default()).map_err(|_| OpenError::NotPdf)?;
+    let mut doc = DocRenderer::with_file(file, path, None, config, Policy::default()).map_err(|_| OpenError::NotPdf)?;
     let page_count = match doc.page_count() {
         Ok(count) if count > 0 && count <= MAX_RENDERER_PAGES => count,
         Err(RenderFailure::NeedsPassword) => return Err(OpenError::PasswordNeeded),

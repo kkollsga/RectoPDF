@@ -206,7 +206,9 @@ impl OwnTemp {
 
     /// **A file with no name, the user's alone: the person's print** (PLAN, "the person can't print a document they opened with its password"). Made new
     /// (`create_new`, mode 0600) under a name nobody can work out, 64 bits from the system's random source, in the system's own temp folder, and unlinked
-    /// before its first byte is written: nothing can open it by a name, not an agent at any level and not a later run, and the kernel frees it when its
+    /// before its first byte is written: nothing can open it by a name, not a later run, and not an agent at any level by `/dev/fd/N` either, as every
+    /// open of a document by its path goes through the file wall (`recto_platform::document_file`), which refuses `/dev` and a file with no link; for
+    /// the instant between its making and its unlinking, see `docs/engineering/opening.md` ("accepted"). The kernel frees it when its
     /// last descriptor closes, however the app ends, a crash or a kill included, so a print of a document opened with its password never lies on disk as a
     /// plain copy with a name. Readable as well as writable, so the window's printing can open it again through `/dev/fd/N`.
     pub(crate) fn create_unnamed() -> Result<File, AgentError> {

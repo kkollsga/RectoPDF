@@ -22,6 +22,9 @@ mod event_agreement;
 pub use event::{Event, edits_changed, page_changed, page_now, view_changed};
 pub mod clipboard;
 pub mod extract;
+mod file_wall;
+#[cfg(test)]
+mod file_wall_scan_tests;
 pub mod find;
 pub mod generated;
 pub mod human;

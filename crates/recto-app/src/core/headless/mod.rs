@@ -36,6 +36,7 @@ mod passwords;
 #[cfg(debug_assertions)]
 mod per_tab_work;
 mod persons_lane;
+mod print_descriptors;
 mod print_protected;
 pub(crate) mod printing;
 mod protected_save;

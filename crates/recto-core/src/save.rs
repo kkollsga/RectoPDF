@@ -116,7 +116,9 @@ fn file_label(path: &Path) -> String {
 
 /// Opens a file the way a save reads it: with the 1 MiB limit on an object. One that can't be opened can't be read.
 pub fn open_for_save(path: &Path) -> Result<IndexedReader, SaveError> {
-    let source = FileSource::open(path).map_err(|_| SaveError::Unreadable)?;
+    // Through the file wall, as every read of a document by its path is: a page added from a file with no name, or from `/dev`, can't be read.
+    let file = recto_platform::document_file::open(path).map_err(|_| SaveError::Unreadable)?;
+    let source = FileSource::from_file(file).map_err(|_| SaveError::Unreadable)?;
     let options = IndexedReaderOptions {
         object_bytes: SAVE_OBJECT_BYTES,
         ..IndexedReaderOptions::default()

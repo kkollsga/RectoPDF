@@ -808,11 +808,15 @@ impl DocRenderer {
         Self::with_file(Self::open_file(path)?, path, password, config, policy)
     }
 
-    /// The part of [`Self::new`] that can block, on a file on a dead volume, for a caller that can't be held up.
+    /// The part of [`Self::new`] that can block, on a file on a dead volume, for a caller that can't be held up. **Through the file wall**
+    /// ([`recto_platform::document_file`]), as every open of a document by its path is: a path into `/dev`, a file that isn't a regular one and a file with
+    /// no name are [`RenderFailure::NotPdf`], so a descriptor the app holds on the person's print can't be opened again by a path.
     pub fn open_file(path: &Path) -> Result<File, RenderFailure> {
-        File::open(path).map_err(|error| match error.kind() {
-            io::ErrorKind::NotFound => RenderFailure::NotFound,
-            _ => RenderFailure::Unavailable,
+        use recto_platform::document_file::{self, Refused};
+        document_file::open(path).map_err(|refused| match refused {
+            Refused::Look(error) | Refused::Open(error) if error.kind() == io::ErrorKind::NotFound => RenderFailure::NotFound,
+            Refused::NotADocument => RenderFailure::NotPdf,
+            Refused::Look(_) | Refused::Open(_) => RenderFailure::Unavailable,
         })
     }
 
@@ -1734,18 +1738,15 @@ impl DocRenderer {
         self.images.forget();
         self.page_count = None;
         self.version = None;
-        match File::open(&self.path) {
+        // Through the wall, as the first open was: what's put at the path since may be a link into `/dev`.
+        match Self::open_file(&self.path) {
             Ok(file) => {
                 self.file = file;
                 self.opened_stamp = file_stamp(&self.path).ok();
             }
-            Err(error) => {
+            Err(failure) => {
                 self.opened_stamp = None;
-                self.note_open_failure(if error.kind() == io::ErrorKind::NotFound {
-                    RenderFailure::NotFound
-                } else {
-                    RenderFailure::Unavailable
-                });
+                self.note_open_failure(failure);
             }
         }
     }
@@ -1764,19 +1765,16 @@ impl DocRenderer {
             self.images.forget();
             self.page_count = None;
             self.version = None;
-            return match File::open(&self.path) {
+            // Through the wall, as the first open was.
+            return match Self::open_file(&self.path) {
                 Ok(file) => {
                     self.file = file;
                     self.opened_stamp = file_stamp(&self.path).ok();
                     None
                 }
                 // It's not there to open, or not now. That holds in the same way, and this renderer's old file isn't what anyone's asking about.
-                Err(error) => {
+                Err(failure) => {
                     self.opened_stamp = None;
-                    let failure = match error.kind() {
-                        io::ErrorKind::NotFound => RenderFailure::NotFound,
-                        _ => RenderFailure::Unavailable,
-                    };
                     self.note_open_failure(failure);
                     Some(failure)
                 }
