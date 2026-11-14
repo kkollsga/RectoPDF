@@ -281,7 +281,7 @@ fn carried_over(folder: &Path, parsed: &ParsedJournal, now: FileStamp, path: &Pa
         .or_else(|| parsed.header.keeping.as_ref().and_then(AddedSource::from_record))
         .filter(kept_file_is_there);
     let pages = restored.edits.len();
-    let rebased = restored.edits.rebase_on_saved(pages, keeping)?;
+    let rebased = restored.edits.rebase_on_saved(pages, keeping, None)?;
     for gone in &rebased.let_go {
         if let Some(name) = gone.file_name().and_then(|name| name.to_str()).filter(|name| record::is_kept_name(name)) {
             let _ = std::fs::remove_file(folder.join(name));
@@ -1943,7 +1943,7 @@ mod tests {
             // The save lands, and the new journal goes out. The record doesn't.
             std::fs::rename(&temp, &file).unwrap();
             let (mut list, _) = PageEdits::replay(5, None, &[rotation()]).unwrap();
-            list.rebase_on_saved(5, None).unwrap();
+            list.rebase_on_saved(5, None, None).unwrap();
             let name = record::journal_file_name(Some(target), &file, None);
             let header = JournalHeader::new(1, &file, Some(target), 5, 0);
             let work = JournalWork {
@@ -2060,7 +2060,7 @@ mod tests {
         };
         let kept = store.keep_pages_of(&original, target, &[0]).unwrap();
         let (mut list, _) = PageEdits::replay(5, None, &[JournalOp::Delete(0, 1, record::AuthorName::Owner)]).unwrap();
-        list.rebase_on_saved(4, Some(kept.clone())).unwrap();
+        list.rebase_on_saved(4, Some(kept.clone()), None).unwrap();
         assert!(list.can_undo());
         let write = |store: &RecordStore, name: &str, record_it: bool| {
             let header = JournalHeader::new(1, &file, Some(now), 4, 0);
@@ -2113,7 +2113,7 @@ mod tests {
         std::fs::remove_file(root.join("session").join(JOURNALS).join(&name)).unwrap();
         let kept_again = store.keep_pages_of(&original, target, &[0]).unwrap();
         let (mut list, _) = PageEdits::replay(5, None, &[JournalOp::Delete(0, 1, record::AuthorName::Owner)]).unwrap();
-        list.rebase_on_saved(4, Some(kept_again.clone())).unwrap();
+        list.rebase_on_saved(4, Some(kept_again.clone()), None).unwrap();
         let header = JournalHeader::new(1, &file, Some(now), 4, 1);
         std::fs::write(
             root.join("session").join(JOURNALS).join(&closed),
@@ -2155,7 +2155,7 @@ mod tests {
         assert!(store.write_journals(&work, false).1.is_none());
         std::fs::rename(&temp, &file).unwrap();
         let (mut list, _) = PageEdits::replay(5, None, &[rotation(), rotation()]).unwrap();
-        list.rebase_on_saved(5, None).unwrap();
+        list.rebase_on_saved(5, None, None).unwrap();
         let name = record::journal_file_name(Some(target), &file, None);
         let header = JournalHeader::new(1, &file, Some(target), 5, 3);
         let work = JournalWork {

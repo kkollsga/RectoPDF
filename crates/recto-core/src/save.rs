@@ -132,7 +132,7 @@ pub fn open_for_save(path: &Path) -> Result<IndexedReader, SaveError> {
 mod annotate;
 mod catalog;
 mod in_memory;
-pub use annotate::{GoneHighlight, HIGHLIGHT_RGB, MAX_GONE, MarksWritten, NewHighlight, RECT_SLACK};
+pub use annotate::{GoneHighlight, HIGHLIGHT_RGB, MAX_EDGE, MAX_GONE, MAX_RECTS, MarksWritten, NewHighlight, RECT_SLACK};
 pub use in_memory::{highlights_in_memory, plan_in_memory, plan_in_memory_within, rewrite_in_memory, signatures_and_keep_in_memory};
 mod copying;
 pub use crate::signatures::{SignatureFacts, persons_signature, signature_facts, signature_facts_of};

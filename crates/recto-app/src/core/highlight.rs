@@ -140,12 +140,12 @@ pub fn marks_of<L: DocLoader>(session: &Session<L>, id: TabId) -> Option<Arc<Tab
         return None;
     }
     let mut pages: Vec<(u32, Vec<Rect>)> = Vec::new();
-    for (position, rects) in list.marks().on_positions(list.slots()) {
-        let rects = rects.iter().map(|[x, y, width, height]| Rect {
-            x: *x,
-            y: *y,
-            width: *width,
-            height: *height,
+    for (position, mark) in list.marks().on_positions(list.slots()) {
+        let rects = mark.rects.iter().map(|rect| Rect {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
         });
         match pages.last_mut() {
             Some((page, held)) if *page == position => held.extend(rects),

@@ -82,6 +82,9 @@ pub fn validate_edits(edits: &EditsRecord) -> Result<(), RecordError> {
     if !crate::edit::marks::MarkRecord::all_fit(&edits.marks, edits.file_pages, &edits.added) {
         return Err(bad("a highlight out of range"));
     }
+    if !edits.hidden.iter().all(|key| key.is_sound() && key.page < edits.file_pages) {
+        return Err(bad("a file's highlight out of range"));
+    }
     steps_fit(&edits.undo, length, edits.file_pages, &edits.added)?;
     steps_fit(&edits.redo, length, edits.file_pages, &edits.added)?;
     for added in &edits.added {

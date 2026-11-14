@@ -450,6 +450,7 @@ impl PageEdits {
             history_dropped: self.history.dropped,
             owner_step_dropped: self.history.owner_dropped,
             marks: self.marks.to_record(),
+            hidden: self.marks.hidden_to_record(),
         }
     }
 
@@ -470,7 +471,7 @@ impl PageEdits {
         };
         let undo = entries(&record.undo, &mut history_bytes);
         let redo = entries(&record.redo, &mut history_bytes);
-        let mut marks = Marks::from_record(&record.marks).ok_or(RecordError::Damaged("a highlight that can't be"))?;
+        let mut marks = Marks::from_record(&record.marks, &record.hidden).ok_or(RecordError::Damaged("a highlight that can't be"))?;
         // A highlight the history can bring back keeps its number: a new one starts past every number named.
         for entry in undo.iter().chain(&redo) {
             if let Step::Mark(step) = &entry.step {
@@ -501,6 +502,7 @@ impl PageEdits {
         };
         edits.differs = edits.differs_from_the_file();
         edits.rewrites = edits.rewrites_the_file();
+        marks::settle(&mut edits);
         Ok(edits)
     }
 
@@ -569,6 +571,7 @@ impl PageEdits {
         edits.acting = Author::Owner;
         edits.differs = edits.differs_from_the_file();
         edits.rewrites = edits.rewrites_the_file();
+        marks::settle(&mut edits);
         Ok((edits, applied))
     }
 
@@ -703,8 +706,9 @@ impl PageEdits {
 
     /// Whether the document differs from the file, and so whether anything is waiting to be saved. Undoing everything brings this back to false, and so does getting back to the file by other steps: four quarter turns, or a page moved and moved back. Costs a look along the list after each step, stopping at the first page out of place, which is at most about 100 µs at the 200,000 pages a document may have. See `docs/engineering/agent-interface.md`.
     pub fn is_edited(&self) -> bool {
-        // Pages as the file has them, but highlights on them, is edited too: what's on a page's pictures (`order_mark`) is the pages alone.
-        self.differs || !self.marks.is_empty()
+        // Pages as the file has them, but highlights on them or the file's taken out, is edited too: what's on a page's pictures (`order_mark`) is
+        // the pages alone.
+        self.differs || self.marks.to_save()
     }
 
     /// Whether there's anything to go back through, or anything lost to the cap on it. A list with none of this and no difference from the file has nothing left to keep it.
@@ -728,7 +732,8 @@ impl PageEdits {
 
     /// Whether saving these edits writes the file anew. Kept up to date as the list changes.
     pub fn rewrites(&self) -> bool {
-        self.differs && self.rewrites
+        // Taking a highlight out of the file is a rewrite too, so it's gone from it (`recto_core::save::writer_for_request`).
+        (self.differs && self.rewrites) || !self.marks.hidden().is_empty()
     }
 
     fn differs_from_the_file(&self) -> bool {
@@ -805,7 +810,10 @@ impl PageEdits {
     /// **Steps stay meaningful, as they're about positions.** A turn, a move or a removal is, and the document's positions are what they were. The only steps that name pages are those that put pages back, and those are of pages that the document doesn't have now, so not in the new file, unless they're from an added PDF, which is still its own file. So they go over to `kept`, a copy of the file as it was, in the history's own folder. Where that isn't there, or doesn't fit, they roll off, with all older ones, as a step's way back depends on those after it: undo stops short and says so, rather than undoing wrongly.
     ///
     /// `pages` not being this list's length means what was written isn't this list, so none of it is about that file. `None` says so.
-    pub fn rebase_on_saved(&mut self, pages: u32, kept: Option<AddedSource>) -> Option<Rebased> {
+    ///
+    /// `marks` is what the save said it did with highlights ([`marks::SavedMarks`]), which the history's highlights go on from: see [`marks::saved`].
+    /// `None` when that isn't known, as for a save a crash interrupted.
+    pub fn rebase_on_saved(&mut self, pages: u32, kept: Option<AddedSource>, marks: Option<&marks::SavedMarks>) -> Option<Rebased> {
         if pages as usize != self.slots.len() {
             return None;
         }
@@ -839,10 +847,11 @@ impl PageEdits {
                 out.rolled_off += self.roll_off_source(u16::try_from(at + 1).unwrap_or(u16::MAX));
             }
         }
+        let mut holds = None;
         match own_pages_at {
             Some(source) => {
                 // A copy of only some pages has them at its own numbers: each step's page goes to where it is there. One it doesn't hold can't be put back, so it rolls off, with what's older.
-                let holds = self.added.last_mut().and_then(|kept| kept.holds.take());
+                holds = self.added.last_mut().and_then(|kept| kept.holds.take());
                 let mut missing = false;
                 for entry in self.history.undo.iter_mut().chain(&mut self.history.redo) {
                     if let Step::Restore { slots, .. } = &mut entry.step {
@@ -864,7 +873,7 @@ impl PageEdits {
             }
             None => out.rolled_off += self.roll_off_source(0),
         }
-        out.rolled_off += marks::saved(self);
+        out.rolled_off += marks::saved(self, own_pages_at.map(|source| (source, holds.as_deref())), marks);
         self.file_pages = pages as usize;
         self.changes += 1;
         self.slots = (0..pages)
@@ -1049,14 +1058,17 @@ impl PageEdits {
 
     /// Adds a highlight to a page, or takes one made as an edit away: a step like any other, the acting author's.
     pub fn mark(&mut self, change: MarkChange) -> Result<(), EditError> {
-        if let MarkChange::Add { pages } = &change {
-            let count = |source: u16| match source {
-                0 => u32::try_from(self.file_pages).unwrap_or(u32::MAX),
-                source => self.added.get(usize::from(source) - 1).map_or(0, |added| added.page_count),
-            };
-            if pages.iter().any(|on| on.page >= count(on.source)) {
-                return Err(EditError::OutOfRange);
-            }
+        let count = |source: u16| match source {
+            0 => u32::try_from(self.file_pages).unwrap_or(u32::MAX),
+            source => self.added.get(usize::from(source) - 1).map_or(0, |added| added.page_count),
+        };
+        let fits = match &change {
+            MarkChange::Add { pages } => pages.iter().all(|on| on.page < count(on.source)),
+            MarkChange::RemoveFile { files, .. } => files.iter().all(|file| file.key.page < count(file.key.source)),
+            MarkChange::Remove { .. } => true,
+        };
+        if !fits {
+            return Err(EditError::OutOfRange);
         }
         let step = self.marks.step_for(change, self.acting).map_err(|refusal| match refusal {
             MarkRefusal::NoSuch => EditError::NoSuchHighlight,
@@ -1209,6 +1221,7 @@ impl PageEdits {
         if !self.replaying {
             self.differs = self.differs_from_the_file();
             self.rewrites = self.rewrites_the_file();
+            marks::settle(self);
         }
     }
 

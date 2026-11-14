@@ -52,7 +52,7 @@ fn busy(s: &mut Session<FakeLoader>) -> (TabId, TabId) {
     for version in [2, 3] {
         s.edit_pages(a, |edits| edits.rotate(0, 1, 1)).unwrap();
         s.begin_save(a, false).unwrap();
-        s.saved(a, stamp(version), 10, None, None);
+        s.saved(a, stamp(version), 10, None, None, None);
         s.end_save(a);
     }
     s.mail_mut().note_drawn(DrawNote {
@@ -165,7 +165,7 @@ fn a_jump_sent_goes_with_an_edit_a_save_and_dormancy() {
             "edit" => s.edit_pages(a, |edits| edits.rotate(0, 1, 1)).unwrap(),
             "save" => {
                 s.begin_save(a, false).unwrap();
-                s.saved(a, stamp(2), 10, None, None);
+                s.saved(a, stamp(2), 10, None, None, None);
                 s.end_save(a);
             }
             _ => {

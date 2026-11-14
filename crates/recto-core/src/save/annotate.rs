@@ -64,11 +64,14 @@ pub struct MarksWritten {
 /// Every number in it was worked out by the save from finite rectangles, so equality is an equivalence.
 impl Eq for MarksWritten {}
 
+/// A highlight to write: its place in the request, and its lines.
+type Asked = (usize, Box<[[f32; 4]]>);
+
 /// What a save writes of highlights, and takes out, by page position. Owned, so the plan doesn't borrow the request.
 #[derive(Default)]
 pub(super) struct Highlights {
     /// Each page's highlights to write, with their place in the request.
-    by_position: BTreeMap<u32, Vec<(usize, Box<[[f32; 4]]>)>>,
+    by_position: BTreeMap<u32, Vec<Asked>>,
     /// Each page's file highlights to take out, by their place in its list, ascending.
     gone: BTreeMap<u32, Vec<u32>>,
     /// How long the file being saved is, for a refusal to say.

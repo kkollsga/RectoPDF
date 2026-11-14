@@ -253,7 +253,7 @@ fn a_restored_tab_wasnt_saved_over_by_the_tab_it_replaced() {
     for version in [1, 0] {
         s.edit_pages(a, |edits| edits.rotate(0, 1, 1)).unwrap();
         s.begin_save(a, false).unwrap();
-        s.saved(a, replaced_stamp(version), 10, None, None);
+        s.saved(a, replaced_stamp(version), 10, None, None, None);
         s.end_save(a);
     }
     assert!(s.saved_from(a).is_some());

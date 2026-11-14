@@ -105,6 +105,16 @@ fn from_save(error: &SaveError) -> AgentError {
     AgentError::new(Code::lower(error.code()), error.message(), exit).then(next)
 }
 
+/// A save that would drop the owner's steps about the file's highlights, which below Full isn't the agent's to make.
+fn owner_steps_at_stake() -> AgentError {
+    AgentError::new(
+        Code::OWNER_EDITS_AT_STAKE,
+        "Nothing was saved: the user has undo steps about highlights on a page this save leaves out, which it would drop.",
+        exit::PERMISSION,
+    )
+    .then("Ask them to save, or put the page back first.")
+}
+
 fn needs_full(what: &str) -> AgentError {
     let mut error = AgentError::new(Code::PERMISSION_DENIED, format!("{what} needs Full access."), exit::PERMISSION);
     error.next = "Run `recto permission request full`, which tells the user what to allow. Nothing else raises this.".to_string();
@@ -250,6 +260,7 @@ fn request_parts(snapshot: &recto_session::SaveSnapshot) -> (Vec<PageRef>, Vec<A
         })
         .collect();
     let highlights = snapshot
+        .marks
         .highlights
         .iter()
         .map(|(position, rects)| recto_core::save::NewHighlight { position: *position, rects })
@@ -319,11 +330,6 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &TabRef, to: &SaveT
         return Err(refusal);
     }
     let (pages, added, highlights) = request_parts(&snapshot);
-    let writer = recto_core::save::writer_for(snapshot.file_pages, &pages);
-    if writer == Writer::Rewrite && level < Level::Full && level >= Level::Control {
-        drop(ending);
-        return Err(needs_full("A save that removes pages for good"));
-    }
     let request = SaveRequest {
         path: &snapshot.path,
         stamp: snapshot.stamp,
@@ -331,8 +337,23 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &TabRef, to: &SaveT
         pages: &pages,
         added: &added,
         highlights: &highlights,
-        highlights_gone: &[],
+        highlights_gone: &snapshot.marks.gone,
     };
+    // The owner's steps about the file's highlights on a page this save leaves out can't be carried past it (coordinator, 2026-11-14): theirs to
+    // lose, so below Full the save isn't made. Such a save is a rewrite too, which below Full is refused anyway; this says why.
+    if level < Level::Full && access.with(|s| s.lists().get(id).is_some_and(recto_session::edit::marks::drops_owner_steps)) {
+        drop(ending);
+        return Err(owner_steps_at_stake());
+    }
+    let writer = recto_core::save::writer_for_request(&request);
+    if writer == Writer::Rewrite && level < Level::Full && level >= Level::Control {
+        drop(ending);
+        return Err(needs_full(if snapshot.marks.gone.is_empty() {
+            "A save that removes pages for good"
+        } else {
+            "A save that takes a highlight out of the file for good"
+        }));
+    }
     let target = match to {
         SaveTo::Same => Target::Same,
         SaveTo::As { out, replace: false } => Target::NewFile(out),
@@ -381,7 +402,10 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &TabRef, to: &SaveT
             .stamp
             .or_else(|| recto_platform::file_stamp(saved_as.as_deref().unwrap_or(&snapshot.path)).ok());
         let rolled_off = match stamp {
-            Some(now) => s.saved(id, now, outcome.pages, saved_as.as_deref(), kept),
+            Some(now) => {
+                let marks = recto_session::edit::marks::SavedMarks::of(&snapshot.marks, &outcome.marks);
+                s.saved(id, now, outcome.pages, saved_as.as_deref(), kept, marks.as_ref())
+            }
             None => 0,
         };
         s.end_save(id);

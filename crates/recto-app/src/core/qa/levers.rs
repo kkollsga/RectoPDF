@@ -141,7 +141,7 @@ impl Inner {
             .map_err(|_| failed("Writing what's about to happen"))?;
         std::fs::rename(&written, &path).map_err(|_| failed("Putting the file in place"))?;
         let now = recto_platform::file_stamp(&path).map_err(|_| failed("Looking at the saved file"))?;
-        self.host.session.with_session(|session| session.saved(id, now, pages, None, kept));
+        self.host.session.with_session(|session| session.saved(id, now, pages, None, kept, None));
         Ok(())
     }
 }

@@ -915,6 +915,13 @@ pub struct EditsRecord {
         deserialize_with = "capped::<_, _, { crate::edit::marks::MAX_MARKS }>"
     )]
     pub marks: Vec<crate::edit::marks::MarkRecord>,
+    /// Highlights of the file taken out and unsaved (review of R4.3, S2). A journal whose base has any is [`MARKED_JOURNAL_VERSION`].
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "capped::<_, _, { crate::edit::marks::MAX_HIDDEN }>"
+    )]
+    pub hidden: Vec<crate::edit::marks::FileKey>,
 }
 
 /// One thing that happened to a tab's edits, as a line of its journal. Only what was asked for, forwards: replaying these through the same checked calls brings back the page order and the whole of the history, with whose each step is, so what a hostile journal can do is limited to what those calls allow. A rotation is about 25 bytes, and an added PDF is a reference to it.
@@ -1812,6 +1819,7 @@ mod tests {
             history_dropped: false,
             owner_step_dropped: false,
             marks: Vec::new(),
+            hidden: Vec::new(),
         };
         assert!(validate_edits(&good).is_ok());
         let by = AuthorName::Owner;

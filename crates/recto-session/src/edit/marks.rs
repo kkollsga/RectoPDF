@@ -8,20 +8,36 @@
 //! **What it costs.** A tab with none has no list at all (no `PageEdits`), and a list with none holds one empty `Vec`. A highlight is a [`Mark`] of 32
 //! bytes plus 16 a line rectangle, boxed in a step only while its step is in the history.
 //!
-//! **What may be in it,** for a list made from a hostile journal as much as from a person's selection: at most [`MAX_MARKS`] a document and
-//! [`MAX_MARK_RECTS`] rectangles each, every edge finite and within [`MAX_EDGE`] points. A step names a highlight by its number, and one that names
-//! nothing does nothing, so no record can make a step that panics.
+//! **What may be in it,** for a list made from a hostile journal as much as from a person's selection: at most [`MAX_MARKS`] a document,
+//! [`MAX_MARK_RECTS`] rectangles each and [`MAX_MARK_LINES`] in all, every edge finite and within [`MAX_EDGE`] points. A step names a highlight by
+//! its number, and one that names nothing does nothing, so no record can make a step that panics.
+//!
+//! **A highlight already in the file** (review of R4.3, S2) is taken out as an edit too: a [`FileMark`] names it by its page, its place in the
+//! page's `/Annots` and its `/Rect`, and holds its lines for the history. While unsaved it's hidden ([`Marks::hidden`], keys only: the worker that
+//! draws the page leaves it out), and the next save takes it out of the file by a rewrite. Undo puts it back. The history goes on past that save
+//! ([`saved`]): a highlight a save wrote is then a file's highlight, so undoing it takes it out of the file.
 
 use super::Author;
 use crate::record::{AddedRecord, AuthorName};
 use serde::{Deserialize, Serialize};
 
+mod saved;
+pub use saved::{SaveMarks, SavedMarks, drops_owner_steps};
+pub(super) use saved::{saved, settle};
+
 /// Most highlights one document may hold as unsaved edits. Far past a person's, and what keeps a hostile journal's list small.
 pub const MAX_MARKS: usize = 10_000;
-/// Most rectangles one highlight may have: a line each, and `recto select` gives at most 32 pages of them.
-pub const MAX_MARK_RECTS: usize = 4096;
-/// Largest edge, in points. PDF's own limit on a page is 14,400 points; past this a rectangle is nonsense.
-pub const MAX_EDGE: f32 = 200_000.0;
+/// Most rectangles one highlight may have: a line each, and `recto select` gives at most 32 pages of them. The save's own limit.
+pub const MAX_MARK_RECTS: usize = recto_core::save::MAX_RECTS;
+/// Most rectangles a document's unsaved highlights may have in all (review of R4.3): 4 MiB of them, where [`MAX_MARKS`] of [`MAX_MARK_RECTS`] each
+/// would be 640 MiB.
+pub const MAX_MARK_LINES: usize = 256 * 1024;
+/// Largest edge, in points: the save's own limit. PDF's own limit on a page is 14,400 points; past this a rectangle is nonsense.
+pub const MAX_EDGE: f32 = recto_core::save::MAX_EDGE;
+/// Most highlights of the file one document may hold taken out and unsaved: what one save takes out.
+pub const MAX_HIDDEN: usize = recto_core::save::MAX_GONE;
+/// Largest place in a page's `/Annots` a removal may name: far past any real page's list.
+pub const MAX_FILE_INDEX: u32 = 1 << 20;
 
 /// One line of a highlight, in the page's frame (see the module's notes).
 // size: 16 bytes, held per line of each highlight.
@@ -44,6 +60,75 @@ impl MarkRect {
             .all(|edge| edge.is_finite() && edge.abs() <= MAX_EDGE)
             && self.width > 0.0
             && self.height > 0.0
+    }
+}
+
+/// **A highlight in the file, as a removal names it:** which PDF (only the tab's own, 0, is ever taken out), its page there, its place in that
+/// page's `/Annots`, and its `/Rect` as the file has it, `[left, bottom, right, top]`. What's held for each one hidden.
+// size: 28 bytes, asserted by `a_mark_stays_small`. Held per file highlight taken out and unsaved, at most MAX_HIDDEN.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FileKey {
+    pub source: u16,
+    pub page: u32,
+    pub index: u32,
+    pub rect: [f32; 4],
+}
+
+/// Every key held is [`FileKey::is_sound`], so equality is an equivalence.
+impl Eq for FileKey {}
+
+impl FileKey {
+    /// Of the tab's own file, at a place in a list, and a rectangle with finite edges inside any page's bounds.
+    pub fn is_sound(&self) -> bool {
+        self.source == 0 && self.index <= MAX_FILE_INDEX && self.rect.iter().all(|edge| edge.is_finite() && edge.abs() <= MAX_EDGE)
+    }
+}
+
+/// **A file's highlight taken out, as a step of the history holds it:** its key, and its lines in the page's frame (as `recto highlights` gives
+/// them), so that once a save has taken it out of the file for good, undoing that puts it back as a new highlight where it was.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileMark {
+    pub key: FileKey,
+    pub rects: Box<[MarkRect]>,
+}
+
+impl FileMark {
+    fn held_bytes(&self) -> usize {
+        size_of::<Self>() + size_of_val::<[MarkRect]>(&self.rects)
+    }
+
+    fn is_sound(&self) -> bool {
+        self.key.is_sound() && !self.rects.is_empty() && self.rects.len() <= MAX_MARK_RECTS && self.rects.iter().all(|rect| rect.is_sound())
+    }
+
+    pub fn to_record(&self) -> FileMarkRecord {
+        FileMarkRecord {
+            key: self.key,
+            rects: self.rects.to_vec(),
+        }
+    }
+
+    pub fn from_record(record: &FileMarkRecord) -> Option<Self> {
+        let mark = Self {
+            key: record.key,
+            rects: record.rects.clone().into_boxed_slice(),
+        };
+        mark.is_sound().then_some(mark)
+    }
+}
+
+/// A file's highlight as a record holds it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileMarkRecord {
+    pub key: FileKey,
+    #[serde(deserialize_with = "crate::record::capped::<_, _, MAX_MARK_RECTS>")]
+    pub rects: Vec<MarkRect>,
+}
+
+impl FileMarkRecord {
+    /// Sound, and on a page the file has.
+    pub fn fits(&self, file_pages: u32) -> bool {
+        self.key.page < file_pages && FileMark::from_record(self).is_some()
     }
 }
 
@@ -107,50 +192,109 @@ pub struct MarkPage {
 /// takes it back whole; or some made as edits taken away by their numbers, as one step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MarkChange {
-    Add { pages: Vec<MarkPage> },
-    Remove { ids: Vec<u32> },
+    Add {
+        pages: Vec<MarkPage>,
+    },
+    Remove {
+        ids: Vec<u32>,
+    },
+    /// Highlights of the tab's own file taken out, with any made as edits, as one step (review of R4.3, S2).
+    RemoveFile {
+        files: Vec<FileMark>,
+        ids: Vec<u32>,
+    },
 }
 
 /// Most pages one highlight runs over: more than `recto select` gives rectangles for (32).
 pub const MAX_MARK_PAGES: usize = 64;
+
+/// File highlights hidden, and highlights made as edits taken away, as one step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Hide {
+    pub(super) files: Box<[FileMark]>,
+    pub(super) ids: Box<[u32]>,
+}
+
+/// File highlights shown again, and highlights made as edits put back, as one step: a [`Hide`]'s inverse.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Unhide {
+    pub(super) files: Box<[FileMark]>,
+    pub(super) marks: Box<[Mark]>,
+}
 
 /// A step of the history about highlights, and how to reverse it. Boxed, so a step of the history stays small.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum MarkStep {
     Add(Box<[Mark]>),
     Remove(Box<[u32]>),
+    RemoveFile(Box<Hide>),
+    RestoreFile(Box<Unhide>),
 }
 
 impl MarkStep {
     /// What it holds beyond its own size.
     pub(super) fn held_bytes(&self) -> usize {
+        let files = |files: &[FileMark]| files.iter().map(FileMark::held_bytes).sum::<usize>();
         match self {
             Self::Add(marks) => marks.iter().map(Mark::held_bytes).sum(),
             Self::Remove(ids) => size_of_val::<[u32]>(ids),
+            Self::RemoveFile(hide) => size_of::<Hide>() + files(&hide.files) + size_of_val::<[u32]>(&hide.ids),
+            Self::RestoreFile(back) => size_of::<Unhide>() + files(&back.files) + back.marks.iter().map(Mark::held_bytes).sum::<usize>(),
         }
     }
 
     /// What its inverse will hold, from the highlights it acts on: a removal's is the highlights it takes, an addition's their numbers. The same
     /// sum [`Self::held_bytes`] makes of the inverse once it's applied.
     pub(super) fn inverse_held_bytes(&self, marks: &Marks) -> usize {
+        let files = |files: &[FileMark], hidden: bool| {
+            files
+                .iter()
+                .filter(|file| marks.hidden.contains(&file.key) == hidden)
+                .map(FileMark::held_bytes)
+                .sum::<usize>()
+        };
         match self {
             Self::Add(added) => size_of::<u32>() * added.iter().filter(|mark| marks.get(mark.id).is_none()).count(),
             Self::Remove(ids) => ids.iter().filter_map(|id| marks.get(*id)).map(Mark::held_bytes).sum(),
+            Self::RemoveFile(hide) => {
+                size_of::<Unhide>() + files(&hide.files, false) + hide.ids.iter().filter_map(|id| marks.get(*id)).map(Mark::held_bytes).sum::<usize>()
+            }
+            Self::RestoreFile(back) => {
+                size_of::<Hide>() + files(&back.files, true) + size_of::<u32>() * back.marks.iter().filter(|mark| marks.get(mark.id).is_none()).count()
+            }
         }
     }
 
     pub(super) fn to_record(&self) -> MarkStepRecord {
+        let files = |files: &[FileMark]| files.iter().map(FileMark::to_record).collect();
         match self {
             Self::Add(marks) => MarkStepRecord::Add(marks.iter().map(Mark::to_record).collect()),
             Self::Remove(ids) => MarkStepRecord::Remove(ids.to_vec()),
+            Self::RemoveFile(hide) => MarkStepRecord::RemoveFile {
+                files: files(&hide.files),
+                ids: hide.ids.to_vec(),
+            },
+            Self::RestoreFile(back) => MarkStepRecord::RestoreFile {
+                files: files(&back.files),
+                marks: back.marks.iter().map(Mark::to_record).collect(),
+            },
         }
     }
 
     /// From a record already checked by [`MarkStepRecord::fits`]; a highlight in it that can't be one is left out.
     pub(super) fn from_record(record: &MarkStepRecord) -> Self {
+        let files = |files: &[FileMarkRecord]| files.iter().filter_map(FileMark::from_record).collect();
         match record {
             MarkStepRecord::Add(marks) => Self::Add(marks.iter().filter_map(Mark::from_record).collect()),
             MarkStepRecord::Remove(ids) => Self::Remove(ids.clone().into_boxed_slice()),
+            MarkStepRecord::RemoveFile { files: of, ids } => Self::RemoveFile(Box::new(Hide {
+                files: files(of),
+                ids: ids.clone().into_boxed_slice(),
+            })),
+            MarkStepRecord::RestoreFile { files: of, marks } => Self::RestoreFile(Box::new(Unhide {
+                files: files(of),
+                marks: marks.iter().filter_map(Mark::from_record).collect(),
+            })),
         }
     }
 
@@ -158,29 +302,79 @@ impl MarkStep {
     pub(super) fn adds(&self) -> &[Mark] {
         match self {
             Self::Add(marks) => marks,
-            Self::Remove(_) => &[],
+            Self::RestoreFile(back) => &back.marks,
+            Self::Remove(_) | Self::RemoveFile(_) => &[],
         }
     }
 
     pub(super) fn adds_mut(&mut self) -> &mut [Mark] {
         match self {
             Self::Add(marks) => marks,
-            Self::Remove(_) => &mut [],
+            Self::RestoreFile(back) => &mut back.marks,
+            Self::Remove(_) | Self::RemoveFile(_) => &mut [],
+        }
+    }
+
+    /// The file's highlights it hides or shows again.
+    pub(super) fn files(&self) -> &[FileMark] {
+        match self {
+            Self::RemoveFile(hide) => &hide.files,
+            Self::RestoreFile(back) => &back.files,
+            Self::Add(_) | Self::Remove(_) => &[],
         }
     }
 }
 
-/// A document's highlights made as edits, in the order they were made.
+/// A document's highlights made as edits, in the order they were made, and the file's own taken out.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Marks {
     list: Vec<Mark>,
     /// The next number given.
     next_id: u32,
+    /// The file's highlights taken out and not yet saved: what the worker that draws the page leaves out, and the next save takes out of the file.
+    hidden: Vec<FileKey>,
+    /// Rectangles the list's highlights have in all, against [`MAX_MARK_LINES`].
+    lines: usize,
+    /// Some highlight in the list is on a page the document has: worked out as the pages change ([`settle`]). One on a page that was deleted is kept
+    /// to come back with it, and isn't something to save.
+    shown: bool,
+    /// Goes up with every change to the list or what's hidden, so what's made from them can tell it's out of date without comparing them.
+    changes: u64,
 }
 
+/// The caps a list is held to, set small by tests.
+#[derive(Clone, Copy)]
+struct Caps {
+    marks: usize,
+    lines: usize,
+    hidden: usize,
+}
+
+const CAPS: Caps = Caps {
+    marks: MAX_MARKS,
+    lines: MAX_MARK_LINES,
+    hidden: MAX_HIDDEN,
+};
+
 impl Marks {
+    /// No highlight made as an edit, and none of the file's taken out.
     pub fn is_empty(&self) -> bool {
-        self.list.is_empty()
+        self.list.is_empty() && self.hidden.is_empty()
+    }
+
+    /// Whether anything here is something to save: a highlight on a page the document has, or one of the file's taken out.
+    pub fn to_save(&self) -> bool {
+        self.shown || !self.hidden.is_empty()
+    }
+
+    /// The file's highlights taken out and unsaved.
+    pub fn hidden(&self) -> &[FileKey] {
+        &self.hidden
+    }
+
+    /// How many changes the highlights have had, in this process.
+    pub fn changes(&self) -> u64 {
+        self.changes
     }
 
     pub fn len(&self) -> usize {
@@ -197,17 +391,18 @@ impl Marks {
 
     /// The step a change makes, checked, with the numbers new ones take. Nothing changes until it's applied.
     pub(super) fn step_for(&mut self, change: MarkChange, by: Author) -> Result<MarkStep, MarkRefusal> {
-        self.step_within(change, by, MAX_MARKS)
+        self.step_within(change, by, CAPS)
     }
 
-    /// [`Self::step_for`] under a cap the tests set small.
-    fn step_within(&mut self, change: MarkChange, by: Author, cap: usize) -> Result<MarkStep, MarkRefusal> {
+    /// [`Self::step_for`] under caps the tests set small.
+    fn step_within(&mut self, change: MarkChange, by: Author, cap: Caps) -> Result<MarkStep, MarkRefusal> {
         match change {
             MarkChange::Add { pages } => {
                 if pages.is_empty() || pages.len() > MAX_MARK_PAGES {
                     return Err(MarkRefusal::Unsound);
                 }
-                if self.list.len() + pages.len() > cap {
+                let lines: usize = pages.iter().map(|page| page.rects.len()).sum();
+                if self.list.len() + pages.len() > cap.marks || self.lines + lines > cap.lines {
                     return Err(MarkRefusal::TooMany);
                 }
                 let first = self.next_id;
@@ -238,59 +433,123 @@ impl Marks {
                 }
                 Ok(MarkStep::Remove(ids.into_boxed_slice()))
             }
+            MarkChange::RemoveFile { files, ids } => {
+                if files.is_empty() || ids.len() > MAX_MARKS || !ids.iter().all(|id| self.get(*id).is_some()) {
+                    return Err(MarkRefusal::NoSuch);
+                }
+                if !files.iter().all(FileMark::is_sound) {
+                    return Err(MarkRefusal::Unsound);
+                }
+                let mut places = std::collections::HashSet::new();
+                let once = files.iter().all(|file| places.insert((file.key.page, file.key.index)));
+                if !once || files.iter().any(|file| self.hidden.contains(&file.key)) {
+                    return Err(MarkRefusal::NoSuch);
+                }
+                if self.hidden.len() + files.len() > cap.hidden {
+                    return Err(MarkRefusal::TooMany);
+                }
+                Ok(MarkStep::RemoveFile(Box::new(Hide {
+                    files: files.into_boxed_slice(),
+                    ids: ids.into_boxed_slice(),
+                })))
+            }
         }
     }
 
     /// Applies a step and gives back its inverse. A highlight already here, or a number naming none, is passed over either way, so a hostile record
     /// can't make it panic or two highlights share a number.
     pub(super) fn apply(&mut self, step: MarkStep) -> MarkStep {
+        self.changes += 1;
         match step {
-            MarkStep::Add(marks) => {
-                let mut added = Vec::with_capacity(marks.len());
-                for mark in marks {
-                    if self.get(mark.id).is_some() || self.list.len() >= MAX_MARKS {
-                        continue;
+            MarkStep::Add(marks) => MarkStep::Remove(self.add(marks.into_vec()).into_boxed_slice()),
+            MarkStep::Remove(ids) => MarkStep::Add(self.take(&ids).into_boxed_slice()),
+            MarkStep::RemoveFile(hide) => {
+                let Hide { files, ids } = *hide;
+                let mut shown_before = Vec::with_capacity(files.len());
+                for file in files {
+                    if !self.hidden.contains(&file.key) && self.hidden.len() < MAX_HIDDEN {
+                        self.hidden.push(file.key);
+                        shown_before.push(file);
                     }
-                    self.next_id = self.next_id.max(mark.id.saturating_add(1));
-                    added.push(mark.id);
-                    self.list.push(mark);
                 }
-                MarkStep::Remove(added.into_boxed_slice())
+                MarkStep::RestoreFile(Box::new(Unhide {
+                    files: shown_before.into_boxed_slice(),
+                    marks: self.take(&ids).into_boxed_slice(),
+                }))
             }
-            MarkStep::Remove(ids) => {
-                let mut removed = Vec::with_capacity(ids.len());
-                for id in ids {
-                    if let Some(at) = self.list.iter().position(|mark| mark.id == id) {
-                        removed.push(self.list.remove(at));
+            MarkStep::RestoreFile(back) => {
+                let Unhide { files, marks } = *back;
+                let mut hidden_before = Vec::with_capacity(files.len());
+                for file in files {
+                    if let Some(at) = self.hidden.iter().position(|key| *key == file.key) {
+                        self.hidden.remove(at);
+                        hidden_before.push(file);
                     }
                 }
-                MarkStep::Add(removed.into_boxed_slice())
+                MarkStep::RemoveFile(Box::new(Hide {
+                    files: hidden_before.into_boxed_slice(),
+                    ids: self.add(marks.into_vec()).into_boxed_slice(),
+                }))
             }
         }
     }
 
-    /// **What a confirmed save does to them:** every one is in the file now, so none is an edit any more; their numbers are given back, for the history
-    /// to drop the steps that would take them out of the file, which can't be done yet.
-    pub(super) fn saved(&mut self) -> Vec<u32> {
-        self.list.drain(..).map(|mark| mark.id).collect()
+    /// Puts highlights in the list, within its caps, and gives the numbers of those put in.
+    fn add(&mut self, marks: Vec<Mark>) -> Vec<u32> {
+        let mut added = Vec::with_capacity(marks.len());
+        for mark in marks {
+            if self.get(mark.id).is_some() || self.list.len() >= MAX_MARKS || self.lines + mark.rects.len() > MAX_MARK_LINES {
+                continue;
+            }
+            self.next_id = self.next_id.max(mark.id.saturating_add(1));
+            self.lines += mark.rects.len();
+            added.push(mark.id);
+            self.list.push(mark);
+        }
+        added
+    }
+
+    /// Takes highlights out of the list by their numbers, and gives them.
+    fn take(&mut self, ids: &[u32]) -> Vec<Mark> {
+        let mut removed = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(at) = self.list.iter().position(|mark| mark.id == *id) {
+                let mark = self.list.remove(at);
+                self.lines -= mark.rects.len();
+                removed.push(mark);
+            }
+        }
+        removed
     }
 
     pub(super) fn to_record(&self) -> Vec<MarkRecord> {
         self.list.iter().map(Mark::to_record).collect()
     }
 
-    /// Each highlight on the positions its page has in `slots` (a page that's there twice has it twice, and one that isn't there has none), its
-    /// rectangles as a save writes them. For a save's snapshot: what it holds is the highlights' own rectangles, and nothing more.
-    pub fn on_positions(&self, slots: &[super::PageSlot]) -> Vec<(u32, Box<[[f32; 4]]>)> {
+    /// **Each highlight on the positions its page has in `slots`** (a page that's there twice has it twice, and one that isn't there has none), in
+    /// position order, as `(position, highlight)`. A look along the pages and one through the list (review of R4.3: it was the list for every page).
+    pub fn on_positions<'m>(&'m self, slots: &[super::PageSlot]) -> Vec<(u32, &'m Mark)> {
         if self.list.is_empty() {
             return Vec::new();
         }
+        let mut by_page: std::collections::HashMap<(u16, u32), Vec<&Mark>> = std::collections::HashMap::new();
+        for mark in &self.list {
+            by_page.entry((mark.source, mark.page)).or_default().push(mark);
+        }
         let mut out = Vec::new();
         for (position, slot) in slots.iter().enumerate() {
-            for mark in self.list.iter().filter(|mark| (mark.source, mark.page) == (slot.source, slot.page)) {
-                let rects = mark.rects.iter().map(|rect| [rect.x, rect.y, rect.width, rect.height]).collect();
-                out.push((u32::try_from(position).unwrap_or(u32::MAX), rects));
+            if let Some(marks) = by_page.get(&(slot.source, slot.page)) {
+                out.extend(marks.iter().map(|mark| (u32::try_from(position).unwrap_or(u32::MAX), *mark)));
             }
+        }
+        out
+    }
+
+    /// Where each highlight's page is first in `slots`, by number: one look along the pages. A highlight whose page isn't there has none.
+    pub fn first_positions(&self, slots: &[super::PageSlot]) -> std::collections::HashMap<u32, u32> {
+        let mut out = std::collections::HashMap::new();
+        for (position, mark) in self.on_positions(slots) {
+            out.entry(mark.id).or_insert(position);
         }
         out
     }
@@ -300,21 +559,33 @@ impl Marks {
         self.list.iter_mut().map(|mark| &mut mark.source)
     }
 
-    /// From records: each sound, numbers not repeated, at most [`MAX_MARKS`]. `None` if any isn't.
-    pub(super) fn from_record(records: &[MarkRecord]) -> Option<Self> {
-        if records.len() > MAX_MARKS {
+    /// From records: each sound, numbers not repeated, at most [`MAX_MARKS`] and [`MAX_MARK_LINES`], and the file's taken out each sound, none
+    /// twice, at most [`MAX_HIDDEN`]. `None` if any isn't.
+    pub(super) fn from_record(records: &[MarkRecord], hidden: &[FileKey]) -> Option<Self> {
+        if records.len() > MAX_MARKS || hidden.len() > MAX_HIDDEN {
             return None;
         }
         let mut marks = Self::default();
         for record in records {
             let mark = Mark::from_record(record)?;
-            if marks.get(mark.id).is_some() {
+            if marks.get(mark.id).is_some() || marks.lines + mark.rects.len() > MAX_MARK_LINES {
                 return None;
             }
             marks.next_id = marks.next_id.max(mark.id.checked_add(1)?);
+            marks.lines += mark.rects.len();
             marks.list.push(mark);
         }
+        for key in hidden {
+            if !key.is_sound() || marks.hidden.contains(key) {
+                return None;
+            }
+            marks.hidden.push(*key);
+        }
         Some(marks)
+    }
+
+    pub(super) fn hidden_to_record(&self) -> Vec<FileKey> {
+        self.hidden.clone()
     }
 
     /// Numbers past any a step names, so one brought back by an undo never meets a new one.
@@ -325,54 +596,11 @@ impl Marks {
     }
 }
 
-/// **What a confirmed save does to a list's highlights** (coordinator, 2026-11-14, E1): every highlight is in the file now, so none is an edit, and the
-/// steps that would take one out of the file leave undo and redo, as taking a file's highlight out isn't built yet. Every other step stays: an undone
-/// highlight's way back moves onto the page's number in the new file, `slots` being the order that was saved, and a part whose page isn't in it goes.
-/// A step left with nothing goes. The bytes the history holds are counted again. Says how many steps had to go for want of their page. Called
-/// before the list's pages start again.
-pub(super) fn saved(edits: &mut super::PageEdits) -> usize {
-    let saved: std::collections::HashSet<u32> = edits.marks.saved().into_iter().collect();
-    let mut position: std::collections::HashMap<(u16, u32), u32> = std::collections::HashMap::new();
-    for (at, slot) in edits.slots.iter().enumerate() {
-        position.entry((slot.source, slot.page)).or_insert(u32::try_from(at).unwrap_or(u32::MAX));
-    }
-    let mut gone = 0;
-    for list in [&mut edits.history.undo, &mut edits.history.redo] {
-        list.retain_mut(|entry| match &mut entry.step {
-            super::Step::Mark(step) => match &mut **step {
-                MarkStep::Remove(ids) => {
-                    // In the file now: taking those out can't be done yet, so that's not a step for them.
-                    *ids = ids.iter().copied().filter(|id| !saved.contains(id)).collect();
-                    !ids.is_empty()
-                }
-                MarkStep::Add(marks) => {
-                    let kept: Vec<Mark> = marks
-                        .iter()
-                        .filter_map(|mark| {
-                            position.get(&(mark.source, mark.page)).map(|at| Mark {
-                                source: 0,
-                                page: *at,
-                                ..mark.clone()
-                            })
-                        })
-                        .collect();
-                    let whole = kept.len() == marks.len();
-                    *marks = kept.into_boxed_slice();
-                    gone += usize::from(!whole && marks.is_empty());
-                    !marks.is_empty()
-                }
-            },
-            _ => true,
-        });
-    }
-    edits.history.bytes = edits.history.undo.iter().chain(&edits.history.redo).map(|entry| entry.step.held_bytes()).sum();
-    gone
-}
-
 /// **Whether a journal holds anything an app from before highlights can't read** (review of R4.3, should-fix 3): highlights in its base's list, or
 /// a highlight's step in its undo or redo. Such a journal says [`crate::record::MARKED_JOURNAL_VERSION`].
 pub fn record_has_marks(base: &crate::record::EditsRecord) -> bool {
     !base.marks.is_empty()
+        || !base.hidden.is_empty()
         || base
             .undo
             .iter()
@@ -455,6 +683,9 @@ impl std::fmt::Debug for crate::record::EditsRecord {
         if !self.marks.is_empty() {
             out.field("marks", &self.marks);
         }
+        if !self.hidden.is_empty() {
+            out.field("hidden", &self.hidden);
+        }
         out.finish()
     }
 }
@@ -468,13 +699,32 @@ pub enum MarkStepRecord {
     Add(#[serde(deserialize_with = "crate::record::capped::<_, _, MAX_MARKS>")] Vec<MarkRecord>),
     #[serde(rename = "x")]
     Remove(#[serde(deserialize_with = "crate::record::capped::<_, _, MAX_MARKS>")] Vec<u32>),
+    /// File highlights hidden, with highlights made as edits taken away (review of R4.3, S2).
+    #[serde(rename = "xf")]
+    RemoveFile {
+        #[serde(deserialize_with = "crate::record::capped::<_, _, MAX_HIDDEN>")]
+        files: Vec<FileMarkRecord>,
+        #[serde(deserialize_with = "crate::record::capped::<_, _, MAX_MARKS>")]
+        ids: Vec<u32>,
+    },
+    /// File highlights shown again, with highlights made as edits put back.
+    #[serde(rename = "af")]
+    RestoreFile {
+        #[serde(deserialize_with = "crate::record::capped::<_, _, MAX_HIDDEN>")]
+        files: Vec<FileMarkRecord>,
+        #[serde(deserialize_with = "crate::record::capped::<_, _, MAX_MARKS>")]
+        marks: Vec<MarkRecord>,
+    },
 }
 
 impl MarkStepRecord {
     pub fn fits(&self, file_pages: u32, added: &[AddedRecord]) -> bool {
+        let files = |files: &[FileMarkRecord]| files.iter().all(|file| file.fits(file_pages));
         match self {
             Self::Add(marks) => marks.iter().all(|mark| mark.fits(file_pages, added)),
             Self::Remove(_) => true,
+            Self::RemoveFile { files: of, .. } => files(of),
+            Self::RestoreFile { files: of, marks } => files(of) && marks.iter().all(|mark| mark.fits(file_pages, added)),
         }
     }
 }
@@ -490,6 +740,14 @@ pub enum MarkOp {
     },
     #[serde(rename = "x")]
     Remove {
+        #[serde(deserialize_with = "crate::record::capped::<_, _, MAX_MARKS>")]
+        ids: Vec<u32>,
+        by: AuthorName,
+    },
+    #[serde(rename = "xf")]
+    RemoveFile {
+        #[serde(deserialize_with = "crate::record::capped::<_, _, MAX_HIDDEN>")]
+        files: Vec<FileMarkRecord>,
         #[serde(deserialize_with = "crate::record::capped::<_, _, MAX_MARKS>")]
         ids: Vec<u32>,
         by: AuthorName,
@@ -512,13 +770,31 @@ impl MarkOp {
                 by,
             },
             MarkStep::Remove(ids) => Self::Remove { ids: ids.to_vec(), by },
+            MarkStep::RemoveFile(hide) => Self::RemoveFile {
+                files: hide.files.iter().map(FileMark::to_record).collect(),
+                ids: hide.ids.to_vec(),
+                by,
+            },
+            // Only ever an inverse, never asked for, so never noted: what's noted of an undo is the undo.
+            MarkStep::RestoreFile(_) => Self::Remove { ids: Vec::new(), by },
         }
     }
 
+    /// What it asks, to be asked again. A file's highlight that can't be one makes it ask nothing that can be done.
     pub(super) fn change(&self) -> (MarkChange, AuthorName) {
         match self {
             Self::Add { pages, by } => (MarkChange::Add { pages: pages.clone() }, *by),
             Self::Remove { ids, by } => (MarkChange::Remove { ids: ids.clone() }, *by),
+            Self::RemoveFile { files, ids, by } => {
+                let read: Option<Vec<FileMark>> = files.iter().map(FileMark::from_record).collect();
+                (
+                    MarkChange::RemoveFile {
+                        files: read.unwrap_or_default(),
+                        ids: ids.clone(),
+                    },
+                    *by,
+                )
+            }
         }
     }
 }
@@ -584,15 +860,15 @@ mod tests {
             rects: vec![rect()],
             by: AuthorName::Owner,
         };
-        assert_eq!(Marks::from_record(std::slice::from_ref(&good)).map(|marks| marks.next_id), Some(4));
-        assert!(Marks::from_record(&[good.clone(), good.clone()]).is_none());
+        assert_eq!(Marks::from_record(std::slice::from_ref(&good), &[]).map(|marks| marks.next_id), Some(4));
+        assert!(Marks::from_record(&[good.clone(), good.clone()], &[]).is_none());
         let bad = MarkRecord {
             rects: vec![MarkRect { x: f32::NAN, ..rect() }],
             ..good.clone()
         };
-        assert!(Marks::from_record(&[bad]).is_none());
+        assert!(Marks::from_record(&[bad], &[]).is_none());
         let last = MarkRecord { id: u32::MAX, ..good };
-        assert!(Marks::from_record(&[last]).is_none(), "a number with none after it can't be the list's");
+        assert!(Marks::from_record(&[last], &[]).is_none(), "a number with none after it can't be the list's");
     }
 
     /// Failure: a step from a hostile record naming a highlight that isn't there, or one that already is, panics or makes two of one number.
@@ -615,17 +891,48 @@ mod tests {
         );
     }
 
-    /// Failure: past the cap a list goes on growing from a journal or an agent's loop. Held at the cap plus one, with the cap set small.
+    /// Failure: past a cap a list goes on growing from a journal or an agent's loop: highlights, their lines in all (review of R4.3: 10,000 of 4,096
+    /// lines each was 640 MiB), or the file's taken out. Each held at its cap plus one, with the caps set small.
     #[test]
-    fn the_count_is_capped() {
-        const CAP: usize = 3;
+    fn the_count_the_lines_and_the_hidden_are_capped() {
+        let caps = Caps { marks: 3, lines: 5, hidden: 2 };
         let mut marks = Marks::default();
-        for _ in 0..CAP {
-            let step = marks.step_within(one(0, 0, vec![rect()]), Author::Owner, CAP).unwrap();
+        for _ in 0..caps.marks {
+            let step = marks.step_within(one(0, 0, vec![rect()]), Author::Owner, caps).unwrap();
             marks.apply(step);
         }
         let one_more = one(0, 0, vec![rect()]);
-        assert_eq!(marks.step_within(one_more, Author::Owner, CAP), Err(MarkRefusal::TooMany));
+        assert_eq!(marks.step_within(one_more, Author::Owner, caps), Err(MarkRefusal::TooMany));
+        let mut lines = Marks::default();
+        let step = lines.step_within(one(0, 0, vec![rect(); 4]), Author::Owner, caps).unwrap();
+        lines.apply(step);
+        assert!(lines.step_within(one(0, 0, vec![rect()]), Author::Owner, caps).is_ok(), "at the cap");
+        assert_eq!(lines.step_within(one(0, 0, vec![rect(); 2]), Author::Owner, caps), Err(MarkRefusal::TooMany));
+        let mut hidden = Marks::default();
+        let step = hidden.step_within(file_removal(&[0, 1]), Author::Owner, caps).unwrap();
+        hidden.apply(step);
+        assert_eq!(hidden.hidden().len(), 2);
+        assert_eq!(hidden.step_within(file_removal(&[2]), Author::Owner, caps), Err(MarkRefusal::TooMany));
+    }
+
+    /// A removal of the file's highlights at these places on its first page.
+    fn file_removal(indexes: &[u32]) -> MarkChange {
+        MarkChange::RemoveFile {
+            files: indexes.iter().map(|index| file_mark(0, *index)).collect(),
+            ids: Vec::new(),
+        }
+    }
+
+    fn file_mark(page: u32, index: u32) -> FileMark {
+        FileMark {
+            key: FileKey {
+                source: 0,
+                page,
+                index,
+                rect: [10.0, 760.0, 110.0, 772.0],
+            },
+            rects: Box::new([rect()]),
+        }
     }
 
     fn add(edits: &mut super::super::PageEdits, page: u32) {
@@ -788,44 +1095,30 @@ mod tests {
         );
     }
 
-    /// Failure (E1, coordinator 2026-11-14): after a save, an undo takes a highlight that's in the file now as if it were an edit, a redo of an undone
-    /// highlight lands on the page that had its old number, or the history's bytes and dropped flags are wrong for what's left.
+    /// Failure (review of R4.3, S2): a removal of the file's highlight doesn't come back from the journal or the record as it was, so a crash or a
+    /// restart shows the highlight again, loses the step, or lets an app from before highlights read the journal and lose it.
     #[test]
-    fn a_save_drops_only_the_steps_that_would_take_a_saved_highlight_out() {
-        let mut edits = super::super::PageEdits::new(3);
-        add(&mut edits, 0);
-        edits.move_pages(2, 1, 0).unwrap();
-        add(&mut edits, 2);
-        assert!(edits.undo(), "the highlight on what was page 3 is undone, and waits to be redone");
-        let rebased = edits.rebase_on_saved(3, None).unwrap();
-        assert_eq!(rebased.rolled_off, 0);
-        assert!(edits.marks().is_empty(), "every highlight that was on is in the file now");
-        assert!(!edits.is_edited());
-        let held: usize = edits.history.undo.iter().chain(&edits.history.redo).map(|entry| entry.step.held_bytes()).sum();
-        assert_eq!(edits.history.bytes, held);
-        assert!(!edits.history.dropped && !edits.history.owner_dropped);
-        assert_eq!(
-            edits.history.undo.len(),
-            1,
-            "the move is left to undo, and nothing takes the saved highlight out"
-        );
-        assert!(edits.redo());
-        let mark = edits.marks().iter().next().unwrap();
-        assert_eq!(
-            (mark.source, mark.page),
-            (0, 0),
-            "the file's page 3 was saved first, so its highlight comes back on page 1"
-        );
-        assert!(edits.undo() && edits.undo(), "the redone highlight, then the move");
-        assert!(!edits.can_undo());
-
-        let mut only = super::super::PageEdits::new(2);
-        add(&mut only, 1);
-        only.rebase_on_saved(2, None).unwrap();
-        assert!(
-            !only.can_undo() && !only.can_redo(),
-            "a saved highlight's step was all there was, so there's nothing to undo"
-        );
+    fn a_file_highlights_removal_comes_back_from_the_journal_and_the_record() {
+        use crate::record::{CURRENT_VERSION, JournalHeader, MARKED_JOURNAL_VERSION, RecordError, journal_start, parse_journal};
+        let mut edits = super::super::PageEdits::new(2);
+        edits.journal_from_now();
+        edits.acting = Author::Agent;
+        edits.mark(file_removal(&[3])).unwrap();
+        edits.acting = Author::Owner;
+        edits.mark(file_removal(&[1])).unwrap();
+        assert!(edits.undo());
+        let ops = edits.journal_waiting().map(|(_, ops)| ops.to_vec()).unwrap();
+        let (replayed, _) = super::super::PageEdits::replay(2, None, &ops).unwrap();
+        assert_eq!(replayed.to_record(), edits.to_record());
+        assert_eq!(replayed.marks().hidden().len(), 1);
+        let back = super::super::PageEdits::from_record(&edits.to_record()).unwrap();
+        assert_eq!(back.to_record(), edits.to_record());
+        let header = JournalHeader::new(1, std::path::Path::new("/d/a.pdf"), None, 2, 0);
+        let journal = journal_start(&header, Some(&edits.to_record()));
+        assert_eq!(parse_journal(&journal, CURRENT_VERSION), Err(RecordError::Newer(MARKED_JOURNAL_VERSION)));
+        let mut bad = edits.to_record();
+        bad.hidden[0].page = 2;
+        assert!(super::super::PageEdits::from_record(&bad).is_err(), "a page the file hasn't");
     }
 
     /// Failure (E2, coordinator 2026-11-14): an app from before highlights reads a journal that has them as if it had none, and its next compaction
