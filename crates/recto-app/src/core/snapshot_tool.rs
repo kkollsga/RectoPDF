@@ -46,6 +46,9 @@ struct Job {
     tab: u32,
     /// The page's place in the tab, edits and all.
     position: u32,
+    /// The page at that place as the view showed it, which the command is refused by if another is there when it runs: it waits its turn in the
+    /// person's lane, behind any page delete or move asked before it (the branch's review, S1).
+    seen: extract::AsSeen,
     wanted: Wanted,
     anyway: bool,
 }
@@ -66,7 +69,7 @@ impl Job {
                 scale: extract::DEFAULT_SCALE,
                 anyway: self.anyway,
                 to_clipboard: true,
-                as_seen: None,
+                as_seen: Some(self.seen),
             }),
             Wanted::Image { x, y } => Command::from(Image {
                 tab,
@@ -76,17 +79,20 @@ impl Job {
                 anyway: self.anyway,
                 at: Some([x, y]),
                 to_clipboard: true,
+                as_seen: Some(self.seen),
             }),
         }
     }
 
     /// The job a command of the tool's is, read back from it: none for any other command, a paste's SVG included.
     fn of(command: &Command) -> Option<Self> {
-        let (tab, page, wanted, anyway) = match (kind_of(command)?, command) {
-            (ClipboardKind::Box, Command::Read(Read::Snapshot(asked))) => (&asked.tab, asked.page, Wanted::Box { rect: asked.rect }, asked.anyway),
+        let (tab, page, seen, wanted, anyway) = match (kind_of(command)?, command) {
+            (ClipboardKind::Box, Command::Read(Read::Snapshot(asked))) => {
+                (&asked.tab, asked.page, asked.as_seen?, Wanted::Box { rect: asked.rect }, asked.anyway)
+            }
             (ClipboardKind::Click, Command::Read(Read::Image(asked))) => {
                 let [x, y] = asked.at?;
-                (&asked.tab, asked.page, Wanted::Image { x, y }, asked.anyway)
+                (&asked.tab, asked.page, asked.as_seen?, Wanted::Image { x, y }, asked.anyway)
             }
             _ => return None,
         };
@@ -94,6 +100,7 @@ impl Job {
         Some(Self {
             tab: tab.0,
             position: page.checked_sub(1)?,
+            seen,
             wanted,
             anyway,
         })
@@ -324,7 +331,7 @@ impl Tool {
     }
 
     /// **The button came up:** the box goes, and what it took is kept for the person's action that takes it ([`super::controls::UiAction::SnapshotTaken`],
-    /// [`taken`]), which the bridge sends next.
+    /// [`taken`]), which the bridge sends next, with the page it was taken from as the view shows it now.
     pub fn release(&self, engine: &Engine, pane: usize) -> Vec<ReaderOp> {
         let taken = lock(&self.state).release();
         let ops = self.box_ops(pane, None);
@@ -340,11 +347,19 @@ impl Tool {
             )),
             Taken::Nothing => None,
         };
-        lock(&self.jobs).taken = wanted.map(|(position, wanted)| Job {
-            tab,
-            position,
-            wanted,
-            anyway: false,
+        lock(&self.jobs).taken = wanted.and_then(|(position, wanted)| {
+            let seen = engine.points().page_seen(position)?;
+            Some(Job {
+                tab,
+                position,
+                seen: extract::AsSeen {
+                    quarter_turns: seen.quarter_turns,
+                    file_page: seen.file_page,
+                    own: seen.own,
+                },
+                wanted,
+                anyway: false,
+            })
         });
         ops
     }
@@ -670,6 +685,8 @@ impl recto_agent::clipboard::ClipboardSink for Sink {
         // Its page is found: the person's next edit goes on now.
         crate::queue::lane::pass_here();
         let Some(app) = self.app.upgrade() else { return stopped() };
+        #[cfg(test)]
+        app.core.holds.at("snapshot_drawing");
         let jobs = lock(&app.tools.tool().jobs);
         jobs.running.clone().unwrap_or_else(stopped)
     }
@@ -715,10 +732,17 @@ pub enum Data {
 mod tests {
     use super::*;
 
+    const PAGE_1: extract::AsSeen = extract::AsSeen {
+        quarter_turns: 0,
+        file_page: 0,
+        own: true,
+    };
+
     fn job(x: f32) -> Job {
         Job {
             tab: 1,
             position: 0,
+            seen: PAGE_1,
             wanted: Wanted::Image { x, y: 0.0 },
             anyway: false,
         }
@@ -902,6 +926,7 @@ mod tests {
         let job = Job {
             tab,
             position: 0,
+            seen: PAGE_1,
             wanted: Wanted::Box { rect },
             anyway: false,
         };

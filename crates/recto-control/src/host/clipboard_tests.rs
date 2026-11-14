@@ -68,10 +68,11 @@ fn nothing_an_agent_sends_reaches_the_clipboard() {
     let run = |line: &str| recto_agent::parse(line).expect("a command");
     let open = format!(r#"{{"cmd":"open","path":{}}}"#, serde_json::Value::from(file.0.display().to_string()));
     host.run(Actor::Agent(Level::Full), &run(&open), &mut Vec::new()).expect("opened");
+    // Each names its page as the window would, so a refusal can only be for whose it is.
     let lines = [
-        r#"{"cmd":"snapshot","page":1,"rect":[10,10,300,100],"as":"png","to_clipboard":true,"anyway":true}"#,
-        r#"{"cmd":"snapshot","page":1,"rect":[10,10,300,100],"as":"svg","to_clipboard":true}"#,
-        r#"{"cmd":"image","page":1,"at":[20,20],"to_clipboard":true,"anyway":true}"#,
+        r#"{"cmd":"snapshot","page":1,"rect":[10,10,300,100],"as":"png","to_clipboard":true,"anyway":true,"as_seen":{"quarter_turns":0,"file_page":0,"own":true}}"#,
+        r#"{"cmd":"snapshot","page":1,"rect":[10,10,300,100],"as":"svg","to_clipboard":true,"as_seen":{"quarter_turns":0,"file_page":0,"own":true}}"#,
+        r#"{"cmd":"image","page":1,"at":[20,20],"to_clipboard":true,"anyway":true,"as_seen":{"quarter_turns":0,"file_page":0,"own":true}}"#,
     ];
     assert!(
         recto_agent::parse(r#"{"cmd":"image","page":1,"at":[20,20],"anyway":true}"#).is_err(),

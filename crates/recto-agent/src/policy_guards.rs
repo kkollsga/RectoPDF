@@ -77,6 +77,7 @@ pub(crate) fn every_command() -> Vec<Command> {
             anyway: false,
             at: None,
             to_clipboard: false,
+            as_seen: None,
         }),
         Command::from(crate::commands::export::Snapshot {
             tab: tab(),

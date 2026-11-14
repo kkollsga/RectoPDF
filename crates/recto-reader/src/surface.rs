@@ -593,6 +593,7 @@ DocView::pub(crate) fn is_on_its_page(&self, point: PagePoint) -> bool
 DocView::pub(crate) fn magnification(&self) -> f64
 DocView::pub(crate) fn own_file_page(&self, position: u32) -> Option<u32>
 DocView::pub(crate) fn page_count(&self) -> u32
+DocView::pub(crate) fn page_in_file(&self, position: u32) -> Option<(u32, bool)>
 DocView::pub(crate) fn page_size_shown(&self, page: u32) -> Option<(f32, f32)>
 DocView::pub(crate) fn page_turns(&self, page: u32) -> u8
 DocView::pub(crate) fn place_y(&self) -> f64
@@ -744,6 +745,7 @@ Points::pub fn has_document(&self) -> bool
 Points::pub fn on_given_page(&self, page: u32, x: f64, y: f64) -> Option<recto_index::select::PagePoint>
 Points::pub fn on_page(&self, x: f64, y: f64) -> Option<(recto_index::select::PagePoint, (f32, f32))>
 Points::pub fn page_count(&self) -> u32
+Points::pub fn page_seen(&self, page: u32) -> Option<crate::snapshot::PageSeen>
 Points::pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)>
 Points::pub fn page_turns(&self, page: u32) -> u8
 Points::pub fn set_band(&self, band: Option<(u32, u16, u16)>)

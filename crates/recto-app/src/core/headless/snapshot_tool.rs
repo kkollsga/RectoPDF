@@ -54,6 +54,13 @@ fn at(app: &HeadlessApp, x: f32, y: f32) -> (f64, f64) {
 
 /// A press at `from`, a drag to `to`, and the release, as the bridge's mouse calls make them with the tool on; then the snapshot's job to its end.
 fn mouse(app: &HeadlessApp, from: (f32, f32), to: Option<(f32, f32)>) {
+    let_go(app, from, to);
+    app.wait_until("the snapshot's job ended", || !app.core().tools.tool().busy());
+    app.settle();
+}
+
+/// A press, a drag and the release, as [`mouse`], without waiting for what it takes.
+fn let_go(app: &HeadlessApp, from: (f32, f32), to: Option<(f32, f32)>) {
     let inner = app.core();
     let engine = inner.panes.reading_engine(&inner.engine);
     let tool = inner.tools.tool();
@@ -65,21 +72,11 @@ fn mouse(app: &HeadlessApp, from: (f32, f32), to: Option<(f32, f32)>) {
     }
     let _ = tool.release(&engine, 0);
     app.act(UiAction::SnapshotTaken);
-    app.wait_until("the snapshot's job ended", || !tool.busy());
-    app.settle();
 }
 
 /// A box drawn and let go, as [`take_box`], without waiting for what it takes.
 fn let_go_of_a_box(app: &HeadlessApp) {
-    let inner = app.core();
-    let engine = inner.panes.reading_engine(&inner.engine);
-    let tool = inner.tools.tool();
-    let (x, y) = at(app, BOX[0], BOX[1]);
-    let _ = tool.press(&engine, 0, x, y);
-    let (x, y) = at(app, BOX[0] + BOX[2], BOX[1] + BOX[3]);
-    let _ = tool.drag(&engine, 0, x, y);
-    let _ = tool.release(&engine, 0);
-    app.act(UiAction::SnapshotTaken);
+    let_go(app, (BOX[0], BOX[1]), Some((BOX[0] + BOX[2], BOX[1] + BOX[3])));
 }
 
 /// One type's bytes, as the bridge's `clipboard_data` gives them: made with the copy, or a promised one the person's paste makes, waited for.
@@ -438,4 +435,78 @@ fn a_page_moved_before_the_paste_gives_no_other_pages_svg() {
         .map(|(_, bytes)| bytes);
     assert_eq!(svg, None, "no SVG of the page that's in its place now");
     assert!(png.is_some() && png == box_png, "the PNG is still the box's");
+}
+
+/// The session thread through what's queued now: what wasn't parked has run.
+fn flush(app: &HeadlessApp) {
+    assert!(app.core().core.flush(WAIT_LIMIT), "the session thread took what was queued");
+}
+
+/// **Failure (the branch's review, S1): a box or a click whose page moved under it copies another page.** The box and the click wait their turn in the
+/// person's lane, and named their page by its place in the tab, so behind a highlight still landing and a page delete parked after it, the box drawn on
+/// page 1 as the view still showed it was taken of whatever page was in its place once the delete had run: another page's picture and text. Each,
+/// box then click, is refused in the tool's words for a page that can't be read now, and nothing is offered.
+#[test]
+fn a_box_or_click_whose_page_moved_under_it_copies_nothing() {
+    let disk = Disk::new();
+    let doc = disk.pdf("three.pdf", 3);
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    tool_on(&app);
+    for (what, release) in [
+        ("a box", (BOX[0], BOX[1], Some((BOX[0] + BOX[2], BOX[1] + BOX[3])))),
+        ("a click", (120.0, 50.0, None)),
+    ] {
+        app.core().panes.reading_engine(&app.core().engine).selection().restore((0, 0), (0, 5));
+        let (held, go) = app.hold_next("highlight");
+        app.act(UiAction::Menu {
+            id: crate::core::highlight::HIGHLIGHT_ID.into(),
+        });
+        held.recv_timeout(WAIT_LIMIT)
+            .expect("the highlight held as its pages are read, holding its turn");
+        app.person(r#"{"cmd":"page_delete","tab":"active","pages":"1"}"#);
+        flush(&app);
+        let (x, y, to) = release;
+        let_go(&app, (x, y), to);
+        flush(&app);
+        drop(go);
+        app.wait_until("the snapshot's answered", || !app.core().tools.tool().busy());
+        app.settle();
+        assert_eq!(
+            (notice(&app), offered_or_nothing(&app)),
+            (
+                "\"That page can't be read now: its file has changed or gone.\" []".to_string(),
+                "nothing offered".to_string()
+            ),
+            "{what} on the page the delete took away"
+        );
+    }
+    let pages = app.core().panes.reading_engine(&app.core().engine).points().page_count();
+    assert_eq!(pages, 1, "both deletes were done");
+}
+
+/// **Failure (the branch's review): a snapshot holds the person's turn while it draws,** so a ⌘Z asked while a heavy box is still being drawn waits for
+/// the drawing, seconds on a map. Its turn passes once its page is found: with the snapshot held at its drawing, the ⌘Z is done.
+#[test]
+fn a_snapshot_still_drawing_doesnt_hold_an_undo_behind_it() {
+    let disk = Disk::new();
+    let doc = disk.pdf("one.pdf", 1);
+    let app = disk.start();
+    app.open(&doc);
+    app.act(UiAction::Menu { id: "rotate.right".into() });
+    app.settle();
+    tool_on(&app);
+    let (held, go) = app.hold_next("snapshot_drawing");
+    let_go_of_a_box(&app);
+    held.recv_timeout(WAIT_LIMIT).expect("the snapshot held as it draws");
+    app.act(UiAction::Menu { id: "edit.undo".into() });
+    flush(&app);
+    assert!(
+        app.core().menu_item_enabled("edit.redo".into()),
+        "the turn undone while the snapshot still draws"
+    );
+    drop(go);
+    app.wait_until("the snapshot's answered", || !app.core().tools.tool().busy());
+    app.settle();
 }

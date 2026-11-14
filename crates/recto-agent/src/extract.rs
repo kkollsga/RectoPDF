@@ -574,8 +574,10 @@ impl PersonsPage<'_> {
     }
 }
 
-/// **The box's page as the person's snapshot saw it** (coordinator, 2026-11-14: the clipboard's types are one copy of one moment): carried by the paste of
-/// its promised SVG, so the SVG is drawn as the PNG was, turned as it was, and only from the same page of the same file. Clipboard-only, as `to_clipboard`.
+/// **The page as the person's snapshot saw it** (coordinator, 2026-11-14: the clipboard's types are one copy of one moment): carried by the box and the
+/// click, as the view showed the page they were taken from, and by the paste of a box's promised SVG, as the box's answer said it. Each is refused if
+/// another page is in its place by the time it runs (the branch's review, S1: the box and click wait their turn in the person's lane, behind a page
+/// delete or move), and the SVG is drawn turned as the PNG was. Clipboard-only, as `to_clipboard`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AsSeen {
@@ -584,6 +586,18 @@ pub struct AsSeen {
     pub file_page: u32,
     /// From the tab's own file, rather than a PDF added to it.
     pub own: bool,
+}
+
+impl AsSeen {
+    /// Whether `now` is still this page of the same file: refused as moved if not. Its turn isn't the page's: a turn asked before the box was let go
+    /// is in what's copied (coordinator, 2026-11-14).
+    fn still(self, now: &ClipPage<'_>) -> Result<(), AgentError> {
+        if (self.file_page, self.own) == (now.file_page, now.whose.own) {
+            Ok(())
+        } else {
+            Err(crate::clipboard::page_moved())
+        }
+    }
 }
 
 /// **A page for the person's clipboard:** the page in its file, as the tab has it, and what the snapshot is told of the tab.
@@ -622,8 +636,11 @@ pub(crate) fn box_to_clipboard(
     page: ClipPage<'_>,
     rect: [f32; 4],
     format: &str,
-    (anyway, as_seen): (bool, Option<AsSeen>),
+    (anyway, as_seen): (bool, AsSeen),
 ) -> Result<Value, AgentError> {
+    let format = format_of(format)?;
+    // Only the page it was taken from, which a move or a deletion since may have put elsewhere.
+    as_seen.still(&page)?;
     let (turns, _) = drawn_for(Destination::Clipboard, page.unsaved_quarter_turns);
     let seen = AsSeen {
         quarter_turns: turns,
@@ -631,21 +648,17 @@ pub(crate) fn box_to_clipboard(
         own: page.whose.own,
     };
     let answer = json!({ "rect": rect, "as": "clipboard", "anyway": anyway, "as_seen": seen });
-    if format_of(format)? == Format::Svg {
-        // As the box saw it: its turn, and only the same page, which a move or a deletion since may have put elsewhere.
-        let turns = match as_seen {
-            Some(was) if (was.file_page, was.own) != (seen.file_page, seen.own) => {
-                return Err(AgentError::new(
-                    Code::SOURCE_CHANGED,
-                    "The page the box was taken from has moved since.",
-                    exit::FAILED,
-                ));
-            }
-            Some(was) => was.quarter_turns,
-            None => turns,
-        };
+    if format == Format::Svg {
+        // As the box saw it: its turn.
         let stop = sink.begin_paste();
-        let svg = snapshot_svg_for(page.path, page.file_page, rect, (turns, page.hidden), (MAX_CLIP_ITEM, page.whose), &stop)?;
+        let svg = snapshot_svg_for(
+            page.path,
+            page.file_page,
+            rect,
+            (as_seen.quarter_turns, page.hidden),
+            (MAX_CLIP_ITEM, page.whose),
+            &stop,
+        )?;
         let bytes = svg.len();
         sink.made(svg);
         return Ok(json!({ "rect": rect, "as": "svg", "bytes": bytes }));
@@ -656,7 +669,13 @@ pub(crate) fn box_to_clipboard(
 }
 
 /// **The person's click on an image, to the window's clipboard** (`image --at x,y --to-clipboard`): the image there as itself, as [`image_clip`] takes it.
-pub(crate) fn image_to_clipboard(sink: &dyn crate::clipboard::ClipboardSink, page: ClipPage<'_>, at: [f32; 2], anyway: bool) -> Result<Value, AgentError> {
+pub(crate) fn image_to_clipboard(
+    sink: &dyn crate::clipboard::ClipboardSink,
+    page: ClipPage<'_>,
+    at: [f32; 2],
+    (anyway, as_seen): (bool, AsSeen),
+) -> Result<Value, AgentError> {
+    as_seen.still(&page)?;
     let answer = json!({ "at": at, "as": "clipboard", "anyway": anyway });
     let stop = sink.begin();
     let outcome = image_clip_for(page.path, page.file_page, (at[0], at[1]), (anyway, page.whose), &stop);

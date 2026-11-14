@@ -235,6 +235,10 @@ pub struct Image {
     /// To the window's clipboard, the person's alone ([`crate::clipboard`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub to_clipboard: bool,
+    /// The click's page as the person saw it, which it's refused by if another page is in its place by the time it runs ([`extract::AsSeen`]).
+    /// Clipboard-only, as `to_clipboard`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub as_seen: Option<extract::AsSeen>,
 }
 
 /// **`image` as it's read off the wire:** every field as `Image` has it, with `number` and `out` required unless it's the person's click to the
@@ -255,6 +259,8 @@ pub struct ImageAsked {
     at: Option<[f32; 2]>,
     #[serde(default)]
     to_clipboard: bool,
+    #[serde(default)]
+    as_seen: Option<extract::AsSeen>,
 }
 
 impl TryFrom<ImageAsked> for Image {
@@ -268,6 +274,7 @@ impl TryFrom<ImageAsked> for Image {
             anyway,
             at,
             to_clipboard,
+            as_seen,
         } = asked;
         if !(to_clipboard && at.is_some()) && (number.is_none() || out.is_none()) {
             return Err("`image` names an image by its number and a new file to write it to");
@@ -280,6 +287,7 @@ impl TryFrom<ImageAsked> for Image {
             anyway,
             at,
             to_clipboard,
+            as_seen,
         })
     }
 }
@@ -324,15 +332,17 @@ impl Cmd for Image {
             anyway,
             at,
             to_clipboard,
+            as_seen,
         } = self;
         let access = cx.access;
-        if *to_clipboard || at.is_some() {
+        if *to_clipboard || at.is_some() || as_seen.is_some() {
             let (Some(sink), Some(at), None, None) = (access.clipboard(cx.actor), at, number, out) else {
                 return Err(crate::clipboard::not_for_agents());
             };
+            let as_seen = as_seen.ok_or_else(crate::clipboard::unseen)?;
             let (id, _, source) = locate(access, tab, *page)?;
             let keys = access.persons_keys(cx.actor);
-            return extract::image_to_clipboard(sink, clip_page(access, id, &source, keys.as_ref()), *at, *anyway);
+            return extract::image_to_clipboard(sink, clip_page(access, id, &source, keys.as_ref()), *at, (*anyway, as_seen));
         }
         let (Some(number), Some(out)) = (number, out) else {
             return Err(AgentError::new(
@@ -384,7 +394,8 @@ pub struct Snapshot {
     /// `as svg` the promised SVG made for a paste. Out of the CLI's flags: anyone else's is refused.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub to_clipboard: bool,
-    /// The box's page as the person's snapshot saw it, which the paste of its SVG is drawn as ([`extract::AsSeen`]). Clipboard-only, as `to_clipboard`.
+    /// The box's page as the person saw it, which it's refused by if another page is in its place by the time it runs, and which the paste of its SVG
+    /// is drawn as ([`extract::AsSeen`]). Clipboard-only, as `to_clipboard`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub as_seen: Option<extract::AsSeen>,
 }
@@ -441,9 +452,10 @@ impl Cmd for Snapshot {
             let (Some(sink), None, true) = (access.clipboard(cx.actor), out, to_clipboard) else {
                 return Err(crate::clipboard::not_for_agents());
             };
+            let as_seen = as_seen.ok_or_else(crate::clipboard::unseen)?;
             let (id, _, source) = locate(access, tab, *page)?;
             let keys = access.persons_keys(cx.actor);
-            return extract::box_to_clipboard(sink, clip_page(access, id, &source, keys.as_ref()), *rect, format, (*anyway, *as_seen));
+            return extract::box_to_clipboard(sink, clip_page(access, id, &source, keys.as_ref()), *rect, format, (*anyway, as_seen));
         }
         {
             if let Some(out) = out {

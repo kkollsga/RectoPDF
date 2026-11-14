@@ -18,6 +18,18 @@ pub enum Taken {
     Nothing,
 }
 
+/// **The page a box or click was taken from, as the view showed it** ([`crate::Points::page_seen`]): which page of which file was at its place, and how
+/// far an edit turned it. What the person's snapshot is refused by if the page at that place is another by the time it runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PageSeen {
+    /// From 0, in its file.
+    pub file_page: u32,
+    /// Of the tab's own file, rather than a PDF added to it.
+    pub own: bool,
+    /// Quarter turns clockwise an edit has added.
+    pub quarter_turns: u8,
+}
+
 /// The tool's state: on or off, and the box being drawn. Two points, so 24 bytes and a flag, and none of it is per page or per tab.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SnapshotTool {

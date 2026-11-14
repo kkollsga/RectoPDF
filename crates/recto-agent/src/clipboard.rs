@@ -73,3 +73,21 @@ pub fn not_for_agents() -> AgentError {
     )
     .then("Give `--out` for a new file, or `--as text` for the words in the answer.")
 }
+
+/// **The person's snapshot to the clipboard without the page it was taken from,** refused, failing closed: with nothing to hold the page at its place
+/// against, it could copy another page (the branch's review, S1). The window always names it.
+#[must_use]
+pub fn unseen() -> AgentError {
+    AgentError::new(
+        Code::USAGE,
+        "A snapshot to the clipboard names the page it was taken from, as it was seen.",
+        exit::USAGE,
+    )
+}
+
+/// **The page a box, a click or a paste was taken from isn't the one at its place now** (a page moved, deleted or put in front of it since): refused,
+/// rather than taking another page's picture and text.
+#[must_use]
+pub fn page_moved() -> AgentError {
+    AgentError::new(Code::SOURCE_CHANGED, "The page the box was taken from has moved since.", exit::FAILED)
+}

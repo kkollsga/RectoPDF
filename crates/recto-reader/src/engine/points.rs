@@ -51,6 +51,19 @@ impl Points<'_> {
         lock(&self.engine.shared.reader).docs.shown().map_or(0, |doc| doc.page_turns(page))
     }
 
+    /// **Which page of which file is at this place in the tab shown, as the view has it,** and how far an edit turned it: what a snapshot's box or click
+    /// was taken from ([`crate::snapshot::PageSeen`]). One short lock.
+    pub fn page_seen(&self, page: u32) -> Option<crate::snapshot::PageSeen> {
+        let reader = lock(&self.engine.shared.reader);
+        let doc = reader.docs.shown()?;
+        let (file_page, own) = doc.page_in_file(page)?;
+        Some(crate::snapshot::PageSeen {
+            file_page,
+            own,
+            quarter_turns: doc.page_turns(page),
+        })
+    }
+
     /// Where a point on a page is in the document.
     pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)> {
         lock(&self.engine.shared.reader).docs.shown()?.document_point(page, x, y)

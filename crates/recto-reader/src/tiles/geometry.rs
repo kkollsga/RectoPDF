@@ -87,9 +87,14 @@ impl DocView {
 
     /// Whether a page of the view is from the tab's own file, and which page of it.
     pub(crate) fn own_file_page(&self, position: u32) -> Option<u32> {
+        self.page_in_file(position).filter(|(_, own)| *own).map(|(page, _)| page)
+    }
+
+    /// Which page of its file a page of the view is, and whether that file is the tab's own.
+    pub(crate) fn page_in_file(&self, position: u32) -> Option<(u32, bool)> {
         match &self.map.slots {
-            None => (position < self.layout.count()).then_some(position),
-            Some(slots) => slots.get(position as usize).filter(|(file, _)| *file == 0).map(|(_, page)| *page),
+            None => (position < self.layout.count()).then_some((position, true)),
+            Some(slots) => slots.get(position as usize).map(|(file, page)| (*page, *file == 0)),
         }
     }
 
