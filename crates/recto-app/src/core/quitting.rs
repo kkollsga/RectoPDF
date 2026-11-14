@@ -22,7 +22,7 @@ impl Inner {
         if let Some(stopper) = lock(&self.serving.stopper).take() {
             stopper.stop();
         }
-        self.forget_a_quiet_copy();
+        super::updates::forget_a_quiet_copy(self.qa.is_some(), &self.updates);
     }
 
     /// **What a quit's step came to, carried out,** with the core's own handle, as a quit's write goes on a thread that holds it. Anything else goes to

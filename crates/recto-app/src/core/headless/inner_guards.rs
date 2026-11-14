@@ -129,14 +129,12 @@ Inner::pub fn close_answered(self: &Arc<Self>, tab: u32, choice: CloseChoice) ->
 Inner::pub fn close_prompt(&self) -> ClosePrompt
 Inner::pub fn dismiss_selection_notice(&self)
 Inner::pub fn dormancy_due(&self) -> Option<Vec<TabId>>
-Inner::pub fn forget_a_quiet_copy(&self)
 Inner::pub fn gather_record(&self) -> (SessionRecord, PlaceDelta)
 Inner::pub fn go_dormant(&self, tabs: &[TabId], why: Why) -> usize
 Inner::pub fn hand_off(&self, limit: Duration) -> Result<HandOffReport, HandOffError>
 Inner::pub fn hand_off_cancelled(&self)
 Inner::pub fn hand_off_check(&self) -> HandOffCheck
 Inner::pub fn hand_off_quit_now(&self) -> bool
-Inner::pub fn has_setting(&self, id: &str) -> bool
 Inner::pub fn look_at_budget(&self)
 Inner::pub fn memory_pressure(&self, critical: bool)
 Inner::pub fn menu_item_enabled(&self, id: String) -> bool

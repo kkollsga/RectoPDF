@@ -504,6 +504,24 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
     }
 }
 
+/// On the way out, at a quit or as a quiet run ends with what started it: a quiet run's copy is a test's or a script's, and the system registered it when it was started, so it's forgotten again and the one install stays the only RectoPDF in Open With. Never the one install itself. Returns at once: the tool outlives the process. Which copy is this process's own executable's bundle, known from the start: what the host tells the updater comes later, and a run can end first (CI, 2026-11-12). `quiet`: this is a quiet run (the app has QA).
+pub fn forget_a_quiet_copy(quiet: bool, updates: &recto_update::updater::Updater) {
+    let own = std::env::current_exe()
+        .ok()
+        .and_then(|program| program.canonicalize().ok())
+        .and_then(|program| recto_update::rules::bundle_of(&program));
+    if let Some(app) = own.or_else(|| updates.app())
+        && recto_update::rules::forgets_itself(quiet, &app)
+    {
+        recto_platform::registry::forget_soon(&app);
+    }
+}
+
+/// Whether Settings has this switch or button, for QA's `settings` verb.
+pub fn has_setting(id: &str) -> bool {
+    matches!(id, AUTO_UPDATE_ROW | DEV_BUILDS_ROW | UPDATE_NOW_ROW)
+}
+
 impl Inner {
     /// What `recto update` and `recto settings` come to. The level's been checked.
     pub fn update_command(&self, command: &Command) -> Result<Value, AgentError> {
@@ -622,29 +640,12 @@ impl Inner {
         self.core.push(CoreCall::Reconcile);
     }
 
-    /// On the way out, at a quit or as a quiet run ends with what started it: a quiet run's copy is a test's or a script's, and the system registered it when it was started, so it's forgotten again and the one install stays the only RectoPDF in Open With. Never the one install itself. Returns at once: the tool outlives the process. Which copy is this process's own executable's bundle, known from the start: what the host tells the updater comes later, and a run can end first (CI, 2026-11-12).
-    pub fn forget_a_quiet_copy(&self) {
-        let own = std::env::current_exe()
-            .ok()
-            .and_then(|program| program.canonicalize().ok())
-            .and_then(|program| recto_update::rules::bundle_of(&program));
-        if let Some(app) = own.or_else(|| self.updates.app())
-            && recto_update::rules::forgets_itself(self.qa.is_some(), &app)
-        {
-            recto_platform::registry::forget_soon(&app);
-        }
-    }
-
     /// With the window open, the margin says it, and nothing more is put up.
     pub fn take_update_alert(&self) -> Option<UpdateAlert> {
         let words = self.updates.menu().take_alert()?;
         let app = lock(&self.window.app);
         let in_dock = app.window.as_ref().is_some_and(|window| window.minimised);
         alert_for(words, !app.window_closed && !in_dock)
-    }
-
-    pub fn has_setting(&self, id: &str) -> bool {
-        matches!(id, AUTO_UPDATE_ROW | DEV_BUILDS_ROW | UPDATE_NOW_ROW)
     }
 
     pub fn settings_model(&self) -> SettingsModel {

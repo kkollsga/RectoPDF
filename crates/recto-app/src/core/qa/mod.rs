@@ -97,7 +97,7 @@ pub fn end_with_starter(limit: Duration, owner: Option<u32>, state: Option<std::
         };
         eprintln!("recto: this quiet run ended, as {why}.");
         if let Some(inner) = ending.upgrade() {
-            inner.forget_a_quiet_copy();
+            super::updates::forget_a_quiet_copy(inner.qa.is_some(), &inner.updates);
         }
         std::process::exit(124);
     });
@@ -508,8 +508,9 @@ impl QaBridge {
                 return self.ask("state", "");
             }
             "settings" => {
-                let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
-                if !matches!(value, "open" | "close" | "privacy") && !inner.has_setting(value) {
+                // Still asked first, as before: an app going away says so before the value is looked at.
+                self.inner().ok_or_else(|| bad("The app is going away."))?;
+                if !matches!(value, "open" | "close" | "privacy") && !super::updates::has_setting(value) {
                     return Err(bad(format!("`{}` isn't something `settings` takes.", cleaned(value))));
                 }
                 self.ask(verb, value)?;
