@@ -1,0 +1,59 @@
+//! What the host is given of highlights (`tiles/marks.rs`).
+
+use super::*;
+use crate::paper::PaperKind;
+use crate::tiles::TabMarks;
+use recto_index::select::Rect;
+
+fn rect(x: f32, width: f32) -> Rect {
+    Rect {
+        x,
+        y: 10.0,
+        width,
+        height: 10.0,
+    }
+}
+
+/// Failure: a set made wrongly (a NaN, an infinite or negative edge, a rectangle past its page, a page the tab hasn't, or more than the caps)
+/// reaches the host to draw. The caps held at themselves plus one, set small.
+#[test]
+fn what_the_host_is_given_is_held_to_what_can_be_drawn() {
+    let mut reader = reader_on(3);
+    settle(&mut reader);
+    let tab = reader.docs.hot_tab().expect("a tab showing");
+    let marks = TabMarks {
+        tab,
+        pages: vec![
+            (
+                0,
+                vec![
+                    rect(10.0, 50.0),
+                    rect(f32::NAN, 5.0),
+                    rect(-1.0, 5.0),
+                    rect(10.0, f32::INFINITY),
+                    rect(600.0, 100.0),
+                ],
+            ),
+            (1, vec![rect(10.0, 5.0), rect(20.0, 5.0), rect(30.0, 5.0)]),
+            (2, vec![rect(10.0, 5.0)]),
+            (9, vec![rect(10.0, 5.0)]),
+        ],
+    };
+    let reader = &mut reader;
+    reader.host.take_ops();
+    super::super::marks::tell_within(&mut reader.host, &reader.docs, &marks, PaperKind::White, (2, 3));
+    let ops = reader.host.take_ops();
+    let Some(Op::Marks { pages, .. }) = ops.last() else { panic!("{ops:?}") };
+    let counts: Vec<(u32, usize)> = pages.iter().map(|(page, rects)| (*page, rects.len())).collect();
+    assert_eq!(
+        counts,
+        vec![(0, 1), (1, 2)],
+        "page 0's one sound line, page 1 to the rectangles' cap, and past the pages' cap nothing"
+    );
+    let other = TabMarks {
+        tab: tab + 1,
+        pages: marks.pages.clone(),
+    };
+    super::super::marks::tell_within(&mut reader.host, &reader.docs, &other, PaperKind::White, (2, 3));
+    assert!(reader.host.take_ops().is_empty(), "another tab's set gives nothing");
+}

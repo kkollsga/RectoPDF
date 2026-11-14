@@ -69,6 +69,20 @@ impl Selection<'_> {
         )
     }
 
+    /// **The tab's highlights made as edits,** the whole set, for the host to draw on the pages it shows, in the colour for `paper`. Rectangles the app
+    /// made from the session's list, so nothing of a file's is here. Nothing is kept: the app gives the set again when it changes, the tab is shown anew
+    /// or the paper changes. Called on the session thread by the app's pass, outside the session's lock; it takes the page view's lock once, as this
+    /// facade's other methods do.
+    pub fn show_marks(&self, marks: &crate::tiles::TabMarks, paper: crate::paper::PaperKind) {
+        let mut reader = lock(&self.engine.shared.reader);
+        if reader.docs.hot_tab() != Some(marks.tab) {
+            return;
+        }
+        let parts = &mut *reader;
+        crate::tiles::tell_marks(&mut parts.host, &parts.docs, marks, paper);
+        self.engine.after(reader);
+    }
+
     /// Which tab is showing, and what's selected on it. A short lock, for the state record.
     pub fn hot(&self) -> Option<(u32, Option<recto_index::select::Range>)> {
         let reader = lock(&self.engine.shared.reader);

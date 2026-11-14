@@ -20,6 +20,7 @@ mod doc;
 mod geometry;
 mod host;
 mod jobs;
+mod marks;
 mod place;
 mod plan;
 mod pointer;
@@ -37,6 +38,8 @@ use host::HostQueue;
 pub use jobs::{DrawKind, Job, JobKind, JobPlan, Outcome};
 use jobs::{MAX_KEYLESS, PlanKind};
 pub(crate) use jobs::{Renew, Work};
+pub(crate) use marks::tell as tell_marks;
+pub use marks::{TabMarks, look as mark_look};
 use place::Place;
 pub use place::place_stamp;
 use pointer::Pointer;
@@ -162,6 +165,13 @@ pub enum Op {
     Highlight {
         page: u32,
         rects: Vec<recto_index::select::Rect>,
+    },
+    /// The tab's highlights made as edits, all of them, by page position, in each page's own coordinates: the whole set, replacing what the host had,
+    /// drawn in `rgb`, lightening what's under them or multiplying it. Layers of the pages', as the selection's are.
+    Marks {
+        pages: Vec<(u32, Vec<recto_index::select::Rect>)>,
+        rgb: u32,
+        lighten: bool,
     },
 }
 

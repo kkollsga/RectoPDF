@@ -254,6 +254,7 @@ pub fn enable_rule(id: &str) -> Option<Enable> {
         // A file in Open Recent, by a key `action` takes.
         recent if recent.starts_with("recent.") && action(recent).is_some() => Enable::Always,
         tool if crate::snapshot_menu::is_menu_id(tool) => Enable::Always,
+        markup if crate::core::highlight::is_menu_id(markup) => Enable::Selection,
         _ => return None,
     })
 }

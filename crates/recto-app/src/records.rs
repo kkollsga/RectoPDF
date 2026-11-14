@@ -27,6 +27,13 @@ pub struct HighlightRect {
     pub height: f64,
 }
 
+/// One page's unsaved highlights, in its own coordinates.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MarkPage {
+    pub page: u32,
+    pub rects: Vec<HighlightRect>,
+}
+
 /// What the host does to its layers, in order.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ReaderOp {
@@ -90,6 +97,25 @@ pub enum ReaderOp {
         page: u32,
         rect: Option<HighlightRect>,
     },
+    /// The tab's unsaved highlights, the whole set by page, replacing what the host had, in `rgb`, lightening or multiplying.
+    Marks {
+        pages: Vec<MarkPage>,
+        rgb: u32,
+        lighten: bool,
+    },
+}
+
+/// A page's rectangles as the host takes them.
+fn pieces(rects: Vec<recto_index::select::Rect>) -> Vec<HighlightRect> {
+    rects
+        .into_iter()
+        .map(|rect| HighlightRect {
+            x: f64::from(rect.x),
+            y: f64::from(rect.y),
+            width: f64::from(rect.width),
+            height: f64::from(rect.height),
+        })
+        .collect()
 }
 
 impl From<Op> for ReaderOp {
@@ -156,17 +182,11 @@ impl From<Op> for ReaderOp {
                 below,
             },
             Op::Detach { id } => Self::Detach { id },
-            Op::Highlight { page, rects } => Self::Highlight {
-                page,
-                rects: rects
-                    .into_iter()
-                    .map(|rect| HighlightRect {
-                        x: f64::from(rect.x),
-                        y: f64::from(rect.y),
-                        width: f64::from(rect.width),
-                        height: f64::from(rect.height),
-                    })
-                    .collect(),
+            Op::Highlight { page, rects } => Self::Highlight { page, rects: pieces(rects) },
+            Op::Marks { pages, rgb, lighten } => Self::Marks {
+                pages: pages.into_iter().map(|(page, rects)| MarkPage { page, rects: pieces(rects) }).collect(),
+                rgb,
+                lighten,
             },
         }
     }

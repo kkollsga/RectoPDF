@@ -35,6 +35,7 @@ pub struct PaneSynced {
     pub map: PageMap,
     pub warm: Vec<u32>,
     pub spread: Option<record::Spread>,
+    pub marks: super::highlight::MarksSynced,
 }
 
 /// **Follows a link a click landed on,** by Rust's rule: a page of this document at once, as a jump; a web or email address only once the sheet's been answered; Back and Forward; and anything else never, with a notice saying why.
@@ -109,6 +110,7 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
                 .selection()
                 .restore((selection.from_page, selection.from_char), (selection.to_page, selection.to_char));
         }
+        synced.marks.shown_anew();
         synced.tab = Some(id);
         synced.pages = shown.pages;
         synced.map = shown.map.clone();
@@ -165,6 +167,7 @@ fn show_in_panes(inner: &Inner, synced: &mut Synced, panes: &[PaneSnapshot], pap
         let Some(engine) = inner.panes.engine(&inner.engine, pane) else { continue };
         changed |= synced.panes[pane].tab != Some(snapshot.id);
         sent.extend(show_in_pane(inner, &engine, &mut synced.panes[pane], snapshot));
+        super::highlight::give(&engine, &mut synced.panes[pane].marks, snapshot.id, snapshot.marks.as_ref(), paper);
     }
     places::jumps_sent(inner, &sent);
     changed

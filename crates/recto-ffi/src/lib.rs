@@ -32,7 +32,7 @@ pub use recto_app::listener::QuitAnswer;
 use recto_app::privacy;
 use recto_app::queue::CoreCall;
 pub use recto_app::reader_view::ReaderView;
-pub use recto_app::records::{HighlightRect, ReaderOp, ScreenInfo};
+pub use recto_app::records::{HighlightRect, MarkPage, ReaderOp, ScreenInfo};
 pub use recto_app::{RowKind, SidebarRow, SidebarView};
 use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Viewport};
 use recto_session::record::{self, SettingsWindow};
@@ -393,6 +393,13 @@ pub struct HighlightRect {
     pub height: f64,
 }
 
+/// One page's unsaved highlights, in its own coordinates.
+#[uniffi::remote(Record)]
+pub struct MarkPage {
+    pub page: u32,
+    pub rects: Vec<HighlightRect>,
+}
+
 /// A place in the document, in its view's coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, uniffi::Record)]
 pub struct DocumentPoint {
@@ -521,6 +528,12 @@ pub enum ReaderOp {
     SnapshotBox {
         page: u32,
         rect: Option<HighlightRect>,
+    },
+    /// The tab's unsaved highlights, the whole set by page, replacing what the host had, in `rgb`, lightening or multiplying.
+    Marks {
+        pages: Vec<MarkPage>,
+        rgb: u32,
+        lighten: bool,
     },
 }
 
