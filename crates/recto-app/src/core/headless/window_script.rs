@@ -1,7 +1,9 @@
 //! **What the window's own state does, step by step, pinned before it moves** (R3.7, S2; AGENTS.md, "guards go in before a move"): a fixed script of what the
 //! host tells Rust of its window (opened, made again, closed, in the Dock, hidden, moved, full screen, the sidebar's width, the contents' scroll, focus,
-//! appearance, the app in front, the Settings window), and after each step what the host was told, in order, what it was answered, and the host's part of
-//! the record as it would be written ([`crate::core::Window::app_record`], with what's been decided for a launch). Held against `golden/window.txt`.
+//! appearance, the app in front, the Settings window), and after each step what the host was told, in order, what it was answered, what the record's writer
+//! was asked for (to write at once, in its own time, or nothing), and the host's part of the record as it would be written
+//! ([`crate::core::Window::app_record`], with what's been decided for a launch). Held against `golden/window.txt`. A launch an update reopened, a quiet run's
+//! placement and a window made again from a state read late (`from_state`) are steps of their own.
 //!
 //! The steps the bridge worked out itself were first done here by a copy of the bridge's bodies at `main` on 2026-11-13 (the guard's commit); as each moved
 //! into Rust its copy went and the step called what the bridge then calls, with the golden unchanged.
@@ -55,11 +57,16 @@ const STEPS: &[(&str, Step)] = &[
     }),
     ("into the Dock", |inner| done(inner.window.minimised_changed(true, &inner.saver))),
     ("placed at a launch", |inner| {
-        said(inner.window.placement(Vec::new(), inner.updates.reopened_by_update(), false).minimised)
+        placed(inner.window.placement(Vec::new(), inner.updates.reopened_by_update(), false))
     }),
+    ("placed in a quiet run", |inner| placed(inner.window.placement(vec![screen()], false, true))),
     ("into the Dock again", |inner| done(inner.window.minimised_changed(true, &inner.saver))),
+    ("placed at a launch an update reopened", |inner| {
+        placed(inner.window.placement(vec![screen()], true, false))
+    }),
     ("closed", |inner| done(inner.window_closed())),
     ("should open", |inner| said(inner.window.should_open(inner.updates.reopened_by_update()))),
+    ("should open at a launch an update reopened", |inner| said(inner.window.should_open(true))),
     ("opened", |inner| done(inner.window_opened())),
     ("out of the Dock with no window", |inner| {
         done(inner.window.minimised_changed(false, &inner.saver))
@@ -69,6 +76,11 @@ const STEPS: &[(&str, Step)] = &[
         said(inner.window.comes_back_hidden(inner.updates.reopened_by_update()))
     }),
     ("shown", |inner| done(inner.window.hidden_changed(false, &inner.saver))),
+    ("hidden again", |inner| done(inner.window.hidden_changed(true, &inner.saver))),
+    ("comes back hidden at a launch an update reopened", |inner| {
+        said(inner.window.comes_back_hidden(true))
+    }),
+    ("shown again", |inner| done(inner.window.hidden_changed(false, &inner.saver))),
     ("sidebar too narrow", |inner| done(inner.window.set_sidebar_width(10.0, &inner.core))),
     ("sidebar wide", |inner| done(inner.window.set_sidebar_width(300.4, &inner.core))),
     ("contents nowhere", |inner| done(inner.window.contents_position(f64::NAN, &inner.saver))),
@@ -98,6 +110,9 @@ const STEPS: &[(&str, Step)] = &[
         inner.window.frontmost_changed(false, false, &inner.saver, &inner.core);
         said(inner.window.opens_in_background(inner.updates.reopened_by_update()))
     }),
+    ("opens behind at a launch an update reopened", |inner| {
+        said(inner.window.opens_in_background(true))
+    }),
     ("to the front", |inner| {
         inner.window.frontmost_changed(true, true, &inner.saver, &inner.core);
         said(inner.window.opens_in_background(inner.updates.reopened_by_update()))
@@ -120,7 +135,31 @@ const STEPS: &[(&str, Step)] = &[
         inner.window_replaced();
         done(inner.window_opened())
     }),
+    ("made again from a state read late", |inner| {
+        {
+            // What the state said, taken in after this window went up: its frame, width and look are the new window's; what the host chose of what's out
+            // of sight (hidden, closed, the Dock) since is kept.
+            let mut app = lock(&inner.window.app);
+            let mut state = app.clone();
+            state.sidebar_width = 333.0;
+            state.appearance = recto_session::record::Appearance::Dark;
+            state.app_hidden = true;
+            state.window_closed = true;
+            if let Some(window) = state.window.as_mut() {
+                window.frame.x = 99.0;
+                window.minimised = true;
+            }
+            app.from_state = Some(Box::new(state));
+        }
+        inner.window_replaced();
+        done(inner.window_opened())
+    }),
 ];
+
+/// A placement's whole answer.
+fn placed(placement: crate::core::WindowPlacement) -> Option<String> {
+    Some(format!("{placement:?}"))
+}
 
 /// What the window's state is after a step, flattened to `path value` pairs: the host's part of the record, what's been decided for a launch, and the
 /// system's appearance as the host said it.
@@ -178,13 +217,18 @@ fn script_lines() -> Vec<String> {
     let mut was = state(app.core());
     let mut lines = vec![format!("launched | {}", changes(&std::collections::BTreeMap::new(), &was))];
     for (name, step) in STEPS {
+        // The session thread held through the step, so what the writer was asked for is the step's: nothing else asks, and no writer takes it.
+        let held = app.hold_session_thread();
+        app.core().saver.forget_asked();
         let answer = step(app.core());
+        let writes = app.core().saver.asked();
+        drop(held);
         app.settle();
         let heard: Vec<&str> = app.listener().take().iter().map(heard_kind).collect();
         let heard = if heard.is_empty() { "nothing".to_string() } else { heard.join(" ") };
         let answer = answer.map_or_else(String::new, |answer| format!(" | answer {answer}"));
         let now = state(app.core());
-        lines.push(format!("{name} | heard {heard}{answer} | changed {}", changes(&was, &now)));
+        lines.push(format!("{name} | heard {heard}{answer} | writes {writes} | changed {}", changes(&was, &now)));
         was = now;
     }
     lines

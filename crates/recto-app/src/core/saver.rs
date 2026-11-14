@@ -120,6 +120,26 @@ impl Saver {
         due
     }
 
+    /// What's been asked of the writer since [`Self::forget_asked`]: a write at once ([`Self::write_soon`]), one in its own time ([`Self::view_changed`]), or
+    /// nothing. For a test that holds the session thread, so that nothing else asks or writes meanwhile.
+    #[cfg(test)]
+    pub(super) fn asked(&self) -> &'static str {
+        if self.urgent.load(Ordering::SeqCst) {
+            "at once"
+        } else if self.view_changed.load(Ordering::Relaxed) {
+            "in its time"
+        } else {
+            "nothing"
+        }
+    }
+
+    /// Forgets what's been asked of the writer, for [`Self::asked`]; what was owed goes unwritten. A test's, with the session thread held.
+    #[cfg(test)]
+    pub(super) fn forget_asked(&self) {
+        self.urgent.store(false, Ordering::SeqCst);
+        self.view_changed.store(false, Ordering::Relaxed);
+    }
+
     /// It's come due. A one-shot thread does the writing, so that nothing else waits on the disk. On the session thread.
     pub fn spawn_writer(self: &Arc<Self>) {
         if self.writer_alive.swap(true, Ordering::SeqCst) {
