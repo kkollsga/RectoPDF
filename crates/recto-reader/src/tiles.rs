@@ -39,6 +39,7 @@ use jobs::{MAX_KEYLESS, PlanKind};
 pub(crate) use jobs::{Renew, Work};
 use place::Place;
 pub use place::place_stamp;
+pub(crate) use place::set_band;
 use pointer::Pointer;
 use scratch::Scratch;
 use wake::Waking;

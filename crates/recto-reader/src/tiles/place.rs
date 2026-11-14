@@ -17,6 +17,23 @@ static PLACE_CLOCK: AtomicU64 = AtomicU64::new(0);
 pub(super) const NONE_PAGE: u32 = u32::MAX;
 pub(super) const BAND_WOKE: u16 = 0x8000;
 
+/// **Sets the shown tab's contents band** (`Docs::set_band`) and, under the same lock, looks at once whether the top of the view is already outside it,
+/// as a scroll step taken between the core's read of the places and this would have been: such a step was checked against the band before, with its
+/// wake already spent, and the core would not hear of it until the next. Outside, it wakes the core once, as leaving it by a scroll does.
+pub(crate) fn set_band(reader: &mut Reader, band: Option<(u32, u16, u16)>) {
+    reader.docs.set_band(band);
+    let viewport = reader.viewport;
+    let place = &mut reader.place;
+    // Not while a jump is on its way: where the view is isn't where it's going (as `Place::track` has it), and the core has the jump.
+    if let (None, Some(page), Some(doc)) = (
+        place.jump,
+        place.last_view_page,
+        reader.docs.hot.and_then(|tab| reader.docs.views.get_mut(&tab)),
+    ) {
+        place.leaves_the_band(doc, viewport, page);
+    }
+}
+
 /// Moves the place clock on, saying where it's come to.
 pub(super) fn tick() -> u64 {
     PLACE_CLOCK.fetch_add(1, Ordering::SeqCst) + 1

@@ -936,6 +936,7 @@ WorkerFigures::pub fn footprint(&self) -> (u64, u64)
 WorkerFigures::pub fn pids(&self) -> Vec<u32>
 WorkerFigures::pub fn walled(&self) -> u32
 Zoom (pub enum, derives Clone, Copy, Debug, PartialEq)
+fn (pub(crate)) pub(crate) fn set_band(reader: &mut Reader, band: Option<(u32, u16, u16)>)
 fn (pub) pub fn place_stamp() -> u64
 fn (pub) pub fn typed_zoom(text: &str, decimal: char) -> Option<Zoom>
 fn (pub) pub fn zoom_after_scroll(current: f64, points: f64) -> f64

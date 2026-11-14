@@ -695,3 +695,19 @@ fn side_by_side_the_top_of_the_view_is_down_the_page_the_reader_is_on() {
     reader.set_viewport(at);
     assert!(reader.place.take_moved_page().is_some(), "450 of 1000 is out of the band");
 }
+
+/// Failure (S2 of the second review): the core reads the places, then sets the band some time later in the same pass; a scroll step in between is checked
+/// against the old band, whose wake was already spent, and the new band is set without a look at where the view is now, so the mark stays where the
+/// view was until some later step leaves the new band. A band set with the view already outside it wakes the core once, and one with the view inside doesn't.
+#[test]
+fn a_band_set_with_the_view_already_outside_it_wakes_the_core_once() {
+    let mut reader = with_band(300, 600, 310.0);
+    crate::tiles::set_band(&mut reader, Some((5, 300, 600)));
+    assert_eq!(reader.place.take_moved_page(), None, "inside: no wake");
+    crate::tiles::set_band(&mut reader, Some((5, 400, 600)));
+    assert!(reader.place.take_moved_page().is_some(), "the view, at 310, is already above the band");
+    reader.set_viewport(top_on(&reader, 5, 320.0));
+    assert_eq!(reader.place.take_moved_page(), None, "and that was the wake for it");
+    crate::tiles::set_band(&mut reader, Some((6, 0, 600)));
+    assert!(reader.place.take_moved_page().is_some(), "a band on another page");
+}
