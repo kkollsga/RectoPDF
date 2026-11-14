@@ -55,40 +55,11 @@ fn window_view() -> recto_reader::Viewport {
     }
 }
 
-/// Stands in for the host's UI thread, as `sleeping.rs`'s does: takes what the page view says, until nothing's queued and everything in view is drawn. Bounded.
+/// Draws what's in a window's view, as the host would with its UI thread, till it's at rest.
 fn drawn(app: &HeadlessApp) {
-    let engine = &app.core().engine;
     let mut view = window_view();
-    crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
-    let began = std::time::Instant::now();
-    loop {
-        assert!(
-            app.core().core.flush(crate::testkit::headless::WAIT_LIMIT),
-            "the session thread took what was queued"
-        );
-        let mut ops = engine.drain();
-        crate::testkit::headless::applied_as_the_host(&ops);
-        engine.applied();
-        let mut quiet = ops.is_empty();
-        while let Some(op) = ops.pop() {
-            if let recto_reader::Op::ScrollTo { y, seq } = op {
-                view.y = y;
-                view.scrolled_to = seq;
-                ops = engine.set_viewport(view);
-                crate::testkit::headless::applied_as_the_host(&ops);
-                engine.applied();
-                quiet = false;
-            }
-        }
-        if quiet && engine.wait_settled(std::time::Duration::from_millis(20)) && engine.report().0["sleep_draws"]["under_way"] == false {
-            return;
-        }
-        assert!(
-            began.elapsed() < crate::testkit::headless::WAIT_LIMIT,
-            "the page view didn't come to rest: {}",
-            engine.report().0
-        );
-    }
+    crate::testkit::headless::applied_as_the_host(&app.core().engine.set_viewport(view));
+    crate::testkit::headless::host_turns(app, &mut view, true);
 }
 
 /// Opens a file as the person does, typing `password` into the sheet when it's asked for (`None`: the sheet's left unanswered), and draws it.

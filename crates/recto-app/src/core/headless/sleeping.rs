@@ -110,40 +110,8 @@ fn window_view() -> recto_reader::Viewport {
     }
 }
 
-/// **Stands in for the host's UI thread,** which the kit has none of: takes what the page view says, scrolls where it's sent and says where it is now, until the session thread has nothing queued and nothing comes, and (with `settled`) everything's drawn, a tab off screen's place included. Bounded.
-fn host_turns(app: &crate::testkit::headless::HeadlessApp, view: &mut recto_reader::Viewport, settled: bool) {
-    let engine = &app.core().engine;
-    let began = std::time::Instant::now();
-    loop {
-        assert!(
-            app.core().core.flush(crate::testkit::headless::WAIT_LIMIT),
-            "the session thread took what was queued"
-        );
-        let mut ops = engine.drain();
-        crate::testkit::headless::applied_as_the_host(&ops);
-        engine.applied();
-        let mut quiet = ops.is_empty();
-        while let Some(op) = ops.pop() {
-            if let recto_reader::Op::ScrollTo { y, seq } = op {
-                view.y = y;
-                view.scrolled_to = seq;
-                ops = engine.set_viewport(*view);
-                crate::testkit::headless::applied_as_the_host(&ops);
-                engine.applied();
-                quiet = false;
-            }
-        }
-        // Drawing for a tab off screen's place isn't what settling waits for, so it's waited for here too.
-        if quiet && (!settled || (engine.wait_settled(std::time::Duration::from_millis(20)) && engine.report().0["sleep_draws"]["under_way"] == false)) {
-            return;
-        }
-        assert!(
-            began.elapsed() < crate::testkit::headless::WAIT_LIMIT,
-            "the page view didn't come to rest: {}",
-            engine.report().0
-        );
-    }
-}
+// The host's UI thread, as the kit stands in for it.
+use crate::testkit::headless::host_turns;
 
 fn tab_named(app: &crate::testkit::headless::HeadlessApp, name: &str) -> u64 {
     app.session_json()["tabs"]
