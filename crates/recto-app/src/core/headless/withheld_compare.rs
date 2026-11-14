@@ -342,3 +342,31 @@ fn an_agent_is_told_nothing_of_where_a_followed_tab_is() {
         assert_eq!(one.len(), two.len());
     }
 }
+
+/// Failure (S2's round): refusing an agent the palette's Rotate of this page while the page being read's place is withheld refuses the person's too, or
+/// turns another page: the person's Rotate in edit mode, in a plain tab left by following a protected one, turns the page they're on, as it always did,
+/// and an agent's is refused as `place_withheld`.
+#[test]
+fn the_persons_rotate_of_this_page_turns_it_where_an_agents_is_refused() {
+    let (app, plain_tab, locked_tab) = synced_beside_protected(5);
+    person_scrolls(&app, locked_tab, 1.0);
+    app.act(UiAction::Menu { id: "compare.separate".into() });
+    app.act(UiAction::PaneRead { tab: plain_tab });
+    app.settle();
+    control(&app, r#"{"cmd":"edit_mode","set":"on"}"#).expect("edit mode");
+    assert_eq!(
+        control(&app, r#"{"cmd":"palette","query":"rotate this page right","run":true}"#)
+            .err()
+            .as_deref(),
+        Some("place_withheld"),
+        "an agent's starts from where the tab is"
+    );
+    app.act(UiAction::Menu { id: "rotate.right".into() });
+    app.settle();
+    let turns = app.core().host.session.with_session(|s| {
+        let id = recto_session::TabId(plain_tab);
+        let page = s.tabs().tab(id).expect("the plain tab").page;
+        (page, s.page_source(id, page).map(|source| source.quarter_turns))
+    });
+    assert_eq!(turns, (4, Some(1)), "the person's turned page 5, where following left the tab, a quarter turn");
+}
