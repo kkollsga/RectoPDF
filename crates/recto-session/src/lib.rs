@@ -163,9 +163,10 @@ struct TabFile {
     stamp: Option<FileStamp>,
     /// What the reader should be told about this tab's file, and whether its edits are about another version of it ([`fit`]): rare enough to be a pointer.
     news: Option<Box<fit::FileNews>>,
-    /// Its file's encrypted on disk, which a file anyone may open with no password can be too (permissions only): reported in `facts`, and what the writer
-    /// refuses to save. It isn't what keeps a document's pages out of a sleep file or from an agent: that's a password having been needed (`password`,
-    /// [`Tabs::withheld_from_agents`]).
+    /// Its file's encrypted on disk, as the loader read it, which a file anyone may open with no password can be too (permissions only). Read in one
+    /// place: a save's original, kept in the history as an added source, is marked protected by it (`saving.rs`), which never holds there today, as the
+    /// writer refuses an encrypted file. `facts` and the writer read the file themselves, not this. It isn't what keeps a document's pages out of a sleep
+    /// file or from an agent: that's a password having been needed (`password`, [`Tabs::withheld_from_agents`]).
     encrypted: bool,
     /// Its file was opened with a password the person typed, this session or one before (it's in the record). Unlike `encrypted`, which a file anyone may open has too, this means what's known of it was decrypted for the person, so nothing of it goes to an agent: see [`Tabs::withheld_from_agents`].
     password: bool,
