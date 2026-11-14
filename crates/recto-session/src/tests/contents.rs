@@ -262,3 +262,47 @@ fn a_list_asleep_lends_the_contents_no_page_numbers() {
         .collect();
     assert_eq!(rows, [("One".into(), None, false, false), ("Two".into(), None, false, false)]);
 }
+
+/// Failure: folding the section that holds the entry being read leaves no row marked, so the sidebar shows no place in the contents (finding 2 of the contents
+/// fixes). The row of the nearest section that shows is current, opening it marks the entry itself again, and a top-level entry with nothing folded is as it was.
+#[test]
+fn a_folded_section_holding_the_current_entry_is_current_itself() {
+    struct Outlined;
+    impl DocLoader for Outlined {
+        fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
+            let line = |title, page, parent, depth| TocLine { title, page, parent, depth };
+            let lines = [
+                line("One", 0, NONE, 0),
+                line("One a", 1, 0, 1),
+                line("One a i", 2, 1, 2),
+                line("Two", 5, NONE, 0),
+            ];
+            Ok(DocFacts {
+                page_count: 10,
+                byte_len: 1,
+                encrypted: false,
+                version: "1.7".into(),
+                title: None,
+                toc: Toc::from_lines(&lines, false),
+                renderer_only: false,
+            })
+        }
+    }
+    fn current(s: &Session<Outlined>) -> (Vec<String>, usize) {
+        let model = s.sidebar();
+        let rows = model.rows.iter().filter(|row| row.kind == RowKind::Contents);
+        (rows.filter(|row| row.current).map(|row| row.text.to_string()).collect(), model.rail_filled)
+    }
+    let mut s = Session::new(Outlined);
+    let id = s.open(Path::new("/d/a.pdf")).unwrap();
+    assert_eq!(current(&s), (vec!["One".to_string()], 1), "top level, nothing folded");
+    s.go_to(id, 2).unwrap();
+    assert_eq!(current(&s), (vec!["One a i".to_string()], 3));
+    s.toggle_contents_section(id, 1);
+    assert_eq!(current(&s), (vec!["One a".to_string()], 2), "the nearest section that shows");
+    s.toggle_contents_section(id, 0);
+    assert_eq!(current(&s), (vec!["One".to_string()], 1), "the outermost fold wins");
+    s.toggle_contents_section(id, 0);
+    s.toggle_contents_section(id, 1);
+    assert_eq!(current(&s), (vec!["One a i".to_string()], 3), "opened again, the entry itself");
+}
