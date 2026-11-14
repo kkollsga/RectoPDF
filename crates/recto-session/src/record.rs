@@ -756,6 +756,20 @@ pub struct TabEntry {
     /// Contents sections the reader opened or closed against what following the place does, as `(entry, open)`. At most [`MAX_CONTENTS_FOLDS`].
     #[serde(default, deserialize_with = "capped::<_, _, MAX_CONTENTS_FOLDS>")]
     pub contents_folds: Vec<(u32, bool)>,
+    /// What of it is kept from agents ([`Withheld`]), its two fields at this level of the record as before.
+    #[serde(flatten)]
+    pub withheld: Withheld,
+    /// Back and forward: places to go back to, oldest first, and to go forward to, the nearest last. See [`crate::trail`]. Read up to [`MAX_TRAIL_READ`], and held to [`crate::trail::MAX_TRAIL`] when taken in.
+    #[serde(default, deserialize_with = "capped::<_, _, MAX_TRAIL_READ>", skip_serializing_if = "Vec::is_empty")]
+    pub back: Vec<crate::trail::Stop>,
+    #[serde(default, deserialize_with = "capped::<_, _, MAX_TRAIL_READ>", skip_serializing_if = "Vec::is_empty")]
+    pub forward: Vec<crate::trail::Stop>,
+}
+
+/// **What of a tab is kept from agents, as the record has it** (SPEC: nothing read from a file opened with a password goes to an agent, not its length
+/// or place). Flattened into [`TabEntry`], so each field is where it was, left out when false: a record without them is byte for byte as before.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Withheld {
     /// Its file was opened with a password the person typed, so what's here of it (its length, its place) was read with one, and none of it goes to an agent. The password itself is never anywhere in the record. Added after version 1, so an older record has none.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub password: bool,
@@ -764,11 +778,6 @@ pub struct TabEntry {
     /// out when false, so a record without it is byte for byte as before, and an older app ignores it (no new version: a field with a default).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub place_withheld: bool,
-    /// Back and forward: places to go back to, oldest first, and to go forward to, the nearest last. See [`crate::trail`]. Read up to [`MAX_TRAIL_READ`], and held to [`crate::trail::MAX_TRAIL`] when taken in.
-    #[serde(default, deserialize_with = "capped::<_, _, MAX_TRAIL_READ>", skip_serializing_if = "Vec::is_empty")]
-    pub back: Vec<crate::trail::Stop>,
-    #[serde(default, deserialize_with = "capped::<_, _, MAX_TRAIL_READ>", skip_serializing_if = "Vec::is_empty")]
-    pub forward: Vec<crate::trail::Stop>,
 }
 
 /// Most stops read from a record each way: past the trail's own cap, so a record from a build with a longer one still reads, and short enough that a forged one can't make it large.
@@ -1506,8 +1515,7 @@ mod tests {
             contents_folds: Vec::new(),
             back: Vec::new(),
             forward: Vec::new(),
-            password: false,
-            place_withheld: false,
+            withheld: Withheld::default(),
         }
     }
 
