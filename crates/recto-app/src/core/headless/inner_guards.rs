@@ -140,7 +140,6 @@ Inner::pub fn look_at_budget(&self)
 Inner::pub fn memory_pressure(&self, critical: bool)
 Inner::pub fn menu_item_enabled(&self, id: String) -> bool
 Inner::pub fn note_input(&self)
-Inner::pub fn note_nearby(&self)
 Inner::pub fn note_update_facts(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String)
 Inner::pub fn notice_read(&self)
 Inner::pub fn perform(self: &Arc<Self>, id: String) -> HostAction
@@ -161,7 +160,6 @@ Inner::pub fn save_problem_answered(&self, save_as: bool) -> super::HostAction
 Inner::pub fn set_frozen(&self, frozen: bool)
 Inner::pub fn setting_chosen(self: &Arc<Self>, id: &str, on: bool)
 Inner::pub fn settings_model(&self) -> SettingsModel
-Inner::pub fn sheet_changed(&self, open: bool)
 Inner::pub fn shown_with_state(&self)
 Inner::pub fn shutdown(&self)
 Inner::pub fn sidebar_tabs(&self) -> Vec<SidebarRow>
@@ -203,6 +201,9 @@ Lifecycle.pub(super) touched: AtomicBool
 Lifecycle.pub(super) update_facts: Mutex<updates::LaunchFacts>
 Lifecycle::pub fn may_remake_window(&self) -> bool
 Lifecycle::pub fn new(clock: Arc<dyn crate::clock::Clock>) -> Self
+Lifecycle::pub fn note_input(&self)
+Lifecycle::pub fn note_nearby(&self)
+Lifecycle::pub fn sheet_changed(&self, open: bool)
 Lifecycle::pub fn state_read(&self) -> bool
 Lifecycle::pub fn step(&self, event: crate::lifecycle::Event) -> Option<crate::lifecycle::Out>
 Lifecycle::pub fn window_interactive(&self) -> bool

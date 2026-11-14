@@ -149,6 +149,26 @@ impl Lifecycle {
         self.life().may_remake_window(now, touched, sheet_up)
     }
 
+    /// A sheet or panel opened over the window, or closed. An update waits for it. The UI thread's: an atomic.
+    pub fn sheet_changed(&self, open: bool) {
+        if open {
+            self.sheets.fetch_add(1, Ordering::SeqCst);
+        } else {
+            let _ = self.sheets.try_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1));
+        }
+    }
+
+    /// Someone's near the app (the pointer over it), which isn't an action: the time since input starts again. The UI thread's: an atomic store.
+    pub fn note_nearby(&self) {
+        self.last_input_ms.store(self.now_ms(), Ordering::Relaxed);
+    }
+
+    /// The person touched the app: the time since input starts again, and the window counts as touched since the launch. The UI thread's: two atomic stores.
+    pub fn note_input(&self) {
+        self.last_input_ms.store(self.now_ms(), Ordering::Relaxed);
+        self.touched.store(true, Ordering::Relaxed);
+    }
+
     /// Whether the host's been told to quit for a hand-off that's written.
     pub(crate) fn told_to_quit(&self) -> bool {
         self.life().hand_off() == crate::lifecycle::HandOff::Quitting

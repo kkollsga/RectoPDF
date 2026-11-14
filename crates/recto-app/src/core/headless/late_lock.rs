@@ -1077,7 +1077,7 @@ fn a_late_keep_makes_the_window_again_once_unless_the_person_touched_it() {
             app.touch();
         }
         // An agent's permission request up on the window, as the host says a sheet is.
-        app.core().sheet_changed(sheet);
+        app.core().life.sheet_changed(sheet);
         app.settle();
         assert_eq!(tries(&app), Some(0), "touching the window isn't working in it");
         drop(before);
@@ -1101,7 +1101,7 @@ fn a_late_keep_makes_the_window_again_once_unless_the_person_touched_it() {
             assert_eq!(window_x(&app), Some(SAVED_X), "from the saved frame");
         }
         if sheet {
-            app.core().sheet_changed(false);
+            app.core().life.sheet_changed(false);
         }
         assert!(!app.core().life.may_remake_window(), "and never again this launch");
         drop(app.quit());

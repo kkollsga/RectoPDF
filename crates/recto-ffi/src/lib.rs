@@ -1242,7 +1242,7 @@ impl AppCore {
 
     /// A sheet or panel opened over the window, or closed. An update waits for it.
     pub fn sheet_changed(&self, open: bool) {
-        self.inner.sheet_changed(open);
+        self.inner.life.sheet_changed(open);
     }
 
     /// The user touched the app. One number stored, on each event, with no timer: an automatic update asks how long it's been.
@@ -1252,7 +1252,7 @@ impl AppCore {
 
     /// The pointer moved over the app, or something else that shows someone's there and isn't an action. Owner, 2026-11-07: "hasn't touched". One number stored, and it's only pressed keys and clicks that say a notice has been read.
     pub fn note_user_nearby(&self) {
-        self.inner.note_nearby();
+        self.inner.life.note_nearby();
     }
 
     /// Seconds since the app was last touched, for QA.

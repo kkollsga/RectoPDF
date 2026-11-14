@@ -144,7 +144,7 @@ fn an_automatic_update_waits_for_thirty_quiet_minutes() {
 #[test]
 fn a_busy_app_waits_and_then_goes() {
     let (app, bed) = running_with_a_document(7);
-    app.core().sheet_changed(true);
+    app.core().life.sheet_changed(true);
     bed.releases.offer(NEW);
     assert_eq!(full(&app, r#"{"cmd":"update_check"}"#)["status"], "available");
     full(&app, r#"{"cmd":"update_install"}"#);
@@ -157,7 +157,7 @@ fn a_busy_app_waits_and_then_goes() {
     app.agent(Level::Control, r#"{"cmd":"goto","page":8}"#).expect("still taking commands");
     app.settle();
     assert!(bed.installer.plans().is_empty() && app.listener().count(&crate::testkit::Heard::HandOffQuit) == 0);
-    app.core().sheet_changed(false);
+    app.core().life.sheet_changed(false);
     let (plan, disk) = app.handed_off(&bed);
     disk.install(&plan, Installed::Swapped);
     let app = disk.builder().update(&bed).start();

@@ -202,11 +202,11 @@ fn script_lines() -> Vec<String> {
     let app = disk.start();
     app.open(&doc);
     script.launched("hand-off", &app, None);
-    app.core().sheet_changed(true);
+    app.core().life.sheet_changed(true);
     let refused = app.core().hand_off(std::time::Duration::from_secs(5));
     assert!(refused.is_err(), "refused with a sheet up");
     script.step("hand-off", "refused with a sheet up", &app, None);
-    app.core().sheet_changed(false);
+    app.core().life.sheet_changed(false);
     app.core().hand_off(std::time::Duration::from_secs(5)).expect("handed off");
     script.step("hand-off", "written", &app, None);
     app.core().hand_off_cancelled();

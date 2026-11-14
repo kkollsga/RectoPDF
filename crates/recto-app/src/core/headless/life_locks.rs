@@ -37,9 +37,9 @@ fn the_windows_life_calls_answer(app: &HeadlessApp) -> Result<(), String> {
                     let _ = core.ready_to_show();
                 }),
                 ("window_shown", &|| core.record_window_shown(false, 1, "ready")),
-                ("sheet_changed open", &|| core.sheet_changed(true)),
-                ("sheet_changed closed", &|| core.sheet_changed(false)),
-                ("note_nearby", &|| core.note_nearby()),
+                ("sheet_changed open", &|| core.life.sheet_changed(true)),
+                ("sheet_changed closed", &|| core.life.sheet_changed(false)),
+                ("note_nearby", &|| core.life.note_nearby()),
                 ("note_input", &|| core.note_input()),
             ];
             for (name, call) in calls {

@@ -346,22 +346,9 @@ impl Inner {
         json!({ "first_shown": *lock(&self.life.first_shown), "remade": self.life.remade(), "sleep": self.sleeper.report(), "writes": writes, "appends": appends, "wrote_bytes": self.saver.store.wrote_bytes(), "failed": self.saver.has_failed() })
     }
 
-    /// A sheet or panel opened over the window, or closed. An update waits for it.
-    pub fn sheet_changed(&self, open: bool) {
-        if open {
-            self.life.sheets.fetch_add(1, Ordering::SeqCst);
-        } else {
-            let _ = self.life.sheets.try_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1));
-        }
-    }
-
-    pub fn note_nearby(&self) {
-        self.life.last_input_ms.store(self.life.now_ms(), Ordering::Relaxed);
-    }
-
+    /// The person touched the app: the life notes it ([`Lifecycle::note_input`]), and a notice they've moved on from goes.
     pub fn note_input(&self) {
-        self.life.last_input_ms.store(self.life.now_ms(), Ordering::Relaxed);
-        self.life.touched.store(true, Ordering::Relaxed);
+        self.life.note_input();
         // One lock per input, and an uncontended one. It's what lets a notice go when the reader has moved on.
         self.notice_read();
     }
