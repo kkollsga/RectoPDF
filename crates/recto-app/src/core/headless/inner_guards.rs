@@ -222,7 +222,8 @@ Lifecycle::pub(crate) fn window_opened(&self)
 Lifecycle::pub(super) fn keeping(&self) -> crate::lifecycle::keeping::Keeping
 Lifecycle::pub(super) fn keeping_due(&self) -> Option<Duration>
 Lifecycle::pub(super) fn life(&self) -> crate::lifecycle::Life
-Lifecycle::pub(super) fn tried(&self, got: bool, busy: impl FnOnce() -> bool) -> Option<crate::lifecycle::Out>
+Lifecycle::pub(super) fn step_keeping(&self, event: crate::lifecycle::keeping::Event, to: &mut super::keeping::Carrier<'_>)
+Lifecycle::pub(super) fn tried(&self, got: bool, busy: impl FnOnce() -> bool, to: &mut super::keeping::Carrier<'_>)
 Printing (pub struct, derives Default)
 Printing::pub fn busy(&self) -> bool
 Printing::pub fn cancel(&self)

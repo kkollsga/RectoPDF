@@ -33,13 +33,12 @@
 //! The read itself is about 2.3 ms for a session of 100 tabs each with a journal (median of 20, release build, this Mac under a load of about 4, 2026-11-13).
 
 use super::*;
-use crate::lifecycle::Event as LifeEvent;
 use crate::lifecycle::keeping::{Event as KeepingEvent, Keeping};
 use std::hash::{Hash as _, Hasher as _};
 
 /// **The keeping desk: what [`crate::lifecycle::keeping`] decides, carried out, and nothing else.** It owns one rule: every keeping event goes through
 /// [`Desk::step`] or [`Desk::try_back`] and is carried by [`crate::lifecycle::keeping::carry`], with nothing between (no other code in the app makes a keeping
-/// event: `a_keeping_event_is_made_only_by_its_desk` reads the sources). It borrows only what its methods read, each said on the method: the life, the host (the
+/// step: the life makes one only with the desk's [`Carrier`], which only this file can build). It borrows only what its methods read, each said on the method: the life, the host (the
 /// session, the notice, what's under way), the record's store, the queue and the updater; and `app`, the whole app, which is there only for [`Carrier::ask`]'s
 /// spawn of the try's thread, whose read (`try_the_lock`, `read_late`) takes it whole until the record's slice (S5) gives them parts. Six references, held so
 /// by a check when it's built, made for a call and dropped with it: no lock, thread or allocation of its own. Each is the app's own handle (`&Arc`), so what a
@@ -157,8 +156,9 @@ impl<'a> Desk<'a> {
         }
         let appearance_then = lock(&window.app).appearance;
         // Decided with nothing of the person's under way, looked at under the life's lock as `person::submit` looks the other way round.
-        let out = self.life.tried(back.got, || busy(self.life, self.host));
-        let _ = self.carried(out, Some((&back.verdict, appearance_then)));
+        let _ = self.carried(Some((&back.verdict, appearance_then)), |carrier| {
+            self.life.tried(back.got, || busy(self.life, self.host), carrier);
+        });
         self.core.push(CoreCall::Reconcile);
     }
 
@@ -177,27 +177,22 @@ impl<'a> Desk<'a> {
     /// try's thread to tell), so the one place keeping settles is where the updater is told of a launch held back. Says what the host is told: the window made
     /// again from a late try's restore, for the caller to tell it once the session thread's call has ended.
     fn step(&self, event: KeepingEvent) -> Option<crate::lifecycle::Out> {
-        let out = self.life.step(LifeEvent::Keeping(event));
-        self.carried(out, None)
+        self.carried(None, |carrier| self.life.step_keeping(event, carrier))
     }
 
-    /// What a step came to, carried out by the machine's one function ([`crate::lifecycle::keeping::carry`]), with the try's thread to tell when a try is back
-    /// (`verdict`); a launch held back and settled can't be left untold, by any route (a debug build says so if it is).
+    /// A step, made by `step` with the desk's carrier, which the life hands what it came to once its lock is let go ([`Lifecycle::step_keeping`]), with the
+    /// try's thread to tell when a try is back (`verdict`); a launch held back and settled can't be left untold, by any route (a debug build says so if it is).
     fn carried(
         &self,
-        out: Option<crate::lifecycle::Out>,
         verdict: Option<(&std::sync::mpsc::Sender<Verdict>, record::Appearance)>,
+        step: impl FnOnce(&mut Carrier<'_>),
     ) -> Option<crate::lifecycle::Out> {
-        let out = match out {
-            Some(crate::lifecycle::Out::Keeping(out)) => Some(out),
-            _ => None,
-        };
         let mut carrier = Carrier {
             desk: self,
             verdict,
             host: None,
         };
-        crate::lifecycle::keeping::carry(out, &mut carrier);
+        step(&mut carrier);
         debug_assert!(
             !(self.life.keeping().settled() && self.life.update_facts.untold()),
             "keeping settled ({:?}) with the launch still held back from the updater",
@@ -357,8 +352,10 @@ pub(crate) fn asks(inner: &Inner) -> KeepsRecord<'_> {
     KeepsRecord(inner)
 }
 
-/// **The app's side of carrying out a step:** the try's thread to tell, when a try is back, and what the host is told once the call's over.
-struct Carrier<'a> {
+/// **The app's side of carrying out a step:** the try's thread to tell, when a try is back, and what the host is told once the call's over. **Only the desk
+/// makes one** (its fields are private to this file), and the life steps keeping the record only with one ([`Lifecycle::step_keeping`],
+/// [`Lifecycle::tried`]), which it carries what the step came to: so no other code makes a keeping step, and none is made without being carried out.
+pub(super) struct Carrier<'a> {
     desk: &'a Desk<'a>,
     verdict: Option<(&'a std::sync::mpsc::Sender<Verdict>, record::Appearance)>,
     host: Option<crate::lifecycle::Out>,

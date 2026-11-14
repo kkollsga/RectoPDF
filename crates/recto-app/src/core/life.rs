@@ -9,6 +9,15 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// What a keeping step comes to, carried out by the machine's one function: an `Out` that isn't keeping's carries nothing.
+fn carry(out: Option<crate::lifecycle::Out>, to: &mut super::keeping::Carrier<'_>) {
+    let out = match out {
+        Some(crate::lifecycle::Out::Keeping(out)) => Some(out),
+        _ => None,
+    };
+    crate::lifecycle::keeping::carry(out, to);
+}
+
 /// **Where the app is in its life:** launch, the state's coming in, the window going up, the person's last touch, and a hand-off with what it waits for. What step
 /// R1.4 makes a state machine on the clock. Its fields are its own (but the launch facts, which are a part with private fields of their own): what other code
 /// counts, notes or asks of them is a method here, each an atomic or a short lock of its own field.
@@ -20,9 +29,9 @@ pub struct Lifecycle {
     /// The host's clock, a test's fake one: what the idle time and the window's patience for input go by (step R1.4).
     clock: Arc<dyn crate::clock::Clock>,
     /// **The state's coming in, the window's patience for it, what's shown and a hand-off's freeze, as one state machine** ([`crate::lifecycle::Life`]). The lock is
-    /// held only inside [`Self::step`] and the queries beside it, for a copy or a transition of a few bytes: never across carrying out an `Out`, a listener call, a
-    /// queue push, another lock or any I/O. So it's taken on the UI thread too, bounded. The time since input isn't in it: what the UI thread sets on every event
-    /// is an atomic store ([`Self::last_input_ms`]), passed to what asks as a value.
+    /// held only inside [`Self::step`], [`Self::step_keeping`], [`Self::tried`] and the queries beside it, for a copy or a transition of a few bytes: never
+    /// across carrying out an `Out`, a listener call, a queue push, another lock or any I/O. So it's taken on the UI thread too, bounded. The time since input
+    /// isn't in it: what the UI thread sets on every event is an atomic store ([`Self::last_input_ms`]), passed to what asks as a value.
     pub(super) life: Mutex<crate::lifecycle::Life>,
     /// Reading the file a restored active tab is on. Nothing's drawn until it's looked at, so the wrong thing can't show.
     holding_tab: Mutex<Option<TabId>>,
@@ -80,10 +89,29 @@ impl Lifecycle {
     }
 
     /// **What happens to the app's life,** now by the clock. The lock's let go of before this returns: the caller carries out what it comes to.
+    ///
+    /// **Not keeping the record:** a keeping event is stepped only by the keeping desk, which carries out what it comes to ([`Self::step_keeping`]). One sent
+    /// here is a mistake a debug build stops at; a release build steps nothing and says nothing came of it, so the machine is as it was and there's nothing
+    /// left to carry out: no lock taken or given back, nothing settled untold.
     #[must_use]
     pub fn step(&self, event: crate::lifecycle::Event) -> Option<crate::lifecycle::Out> {
+        debug_assert!(
+            !matches!(event, crate::lifecycle::Event::Keeping(_)),
+            "a keeping event stepped outside the keeping desk: {event:?}"
+        );
+        if let crate::lifecycle::Event::Keeping(_) = event {
+            return None;
+        }
         let now = self.now_ms();
         lock(&self.life).step(event, now)
+    }
+
+    /// **A step of keeping the record, and what it comes to carried out** ([`crate::lifecycle::keeping::carry`]) once the life's lock is let go. It takes the
+    /// desk's [`super::keeping::Carrier`], which only the desk can make, so no other code steps keeping the record and none steps it without carrying it out.
+    pub(super) fn step_keeping(&self, event: crate::lifecycle::keeping::Event, to: &mut super::keeping::Carrier<'_>) {
+        let now = self.now_ms();
+        let out = lock(&self.life).step(crate::lifecycle::Event::Keeping(event), now);
+        carry(out, to);
     }
 
     /// The app's life as it stands, a copy.
@@ -133,12 +161,16 @@ impl Lifecycle {
 
     /// **A late try at the record's lock, back,** taken in with whether something of the person's is `busy` (a command under way on its own thread), looked at
     /// under this lock only for a try that got the lock while it's trying, as `person::submit` counts and then looks at the machine: a lock it got is then given
-    /// back. `busy` is a load of two atomics: nothing under this lock touches the disk.
-    pub(super) fn tried(&self, got: bool, busy: impl FnOnce() -> bool) -> Option<crate::lifecycle::Out> {
+    /// back. `busy` is a load of two atomics: nothing under this lock touches the disk. What it comes to is carried out once the lock's let go, by the desk's
+    /// carrier, as [`Self::step_keeping`] does.
+    pub(super) fn tried(&self, got: bool, busy: impl FnOnce() -> bool, to: &mut super::keeping::Carrier<'_>) {
         let now = self.now_ms();
-        let mut life = lock(&self.life);
-        let busy = got && life.keeping().trying() && busy();
-        life.step(crate::lifecycle::Event::Keeping(crate::lifecycle::keeping::Event::Tried { got, busy }), now)
+        let out = {
+            let mut life = lock(&self.life);
+            let busy = got && life.keeping().trying() && busy();
+            life.step(crate::lifecycle::Event::Keeping(crate::lifecycle::keeping::Event::Tried { got, busy }), now)
+        };
+        carry(out, to);
     }
 
     /// Whether the window is made again from the state now ([`crate::lifecycle::Life::may_remake_window`]): what the host asks on the UI thread, cheap and
