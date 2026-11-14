@@ -366,9 +366,10 @@ fn start(inner: &Arc<Inner>, job: Job) {
                 publish(&runner, job, outcome, source);
             }
         }
+        // Told first, then counted done, so the app's settled sees it under way until its word is queued ([`crate::settled`]).
+        runner.core.push(super::CoreCall::Reconcile);
         runner.tools.tool().running.fetch_sub(1, Ordering::SeqCst);
         runner.host.running.fetch_sub(1, Ordering::SeqCst);
-        runner.core.push(super::CoreCall::Reconcile);
     });
     if spawned.is_err() {
         *lock(&tool.jobs) = JobSlot::default();

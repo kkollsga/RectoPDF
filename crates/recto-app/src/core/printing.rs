@@ -60,6 +60,12 @@ pub struct Printing {
 }
 
 impl Printing {
+    /// Pages being prepared, on the print's own thread: Rust's part, which the app's settled waits for ([`crate::settled`]). The host's part, the file handed
+    /// to the system, is in [`Self::busy`].
+    pub fn preparing(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
     pub fn busy(&self) -> bool {
         self.running.load(Ordering::SeqCst) || lock(&self.ready).is_some() || self.handing.load(Ordering::SeqCst)
     }
@@ -335,10 +341,11 @@ pub fn start(inner: &Arc<Inner>, request: Request) -> bool {
                 lock(&printing.qa_target).take();
             }
         }
-        printing.running.store(false, Ordering::SeqCst);
-        runner.host.running.fetch_sub(1, Ordering::SeqCst);
+        // Told first, then counted done, so the app's settled sees it under way until its word is queued ([`crate::settled`]).
         runner.core.push(CoreCall::Reconcile);
         runner.listener.model_changed();
+        printing.running.store(false, Ordering::SeqCst);
+        runner.host.running.fetch_sub(1, Ordering::SeqCst);
     });
     if spawned.is_err() {
         printing.running.store(false, Ordering::SeqCst);

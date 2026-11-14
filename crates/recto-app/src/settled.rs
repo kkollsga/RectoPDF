@@ -6,8 +6,10 @@
 //! - **the session thread**, by its own account ([`crate::queue::CoreQueue::at_rest`]): nothing queued for it, and parked having found none of its deadlines
 //!   due now (the record's write, a tab's dormancy, a try at the record's lock, a restore's or the launch's patience), not nudged since and not past the time it
 //!   parked till. A deadline due later (a cool-down, a retry in seconds) is not under way: on the kit's clock it's exact, as only the test moves that clock;
-//! - **what runs off it and comes back to it**: files being read, a password being tried, the person's commands on threads of their own, the window's saves,
-//!   the looks at other tabs' and woken tabs' files, Find's thread, and the record's writer running or a write due now;
+//! - **what runs off it and comes back to it**, each counted until after it has queued what it found: files being read, a password being tried, the person's
+//!   commands on threads of their own and agents' commands in flight, the window's saves, a snapshot on its way to the clipboard, a print's pages being
+//!   prepared, the looks at other tabs' and woken tabs' files, at a file's signatures and at generated contents, Find's thread, and the record's writer
+//!   running or a write due now;
 //! - **the page views**, by whether a host draws them ([`PageViews`]): each one's last job's end told ([`recto_reader::Engine::wait_settled`]), and either drawn
 //!   as far as it shows (a window) or its thread resting with everything asked of it seen (the kit, which has no view to draw).
 //!
@@ -16,9 +18,11 @@
 //! record's lock and a late keep's read, each on a thread of its own: the deadline that starts a try is counted (the session thread acts on it before it's at
 //! rest), the thread it starts isn't, as tests hold it on purpose and wait for what it decides by name, and the life's keeping isn't the session's to read
 //! from here. A test that holds a page view's thread (`Seam::Worker`) waits for the session's part with the host's turns (`host_turns`), as the kit's settle
-//! waits for the page view at rest. The search index
-//! and generated contents, which the kit has off and which say when they're done in their own words. In the window, its animations and a snapshot or a print
-//! under way, which `qa wait` adds itself, as only the host knows them.
+//! waits for the page view at rest. The updater's check and install, each on a thread of its own: in the real app a check is a network fetch, and
+//! installing or waiting lasts until a hand-off, so counting them would have `qa wait` wait those out; the kit's update tests wait for the updater by its
+//! status, by name (`wait_for_status`), and its end says only that the window should look again. The search index, which the kit has off and which says
+//! when it's done in its own words. In the window, its animations and a print's file being handed to the system, which `qa wait` adds itself, as only the
+//! host knows them.
 //!
 //! **Why two looks.** The parts hand work to each other: a page view's job ends and queues the session a look; the session's call asks a page view for a job;
 //! a read's thread ends and queues what it read. Each part is looked at in turn, so one look can see each at rest at a different moment with work passed
@@ -184,6 +188,13 @@ fn off_the_session_thread(inner: &Watched<'_>, busy: &mut Vec<String>) {
     let saves = inner.tools.save_ui().running.load(Ordering::SeqCst);
     if saves > 0 {
         busy.push(format!("{saves} of the window's save(s)"));
+    }
+    // A snapshot on its way to the clipboard, and a print's pages being prepared: each says what came of it, then stops counting.
+    if inner.tools.tool().busy() {
+        busy.push("a snapshot on its way to the clipboard".to_string());
+    }
+    if inner.tools.printing().preparing() {
+        busy.push("a print's pages being prepared".to_string());
     }
     // A first edit's look at the file's signatures reads the whole file, then has the session look again for Save's state.
     let signatures = inner.tools.save_ui().signature_looks();

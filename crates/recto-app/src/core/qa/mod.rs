@@ -664,10 +664,9 @@ impl QaBridge {
                 .then("`recto qa state` shows what it's still waiting for."));
             }
             let running = self.ask("animations", "")?;
-            // A snapshot on its way to the clipboard is about to change what `qa copied` and the notice say.
-            // A snapshot on its way to the clipboard, or a print's pages being drawn or handed to the system, is about to change what's shown.
-            let snapshot_busy = self.inner().is_some_and(|inner| inner.tools.tool().busy() || inner.tools.printing().busy());
-            if running.as_array().is_none_or(Vec::is_empty) && !snapshot_busy {
+            // The host's part of a print, a file handed to the system, is about to change what's shown; its pages being prepared are the definition's.
+            let printing = self.inner().is_some_and(|inner| inner.tools.printing().busy());
+            if running.as_array().is_none_or(Vec::is_empty) && !printing {
                 return Ok(
                     json!({ "settled": true, "waited_ms": started.elapsed().as_millis() as u64, "animations_waited_ms": animations_waited.as_millis() as u64 }),
                 );
