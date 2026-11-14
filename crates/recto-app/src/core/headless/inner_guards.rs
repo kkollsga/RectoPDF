@@ -199,7 +199,7 @@ Lifecycle::pub fn new(clock: Arc<dyn crate::clock::Clock>) -> Self
 Lifecycle::pub fn note_input(&self)
 Lifecycle::pub fn note_nearby(&self)
 Lifecycle::pub fn ready_to_show(&self, checks: showing::PageChecks) -> bool
-Lifecycle::pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str, report: &Value, checks: showing::PageChecks)
+Lifecycle::pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str, engine: &recto_reader::Engine, checks: showing::PageChecks)
 Lifecycle::pub fn seconds_since_start(&self) -> f64
 Lifecycle::pub fn sheet_changed(&self, open: bool)
 Lifecycle::pub fn state_read(&self) -> bool

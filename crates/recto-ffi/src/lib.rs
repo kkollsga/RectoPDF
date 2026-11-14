@@ -1185,14 +1185,12 @@ impl AppCore {
 
     /// The window has just been put on the screen, showing this, and `why`: `ready` when `ready_to_show` said yes, `patience` when the host's timer ran out. For QA to see what the first frame was.
     pub fn window_shown(&self, home: bool, tile_layers: u32, why: String) {
-        for engine in self.inner.panes.engines(&self.inner.engine) {
+        let inner = Arc::clone(&self.inner);
+        for engine in inner.panes.engines(&inner.engine) {
             engine.waking().window_up();
         }
-        self.inner
-            .life
-            .record_window_shown(home, tile_layers, &why, &self.inner.engine.report().0, self.inner.page_checks());
+        inner.life.record_window_shown(home, tile_layers, &why, &inner.engine, inner.page_checks());
         // The installer's waiting for this, off this thread, as it writes a small file and may start a worker, and only for a version that's new here.
-        let inner = Arc::clone(&self.inner);
         let _ = std::thread::Builder::new()
             .name("recto-update-frame".into())
             .stack_size(UPDATE_FRAME_STACK)

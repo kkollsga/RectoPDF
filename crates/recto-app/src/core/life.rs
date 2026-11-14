@@ -180,9 +180,10 @@ impl Lifecycle {
     }
 
     /// **What the window's first showing had on it, and why it was shown.** `why` is `ready` (the page checks passed), `cap` (Rust's cap ran out: the host
-    /// asked and was told yes) or `patience` (the host's timer showed it). The rest is the page view's `report` and how the page `checks` were at the show,
-    /// both gathered by the app in that order, written once per window. The UI thread's.
-    pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str, report: &Value, checks: showing::PageChecks) {
+    /// asked and was told yes) or `patience` (the host's timer showed it). The rest is the page view's report and how the page `checks` were at the show (the
+    /// app gathers them just before), written once per window. The UI thread's.
+    pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str, engine: &recto_reader::Engine, checks: showing::PageChecks) {
+        let report = engine.report().0;
         let why = if why == "ready" && self.shown_by_cap.load(Ordering::Relaxed) {
             "cap"
         } else {

@@ -37,7 +37,7 @@ fn the_windows_life_calls_answer(app: &HeadlessApp) -> Result<(), String> {
                     let _ = core.life.ready_to_show(core.page_checks());
                 }),
                 ("window_shown", &|| {
-                    core.life.record_window_shown(false, 1, "ready", &core.engine.report().0, core.page_checks())
+                    core.life.record_window_shown(false, 1, "ready", &core.engine, core.page_checks())
                 }),
                 ("sheet_changed open", &|| core.life.sheet_changed(true)),
                 ("sheet_changed closed", &|| core.life.sheet_changed(false)),
