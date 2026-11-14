@@ -409,17 +409,16 @@ fn golden_lines(controls: &[(String, Did)], recent: &str) -> Vec<String> {
             let name = name.replace(recent, "<recent>");
             let sent = did.sent.iter().map(|wire| wire.replace(recent, "<recent>")).collect::<Vec<_>>().join(" ; ");
             // A save's steps, a Find query's hits and a print's pages arrive in changes the session thread's look finds together or apart: see [`heard_line`].
-            let saves = did.sent.iter().any(|wire| {
-                wire.starts_with(r#"{"cmd":"save","#)
-                    || wire.starts_with(r#"{"cmd":"find","query":""#)
-                    || wire.starts_with(r#"{"cmd":"print","#)
-                    || wire.starts_with(r#"{"cmd":"snapshot","#)
-            });
+            let saves = did
+                .sent
+                .iter()
+                .any(|wire| wire.starts_with(r#"{"cmd":"save","#) || wire.starts_with(r#"{"cmd":"find","query":""#) || wire.starts_with(r#"{"cmd":"print","#));
+            let snapshot = did.sent.iter().any(|wire| wire.starts_with(r#"{"cmd":"snapshot","#));
             format!(
                 "{name} | sent [{sent}] | host {:?} understood {} | heard {}",
                 did.acted.host,
                 did.acted.understood,
-                heard_line(&did.heard, saves)
+                if snapshot { heard_kinds(&did.heard) } else { heard_line(&did.heard, saves) }
             )
         })
         .collect()
@@ -433,9 +432,8 @@ fn golden_lines(controls: &[(String, Did)], recent: &str) -> Vec<String> {
 /// as "page", told 4 times in the runs seen and 3 once, under the whole suite): each call is Find's own, at the hits' version 1, 1, 2 and 6, so three
 /// batches of hits are already one call; the worker lands a batch when it does, and the session thread tells of what has changed when it looks, so a batch
 /// that lands before the look before is one call with it. **And a person's print** (S2, 2026-11-14): each page done is a change to the notice's count,
-/// told 4 times on one run of a 2-page print and 6 on a 4-page one, as its pages land before or after the look. **And the snapshot tool's** (2026-11-14):
-/// "Copying…" said at once, then the answer, which the session thread's look finds together or apart as the worker is quick or not. Every other control's calls were the same
-/// in all 20.
+/// told 4 times on one run of a 2-page print and 6 on a 4-page one, as its pages land before or after the look. Every other control's calls were the same
+/// in all 20 but the snapshot tool's ([`heard_kinds`]).
 fn heard_line(heard: &[&str], saves: bool) -> String {
     if heard.is_empty() {
         return "nothing".to_string();
@@ -453,6 +451,18 @@ fn heard_line(heard: &[&str], saves: bool) -> String {
         (false, count) => format!("{kind}*{count}"),
     };
     runs.iter().map(run).collect::<Vec<_>>().join(" ")
+}
+
+/// **The Listener's calls for the snapshot tool's box, as the golden holds them:** which kinds, each once as `kind+`, in no order. "Copying…" is said
+/// at once and the answer when the worker's done, and the session thread's look finds the two together or apart, before or after the host is told the
+/// clipboard's ready, as the worker is quick or not (2026-11-14: `model_changed+ copy_ready+ model_changed+` in 12 runs of 20 under `--like-ci`, and
+/// `model_changed+ copy_ready+` in 8). What it holds: the host is told the clipboard's ready, and the window's changed, and nothing else.
+fn heard_kinds(heard: &[&str]) -> String {
+    let kinds: std::collections::BTreeSet<&str> = heard.iter().copied().collect();
+    if kinds.is_empty() {
+        return "nothing".to_string();
+    }
+    kinds.iter().map(|kind| format!("{kind}+")).collect::<Vec<_>>().join(" ")
 }
 
 /// What every control did on 2026-11-13, before `Inner`'s person's methods moved into their features (R3.7): one line a control, as [`golden_lines`] makes them.
