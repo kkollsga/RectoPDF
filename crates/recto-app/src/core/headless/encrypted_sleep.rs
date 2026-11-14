@@ -203,6 +203,36 @@ fn locked_for_one_reader(password: &str) -> Vec<u8> {
     bytes
 }
 
+/// What only the page's own note says, of a page added from a file that needs a password: the document-level "This PDF needs a password." doesn't.
+const ADDED_PAGES_NOTE: &str = "comes from a PDF that needs a password";
+
+/// Opens `file` as the person opens it, a file only PDFium needs a password for: the loader reads it as plain, the page view's worker finds it needs one,
+/// which is asked for and typed, and its own tab draws with it.
+fn opened_for_one_reader(app: &HeadlessApp, file: &std::path::Path, password: &str) {
+    app.act(crate::core::controls::UiAction::Open {
+        path: file.display().to_string(),
+    });
+    app.settle();
+    drawn(app);
+    app.settle();
+    let prompt = app.reader().password_prompt.expect("its password is asked for, as PDFium needs one");
+    app.core().password_answered(prompt.id, Some(password.into()));
+    app.settle();
+    drawn(app);
+    assert!(app.reader().password_prompt.is_none(), "the password opened it");
+    assert_eq!(app.core().engine.note(), None, "its own tab draws with the password");
+}
+
+/// Opens the plain document, adds `added`'s page at its front, as the loader reads it as plain, and brings that page into view, drawn.
+fn added_and_in_view(app: &HeadlessApp, plain: &std::path::Path, added: &std::path::Path) {
+    opened_by_the_person(app, plain, None);
+    let inserted = app.recto(recto_agent::Level::Full, &["page", "insert", added.to_str().unwrap(), "--at", "1"]);
+    assert!(inserted.is_ok(), "the loader reads it as plain, so it's added: {inserted:?}");
+    // The view keeps the reader's place, now page 2: the added page is brought into view, where a sleep file would picture it.
+    full(app, &["goto", "1"]);
+    drawn(app);
+}
+
 /// Every sleep file in the state folder, read back: the pages each has a picture of.
 fn pictured_pages(app: &HeadlessApp) -> Vec<Vec<u32>> {
     let mut folders = vec![app.disk().paths().root.clone()];
@@ -235,27 +265,10 @@ fn a_page_added_from_a_file_only_one_reader_needs_a_password_for_is_never_drawn_
     let other = disk.pdf("other.pdf", 2);
     let app = disk.start();
     app.core().engine.waking().window_up();
-    // Opened as the person opens it: the loader reads it as plain, and the page view's worker finds it needs a password, which is asked for and typed.
-    app.act(crate::core::controls::UiAction::Open {
-        path: crafted.display().to_string(),
-    });
-    app.settle();
-    drawn(&app);
-    app.settle();
-    let prompt = app.reader().password_prompt.expect("its password is asked for, as PDFium needs one");
-    app.core().password_answered(prompt.id, Some("right".into()));
-    app.settle();
-    drawn(&app);
-    assert!(app.reader().password_prompt.is_none(), "the password opened it");
-    assert_eq!(app.core().engine.note(), None, "its own tab draws with the password");
-    opened_by_the_person(&app, &plain, None);
-    let added = app.recto(recto_agent::Level::Full, &["page", "insert", crafted.to_str().unwrap(), "--at", "1"]);
-    assert!(added.is_ok(), "the loader reads it as plain, so it's added: {added:?}");
-    // The view keeps the reader's place, now page 2: the added page is brought into view, where a sleep file would picture it.
-    full(&app, &["goto", "1"]);
-    drawn(&app);
+    opened_for_one_reader(&app, &crafted, "right");
+    added_and_in_view(&app, &plain, &crafted);
     assert!(
-        app.core().engine.note().is_some_and(|note| note.contains("needs a password")),
+        app.core().engine.note().is_some_and(|note| note.contains(ADDED_PAGES_NOTE)),
         "the plain document's page from it says why it isn't shown: {:?}; {}; {}",
         app.core().engine.note(),
         app.core().engine.report().0,
