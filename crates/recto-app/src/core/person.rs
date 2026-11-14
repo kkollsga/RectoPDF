@@ -9,7 +9,6 @@ use super::answer_parts::AnswerParts;
 use super::{FileReads, Inner};
 use crate::queue::{CoreCall, Origin, PersonCommand, Reading};
 use recto_agent::Code;
-use recto_agent::Runs;
 use recto_agent::later::{Fetched, ReadLater};
 use recto_agent::{Actor, AgentError, Command, Event};
 use serde_json::Value;
@@ -26,7 +25,7 @@ pub fn submit(inner: &Arc<Inner>, command: Command) -> bool {
     }
     let lane = Person::of(inner).lane();
     let turn = lane.turn_for(&command);
-    if command.waits() || command.route() != Runs::Session {
+    if super::person_lane::runs_on_its_own_thread(&command) {
         match turn {
             Some(turn) => lane.submit_waiting(command, turn),
             None => lane.start_waiting(command, None),
@@ -82,7 +81,7 @@ impl<'a> Person<'a> {
 /// Whether a person's command, as it's queued, is one that runs on a thread of its own: one that may wait, or isn't the session's to answer. Only a command
 /// held while a late keep's restore was read is queued so ([`submit`]), and it goes to its thread once it's let go.
 pub(crate) fn on_a_thread_of_its_own(run: &PersonCommand) -> bool {
-    run.origin == Origin::Input && run.fetched.is_none() && (run.command.waits() || run.command.route() != Runs::Session)
+    run.origin == Origin::Input && run.fetched.is_none() && super::person_lane::runs_on_its_own_thread(&run.command)
 }
 
 /// What the person is told when their command's thread couldn't be started, before its feature's own words, if it has any.

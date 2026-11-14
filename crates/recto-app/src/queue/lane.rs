@@ -1,43 +1,77 @@
 //! **The person's lane: their edits take effect in the order they asked for them** (the ⌃⌘H-then-⌘Z fault, 2026-11-14). A person's command that may wait
 //! (a highlight reading its pages, a save, a print) runs on a thread of its own, and the rest on the session thread's queue; with nothing more, an Undo
 //! pressed while a highlight was being read ran first and undid the step before it. Each of the person's ordered commands takes a ticket as it's asked, and
-//! acts on the document only on its turn: when every ticket before it has **passed**, that is, its command has fixed the state it acts on (a highlight landed,
-//! a print's pages read, a save begun) or has gone without doing anything.
+//! acts on the document only when **every ticket before it has passed or names another tab**: passed, that is, its command has fixed the state it acts on
+//! (a highlight landed, a print's pages read, a save begun) or has gone without doing anything.
 //!
-//! **Nothing waits.** A command whose turn hasn't come is parked here, with no thread of its own, and started by whoever passes the ticket before it, as that
-//! one passes ([`Turn`]'s drop): the thread of the command before as it ends, or the session thread as it finishes one. One lane for the app, not a lane per
-//! tab: an idle lane holds no buffer, and a parked edit in another tab waits at most for the one command ahead of it.
+//! **What a ticket names.** A command that runs on a thread of its own names its tab as it's asked; one for the session thread that says "the tab showing"
+//! is named when that thread takes it, as the tab it is then. Until it's named a ticket holds everything after it, which lasts only until the session thread
+//! gets to it. So an edit waits only for edits of its own tab asked before it (review of the lane, D2): a highlight's long read in one tab holds up nothing
+//! in another.
 //!
-//! What's ordered, and how each command is started, is the person's commands' own (`core::person`); this holds only the order.
+//! **Nothing waits.** A command whose turn hasn't come is parked here, with no thread of its own, and started by whoever passes or names the ticket that held
+//! it, as that one does ([`Turn`]'s drop, [`Lane::name`]): the thread of the command before as it ends, or the session thread. One small lane for the app,
+//! not one per tab: an idle lane holds no buffer, and at most [`CAP`] are parked in all.
+//!
+//! What's ordered, and how each command is started, is the person's commands' own (`core::person_lane`); this holds only the order.
 
 use crate::lock;
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::VecDeque;
 use std::sync::{Mutex, Weak};
 
-/// How many of the person's commands can be parked at once. Reached only by a key held down while a command waits: the next is refused, and said so.
+/// How many of the person's commands can be parked at once, over every tab. Reached only by a key held down while a command waits: the next is refused,
+/// and said so.
 pub const CAP: usize = 64;
 
 /// What a parked command does once its turn comes, given its turn to hold until it passes.
 pub type Start = Box<dyn FnOnce(Turn) + Send>;
 
-/// The lane: the tickets handed out, how far they've passed, and the commands parked for their turn.
+/// A ticket's tab before it's named: it holds every ticket after it.
+const UNNAMED: u32 = 0;
+
+/// The lane: the tickets not yet passed, and the commands parked for their turn.
 pub struct Lane {
     state: Mutex<State>,
+}
+
+/// A ticket not yet passed.
+#[derive(Clone, Copy)]
+struct Outstanding {
+    ticket: u64,
+    /// The tab its command acts on, or [`UNNAMED`] till that's known.
+    tab: u32,
+    /// Its command can change the document when it lands, after the session has published what it holds: a close asks the person meanwhile.
+    landing: bool,
 }
 
 struct State {
     /// The next ticket to be handed out.
     next: u64,
-    /// Every ticket below this has passed: this one's is the next turn.
-    passed: u64,
-    /// Tickets that passed before their turn, as their command went without running (a freeze, the end): skipped when the turn reaches them.
-    gone: BTreeSet<u64>,
-    /// Tickets not yet passed, with the tab each names (0: none), so a close can ask whether an edit of its tab is still landing.
-    outstanding: VecDeque<(u64, u32)>,
-    /// Commands waiting for their turn, by ticket, each with the way back to the queue its turn will hold.
+    /// Tickets not yet passed, in the order they were handed out.
+    outstanding: VecDeque<Outstanding>,
+    /// Commands waiting for their turn, in the order of their tickets, each with the way back to the queue its turn will hold.
     parked: VecDeque<(u64, Weak<super::CoreQueue>, Start)>,
     /// [`CAP`], or a test's smaller one.
     cap: usize,
+}
+
+impl State {
+    /// **The lane's rule:** whether `ticket` may act now: every ticket before it has passed or names another tab (and it names its own).
+    fn may_run(&self, ticket: u64) -> bool {
+        let Some(own) = self.outstanding.iter().find(|outstanding| outstanding.ticket == ticket) else {
+            return true;
+        };
+        self.outstanding
+            .iter()
+            .take_while(|outstanding| outstanding.ticket < ticket)
+            .all(|before| before.tab != UNNAMED && own.tab != UNNAMED && before.tab != own.tab)
+    }
+
+    /// The first parked command that may act now, taken out.
+    fn runnable(&mut self) -> Option<(u64, Weak<super::CoreQueue>, Start)> {
+        let at = self.parked.iter().position(|(ticket, ..)| self.may_run(*ticket))?;
+        self.parked.remove(at)
+    }
 }
 
 impl Default for Lane {
@@ -47,8 +81,6 @@ impl Default for Lane {
         let lane = Self {
             state: Mutex::new(State {
                 next: 0,
-                passed: 0,
-                gone: BTreeSet::new(),
                 outstanding: VecDeque::with_capacity(8),
                 parked: VecDeque::new(),
                 cap: CAP,
@@ -63,14 +95,14 @@ impl Default for Lane {
 pub enum Asked {
     /// It's its turn: start it, holding the turn till it passes.
     Now(Start, Turn),
-    /// Parked, to be started by whoever passes the ticket before it.
+    /// Parked, to be started by whoever passes or names the ticket that holds it.
     Parked,
     /// Too many parked already: not taken. Its turn passes as it's dropped.
     Full(Start, Turn),
 }
 
 /// **A ticket in the lane, held by its command until the state it acts on is fixed:** passed as it's dropped, however the command ends (done, refused,
-/// dropped by a freeze or the end, a panic), and the next command whose turn it is started.
+/// dropped by the end, a panic), and whatever it held up started.
 pub struct Turn {
     /// The queue whose lane it's in: `None` once it's parked, as the ticket is then passed only by the turn its command is started with.
     queue: Option<Weak<super::CoreQueue>>,
@@ -100,19 +132,36 @@ impl Turn {
 }
 
 impl Lane {
-    /// A ticket for a command just asked, naming `tab` (0: none).
-    pub(super) fn take(&self, queue: Weak<super::CoreQueue>, tab: u32) -> Turn {
+    /// A ticket for a command just asked, naming `tab` ([`UNNAMED`], 0, till it's known), and whether it's an edit that lands later.
+    pub(super) fn take(&self, queue: Weak<super::CoreQueue>, tab: u32, landing: bool) -> Turn {
         let mut state = lock(&self.state);
         let ticket = state.next;
         state.next += 1;
-        state.outstanding.push_back((ticket, tab));
+        state.outstanding.push_back(Outstanding { ticket, tab, landing });
         Turn { queue: Some(queue), ticket }
     }
 
-    /// **The command holding `turn` asks to act now:** it may if its turn has come, and is parked otherwise, to be started with its turn when it does.
+    /// **`turn`'s command acts on `tab`,** known now (the session thread has taken it): whatever its being unnamed held up, in other tabs, starts.
+    pub fn name(&self, turn: &Turn, tab: u32) {
+        if let Some(outstanding) = lock(&self.state).outstanding.iter_mut().find(|outstanding| outstanding.ticket == turn.ticket) {
+            outstanding.tab = tab;
+        }
+        self.start_runnable();
+    }
+
+    /// Whether `turn`'s tab is named yet.
+    pub fn is_named(&self, turn: &Turn) -> bool {
+        lock(&self.state)
+            .outstanding
+            .iter()
+            .any(|outstanding| outstanding.ticket == turn.ticket && outstanding.tab != UNNAMED)
+    }
+
+    /// **The command holding `turn` asks to act now:** it may if nothing before it holds it, and is parked otherwise, to be started with its turn when
+    /// that's so.
     pub fn ask(&self, mut turn: Turn, start: Start) -> Asked {
         let mut state = lock(&self.state);
-        if turn.ticket == state.passed {
+        if state.may_run(turn.ticket) {
             return Asked::Now(start, turn);
         }
         if state.parked.len() >= state.cap {
@@ -131,37 +180,21 @@ impl Lane {
         Asked::Parked
     }
 
-    /// Whether `turn`'s ticket is the next turn now.
-    pub fn is_turn(&self, turn: &Turn) -> bool {
-        lock(&self.state).passed == turn.ticket
+    /// Whether `turn`'s command may act now ([`State::may_run`]).
+    pub fn may_run(&self, turn: &Turn) -> bool {
+        lock(&self.state).may_run(turn.ticket)
     }
 
-    /// The ticket passed: the turn moves on, and the command whose turn it is now, if it's parked, is started (outside the lane's lock).
+    /// The ticket passed: whatever it held up starts (outside the lane's lock).
     fn pass(&self, ticket: u64) {
-        let start = {
-            let mut state = lock(&self.state);
-            if ticket < state.passed || state.gone.contains(&ticket) {
-                return;
-            }
-            state.outstanding.retain(|(outstanding, _)| *outstanding != ticket);
-            if ticket == state.passed {
-                state.passed += 1;
-                loop {
-                    let passed = state.passed;
-                    if !state.gone.remove(&passed) {
-                        break;
-                    }
-                    state.passed += 1;
-                }
-            } else {
-                state.gone.insert(ticket);
-            }
-            match state.parked.front() {
-                Some((parked, ..)) if *parked == state.passed => state.parked.pop_front(),
-                _ => None,
-            }
-        };
-        if let Some((ticket, queue, start)) = start {
+        lock(&self.state).outstanding.retain(|outstanding| outstanding.ticket != ticket);
+        self.start_runnable();
+    }
+
+    /// Every parked command that may act now, started, one at a time outside the lane's lock (a start may pass a ticket of its own).
+    fn start_runnable(&self) {
+        loop {
+            let Some((ticket, queue, start)) = lock(&self.state).runnable() else { return };
             start(Turn { queue: Some(queue), ticket });
         }
     }
@@ -169,7 +202,14 @@ impl Lane {
     /// **The queue's end** (a headless app's kill): what's parked goes, with what it holds (the app's count of it), and nothing more starts, as the queue
     /// takes nothing more.
     pub(super) fn clear(&self) {
-        let parked = std::mem::take(&mut lock(&self.state).parked);
+        let parked = {
+            let mut state = lock(&self.state);
+            let parked = std::mem::take(&mut state.parked);
+            state
+                .outstanding
+                .retain(|outstanding| !parked.iter().any(|(ticket, ..)| *ticket == outstanding.ticket));
+            parked
+        };
         drop(parked);
     }
 
@@ -178,9 +218,14 @@ impl Lane {
         lock(&self.state).parked.len()
     }
 
-    /// Whether an ordered command naming `tab` is still to pass: an edit of the tab still landing.
-    pub fn naming(&self, tab: u32) -> bool {
-        tab != 0 && lock(&self.state).outstanding.iter().any(|(_, named)| *named == tab)
+    /// **Whether an edit of `tab` the person asked for is still landing:** one that can change the document (a highlight or its removal), in flight or
+    /// parked. Not an undo or a turn waiting for the session thread, a print, or a close.
+    pub fn landing(&self, tab: u32) -> bool {
+        tab != UNNAMED
+            && lock(&self.state)
+                .outstanding
+                .iter()
+                .any(|outstanding| outstanding.landing && outstanding.tab == tab)
     }
 
     /// A test's smaller cap.
@@ -266,7 +311,7 @@ mod tests {
 
     /// Asks for `name`'s turn: started now, or parked.
     fn ask(queue: &Arc<CoreQueue>, started: &Started, name: &'static str, tab: u32) -> &'static str {
-        match queue.lane().ask(queue.take_turn(tab), started.start(name)) {
+        match queue.lane().ask(queue.take_turn(tab, true), started.start(name)) {
             Asked::Now(start, turn) => {
                 start(turn);
                 "now"
@@ -285,7 +330,7 @@ mod tests {
         let started = Started::new();
         assert_eq!(ask(&queue, &started, "highlight", 1), "now");
         assert_eq!(ask(&queue, &started, "undo", 1), "parked");
-        assert_eq!(ask(&queue, &started, "redo", 2), "parked");
+        assert_eq!(ask(&queue, &started, "redo", 1), "parked");
         assert_eq!(queue.lane().parked(), 2);
         assert_eq!(started.order(), ["highlight"]);
         started.pass("highlight");
@@ -308,7 +353,7 @@ mod tests {
         let queue = Arc::new(CoreQueue::default());
         let started = Started::new();
         assert_eq!(ask(&queue, &started, "highlight", 1), "now");
-        let dropped = queue.take_turn(1);
+        let dropped = queue.take_turn(1, true);
         assert_eq!(ask(&queue, &started, "undo", 1), "parked");
         drop(dropped);
         assert_eq!(started.order(), ["highlight"], "the undo still waits for the highlight");
@@ -331,18 +376,62 @@ mod tests {
         assert_eq!(ask(&queue, &started, "next", 1), "now", "the refused one's ticket passed");
     }
 
-    /// Failure: a close asks the person for an edit of another tab still landing, or not for its own (the coordinator's Q4, 2026-11-14). Only an
-    /// outstanding ticket naming the tab counts, and only until it passes.
+    /// Failure: a close asks the person for an edit of another tab still landing, or not for its own (the coordinator's Q4, 2026-11-14); or for a
+    /// command that changes nothing after it lands (an undo waiting for the session thread, a print: review of the lane, D1). Only an outstanding ticket
+    /// of an edit that lands later naming the tab counts, and only until it passes.
     #[test]
     fn an_edit_is_landing_on_the_tab_it_names_until_it_passes() {
         let queue = Arc::new(CoreQueue::default());
         let started = Started::new();
         assert_eq!(ask(&queue, &started, "highlight", 3), "now");
-        assert_eq!(ask(&queue, &started, "undo", 4), "parked");
-        assert!(queue.lane().naming(3) && queue.lane().naming(4) && !queue.lane().naming(5) && !queue.lane().naming(0));
+        assert_eq!(ask(&queue, &started, "removal", 4), "now");
+        let undo = queue.take_turn(5, false);
+        assert!(queue.lane().landing(3) && queue.lane().landing(4) && !queue.lane().landing(6) && !queue.lane().landing(0));
+        assert!(!queue.lane().landing(5), "an undo isn't an edit landing");
         started.pass("highlight");
-        assert!(!queue.lane().naming(3), "landed");
-        started.pass("undo");
-        assert!(!queue.lane().naming(4));
+        assert!(!queue.lane().landing(3), "landed");
+        started.pass("removal");
+        assert!(!queue.lane().landing(4));
+        drop(undo);
+    }
+
+    /// Failure (review of the lane, D2): an edit waits for another tab's, so a highlight's long read in one tab parks every edit in the others; or one of
+    /// the same tab goes before an edit asked ahead of it. Each waits only for the tickets before it of its own tab, and for none not yet named.
+    #[test]
+    fn an_edit_waits_only_for_its_own_tabs() {
+        let queue = Arc::new(CoreQueue::default());
+        let started = Started::new();
+        assert_eq!(ask(&queue, &started, "highlight in 1", 1), "now");
+        assert_eq!(ask(&queue, &started, "undo in 2", 2), "now", "another tab: at once");
+        assert_eq!(ask(&queue, &started, "undo in 1", 1), "parked", "its own tab's highlight first");
+        assert_eq!(ask(&queue, &started, "turn in 2", 2), "parked", "its own tab's undo first");
+        started.pass("undo in 2");
+        assert_eq!(
+            started.order(),
+            ["highlight in 1", "undo in 2", "turn in 2"],
+            "started as its tab's last passed"
+        );
+        started.pass("highlight in 1");
+        assert_eq!(started.order(), ["highlight in 1", "undo in 2", "turn in 2", "undo in 1"]);
+        started.pass("undo in 1");
+        started.pass("turn in 2");
+        assert_eq!(queue.lane().parked(), 0);
+    }
+
+    /// Failure (D2): a ticket whose tab isn't known yet (an undo of "the tab showing", before the session thread takes it) lets an edit asked after it go
+    /// first in what may be the same tab; or, named, still holds up another tab's. It holds every ticket after it till it's named, and then only its tab's.
+    #[test]
+    fn a_ticket_not_yet_named_holds_everything_after_it_till_it_is() {
+        let queue = Arc::new(CoreQueue::default());
+        let started = Started::new();
+        let undo = queue.take_turn(0, false);
+        assert_eq!(ask(&queue, &started, "highlight in 2", 2), "parked", "the undo may be of tab 2");
+        assert_eq!(ask(&queue, &started, "highlight in 1", 1), "parked");
+        queue.lane().name(&undo, 1);
+        assert_eq!(started.order(), ["highlight in 2"], "named tab 1: tab 2's goes, tab 1's waits");
+        drop(undo);
+        assert_eq!(started.order(), ["highlight in 2", "highlight in 1"]);
+        started.pass("highlight in 1");
+        started.pass("highlight in 2");
     }
 }

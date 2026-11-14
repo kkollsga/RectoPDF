@@ -267,9 +267,10 @@ impl CoreQueue {
         &self.lane
     }
 
-    /// A ticket in the person's lane for an ordered command just asked, naming `tab` (0: none).
-    pub fn take_turn(self: &Arc<Self>, tab: u32) -> lane::Turn {
-        self.lane.take(Arc::downgrade(self), tab)
+    /// A ticket in the person's lane for an ordered command just asked, naming `tab` (0: not yet known), and whether it's an edit that lands later
+    /// ([`lane::Lane::landing`]).
+    pub fn take_turn(self: &Arc<Self>, tab: u32, landing: bool) -> lane::Turn {
+        self.lane.take(Arc::downgrade(self), tab, landing)
     }
 
     /// **A person's command let go from the lane, its turn come:** queued past a freeze, as it was asked before it, as the end of something under way is

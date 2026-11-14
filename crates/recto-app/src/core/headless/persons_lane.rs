@@ -125,6 +125,25 @@ fn every_order_asked_is_the_order_done() {
     assert_eq!(undo_redo(&app), (true, true), "the turn stands");
     app.agent(Level::Full, r#"{"cmd":"undo"}"#).expect("the turn undone");
     assert!(!undo_redo(&app).0, "nothing before the turn: the two undos took exactly the two highlights");
+
+    // Two tabs (D2): A's ⌘Z waits for A's highlight; B's, asked after it, goes at once and takes B's own step.
+    let disk = Disk::new();
+    let (a, b) = (disk.pdf("a.pdf", 2), disk.pdf("b.pdf", 2));
+    let app = disk.start();
+    app.open(&b);
+    menu(&app, "rotate.right");
+    app.open(&a);
+    menu(&app, "rotate.right");
+    app.settle();
+    while_a_highlight_is_read(&app, HIGHLIGHT_ID, "highlight", || {
+        menu(&app, "edit.undo");
+        app.act(UiAction::Open { path: b.display().to_string() });
+        menu(&app, "edit.undo");
+        assert_eq!(undo_redo(&app), (false, true), "B's undo done, its turn taken off, while A's highlight is read");
+        app.act(UiAction::Open { path: a.display().to_string() });
+    });
+    assert_eq!(highlights(&app), (0, 0), "A: highlight, undo: it's gone");
+    assert_eq!(undo_redo(&app), (true, true), "A's turn stands");
 }
 
 /// Failure: a highlight that's refused (no text where it was asked) leaves the person's Undo waiting for good, or drops it. The Undo runs when the refusal's
@@ -182,6 +201,45 @@ fn a_save_being_written_holds_up_no_edit_in_another_tab() {
     assert!(undo_redo(&app).0, "the turn in the other tab is done while the save writes");
     drop(go);
     app.settle();
+}
+
+/// **Failure (review of the lane, D2): an edit in one tab waits for another tab's.** A highlight's read in tab A (up to `selecting`'s 60 s cap, or a hung
+/// volume) parked every edit after it, so ⌘Z, ⌘R, Save and ⌘W in tab B did nothing till A's highlight landed. Each is done in B while A's is held, and
+/// A's lands after.
+#[test]
+fn a_held_highlight_in_one_tab_holds_up_nothing_in_another() {
+    let disk = Disk::new();
+    let (a, b) = (disk.pdf("a.pdf", 2), disk.pdf("b.pdf", 2));
+    let app = disk.start();
+    app.open(&b);
+    menu(&app, "rotate.right");
+    app.settle();
+    app.open(&a);
+    let in_a = app.reader().shown_tab;
+    while_a_highlight_is_read(&app, HIGHLIGHT_ID, "highlight", || {
+        app.act(UiAction::Open { path: b.display().to_string() });
+        flush(&app);
+        assert_ne!(app.reader().shown_tab, in_a, "B showing");
+        menu(&app, "edit.undo");
+        assert_eq!(undo_redo(&app), (false, true), "⌘Z in B done while A's highlight is held");
+        menu(&app, "rotate.right");
+        assert_eq!(undo_redo(&app), (true, false), "⌘R in B done");
+        menu(&app, "file.save");
+        app.wait_until("B saved while A's highlight is held", || {
+            flush(&app);
+            !app.reader().edited && app.core().tools.save_ui().running.load(std::sync::atomic::Ordering::SeqCst) == 0
+        });
+        assert_eq!(menu(&app, "file.close"), HostAction::None, "B, saved, closes without asking");
+        app.wait_until("B closed while A's highlight is held", || {
+            flush(&app);
+            app.tabs().len() == 1
+        });
+        assert!(app.core().life.persons_running() >= 1, "A's highlight still held");
+    });
+    assert_eq!(app.reader().shown_tab, in_a);
+    assert_eq!(highlights(&app), (1, 0), "A's highlight landed after");
+    let saved = std::fs::read(&b).expect("B");
+    assert!(String::from_utf8_lossy(&saved).contains("/Rotate 90"), "B saved turned");
 }
 
 /// Failure: a tab closed by an agent while the person's edits of it wait leaves them waiting for good, or the app unsettled. They run, and are refused as

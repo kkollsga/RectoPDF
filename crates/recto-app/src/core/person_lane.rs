@@ -34,20 +34,28 @@ pub fn ordered(command: &Command) -> bool {
     }
 }
 
-/// The tab an ordered command names, for a close to ask whether an edit of its tab is still landing: its own number, or for "the tab showing", the
-/// one the window shows now. 0 for none.
+/// **The tab an ordered command names as it's asked:** its own number; for "the tab showing", the one the window shows now if it runs on a thread of its
+/// own, which takes the session as it is when it starts; and none yet (0) for one the session thread runs, which names the tab showing as it takes it
+/// ([`PersonsLane::taken`]).
 fn named_tab(published: &std::sync::Mutex<super::Published>, command: &Command) -> u32 {
-    let tab = match command {
-        Command::Edit(edit) => edit.tab(),
-        Command::Read(read) => read.tab(),
-        Command::Move(moved) => moved.tab(),
-        _ => None,
-    };
-    match tab {
+    match command_tab(command) {
         Some(TabRef::Id(id)) => id.0,
-        Some(TabRef::Active) => crate::lock(published).reader.shown_tab,
+        Some(TabRef::Active) if runs_on_its_own_thread(command) => crate::lock(published).reader.shown_tab,
         _ => 0,
     }
+}
+
+/// Whether a person's command runs on a thread of its own: one that may wait, or isn't the session's to answer.
+pub(super) fn runs_on_its_own_thread(command: &Command) -> bool {
+    command.waits() || command.route() != recto_agent::Runs::Session
+}
+
+/// **Whether an ordered command is an edit that lands later** ([`crate::queue::lane::Lane::landing`]): one that can change the document, run on a thread
+/// of its own, so the session publishes what it did only once it lands: a highlight, its removal, and an inserted page (which no window path sends today).
+/// Not an undo, a turn or a close, which the session thread runs in the order taken; not a save or a print, which change no edit.
+#[must_use]
+pub fn lands_later(command: &Command) -> bool {
+    runs_on_its_own_thread(command) && matches!(command, Command::Edit(Edit::Highlight(_) | Edit::HighlightRemove(_) | Edit::PageInsert(_)))
 }
 
 /// **The person's lane, as the app uses it** ([`person::Person::lane`]): a ticket for each ordered command, its start now or when its turn comes.
@@ -59,7 +67,7 @@ pub struct PersonsLane<'a> {
 impl PersonsLane<'_> {
     /// A ticket for the person's command, if it's an ordered one.
     pub fn turn_for(self, command: &Command) -> Option<Turn> {
-        ordered(command).then(|| self.app.core.take_turn(named_tab(&self.app.published, command)))
+        ordered(command).then(|| self.app.core.take_turn(named_tab(&self.app.published, command), lands_later(command)))
     }
 
     /// **A person's ordered command that runs on a thread of its own** (one that may wait): started now if it's its turn, or parked till it is, counted
@@ -74,9 +82,18 @@ impl PersonsLane<'_> {
         self.asked(self.app.core.lane().ask(turn, start));
     }
 
-    /// **The person's Save of `tab`, asked:** started now if it's its turn, or parked till it is. `start` runs it, holding its turn.
+    /// **The person's Save of `tab`, asked:** started now if it's its turn, or parked till it is. `start` runs it, holding its turn. Its ticket is taken
+    /// as any ordered command's is ([`Self::turn_for`]): a save is ordered by [`ordered`], the one place that says so.
     pub fn submit_save(self, tab: TabId, start: Start) {
-        let turn = self.app.core.take_turn(tab.0);
+        let save = Command::from(recto_agent::commands::saving::Save {
+            tab: TabRef::Id(tab),
+            out: None,
+            replace: false,
+        });
+        let turn = self.turn_for(&save).unwrap_or_else(|| {
+            debug_assert!(false, "a save is ordered");
+            self.app.core.take_turn(tab.0, false)
+        });
         let counted = person::Counted::new(&self.app.life, &self.app.core);
         let start: Start = Box::new(move |turn| {
             start(turn);
@@ -140,8 +157,20 @@ impl PersonsLane<'_> {
             when_run,
             turn,
         } = run;
+        let lane = self.app.core.lane();
+        // Named as the session thread takes it, if it said "the tab showing": the tab showing now, in the order of what the person did.
+        if let Some(turn) = &turn
+            && !lane.is_named(turn)
+        {
+            let tab = match command_tab(&command) {
+                Some(TabRef::Id(id)) => Some(id),
+                Some(TabRef::Active) => self.app.host.session.with_session(|session| session.tabs().active()),
+                _ => None,
+            };
+            lane.name(turn, tab.map_or(0, |tab| tab.0));
+        }
         let turn = match turn {
-            Some(turn) if !self.app.core.lane().is_turn(&turn) => turn,
+            Some(turn) if !lane.may_run(&turn) => turn,
             turn => {
                 return Some(PersonCommand {
                     command,
@@ -184,6 +213,16 @@ impl PersonsLane<'_> {
         // Its turn may have come meanwhile, as the command before passed it: then it's queued again at once, named as it is, and runs as it's taken.
         self.asked(self.app.core.lane().ask(turn, start));
         None
+    }
+}
+
+/// The tab a command names, if it names one.
+fn command_tab(command: &Command) -> Option<TabRef> {
+    match command {
+        Command::Edit(edit) => edit.tab().cloned(),
+        Command::Read(read) => read.tab().cloned(),
+        Command::Move(moved) => moved.tab().cloned(),
+        _ => None,
     }
 }
 
