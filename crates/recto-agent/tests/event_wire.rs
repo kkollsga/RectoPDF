@@ -75,20 +75,34 @@ fn made() -> Vec<(&'static str, Event)> {
                 code: "render_failed",
             },
         ),
-        ("indexing_started", Event::IndexingStarted { corpus: "ab12".into() }),
+        (
+            "indexing_started",
+            Event::IndexingStarted {
+                path: "/d/a.pdf".into(),
+                corpus: "ab12".into(),
+            },
+        ),
         (
             "indexing_finished",
             Event::IndexingFinished {
+                path: "/d/a.pdf".into(),
                 corpus: "ab12".into(),
                 state: "done".into(),
                 code: Value::Null,
                 pages: json!(40),
             },
         ),
-        ("contents_generating", Event::ContentsGenerating { file: "cd34".into() }),
+        (
+            "contents_generating",
+            Event::ContentsGenerating {
+                path: "/d/a.pdf".into(),
+                file: "cd34".into(),
+            },
+        ),
         (
             "contents_generated",
             Event::ContentsGenerated {
+                path: "/d/a.pdf".into(),
                 file: "cd34".into(),
                 state: "done",
                 code: Some("ok".into()),

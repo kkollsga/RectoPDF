@@ -6,6 +6,7 @@
 
 use recto_session::{Closed, DocLoader, Session, TabId};
 use serde_json::{Value, json};
+use std::path::PathBuf;
 
 /// Something that happened in the session. Its line on the wire is [`Event::to_json`], and the tests in `tests/event_wire.rs` hold that to what it was before the events were a type.
 #[derive(Clone, Debug, PartialEq)]
@@ -48,21 +49,26 @@ pub enum Event {
         page: u32,
         code: &'static str,
     },
+    /// The helpers' news is about a file: `path`, which isn't said on the wire, is what [`crate::withheld`] judges it by.
     IndexingStarted {
+        path: PathBuf,
         corpus: String,
     },
     /// `code` and `pages` are the helper's own report, passed on as it gave them.
     IndexingFinished {
+        path: PathBuf,
         corpus: String,
         state: String,
         code: Value,
         pages: Value,
     },
     ContentsGenerating {
+        path: PathBuf,
         file: String,
     },
     /// `elapsed_ms` and `helper_peak_bytes` are the helper's own numbers, passed on as it gave them.
     ContentsGenerated {
+        path: PathBuf,
         file: String,
         state: &'static str,
         code: Option<String>,
@@ -154,15 +160,18 @@ impl Event {
             Self::Saved { tab, writer } => json!({ "tab": tab.0, "writer": writer }),
             Self::PageDrawn { tab, page } => json!({ "tab": tab.0, "page": page }),
             Self::PageFailed { tab, page, code } => json!({ "tab": tab.0, "page": page, "code": code }),
-            Self::IndexingStarted { corpus } => json!({ "corpus": corpus }),
-            Self::IndexingFinished { corpus, state, code, pages } => json!({ "corpus": corpus, "state": state, "code": code, "pages": pages }),
-            Self::ContentsGenerating { file } => json!({ "file": file }),
+            Self::IndexingStarted { corpus, .. } => json!({ "corpus": corpus }),
+            Self::IndexingFinished {
+                corpus, state, code, pages, ..
+            } => json!({ "corpus": corpus, "state": state, "code": code, "pages": pages }),
+            Self::ContentsGenerating { file, .. } => json!({ "file": file }),
             Self::ContentsGenerated {
                 file,
                 state,
                 code,
                 elapsed_ms,
                 helper_peak_bytes,
+                ..
             } => json!({ "file": file, "state": state, "code": code, "elapsed_ms": elapsed_ms, "helper_peak_bytes": helper_peak_bytes }),
             Self::LevelChanged { level, was } => json!({ "level": level, "was": was }),
             Self::ViewSettingsChanged { paper, sidebar } => json!({ "paper": paper, "sidebar": sidebar }),
@@ -270,12 +279,13 @@ pub fn comparison_changed<L: DocLoader>(session: &Session<L>) -> Event {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    /// One of each variant, with the group it must be in. The `match` makes a new variant fail to compile here until it has a sample.
-    fn samples() -> Vec<Event> {
-        let tab = TabId(1);
+    /// One of each variant, about `tab` and its file `path` where it's about one: the one list every test of all the events walks (here, and
+    /// [`crate::withheld`]'s). The `match` makes a new variant fail to compile here until it has a sample.
+    pub(crate) fn samples_about(tab: TabId, path: &std::path::Path) -> Vec<Event> {
+        let path = path.to_path_buf();
         let samples = vec![
             Event::TabOpened { tab, name: None },
             Event::TabActivated { tab, name: None },
@@ -285,15 +295,23 @@ mod tests {
             Event::Saved { tab, writer: "lopdf" },
             Event::PageDrawn { tab, page: 1 },
             Event::PageFailed { tab, page: 1, code: "x" },
-            Event::IndexingStarted { corpus: String::new() },
+            Event::IndexingStarted {
+                path: path.clone(),
+                corpus: String::new(),
+            },
             Event::IndexingFinished {
+                path: path.clone(),
                 corpus: String::new(),
                 state: String::new(),
                 code: Value::Null,
                 pages: Value::Null,
             },
-            Event::ContentsGenerating { file: String::new() },
+            Event::ContentsGenerating {
+                path: path.clone(),
+                file: String::new(),
+            },
             Event::ContentsGenerated {
+                path,
                 file: String::new(),
                 state: "done",
                 code: None,
@@ -307,10 +325,10 @@ mod tests {
                 panes: Vec::new(),
                 synced: false,
             },
-            Event::FindRunning { tab: None },
+            Event::FindRunning { tab: Some(tab) },
             Event::FindOpened { tab: None, page: None },
             Event::FindClosed,
-            Event::FindFinished { tab: None, hits: 0 },
+            Event::FindFinished { tab: Some(tab), hits: 0 },
         ];
         for event in &samples {
             match event {
@@ -337,6 +355,10 @@ mod tests {
             }
         }
         samples
+    }
+
+    fn samples() -> Vec<Event> {
+        samples_about(TabId(1), std::path::Path::new("/d/a.pdf"))
     }
 
     /// Failure: an event's name or group is in the code and not in the table the reference and `--events` read, so a watcher is told of an event it can't select, or the reference lists one that never comes. The two lists hold exactly the same names and groups.
