@@ -98,16 +98,23 @@ impl JobPlan {
                 let surface = match what {
                     DrawKind::Preview => Self::take_surface(rect.width, rect.height)?,
                     DrawKind::Tile => Self::take_surface(TILE_EDGE, TILE_EDGE)?,
-                    DrawKind::Region => loop {
-                        // Across no more than the view, but held to the longest edge too, in whole tiles: a surface past it can never be made.
+                    DrawKind::Region => {
+                        // Across no more than the view, but held to the longest edge too, in whole tiles: a surface past it can never be made. And held
+                        // to the cap by its rows before it's made, in whole tiles, so no surface over it is asked for only to be let go.
                         (rect.width, rect.height) = (rect.width.min(super::MAX_SURFACE_EDGE), rect.height.min(super::MAX_SURFACE_EDGE));
-                        let surface = Self::take_surface(rect.width, rect.height)?;
-                        // A surface's rows can be padded, which can take it over the cap. A row of tiles less is always under.
-                        if u64::from(surface.stride()) * u64::from(rect.height) <= MAX_REGION_BYTES || rect.height <= TILE_EDGE {
-                            break surface;
+                        let rows = MAX_REGION_BYTES / (u64::from(rect.width.max(1)) * 4);
+                        rect.height = rect
+                            .height
+                            .min((u32::try_from(rows).unwrap_or(u32::MAX) / TILE_EDGE * TILE_EDGE).max(TILE_EDGE));
+                        loop {
+                            let surface = Self::take_surface(rect.width, rect.height)?;
+                            // A surface's rows can be padded, which can take it over the cap. A row of tiles less is always under.
+                            if u64::from(surface.stride()) * u64::from(rect.height) <= MAX_REGION_BYTES || rect.height <= TILE_EDGE {
+                                break surface;
+                            }
+                            rect.height -= TILE_EDGE;
                         }
-                        rect.height -= TILE_EDGE;
-                    },
+                    }
                 };
                 JobKind::Draw {
                     scale,
@@ -134,6 +141,8 @@ impl JobPlan {
         if surface_seam::refused() {
             return None;
         }
+        #[cfg(test)]
+        surface_seam::note_asked(width, height);
         PixelSurface::create(width, height).ok()
     }
 }
@@ -216,10 +225,53 @@ pub(crate) mod surface_seam {
         REFUSE.try_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(1)).is_ok()
     }
 
+    std::thread_local! {
+        /// The most bytes of any surface this thread has asked for, by its unpadded rows.
+        static LARGEST_ASKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    pub(super) fn note_asked(width: u32, height: u32) {
+        LARGEST_ASKED.with(|largest| largest.set(largest.get().max(u64::from(width) * u64::from(height) * 4)));
+    }
+
     pub(super) fn first_wait() -> Option<std::time::Duration> {
         Some(FIRST_WAIT_MS.load(Ordering::SeqCst))
             .filter(|ms| *ms > 0)
             .map(std::time::Duration::from_millis)
+    }
+
+    /// Failure (the second review of the measured faults): a region's surface was made at the size asked, up to 16,384 pixels on an edge, and only then
+    /// held to [`super::MAX_REGION_BYTES`], a row of tiles less and another surface at a time: a region of a large page at a high zoom asked the system for
+    /// a surface of up to 1 GiB, and up to sixty more, to keep one of 32 MiB. Its height is worked out from the cap first, so no surface asked for is
+    /// over it but by its rows' padding, and the region made is still within it.
+    #[test]
+    fn a_regions_surface_is_held_to_its_cap_before_it_is_made() {
+        let plan = super::JobPlan {
+            tab: 1,
+            position: 0,
+            file: std::path::PathBuf::from("/d/a.pdf"),
+            source_page: 0,
+            generation: 0,
+            kind: super::PlanKind::Draw {
+                scale: 4.0,
+                rect: crate::tiles::TileRect {
+                    x: 0,
+                    y: 0,
+                    width: 4096,
+                    height: 16_384,
+                },
+                what: crate::tiles::DrawKind::Region,
+                paper: crate::paper::PaperKind::White,
+            },
+        };
+        let job = plan.ready().expect("a region");
+        let crate::tiles::JobKind::Draw { rect, surface, .. } = &job.kind else {
+            panic!("a draw")
+        };
+        assert!(u64::from(surface.stride()) * u64::from(rect.height) <= super::MAX_REGION_BYTES, "{rect:?}");
+        assert_eq!(rect.height % super::TILE_EDGE, 0, "in whole tiles: {rect:?}");
+        let largest = LARGEST_ASKED.with(std::cell::Cell::get);
+        assert!(largest <= super::MAX_REGION_BYTES, "no surface asked for over the cap: {largest} bytes");
     }
 
     /// Failure: the wait doesn't back off, or backs off past its cap, so a machine out of surfaces is asked every second for good, or a page waits minutes
