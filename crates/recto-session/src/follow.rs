@@ -176,26 +176,31 @@ impl ContentsFollow {
         }
     }
 
-    /// The place being read is now on this row. `now` is in seconds, from any fixed moment.
+    /// The place being read is now on this row, or above the first entry (`None`, the reader before the document's first heading). `now` is in seconds,
+    /// from any fixed moment.
+    ///
+    /// A place above the first entry is the list's top, followed like any other: a list shown with nothing current is placed there, or where a restore
+    /// left it, and not left where another tab's list had the scroll, which can be past this one's end with no row in view (the first real-app run with
+    /// the current entry found by place, 2026-11-14). Folded contents publish no rows, and there's nothing to follow.
     pub fn reached(&mut self, row: Option<u32>, view: ContentsView, now: f64, reduce_motion: bool) -> FollowMove {
-        if self.current == row {
+        if self.current == row && (self.placed || view.rows == 0) {
             return FollowMove::Stay;
         }
         self.current = row;
         // Folded: there's nothing to follow, and what's under way stops. Opened again, the place is straight where it should be, and nothing whooshes from the top.
-        let Some(row) = row else {
+        if view.rows == 0 {
             self.moving = None;
             self.placed = false;
             self.paused = false;
             return FollowMove::Stay;
-        };
+        }
         if self.paused {
             if self.pointer_inside || now - self.last_user_scroll < FOLLOW_RESUME_AFTER {
                 return FollowMove::Stay;
             }
             self.paused = false;
         }
-        let place = (f64::from(row) + 0.5) * CONTENTS_ROW_HEIGHT;
+        let place = row.map_or(0.0, |row| (f64::from(row) + 0.5) * CONTENTS_ROW_HEIGHT);
         let furthest = (f64::from(view.rows) * CONTENTS_ROW_HEIGHT - view.height).max(0.0);
         let target = (place - view.height * FOLLOW_ANCHOR).clamp(0.0, furthest);
         if !self.placed {
