@@ -312,10 +312,13 @@ mod tests {
     }
     use recto_session::SessionError;
 
-    /// **Failure (a guard before the answers are given the app's parts and not the app, `build/registries`):** what a person is shown after a command of
+    /// **Failure (a guard before the answers were given the app's parts and not the app, `build/registries`):** what a person is shown after a command of
     /// theirs ran changes: a refusal said in other words or by another line (the page's notice, or the open failure under the field), one said where it
-    /// was said nothing (an agent's refusal, which names `recto` and levels, or a close refused that wasn't the prompt's), or a rotate that went leaving
-    /// the line there. Each feature's answer, through the one list, as the session thread calls it.
+    /// was said nothing (an agent's refusal, which names `recto` and levels, or a close refused that wasn't the prompt's), a rotate that went leaving the
+    /// line there, or a line said without the window being published again to show it, or published for nothing (`say` and `notice` swapped). Through the
+    /// one list, as the session thread calls it, for the answers of going to a page, opening (its failure; not its password sheet), closing, editing,
+    /// comparison and highlights. Held elsewhere: Find's (`headless/finding.rs`, `a_query_too_long_is_said_and_not_searched`), the updates menu's
+    /// (`headless/update_menu.rs`), the password sheet an open asks for (`headless/passwords.rs`); Clear Menu's record written at once is held by none.
     #[test]
     fn what_a_person_is_shown_after_each_command_is_as_it_was() {
         use super::Origin;
@@ -338,15 +341,18 @@ mod tests {
                 recto_agent::exit::PERMISSION,
             ))
         };
+        assert!(inner.core.flush(std::time::Duration::from_secs(10)), "the app at rest");
         let shown = |command: Command, origin: Origin, result: Result<serde_json::Value, AgentError>| {
             let notices = inner.window.notices();
             notices.say("before".into());
             notices.clear_open_failure();
+            let asked = inner.core.reconciles_asked();
             super::answered(&super::AnswerParts::of(&inner), &command, origin, &result);
-            (notices.notice(), notices.open_failure())
+            (notices.notice(), notices.open_failure(), inner.core.reconciles_asked() > asked)
         };
-        let said = |words: &str| (Some(words.to_string()), None);
-        let left = (Some("before".to_string()), None);
+        // Said by the page, which goes by itself: the window published again to show it.
+        let said = |words: &str| (Some(words.to_string()), None, true);
+        let left = (Some("before".to_string()), None, false);
         let goto = Command::from(Goto {
             tab: TabRef::Id(TabId(1)),
             page: None,
@@ -394,7 +400,7 @@ mod tests {
             (
                 "a file that isn't a PDF",
                 shown(open.clone(), Origin::Input, Err(SessionError::Open(OpenError::NotPdf).into())),
-                (Some("before".into()), Some(SessionError::Open(OpenError::NotPdf).message().to_string())),
+                (Some("before".into()), Some(SessionError::Open(OpenError::NotPdf).message().to_string()), false),
             ),
             (
                 "an open refused in an agent's words",
@@ -417,11 +423,16 @@ mod tests {
                 shown(rotate.clone(), Origin::Input, agents(Code::WOULD_CLEAR_REDO)),
                 left.clone(),
             ),
-            ("a rotate that went", shown(rotate, Origin::Input, Ok(serde_json::Value::Null)), (None, None)),
+            (
+                "a rotate that went",
+                shown(rotate, Origin::Input, Ok(serde_json::Value::Null)),
+                (None, None, false),
+            ),
             (
                 "a fourth pane",
                 shown(compare.clone(), Origin::Input, agents(Code::lower(CompareError::TooMany.code()))),
-                said(CompareError::TooMany.message()),
+                // The comparison's line asks for no pass of its own, as before: it shows with the next.
+                (Some(CompareError::TooMany.message().to_string()), None, false),
             ),
             (
                 "a pane that couldn't be read",
