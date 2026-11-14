@@ -175,10 +175,15 @@ fn agent_told(pages: usize, word: &str) -> Vec<String> {
     host_turns(&app, &mut view, true);
     // A wider window: the page showing is drawn again, at its new size.
     engine.qa().hold_tells(true);
+    let watch = DrawWatch::from_now(&app);
     view.width *= 2.0;
     view.frame_width *= 2.0;
     applied_as_the_host(&engine.set_viewport(view));
-    assert!(engine.qa().wait_for_held_tell(crate::testkit::headless::WAIT_LIMIT), "a draw's word held");
+    assert!(
+        engine.qa().wait_for_held_tell(crate::testkit::headless::WAIT_LIMIT),
+        "a draw's word held: {}",
+        watch.why(&app)
+    );
     let tab = app.tabs()[0].tab;
     if app.act(UiAction::Menu { id: "file.close".into() }).host == crate::menus::HostAction::ConfirmClose {
         app.act(UiAction::CloseAnswered {
@@ -194,6 +199,77 @@ fn agent_told(pages: usize, word: &str) -> Vec<String> {
     app.settle();
     told.push(format!("after: {:?}", watching.heard()));
     told
+}
+
+/// **What the page view was doing when a draw's word waited for at the tell's hold didn't come** (the walk's widening, 2 of 40 under `--like-ci` on
+/// 2026-11-14, cause unknown then): taken from just before what should draw, and read when the wait runs out, so the failure says why by itself.
+struct DrawWatch {
+    before: Value,
+}
+
+impl DrawWatch {
+    fn from_now(app: &HeadlessApp) -> Self {
+        Self {
+            before: app.core().engine.report().0,
+        }
+    }
+
+    /// Which of the ways a wait for a draw's word runs out it was, then what the page view and the session's mail had to say: a draw done and told
+    /// before the hold could take it (the test's order); nothing planned, the page view at rest (the change asked for no draw); or the page view still
+    /// at work (a draw slow past the wait: a starved worker, a page deadline).
+    fn why(&self, app: &HeadlessApp) -> String {
+        let now = app.core().engine.report().0;
+        let count = |report: &Value, key: &str| report["counts"][key].as_u64().unwrap_or(0);
+        let drawn = count(&now, "drawn").saturating_sub(count(&self.before, "drawn"));
+        let jobs = count(&now, "jobs").saturating_sub(count(&self.before, "jobs"));
+        let verdict = if drawn > 0 {
+            "a draw was done and told before the hold took it"
+        } else if now["settled"] == true {
+            "nothing was planned: the page view is at rest"
+        } else {
+            "the page view is still at work: a draw slow past the wait"
+        };
+        let mail = app
+            .core()
+            .host
+            .session
+            .try_with_session(|session| format!("{:?}", session.mail()))
+            .unwrap_or_else(|| "(the session is held)".into());
+        format!(
+            "{verdict} (drawn since {drawn}, jobs since {jobs}); settled {}, page {}, visible {}, jobs now {}, note {}, the renderer's counts {}; the \
+             session's mail: {mail}",
+            now["settled"], now["page"], now["visible_pages"], now["jobs"], now["note"], now["counts"]
+        )
+    }
+}
+
+/// **Failure: the record of a draw's word that didn't come names the wrong cause,** so the walk's failure says nothing true about itself. Made both
+/// ways it runs out: the hold set after the widening was drawn and told, and a hold with nothing asked to draw.
+#[test]
+fn a_draws_word_not_held_says_why() {
+    let disk = Disk::new();
+    let file = disk.pdf("plain.pdf", 2);
+    let app = disk.start();
+    app.open(&file);
+    app.settle();
+    let engine = app.core().engine.clone();
+    let mut view = window_view();
+    applied_as_the_host(&engine.set_viewport(view));
+    host_turns(&app, &mut view, true);
+    let watch = DrawWatch::from_now(&app);
+    view.width *= 2.0;
+    view.frame_width *= 2.0;
+    applied_as_the_host(&engine.set_viewport(view));
+    host_turns(&app, &mut view, true);
+    engine.qa().hold_tells(true);
+    assert!(!engine.qa().wait_for_held_tell(std::time::Duration::from_millis(50)), "nothing to hold");
+    let told_before = watch.why(&app);
+    assert!(told_before.starts_with("a draw was done and told before the hold took it"), "{told_before}");
+    let watch = DrawWatch::from_now(&app);
+    assert!(!engine.qa().wait_for_held_tell(std::time::Duration::from_millis(50)), "nothing to hold");
+    let at_rest = watch.why(&app);
+    assert!(at_rest.starts_with("nothing was planned: the page view is at rest"), "{at_rest}");
+    engine.qa().hold_tells(false);
 }
 
 /// The person's snapshot of a box on page 1 with the snapshot tool, as the bridge's mouse calls take it, then a paste of its promised SVG: each of their
