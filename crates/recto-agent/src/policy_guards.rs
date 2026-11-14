@@ -582,8 +582,8 @@ fn what_starts_from_the_place_is_as_listed() {
         (FindAsk::Open, FromPlace::No),
         (FindAsk::Close, FromPlace::No),
         (FindAsk::Look, FromPlace::No),
-        (FindAsk::Step { forward: true, jump: false }, FromPlace::Place),
-        (FindAsk::Step { forward: false, jump: true }, FromPlace::Place),
+        (FindAsk::Step { forward: true, jump: false }, FromPlace::PlaceOrHit),
+        (FindAsk::Step { forward: false, jump: true }, FromPlace::PlaceOrHit),
         (FindAsk::Hit(0), FromPlace::Place),
     ] {
         assert_eq!(Command::from(Find::from(ask.clone())).starts_from(), from, "find {ask:?}");

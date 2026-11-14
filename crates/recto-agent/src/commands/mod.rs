@@ -107,6 +107,9 @@ pub enum FromPlace {
     No,
     /// Where the tab is.
     Place,
+    /// Where the tab is, or Find's hit gone to last, which a step goes on from and may have been stepped to from a withheld place
+    /// (the session's `Viewing::find_current_withheld`).
+    PlaceOrHit,
     /// Where the tab is, to the stop on its trail Back (`back`) or Forward goes to, which may have been made from a withheld place.
     Trail { back: bool },
 }

@@ -274,12 +274,16 @@ impl<A: crate::SessionAccess> Run<'_, A> {
 }
 
 /// Where Find stands, for an answer.
-fn answer<A: crate::SessionAccess>(access: &A, _actor: Actor, finding: &dyn Finding, listed: usize, went: Option<(u32, Hit)>) -> Value {
+fn answer<A: crate::SessionAccess>(access: &A, actor: Actor, finding: &dyn Finding, listed: usize, went: Option<(u32, Hit)>) -> Value {
     let record = access.with(|s| s.viewing().find().clone());
     // Hits from a document the person opened with a password are text read with it: none of them goes to an agent, whichever tab is being read now.
     let mut about = None;
     finding.with_results(&mut |results| about = results.tab);
     let withheld = about.is_some_and(|tab| access.with(|s| s.tabs().withheld_from_agents(TabId(tab))));
+    // The hit gone to last, and where a step went, say where its tab is: not to an agent while that's withheld (S2's round), though the hits are its own.
+    let place_withheld = about.is_some_and(|tab| access.with(|s| s.tabs().tab(TabId(tab)).is_some_and(|tab| crate::place::place_for(s, actor, tab).is_none())));
+    // A hit stepped to from a withheld place is the next past it, so it's withheld too.
+    let current_withheld = access.with(|s| s.viewing().find_current_withheld());
     let mut value = json!(null);
     finding.with_results(&mut |results| {
         let state = match &results.end {
@@ -312,10 +316,16 @@ fn answer<A: crate::SessionAccess>(access: &A, _actor: Actor, finding: &dyn Find
         });
         if withheld {
             value = json!({ "open": record.open, "tab": results.tab, "state": state, "protected": true, "protected_note": crate::PROTECTED_NOTE, "hits": [] });
+        } else if place_withheld || current_withheld {
+            value["current"] = Value::Null;
         }
     });
     if let Some((tab, hit)) = went {
-        value["went_to"] = json!({ "tab": tab, "page": hit.page + 1, "start": hit.start, "end": hit.end });
+        value["went_to"] = if place_withheld {
+            Value::Null
+        } else {
+            json!({ "tab": tab, "page": hit.page + 1, "start": hit.start, "end": hit.end })
+        };
     }
     value
 }

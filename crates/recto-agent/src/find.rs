@@ -648,6 +648,9 @@ fn went_to<A: crate::SessionAccess>(access: &A, tab: u32, hit: &Hit, going: Goin
         s.viewing_mut().set_find_current(Some((hit.page, hit.start)), Some(tab));
         if s.tabs().active().map(|id| id.0) == Some(tab) {
             let id = TabId(tab);
+            // From a withheld place, the hit gone to says where that was, so it stays withheld (S2's round). Only the person's step comes here from
+            // one: an agent's is refused before it starts ([`crate::place`]).
+            let from_withheld = recto_session::compare::place_withheld(s, id);
             match going {
                 Going::Step => {
                     let _ = s.go_to(id, hit.page);
@@ -658,6 +661,10 @@ fn went_to<A: crate::SessionAccess>(access: &A, tab: u32, hit: &Hit, going: Goin
                         let _ = s.mail_mut().take_jump(id);
                     }
                 }
+            }
+            if from_withheld {
+                recto_session::compare::withhold_place(s, id);
+                s.viewing_mut().withhold_find_current();
             }
         }
     });

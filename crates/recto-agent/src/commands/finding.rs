@@ -157,7 +157,8 @@ impl Cmd for Find {
     /// closing Find, and looking at it start from nothing of it.
     fn starts_from(&self) -> super::FromPlace {
         match self.ask {
-            FindAsk::Step { .. } | FindAsk::Hit(_) => super::FromPlace::Place,
+            FindAsk::Step { .. } => super::FromPlace::PlaceOrHit,
+            FindAsk::Hit(_) => super::FromPlace::Place,
             FindAsk::Query(_) | FindAsk::Open | FindAsk::Close | FindAsk::Look => super::FromPlace::No,
         }
     }

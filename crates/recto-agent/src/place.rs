@@ -65,13 +65,18 @@ pub fn place_withheld_refusal() -> AgentError {
 }
 
 /// **The gate:** whether `actor`'s command that starts `from` the place of tab `id` is refused: an agent's, while the tab's place is withheld, or Back or
-/// Forward would land on a stop made from such a place ([`compare::trail_step_withheld`]).
+/// Forward would land on a stop made from such a place ([`compare::trail_step_withheld`]), or Find's step would go on from a hit stepped to from one.
 pub(crate) fn refuses<L: DocLoader>(session: &Session<L>, actor: Actor, from: FromPlace, id: TabId) -> bool {
     if actor.sees_protected() || from == FromPlace::No {
         return false;
     }
     let withheld = session.tabs().tab(id).is_some_and(|tab| compare::place_withheld_of(session, tab));
-    withheld || matches!(from, FromPlace::Trail { back } if compare::trail_step_withheld(session, id, back))
+    withheld
+        || match from {
+            FromPlace::Trail { back } => compare::trail_step_withheld(session, id, back),
+            FromPlace::PlaceOrHit => session.viewing().find_current_withheld(),
+            FromPlace::No | FromPlace::Place => false,
+        }
 }
 
 /// The state record's sizes and counts, which an answer gives as the host says them.
