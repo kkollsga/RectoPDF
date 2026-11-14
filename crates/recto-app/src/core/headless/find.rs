@@ -21,7 +21,7 @@ fn selected(app: &HeadlessApp) -> Option<recto_index::select::Range> {
 /// the window that went up without the state when it was made again. Decision 23: Find's field, its hits, found again as they're never kept, and the hit gone
 /// to, chosen again by its place and selected on the page. The state's read and the window's remake held, and let through in the order a slow machine has them:
 /// the state, the hits found again on the window up without it, then the remake. The third hit is the current one and selected on both windows, and the next
-/// step goes on from it. (The kit's Find reads pages on its own thread, not through the renderer's workers, so `Seam::Worker` holds nothing of it.)
+/// step goes on from it. (Find reads its pages on its own thread through a worker of its own, at the worker's seam, which isn't held here.)
 #[test]
 fn the_hit_gone_to_is_chosen_again_when_its_hits_come_after_the_state() {
     let disk = Disk::new();
@@ -60,6 +60,55 @@ fn the_hit_gone_to_is_chosen_again_when_its_hits_come_after_the_state() {
     app.act(UiAction::FindReturn { forward: true });
     app.settle();
     assert_eq!(shown(&app).2, Some(7), "and it goes on from there");
+}
+
+/// Failure (slow mode, 2026-11-14: the hand-off test's settle ran out on "Find looking", and nothing said whether one search was slow or searches kept starting
+/// again): with the worker's answers late, Find starts its search over, on the session thread's next call after a page's answer (its own news), and never
+/// finishes, reading pages without end; or a wait that runs out on it says only that Find is looking. Each page's text held at the worker's seam, a session
+/// call made while it's held as a late answer's news makes one, then let through, one at a time however long each is held: Find reads each page once, in one
+/// run, and finishes; and while it's held, what's under way says which run it is and how far it's got.
+#[test]
+fn find_with_late_answers_reads_each_page_once_and_says_how_far_it_is() {
+    const PAGES: u64 = 12;
+    let disk = Disk::new();
+    let doc = disk.pdf("late.pdf", PAGES as usize);
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    let finder = app.core().host.session.finder().clone();
+    recto_platform::slow::gate::hold(&[Seam::Worker]);
+    // Found on no page, as the hand-off test's query is: one read a page, and no page drawn to check a hit's text isn't hidden.
+    app.act(UiAction::FindTyped {
+        text: "not on any page".into(),
+    });
+    app.wait_until("Find started", || finder.looking().is_some());
+    let mut run = None;
+    let mut read = 0;
+    loop {
+        app.wait_until("a page's text held at the worker, or Find done", || {
+            app.waiting(Seam::Worker) > 0 || finder.looking().is_none()
+        });
+        let Some((now, _)) = finder.looking() else { break };
+        assert!(read < PAGES, "page {} read of a {PAGES}-page document: Find started again ({now})", read + 1);
+        assert_eq!(*run.get_or_insert(now), now, "Find started again at page {read}");
+        let busy = crate::settled::under_way(&crate::settled::watched!(app.core()), crate::settled::PageViews::AtRest);
+        let said = format!("Find looking (run {now}, page {read} of {PAGES})");
+        assert!(busy.contains(&said), "a wait running out now says how far Find is: {busy:?}, not {said:?}");
+        // What a late answer's news is: a call on the session thread, which keeps Find with the document.
+        app.send(crate::queue::CoreCall::Find(crate::core::find::FindCall::News));
+        app.let_through(Seam::Worker, 1);
+        read += 1;
+    }
+    recto_platform::slow::gate::open(Seam::Worker);
+    app.settle();
+    assert_eq!(read, PAGES, "each page read once");
+    let view = find::view(app.core());
+    assert!(!view.running, "Find finished: {}", view.status);
+    recto_agent::find::Finding::with_results(&finder, &mut |results| {
+        assert_eq!(Some(results.generation), run, "in the one run");
+        assert_eq!(results.end, Some(recto_agent::find::End::Finished), "{:?}", results.progress);
+        assert_eq!(u64::from(results.progress.pages_done), PAGES);
+    });
 }
 
 /// Failure: an agent's `recto find --next` goes to a hit and the page view doesn't select it, as ⌘G's does, because what the window does after a command was

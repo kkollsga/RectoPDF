@@ -1120,6 +1120,7 @@ final class BookMark: NSView {
         updateZoomLevel()
         layout()
         chrome.refresh()
+        sidebar.find.takeFocusIfWanted()
     }
 
     func appearanceChanged() {

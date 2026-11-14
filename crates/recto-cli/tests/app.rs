@@ -2848,7 +2848,16 @@ fn find_in_the_sidebar_lists_steps_and_keeps_to_its_room() {
         .get("app")
         .cloned()
         .unwrap_or(opened);
-    assert_eq!(opened["focus_view"], "find", "⌘F gives the field the keyboard: {}", opened["find"]);
+    // In the same read that has Find open: the host takes the field's keyboard in the turn Find opens (CI run 43621847377 read it a turn early). If not,
+    // a read after a settle tells a keyboard come late from one lost.
+    if (opened["focus_view"].as_str(), opened["find"]["field_has_focus"].as_bool()) != (Some("find"), Some(true)) {
+        run.settled();
+        let later = run.report();
+        panic!(
+            "⌘F gives the field the keyboard as Find opens: focus_view {} with {}; after a settle focus_view {} and field_has_focus {} (late if \"find\" and true there, lost if not)",
+            opened["focus_view"], opened["find"], later["app"]["focus_view"], later["app"]["find"]["field_has_focus"]
+        );
+    }
     run.ok(&["qa", "find-type", "words"]);
     // Settled once Find has read all 200 pages, each a worker's job: as long as that takes, which with the worker's answers late (the slow stage) came to
     // 29 s of this test's 30 s here, and past it with the profile doubled (2026-11-11). What's checked is that it settles, not how soon.
