@@ -33,6 +33,7 @@ mod render;
 pub mod saving;
 pub use render::{output_exists, publish_picture, svg_in_memory};
 mod command;
+mod highlighting;
 mod route;
 mod search;
 mod selecting;

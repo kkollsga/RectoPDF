@@ -82,6 +82,20 @@ pub(crate) fn every_command() -> Vec<Command> {
             anyway: false,
         }),
         Command::from(crate::commands::text::Text { tab: tab(), page: 1 }),
+        Command::from(crate::commands::highlight::Highlight {
+            tab: tab(),
+            page: Some(1),
+            to_page: None,
+            chars: Some("0-5".into()),
+            at: None,
+            to: None,
+            unit: None,
+        }),
+        Command::from(crate::commands::highlight::HighlightRemove {
+            tab: tab(),
+            what: crate::commands::highlight::RemoveWhat::Id(0),
+        }),
+        Command::from(crate::commands::highlight::Highlights { tab: tab(), page: Some(1) }),
         Command::from(crate::commands::text::Select {
             tab: tab(),
             page: Some(1),

@@ -28,6 +28,7 @@ Read a document:
   signatures           What the file says about signatures.
   sidebar              The sidebar's rows, as the app would draw them.
   links                A page's links and where each goes: a page of this document, a web or email address, or refused, as a script, a program or a file on the Mac always is.
+  highlights           The tab's unsaved highlights, with their numbers and who made them, and with `--page` the file's own on that page.
 
 Open and move around:
   open                 Opens a PDF as the active tab, or goes to its tab if it's already open.
@@ -61,6 +62,8 @@ Change pages, then save:
   save                 Saves a tab's edits into its file.
   save-as              Saves a tab's document as a new file, and the tab goes over to it.
   edit mode            Turns the window's edit mode on or off, as the user does: on, the sidebar shows its tools for editing pages and its Rotate turns the page being read rather than every page.
+  highlight            Highlights what `recto select` takes for the same arguments, as Mark Up > Highlight does: an unsaved edit like a turn, written into the PDF as a standard highlight on Save.
+  highlight remove     Takes unsaved highlights away, as one step: by number, under a point, or wherever a pick touches one (with none, every one on the page being read).
 
 Wait instead of polling:
   wait tab-open        Blocks until a tab matching the selector is open.

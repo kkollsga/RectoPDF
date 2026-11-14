@@ -328,6 +328,7 @@ family! {
         Signatures(reading::Signatures),
         Sidebar(reading::Sidebar),
         Links(linking::Links),
+        Highlights(highlight::Highlights),
     }
 }
 
@@ -372,6 +373,9 @@ family! {
         Save(saving::Save),
         #[line(edit_mode::line::EditMode)]
         EditMode(edit_mode::EditMode),
+        Highlight(highlight::Highlight),
+        #[line(highlight::line::HighlightRemove)]
+        HighlightRemove(highlight::HighlightRemove),
     }
 }
 
@@ -516,6 +520,7 @@ const COMBINATIONS: &[(&str, &str)] = &[
     ("compare", compare::READING_ALONE),
     ("find", finding::ONE_THING),
     ("find", finding::JUMP_WITH_A_STEP),
+    ("highlight_remove", highlight::ID_ALONE),
 ];
 
 /// For tests (the table's and the fuzz target's): whether a line the CLI built, each of whose words its row takes, is refused as it's read only for what its

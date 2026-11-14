@@ -207,6 +207,7 @@ codes! {
     GENERATING_FAILED = "generating_failed", Next::ByExit;
     HAND_OFF_REFUSED = "hand_off_refused", Next::ByExit;
     HARD_LINKS = "hard_links", Next::ByExit;
+    HIGHLIGHT_IN_FILE = "highlight_in_file", Next::Says("Highlights already in the file can't be taken out yet. `recto highlights --page N` says which are edits (`from: edit`).");
     HISTORY_FULL = "history_full", Next::ByExit;
     HISTORY_ROLLED_OFF = "history_rolled_off", Next::ByExit;
     INDEX_FAILED = "index_failed", Next::ByExit;
@@ -231,6 +232,7 @@ codes! {
     NO_PAGES_LEFT = "no_pages_left", Next::ByExit;
     NO_RECORD = "no_record", Next::ByExit;
     NO_STATE = "no_state", Next::ByExit;
+    NO_SUCH_HIGHLIGHT = "no_such_highlight", Next::Says("`recto highlights` lists this tab's unsaved highlights and their numbers.");
     NO_SUCH_HIT = "no_such_hit", Next::ByExit;
     NO_SUCH_IMAGE = "no_such_image", Next::ByExit;
     NO_SUCH_LABEL = "no_such_label", Next::ByExit;
@@ -239,6 +241,7 @@ codes! {
     NO_SUCH_TAB = "no_such_tab", Next::Says("`recto tabs` lists what's open. `recto open <file.pdf>` opens a file.");
     NO_SWAP = "no_swap", Next::ByExit;
     NO_TEMP = "no_temp", Next::ByExit;
+    NO_TEXT_THERE = "no_text_there", Next::Says("`recto select` with the same arguments shows what they take. `recto text --page N` gives a page's characters.");
     NOT_A_BUILD = "not_a_build", Next::ByExit;
     NOT_A_FILE = "not_a_file", Next::ByExit;
     NOT_A_FOLDER = "not_a_folder", Next::ByExit;
@@ -342,6 +345,7 @@ codes! {
     TOO_LARGE = "too_large", Next::ByExit;
     TOO_LARGE_AT_THIS_SCALE = "too_large_at_this_scale", Next::Says("Try a smaller `--scale`. 2 is twice the page's size, and 1 is its own.");
     TOO_MANY_PAGES = "too_many_pages", Next::Says("Add less to this document.");
+    TOO_MANY_HIGHLIGHTS = "too_many_highlights", Next::Says("Save, which puts them in the file, and then go on.");
     TOO_MANY_PANES = "too_many_panes", Next::ByExit;
     TOO_MANY_SOURCES = "too_many_sources", Next::Says("Add less to this document.");
     TOO_MANY_TABS = "too_many_tabs", Next::Says("`recto close` closes a tab.");
