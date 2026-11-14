@@ -25,6 +25,7 @@ fn searched_now() -> u64 {
 }
 
 type Then = Mutex<Option<(std::thread::ThreadId, Box<dyn FnOnce() + Send>)>>;
+type AtPane = Mutex<Option<(usize, Box<dyn FnOnce() + Send>)>>;
 
 /// **What a test asked of the reads of the views' places and their take-in,** and the looks counted: in [`crate::core::Serving`], test builds only.
 #[derive(Default)]
@@ -35,6 +36,10 @@ pub struct PlaceSeams {
     command_taken: Then,
     /// The session thread's look has read the views and taken nothing in.
     look_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// The session thread's look has shown the panes up to this one, and not the rest ([`Self::after_the_look_shows_pane`]).
+    pane_shown: AtPane,
+    /// The session thread's next look has said the jumps it sent to the session ([`Self::after_the_look_sends`]).
+    look_sent: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// Looks begun, and looks done (the jumps they sent said to the session).
     looks_begun: AtomicU64,
     looks_done: AtomicU64,
@@ -80,8 +85,42 @@ impl PlaceSeams {
         }
     }
 
+    /// The look has shown this pane, and the panes after it are still as they were.
+    pub(crate) fn pane_shown(&self, pane: usize) {
+        let then = {
+            let mut asked = crate::lock(&self.pane_shown);
+            if asked.as_ref().is_some_and(|(at, _)| *at == pane) {
+                asked.take()
+            } else {
+                None
+            }
+        };
+        if let Some((_, then)) = then {
+            then();
+        }
+    }
+
+    /// **`then` runs on the session thread once its next look has shown `pane`, and before it shows the panes after it** (the fourth review's item 5):
+    /// while a comparison's tabs shift, a tab is shown in its new pane before the pane it's leaving is given another. With [`Self::after_the_look_sends`],
+    /// what a command reads there and takes in once the look has said its jumps sent.
+    #[cfg(test)]
+    pub(crate) fn after_the_look_shows_pane(&self, pane: usize, then: impl FnOnce() + Send + 'static) {
+        *crate::lock(&self.pane_shown) = Some((pane, Box::new(then)));
+    }
+
+    /// **`then` runs on the session thread once its next look has said the jumps it sent,** before anything after the look: as a command whose read was
+    /// made during the look takes it in then.
+    #[cfg(test)]
+    pub(crate) fn after_the_look_sends(&self, then: impl FnOnce() + Send + 'static) {
+        *crate::lock(&self.look_sent) = Some(Box::new(then));
+    }
+
     /// The look is done, the jumps it sent said to the session.
     pub(crate) fn look_done(&self) {
+        let then = crate::lock(&self.look_sent).take();
+        if let Some(then) = then {
+            then();
+        }
         self.looks_done.fetch_add(1, Ordering::SeqCst);
     }
 

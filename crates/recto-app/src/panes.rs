@@ -114,7 +114,9 @@ impl Panes {
             }
         }
         while extra.len() + 1 < count {
-            let engine = Engine::new(self.config.clone(), Arc::clone(&self.hooks));
+            // Its draws told with the pane's number (the fourth review's item 5): a pane's page views are never more than `MAX_PANES`.
+            let view = u8::try_from(extra.len() + 1).unwrap_or(u8::MAX);
+            let engine = Engine::new(self.config.clone(), Arc::new(PaneEvents::new(view, Arc::clone(&self.hooks))));
             engine.set_paper(paper);
             if !window_open {
                 engine.window_closed();
@@ -294,6 +296,46 @@ pub fn margins(pane: usize, count: usize) -> (f64, f64) {
         (PANE_MARGIN, CORNER_MARGIN)
     } else {
         (PANE_MARGIN, PANE_MARGIN)
+    }
+}
+
+/// **A pane's page view's events,** passed on to the app's with the pane's number on each draw ([`EngineEvents::page_drawn_by`]): pane 0's page view has the
+/// app's own, numbered 0.
+struct PaneEvents {
+    view: u8,
+    events: Arc<dyn EngineEvents>,
+}
+
+impl PaneEvents {
+    fn new(view: u8, events: Arc<dyn EngineEvents>) -> Self {
+        Self { view, events }
+    }
+}
+
+impl EngineEvents for PaneEvents {
+    fn ops_ready(&self) {
+        self.events.ops_ready();
+    }
+    fn note_changed(&self) {
+        self.events.note_changed();
+    }
+    fn page_moved(&self) {
+        self.events.page_moved();
+    }
+    fn page_drawn(&self, tab: u32, page: u32, failure: Option<&'static str>, asked: u64) {
+        self.events.page_drawn_by(self.view, tab, page, failure, asked);
+    }
+    fn page_drawn_by(&self, _view: u8, tab: u32, page: u32, failure: Option<&'static str>, asked: u64) {
+        self.page_drawn(tab, page, failure, asked);
+    }
+    fn copy_ready(&self) {
+        self.events.copy_ready();
+    }
+    fn file_replaced(&self, tab: u32) {
+        self.events.file_replaced(tab);
+    }
+    fn file_length(&self, tab: u32, pages: u32, version: u64) {
+        self.events.file_length(tab, pages, version);
     }
 }
 

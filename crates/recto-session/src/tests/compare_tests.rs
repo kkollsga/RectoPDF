@@ -449,7 +449,7 @@ fn a_views_word_from_before_the_persons_release_is_not_taken_in() {
         let before_send = s.view_told_of(plain, place_on(7, 0.6), 60);
         let kept = crate::place_shown(s.tabs().tab(plain).unwrap()).map(|place| (place.zoom, place.within));
         let to = s.mail_mut().take_jump(plain).expect("the person's jump");
-        s.mail_mut().jump_sent(plain, to, 100);
+        s.mail_mut().jump_sent(plain, to, 100, 0);
         let read_before = s.view_told_of(plain, place_on(7, 0.6), 90);
         let at_the_jump = s.view_told_of(plain, place_on(p, 0.0), 100);
         (before_send, kept, read_before, at_the_jump)
@@ -637,12 +637,12 @@ fn draws_asked_before_a_withheld_place_was_let_go_are_dropped() {
         failure: None,
     };
     s.jump_as(plain, 2, 0.0, Author::Owner).unwrap();
-    assert!(!s.mail_mut().note_drawn_asked(note(8), 100), "drawn before the jump was sent");
+    assert!(!s.mail_mut().note_drawn_asked(note(8), 100, 0), "drawn before the jump was sent");
     let to = s.mail_mut().take_jump(plain).expect("the goto's jump");
-    s.mail_mut().jump_sent(plain, to, 200);
-    assert!(!s.mail_mut().note_drawn_asked(note(6), 199), "asked before the send");
+    s.mail_mut().jump_sent(plain, to, 200, 0);
+    assert!(!s.mail_mut().note_drawn_asked(note(6), 199, 0), "asked before the send");
     assert_eq!(s.mail().draw_note(plain, 6), None);
-    assert!(s.mail_mut().note_drawn_asked(note(2), 200), "asked of the view at the jump");
+    assert!(s.mail_mut().note_drawn_asked(note(2), 200, 0), "asked of the view at the jump");
     assert!(s.mail().draw_note(plain, 2).is_some());
     let other = s.open(&PathBuf::from("/d/other.pdf")).unwrap();
     let plain_note = DrawNote {
@@ -650,6 +650,6 @@ fn draws_asked_before_a_withheld_place_was_let_go_are_dropped() {
         page: 0,
         failure: None,
     };
-    assert!(s.mail_mut().note_drawn_asked(plain_note, 1), "a tab never withheld");
+    assert!(s.mail_mut().note_drawn_asked(plain_note, 1, 0), "a tab never withheld");
     let _ = locked;
 }

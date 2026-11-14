@@ -666,7 +666,7 @@ fn click_entry(s: &mut Session<impl DocLoader>, id: TabId, page: u32, within: f6
     s.jump(id, page, within).unwrap();
     s.mail_mut().jump_is_to_entry(id, entry);
     let to = s.mail().waiting_jump(id).expect("a jump waiting");
-    s.mail_mut().jump_sent(id, to, stamp);
+    s.mail_mut().jump_sent(id, to, stamp, 0);
     to
 }
 
