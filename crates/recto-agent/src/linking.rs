@@ -111,7 +111,8 @@ pub fn follow<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, page: u3
         let went = match &chosen.target {
             LinkTarget::Page { page: file_page, within } => {
                 let to = s.pages().position_in_same_file(id, position, *file_page).ok_or_else(|| AgentError::new(Code::LINK_GOES_NOWHERE, "The page this link goes to isn't in the document as it's been edited.", exit::FAILED))?;
-                s.jump_as(id, to, within.map_or(0.0, f64::from), actor.author())?;
+                // A link's jump, chosen from where the tab is: it keeps a withheld place withheld, whoever follows it (the fourth review's item 2).
+                recto_session::trail::jump_from_place(s, id, to, within.map_or(0.0, f64::from), actor.author())?;
                 "page"
             }
             LinkTarget::History { back } => {

@@ -657,14 +657,16 @@ fn went_to<A: crate::SessionAccess>(access: &A, tab: u32, hit: &Hit, going: Goin
                     let _ = s.go_to(id, hit.page);
                 }
                 // Marked for Back, and the page view's told nothing more: the app brings the hit itself into view, a third down, which landing at the page's top would undo.
+                // A jump chosen from where the tab is, whoever chose it: the hit's brought into view only as far as it isn't already, so when it's in
+                // view the place hasn't moved at all, and a withheld place stays withheld (the fourth review's item 1; `recto_session::trail::Chosen`).
                 Going::Jump(by) => {
-                    if s.jump_as(id, hit.page, 0.0, by).is_ok() {
+                    if recto_session::trail::jump_from_place(s, id, hit.page, 0.0, by).is_ok() {
                         let _ = s.mail_mut().take_jump(id);
                     }
                 }
             }
-            // A step lands where it does from the place, so the place stays withheld, with or without its jump; a hit chosen by its index is an absolute
-            // move, which lets it go when it's the person's (D-1), and an agent's doesn't ([`recto_session::Session::jump_as`], D-A).
+            // A step lands where it does from the place, so the place and the hit gone to stay withheld, with or without its jump; a hit chosen by its
+            // index keeps the place withheld as any jump from the place does, and the hit, chosen by itself, isn't marked.
             if from_withheld && stepped {
                 recto_session::compare::withhold_place(s, id);
                 s.viewing_mut().withhold_find_current();

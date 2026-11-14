@@ -540,7 +540,7 @@ impl RecordStore {
                 tabs: Vec::new(),
                 comparison: None,
                 recent: Vec::new(),
-                withheld_places: Vec::new(),
+                withheld_places: recto_session::record::WithheldPlaces::default(),
             },
         };
         // What the disk has, so what loading the journals changes in it does get written.
@@ -1484,7 +1484,7 @@ mod tests {
                 .collect(),
             comparison: None,
             recent: Vec::new(),
-            withheld_places: Vec::new(),
+            withheld_places: recto_session::record::WithheldPlaces::default(),
         }
     }
 
@@ -1545,7 +1545,7 @@ mod tests {
         let whole = store.write_record(&record, &PlaceDelta::default(), false).unwrap();
         record.tabs[0].page = 3;
         record.tabs[0].place = Some(place());
-        record.withheld_places = vec![1];
+        record.withheld_places = recto_session::record::WithheldPlaces::of(vec![1]);
         let delta = PlaceDelta {
             places: vec![(1, 3, Some(place()))],
             active: Some(1),
@@ -1555,8 +1555,8 @@ mod tests {
         assert!(wrote >= whole, "{wrote} bytes, against {whole} for the whole record: a line");
         drop(store);
         let again = RecordStore::open(&paths, Flavor::App);
-        assert_eq!(loaded_record(&again).withheld_places, [1]);
-        record.withheld_places.clear();
+        assert_eq!(loaded_record(&again).withheld_places.ids(), [1]);
+        record.withheld_places = recto_session::record::WithheldPlaces::default();
         assert!(
             again.write_record(&record, &PlaceDelta::default(), false).unwrap() >= whole - 16,
             "let go: whole too"

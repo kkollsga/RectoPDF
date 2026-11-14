@@ -379,7 +379,7 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
     };
     access.with(|s| {
         if let Some(page) = page {
-            go_to(s, id, page, 0.0, actor.author())?;
+            go_to(s, id, page, 0.0, actor.author(), recto_session::trail::Chosen::ByItself)?;
         }
         if is_new {
             events.push(event::tab_opened(s, id));

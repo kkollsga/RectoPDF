@@ -374,7 +374,7 @@ fn withholding_a_place_carries_through_syncing_to_a_third_tab() {
 
 /// Failure (the second security review, D-1): the person's own scroll, page keys, Back or Forward in a tab left by following lets its place go, so where
 /// it lands, a function of where following left it, is told; or a place the page view tells of after a zoom or a change of layout does. Only an absolute
-/// move lets a withheld place go: a jump (an agent's or the person's `goto`, a contents row, a link, a Find hit chosen).
+/// move lets a withheld place go: the person's jump to a place chosen by itself (`goto`, a contents row), never a link or a Find hit (`trail::Chosen`).
 #[test]
 fn only_an_absolute_move_lets_a_withheld_place_go() {
     let (mut s, plain, _) = left_by_following();
@@ -449,7 +449,7 @@ fn a_views_word_from_before_the_persons_release_is_not_taken_in() {
         let before_send = s.view_told_of(plain, place_on(7, 0.6), 60);
         let kept = crate::place_shown(s.tabs().tab(plain).unwrap()).map(|place| (place.zoom, place.within));
         let to = s.mail_mut().take_jump(plain).expect("the person's jump");
-        s.mail_mut().jump_sent(plain, to, 100);
+        s.mail_mut().jump_sent(plain, to, 100, 0);
         let read_before = s.view_told_of(plain, place_on(7, 0.6), 90);
         let at_the_jump = s.view_told_of(plain, place_on(p, 0.0), 100);
         (before_send, kept, read_before, at_the_jump)
@@ -566,10 +566,12 @@ fn the_record_keeps_a_withheld_place_and_its_trails_marks() {
     );
 }
 
-/// Failure (the third review, D-C; the coordinator's conditions): the record's list of tabs whose place is withheld, read from a file that's hostile, panics,
-/// grows by what it claims, marks a tab it doesn't name, or is lost: an id that names no tab, one named twice, a list one past [`crate::MAX_TABS`], and a
-/// list of the wrong type. What names a tab withholds that tab and no other after a restore, as the ids are the tabs' own; one past the cap and a wrong
-/// type fail the record as damaged; and a record with nothing withheld has no such key.
+/// Failure (the third review, D-C; the fourth's item 4): the record's list of tabs whose place is withheld, read from a file that's hostile, panics, grows
+/// by what it claims, marks a tab it doesn't name, gives back a place it named, or costs the person their session: an id that names no tab, one named
+/// twice, a list one past [`crate::MAX_TABS`], and a list of the wrong type. What names a tab withholds that tab and no other after a restore, as the ids
+/// are the tabs' own; a list that can't be read (past the cap, or the wrong type) withholds every tab's place, as "something was withheld and which can't
+/// be told" (fail closed), and the rest of the record is read as usual, so the tabs and the active one come back; a record with nothing withheld has no
+/// such key.
 #[test]
 fn the_records_list_of_withheld_places_is_read_as_hostile() {
     let (mut s, plain) = followed_after_jumps(0);
@@ -588,16 +590,37 @@ fn the_records_list_of_withheld_places_is_read_as_hostile() {
     written["withheld_places"] = serde_json::json!([plain.0, 999_999, plain.0]);
     assert_eq!(read(&written), Ok([true, false]), "an id of no tab is nothing, and one twice is one");
     written["withheld_places"] = serde_json::json!(vec![plain.0; crate::MAX_TABS + 1]);
-    assert!(read(&written).is_err(), "one past the cap is damage");
+    assert_eq!(read(&written), Ok([true, true]), "one past the cap withholds every tab's place");
     for wrong in [
         serde_json::json!("1"),
         serde_json::json!([-1]),
-        serde_json::json!([{}]),
+        serde_json::json!([plain.0, {}]),
+        serde_json::json!([plain.0, [1, 2]]),
+        serde_json::json!([4_294_967_296_u64]),
         serde_json::json!({"1": true}),
+        serde_json::json!(null),
+        serde_json::json!(true),
     ] {
         written["withheld_places"] = wrong.clone();
-        assert!(read(&written).is_err(), "{wrong} is damage");
+        assert_eq!(read(&written), Ok([true, true]), "{wrong} withholds every tab's place");
     }
+    // The rest of the record is read as usual: the tabs and the one being read.
+    let bytes = record::seal(record::MAIN_KIND, 3, &serde_json::to_vec(&written).unwrap());
+    let back = record::decode_record(&bytes, record::CURRENT_VERSION).expect("the record reads");
+    assert_eq!(back.record.tabs.len(), s.tabs().all().len());
+    assert_eq!(back.record.active, s.tabs().active().map(|id| id.0));
+    // Written again, it says each tab by its id, so a restart after it still withholds them all; and a record read with the list unreadable, written as it
+    // was read (as a compaction does), reads back the same.
+    let mut every = session(200);
+    every.restore(&back.record, HashMap::new()).unwrap();
+    let sorted = |mut ids: Vec<u32>| {
+        ids.sort_unstable();
+        ids
+    };
+    let written_ids: Vec<u32> = serde_json::from_value(body(&every)["withheld_places"].clone()).expect("a list of ids");
+    assert_eq!(sorted(written_ids), sorted(every.tabs().all().iter().map(|tab| tab.id.0).collect()));
+    let again = record::decode_record(&record::encode_record(&back.record, 4), record::CURRENT_VERSION).expect("written as read");
+    assert_eq!(again.record.withheld_places, back.record.withheld_places);
     let plain_only = session(10);
     assert!(body(&plain_only).get("withheld_places").is_none(), "nothing withheld, no key");
 }
@@ -614,12 +637,12 @@ fn draws_asked_before_a_withheld_place_was_let_go_are_dropped() {
         failure: None,
     };
     s.jump_as(plain, 2, 0.0, Author::Owner).unwrap();
-    assert!(!s.mail_mut().note_drawn_asked(note(8), 100), "drawn before the jump was sent");
+    assert!(!s.mail_mut().note_drawn_asked(note(8), 100, 0), "drawn before the jump was sent");
     let to = s.mail_mut().take_jump(plain).expect("the goto's jump");
-    s.mail_mut().jump_sent(plain, to, 200);
-    assert!(!s.mail_mut().note_drawn_asked(note(6), 199), "asked before the send");
+    s.mail_mut().jump_sent(plain, to, 200, 0);
+    assert!(!s.mail_mut().note_drawn_asked(note(6), 199, 0), "asked before the send");
     assert_eq!(s.mail().draw_note(plain, 6), None);
-    assert!(s.mail_mut().note_drawn_asked(note(2), 200), "asked of the view at the jump");
+    assert!(s.mail_mut().note_drawn_asked(note(2), 200, 0), "asked of the view at the jump");
     assert!(s.mail().draw_note(plain, 2).is_some());
     let other = s.open(&PathBuf::from("/d/other.pdf")).unwrap();
     let plain_note = DrawNote {
@@ -627,6 +650,6 @@ fn draws_asked_before_a_withheld_place_was_let_go_are_dropped() {
         page: 0,
         failure: None,
     };
-    assert!(s.mail_mut().note_drawn_asked(plain_note, 1), "a tab never withheld");
+    assert!(s.mail_mut().note_drawn_asked(plain_note, 1, 0), "a tab never withheld");
     let _ = locked;
 }

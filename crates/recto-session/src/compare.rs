@@ -205,6 +205,9 @@ impl<L: DocLoader> Session<L> {
             .unwrap_or(tabs[0]);
         // Synced scroll stays on through a change of tabs, starting again from where each is now.
         let synced = self.comparison.as_ref().is_some_and(|was| was.synced);
+        for id in tabs {
+            self.mail.compared(*id);
+        }
         self.comparison = Some(comparison);
         if synced {
             self.set_compare_synced(true);
@@ -278,6 +281,7 @@ impl<L: DocLoader> Session<L> {
         }
         let page = self.tabs.tab(id).map_or(0, |tab| tab.page);
         comparison.add(id, page)?;
+        self.mail.compared(id);
         self.sleeper().wake_list(id);
         self.comparison = Some(comparison);
         self.activate(id);
@@ -369,8 +373,8 @@ pub fn synced_would_withhold<L: DocLoader>(session: &Session<L>, panes: &[TabId]
     panes.iter().any(|id| session.tabs.tab(*id).is_some_and(withheld_by_itself))
 }
 
-/// **Lets a withheld place go, with all that came of it,** as the person's own jump sets an absolute place (the second review, D-1 and S-2; only the
-/// person's, by [`Session::jump_as`]'s rule, D-A of the third review): the flag; the tab's draw
+/// **Lets a withheld place go, with all that came of it,** as the person's own jump to a place chosen by itself sets one (the second review, D-1 and S-2; only the
+/// person's, by `trail::jump_with`'s rule, D-A of the third review and the fourth's items 1 and 2): the flag; the tab's draw
 /// notes and a jump on its way, drawn or sent from where it was; the exact place the page view last said, which on the page the jump goes to too would
 /// say how far down it following had left the tab, and its zoom only then; and every draw of the tab from before the jump's send, which the mail drops
 /// as it's told (the mail's `release`). Nothing for a tab whose place isn't withheld on its own account, nor one that follows: what
@@ -388,7 +392,8 @@ pub(crate) fn let_go_of_place<L: DocLoader>(session: &mut Session<L>, id: TabId)
         tab.place_dirty = true;
     }
     let live = session.warm.contains(id);
-    session.mail.release(id, live);
+    let compared = session.comparison.as_ref().is_some_and(|comparison| comparison.contains(id));
+    session.mail.release(id, live, compared);
 }
 
 /// **Whether `back` (or forward) in a tab would land on a stop made from a place withheld from agents** (S2's round): such a stop is where following left
