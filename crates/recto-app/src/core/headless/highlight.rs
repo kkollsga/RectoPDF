@@ -226,3 +226,39 @@ fn listed_on(app: &HeadlessApp, page: u32) -> Value {
     app.agent(Level::ReadOnly, &format!(r##"{{"cmd":"highlights","tab":"active","page":{page}}}"##))
         .expect("highlights")
 }
+
+/// **Failure (second review of R4.3, S4): a tab with a file highlight taken out is shown before its page view has its set**, so the draws its showing
+/// starts are made with the highlight there, and only a later set change takes them back. Switching to it, the set is in the page view's hands
+/// while its showing is held at the page view's door.
+#[test]
+fn a_tab_with_a_removal_is_given_its_set_before_it_is_shown() {
+    use recto_reader::engine::Ask;
+    let disk = Disk::new();
+    let (marked, plain) = (disk.pdf("marked.pdf", 1), disk.pdf("plain.pdf", 1));
+    let app = disk.start();
+    app.open(&marked);
+    app.settle();
+    let marked_tab = app.core().host.session.with_session(|s| s.tabs().active()).expect("a tab").0;
+    app.agent(Level::Control, r##"{"cmd":"highlight","tab":"active","page":1,"chars":"0-5"}"##)
+        .expect("highlight");
+    app.agent(Level::Control, r##"{"cmd":"save","tab":"active"}"##).expect("save");
+    app.settle();
+    let file = listed_on(&app, 1);
+    let [x, y, width, height] = ["0", "1", "2", "3"].map(|at| file["file"]["highlights"][0]["rects"][0][at.parse::<usize>().unwrap()].as_f64().unwrap());
+    let at = format!("{},{}", x + width / 2.0, y + height / 2.0);
+    app.recto(Level::Control, &["highlight", "remove", "--page", "1", "--at", &at])
+        .expect("taken out");
+    app.settle();
+    app.open(&plain);
+    app.settle();
+    assert_eq!(hidden_sets(&app), 0, "the other tab shown, its set is taken back");
+    let engine = app.core().panes.reading_engine(&app.core().engine);
+    engine.qa().hold_asks(Ask::Activate, true);
+    app.agent(Level::Control, &format!(r##"{{"cmd":"tap","tab":"#{marked_tab}"}}"##)).expect("tap");
+    assert!(engine.qa().wait_for_held_asks(1), "the look showed the tab");
+    let given = hidden_sets(&app);
+    engine.qa().hold_asks(Ask::Activate, false);
+    app.settle();
+    assert_eq!(given, 1, "its set was given before it was shown");
+    assert_eq!(hidden_sets(&app), 1);
+}

@@ -181,6 +181,16 @@ fn make_marks<L: DocLoader>(session: &Session<L>, id: TabId, list: &recto_sessio
     Arc::new(TabMarks { tab: id.0, pages, hidden })
 }
 
+/// **The file's highlights a tab has taken out, given to the pane's page view before it shows the tab** (second review of R4.3, S4), so the draws
+/// its showing starts leave them out from the first; and a tab it stops showing has its set taken back first. Nothing when it has that set already.
+pub fn before_showing(engine: &recto_reader::Engine, synced: &mut MarksSynced, marks: Option<&Arc<TabMarks>>) {
+    give_hidden(
+        engine,
+        synced,
+        marks.and_then(|marks| marks.hidden.as_ref().map(|(file, set)| (marks.tab, file, set))),
+    );
+}
+
 /// What a pane's page view has been given of highlights.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MarksSynced {
@@ -205,11 +215,7 @@ impl MarksSynced {
 /// when the tab has none and some may be there. Nothing otherwise, so a tab without highlights, and every pass with nothing new, costs a comparison
 /// and no op.
 pub fn give(engine: &recto_reader::Engine, synced: &mut MarksSynced, tab: TabId, marks: Option<&Arc<TabMarks>>, paper: PaperKind) {
-    give_hidden(
-        engine,
-        synced,
-        marks.and_then(|marks| marks.hidden.as_ref().map(|(file, set)| (marks.tab, file, set))),
-    );
+    before_showing(engine, synced, marks);
     match marks {
         Some(marks) => {
             let now = Some((Arc::clone(marks), paper));

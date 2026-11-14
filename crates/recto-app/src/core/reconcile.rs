@@ -170,6 +170,7 @@ fn show_in_panes(inner: &Inner, synced: &mut Synced, panes: &[PaneSnapshot], pap
     for (pane, snapshot) in panes.iter().enumerate() {
         let Some(engine) = inner.panes.engine(&inner.engine, pane) else { continue };
         changed |= synced.panes[pane].tab != Some(snapshot.id);
+        super::highlight::before_showing(&engine, &mut synced.panes[pane].marks, snapshot.marks.as_ref());
         sent.extend(show_in_pane(inner, &engine, &mut synced.panes[pane], snapshot));
         super::highlight::give(&engine, &mut synced.panes[pane].marks, snapshot.id, snapshot.marks.as_ref(), paper);
     }
