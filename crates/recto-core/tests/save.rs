@@ -1811,3 +1811,63 @@ fn a_highlight_that_cant_be_placed_refuses_the_save() {
     );
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
+
+/// Failure (review of R4.3): a highlight on a page added from another PDF (the copy path, whose `/Annots` names a list in that file) is lost, or
+/// keeps the added page's own annotations out; or one on a page turned by an edit is written in the turned frame rather than where the person saw
+/// it, which is the page's frame before the edit's turn.
+#[test]
+fn a_highlight_on_an_added_page_and_on_a_page_turned_by_an_edit_is_where_it_was_shown() {
+    let dir = Dir::new();
+    let path = dir.write("doc.pdf", &marked(&["MINE"]));
+    let other = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Contents 4 0 R /Annots 5 0 R >>".into()),
+        Raw::Stream {
+            dict: String::new(),
+            data: b"BT ET".to_vec(),
+        },
+        Raw::Dict("[6 0 R]".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] >>".into()),
+    ]);
+    let other_path = dir.write("other.pdf", &other);
+    let added = [AddedFile {
+        path: &other_path,
+        page_count: 1,
+        stamp: Some(stamp(&other_path)),
+    }];
+    let order = [
+        PageRef {
+            source: 0,
+            page: 0,
+            quarter_turns: 1,
+        },
+        PageRef {
+            source: 1,
+            page: 0,
+            quarter_turns: 0,
+        },
+    ];
+    let line = [[40.0, 100.0, 100.0, 12.0]];
+    let highlights = [
+        save::NewHighlight { position: 0, rects: &line },
+        save::NewHighlight { position: 1, rects: &line },
+    ];
+    let asked = SaveRequest {
+        highlights: &highlights,
+        ..request(&path, 1, &order, &added)
+    };
+    save::save(&asked, Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!(read_pages(&path)[0].1, 90, "the edit's turn is written");
+    let turned = annotations_of(&path, 0);
+    assert_eq!(turned.len(), 1);
+    // In the page's frame before the edit's turn: 100 points down from the top of a 792-point page.
+    assert_eq!(turned[0].1, vec![40.0, 692.0, 140.0, 692.0, 40.0, 680.0, 140.0, 680.0]);
+    let copied = annotations_of(&path, 1);
+    assert_eq!(
+        copied.iter().map(|(kind, ..)| kind.as_slice()).collect::<Vec<_>>(),
+        vec![&b"Link"[..], b"Highlight"],
+        "the added page keeps its own and gains the highlight"
+    );
+    assert_eq!(copied[1].1, vec![40.0, 200.0, 140.0, 200.0, 40.0, 188.0, 140.0, 188.0]);
+}
