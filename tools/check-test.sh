@@ -746,6 +746,11 @@ check "a how-to page naming what isn't there stops the quick check after the rat
 : > "$CALLS"
 out=$(STUB_FAIL=doc-paths full); rc=$?
 check "and the full one" "1 2" "$rc $(ran)"
+chmod -x tools/doc-paths.sh
+out=$(tools/check.sh --quick 2>&1); rc=$?
+check "a check that can't run fails, not skips" "1 1" "$rc $(ran)"
+has "saying so" "isn't executable" "$out"
+chmod +x tools/doc-paths.sh
 sel > /dev/null
 check "a change outside tools/ runs neither of the tools' tests" "0" "$(sel_has 'ratchet-test\|check-test')"
 echo t > tools/note.txt && git add . && git commit -qm tools-change-2
