@@ -229,6 +229,7 @@ const ANSWERED: &[fn(&AnswerParts<'_>, &Ran<'_>)] = &[
     super::highlight::answered,
     super::updates::answered,
     super::printing::answered,
+    super::snapshot_tool::answered,
 ];
 
 pub(super) fn answered(parts: &AnswerParts<'_>, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {

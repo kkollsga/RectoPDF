@@ -127,7 +127,7 @@ const EXPORTS: &[(&str, Is, &[&str])] = &[
     ("memory_pressure", Input, &[]),
     ("selection_press", Input, &["PaneRead"]),
     ("selection_drag", Input, &[]),
-    ("selection_release", Input, &["LinkClicked"]),
+    ("selection_release", Input, &["LinkClicked", "SnapshotTaken"]),
     // The person's own notices, which no agent sees: their time is up, or the person dismissed them.
     ("dismiss_selection_notice", Input, &[]),
     ("update_alert_answered", Input, &[]),
@@ -194,7 +194,8 @@ const EXPORTS: &[(&str, Is, &[&str])] = &[
         &[],
     ),
     ("take_clipboard", HostOnly(CLIPBOARD), &[]),
-    ("clipboard_data", HostOnly(CLIPBOARD), &[]),
+    // A promised type the system's paste asks for is the person's `snapshot` command, sent through `act`; the rest are bytes made with the copy.
+    ("clipboard_data", Input, &["Pasted"]),
     ("clipboard_released", HostOnly(CLIPBOARD), &[]),
     ("take_print", HostOnly(PRINTING), &[]),
     ("print_finished", HostOnly(PRINTING), &[]),
@@ -213,17 +214,8 @@ const EXPORTS: &[(&str, Is, &[&str])] = &[
 ];
 
 /// **What reaches the person's commands from inside `recto-app`, where reading the bridge can't see it,** with where it's to be fixed. Only shrinks: a new
-/// one fails [`every_export_is_in_the_table_and_reaches_the_person_only_through_act`] (2 on 2026-11-14).
-const KNOWN: &[(&str, &str)] = &[
-    (
-        "selection_release",
-        "with the snapshot tool on, the release takes a snapshot through `extract` in `snapshot_tool::start`, outside the executor (PLAN, S2's follow-ups)",
-    ),
-    (
-        "clipboard_data",
-        "a promised SVG of the snapshot tool's is made through `extract::snapshot_svg` as a paste asks for it, outside the executor (PLAN, S2's follow-ups)",
-    ),
-];
+/// one fails [`every_export_is_in_the_table_and_reaches_the_person_only_through_act`] (2 on 2026-11-14, none since S2's follow-ups (1) and (2)).
+const KNOWN: &[(&str, &str)] = &[];
 
 /// What may not appear in an export's body: the ways to a person's command other than `act`.
 const FORBIDDEN: &[&str] = &["person::", "submit(", "execute(", ".run(Actor", "run_counted", "printing::start"];
@@ -439,7 +431,7 @@ fn every_export_is_in_the_table_and_reaches_the_person_only_through_act() {
     assert!(exported > 100, "the bridge's exports were read: {exported}");
     let wrong = wrong(&methods, &walked());
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    assert!(KNOWN.len() <= 2, "a new known exception: fix it instead");
+    assert!(KNOWN.is_empty(), "a new known exception: fix it instead");
 }
 
 /// Failure (R2.3, C6; kept beside the table, review of S2, S3): the bridge reaches past the one way a person's action comes in, queuing a person's call on

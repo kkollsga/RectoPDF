@@ -50,6 +50,10 @@ pub enum UiAction {
     SettingChosen { id: String, on: bool },
     /// The mouse came up on a page in this pane after a press: the link the click landed on, if any, is followed. The bridge's own, from `selection_release`.
     LinkClicked { pane: u32 },
+    /// The mouse came up with the snapshot tool on: what it took goes to the clipboard. The bridge's own, from `selection_release`.
+    SnapshotTaken,
+    /// The system's paste asked for a promised type of the offer with this number. The bridge's own, from `clipboard_data`.
+    Pasted { serial: u64, uti: String },
     /// The print panel answered with Print, for the tab it was opened for: all the pages or a range from 1, or just the selection's, on paper or, with
     /// `to_file`, to a PDF the system's printing saves or previews.
     Print {

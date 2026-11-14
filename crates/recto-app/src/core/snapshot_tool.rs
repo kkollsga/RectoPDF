@@ -1,27 +1,37 @@
-//! **The snapshot tool in the window, and the clipboard** (SPEC section 6, Extraction). Its rule is `recto_reader::snapshot`; this joins it to the mouse, the clipboard and the notice. With the tool on, what a press, drag and release on a page do goes here instead of to text selection: a drag draws a box, and a release takes it, PNG, text, SVG and JPG all on the clipboard at once; a click takes the image under the pointer, as its own JPEG bytes or a lossless PNG. What goes on the clipboard, in what order, is `recto_agent::extract`'s to say, the same functions `recto image` and `recto snapshot` use.
+//! **The snapshot tool in the window, and the clipboard** (SPEC section 6, Extraction). Its rule is `recto_reader::snapshot`; this joins it to the mouse, the clipboard and the notice. With the tool on, what a press, drag and release on a page do goes here instead of to text selection: a drag draws a box, and a release takes it, PNG, text, SVG and JPG all on the clipboard at once; a click takes the image under the pointer, as its own JPEG bytes or a lossless PNG.
 //!
-//! **One job at a time.** A release while another snapshot is being taken stops that one (its worker's cancel word, so a map nobody wants any more isn't finished) and waits in its place, the newest only: ten clicks on a map are one worker at a time, never ten (review, 2026-11-08). The job runs on one short-lived thread, `recto-snapshot`, which takes the waiting job when it's done with its own. At rest there's no thread, worker, timer or buffer: the tool is a flag and two points, and what's waiting for the clipboard is held only until the host takes it.
+//! **One action, one implementation** (S2's follow-up (1), 2026-11-14): what a release takes is the person's own command, run by the one executor as any
+//! of theirs is ([`super::person::submit`]): `snapshot --to-clipboard` of the box, or `image --at x,y --to-clipboard` of the click, naming the tab. So the
+//! rules the executor holds (the tab held while it reads, a file that asks not to be copied and its words, the person's password for their own document,
+//! the person's lane) are the command's alone. Its output, the window's clipboard, is given only to the actor at the window
+//! ([`recto_agent::clipboard`]): what's made stays in memory, held here until the host takes it, and no file or descriptor is ever made for it.
 //!
-//! **One clipboard.** A text copy and a snapshot both reach the host as one offer from [`AppCore::take_clipboard`]: the types in order, and which are made now and which only when a paste asks for them ([`AppCore::clipboard_data`]). A snapshot's SVG is the one promised: making it can take the larger worker, 742 MiB on the USGS map, and most pastes never want it.
+//! **One job at a time.** A release while another snapshot is being taken stops that one (its worker's cancel word, so a map nobody wants any more isn't finished) and waits in its place, the newest only: ten clicks on a map are one worker at a time, never ten (review, 2026-11-08). The waiting one is sent when the running one's answered. At rest there's no thread, worker, timer or buffer: the tool is a flag and two points, and what's waiting for the clipboard is held only until the host takes it.
+//!
+//! **One clipboard.** A text copy and a snapshot both reach the host as one offer from [`Tool::take_offer`]: the types in order, and which are made now and which only when a paste asks for them. A snapshot's SVG is the one promised: making it can take the larger worker, 742 MiB on the USGS map, and most pastes never want it. A paste of it is the person's `snapshot --as svg --to-clipboard`, which the system's paste waits for on the UI thread, the one place the UI thread waits here, and for at most [`PASTE_PATIENCE_MS`] ([`Tool::wait_for_paste`]).
 //!
 //! **A file that asks not to be copied** gets the notice text does, with "Copy anyway" (owner, 2026-11-08). Each notice has a number, and its button names it, so a stale button takes nothing: turning the tool, or starting a new box, takes the notice and what it offered away.
 
 use super::{HighlightRect, Inner, ReaderOp, SelectionNotice, lock};
 pub use crate::snapshot_menu::{TOGGLE_ID, is_menu_id};
-use recto_agent::Code;
-use recto_agent::extract::{self, ClipItem, ClipOutcome, ClipStop};
+use recto_agent::commands::Read;
+use recto_agent::commands::export::{Image, Snapshot};
+use recto_agent::extract::{self, Clip, ClipItem, ClipStop};
+use recto_agent::{AgentError, Code, Command, TabRef};
 use recto_reader::Engine;
 use recto_reader::snapshot::{SnapshotTool, Taken};
 use recto_session::TabId;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-
-/// A snapshot thread's stack: a worker's replies and a PNG's compressor, with the rows on the heap.
-const STACK: usize = 1024 * 1024;
+use serde_json::Value;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::time::Duration;
 
 /// A notice's "Copy anyway", followed by the notice's number.
 const ANYWAY_PREFIX: &str = "tools.copy_anyway.";
+
+/// **How long the system's paste of a promised SVG is waited for,** on the app's clock (coordinator, 2026-11-14): past it the paste gets nothing and the
+/// SVG being made is stopped. The UI thread waits here only, as the system asks there and wants the bytes in its answer.
+pub const PASTE_PATIENCE_MS: u64 = 10_000;
 
 /// What a release asked for, kept so "Copy anyway" can ask again.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -37,8 +47,63 @@ struct Job {
     position: u32,
     wanted: Wanted,
     anyway: bool,
-    /// How far the page was shown turned when the box was taken, which the pictures are turned by: what's copied is what was seen.
-    turns: u8,
+}
+
+impl Job {
+    /// **The person's command for it,** naming its tab: the box as `snapshot --as png --to-clipboard`, every type at once; the click as
+    /// `image --at x,y --to-clipboard`.
+    fn command(self) -> Command {
+        let tab = TabRef::Id(TabId(self.tab));
+        let page = self.position + 1;
+        match self.wanted {
+            Wanted::Box { rect } => Command::from(Snapshot {
+                tab,
+                page,
+                rect,
+                format: "png".into(),
+                out: None,
+                scale: extract::DEFAULT_SCALE,
+                anyway: self.anyway,
+                to_clipboard: true,
+                as_seen: None,
+            }),
+            Wanted::Image { x, y } => Command::from(Image {
+                tab,
+                page,
+                number: None,
+                out: None,
+                anyway: self.anyway,
+                at: Some([x, y]),
+                to_clipboard: true,
+            }),
+        }
+    }
+
+    /// The job a command of the tool's is, read back from it: none for any other command, a paste's SVG included.
+    fn of(command: &Command) -> Option<Self> {
+        let (tab, page, wanted, anyway) = match command {
+            Command::Read(Read::Snapshot(asked)) if asked.to_clipboard && asked.format != "svg" => {
+                (&asked.tab, asked.page, Wanted::Box { rect: asked.rect }, asked.anyway)
+            }
+            Command::Read(Read::Image(asked)) if asked.to_clipboard => {
+                let [x, y] = asked.at?;
+                (&asked.tab, asked.page, Wanted::Image { x, y }, asked.anyway)
+            }
+            _ => return None,
+        };
+        let TabRef::Id(tab) = tab else { return None };
+        Some(Self {
+            tab: tab.0,
+            position: page.checked_sub(1)?,
+            wanted,
+            anyway,
+        })
+    }
+}
+
+/// Whether a command is the person's paste of a promised SVG.
+fn is_paste(command: &Command) -> bool {
+    matches!(command, Command::Read(Read::Snapshot(asked)) if asked.to_clipboard && asked.format == "svg")
 }
 
 /// What to say by the page about the last snapshot, with its number.
@@ -49,15 +114,14 @@ pub struct ToolNotice {
     pub offers_copy_anyway: bool,
 }
 
-/// What a snapshot's promised SVG is made from, if a paste asks.
-#[derive(Clone, Debug, PartialEq)]
+/// What a snapshot's promised SVG is made from, if a paste asks: the box on its tab's page, which the person's command reads again then, as the box saw it
+/// (its turn, and only the same page of its file), so the clipboard's types are one copy of one moment.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Promise {
-    pub path: PathBuf,
-    pub page: u32,
+    pub tab: u32,
+    pub position: u32,
     pub rect: [f32; 4],
-    pub turns: u8,
-    /// The file's highlights the tab had taken out when the box was taken, which the SVG leaves out as the pictures do.
-    pub hidden: extract::Hidden,
+    pub as_seen: Option<extract::AsSeen>,
 }
 
 /// What's on its way to the clipboard, or on it.
@@ -69,11 +133,14 @@ pub struct Offered {
     promise: Option<Box<Promise>>,
 }
 
-/// **The one-at-a-time rule**, apart from threads so it's tested alone: the job running, by its stop, and the newest one waiting.
+/// **The one-at-a-time rule**, apart from threads so it's tested alone: the job running, by its stop, the newest one waiting, what the running one made
+/// before it's answered, and the release's box before `act` takes it.
 #[derive(Default)]
 struct JobSlot {
     running: Option<ClipStop>,
     waiting: Option<Job>,
+    made: Option<Clip>,
+    taken: Option<Job>,
 }
 
 impl JobSlot {
@@ -97,6 +164,33 @@ impl JobSlot {
     }
 }
 
+/// **The system's paste of a promised SVG, waiting:** one at a time, as the system asks one at a time on its UI thread.
+#[derive(Default)]
+struct PasteState {
+    /// The person's command for it is under way.
+    running: bool,
+    /// A paste waits for it, and gives up at `deadline`, on the app's clock.
+    waiting: bool,
+    deadline: u64,
+    made: Option<Vec<u8>>,
+    stop: ClipStop,
+}
+
+#[derive(Default)]
+struct Paste {
+    state: Mutex<PasteState>,
+    changed: Condvar,
+    /// The app's clock, set once at the start ([`sink`]): a test's own.
+    clock: std::sync::OnceLock<Arc<dyn crate::clock::Clock>>,
+}
+
+impl Paste {
+    /// Now, by the app's clock; past any deadline without one.
+    fn now_ms(&self) -> u64 {
+        self.clock.get().map_or(u64::MAX, |clock| clock.now_ms())
+    }
+}
+
 #[derive(Default)]
 pub struct Tool {
     state: Mutex<SnapshotTool>,
@@ -104,8 +198,7 @@ pub struct Tool {
     on: AtomicBool,
     /// The page the box was last drawn on, by pane, to take it off when it moves or goes.
     drawn: Mutex<Option<(usize, u32)>>,
-    jobs: Mutex<JobSlot>,
-    running: AtomicU32,
+    jobs: Mutex<Box<JobSlot>>,
     pub ready: Mutex<Option<Offered>>,
     /// What the host has been offered, held until a paste takes it or another copy replaces it.
     pub offered: Mutex<Option<Offered>>,
@@ -115,6 +208,7 @@ pub struct Tool {
     refused: Mutex<Option<(u64, Job)>>,
     /// The app's quitting: a promised SVG isn't made on the way out.
     quitting: AtomicBool,
+    paste: Box<Paste>,
 }
 
 impl Tool {
@@ -133,9 +227,10 @@ impl Tool {
         on
     }
 
-    /// A snapshot is being taken now, which a hand-off and `qa wait-settled` wait for.
+    /// A snapshot is being taken now, or waits its turn, which a hand-off and `qa wait-settled` wait for.
     pub fn busy(&self) -> bool {
-        self.running.load(Ordering::SeqCst) > 0
+        let jobs = lock(&self.jobs);
+        jobs.running.is_some() || jobs.waiting.is_some()
     }
 
     pub fn is_drawing(&self) -> bool {
@@ -229,32 +324,29 @@ impl Tool {
         self.box_ops(pane, shown)
     }
 
-    /// The button came up: the box goes, and what it took is on its way to the clipboard.
-    pub fn release(&self, inner: &Arc<Inner>, engine: &Engine, pane: usize) -> Vec<ReaderOp> {
+    /// **The button came up:** the box goes, and what it took is kept for the person's action that takes it ([`super::controls::UiAction::SnapshotTaken`],
+    /// [`taken`]), which the bridge sends next.
+    pub fn release(&self, engine: &Engine, pane: usize) -> Vec<ReaderOp> {
         let taken = lock(&self.state).release();
         let ops = self.box_ops(pane, None);
         let Some(tab) = engine.hot_tab() else { return ops };
-        let job = match taken {
+        let wanted = match taken {
             // An image goes as itself, its own bytes, so it isn't turned.
-            Taken::Click(point) => Job {
-                tab,
-                position: point.page,
-                wanted: Wanted::Image { x: point.x, y: point.y },
-                anyway: false,
-                turns: 0,
-            },
-            Taken::Box { page, rect } => Job {
-                tab,
-                position: page,
-                wanted: Wanted::Box {
+            Taken::Click(point) => Some((point.page, Wanted::Image { x: point.x, y: point.y })),
+            Taken::Box { page, rect } => Some((
+                page,
+                Wanted::Box {
                     rect: [rect.x, rect.y, rect.width, rect.height],
                 },
-                anyway: false,
-                turns: engine.points().page_turns(page),
-            },
-            Taken::Nothing => return ops,
+            )),
+            Taken::Nothing => None,
         };
-        start(inner, job);
+        lock(&self.jobs).taken = wanted.map(|(position, wanted)| Job {
+            tab,
+            position,
+            wanted,
+            anyway: false,
+        });
         ops
     }
 
@@ -264,6 +356,7 @@ impl Tool {
         if let Some(running) = &lock(&self.jobs).running {
             running.stop();
         }
+        lock(&self.paste.state).stop.stop();
     }
 
     /// One type of the offer with this number: its bytes, once, dropped from here as they go, or what a promised one is made from. Nothing for an offer replaced since, a type not in it, or a promise on the way out.
@@ -310,12 +403,12 @@ impl Tool {
         Some(offer)
     }
 
-    /// **One type's bytes for the offer with this number,** once: one made with the copy is handed over and dropped from here; a promised one is made now,
-    /// as a paste asks for it. The bridge's `clipboard_data`.
-    pub fn offer_data(&self, serial: u64, uti: &str) -> Option<Vec<u8>> {
+    /// **One type's bytes made with the copy, for the offer with this number,** once, handed over and dropped from here. Nothing for a promised one, which
+    /// a paste asks the person's command for ([`super::controls::UiAction::Pasted`], [`Self::wait_for_paste`]). The bridge's `clipboard_data`.
+    pub fn ready_bytes(&self, serial: u64, uti: &str) -> Option<Vec<u8>> {
         match self.data(serial, uti)? {
             Data::Ready(bytes) => Some(bytes),
-            Data::Make(promise, cap) => extract::snapshot_svg(&promise.path, promise.page, promise.rect, promise.turns, promise.hidden, cap).ok(),
+            Data::Make(..) => None,
         }
     }
 
@@ -337,6 +430,60 @@ impl Tool {
             }],
             promise: None,
         }
+    }
+
+    /// **A paste of a promised SVG is asked:** waited for from now, on the app's clock, if no other is being made. False if one is, or the app's quitting.
+    fn arm_paste(&self) -> bool {
+        let mut paste = lock(&self.paste.state);
+        if paste.running || self.quitting.load(Ordering::SeqCst) {
+            return false;
+        }
+        *paste = PasteState {
+            running: true,
+            waiting: true,
+            deadline: self.paste.now_ms().saturating_add(PASTE_PATIENCE_MS),
+            made: None,
+            stop: ClipStop::default(),
+        };
+        true
+    }
+
+    /// A paste's SVG is being made, for a test.
+    #[cfg(test)]
+    pub(crate) fn paste_running(&self) -> bool {
+        lock(&self.paste.state).running
+    }
+
+    /// **The bytes the system's paste is waiting for,** on the UI thread, where the system asks: the person's command's SVG once it's made, or nothing
+    /// once it's refused, or at [`PASTE_PATIENCE_MS`] on the app's clock, when the SVG being made is stopped. Takes no lock but this paste's own, never
+    /// the session's.
+    pub fn wait_for_paste(&self) -> Option<Vec<u8>> {
+        let mut paste = lock(&self.paste.state);
+        loop {
+            if let Some(bytes) = paste.made.take() {
+                paste.waiting = false;
+                return Some(bytes);
+            }
+            let now = self.paste.now_ms();
+            if !paste.waiting || !paste.running || now >= paste.deadline {
+                paste.waiting = false;
+                paste.stop.stop();
+                return None;
+            }
+            // The clock may be a test's, which moves without waking anything: looked at again every 20 ms. ratchet: poll
+            paste = match self.paste.changed.wait_timeout(paste, Duration::from_millis(20)) {
+                Ok((paste, _)) => paste,
+                Err(poisoned) => poisoned.into_inner().0,
+            };
+        }
+    }
+}
+
+/// **A release's snapshot, taken:** the box or click [`Tool::release`] kept, as the person's command ([`super::controls::UiAction::SnapshotTaken`]).
+pub(super) fn taken(inner: &Arc<Inner>) {
+    let job = lock(&inner.tools.tool().jobs).taken.take();
+    if let Some(job) = job {
+        start(inner, job);
     }
 }
 
@@ -385,119 +532,177 @@ pub(super) fn anyway(inner: &Arc<Inner>, serial: u64) {
     }
 }
 
-/// What the notice says when a snapshot couldn't be taken, in Rust's words, and whether it offers "Copy anyway".
-fn words_for(outcome: &ClipOutcome) -> (String, bool) {
-    match outcome {
-        ClipOutcome::Ready(clip) => (clip.note.clone(), false),
-        ClipOutcome::Restricted => ("This file's permissions ask that it isn't copied.".into(), true),
-        ClipOutcome::NoImage => ("There's no image there. Drag a box to take part of the page.".into(), false),
-        ClipOutcome::Stopped => (String::new(), false),
-        ClipOutcome::Failed(error) => (error.message.clone(), false),
-    }
+/// **What the notice says of the person's snapshot,** in Rust's words, and whether it offers "Copy anyway": nothing for one a newer one stopped.
+fn words_for(result: &Result<Value, AgentError>) -> Option<(String, bool)> {
+    let error = match result {
+        Ok(answer) => return Some((answer["says"].as_str().unwrap_or_default().to_string(), false)),
+        Err(error) => error,
+    };
+    Some(match error.code {
+        Code::COPY_RESTRICTED => ("This file's permissions ask that it isn't copied.".into(), true),
+        Code::NO_SUCH_IMAGE => ("There's no image there. Drag a box to take part of the page.".into(), false),
+        Code::CANCELLED => return None,
+        Code::SOURCE_CHANGED => ("That page can't be read now: its file has changed or gone.".into(), false),
+        Code::NOT_STARTED => ("The snapshot couldn't be started.".into(), false),
+        _ => (error.message.clone(), false),
+    })
 }
 
-/// Takes a job off the UI thread: now, on a thread of its own, or after the one running, which it stops.
+/// **A job sent as the person's command,** now or after the one running, which it stops. Never waits.
 fn start(inner: &Arc<Inner>, job: Job) {
     let tool = inner.tools.tool();
     // A box on a heavy page can take seconds, so the reader is told it's on its way, until the answer replaces this.
     tool.say("Copying…", false);
     lock(&tool.refused).take();
     inner.core.push(super::CoreCall::Reconcile);
-    let Some(first) = lock(&tool.jobs).offer(job) else { return };
-    tool.running.fetch_add(1, Ordering::SeqCst);
-    // An update waits for it, as it does for a command.
-    inner.host.running.fetch_add(1, Ordering::SeqCst);
-    let runner = Arc::clone(inner);
-    let spawned = std::thread::Builder::new().name("recto-snapshot".into()).stack_size(STACK).spawn(move || {
-        let mut next = Some(first);
-        while let Some((job, stop)) = next {
-            let (outcome, source) = take(&runner, job, &stop);
-            // Under the slot's lock, so a release now either waits for this thread or finds the slot free after the answer is in. Nothing here takes the session's lock.
-            let mut jobs = lock(&runner.tools.tool().jobs);
-            next = jobs.next();
-            if next.is_none() {
-                publish(&runner, job, outcome, source);
-            }
-        }
-        // Told first, then counted done, so the app's settled sees it under way until its word is queued ([`crate::settled`]).
-        runner.core.push(super::CoreCall::Reconcile);
-        runner.tools.tool().running.fetch_sub(1, Ordering::SeqCst);
-        runner.host.command_ended(false);
-    });
-    if spawned.is_err() {
-        *lock(&tool.jobs) = JobSlot::default();
-        tool.running.fetch_sub(1, Ordering::SeqCst);
-        inner.host.command_ended(false);
-        tool.say("The snapshot couldn't be started.", false);
-        inner.core.push(super::CoreCall::Reconcile);
+    let first = lock(&tool.jobs).offer(job);
+    if let Some((job, _)) = first
+        && !super::person::submit(inner, job.command())
+    {
+        // Not taken, as the app hands off: nothing runs, and nothing's said to be on its way.
+        **lock(&tool.jobs) = JobSlot::default();
+        lock(&tool.notice).take();
     }
 }
 
-/// The newest job's answer: the notice, and what's for the clipboard.
-fn publish(inner: &Inner, job: Job, outcome: ClipOutcome, source: Option<Source>) {
-    let tool = inner.tools.tool();
-    if matches!(outcome, ClipOutcome::Stopped) {
-        lock(&tool.notice).take();
-        return;
+/// **What came of the person's snapshot, said** ([`super::person`]'s list of answers): the notice, what's for the clipboard, and the job waiting next sent;
+/// or, for a paste's SVG, the paste told it's done.
+pub fn answered(parts: &super::answer_parts::AnswerParts<'_>, ran: &super::person::Ran<'_>) {
+    let person = parts.person();
+    if is_paste(ran.command) || Job::of(ran.command).is_some() {
+        parts.snapshot_answered(|tool| answer(tool, person, ran));
     }
-    let (text, offers) = words_for(&outcome);
+}
+
+/// What came of it, to the tool's state: whether something's ready for the host.
+fn answer(tool: &Tool, person: super::person::Person<'_>, ran: &super::person::Ran<'_>) -> bool {
+    if is_paste(ran.command) {
+        lock(&tool.paste.state).running = false;
+        tool.paste.changed.notify_all();
+        return false;
+    }
+    let Some(job) = Job::of(ran.command) else { return false };
+    // Under the slot's lock, so a release now either waits for this or finds the slot free after the answer is in. Nothing here takes the session's lock.
+    let mut jobs = lock(&tool.jobs);
+    let made = jobs.made.take();
+    if let Some((next, _)) = jobs.next() {
+        drop(jobs);
+        if !person.submit(next.command()) {
+            **lock(&tool.jobs) = JobSlot::default();
+            lock(&tool.notice).take();
+        }
+        return false;
+    }
+    publish(tool, job, ran.result, made)
+}
+
+/// The newest job's answer: the notice, and what's for the clipboard. Whether there's something ready for the host.
+fn publish(tool: &Tool, job: Job, result: &Result<Value, AgentError>, made: Option<Clip>) -> bool {
+    let Some((text, offers)) = words_for(result) else {
+        lock(&tool.notice).take();
+        return false;
+    };
     let serial = tool.say(text, offers);
     *lock(&tool.refused) = offers.then_some((serial, job));
-    if let ClipOutcome::Ready(clip) = outcome {
-        let promise = match job.wanted {
-            Wanted::Box { rect } => source.map(|(path, page, hidden)| Promise {
-                path,
-                page,
-                rect,
-                turns: job.turns,
-                hidden,
-            }),
-            Wanted::Image { .. } => None,
-        };
-        let items = clip
-            .items
-            .into_iter()
-            .filter(|item| matches!(item, ClipItem::Ready { .. }) || promise.is_some())
-            .collect();
-        *lock(&tool.ready) = Some(Offered {
-            serial: 0,
-            items,
-            promise: promise.map(Box::new),
-        });
-        inner.listener.copy_ready();
+    let (Ok(_), Some(clip)) = (result, made) else { return false };
+    let promise = match job.wanted {
+        Wanted::Box { rect } => Some(Promise {
+            tab: job.tab,
+            position: job.position,
+            rect,
+            as_seen: result.as_ref().ok().and_then(|answer| serde_json::from_value(answer["as_seen"].clone()).ok()),
+        }),
+        Wanted::Image { .. } => None,
+    };
+    let items = clip
+        .items
+        .into_iter()
+        .filter(|item| matches!(item, ClipItem::Ready { .. }) || promise.is_some())
+        .collect();
+    *lock(&tool.ready) = Some(Offered {
+        serial: 0,
+        items,
+        promise: promise.map(Box::new),
+    });
+    true
+}
+
+/// **A paste asks for a promised type of the offer with this number** ([`super::controls::UiAction::Pasted`]): the person's `snapshot --as svg
+/// --to-clipboard` of the box it promised, read again from the tab as it is now, whose bytes [`Tool::wait_for_paste`] waits for. False if there's
+/// nothing to make (an offer replaced since, a type not promised, the app quitting) or a paste's SVG is being made already.
+pub(super) fn pasted(inner: &Arc<Inner>, serial: u64, uti: &str) -> bool {
+    let tool = inner.tools.tool();
+    let Some(Data::Make(promise, _)) = tool.data(serial, uti) else { return false };
+    if !tool.arm_paste() {
+        return false;
+    }
+    let command = Command::from(Snapshot {
+        tab: TabRef::Id(TabId(promise.tab)),
+        page: promise.position + 1,
+        rect: promise.rect,
+        format: "svg".into(),
+        out: None,
+        scale: extract::DEFAULT_SCALE,
+        anyway: false,
+        to_clipboard: true,
+        as_seen: promise.as_seen,
+    });
+    if !super::person::submit(inner, command) {
+        lock(&tool.paste.state).running = false;
+        return false;
+    }
+    true
+}
+
+/// **The window's clipboard, for the person's own snapshot** ([`recto_agent::clipboard::ClipboardSink`]): the app's side of it, given to the host once
+/// ([`recto_control::host::SessionHost::set_clipboard`]), which gives it only to the person's own commands.
+struct Sink {
+    app: Weak<Inner>,
+}
+
+/// The sink, for the host to give the person's snapshot; and `tool` set to go by the app's clock, which a paste's patience goes by.
+pub fn sink(app: &Arc<Inner>, clock: Arc<dyn crate::clock::Clock>) -> Arc<dyn recto_agent::clipboard::ClipboardSink> {
+    let _ = app.tools.tool().paste.clock.set(clock);
+    Arc::new(Sink { app: Arc::downgrade(app) })
+}
+
+impl recto_agent::clipboard::ClipboardSink for Sink {
+    fn begin(&self) -> ClipStop {
+        // Its page is found: the person's next edit goes on now.
+        crate::queue::lane::pass_here();
+        let Some(app) = self.app.upgrade() else { return stopped() };
+        let jobs = lock(&app.tools.tool().jobs);
+        jobs.running.clone().unwrap_or_else(stopped)
+    }
+
+    fn begin_paste(&self) -> ClipStop {
+        let Some(app) = self.app.upgrade() else { return stopped() };
+        lock(&app.tools.tool().paste.state).stop.clone()
+    }
+
+    fn offer(&self, clip: Clip) {
+        if let Some(app) = self.app.upgrade() {
+            lock(&app.tools.tool().jobs).made = Some(clip);
+        }
+    }
+
+    fn made(&self, bytes: Vec<u8>) {
+        let Some(app) = self.app.upgrade() else { return };
+        let tool = app.tools.tool();
+        let mut paste = lock(&tool.paste.state);
+        if paste.waiting {
+            paste.made = Some(bytes);
+        }
+        drop(paste);
+        tool.paste.changed.notify_all();
     }
 }
 
-/// A page as it is in its file, and the file's highlights its tab has taken out, which a snapshot leaves out as the page view does.
-type Source = (PathBuf, u32, extract::Hidden);
-
-/// The page as it is in its file, for the tab and place the release was on, and what the tab has taken out of it (second review of R4.3, S3).
-fn source_of(inner: &Inner, job: Job) -> Option<Source> {
-    inner.host.session.with_session(|session| {
-        let id = TabId(job.tab);
-        let source = session.page_source(id, job.position).filter(recto_session::PageSource::is_current)?;
-        let hidden = recto_agent::hidden_in(session, id, &source);
-        Some((source.path, source.page, hidden))
-    })
-}
-
-/// What goes on the clipboard for a job, from the page as it is in its file.
-fn take(inner: &Inner, job: Job, stop: &ClipStop) -> (ClipOutcome, Option<Source>) {
-    let Some((path, page, hidden)) = source_of(inner, job) else {
-        return (
-            ClipOutcome::Failed(recto_agent::AgentError::new(
-                Code::SOURCE_CHANGED,
-                "That page can't be read now: its file has changed or gone.",
-                recto_agent::exit::FAILED,
-            )),
-            None,
-        );
-    };
-    let outcome = match job.wanted {
-        Wanted::Image { x, y } => extract::image_clip(&path, page, x, y, job.anyway, stop),
-        Wanted::Box { rect } => extract::snapshot_clip(&path, page, rect, (job.turns, hidden.clone()), job.anyway, stop),
-    };
-    (outcome, Some((path, page, hidden)))
+/// A stop already set: for a snapshot nothing is waiting for.
+fn stopped() -> ClipStop {
+    let stop = ClipStop::default();
+    stop.stop();
+    stop
 }
 
 /// What [`Tool::data`] hands over: bytes made with the copy, or what to make a promised type from.
@@ -517,21 +722,19 @@ mod tests {
             position: 0,
             wanted: Wanted::Image { x, y: 0.0 },
             anyway: false,
-            turns: 0,
         }
     }
 
     /// Failure: a refusal for permissions has no "Copy anyway", or a plain answer offers one, or the reader isn't told why nothing was copied by a click off any image.
     #[test]
     fn the_notice_says_what_happened_and_offers_copy_anyway_only_when_refused() {
-        assert!(words_for(&ClipOutcome::Restricted).1);
-        let (text, offers) = words_for(&ClipOutcome::NoImage);
+        let refused = |code: Code| Err(AgentError::new(code, "an agent's words", recto_agent::exit::FAILED));
+        assert!(words_for(&refused(Code::COPY_RESTRICTED)).expect("said").1);
+        let (text, offers) = words_for(&refused(Code::NO_SUCH_IMAGE)).expect("said");
         assert!(!offers && text.contains("no image"));
-        let ready = words_for(&ClipOutcome::Ready(extract::Clip {
-            items: Vec::new(),
-            note: "Copied.".into(),
-        }));
-        assert_eq!(ready, ("Copied.".to_string(), false));
+        let ready = words_for(&Ok(serde_json::json!({ "says": "Copied." })));
+        assert_eq!(ready, Some(("Copied.".to_string(), false)));
+        assert_eq!(words_for(&refused(Code::CANCELLED)), None, "one a newer one stopped says nothing");
     }
 
     /// Failure: the box stays on a page it's left, or isn't drawn where the tool says, so the reader sees two boxes, or none, while dragging.
@@ -620,11 +823,10 @@ mod tests {
     fn an_offers_bytes_go_once_to_that_offer() {
         let tool = Tool::default();
         let promise = Promise {
-            path: "/a.pdf".into(),
-            page: 0,
+            tab: 1,
+            position: 0,
             rect: [0.0, 0.0, 1.0, 1.0],
-            turns: 0,
-            hidden: None,
+            as_seen: None,
         };
         *lock(&tool.offered) = Some(Offered {
             serial: 7,
@@ -635,14 +837,14 @@ mod tests {
                 },
                 ClipItem::Promised { uti: extract::UTI_SVG, cap: 9 },
             ],
-            promise: Some(Box::new(promise.clone())),
+            promise: Some(Box::new(promise)),
         });
         assert_eq!(tool.data(6, extract::UTI_PNG), None, "an older offer");
         assert_eq!(tool.data(7, extract::UTI_PNG), Some(Data::Ready(vec![1])));
         assert_eq!(tool.data(7, extract::UTI_PNG), None, "once");
         assert_eq!(
             tool.data(7, extract::UTI_SVG),
-            Some(Data::Make(promise.clone(), 9)),
+            Some(Data::Make(promise, 9)),
             "a promise, as often as a paste asks"
         );
         assert_eq!(tool.data(7, extract::UTI_SVG), Some(Data::Make(promise, 9)));
@@ -675,7 +877,7 @@ mod tests {
 
     /// **Failure (second review of R4.3, S3): the person's Snapshot tool copies a highlight they've taken out**, as it draws the page with a renderer of
     /// its own that's never given the tab's set. With the file's highlight, then taken out, then undone: yellow inside its rectangle, none, and
-    /// yellow again; and the SVG a paste makes is given the same set (it draws no annotations today, so the set can't be seen in it).
+    /// yellow again. Through the person's command, as a release sends it; the SVG a paste makes is the same command's, given the same set by it.
     #[test]
     fn the_snapshot_tool_leaves_out_a_highlight_taken_out() {
         use crate::testkit::headless::Disk;
@@ -703,14 +905,13 @@ mod tests {
             position: 0,
             wanted: Wanted::Box { rect },
             anyway: false,
-            turns: 0,
         };
-        let snapshot = |taken_out: bool| {
-            let (outcome, source) = take(app.core(), job, &ClipStop::default());
-            let ClipOutcome::Ready(clip) = outcome else {
-                panic!("a snapshot: {outcome:?}")
-            };
-            let png = clip
+        let snapshot = || {
+            start(app.core(), job);
+            app.wait_until("the snapshot's answered", || !app.core().tools.tool().busy());
+            app.settle();
+            let offered = lock(&app.core().tools.tool().ready).take().expect("a snapshot");
+            let png = offered
                 .items
                 .iter()
                 .find_map(|item| match item {
@@ -718,22 +919,18 @@ mod tests {
                     _ => None,
                 })
                 .expect("a PNG");
-            assert!(
-                source.is_some_and(|(.., hidden)| hidden.is_some() == taken_out),
-                "the SVG a paste asks for is given the same set"
-            );
             yellow_in(&png, inside)
         };
-        let with = snapshot(false);
+        let with = snapshot();
         assert!(with > 100, "the file's highlight is in the picture: {with}");
         let at = format!("{},{}", x + width / 2.0, y + height / 2.0);
         app.recto(Level::Control, &["highlight", "remove", "--page", "1", "--at", &at])
             .expect("taken out");
         app.settle();
-        assert_eq!(snapshot(true), 0, "taken out, it isn't in the picture");
+        assert_eq!(snapshot(), 0, "taken out, it isn't in the picture");
         app.agent(Level::Control, r#"{"cmd":"undo"}"#).expect("undo");
         app.settle();
-        assert_eq!(snapshot(false), with, "undone, it's back");
+        assert_eq!(snapshot(), with, "undone, it's back");
     }
 }
 

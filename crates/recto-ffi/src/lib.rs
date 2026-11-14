@@ -958,7 +958,9 @@ impl AppCore {
             return Vec::new();
         };
         if self.inner.tools.tool().is_drawing() {
-            return self.inner.tools.tool().release(&self.inner, &engine, pane as usize);
+            let ops = self.inner.tools.tool().release(&engine, pane as usize);
+            self.inner.act(UiAction::SnapshotTaken);
+            return ops;
         }
         let ops = engine.selection().release().into_iter().map(ReaderOp::from).collect();
         self.inner.act(UiAction::LinkClicked { pane });

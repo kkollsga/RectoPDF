@@ -72,7 +72,7 @@ fn renderer_for<'a>(
 /// the tab's own file, as the page view draws (a page added from another file that needs a password stays unreadable, as on screen), and only the one
 /// typed for the very file opened here, by its own identity, so a file put at the path since the person typed it is never given it. The only place a
 /// print asks for a key.
-fn key_for(file: &File, page: &PrintPage, keys: Option<&PersonsKeys>) -> Option<Arc<recto_core::Password>> {
+pub(crate) fn key_for(file: &File, page: &PrintPage, keys: Option<&PersonsKeys>) -> Option<Arc<recto_core::Password>> {
     keys.filter(|_| page.own)?.for_file(file)
 }
 
@@ -190,7 +190,7 @@ pub fn any_copy_restricted(pages: &[PrintPage], keys: Option<&PersonsKeys>) -> b
 /// **A page's file's flag, read with the person's password where the page is printed with it** ([`key_for`]): a file that opens only with its password
 /// can't be read without it, and the read without one fails open ("not restricted"), so its flag is read through the file opened, with its key. A read
 /// with the key that fails all the same is taken as asking: the person is offered "Print anyway", where failing open would skip it.
-fn copy_restricted(page: &PrintPage, keys: Option<&PersonsKeys>) -> bool {
+pub(crate) fn copy_restricted(page: &PrintPage, keys: Option<&PersonsKeys>) -> bool {
     if let Ok(file) = DocRenderer::open_file(&page.path)
         && let Some(key) = key_for(&file, page, keys)
     {

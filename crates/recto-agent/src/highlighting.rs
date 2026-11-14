@@ -570,6 +570,8 @@ mod tests {
                 out: Some(shot.clone()),
                 scale: 1.0,
                 anyway: false,
+                to_clipboard: false,
+                as_seen: None,
             };
             run(session, Command::from(snapshot)).expect("snapshot");
             // Yellow inside the highlight's rectangle, in each (both at a pixel a point, from the page's top left), not whole pictures compared.
@@ -740,9 +742,10 @@ mod tests {
         ("recto-agent/src/agreement.rs", 1, 0, "the agreement gate's look at the file's text"),
         (
             "recto-agent/src/extract.rs",
-            6,
+            5,
             3,
-            "a snapshot's picture and SVG (the agent's), the Snapshot tool's PNG and JPG, and its SVG; the rest copy an embedded image or read text",
+            "a snapshot's picture and SVG (the agent's), and the person's to the clipboard, its PNG and JPG and its SVG, each given the set, opened in one \
+             place (`PersonsPage::open`, twice: with their password or without); the rest copy an embedded image or read text",
         ),
         ("recto-agent/src/loader.rs", 1, 0, "a file's facts when it's opened"),
         ("recto-agent/src/print.rs", 1, 1, "each page printed"),

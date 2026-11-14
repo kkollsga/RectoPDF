@@ -109,6 +109,16 @@ impl<'a> AnswerParts<'a> {
         self.listener.model_changed();
     }
 
+    /// The snapshot tool's own: what came of the person's snapshot, said to the tool's state, then the window published again, and the host told when
+    /// something's ready for the clipboard ([`super::snapshot_tool::answered`]).
+    pub fn snapshot_answered(&self, said: impl FnOnce(&super::snapshot_tool::Tool) -> bool) {
+        // The host told first, then the window published again, as the tool's own thread did.
+        if said(self.tools.tool()) {
+            self.listener.copy_ready();
+        }
+        self.core.push(super::CoreCall::Reconcile);
+    }
+
     /// What the person may start on a thread of its own.
     pub fn person(&self) -> Person<'a> {
         self.person

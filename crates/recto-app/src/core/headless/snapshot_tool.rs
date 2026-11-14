@@ -2,8 +2,9 @@
 //! put in before the tool's snapshot moved into the one executor).
 
 use super::files::{locked_allowing, locked_with};
+use crate::core::controls::UiAction;
 use crate::core::snapshot_tool::{self, ClipboardOffer};
-use crate::testkit::headless::{Disk, HeadlessApp};
+use crate::testkit::headless::{Disk, HeadlessApp, WAIT_LIMIT};
 use recto_agent::Level;
 use recto_agent::extract::{self, ClipItem, ClipOutcome, ClipStop};
 use std::path::Path;
@@ -62,9 +63,35 @@ fn mouse(app: &HeadlessApp, from: (f32, f32), to: Option<(f32, f32)>) {
         let (x, y) = at(app, to.0, to.1);
         let _ = tool.drag(&engine, 0, x, y);
     }
-    let _ = tool.release(inner, &engine, 0);
+    let _ = tool.release(&engine, 0);
+    app.act(UiAction::SnapshotTaken);
     app.wait_until("the snapshot's job ended", || !tool.busy());
     app.settle();
+}
+
+/// A box drawn and let go, as [`take_box`], without waiting for what it takes.
+fn let_go_of_a_box(app: &HeadlessApp) {
+    let inner = app.core();
+    let engine = inner.panes.reading_engine(&inner.engine);
+    let tool = inner.tools.tool();
+    let (x, y) = at(app, BOX[0], BOX[1]);
+    let _ = tool.press(&engine, 0, x, y);
+    let (x, y) = at(app, BOX[0] + BOX[2], BOX[1] + BOX[3]);
+    let _ = tool.drag(&engine, 0, x, y);
+    let _ = tool.release(&engine, 0);
+    app.act(UiAction::SnapshotTaken);
+}
+
+/// One type's bytes, as the bridge's `clipboard_data` gives them: made with the copy, or a promised one the person's paste makes, waited for.
+fn clipboard_data(app: &HeadlessApp, serial: u64, uti: &str) -> Option<Vec<u8>> {
+    let tool = app.core().tools.tool();
+    if let Some(bytes) = tool.ready_bytes(serial, uti) {
+        return Some(bytes);
+    }
+    app.act(UiAction::Pasted { serial, uti: uti.into() })
+        .understood
+        .then(|| tool.wait_for_paste())
+        .flatten()
 }
 
 fn take_box(app: &HeadlessApp) {
@@ -86,11 +113,7 @@ type Given = (String, Option<Vec<u8>>);
 fn offered(app: &HeadlessApp) -> Option<(ClipboardOffer, Vec<Given>)> {
     let inner = app.core();
     let offer = inner.tools.tool().take_offer(&inner.panes.engines(&inner.engine))?;
-    let bytes = offer
-        .types
-        .iter()
-        .map(|uti| (uti.clone(), inner.tools.tool().offer_data(offer.serial, uti)))
-        .collect();
+    let bytes = offer.types.iter().map(|uti| (uti.clone(), clipboard_data(app, offer.serial, uti))).collect();
     Some((offer, bytes))
 }
 
@@ -152,20 +175,27 @@ const GOLDEN: &[&str] = &[
     "its file changed on disk under an edit | \"That page can't be read now: its file has changed or gone.\" [] | nothing offered",
     "asks not to be copied | \"This file's permissions ask that it isn't copied.\" [Copy anyway] | nothing offered",
     "its Copy anyway | \"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image*, public.jpeg] | same",
-    "opened with its password | \"This PDF needs a password.\" [] | nothing offered",
+    // Decided 2026-11-14 (S2's follow-up (1), Q5): the person's own snapshot reads a document they opened with its password, as the page view does; it
+    // said "This PDF needs a password." before, and offered nothing. And its flag against copying is read with the password.
+    "opened with its password | \"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image*, public.jpeg] | every type given | text \"Locked page 1\"",
+    "opened with its password, asking not to be copied | \"This file's permissions ask that it isn't copied.\" [Copy anyway] | nothing offered",
 ];
 
 /// **Failure (a guard before the snapshot tool's release became the person's `snapshot` and `image` commands):** what the tool puts on the clipboard, or
 /// says by the page, changes: other types or another order, the SVG made at once rather than promised, bytes other than `extract` makes for the box (as
 /// the page is seen, turned by an unsaved turn; the same on dark paper), a JPEG clicked not its own bytes, other words or another button for a click off any
-/// image, a file changed under the tab, one that asks not to be copied and its Copy anyway, or a document opened with its password. One app, each case in
-/// turn, held against the golden.
+/// image, a file changed under the tab, one that asks not to be copied and its Copy anyway, or a document opened with its password (read with it, its
+/// flag against copying too). One app, each case in turn, held against the golden.
 #[test]
 fn the_snapshot_tool_does_what_it_did() {
     let disk = Disk::new();
     let doc = disk.file("snapshot.pdf", &text_and_image());
     let restricted = disk.file("restricted.pdf", &locked_allowing("", 1, lopdf::encryption::Permissions::PRINTABLE));
     let locked = disk.file("locked.pdf", &locked_with("secret", 1));
+    let locked_restricted = disk.file(
+        "locked-restricted.pdf",
+        &locked_allowing("secret", 1, lopdf::encryption::Permissions::PRINTABLE),
+    );
     let changing = disk.file("changing.pdf", &text_and_image());
     let app = disk.start();
     app.open(&doc);
@@ -233,7 +263,7 @@ fn the_snapshot_tool_does_what_it_did() {
         .selection_notice()
         .and_then(|notice| notice.action_id)
         .expect("Copy anyway");
-    app.act(crate::core::controls::UiAction::Menu { id: anyway });
+    app.act(UiAction::Menu { id: anyway });
     app.wait_until("the snapshot's job ended", || !app.core().tools.tool().busy());
     app.settle();
     lines.push(format!("its Copy anyway | {}", a_box(&app, &restricted, 0, true)));
@@ -241,7 +271,28 @@ fn the_snapshot_tool_does_what_it_did() {
     open_locked(&app, &locked);
     tool_on(&app);
     take_box(&app);
-    lines.push(format!("opened with its password | {} | {}", notice(&app), offered_or_nothing(&app)));
+    let said = notice(&app);
+    let (offer, bytes) = offered(&app).expect("offered");
+    let given = if bytes.iter().all(|(_, made)| made.as_ref().is_some_and(|made| !made.is_empty())) {
+        "every type given"
+    } else {
+        "a type not given"
+    };
+    let text = bytes
+        .iter()
+        .find(|(uti, _)| uti == extract::UTI_TEXT)
+        .and_then(|(_, made)| made.clone())
+        .map(|made| String::from_utf8_lossy(&made).into_owned())
+        .unwrap_or_default();
+    lines.push(format!("opened with its password | {said} | {} | {given} | text {text:?}", types(&offer)));
+    open_locked(&app, &locked_restricted);
+    tool_on(&app);
+    take_box(&app);
+    lines.push(format!(
+        "opened with its password, asking not to be copied | {} | {}",
+        notice(&app),
+        offered_or_nothing(&app)
+    ));
 
     assert_eq!(lines, GOLDEN, "\nnow:\n{}", lines.join("\n"));
 }
@@ -262,7 +313,7 @@ fn open_with_tool(app: &HeadlessApp, path: &Path) {
 
 /// Opens a protected file with its password, as the person types it into the sheet.
 fn open_locked(app: &HeadlessApp, path: &Path) {
-    app.act(crate::core::controls::UiAction::Open {
+    app.act(UiAction::Open {
         path: path.display().to_string(),
     });
     app.settle();
@@ -273,4 +324,115 @@ fn open_locked(app: &HeadlessApp, path: &Path) {
         .password_answered(prompt.id, Some("secret".into()), &app.core().core, &app.core().window);
     app.settle();
     assert!(app.reader().password_prompt.is_none(), "it opened");
+}
+
+/// The session held by a thread of the test's until what's returned is dropped, so a command that reads it waits.
+fn session_held(app: &HeadlessApp) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+    let core = std::sync::Arc::clone(app.core());
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::Builder::new()
+        .name("test-session-holder".into())
+        .spawn(move || {
+            core.host.session.with_session(|_| {
+                held_tx.send(()).expect("the test is waiting");
+                let _ = done_rx.recv_timeout(WAIT_LIMIT);
+            });
+        })
+        .expect("a thread");
+    held_rx.recv_timeout(WAIT_LIMIT).expect("the session held");
+    (done_tx, holder)
+}
+
+/// **Failure (coordinator, 2026-11-14, the one place the UI thread waits): the system's paste of a promised SVG waits without end** for the person's
+/// command making it, or waits on the session's lock itself, so the window stops. With the session held, the paste's command can't find its page: the
+/// paste, on a thread standing in for the UI thread, gives up when the app's clock passes [`snapshot_tool::PASTE_PATIENCE_MS`], though the session is
+/// still held, so it took no lock the session's holder has; the command, let go, makes nothing for it; and a paste after gets its SVG.
+#[test]
+fn a_paste_waits_at_most_its_patience_and_never_for_the_session() {
+    let disk = Disk::new();
+    let doc = disk.file("snapshot.pdf", &text_and_image());
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    tool_on(&app);
+    take_box(&app);
+    let inner = app.core();
+    let offer = inner.tools.tool().take_offer(&inner.panes.engines(&inner.engine)).expect("offered");
+    let (release, holder) = session_held(&app);
+    let core = std::sync::Arc::clone(app.core());
+    let serial = offer.serial;
+    let ui = std::thread::spawn(move || {
+        let tool = core.tools.tool();
+        core.act(UiAction::Pasted {
+            serial,
+            uti: extract::UTI_SVG.into(),
+        })
+        .understood
+        .then(|| tool.wait_for_paste())
+        .flatten()
+    });
+    app.wait_until("the paste's command is under way", || app.core().tools.tool().paste_running());
+    app.advance(snapshot_tool::PASTE_PATIENCE_MS);
+    app.wait_until("the paste gave up, the session still held", || ui.is_finished());
+    assert_eq!(ui.join().expect("the paste's thread"), None, "nothing given past its patience");
+    drop(release);
+    holder.join().expect("the session's holder");
+    app.wait_until("the paste's command ended", || !app.core().tools.tool().paste_running());
+    let svg = clipboard_data(&app, serial, extract::UTI_SVG).expect("a paste after gets its SVG");
+    assert!(String::from_utf8_lossy(&svg).contains("<svg"), "an SVG");
+}
+
+/// **Failure (S2's follow-ups, coordinator's Q6, 2026-11-14): a snapshot reads its page when its command starts,** so a ⌘R pressed right after the
+/// button came up is in what's copied, or one pressed before it isn't. The snapshot holds the person's turn until its page is found: a turn asked
+/// meanwhile waits, and is done after; what's copied is the page as it was when the box was let go.
+#[test]
+fn a_turn_asked_after_a_snapshot_isnt_copied() {
+    let disk = Disk::new();
+    let doc = disk.file("snapshot.pdf", &text_and_image());
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    tool_on(&app);
+    let (held, go) = app.hold_next("snapshot");
+    let_go_of_a_box(&app);
+    held.recv_timeout(WAIT_LIMIT).expect("the snapshot held before it finds its page");
+    app.act(UiAction::Menu { id: "rotate.right".into() });
+    assert!(app.core().core.flush(WAIT_LIMIT), "the session thread took the turn");
+    drop(go);
+    app.wait_until("the snapshot's answered", || !app.core().tools.tool().busy());
+    app.settle();
+    assert_eq!(
+        a_box(&app, &doc, 0, false),
+        "\"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image*, public.jpeg] | same",
+        "copied as the page was when the box was let go"
+    );
+    assert!(app.core().menu_item_enabled("edit.undo".into()), "and the turn done after it");
+}
+
+/// **Failure (coordinator, 2026-11-14: the clipboard's types are one copy of one moment): a page moved between the box and the paste of its SVG** gives
+/// another page's SVG, as the paste names the page's place in the tab. The box on page 1 of two, the page moved after page 2, then the paste: no SVG, and
+/// the PNG on the clipboard still the box's.
+#[test]
+fn a_page_moved_before_the_paste_gives_no_other_pages_svg() {
+    let disk = Disk::new();
+    let doc = disk.pdf("two.pdf", 2);
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    tool_on(&app);
+    take_box(&app);
+    let inner = app.core();
+    let offer = inner.tools.tool().take_offer(&inner.panes.engines(&inner.engine)).expect("offered");
+    app.agent(Level::Control, r#"{"cmd":"page_move","tab":"active","pages":"1","to":2}"#)
+        .expect("moved");
+    app.settle();
+    let png = clipboard_data(&app, offer.serial, extract::UTI_PNG);
+    let svg = clipboard_data(&app, offer.serial, extract::UTI_SVG);
+    let box_png = reference(&doc, 0, false)
+        .into_iter()
+        .find(|(uti, _)| uti == extract::UTI_PNG)
+        .map(|(_, bytes)| bytes);
+    assert_eq!(svg, None, "no SVG of the page that's in its place now");
+    assert!(png.is_some() && png == box_png, "the PNG is still the box's");
 }

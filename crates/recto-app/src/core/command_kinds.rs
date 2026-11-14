@@ -3,7 +3,7 @@
 //! "not ordered" or "only reads" by being forgotten: the test names it until it's placed.
 //!
 //! - **Ordered** (`crate::core::person_lane`): the person's command keeps its place among their edits, as it changes a document's state or fixes what's
-//!   read of it (every edit but the list and edit mode, a save, a print and a close).
+//!   read of it (every edit but the list and edit mode, a save, a print and a close; and by its arguments the snapshot tool's box and click, [`ordered`]).
 //! - **Lands later** (`crate::core::person_lane`): an edit run on a thread of its own whose effect the session publishes only as it lands, so a close
 //!   asks and Undo and Save are on while it lands.
 //! - **Changes** (the quit's wait, `core::running`): **anything it does can be in what the quit writes** (the record, a journal, a document's file), so a
@@ -310,10 +310,17 @@ const LANDS_NOW: &[&str] = &[
     "where",
 ];
 
-/// **Whether a person's command keeps its place among their edits** (the module's notes).
+/// **Whether a person's command keeps its place among their edits** (the module's notes). And, by its arguments, the snapshot tool's box and click to
+/// the clipboard, as a print is: each holds its turn until its page is found, so a turn asked before the release is in what's copied, and one asked
+/// after isn't (coordinator, 2026-11-14). A plain `snapshot` or `image` is a read, and a paste's SVG isn't ordered, as the system's paste waits for it.
 #[must_use]
 pub fn ordered(command: &Command) -> bool {
-    ORDERED.contains(&command.tag())
+    use recto_agent::commands::Read;
+    match command {
+        Command::Read(Read::Snapshot(asked)) => asked.to_clipboard && asked.format != "svg",
+        Command::Read(Read::Image(asked)) => asked.to_clipboard,
+        _ => ORDERED.contains(&command.tag()),
+    }
 }
 
 /// **Whether a command is an edit that lands later** (the list's notes): a highlight, its removal, and an inserted page (which no window path sends today).

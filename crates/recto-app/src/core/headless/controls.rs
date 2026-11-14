@@ -32,8 +32,10 @@ fn place(action: &UiAction) -> (usize, usize) {
         UiAction::SettingChosen { .. } => 19,
         UiAction::Print { .. } => 20,
         UiAction::LinkClicked { .. } => 21,
+        UiAction::SnapshotTaken => 22,
+        UiAction::Pasted { .. } => 23,
     };
-    (place, 22)
+    (place, 24)
 }
 
 /// An app with two files open, and one of every kind of control on it, every menu item among them.
@@ -101,6 +103,12 @@ fn every_kind_of_control() -> (crate::testkit::headless::HeadlessApp, Vec<UiActi
         UiAction::Swiped { delta_x: 1.0 },
         // A mouse-up on a page with no link clicked: nothing to follow (a click on one is below, from the caller's thread).
         UiAction::LinkClicked { pane: 0 },
+        // The snapshot tool's release with nothing taken, and a paste of an offer there isn't: nothing to do, at once.
+        UiAction::SnapshotTaken,
+        UiAction::Pasted {
+            serial: 1,
+            uti: "public.svg-image".into(),
+        },
         UiAction::ZoomTyped {
             text: "150".into(),
             decimal: ".".into(),

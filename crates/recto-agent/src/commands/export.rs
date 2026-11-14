@@ -212,18 +212,76 @@ impl Cmd for Images {
     }
 }
 
-/// One of a page's images to a new file, as itself: a JPEG's own bytes, or a lossless PNG.
+/// One of a page's images to a new file, as itself: a JPEG's own bytes, or a lossless PNG. Read as [`ImageAsked`], so a request that names no image or no
+/// file is refused as it always was, unless it's the person's click to the clipboard.
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "ImageAsked")]
 pub struct Image {
     #[serde(default)]
     pub tab: TabRef,
     pub page: u32,
-    /// From 1, as `images` lists them.
-    pub number: u32,
-    pub out: PathBuf,
+    /// From 1, as `images` lists them. None only for the person's click ([`Self::at`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<u32>,
+    /// A new file. None only for the person's click, to the window's clipboard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out: Option<PathBuf>,
     #[serde(default)]
     pub anyway: bool,
+    /// **The person's click on an image,** `x, y` in points from the page's top left as its file shows it: the image there, to the window's clipboard
+    /// ([`crate::clipboard`]). The window's alone, and out of the CLI's flags: anyone else's is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<[f32; 2]>,
+    /// To the window's clipboard, the person's alone ([`crate::clipboard`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub to_clipboard: bool,
+}
+
+/// **`image` as it's read off the wire:** every field as `Image` has it, with `number` and `out` required unless it's the person's click to the
+/// clipboard (`at` with `to_clipboard`), so what an agent sends reads as it did before the click had a command.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageAsked {
+    #[serde(default)]
+    tab: TabRef,
+    page: u32,
+    #[serde(default)]
+    number: Option<u32>,
+    #[serde(default)]
+    out: Option<PathBuf>,
+    #[serde(default)]
+    anyway: bool,
+    #[serde(default)]
+    at: Option<[f32; 2]>,
+    #[serde(default)]
+    to_clipboard: bool,
+}
+
+impl TryFrom<ImageAsked> for Image {
+    type Error = &'static str;
+    fn try_from(asked: ImageAsked) -> Result<Self, Self::Error> {
+        let ImageAsked {
+            tab,
+            page,
+            number,
+            out,
+            anyway,
+            at,
+            to_clipboard,
+        } = asked;
+        if !(to_clipboard && at.is_some()) && (number.is_none() || out.is_none()) {
+            return Err("`image` names an image by its number and a new file to write it to");
+        }
+        Ok(Self {
+            tab,
+            page,
+            number,
+            out,
+            anyway,
+            at,
+            to_clipboard,
+        })
+    }
 }
 
 impl Cmd for Image {
@@ -253,8 +311,9 @@ impl Cmd for Image {
             number,
             out,
             anyway,
+            ..
         } = self;
-        json!({ "tab": super::log_tab(tab), "page": page, "number": number, "anyway": anyway, "untrusted": super::log_file(out) })
+        json!({ "tab": super::log_tab(tab), "page": page, "number": number, "anyway": anyway, "untrusted": out.as_deref().map(super::log_file) })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self {
@@ -263,15 +322,30 @@ impl Cmd for Image {
             number,
             out,
             anyway,
+            at,
+            to_clipboard,
         } = self;
         let access = cx.access;
-        {
-            crate::quiet_files::check_new_file(access, out)?;
-            let (_, _, source) = locate(access, tab, *page)?;
-            let mut data = extract::image_to_file(&source.path, source.page + 1, *number, out, *anyway)?;
-            describe_source(&mut data, *page, &source);
-            Ok(data)
+        if *to_clipboard || at.is_some() {
+            let (Some(sink), Some(at), None, None) = (access.clipboard(cx.actor), at, number, out) else {
+                return Err(crate::clipboard::not_for_agents());
+            };
+            let (id, _, source) = locate(access, tab, *page)?;
+            let keys = access.persons_keys(cx.actor);
+            return extract::image_to_clipboard(sink, clip_page(access, id, &source, keys.as_ref()), *at, *anyway);
         }
+        let (Some(number), Some(out)) = (number, out) else {
+            return Err(AgentError::new(
+                Code::USAGE,
+                "`recto image` needs `--number` and `--out`, a new file.",
+                exit::USAGE,
+            ));
+        };
+        crate::quiet_files::check_new_file(access, out)?;
+        let (_, _, source) = locate(access, tab, *page)?;
+        let mut data = extract::image_to_file(&source.path, source.page + 1, *number, out, *anyway)?;
+        describe_source(&mut data, *page, &source);
+        Ok(data)
     }
     fn human(data: &Value) -> String {
         format!(
@@ -306,6 +380,13 @@ pub struct Snapshot {
     pub scale: f32,
     #[serde(default)]
     pub anyway: bool,
+    /// **To the window's clipboard,** the person's alone ([`crate::clipboard`]): `as png` is every type at once, as the snapshot tool takes a box, and
+    /// `as svg` the promised SVG made for a paste. Out of the CLI's flags: anyone else's is refused.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub to_clipboard: bool,
+    /// The box's page as the person's snapshot saw it, which the paste of its SVG is drawn as ([`extract::AsSeen`]). Clipboard-only, as `to_clipboard`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub as_seen: Option<extract::AsSeen>,
 }
 
 impl Cmd for Snapshot {
@@ -324,7 +405,7 @@ impl Cmd for Snapshot {
     }
     fn access(&self) -> Access {
         // Text comes back in the answer, as `copy` gives it. A file written is an export.
-        if self.out.is_none() && !extract::snapshot_writes(&self.format) {
+        if self.out.is_none() && !self.to_clipboard && !extract::snapshot_writes(&self.format) {
             return Access::At(Level::ReadOnly);
         }
         row_access(Self::TAG)
@@ -352,8 +433,18 @@ impl Cmd for Snapshot {
             out,
             scale,
             anyway,
+            to_clipboard,
+            as_seen,
         } = self;
         let access = cx.access;
+        if *to_clipboard || as_seen.is_some() {
+            let (Some(sink), None, true) = (access.clipboard(cx.actor), out, to_clipboard) else {
+                return Err(crate::clipboard::not_for_agents());
+            };
+            let (id, _, source) = locate(access, tab, *page)?;
+            let keys = access.persons_keys(cx.actor);
+            return extract::box_to_clipboard(sink, clip_page(access, id, &source, keys.as_ref()), *rect, format, (*anyway, *as_seen));
+        }
         {
             if let Some(out) = out {
                 crate::quiet_files::check_new_file(access, out)?;
@@ -375,6 +466,24 @@ impl Cmd for Snapshot {
     }
     fn human(data: &Value) -> String {
         snapshot(data)
+    }
+}
+
+/// **The page a snapshot to the person's clipboard reads:** its file and place, its unsaved turn, what the tab has taken out of it, and whether it's of
+/// the tab's own file, which their password reads by the print's rule.
+fn clip_page<'a, A: SessionAccess>(
+    access: &A,
+    id: recto_session::TabId,
+    source: &'a recto_session::PageSource,
+    keys: Option<&'a crate::keys::PersonsKeys>,
+) -> extract::ClipPage<'a> {
+    let own = access.with(|s| s.tabs().path_of(id)).as_deref() == Some(source.path.as_path());
+    extract::ClipPage {
+        path: &source.path,
+        file_page: source.page,
+        unsaved_quarter_turns: source.quarter_turns,
+        hidden: crate::highlighting::hidden_on(access, id, source),
+        whose: extract::PersonsPage { keys, own },
     }
 }
 

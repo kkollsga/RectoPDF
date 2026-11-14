@@ -55,6 +55,11 @@ pub enum UiAction {
     /// The mouse came up on a page in `pane` after a press: the link the click landed on, if the page view says it landed on one, is followed
     /// ([`super::reconcile::link_clicked`]).
     LinkClicked { pane: u32 },
+    /// The mouse came up with the snapshot tool on: the box or click it took is taken, to the clipboard ([`super::snapshot_tool::taken`]).
+    SnapshotTaken,
+    /// The system's paste asked for a promised type of the clipboard's offer with this number ([`super::snapshot_tool::pasted`]): its bytes are waited
+    /// for by the host's call that asked ([`super::snapshot_tool::Tool::wait_for_paste`]).
+    Pasted { serial: u64, uti: String },
     /// The print panel answered with Print, for the tab it was opened for: all the pages or a range from 1, or just the selection's, on paper or, with
     /// `to_file`, to a PDF the system's printing saves or previews.
     Print {
@@ -146,6 +151,16 @@ impl Inner {
             }
             UiAction::SettingChosen { id, on } => super::updates::setting_command(&id, on),
             UiAction::LinkClicked { pane } => super::reconcile::link_clicked(self, pane as usize),
+            UiAction::SnapshotTaken => {
+                super::snapshot_tool::taken(self);
+                return Acted::DONE;
+            }
+            UiAction::Pasted { serial, uti } => {
+                return Acted {
+                    host: HostAction::None,
+                    understood: super::snapshot_tool::pasted(self, serial, &uti),
+                };
+            }
             UiAction::Print {
                 tab,
                 all,

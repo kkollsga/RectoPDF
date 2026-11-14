@@ -14,6 +14,8 @@ use recto_agent::{
 };
 
 #[cfg(test)]
+mod clipboard_tests;
+#[cfg(test)]
 mod keys_tests;
 mod own_record;
 #[cfg(test)]
@@ -79,6 +81,8 @@ pub struct SessionHost<L = DrawableLoader> {
     places: std::sync::OnceLock<Places>,
     /// The window's watch over the person's print, set once by the app: none for a session with no window.
     print_watch: std::sync::OnceLock<Arc<dyn recto_agent::print::PrintWatch>>,
+    /// The window's clipboard, for the person's own snapshot, set once by the app: none for a session with no window.
+    clipboard: std::sync::OnceLock<Arc<dyn recto_agent::clipboard::ClipboardSink>>,
 }
 
 /// What carries a command's [`recto_agent::Effect`] to the window.
@@ -114,6 +118,8 @@ struct Hosted<'a, L> {
     places: Option<&'a Places>,
     /// The window's watch over the person's print: only in an access made by [`SessionHost::persons_access`], as the keys are.
     print_watch: Option<&'a dyn recto_agent::print::PrintWatch>,
+    /// The window's clipboard: only in an access made by [`SessionHost::persons_access`], as the keys are.
+    clipboard: Option<&'a dyn recto_agent::clipboard::ClipboardSink>,
     /// How what a command needs is read, on a host that mustn't wait on a disk: the window's session thread. None everywhere else.
     reads_later: Option<&'a dyn recto_agent::later::ReadLater>,
     /// Whether the answer is read: not on the window's session thread, which draws what the session publishes.
@@ -181,6 +187,9 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
     fn print_watch(&self, actor: Actor) -> Option<&dyn recto_agent::print::PrintWatch> {
         self.print_watch.filter(|_| actor.at_the_window())
     }
+    fn clipboard(&self, actor: Actor) -> Option<&dyn recto_agent::clipboard::ClipboardSink> {
+        self.clipboard.filter(|_| actor.at_the_window())
+    }
 }
 
 impl Default for SessionHost<DrawableLoader> {
@@ -216,6 +225,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             effects: std::sync::OnceLock::new(),
             places: std::sync::OnceLock::new(),
             print_watch: std::sync::OnceLock::new(),
+            clipboard: std::sync::OnceLock::new(),
         }
     }
 
@@ -293,6 +303,11 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         let _ = self.print_watch.set(watch);
     }
 
+    /// The window's clipboard, for the person's own snapshot, once, by the app. The first one set stays.
+    pub fn set_clipboard(&self, clipboard: Arc<dyn recto_agent::clipboard::ClipboardSink>) {
+        let _ = self.clipboard.set(clipboard);
+    }
+
     /// Where the window's page views are is taken in from here before a jump, once, by the app.
     pub fn set_places(&self, places: Places) {
         let _ = self.places.set(places);
@@ -328,6 +343,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             effects: self.effects.get(),
             places: self.places.get(),
             print_watch: None,
+            clipboard: None,
             reads_later: None,
             answer_read: true,
             persons_keys: None,
@@ -344,6 +360,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         Hosted {
             persons_keys: self.persons_keys.get(),
             print_watch: self.print_watch.get().map(|watch| &**watch),
+            clipboard: self.clipboard.get().map(|clipboard| &**clipboard),
             ..self.access()
         }
     }
