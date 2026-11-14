@@ -301,6 +301,8 @@ fn a_window_can_go_up_with_a_picture_on_every_page() {
     reader.activate(1, 5, 0, map(), &[], Some(saved), Spread::Single);
     reader.host.take_ops();
     assert!(!reader.is_showable(), "still being sent to its place, with nothing on it");
+    // And it says why, for the record of the window's first showing: a slow page and a missed wake read differently there.
+    assert_eq!(reader.not_showable(), Some(crate::tiles::NotShowable::Jump));
     let scrolled = reader.place.jump.unwrap_or(0);
     reader.set_viewport(Viewport {
         scrolled_to: scrolled,
@@ -309,6 +311,7 @@ fn a_window_can_go_up_with_a_picture_on_every_page() {
     reader.host.take_ops();
     reader.host.unapplied = false;
     assert!(!reader.is_showable(), "a bare page isn't what goes up");
+    assert_eq!(reader.not_showable(), Some(crate::tiles::NotShowable::NotCovered), "nothing's drawing it here");
     let shot = SleepShot {
         page: 0,
         scale: 0.25,
@@ -335,6 +338,7 @@ fn a_window_can_go_up_with_a_picture_on_every_page() {
     reader.host.take_ops();
     reader.host.unapplied = false;
     assert!(reader.is_showable());
+    assert_eq!(reader.not_showable(), None);
     assert!(!reader.is_on_place(), "and that's sooner than sharp");
 }
 
@@ -544,5 +548,18 @@ fn a_picture_made_from_the_tiles_has_their_one_colour_tiles_in_it() {
     // The cache's order is a new one each time; the picture isn't.
     for _ in 0..8 {
         assert!(picture_from_the_tiles(true).0.bgra == band.bgra, "the same tiles made another picture");
+    }
+}
+
+/// Failure: the record of a window's first showing reads a reason back as another (a byte kept for it in the app's state), so a slow page is told as a
+/// missed wake or the other way round.
+#[test]
+fn why_a_window_cant_go_up_reads_back_as_itself() {
+    use crate::tiles::NotShowable;
+    assert_eq!(NotShowable::from_code(NotShowable::code(None)), None);
+    let all = (1..=u8::MAX).map_while(NotShowable::from_code).collect::<Vec<_>>();
+    assert_eq!(all.len(), 9, "each reason has its own byte: {all:?}");
+    for reason in all {
+        assert_eq!(NotShowable::from_code(NotShowable::code(Some(reason))), Some(reason));
     }
 }

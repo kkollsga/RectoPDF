@@ -614,6 +614,8 @@ fn a_hand_off_in_the_middle_of_things_loses_nothing() {
     run.ok(&["qa", "scroller-style", "overlay"]);
     run.settled();
     let after = run.report();
+    // Why the new window was shown when it was, and what held it till then: kept with a passing run's output too.
+    eprintln!("first_shown: {}", after["record"]["first_shown"]);
     assert_same(&before, &after, &known_paths());
     assert_eq!(after["session"]["edit_mode"], true);
     assert_eq!(after["session"]["find"]["draft"], "typed but not run");

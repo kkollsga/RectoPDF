@@ -15,6 +15,7 @@ mod exports;
 pub(crate) mod files;
 mod find;
 mod finding;
+mod first_show;
 mod highlight;
 mod inner_guards;
 mod input_to_frame;
