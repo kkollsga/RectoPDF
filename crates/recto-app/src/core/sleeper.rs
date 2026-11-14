@@ -4,8 +4,10 @@
 //!
 //! **Going dormant, once:** the tab's sleep file's written if there's anything new to say, its journal's compacted and read back, and its contents, list, worker and tiles go. A byte budget across the documents off screen and memory pressure make that happen sooner, oldest first. A tab being worked on by an agent or saved doesn't go, whatever's asking: `Session::hold` and `saving` see to that.
 
+use super::keeping::KeepsRecord;
 use super::{CoreCall, Inner, lock};
 use crate::clock::Clock;
+use recto_control::record_store::RecordStore;
 use recto_platform::surface::PixelSurface;
 use recto_reader::layout::PageBox;
 use recto_reader::paper::PaperKind;
@@ -401,14 +403,43 @@ impl Inner {
         let material = self.panes.engine_for_tab(&self.engine, id).waking().sleep_material(id.0, &now)?;
         // What's queued for it is older than this.
         self.sleeper.leaving.forget(id);
-        self.write_with_material(facts, material, by, until)
+        self.sleeper
+            .write_with_material(&self.saver.store, &super::keeping::asks(self), facts, material, by, until)
     }
 
+    /// The queue's said there's no writer: one's started.
+    ///
+    /// **Stays on the app** (R3.7 S6): the thread it starts holds the app, as the writer asks the record's keeping before each write
+    /// ([`super::keeping::asks`]), which is the app's; it goes to the [`Sleeper`] when R3.7 S5 gives the record's keeping a part of its own.
+    pub(super) fn start_sleep_writer(&self) {
+        let Some(inner) = self.saver.inner() else {
+            self.sleeper.leaving.writer_gone();
+            return;
+        };
+        let spawned = std::thread::Builder::new()
+            .name("recto-sleep".into())
+            .stack_size(512 * 1024)
+            .spawn(move || inner.sleeper.write_leaving(&inner.saver.store, &super::keeping::asks(&inner)));
+        if spawned.is_err() {
+            self.sleeper.leaving.writer_gone();
+        }
+    }
+}
+
+impl Sleeper {
     /// A sleep file from what's known and what's on hand. With no pictures to hand, as with a closed window or what the system's taken, what's there already stands, if it's about the same list. Past the limits, a tab that's only moving about keeps what it has, and one with nothing yet has its facts, which is small and says what the PDF would.
-    fn write_with_material(&self, facts: SleepFacts, material: SleepMaterial, by: By, until: Option<Instant>) -> Option<Outcome> {
+    fn write_with_material(
+        &self,
+        store: &RecordStore,
+        keeps: &KeepsRecord<'_>,
+        facts: SleepFacts,
+        material: SleepMaterial,
+        by: By,
+        until: Option<Instant>,
+    ) -> Option<Outcome> {
         // Past `until` it's counted as skipped, by the machine.
-        let _one_at_a_time = self.sleeper.take_writing(until)?;
-        self.write_holding_lock(facts, material, by)
+        let _one_at_a_time = self.take_writing(until)?;
+        self.write_holding_lock(store, keeps, facts, material, by)
     }
 
     /// The same, with the one-at-a-time lock held: what it carries is the machine's to say ([`Write`]), and an agent's is measured against its share before
@@ -417,8 +448,8 @@ impl Inner {
     /// **Only a copy that keeps the record writes one** ([`super::keeping::may_write`], the rule every writer of the record goes by): the queue's writer and an
     /// asked sleep aren't behind the saver's gate, and the store's own refusal goes by its lock, which a copy can hold while it doesn't keep the record (a late
     /// keep's read, or its read past its patience). So nothing's written then, and nothing's said to have been.
-    fn write_holding_lock(&self, mut facts: SleepFacts, material: SleepMaterial, by: By) -> Option<Outcome> {
-        if !super::keeping::may_write(self) {
+    fn write_holding_lock(&self, store: &RecordStore, keeps: &KeepsRecord<'_>, mut facts: SleepFacts, material: SleepMaterial, by: By) -> Option<Outcome> {
+        if !keeps.may_write() {
             return None;
         }
         let material = crate::sleep_writer::allowed_material(&mut facts, material);
@@ -428,9 +459,9 @@ impl Inner {
             sleep,
             pictures_allowed,
         } = facts;
-        let there = self.saver.store.read_sleep(sleep.file, &path);
+        let there = store.read_sleep(sleep.file, &path);
         let new_dark = material.pictures.first().map(|picture| picture.paper == PaperKind::Dark);
-        let write = self.sleeper.step(Event::Write {
+        let write = self.step(Event::Write {
             id,
             by,
             there: there.is_some(),
@@ -461,7 +492,7 @@ impl Inner {
         while by.agent() {
             let packed = recto_session::sleep::encode_sleep(&sleep);
             let pictures = !sleep.pictures.is_empty();
-            match self.sleeper.step(Event::AgentSize {
+            match self.step(Event::AgentSize {
                 bytes: packed.len() as u64,
                 pictures,
                 there: had_file,
@@ -483,17 +514,43 @@ impl Inner {
             }
         }
         let bytes = match &measured {
-            Some(packed) => self.saver.store.write_sleep_bytes(&path, sleep.file, packed),
-            None => self.saver.store.write_sleep(&path, &sleep),
+            Some(packed) => store.write_sleep_bytes(&path, sleep.file, packed),
+            None => store.write_sleep(&path, &sleep),
         };
         debug_assert!(
             measured.as_ref().is_none_or(|packed| bytes == 0 || bytes == packed.len() as u64),
             "an agent's file is written as measured"
         );
-        let _ = self.sleeper.step(Event::Wrote { id, bytes });
+        let _ = self.step(Event::Wrote { id, bytes });
         Some(Outcome { write, cut_for_share })
     }
 
+    /// **The queue's one writer** ([`crate::sleep_queue::Leaving::serve`]): oldest first, until there's none, and then it ends. A write someone's waiting on goes
+    /// first. One that something newer's been written for since it was taken isn't written: that's asked with the one-at-a-time lock held, so the newer either
+    /// came before or comes after.
+    fn write_leaving(&self, store: &RecordStore, keeps: &KeepsRecord<'_>) {
+        let leaving = &self.leaving;
+        leaving.serve(
+            || self.millis(),
+            |facts, material, caused_by| {
+                self.let_others_go_first();
+                let _one_at_a_time = lock(&self.writing);
+                if leaving.still_wanted() {
+                    let (stamp, path) = (facts.sleep.file, facts.path.clone());
+                    let wrote = self
+                        .write_holding_lock(store, keeps, facts, material, By::Queue(caused_by))
+                        .is_some_and(|outcome| outcome.write != Write::PutOff);
+                    // Retired as it was written: the saver may have removed the file before this landed, so it goes now. Only one this wrote.
+                    if wrote && leaving.retired_in_flight() {
+                        store.remove_sleep(stamp, &path);
+                    }
+                }
+            },
+        );
+    }
+}
+
+impl Inner {
     /// **Tabs pushed out of the warm ones, their sleep files queued,** with their pictures copied just before the page view lets go of them: a quick copy of each, of those whose time's come, queued as it's made, so what's held is the queue's cap and the one being copied. Packing a photograph takes long enough to hold up whatever's asked for next, so the one writer does that ([`crate::sleep_queue`]). Each waits [`crate::sleeper::LEAVING_WAIT_MS`] first (the cool-down on the write). A flush hurries what's waiting and waits for it for what's left of its time, then writes the tab on screen's file.
     /// `shown` is the tab being shown: what's queued for it was copied as it left, so it's taken back, not written, and said for its first frame
     /// ([`Self::give_sleep_view`]); it's queued again when it next leaves.
@@ -536,45 +593,6 @@ impl Inner {
         if self.sleeper.leaving.push(facts, material, Leaves::Dormant, self.sleeper.millis()) {
             self.start_sleep_writer();
         }
-    }
-
-    /// The queue's said there's no writer: one's started.
-    pub(super) fn start_sleep_writer(&self) {
-        let Some(inner) = self.saver.inner() else {
-            self.sleeper.leaving.writer_gone();
-            return;
-        };
-        let spawned = std::thread::Builder::new()
-            .name("recto-sleep".into())
-            .stack_size(512 * 1024)
-            .spawn(move || inner.write_leaving());
-        if spawned.is_err() {
-            self.sleeper.leaving.writer_gone();
-        }
-    }
-
-    /// **The queue's one writer** ([`crate::sleep_queue::Leaving::serve`]): oldest first, until there's none, and then it ends. A write someone's waiting on goes
-    /// first. One that something newer's been written for since it was taken isn't written: that's asked with the one-at-a-time lock held, so the newer either
-    /// came before or comes after.
-    fn write_leaving(&self) {
-        let leaving = &self.sleeper.leaving;
-        leaving.serve(
-            || self.sleeper.millis(),
-            |facts, material, caused_by| {
-                self.sleeper.let_others_go_first();
-                let _one_at_a_time = lock(&self.sleeper.writing);
-                if leaving.still_wanted() {
-                    let (stamp, path) = (facts.sleep.file, facts.path.clone());
-                    let wrote = self
-                        .write_holding_lock(facts, material, By::Queue(caused_by))
-                        .is_some_and(|outcome| outcome.write != Write::PutOff);
-                    // Retired as it was written: the saver may have removed the file before this landed, so it goes now. Only one this wrote.
-                    if wrote && leaving.retired_in_flight() {
-                        self.saver.store.remove_sleep(stamp, &path);
-                    }
-                }
-            },
-        );
     }
 
     /// Tabs just woken from their sleep files: nothing's asked of the PDF on the way, as it may be on a disk that's gone away. Each is looked at on a thread of its own, and if it's turned out to be something else, it's read after all.
