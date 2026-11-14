@@ -29,20 +29,6 @@ impl Inner {
         self.core.push(CoreCall::RestorePatienceOver);
     }
 
-    /// The page checks as they are now, gathered for [`showing::decide`] and the record of the window's first showing ([`Lifecycle::ready_to_show`],
-    /// [`Lifecycle::record_window_shown`]). The UI thread asks, and doesn't wait for the session: its lock is only tried.
-    pub fn page_checks(&self) -> showing::PageChecks {
-        let active = self.host.session.try_with_session(|session| session.tabs().active().is_some());
-        showing::PageChecks {
-            state_read: self.life.state_read(),
-            holding_tab: self.life.holding_tab().is_some(),
-            session_free: active.is_some(),
-            has_tab: active.unwrap_or(false),
-            on_place: self.engine.waking().is_on_place(),
-            showable: self.engine.waking().is_showable(),
-        }
-    }
-
     /// The window opened: its page views have somewhere to draw again, what was selected on the window it replaced comes back, and the contents go back to where they were.
     pub fn window_opened(&self) {
         self.life.window_opened();

@@ -139,7 +139,6 @@ Inner::pub fn memory_pressure(&self, critical: bool)
 Inner::pub fn menu_item_enabled(&self, id: String) -> bool
 Inner::pub fn note_input(&self)
 Inner::pub fn notice_read(&self)
-Inner::pub fn page_checks(&self) -> showing::PageChecks
 Inner::pub fn perform(self: &Arc<Self>, id: String) -> HostAction
 Inner::pub fn qa_save_from(&self, written: &str) -> Result<(), AgentError>
 Inner::pub fn qa_session_verb(&self, verb: &str, value: &str) -> Option<Result<(), AgentError>>
@@ -189,8 +188,8 @@ Lifecycle::pub fn may_remake_window(&self) -> bool
 Lifecycle::pub fn new(clock: Arc<dyn crate::clock::Clock>) -> Self
 Lifecycle::pub fn note_input(&self)
 Lifecycle::pub fn note_nearby(&self)
-Lifecycle::pub fn ready_to_show(&self, checks: showing::PageChecks) -> bool
-Lifecycle::pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str, engine: &recto_reader::Engine, checks: showing::PageChecks)
+Lifecycle::pub fn ready_to_show(&self, session: &SessionHost<DrawableLoader>, engine: &recto_reader::Engine) -> bool
+Lifecycle::pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str, session: &SessionHost<DrawableLoader>, engine: &recto_reader::Engine)
 Lifecycle::pub fn seconds_since_start(&self) -> f64
 Lifecycle::pub fn sheet_changed(&self, open: bool)
 Lifecycle::pub fn state_read(&self) -> bool

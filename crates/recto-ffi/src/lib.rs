@@ -1180,7 +1180,7 @@ impl AppCore {
 
     /// Whether what the window would show now is right: the place on the layers, or nothing to wait for. Then, or once the patience is over, it shows. A short lock, asked only until it's showing.
     pub fn ready_to_show(&self) -> bool {
-        self.inner.life.ready_to_show(self.inner.page_checks())
+        self.inner.life.ready_to_show(&self.inner.host.session, &self.inner.engine)
     }
 
     /// The window has just been put on the screen, showing this, and `why`: `ready` when `ready_to_show` said yes, `patience` when the host's timer ran out. For QA to see what the first frame was.
@@ -1189,7 +1189,7 @@ impl AppCore {
         for engine in inner.panes.engines(&inner.engine) {
             engine.waking().window_up();
         }
-        inner.life.record_window_shown(home, tile_layers, &why, &inner.engine, inner.page_checks());
+        inner.life.record_window_shown(home, tile_layers, &why, &inner.host.session, &inner.engine);
         // The installer's waiting for this, off this thread, as it writes a small file and may start a worker, and only for a version that's new here.
         let _ = std::thread::Builder::new()
             .name("recto-update-frame".into())

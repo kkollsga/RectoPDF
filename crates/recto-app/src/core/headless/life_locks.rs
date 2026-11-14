@@ -35,10 +35,10 @@ fn the_windows_life_calls_answer(app: &HeadlessApp) -> Result<(), String> {
                     let _ = core.life.may_remake_window();
                 }),
                 ("ready_to_show", &|| {
-                    let _ = core.life.ready_to_show(core.page_checks());
+                    let _ = core.life.ready_to_show(&core.host.session, &core.engine);
                 }),
                 ("window_shown", &|| {
-                    core.life.record_window_shown(false, 1, "ready", &core.engine, core.page_checks())
+                    core.life.record_window_shown(false, 1, "ready", &core.host.session, &core.engine)
                 }),
                 ("sheet_changed open", &|| core.life.sheet_changed(true)),
                 ("sheet_changed closed", &|| core.life.sheet_changed(false)),

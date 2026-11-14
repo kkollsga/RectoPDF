@@ -3,6 +3,8 @@
 
 use super::{SHOW_PATIENCE, showing, updates};
 use crate::lock;
+use recto_agent::DrawableLoader;
+use recto_control::host::SessionHost;
 use recto_session::TabId;
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -203,20 +205,35 @@ impl Lifecycle {
         self.touched.store(true, Ordering::Relaxed);
     }
 
-    /// Whether the window may be shown now, by [`showing::decide`] on the page checks the app gathered ([`super::Inner::page_checks`]); what it said is kept
+    /// The page checks as they are now, gathered for [`showing::decide`] and the record of the window's first showing: the session's lock only tried, as the UI
+    /// thread asks and doesn't wait for it, and the page view's word on its place.
+    fn page_checks(&self, session: &SessionHost<DrawableLoader>, engine: &recto_reader::Engine) -> showing::PageChecks {
+        let active = session.try_with_session(|session| session.tabs().active().is_some());
+        showing::PageChecks {
+            state_read: self.state_read(),
+            holding_tab: self.holding_tab().is_some(),
+            session_free: active.is_some(),
+            has_tab: active.unwrap_or(false),
+            on_place: engine.waking().is_on_place(),
+            showable: engine.waking().is_showable(),
+        }
+    }
+
+    /// Whether the window may be shown now, by [`showing::decide`] on the page checks as they are, from the session and the page view; what it said is kept
     /// for the record. The UI thread's.
-    pub fn ready_to_show(&self, checks: showing::PageChecks) -> bool {
+    pub fn ready_to_show(&self, session: &SessionHost<DrawableLoader>, engine: &recto_reader::Engine) -> bool {
         let opened = lock(&self.window_opened_at).map(|at| at.elapsed());
-        let decision = showing::decide(opened, self.started.elapsed(), checks);
+        let decision = showing::decide(opened, self.started.elapsed(), self.page_checks(session, engine));
         self.shown_by_cap.store(decision == showing::Show::Cap, Ordering::Relaxed);
         decision != showing::Show::Wait
     }
 
     /// **What the window's first showing had on it, and why it was shown.** `why` is `ready` (the page checks passed), `cap` (Rust's cap ran out: the host
-    /// asked and was told yes) or `patience` (the host's timer showed it). The rest is the page view's report and how the page `checks` were at the show (the
-    /// app gathers them just before), written once per window. The UI thread's.
-    pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str, engine: &recto_reader::Engine, checks: showing::PageChecks) {
+    /// asked and was told yes) or `patience` (the host's timer showed it). The rest is the page view's report and how the page checks were at the show,
+    /// gathered just after it, written once per window. The UI thread's.
+    pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str, session: &SessionHost<DrawableLoader>, engine: &recto_reader::Engine) {
         let report = engine.report().0;
+        let checks = self.page_checks(session, engine);
         let why = if why == "ready" && self.shown_by_cap.load(Ordering::Relaxed) {
             "cap"
         } else {
