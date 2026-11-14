@@ -36,6 +36,18 @@ pub(super) struct QaHolds {
     /// How many asks wait at the hold, for [`Qa::wait_for_held_asks`].
     waiting: Mutex<u32>,
     changed: Condvar,
+    /// [`Qa::hold_tells`]: the thread that draws waits after a job's end, the view let go, before it tells what came of it.
+    tells_held: AtomicBool,
+    /// How many wait at that hold, for [`Qa::wait_for_held_tell`], and how many of them may go ([`Qa::let_a_tell_go`]).
+    tells: Mutex<Tells>,
+}
+
+/// The tells waiting at [`Qa::hold_tells`], and those let go.
+#[cfg(any(test, feature = "qa"))]
+#[derive(Default)]
+struct Tells {
+    waiting: u32,
+    let_go: u32,
 }
 
 impl Shared {
@@ -72,6 +84,29 @@ impl Shared {
         #[cfg(not(any(test, feature = "qa")))]
         {
             let _ = ask;
+        }
+    }
+}
+
+/// What [`Shared`] notes for [`Qa::hold_tells`]: nothing at all in a build without the `qa` feature.
+impl Shared {
+    /// After a job's end, the view let go, before what came of it is told: waits here while QA holds tells ([`Qa::hold_tells`]).
+    #[inline]
+    pub(super) fn before_telling(&self) {
+        #[cfg(any(test, feature = "qa"))]
+        {
+            if !self.qa.tells_held.load(Ordering::SeqCst) {
+                return;
+            }
+            let mut tells = self.qa.tells.lock().unwrap_or_else(PoisonError::into_inner);
+            tells.waiting += 1;
+            self.qa.changed.notify_all();
+            while self.qa.tells_held.load(Ordering::SeqCst) && tells.let_go == 0 {
+                tells = self.qa.changed.wait(tells).unwrap_or_else(PoisonError::into_inner);
+            }
+            tells.let_go = tells.let_go.saturating_sub(1);
+            tells.waiting -= 1;
+            self.qa.changed.notify_all();
         }
     }
 }
@@ -144,5 +179,37 @@ impl Qa<'_> {
             waiting = qa.changed.wait_timeout(waiting, left).unwrap_or_else(PoisonError::into_inner).0;
         }
         true
+    }
+
+    /// **The page view's word on a job's end, held:** while on, the thread that draws stops after each job's end, with the view let go and nothing of what
+    /// came of it told yet (the session's look it asks for, a page's note, the host's word that there are layers), as a thread preempted there does. Let go
+    /// one at a time ([`Self::let_a_tell_go`]) or all at once (off).
+    pub fn hold_tells(&self, on: bool) {
+        let qa = &self.engine.shared.qa;
+        let _tells = qa.tells.lock().unwrap_or_else(PoisonError::into_inner);
+        qa.tells_held.store(on, Ordering::SeqCst);
+        qa.changed.notify_all();
+    }
+
+    /// Waits, at most `limit`, until a job's end waits at [`Self::hold_tells`]. Says whether one did.
+    pub fn wait_for_held_tell(&self, limit: Duration) -> bool {
+        let qa = &self.engine.shared.qa;
+        let deadline = Instant::now() + limit;
+        let mut tells = qa.tells.lock().unwrap_or_else(PoisonError::into_inner);
+        while tells.waiting <= tells.let_go {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            tells = qa.changed.wait_timeout(tells, left).unwrap_or_else(PoisonError::into_inner).0;
+        }
+        true
+    }
+
+    /// The next job's end waiting at [`Self::hold_tells`] tells what came of it.
+    pub fn let_a_tell_go(&self) {
+        let qa = &self.engine.shared.qa;
+        qa.tells.lock().unwrap_or_else(PoisonError::into_inner).let_go += 1;
+        qa.changed.notify_all();
     }
 }

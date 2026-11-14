@@ -741,7 +741,10 @@ Qa (pub struct, derives Clone, Copy) [qa feature only]
 Qa::pub fn follow_is_pending(&self) -> bool [qa feature only]
 Qa::pub fn hold_asks(&self, ask: Ask, on: bool) [qa feature only]
 Qa::pub fn hold_busy(&self, on: bool) [qa feature only]
+Qa::pub fn hold_tells(&self, on: bool) [qa feature only]
+Qa::pub fn let_a_tell_go(&self) [qa feature only]
 Qa::pub fn wait_for_held_asks(&self, count: u32) -> bool [qa feature only]
+Qa::pub fn wait_for_held_tell(&self, limit: Duration) -> bool [qa feature only]
 QaHolds (pub(super) struct, derives Default) [qa feature only]
 RawPicture (pub struct, derives Clone, Debug, PartialEq)
 RawPicture.pub bgra: Vec<u8>
@@ -874,6 +877,7 @@ SurfaceRetry::pub(crate) fn clear(&mut self)
 SurfaceRetry::pub(crate) fn refused(&mut self) -> std::time::Duration
 SurfaceRetry::pub(crate) fn report(&self) -> serde_json::Value
 TabNow (pub(super) struct, derives Clone, Copy, Debug, Default, PartialEq, Eq)
+Tells (private struct, derives Default) [qa feature only]
 TileCache (pub(crate) struct, derives Debug)
 TileCache::pub(crate) fn empty_discardable(&mut self) -> usize
 TileCache::pub(crate) fn set_share(&mut self, views: usize, host: &mut HostQueue)
@@ -922,6 +926,7 @@ Waking::pub(crate) fn last_wake(&self) -> Option<WakeReport>
 Waking::pub(crate) fn window_up(&mut self)
 Work (pub(crate) struct, derives Debug)
 Work.pub(crate) surfaces: SurfaceRetry
+Work.pub(crate) telling: bool
 Work::pub(crate) fn hold_drawing(&mut self, on: bool)
 Work::pub(crate) fn note_started(&mut self, job: &Job, cancel: Option<CancelHandle>)
 Work::pub(crate) fn set_cancel(&mut self, cancel: CancelHandle)

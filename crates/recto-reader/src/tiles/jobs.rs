@@ -371,6 +371,11 @@ pub(crate) struct Work {
     pub(super) gave_up: bool,
     /// For QA: nothing's drawn, so a first frame stays to be looked at.
     pub(super) hold_drawing: bool,
+    /// **The thread that draws has let go of the view to tell what came of its last turn** (a job's end, a file's length, a change the view made), and hasn't
+    /// taken the view again since: what it tells may queue work for the session (a look, a page's note, a file's length), so whoever waits for the view
+    /// settled waits for this too ([`crate::Engine::wait_settled`]). Set with the lock held as it's let go, cleared the next time that thread takes it: so a
+    /// view seen settled under the lock has told everything. A byte of room `Work` had.
+    pub(crate) telling: bool,
     pub(super) wanted_files: Arc<Vec<PathBuf>>,
     /// Surfaces the system refused a page in view, and whether one's waited for now ([`SurfaceRetry`]): the thread that draws notes them, and QA reads them.
     pub(crate) surfaces: SurfaceRetry,
@@ -391,6 +396,7 @@ impl Work {
             renew: Vec::new(),
             keyless: Vec::new(),
             hold_drawing: false,
+            telling: false,
         }
     }
 
