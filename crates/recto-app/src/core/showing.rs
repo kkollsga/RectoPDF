@@ -25,7 +25,87 @@ impl PageChecks {
     /// The page is as it should be, or there is no page to wait for.
     #[must_use]
     pub fn pass(self) -> bool {
-        self.state_read && !self.holding_tab && self.session_free && (!self.has_tab || self.on_place || self.showable)
+        self.held_by().next().is_none()
+    }
+
+    /// **The checks that hold the window,** by name, none when they [`Self::pass`]: what the record of the first showing says held it.
+    pub fn held_by(self) -> impl Iterator<Item = &'static str> {
+        [
+            (!self.state_read, "state_not_read"),
+            (self.holding_tab, "holding_tab"),
+            (!self.session_free, "session_busy"),
+            (self.has_tab && !self.on_place && !self.showable, "page_not_ready"),
+        ]
+        .into_iter()
+        .filter_map(|(holds, name)| holds.then_some(name))
+    }
+
+    /// The six checks as bits of one byte, in the order of the fields, for an ask kept in the app's state.
+    const fn bits(self) -> u8 {
+        self.state_read as u8
+            | (self.holding_tab as u8) << 1
+            | (self.session_free as u8) << 2
+            | (self.has_tab as u8) << 3
+            | (self.on_place as u8) << 4
+            | (self.showable as u8) << 5
+    }
+
+    /// The checks [`Self::bits`] made a byte of.
+    const fn from_bits(bits: u8) -> Self {
+        Self {
+            state_read: bits & 1 != 0,
+            holding_tab: bits & 1 << 1 != 0,
+            session_free: bits & 1 << 2 != 0,
+            has_tab: bits & 1 << 3 != 0,
+            on_place: bits & 1 << 4 != 0,
+            showable: bits & 1 << 5 != 0,
+        }
+    }
+}
+
+/// **One ask of the page checks,** as the rule saw it: when (since the window was put up), the checks, and what the rule said. Eight bytes, as the app's
+/// state keeps two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Asked {
+    /// Microseconds since the window was put up, at most `u32::MAX`; 0 with none put up.
+    pub micros: u32,
+    checks: u8,
+    pub said: Show,
+}
+
+impl Asked {
+    /// The page checks as they were.
+    #[must_use]
+    pub const fn checks(self) -> PageChecks {
+        PageChecks::from_bits(self.checks)
+    }
+}
+
+const _: () = assert!(size_of::<Option<Asked>>() <= 8, "an ask the app's state keeps grew");
+
+/// **A window's asks before its first showing:** how many, the last (the one that decided, when it said yes), and the last that said wait. What the record
+/// says the decision saw, where the checks gathered after the show's layout say what that layout made of the page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Asks {
+    pub count: u32,
+    pub last: Option<Asked>,
+    pub last_wait: Option<Asked>,
+}
+
+impl Asks {
+    /// An ask, `since` the window was put up.
+    pub fn note(&mut self, since: Option<Duration>, checks: PageChecks, said: Show) {
+        let micros = since.map_or(0, |since| u32::try_from(since.as_micros()).unwrap_or(u32::MAX));
+        let asked = Asked {
+            micros,
+            checks: checks.bits(),
+            said,
+        };
+        self.count = self.count.saturating_add(1);
+        self.last = Some(asked);
+        if said == Show::Wait {
+            self.last_wait = Some(asked);
+        }
     }
 }
 
@@ -157,5 +237,61 @@ mod tests {
             }
             .pass()
         );
+    }
+
+    /// Failure: the record names a check that didn't hold the window, or leaves out one that did, so a show by patience is blamed on the wrong thing.
+    #[test]
+    fn what_held_the_window_is_named() {
+        let held = |checks: PageChecks| checks.held_by().collect::<Vec<_>>();
+        assert_eq!(held(covered()), Vec::<&str>::new());
+        assert_eq!(held(not_covered()), ["page_not_ready"]);
+        assert_eq!(
+            held(PageChecks {
+                session_free: false,
+                has_tab: false,
+                ..not_covered()
+            }),
+            ["session_busy"],
+            "no tab's page to wait for"
+        );
+        assert_eq!(held(PageChecks::default()), ["state_not_read", "session_busy"]);
+        assert_eq!(
+            held(PageChecks {
+                holding_tab: true,
+                ..covered()
+            }),
+            ["holding_tab"]
+        );
+    }
+
+    /// Failure: the last wait is lost when the deciding ask says yes, so the record can't say what held the window till then.
+    #[test]
+    fn the_asks_keep_the_last_and_the_last_wait() {
+        let mut asks = Asks::default();
+        asks.note(Some(ms(10)), not_covered(), Show::Wait);
+        asks.note(Some(ms(400)), not_covered(), Show::Wait);
+        asks.note(Some(ms(900)), covered(), Show::Ready);
+        assert_eq!(asks.count, 3);
+        assert_eq!(asks.last.map(|asked| (asked.micros, asked.said)), Some((900_000, Show::Ready)));
+        assert_eq!(asks.last_wait.map(|asked| (asked.micros, asked.checks())), Some((400_000, not_covered())));
+    }
+
+    /// Failure: a check is kept under another's bit, so the record says the wrong one held the window.
+    #[test]
+    fn each_check_keeps_its_own_bit() {
+        for at in 0..6 {
+            let checks = PageChecks::from_bits(1 << at);
+            assert_eq!(checks.bits(), 1 << at);
+            let set = [
+                checks.state_read,
+                checks.holding_tab,
+                checks.session_free,
+                checks.has_tab,
+                checks.on_place,
+                checks.showable,
+            ];
+            assert_eq!(set.iter().filter(|set| **set).count(), 1, "{checks:?}");
+            assert!(set[at], "{checks:?}");
+        }
     }
 }
