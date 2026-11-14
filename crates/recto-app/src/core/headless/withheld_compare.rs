@@ -347,6 +347,13 @@ fn agent_told_beside_a_followed_tab(pages: usize, word: &str, plain_leads: bool)
     told
 }
 
+/// **The twins' answers don't turn on the machine's speed,** as in `recto-agent`'s walk: every renderer of this test's process gets a page deadline it
+/// always meets, so Find reads every page for both twins. Under `--like-ci` one twin's Find once counted a page it couldn't read in time
+/// (`failed_pages`), and the walk told them apart by it (2 of 20, 2026-11-14).
+fn deadlines_met() {
+    recto_render_service::page_deadline_for_this_process(std::time::Duration::from_secs(20));
+}
+
 /// Failure (security review of S2's round): a plain tab that follows a protected one, or was left by following one, tells an agent that document's
 /// place and length by a way the first round didn't close: an edit's, undo's, redo's or save's answer, `edits`, a step of Find from it or the person's
 /// ⌘G there, `back` and `forward` after a jump, `session save`'s sizes, `session restore` (which forgets the place was withheld), `wait page-drawn`
@@ -354,6 +361,7 @@ fn agent_told_beside_a_followed_tab(pages: usize, word: &str, plain_leads: bool)
 /// are told and heard alike, the protected one leading and the plain one leading.
 #[test]
 fn an_agent_is_told_nothing_of_where_a_followed_tab_is() {
+    deadlines_met();
     for plain_leads in [false, true] {
         let (one, two) = (
             agent_told_beside_a_followed_tab(5, "Locked", plain_leads),
@@ -536,6 +544,7 @@ fn agent_told_through_sequences(pages: usize, word: &str) -> Vec<String> {
 /// differ in length and words, so following leaves the plain tab on page 8 in one, are told and hear the same; and the person's page is still drawn.
 #[test]
 fn an_agent_is_told_nothing_of_a_followed_place_through_sequences() {
+    deadlines_met();
     let (one, two) = (agent_told_through_sequences(5, "Locked"), agent_told_through_sequences(9, "Sealed"));
     let differs: Vec<String> = one.iter().zip(&two).filter(|(a, b)| a != b).map(|(a, b)| format!("  {a}\n  {b}")).collect();
     assert!(
