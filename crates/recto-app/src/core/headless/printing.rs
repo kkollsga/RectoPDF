@@ -4,7 +4,7 @@
 
 use super::files::locked_allowing;
 use crate::core::controls::UiAction;
-use crate::core::printing::AT_PAGE;
+use crate::core::printing::{AFTER_END, AT_PAGE};
 use crate::lock;
 use crate::testkit::headless::{Disk, HeadlessApp, WAIT_LIMIT};
 
@@ -450,4 +450,32 @@ fn a_quit_before_the_print_begins_stops_it() {
     app.settle();
     assert_eq!(printed(&app), "none", "the quit stopped it");
     assert_eq!(print_files_left(), Vec::<String>::new(), "nothing's left");
+}
+
+/// Failure (review of S2, S1): an update hands off and quits in the moment between the person's print's drawing ending and its file being the host's (the
+/// print looked neither prepared nor ready, and the command was no longer counted), so the print is lost without a word; or the update's check names the
+/// person's print as an agent's command. Held there: the check isn't safe, names the print and the person's command and no agent's; once the file's
+/// handed over and done with, it's safe.
+#[test]
+fn a_hand_off_waits_for_the_persons_print_to_be_handed_over() {
+    let disk = Disk::new();
+    let doc = disk.file("widths.pdf", &widths(1));
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    let (told, held) = std::sync::mpsc::channel();
+    let (go, waiting) = std::sync::mpsc::channel();
+    *lock(&AFTER_END) = Some((told, waiting));
+    answer(&app, ALL);
+    held.recv_timeout(WAIT_LIMIT).expect("the print held after its drawing ended");
+    let check = app.core().hand_off_check();
+    drop(go);
+    app.settle();
+    let codes: Vec<&str> = check.busy.iter().map(|item| item.code.as_str()).collect();
+    assert!(!check.safe, "an update hands off with the print's file not yet the host's: {codes:?}");
+    assert!(codes.contains(&"printing") && codes.contains(&"person_command"), "{codes:?}");
+    assert!(!codes.contains(&"agent_command"), "the person's print named as an agent's command: {codes:?}");
+    assert_ne!(printed(&app), "none", "the print's file reached the host");
+    app.settle();
+    assert!(app.core().hand_off_check().safe, "nothing in flight once it's done");
 }

@@ -216,8 +216,10 @@ pub struct Serving {
     pub(crate) place_seams: crate::testkit::place_seams::PlaceSeams,
 }
 
-/// What's in flight, for an update to wait for. A save from the window counts here, and an agent's save or an export is a command.
-pub fn hand_off_check_parts(inner_reads: u32, sheets: u32, commands: u32, saves: u32, printing: bool) -> Vec<BusyItem> {
+/// What's in flight, for an update to wait for. A save from the window counts here, and an agent's save or an export is a command. `commands` counts every
+/// command running through the host, the person's among them, and `persons` the person's commands on threads of their own, from when they're asked for
+/// to when what came of them is said: those are the person's, not an agent's (review of S2, S1).
+pub fn hand_off_check_parts(inner_reads: u32, sheets: u32, commands: u32, persons: u32, saves: u32, printing: bool) -> Vec<BusyItem> {
     let item = |code: &str, message: &str| BusyItem {
         code: code.to_string(),
         message: message.to_string(),
@@ -226,8 +228,11 @@ pub fn hand_off_check_parts(inner_reads: u32, sheets: u32, commands: u32, saves:
     if sheets > 0 {
         busy.push(item("sheet_open", "A sheet or panel is open over the window."));
     }
-    if commands > 0 {
+    if commands.saturating_sub(persons) > 0 {
         busy.push(item("agent_command", "An agent's command is running."));
+    }
+    if persons > 0 {
+        busy.push(item("person_command", "Something you asked for is still being done."));
     }
     if inner_reads > 0 {
         busy.push(item("file_opening", "A file is being opened."));
@@ -260,6 +265,7 @@ impl Inner {
             self.life.reads_running(),
             self.life.sheets_open(),
             self.host.running.load(Ordering::SeqCst),
+            self.life.persons_running(),
             self.tools.save_ui().running.load(Ordering::SeqCst),
             self.tools.printing().busy(),
         );
@@ -399,16 +405,35 @@ mod tests {
     /// Failure: an update goes ahead while a document is being saved from the window, so the app quits under the save (SPEC decision 24: a running save finishes first). Each thing in flight is named, and a save is one of them.
     #[test]
     fn a_hand_off_waits_for_a_save() {
-        assert!(hand_off_check_parts(0, 0, 0, 0, false).is_empty());
-        let busy = hand_off_check_parts(0, 0, 0, 1, false);
+        assert!(hand_off_check_parts(0, 0, 0, 0, 0, false).is_empty());
+        let busy = hand_off_check_parts(0, 0, 0, 0, 1, false);
         assert_eq!(busy.iter().map(|item| item.code.as_str()).collect::<Vec<_>>(), ["saving"]);
-        assert_eq!(hand_off_check_parts(1, 1, 1, 1, true).len(), 5);
+        assert_eq!(hand_off_check_parts(1, 1, 2, 1, 1, true).len(), 6);
+    }
+
+    /// Failure (review of S2, S1): during the person's own print, or another command of theirs on its own thread, the update's check says "An agent's
+    /// command is running.", which is an agent's word for the person's action; or an agent's command beside the person's isn't named.
+    #[test]
+    fn a_persons_command_is_named_as_theirs() {
+        let codes = |commands, persons| {
+            hand_off_check_parts(0, 0, commands, persons, 0, false)
+                .into_iter()
+                .map(|item| item.code)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(codes(1, 1), ["person_command"], "the person's command, running through the host");
+        assert_eq!(
+            codes(0, 1),
+            ["person_command"],
+            "the person's command, before it runs or as what came of it is said"
+        );
+        assert_eq!(codes(2, 1), ["agent_command", "person_command"], "and an agent's beside it");
     }
 
     /// Failure: an update quits the app mid-print, because the check only counted running commands, and a print's thread is done before the system's printing has its file (review, 2026-11-08).
     #[test]
     fn a_hand_off_waits_for_a_print() {
-        let busy = hand_off_check_parts(0, 0, 0, 0, true);
+        let busy = hand_off_check_parts(0, 0, 0, 0, 0, true);
         assert_eq!(busy.iter().map(|item| item.code.as_str()).collect::<Vec<_>>(), ["printing"]);
     }
 

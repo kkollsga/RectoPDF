@@ -416,6 +416,8 @@ impl PrintWatch for Watch {
         if std::thread::panicking() {
             self.printing.running.store(false, Ordering::SeqCst);
         }
+        #[cfg(test)]
+        after_end();
     }
 }
 
@@ -495,6 +497,19 @@ pub(crate) static AT_PAGE: Mutex<Option<(u32, Hold)>> = Mutex::new(None);
 /// A test's hold on a print's thread: it says it's there, then waits to be let go.
 #[cfg(test)]
 pub(crate) type Hold = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+
+/// A test's: the next print's thread, once its command's drawing has ended and before what came of it is said, says so and waits to be let go.
+#[cfg(test)]
+pub(crate) static AFTER_END: Mutex<Option<Hold>> = Mutex::new(None);
+
+/// Where a print's thread waits between its drawing's end and its answer, while a test holds it there ([`AFTER_END`]).
+#[cfg(test)]
+fn after_end() {
+    if let Some((told, go)) = lock(&AFTER_END).take() {
+        let _ = told.send(());
+        let _ = go.recv_timeout(crate::testkit::headless::WAIT_LIMIT);
+    }
+}
 
 /// Where a print's thread waits mid-way while a test holds it there ([`AT_PAGE`]).
 #[cfg(test)]
