@@ -206,7 +206,11 @@ impl AppHost {
             let hidden_commands = [(true, "go.back"), (false, "go.forward")]
                 .into_iter()
                 .filter(|(back, _)| {
-                    reading.is_some_and(|id| recto_agent::place::refuses(session, actor, recto_agent::commands::FromPlace::Trail { back: *back }, id))
+                    // A protected document's are refused as `protected` by their command, as every command about it is.
+                    reading.is_some_and(|id| {
+                        !session.tabs().withheld_from_agents(id)
+                            && recto_agent::place::refuses(session, actor, recto_agent::commands::FromPlace::Trail { back: *back }, id)
+                    })
                 })
                 .map(|(_, menu)| menu)
                 .collect();

@@ -664,6 +664,7 @@ HostQueue: Drop::fn drop(&mut self)
 HostQueue::pub(crate) fn has_ops(&self) -> bool
 Issue (pub(super) struct, derives Clone, Debug)
 Job (pub struct, derives Debug)
+Job.pub asked: u64
 Job.pub file: PathBuf
 Job.pub generation: u64
 Job.pub kind: JobKind
@@ -672,6 +673,7 @@ Job.pub source_page: u32
 Job.pub tab: u32
 JobKind (pub enum, derives Debug)
 JobPlan (pub struct, derives Debug)
+JobPlan.pub asked: u64
 JobPlan.pub file: PathBuf
 JobPlan.pub generation: u64
 JobPlan.pub position: u32
