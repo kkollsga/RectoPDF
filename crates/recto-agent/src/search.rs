@@ -590,12 +590,18 @@ impl<'a> Reader<'a> {
     }
 
     /// Works out how a file's pages get read: from its corpus if there's a finished one for the file as it is now, or else page by page, asking for a corpus to be built for next time. A file reached only for the count doesn't change how the answer's hits were read, so it isn't said to have.
-    /// The password the person typed for this file, if this is their own Find and they did.
+    /// The password the person typed for this file, if this is their own Find and they did. **Only for the document's own file,** a page added from
+    /// it included: a password is for the tab it was typed for, so a PDF added from another file is read with none, as the page view draws it
+    /// (`added_needs_password` in `recto-reader`), and what a password protects never shows as a hit in a document it wasn't typed for.
     fn key_of(&mut self, file: u16) -> Option<std::sync::Arc<recto_core::Password>> {
         let keys = self.plan.keys.as_ref()?;
+        let path = &self.plan.files.get(usize::from(file))?.path;
+        if self.plan.files.first().is_none_or(|own| own.path != *path) {
+            return None;
+        }
         let known = &mut self.file_keys[usize::from(file)];
         if known.is_none() {
-            *known = Some(keys(&self.plan.files[usize::from(file)].path));
+            *known = Some(keys(path));
         }
         known.clone().flatten()
     }
@@ -1668,5 +1674,41 @@ mod tests {
         ] {
             assert_eq!(find_regex(page, &pattern(text), 5).total, 1, "{text} on {page}");
         }
+    }
+
+    /// Failure (review round 1 of the measured faults, S1): the person's own Find looks up the password they typed by path for every file in the
+    /// document, a PDF added from another file too, so a crafted file the loader added with no password (as nothing needing one can be added otherwise)
+    /// had its protected text read with the password typed for its own tab and shown as hits in another document. A password is for the tab it was
+    /// typed for: the document's own file has it, and so does a page added from that same file, and no other file does.
+    #[test]
+    fn the_persons_find_reads_only_the_documents_own_file_with_a_password() {
+        let file = |path: &str, added: bool| PlanFile {
+            path: PathBuf::from(path),
+            expected: None,
+            added,
+        };
+        let plan = Plan {
+            files: vec![file("/d/own.pdf", false), file("/d/protected.pdf", true), file("/d/own.pdf", true)],
+            pages: vec![(0, 0, 0), (1, 1, 0), (2, 2, 0)],
+            tab: 1,
+            keys: Some(std::sync::Arc::new(|_: &std::path::Path| {
+                Some(std::sync::Arc::new(recto_core::Password::new("typed").unwrap()))
+            })),
+        };
+        let far = far_future();
+        let settings = Settings {
+            limit: 20,
+            context: 0,
+            deadline: far,
+            draw_until: far,
+            second_pass_until: far,
+            live_budget: Duration::from_secs(5),
+            indexing: None,
+            force_scan: false,
+        };
+        let mut reader = Reader::new(&plan, &settings);
+        assert!(reader.key_of(0).is_some(), "the document's own file");
+        assert!(reader.key_of(1).is_none(), "a PDF added from another file");
+        assert!(reader.key_of(2).is_some(), "a page added from the document's own file");
     }
 }
