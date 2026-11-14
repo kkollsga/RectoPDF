@@ -275,7 +275,7 @@ impl LaunchFacts {
     }
 
     /// **The updater told of the launch, or held back** (at the launch, on the thread that reads the state, before it reads): `keeps` is the answer of the
-    /// launch's one wait for the record's lock ([`super::launching::read_state`]), as an app that's just quit can still be letting go of it, and a quick quit and
+    /// launch's one wait for the record's lock ([`super::keeper::Keeper::begin_restore`]), as an app that's just quit can still be letting go of it, and a quick quit and
     /// reopen isn't a second copy. Kept: told now ([`Self::tell`]), so a version that keeps failing goes back here, and not by reading on. Not kept: what's known
     /// is held back and nothing about an update can begin (the updater has no version to go by: a check or an install is answered that it's still starting, and
     /// its timer isn't set), until keeping has settled, where it's told ([`super::keeping`]): by the late try that got the lock, before the saved session is

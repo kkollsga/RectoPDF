@@ -236,7 +236,7 @@ impl Builder {
             update_seams,
         )
         .expect("the core starts");
-        inner.sleeper.set_leaving_wait(self.leaving_wait_ms);
+        inner.on_disk.sleeper().set_leaving_wait(self.leaving_wait_ms);
         // As the app does unless another copy has it: a test whose app isn't keeping the record would test another path, without saying so.
         assert!(
             self.another_keeps || inner.saver.store.holds_the_record(),
@@ -573,7 +573,7 @@ impl HeadlessApp {
     pub fn advance(&self, ms: u64) {
         self.clock.advance(ms);
         self.core().core.nudge();
-        self.core().sleeper.poke_leaving();
+        self.core().on_disk.sleeper().poke_leaving();
     }
 
     /// The person touched the app now, by the clock, as the host's event monitor says.
@@ -789,6 +789,7 @@ fn end(app: &mut HeadlessApp, mut holding: Option<Holding<'_>>) -> Disk {
         // And the updater's threads end with it: an install that had handed off was waiting for its process to go, on a clock that stands still here,
         // and looks at whether its app has ended instead.
         let updater = Arc::downgrade(&inner.updates);
+        let on_disk = inner.on_disk.downgrade();
         drop(inner);
         if let Some((seam, ended)) = holding.take() {
             ended(app.disk.as_ref().expect("the disk"));
@@ -803,6 +804,7 @@ fn end(app: &mut HeadlessApp, mut holding: Option<Holding<'_>>) -> Disk {
             );
             std::thread::sleep(LOOK_EVERY); // ratchet: poll
         }
+        on_disk.wait_until_let_go(WAIT_LIMIT);
     }
     let mut disk = app.disk.take().expect("the disk");
     // The time of day moved on with this run's clock, from where it was at its launch.

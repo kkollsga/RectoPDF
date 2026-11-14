@@ -83,7 +83,7 @@ macro_rules! watched {
             core: &$inner.core,
             life: &$inner.life,
             tools: &$inner.tools,
-            sleeper: &$inner.sleeper,
+            sleeper: $inner.on_disk.sleeper(),
             saver: &$inner.saver,
             host: &$inner.host,
             panes: &$inner.panes,

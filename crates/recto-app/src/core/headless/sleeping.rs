@@ -430,7 +430,18 @@ fn a_tab_put_to_sleep_and_woken_in_one_look_has_its_next_sleep_file_decided() {
     };
     let held = app.hold_session_thread();
     let id = recto_session::TabId(u32::try_from(a).expect("a tab id"));
-    assert_eq!(app.core().go_dormant(&[id], super::super::sleeper::Why::LeftAlone), 1, "a goes dormant");
+    let core = app.core();
+    let going_dormant = crate::core::sleeper::GoingDormant::new(
+        crate::core::sleeper::OnHand::new(&core.host.session, &core.panes, &core.engine),
+        &core.on_disk,
+        &core.saver,
+        &core.core.frozen,
+    );
+    assert_eq!(
+        core.on_disk.sleeper().go_dormant(&going_dormant, &[id], super::super::sleeper::Why::LeftAlone),
+        1,
+        "a goes dormant"
+    );
     let name = sleep_file_of(&app, a);
     app.wait_until("a's sleep file written", || sleep_files_on_disk(&app).contains(&name));
     full(&app, &["tap", &format!("#{a}")]);
@@ -645,7 +656,7 @@ fn an_agents_sleeps_stop_at_its_share_and_the_persons_push_out_is_still_written(
     assert_eq!(sleep["sleep_files_written"], 1, "{sleep}");
     let file = sleep["agent_bytes_this_hour"].as_u64().expect("agents' bytes");
     assert_eq!(sleep["sleep_bytes_written"], file, "the agent's file is counted as the agent's: {sleep}");
-    app.core().sleeper.set_agent_hour_cap(file + file / 2);
+    app.core().on_disk.sleeper().set_agent_hour_cap(file + file / 2);
     let second = turn("5");
     let note = second["note"]
         .as_str()
@@ -694,7 +705,7 @@ fn an_agents_answer_says_what_its_share_did_to_its_own_sleep_file() {
         host_turns(&app, &mut view, true);
     }
     // Room for a tab's facts, not its pictures (a picture of a synthetic page packs to a few KB).
-    app.core().sleeper.set_agent_hour_cap(1_000);
+    app.core().on_disk.sleeper().set_agent_hour_cap(1_000);
     let a = tab_named(&app, "a.pdf");
     let slept = full(&app, &["session", "sleep", "--tab", &format!("#{a}")]);
     host_turns(&app, &mut view, true);
@@ -706,7 +717,7 @@ fn an_agents_answer_says_what_its_share_did_to_its_own_sleep_file() {
     assert_eq!(sleep["sleep_files_written"], 1, "its facts: {sleep}");
     let used = sleep["agent_bytes_this_hour"].as_u64().expect("agents' bytes");
     assert!(used > 0 && used <= 1_000, "{sleep}");
-    app.core().sleeper.set_agent_hour_cap(used);
+    app.core().on_disk.sleeper().set_agent_hour_cap(used);
     let saved = full(&app, &["session", "save"]);
     assert_eq!(saved["saved"], true, "{saved}");
     let note = saved["note"]
@@ -731,7 +742,7 @@ fn an_agent_cycling_through_tabs_stops_at_its_share_and_the_persons_cycling_is_s
     let docs: Vec<_> = (0..TABS).map(|at| disk.pdf(&format!("t{at}.pdf"), 3)).collect();
     let app = disk.start();
     // Nothing goes dormant by itself here: only tabs pushed out of the warm ones are written.
-    app.core().sleeper.set_after(24 * 60 * 60);
+    app.core().on_disk.sleeper().set_after(24 * 60 * 60);
     let engine = app.core().engine.clone();
     let small = || recto_reader::Viewport {
         width: 160.0,
@@ -753,7 +764,7 @@ fn an_agent_cycling_through_tabs_stops_at_its_share_and_the_persons_cycling_is_s
     assert_eq!(files, 1, "the person's last open pushed the first out: {sleep}");
     assert_eq!(sleep["agent_bytes_this_hour"], 0, "{sleep}");
     let share = bytes * 3 / 2;
-    app.core().sleeper.set_agent_hour_cap(share);
+    app.core().on_disk.sleeper().set_agent_hour_cap(share);
     let tabs: Vec<u64> = (0..TABS).map(|at| tab_named(&app, &format!("t{at}.pdf"))).collect();
     let gap = u64::from(crate::sleeper::SLEEP_WRITE_EVERY_SECONDS) * 1000 + 1;
     // A tap to each tab in turn, from the first, pushes out the one after it; the first, pushed out last, is left at page 2, so its file isn't the
@@ -817,7 +828,7 @@ fn a_quit_after_a_sleep_writer_panicked_writes_what_waits_and_the_tab_on_screen(
     let disk = Disk::new();
     let docs: Vec<_> = ["a", "b", "c", "d"].iter().map(|name| disk.pdf(&format!("{name}.pdf"), 3)).collect();
     let app = disk.builder().leaving_wait(crate::sleeper::LEAVING_WAIT_MS).start();
-    app.core().sleeper.panic_next_leaving_writer();
+    app.core().on_disk.sleeper().panic_next_leaving_writer();
     for doc in &docs {
         app.open(doc);
         app.settle();
@@ -923,7 +934,7 @@ fn going_to_the_background_after_a_sleep_writer_panicked_writes_what_waits() {
     let disk = Disk::new();
     let docs: Vec<_> = ["a", "b", "c", "d"].iter().map(|name| disk.pdf(&format!("{name}.pdf"), 3)).collect();
     let app = disk.builder().leaving_wait(crate::sleeper::LEAVING_WAIT_MS).start();
-    app.core().sleeper.panic_next_leaving_writer();
+    app.core().on_disk.sleeper().panic_next_leaving_writer();
     for doc in &docs {
         app.open(doc);
         app.settle();
@@ -992,10 +1003,10 @@ fn a_copy_letting_the_record_go_writes_no_sleep_file() {
         .with_session(|session| session.tabs().active())
         .expect("a tab on screen");
     assert_eq!(
-        app.core().sleeper.write_sleep_for(
+        app.core().on_disk.sleeper().write_sleep_for(
             &crate::core::sleeper::OnHand::new(&app.core().host.session, &app.core().panes, &app.core().engine),
             &app.core().saver.store,
-            &crate::core::keeping::asks(app.core()),
+            &app.core().on_disk.keeper().asks(),
             on_screen,
             crate::sleep_writer::By::Asked(recto_agent::Actor::Person),
             None
@@ -1121,7 +1132,7 @@ fn switching(tabs: usize, cycle: usize, dwell: (u64, u64), total: u64, wait: u64
     let disk = Disk::new();
     let docs: Vec<_> = (0..tabs).map(|at| disk.pdf(&format!("t{at}.pdf"), 6)).collect();
     let app = disk.builder().leaving_wait(wait).start();
-    app.core().sleeper.set_hour_cap(cap);
+    app.core().on_disk.sleeper().set_hour_cap(cap);
     let engine = app.core().engine.clone();
     engine.waking().window_up();
     let mut view = window_view();
@@ -1399,7 +1410,7 @@ fn session_sleep_keeps_to_the_limits_on_writing() {
     assert_eq!(moved["sleep_files_written"], 3, "one for each new place: {moved}");
     assert_eq!(moved["writes_for_place"], 2, "{moved}");
     // At the hour's cap: the next is put off, and counted.
-    app.core().sleeper.set_hour_cap(moved["sleep_bytes_written"].as_u64().expect("bytes"));
+    app.core().on_disk.sleeper().set_hour_cap(moved["sleep_bytes_written"].as_u64().expect("bytes"));
     let put_off = moved["writes_put_off"].as_u64().unwrap();
     turn("2");
     let capped = counts();
