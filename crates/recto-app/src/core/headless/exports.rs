@@ -449,8 +449,14 @@ fn every_export_is_in_the_table_and_reaches_the_person_only_through_act() {
 /// nothing a person does.
 #[test]
 fn the_bridge_queues_none_of_a_persons_calls() {
+    let named = persons_calls_queued_by(&bridge_sources());
+    assert!(named.is_empty(), "{named:#?}");
+}
+
+/// Every `CoreCall` but `Reconcile` named anywhere in these bridge sources.
+fn persons_calls_queued_by(sources: &[(String, String)]) -> Vec<String> {
     let mut named = Vec::new();
-    for (file, text) in bridge_sources() {
+    for (file, text) in sources {
         for (at, _) in text.match_indices("CoreCall::") {
             let call: String = text[at + "CoreCall::".len()..].chars().take_while(|c| c.is_alphanumeric()).collect();
             if call != "Reconcile" {
@@ -458,7 +464,37 @@ fn the_bridge_queues_none_of_a_persons_calls() {
             }
         }
     }
-    assert!(named.is_empty(), "{named:#?}");
+    named
+}
+
+/// Failure (the weak-test review, proven by seeding): the table's check reads an export's body and what it calls of its own one level down, so a person's
+/// call queued two private functions deep from an export passes it, and only the search of the whole text sees it. Seeded as it was proven: the table's
+/// check says nothing, and the search names the call, so neither is a repeat of the other.
+#[test]
+fn a_call_queued_two_functions_deep_is_seen_by_the_search_and_not_the_table() {
+    let mut sources = bridge_sources();
+    let (_, printing) = sources
+        .iter_mut()
+        .find(|(file, _)| file.ends_with("printing.rs"))
+        .expect("the bridge's printing");
+    *printing = printing.replace(
+        "        self.inner.tools.printing().finished(&path);",
+        "        self.inner.tools.printing().finished(&path);\n        seed_a(&self.inner);",
+    );
+    printing.push_str(
+        "\nfn seed_a(inner: &Inner) {\n    seed_b(inner);\n}\n\nfn seed_b(inner: &Inner) {\n    inner.core.push(CoreCall::Find(String::new()));\n}\n",
+    );
+    assert_eq!(
+        persons_calls_queued_by(&sources).len(),
+        1,
+        "the search names the call two functions deep: {:#?}",
+        persons_calls_queued_by(&sources)
+    );
+    let said = wrong(&bridge_methods(&sources), &walked());
+    assert!(
+        said.is_empty(),
+        "the table's check reads one level down only; if it follows further now, this test and the search can go: {said:#?}"
+    );
 }
 
 /// **What uniffi really exports, by the bridge's static library,** where one is built from these sources: its `uniffi_recto_ffi_fn_` symbols, the
@@ -512,8 +548,8 @@ fn the_reading_of_the_bridge_is_what_uniffi_exports() {
 }
 
 /// Failure: the reading of the bridge misses what it's for: an export added with no line, one that reaches the core's person's commands directly, as the
-/// bridge's print did, or one that queues a person's call on the session thread itself (what `the_bridge_queues_none_of_a_persons_calls` held before this
-/// replaced it), passes. Each seeded in the bridge's text as it is now: each is found.
+/// bridge's print did, or one that queues a person's call on the session thread itself (`the_bridge_queues_none_of_a_persons_calls`, kept: it sees a call
+/// queued deeper than the table reads), passes. Each seeded in the bridge's text as it is now: each is found.
 #[test]
 fn a_seeded_export_is_found() {
     let mut sources = bridge_sources();
