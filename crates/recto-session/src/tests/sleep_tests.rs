@@ -408,6 +408,35 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Failure (review round 1 of the measured faults, S3): a page added before 2026-11-13 from an encrypted file was recorded as protected, and such a
+/// journal is still read. Since then an added page is never marked so, and nothing held what an old flag still means: the document it's taken into has
+/// no pictures in its sleep file until those pages are gone. The same list unflagged has them, so it's the flag that decides.
+#[test]
+fn a_tab_taking_up_an_old_journals_protected_page_has_no_sleep_pictures() {
+    let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-old-protected-");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = journaled(3);
+    s.dormancy_mut().set_sleep_files(true);
+    for (name, protected) in [("flagged.pdf", true), ("unflagged.pdf", false)] {
+        let path = dir.join(name);
+        std::fs::write(&path, b"a file").unwrap();
+        let id = s.open(&path).unwrap();
+        // As a journal written before reads back: a page added at the front, its source flagged as the old rule had it.
+        let mut written = PageEdits::new(3);
+        written.insert_pdf_noting(0, &dir.join("added.pdf"), 1, None, protected).unwrap();
+        let read = PageEdits::from_record(&written.to_record()).unwrap();
+        s.journal_desk()
+            .take_up_history(id, &format!("journal-00000000000000{}.log", if protected { "a1" } else { "a2" }), read, 1);
+        assert_eq!(s.lists().get(id).map(PageEdits::len), Some(4), "{name}: the list was taken up");
+        let facts = s.dormant().sleep_facts(id).unwrap_or_else(|| panic!("{name} has sleep facts"));
+        assert_eq!(
+            facts.pictures_allowed, !protected,
+            "{name}: pictures only without a page the old journal called protected"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Failure: a list naming a file of a length it's not about is believed, as a forged journal can say a save happened, and its pages are written onto that file,
 /// or read from it past its end. Or (B1, 2026-11-13) it's deleted with its journal, as one about a file replaced mid-read was, and a person's edits go. Or (review
 /// round 1) the tab says the file changed on disk, which it didn't. A file read at its own stamp and another length than the list says shows the list isn't about
