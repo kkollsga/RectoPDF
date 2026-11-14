@@ -12,12 +12,17 @@ pub fn locked_with(password: &str, pages: usize) -> Vec<u8> {
 }
 
 /// The same, with what its permissions allow.
-#[allow(clippy::disallowed_methods)] // As above.
 pub fn locked_allowing(password: &str, pages: usize, permissions: lopdf::encryption::Permissions) -> Vec<u8> {
+    locked_saying(password, pages, "Locked", permissions)
+}
+
+/// The same, each page saying "`word` page N": two protected files that differ in their words as well as their length.
+#[allow(clippy::disallowed_methods)] // As above.
+pub fn locked_saying(password: &str, pages: usize, word: &str, permissions: lopdf::encryption::Permissions) -> Vec<u8> {
     use lopdf::encryption::{EncryptionState, EncryptionVersion};
     use lopdf::{Object, dictionary};
     let plain: Vec<recto_testpdf::Page> = (0..pages)
-        .map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("Locked page {}", page + 1)])))
+        .map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("{word} page {}", page + 1)])))
         .collect();
     let mut document = lopdf::Document::load_mem(&recto_testpdf::pages(&plain)).unwrap();
     let first_page = *document.get_pages().values().next().unwrap();
