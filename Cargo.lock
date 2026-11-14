@@ -804,6 +804,7 @@ dependencies = [
  "recto-index",
  "recto-platform",
  "recto-proto",
+ "recto-reader",
  "recto-render-service",
  "recto-testpdf",
  "serde_json",

@@ -410,6 +410,7 @@ fn wakes() {
                 },
                 std::sync::Arc::new(Quiet),
             );
+            engine.qa().system_takes_only_when_told();
             engine.set_viewport(view);
             engine.set_paper(PaperKind::Dark);
             engine.set_spread(spread);
