@@ -129,8 +129,8 @@ impl Cmd for Recent {
         Value::Null
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        let (access, level) = (cx.access, cx.level);
-        Ok(access.with(|s| recent_json(s, level)))
+        let (access, actor) = (cx.access, cx.actor);
+        Ok(access.with(|s| recent_json(s, actor)))
     }
     fn human(data: &Value) -> String {
         match data["files"].as_array().filter(|files| !files.is_empty()) {
@@ -227,7 +227,7 @@ impl Cmd for Close {
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { tab } = self;
-        let (access, actor, level, events) = (cx.access, cx.actor, cx.level, &mut *cx.events);
+        let (access, actor, events) = (cx.access, cx.actor, &mut *cx.events);
         // The close rule, said once: what a close would lose, and what this actor does about it.
         let refused = |s: &Session<A::Loader>, id| crate::close_rule::WouldLose::of(s, id).refusal(actor).map_or(Ok(()), Err);
         {
@@ -242,7 +242,7 @@ impl Cmd for Close {
                 let id = select(s, tab)?;
                 refused(s, id)?;
                 // At Full, what's lost is the holder's call, and the close rule has let it through. The session itself won't lose the owner's undone steps unasked.
-                if level >= Level::Full && s.lists().has_undone_owner_steps(id) {
+                if !actor.held_to_owners_edits() && s.lists().has_undone_owner_steps(id) {
                     s.discard_edits(id);
                 }
                 let closed = s.close(id)?;

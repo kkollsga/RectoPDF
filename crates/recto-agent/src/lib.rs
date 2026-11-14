@@ -15,6 +15,7 @@ pub mod effect;
 pub mod later;
 pub use effect::Effect;
 pub mod commands;
+pub mod copying;
 pub mod event;
 #[cfg(test)]
 mod event_agreement;
@@ -88,7 +89,7 @@ pub mod exit {
 }
 
 /// What an agent is allowed to do, set by the user. Ordered from least to most.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Level {
     Off,
@@ -397,10 +398,7 @@ pub fn refusal(command_name: &str, have: Level, needed: Access) -> AgentError {
     }
 }
 
-/// Whether a level may run a command.
-pub fn allowed(have: Level, needed: Access) -> bool {
-    matches!(needed, Access::At(level) if have >= level)
-}
+pub use actor::allowed;
 
 /// A way to reach the session. In one process that's a plain reference; on the socket it's a lock taken only as long as each step needs.
 pub trait SessionAccess {
@@ -518,21 +516,10 @@ pub fn only_the_user_quits() -> AgentError {
     .then("Ask them to, if it needs to stop. Everything else works with it running.")
 }
 
-/// `session restore` would lose the owner's edits, which is theirs to say below Full: SPEC decision 20.
-pub fn restore_would_lose_owners_edits() -> AgentError {
-    AgentError::new(
-        Code::OWNER_EDITS_AT_STAKE,
-        "Restoring would replace this session, which holds the user's own unsaved edits, so it wasn't done.",
-        exit::PERMISSION,
-    )
-    .then("Ask them to save or discard those first.")
-}
-
 /// What `session show` says, from the record and the session. No more of a document than `tabs` gives, and what the owner typed in Find only at Control, and
 /// not while the document being read is one they opened with its password, as what they looked for in it says what they saw there. Called with the session
 /// held.
 pub fn session_show_json<L: DocLoader>(session: &Session<L>, actor: Actor, kept: Value) -> Value {
-    let level = actor.level();
     let tabs: Vec<Value> = session
         .tabs()
         .iter()
@@ -555,7 +542,7 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, actor: Actor, kept:
     let find = session.viewing().find();
     let mut find_json = json!({ "open": find.open, "has_text": !find.query.is_empty() || !find.draft.is_empty() });
     let reading_withheld = session.tabs().active().is_some_and(|id| session.tabs().withheld_from_agents(id));
-    if level >= Level::Control && !reading_withheld {
+    if actor.sees_users_words_and_paths() && !reading_withheld {
         find_json["query"] = json!(find.query);
         find_json["draft"] = json!(find.draft);
     }
@@ -625,19 +612,18 @@ pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, ev
 }
 
 fn execute_held<A: SessionAccess>(access: &A, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-    let level = actor.level();
     match command {
-        Command::Measure(command) => command.run(&mut commands::Cx { access, actor, level, events }),
-        Command::Edit(command) => command.run(&mut commands::Cx { access, actor, level, events }),
-        Command::Move(command) => command.run(&mut commands::Cx { access, actor, level, events }),
-        Command::Read(command) => command.run(&mut commands::Cx { access, actor, level, events }),
-        Command::Updates(command) => command.run(&mut commands::Cx { access, actor, level, events }),
-        Command::Start(command) => command.run(&mut commands::Cx { access, actor, level, events }),
-        Command::Waits(command) => command.run(&mut commands::Cx { access, actor, level, events }),
-        Command::Rights(command) => command.run(&mut commands::Cx { access, actor, level, events }),
-        Command::Session(command) => command.run(&mut commands::Cx { access, actor, level, events }),
-        Command::Qa(command) => command.run(&mut commands::Cx { access, actor, level, events }),
-        Command::Record(command) => command.run(&mut commands::Cx { access, actor, level, events }),
+        Command::Measure(command) => command.run(&mut commands::Cx { access, actor, events }),
+        Command::Edit(command) => command.run(&mut commands::Cx { access, actor, events }),
+        Command::Move(command) => command.run(&mut commands::Cx { access, actor, events }),
+        Command::Read(command) => command.run(&mut commands::Cx { access, actor, events }),
+        Command::Updates(command) => command.run(&mut commands::Cx { access, actor, events }),
+        Command::Start(command) => command.run(&mut commands::Cx { access, actor, events }),
+        Command::Waits(command) => command.run(&mut commands::Cx { access, actor, events }),
+        Command::Rights(command) => command.run(&mut commands::Cx { access, actor, events }),
+        Command::Session(command) => command.run(&mut commands::Cx { access, actor, events }),
+        Command::Qa(command) => command.run(&mut commands::Cx { access, actor, events }),
+        Command::Record(command) => command.run(&mut commands::Cx { access, actor, events }),
     }
 }
 
@@ -874,8 +860,8 @@ fn edit<A: SessionAccess>(
 ) -> Result<Value, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
-        keep_owners_undone_steps(s, id, actor.level())?;
-        note_agent_at_full(s, actor);
+        actor.refuse_owner_edits_at_stake(s, actor::Stake::UndoneSteps(id))?;
+        actor.note_who_edits(s);
         s.edit_pages_as(id, actor.author(), change)?;
         events.push(edits_changed(s, id));
         let mut data = edit_state_json(s, actor, id);
@@ -884,61 +870,7 @@ fn edit<A: SessionAccess>(
     })
 }
 
-/// An agent's edit, undo or redo says whether it's at Full, which may push past the owner's steps. The person's edits are the owner's, and say nothing of it.
-fn note_agent_at_full<L: DocLoader>(session: &mut Session<L>, actor: Actor) {
-    if let Actor::Agent(level) = actor {
-        session.lists_mut().set_agent_at_full(level >= Level::Full);
-    }
-}
-
-/// What asking for Full is for, where only that would do. The one command an agent can run to get there.
-pub(crate) const ASK_FULL: &str = "recto permission request full";
-
-/// Undone steps can still be got back, and a new edit clears them for good, which is how an agent could erase the user's edits: undo them all, make one edit. So below Full, an edit that would lose an undone step of the user's is refused. Undone steps of agents' own are theirs to lose. SPEC decision log, 2026-11-07: below Full, an agent can throw away only agents' edits, never the owner's.
-fn keep_owners_undone_steps<L: DocLoader>(session: &Session<L>, id: TabId, level: Level) -> Result<(), AgentError> {
-    if level >= Level::Full || !session.lists().has_undone_owner_steps(id) {
-        return Ok(());
-    }
-    let mut error = AgentError::new(
-        Code::WOULD_CLEAR_REDO,
-        "A new edit here would throw away the user's edits, undone but still there to redo, and that needs Full access.",
-        exit::PERMISSION,
-    );
-    error.ask = Some(ASK_FULL.into());
-    error.next =
-        format!("Run `recto redo` until there's nothing left to redo, which keeps everything, and then go on. Or run `{ASK_FULL}` to ask for Full access.");
-    Err(error)
-}
-
-/// **An agent throws away nothing it can't read** (coordinator, 2026-11-13: unknown is "would lose", not "nothing to lose"). Every command about a tab reads
-/// its list back first, so one still asleep is one whose journal couldn't be read: its summary says some of what's there, not all of it. An agent's
-/// `discard` or `clear-history` of it is refused at every level; the person, whose tab says so, decides.
-fn refuse_unreadable<L: DocLoader>(session: &Session<L>, id: TabId, actor: Actor, what: &str) -> Result<(), AgentError> {
-    if actor == Actor::Person || !session.lists().is_asleep(id) {
-        return Ok(());
-    }
-    Err(AgentError::new(
-        Code::EDITS_UNREADABLE,
-        format!("Nothing was {what}: this tab's edits couldn't be read back just now, so what that would throw away can't all be known."),
-        exit::FAILED,
-    )
-    .then("Leave them: the tab tells the user its edits couldn't be read, and what to do with them is theirs. `recto session show` says what's known of them."))
-}
-
-/// `discard` throws away everything on the tab's list, undone or not, and whatever fell off its capped undo list too, since that's still in the page order. Below Full, none of that may be the user's.
-fn refuse_discard_of_owners_edits<L: DocLoader>(session: &Session<L>, id: TabId, level: Level) -> Result<(), AgentError> {
-    if level >= Level::Full || !session.lists().summary(id).is_some_and(|summary| summary.holds_owner_edits) {
-        return Ok(());
-    }
-    let mut error = AgentError::new(
-        Code::WOULD_DISCARD_USER_EDITS,
-        "Nothing was discarded: some of this tab's edits are the user's, and throwing those away needs Full access.",
-        exit::PERMISSION,
-    );
-    error.ask = Some(ASK_FULL.into());
-    error.next = format!("`recto undo` steps back through them, and keeps them. Run `{ASK_FULL}` to ask for Full access, or tell the user.");
-    Err(error)
-}
+pub(crate) use actor::ASK_FULL;
 
 /// Says when the page being read went away, so the tab is on another one: not to an agent while its place is withheld, as which page went says where
 /// it was.
@@ -1167,7 +1099,8 @@ pub fn condition_topics(condition: Condition) -> &'static [&'static str] {
 }
 
 /// Files opened lately, newest first. A name comes from outside, so it's under `untrusted`. The command needs Control, the coordinator's decision (review O7): names of files someone's closed say what they've been reading. Paths are held to Control here too, whatever the row says.
-fn recent_json<L: DocLoader>(session: &Session<L>, level: Level) -> Value {
+fn recent_json<L: DocLoader>(session: &Session<L>, actor: Actor) -> Value {
+    let paths_shown = actor.sees_users_words_and_paths();
     let files: Vec<Value> = session
         .recent_files()
         .iter()
@@ -1175,13 +1108,13 @@ fn recent_json<L: DocLoader>(session: &Session<L>, level: Level) -> Value {
         .map(|(at, file)| {
             let mut out =
                 json!({ "file": at + 1, "open_tab": file.open.map(|id| format!("#{}", id.0)), "untrusted": { "name": recto_core::clean_line(&file.name) } });
-            if level >= Level::Control {
+            if paths_shown {
                 out["untrusted"]["path"] = json!(file.path.to_string_lossy());
             }
             out
         })
         .collect();
-    json!({ "count": files.len(), "files": files, "paths_shown": level >= Level::Control })
+    json!({ "count": files.len(), "files": files, "paths_shown": paths_shown })
 }
 
 /// Puts each hit's page label on it, under `untrusted` as it's the file's words, where the file calls the page something other than its number, as Find shows it.
@@ -3629,7 +3562,7 @@ mod protected_tests {
                     }
                 }
             }
-            if level >= Level::ReadOnly {
+            if actor::allowed(level, table::Access::At(Level::ReadOnly)) {
                 for command in [
                     Command::from(crate::commands::reading::Facts { tab: tab.clone() }),
                     Command::from(crate::commands::reading::Contents {

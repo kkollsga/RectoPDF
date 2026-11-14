@@ -10,7 +10,7 @@
 //!   level, and the person, who sees the tab say so, decides. Unknown is "would lose", not "nothing to lose" (coordinator, 2026-11-13).
 
 use crate::Code;
-use crate::{ASK_FULL, Actor, AgentError, Level, exit};
+use crate::{ASK_FULL, Actor, AgentError, exit};
 use recto_session::edit::PageEdits;
 use recto_session::{DocLoader, Session, TabId};
 
@@ -29,6 +29,8 @@ pub struct WouldLose {
     pub history_dropped: bool,
     /// The list couldn't be read back, so only its summary is known: not all of what a close would lose.
     pub unreadable: bool,
+    /// An edit of the tab's that the person asked for is still landing, so what a close would lose can't be known yet: the person is asked.
+    pub landing: bool,
 }
 
 impl WouldLose {
@@ -43,29 +45,34 @@ impl WouldLose {
             owners_anywhere: summary.holds_owner_edits,
             history_dropped: session.lists().get(id).is_some_and(PageEdits::history_dropped),
             unreadable: session.lists().is_asleep(id),
+            landing: false,
         }
     }
 
-    /// What the window has of it, as the session thread published it: the tab showing's unsaved edits and the owner's undone steps there.
+    /// What the window has of it, as the session thread published it: the tab showing's unsaved edits and the owner's undone steps there; and whether an
+    /// edit of it the person asked for is still landing, which the session hasn't seen yet.
     #[must_use]
-    pub fn as_published(unsaved: bool, owners_undone: bool) -> Self {
+    pub fn as_published(unsaved: bool, owners_undone: bool, landing: bool) -> Self {
         Self {
             unsaved,
             owners_undone,
+            landing,
             ..Self::default()
         }
     }
 
-    /// Whether a person is asked before the close: it would lose unsaved edits, or their own undone steps.
+    /// Whether a person is asked before the close: it would lose unsaved edits, or their own undone steps, or an edit of theirs is still landing (a
+    /// highlight reading its pages), which is asked as unsaved edits are, as it is one by the time their choice runs. Never so for an agent's close:
+    /// [`Self::of`] has no `landing`.
     #[must_use]
     pub fn asks_the_person(&self) -> bool {
-        self.unsaved || self.owners_undone
+        self.unsaved || self.owners_undone || self.landing
     }
 
     /// **Why `close` is refused for `actor`,** if it is, saying all of what it would lose and every way on that's real.
     #[must_use]
     pub fn refusal(&self, actor: Actor) -> Option<AgentError> {
-        if self.unreadable && actor != Actor::Person {
+        if self.unreadable && !actor.may_lose_unread() {
             return Some(
                 AgentError::new(
                     Code::EDITS_UNREADABLE,
@@ -75,7 +82,7 @@ impl WouldLose {
                 .then("Leave the tab open: it tells the user its edits couldn't be read, and closing it is theirs to decide. `recto session show` says what's known of them."),
             );
         }
-        let protected = actor.level() < Level::Full;
+        let protected = actor.held_to_owners_edits();
         let owners_undone = protected && self.owners_undone;
         let owners_anywhere = protected && self.owners_anywhere;
         if !self.unsaved && !owners_undone {
@@ -130,6 +137,7 @@ impl WouldLose {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Level;
 
     /// Failure: the close rule answers one actor otherwise than it says: a person not asked before losing unsaved edits or their own undone steps, an agent
     /// let close over unsaved edits at any level or over the owner's undone steps below Full, or one at Full stopped by the owner's undone steps alone.
@@ -172,5 +180,32 @@ mod tests {
             );
         }
         assert_eq!(code(unreadable, Actor::Person), None, "the person decides");
+    }
+
+    /// Failure (the ⌃⌘H-then-⌘W case, 2026-11-14): a close asked while the person's edit of the tab is still landing closes without asking, and the edit
+    /// lands on a tab that's gone or makes the close refused with nothing said; or an agent's close is judged by it, which it can't see. An edit still
+    /// landing asks the person, alone and changes no refusal; and the session's own look never has it.
+    #[test]
+    fn an_edit_still_landing_asks_the_person_and_no_one_else() {
+        let landing = WouldLose::as_published(false, false, true);
+        assert!(landing.asks_the_person(), "the person is asked");
+        assert!(
+            !WouldLose::as_published(false, false, false).asks_the_person(),
+            "nothing to lose, nothing landing: not asked"
+        );
+        for actor in [
+            Actor::Person,
+            Actor::Agent(Level::ReadOnly),
+            Actor::Agent(Level::Control),
+            Actor::Agent(Level::Full),
+        ] {
+            assert_eq!(
+                landing.refusal(actor).map(|error| error.code),
+                WouldLose::default().refusal(actor).map(|error| error.code),
+                "{actor:?}: no refusal changes"
+            );
+        }
+        let session = Session::new(recto_session::DiskLoader);
+        assert!(!WouldLose::of(&session, TabId(1)).landing, "the session's look never has it");
     }
 }

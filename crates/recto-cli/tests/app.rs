@@ -2722,7 +2722,8 @@ fn a_protected_pdf_asks_for_its_password_and_keeps_it_nowhere() {
             } else if args[0] == "where" {
                 assert_eq!(reply["data"]["protected"], true, "and says why: {reply}");
             }
-            if level >= Level::ReadOnly && ["contents", "facts", "search", "text"].contains(&args[0]) {
+            if recto_agent::actor::allowed(level, recto_agent::table::Access::At(Level::ReadOnly)) && ["contents", "facts", "search", "text"].contains(&args[0])
+            {
                 assert_eq!(
                     (code, &reply["error"]["code"]),
                     (exit::PROTECTED, &json!("protected")),

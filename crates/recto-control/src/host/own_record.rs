@@ -188,6 +188,37 @@ mod tests {
         assert_eq!(saved["edited_tabs"], 1, "only #1 has unsaved changes: {saved}");
     }
 
+    /// Failure: `session restore` over the owner's unsaved edits answers otherwise for the person or some level than it did before the rules about
+    /// who may do what moved onto `Actor` (2026-11-14): below Full it's refused with `owner_edits_at_stake`, these words and no `ask`, and the
+    /// owner's edit is still there; the person and an agent at Full restore.
+    #[test]
+    fn a_restore_over_the_owners_edits_answers_each_actor_as_it_did() {
+        use recto_agent::Actor;
+        for actor in [Actor::Person, Actor::Agent(Level::Control), Actor::Agent(Level::Full)] {
+            let (host, _root) = with_record();
+            run(&host, Level::Full, r#"{"cmd":"open","path":"/d/a.pdf"}"#).expect("opened");
+            run(&host, Level::Control, r#"{"cmd":"session_save"}"#).expect("saved");
+            let turn = parse(r##"{"cmd":"page_rotate","tab":"#1","pages":"1","degrees":90}"##).unwrap();
+            host.run(Actor::Person, &turn, &mut Vec::new()).expect("the owner's edit");
+            let said = match host.run(actor, &parse(r#"{"cmd":"session_restore"}"#).unwrap(), &mut Vec::new()) {
+                Ok(_) => "ok".to_string(),
+                Err(error) => format!("{} {} | {} | {} | {:?}", error.code, error.exit, error.message, error.next, error.ask),
+            };
+            let expected = if actor == Actor::Agent(Level::Control) {
+                "owner_edits_at_stake 5 | Restoring would replace this session, which holds the user's own unsaved edits, so it wasn't done. | Ask them to \
+                 save or discard those first. | None"
+            } else {
+                "ok"
+            };
+            assert_eq!(said, expected, "{actor:?}");
+            // Refused, the owner's edit is still in the tab; let through, the restore replaced the session with what was saved before it.
+            let edited = host
+                .run(Actor::Person, &parse(r##"{"cmd":"where","tab":"#1"}"##).unwrap(), &mut Vec::new())
+                .expect("where");
+            assert_eq!(edited["edited"], actor == Actor::Agent(Level::Control), "{actor:?}: {edited}");
+        }
+    }
+
     /// Failure: a long-running session that keeps no record answers one of the record's commands as if it did, or as needing the long-running session it is, or says so before it says the level is too low.
     #[test]
     fn with_no_record_each_record_command_says_so() {

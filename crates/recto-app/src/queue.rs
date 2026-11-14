@@ -18,6 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+pub mod lane;
+
 /// How many calls can wait for the session thread before notes of pages drawn stop being added.
 pub const MAX_QUEUED_CALLS: usize = 4096;
 /// What the session thread is asked to do, in the order the user asked.
@@ -76,6 +78,8 @@ pub struct PersonCommand {
     pub fetched: Option<(PathBuf, recto_agent::later::Fetched)>,
     /// What it comes to by what the session holds when it runs, not when it was asked: the panel's Rotate, every page or, in edit mode, the page being read.
     pub when_run: Option<WhenRun>,
+    /// Its ticket in the person's lane, for an edit that takes effect in the order asked ([`lane`]): held till it has run, or it's dropped.
+    pub turn: Option<lane::Turn>,
 }
 
 /// **Makes a command what it is by the session as it is when it runs,** just before: a person's on the session thread, an agent's on its own. What it reads
@@ -93,6 +97,7 @@ impl PersonCommand {
             origin: Origin::Input,
             fetched: None,
             when_run: None,
+            turn: None,
         })
     }
 
@@ -104,6 +109,7 @@ impl PersonCommand {
             origin: Origin::Finishing,
             fetched,
             when_run: None,
+            turn: None,
         }
     }
 }
@@ -115,6 +121,28 @@ pub enum Origin {
     Input,
     /// The end of something already under way, as a command running again once its file's been read: let through, or it would wait for good.
     Finishing,
+    /// **What the person did, its turn in their lane come** ([`lane`]): asked before whatever freezes the queue now, as nothing a person does is taken
+    /// once it's frozen (`person::submit`), so let through, in the order asked; a quit waits for it, and a hand-off finds it running and doesn't go.
+    TurnCame,
+}
+
+impl Origin {
+    /// **Whether a hand-off's or a quit's freeze holds it back:** what the person just did, and only that. The end of something under way, and what was
+    /// asked before the freeze and has its turn now, go through, in the order asked (review of the lane, D4 and D5): the session thread's queue asks this
+    /// of a person's command ([`CoreCall::is_user_action`]), and the app's host of one on a thread of its own.
+    #[must_use]
+    pub fn held_back_by_a_freeze(self) -> bool {
+        match self {
+            Self::Input => true,
+            Self::Finishing | Self::TurnCame => false,
+        }
+    }
+
+    /// Whether it's what the person did, as their words and the window's own steps before it go by: the person's input, now or on its turn.
+    #[must_use]
+    pub fn is_persons_input(self) -> bool {
+        matches!(self, Self::Input | Self::TurnCame)
+    }
 }
 
 impl CoreCall {
@@ -125,7 +153,7 @@ impl CoreCall {
     pub fn is_user_action(&self) -> bool {
         match self {
             Self::Find(call) => call.is_user_action(),
-            Self::Run(run) => run.origin == Origin::Input,
+            Self::Run(run) => run.origin.held_back_by_a_freeze(),
             // A password tried on its own thread: dropped, its prompt would wait for good. Its file's read as a `Read` is.
             Self::Unlocked(..)
             | Self::Reconcile
@@ -253,9 +281,26 @@ pub struct CoreQueue {
     /// **Abandoned:** a headless app's kill, and only that ([`Self::abandon`]). From here a call pushed is dropped at once, with what it holds, as nothing will
     /// ever take it: a thread that waits on a channel a call carries (a late try's verdict) then sees it closed and ends. The app's queue is never abandoned.
     abandoned: AtomicBool,
+    /// The person's lane: their edits in the order they asked for them ([`lane`]).
+    lane: lane::Lane,
+    /// A test's hold on the next of the app's steps with a name ([`crate::testkit::holds`]): on the queue every step that's held can reach, so it's the
+    /// app's and not the process's.
+    #[cfg(test)]
+    pub(crate) holds: crate::testkit::holds::Holds,
 }
 
 impl CoreQueue {
+    /// The person's lane.
+    pub fn lane(&self) -> &lane::Lane {
+        &self.lane
+    }
+
+    /// A ticket in the person's lane for an ordered command just asked, naming `tab` (0: not yet known), and whether it's an edit that lands later
+    /// ([`lane::Lane::landing`]).
+    pub fn take_turn(self: &Arc<Self>, tab: u32, landing: bool) -> lane::Turn {
+        self.lane.take(Arc::downgrade(self), tab, landing)
+    }
+
     pub fn push(&self, call: CoreCall) {
         #[cfg(test)]
         if matches!(call, CoreCall::Reconcile) {
@@ -295,6 +340,12 @@ impl CoreQueue {
         self.ready.notify_one();
     }
 
+    /// Waits on the session thread's parks begun, for a test to know a wait on it is waiting, in a test build.
+    #[cfg(test)]
+    pub(crate) fn park_waits(&self) -> usize {
+        self.park_waits.load(Ordering::SeqCst)
+    }
+
     /// How many times a `Reconcile` has been pushed, each counted, in a test build.
     #[cfg(test)]
     pub(crate) fn reconciles_asked(&self) -> usize {
@@ -323,8 +374,11 @@ impl CoreQueue {
         // push that got in first is taken away with the rest and one that comes after is dropped by `push`.
         let mut calls = lock(&self.calls);
         self.abandoned.store(true, Ordering::SeqCst);
-        drop(std::mem::take(&mut calls.queue));
+        let taken = std::mem::take(&mut calls.queue);
         drop(calls);
+        // Outside the lock: a person's turn among them passes as it's dropped, and may start the next, which the abandoned queue then drops.
+        drop(taken);
+        self.lane.drop_parked();
         self.reconcile_queued.store(false, Ordering::SeqCst);
         self.end();
     }
@@ -794,6 +848,11 @@ mod tests {
                 recto_agent::parse(r##"{"cmd":"tap","tab":"#1"}"##).expect("a command"),
                 None,
             ))),
+            CoreCall::Run({
+                let mut run = PersonCommand::input(recto_agent::parse(r#"{"cmd":"undo"}"#).expect("a command"));
+                run.origin = Origin::TurnCame;
+                run
+            }),
         ]
     }
 
@@ -823,11 +882,12 @@ mod tests {
             CoreCall::Run(run) => match run.origin {
                 Origin::Input => 18,
                 Origin::Finishing => 19,
+                Origin::TurnCame => 20,
             },
-            CoreCall::TryBack(_) => 20,
-            CoreCall::LateRead(_) => 21,
+            CoreCall::TryBack(_) => 21,
+            CoreCall::LateRead(_) => 22,
         };
-        (place, 22)
+        (place, 23)
     }
 
     /// Failure (review C8): a call a person makes isn't on the hand-off freeze's list, so it's taken while a hand-off writes what comes back, and lost: closing a tab, the close prompt's answer, the contents' note and a section's chevron were. Every variant is sampled, and those a person makes, named here apart from the code that decides, are exactly the ones held back. The rest get through.

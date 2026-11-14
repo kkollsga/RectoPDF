@@ -66,7 +66,7 @@ fn every_row_is_enforced_at_every_level_over_the_socket() {
                 reply = raw.read().unwrap();
             }
             let refused = reply["error"]["exit"] == exit::PERMISSION;
-            let allowed = matches!(spec.access, Access::At(needed) if level >= needed);
+            let allowed = recto_agent::actor::allowed(level, spec.access);
             assert_eq!(refused, !allowed, "{} at {level:?}: {reply}", spec.name);
             if refused && let Access::At(needed) = spec.access {
                 assert_eq!(reply["error"]["code"], "permission_denied", "{reply}");

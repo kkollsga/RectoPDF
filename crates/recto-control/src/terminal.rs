@@ -19,7 +19,7 @@ use std::time::Duration;
 /// Sets the level. Raising it reads a confirmation from the real terminal.
 pub fn set_level(paths: &StatePaths, wanted: Level) -> Result<Value, AgentError> {
     let was = levels::current(paths);
-    if wanted > was {
+    if wanted.raises(was) {
         confirm_at_terminal(wanted)?;
     }
     levels::store(paths, wanted).map_err(|_| {

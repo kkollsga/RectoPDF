@@ -9,7 +9,6 @@ use super::answer_parts::AnswerParts;
 use super::{FileReads, Inner};
 use crate::queue::{CoreCall, Origin, PersonCommand, Reading};
 use recto_agent::Code;
-use recto_agent::Runs;
 use recto_agent::later::{Fetched, ReadLater};
 use recto_agent::{Actor, AgentError, Command, Event};
 use serde_json::Value;
@@ -24,19 +23,26 @@ pub fn submit(inner: &Arc<Inner>, command: Command) -> bool {
     if inner.core.frozen.load(std::sync::atomic::Ordering::SeqCst) {
         return false;
     }
-    if command.waits() || command.route() != Runs::Session {
-        // Counted first, and then looked: a late try at the record's lock decides on keeping it (and restoring) only with none counted, under the life's lock
-        // (`keeping::try_back`), so either it sees this one and tries again later, or this one sees it restoring and waits on the queue with what else the
-        // person does, to run on the restored session.
-        let counted = Running::start(Arc::clone(inner));
-        if inner.life.keeping().restoring() {
-            drop(counted);
-            inner.core.push(CoreCall::Run(PersonCommand::input(command)));
-            return true;
+    #[cfg(test)]
+    inner.core.holds.at("submit_looked");
+    let lane = Person::of(inner).lane();
+    if super::person_lane::runs_on_its_own_thread(&command) {
+        // Counted first, then looked at again, as the host's commands are: a hand-off that froze since and saw no count can't have this run past its
+        // last look on the strength of its turn (second review of the lane, 3).
+        let counted = Counted::new(&inner.life, &inner.core);
+        if inner.core.frozen.load(std::sync::atomic::Ordering::SeqCst) {
+            return false;
         }
-        on_its_own_thread(command, counted);
+        match lane.turn_for(&command) {
+            Some(turn) => lane.submit_waiting(command, turn),
+            None => lane.start_waiting(command, None),
+        }
+        drop(counted);
     } else {
-        inner.core.push(CoreCall::Run(PersonCommand::input(command)));
+        let turn = lane.turn_for(&command);
+        let mut run = PersonCommand::input(command);
+        run.turn = turn;
+        inner.core.push(CoreCall::Run(run));
     }
     true
 }
@@ -53,6 +59,11 @@ impl<'a> Person<'a> {
     /// The person's way into `app`.
     pub(in crate::core) fn of(app: &'a Arc<Inner>) -> Self {
         Self { app }
+    }
+
+    /// The person's lane: their ordered commands, each in its turn ([`super::person_lane`]).
+    pub(in crate::core) fn lane(self) -> super::person_lane::PersonsLane<'a> {
+        super::person_lane::PersonsLane { app: self.app }
     }
 
     /// A command as the person's ([`submit`]), saying whether it was taken: false past a hand-off's last look.
@@ -79,7 +90,7 @@ impl<'a> Person<'a> {
 /// Whether a person's command, as it's queued, is one that runs on a thread of its own: one that may wait, or isn't the session's to answer. Only a command
 /// held while a late keep's restore was read is queued so ([`submit`]), and it goes to its thread once it's let go.
 pub(crate) fn on_a_thread_of_its_own(run: &PersonCommand) -> bool {
-    run.origin == Origin::Input && run.fetched.is_none() && (run.command.waits() || run.command.route() != Runs::Session)
+    run.origin.is_persons_input() && run.fetched.is_none() && super::person_lane::runs_on_its_own_thread(&run.command)
 }
 
 /// What the person is told when their command's thread couldn't be started, before its feature's own words, if it has any.
@@ -91,16 +102,22 @@ static NO_THREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 
 /// A person's command that may hold its thread for long, as the window's Save always ran: through the host, counted for a hand-off, and what it did told.
 /// A thread that can't be started is said, as a refusal of the command: the person is never left with a click that did nothing.
-fn on_its_own_thread(command: Command, counted: Running) {
+pub(super) fn on_its_own_thread(command: Command, counted: Running, turn: Option<crate::queue::lane::Turn>) {
     let inner = Arc::clone(&counted.inner);
     let kept = command.clone();
     let spawned = spawn(move || {
         let inner = Arc::clone(&counted.inner);
+        // Holding a turn in the person's lane, it was asked before any freeze there is now, and goes through it.
+        let origin = if turn.is_some() { Origin::TurnCame } else { Origin::Input };
+        let here = crate::queue::lane::hold_here(turn);
         let mut events = Vec::new();
         sent(&inner.serving, &command);
-        let result = recto_control::host::Host::run(&*inner.host, Actor::Person, &command, &mut events);
+        let result = inner.host.run_as(Actor::Person, &command, &mut events, origin);
         answered(&AnswerParts::of(&inner), &command, Origin::Input, &result);
         inner.core.push(CoreCall::Events(events));
+        // Its turn passes once what it did is told, so watchers hear of it before the person's next edit; and before its count goes, so the app's
+        // never seen at rest between the two.
+        drop(here);
         drop(counted);
     });
     // The thread that didn't start took its count with it, as the closure holding it was dropped. It's said in the person's words, then answered as
@@ -134,17 +151,40 @@ pub fn not_started(error: &AgentError) -> bool {
 /// **A person's command counted as running for a hand-off** until it's dropped: as its thread ends, however it ends. A command that panicked was counted
 /// running for good, so a hand-off waited on it to the end of its patience and the tests' settle never settled (review, 2026-11-13).
 /// The life's count goes first as it's dropped (fields drop in the order they're declared), then the app, as when this let go of the count itself.
-struct Running {
-    _counted: super::life::PersonRunning,
+pub(super) struct Running {
+    _counted: Counted,
     inner: Arc<Inner>,
 }
 
 impl Running {
-    fn start(inner: Arc<Inner>) -> Self {
+    pub(super) fn start(inner: Arc<Inner>) -> Self {
         Self {
-            _counted: inner.life.person_running(),
+            _counted: Counted::new(&inner.life, &inner.core),
             inner,
         }
+    }
+}
+
+/// **A person's command counted as running, until this is dropped,** on its thread or waiting its turn in the lane: the last to go wakes a quit waiting
+/// for what's running to land ([`super::quitting`]), as the session thread parks again once nudged.
+pub(super) struct Counted {
+    counted: Option<super::life::PersonRunning>,
+    core: Arc<crate::queue::CoreQueue>,
+}
+
+impl Counted {
+    pub(super) fn new(life: &Arc<super::Lifecycle>, core: &Arc<crate::queue::CoreQueue>) -> Self {
+        Self {
+            counted: Some(life.person_running()),
+            core: Arc::clone(core),
+        }
+    }
+}
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        drop(self.counted.take());
+        super::running::ended(&self.core);
     }
 }
 
@@ -191,7 +231,7 @@ const ANSWERED: &[fn(&AnswerParts<'_>, &Ran<'_>)] = &[
     super::printing::answered,
 ];
 
-fn answered(parts: &AnswerParts<'_>, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {
+pub(super) fn answered(parts: &AnswerParts<'_>, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {
     let ran = Ran { command, origin, result };
     for answer in ANSWERED {
         answer(parts, &ran);
@@ -237,11 +277,16 @@ pub fn say(notices: &super::window::Notices, core: &crate::queue::CoreQueue, wor
 
 /// Runs a person's command now. Its answer is nobody's but a test's: the window draws what the session publishes.
 pub fn run(inner: &Arc<Inner>, reads: &mut FileReads, run: PersonCommand, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    // One of the person's ordered edits whose turn hasn't come is parked, to run when it does.
+    let Some(run) = Person::of(inner).lane().taken(run) else {
+        return Ok(Value::Null);
+    };
     let PersonCommand {
         command,
         fetched,
         origin,
         when_run,
+        turn: _turn,
     } = run;
     let command = match when_run {
         Some(resolve) => match inner.host.session.with_session(|session| resolve(session, Actor::Person, command.clone())) {
@@ -254,7 +299,7 @@ pub fn run(inner: &Arc<Inner>, reads: &mut FileReads, run: PersonCommand, events
         },
         None => command,
     };
-    if origin == Origin::Input {
+    if origin.is_persons_input() {
         sent(&inner.serving, &command);
         for before in BEFORE {
             before(inner, reads, &command);
@@ -286,6 +331,7 @@ struct Later<'a> {
 impl ReadLater for Later<'_> {
     /// As a tap's read always was: the tab the person last asked for is the one wanted, and a command for one they've left by the time it's read doesn't run.
     fn wake(&self, tab: recto_session::TabId, path: PathBuf) {
+        refuse_an_ordered_command(self.command);
         let mut reads = self.reads.borrow_mut();
         reads.wanted_tab = Some(tab);
         reads.then.insert(Reading::Tab(tab), Box::new(self.command.clone()));
@@ -298,6 +344,7 @@ impl ReadLater for Later<'_> {
         if let Some((_, fetched)) = self.fetched.borrow_mut().take_if(|(read, _)| read == path) {
             return Some(fetched);
         }
+        refuse_an_ordered_command(self.command);
         let mut reads = self.reads.borrow_mut();
         reads.wanted_tab = None;
         reads.then.insert(Reading::File(path.to_path_buf()), Box::new(self.command.clone()));
@@ -305,6 +352,17 @@ impl ReadLater for Later<'_> {
         reads.forget_unless_running(&Reading::File(path.to_path_buf()));
         None
     }
+}
+
+/// **No ordered command reads later** (review of the lane, D9): its turn in the person's lane goes as it's dropped at the end of [`run`], so one that went
+/// to read here would let an edit asked after it act first. None does today (only a tap, an open and a comparison read later); one that's made to must
+/// first carry its turn through the read, in `reads.then`, to the run again.
+fn refuse_an_ordered_command(command: &Command) {
+    debug_assert!(
+        !super::person_lane::ordered(command),
+        "{} is one of the person's ordered commands and reads its file later: carry its turn through the read (`reads.then`) first",
+        command.tag()
+    );
 }
 
 /// What a read finished for a person's command comes to: the command again, with what was read, to run in the same call that took the read in, as the
@@ -319,8 +377,10 @@ pub fn submit_when_run(inner: &Arc<Inner>, command: Command, when_run: crate::qu
     if inner.core.frozen.load(std::sync::atomic::Ordering::SeqCst) {
         return;
     }
+    let turn = Person::of(inner).lane().turn_for(&command);
     let mut run = PersonCommand::input(command);
     run.when_run = Some(when_run);
+    run.turn = turn;
     inner.core.push(CoreCall::Run(run));
 }
 
