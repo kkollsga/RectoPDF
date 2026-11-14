@@ -273,10 +273,34 @@ mod tests {
         );
     }
 
+    /// The lines, from 0, where a source's shipping code makes a session or a host: every production line, read past any test item however early in the
+    /// file ([`recto_testpdf::production::production_lines`]), and none of a comment.
+    fn sessions_made_in(text: &str) -> Vec<usize> {
+        recto_testpdf::production::production_lines(text)
+            .into_iter()
+            .filter(|(_, line)| {
+                let code = line.split("//").next().unwrap_or_default();
+                ["Session::new(", "SessionHost::new(", "SessionHost::default()"]
+                    .iter()
+                    .any(|made| code.contains(made))
+            })
+            .map(|(at, _)| at)
+            .collect()
+    }
+
+    /// **Failure (the phase's closing read, 2026-11-15): the scan read a file only to its first `#[cfg(test)]`,** so in a file with a test-only item near
+    /// its top (`recto-control/src/host.rs`, `recto-app/src/core/host.rs`) a session made after it went unseen. Seeded after an early test-only use: it's
+    /// found, by its line, and the test module's own isn't.
+    #[test]
+    fn the_scan_reads_past_an_early_test_item() {
+        let source = "#[cfg(test)]\nuse std::fmt;\nfn make() -> SessionHost<L> {\n    SessionHost::new(loader) // made here\n}\n#[cfg(test)]\nmod tests {\n    fn t() {\n        Session::new(x);\n    }\n}\n";
+        assert_eq!(sessions_made_in(source), [3], "the one after the early test item");
+    }
+
     /// Failure: a place in the shipping code makes a session or a host itself instead of through [`session_on`] or `SessionHost::on_state`, which confine
     /// one on a test state folder by construction, so a host added later on such a folder reaches the user's files at the Full a quiet run leaves. In the
     /// crates that make them, no shipping line outside those two makes one at all (review of the branch, F7: the guard before this one went by what came
-    /// within four lines after, and skipped folders). Test code, after its `#[cfg(test)]` or in a test file, makes its own.
+    /// within four lines after, and skipped folders). Test code, in a test item or a test file, makes its own.
     #[test]
     fn no_shipping_code_makes_a_session_but_the_confining_constructors() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -300,15 +324,8 @@ mod tests {
             }
             scanned += 1;
             let text = std::fs::read_to_string(&path).unwrap();
-            let shipping = text.split("#[cfg(test)]").next().unwrap_or_default();
-            for (at, line) in shipping.lines().enumerate() {
-                let code = line.split("//").next().unwrap_or_default();
-                if ["Session::new(", "SessionHost::new(", "SessionHost::default()"]
-                    .iter()
-                    .any(|made| code.contains(made))
-                {
-                    makers.push(format!("{}:{}", path.strip_prefix(&root).unwrap().display(), at + 1));
-                }
+            for at in sessions_made_in(&text) {
+                makers.push(format!("{}:{}", path.strip_prefix(&root).unwrap().display(), at + 1));
             }
         }
         assert!(scanned > 50, "the scan found the shipping files: {scanned}");

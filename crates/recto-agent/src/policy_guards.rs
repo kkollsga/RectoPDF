@@ -1180,56 +1180,8 @@ const REPLACES_ON_PURPOSE: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// A source's lines outside test items: an item under `#[cfg(test)]` is left out to its end, braces counted as written (as `tests/codes.rs` reads them).
-/// An item with no body (a `mod x;`, a field, a variant) ends at its `;` or `,`.
-pub(crate) fn production_lines(source: &str) -> Vec<(usize, &str)> {
-    let mut lines = Vec::new();
-    let mut skipping: Option<(bool, i64)> = None;
-    for (at, line) in source.lines().enumerate() {
-        let trimmed = line.trim_start();
-        if skipping.is_none() {
-            if trimmed.starts_with("#[cfg(test)]") {
-                skipping = Some((false, 0));
-                if trimmed.trim_end() == "#[cfg(test)]" {
-                    continue;
-                }
-            } else {
-                lines.push((at, line));
-                continue;
-            }
-        }
-        let Some((opened, depth)) = skipping.as_mut() else { continue };
-        if !*opened && trimmed.starts_with("#[") {
-            continue;
-        }
-        for c in line.chars() {
-            match c {
-                '{' => {
-                    *opened = true;
-                    *depth += 1;
-                }
-                '}' => *depth -= 1,
-                _ => {}
-            }
-        }
-        if (*opened && *depth <= 0) || (!*opened && (line.trim_end().ends_with(';') || line.trim_end().ends_with(','))) {
-            skipping = None;
-        }
-    }
-    lines
-}
-
-/// Failure (review of R4.2): a `#[cfg(test)]` on a field or a variant skipped every production line after it up to the next `;`, so a write there went
-/// unseen. Test items are left out to their end, and the production lines after them are read.
-#[test]
-fn a_test_only_field_doesnt_hide_the_lines_after_it() {
-    let source = "struct A {\n    #[cfg(test)]\n    seen: u8,\n    kept: u8,\n}\nfn b() {\n    let _ = std::fs::write(x, y);\n}\n#[cfg(test)]\nmod tests {\n    fn c() {}\n}\nfn d() {}\n";
-    let read: Vec<&str> = production_lines(source).into_iter().map(|(_, line)| line.trim()).collect();
-    assert_eq!(
-        read,
-        ["struct A {", "kept: u8,", "}", "fn b() {", "let _ = std::fs::write(x, y);", "}", "fn d() {}"]
-    );
-}
+/// A source's lines outside test items: the one copy, shared with the scans in other crates ([`recto_testpdf::production::production_lines`]).
+pub(crate) use recto_testpdf::production::production_lines;
 
 /// The file and line of each write in `text`'s production lines that could go over a file, less those replacing one on purpose.
 fn writes_over(name: &str, text: &str) -> Vec<(usize, String)> {
