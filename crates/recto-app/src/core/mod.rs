@@ -27,6 +27,7 @@ mod editing;
 mod headless;
 pub(crate) mod keeping;
 mod launching;
+mod life;
 pub mod menu_rows;
 mod navigation;
 mod opening;
@@ -42,6 +43,7 @@ mod window_rows;
 pub mod zoom;
 
 pub use host::*;
+pub use life::Lifecycle;
 use opening::*;
 pub use reconcile::*;
 use recto_agent::Code;
@@ -81,7 +83,7 @@ use saver::Saver;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -192,46 +194,6 @@ pub struct Inner {
     pub tools: Tools,
 }
 
-/// **Where the app is in its life:** launch, the state's coming in, the window going up, the person's last touch, and a hand-off with what it waits for. What step
-/// R1.4 makes a state machine on the clock.
-pub struct Lifecycle {
-    /// What the host knows of this copy, for the thread that reads the state, held back while the record's lock hasn't come ([`updates::LaunchFacts`]).
-    pub update_facts: updates::LaunchFacts,
-    /// What the bridge's own readings go by: the first frame's time, its show patience and the contents' follow. The core's go by [`Self::clock`].
-    pub started: Instant,
-    /// The host's clock, a test's fake one: what the idle time and the window's patience for input go by (step R1.4).
-    pub(crate) clock: Arc<dyn crate::clock::Clock>,
-    /// **The state's coming in, the window's patience for it, what's shown and a hand-off's freeze, as one state machine** ([`crate::lifecycle::Life`]). The lock is
-    /// held only inside [`Self::step`] and the queries beside it, for a copy or a transition of a few bytes: never across carrying out an `Out`, a listener call, a
-    /// queue push, another lock or any I/O. So it's taken on the UI thread too, bounded. The time since input isn't in it: what the UI thread sets on every event
-    /// is an atomic store ([`Self::last_input_ms`]), passed to what asks as a value.
-    life: Mutex<crate::lifecycle::Life>,
-    /// Reading the file a restored active tab is on. Nothing's drawn until it's looked at, so the wrong thing can't show.
-    pub holding_tab: Mutex<Option<TabId>>,
-    /// In a QA run, files being read wait here, as they would for a slow disk.
-    pub(crate) qa_hold_reads: AtomicBool,
-    /// Files being read now, which a hand-off waits for.
-    pub(crate) reads_running: AtomicU32,
-    /// The one pass over the other tabs' files after a restore, while it's under way: what a test waits for, as nothing else does.
-    pub(crate) others_looking: AtomicU32,
-    /// A person's commands on threads of their own (`person::submit`), to the end of what came of them: what a test waits for. The host counts them for a
-    /// hand-off as it counts any command.
-    pub(crate) persons_running: AtomicU32,
-    /// Sheets and panels over the window now, which a hand-off waits for.
-    pub sheets: AtomicU32,
-    /// When the user last touched the app, in milliseconds of `clock`. One number, set by what the event monitor calls, with no timer.
-    pub(crate) last_input_ms: AtomicU64,
-    /// The person has touched the app since the launch: a click, a key, a scroll or a pinch, which moving or resizing the window begins with. Not the pointer only
-    /// passing over it.
-    touched: AtomicBool,
-    /// What the window's first showing had on it.
-    pub first_shown: Mutex<Option<Value>>,
-    /// When the window was last put up, for how long the patience had run when it was shown.
-    pub window_opened_at: Mutex<Option<Instant>>,
-    /// Whether the last yes `ready_to_show` gave was the cap's, for the record to say so.
-    pub shown_by_cap: AtomicBool,
-}
-
 /// **The control socket:** where the state lives, the server waiting for the session to be as it was, and what stops it and announces to its watchers.
 pub struct Serving {
     /// The control socket, ready to run once the session's as it was, so nothing asks about an empty one or opens over it.
@@ -249,110 +211,6 @@ pub struct Serving {
     /// Where a test comes between the reads of the views' places and their take-in, and the looks counted: [`crate::testkit::place_seams::PlaceSeams`].
     #[cfg(any(test, feature = "testkit"))]
     pub(crate) place_seams: crate::testkit::place_seams::PlaceSeams,
-}
-
-// `new` is public for the bridge, which builds the app; launch is no default state.
-#[allow(clippy::new_without_default)]
-impl Lifecycle {
-    /// At launch: nothing read, nothing shown, no hand-off.
-    pub fn new(clock: Arc<dyn crate::clock::Clock>) -> Self {
-        Self {
-            started: Instant::now(),
-            clock,
-            life: Mutex::new(crate::lifecycle::Life::default()),
-            holding_tab: Mutex::new(None),
-            first_shown: Mutex::new(None),
-            window_opened_at: Mutex::new(None),
-            shown_by_cap: AtomicBool::new(false),
-            last_input_ms: AtomicU64::new(0),
-            touched: AtomicBool::new(false),
-            update_facts: updates::LaunchFacts::new(),
-            reads_running: AtomicU32::new(0),
-            persons_running: AtomicU32::new(0),
-            others_looking: AtomicU32::new(0),
-            sheets: AtomicU32::new(0),
-            qa_hold_reads: AtomicBool::new(false),
-        }
-    }
-
-    /// Now, by the clock, in its milliseconds.
-    pub(crate) fn now_ms(&self) -> u64 {
-        self.clock.now_ms()
-    }
-
-    /// **What happens to the app's life,** now by the clock. The lock's let go of before this returns: the caller carries out what it comes to.
-    #[must_use]
-    pub fn step(&self, event: crate::lifecycle::Event) -> Option<crate::lifecycle::Out> {
-        let now = self.now_ms();
-        lock(&self.life).step(event, now)
-    }
-
-    /// The app's life as it stands, a copy.
-    fn life(&self) -> crate::lifecycle::Life {
-        *lock(&self.life)
-    }
-
-    /// Whether the state's been read and taken in.
-    pub fn state_read(&self) -> bool {
-        self.life().restored()
-    }
-
-    /// Whether what the host shows has been made from the state.
-    pub(crate) fn shown_with_state(&self) -> bool {
-        self.life().shown() == crate::lifecycle::Shown::WithState
-    }
-
-    /// Whether the window went up without the state and was made again from it.
-    pub(crate) fn remade(&self) -> bool {
-        self.life().remade()
-    }
-
-    /// Whether the window takes what a person does, now.
-    pub(crate) fn takes_input(&self) -> bool {
-        let now = self.now_ms();
-        self.life().takes_input(now)
-    }
-
-    /// How long until the patience for the state is over by the session thread's own deadline, if it waits on one.
-    pub(crate) fn due(&self) -> Option<Duration> {
-        let now = self.now_ms();
-        self.life().due(now)
-    }
-
-    /// Whether this copy keeps the record, or is trying again for its lock ([`crate::lifecycle::keeping`]).
-    fn keeping(&self) -> crate::lifecycle::keeping::Keeping {
-        self.life().keeping()
-    }
-
-    /// How long until the next try at the record's lock, while a launch that didn't get it tries again.
-    fn keeping_due(&self) -> Option<Duration> {
-        let now = self.now_ms();
-        self.life().keeping_due(now)
-    }
-
-    /// **A late try at the record's lock, back,** taken in with whether something of the person's is `busy` (a command under way on its own thread), looked at
-    /// under this lock only for a try that got the lock while it's trying, as `person::submit` counts and then looks at the machine: a lock it got is then given
-    /// back. `busy` is a load of two atomics: nothing under this lock touches the disk.
-    fn tried(&self, got: bool, busy: impl FnOnce() -> bool) -> Option<crate::lifecycle::Out> {
-        let now = self.now_ms();
-        let mut life = lock(&self.life);
-        let busy = got && life.keeping().trying() && busy();
-        life.step(crate::lifecycle::Event::Keeping(crate::lifecycle::keeping::Event::Tried { got, busy }), now)
-    }
-
-    /// Whether the window is made again from the state now ([`crate::lifecycle::Life::may_remake_window`]): what the host asks on the UI thread, cheap and
-    /// bounded.
-    pub fn may_remake_window(&self) -> bool {
-        let now = self.now_ms();
-        let touched = self.touched.load(Ordering::Relaxed);
-        let sheet_up = self.sheets.load(Ordering::SeqCst) > 0;
-        self.life().may_remake_window(now, touched, sheet_up)
-    }
-
-    /// Whether the host's been told to quit for a hand-off that's written.
-    pub(crate) fn told_to_quit(&self) -> bool {
-        self.life().hand_off() == crate::lifecycle::HandOff::Quitting
-    }
 }
 
 /// What's in flight, for an update to wait for. A save from the window counts here, and an agent's save or an export is a command.
@@ -396,13 +254,13 @@ pub fn hand_off_check(host: &AppHost) -> HandOffCheck {
 impl Inner {
     pub fn hand_off_check(&self) -> HandOffCheck {
         let busy = hand_off_check_parts(
-            self.life.reads_running.load(Ordering::SeqCst),
-            self.life.sheets.load(Ordering::SeqCst),
+            self.life.reads_running(),
+            self.life.sheets_open(),
             self.host.running.load(Ordering::SeqCst),
             self.tools.save_ui().running.load(Ordering::SeqCst),
             self.tools.printing().busy(),
         );
-        let last = self.life.last_input_ms.load(Ordering::Relaxed);
+        let last = self.life.last_input_ms();
         let now = self.life.now_ms();
         HandOffCheck {
             safe: busy.is_empty(),
@@ -459,6 +317,11 @@ impl Inner {
         self.life.told_to_quit()
     }
 
+    /// The hand-off isn't going ahead.
+    pub fn hand_off_cancelled(&self) {
+        self.carry_out(self.life.step(crate::lifecycle::Event::HandOffUndone));
+    }
+
     /// The reader's moved on from what they were told about the session as a whole.
     pub fn notice_read(&self) {
         if lock(&self.host.notice).take().is_some() {
@@ -485,25 +348,21 @@ impl Inner {
     /// What QA reads of how a restore and the record went, none of it what the user sees.
     pub fn record_report(&self) -> Value {
         let (writes, appends) = self.saver.store.writes();
-        json!({ "first_shown": *lock(&self.life.first_shown), "remade": self.life.remade(), "sleep": self.sleeper.report(), "writes": writes, "appends": appends, "wrote_bytes": self.saver.store.wrote_bytes(), "failed": self.saver.has_failed() })
+        let wrote_bytes = || {
+            // Where a test holds a report, as a writer flushing to a slow disk holds the store.
+            #[cfg(test)]
+            headless::life_locks::a_report_reads_the_store();
+            self.saver.store.wrote_bytes()
+        };
+        // The first showing is copied under its short lock and the answer built after it's let go, so nothing the answer reads (the life, the sleeper, the
+        // store, whose writer holds its own lock across a flush to the disk) is waited on holding the lock the window takes as it's shown.
+        let first_shown = self.life.first_shown();
+        json!({ "first_shown": first_shown, "remade": self.life.remade(), "sleep": self.sleeper.report(), "writes": writes, "appends": appends, "wrote_bytes": wrote_bytes(), "failed": self.saver.has_failed() })
     }
 
-    /// A sheet or panel opened over the window, or closed. An update waits for it.
-    pub fn sheet_changed(&self, open: bool) {
-        if open {
-            self.life.sheets.fetch_add(1, Ordering::SeqCst);
-        } else {
-            let _ = self.life.sheets.try_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1));
-        }
-    }
-
-    pub fn note_nearby(&self) {
-        self.life.last_input_ms.store(self.life.now_ms(), Ordering::Relaxed);
-    }
-
+    /// The person touched the app: the life notes it ([`Lifecycle::note_input`]), and a notice they've moved on from goes.
     pub fn note_input(&self) {
-        self.life.last_input_ms.store(self.life.now_ms(), Ordering::Relaxed);
-        self.life.touched.store(true, Ordering::Relaxed);
+        self.life.note_input();
         // One lock per input, and an uncontended one. It's what lets a notice go when the reader has moved on.
         self.notice_read();
     }

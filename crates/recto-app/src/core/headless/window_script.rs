@@ -118,7 +118,7 @@ const STEPS: &[(&str, Step)] = &[
         said(inner.window.opens_in_background(inner.updates.reopened_by_update()))
     }),
     ("contents scrolled by the person", |inner| {
-        inner.window.contents_user_scrolled(inner.life.started.elapsed().as_secs_f64());
+        inner.window.contents_user_scrolled(inner.life.seconds_since_start());
         said(inner.window.contents_following())
     }),
     ("settings opened", |inner| {

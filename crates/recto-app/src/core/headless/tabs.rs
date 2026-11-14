@@ -5,7 +5,6 @@ use super::twins::{Twins, names};
 use crate::core::controls::UiAction;
 use crate::testkit::headless::{Disk, HeadlessApp};
 use recto_agent::Level;
-use std::sync::atomic::Ordering;
 
 /// One control: its name, what the person does, and the agent's line.
 type Step = (&'static str, Box<dyn Fn(&HeadlessApp)>, String);
@@ -106,12 +105,12 @@ fn the_tab_last_tapped_wins_over_one_still_being_read() {
     }
     cold(&app, 1);
     let inner = app.core();
-    inner.life.qa_hold_reads.store(true, Ordering::SeqCst);
+    inner.life.hold_reads(true);
     app.act(row(&app, 1));
-    app.wait_until("the cold tab's read to be under way", || inner.life.reads_running.load(Ordering::SeqCst) > 0);
+    app.wait_until("the cold tab's read to be under way", || inner.life.reads_running() > 0);
     app.act(row(&app, 2));
     app.wait_until("the later tap taken", || app.reader().shown_tab == 2);
-    inner.life.qa_hold_reads.store(false, Ordering::SeqCst);
+    inner.life.hold_reads(false);
     app.settle();
     assert_eq!(app.reader().shown_tab, 2, "the tab last tapped is in front");
     app.hear_events();
@@ -238,7 +237,7 @@ fn a_file_opened_before_the_state_is_in_opens_once_it_is() {
     let app = disk.builder().hold(&[recto_platform::slow::Seam::State]).start();
     app.act(UiAction::Open { path: b.display().to_string() });
     assert!(app.core().core.flush(crate::testkit::headless::WAIT_LIMIT), "taken, and any read for it done");
-    assert!(!app.core().state_read(), "the state's still held");
+    assert!(!app.core().life.state_read(), "the state's still held");
     assert_eq!(
         app.core().host.session.with_session(|session| session.tabs().len()),
         0,

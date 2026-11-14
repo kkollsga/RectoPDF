@@ -104,7 +104,7 @@ pub fn end_with_starter(limit: Duration, owner: Option<u32>, state: Option<std::
 }
 
 fn updates_takes_input(inner: &Inner) -> bool {
-    inner.life.takes_input()
+    inner.life.window_interactive()
 }
 
 /// How long the UI thread may take with a QA request before the answer is that it's stuck.

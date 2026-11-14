@@ -188,8 +188,8 @@ fn a_lock_never_let_go_is_said_after_ten_seconds_and_not_before() {
         std::thread::Builder::new()
             .name("test-window".into())
             .spawn(move || {
-                let _ = core.ready_to_show();
-                let _ = core.state_read();
+                let _ = core.life.ready_to_show(&core.host.session, &core.engine);
+                let _ = core.life.state_read();
                 let _ = crate::lock(&core.published).reader.home;
                 let _ = said.send(core.core.flush(WAIT_LIMIT));
             })
@@ -351,7 +351,7 @@ fn a_lock_let_go_between_the_launchs_wait_and_its_read_still_tells_the_updater()
     app.core().life.update_facts.first_frame_shown(&app.core().updates);
     drop(old_on_its_way_out);
     app.let_through(Seam::State, 1);
-    app.wait_until("the state taken in", || app.core().state_read());
+    app.wait_until("the state taken in", || app.core().life.state_read());
     app.settle();
     assert!(!app.core().saver.store.holds_the_record(), "the read didn't take the lock: it's the try's");
     app.advance(TRY_EVERY_MS);
@@ -731,8 +731,8 @@ fn the_window_answers_within(app: &HeadlessApp, limit: std::time::Duration) -> R
     std::thread::Builder::new()
         .name("test-window".into())
         .spawn(move || {
-            let _ = core.state_read();
-            let _ = core.window_interactive();
+            let _ = core.life.state_read();
+            let _ = core.life.window_interactive();
             let _ = core.life.may_remake_window();
             let _ = said.send(());
         })
@@ -857,18 +857,17 @@ fn eight_agents_looping_changes_and_saves_dont_stop_the_tries() {
 /// keeps the record and the saved session comes back.
 #[test]
 fn a_try_back_with_a_persons_command_under_way_gives_the_lock_back_for_the_next() {
-    use std::sync::atomic::Ordering;
     let disk = a_saved_session();
     let before = the_copy_before(&disk);
     let app = disk.builder().another_keeps().hold(&[Seam::RecordLock]).start();
     drop(before);
     app.advance(TRY_EVERY_MS);
     app.wait_until("the try held with the lock", || app.waiting(Seam::RecordLock) > 0);
-    app.core().life.persons_running.fetch_add(1, Ordering::SeqCst);
+    let person = app.core().life.person_running();
     app.let_through(Seam::RecordLock, 1);
     app.wait_until("given back", || tries(&app) == Some(1) && !app.core().saver.store.holds_the_record());
     assert_eq!(app.reader().note, None, "nothing said");
-    app.core().life.persons_running.fetch_sub(1, Ordering::SeqCst);
+    drop(person);
     recto_platform::slow::gate::open(Seam::RecordLock);
     app.advance(TRY_EVERY_MS);
     app.wait_until("the record kept at the next try", || app.core().life.keeping() == Keeping::Keeps);
@@ -1000,7 +999,7 @@ fn an_ordinary_late_state_keeps_the_appearance_the_window_shows_once_it_takes_in
     use recto_session::record::Appearance;
     let app = a_saved_session().builder().hold(&[Seam::State]).start();
     app.advance(u64::try_from(crate::core::updates::INPUT_PATIENCE.as_millis()).expect("ms"));
-    assert!(app.core().window_interactive(), "past its patience, the window takes input");
+    assert!(app.core().life.window_interactive(), "past its patience, the window takes input");
     crate::lock(&app.core().window.app).appearance = Appearance::Dark;
     app.core().saver.view_changed();
     app.let_state_in();
@@ -1081,7 +1080,7 @@ fn a_late_keep_makes_the_window_again_once_unless_the_person_touched_it() {
             app.touch();
         }
         // An agent's permission request up on the window, as the host says a sheet is.
-        app.core().sheet_changed(sheet);
+        app.core().life.sheet_changed(sheet);
         app.settle();
         assert_eq!(tries(&app), Some(0), "touching the window isn't working in it");
         drop(before);
@@ -1105,7 +1104,7 @@ fn a_late_keep_makes_the_window_again_once_unless_the_person_touched_it() {
             assert_eq!(window_x(&app), Some(SAVED_X), "from the saved frame");
         }
         if sheet {
-            app.core().sheet_changed(false);
+            app.core().life.sheet_changed(false);
         }
         assert!(!app.core().life.may_remake_window(), "and never again this launch");
         drop(app.quit());

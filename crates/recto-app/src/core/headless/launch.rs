@@ -92,9 +92,9 @@ fn a_late_state_and_a_late_remake_come_in_the_order_theyre_let_through() {
     let (_, disk) = app.quit();
     let app = disk.builder().hold(&[Seam::State, Seam::Remake]).start();
     assert_eq!(app.listener().count(&Heard::RestoreReady), 1, "up without the state");
-    assert!(!app.core().state_read() && app.tabs().is_empty() && app.reader().home);
+    assert!(!app.core().life.state_read() && app.tabs().is_empty() && app.reader().home);
     app.let_state_in();
-    assert!(app.core().state_read(), "the state's in");
+    assert!(app.core().life.state_read(), "the state's in");
     assert_eq!(app.listener().count(&Heard::RestoreReady), 1, "and the remake is held");
     assert!(!app.core().life.shown_with_state());
     app.let_through(Seam::Remake, 1);
@@ -122,7 +122,7 @@ fn what_is_done_before_the_window_is_made_from_a_late_state_waits_for_it() {
     let app = disk.builder().hold(&[Seam::State, Seam::Remake]).start();
     app.let_state_in();
     assert!(
-        app.core().state_read() && !app.core().life.shown_with_state(),
+        app.core().life.state_read() && !app.core().life.shown_with_state(),
         "the state's in, and the window not yet made from it"
     );
     assert!(!app.core().menu_item_enabled("find.open".into()), "⌘F isn't enabled on the window that's to go");

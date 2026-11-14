@@ -132,9 +132,7 @@ fn a_quit_during_a_stuck_read_still_writes() {
     app.act(crate::core::controls::UiAction::Open {
         path: other.display().to_string(),
     });
-    app.wait_until("the other file's read to be under way", || {
-        app.core().life.reads_running.load(Ordering::SeqCst) > 0
-    });
+    app.wait_until("the other file's read to be under way", || app.core().life.reads_running() > 0);
     app.recto(recto_agent::Level::Full, &["goto", "12"]).expect("goto");
     let answer = app.ask_to_quit();
     assert!(answer.go, "{answer:?}");

@@ -711,13 +711,6 @@ fn settings_answer(updates: &recto_update::updater::Updater) -> Value {
     json!({ "auto_update": on, "words": words })
 }
 
-impl Inner {
-    /// The hand-off isn't going ahead.
-    pub fn hand_off_cancelled(&self) {
-        self.carry_out(self.life.step(crate::lifecycle::Event::HandOffUndone));
-    }
-}
-
 /// A page of one colour, as small as a PDF gets. Ours, so it says something about this version and nothing about whatever the user had open.
 fn probe_pdf() -> Vec<u8> {
     let objects = [

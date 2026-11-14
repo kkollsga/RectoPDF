@@ -33,82 +33,173 @@
 //! The read itself is about 2.3 ms for a session of 100 tabs each with a journal (median of 20, release build, this Mac under a load of about 4, 2026-11-13).
 
 use super::*;
-use crate::lifecycle::Event as LifeEvent;
 use crate::lifecycle::keeping::{Event as KeepingEvent, Keeping};
 use std::hash::{Hash as _, Hasher as _};
 
-/// **What the window has now, as one number:** the session as the record would have it, the appearance the person chose, and any file being opened. What
-/// counts and what doesn't is said in [`crate::lifecycle::keeping`]: the sidebar shown or hidden is the window's arrangement, so it's left out here, with the
-/// window's frame, focus, the sidebar's width, the panel and Settings, which aren't in the session's record at all.
-fn as_done(inner: &Inner, reads: &FileReads) -> u64 {
-    let mut record = inner.host.session.with_session(|session| session.to_record());
-    record.view.sidebar_hidden = false;
-    let appearance = lock(&inner.window.app).appearance;
-    let mut opening: Vec<&std::path::Path> = reads
-        .running
-        .iter()
-        .filter_map(|reading| match reading {
-            Reading::File(path) => Some(path.as_path()),
-            _ => None,
-        })
-        .collect();
-    opening.sort_unstable();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    serde_json::to_vec(&(record, appearance)).unwrap_or_default().hash(&mut hasher);
-    opening.hash(&mut hasher);
-    hasher.finish()
+/// **The keeping desk: what [`crate::lifecycle::keeping`] decides, carried out, and nothing else.** It owns one rule: every keeping event goes through
+/// [`Desk::step`] or [`Desk::try_back`] and is carried by [`crate::lifecycle::keeping::carry`], with nothing between (no other code in the app makes a keeping
+/// step: the life makes one only with the desk's [`Carrier`], which only this file can build). It borrows only what its methods read, each said on the method: the life, the host (the
+/// session, the notice, what's under way), the record's store, the queue and the updater; and `app`, the whole app, which is there only for [`Carrier::ask`]'s
+/// spawn of the try's thread, whose read (`try_the_lock`, `read_late`) takes it whole until the record's slice (S5) gives them parts. Six references, held so
+/// by a check when it's built, made for a call and dropped with it: no lock, thread or allocation of its own. Each is the app's own handle (`&Arc`), so what a
+/// thread needs of it can be cloned for that thread (the updater's telling now; the try's thread once S5 gives it parts) and `app` can go.
+pub(super) struct Desk<'a> {
+    life: &'a Arc<Lifecycle>,
+    host: &'a Arc<AppHost>,
+    store: &'a Arc<recto_control::record_store::RecordStore>,
+    core: &'a Arc<CoreQueue>,
+    updates: &'a Arc<recto_update::updater::Updater>,
+    app: &'a Arc<Inner>,
 }
 
-/// **The state's been taken in** (`session::apply_restored`), with `other_instance` when it was refused for the lock. The first time, whether this copy keeps
-/// the record starts here; taken in with the lock while it's trying, restoring or settled not to (a late try's restore, or a `session restore` by anyone), it
-/// keeps it from here. Says whether the notice that came with what was read is said now (not while it's trying, nor once it's settled not to keep the record,
-/// whose own notice is said instead), and what the host is told: the window made again from a late keep's restore.
-pub(super) fn taken_in(inner: &Arc<Inner>, other_instance: bool, first_time: bool, reads: &FileReads) -> (bool, Option<crate::lifecycle::Out>) {
-    let keeps = inner.saver.store.holds_the_record();
-    let mut host = None;
-    if first_time || keeps {
-        let as_read = if keeps { 0 } else { as_done(inner, reads) };
-        // A stat or two (the update's plan or outcome), as the window's patience asks on this thread too.
-        let by_update = !keeps && inner.updates.may_be_reopened_by_update();
-        host = step(inner, KeepingEvent::Read { keeps, as_read, by_update });
-    }
-    let keeping = inner.life.keeping();
-    // Where the store answers: it can't be "not kept" with the store holding the lock, by any route. (A late read still out holds it as `LettingGo`, which
-    // refuses a `session restore` until it's out.)
-    debug_assert!(!(keeping == Keeping::NotKept && keeps), "not kept with the record's lock held");
-    if keeping.not_kept() {
-        // A restore's saved notice isn't put over the one that's true.
-        *lock(&inner.host.notice) = Some(record::notices::OTHER_INSTANCE.to_owned());
-    }
-    (!(other_instance && keeping.trying()) && !keeping.not_kept(), host)
-}
+const _: () = assert!(
+    std::mem::size_of::<Desk<'_>>() == 6 * std::mem::size_of::<usize>(),
+    "the desk is six references"
+);
 
-/// After every call on the session thread, while it's trying: the person having opened or changed something stops it, and that's said now.
-pub(super) fn look_after_call(inner: &Arc<Inner>, reads: &FileReads) {
-    if !inner.life.keeping().trying() {
-        return;
+impl<'a> Desk<'a> {
+    /// The desk for a call, from the app's parts.
+    pub(super) fn of(app: &'a Arc<Inner>) -> Self {
+        Self {
+            life: &app.life,
+            host: &app.host,
+            store: &app.saver.store,
+            core: &app.core,
+            updates: &app.updates,
+            app,
+        }
     }
-    let now_as = as_done(inner, reads);
-    let _ = step(inner, KeepingEvent::Looked { now_as });
-}
 
-/// **The session thread's deadline while it's trying or restoring:** a restore's patience over, or a look at the window and, if it's as it was read, one try at
-/// the lock sent out (see the module's order).
-pub(super) fn when_due(inner: &Arc<Inner>, reads: &FileReads) {
-    if !inner.life.keeping_due().is_some_and(|wait| wait.is_zero()) {
-        return;
+    /// **What the window has now, as one number:** the session as the record would have it, the appearance the person chose, and any file being opened. What
+    /// counts and what doesn't is said in [`crate::lifecycle::keeping`]: the sidebar shown or hidden is the window's arrangement, so it's left out here, with the
+    /// window's frame, focus, the sidebar's width, the panel and Settings, which aren't in the session's record at all. Reads the session and the window.
+    fn as_done(&self, window: &Window, reads: &FileReads) -> u64 {
+        let mut record = self.host.session.with_session(|session| session.to_record());
+        record.view.sidebar_hidden = false;
+        let appearance = lock(&window.app).appearance;
+        let mut opening: Vec<&std::path::Path> = reads
+            .running
+            .iter()
+            .filter_map(|reading| match reading {
+                Reading::File(path) => Some(path.as_path()),
+                _ => None,
+            })
+            .collect();
+        opening.sort_unstable();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        serde_json::to_vec(&(record, appearance)).unwrap_or_default().hash(&mut hasher);
+        opening.hash(&mut hasher);
+        hasher.finish()
     }
-    if inner.life.keeping().restoring() {
-        let _ = step(inner, KeepingEvent::ReadPatienceOver);
-        inner.core.push(CoreCall::Reconcile);
-        return;
+
+    /// **The state's been taken in** (`session::apply_restored`), with `other_instance` when it was refused for the lock. The first time, whether this copy keeps
+    /// the record starts here; taken in with the lock while it's trying, restoring or settled not to (a late try's restore, or a `session restore` by anyone), it
+    /// keeps it from here. Says whether the notice that came with what was read is said now (not while it's trying, nor once it's settled not to keep the record,
+    /// whose own notice is said instead), and what the host is told: the window made again from a late keep's restore. Reads the store, the window (as done), the
+    /// updater (whether an update opened the launch), the life, and sets the notice.
+    pub(super) fn taken_in(&self, window: &Window, other_instance: bool, first_time: bool, reads: &FileReads) -> (bool, Option<crate::lifecycle::Out>) {
+        let keeps = self.store.holds_the_record();
+        let mut host = None;
+        if first_time || keeps {
+            let as_read = if keeps { 0 } else { self.as_done(window, reads) };
+            // A stat or two (the update's plan or outcome), as the window's patience asks on this thread too.
+            let by_update = !keeps && self.updates.may_be_reopened_by_update();
+            host = self.step(KeepingEvent::Read { keeps, as_read, by_update });
+        }
+        let keeping = self.life.keeping();
+        // Where the store answers: it can't be "not kept" with the store holding the lock, by any route. (A late read still out holds it as `LettingGo`, which
+        // refuses a `session restore` until it's out.)
+        debug_assert!(!(keeping == Keeping::NotKept && keeps), "not kept with the record's lock held");
+        if keeping.not_kept() {
+            // A restore's saved notice isn't put over the one that's true.
+            *lock(&self.host.notice) = Some(record::notices::OTHER_INSTANCE.to_owned());
+        }
+        (!(other_instance && keeping.trying()) && !keeping.not_kept(), host)
     }
-    let now_as = as_done(inner, reads);
-    let _ = step(inner, KeepingEvent::Looked { now_as });
-    if inner.life.keeping().trying() {
-        let _ = step(inner, KeepingEvent::Asking);
+
+    /// After every call on the session thread, while it's trying: the person having opened or changed something stops it, and that's said now. Reads the life, and
+    /// the window as done.
+    pub(super) fn look_after_call(&self, window: &Window, reads: &FileReads) {
+        if !self.life.keeping().trying() {
+            return;
+        }
+        let now_as = self.as_done(window, reads);
+        let _ = self.step(KeepingEvent::Looked { now_as });
     }
-    inner.core.push(CoreCall::Reconcile);
+
+    /// **The session thread's deadline while it's trying or restoring:** a restore's patience over, or a look at the window and, if it's as it was read, one try at
+    /// the lock sent out (see the module's order). Reads the life and the window as done; tells the queue to look again.
+    pub(super) fn when_due(&self, window: &Window, reads: &FileReads) {
+        if !self.life.keeping_due().is_some_and(|wait| wait.is_zero()) {
+            return;
+        }
+        if self.life.keeping().restoring() {
+            let _ = self.step(KeepingEvent::ReadPatienceOver);
+            self.core.push(CoreCall::Reconcile);
+            return;
+        }
+        let now_as = self.as_done(window, reads);
+        let _ = self.step(KeepingEvent::Looked { now_as });
+        if self.life.keeping().trying() {
+            let _ = self.step(KeepingEvent::Asking);
+        }
+        self.core.push(CoreCall::Reconcile);
+    }
+
+    /// **A try is back,** on the session thread: the window's looked at first, so whatever the person did while it was out counts before the lock does; then the try's
+    /// taken in, looked at under the life's lock with whatever of the person's is under way, and carried out. Reads the life, the window (as done, and its
+    /// appearance), what's under way; tells the queue to look again.
+    pub(super) fn try_back(&self, window: &Window, reads: &FileReads, back: TryBack) {
+        if self.life.keeping().trying() {
+            let now_as = self.as_done(window, reads);
+            let _ = self.step(KeepingEvent::Looked { now_as });
+        }
+        let appearance_then = lock(&window.app).appearance;
+        // Decided with nothing of the person's under way, looked at under the life's lock as `person::submit` looks the other way round.
+        let _ = self.carried(Some((&back.verdict, appearance_then)), |carrier| {
+            self.life.tried(back.got, || busy(self.life, self.host), carrier);
+        });
+        self.core.push(CoreCall::Reconcile);
+    }
+
+    /// **A late try's saved session, come in from its thread:** what's taken in; or, with nothing (the read's thread ended without it: a panic, or its patience ran
+    /// out while it read), the machine told the thread is out of its read, which gives the lock back. Reads the life.
+    pub(super) fn late_read(&self, read: Option<Box<(Loaded, record::Appearance)>>) -> Option<(Loaded, record::Appearance)> {
+        let Some(loaded) = read else {
+            let _ = self.step(KeepingEvent::ReadGone);
+            return None;
+        };
+        // Only a claimed read comes in, and a claimed restore has no patience to run out: still restoring.
+        self.life.keeping().restoring().then_some(*loaded)
+    }
+
+    /// **A step of keeping the record, carried out:** every step anyone makes of it but a try's coming back ([`Self::try_back`], which carries out its own with the
+    /// try's thread to tell), so the one place keeping settles is where the updater is told of a launch held back. Says what the host is told: the window made
+    /// again from a late try's restore, for the caller to tell it once the session thread's call has ended.
+    fn step(&self, event: KeepingEvent) -> Option<crate::lifecycle::Out> {
+        self.carried(None, |carrier| self.life.step_keeping(event, carrier))
+    }
+
+    /// A step, made by `step` with the desk's carrier, which the life hands what it came to once its lock is let go ([`Lifecycle::step_keeping`]), with the
+    /// try's thread to tell when a try is back (`verdict`); a launch held back and settled can't be left untold, by any route (a debug build says so if it is).
+    fn carried(
+        &self,
+        verdict: Option<(&std::sync::mpsc::Sender<Verdict>, record::Appearance)>,
+        step: impl FnOnce(&mut Carrier<'_>),
+    ) -> Option<crate::lifecycle::Out> {
+        let mut carrier = Carrier {
+            desk: self,
+            verdict,
+            host: None,
+        };
+        step(&mut carrier);
+        debug_assert!(
+            !(self.life.keeping().settled() && self.life.update_facts.untold()),
+            "keeping settled ({:?}) with the launch still held back from the updater",
+            self.life.keeping()
+        );
+        carrier.host
+    }
 }
 
 /// **A try at the record's lock, on a thread of its own:** the store's one `try_lock` (an open of the lock file, which a sleeping disk can make slow), told to the
@@ -148,7 +239,7 @@ fn read_late(inner: &Arc<Inner>, appearance_then: record::Appearance) {
     recto_platform::slow::pause(recto_platform::slow::Seam::State);
     let misreads = inner.life.update_facts.misreads();
     let loaded = if misreads { Loaded::Nothing } else { inner.saver.store.load() };
-    let _ = step(inner, KeepingEvent::Claimed);
+    let _ = Desk::of(inner).step(KeepingEvent::Claimed);
     if !inner.life.keeping().claims() {
         return;
     }
@@ -203,32 +294,10 @@ impl TryBack {
     }
 }
 
-/// **A try is back,** on the session thread: the window's looked at first, so whatever the person did while it was out counts before the lock does; then the try's
-/// taken in, looked at under the life's lock with whatever of the person's is under way, and carried out.
-pub(super) fn try_back(inner: &Arc<Inner>, reads: &FileReads, back: TryBack) {
-    if inner.life.keeping().trying() {
-        let now_as = as_done(inner, reads);
-        let _ = step(inner, KeepingEvent::Looked { now_as });
-    }
-    let appearance_then = lock(&inner.window.app).appearance;
-    // Decided with nothing of the person's under way, looked at under the life's lock as `person::submit` looks the other way round.
-    let out = inner.life.tried(back.got, || busy(&inner.life, &inner.host));
-    let _ = carried(
-        inner,
-        out,
-        Carrier {
-            inner,
-            verdict: Some((&back.verdict, appearance_then)),
-            host: None,
-        },
-    );
-    inner.core.push(CoreCall::Reconcile);
-}
-
 /// Something under way that a late try's restore would replace or lose: a person's command on its own thread (its change isn't in to be looked at), or a
 /// hand-off.
 fn busy(life: &Lifecycle, host: &AppHost) -> bool {
-    life.persons_running.load(Ordering::SeqCst) > 0 || host.handing_off.load(Ordering::SeqCst)
+    life.persons_running() > 0 || host.handing_off.load(Ordering::SeqCst)
 }
 
 /// **Whether an agent's command is answered while keeping the record is settling** (trying or restoring, [`crate::lifecycle::keeping::Keeping::refuses_agents_changes`]):
@@ -244,17 +313,6 @@ pub(crate) fn answers_agents(command: &recto_agent::Command) -> bool {
 /// record's lock; a second read of the same folder beside it isn't made. Busy for a moment: refused as busy, to try again.
 pub(crate) fn refuses_a_restore(life: &Lifecycle) -> bool {
     life.keeping() == Keeping::LettingGo
-}
-
-/// **A late try's saved session, come in from its thread:** what's taken in; or, with nothing (the read's thread ended without it: a panic, or its patience ran
-/// out while it read), the machine told the thread is out of its read, which gives the lock back.
-pub(super) fn late_read(inner: &Arc<Inner>, read: Option<Box<(Loaded, record::Appearance)>>) -> Option<(Loaded, record::Appearance)> {
-    let Some(loaded) = read else {
-        let _ = step(inner, KeepingEvent::ReadGone);
-        return None;
-    };
-    // Only a claimed read comes in, and a claimed restore has no patience to run out: still restoring.
-    inner.life.keeping().restoring().then_some(*loaded)
 }
 
 /// **Whether a writer of the record may write now:** this copy holds the record's lock and keeps the record, from the launch or since a late try's saved session
@@ -273,7 +331,7 @@ pub(crate) fn may_write(inner: &Inner) -> bool {
     if keeping == Keeping::Keeps
         && let Some(inner) = inner.saver.inner()
     {
-        let _ = step(&inner, KeepingEvent::LockLost);
+        let _ = Desk::of(&inner).step(KeepingEvent::LockLost);
     }
     false
 }
@@ -294,41 +352,11 @@ pub(crate) fn asks(inner: &Inner) -> KeepsRecord<'_> {
     KeepsRecord(inner)
 }
 
-/// **A step of keeping the record, carried out:** every step anyone makes of it but a try's coming back ([`try_back`], which carries out its own with the try's
-/// thread to tell), so the one place keeping settles is where the updater is told of a launch held back. Says what the host is told: the window made again
-/// from a late try's restore, for the caller to tell it once the session thread's call has ended.
-fn step(inner: &Arc<Inner>, event: KeepingEvent) -> Option<crate::lifecycle::Out> {
-    let out = inner.life.step(LifeEvent::Keeping(event));
-    carried(
-        inner,
-        out,
-        Carrier {
-            inner,
-            verdict: None,
-            host: None,
-        },
-    )
-}
-
-/// What a step came to, carried out by the machine's one function ([`crate::lifecycle::keeping::carry`]); a launch held back and settled can't be left untold,
-/// by any route (a debug build says so if it is).
-fn carried(inner: &Arc<Inner>, out: Option<crate::lifecycle::Out>, mut carrier: Carrier<'_>) -> Option<crate::lifecycle::Out> {
-    let out = match out {
-        Some(crate::lifecycle::Out::Keeping(out)) => Some(out),
-        _ => None,
-    };
-    crate::lifecycle::keeping::carry(out, &mut carrier);
-    debug_assert!(
-        !(inner.life.keeping().settled() && inner.life.update_facts.untold()),
-        "keeping settled ({:?}) with the launch still held back from the updater",
-        inner.life.keeping()
-    );
-    carrier.host
-}
-
-/// **The app's side of carrying out a step:** the try's thread to tell, when a try is back, and what the host is told once the call's over.
-struct Carrier<'a> {
-    inner: &'a Arc<Inner>,
+/// **The app's side of carrying out a step:** the try's thread to tell, when a try is back, and what the host is told once the call's over. **Only the desk
+/// makes one** (its fields are private to this file), and the life steps keeping the record only with one ([`Lifecycle::step_keeping`],
+/// [`Lifecycle::tried`]), which it carries what the step came to: so no other code makes a keeping step, and none is made without being carried out.
+pub(super) struct Carrier<'a> {
+    desk: &'a Desk<'a>,
     verdict: Option<(&'a std::sync::mpsc::Sender<Verdict>, record::Appearance)>,
     host: Option<crate::lifecycle::Out>,
 }
@@ -337,18 +365,18 @@ impl crate::lifecycle::keeping::Carry for Carrier<'_> {
     /// On a thread of its own; a try that didn't get the lock with a person's command or a hand-off under way, or with no thread to be had, coming back through
     /// the queue as any try does.
     fn ask(&mut self) {
-        if busy(&self.inner.life, &self.inner.host) {
-            self.inner.core.push(CoreCall::TryBack(TryBack::without_the_lock()));
+        if busy(self.desk.life, self.desk.host) {
+            self.desk.core.push(CoreCall::TryBack(TryBack::without_the_lock()));
             return;
         }
         let (verdict, heard) = std::sync::mpsc::channel();
-        let asking = Arc::clone(self.inner);
+        let asking = Arc::clone(self.desk.app);
         let sent = std::thread::Builder::new()
             .name("recto-record-lock".into())
             .stack_size(512 * 1024)
             .spawn(move || try_the_lock(&asking, verdict, &heard));
         if sent.is_err() {
-            self.inner.core.push(CoreCall::TryBack(TryBack::without_the_lock()));
+            self.desk.core.push(CoreCall::TryBack(TryBack::without_the_lock()));
         }
     }
 
@@ -361,23 +389,23 @@ impl crate::lifecycle::keeping::Carry for Carrier<'_> {
 
     /// An unlock and a close of a descriptor already open: no disk is waited on, so it's done here, before anything else is taken.
     fn give_back(&mut self) {
-        self.inner.saver.store.give_back();
+        self.desk.store.give_back();
     }
 
     fn notice(&mut self, not_kept: bool) {
         {
-            let mut notice = lock(&self.inner.host.notice);
+            let mut notice = lock(&self.desk.host.notice);
             if not_kept {
                 *notice = Some(record::notices::OTHER_INSTANCE.to_owned());
             } else if notice.as_deref() == Some(record::notices::OTHER_INSTANCE) {
                 *notice = None;
             }
         }
-        self.inner.core.push(CoreCall::Reconcile);
+        self.desk.core.push(CoreCall::Reconcile);
     }
 
     fn tell_the_updater(&mut self) {
-        updates::tell_held(&self.inner.life, &self.inner.updates);
+        updates::tell_held(self.desk.life, self.desk.updates);
     }
 
     fn remake(&mut self) {
