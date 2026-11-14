@@ -196,7 +196,7 @@ pub struct Inner {
 /// R1.4 makes a state machine on the clock.
 pub struct Lifecycle {
     /// What the host knows of this copy, for the thread that reads the state, held back while the record's lock hasn't come ([`updates::LaunchFacts`]).
-    update_facts: Mutex<updates::LaunchFacts>,
+    pub update_facts: updates::LaunchFacts,
     /// What the bridge's own readings go by: the first frame's time, its show patience and the contents' follow. The core's go by [`Self::clock`].
     pub started: Instant,
     /// The host's clock, a test's fake one: what the idle time and the window's patience for input go by (step R1.4).
@@ -266,7 +266,7 @@ impl Lifecycle {
             shown_by_cap: AtomicBool::new(false),
             last_input_ms: AtomicU64::new(0),
             touched: AtomicBool::new(false),
-            update_facts: Mutex::new(updates::LaunchFacts::default()),
+            update_facts: updates::LaunchFacts::new(),
             reads_running: AtomicU32::new(0),
             persons_running: AtomicU32::new(0),
             others_looking: AtomicU32::new(0),

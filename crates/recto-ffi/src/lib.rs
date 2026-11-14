@@ -1141,7 +1141,7 @@ impl AppCore {
         let _ = std::thread::Builder::new()
             .name("recto-update-frame".into())
             .stack_size(UPDATE_FRAME_STACK)
-            .spawn(move || updates::first_frame_shown(&inner));
+            .spawn(move || inner.life.update_facts.first_frame_shown(&inner.updates));
     }
 
     /// The UI thread has woken, or (`block`) a block of the host's begins on it. True if no stretch was under way and this began one, which `main_idle` ends.
@@ -1194,7 +1194,7 @@ impl AppCore {
         let _ = std::thread::Builder::new()
             .name("recto-update-frame".into())
             .stack_size(UPDATE_FRAME_STACK)
-            .spawn(move || updates::first_frame_shown(&inner));
+            .spawn(move || inner.life.update_facts.first_frame_shown(&inner.updates));
     }
 
     /// Where the new window goes, on the screens there are now. Rust's rule, from what was saved. In a quiet run it keeps its place off every screen, and only its size comes back.
@@ -1282,7 +1282,7 @@ impl AppCore {
 
     /// What this copy of the app is, from the host. Before `begin_restore`, which is what reads what the updater remembers.
     pub fn set_update_facts(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String) {
-        self.inner.note_update_facts(version, dev_version, bundle_path, system_version);
+        self.inner.life.update_facts.note(version, dev_version, bundle_path, system_version);
     }
 
     /// When the host's one timer should go off, if at all. It's the same until something happens, and the host arms again only when it isn't.

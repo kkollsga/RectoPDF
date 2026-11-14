@@ -19,7 +19,7 @@ fn next_try_fails(app: &HeadlessApp) {
 
 /// The updater held back for the record's lock: not yet told of the launch.
 fn updater_held(app: &HeadlessApp) -> bool {
-    crate::lock(&app.core().life.update_facts).held
+    app.core().life.update_facts.held()
 }
 
 /// Failure (third read, 2026-11-13, the blocker): the last try gets the lock while a person's command is running on its own thread, so the lock is given back
@@ -33,7 +33,7 @@ fn the_last_try_back_with_a_persons_command_under_way_still_settles() {
     let (disk, bed, plan, old_on_its_way_out) = handed_off_with_the_old_copy_holding();
     let was = state_but_the_launch_ok(&disk);
     let app = disk.builder().update(&bed).another_keeps().start();
-    crate::core::updates::first_frame_shown(app.core());
+    app.core().life.update_facts.first_frame_shown(&app.core().updates);
     for _ in 1..TRIES_AFTER_UPDATE {
         next_try_fails(&app);
     }
@@ -178,7 +178,7 @@ fn a_late_keeps_read_slower_than_its_patience_is_a_second_copy_and_lets_go_only_
     let (disk, bed, plan, old_on_its_way_out) = handed_off_with_the_old_copy_holding();
     let was = state_but_the_launch_ok(&disk);
     let app = disk.builder().update(&bed).another_keeps().start();
-    crate::core::updates::first_frame_shown(app.core());
+    app.core().life.update_facts.first_frame_shown(&app.core().updates);
     next_try_fails(&app);
     recto_platform::slow::gate::hold(&[Seam::State]);
     drop(old_on_its_way_out);
@@ -202,7 +202,7 @@ fn a_late_keeps_read_slower_than_its_patience_is_a_second_copy_and_lets_go_only_
     disk.installer_saw_it_up();
     let next = disk.builder().update(&bed).start();
     assert_eq!(tab_names(&next), ["alpha"], "the next launch restores the session the hand-off wrote");
-    crate::core::updates::first_frame_shown(next.core());
+    next.core().life.update_facts.first_frame_shown(&next.core().updates);
     next.wait_until("the install settled: the version proven", || {
         recto_update::saved::Saved::read(&next.disk().update_files().saved).proven.as_deref() == Some(NEW)
     });
@@ -217,7 +217,7 @@ fn the_updater_told_while_a_try_holds_the_lock_hears_a_second_copy() {
     let (disk, bed, plan, old_on_its_way_out) = handed_off_with_the_old_copy_holding();
     let was = state_but_the_launch_ok(&disk);
     let app = disk.builder().update(&bed).another_keeps().start();
-    crate::core::updates::first_frame_shown(app.core());
+    app.core().life.update_facts.first_frame_shown(&app.core().updates);
     recto_platform::slow::gate::hold(&[Seam::RecordLock, Seam::Launch]);
     drop(old_on_its_way_out);
     app.advance(TRY_EVERY_MS);

@@ -365,7 +365,7 @@ fn an_app_ended_while_the_updater_is_told_writes_nothing_a_kept_copy_would() {
     let (disk, bed, _plan, old_on_its_way_out) = handed_off_with_the_old_copy_holding();
     let was = state_but_the_launch_ok(&disk);
     let app = disk.builder().update(&bed).another_keeps().start();
-    crate::core::updates::first_frame_shown(app.core());
+    app.core().life.update_facts.first_frame_shown(&app.core().updates);
     for _ in 1..crate::lifecycle::keeping::TRIES_AFTER_UPDATE {
         next_try_fails(&app);
     }
@@ -408,7 +408,7 @@ fn written_by_an_update() -> Vec<String> {
     ))];
     disk.install(&plan, Installed::Swapped);
     let app = disk.builder().update(&bed).start();
-    crate::core::updates::first_frame_shown(app.core());
+    app.core().life.update_facts.first_frame_shown(&app.core().updates);
     app.wait_for("the installer to see it up", || installer_sees(app.disk(), &plan));
     app.settle();
     let launch_ok = std::fs::read_to_string(app.disk().update_files().launch_ok()).unwrap_or_default();

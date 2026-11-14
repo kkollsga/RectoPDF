@@ -58,6 +58,7 @@ const BUDGETS: [(&str, usize); 7] = [
 fn what_the_apps_state_lets_other_code_reach_is_listed() {
     let types = [
         "Inner",
+        "LaunchFacts",
         "Lifecycle",
         "Serving",
         "Window",
@@ -141,7 +142,6 @@ Inner::pub fn memory_pressure(&self, critical: bool)
 Inner::pub fn menu_item_enabled(&self, id: String) -> bool
 Inner::pub fn note_input(&self)
 Inner::pub fn note_nearby(&self)
-Inner::pub fn note_update_facts(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String)
 Inner::pub fn notice_read(&self)
 Inner::pub fn perform(self: &Arc<Self>, id: String) -> HostAction
 Inner::pub fn qa_save_from(&self, written: &str) -> Result<(), AgentError>
@@ -187,12 +187,22 @@ Inner::pub(super) fn queue_those_leaving(&self, shown: TabId) -> Option<(SleepFa
 Inner::pub(super) fn sleep_at_flush(&self, asked: Option<app::Asked>, until: Instant)
 Inner::pub(super) fn start_sleep_writer(&self)
 Inner::pub(super) fn write_sleep_for(&self, id: TabId, by: By) -> Option<Outcome>
+LaunchFacts (pub struct)
+LaunchFacts::pub fn first_frame_shown(&self, updates: &recto_update::updater::Updater)
+LaunchFacts::pub fn note(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String)
+LaunchFacts::pub(super) fn held(&self) -> bool
+LaunchFacts::pub(super) fn hold_or_tell(&self, keeps: bool, updates: &recto_update::updater::Updater) -> recto_update::updater::AtLaunch
+LaunchFacts::pub(super) fn misreads(&self) -> bool
+LaunchFacts::pub(super) fn new() -> Self
+LaunchFacts::pub(super) fn tell(&self, updates: &recto_update::updater::Updater) -> recto_update::updater::AtLaunch
+LaunchFacts::pub(super) fn untold(&self) -> bool
 Lifecycle (pub struct)
 Lifecycle.pub first_shown: Mutex<Option<Value>>
 Lifecycle.pub holding_tab: Mutex<Option<TabId>>
 Lifecycle.pub sheets: AtomicU32
 Lifecycle.pub shown_by_cap: AtomicBool
 Lifecycle.pub started: Instant
+Lifecycle.pub update_facts: updates::LaunchFacts
 Lifecycle.pub window_opened_at: Mutex<Option<Instant>>
 Lifecycle.pub(crate) clock: Arc<dyn crate::clock::Clock>
 Lifecycle.pub(crate) last_input_ms: AtomicU64
