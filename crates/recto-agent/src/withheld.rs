@@ -56,8 +56,14 @@ pub fn needs_the_session(events: &[Event]) -> bool {
 /// **What of `events` may go to an agent,** in place: an event about a document withheld from agents is dropped; the rest go as they are, in their
 /// order. `finding` is the document Find's results are about now, as its Finder holds them, so news of a search
 /// still going over a protected document isn't let through because the person has since gone to another tab. Allocates nothing.
+///
+/// **A tab that isn't open counts as withheld here.** What's decided is decided when the news is sent, and news can come after its tab has closed (a draw
+/// done before the close and told after it, a search still going over it), when the session's rule, which is about the tabs open, no longer knows it was
+/// protected. So late news of any closed tab is held back (a plain one's too, which costs an agent nothing it's owed: that the tab closed still goes).
+/// The session's own [`recto_session::Tabs::withheld_from_agents`] keeps its meaning, as every other caller asks it of a tab that's open (a command's
+/// gate on the tab it selected, what a sleep file may hold, the window's model).
 pub fn for_agents<L: DocLoader>(session: &Session<L>, finding: Option<TabId>, events: &mut Vec<Event>) {
-    let withheld = |id: TabId| session.tabs().withheld_from_agents(id);
+    let withheld = |id: TabId| session.tabs().tab(id).is_none() || session.tabs().withheld_from_agents(id);
     // Asked once a batch, and only if Find's in it.
     let mut reading_withheld = None;
     events.retain(|event| match about(event) {
