@@ -72,6 +72,8 @@ palette go.page | sent [] | host ShowGoTo understood true | heard nothing
 palette layout.single | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":null,"layout":"single","tab":"#3"}] | host None understood true | heard nothing
 palette layout.two_up | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":null,"layout":"two-up","tab":"#3"}] | host None understood true | heard ops_ready model_changed
 palette layout.two_up_cover | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":null,"layout":"two-up-cover","tab":"#3"}] | host None understood true | heard ops_ready model_changed
+palette markup.highlight | sent [] | host None understood true | heard nothing
+palette markup.remove_highlight | sent [] | host None understood true | heard nothing
 palette paper.dark | sent [{"cmd":"view","paper":"dark","sidebar":null,"agent_icon":null,"zoom":null,"layout":null,"tab":null}] | host None understood true | heard model_changed
 palette paper.warm | sent [{"cmd":"view","paper":"warm","sidebar":null,"agent_icon":null,"zoom":null,"layout":null,"tab":null}] | host None understood true | heard model_changed
 palette paper.white | sent [{"cmd":"view","paper":"white","sidebar":null,"agent_icon":null,"zoom":null,"layout":null,"tab":null}] | host None understood true | heard nothing

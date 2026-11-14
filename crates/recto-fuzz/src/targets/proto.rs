@@ -89,6 +89,14 @@ fn every_decoder(payload: &[u8]) {
     if let Ok(reply) = TileReply::decode(payload) {
         assert_eq!(TileReply::decode(&reply.encode()[HEADER_LEN..]), Ok(reply));
     }
+    // The file's highlights a worker hides (R4.3): a set either end may forge, checked as it's read, bounded by what it says, and the same sent again.
+    let (hidden, peak) = peak_of(|| recto_proto::hidden::HiddenAnnots::decode(payload));
+    assert!(peak <= payload.len() * 2 + 4096, "a hidden set of {} bytes took {peak}", payload.len());
+    if let Ok(set) = hidden {
+        assert!(set.len() <= recto_proto::hidden::MAX_HIDDEN_ANNOTS);
+        let again = set.encode().expect("a set that was read can be sent");
+        assert_eq!(recto_proto::hidden::HiddenAnnots::decode(&again[HEADER_LEN..]), Ok(set));
+    }
     let (region, peak) = peak_of(|| RegionReply::decode(payload));
     assert!(peak <= payload.len() * 2 + 4096, "a region reply of {} bytes took {peak}", payload.len());
     if let Ok(reply) = region {

@@ -35,6 +35,7 @@ pub struct PaneSynced {
     pub map: PageMap,
     pub warm: Vec<u32>,
     pub spread: Option<record::Spread>,
+    pub marks: super::highlight::MarksSynced,
 }
 
 /// **Follows a link a click landed on,** by Rust's rule: a page of this document at once, as a jump; a web or email address only once the sheet's been answered; Back and Forward; and anything else never, with a notice saying why.
@@ -109,6 +110,7 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
                 .selection()
                 .restore((selection.from_page, selection.from_char), (selection.to_page, selection.to_char));
         }
+        synced.marks.shown_anew();
         synced.tab = Some(id);
         synced.pages = shown.pages;
         synced.map = shown.map.clone();
@@ -161,13 +163,16 @@ fn show_in_panes(inner: &Inner, synced: &mut Synced, panes: &[PaneSnapshot], pap
     synced.panes.resize_with(count, PaneSynced::default);
     if panes.is_empty() && synced.panes[0].tab.take().is_some() {
         inner.engine.deactivate();
+        super::highlight::give(&inner.engine, &mut synced.panes[0].marks, TabId(0), None, paper);
     }
     let mut changed = false;
     let mut sent = Vec::new();
     for (pane, snapshot) in panes.iter().enumerate() {
         let Some(engine) = inner.panes.engine(&inner.engine, pane) else { continue };
         changed |= synced.panes[pane].tab != Some(snapshot.id);
+        super::highlight::before_showing(&engine, &mut synced.panes[pane].marks, snapshot.marks.as_ref());
         sent.extend(show_in_pane(inner, &engine, &mut synced.panes[pane], snapshot));
+        super::highlight::give(&engine, &mut synced.panes[pane].marks, snapshot.id, snapshot.marks.as_ref(), paper);
     }
     places::jumps_sent(inner, &sent);
     changed

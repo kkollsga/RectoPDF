@@ -56,6 +56,8 @@ pub struct Promise {
     pub page: u32,
     pub rect: [f32; 4],
     pub turns: u8,
+    /// The file's highlights the tab had taken out when the box was taken, which the SVG leaves out as the pictures do.
+    pub hidden: extract::Hidden,
 }
 
 /// What's on its way to the clipboard, or on it.
@@ -63,7 +65,8 @@ pub struct Promise {
 pub struct Offered {
     pub serial: u64,
     pub items: Vec<ClipItem>,
-    promise: Option<Promise>,
+    /// Boxed, so the tool's state stays its size whatever a promise holds (the app's state has a budget: `inner_guards`).
+    promise: Option<Box<Promise>>,
 }
 
 /// **The one-at-a-time rule**, apart from threads so it's tested alone: the job running, by its stop, and the newest one waiting.
@@ -277,7 +280,7 @@ impl Tool {
                 if self.quitting.load(Ordering::SeqCst) {
                     return None;
                 }
-                Some(Data::Make(current.promise.clone()?, cap))
+                Some(Data::Make(*current.promise.clone()?, cap))
             }
         }
     }
@@ -380,7 +383,7 @@ fn start(inner: &Arc<Inner>, job: Job) {
 }
 
 /// The newest job's answer: the notice, and what's for the clipboard.
-fn publish(inner: &Inner, job: Job, outcome: ClipOutcome, source: Option<(PathBuf, u32)>) {
+fn publish(inner: &Inner, job: Job, outcome: ClipOutcome, source: Option<Source>) {
     let tool = inner.tools.tool();
     if matches!(outcome, ClipOutcome::Stopped) {
         lock(&tool.notice).take();
@@ -391,11 +394,12 @@ fn publish(inner: &Inner, job: Job, outcome: ClipOutcome, source: Option<(PathBu
     *lock(&tool.refused) = offers.then_some((serial, job));
     if let ClipOutcome::Ready(clip) = outcome {
         let promise = match job.wanted {
-            Wanted::Box { rect } => source.map(|(path, page)| Promise {
+            Wanted::Box { rect } => source.map(|(path, page, hidden)| Promise {
                 path,
                 page,
                 rect,
                 turns: job.turns,
+                hidden,
             }),
             Wanted::Image { .. } => None,
         };
@@ -404,20 +408,31 @@ fn publish(inner: &Inner, job: Job, outcome: ClipOutcome, source: Option<(PathBu
             .into_iter()
             .filter(|item| matches!(item, ClipItem::Ready { .. }) || promise.is_some())
             .collect();
-        *lock(&tool.ready) = Some(Offered { serial: 0, items, promise });
+        *lock(&tool.ready) = Some(Offered {
+            serial: 0,
+            items,
+            promise: promise.map(Box::new),
+        });
         inner.listener.copy_ready();
     }
 }
 
-/// The page as it is in its file, for the tab and place the release was on.
-fn source_of(inner: &Inner, job: Job) -> Option<(PathBuf, u32)> {
-    let source = inner.host.session.with_session(|session| session.page_source(TabId(job.tab), job.position));
-    source.filter(recto_session::PageSource::is_current).map(|source| (source.path, source.page))
+/// A page as it is in its file, and the file's highlights its tab has taken out, which a snapshot leaves out as the page view does.
+type Source = (PathBuf, u32, extract::Hidden);
+
+/// The page as it is in its file, for the tab and place the release was on, and what the tab has taken out of it (second review of R4.3, S3).
+fn source_of(inner: &Inner, job: Job) -> Option<Source> {
+    inner.host.session.with_session(|session| {
+        let id = TabId(job.tab);
+        let source = session.page_source(id, job.position).filter(recto_session::PageSource::is_current)?;
+        let hidden = recto_agent::hidden_in(session, id, &source);
+        Some((source.path, source.page, hidden))
+    })
 }
 
 /// What goes on the clipboard for a job, from the page as it is in its file.
-fn take(inner: &Inner, job: Job, stop: &ClipStop) -> (ClipOutcome, Option<(PathBuf, u32)>) {
-    let Some((path, page)) = source_of(inner, job) else {
+fn take(inner: &Inner, job: Job, stop: &ClipStop) -> (ClipOutcome, Option<Source>) {
+    let Some((path, page, hidden)) = source_of(inner, job) else {
         return (
             ClipOutcome::Failed(recto_agent::AgentError::new(
                 Code::SOURCE_CHANGED,
@@ -429,9 +444,9 @@ fn take(inner: &Inner, job: Job, stop: &ClipStop) -> (ClipOutcome, Option<(PathB
     };
     let outcome = match job.wanted {
         Wanted::Image { x, y } => extract::image_clip(&path, page, x, y, job.anyway, stop),
-        Wanted::Box { rect } => extract::snapshot_clip(&path, page, rect, job.turns, job.anyway, stop),
+        Wanted::Box { rect } => extract::snapshot_clip(&path, page, rect, (job.turns, hidden.clone()), job.anyway, stop),
     };
-    (outcome, Some((path, page)))
+    (outcome, Some((path, page, hidden)))
 }
 
 /// What [`Tool::data`] hands over: bytes made with the copy, or what to make a promised type from.
@@ -558,6 +573,7 @@ mod tests {
             page: 0,
             rect: [0.0, 0.0, 1.0, 1.0],
             turns: 0,
+            hidden: None,
         };
         *lock(&tool.offered) = Some(Offered {
             serial: 7,
@@ -568,7 +584,7 @@ mod tests {
                 },
                 ClipItem::Promised { uti: extract::UTI_SVG, cap: 9 },
             ],
-            promise: Some(promise.clone()),
+            promise: Some(Box::new(promise.clone())),
         });
         assert_eq!(tool.data(6, extract::UTI_PNG), None, "an older offer");
         assert_eq!(tool.data(7, extract::UTI_PNG), Some(Data::Ready(vec![1])));
@@ -588,6 +604,85 @@ mod tests {
                 bytes: b"words".to_vec()
             }]
         );
+    }
+
+    /// Pixels of a snapshot's PNG inside `[left, top, right, bottom]` (in its pixels) that a highlight's yellow is on: the blue taken down, the red
+    /// and green left.
+    fn yellow_in(png: &[u8], [left, top, right, bottom]: [usize; 4]) -> usize {
+        let recto_svg::verify::Embedded::Png { width, channels, pixels, .. } = recto_svg::verify::read_png(png) else {
+            panic!("a PNG")
+        };
+        pixels
+            .chunks(channels)
+            .enumerate()
+            .filter(|(at, pixel)| {
+                let (x, y) = (at % width as usize, at / width as usize);
+                (left..right).contains(&x) && (top..bottom).contains(&y) && pixel[2] < 160 && pixel[0] > 200 && pixel[1] > 150
+            })
+            .count()
+    }
+
+    /// **Failure (second review of R4.3, S3): the person's Snapshot tool copies a highlight they've taken out**, as it draws the page with a renderer of
+    /// its own that's never given the tab's set. With the file's highlight, then taken out, then undone: yellow inside its rectangle, none, and
+    /// yellow again; and the SVG a paste makes is given the same set (it draws no annotations today, so the set can't be seen in it).
+    #[test]
+    fn the_snapshot_tool_leaves_out_a_highlight_taken_out() {
+        use crate::testkit::headless::Disk;
+        use recto_agent::Level;
+        let disk = Disk::new();
+        let doc = disk.pdf("file.pdf", 1);
+        let app = disk.start();
+        app.open(&doc);
+        app.settle();
+        app.agent(Level::Control, r##"{"cmd":"highlight","tab":"active","page":1,"chars":"0-5"}"##)
+            .expect("highlight");
+        app.agent(Level::Control, r##"{"cmd":"save","tab":"active"}"##).expect("save");
+        app.settle();
+        let listed = app
+            .agent(Level::ReadOnly, r##"{"cmd":"highlights","tab":"active","page":1}"##)
+            .expect("highlights");
+        let [x, y, width, height] = [0, 1, 2, 3].map(|at| listed["file"]["highlights"][0]["rects"][0][at].as_f64().unwrap() as f32);
+        let tab = app.core().host.session.with_session(|session| session.tabs().active()).expect("a tab").0;
+        // A box 10 points around the highlight; the highlight is the middle of it, inset a point, at the snapshot's two pixels a point.
+        let rect = [x - 10.0, y - 10.0, width + 20.0, height + 20.0];
+        let scale = extract::DEFAULT_SCALE;
+        let inside = [11.0 * scale, 11.0 * scale, (width + 9.0) * scale, (height + 9.0) * scale].map(|edge| edge as usize);
+        let job = Job {
+            tab,
+            position: 0,
+            wanted: Wanted::Box { rect },
+            anyway: false,
+            turns: 0,
+        };
+        let snapshot = |taken_out: bool| {
+            let (outcome, source) = take(app.core(), job, &ClipStop::default());
+            let ClipOutcome::Ready(clip) = outcome else {
+                panic!("a snapshot: {outcome:?}")
+            };
+            let png = clip
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    ClipItem::Ready { uti, bytes } if *uti == extract::UTI_PNG => Some(bytes.clone()),
+                    _ => None,
+                })
+                .expect("a PNG");
+            assert!(
+                source.is_some_and(|(.., hidden)| hidden.is_some() == taken_out),
+                "the SVG a paste asks for is given the same set"
+            );
+            yellow_in(&png, inside)
+        };
+        let with = snapshot(false);
+        assert!(with > 100, "the file's highlight is in the picture: {with}");
+        let at = format!("{},{}", x + width / 2.0, y + height / 2.0);
+        app.recto(Level::Control, &["highlight", "remove", "--page", "1", "--at", &at])
+            .expect("taken out");
+        app.settle();
+        assert_eq!(snapshot(true), 0, "taken out, it isn't in the picture");
+        app.agent(Level::Control, r#"{"cmd":"undo"}"#).expect("undo");
+        app.settle();
+        assert_eq!(snapshot(false), with, "undone, it's back");
     }
 }
 

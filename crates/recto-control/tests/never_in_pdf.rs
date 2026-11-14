@@ -94,6 +94,8 @@ fn a_saved_pdf_has_nothing_of_the_history_in_it() {
         file_pages: snapshot.file_pages,
         pages: &order,
         added: &added_files,
+        highlights: &[],
+        highlights_gone: &[],
     };
     let needed = session.lists().own_pages_needed(tab);
     assert_eq!(needed, [1], "the history can put back the deleted page, and only that");
@@ -108,7 +110,7 @@ fn a_saved_pdf_has_nothing_of_the_history_in_it() {
     let outcome = save::save(&request, Target::Same, None, &mut hooks).unwrap();
     let kept = hooks.kept.take().expect("a small page fits");
     assert_eq!(outcome.writer, Writer::Rewrite);
-    assert_eq!(session.saved(tab, outcome.stamp.unwrap(), outcome.pages, None, Some(kept.clone())), 0);
+    assert_eq!(session.saved(tab, outcome.stamp.unwrap(), outcome.pages, None, Some(kept.clone()), None), 0);
     session.end_save(tab);
     let work = session.journal_desk().work();
     let (outcome, failed) = store.write_journals(&work, false);

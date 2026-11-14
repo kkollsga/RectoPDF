@@ -642,6 +642,8 @@ pub struct SaveSnapshot {
     pub holds_owner_edits: bool,
     /// The history needs pages of the file as it is now, which a save may take out of it.
     pub needs_own_pages: bool,
+    /// Highlights made as edits on the pages' positions in `slots`, and the file's taken out: what the save writes and takes out.
+    pub marks: edit::marks::SaveMarks,
 }
 
 /// Files read ahead of waking their tabs, held at once. More than wakes can be under way together.

@@ -4,8 +4,9 @@
 //! level, each with at most as many children as there are visits left, and a name is shared rather than copied for each child. **What couldn't be read is never reported as absent:** an unreadable catalog
 //! or form means `structure_read` is false, and an unreadable field counts in `unread`, so "none" is only ever said of a file that was really read.
 
+use crate::save::{catalog, dict_value};
 use crate::{OpenError, clean_text, open_bytes, open_reader};
-use lopdf::{Dictionary, IndexedReader, Object, ObjectId};
+use lopdf::{Dictionary, IndexedReader, IndexedSignatureKind, Object, ObjectId};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -360,4 +361,133 @@ fn byte_range(reader: &IndexedReader, dict: &Dictionary) -> Option<[u64; 4]> {
     };
     let number = |object: &Object| object.as_i64().ok().and_then(|number| u64::try_from(number).ok());
     Some([number(first)?, number(second)?, number(third)?, number(fourth)?])
+}
+
+// What a save needs to know of a file's signatures, moved here from `save.rs` unchanged (R4.3), so the save's plan has room for what it adds to pages.
+
+/// What a file says about signatures, from its catalog. Facts only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SignatureFacts {
+    /// `/Perms /DocMDP`: a certification, which allows no change to pages.
+    pub certified: bool,
+    /// `/Perms /UR3` or `/UR`: usage rights, which aren't a person's signature.
+    pub usage_rights: bool,
+    /// A signed signature field with a `/Lock` that has a `/P`: like a certification, it allows no change to pages once it's signed.
+    pub field_locked: bool,
+    /// A signature field with a value: a person's signature, which additions keep and a rewrite of the file can't. Says nothing of whether it's valid.
+    pub signed: bool,
+}
+
+impl SignatureFacts {
+    /// Whether a person's signature is on it, of any kind: usage rights aren't one.
+    pub fn has_persons_signature(&self) -> bool {
+        self.signed || self.certified || self.field_locked
+    }
+}
+
+/// What a file's catalog says about signatures. Cheap: the catalog and its `/Perms`.
+pub fn signature_facts(reader: &IndexedReader) -> SignatureFacts {
+    let Some(root) = catalog(reader) else { return SignatureFacts::default() };
+    let perms = root
+        .get(b"Perms")
+        .ok()
+        .cloned()
+        .and_then(|perms| dict_value(reader, &perms))
+        .unwrap_or_default();
+    let (signed, field_locked) = signed_fields(reader, &root);
+    SignatureFacts {
+        certified: perms.has(b"DocMDP"),
+        usage_rights: perms.has(b"UR3") || perms.has(b"UR"),
+        field_locked,
+        signed,
+    }
+}
+
+/// Fields looked at for a lock. A form has far fewer; a hostile one can't make the look long.
+const MAX_FIELDS_FOR_LOCKS: usize = 16_384;
+
+/// Whether a signature field is signed, and whether a signed one has a `/Lock` with a `/P`. That permission, 1 to 3, allows no change to pages in any of them. A field that can't be read
+/// is passed over, and a form past the limit counts as signed and locked, on the side of refusing.
+fn signed_fields(reader: &IndexedReader, root: &Dictionary) -> (bool, bool) {
+    let Some(form) = root.get(b"AcroForm").ok().cloned().and_then(|form| dict_value(reader, &form)) else {
+        return (false, false);
+    };
+    // Each field with whether a parent of it says it's a signature field, as `/FT` is inherited.
+    let mut stack: Vec<(Object, bool)> = match form.get(b"Fields").ok().cloned().map(|fields| match fields {
+        Object::Reference(id) => reader.resolve_object(id).unwrap_or(Object::Null),
+        other => other,
+    }) {
+        Some(Object::Array(fields)) => fields.into_iter().map(|field| (field, false)).collect(),
+        _ => return (false, false),
+    };
+    let mut seen = HashSet::new();
+    let mut visits = 0;
+    let mut queued = stack.len();
+    let mut any_signed = false;
+    while let Some((field, parent_is_sig)) = stack.pop() {
+        visits += 1;
+        if visits > MAX_FIELDS_FOR_LOCKS {
+            return (true, true);
+        }
+        if let Object::Reference(id) = &field
+            && !seen.insert(*id)
+        {
+            continue;
+        }
+        let Some(field) = dict_value(reader, &field) else { continue };
+        let is_sig = match field.get(b"FT") {
+            Ok(Object::Name(kind)) => kind == b"Sig",
+            _ => parent_is_sig,
+        };
+        // A value with a byte range is a signature whatever the field says it is (review round 2).
+        let signed = (is_sig && field.has(b"V")) || value_is_signature(reader, &field);
+        any_signed |= signed;
+        if signed
+            && field
+                .get(b"Lock")
+                .ok()
+                .cloned()
+                .and_then(|lock| dict_value(reader, &lock))
+                .is_some_and(|lock| lock.has(b"P"))
+        {
+            return (true, true);
+        }
+        if let Ok(Object::Array(kids)) = field.get(b"Kids") {
+            // Everything ever queued counts, so a tree of wide nodes can't hold millions (review).
+            let room = MAX_FIELDS_FOR_LOCKS.saturating_sub(queued);
+            if kids.len() > room {
+                return (true, true);
+            }
+            queued += kids.len();
+            stack.extend(kids.iter().cloned().map(|kid| (kid, is_sig)));
+        }
+    }
+    (any_signed, false)
+}
+
+/// **Whether a field's own `/V` is a signature's value:** a dictionary with a `/ByteRange`, written in place or named. One object resolved at most.
+pub(crate) fn value_is_signature(reader: &IndexedReader, field: &Dictionary) -> bool {
+    match field.get(b"V") {
+        Ok(Object::Dictionary(value)) => value.has(b"ByteRange"),
+        Ok(Object::Reference(id)) => matches!(reader.resolve_object(*id), Ok(Object::Dictionary(value)) if value.has(b"ByteRange")),
+        _ => false,
+    }
+}
+
+/// [`signature_facts`] of a file on disk, for deciding what's on offer before anyone saves, with the fork's own look through the file's bytes for a signature,
+/// which is what the rewrite refuses by: so Save is off exactly when a save over the file would be refused. Reads the whole file, so never on the UI thread or the
+/// session's. A file that won't open says nothing.
+pub fn signature_facts_of(path: &Path) -> Result<SignatureFacts, OpenError> {
+    let reader = crate::open_reader(path)?;
+    let mut facts = signature_facts(&reader);
+    facts.signed |= persons_signature(&reader);
+    Ok(facts)
+}
+
+/// **Whether the fork finds a person's signature in the file:** by form field, by `/Perms`, and by every `/ByteRange` in its bytes, old revisions included, as the
+/// rewrite looks before it refuses. Usage rights aren't one. A file it can't look through counts as signed, on the side of refusing.
+pub fn persons_signature(reader: &IndexedReader) -> bool {
+    reader
+        .signatures()
+        .map_or(true, |found| found.iter().any(|signature| signature.kind != IndexedSignatureKind::UsageRights))
 }

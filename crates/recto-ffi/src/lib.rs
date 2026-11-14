@@ -32,7 +32,7 @@ pub use recto_app::listener::QuitAnswer;
 use recto_app::privacy;
 use recto_app::queue::CoreCall;
 pub use recto_app::reader_view::ReaderView;
-pub use recto_app::records::{HighlightRect, ReaderOp, ScreenInfo};
+pub use recto_app::records::{HighlightRect, MarkPage, ReaderOp, ScreenInfo};
 pub use recto_app::{RowKind, SidebarRow, SidebarView};
 use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Viewport};
 use recto_session::record::{self, SettingsWindow};
@@ -393,6 +393,13 @@ pub struct HighlightRect {
     pub height: f64,
 }
 
+/// One page's unsaved highlights, in its own coordinates.
+#[uniffi::remote(Record)]
+pub struct MarkPage {
+    pub page: u32,
+    pub rects: Vec<HighlightRect>,
+}
+
 /// A place in the document, in its view's coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, uniffi::Record)]
 pub struct DocumentPoint {
@@ -521,6 +528,12 @@ pub enum ReaderOp {
     SnapshotBox {
         page: u32,
         rect: Option<HighlightRect>,
+    },
+    /// The tab's unsaved highlights, the whole set by page, replacing what the host had, in `rgb`, lightening or multiplying.
+    Marks {
+        pages: Vec<MarkPage>,
+        rgb: u32,
+        lighten: bool,
     },
 }
 
@@ -978,36 +991,10 @@ impl AppCore {
 
     /// **What the pointer looks like over a page, and what a link under it says.** A link's page not read yet says nothing for now and is read next, so the look comes with the next move. A short lock on the page view and the published state, never the session's.
     pub fn pointer_look(&self, pane: u32, x: f64, y: f64) -> linking::PointerLook {
-        let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else {
-            return linking::PointerLook {
-                cursor: "arrow".into(),
-                hint: None,
-            };
-        };
-        // The snapshot tool's pointer is a crosshair wherever it is, and a link isn't followed while it's on.
-        if self.inner.tools.tool().is_on() {
-            return linking::PointerLook {
-                cursor: "crosshair".into(),
-                hint: None,
-            };
-        }
-        if let Some(hit) = engine.links().at(x, y) {
-            let hint = match &hit.target {
-                recto_core::nav::LinkTarget::Page { page, .. } => match engine.links().position_in_same_file(hit.page, *page) {
-                    Some(position) => {
-                        let toc = lock(&self.inner.published).pane_tocs.get(pane as usize).cloned().flatten();
-                        Some(linking::page_words(position, engine.links().own_file_page(position), toc.as_deref()))
-                    }
-                    None => Some("The page this link goes to isn't in the document as it's been edited".to_string()),
-                },
-                other => linking::hint_for(other),
-            };
-            return linking::PointerLook { cursor: "link".into(), hint };
-        }
-        linking::PointerLook {
-            cursor: if engine.selection().is_over_text(x, y) { "ibeam" } else { "arrow" }.into(),
-            hint: None,
-        }
+        let (inner, at) = (&self.inner, pane as usize);
+        let tocs = || lock(&inner.published).pane_tocs.get(at).cloned().flatten();
+        let (cursor, hint) = recto_app::linking::pointer_look(inner.panes.engine(&inner.engine, at), inner.tools.tool().is_on(), tocs, x, y);
+        linking::PointerLook { cursor: cursor.into(), hint }
     }
 
     /// The sheet asking about a web or email address was answered, by its id. With Open, the address comes back for the host to hand to the system, exactly as the sheet showed it; with Cancel, nothing does.

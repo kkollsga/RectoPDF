@@ -87,6 +87,11 @@ for look in light dark; do
     r qa mouse-down "$(place 3 2 0.2)"; r qa mouse-drag "$(place 3 6 0.7)"; r qa mouse-up; settle; shot selection
     r qa mouse-down "$(place 3 2 0.2)"; r qa mouse-up
 
+    # A highlight, from that selection by Mark Up > Highlight, the selection then cleared; taken back after its shot (app/qa/highlight-shots.sh has more).
+    r qa mouse-down "$(place 3 2 0.2)"; r qa mouse-drag "$(place 3 6 0.7)"; r qa mouse-up
+    r qa menu markup.highlight; until_state "a['document_edited']"
+    r qa mouse-down "$(place 3 2 0.2)"; r qa mouse-up; settle; shot highlight; r qa as-person "undo"; until_state "not a['document_edited']"
+
     # The comparison, side by side, and the panel.
     r compare --tabs "#1,#2"; settle; shot compare; r compare --off; settle
     r qa panel toggle; settle; shot panel; r qa panel toggle

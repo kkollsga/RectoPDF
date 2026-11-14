@@ -220,7 +220,7 @@ fn run(data: &[u8], root: &Path) {
         return;
     };
     let pages = PAGES - count;
-    if list.rebase_on_saved(pages, kept.clone()).is_none() {
+    if list.rebase_on_saved(pages, kept.clone(), None).is_none() {
         return;
     }
     // What the journal says of the kept file: as it is, or with its path, stamp, pages or kind as the bytes say.

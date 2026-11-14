@@ -83,7 +83,8 @@ pub(super) fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentErro
         // What shows a window is left out: a quiet run shows none.
         // Save As's sheet is a sheet on the window, as the close prompt is, so a quiet run can show it and answer it.
         "menu" => {
-            !matches!(value, "file.open" | "app.about" | "app.quit") && (crate::menus::action(value).is_some() || crate::core::snapshot_tool::is_menu_id(value))
+            !matches!(value, "file.open" | "app.about" | "app.quit")
+                && (crate::menus::action(value).is_some() || crate::core::snapshot_tool::is_menu_id(value) || super::super::highlight::is_menu_id(value))
         }
         "panel" => {
             value == "toggle"

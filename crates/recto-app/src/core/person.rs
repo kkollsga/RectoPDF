@@ -114,6 +114,7 @@ const ANSWERED: &[fn(&Arc<Inner>, &Ran<'_>)] = &[
     super::editing::answered,
     super::comparison::answered,
     super::find::answered,
+    super::highlight::answered,
     super::updates::answered,
 ];
 

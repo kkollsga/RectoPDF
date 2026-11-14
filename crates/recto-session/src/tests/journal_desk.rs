@@ -178,7 +178,7 @@ fn scripted_run() -> String {
     // A save: the journal goes by the new version's name, starting again from the whole list, and the old one goes once it's there.
     let snapshot = s.begin_save(a, false).unwrap().expect("a has unsaved edits");
     s.save_prepared(a, SAVED, None);
-    assert_eq!(s.saved(a, SAVED, snapshot.slots.len() as u32, None, None), 0);
+    assert_eq!(s.saved(a, SAVED, snapshot.slots.len() as u32, None, None, None), 0);
     s.end_save(a);
     write(&mut s, &mut disk);
     disk.take_step("a saved", &mut out);
@@ -205,7 +205,7 @@ fn scripted_run() -> String {
     let snapshot = s.begin_save(a, false).unwrap().expect("a's edit since");
     let again = FileStamp { size: 10, ..SAVED };
     s.save_prepared(a, again, None);
-    assert_eq!(s.saved(a, again, snapshot.slots.len() as u32, None, None), 0);
+    assert_eq!(s.saved(a, again, snapshot.slots.len() as u32, None, None, None), 0);
     s.end_save(a);
     s.close(a).unwrap();
     write(&mut s, &mut disk);
@@ -357,7 +357,7 @@ fn a_lists_operations_reach_its_journal_once_and_in_order_and_a_retired_journal_
             3 => {
                 let id = tabs[0];
                 let snapshot = s.begin_save(id, false).unwrap().expect("a has unsaved edits");
-                s.saved(id, SAVED, snapshot.slots.len() as u32, None, None);
+                s.saved(id, SAVED, snapshot.slots.len() as u32, None, None, None);
                 s.end_save(id);
                 write(&mut s, &mut disk);
             }

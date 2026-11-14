@@ -831,6 +831,7 @@ Selection::pub fn copy(&self, anyway: bool)
 Selection::pub fn dismiss_notice(&self)
 Selection::pub fn drag(&self, x: f64, y: f64) -> Vec<Op>
 Selection::pub fn has_any(&self) -> bool
+Selection::pub fn hidden_sets(&self) -> usize
 Selection::pub fn hot(&self) -> Option<(u32, Option<recto_index::select::Range>)>
 Selection::pub fn is_over_text(&self, x: f64, y: f64) -> bool
 Selection::pub fn notice(&self) -> Option<Notice>
@@ -839,6 +840,8 @@ Selection::pub fn release(&self) -> Vec<Op>
 Selection::pub fn restore(&self, from: (u32, u32), to: (u32, u32))
 Selection::pub fn reveal(&self, page: u32, start: u32, end: u32)
 Selection::pub fn select_all(&self)
+Selection::pub fn show_hidden(&self, tab: u32, file: &std::path::Path, set: Option<std::sync::Arc<recto_proto::hidden::HiddenAnnots>>)
+Selection::pub fn show_marks(&self, marks: &crate::tiles::TabMarks, paper: crate::paper::PaperKind)
 Selection::pub fn take_copied(&self) -> Option<recto_index::select::CopiedText>
 Selection::pub fn text_now(&self) -> Option<String>
 Shared (private struct)
@@ -876,6 +879,10 @@ SurfaceRetry (pub(crate) struct, derives Debug, Default)
 SurfaceRetry::pub(crate) fn clear(&mut self)
 SurfaceRetry::pub(crate) fn refused(&mut self) -> std::time::Duration
 SurfaceRetry::pub(crate) fn report(&self) -> serde_json::Value
+TabMarks (pub struct, derives Clone, Debug, Default, PartialEq)
+TabMarks.pub hidden: Option<(PathBuf, Arc<HiddenAnnots>)>
+TabMarks.pub pages: Vec<(u32, Vec<Rect>)>
+TabMarks.pub tab: u32
 TabNow (pub(super) struct, derives Clone, Copy, Debug, Default, PartialEq, Eq)
 TileCache (pub(crate) struct, derives Debug)
 TileCache::pub(crate) fn empty_discardable(&mut self) -> usize
@@ -937,7 +944,11 @@ WorkerFigures::pub fn footprint(&self) -> (u64, u64)
 WorkerFigures::pub fn pids(&self) -> Vec<u32>
 WorkerFigures::pub fn walled(&self) -> u32
 Zoom (pub enum, derives Clone, Copy, Debug, PartialEq)
+fn (pub(crate)) pub(crate) fn put_hidden(sets: &mut HiddenSets, tab: u32, file: PathBuf, set: Option<Arc<HiddenAnnots>>) -> Vec<u32>
+fn (pub(crate)) pub(crate) fn redraw_own_pages(reader: &mut Reader, tab: u32, file_pages: &[u32])
 fn (pub(crate)) pub(crate) fn set_band(reader: &mut Reader, band: Option<(u32, u16, u16)>)
+fn (pub(crate)) pub(crate) fn tell(host: &mut HostQueue, docs: &Docs, marks: &TabMarks, paper: PaperKind)
+fn (pub) pub fn look(paper: PaperKind) -> (u32, bool)
 fn (pub) pub fn place_stamp() -> u64
 fn (pub) pub fn typed_zoom(text: &str, decimal: char) -> Option<Zoom>
 fn (pub) pub fn zoom_after_scroll(current: f64, points: f64) -> f64

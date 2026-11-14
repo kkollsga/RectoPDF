@@ -62,6 +62,8 @@ fn request<'a>(path: &'a Path, file_pages: u32, pages: &'a [PageRef], added: &'a
         file_pages,
         pages,
         added,
+        highlights: &[],
+        highlights_gone: &[],
     }
 }
 
@@ -363,6 +365,8 @@ fn a_file_changed_meanwhile_isnt_saved_over() {
         file_pages: 1,
         pages: &order,
         added: &[],
+        highlights: &[],
+        highlights_gone: &[],
     };
     assert_eq!(
         save::save(&stale, Target::Same, None, &mut save::NoHooks),
@@ -415,6 +419,8 @@ fn a_rewrite_that_keeps_size_and_time_isnt_saved_onto() {
         file_pages: 10,
         pages: &order,
         added: &[],
+        highlights: &[],
+        highlights_gone: &[],
     };
     let copy = dir.0.join("copy.pdf");
     // In place: the same number, size and time, five pages.
@@ -930,6 +936,8 @@ fn no_stamp_is_no_save() {
         file_pages: 1,
         pages: &order,
         added: &[],
+        highlights: &[],
+        highlights_gone: &[],
     };
     assert_eq!(save::save(&unstamped, Target::Same, None, &mut save::NoHooks), Err(SaveError::FileChanged));
 }
@@ -1668,4 +1676,550 @@ fn an_encrypted_file_is_refused_in_words_true_of_it() {
         added(false)
     );
     assert!(added(true).to_lowercase().contains("password"), "{}", added(true));
+}
+
+/// Two pages sharing one named `/Annots` list with a link in it; the second turned a quarter and cropped.
+fn annotated() -> Vec<u8> {
+    build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 5 0 R /Annots 6 0 R >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /CropBox [100 50 500 750] /Rotate 90 /Contents 5 0 R /Annots 6 0 R >>".into()),
+        Raw::Stream {
+            dict: String::new(),
+            data: b"BT ET".to_vec(),
+        },
+        Raw::Dict("[7 0 R]".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /Contents (from the file) >>".into()),
+    ])
+}
+
+fn numbers(object: &Object) -> Vec<f32> {
+    object.as_array().unwrap().iter().map(|n| n.as_float().unwrap()).collect()
+}
+
+/// A page's annotations as the fork's reader reads the saved file: each `(subtype, quad points)`.
+fn annotations_of(path: &Path, page: usize) -> Vec<(Vec<u8>, Vec<f32>, Object)> {
+    let reader = IndexedReader::open(FileSource::open(path).unwrap()).unwrap();
+    let map = reader.page_map().unwrap();
+    let Object::Dictionary(dict) = reader.resolve_object(map.get(page).unwrap().id()).unwrap() else {
+        panic!()
+    };
+    let annots = match dict.get(b"Annots").unwrap() {
+        Object::Reference(id) => reader.resolve_object(*id).unwrap(),
+        other => other.clone(),
+    };
+    annots
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            let Object::Dictionary(annot) = reader.resolve_object(item.as_reference().unwrap()).unwrap() else {
+                panic!()
+            };
+            let quads = annot.get(b"QuadPoints").map(numbers).unwrap_or_default();
+            let appearance = annot
+                .get(b"AP")
+                .and_then(|ap| ap.as_dict().and_then(|ap| ap.get(b"N")))
+                .map(|n| reader.resolve_object(n.as_reference().unwrap()).unwrap())
+                .unwrap_or(Object::Null);
+            (annot.get(b"Subtype").unwrap().as_name().unwrap().to_vec(), quads, appearance)
+        })
+        .collect()
+}
+
+/// **Failure: a highlight isn't in the saved file as a standard annotation where it was shown** (R4.3): it's written over the file's bytes, lost
+/// from a page whose list the file names, put on the other page that shares that list, placed wrong on a turned or cropped page, or saved without the
+/// appearance other readers draw it by. Read back by the fork's reader, independently of the plan that wrote it.
+#[test]
+fn a_highlight_is_appended_where_it_was_shown_and_reads_back() {
+    let dir = Dir::new();
+    let path = dir.write("annotated.pdf", &annotated());
+    let before = std::fs::read(&path).unwrap();
+    let order = own(&[(0, 0), (1, 0)]);
+    let line = [[40.0, 100.0, 100.0, 12.0]];
+    let highlights = [save::NewHighlight { position: 1, rects: &line }];
+    let asked = SaveRequest {
+        highlights: &highlights,
+        ..request(&path, 2, &order, &[])
+    };
+    let outcome = save::save(&asked, Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!(outcome.writer, Writer::Append);
+    assert!(std::fs::read(&path).unwrap().starts_with(&before), "every byte that was there is still there");
+    let first = annotations_of(&path, 0);
+    assert_eq!(first.len(), 1, "the page that shares the list and has no highlight keeps it as it was");
+    let second = annotations_of(&path, 1);
+    assert_eq!(
+        second.iter().map(|(kind, ..)| kind.as_slice()).collect::<Vec<_>>(),
+        vec![&b"Link"[..], b"Highlight"]
+    );
+    // Shown turned a quarter: the frame's x runs up the page from the crop's bottom (50), its y in from the crop's left (100).
+    assert_eq!(second[1].1, vec![200.0, 90.0, 200.0, 190.0, 212.0, 90.0, 212.0, 190.0]);
+    let Object::Stream(appearance) = &second[1].2 else {
+        panic!("an appearance: {:?}", second[1].2)
+    };
+    assert_eq!(appearance.dict.get(b"Subtype").unwrap().as_name().unwrap(), b"Form");
+    assert!(String::from_utf8_lossy(&appearance.content).contains("rg"), "it fills with its colour");
+}
+
+/// Failure: a highlight saved on a signed PDF changes the bytes its signature covers, or one on a certified PDF is written, which its certification
+/// forbids (the stricter rule kept, coordinator 2026-11-14).
+#[test]
+fn a_highlight_on_a_signed_file_is_appended_and_a_certified_one_refused() {
+    let dir = Dir::new();
+    let line = [[10.0, 10.0, 50.0, 10.0]];
+    let highlights = [save::NewHighlight { position: 0, rects: &line }];
+    let order = own(&[(0, 0)]);
+    let path = dir.write("signed.pdf", &signed(false, false));
+    let before = std::fs::read(&path).unwrap();
+    let on_signed = SaveRequest {
+        highlights: &highlights,
+        ..request(&path, 1, &order, &[])
+    };
+    assert_eq!(save::save(&on_signed, Target::Same, None, &mut save::NoHooks).unwrap().writer, Writer::Append);
+    assert!(std::fs::read(&path).unwrap().starts_with(&before));
+    let certified = dir.write("certified.pdf", &signed(true, false));
+    let before = std::fs::read(&certified).unwrap();
+    let on_certified = SaveRequest {
+        highlights: &highlights,
+        ..request(&certified, 1, &order, &[])
+    };
+    assert_eq!(
+        save::save(&on_certified, Target::Same, None, &mut save::NoHooks),
+        Err(SaveError::BreaksCertification)
+    );
+    assert_eq!(std::fs::read(&certified).unwrap(), before);
+}
+
+/// Failure (review of R4.3): a highlight whose lines come to no finite place on its page, as a hostile page box makes them, is left out of what's
+/// written while the save says it's done, so the person's highlight is lost and counted saved. The save refuses and the file stays as it was.
+#[test]
+fn a_highlight_that_cant_be_placed_refuses_the_save() {
+    let dir = Dir::new();
+    let huge = "300000000000000000000000000000000000000.0";
+    let mut page = Page::new(text_lines(&["Words"]));
+    page.page_extra = format!("/MediaBox [-{huge} -{huge} {huge} {huge}]");
+    let path = dir.write("huge.pdf", &pages(&[page]));
+    let before = std::fs::read(&path).unwrap();
+    let line = [[10.0, 10.0, 100.0, 12.0]];
+    let highlights = [save::NewHighlight { position: 0, rects: &line }];
+    let order = own(&[(0, 0)]);
+    let asked = SaveRequest {
+        highlights: &highlights,
+        ..request(&path, 1, &order, &[])
+    };
+    let saved = save::save(&asked, Target::Same, None, &mut save::NoHooks);
+    assert!(
+        matches!(saved, Err(SaveError::EditsDontMatch { .. })),
+        "refused, not done without it: {saved:?}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+/// Failure (review of R4.3): a highlight on a page added from another PDF (the copy path, whose `/Annots` names a list in that file) is lost, or
+/// keeps the added page's own annotations out; or one on a page turned by an edit is written in the turned frame rather than where the person saw
+/// it, which is the page's frame before the edit's turn.
+#[test]
+fn a_highlight_on_an_added_page_and_on_a_page_turned_by_an_edit_is_where_it_was_shown() {
+    let dir = Dir::new();
+    let path = dir.write("doc.pdf", &marked(&["MINE"]));
+    let other = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Contents 4 0 R /Annots 5 0 R >>".into()),
+        Raw::Stream {
+            dict: String::new(),
+            data: b"BT ET".to_vec(),
+        },
+        Raw::Dict("[6 0 R]".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] >>".into()),
+    ]);
+    let other_path = dir.write("other.pdf", &other);
+    let added = [AddedFile {
+        path: &other_path,
+        page_count: 1,
+        stamp: Some(stamp(&other_path)),
+    }];
+    let order = [
+        PageRef {
+            source: 0,
+            page: 0,
+            quarter_turns: 1,
+        },
+        PageRef {
+            source: 1,
+            page: 0,
+            quarter_turns: 0,
+        },
+    ];
+    let line = [[40.0, 100.0, 100.0, 12.0]];
+    let highlights = [
+        save::NewHighlight { position: 0, rects: &line },
+        save::NewHighlight { position: 1, rects: &line },
+    ];
+    let asked = SaveRequest {
+        highlights: &highlights,
+        ..request(&path, 1, &order, &added)
+    };
+    save::save(&asked, Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!(read_pages(&path)[0].1, 90, "the edit's turn is written");
+    let turned = annotations_of(&path, 0);
+    assert_eq!(turned.len(), 1);
+    // In the page's frame before the edit's turn: 100 points down from the top of a 792-point page.
+    assert_eq!(turned[0].1, vec![40.0, 692.0, 140.0, 692.0, 40.0, 680.0, 140.0, 680.0]);
+    let copied = annotations_of(&path, 1);
+    assert_eq!(
+        copied.iter().map(|(kind, ..)| kind.as_slice()).collect::<Vec<_>>(),
+        vec![&b"Link"[..], b"Highlight"],
+        "the added page keeps its own and gains the highlight"
+    );
+    assert_eq!(copied[1].1, vec![40.0, 200.0, 140.0, 200.0, 40.0, 188.0, 140.0, 188.0]);
+}
+
+/// A page with a link, a highlight with its popup note, and a second highlight: `/Annots [link, highlight, popup, highlight]`. The first
+/// highlight's `/Rect` is `[50 700 150 712]`, the second's `[50 600 150 612]`.
+fn with_file_highlights() -> Vec<u8> {
+    build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [5 0 R 6 0 R 8 0 R 9 0 R] >>".into()),
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["Words"]),
+        },
+        Raw::Dict("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Highlight /Rect [50 700 150 712] /QuadPoints [50 712 150 712 50 700 150 700] /AP << /N 7 0 R >> /Popup 8 0 R /Contents (GONENOTE) >>".into()),
+        Raw::Stream {
+            dict: "/Type /XObject /Subtype /Form /BBox [50 700 150 712]".into(),
+            data: b"GONEAPPEARANCE 1 1 0 rg 50 700 100 12 re f".to_vec(),
+        },
+        Raw::Dict("<< /Type /Annot /Subtype /Popup /Rect [200 700 300 760] /Parent 6 0 R >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Highlight /Rect [50 600 150 612] /QuadPoints [50 612 150 612 50 600 150 600] /Contents (KEPTNOTE) >>".into()),
+    ])
+}
+
+/// Failure (review of R4.3, S2): taking a file's highlight out is appended, so it's still in the file's bytes and an earlier revision, or its
+/// appearance or its popup keeps it reachable, or the other highlight on the page goes too, or the save doesn't say where what's left now is.
+/// It's a rewrite: the highlight, its appearance and its note are nowhere in the new file, and the other highlight is, one place down.
+#[test]
+fn a_file_highlight_taken_out_is_gone_from_the_file() {
+    let dir = Dir::new();
+    let path = dir.write("marked.pdf", &with_file_highlights());
+    let order = own(&[(0, 0)]);
+    let gone = [save::GoneHighlight {
+        position: 0,
+        index: 1,
+        rect: [50.0, 700.0, 150.0, 712.0],
+    }];
+    let line = [[40.0, 100.0, 100.0, 12.0]];
+    let highlights = [save::NewHighlight { position: 0, rects: &line }];
+    let asked = SaveRequest {
+        highlights: &highlights,
+        highlights_gone: &gone,
+        ..request(&path, 1, &order, &[])
+    };
+    assert_eq!(save::writer_for_request(&asked), Writer::Rewrite);
+    let outcome = save::save(&asked, Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!(outcome.writer, Writer::Rewrite);
+    let bytes = std::fs::read(&path).unwrap();
+    for mark in ["GONENOTE", "GONEAPPEARANCE", "/Popup"] {
+        assert!(!contains(&bytes, mark), "{mark} is still in the file");
+    }
+    assert!(contains(&bytes, "KEPTNOTE"), "the other highlight stays");
+    let left = annotations_of(&path, 0);
+    assert_eq!(
+        left.iter().map(|(kind, ..)| kind.as_slice()).collect::<Vec<_>>(),
+        vec![&b"Link"[..], b"Highlight", b"Highlight"]
+    );
+    assert_eq!(
+        outcome.marks.removed,
+        vec![(0, 1), (0, 2)],
+        "the highlight and its note, by their places as they were"
+    );
+    assert_eq!(outcome.marks.placed.len(), 1);
+    assert_eq!(outcome.marks.placed[0].0, 2, "the new one goes after what's left");
+    assert_eq!(
+        left[2].1[..2],
+        [outcome.marks.placed[0].1[0], outcome.marks.placed[0].1[3]],
+        "at the /Rect it says"
+    );
+}
+
+/// Failure (review of R4.3, S2): the file changed since the removal was asked (another app moved the highlight, or put something else at its place),
+/// and the save takes out whatever is there now. Refused, with the file as it was: another kind of annotation there, or a `/Rect` further than half a
+/// point from what the removal says, or a place past the list, or one place named twice.
+#[test]
+fn a_removal_that_doesnt_match_the_file_refuses_the_save() {
+    let dir = Dir::new();
+    let path = dir.write("marked.pdf", &with_file_highlights());
+    let before = std::fs::read(&path).unwrap();
+    let order = own(&[(0, 0)]);
+    let right = [50.0, 700.0, 150.0, 712.0];
+    let near = [50.4, 699.6, 150.0, 712.0];
+    let cases: [&[save::GoneHighlight]; 5] = [
+        &[save::GoneHighlight {
+            position: 0,
+            index: 0,
+            rect: right,
+        }],
+        &[save::GoneHighlight {
+            position: 0,
+            index: 1,
+            rect: [50.0, 700.0, 151.0, 712.0],
+        }],
+        &[save::GoneHighlight {
+            position: 0,
+            index: 7,
+            rect: right,
+        }],
+        &[save::GoneHighlight {
+            position: 1,
+            index: 1,
+            rect: right,
+        }],
+        &[
+            save::GoneHighlight {
+                position: 0,
+                index: 1,
+                rect: right,
+            },
+            save::GoneHighlight {
+                position: 0,
+                index: 1,
+                rect: right,
+            },
+        ],
+    ];
+    for gone in cases {
+        let asked = SaveRequest {
+            highlights_gone: gone,
+            ..request(&path, 1, &order, &[])
+        };
+        let saved = save::save(&asked, Target::Same, None, &mut save::NoHooks);
+        assert!(matches!(saved, Err(SaveError::EditsDontMatch { file_pages: 1 })), "{gone:?}: {saved:?}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    let close = [save::GoneHighlight {
+        position: 0,
+        index: 1,
+        rect: near,
+    }];
+    let asked = SaveRequest {
+        highlights_gone: &close,
+        ..request(&path, 1, &order, &[])
+    };
+    assert!(
+        save::save(&asked, Target::Same, None, &mut save::NoHooks).is_ok(),
+        "within half a point it's that highlight"
+    );
+}
+
+/// Failure (review of R4.3, S2): taking a highlight out of a signed file rewrites the signed bytes, or an agent below Full gets the rewrite. Over the
+/// file it's refused as a delete is (Save As makes an unsigned copy without it), and a caller that may not rewrite is refused before anything's written.
+#[test]
+fn a_removal_on_a_signed_file_is_an_unsigned_copy_and_needs_a_rewrite_allowed() {
+    let dir = Dir::new();
+    let path = dir.write("signed.pdf", &signed(false, false));
+    let line = [[10.0, 10.0, 50.0, 10.0]];
+    let highlights = [save::NewHighlight { position: 0, rects: &line }];
+    let order = own(&[(0, 0)]);
+    let added = SaveRequest {
+        highlights: &highlights,
+        ..request(&path, 1, &order, &[])
+    };
+    let outcome = save::save(&added, Target::Same, None, &mut save::NoHooks).unwrap();
+    let (index, rect) = outcome.marks.placed[0];
+    let before = std::fs::read(&path).unwrap();
+    let gone = [save::GoneHighlight { position: 0, index, rect }];
+    let asked = SaveRequest {
+        highlights_gone: &gone,
+        ..request(&path, 1, &order, &[])
+    };
+    assert_eq!(save::save(&asked, Target::Same, None, &mut save::NoHooks), Err(SaveError::SignedNeedsCopy));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    struct NoRewrite;
+    impl SaveHooks for NoRewrite {
+        fn may_rewrite(&self) -> bool {
+            false
+        }
+    }
+    let copy = path.with_file_name("copy.pdf");
+    assert_eq!(
+        save::save(&asked, Target::NewFile(&copy), None, &mut NoRewrite),
+        Err(SaveError::RewriteNotAllowed)
+    );
+    assert!(!copy.exists());
+    let outcome = save::save(&asked, Target::NewFile(&copy), None, &mut save::NoHooks).unwrap();
+    assert_eq!((outcome.writer, outcome.signatures_removed), (Writer::Rewrite, 1));
+    assert_unsigned(&copy);
+    assert!(annotations_of(&copy, 0).iter().all(|(kind, ..)| kind != b"Highlight"), "without the highlight");
+    assert_eq!(std::fs::read(&path).unwrap(), before, "the original keeps its signature and its highlight");
+}
+
+/// Failure (review of R4.3, S3): the save doesn't say the size a page an edit turned was shown at, so the history's highlights on it can't be put in
+/// the frame the page has after the save. Said for a turned page only, in its frame before the turn: a page the file turns itself is shown on its side.
+#[test]
+fn a_save_says_the_size_a_turned_page_was_shown_at() {
+    let dir = Dir::new();
+    let page = |extra: &str| {
+        let mut page = Page::new(text_lines(&["Words"]));
+        page.media = (300.0, 500.0);
+        page.page_extra = extra.into();
+        page
+    };
+    let path = dir.write("turned.pdf", &pages(&[page(""), page("/Rotate 90"), page("")]));
+    let order = own(&[(0, 1), (1, 3), (2, 0)]);
+    let outcome = save::save(&request(&path, 3, &order, &[]), Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!(outcome.marks.turned, vec![(0, [300.0, 500.0]), (1, [500.0, 300.0])]);
+}
+
+/// Failure (review of R4.3): the fuzzer's way into a save of highlights alone (no new tree) and of a file highlight's removal doesn't write or doesn't
+/// verify on an ordinary file, so it reaches neither path and fuzzes nothing there.
+#[test]
+fn the_fuzzers_highlights_path_writes_and_takes_one_out() {
+    assert_eq!(save::highlights_in_memory(&with_file_highlights()), Ok((1, true)));
+    assert_eq!(save::highlights_in_memory(&with_a_highlight_reached_many_ways()), Ok((2, true)));
+    assert_eq!(save::highlights_in_memory(&marked(&["A", "B", "C"])), Ok((3, false)));
+}
+
+/// Two pages, and a highlight (object 6) reached every other way a file can reach it besides its place on page 1's list: listed there twice, listed on
+/// page 2 too, named by a reply's `/IRT` and by the structure tree's `/OBJR`, with a popup (object 8) its `/Popup` names that no list has. Its
+/// `/Rect` is `[50 700 150 712]`, at place 1 of page 1's `/Annots [link, highlight, reply, highlight]`.
+fn with_a_highlight_reached_many_ways() -> Vec<u8> {
+    build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 11 0 R >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R 10 0 R] /Count 2 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [5 0 R 6 0 R 9 0 R 6 0 R] >>".into()),
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["Words"]),
+        },
+        Raw::Dict("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Highlight /Rect [50 700 150 712] /QuadPoints [50 712 150 712 50 700 150 700] /AP << /N 7 0 R >> /Popup 8 0 R /Contents (GONENOTE) /StructParent 1 >>".into()),
+        Raw::Stream {
+            dict: "/Type /XObject /Subtype /Form /BBox [50 700 150 712]".into(),
+            data: b"GONEAPPEARANCE 1 1 0 rg 50 700 100 12 re f".to_vec(),
+        },
+        Raw::Dict("<< /Type /Annot /Subtype /Popup /Rect [200 700 300 760] /Parent 6 0 R /NM (POPUPMARK) >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Text /Rect [20 20 40 40] /IRT 6 0 R /Contents (REPLYNOTE) >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [6 0 R] >>".into()),
+        Raw::Dict("<< /Type /StructTreeRoot /K 12 0 R >>".into()),
+        Raw::Dict("<< /Type /StructElem /S /Annot /P 11 0 R /Pg 3 0 R /K << /Type /OBJR /Obj 6 0 R >> >>".into()),
+    ])
+}
+
+/// **Failure (second review of R4.3, S1): a highlight taken out stays in the file's bytes** (SPEC: nothing is left recoverable after it's said to be
+/// removed). Taking it out of the one list it was asked from leaves it reachable through its second entry there, page 2's list, a reply's `/IRT`
+/// or the structure tree's `/OBJR`, so the rewrite writes it, its note, its appearance and its popup into the new file. However it was reached,
+/// it's gone, with its appearance, note and popup; the reply stays as a note of its own, without its `/IRT`; and no page lists a highlight.
+#[test]
+fn a_file_highlight_taken_out_is_gone_however_the_file_reached_it() {
+    let dir = Dir::new();
+    let path = dir.write("reached.pdf", &with_a_highlight_reached_many_ways());
+    let order = own(&[(0, 0), (1, 0)]);
+    let gone = [save::GoneHighlight {
+        position: 0,
+        index: 1,
+        rect: [50.0, 700.0, 150.0, 712.0],
+    }];
+    let asked = SaveRequest {
+        highlights_gone: &gone,
+        ..request(&path, 2, &order, &[])
+    };
+    save::save(&asked, Target::Same, None, &mut save::NoHooks).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    for mark in ["GONENOTE", "GONEAPPEARANCE", "POPUPMARK", "/Highlight", "/IRT", "/Popup"] {
+        assert!(!contains(&bytes, mark), "{mark} is still in the file");
+    }
+    assert!(contains(&bytes, "REPLYNOTE"), "the reply stays, a note of its own");
+    let kinds = |page| annotations_of(&path, page).into_iter().map(|(kind, ..)| kind).collect::<Vec<_>>();
+    assert_eq!(kinds(0), vec![b"Link".to_vec(), b"Text".to_vec()]);
+    assert!(kinds(1).is_empty(), "page 2 listed it too");
+}
+
+/// **Failure (second review of R4.3, S1): a removal takes out what a document is made of**, as a hostile file dresses its page as a highlight in its
+/// own list, or names its catalog (with no `/Type`) as a highlight's popup: the save removes the page, or the catalog, with every reference to it.
+/// The page is refused, the file as it was; the highlight whose "popup" is the catalog goes, and the catalog and both pages stay.
+#[test]
+fn a_page_or_catalog_dressed_as_an_annotation_is_never_taken_out() {
+    let dir = Dir::new();
+    let bytes = build(&[
+        Raw::Dict("<< /Pages 2 0 R /Subtype /Popup >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".into()),
+        Raw::Dict("<< /Type /Page /Subtype /Highlight /Rect [50 700 150 712] /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [3 0 R 5 0 R] >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".into()),
+        Raw::Dict("<< /Subtype /Highlight /Rect [50 600 150 612] /Popup 1 0 R /Contents (GONENOTE) >>".into()),
+    ]);
+    let path = dir.write("dressed.pdf", &bytes);
+    let order = own(&[(0, 0), (1, 0)]);
+    let asked = |gone| SaveRequest {
+        highlights_gone: gone,
+        ..request(&path, 2, &order, &[])
+    };
+    let page = [save::GoneHighlight {
+        position: 0,
+        index: 0,
+        rect: [50.0, 700.0, 150.0, 712.0],
+    }];
+    let saved = save::save(&asked(&page), Target::Same, None, &mut save::NoHooks);
+    assert!(matches!(saved, Err(SaveError::EditsDontMatch { .. })), "{saved:?}");
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    let highlight = [save::GoneHighlight {
+        position: 0,
+        index: 1,
+        rect: [50.0, 600.0, 150.0, 612.0],
+    }];
+    let saved = save::save(&asked(&highlight), Target::Same, None, &mut save::NoHooks);
+    assert!(saved.is_ok(), "{saved:?}");
+    assert!(!contains(&std::fs::read(&path).unwrap(), "GONENOTE"));
+    let reader = IndexedReader::open(FileSource::open(&path).unwrap()).unwrap();
+    assert_eq!(reader.page_map().unwrap().len(), 2, "the catalog and both pages stay");
+}
+
+/// **Failure (second review of R4.3, S2): after a rewrite the save reports places in `/Annots` the written file doesn't have**: it says where things
+/// went before lopdf writes, and the rewrite then takes more out of kept pages' lists (here a link on page 1 to page 3, which this save deletes). So
+/// the history names the wrong place, and a later undo hides another annotation, or the next save refuses. Each place reported holds, in the file
+/// written, a `/Highlight` with the `/Rect` reported; and what the save says left page 1's list is what did.
+#[test]
+fn a_rewrite_reports_the_places_the_written_file_has() {
+    let dir = Dir::new();
+    let bytes = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R 6 0 R 7 0 R] /Count 3 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [5 0 R 8 0 R] >>".into()),
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["Contents"]),
+        },
+        Raw::Dict("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /Dest [7 0 R /Fit] >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Highlight /Rect [50 600 150 612] >>".into()),
+    ]);
+    let path = dir.write("contents.pdf", &bytes);
+    let order = own(&[(0, 0), (1, 0)]);
+    let line = [[40.0, 100.0, 100.0, 12.0]];
+    let highlights = [save::NewHighlight { position: 0, rects: &line }];
+    let asked = SaveRequest {
+        highlights: &highlights,
+        ..request(&path, 3, &order, &[])
+    };
+    let outcome = save::save(&asked, Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!(outcome.writer, Writer::Rewrite);
+    let left = annotations_of(&path, 0);
+    assert_eq!(
+        left.iter().map(|(kind, ..)| kind.as_slice()).collect::<Vec<_>>(),
+        vec![&b"Highlight"[..], b"Highlight"],
+        "the link to the deleted page went"
+    );
+    let (index, rect) = outcome.marks.placed[0];
+    let (kind, quad, _) = &left[index as usize];
+    assert_eq!(kind, b"Highlight");
+    let bounds = |pick: fn(f32, f32) -> f32, from: usize| quad.iter().skip(from).step_by(2).copied().reduce(pick).unwrap();
+    assert_eq!(
+        [bounds(f32::min, 0), bounds(f32::min, 1), bounds(f32::max, 0), bounds(f32::max, 1)],
+        rect,
+        "the place reported holds the highlight written, at its /Rect"
+    );
+    assert_eq!(outcome.marks.removed, vec![(0, 0)], "the link, by its place as it was");
 }

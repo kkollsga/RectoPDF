@@ -222,3 +222,22 @@ fn a_refusal_as_a_request_is_read_says_only_constant_words_and_the_agents_own() 
     }
     assert!(walked >= 25, "the walk reached the types' refusals: {walked}");
 }
+
+/// **Failure (second review of R4.3, SF6): the save target never builds a file it can take a highlight out of**, so the removal (and what it must
+/// hold: each place reported a `/Highlight` at its `/Rect`, what's taken out gone) is never fuzzed. Of 400 made files, at least a tenth reach it.
+#[test]
+fn the_save_target_reaches_a_highlights_removal() {
+    let reached = (0u32..400)
+        .filter(|seed| {
+            let data: Vec<u8> = (0u32..512)
+                .map(|at| (seed.wrapping_mul(2_654_435_761).wrapping_add(at.wrapping_mul(40_503)) >> 11) as u8)
+                .collect();
+            matches!(
+                recto_core::save::highlights_in_memory(&recto_fuzz::targets::pdf::highlight_tree(&data)),
+                Ok((_, true))
+            )
+        })
+        .count();
+    // 69 on 2026-11-14: most of the rest are refused as damaged, where a hostile number makes an object the rewrite can't read.
+    assert!(reached >= 40, "{reached} of 400 made files had a highlight the save could take out");
+}

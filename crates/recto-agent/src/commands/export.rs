@@ -58,7 +58,8 @@ impl Cmd for Render {
             crate::quiet_files::check_new_file(access, out)?;
             let (id, position, source) = locate(access, tab, *page)?;
             extract::refuse_if_restricted(&source.path, source.page, *anyway)?;
-            let drawn = render::render(&source.path, source.page + 1, *scale, out);
+            let hidden = crate::highlighting::hidden_on(access, id, &source);
+            let drawn = render::render(&source.path, source.page + 1, *scale, out, hidden);
             if !is_about_the_output(drawn.as_ref().err().map(|error| error.code)) {
                 note_draw(access, id, position, drawn.as_ref().err().map(|error| error.code.as_str()), events);
             }
@@ -141,6 +142,7 @@ impl Cmd for ExportSvg {
                 text: text.as_deref(),
                 scale: *scale,
                 strip_metadata: *strip_metadata,
+                hidden: crate::highlighting::hidden_on(access, id, &source),
             };
             let drawn = render::export_svg(&args);
             if !is_about_the_output(drawn.as_ref().err().map(|error| error.code)) {
@@ -341,7 +343,7 @@ impl Cmd for Snapshot {
             if let Some(out) = out {
                 crate::quiet_files::check_new_file(access, out)?;
             }
-            let (_, _, source) = locate(access, tab, *page)?;
+            let (id, _, source) = locate(access, tab, *page)?;
             let mut data = extract::snapshot_command(&extract::SnapshotAsked {
                 path: &source.path,
                 page: source.page + 1,
@@ -350,6 +352,7 @@ impl Cmd for Snapshot {
                 out: out.as_deref(),
                 scale: *scale,
                 anyway: *anyway,
+                hidden: crate::highlighting::hidden_on(access, id, &source),
             })?;
             describe_source(&mut data, *page, &source);
             Ok(data)
