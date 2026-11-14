@@ -912,6 +912,7 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
     let saved = session.tabs().place_to_show(id).map(|place| SavedPlace {
         page: place.page,
         anchor: (place.anchor_page, place.within),
+        line: (place.anchor_page, place.within),
         x: place.x,
         y: place.y,
         document_height: place.document_height,

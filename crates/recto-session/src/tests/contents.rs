@@ -603,3 +603,32 @@ fn the_session_and_the_page_view_round_a_place_alike() {
     assert!(band.lo <= seen && seen < band.hi, "the page view at {seen} is outside the band {band:?}");
     assert_eq!(current_of(&s), ["A"], "B, at 506, is 6 below the top of the view");
 }
+
+/// Failure (S1 of the second review): the session took the current entry from the place's top, which can't come within a view-height of the document's
+/// end, and not from the line the page view says with it, so the last entries were never current by scrolling, whatever the page view said. The line is
+/// the page view's word: it decides the mark and the band, and a line that moves with the place where it was is nothing to write (the record's place
+/// is as it was, and no line of the log of places is asked for).
+#[test]
+fn the_line_the_page_view_says_finds_the_current_entry_and_is_never_written() {
+    let (mut s, id) = reading_page_two();
+    let place = PlaceRecord {
+        page: 1,
+        anchor_page: 1,
+        within: 0.1,
+        x: 0.0,
+        y: 0.0,
+        document_height: 1.0,
+        zoom: 1.0,
+        page_width: 0.0,
+        page_height: 0.0,
+    };
+    assert!(s.view_told_of(id, ViewSaid { place, line: (1, 650) }, 1));
+    assert_eq!(current_of(&s), ["C"], "the line is below C's top, the top of the view above B's");
+    let band = reading_band(&s, s.tabs().tab(id).unwrap()).expect("a band");
+    assert_eq!((band.page, band.lo), (1, 600 - recto_core::TOP_SLACK), "and the band is C's");
+    let delta = s.take_place_delta(1);
+    assert_eq!(delta.places, [(id.0, 1, Some(place))], "the place as the page view said it, no line in it");
+    assert!(s.view_told_of(id, ViewSaid { place, line: (1, 100) }, 2));
+    assert_eq!(current_of(&s), ["A"]);
+    assert!(s.take_place_delta(2).places.is_empty(), "only the line moved: nothing to write");
+}

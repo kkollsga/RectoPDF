@@ -21,6 +21,7 @@ fn the_tabs_sleep_view_is_its_first_frame() {
         document_height: 0.0,
         magnification: 1.0,
         page_size: Some(letter()),
+        line: (0, 0.0),
     };
     // For another tab: not used.
     reader.wake.give_sleep(
@@ -285,6 +286,7 @@ fn a_window_can_go_up_with_a_picture_on_every_page() {
         document_height: 0.0,
         magnification: 1.0,
         page_size: Some(letter()),
+        line: (0, 0.0),
     };
     reader.wake.give_sleep(
         1,
@@ -350,6 +352,7 @@ fn woken_with(pages: &[u32], unattached: bool) -> (Reader, WakeReport) {
         document_height: 0.0,
         magnification: 1.0,
         page_size: Some(letter()),
+        line: (0, 0.0),
     };
     if !pages.is_empty() {
         reader.wake.give_sleep(

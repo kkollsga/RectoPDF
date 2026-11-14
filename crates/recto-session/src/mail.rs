@@ -16,7 +16,14 @@ struct ViewWord {
     last_read: u64,
     /// The jump sent the view and the place clock the send came to, while no read at or past it has been taken in: where the session has sent the reader.
     jump_on_its_way: Option<(Stop, u64)>,
+    /// The line the contents' current entry is found by, as the read taken in last said it with its place ([`crate::view::ViewSaid`]): the page and
+    /// thousandths down it, or a page of `NONE` before any read.
+    line: (u32, u16),
 }
+
+// size: one for each tab a page view has told of or been sent a jump on (hot and warm, a few), none for a cold tab. 40 bytes until 2026-11-14, 48 with the
+// line; held there, so a field added is a deliberate change.
+const _: () = assert!(size_of::<ViewWord>() == 48, "a page view's word on a tab grew");
 
 /// What passes between the session and the page view outside a call. What's public here notes a draw, or takes or says what's waiting for the view;
 /// what makes a jump or forgets a tab's stays the crate's, as it goes with the tab's trail and place.
@@ -74,6 +81,7 @@ impl PageViewMail {
                     tab,
                     last_read: 0,
                     jump_on_its_way: None,
+                    line: (crate::NONE, 0),
                 });
                 self.words.len() - 1
             }
@@ -91,17 +99,27 @@ impl PageViewMail {
     }
 
     /// **A read of a page view's places, stamped `stamp`, is to be taken in for a tab:** whether it's as new as what the session has. If it is, it's what
-    /// the session has from here, and a jump sent at or before it is told of.
-    pub(crate) fn view_told_of(&mut self, tab: TabId, stamp: u64) -> bool {
+    /// the session has from here, with the `line` it said, and a jump sent at or before it is told of.
+    pub(crate) fn view_told_of(&mut self, tab: TabId, stamp: u64, line: (u32, u16)) -> bool {
         let word = self.word(tab);
         if stamp < word.last_read {
             return false;
         }
         word.last_read = stamp;
+        word.line = line;
         if word.jump_on_its_way.is_some_and(|(_, sent)| sent <= stamp) {
             word.jump_on_its_way = None;
         }
         true
+    }
+
+    /// The line the read taken in last said for a tab, with the place the tab has from it.
+    pub(crate) fn view_line(&self, tab: TabId) -> Option<(u32, u16)> {
+        self.words
+            .iter()
+            .find(|word| word.tab == tab)
+            .map(|word| word.line)
+            .filter(|(page, _)| *page != crate::NONE)
     }
 
     /// The tab's moved on, to another page or other pages: the jump it was sent is no longer where the reader is.

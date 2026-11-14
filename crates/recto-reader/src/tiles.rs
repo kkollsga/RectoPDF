@@ -219,6 +219,10 @@ pub struct SavedPlace {
     pub magnification: f64,
     /// The size pages are taken to be, so there's no size to wait for on the first frame.
     pub page_size: Option<PageBox>,
+    /// **The line the contents' current entry is found by,** the page and how far down it (`place::reading_line`): the top of the view, but in the last
+    /// view-height of the scroll on its way to the last page's foot. Said with the place it was read with, and only for the session's contents: not saved,
+    /// not restored (what a place given to [`Reader::activate`] says here is passed over) and not used by Back. A warm tab's is its anchor.
+    pub line: (u32, f64),
 }
 
 #[cfg(test)]

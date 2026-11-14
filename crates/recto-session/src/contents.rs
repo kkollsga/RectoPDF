@@ -147,17 +147,17 @@ fn shown_contents_of<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> Opt
 
 /// **The line the contents' current entry is found by:** the page at the top of the reader's view, as the session counts pages, and how far down it, in
 /// thousandths. An entry is current once its top is at or above this, so a heading becomes current as it reaches the top of the view, and an entry jumped to
-/// (whose top the jump puts on the view's top) stays current. It is where a jump the page view hasn't taken yet is going, else the place the page view last
-/// told of for the page the tab is on (its anchor, which is the top of the view and may be the page before the one the page number says, at the foot of it),
-/// else the top of the tab's page, as before the view has said.
+/// (whose top the jump puts on the view's top) stays current. It is where a jump the page view hasn't taken yet is going, else the line the page view said with
+/// the place it last told of for the page the tab is on ([`crate::ViewSaid`]: the top of the view, which may be the page before the one the page number
+/// says, at the foot of it, and in the last view-height of the scroll on its way to the last page's foot, so the last entries become current as the view
+/// reaches the end), else that place's top, else the top of the tab's page, as before the view has said.
 fn reading_line<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> (u32, u16) {
     if let Some(jump) = crate::trail::jump_here(session, tab) {
         return (jump.page, thousandths(f64::from(jump.within)));
     }
-    tab.reading
-        .place
-        .filter(|place| place.page == tab.page)
-        .map_or((tab.page, 0), |place| (place.anchor_page, thousandths(place.within)))
+    tab.reading.place.filter(|place| place.page == tab.page).map_or((tab.page, 0), |place| {
+        session.mail.view_line(tab.id).unwrap_or((place.anchor_page, thousandths(place.within)))
+    })
 }
 
 /// Which pages of the file have entries whose places mean something: not those with an unsaved turn (or any page, with the view turned), whose frame isn't the

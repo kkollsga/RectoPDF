@@ -77,6 +77,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+pub use view::ViewSaid;
 pub use viewing::Viewing;
 pub use warm::Warm;
 

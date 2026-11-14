@@ -816,6 +816,7 @@ Running (pub(super) struct, derives Debug)
 SavedPlace (pub struct, derives Clone, Copy, Debug, PartialEq)
 SavedPlace.pub anchor: (u32, f64)
 SavedPlace.pub document_height: f64
+SavedPlace.pub line: (u32, f64)
 SavedPlace.pub magnification: f64
 SavedPlace.pub page: u32
 SavedPlace.pub page_size: Option<PageBox>
