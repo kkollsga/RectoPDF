@@ -216,7 +216,8 @@ impl Qa<'_> {
         crate::tiles::system_takes_only_when_told();
     }
 
-    /// How many surfaces this view keeps that the kernel is told it may empty whenever it likes: none, once [`Self::system_takes_only_when_told`].
+    /// How many surfaces this view keeps that the kernel was told it may empty whenever it likes, or has emptied: none, once
+    /// [`Self::system_takes_only_when_told`] (and before a test empties them).
     pub fn marked_for_the_system(&self) -> usize {
         lock(&self.engine.shared.reader).cache.marked_for_the_system()
     }

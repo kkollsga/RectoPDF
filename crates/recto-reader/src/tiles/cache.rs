@@ -249,13 +249,13 @@ impl TileCache {
         emptied
     }
 
-    /// For QA ([`crate::engine::Qa::marked_for_the_system`]): the surfaces kept that the kernel is told it may empty.
+    /// For QA ([`crate::engine::Qa::marked_for_the_system`]): the surfaces kept that the kernel was told it may empty, those it has emptied already among them.
     #[cfg(any(test, feature = "qa"))]
     pub(crate) fn marked_for_the_system(&self) -> usize {
         self.entries
             .values()
             .filter_map(|entry| entry.surface.as_ref())
-            .filter(|surface| surface.is_marked_discardable())
+            .filter(|surface| surface.is_marked_discardable() || surface.was_emptied())
             .count()
     }
 
