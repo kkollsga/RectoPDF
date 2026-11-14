@@ -471,6 +471,7 @@ impl Cmd for Snapshot {
                 scale: *scale,
                 anyway: *anyway,
                 hidden: crate::highlighting::hidden_on(access, id, &source),
+                unsaved_quarter_turns: source.quarter_turns,
             })?;
             describe_source(&mut data, *page, &source);
             Ok(data)

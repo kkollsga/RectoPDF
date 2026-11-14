@@ -60,23 +60,10 @@ impl Format {
 /// The most text a snapshot takes: a box can't hold more than its page, and a page past the selectable limit holds none.
 pub(crate) const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024;
 
-/// Draws the box at `scale` into `out` as PNG or JPG. Returns the picture's size in pixels. `page` is from 0. Can sleep waiting for the larger limit, so never on a UI thread.
-pub(crate) fn picture_into<O: Output>(
-    doc: &mut DocRenderer,
-    page: u32,
-    rect: [f32; 4],
-    scale: f32,
-    format: Format,
-    caps: &OutputCaps,
-    out: &RefCell<O>,
-) -> Result<(u32, u32), AgentError> {
-    pictures_into(doc, page, rect, scale, format, caps, out, None, 0, 0).map(|(size, _)| size)
-}
-
 /// How much of a turned snapshot is held at once, as RGB: a band of the box, drawn and then written out turned. A box at the usual scale is one band; a larger one is drawn in several, so memory stays at this whatever its size.
 const TURN_BAND_BYTES: usize = 16 * 1024 * 1024;
 
-/// [`picture_into`], and a JPG of the same rows into `jpg` as it goes, if given: one drawing for both, as the clipboard has them. The JPG is an extra, so one that fails, as by passing its buffer's cap, is dropped and the rest goes on; the second value says whether it came. `generation` is what a [`recto_render_service::CancelHandle`] stops.
+/// Draws the box at `scale` into `out` as PNG or JPG, and a JPG of the same rows into `jpg` as it goes, if given: one drawing for both, as the clipboard has them. The JPG is an extra, so one that fails, as by passing its buffer's cap, is dropped and the rest goes on; the first value is the picture's size in pixels, the second says whether the JPG came. `page` is from 0. Can sleep waiting for the larger limit, so never on a UI thread. `generation` is what a [`recto_render_service::CancelHandle`] stops.
 ///
 /// **`quarter_turns` turns the picture clockwise**, as the page is seen with an unsaved turn: the box is still on the page as the file shows it, and the picture comes out turned. Turned, the box is drawn a band at a time, at most [`TURN_BAND_BYTES`] of it held, and each band written out turned: columns for a quarter turn, rows from the bottom for a half.
 #[allow(clippy::too_many_arguments)]
