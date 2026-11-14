@@ -125,8 +125,13 @@ impl<L: DocLoader> Session<L> {
 
     /// The contents the sidebar shows for a tab: its generated ones if they're chosen and ready, or its own.
     fn shown_contents(&self, id: TabId) -> Option<Arc<Toc>> {
-        let own = self.warm.toc(id)?;
-        Some(match (self.tabs.tab(id).is_some_and(|tab| tab.generated_contents), self.generated.view(id)) {
+        self.shown_contents_of(self.tabs.tab(id)?)
+    }
+
+    /// [`Self::shown_contents`] for a tab in hand, so a walk over every tab needn't look each up again.
+    fn shown_contents_of(&self, tab: &TabRecord) -> Option<Arc<Toc>> {
+        let own = self.warm.toc(tab.id)?;
+        Some(match (tab.generated_contents, self.generated.view(tab.id)) {
             (true, Some(GeneratedView::Ready(generated))) => Arc::clone(generated),
             _ => Arc::clone(own),
         })
@@ -192,13 +197,12 @@ impl Placed {
 /// the page's thousandths, for the page view to tell the core when the top of the view leaves it, and no oftener. `None` where nothing can be said: no
 /// contents shown, or the page isn't the file's own. The page is the session's (edits counted), as the page view counts.
 #[must_use]
-pub fn reading_band<L: DocLoader>(session: &Session<L>, id: TabId) -> Option<recto_core::Band> {
-    let tab = session.tabs.tab(id)?;
+pub fn reading_band<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> Option<recto_core::Band> {
     if !tab.toc_open {
         return None;
     }
-    let toc = session.shown_contents(id)?;
-    let order = session.lists.order(id);
+    let toc = session.shown_contents_of(tab)?;
+    let order = session.lists.order(tab.id);
     let (at_page, top) = reading_line(session, tab);
     let page = original_page(at_page, order)?;
     let placed = Placed::of(tab, order);

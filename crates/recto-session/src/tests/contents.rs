@@ -432,16 +432,16 @@ fn reading_down_a_page_by_scroll_marks_a_then_b_then_c_as_each_reaches_the_top()
     assert_eq!(current_of(&s), ["A"]);
     view_reads(&mut s, id, 1, 1, 0.20);
     assert_eq!(current_of(&s), ["A"], "B hasn't reached the top");
-    let band = reading_band(&s, id).expect("a band");
+    let band = reading_band(&s, s.tabs().tab(id).unwrap()).expect("a band");
     assert_eq!((band.page, band.lo, band.hi), (1, 0, 300 - recto_core::TOP_SLACK));
     view_reads(&mut s, id, 2, 1, 0.31);
     assert_eq!(current_of(&s), ["B"]);
-    let band = reading_band(&s, id).expect("a band");
+    let band = reading_band(&s, s.tabs().tab(id).unwrap()).expect("a band");
     assert_eq!((band.lo, band.hi), (300 - recto_core::TOP_SLACK, 600 - recto_core::TOP_SLACK));
     view_reads(&mut s, id, 3, 1, 0.70);
     assert_eq!(current_of(&s), ["C"]);
     assert_eq!(
-        reading_band(&s, id).map(|band| band.hi),
+        reading_band(&s, s.tabs().tab(id).unwrap()).map(|band| band.hi),
         Some(recto_core::TOP_SCALE + 1),
         "no entry below C on the page"
     );
@@ -469,7 +469,7 @@ fn at_the_foot_of_a_page_the_top_of_the_view_is_still_on_it() {
     };
     assert!(s.view_told_of(id, place, 1));
     assert_eq!(current_of(&s), ["C"], "D is on the page below the top line");
-    let band = reading_band(&s, id).expect("a band");
+    let band = reading_band(&s, s.tabs().tab(id).unwrap()).expect("a band");
     assert_eq!(band.page, 1, "the band is on the page at the top of the view");
 }
 
@@ -543,7 +543,7 @@ fn a_page_with_an_unsaved_turn_is_unplaced_and_has_no_band_to_leave() {
     assert_eq!(current_of(&s), ["A"], "placed: the top of the view is at A");
     s.edit_pages(id, |edits| edits.rotate(1, 1, 1)).unwrap();
     assert_eq!(current_of(&s), ["C"], "unplaced: the last of the page wherever the view is");
-    let band = reading_band(&s, id).expect("a band");
+    let band = reading_band(&s, s.tabs().tab(id).unwrap()).expect("a band");
     assert_eq!((band.lo, band.hi), (0, recto_core::TOP_SCALE + 1));
     assert!(
         s.sidebar().rows.iter().filter(|row| row.kind == RowKind::Contents).all(|row| row.top == 0),

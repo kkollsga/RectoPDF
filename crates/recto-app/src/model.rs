@@ -939,7 +939,7 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
         title: tab.name.to_string(),
         jump: None,
         toc: session.warm().toc(id).cloned(),
-        band: recto_session::reading_band(session, id),
+        band: recto_session::reading_band(session, tab),
     })
 }
 
