@@ -490,7 +490,12 @@ impl Sleeper {
 
 impl Sleeper {
     /// **What the sleeper does at the end of every call on the session thread:** the tabs just woken from their sleep files are looked at, the next
-    /// deadline's worked out, and what's off screen is looked at against its budget, in that order.
+    /// deadline's worked out, and what's off screen is looked at against its budget, in that order. The rule it holds is that a call ends with all three, so
+    /// none is left out where the session thread's tail is changed. The order is the one the tail always had, and it's kept for a reason: the looks at the
+    /// woken files go first, as each starts a thread and the soonest a file found to be another is read again is best; the deadline's then worked out from
+    /// everything this call touched or woke; the budget goes last, as what it decides is sent to sleep by a call of its own after this one. None of the three
+    /// reads what another wrote in this call, so the order is not a correctness rule. It is pinned, with what the sleeper writes, by the golden in
+    /// `headless/sleep_counts.rs`.
     pub(super) fn after_a_call(&self, on_hand: &OnHand<'_>, core: &Arc<CoreQueue>) {
         self.check_woken_files(on_hand.session, core);
         self.rearm(on_hand.session);
