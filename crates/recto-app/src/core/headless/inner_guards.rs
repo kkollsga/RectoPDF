@@ -125,13 +125,13 @@ AnswerParts::pub fn ask_password(&self, path: &Path)
 AnswerParts::pub fn fail_open(&self, words: String)
 AnswerParts::pub fn find_handle<R>(&self, step: impl FnOnce(&FindHandle<'_, dyn Listener>) -> R) -> R
 AnswerParts::pub fn notice(&self, words: String)
-AnswerParts::pub fn of(app: &'a Arc<Inner>) -> Self
 AnswerParts::pub fn person(&self) -> Person<'a>
 AnswerParts::pub fn say(&self, words: String)
 AnswerParts::pub fn take_notice(&self)
 AnswerParts::pub fn unmark_update_menu(&self)
 AnswerParts::pub fn update_menu_marked(&self) -> bool
 AnswerParts::pub fn write_soon(&self)
+AnswerParts::pub(in crate::core) fn of(app: &'a Arc<Inner>) -> Self
 AppState (pub struct, derives Clone, Debug)
 AppState.pub(super) app_hidden: bool
 AppState.pub(super) appearance: Appearance
@@ -281,12 +281,12 @@ OnDisk::pub(crate) fn sleeper(&self) -> &Arc<Sleeper>
 OnDisk::pub(super) fn new(keeper: Arc<Keeper>, sleeper: Arc<Sleeper>) -> Self
 OnDisk::pub(super) fn starts_writer(&self) -> StartsWriter<'_>
 Person (pub struct, derives Clone, Copy)
-Person::pub fn of(app: &'a Arc<Inner>) -> Self
 Person::pub fn print_anyway(self, serial: u64)
 Person::pub fn save(self, tab: recto_session::TabId)
 Person::pub fn snapshot_anyway(self, serial: u64)
 Person::pub fn submit(self, command: Command)
 Person::pub fn submit_when_run(self, command: Command, when_run: crate::queue::WhenRun)
+Person::pub(in crate::core) fn of(app: &'a Arc<Inner>) -> Self
 Printing (pub struct, derives Default)
 Printing::pub fn busy(&self) -> bool
 Printing::pub fn cancel(&self)
@@ -322,7 +322,6 @@ RowParts::pub fn can_save(&self) -> bool
 RowParts::pub fn cancel_print(&self)
 RowParts::pub fn copy_selection(&self, anyway: bool)
 RowParts::pub fn mark_update_menu(&self) -> bool
-RowParts::pub fn of(app: &'a Arc<Inner>) -> Self
 RowParts::pub fn open(&self, path: PathBuf)
 RowParts::pub fn open_palette(&self)
 RowParts::pub fn person(&self) -> Person<'a>
@@ -336,6 +335,7 @@ RowParts::pub fn toggle_panel(&self)
 RowParts::pub fn toggle_snapshot_tool(&self)
 RowParts::pub fn update_installs(&self) -> bool
 RowParts::pub fn zoom_for_person(&self, zoom: Zoom) -> bool
+RowParts::pub(in crate::core) fn of(app: &'a Arc<Inner>) -> Self
 Serving (pub struct)
 Serving.pub paths: Option<StatePaths>
 Serving.pub(crate) announcer: Mutex<Option<Announcer>>

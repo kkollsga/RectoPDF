@@ -38,7 +38,7 @@ pub struct RowParts<'a> {
 
 impl<'a> RowParts<'a> {
     /// The rows' parts of `app`.
-    pub fn of(app: &'a Arc<Inner>) -> Self {
+    pub(in crate::core) fn of(app: &'a Arc<Inner>) -> Self {
         Self {
             published: &app.published,
             panes: &app.panes,

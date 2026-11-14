@@ -39,7 +39,7 @@ pub struct AnswerParts<'a> {
 
 impl<'a> AnswerParts<'a> {
     /// The answers' parts of `app`.
-    pub fn of(app: &'a Arc<Inner>) -> Self {
+    pub(in crate::core) fn of(app: &'a Arc<Inner>) -> Self {
         Self {
             notices: app.window.notices(),
             core: &app.core,

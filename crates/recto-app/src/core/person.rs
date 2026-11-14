@@ -49,7 +49,7 @@ pub struct Person<'a> {
 
 impl<'a> Person<'a> {
     /// The person's way into `app`.
-    pub fn of(app: &'a Arc<Inner>) -> Self {
+    pub(in crate::core) fn of(app: &'a Arc<Inner>) -> Self {
         Self { app }
     }
 
