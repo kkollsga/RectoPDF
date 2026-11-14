@@ -32,6 +32,7 @@ mod passwords;
 // The count it reads is a debug build's only.
 #[cfg(debug_assertions)]
 mod per_tab_work;
+mod printing;
 mod protected_save;
 mod quiet_files;
 mod quit;

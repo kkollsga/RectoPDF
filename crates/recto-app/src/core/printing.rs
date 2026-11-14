@@ -319,6 +319,8 @@ pub fn start(inner: &Arc<Inner>, request: Request) -> bool {
                 printing.done.store(done, Ordering::SeqCst);
                 printing.of.store(of, Ordering::SeqCst);
                 runner.core.push(CoreCall::Reconcile);
+                #[cfg(test)]
+                at_page(done);
                 // Closing the tab stops it, as Stop does.
                 let open = runner.host.session.with_session(|session| session.tabs().iter().any(|record| record.id == tab));
                 open && !printing.cancel.load(Ordering::SeqCst)
@@ -369,6 +371,20 @@ static AFTER_TELLING: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc
 #[cfg(test)]
 fn after_telling() {
     if let Some((told, go)) = lock(&AFTER_TELLING).take() {
+        let _ = told.send(());
+        let _ = go.recv_timeout(crate::testkit::headless::WAIT_LIMIT);
+    }
+}
+
+/// A test's: the next print's thread, once this many pages are done, says so and waits to be let go, so a Stop or a second print can be asked mid-way.
+#[cfg(test)]
+pub(crate) static AT_PAGE: Mutex<Option<(u32, std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>> = Mutex::new(None);
+
+/// Where a print's thread waits mid-way while a test holds it there ([`AT_PAGE`]).
+#[cfg(test)]
+fn at_page(done: u32) {
+    let held = lock(&AT_PAGE).take_if(|(at, _, _)| *at == done);
+    if let Some((_, told, go)) = held {
         let _ = told.send(());
         let _ = go.recv_timeout(crate::testkit::headless::WAIT_LIMIT);
     }
