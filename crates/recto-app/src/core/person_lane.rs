@@ -24,15 +24,8 @@ use std::sync::Arc;
 /// (coordinator, 2026-11-14).
 pub const FULL: &str = "That wasn't done: too many edits are waiting for the one before. Try again in a moment.";
 
-/// **Whether a person's command keeps its place among their edits** (the module's notes).
-#[must_use]
-pub fn ordered(command: &Command) -> bool {
-    match command {
-        Command::Edit(edit) => !matches!(edit, Edit::Edits(_) | Edit::EditMode(_)),
-        Command::Read(Read::Print(_)) | Command::Move(Move::Close(_)) => true,
-        _ => false,
-    }
-}
+/// **Whether a person's command keeps its place among their edits**: [`super::command_kinds`] says, by its tag, in a list with no default.
+pub use super::command_kinds::ordered;
 
 /// **The tab an ordered command names as it's asked:** its own number; for "the tab showing", the one the window shows now if it runs on a thread of its
 /// own, which takes the session as it is when it starts; and none yet (0) for one the session thread runs, which names the tab showing as it takes it

@@ -21,6 +21,7 @@ pub mod updates;
 
 mod answer_parts;
 mod closing;
+pub(crate) mod command_kinds;
 mod comparison;
 mod contents;
 pub mod controls;
