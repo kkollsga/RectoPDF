@@ -658,6 +658,9 @@ impl QaBridge {
             }
             std::thread::sleep(ANIMATION_POLL.min(left()));
         }
+        // What the window had moving at the last round, for a wait that runs out on the round after: the session thread's flush is what's asked first, and
+        // with no time left it can't answer, so that alone would be said for what was really the window's.
+        let mut moving: Option<Value> = None;
         loop {
             // The app at rest, as the one definition has it (`crate::settled`): the session thread through what's queued with nothing due now, what comes back
             // to it done, and every page view drawn with its last job's end told, seen twice with nothing handed on between.
@@ -669,7 +672,11 @@ impl QaBridge {
             if let Err(busy) = at_rest {
                 return Err(AgentError::new(
                     Code::TIMED_OUT,
-                    format!("The app didn't settle in time: still under way, {}.", busy.join("; ")),
+                    format!(
+                        "The app didn't settle in time: still under way, {}{}.",
+                        busy.join("; "),
+                        moving.map_or(String::new(), |moving| format!("; and in the window, {moving}"))
+                    ),
                     exit::TIMED_OUT,
                 )
                 .then("`recto qa state` shows what it's still waiting for."));
@@ -690,6 +697,7 @@ impl QaBridge {
                 )
                 .then("`recto qa state` shows what's running under `app.animations`."));
             }
+            moving = Some(running);
             let pause = ANIMATION_POLL.min(left());
             std::thread::sleep(pause);
             animations_waited += pause;
