@@ -1385,6 +1385,30 @@ fn a_long_outline_scrolls_by_itself_and_keeps_the_tabs_on_screen() {
             && state["app"]["contents"]["current_in_view"] == true
             && state["app"]["contents"]["frames_running"] == false
     });
+    // Failure (the first real-app run with the current entry found by place, 2026-11-14): a document whose first entry is a little way down its first page,
+    // opened at its top, has no entry current, and its list was left scrolled where the long one's was, past its end, with no row drawn. It's drawn from its
+    // top; and once an entry is current, it's in view.
+    let below = outlined_at(20, "/XYZ 0 700 0", "below-the-top.pdf");
+    run.ok(&["open", below.0.to_str().unwrap()]);
+    run.settled();
+    let top = wait_for(&run, |state| {
+        state["app"]["contents"]["count"] == 20 && state["app"]["contents"]["frames_running"] == false
+    });
+    let contents = &top["app"]["contents"];
+    assert_eq!(contents["current"], Value::Null, "nothing before the first entry: {contents}");
+    assert_eq!(contents["scroll_y"].as_f64().unwrap(), 0.0, "the list from its top: {contents}");
+    assert!(contents["row_views"].as_u64().unwrap() > 0, "rows drawn: {contents}");
+    run.ok(&["goto", "12"]);
+    run.settled();
+    let reading = wait_for(&run, |state| {
+        state["app"]["contents"]["current"].as_u64() == Some(10) && state["app"]["contents"]["frames_running"] == false
+    });
+    let contents = &reading["app"]["contents"];
+    let furthest = (20.0 * 28.0 - contents["height"].as_f64().unwrap()).max(0.0);
+    let y = contents["scroll_y"].as_f64().unwrap();
+    assert!((0.0..=furthest).contains(&y), "the scroll within the list: {contents}");
+    assert_eq!(contents["current_in_view"], true, "{contents}");
+    assert!(contents["row_views"].as_u64().unwrap() > 0, "{contents}");
 }
 
 /// Where the app's threads are over the next 2 s, for a test that finds it awake when it should be resting. CI's machines don't behave like this one, so a failure there has to carry its own evidence.
@@ -1470,6 +1494,11 @@ fn the_contents_follow_quietly_and_nothing_runs_at_rest() {
 
 /// A PDF of as many pages, each with an outline entry.
 fn outlined_with(count: usize) -> TempPdf {
+    outlined_at(count, "/Fit", "long-outline.pdf")
+}
+
+/// [`outlined_with`], each entry's destination on its page being `fit` (`/Fit`, or `/XYZ 0 700 0` for one a little way down).
+fn outlined_at(count: usize, fit: &str, name: &str) -> TempPdf {
     let first_page = 4 + count;
     let mut objects = vec![
         Object::Dict("<< /Type /Catalog /Pages 2 0 R /Outlines 3 0 R >>".into()),
@@ -1487,14 +1516,14 @@ fn outlined_with(count: usize) -> TempPdf {
             String::new()
         };
         objects.push(Object::Dict(format!(
-            "<< /Title (Section {index}) /Parent 3 0 R {prev} {next} /Dest [{} 0 R /Fit] >>",
+            "<< /Title (Section {index}) /Parent 3 0 R {prev} {next} /Dest [{} 0 R {fit}] >>",
             first_page + index
         )));
     }
     for _ in 0..count {
         objects.push(Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".into()));
     }
-    TempPdf::new("long-outline.pdf", &build(&objects))
+    TempPdf::new(name, &build(&objects))
 }
 
 /// A PDF with chapters of sections, each on a page, so the contents open and close as the reader moves.
