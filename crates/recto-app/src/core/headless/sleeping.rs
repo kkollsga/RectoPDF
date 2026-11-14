@@ -95,18 +95,31 @@ fn a_flush_counts_the_tab_on_screens_sleep_file_it_skipped_and_writes_it_given_t
     drop(app.quit());
 }
 
-/// The view the host would have, at the top of the document: a Retina window, the page at its fit.
+/// The view the host would have, at the top of the document, the page at its fit: a small window at one pixel a point, so each picture is a tenth of a
+/// Retina window's and a test's every show and draw is quick under CI's limits (the file's tests took about 60 s of test time under `--like-ci` in a
+/// 1168 by 900 Retina window, 2026-11-14). What's decided doesn't depend on a picture's size, except where a test says so ([`retina_view`]).
 fn window_view() -> recto_reader::Viewport {
     recto_reader::Viewport {
         x: 0.0,
         y: 0.0,
-        width: 1168.0,
-        height: 900.0,
-        frame_width: 1168.0,
+        width: 292.0,
+        height: 225.0,
+        frame_width: 292.0,
         magnification: 1.0,
-        backing: 2.0,
+        backing: 1.0,
         live: false,
         scrolled_to: u64::MAX,
+    }
+}
+
+/// A Retina window, 1168 by 900 points at two pixels a point, as the host has: for a test that needs a picture of a synthetic page to pack to a few KB.
+fn retina_view() -> recto_reader::Viewport {
+    recto_reader::Viewport {
+        width: 1168.0,
+        frame_width: 1168.0,
+        height: 900.0,
+        backing: 2.0,
+        ..window_view()
     }
 }
 
@@ -702,10 +715,10 @@ fn an_agents_answer_says_what_its_share_did_to_its_own_sleep_file() {
     let (a, b) = (disk.pdf("a.pdf", 6), disk.pdf("b.pdf", 6));
     let app = disk.start();
     let engine = app.core().engine.clone();
-    let mut view = window_view();
+    let mut view = retina_view();
     for doc in [&a, &b] {
         app.open(doc);
-        view = window_view();
+        view = retina_view();
         drop(engine.set_viewport(view));
         host_turns(&app, &mut view, true);
     }
