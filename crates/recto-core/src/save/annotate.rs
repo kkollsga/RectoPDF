@@ -274,6 +274,16 @@ fn take_out(reader: &IndexedReader, annots: &mut Vec<Object>, indexes: &[u32]) -
     out
 }
 
+/// The first `/Highlight` among a page's first `within` items, by its place and `/Rect`: what a fuzzer's removal can name.
+pub(super) fn first_highlight(reader: &IndexedReader, page: &Dictionary, within: usize) -> Option<(u32, [f32; 4])> {
+    annots_of(reader, page).iter().take(within).enumerate().find_map(|(at, item)| {
+        let annot = annotation_at(reader, item)?;
+        let highlight = matches!(annot.get(b"Subtype"), Ok(Object::Name(kind)) if kind == b"Highlight");
+        let rect = numbers_of(annot.get(b"Rect").ok())?;
+        highlight.then_some((u32::try_from(at).ok()?, rect))
+    })
+}
+
 /// A page's `/Annots` as a list of its own, whatever form the file gave it: written in place, or named. Anything else is no list, so what's
 /// written is the highlights alone.
 fn annots_of(reader: &IndexedReader, page: &Dictionary) -> Vec<Object> {

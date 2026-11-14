@@ -40,6 +40,8 @@ pub fn check_save(data: &[u8]) {
     within("planning and copying a save", BUDGET, || {
         let _ = recto_core::save::plan_in_memory(&plain, &hostile);
         let _ = recto_core::save::plan_in_memory(&hostile, &plain);
+        // Highlights alone on a hostile file's own pages, the path that writes no new tree, and one of its own taken out by the rewrite (R4.3).
+        let _ = recto_core::save::highlights_in_memory(&hostile);
     });
     // The rewrite: a delete in a hostile file, with and without pages added, and hostile pages added to a plain file. What it writes passes the fork's verify, or it refuses.
     within("planning and writing a rewrite", BUDGET, || {
@@ -163,7 +165,7 @@ fn assert_facts_hold(facts: &DocFacts, file_bytes: u64) {
     assert!(toc.labels.ranges().len() <= recto_core::nav::MAX_LABEL_RANGES);
 }
 
-/// Links: within their caps, boxes real, addresses only of the kinds that may be offered, and a page a link goes to one there is.
+/// A file's highlights: within their caps, and every rectangle finite, of some area and inside its page.
 fn assert_highlights_hold(read: &recto_core::highlights::PageHighlights) {
     use recto_core::highlights::{MAX_PAGE_HIGHLIGHTS, MAX_QUADS};
     assert!(read.found.len() <= MAX_PAGE_HIGHLIGHTS);
@@ -186,6 +188,7 @@ fn assert_highlights_hold(read: &recto_core::highlights::PageHighlights) {
     }
 }
 
+/// Links: within their caps, boxes real, addresses only of the kinds that may be offered, and a page a link goes to one there is.
 fn assert_links_hold(read: &[(u32, recto_core::nav::PageLinks)]) {
     use recto_core::nav::{LinkTarget, MAX_PAGE_LINKS, MAX_PAGES_PER_READ, MAX_URI_BYTES};
     assert!(read.len() <= MAX_PAGES_PER_READ);

@@ -2072,3 +2072,11 @@ fn a_save_says_the_size_a_turned_page_was_shown_at() {
     let outcome = save::save(&request(&path, 3, &order, &[]), Target::Same, None, &mut save::NoHooks).unwrap();
     assert_eq!(outcome.marks.turned, vec![(0, [300.0, 500.0]), (1, [500.0, 300.0])]);
 }
+
+/// Failure (review of R4.3): the fuzzer's way into a save of highlights alone (no new tree) and of a file highlight's removal doesn't write or doesn't
+/// verify on an ordinary file, so it reaches neither path and fuzzes nothing there.
+#[test]
+fn the_fuzzers_highlights_path_writes_and_takes_one_out() {
+    assert_eq!(save::highlights_in_memory(&with_file_highlights()), Ok(1));
+    assert_eq!(save::highlights_in_memory(&marked(&["A", "B", "C"])), Ok(3));
+}

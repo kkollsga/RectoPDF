@@ -93,6 +93,75 @@ pub fn plan_in_memory_within(target: &[u8], added: &[u8], work_limit: u64) -> Re
     Ok(expected.len())
 }
 
+/// **Highlights alone, on bytes in memory, for the fuzzer** (review of R4.3): `target`'s pages as they are, with a highlight on its first two, written
+/// as an update (the path a save of highlights alone takes: no new tree, each page written again with its list); then, if the first page's list
+/// has a highlight among its first eight items, that highlight taken out by the rewrite, through the fork's own verify. Gives back the pages the
+/// result has. The same plan and sinks a save uses, with no file.
+pub fn highlights_in_memory(target: &[u8]) -> Result<usize, SaveError> {
+    let (reader, map) = open_bytes_for_save(target)?;
+    let pages = u32::try_from(map.len()).map_err(|_| SaveError::Damaged)?;
+    let order: Vec<PageRef> = (0..pages)
+        .map(|page| PageRef {
+            source: 0,
+            page,
+            quarter_turns: 0,
+        })
+        .collect();
+    let line = [[10.0, 10.0, 100.0, 12.0]];
+    let highlights: Vec<NewHighlight<'_>> = (0..pages.min(2)).map(|position| NewHighlight { position, rects: &line }).collect();
+    let first_highlight = map.get(0).and_then(|entry| match reader.resolve_object(entry.id()) {
+        Ok(Object::Dictionary(page)) => annotate::first_highlight(&reader, &page, 8),
+        _ => None,
+    });
+    let gone: Vec<GoneHighlight> = first_highlight
+        .into_iter()
+        .map(|(index, rect)| GoneHighlight { position: 0, index, rect })
+        .collect();
+    let request = |highlights_gone| SaveRequest {
+        path: Path::new("target.pdf"),
+        stamp: None,
+        file_pages: pages,
+        pages: &order,
+        added: &[],
+        highlights: &highlights,
+        highlights_gone,
+    };
+    reader.check_appendable().map_err(from_append)?;
+    let plan = Plan::make(&reader, &map, &request(&[]), &[], signature_facts(&reader), Writer::Append, MAX_COPY_WORK)?;
+    let mut out = Vec::new();
+    let mut writer = AppendWriter::new(&reader, &mut out).map_err(from_append)?;
+    let began = writer.position();
+    let expected = plan.write(&reader, &[], &mut AppendSink { writer: &mut writer, began })?;
+    writer.finish().map_err(from_append)?;
+    let (_, written) = open_bytes_for_save(&out).map_err(|_| SaveError::CheckFailed { detail: "doesn't open" })?;
+    if written.len() != expected.len() {
+        return Err(SaveError::CheckFailed { detail: "pages out of place" });
+    }
+    if gone.is_empty() {
+        return Ok(expected.len());
+    }
+    reader.check_rewritable().map_err(from_rewrite)?;
+    let plan = Plan::make(&reader, &map, &request(&gone), &[], signature_facts(&reader), Writer::Rewrite, MAX_COPY_WORK)?;
+    let mut changes = RewriteChanges::new(&reader).map_err(from_rewrite)?;
+    let cap = plan.append_cap.min(MAX_REWRITE_HELD_BYTES);
+    let expected = plan.write(
+        &reader,
+        &[],
+        &mut RewriteSink {
+            changes: &mut changes,
+            held: 0,
+            cap,
+        },
+    )?;
+    let mut out = Vec::new();
+    let unverified = changes.write_unverified_to(RewritePolicy::new(), &mut out).map_err(from_rewrite)?;
+    let bytes: std::sync::Arc<[u8]> = out.into();
+    unverified
+        .verify(&reader, std::sync::Arc::new(lopdf::BytesSource::new(std::sync::Arc::clone(&bytes))))
+        .map_err(from_rewrite)?;
+    Ok(expected.len())
+}
+
 /// **The rewrite's planner on bytes in memory, for the fuzzer:** `target` with its first page deleted, and with `added`'s pages after the rest when `with_added`,
 /// written by the rewrite into memory, checked by the fork's own verify and read back. Gives back the pages the result has. The same plan and sink a save
 /// uses, with no file. A target of one page has nothing left to delete, so it's refused as a save would refuse it.
