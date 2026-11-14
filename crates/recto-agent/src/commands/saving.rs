@@ -30,6 +30,9 @@ impl Cmd for Save {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -56,7 +59,7 @@ impl Cmd for Save {
             None if *replace => return Err(AgentError::new(Code::USAGE, "`--replace` goes with Save As's `--out`.", exit::USAGE)),
             None => saving::SaveTo::Same,
         };
-        saving::save(cx.access, cx.level, tab, &to, cx.events)
+        saving::save(cx.access, cx.actor, tab, &to, cx.events)
     }
     /// Its answer, every field, as it has always been put.
     fn human(data: &Value) -> String {

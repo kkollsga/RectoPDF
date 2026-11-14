@@ -155,6 +155,7 @@ impl<L: DocLoader> Session<L> {
                 news: None,
                 encrypted: false,
                 password: false,
+                placed_by_withheld: false,
             },
             reading: TabPlace {
                 place: None,

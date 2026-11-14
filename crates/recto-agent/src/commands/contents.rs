@@ -32,6 +32,10 @@ impl Cmd for ContentsFold {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    /// Folded or opened against what following the place opens, so whether it's open after says whether the reader is in the section.
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::Place
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -162,6 +166,9 @@ impl Cmd for ContentsShow {
     const ABOUT: super::About = super::About::Its;
     // Generated ones not shown yet are looked for: the file's key, and the folder they're kept in.
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -242,6 +249,9 @@ impl Cmd for ContentsStop {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }

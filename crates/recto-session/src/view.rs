@@ -30,11 +30,16 @@ impl<L: DocLoader> Session<L> {
         if self.tabs.tab(id).is_none() || !self.mail.view_told_of(id, stamp, line, (place.anchor_page, place.within)) {
             return false;
         }
+        let following = compare::follows_withheld(self, id);
         if let Some(tab) = self.tabs.tab_mut(id)
             && tab.reading.place != Some(place)
         {
             tab.reading.place = Some(place);
             tab.place_dirty = true;
+            // A move down its page while it follows a withheld tab says how far down that one went, as a move to another page does (S2's round).
+            if following {
+                compare::set_placed_by_withheld(tab, &mut self.mail, true);
+            }
         }
         true
     }

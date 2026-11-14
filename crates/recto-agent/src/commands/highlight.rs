@@ -59,6 +59,9 @@ impl Cmd for Highlight {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -208,6 +211,9 @@ impl Cmd for HighlightRemove {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -269,6 +275,9 @@ impl Cmd for Highlights {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }

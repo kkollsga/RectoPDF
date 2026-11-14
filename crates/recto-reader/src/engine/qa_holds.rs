@@ -346,7 +346,7 @@ mod tests {
         fn ops_ready(&self) {}
         fn note_changed(&self) {}
         fn page_moved(&self) {}
-        fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
+        fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>, _asked: u64) {}
     }
 
     /// Failure (second review of `build/settled-gaps`, 2026-11-14): the thread that draws said it had told what came of a job, by clearing its flag, without

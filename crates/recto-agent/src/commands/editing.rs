@@ -28,6 +28,9 @@ impl Cmd for PageMove {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -76,6 +79,9 @@ impl Cmd for PageDelete {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -121,6 +127,9 @@ impl Cmd for PageInsert {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -154,7 +163,7 @@ impl Cmd for PageInsert {
                 note_agent_at_full(s, actor);
                 s.insert_pdf_with_facts(id, actor.author(), position, path, &facts, stamp)?;
                 events.push(edits_changed(s, id));
-                let mut data = edit_state_json(s, id);
+                let mut data = edit_state_json(s, actor, id);
                 data["did"] = json!(format!(
                     "Added {} at page {at}.",
                     if facts.page_count == 1 {
@@ -163,7 +172,7 @@ impl Cmd for PageInsert {
                         format!("{} pages", facts.page_count)
                     }
                 ));
-                Ok(with_place_note(s, id, data))
+                Ok(with_place_note(s, actor, id, data))
             })
         }
     }
@@ -189,6 +198,9 @@ impl Cmd for Edits {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -204,10 +216,10 @@ impl Cmd for Edits {
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { tab } = self;
-        let access = cx.access;
+        let (access, actor) = (cx.access, cx.actor);
         access.with(|s| {
             let id = select(s, tab)?;
-            Ok(edits_json(s, id))
+            Ok(edits_json(s, actor, id))
         })
     }
     fn human(data: &Value) -> String {
@@ -231,6 +243,9 @@ impl Cmd for Discard {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -254,13 +269,13 @@ impl Cmd for Discard {
             let had_any = s.lists().summary(id).is_some();
             s.discard_edits(id);
             events.push(edits_changed(s, id));
-            let mut data = edit_state_json(s, id);
+            let mut data = edit_state_json(s, actor, id);
             data["did"] = json!(if had_any {
                 "Threw away this tab's edits."
             } else {
                 "There were no edits to throw away."
             });
-            Ok(with_place_note(s, id, data))
+            Ok(with_place_note(s, actor, id, data))
         })
     }
     fn human(data: &Value) -> String {
@@ -410,6 +425,9 @@ impl Cmd for PageRotate {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -464,6 +482,9 @@ impl Cmd for Undo {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -485,9 +506,9 @@ impl Cmd for Undo {
                 return Err(AgentError::new(Code::NOTHING_TO_UNDO, "There's nothing to undo on this tab.", exit::FAILED));
             }
             events.push(edits_changed(s, id));
-            let mut data = edit_state_json(s, id);
+            let mut data = edit_state_json(s, actor, id);
             data["did"] = json!("Undid the last edit.");
-            Ok(with_place_note(s, id, data))
+            Ok(with_place_note(s, actor, id, data))
         })
     }
     fn human(data: &Value) -> String {
@@ -511,6 +532,9 @@ impl Cmd for Redo {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -532,9 +556,9 @@ impl Cmd for Redo {
                 return Err(AgentError::new(Code::NOTHING_TO_REDO, "There's nothing to redo on this tab.", exit::FAILED));
             }
             events.push(edits_changed(s, id));
-            let mut data = edit_state_json(s, id);
+            let mut data = edit_state_json(s, actor, id);
             data["did"] = json!("Redid the last undone edit.");
-            Ok(with_place_note(s, id, data))
+            Ok(with_place_note(s, actor, id, data))
         })
     }
     fn human(data: &Value) -> String {
@@ -558,6 +582,9 @@ impl Cmd for ClearHistory {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -582,13 +609,13 @@ impl Cmd for ClearHistory {
             if had_any {
                 events.push(edits_changed(s, id));
             }
-            let mut data = edit_state_json(s, id);
+            let mut data = edit_state_json(s, actor, id);
             data["did"] = json!(if had_any {
                 "Cleared this tab's edit history. Unsaved edits are still here, and can't be undone now."
             } else {
                 "There was no edit history to clear."
             });
-            Ok(with_place_note(s, id, data))
+            Ok(with_place_note(s, actor, id, data))
         })
     }
     fn human(data: &Value) -> String {

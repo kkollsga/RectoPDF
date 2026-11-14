@@ -29,6 +29,9 @@ impl Cmd for Wait {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -79,6 +82,9 @@ impl Cmd for Watch {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }
@@ -112,6 +118,9 @@ impl Cmd for WatchStop {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }

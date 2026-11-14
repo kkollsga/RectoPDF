@@ -41,7 +41,8 @@ pub enum CoreCall {
     FileLength(TabId, u32, u64),
     /// A worker's found a tab's file replaced, so it's looked at.
     LookAgain(TabId),
-    Page(u32, Option<&'static str>, TabId),
+    /// A page drawn, or not, in a tab, by a job planned when the place clock was at the last (`recto_reader::tiles::Job::asked`).
+    Page(u32, Option<&'static str>, TabId, u64),
     /// A file read off the session thread, for a tab being woken or a file being opened.
     Read(Box<FileRead>),
     /// Everything asked before this has been done.
@@ -316,11 +317,18 @@ impl CoreQueue {
         if self.abandoned.load(Ordering::SeqCst) {
             return;
         }
-        if let CoreCall::Page(page, failure, tab) = &call {
+        if let CoreCall::Page(page, failure, tab, asked) = &call {
             // Only notes of what was drawn can go, as they're told on to watchers and no more. Many tiles of a page are one note, which is most of them, so this is hard to reach. With the session thread held up for some reason this stops them growing without end. Anything a person did always gets in.
-            if calls.len() >= MAX_QUEUED_CALLS
-                || matches!(calls.back(), Some(CoreCall::Page(last_page, last_failure, last_tab)) if last_page == page && last_failure == failure && last_tab == tab)
+            if calls.len() >= MAX_QUEUED_CALLS {
+                return;
+            }
+            // One note for the page, asked as late as the latest of its draws: one asked after a release of a withheld place is told (S-3).
+            if let Some(CoreCall::Page(last_page, last_failure, last_tab, last_asked)) = calls.back_mut()
+                && last_page == page
+                && last_failure == failure
+                && last_tab == tab
             {
+                *last_asked = (*last_asked).max(*asked);
                 return;
             }
         }
@@ -579,7 +587,7 @@ mod tests {
     fn a_full_queue_loses_only_notes_of_pages_drawn() {
         let queue = CoreQueue::default();
         for page in 0..(MAX_QUEUED_CALLS as u32 + 100) {
-            queue.push(CoreCall::Page(page, None, TabId(1)));
+            queue.push(CoreCall::Page(page, None, TabId(1), 0));
         }
         assert_eq!(lock(&queue.calls).len(), MAX_QUEUED_CALLS, "it stops at the cap");
         queue.push(tap(2));
@@ -820,7 +828,7 @@ mod tests {
             CoreCall::WokenFileIsOther(tab, FileStatus::Same(stamp), Some(stamp)),
             CoreCall::FileLength(tab, 1, 1),
             CoreCall::LookAgain(tab),
-            CoreCall::Page(1, None, tab),
+            CoreCall::Page(1, None, tab, 0),
             CoreCall::Read(Box::new(read)),
             CoreCall::Flush(Arc::new(Flushed::default())),
             CoreCall::Restored(Box::new(Loaded::Nothing)),
@@ -912,11 +920,11 @@ mod tests {
     fn repeated_notes_of_a_page_take_one_place() {
         let queue = CoreQueue::default();
         for _ in 0..100 {
-            queue.push(CoreCall::Page(3, None, TabId(1)));
+            queue.push(CoreCall::Page(3, None, TabId(1), 0));
         }
         assert_eq!(lock(&queue.calls).len(), 1);
-        queue.push(CoreCall::Page(3, Some("page_failed"), TabId(1)));
-        queue.push(CoreCall::Page(4, None, TabId(1)));
+        queue.push(CoreCall::Page(3, Some("page_failed"), TabId(1), 0));
+        queue.push(CoreCall::Page(4, None, TabId(1), 0));
         assert_eq!(lock(&queue.calls).len(), 3);
     }
 }

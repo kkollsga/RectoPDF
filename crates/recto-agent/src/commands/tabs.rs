@@ -29,6 +29,9 @@ impl Cmd for Open {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }
@@ -65,6 +68,9 @@ impl Cmd for Tap {
     const PROTECTED_OK: bool = true;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -78,7 +84,7 @@ impl Cmd for Tap {
         json!({ "tab": super::log_tab(&self.tab) })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        let (access, events) = (cx.access, &mut *cx.events);
+        let (access, actor, events) = (cx.access, cx.actor, &mut *cx.events);
         let id = access.with(|s| select(s, &self.tab))?;
         read_ahead(access, |s| s.wake_for_tap(id))?;
         access.with(|s| {
@@ -86,7 +92,7 @@ impl Cmd for Tap {
             let switched = s.tap(id)?;
             event::switched(s, switched, events);
             // The sidebar's every row, which the window's own tap would build for nobody: SessionAccess::answer_read.
-            Ok(if access.answer_read() { sidebar_json(s) } else { Value::Null })
+            Ok(if access.answer_read() { sidebar_json(s, actor) } else { Value::Null })
         })
     }
     fn human(data: &Value) -> String {
@@ -107,6 +113,9 @@ impl Cmd for Recent {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }
@@ -153,6 +162,9 @@ impl Cmd for RecentClear {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }
@@ -197,6 +209,9 @@ impl Cmd for Close {
     const PROTECTED_OK: bool = true;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -233,7 +248,7 @@ impl Cmd for Close {
                 let closed = s.close(id)?;
                 event::closed(s, closed, events);
                 // Not the whole list: closing a thousand tabs shouldn't build a thousand lists.
-                Ok(json!({ "closed": id.0, "count": s.tabs().len(), "active": s.tabs().active().map(|active| where_json(s, active)) }))
+                Ok(json!({ "closed": id.0, "count": s.tabs().len(), "active": s.tabs().active().map(|active| where_json(s, actor, active)) }))
             })
         }
     }
@@ -374,7 +389,7 @@ fn open<A: SessionAccess>(access: &A, actor: Actor, path: &Path, page: Option<u3
         if page.is_some() {
             events.push(page_now(s, id));
         }
-        let mut data = where_json(s, id);
+        let mut data = where_json(s, actor, id);
         // A PDF is open once, so what's asked for by any name is this tab, and an agent is told.
         if !is_new {
             data["already_open"] = json!(true);

@@ -20,6 +20,9 @@ pub struct Job {
     pub file: PathBuf,
     pub source_page: u32,
     pub generation: u64,
+    /// **The place clock as it was planned** ([`super::place::place_stamp`]), under the page view's lock: a draw's end is told with it, so the session
+    /// can drop one asked of the view before a jump that let a place withheld from agents go (`recto_session`'s mail, the second review's S-3).
+    pub asked: u64,
     pub kind: JobKind,
 }
 
@@ -58,6 +61,8 @@ pub struct JobPlan {
     pub file: PathBuf,
     pub source_page: u32,
     pub generation: u64,
+    /// The place clock as it was planned: see [`Job::asked`].
+    pub asked: u64,
     pub(super) kind: PlanKind,
 }
 
@@ -87,6 +92,7 @@ impl JobPlan {
             file,
             source_page,
             generation,
+            asked,
             kind,
         } = self;
         let kind = match kind {
@@ -131,6 +137,7 @@ impl JobPlan {
             file,
             source_page,
             generation,
+            asked,
             kind,
         })
     }
@@ -252,6 +259,7 @@ pub(crate) mod surface_seam {
             file: std::path::PathBuf::from("/d/a.pdf"),
             source_page: 0,
             generation: 0,
+            asked: 0,
             kind: super::PlanKind::Draw {
                 scale: 4.0,
                 rect: crate::tiles::TileRect {
@@ -496,3 +504,8 @@ impl Reader {
         }
     }
 }
+// size: one for each job planned and not yet ended, in flight only (a page view's queue and its workers), never per idle tab. 80 and 72 bytes on a Mac
+// until 2026-11-14; 88 and 80 with `asked`, the place clock a draw's news is judged by (the second review's S-3). Held on the Mac, where it's measured
+// (a path and a surface differ by system), so a field added is a deliberate change.
+#[cfg(target_os = "macos")]
+const _: () = assert!(size_of::<Job>() == 88 && size_of::<JobPlan>() == 80, "a job grew");

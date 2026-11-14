@@ -160,7 +160,7 @@ impl recto_reader::engine::EngineEvents for QuietEngine {
     fn ops_ready(&self) {}
     fn note_changed(&self) {}
     fn page_moved(&self) {}
-    fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
+    fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>, _asked: u64) {}
 }
 
 #[cfg(test)]

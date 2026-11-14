@@ -442,7 +442,7 @@ mod tests {
         fn ops_ready(&self) {}
         fn note_changed(&self) {}
         fn page_moved(&self) {}
-        fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
+        fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>, _asked: u64) {}
     }
 
     /// Failure (review 1 of the slow mode): an arm of the session thread's loop left it early, with `continue`, and skipped what every call ends with. The state's coming in announced nothing it did and left Find's field behind for the window made from it (CI, run 43062872948), and a flush's own changes were never announced. Only these leave early, each for its reason: a person's open before the state's in, put off whole; a drawn page, which announces itself and makes no view; and the state's coming in, after its tail, before the host's told.

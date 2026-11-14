@@ -28,6 +28,9 @@ impl Cmd for Tabs {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }
@@ -42,8 +45,8 @@ impl Cmd for Tabs {
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { from, limit } = self;
-        let access = cx.access;
-        access.with(|s| tabs_json(s, *from, *limit))
+        let (access, actor) = (cx.access, cx.actor);
+        access.with(|s| tabs_json(s, actor, *from, *limit))
     }
     fn human(data: &Value) -> String {
         tabs(data)
@@ -66,6 +69,9 @@ impl Cmd for Where {
     const PROTECTED_OK: bool = true;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -81,8 +87,8 @@ impl Cmd for Where {
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { tab } = self;
-        let access = cx.access;
-        access.with(|s| Ok(where_json(s, select(s, tab)?)))
+        let (access, actor) = (cx.access, cx.actor);
+        access.with(|s| Ok(where_json(s, actor, select(s, tab)?)))
     }
     fn human(data: &Value) -> String {
         place(data)
@@ -105,6 +111,9 @@ impl Cmd for Facts {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -155,6 +164,9 @@ impl Cmd for Contents {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -204,6 +216,9 @@ impl Cmd for Signatures {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -240,6 +255,9 @@ impl Cmd for Sidebar {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }
@@ -253,8 +271,8 @@ impl Cmd for Sidebar {
         Value::Null
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        let access = cx.access;
-        Ok(access.with(|s| sidebar_json(s)))
+        let (access, actor) = (cx.access, cx.actor);
+        Ok(access.with(|s| sidebar_json(s, actor)))
     }
     fn human(data: &Value) -> String {
         sidebar(data)

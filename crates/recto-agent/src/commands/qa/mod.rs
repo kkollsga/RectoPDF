@@ -34,6 +34,9 @@ impl Cmd for QaRead {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }
@@ -80,6 +83,9 @@ impl Cmd for QaDrive {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }

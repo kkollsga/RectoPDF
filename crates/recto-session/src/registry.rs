@@ -217,9 +217,7 @@ impl Tabs {
 
     /// **Nothing of this tab's file goes to an agent:** it was opened with a password the person typed, or it needs one, and what the record has of it (its length, its place) was read with one. Reading a protected document needs the person's consent for that document (agent report §5.5), which isn't built, so it's refused outright. `encrypted` alone isn't this: a file anyone may open can be encrypted too.
     pub fn withheld_from_agents(&self, id: TabId) -> bool {
-        self.tab(id).is_some_and(|tab| {
-            tab.file.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.file.notice(), Some(FileNotice::NeedsPassword))
-        })
+        self.tab(id).is_some_and(withheld_tab)
     }
 
     /// What a tab's own file was when its page numbers were recorded, for a caller listing pages by file.
@@ -245,14 +243,12 @@ impl Tabs {
 
     /// Whether a tab can go back, and forward.
     pub fn can_go_back_and_forward(&self, id: TabId) -> (bool, bool) {
-        self.trail_of(id)
-            .map_or((false, false), |trail| (!trail.back().is_empty(), !trail.forward().is_empty()))
+        self.trail_of(id).map_or((false, false), |trail| (trail.can_go(true), trail.can_go(false)))
     }
 
     /// Where to bring a tab back to: only if it's still about the page the tab is on, as a `goto` while it was cold leaves it not.
     pub fn place_to_show(&self, id: TabId) -> Option<PlaceRecord> {
-        let tab = self.tab(id)?;
-        tab.reading.place.filter(|place| place.page == tab.page)
+        place_shown(self.tab(id)?)
     }
 
     /// What's selected in a tab. Carried across a restart, and nothing else here reads it. The crate's: from outside, a selection is noted only by
@@ -345,4 +341,15 @@ impl crate::parts::PartMut<'_, Tabs> {
     pub fn note_password_used(&mut self, id: TabId) {
         self.0.note_password_used(id);
     }
+}
+
+/// [`Tabs::withheld_from_agents`], the one rule, for a tab in hand: so a walk over every tab, or an answer that has the tab's record, needn't look it up
+/// again by its number.
+pub fn withheld_tab(tab: &TabRecord) -> bool {
+    tab.file.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.file.notice(), Some(FileNotice::NeedsPassword))
+}
+
+/// [`Tabs::place_to_show`], for a tab in hand: the exact place the page view last said, while it's on the page the tab is.
+pub fn place_shown(tab: &TabRecord) -> Option<PlaceRecord> {
+    tab.reading.place.filter(|place| place.page == tab.page)
 }

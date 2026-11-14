@@ -224,6 +224,9 @@ impl Cmd for View {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     /// The tab a layout is for: the one named, or the one showing. Which tab it is decides, not how it was named, so a layout of a document withheld from
     /// agents is refused either way. The paper, the sidebar and the agent icon touch no tab, and a plain look names none.
     fn tab(&self) -> Option<&TabRef> {
@@ -313,6 +316,9 @@ impl Cmd for Palette {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }

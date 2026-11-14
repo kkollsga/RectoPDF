@@ -252,7 +252,7 @@ fn job_ended(shared: &Shared, job: Job, outcome: Outcome, file_changed: bool) {
         (JobKind::Draw { .. }, Outcome::PageFailed { .. }) => Some(Some("page_failed")),
         _ => None,
     };
-    let (tab, page) = (job.tab, job.position);
+    let (tab, page, asked) = (job.tab, job.position, job.asked);
     let mut reader = lock(&shared.reader);
     if file_changed {
         reader.file_changed(tab);
@@ -275,7 +275,7 @@ fn job_ended(shared: &Shared, job: Job, outcome: Outcome, file_changed: bool) {
     note_change(shared, note);
     tell_selecting(shared, selecting);
     if let Some(failure) = drawn {
-        shared.events.page_drawn(tab, page, failure);
+        shared.events.page_drawn(tab, page, failure, asked);
     }
     if has_ops {
         signal_ops(shared);

@@ -56,6 +56,9 @@ pub(crate) fn tab_line(tab: &Value) -> String {
         .unwrap_or_default();
     let place = if tab["protected"] == true {
         "protected".to_string()
+    } else if tab["place_withheld"] == true {
+        // It follows, or was left by following, a protected document's place in a comparison: its length is its own.
+        format!("{} pages, where it is not given: it followed a protected document", number(&tab["pages"]))
     } else {
         format!("page {} of {}{label}", number(&tab["page"]), number(&tab["pages"]))
     };
