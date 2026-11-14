@@ -5,6 +5,7 @@
 //! What the window does around a person's command, beyond the command, is each feature's, one line each in the lists below: before it runs ([`BEFORE`]), and
 //! once it has ([`ANSWERED`]), as the words a refusal is said in, a password asked for or a list kept at once.
 
+use super::answer_parts::AnswerParts;
 use super::{FileReads, Inner};
 use crate::queue::{CoreCall, Origin, PersonCommand, Reading};
 use recto_agent::Code;
@@ -40,6 +41,41 @@ pub fn submit(inner: &Arc<Inner>, command: Command) -> bool {
     true
 }
 
+/// **What a person may start from a menu row or an answer, as the person:** a command, and the feature's own runs that take a thread of their own (a
+/// Save with the window's progress, a refused snapshot taken anyway). Each starts on its own thread, which holds the app to run it and to answer
+/// how it went, so this holds the app; its field is private to this file, so a row or an answer can do these and nothing more of the app through it.
+#[derive(Clone, Copy)]
+pub struct Person<'a> {
+    app: &'a Arc<Inner>,
+}
+
+impl<'a> Person<'a> {
+    /// The person's way into `app`.
+    pub(in crate::core) fn of(app: &'a Arc<Inner>) -> Self {
+        Self { app }
+    }
+
+    /// A command as the person's ([`submit`]), saying whether it was taken: false past a hand-off's last look.
+    pub fn submit(self, command: Command) -> bool {
+        submit(self.app, command)
+    }
+
+    /// A command as the person's, made what it is by the session as it is when it runs ([`submit_when_run`]).
+    pub fn submit_when_run(self, command: Command, when_run: crate::queue::WhenRun) {
+        submit_when_run(self.app, command, when_run);
+    }
+
+    /// Saving's own: the person's Save of `tab`, on a thread of its own with the window's progress ([`super::saving::start_save`]).
+    pub fn save(self, tab: recto_session::TabId) {
+        super::saving::start_save(self.app, tab, None, false);
+    }
+
+    /// The snapshot tool's own: a notice's Copy anyway, for the person's snapshot it refused ([`super::snapshot_tool::anyway`]).
+    pub fn snapshot_anyway(self, serial: u64) {
+        super::snapshot_tool::anyway(self.app, serial);
+    }
+}
+
 /// Whether a person's command, as it's queued, is one that runs on a thread of its own: one that may wait, or isn't the session's to answer. Only a command
 /// held while a late keep's restore was read is queued so ([`submit`]), and it goes to its thread once it's let go.
 pub(crate) fn on_a_thread_of_its_own(run: &PersonCommand) -> bool {
@@ -63,16 +99,16 @@ fn on_its_own_thread(command: Command, counted: Running) {
         let mut events = Vec::new();
         sent(&inner.serving, &command);
         let result = recto_control::host::Host::run(&*inner.host, Actor::Person, &command, &mut events);
-        answered(&inner, &command, Origin::Input, &result);
+        answered(&AnswerParts::of(&inner), &command, Origin::Input, &result);
         inner.core.push(CoreCall::Events(events));
         drop(counted);
     });
     // The thread that didn't start took its count with it, as the closure holding it was dropped. It's said in the person's words, then answered as
     // refused, so its feature can say more of its own.
     if spawned.is_err() {
-        say(&inner, NOT_STARTED.to_string());
+        say(inner.window.notices(), &inner.core, NOT_STARTED.to_string());
         let refused = Err(AgentError::new(Code::NOT_STARTED, NOT_STARTED, recto_agent::exit::BUSY));
-        answered(&inner, &kept, Origin::Input, &refused);
+        answered(&AnswerParts::of(&inner), &kept, Origin::Input, &refused);
     }
 }
 
@@ -143,7 +179,7 @@ const BEFORE: &[fn(&Inner, &mut FileReads, &Command)] = &[super::opening::before
 /// **What the window does with how a person's command went,** feature by feature, one line each: a failure in the person's own words, from the feature
 /// it's about, and the window's own steps after (a list kept at once). A failure no feature has words for is said nothing of, as the window's own calls said
 /// nothing (an Undo with nothing to undo); an agent's words, which name `recto` commands and levels, are never shown to a person.
-const ANSWERED: &[fn(&Arc<Inner>, &Ran<'_>)] = &[
+const ANSWERED: &[fn(&AnswerParts<'_>, &Ran<'_>)] = &[
     super::navigation::answered,
     super::opening::answered,
     super::closing::answered,
@@ -155,10 +191,10 @@ const ANSWERED: &[fn(&Arc<Inner>, &Ran<'_>)] = &[
     super::printing::answered,
 ];
 
-fn answered(inner: &Arc<Inner>, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {
+fn answered(parts: &AnswerParts<'_>, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {
     let ran = Ran { command, origin, result };
     for answer in ANSWERED {
-        answer(inner, &ran);
+        answer(parts, &ran);
     }
 }
 
@@ -194,9 +230,9 @@ pub fn session_words(error: &AgentError) -> Option<&'static str> {
 }
 
 /// A line by the page in the person's words, which goes by itself.
-pub fn say(inner: &Inner, words: String) {
-    inner.window.notices().say(words);
-    inner.core.push(CoreCall::Reconcile);
+pub fn say(notices: &super::window::Notices, core: &crate::queue::CoreQueue, words: String) {
+    notices.say(words);
+    core.push(CoreCall::Reconcile);
 }
 
 /// Runs a person's command now. Its answer is nobody's but a test's: the window draws what the session publishes.
@@ -212,7 +248,7 @@ pub fn run(inner: &Arc<Inner>, reads: &mut FileReads, run: PersonCommand, events
             Ok(resolved) => resolved,
             Err(error) => {
                 let result = Err(error);
-                answered(inner, &command, origin, &result);
+                answered(&AnswerParts::of(inner), &command, origin, &result);
                 return result;
             }
         },
@@ -234,7 +270,7 @@ pub fn run(inner: &Arc<Inner>, reads: &mut FileReads, run: PersonCommand, events
         .host
         .session
         .run_reading_later(Actor::Person, &command, events, &later, &super::find::effects_now(inner));
-    answered(inner, &command, origin, &result);
+    answered(&AnswerParts::of(inner), &command, origin, &result);
     result
 }
 
@@ -340,6 +376,172 @@ mod tests {
         app.settle();
         let notice = app.reader().selection_notice.map(|notice| notice.text);
         assert_eq!(notice.as_deref(), Some(super::NOT_STARTED), "told in the window's words");
+    }
+
+    /// **Failure (a guard before the answers were given the app's parts and not the app, `build/registries`):** what a person is shown after a command of
+    /// theirs ran changes: a refusal said in other words or by another line (the page's notice, or the open failure under the field), one said where it
+    /// was said nothing (an agent's refusal, which names `recto` and levels, or a close refused that wasn't the prompt's), a rotate that went leaving the
+    /// line there, or a line said without the window being published again to show it, or published for nothing (`say` and `notice` swapped). Through the
+    /// one list, as the session thread calls it, for the answers of going to a page, opening (its failure; not its password sheet), closing, editing,
+    /// comparison and highlights. Held elsewhere: Find's (`headless/finding.rs`, `a_query_too_long_is_said_and_not_searched`), the updates menu's
+    /// (`headless/update_menu.rs`), the password sheet an open asks for (`headless/passwords.rs`); Clear Menu's record written at once is held by none.
+    #[test]
+    fn what_a_person_is_shown_after_each_command_is_as_it_was() {
+        use super::Origin;
+        use recto_agent::commands::compare::Compare;
+        use recto_agent::commands::editing::PageRotate;
+        use recto_agent::commands::highlight::{Highlight, HighlightRemove, RemoveWhat};
+        use recto_agent::commands::linking::Goto;
+        use recto_agent::commands::tabs::{Close, Open};
+        use recto_agent::{Code, Command, TabRef};
+        use recto_core::OpenError;
+        use recto_session::TabId;
+        use recto_session::compare::CompareError;
+
+        let app = crate::testkit::headless::HeadlessApp::start();
+        let inner = std::sync::Arc::clone(app.core());
+        let agents = |code: Code| {
+            Err(AgentError::new(
+                code,
+                "an agent's words, naming `recto` and Full access",
+                recto_agent::exit::PERMISSION,
+            ))
+        };
+        assert!(inner.core.flush(std::time::Duration::from_secs(10)), "the app at rest");
+        let shown = |command: Command, origin: Origin, result: Result<serde_json::Value, AgentError>| {
+            let notices = inner.window.notices();
+            notices.say("before".into());
+            notices.clear_open_failure();
+            let asked = inner.core.reconciles_asked();
+            super::answered(&super::AnswerParts::of(&inner), &command, origin, &result);
+            (notices.notice(), notices.open_failure(), inner.core.reconciles_asked() > asked)
+        };
+        // Said by the page, which goes by itself: the window published again to show it.
+        let said = |words: &str| (Some(words.to_string()), None, true);
+        let left = (Some("before".to_string()), None, false);
+        let goto = Command::from(Goto {
+            tab: TabRef::Id(TabId(1)),
+            page: None,
+            label: Some("xii".into()),
+            within: None,
+            entry: None,
+        });
+        let open = Command::from(Open {
+            path: "/nowhere/a.pdf".into(),
+            page: None,
+        });
+        let close = Command::from(Close { tab: TabRef::Id(TabId(1)) });
+        let rotate = Command::from(PageRotate {
+            tab: "active".into(),
+            pages: "all".into(),
+            degrees: 90,
+        });
+        let compare = Command::from(Compare::Toggle(TabRef::Id(TabId(1))));
+        let highlight = Command::Edit(recto_agent::commands::Edit::Highlight(Highlight {
+            tab: TabRef::Id(TabId(1)),
+            page: Some(1),
+            to_page: None,
+            chars: Some("0-4".into()),
+            at: None,
+            to: None,
+            unit: None,
+        }));
+        let remove = Command::Edit(recto_agent::commands::Edit::HighlightRemove(HighlightRemove {
+            tab: TabRef::Id(TabId(1)),
+            what: RemoveWhat::Pick {
+                page: Some(1),
+                to_page: None,
+                chars: Some("0-4".into()),
+                at: None,
+                to: None,
+            },
+        }));
+        let cases = [
+            (
+                "a typed page that's none",
+                shown(goto.clone(), Origin::Input, agents(Code::NO_SUCH_PAGE)),
+                said(&crate::linking::no_such_page("xii")),
+            ),
+            ("a goto that went", shown(goto, Origin::Input, Ok(serde_json::Value::Null)), left.clone()),
+            (
+                "a file that isn't a PDF",
+                shown(open.clone(), Origin::Input, Err(SessionError::Open(OpenError::NotPdf).into())),
+                (Some("before".into()), Some(SessionError::Open(OpenError::NotPdf).message().to_string()), false),
+            ),
+            (
+                "an open refused in an agent's words",
+                shown(open, Origin::Input, agents(Code::PERMISSION_DENIED)),
+                left.clone(),
+            ),
+            (
+                "the prompt's close, after its save, with an edit since",
+                shown(close.clone(), Origin::Finishing, agents(Code::UNSAVED_CHANGES)),
+                said(crate::saving::SAVED_NOT_CLOSED),
+            ),
+            ("File > Close refused", shown(close, Origin::Input, agents(Code::UNSAVED_CHANGES)), left.clone()),
+            (
+                "a rotate refused by the session",
+                shown(rotate.clone(), Origin::Input, Err(SessionError::Saving.into())),
+                said(&format!("Couldn't rotate: {}", SessionError::Saving.message())),
+            ),
+            (
+                "a rotate refused in an agent's words",
+                shown(rotate.clone(), Origin::Input, agents(Code::WOULD_CLEAR_REDO)),
+                left.clone(),
+            ),
+            (
+                "a rotate that went",
+                shown(rotate, Origin::Input, Ok(serde_json::Value::Null)),
+                (None, None, false),
+            ),
+            (
+                "a fourth pane",
+                shown(compare.clone(), Origin::Input, agents(Code::lower(CompareError::TooMany.code()))),
+                // The comparison's line asks for no pass of its own, as before: it shows with the next.
+                (Some(CompareError::TooMany.message().to_string()), None, false),
+            ),
+            (
+                "a pane that couldn't be read",
+                shown(compare, Origin::Input, agents(Code::PERMISSION_DENIED)),
+                left.clone(),
+            ),
+            (
+                "a highlight where there's no text",
+                shown(highlight.clone(), Origin::Input, agents(Code::NO_TEXT_THERE)),
+                said("Couldn't highlight: there's no text selected there."),
+            ),
+            (
+                "a highlight refused by the session",
+                shown(highlight.clone(), Origin::Input, Err(SessionError::Saving.into())),
+                said(&format!("Couldn't highlight: {}", SessionError::Saving.message())),
+            ),
+            (
+                "a highlight refused in an agent's words",
+                shown(highlight, Origin::Input, agents(Code::WOULD_CLEAR_REDO)),
+                left.clone(),
+            ),
+            (
+                "a removal with nothing there",
+                shown(remove.clone(), Origin::Input, agents(Code::NO_SUCH_HIGHLIGHT)),
+                said("Couldn't remove the highlight: there's no highlight there."),
+            ),
+            (
+                "a removal of an added file's",
+                shown(remove.clone(), Origin::Input, agents(Code::HIGHLIGHT_IN_ADDED_FILE)),
+                said("Couldn't remove the highlight: that highlight came with an added PDF, so save first, then it can be removed."),
+            ),
+            (
+                "a removal as the pages moved",
+                shown(remove, Origin::Input, agents(Code::CHANGED)),
+                said("Couldn't remove the highlight: the pages moved meanwhile, so try again."),
+            ),
+        ];
+        let wrong: Vec<String> = cases
+            .into_iter()
+            .filter(|(_, now, was)| now != was)
+            .map(|(case, now, was)| format!("{case}: shown {now:?}, was {was:?}"))
+            .collect();
+        assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
     /// Failure: a person's refused edit is said in an agent's words (naming `recto` commands or a level), or a refusal the session made in the person's

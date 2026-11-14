@@ -87,10 +87,9 @@ struct crates/recto-agent/src/render/svg.rs::Tally 20
 struct crates/recto-agent/src/search.rs::Reader 16
 struct crates/recto-app/src/reader_view.rs::ReaderView 35
 struct crates/recto-control/src/server.rs::Limits 17
-struct crates/recto-control/src/server.rs::Loop 21
+struct crates/recto-control/src/server.rs::Loop 20
 struct crates/recto-index/src/chrome.rs::EdgeLine 20
 struct crates/recto-platform/src/isolate_mac.rs::TaskVmInfo 20
-struct crates/recto-reader/src/engine.rs::Shared 16
 struct crates/recto-render-service/src/budget.rs::BudgetReport 20
 struct crates/recto-render-service/src/host.rs::DocRenderer 24
 struct crates/recto-render-service/src/host.rs::Policy 16
@@ -108,4 +107,4 @@ type crates/recto-render/src::Walk 64
 type crates/recto-session/src::PageEdits 68
 type crates/recto-session/src::Session 103
 type crates/recto-update/src::Updater 74
-whole crates/recto-app/src::Inner 99
+whole crates/recto-app/src::Inner 76

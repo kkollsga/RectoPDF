@@ -129,7 +129,7 @@ impl<A: crate::SessionAccess> Run<'_, A> {
                 end -= 1;
             }
             let typed = &query[..end];
-            events.push(Event::FindOpened { page: None });
+            events.push(Event::FindOpened { tab: None, page: None });
             return begin_keyed(access, typed, access.find_keys(self.actor)).map(drop).inspect_err(|_| {
                 self.finding.clear();
                 // Refused as the tab's edits don't fit its file: kept as the query, so the window keeps the refusal against what it was refused on, the line
@@ -144,7 +144,7 @@ impl<A: crate::SessionAccess> Run<'_, A> {
         } else {
             self.here_to_the_end(query)?;
         }
-        events.push(Event::FindOpened { page: None });
+        events.push(Event::FindOpened { tab: None, page: None });
         Ok(())
     }
 
@@ -194,7 +194,7 @@ impl<A: crate::SessionAccess> Run<'_, A> {
             found = self.query(&draft, &mut quiet);
         }
         if access.with(|s| *s.viewing().find() != before) {
-            events.push(Event::FindOpened { page: None });
+            events.push(Event::FindOpened { tab: None, page: None });
         }
         // An agent's Find is open, and its answer says what the draft found; the person's field says why it found nothing.
         if self.at_the_window() { found } else { Ok(()) }
@@ -264,7 +264,7 @@ impl<A: crate::SessionAccess> Run<'_, A> {
 
     /// A hit gone to: heard, and selected on the page, as ⌘G's is, whoever asked.
     fn went(&self, (tab, hit): (u32, Hit), events: &mut Vec<Event>) -> (u32, Hit) {
-        self.access.with(|s| heard_going_to(s, tab, &hit, events));
+        heard_going_to(tab, &hit, events);
         self.access.effect(Effect::Reveal {
             tab: TabId(tab),
             hit: hit.clone(),

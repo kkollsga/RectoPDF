@@ -19,6 +19,7 @@ pub mod start;
 pub mod tools;
 pub mod updates;
 
+mod answer_parts;
 mod closing;
 mod comparison;
 mod contents;
@@ -37,6 +38,7 @@ pub mod person;
 pub mod places;
 mod quitting;
 mod record_commands;
+pub mod row_parts;
 pub mod showing;
 mod unlocking;
 mod viewing;

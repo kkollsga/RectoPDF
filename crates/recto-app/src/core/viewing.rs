@@ -1,17 +1,17 @@
 //! **How pages are shown, as the person changes it** (step R2.3, C5a): the paper, the sidebar, the agent icon and a tab's layout are each `view`, the command
 //! an agent sends, run for the person on the session thread ([`super::person::submit`]); the zoom is [`super::zoom`]'s, on the thread that asked.
 
+use super::HostAction;
 use super::menu_rows::{Agents, Asked, Row};
-use super::{HostAction, Inner};
+use super::row_parts::RowParts;
 use crate::menus::Action;
 use recto_agent::Command;
 use recto_agent::commands::view::{PaperChoice, Shown, View};
-use std::sync::Arc;
 
 /// **The view's menu ids** ([`super::menu_rows`]): the paper, the sidebar, the agent icon and a tab's layout are each `view`. A toggle toggles when it runs,
 /// so a quick second press before the first is shown is a second toggle (accident A3). A layout names the tab in the pane being read as it's chosen, which a
 /// right-click on a pane has just made it, whatever the session's still to hear: a tab tapped just before isn't laid out instead (accident A4).
-pub fn row<'a>(inner: &'a Arc<Inner>, asked: &Asked<'_>) -> Option<Row<'a>> {
+pub fn row<'a>(parts: &RowParts<'a>, asked: &Asked<'_>) -> Option<Row<'a>> {
     let view = match asked.action.as_ref()? {
         Action::SetPaper(paper) => View {
             paper: Some(PaperChoice::Is(*paper)),
@@ -27,7 +27,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &Asked<'_>) -> Option<Row<'a>> {
         },
         Action::SetSpread(spread) => View {
             layout: Some(*spread),
-            tab: inner.panes.tab_of(inner.panes.reading()).map(recto_agent::TabRef::Id),
+            tab: parts.reading_tab().map(recto_agent::TabRef::Id),
             ..View::default()
         },
         Action::Host(HostAction::None) if asked.id == "view.paper" => {

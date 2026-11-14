@@ -828,6 +828,8 @@ SavedPlace.pub page_size: Option<PageBox>
 SavedPlace.pub x: f64
 SavedPlace.pub y: f64
 Scratch (pub(super) struct, derives Debug, Default)
+Seen (pub(super) struct, derives Default)
+SeenLists (private struct, derives Default)
 SelectingNews (private struct)
 Selection (pub struct, derives Clone, Copy)
 Selection::pub fn can_be_sent(&self) -> bool

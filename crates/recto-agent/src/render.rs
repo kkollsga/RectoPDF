@@ -574,13 +574,18 @@ fn too_heavy_to_export(failure: RenderFailure, page: u32, scale: f32, (width, he
 }
 
 /// Says how long a failure took, when that was long enough to matter to whoever's waiting.
-fn with_time_taken(mut error: AgentError, started: Instant) -> AgentError {
-    let elapsed = started.elapsed();
-    if elapsed.as_millis() >= 100 {
-        error.message.push_str(&format!(
-            " That took {}.",
-            crate::human::duration(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
-        ));
+fn with_time_taken(error: AgentError, started: Instant) -> AgentError {
+    with_time_taken_of(error, u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX))
+}
+
+/// What's said around a failure's time after its words when it took `ms`, from 100 ms on: written by [`with_time_taken_of`] and taken off by
+/// [`without_time_taken`], so the two can't drift.
+const TIME_TAKEN: (&str, &str) = (" That took ", ".");
+
+/// [`with_time_taken`], for a failure that took `ms`.
+pub(crate) fn with_time_taken_of(mut error: AgentError, ms: u64) -> AgentError {
+    if ms >= 100 {
+        error.message = format!("{}{}{}{}", error.message, TIME_TAKEN.0, crate::human::duration(ms), TIME_TAKEN.1);
     }
     error
 }
@@ -836,6 +841,21 @@ pub(crate) fn budget(path: &Path, args: &BudgetArgs) -> Result<Value, AgentError
         data["samples"] = Value::Array(samples);
     }
     Ok(data)
+}
+
+/// A failure's words without how long it took ([`with_time_taken`]), which is measured and not about the document: for a comparison of what two runs
+/// said. Only the suffix that adds, with a time as [`crate::human::duration`] words it, is taken off.
+#[cfg(test)]
+pub(crate) fn without_time_taken(message: &str) -> &str {
+    let Some((words, time)) = message.rsplit_once(TIME_TAKEN.0) else {
+        return message;
+    };
+    let Some(time) = time.strip_suffix(TIME_TAKEN.1) else { return message };
+    let worded = |unit: &str, number: &str| {
+        time.strip_suffix(unit)
+            .is_some_and(|figure| !figure.is_empty() && figure.chars().all(|c| c.is_ascii_digit() || (number == "." && c == '.')))
+    };
+    if worded(" ms", "") || worded(" s", ".") { words } else { message }
 }
 
 #[cfg(test)]

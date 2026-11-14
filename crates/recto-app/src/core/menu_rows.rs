@@ -11,6 +11,7 @@
 //! session thread for the person, on the agent's thread for an agent), and names in the command what it read (the tab, not "the active one"), so whatever
 //! comes between it and the run, the command is about what was read; for an agent it refuses a tab withheld from it before reading anything of it.
 
+use super::row_parts::RowParts;
 use super::{HostAction, Inner};
 use crate::menus::Action;
 use crate::queue::WhenRun;
@@ -117,8 +118,9 @@ impl Asked<'_> {
     }
 }
 
-/// A feature's rows: its own ids' [`Row`]s, or `None` for an id that isn't its.
-type Rows = for<'a> fn(&'a Arc<Inner>, &Asked<'_>) -> Option<Row<'a>>;
+/// A feature's rows: its own ids' [`Row`]s, or `None` for an id that isn't its. A row is given what it may read of the app and do in it ([`RowParts`]),
+/// never the app.
+type Rows = for<'a> fn(&RowParts<'a>, &Asked<'_>) -> Option<Row<'a>>;
 
 /// **Every feature's rows, one line each,** by the feature's name.
 const ROWS: &[(&str, Rows)] = &[
@@ -141,11 +143,16 @@ const ROWS: &[(&str, Rows)] = &[
 
 /// What `id` is now, from what's published and the window's own state: never the session's lock. `None` for an id nothing has.
 pub fn row<'a>(inner: &'a Arc<Inner>, id: &str) -> Option<Row<'a>> {
+    row_in(&RowParts::of(inner), id)
+}
+
+/// [`row`], with the rows' parts already made.
+pub fn row_in<'a>(parts: &RowParts<'a>, id: &str) -> Option<Row<'a>> {
     let asked = Asked {
         id,
         action: crate::menus::action(id),
     };
-    ROWS.iter().find_map(|(_, rows)| rows(inner, &asked))
+    ROWS.iter().find_map(|(_, rows)| rows(parts, &asked))
 }
 
 /// The features whose rows claim `id`: one, or none for an id nothing has. Two would be one id with two meanings, the first of which [`row`] takes.
@@ -155,17 +162,18 @@ pub fn claimed_by(inner: &Arc<Inner>, id: &str) -> Vec<&'static str> {
         id,
         action: crate::menus::action(id),
     };
-    ROWS.iter().filter(|(_, rows)| rows(inner, &asked).is_some()).map(|(name, _)| *name).collect()
+    let parts = RowParts::of(inner);
+    ROWS.iter().filter(|(_, rows)| rows(&parts, &asked).is_some()).map(|(name, _)| *name).collect()
 }
 
 /// **The person's run of a row,** saying what's left for the host. Never waits.
-pub fn by_person(inner: &Arc<Inner>, row: Row<'_>) -> HostAction {
+pub fn by_person(parts: &RowParts<'_>, row: Row<'_>) -> HostAction {
     match row {
         Row::Command { command, when_run, host } => {
             match when_run {
-                Some(when_run) => super::person::submit_when_run(inner, command, when_run),
+                Some(when_run) => parts.person().submit_when_run(command, when_run),
                 None => {
-                    super::person::submit(inner, command);
+                    parts.person().submit(command);
                 }
             }
             host

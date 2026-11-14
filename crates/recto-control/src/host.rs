@@ -43,6 +43,9 @@ pub trait Host: Send + Sync + 'static {
     }
     /// How to tell the session something happened outside any command. Given once, before anything runs.
     fn attach(&self, _notify: Notifier) {}
+    /// **What of `events` agents may be told,** in place: everything that leaves for watchers is asked here first (`server::outlet`), on the thread that
+    /// made it. No default: a host says what it holds back, by [`recto_agent::withheld::for_agents`] on its session.
+    fn for_watchers(&self, events: &mut Vec<Event>);
     /// The session is ending. Anything running in the background for it stops.
     fn shut_down(&self) {}
     /// Agent access is Off now. Whatever agents started that's still working on documents stops. Must never block: this is the socket's own thread.
@@ -419,6 +422,16 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
 
     fn acted_tab(&self, command: &Command) -> Option<TabId> {
         acted_tab(&self.session.lock(), command)
+    }
+
+    fn for_watchers(&self, events: &mut Vec<Event>) {
+        if !recto_agent::withheld::needs_the_session(events) {
+            return;
+        }
+        // Find's own document, asked of the Finder before the session's lock is taken, never under it.
+        let mut finding = None;
+        recto_agent::find::Finding::with_results(&self.finder, &mut |results| finding = results.tab.map(TabId));
+        recto_agent::withheld::for_agents(&self.session.lock(), finding, events);
     }
 
     fn attach(&self, notify: Notifier) {

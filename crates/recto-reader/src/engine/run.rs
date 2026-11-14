@@ -63,8 +63,7 @@ pub(super) fn run_guarded(shared: &Shared) {
         drop(reader);
         note_change(shared, note);
         tell_selecting(shared, selecting);
-        *lock(&shared.worker_pids) = Vec::new();
-        shared.walled_workers.store(0, Ordering::Relaxed);
+        shared.workers.restarted();
         shared.settled.notify_all();
         if has_ops {
             signal_ops(shared);
@@ -319,7 +318,7 @@ fn renew(
 /// surface is waited for, and the thread wakes by then at the latest. Idle workers go here when the system asks for memory, whichever it is.
 fn rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, resting_since: &mut Option<Instant>, retry: Option<Duration>) {
     shared.settled.notify_all();
-    if shared.kill_idle_workers.swap(false, Ordering::SeqCst) {
+    if shared.workers.take_idle_ask() {
         for open in renderers.values_mut() {
             open.doc.kill_worker();
         }
@@ -394,9 +393,7 @@ fn publish_workers(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>) {
             Some((path.clone(), pid))
         })
         .collect();
-    shared.walled_workers.store(walled, Ordering::Relaxed);
-    *lock(&shared.worker_pids) = by_file.iter().map(|(_, pid)| *pid).collect();
-    *lock(&shared.workers_by_file) = by_file;
+    shared.workers.publish(by_file, walled);
 }
 
 /// **Only hot and warm tabs' files keep a renderer, and one given a password the person typed only while the tab it was given for holds it as its own

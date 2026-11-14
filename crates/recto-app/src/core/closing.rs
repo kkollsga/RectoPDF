@@ -20,11 +20,11 @@ fn close(tab: TabId) -> Command {
 /// **What the window says when a person's close didn't go:** only the close after the prompt's Save, which an edit made since the save stops, as the file
 /// hasn't got it, says so, in the prompt's words. Any other close that's refused (an edit that came in as File > Close was chosen) said nothing, and says
 /// nothing now.
-pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
+pub fn answered(parts: &super::answer_parts::AnswerParts<'_>, ran: &person::Ran<'_>) {
     if let (Some(error), Command::Move(Move::Close(_)), Origin::Finishing) = (ran.refused(), ran.command, ran.origin)
         && error.code == Code::UNSAVED_CHANGES
     {
-        person::say(inner, SAVED_NOT_CLOSED.to_string());
+        parts.say(SAVED_NOT_CLOSED.to_string());
     }
 }
 
@@ -36,20 +36,18 @@ pub fn after_save(inner: &Inner, tab: TabId) {
 
 /// **Closing's menu ids** ([`super::menu_rows`]): File > Close is `close` on the document showing, with nothing to do with none or while it's saving; Close
 /// Window is the system's.
-pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+pub fn row<'a>(parts: &super::row_parts::RowParts<'a>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
     use super::menu_rows::Row;
     match (asked.action.as_ref()?, asked.id) {
         (crate::menus::Action::CloseDocument, _) => {
-            let (reader, undone_owner_steps) = {
-                let published = super::lock(&inner.published);
-                (published.reader.clone(), published.sidebar.undone_owner_steps)
-            };
+            let (reader, undone_owner_steps) = parts.published(|published| (published.reader.clone(), published.sidebar.undone_owner_steps));
             if reader.home || reader.saving || reader.shown_tab == 0 {
                 return Some(Row::Nothing);
             }
             let tab = TabId(reader.shown_tab);
             // The close rule, said once in recto-agent, asked of what the session thread published: the UI thread doesn't take the session's lock.
             let would_lose = recto_agent::close_rule::WouldLose::as_published(reader.edited, undone_owner_steps);
+            let person = parts.person();
             Some(Row::own_way(
                 close(tab),
                 "a person is asked first when closing would lose unsaved edits or their own undone steps, as any Mac app asks",
@@ -57,7 +55,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
                     if would_lose.asks_the_person() {
                         return HostAction::ConfirmClose;
                     }
-                    person::submit(inner, close(tab));
+                    person.submit(close(tab));
                     HostAction::None
                 },
             ))

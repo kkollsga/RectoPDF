@@ -16,14 +16,14 @@ pub fn contents_page(page: u32, shown: u32) -> u32 {
 
 /// What a person's `goto` that didn't go is said as: a typed page that's no page, in the go-to field's words. Any other way it can't go said nothing before,
 /// and says nothing now.
-pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
+pub fn answered(parts: &super::answer_parts::AnswerParts<'_>, ran: &person::Ran<'_>) {
     if let (Some(_), Command::Move(Move::Goto(Goto { label: Some(typed), .. }))) = (ran.refused(), ran.command) {
-        person::say(inner, linking::no_such_page(typed));
+        parts.say(linking::no_such_page(typed));
     }
 }
 
 /// **Going's menu ids** ([`super::menu_rows`]): Back and Forward are `back` and `forward` on the tab being read; Go to Page opens the window's field.
-pub fn row<'a>(_: &'a Arc<Inner>, asked: &menu_rows::Asked<'_>) -> Option<menu_rows::Row<'a>> {
+pub fn row<'a>(_: &super::row_parts::RowParts<'a>, asked: &menu_rows::Asked<'_>) -> Option<menu_rows::Row<'a>> {
     match (asked.action.as_ref()?, asked.id) {
         (menus::Action::Step(back), _) => Some(menu_rows::Row::command(step(*back))),
         (menus::Action::Host(host), "go.page") => Some(menu_rows::Row::host(

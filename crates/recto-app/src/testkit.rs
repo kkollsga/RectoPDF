@@ -6,6 +6,7 @@ pub(crate) mod heard;
 pub(crate) mod place_seams;
 mod scrolled;
 pub mod update_bed;
+pub mod watching;
 
 use crate::clock::Clock;
 use crate::listener::{Listener, QuitAnswer};

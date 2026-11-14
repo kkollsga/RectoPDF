@@ -10,7 +10,7 @@
 //! - **A print to a file is an export.** When the panel's answer saves or previews a PDF rather than printing on paper, a file that asks not to be copied gets the notice a copy has, with "Print anyway" (owner, 2026-11-08: exports ask "anyway" like Copy). Print to paper never asks.
 //! - **Nothing's left behind.** Stop, closing the tab and quitting each stop the preparing at the next page, and its file goes; a launch removes the files of a run that died (`recto-print-PID-*` of a process that's gone).
 
-use super::{CoreCall, HostAction, Inner, SelectionNotice, lock, person};
+use super::{CoreCall, HostAction, SelectionNotice, lock, person};
 use crate::queue::CoreQueue;
 use recto_agent::commands::{Read, export::Print};
 use recto_agent::print::{self, PrintWatch};
@@ -307,8 +307,9 @@ pub fn chosen_range(pages: u32, all: bool, first: u32, last: u32, selection: Opt
 
 /// **Printing's menu ids** ([`super::menu_rows`]), all the window's alone: Print… opens the system's panel, Stop stops the print being prepared for it, and a
 /// notice's "Print anyway" asks again only what that notice refused.
-pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+pub fn row<'a>(parts: &super::row_parts::RowParts<'a>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
     use super::menu_rows::Row;
+    let parts = *parts;
     if asked.id == "file.print" {
         return Some(Row::host(
             "opens the system's print panel for the person",
@@ -321,7 +322,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
             "stops the person's print being prepared for the system's print panel",
             super::menu_rows::Agents::Never,
             move || {
-                inner.tools.printing().cancel();
+                parts.cancel_print();
                 HostAction::None
             },
         ));
@@ -331,10 +332,10 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
         "a notice's Print anyway, for the person's own print it refused: their decision, where an agent's is `print --anyway`, which is logged",
         super::menu_rows::Agents::ItsOwn("`recto print --anyway`"),
         move || {
-            if let Some(command) = serial.parse().ok().and_then(|serial| inner.tools.printing().anyway(serial)) {
-                person::submit(inner, command);
+            if let Some(command) = serial.parse().ok().and_then(|serial| parts.refused_print_anyway(serial)) {
+                parts.person().submit(command);
             }
-            inner.core.push(CoreCall::Reconcile);
+            parts.reconcile();
             HostAction::None
         },
     ))
@@ -423,14 +424,20 @@ impl PrintWatch for Watch {
 
 /// **What came of the person's print, said:** its file ready for the host, with a note if a page printed smaller; a file that asks not to be copied, with
 /// "Print anyway"; nothing if it was stopped; or the refusal's own words, whatever refused it, before it ran or as it did.
-pub fn answered(inner: &Arc<Inner>, ran: &person::Ran<'_>) {
+pub fn answered(parts: &super::answer_parts::AnswerParts<'_>, ran: &person::Ran<'_>) {
     let Command::Read(Read::Print(asked)) = ran.command else { return };
     if ran.result.is_err() && ran.refused().is_none() {
         return;
     }
-    let printing = inner.tools.printing();
+    parts.print_answered(|printing| said(printing, asked, ran.result));
+    #[cfg(test)]
+    after_telling();
+}
+
+/// What came of the person's print, said to printing's state.
+fn said(printing: &Printing, asked: &Print, result: &Result<Value, AgentError>) {
     let asked_by = printing.asked_by.load(Ordering::SeqCst);
-    match ran.result {
+    match result {
         Ok(answer) => {
             if let Some(note) = scaled_down(answer).scaled_down_note() {
                 printing.say(note, false);
@@ -462,10 +469,6 @@ pub fn answered(inner: &Arc<Inner>, ran: &person::Ran<'_>) {
     }
     // Ended once what came of it is the window's and its file the host's: never neither preparing nor ready.
     printing.running.store(false, Ordering::SeqCst);
-    inner.core.push(CoreCall::Reconcile);
-    inner.listener.model_changed();
-    #[cfg(test)]
-    after_telling();
 }
 
 /// The pages a print's answer says were printed smaller than asked.

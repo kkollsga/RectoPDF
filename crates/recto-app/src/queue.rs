@@ -237,6 +237,9 @@ pub struct CoreQueue {
     #[cfg(test)]
     park_waits: std::sync::atomic::AtomicUsize,
     reconcile_queued: AtomicBool,
+    /// Every `Reconcile` pushed, counted before many are made one, for a test that holds who asks for one (`core::person`'s answers guard).
+    #[cfg(test)]
+    reconciles_asked: std::sync::atomic::AtomicUsize,
     /// A hand-off or a quit is writing what comes back, so what a person does from here wouldn't: taps, opens and the rest aren't taken.
     pub frozen: AtomicBool,
     /// Copies of a way back to this queue held by threads off the session thread that haven't let go of them yet, each until after it's queued what it
@@ -252,6 +255,10 @@ pub struct CoreQueue {
 
 impl CoreQueue {
     pub fn push(&self, call: CoreCall) {
+        #[cfg(test)]
+        if matches!(call, CoreCall::Reconcile) {
+            self.reconciles_asked.fetch_add(1, Ordering::SeqCst);
+        }
         // Many reasons to look can wait for one look.
         if matches!(call, CoreCall::Reconcile) && self.reconcile_queued.swap(true, Ordering::SeqCst) {
             return;
@@ -275,6 +282,12 @@ impl CoreQueue {
         calls.push_back(call);
         drop(calls);
         self.ready.notify_one();
+    }
+
+    /// How many times a `Reconcile` has been pushed, each counted, in a test build.
+    #[cfg(test)]
+    pub(crate) fn reconciles_asked(&self) -> usize {
+        self.reconciles_asked.load(Ordering::SeqCst)
     }
 
     /// Blocks until the session thread has got through everything already asked of it. For QA, on a job thread. A file on a dead volume could hold this up, so it has a limit.

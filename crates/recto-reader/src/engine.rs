@@ -5,7 +5,7 @@ use crate::selection::Notice;
 use crate::tiles::{MAX_ATTACH_PER_TURN, Op, PageMap, Reader, ReaderReport, SavedPlace, Viewport, Zoom};
 use recto_render_service::{Policy, ServiceConfig};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::Thread;
 use std::time::{Duration, Instant};
@@ -66,12 +66,8 @@ struct Shared {
     settled: Condvar,
     events: Arc<dyn EngineEvents>,
     ops_signalled: AtomicBool,
-    worker_pids: Mutex<Vec<u32>>,
-    /// Of those, the workers that said their walls were up.
-    walled_workers: AtomicU32,
-    workers_by_file: Mutex<Vec<(PathBuf, u32)>>,
-    /// The system's asked for memory back: workers with nothing to do go the next time this thread comes round.
-    kill_idle_workers: AtomicBool,
+    /// What this thread last said of its render workers, and the system's ask that idle ones go: [`workers::Seen`].
+    workers: workers::Seen,
     last_note: Mutex<Option<String>>,
     last_notice: Mutex<Option<Notice>>,
     config: EngineConfig,
@@ -178,10 +174,7 @@ impl Engine {
             settled: Condvar::new(),
             events,
             ops_signalled: AtomicBool::new(false),
-            worker_pids: Mutex::new(Vec::new()),
-            walled_workers: AtomicU32::new(0),
-            workers_by_file: Mutex::new(Vec::new()),
-            kill_idle_workers: AtomicBool::new(false),
+            workers: workers::Seen::default(),
             last_note: Mutex::new(None),
             last_notice: Mutex::new(None),
             config,
@@ -341,7 +334,7 @@ impl Engine {
     /// The system wants memory back, so what's off screen goes, and workers with nothing to do.
     pub fn memory_pressure(&self, critical: bool) {
         lock(&self.shared.reader).memory_pressure(critical);
-        self.shared.kill_idle_workers.store(true, Ordering::SeqCst);
+        self.shared.workers.ask_idle_to_go();
         self.unpark_thread();
     }
 
@@ -773,6 +766,7 @@ mod tests {
     use crate::paper::{DarkTile, dark_rgb, dim_rgb};
     use recto_proto::TileRect;
     use recto_render_service::TileKind;
+    use std::sync::atomic::AtomicU32;
 
     struct Quiet;
     impl EngineEvents for Quiet {
