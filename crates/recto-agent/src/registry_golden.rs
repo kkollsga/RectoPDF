@@ -61,10 +61,12 @@ fn props() -> String {
     let mut out = String::new();
     for (_, command) in commands() {
         out.push_str(&format!(
-            "{} level={} tab={:?} draws={} reads_pages={} route={} log={}\n",
+            "{} level={} tab={:?} about={:?} protected_ok={} draws={} reads_pages={} route={} log={}\n",
             command.tag(),
             access_word(command.access()),
             command.tab_selector(),
+            command.about(),
+            command.protected_ok(),
             command.draws(),
             command.reads_pages(),
             route_word(&command),

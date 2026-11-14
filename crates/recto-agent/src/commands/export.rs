@@ -36,6 +36,7 @@ impl Cmd for Render {
     const DRAWS: bool = true;
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
@@ -102,6 +103,7 @@ impl Cmd for ExportSvg {
     const DRAWS: bool = true;
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
@@ -169,6 +171,7 @@ impl Cmd for Images {
     const DRAWS: bool = true;
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
@@ -218,6 +221,7 @@ impl Cmd for Image {
     const DRAWS: bool = true;
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
@@ -296,6 +300,7 @@ impl Cmd for Snapshot {
     const DRAWS: bool = true;
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
@@ -378,6 +383,7 @@ impl Cmd for Print {
     const DRAWS: bool = true;
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)

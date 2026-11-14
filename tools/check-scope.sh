@@ -39,6 +39,9 @@ WINDOW_CRATES='recto-ffi recto-reader recto-session recto-agent recto-control'
 # doc linking a private item, fails it (`cargo doc -p <crate> --no-deps`, `-D` on rustdoc's two link lints; about 1 s warm, R3.5b). A broken link in the
 # session's docs reached main unseen in R3.5a.
 DOC_LINK_CRATES='recto-session'
+# The how-to pages whose every backticked path and name must exist (tools/doc-paths.sh, R4.2): checked before anything is queued, in --quick and --full,
+# whatever changed, as a rename anywhere can break them. Reads the tree, builds nothing, well under a second.
+DOC_PATH_FILES='docs/FEATURES.md docs/agent-instructions/feature-brief.md'
 # The changes that run the lifecycle tier: a crate it is about (recto-update, recto-platform), the app, the record code, the bridge's modules for updates and
 # sleeping, and the tests themselves. Not recto-core, recto-session in general or recto-agent: those reach the window tier.
 LIFECYCLE_PATHS='^app/|^crates/(recto-update|recto-platform)/|^crates/recto-session/src/record\.rs$|^crates/recto-control/src/record_store\.rs$|^crates/recto-app/src/core/(updates|sleeper|saver)\.rs$|^crates/recto-app/src/(sleep_queue|saver|sleeper)\.rs$|^crates/recto-cli/tests/(restore|long_session|registrations|compare|common)|^crates/recto-cli/tests/app/quiet\.rs$'
@@ -99,9 +102,10 @@ affected_crates() {
     /dev/stdin <(printf '%s\n' "$edges") | sort -u
 }
 
-# What the tools' own tests (tools/check-test.sh, tools/ratchet-test.sh) are about: the tools, the hooks in tools/hooks, nextest's profiles and CI's workflow.
+# What the tools' own tests (tools/check-test.sh, tools/ratchet-test.sh, tools/new-feature-test.sh) are about: the tools, the hooks in tools/hooks,
+# nextest's profiles, CI's workflow, and the contact sheet (app/qa/contact-sheet.sh), which new-feature-test.sh runs against a stand-in recto.
 # A change to any of these since the base runs them in a full run, here and on CI; nothing else does.
-TOOLS_PATHS='^(tools|\.config|\.github)/'
+TOOLS_PATHS='^(tools|\.config|\.github)/|^app/qa/contact-sheet'
 
 # The commit CI compares with, for what the tools' tests are about: on main, the commit the push came after, which CI checked last; on any other branch,
 # where it left origin/main, so every push of a branch that changed the tools runs them. Prints it, or fails when it can't be worked out (a manual run, a
@@ -119,13 +123,15 @@ ci_base() {
   printf '%s\n' "$base"
 }
 
-# Which of the tools' own tests a changed file under TOOLS_PATHS needs, as words (ratchet, hygiene, check) in `tool_tests`. Each test holds the tool it is named
+# Which of the tools' own tests a changed file under TOOLS_PATHS needs, as words (ratchet, hygiene, check, feature) in `tool_tests`. Each test holds the tool it is named
 # for: ratchet-test.sh the ratchet, target-hygiene-test.sh target-hygiene.sh, check-test.sh check.sh and everything it copies into its throwaway repository
-# (the scope, times, rerun, like-ci and push-main scripts, the hooks, the queue). A file mapped to none of them runs all three, as it did before.
+# (the scope, times, rerun, like-ci and push-main scripts, the hooks, the queue), new-feature-test.sh the scaffold and doc-paths.sh (seconds: the
+# templates themselves are compiled by the crates' tests). A file mapped to none of them runs the first three, as it did before.
 tool_tests_for() {
   case "$1" in
     tools/ratchet.sh | tools/ratchet/* | tools/ratchet-test.sh) tool_tests="ratchet" ;;
     tools/target-hygiene.sh | tools/target-hygiene-test.sh) tool_tests="hygiene" ;;
+    tools/new-feature.sh | tools/new-feature/* | tools/new-feature-test.sh | tools/doc-paths.sh | tools/doc-paths.py | app/qa/contact-sheet*) tool_tests="feature" ;;
     tools/check.sh | tools/check-*.sh | tools/push-main.sh | tools/hooks/* | tools/sysguard/heavy.sh) tool_tests="check" ;;
     *) tool_tests="ratchet hygiene check" ;;
   esac

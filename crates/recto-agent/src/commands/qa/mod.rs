@@ -32,6 +32,7 @@ impl Cmd for QaRead {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         None
@@ -77,6 +78,7 @@ impl Cmd for QaDrive {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
     fn tab(&self) -> Option<&TabRef> {
         None

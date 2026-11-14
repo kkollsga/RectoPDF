@@ -149,6 +149,7 @@ impl Cmd for Find {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Reading;
     // An agent's query waits for its hits; the person's returns at once, its step kept for when its hit is known, so it's run on the window's session
     // thread as a keystroke.
     const WAITS: bool = false;

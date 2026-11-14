@@ -201,6 +201,7 @@ impl Cmd for Compare {
     const DRAWS: bool = false;
     const READS_PAGES: bool = false;
     const PROTECTED_OK: bool = false;
+    const ABOUT: super::About = super::About::Nothing;
     // A pane's cold file is read in place here, or, on the window's session thread, off it and the command run again once it's in (`later`).
     const WAITS: bool = false;
     fn tab(&self) -> Option<&TabRef> {
