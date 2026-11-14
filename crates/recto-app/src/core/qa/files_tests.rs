@@ -339,3 +339,60 @@ fn the_values_holding_files_are_real_text_arguments() {
         assert_eq!(arg.kind, Kind::Text, "{name} {key}");
     }
 }
+
+/// The QA verbs that write a file or replace a tab's, and what each is held by. `save_as` and `save_from` put a file where the person's own is and say the
+/// test's-files rule in its own words ([`as_person::check_tests_files`]); `as_person` (its `save-as --out`) holds it before the command is sent and
+/// `print_to_pdf` holds the quiet run's folders and the export rules in `check_print_target`. The pictures (`shot*`) are made by the host and held by
+/// the table's wall on their `Path`, which the walk above runs for each.
+const WRITES: &[(&str, bool)] = &[("save_as", true), ("save_from", true), ("as_person", false), ("print_to_pdf", false)];
+const PICTURES: &[&str] = &["shot", "shot_settings", "shot_menus", "shot_menu"];
+
+/// Failure (the weak-test review, `qa save-from`): a QA verb that writes, or moves a file over a tab's, doesn't check that the file is a test's own, as
+/// its siblings do, so a quiet-run test, or a caller that sends it the wrong path, replaces a file outside the test's folders. Every such verb is sent a
+/// file outside them, there and not, through the verb as a client sends it, and refuses it, leaving the file as it was and making none; the two that
+/// put a file in a tab's place say the test's-files rule in its words, which the quiet run's folder rule behind them doesn't. And a new verb with a file
+/// in it that is in none of these lists is a verb whose walls nobody decided.
+#[test]
+fn every_qa_verb_that_writes_refuses_a_path_outside_the_tests_files() {
+    let (dir, file) = outside();
+    let absent = dir.path().join("never.pdf");
+    let bytes = std::fs::read(&file).unwrap();
+    let app = HeadlessApp::start();
+    app.open(&app.disk().pdf("own.pdf", 2));
+    let bridge = answering_bridge(&app);
+    let send = |verb: &str, value: &str| {
+        bridge.run(&Qa::QaDrive(QaDrive {
+            verb: verb.to_owned(),
+            value: value.to_owned(),
+            timeout_ms: None,
+            tab: None,
+        }))
+    };
+    for (verb, says_the_rule) in WRITES {
+        for target in [&file, &absent] {
+            let value = match *verb {
+                "as_person" => format!("save-as --out {}", target.display()),
+                _ => target.to_string_lossy().into_owned(),
+            };
+            let refused = send(verb, &value).expect_err(&format!("{verb} {value}"));
+            assert!(!refused.message.contains(MARKER), "{verb}: {refused:?}");
+            if *says_the_rule {
+                assert!(refused.message.contains("a test's own file"), "{verb} {value}: {refused:?}");
+            }
+        }
+        assert!(std::fs::symlink_metadata(&absent).is_err(), "{verb} made a file outside");
+        assert_eq!(std::fs::read(&file).unwrap(), bytes, "{verb} changed or moved the outside file");
+    }
+    // A verb with a file in it that these lists don't name is one whose wall nobody has decided.
+    let with_a_file: std::collections::BTreeSet<&str> = app_rows()
+        .filter(|spec| {
+            spec.args.iter().any(|arg| arg.kind == Kind::Path)
+                || FILE_IN_A_VALUE.iter().any(|(name, _, _)| *name == spec.name)
+        })
+        .map(verb_of)
+        .filter(|verb| *verb != "compare_budget")
+        .collect();
+    let decided: std::collections::BTreeSet<&str> = WRITES.iter().map(|(verb, _)| *verb).chain(PICTURES.iter().copied()).collect();
+    assert_eq!(with_a_file, decided, "a QA verb with a file in it, and which wall holds it");
+    drop(app.quit());
+}

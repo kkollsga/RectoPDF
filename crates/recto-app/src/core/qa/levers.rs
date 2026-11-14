@@ -97,7 +97,9 @@ impl Inner {
     pub fn qa_save_from(&self, written: &str) -> Result<(), AgentError> {
         let failed = |what: &str| AgentError::new(Code::SAVE_FAILED, format!("{what} failed."), recto_agent::exit::FAILED);
         let written = PathBuf::from(written);
-        // The second line behind the table's (its value is a file to the table): a file outside the run's folders is refused before anything is looked
+        // Its siblings' wall (`qa save-as`, `qa as-person`): a test's own file, and every file open a test's, before anything else is looked at.
+        super::as_person::check_tests_files(self, &[written.as_path()])?;
+        // A second line behind the table's and the check above (its value is a file to the table): a file outside the run's folders is refused before anything is looked
         // at, so its being there or not says nothing, and it's never moved into a tab (2026-11-13).
         if let Some(folders) = self.host.session.confinement() {
             recto_agent::quiet_files::check_paths(&folders, std::slice::from_ref(&written))?;

@@ -77,7 +77,7 @@ fn is_a_tests_path(path: &Path) -> bool {
     path.parent().is_some_and(is_a_tests_file)
 }
 
-/// **The QA verbs' file wall, stated once:** what acts as the person (`qa as-person`, its `owner-edit` alias, `qa save-as`, `qa password`) does so only
+/// **The QA verbs' file wall, stated once:** what acts as the person (`qa as-person`, its `owner-edit` alias, `qa save-as`, `qa save-from`, `qa password`) does so only
 /// while every file open in the session, and every file it names, is a test's own: in the quiet run's state folder or one of the temp folders a quiet run
 /// may use.
 ///
