@@ -710,11 +710,6 @@ impl Inner {
         };
         super::person::submit(self, command);
     }
-
-    /// The hand-off isn't going ahead.
-    pub fn hand_off_cancelled(&self) {
-        self.carry_out(self.life.step(crate::lifecycle::Event::HandOffUndone));
-    }
 }
 
 /// A page of one colour, as small as a PDF gets. Ours, so it says something about this version and nothing about whatever the user had open.

@@ -317,6 +317,11 @@ impl Inner {
         self.life.told_to_quit()
     }
 
+    /// The hand-off isn't going ahead.
+    pub fn hand_off_cancelled(&self) {
+        self.carry_out(self.life.step(crate::lifecycle::Event::HandOffUndone));
+    }
+
     /// The reader's moved on from what they were told about the session as a whole.
     pub fn notice_read(&self) {
         if lock(&self.host.notice).take().is_some() {
