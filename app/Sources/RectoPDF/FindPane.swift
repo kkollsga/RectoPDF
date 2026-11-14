@@ -62,7 +62,7 @@ final class FindRowCell: NSView {
     private let core: AppCore
     private(set) var model = FindView(open: false, text: "", placeholder: "", status: "", version: 0, rowCount: 0, currentRow: nil, running: false, closeTooltip: "")
     private var heights = (field: 28.0, status: 20.0, list: 0.0, row: 24.0)
-    /// ⌘F asked for the keyboard, for once Find's open and laid out.
+    /// ⌘F asked for the keyboard, for once Find's open and laid out (`takeFocusIfWanted`).
     var wantsFocus = false
     /// The current row last brought into view, so it's brought there once and the reader's own scroll stays.
     private var shownCurrent: UInt32?
@@ -135,9 +135,14 @@ final class FindRowCell: NSView {
             view.window?.makeFirstResponder(nil)
         }
         thumb.refresh()
-        if wantsFocus && new.open {
-            DispatchQueue.main.async { [weak self] in self?.focusField() }
-        }
+    }
+
+    /// ⌘F's keyboard, once Find is open: taken by whoever laid the window out from the model that opened it, at the end of that same turn, so nothing reads
+    /// or types in between Find showing open and its field having the keyboard. It was taken a turn later, from the main queue, and a report read in that
+    /// turn had Find open with the page still holding the keyboard (CI run 43621847377: `focus_view` "page" right after ⌘F, "find" a moment later); so
+    /// would a key typed in it.
+    func takeFocusIfWanted() {
+        if wantsFocus && model.open { focusField() }
     }
 
     func placeViews() {

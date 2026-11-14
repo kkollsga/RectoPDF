@@ -698,6 +698,10 @@ Looks (pub(super) struct, derives Debug, Default)
 LowResNote (pub(super) struct, derives Debug)
 Next (pub(super) enum, derives Clone, Copy, Debug, PartialEq, Eq)
 NoLook (pub(super) enum, derives Debug, PartialEq, Eq)
+NotShowable (pub enum, derives Clone, Copy, Debug, PartialEq, Eq)
+NotShowable::pub const fn code(reason: Option<Self>) -> u8
+NotShowable::pub const fn name(self) -> &'static str
+NotShowable::pub fn from_code(code: u8) -> Option<Self>
 Op (pub enum, derives Debug, PartialEq)
 OpenDoc (private struct)
 Outcome (pub enum, derives Debug)
@@ -779,12 +783,12 @@ Reader::pub fn finish(&mut self, job: Job, outcome: Outcome)
 Reader::pub fn follow(&mut self, page: u32, within: f64) -> Option<u32>
 Reader::pub fn is_on_place(&self) -> bool
 Reader::pub fn is_settled(&self) -> bool
-Reader::pub fn is_showable(&self) -> bool
 Reader::pub fn jump_to(&mut self, page: u32, within: f64) -> bool
 Reader::pub fn key_given(&mut self, path: &std::path::Path)
 Reader::pub fn memory_pressure(&mut self, critical: bool)
 Reader::pub fn new() -> Self
 Reader::pub fn next_plan(&mut self) -> Option<JobPlan>
+Reader::pub fn not_showable(&self) -> Option<NotShowable>
 Reader::pub fn note(&self) -> Option<&str>
 Reader::pub fn note_version(&mut self, file: &std::path::Path, version: u64)
 Reader::pub fn note_wake(&mut self, tab: u32, began: std::time::Instant)
@@ -922,7 +926,7 @@ Wake (pub struct, derives Clone, Copy)
 Wake::pub fn give_sleep(&self, tab: u32, view: crate::tiles::SleepView)
 Wake::pub fn holds(&self, tab: u32) -> bool
 Wake::pub fn is_on_place(&self) -> bool
-Wake::pub fn is_showable(&self) -> bool
+Wake::pub fn not_showable(&self) -> Option<crate::tiles::NotShowable>
 Wake::pub fn note_wake(&self, tab: u32, began: Instant)
 Wake::pub fn sleep_material(&self, tab: u32, now: &PageMap) -> Option<crate::tiles::SleepMaterial>
 Wake::pub fn window_up(&self)

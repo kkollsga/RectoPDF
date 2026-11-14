@@ -440,6 +440,13 @@ final class BookMark: NSView {
         showNow(why: "ready")
     }
 
+    /// The host's patience for the page is over: shown whatever's on it. Rust is asked once more first, so its record says what the page checks were as the timer ran out: whether the page had been ready with nothing asking.
+    func patienceRanOut() {
+        guard !shown else { return }
+        _ = delegate.core.readyToShow()
+        showNow(why: "patience")
+    }
+
     /// Whatever's on it. `why` is told to Rust: `ready` when it said so, `patience` when the timer did. In a quiet run, nothing is ever ordered in, and the rest is the same.
     func showNow(why: String) {
         guard !shown else { return }
@@ -1113,6 +1120,7 @@ final class BookMark: NSView {
         updateZoomLevel()
         layout()
         chrome.refresh()
+        sidebar.find.takeFocusIfWanted()
     }
 
     func appearanceChanged() {

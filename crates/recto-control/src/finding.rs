@@ -83,6 +83,13 @@ impl Finder {
     pub fn has_thread(&self) -> bool {
         self.0.lock().working
     }
+
+    /// **While the thread's there, how far it's got:** which run this is (every query started, found again or cleared counts one) and the pages read of it,
+    /// for a wait that runs out on Find to say whether one query was slow or queries kept starting again. `None` with no thread.
+    pub fn looking(&self) -> Option<(u64, find::Progress)> {
+        let inner = self.0.lock();
+        inner.working.then_some((inner.results.generation, inner.results.progress))
+    }
 }
 
 impl Shared {
