@@ -27,6 +27,8 @@ pub(crate) struct SvgArgs<'a> {
     pub scale: f32,
     /// Takes out of JPEGs what isn't the picture, and the document's title. Off by default: a JPEG goes as its original bytes (owner, 2026-11-07).
     pub strip_metadata: bool,
+    /// The file's own highlights the tab has taken out, left out of the page's pictures (R4.3).
+    pub hidden: crate::render::Hidden,
 }
 
 /// Why each kind of picture is one, in words, and a stable code. PDFium has no call that reads these, so it's said rather than guessed.
@@ -455,6 +457,7 @@ pub(super) fn export_with(config: ServiceConfig, args: &SvgArgs<'_>, caps: &Outp
     }
     let started = Instant::now();
     let mut doc = DocRenderer::new(args.path, None, config, Policy::default())?;
+    doc.hidden.draw_for(0, args.hidden.clone());
     let (temp, file) = OwnTemp::create(args.out).map_err(|_| write_failed())?;
     let out = RefCell::new(FileOut(file));
     let written = write_svg(

@@ -18,6 +18,41 @@ use recto_session::{Author, TabId};
 use serde_json::{Value, json};
 use std::cell::Cell;
 
+/// **The file's own highlights a tab has taken out, for drawing a page of its own file,** as the worker that draws that page leaves them out: so a picture,
+/// print or SVG made from the tab never shows one the person has removed (coordinator, 2026-11-14). None for a page added from another PDF, or with
+/// none taken out.
+pub(crate) fn hidden_in<L: recto_session::DocLoader>(
+    s: &recto_session::Session<L>,
+    id: TabId,
+    source: &recto_session::PageSource,
+) -> Option<std::sync::Arc<recto_proto::hidden::HiddenAnnots>> {
+    if source.added {
+        return None;
+    }
+    // The whole file's set, whatever the page: a worker leaves out only what's on the page it draws, and one set for every page of the file is
+    // what lets a print's pages share one worker (a set goes to it only when it's another).
+    let marks = s.lists().get(id)?.marks();
+    let mut by_page: std::collections::BTreeMap<u32, Vec<(u32, [f32; 4])>> = std::collections::BTreeMap::new();
+    for key in marks.hidden() {
+        by_page.entry(key.page).or_default().push((key.index, key.rect));
+    }
+    (!by_page.is_empty()).then(|| {
+        std::sync::Arc::new(recto_proto::hidden::HiddenAnnots {
+            generation: marks.changes(),
+            pages: by_page.into_iter().collect(),
+        })
+    })
+}
+
+/// [`hidden_in`], through the session's access.
+pub(crate) fn hidden_on<A: SessionAccess>(
+    access: &A,
+    id: TabId,
+    source: &recto_session::PageSource,
+) -> Option<std::sync::Arc<recto_proto::hidden::HiddenAnnots>> {
+    access.with(|s| hidden_in(s, id, source))
+}
+
 /// The rectangles a pick takes, by page position: what `recto select` gives, sound ones only.
 fn picked<A: SessionAccess>(access: &A, pick: &Pick) -> Result<Vec<(u32, Vec<MarkRect>)>, AgentError> {
     let data = selecting::run(access, pick, true)?;
@@ -482,7 +517,41 @@ mod tests {
                 y: y + height / 2.0,
             },
         };
+        let dir = file.0.parent().unwrap().to_path_buf();
+        let pictures = |session: &mut Session<crate::DrawableLoader>, name: &str| {
+            let out = dir.join(format!("{name}.png"));
+            let render = crate::commands::export::Render {
+                tab: TabRef::default(),
+                page: 1,
+                scale: 1.0,
+                out: out.clone(),
+                anyway: false,
+            };
+            run(session, Command::from(render)).expect("rendered");
+            let shot = dir.join(format!("{name}-shot.png"));
+            let snapshot = crate::commands::export::Snapshot {
+                tab: TabRef::default(),
+                page: 1,
+                rect: [0.0, 0.0, 300.0, 200.0],
+                format: "png".into(),
+                out: Some(shot.clone()),
+                scale: 1.0,
+                anyway: false,
+            };
+            run(session, Command::from(snapshot)).expect("snapshot");
+            (std::fs::read(out).unwrap(), std::fs::read(shot).unwrap())
+        };
+        let with = pictures(&mut session, "with");
         run(&mut session, Command::from(remove)).expect("taken out");
+        // A picture an agent makes of the tab follows the person's unsaved removal (coordinator, 2026-11-14): it isn't in it, and undone, it is.
+        let without = pictures(&mut session, "without");
+        assert!(
+            without.0 != with.0 && without.1 != with.1,
+            "render and snapshot leave out a highlight taken out"
+        );
+        run(&mut session, Command::from(crate::commands::editing::Undo { tab: TabRef::default() })).expect("undo");
+        assert_eq!(pictures(&mut session, "undone"), with, "and put it back once that's undone");
+        run(&mut session, Command::from(crate::commands::editing::Redo { tab: TabRef::default() })).expect("redo");
         run(
             &mut session,
             Command::from(crate::commands::saving::Save {

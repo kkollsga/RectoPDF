@@ -122,6 +122,8 @@ pub(crate) struct SnapshotAsked<'a> {
     pub out: Option<&'a Path>,
     pub scale: f32,
     pub anyway: bool,
+    /// The file's own highlights the tab has taken out, left out of a picture (R4.3).
+    pub hidden: crate::render::Hidden,
 }
 
 fn format_of(name: &str) -> Result<Format, AgentError> {
@@ -177,6 +179,7 @@ pub(crate) fn snapshot_command(asked: &SnapshotAsked<'_>) -> Result<Value, Agent
     }
     refuse_if_restricted(asked.path, page, asked.anyway)?;
     let mut doc = open_for_text(asked.path)?;
+    doc.hidden.draw_for(0, asked.hidden.clone());
     let (temp, file) = OwnTemp::create(out)?;
     let written = RefCell::new(FileOut(file));
     let mut data = json!({ "page": asked.page, "rect": asked.rect, "as": format.name(), "out": out, "anyway": asked.anyway });

@@ -119,9 +119,13 @@ fn page_index(page: u32) -> Result<u32, AgentError> {
         .ok_or_else(|| AgentError::new(Code::NO_SUCH_PAGE, "Pages are numbered from 1.", exit::NOT_FOUND))
 }
 
-pub(crate) fn render(path: &Path, page: u32, scale: f32, out: &Path) -> Result<Value, AgentError> {
-    render_with_caps(path, page, scale, out, &OutputCaps::default())
+/// `hidden`: the file's own highlights the tab has taken out, left out of the picture ([`crate::highlighting::hidden_on`]).
+pub(crate) fn render(path: &Path, page: u32, scale: f32, out: &Path, hidden: Hidden) -> Result<Value, AgentError> {
+    render_with_caps(path, page, scale, out, &OutputCaps::default(), hidden)
 }
+
+/// The file's own highlights a tab has taken out, which a picture of its page leaves out.
+pub(crate) type Hidden = Option<std::sync::Arc<recto_proto::hidden::HiddenAnnots>>;
 
 /// A temp file this process created, next to where the picture is going. Only ever deletes itself: never a file that was already there.
 pub(crate) struct OwnTemp {
@@ -340,11 +344,11 @@ pub fn output_exists() -> AgentError {
     AgentError::new(Code::OUTPUT_EXISTS, "A file is already there, and it won't be replaced.", exit::FAILED)
 }
 
-fn render_with_caps(path: &Path, page: u32, scale: f32, out: &Path, caps: &OutputCaps) -> Result<Value, AgentError> {
-    render_with(ServiceConfig::discover()?, path, page, scale, out, caps)
+fn render_with_caps(path: &Path, page: u32, scale: f32, out: &Path, caps: &OutputCaps, hidden: Hidden) -> Result<Value, AgentError> {
+    render_with(ServiceConfig::discover()?, path, page, scale, out, caps, hidden)
 }
 
-fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &Path, caps: &OutputCaps) -> Result<Value, AgentError> {
+fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &Path, caps: &OutputCaps, hidden: Hidden) -> Result<Value, AgentError> {
     let page = page_index(page)?;
     // Only ever a new picture, where nothing reads it as anything else. The ending also keeps `out` off the PDF itself, because only the append writer may change one.
     crate::saving::check_export_path(out, &["png"], "picture")?;
@@ -364,6 +368,7 @@ fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &
     let policy = Policy::default();
     let limit = policy.heavy_limit_bytes;
     let mut doc = DocRenderer::new(path, None, config, policy)?;
+    doc.hidden.draw_for(0, hidden);
     let scale = if largest { largest_scale(&mut doc, page, caps)? } else { scale };
     let (temp, drawn, kind) = write_page(&mut doc, page, scale, out, caps, limit).map_err(|error| {
         let error = if error.code == Code::TOO_LARGE_AT_THIS_SCALE {
@@ -841,7 +846,7 @@ mod tests {
         let file = doc();
         let out = file.0.with_file_name("taken.png");
         std::fs::write(&out, b"precious").unwrap();
-        assert_eq!(render(&file.0, 1, 1.0, &out).unwrap_err().code, "output_exists");
+        assert_eq!(render(&file.0, 1, 1.0, &out, None).unwrap_err().code, "output_exists");
         assert_eq!(std::fs::read(&out).unwrap(), b"precious");
         std::fs::remove_file(&out).unwrap();
     }
@@ -853,7 +858,7 @@ mod tests {
         let out = file.0.with_file_name("link.png");
         let target = file.0.with_file_name("target-of-link");
         std::os::unix::fs::symlink(&target, &out).unwrap();
-        assert_eq!(render(&file.0, 1, 1.0, &out).unwrap_err().code, "output_exists");
+        assert_eq!(render(&file.0, 1, 1.0, &out, None).unwrap_err().code, "output_exists");
         assert!(!target.exists(), "the link was followed");
         std::fs::remove_file(&out).unwrap();
     }
@@ -867,13 +872,13 @@ mod tests {
         let link = file.0.with_file_name("fine.png.partial");
         std::fs::write(&target, b"victim").unwrap();
         std::os::unix::fs::symlink(&target, &link).unwrap();
-        render(&file.0, 1, 1.0, &out).unwrap();
+        render(&file.0, 1, 1.0, &out, None).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"victim", "the write went through the link");
         // A failing render must leave it too.
         let failed = file.0.with_file_name("fine2.png");
         let plain = file.0.with_file_name("fine2.png.partial");
         std::fs::write(&plain, b"not ours").unwrap();
-        assert!(render(&file.0, 99, 1.0, &failed).is_err());
+        assert!(render(&file.0, 99, 1.0, &failed, None).is_err());
         assert_eq!(std::fs::read(&plain).unwrap(), b"not ours", "a failed render deleted a file it didn't make");
         for path in [&out, &target, &link, &plain] {
             std::fs::remove_file(path).unwrap();
@@ -936,7 +941,7 @@ mod tests {
     fn a_long_output_name_still_gets_a_temp_file() {
         let file = doc();
         let out = file.0.with_file_name(format!("{}.png", "n".repeat(250)));
-        render(&file.0, 1, 1.0, &out).unwrap();
+        render(&file.0, 1, 1.0, &out, None).unwrap();
         std::fs::remove_file(&out).unwrap();
     }
 
@@ -946,13 +951,13 @@ mod tests {
         let file = doc();
         let before = folder_entries(&file);
         let out = file.0.with_file_name("a.png");
-        render(&file.0, 1, 1.0, &out).unwrap();
+        render(&file.0, 1, 1.0, &out, None).unwrap();
         std::fs::remove_file(&out).unwrap();
         let tiny = OutputCaps {
             max_bytes: 10,
             ..OutputCaps::default()
         };
-        assert_eq!(render_with_caps(&file.0, 1, 1.0, &out, &tiny).unwrap_err().code, "output_too_large");
+        assert_eq!(render_with_caps(&file.0, 1, 1.0, &out, &tiny, None).unwrap_err().code, "output_too_large");
         assert_eq!(folder_entries(&file), before);
     }
 
@@ -965,17 +970,20 @@ mod tests {
             max_pixels: 1000,
             ..OutputCaps::default()
         };
-        assert_eq!(render_with_caps(&file.0, 1, 1.0, &out, &pixels).unwrap_err().code, "too_large_at_this_scale");
+        assert_eq!(
+            render_with_caps(&file.0, 1, 1.0, &out, &pixels, None).unwrap_err().code,
+            "too_large_at_this_scale"
+        );
         let bytes = OutputCaps {
             max_bytes: 100,
             ..OutputCaps::default()
         };
-        assert_eq!(render_with_caps(&file.0, 1, 1.0, &out, &bytes).unwrap_err().code, "output_too_large");
+        assert_eq!(render_with_caps(&file.0, 1, 1.0, &out, &bytes, None).unwrap_err().code, "output_too_large");
         let time = OutputCaps {
             max_time: Duration::ZERO,
             ..OutputCaps::default()
         };
-        assert_eq!(render_with_caps(&file.0, 1, 1.0, &out, &time).unwrap_err().code, "render_took_too_long");
+        assert_eq!(render_with_caps(&file.0, 1, 1.0, &out, &time, None).unwrap_err().code, "render_took_too_long");
         assert!(!out.exists());
     }
 
@@ -985,9 +993,9 @@ mod tests {
         let file = doc();
         let out = file.0.with_file_name("huge.png");
         let started = Instant::now();
-        assert_eq!(render(&file.0, 1, 16.0, &out).unwrap_err().code, "too_large_at_this_scale");
+        assert_eq!(render(&file.0, 1, 16.0, &out, None).unwrap_err().code, "too_large_at_this_scale");
         assert_eq!(
-            render(&file.0, 1, 64.0, &out).unwrap_err().code,
+            render(&file.0, 1, 64.0, &out, None).unwrap_err().code,
             "too_large_at_this_scale",
             "wider than a strip can be"
         );
@@ -1011,7 +1019,7 @@ mod tests {
             max_pixels: 400_000,
             ..OutputCaps::default()
         };
-        let refused = render_with_caps(&file.0, 1, 8.0, &out, &caps).unwrap_err();
+        let refused = render_with_caps(&file.0, 1, 8.0, &out, &caps, None).unwrap_err();
         assert_eq!(refused.code, "too_large_at_this_scale");
         assert!(refused.message.contains("2232 x 2016"), "it says why: {}", refused.message);
         let named: f32 = refused.candidates[0].strip_prefix("--scale ").unwrap().parse().unwrap();
@@ -1021,13 +1029,13 @@ mod tests {
             refused.message,
             refused.next
         );
-        let drawn = render_with_caps(&file.0, 1, named, &out, &caps).unwrap();
+        let drawn = render_with_caps(&file.0, 1, named, &out, &caps, None).unwrap();
         assert!(
             drawn["width"].as_u64().unwrap() * drawn["height"].as_u64().unwrap() <= caps.max_pixels,
             "{drawn}"
         );
         std::fs::remove_file(&out).unwrap();
-        let next_up = render_with_caps(&file.0, 1, named + 0.02, &out, &caps).unwrap_err();
+        let next_up = render_with_caps(&file.0, 1, named + 0.02, &out, &caps, None).unwrap_err();
         assert_eq!(next_up.code, "too_large_at_this_scale", "it's the edge, not somewhere well under it");
         assert!(!out.exists());
         // At the real caps: the map's own size, from the failure an agent met. 8 is refused and what it names is at least the 4 that worked.
@@ -1065,7 +1073,7 @@ mod tests {
     fn a_scale_reads_as_it_was_written() {
         let file = doc();
         let out = file.0.with_file_name("written.png");
-        let drawn = render(&file.0, 1, 0.71, &out).unwrap();
+        let drawn = render(&file.0, 1, 0.71, &out, None).unwrap();
         assert_eq!(drawn["scale"], 0.71, "{drawn}");
         assert!(crate::human::render("render", &drawn).contains("at 0.71x"), "{drawn}");
         std::fs::remove_file(&out).unwrap();
@@ -1087,7 +1095,7 @@ mod tests {
             max_pixels: 400_000,
             ..OutputCaps::default()
         };
-        let drawn = render_with_caps(&file.0, 1, LARGEST_THAT_FITS, &out, &caps).unwrap();
+        let drawn = render_with_caps(&file.0, 1, LARGEST_THAT_FITS, &out, &caps, None).unwrap();
         let named = drawn["scale"].as_f64().unwrap() as f32;
         assert_eq!(drawn["largest_that_fits"], true, "{drawn}");
         assert_eq!(Some(named), largest_scale_that_fits(2232.0, 2016.0, &caps), "{drawn}");
@@ -1098,7 +1106,7 @@ mod tests {
         let said = crate::human::render("render", &drawn);
         assert!(said.contains(&format!("at {named}x")) && said.contains("largest"), "{said}");
         std::fs::remove_file(&out).unwrap();
-        let at_a_number = render_with_caps(&file.0, 1, 0.1, &out, &caps).unwrap();
+        let at_a_number = render_with_caps(&file.0, 1, 0.1, &out, &caps, None).unwrap();
         assert_eq!(at_a_number["largest_that_fits"], false);
         assert!(!crate::human::render("render", &at_a_number).contains("largest"));
         std::fs::remove_file(&out).unwrap();
@@ -1110,7 +1118,7 @@ mod tests {
         let file = doc();
         let before = folder_entries(&file);
         let out = file.0.with_file_name("heavy.png");
-        let error = render_with(stand_in(), &file.0, 1, LARGEST_THAT_FITS, &out, &OutputCaps::default()).unwrap_err();
+        let error = render_with(stand_in(), &file.0, 1, LARGEST_THAT_FITS, &out, &OutputCaps::default(), None).unwrap_err();
         assert!(matches!(error.code, Code::EXPORT_PAGE_TOO_HEAVY | Code::EXPORT_MEMORY_TIGHT), "{}", error.code);
         assert!(error.message.contains("no file was written"), "{}", error.message);
         assert_eq!(folder_entries(&file), before);
@@ -1122,16 +1130,19 @@ mod tests {
         let file = doc();
         let hidden = file.0.with_file_name(".hidden");
         std::fs::create_dir_all(&hidden).unwrap();
-        assert_eq!(render(&file.0, 1, 1.0, &hidden.join("a.png")).unwrap_err().code, "bad_output");
+        assert_eq!(render(&file.0, 1, 1.0, &hidden.join("a.png"), None).unwrap_err().code, "bad_output");
         let script = file.0.with_file_name("run.sh");
         std::fs::write(&script, b"").unwrap();
         let link = file.0.with_file_name("innocent.png");
         std::os::unix::fs::symlink(&script, &link).unwrap();
-        let led = render(&file.0, 1, 1.0, &link).unwrap_err();
+        let led = render(&file.0, 1, 1.0, &link, None).unwrap_err();
         assert_eq!(led.code, "bad_output", "{}", led.message);
-        assert_eq!(render(&file.0, 1, 1.0, &file.0.with_file_name("a.jpg")).unwrap_err().code, "bad_output");
+        assert_eq!(render(&file.0, 1, 1.0, &file.0.with_file_name("a.jpg"), None).unwrap_err().code, "bad_output");
         if let Some(home) = recto_platform::local::real_home() {
-            assert_eq!(render(&file.0, 1, 1.0, &home.join("Library/recto-never.png")).unwrap_err().code, "bad_output");
+            assert_eq!(
+                render(&file.0, 1, 1.0, &home.join("Library/recto-never.png"), None).unwrap_err().code,
+                "bad_output"
+            );
             assert!(!home.join("Library/recto-never.png").exists());
         }
         assert_eq!(std::fs::read(&script).unwrap(), b"", "nothing went through the link");
@@ -1146,7 +1157,7 @@ mod tests {
     fn a_drawing_says_how_long_it_took() {
         let file = doc();
         let out = file.0.with_file_name("timed.png");
-        let drawn = render(&file.0, 1, 1.0, &out).unwrap();
+        let drawn = render(&file.0, 1, 1.0, &out, None).unwrap();
         assert!(drawn["took_ms"].is_u64(), "{drawn}");
         assert!(crate::human::render("render", &drawn).contains(" in "), "{drawn}");
         std::fs::remove_file(&out).unwrap();
@@ -1245,7 +1256,7 @@ mod tests {
         let file = doc();
         let before = folder_entries(&file);
         let out = file.0.with_file_name("low.png");
-        let error = render_with(stand_in(), &file.0, 1, 2.0, &out, &OutputCaps::default()).unwrap_err();
+        let error = render_with(stand_in(), &file.0, 1, 2.0, &out, &OutputCaps::default(), None).unwrap_err();
         // Which refusal depends on how much memory this Mac has free. None of them is a picture.
         assert!(matches!(error.code, Code::EXPORT_PAGE_TOO_HEAVY | Code::EXPORT_MEMORY_TIGHT), "{}", error.code);
         assert!(error.message.contains("no file was written"), "{}", error.message);
