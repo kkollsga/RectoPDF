@@ -22,7 +22,7 @@ pub mod edit_mode;
 pub mod editing;
 pub mod export;
 pub mod finding;
-pub mod highlight; // new-feature: highlight
+pub mod highlight;
 pub mod linking;
 pub mod measure;
 pub mod qa;
