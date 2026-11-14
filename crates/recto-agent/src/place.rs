@@ -186,14 +186,29 @@ mod tests {
         );
     }
 
-    /// What reads a tab's place, as the scan below looks for it: its page, counted from 0 or 1, and what the page view or the file says of it there.
-    const READS: [&str; 6] = [".page + 1", "tab.page", "place_to_show(", "label_differs(", ".here(", "reading_line("];
+    /// What reads a tab's place, as the scan below looks for it: its page, counted from 0 or 1, and what the page view or the file says of it there; and
+    /// what's derived from it (the second review, D-5): the place the page view said, a jump waiting for the view, where synced scroll started each pane,
+    /// and the notes of pages drawn.
+    const READS: [&str; 11] = [
+        ".page + 1",
+        "tab.page",
+        "place_to_show(",
+        "label_differs(",
+        ".here(",
+        "reading_line(",
+        "place_shown(",
+        "reading.place",
+        "waiting_jump(",
+        "sync_from",
+        "draw_note(",
+    ];
 
     /// **Each read of a place that isn't a tab's place through [`super::place_for`], with why,** by its file and function. A page an agent named, a hit's,
     /// a draw's or a link's is the document's, not where the tab is; an event is judged where events leave ([`crate::withheld`]).
     const READS_ALLOWED: &[(&str, &str, &str)] = &[
         ("place.rs", "page", "the one way: a `Place` is only had from `place_for`"),
         ("place.rs", "label", "the one way: a `Place` is only had from `place_for`"),
+        ("place.rs", "shown", "the one way: a `Place` is only had from `place_for`"),
         (
             "selecting.rs",
             "run_counted",
@@ -203,6 +218,16 @@ mod tests {
         ("lib.rs", "describe_source", "the file's page behind a page an agent named"),
         ("lib.rs", "edits_json", "the edit list's runs of pages, which say nothing of where the tab is"),
         ("lib.rs", "label_hits", "what the file calls each hit's page: the hits are the document's"),
+        (
+            "lib.rs",
+            "compare_json",
+            "where synced scroll started each pane: left out while the comparison is withheld (`compare::comparison_withheld`)",
+        ),
+        (
+            "lib.rs",
+            "check_condition",
+            "a draw's note of a page an agent named, after the place rule's refusal and the mail's cutoff (S-3)",
+        ),
         (
             "event.rs",
             "page_now",
@@ -225,13 +250,68 @@ mod tests {
         ("text.rs", "run", "the file's page behind a page an agent named, to read"),
     ];
 
+    /// **The same for `recto-app`,** whose answers to agents (the palette, the menus' rows, the app's own commands) and whose taking in of what the page
+    /// views say read a tab's place too (D-5). Each with why it isn't an agent's answer, or goes through the place rule.
+    const APP_READS_ALLOWED: &[(&str, &str, &str)] = &[
+        (
+            "panes.rs",
+            "follow",
+            "synced scroll's follow between the host's panes: the person's window, never an agent's answer",
+        ),
+        (
+            "model.rs",
+            "reading_facts",
+            "the window's model of the pane being read, drawn for the person; `qa state` reads it only in a quiet run",
+        ),
+        ("model.rs", "pane_snapshot", "what a pane's page view is given to show: the person's window"),
+        (
+            "core/places.rs",
+            "take_in",
+            "what the page views say, taken into the session; its `page_changed` is judged where events leave",
+        ),
+        (
+            "core/places.rs",
+            "take_in_at_the_look",
+            "the jumps the session thread's look sends the page views",
+        ),
+        (
+            "core/editing.rs",
+            "rotate_pages_now",
+            "the page Rotate turns: an agent's is refused first by the gate's rule (`place::refuses`, D-6)",
+        ),
+        ("core/highlight.rs", "pick_of", "the pages of the person's selection, not where the tab is"),
+    ];
+
+    /// **The same for `recto-control`.**
+    const CONTROL_READS_ALLOWED: &[(&str, &str, &str)] = &[(
+        "record_store.rs",
+        "claim",
+        "the record's page held to the pages its journal's edits have, as a restore takes it in: never an answer",
+    )];
+
     /// Each read in `text`'s production lines (test items left out to their end, so production code after a test module is read), as (its line, the
     /// function it's in, the line's words).
     fn place_reads(text: &str) -> Vec<(usize, String, String)> {
         let mut function = String::new();
         let mut found = Vec::new();
         for (at, line) in crate::policy_guards::production_lines(text) {
-            let code = line.split("//").next().unwrap_or_default();
+            // Words in a string are an answer's or a row's text, not a read.
+            let mut in_string = false;
+            let mut last = ' ';
+            let code: String = line
+                .split("//")
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .filter(|c| {
+                    if *c == '"' && last != '\\' {
+                        in_string = !in_string;
+                    }
+                    last = *c;
+                    !in_string && *c != '"'
+                })
+                .collect();
+            let code = code.as_str();
             if let Some((_, after)) = code.split_once("fn ") {
                 let name: String = after.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
                 if !name.is_empty() {
@@ -251,55 +331,87 @@ mod tests {
         found
     }
 
-    /// Failure (security review of S2's round): an answer reads where a tab is in a way of its own, as `edits` and every edit's answer did, and gives an
-    /// agent a place that follows a protected document's. Every production line of the crate that reads a tab's place is in [`super::place_for`] or on
-    /// [`READS_ALLOWED`] with why; and each entry there is still a read, so the list doesn't keep what's gone.
-    #[test]
-    fn every_read_of_a_tabs_place_goes_through_place_for() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    /// The reads in a crate's production sources not on `allowed`, and which entries of `allowed` were met: a folder named `tests`, `headless` or
+    /// `testkit` and files named for tests are test-only, and so are `skip`.
+    fn unlisted(root: &std::path::Path, crate_name: &str, allowed: &[(&str, &str, &str)], skip: &[&str]) -> (usize, Vec<String>, Vec<usize>) {
+        let root = root.to_path_buf();
         let mut folders = vec![root.clone()];
-        let (mut read, mut found, mut used) = (0, Vec::new(), std::collections::HashSet::new());
+        let (mut read, mut found, mut used) = (0, Vec::new(), Vec::new());
         while let Some(folder) = folders.pop() {
             for path in std::fs::read_dir(&folder).unwrap().map(|entry| entry.unwrap().path()) {
                 let name = path.file_name().unwrap().to_string_lossy().into_owned();
                 if path.is_dir() {
-                    if name != "tests" {
+                    if !matches!(name.as_str(), "tests" | "headless" | "testkit") {
                         folders.push(path);
                     }
                     continue;
                 }
-                // Test-only files: those registered under `#[cfg(test)]` or named for tests.
-                if !name.ends_with(".rs")
-                    || name.ends_with("tests.rs")
-                    || matches!(name.as_str(), "policy_guards.rs" | "registry_golden.rs" | "event_agreement.rs")
-                {
+                if !name.ends_with(".rs") || name.ends_with("tests.rs") || skip.contains(&name.as_str()) {
                     continue;
                 }
                 read += 1;
                 let file = path.strip_prefix(&root).unwrap().to_string_lossy().replace("commands/", "");
                 for (line, function, words) in place_reads(&std::fs::read_to_string(&path).unwrap()) {
-                    match READS_ALLOWED.iter().position(|(allowed, named, _)| *allowed == file && *named == function) {
-                        Some(at) => {
-                            used.insert(at);
-                        }
-                        None => found.push(format!("{file}:{line} in `{function}`: {words}")),
+                    match allowed.iter().position(|(allowed, named, _)| *allowed == file && *named == function) {
+                        Some(at) => used.push(at),
+                        None => found.push(format!("{crate_name}/{file}:{line} in `{function}`: {words}")),
                     }
                 }
             }
         }
-        assert!(read > 50, "the crate's sources were read: {read} files");
-        assert!(
-            found.is_empty(),
-            "a tab's place read other than through `place::place_for`: use it, or put the read on `READS_ALLOWED` with why it isn't where the tab is:\n{}",
-            found.join("\n")
-        );
-        let gone: Vec<_> = READS_ALLOWED
-            .iter()
-            .enumerate()
-            .filter(|(at, _)| !used.contains(at))
-            .map(|(_, entry)| entry)
-            .collect();
-        assert!(gone.is_empty(), "no longer a read, so taken off `READS_ALLOWED`: {gone:?}");
+        (read, found, used)
+    }
+
+    /// Failure (security review of S2's round, and the second review's D-5): an answer reads where a tab is in a way of its own, as `edits` and every
+    /// edit's answer did, or what's derived from it (`session show`'s zoom from the page view's place), and gives an agent a place that follows a
+    /// protected document's. Every production line of `recto-agent`, `recto-app` and `recto-control` that reads a tab's place or what came of it is in
+    /// [`super::place_for`] or on the crate's reviewed list with why; and each entry there is still a read, so a list doesn't keep what's gone.
+    #[test]
+    fn every_read_of_a_tabs_place_goes_through_place_for() {
+        for (crate_name, allowed, skip, least) in [
+            (
+                "recto-agent",
+                READS_ALLOWED,
+                &["policy_guards.rs", "registry_golden.rs", "event_agreement.rs"][..],
+                50,
+            ),
+            ("recto-app", APP_READS_ALLOWED, &["testkit.rs"][..], 50),
+            ("recto-control", CONTROL_READS_ALLOWED, &[][..], 10),
+        ] {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(crate_name).join("src");
+            let (read, found, used) = unlisted(&root, crate_name, allowed, skip);
+            assert!(read > least, "{crate_name}'s sources were read: {read} files");
+            assert!(
+                found.is_empty(),
+                "a tab's place read other than through `place::place_for`: use it, or put the read on {crate_name}'s list with why it isn't where the tab is:\n{}",
+                found.join("\n")
+            );
+            let gone: Vec<_> = allowed
+                .iter()
+                .enumerate()
+                .filter(|(at, _)| !used.contains(at))
+                .map(|(_, entry)| entry)
+                .collect();
+            assert!(gone.is_empty(), "no longer a read, so taken off {crate_name}'s list: {gone:?}");
+        }
+    }
+
+    /// Failure (D-5): the scan of a crate misses a read in a folder below its sources, or one of a name it looks for, or counts a test-only folder: one
+    /// read of each name seeded in a crate's nested folder is found, and the same in `headless` isn't.
+    #[test]
+    fn the_scan_of_a_crate_finds_a_read_of_each_name_seeded_in_it() {
+        let root = std::env::temp_dir().join(format!("recto-place-scan-{}", std::process::id()));
+        for folder in ["core", "headless"] {
+            std::fs::create_dir_all(root.join(folder)).unwrap();
+        }
+        for read in READS {
+            let text = format!("fn seeded() {{\n    let _ = (x{read} 0);\n}}\n");
+            std::fs::write(root.join("core").join("seeded.rs"), &text).unwrap();
+            std::fs::write(root.join("headless").join("seeded.rs"), &text).unwrap();
+            let (read_files, found, _) = unlisted(&root, "seeded", &[], &[]);
+            assert_eq!((read_files, found.len()), (1, 1), "{read}: {found:?}");
+        }
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// Failure: the scan misses a read it names, or one after a test module, as another scan in this crate once lost a renderer by stopping at the first
