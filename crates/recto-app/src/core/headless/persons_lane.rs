@@ -10,7 +10,13 @@ use crate::testkit::headless::{Disk, HeadlessApp, WAIT_LIMIT};
 use recto_agent::Level;
 use serde_json::Value;
 
+/// **A menu item chosen, as a person can:** Undo, Redo, Save and Close only while they're enabled, as AppKit drops a key whose item isn't (the fault as
+/// filed: ⌃⌘H then a quick ⌘Z met a disabled Undo, and the highlight stayed). The rest are enabled by the page view's document and selection, which this
+/// file doesn't test.
 fn menu(app: &HeadlessApp, id: &str) -> HostAction {
+    if ["edit.undo", "edit.redo", "file.save", "file.close"].contains(&id) {
+        assert!(app.core().menu_item_enabled(id.into()), "{id} can be chosen now");
+    }
     app.act(UiAction::Menu { id: id.into() }).host
 }
 
@@ -79,6 +85,58 @@ fn a_quick_undo_after_a_highlight_undoes_the_highlight() {
     assert_eq!(undo_redo(&app), (true, true), "the turn still there to undo, and the highlight to redo");
 }
 
+/// **Failure (the fault as filed, review of the lane, D3): on a fresh document, ⌃⌘H then a quick ⌘Z met a disabled Undo,** as the session hadn't
+/// published the highlight yet: AppKit dropped the key and the highlight stayed. Undo and Save can be chosen while an edit of the tab showing lands: the
+/// ⌘Z undoes the highlight, and a Save writes it.
+#[test]
+fn undo_and_save_can_be_chosen_while_a_highlight_lands_on_a_fresh_document() {
+    let disk = Disk::new();
+    let doc = disk.pdf("fresh.pdf", 1);
+    let app = disk.start();
+    app.open(&doc);
+    assert_eq!(undo_redo(&app), (false, false), "nothing done yet");
+    while_a_highlight_is_read(&app, HIGHLIGHT_ID, "highlight", || {
+        assert!(app.core().menu_item_enabled("file.save".into()), "Save can be chosen");
+        menu(&app, "edit.undo");
+    });
+    assert_eq!(highlights(&app), (0, 0), "the highlight undone");
+    assert_eq!(undo_redo(&app), (false, true));
+
+    let disk = Disk::new();
+    let doc = disk.pdf("fresh.pdf", 1);
+    let app = disk.start();
+    app.open(&doc);
+    while_a_highlight_is_read(&app, HIGHLIGHT_ID, "highlight", || {
+        menu(&app, "file.save");
+    });
+    let read = recto_core::highlights::page_highlights(&doc, 0).expect("the saved file reads");
+    assert_eq!(read.found.len(), 1, "the Save chosen while it landed wrote it");
+}
+
+/// Failure (D3): the Undo chosen while a highlight landed, with the highlight refused and no step to undo, says something or undoes something. It does
+/// nothing and says nothing of its own, as an Undo with nothing to undo always has: the line by the page is the highlight's refusal.
+#[test]
+fn an_undo_chosen_while_a_refused_highlight_landed_does_nothing() {
+    let disk = Disk::new();
+    let doc = disk.pdf("fresh.pdf", 1);
+    let app = disk.start();
+    app.open(&doc);
+    selects(&app, (0, 0), (0, 0));
+    let (held, go) = hold("highlight");
+    menu(&app, HIGHLIGHT_ID);
+    held.recv_timeout(WAIT_LIMIT).expect("held");
+    menu(&app, "edit.undo");
+    drop(go);
+    app.settle();
+    assert_eq!(undo_redo(&app), (false, false), "nothing done, nothing undone");
+    let notice = app.reader().selection_notice.map(|notice| notice.text);
+    assert_eq!(
+        notice.as_deref(),
+        Some("Couldn't highlight: there's no text selected there."),
+        "only the highlight's refusal is said"
+    );
+}
+
 /// Failure: the same fault for Remove Highlight: ⌘Z after it undoes the step before, and the removal lands. The removal is undone: the highlight's back.
 #[test]
 fn a_quick_undo_after_a_removal_undoes_the_removal() {
@@ -94,25 +152,32 @@ fn a_quick_undo_after_a_removal_undoes_the_removal() {
     assert_eq!(undo_redo(&app), (true, true), "the highlight and the turn to undo, the removal to redo");
 }
 
-/// Failure: the person's edits asked while a highlight is read run in another order than asked: Undo then Redo puts the highlight back, Redo then Undo
-/// takes it off (the highlight cleared what there was to redo, so the Redo has nothing), and two highlights then two Undos leave neither and the turn.
+/// Failure: the person's edits asked while a highlight is read run in another order than asked. Each sequence is one a person can reach, every item
+/// enabled as it's chosen: with the turn undone first (so Redo can be chosen), Undo then Redo puts the highlight back; Redo then Undo takes it off (the
+/// highlight cleared what there was to redo, so the Redo has nothing); and two highlights then two Undos leave neither and the turn.
 #[test]
 fn every_order_asked_is_the_order_done() {
-    let app = with_a_step_before();
+    let with_the_turn_undone = || {
+        let app = with_a_step_before();
+        menu(&app, "edit.undo");
+        assert_eq!(undo_redo(&app), (false, true), "the turn undone, to redo");
+        app
+    };
+    let app = with_the_turn_undone();
     while_a_highlight_is_read(&app, HIGHLIGHT_ID, "highlight", || {
         menu(&app, "edit.undo");
         menu(&app, "edit.redo");
     });
     assert_eq!(highlights(&app), (1, 0), "highlight, undo, redo: it's there");
-    assert_eq!(undo_redo(&app), (true, false));
+    assert_eq!(undo_redo(&app), (true, false), "and the turn's redo went with the highlight");
 
-    let app = with_a_step_before();
+    let app = with_the_turn_undone();
     while_a_highlight_is_read(&app, HIGHLIGHT_ID, "highlight", || {
         menu(&app, "edit.redo");
         menu(&app, "edit.undo");
     });
     assert_eq!(highlights(&app), (0, 0), "highlight, redo (nothing), undo: it's gone");
-    assert_eq!(undo_redo(&app), (true, true), "the turn stands");
+    assert_eq!(undo_redo(&app), (false, true), "the turn not redone: only the highlight to redo");
 
     let app = with_a_step_before();
     while_a_highlight_is_read(&app, HIGHLIGHT_ID, "highlight", || {
@@ -285,7 +350,11 @@ fn an_agents_command_neither_waits_for_the_persons_nor_holds_them_up() {
     while_a_highlight_is_read(&app, HIGHLIGHT_ID, "highlight", || {
         app.agent(Level::Full, r#"{"cmd":"undo"}"#)
             .expect("the agent's undo, answered while the highlight is held");
-        assert!(!undo_redo(&app).0, "done at once: the turn undone");
+        flush(&app);
+        assert!(
+            !app.reader().can_undo,
+            "done at once: the turn undone (the menu's Undo is on for the highlight landing)"
+        );
     });
     assert_eq!(highlights(&app), (1, 0), "the person's highlight landed");
 }

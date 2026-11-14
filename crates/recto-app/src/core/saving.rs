@@ -74,10 +74,12 @@ impl SaveSupport for AppSaving {
     }
 }
 
-/// **Whether Save can be chosen now,** from what's published: never waits. Not under a sheet: the close prompt's own Save is how to save then.
-pub fn can_save(published: &std::sync::Mutex<super::Published>, life: &super::Lifecycle) -> bool {
+/// **Whether Save can be chosen now,** from what's published and the person's lane: never waits. With an edit of the tab showing still landing (a
+/// highlight reading its pages) it can, as the Save is ordered behind it (review of the lane, D3). Not under a sheet: the close prompt's own Save is how to
+/// save then.
+pub fn can_save(published: &std::sync::Mutex<super::Published>, life: &super::Lifecycle, lane: &crate::queue::lane::Lane) -> bool {
     let reader = super::lock(published).reader.clone();
-    !reader.home && reader.edited && reader.save_enabled && life.sheets_open() == 0
+    !reader.home && (reader.edited || lane.landing(reader.shown_tab)) && reader.save_enabled && life.sheets_open() == 0
 }
 
 /// **A save from the window, off the UI thread,** through the same command an agent's `recto save` runs, as the person's. `out` makes it a Save As. `close_after` closes the tab once it's saved, for the close prompt's Save. A hand-off waits for it, as it's a running command.

@@ -53,7 +53,8 @@ impl Inner {
             Enable::SaveAs => reader(|reader| !reader.home && !reader.saving) && self.tools.save_ui().disagreement_now().is_none(),
             Enable::Close => reader(|reader| !reader.home && !reader.saving),
             Enable::ClearRecent => !lock(&self.published).recent.is_empty(),
-            Enable::Undo => reader(|reader| reader.can_undo),
+            // With an edit of the tab showing still landing, an Undo is ordered behind it and undoes it (review of the lane, D3).
+            Enable::Undo => reader(|reader| reader.can_undo) || self.core.lane().landing(lock(&self.published).reader.shown_tab),
             Enable::Redo => reader(|reader| reader.can_redo),
             Enable::Back => reader(|reader| reader.can_go_back),
             Enable::Forward => reader(|reader| reader.can_go_forward),
@@ -62,7 +63,7 @@ impl Inner {
 
     /// Whether Save does anything now: the tab showing has unsaved edits and isn't being saved.
     pub fn can_save(&self) -> bool {
-        super::saving::can_save(&self.published, &self.life)
+        super::saving::can_save(&self.published, &self.life, self.core.lane())
     }
 
     /// The menu bar as it stands, as recto-app's lists: what `AppCore::menu_bar` converts, and the palette lists.
