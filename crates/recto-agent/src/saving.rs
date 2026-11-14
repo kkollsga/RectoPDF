@@ -15,6 +15,7 @@
 
 use crate::Code;
 use crate::TabRef;
+use crate::actor::Rewrite;
 use crate::{Actor, AgentError, Event, Level, SessionAccess, exit, file_label, select};
 use recto_core::save::{AddedFile, PageRef, SaveError, SaveHooks, SaveOutcome, SaveRequest, SaveStep, Target, Writer};
 use recto_platform::FileStamp;
@@ -103,13 +104,6 @@ fn from_save(error: &SaveError) -> AgentError {
         _ => "Tell the user what failed. The edits are still here, unsaved, and the file is as it was.",
     };
     AgentError::new(Code::lower(error.code()), error.message(), exit).then(next)
-}
-
-fn needs_full(what: &str) -> AgentError {
-    let mut error = AgentError::new(Code::PERMISSION_DENIED, format!("{what} needs Full access."), exit::PERMISSION);
-    error.next = "Run `recto permission request full`, which tells the user what to allow. Nothing else raises this.".to_string();
-    error.ask = Some("recto permission request full".into());
-    error
 }
 
 fn bad_path(message: &str) -> AgentError {
@@ -260,14 +254,14 @@ fn request_parts(snapshot: &recto_session::SaveSnapshot) -> (Vec<PageRef>, Vec<A
 
 /// **Saves a tab.** The one way an agent, the CLI or the app saves.
 pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveTo, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-    let (level, mut to) = (actor.level(), to.clone());
+    let mut to = to.clone();
     // Save As onto the tab's own file, which is a Save: a signed one's refusal then says to choose another name, not to use Save As.
     let mut onto_itself = false;
     if let SaveTo::As { out, replace } = &to {
         crate::quiet_files::check_new_file(access, out)?; // The session's own wall, beside the table's (F4).
         check_save_path(out)?;
-        if *replace && level < Level::Full {
-            return Err(needs_full("Replacing another file"));
+        if *replace {
+            actor.refuse_rewrite(Rewrite::ReplacesAnotherFile)?;
         }
         if !*replace && std::fs::symlink_metadata(out).is_ok() {
             return Err(from_save(&SaveError::TargetExists));
@@ -335,13 +329,16 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
         return Err(refused);
     }
     let writer = recto_core::save::writer_for_request(&request);
-    if writer == Writer::Rewrite && level < Level::Full && level >= Level::Control {
-        drop(ending);
-        return Err(needs_full(if snapshot.marks.gone.is_empty() {
-            "A save that removes pages for good"
+    // Below Control nothing saves at all: the table refuses it.
+    if writer == Writer::Rewrite
+        && let Err(refused) = actor.refuse_rewrite(if snapshot.marks.gone.is_empty() {
+            Rewrite::RemovesPages
         } else {
-            "A save that takes a highlight out of the file for good"
-        }));
+            Rewrite::TakesOutHighlight
+        })
+    {
+        drop(ending);
+        return Err(refused);
     }
     let target = match to {
         SaveTo::Same => Target::Same,
@@ -363,7 +360,7 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
         original: &snapshot.path,
         needed,
         kept: None,
-        level,
+        actor,
     };
     let saved = recto_core::save::save(&request, target, backups.as_deref(), &mut hooks);
     let kept = hooks.kept.take();
@@ -371,7 +368,7 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
         Ok(outcome) => outcome,
         Err(SaveError::RewriteNotAllowed) => {
             drop(ending);
-            return Err(needs_full("A save that writes the file anew"));
+            return Err(Rewrite::WritesAnew.refusal());
         }
         Err(SaveError::SignedNeedsCopy) if onto_itself => {
             drop(ending);
@@ -419,13 +416,12 @@ struct Hooks<'a, A: SessionAccess> {
     needed: Vec<u32>,
     /// That copy, once it's made.
     kept: Option<recto_session::edit::AddedSource>,
-    level: Level,
+    actor: Actor,
 }
 
 impl<A: SessionAccess> SaveHooks for Hooks<'_, A> {
     fn may_rewrite(&self) -> bool {
-        // Writing a file anew takes what was removed out of it for good: Full only (SPEC section 5). Below Control nothing saves at all.
-        self.level >= Level::Full
+        self.actor.may_rewrite()
     }
 
     fn step(&mut self, step: SaveStep) {

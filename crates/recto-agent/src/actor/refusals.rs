@@ -89,3 +89,33 @@ pub(crate) fn unreadable(what: &str) -> AgentError {
     )
     .then("Leave them: the tab tells the user its edits couldn't be read, and what to do with them is theirs. `recto session show` says what's known of them.")
 }
+
+/// **What only Full may write** (SPEC section 5; the coordinator's decision, 2026-11-08): a save that takes what was removed out of a file for good,
+/// and a save over another file. At Control an agent may append and Save As to a new file, which lose nothing.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Rewrite {
+    /// A Save As over a file that's there.
+    ReplacesAnotherFile,
+    /// A rewrite, as the edits ask for one, that takes out deleted pages.
+    RemovesPages,
+    /// A rewrite, as the edits ask for one, that takes out a highlight of the file's.
+    TakesOutHighlight,
+    /// A rewrite the writer chose once it read the file (a signed or certified file's copy).
+    WritesAnew,
+}
+
+impl Rewrite {
+    /// The refusal, below Full.
+    pub(crate) fn refusal(self) -> AgentError {
+        let what = match self {
+            Self::ReplacesAnotherFile => "Replacing another file",
+            Self::RemovesPages => "A save that removes pages for good",
+            Self::TakesOutHighlight => "A save that takes a highlight out of the file for good",
+            Self::WritesAnew => "A save that writes the file anew",
+        };
+        let mut error = AgentError::new(Code::PERMISSION_DENIED, format!("{what} needs Full access."), exit::PERMISSION);
+        error.next = format!("Run `{ASK_FULL}`, which tells the user what to allow. Nothing else raises this.");
+        error.ask = Some(ASK_FULL.into());
+        error
+    }
+}

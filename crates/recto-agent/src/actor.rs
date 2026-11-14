@@ -7,7 +7,7 @@
 
 mod refusals;
 
-pub(crate) use refusals::{ASK_FULL, Stake};
+pub(crate) use refusals::{ASK_FULL, Rewrite, Stake};
 
 use crate::table::Access;
 use crate::{AgentError, Level};
@@ -112,6 +112,17 @@ impl Actor {
             return Ok(());
         }
         Err(refusals::unreadable(what))
+    }
+
+    /// **May write a file anew** (SPEC section 5), which takes what was removed out of it for good, or save over another file: at Full.
+    #[must_use]
+    pub fn may_rewrite(self) -> bool {
+        self.at_full()
+    }
+
+    /// **Refuses a rewrite** below Full, with its one refusal.
+    pub(crate) fn refuse_rewrite(self, rewrite: Rewrite) -> Result<(), AgentError> {
+        if self.may_rewrite() { Ok(()) } else { Err(rewrite.refusal()) }
     }
 }
 

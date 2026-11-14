@@ -926,7 +926,11 @@ fn no_command_below_full_loses_the_owners_edits() {
         }
     }
     assert!(lost.is_empty(), "the owner's edits lost below Full:\n{}", lost.join("\n"));
-    assert!(own_words.is_empty(), "refused for the owner's edits in words of its own, not `actor::Stake`'s:\n{}", own_words.join("\n"));
+    assert!(
+        own_words.is_empty(),
+        "refused for the owner's edits in words of its own, not `actor::Stake`'s:\n{}",
+        own_words.join("\n")
+    );
 }
 
 /// **Failure (second review of R4.3): a save below Full that would drop the owner's steps is made**, losing them. The walk above saves only where

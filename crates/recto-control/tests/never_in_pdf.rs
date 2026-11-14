@@ -28,6 +28,9 @@ struct Keeping<'a> {
 }
 
 impl SaveHooks for Keeping<'_> {
+    fn may_rewrite(&self) -> bool {
+        true
+    }
     fn prepared(&mut self, _written: &Path, stamp: recto_platform::FileStamp) -> std::io::Result<()> {
         self.kept = self.store.keep_pages_of(self.file, stamp, &self.needed);
         self.session.save_prepared(self.tab, stamp, self.kept.as_ref());
