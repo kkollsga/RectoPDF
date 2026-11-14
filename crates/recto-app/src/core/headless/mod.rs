@@ -20,7 +20,7 @@ mod late_lock;
 mod late_lock_order;
 mod launch;
 mod levels;
-mod life_locks;
+pub(super) mod life_locks;
 mod life_script;
 mod menu_agents;
 mod menu_twins;

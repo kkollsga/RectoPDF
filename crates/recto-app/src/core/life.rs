@@ -220,9 +220,10 @@ impl Lifecycle {
         *lock(&self.window_opened_at) = Some(Instant::now());
     }
 
-    /// What the window's first showing had on it, read under its short lock.
-    pub(crate) fn first_shown<R>(&self, read: impl FnOnce(&Option<Value>) -> R) -> R {
-        read(&lock(&self.first_shown))
+    /// What the window's first showing had on it, a copy taken under its short lock: the lock the UI thread takes as the window's shown, so nothing else is
+    /// done holding it.
+    pub(crate) fn first_shown(&self) -> Option<Value> {
+        lock(&self.first_shown).clone()
     }
 
     /// The restored active tab whose file is being read, if one is: nothing's drawn of it until it's looked at.

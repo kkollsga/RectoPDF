@@ -198,7 +198,7 @@ Lifecycle::pub fn state_read(&self) -> bool
 Lifecycle::pub fn step(&self, event: crate::lifecycle::Event) -> Option<crate::lifecycle::Out>
 Lifecycle::pub fn window_interactive(&self) -> bool
 Lifecycle::pub(crate) fn due(&self) -> Option<Duration>
-Lifecycle::pub(crate) fn first_shown<R>(&self, read: impl FnOnce(&Option<Value>) -> R) -> R
+Lifecycle::pub(crate) fn first_shown(&self) -> Option<Value>
 Lifecycle::pub(crate) fn hold_reads(&self, hold: bool)
 Lifecycle::pub(crate) fn holding_tab(&self) -> Option<TabId>
 Lifecycle::pub(crate) fn last_input_ms(&self) -> u64

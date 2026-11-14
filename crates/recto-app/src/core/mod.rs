@@ -348,8 +348,16 @@ impl Inner {
     /// What QA reads of how a restore and the record went, none of it what the user sees.
     pub fn record_report(&self) -> Value {
         let (writes, appends) = self.saver.store.writes();
-        // Built under the first showing's short lock, as it always was.
-        self.life.first_shown(|first_shown| json!({ "first_shown": first_shown, "remade": self.life.remade(), "sleep": self.sleeper.report(), "writes": writes, "appends": appends, "wrote_bytes": self.saver.store.wrote_bytes(), "failed": self.saver.has_failed() }))
+        let wrote_bytes = || {
+            // Where a test holds a report, as a writer flushing to a slow disk holds the store.
+            #[cfg(test)]
+            headless::life_locks::a_report_reads_the_store();
+            self.saver.store.wrote_bytes()
+        };
+        // The first showing is copied under its short lock and the answer built after it's let go, so nothing the answer reads (the life, the sleeper, the
+        // store, whose writer holds its own lock across a flush to the disk) is waited on holding the lock the window takes as it's shown.
+        let first_shown = self.life.first_shown();
+        json!({ "first_shown": first_shown, "remade": self.life.remade(), "sleep": self.sleeper.report(), "writes": writes, "appends": appends, "wrote_bytes": wrote_bytes(), "failed": self.saver.has_failed() })
     }
 
     /// The person touched the app: the life notes it ([`Lifecycle::note_input`]), and a notice they've moved on from goes.
