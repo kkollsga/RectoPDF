@@ -117,18 +117,19 @@ pub fn answered(inner: &Arc<Inner>, ran: &person::Ran<'_>) {
     };
     let (Err(_), Some(error)) = (ran.result, ran.refused()) else { return };
     let words = if error.code == Code::NO_TEXT_THERE {
-        Some("there's no text selected there")
+        Some("there's no text selected there.")
     } else if error.code == Code::NO_SUCH_HIGHLIGHT {
-        Some("there's no highlight there")
+        Some("there's no highlight there.")
     } else if error.code == Code::HIGHLIGHT_IN_ADDED_FILE {
-        Some("that highlight came with an added PDF, so save first, then it can be removed")
+        Some("that highlight came with an added PDF, so save first, then it can be removed.")
     } else if error.code == Code::CHANGED {
-        Some("the pages moved meanwhile, so try again")
+        Some("the pages moved meanwhile, so try again.")
     } else {
+        // The session's words are sentences, each with its own full stop.
         person::session_words(error)
     };
     if let Some(words) = words {
-        person::say(inner, format!("{doing}: {words}."));
+        person::say(inner, format!("{doing}: {words}"));
     }
 }
 

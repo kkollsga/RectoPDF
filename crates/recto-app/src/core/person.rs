@@ -395,7 +395,7 @@ mod tests {
             (
                 "a highlight refused by the session",
                 shown(highlight.clone(), Origin::Input, Err(SessionError::Saving.into())),
-                said(&format!("Couldn't highlight: {}.", SessionError::Saving.message())),
+                said(&format!("Couldn't highlight: {}", SessionError::Saving.message())),
             ),
             (
                 "a highlight refused in an agent's words",
