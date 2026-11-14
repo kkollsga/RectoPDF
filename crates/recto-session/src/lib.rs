@@ -43,7 +43,7 @@ mod viewing;
 mod warm;
 
 pub use change::Closed;
-pub use contents::reading_band;
+pub use contents::{entry_is_on, reading_band};
 // The session's components, as the accessors in `parts.rs` hand them out: named here so a caller outside the crate can take one alone, and so their
 // docs are read. Naming one gives no way to build or replace it (R3.5a: no public constructor, and changes go through a `PartMut`).
 pub use dormancy::Dormancy;

@@ -1271,7 +1271,15 @@ mod tests {
                 encrypted: false,
                 version: "1.7".into(),
                 title: None,
-                toc: Toc::default(),
+                toc: Toc::from_lines(
+                    &[recto_core::TocLine {
+                        title: "Chapter",
+                        page: 0,
+                        parent: recto_core::NONE,
+                        depth: 0,
+                    }],
+                    false,
+                ),
                 renderer_only: false,
             })
         }
@@ -3048,6 +3056,43 @@ mod tests {
         assert_eq!(positive_limit(None, 20, 200).unwrap(), 20);
     }
 
+    /// Failure (S3 of the second review): `goto --entry` names an entry that isn't one of the contents shown, or isn't on the page it goes to, and the
+    /// jump is made and the entry marked anyway, so the mark says the reader is somewhere they aren't. Refused with its own code and nothing moved; an entry
+    /// that is there is gone to; with a label it's a usage error, as `--within` is.
+    #[test]
+    fn goto_an_entry_is_refused_unless_its_on_that_page() {
+        let mut s = edit_session();
+        let goto = |page: u32, entry: u32| {
+            Command::from(crate::commands::linking::Goto {
+                tab: "#1".into(),
+                page: Some(page),
+                label: None,
+                within: Some(0.25),
+                entry: Some(entry),
+            })
+        };
+        let page = |s: &Session<Fake>| s.tabs().tab(TabId(1)).unwrap().page;
+        for (asked, why) in [(goto(5, 0), "on page 1, not 5"), (goto(1, 7), "no entry 7")] {
+            let error = run(&mut s, Level::Control, &asked).unwrap_err();
+            assert_eq!((error.code.as_str(), error.exit), ("no_such_entry", exit::NOT_FOUND), "{why}");
+            assert_eq!(page(&s), 0, "{why}: nothing moved");
+        }
+        assert_eq!(
+            run(&mut s, Level::Control, &goto(11, 0)).unwrap_err().code,
+            "no_such_page",
+            "a page that isn't there is that first"
+        );
+        assert_eq!(run(&mut s, Level::Control, &goto(1, 0)).unwrap()["page"], 1);
+        let with_label = Command::from(crate::commands::linking::Goto {
+            tab: "#1".into(),
+            page: None,
+            label: Some("1".into()),
+            within: None,
+            entry: Some(0),
+        });
+        assert_eq!(run(&mut s, Level::Control, &with_label).unwrap_err().code, "usage");
+    }
+
     /// Failure: an agent goes to a page that isn't there, the session clamps it, and it believes it's on that page.
     #[test]
     fn going_past_the_end_is_refused() {
@@ -3060,6 +3105,7 @@ mod tests {
                 page: Some(11),
                 label: None,
                 within: None,
+                entry: None,
             }),
         )
         .unwrap_err();
@@ -3073,6 +3119,7 @@ mod tests {
                     page: Some(0),
                     label: None,
                     within: None,
+                    entry: None,
                 })
             )
             .unwrap_err()
@@ -3088,6 +3135,7 @@ mod tests {
                     page: Some(10),
                     label: None,
                     within: None,
+                    entry: None,
                 })
             )
             .unwrap()["page"],
@@ -3313,12 +3361,14 @@ mod protected_tests {
                     page: Some(2),
                     label: None,
                     within: None,
+                    entry: None,
                 }),
                 Command::from(crate::commands::linking::Goto {
                     tab: tab.clone(),
                     page: None,
                     label: Some("ii".into()),
                     within: None,
+                    entry: None,
                 }),
                 Command::from(crate::commands::linking::Links { tab: tab.clone(), page: 1 }),
                 Command::from(crate::commands::linking::Follow {

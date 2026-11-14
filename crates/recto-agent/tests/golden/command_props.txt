@@ -16,6 +16,7 @@ tap level=control tab=Some("active") about=Some("active") protected_ok=true draw
 tap level=control tab=Some("#2") about=Some("#2") protected_ok=true draws=false reads_pages=false route=session log={"tab":"#2"}
 goto level=control tab=Some("active") about=Some("active") protected_ok=false draws=false reads_pages=false route=session log={"by_label":false,"page":null,"tab":"active","within":null}
 goto level=control tab=Some("#2") about=Some("#2") protected_ok=false draws=false reads_pages=false route=session log={"by_label":true,"page":3,"tab":"#2","within":null}
+goto level=control tab=Some("active") about=Some("active") protected_ok=false draws=false reads_pages=false route=session log={"by_label":false,"entry":2,"page":3,"tab":"active","within":0.25}
 goto level=control tab=Some("active") about=Some("active") protected_ok=false draws=false reads_pages=false route=session log={"by_label":false,"page":null,"tab":"active","within":null}
 goto level=control tab=Some("active") about=Some("active") protected_ok=false draws=false reads_pages=false route=session log={"by_label":false,"page":null,"tab":"active","within":null}
 goto level=control tab=Some("active") about=Some("active") protected_ok=false draws=false reads_pages=false route=session log={"by_label":false,"page":null,"tab":"active","within":null}

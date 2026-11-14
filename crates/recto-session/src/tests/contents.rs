@@ -632,3 +632,108 @@ fn the_line_the_page_view_says_finds_the_current_entry_and_is_never_written() {
     assert_eq!(current_of(&s), ["A"]);
     assert!(s.take_place_delta(2).places.is_empty(), "only the line moved: nothing to write");
 }
+
+/// The page view as it reads after a jump has landed, or after the person's scroll: the reader on `page` (counted from 0), the top of the view `within`
+/// down page `anchor`, and the line the page view says with it.
+fn view_says(s: &mut Session<impl DocLoader>, id: TabId, stamp: u64, page: u32, anchor: (u32, f64), line: (u32, u16)) {
+    let place = PlaceRecord {
+        page,
+        anchor_page: anchor.0,
+        within: anchor.1,
+        x: 0.0,
+        y: 0.0,
+        document_height: 1.0,
+        zoom: 1.0,
+        page_width: 0.0,
+        page_height: 0.0,
+    };
+    assert!(s.view_told_of(id, ViewSaid { place, line }, stamp));
+}
+
+/// A click on a contents row: a jump to the entry's page and place, naming the entry, sent to the page view by the look with the place clock at `stamp`.
+fn click_entry(s: &mut Session<impl DocLoader>, id: TabId, page: u32, within: f64, entry: u32, stamp: u64) -> trail::Stop {
+    s.jump(id, page, within).unwrap();
+    s.mail_mut().jump_is_to_entry(id, entry);
+    let to = s.mail().waiting_jump(id).expect("a jump waiting");
+    s.mail_mut().jump_sent(id, to, stamp);
+    to
+}
+
+/// Failure (S3 of the second review): the entry clicked is found again by its place when the view reports back, so with another entry at the same place
+/// (ties go to the later) or a few thousandths below it (inside the slack for a pixel's rounding) the other one is marked, not the one clicked. The
+/// clicked entry stays current until the person scrolls; one step by hand and the place decides again.
+#[test]
+fn the_entry_clicked_stays_current_until_a_scroll_by_hand_with_another_at_or_just_below_its_place() {
+    for (tops, case) in [(&[300, 300][..], "at the same place"), (&[300, 303][..], "3 thousandths below")] {
+        let mut s = Session::new(AtTops(tops));
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        let to = click_entry(&mut s, id, 1, 0.3, 0, 5);
+        assert_eq!(current_of(&s), ["A"], "{case}: on its way");
+        view_says(&mut s, id, 6, 1, (1, f64::from(to.within)), (1, 300));
+        assert_eq!(current_of(&s), ["A"], "{case}: the view landed where the click sent it");
+        let band = reading_band(&s, s.tabs().tab(id).unwrap()).expect("a band");
+        assert_eq!((band.page, band.lo, band.hi), (1, 300, 301), "{case}: the person's first step leaves it");
+        view_says(&mut s, id, 7, 1, (1, 0.31), (1, 310));
+        assert_eq!(current_of(&s), ["B"], "{case}: one step down by hand, and the place decides");
+    }
+}
+
+/// Failure (S3): in an outline whose destinations say no place (`/Fit`), every entry of a page reads as at its top and the last of them is current, so
+/// clicking the first of three entries on a page marks the third. The clicked one is marked; scrolling, the last of the page is, as before.
+#[test]
+fn clicking_the_first_of_three_unplaced_entries_on_a_page_marks_it() {
+    struct ThreeUnplaced;
+    impl DocLoader for ThreeUnplaced {
+        fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
+            let line = |title, page| TocLine {
+                title,
+                page,
+                parent: NONE,
+                depth: 0,
+            };
+            Ok(DocFacts {
+                page_count: 10,
+                byte_len: 1,
+                encrypted: false,
+                version: "1.7".into(),
+                title: None,
+                toc: Toc::from_lines(&[line("A", 1), line("B", 1), line("C", 1)], false),
+                renderer_only: false,
+            })
+        }
+    }
+    let mut s = Session::new(ThreeUnplaced);
+    let id = s.open(Path::new("/d/a.pdf")).unwrap();
+    click_entry(&mut s, id, 1, 0.0, 0, 5);
+    view_says(&mut s, id, 6, 1, (1, 0.0), (1, 0));
+    assert_eq!(current_of(&s), ["A"], "the one clicked");
+    view_says(&mut s, id, 7, 1, (1, 0.2), (1, 200));
+    assert_eq!(current_of(&s), ["C"], "scrolled: the last of the page, as with no places");
+}
+
+/// Failure (S3): an entry in the last view-height of the document can't be brought to the top of the view; the page view stops at the end and says the
+/// last page, the line is the end of the document, and the last entry is marked, not the one clicked. It stays marked through the view's report and the
+/// page it says, until a scroll by hand; and Back to the place it left lands by place, without the entry.
+#[test]
+fn an_entry_clicked_near_the_end_stays_marked_until_a_scroll_by_hand_and_back_doesnt_revive_it() {
+    let (mut s, id) = reading_page_two();
+    let to = click_entry(&mut s, id, 1, 0.3, 1, 5);
+    assert_eq!(s.here(id), Some(trail::Stop::new(1, 0.3)), "the trail's place is the jump's, entry or none");
+    // Arrived where the view stops: the page view says the last page (counted from 0, 9) and the end of the document as its line, the top of its
+    // view where the jump put it.
+    s.go_to(id, 9).unwrap();
+    view_says(&mut s, id, 6, 9, (1, f64::from(to.within)), (9, 1000));
+    assert_eq!(current_of(&s), ["B"], "the one clicked, not D at the end");
+    // Scrolled up a step by hand.
+    view_says(&mut s, id, 7, 9, (1, 0.29), (9, 990));
+    assert_eq!(current_of(&s), ["D"], "the place decides again");
+    // Back and forth: Back lands at the stop the click made, by place.
+    let mut s = Session::new(AtTops(&[300, 300]));
+    let id = s.open(Path::new("/d/a.pdf")).unwrap();
+    let to = click_entry(&mut s, id, 1, 0.3, 0, 5);
+    view_says(&mut s, id, 6, 1, (1, f64::from(to.within)), (1, 300));
+    assert_eq!(current_of(&s), ["A"], "A clicked, B at its place");
+    s.jump(id, 2, 0.0).unwrap();
+    assert!(s.step_as(id, true, Author::Owner).unwrap(), "back");
+    assert_eq!(current_of(&s), ["B"], "Back goes by place: the later of two at one place");
+}

@@ -143,21 +143,29 @@ fn the_chevron_folds_generated_contents() {
 /// A file of three pages with a flat outline of six entries, three on page 1, two on page 2 and one on page 3, each with its place down the page as the
 /// file's own `/XYZ` says (the last has none).
 fn several_to_a_page() -> Vec<u8> {
-    let mut objects = vec![
-        recto_testpdf::Object::Dict("<< /Type /Catalog /Pages 2 0 R /Outlines 6 0 R >>".into()),
-        recto_testpdf::Object::Dict("<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 /MediaBox [0 0 600 800] >>".into()),
-        recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R >>".into()),
-        recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R >>".into()),
-        recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R >>".into()),
-        recto_testpdf::Object::Dict("<< /Type /Outlines /First 7 0 R /Last 12 0 R /Count 6 >>".into()),
-    ];
-    let dests = [
+    outlined(&[
         "[3 0 R /XYZ 0 800 0]",
         "[3 0 R /XYZ 0 520 0]",
         "[3 0 R /XYZ 0 200 0]",
         "[4 0 R /XYZ 0 700 0]",
         "[4 0 R /XYZ 0 300 0]",
         "[5 0 R /Fit]",
+    ])
+}
+
+/// A file of three pages, 800 points high, with a flat outline of an entry for each destination given, `Entry 0` on: its pages are objects 3, 4 and 5.
+fn outlined(dests: &[&str]) -> Vec<u8> {
+    let mut objects = vec![
+        recto_testpdf::Object::Dict("<< /Type /Catalog /Pages 2 0 R /Outlines 6 0 R >>".into()),
+        recto_testpdf::Object::Dict("<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 /MediaBox [0 0 600 800] >>".into()),
+        recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R >>".into()),
+        recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R >>".into()),
+        recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R >>".into()),
+        recto_testpdf::Object::Dict(format!(
+            "<< /Type /Outlines /First 7 0 R /Last {} 0 R /Count {} >>",
+            6 + dests.len(),
+            dests.len()
+        )),
     ];
     for (at, dest) in dests.iter().enumerate() {
         let next = if at + 1 < dests.len() {
@@ -256,14 +264,14 @@ fn after_going_to_any_entry_that_entry_is_current_own_and_generated() {
     }
 }
 
-/// Failure: the person's click on an entry lands somewhere than the agent's way to the same entry (`goto` with the page and how far down), or isn't made the
-/// same way (a different trail, event or record), or Back after it doesn't return to where the reader was.
+/// Failure: the person's click on an entry lands somewhere than the agent's way to the same entry (`goto` with the page, how far down and the entry), or
+/// isn't made the same way (a different trail, event or record), or Back after it doesn't return to where the reader was.
 #[test]
 fn a_click_on_an_entry_is_the_agents_goto_to_its_place_and_back_returns() {
     let twins = Twins::with_generating(&[("several.pdf", several_to_a_page())]);
     let tab = twins.person.reader().shown_tab;
     let entries = rows(&twins.person);
-    let line = format!(r##"{{"cmd":"goto","tab":"#{tab}","page":2,"within":0.625}}"##);
+    let line = format!(r##"{{"cmd":"goto","tab":"#{tab}","page":2,"within":0.625,"entry":4}}"##);
     let (said, agent_said) = twins.both(
         UiAction::Row {
             row: host_row(&entries[4]),
@@ -291,23 +299,27 @@ fn a_click_on_an_entry_is_the_agents_goto_to_its_place_and_back_returns() {
 /// second's place, or an entry with no place lands anywhere than the page's top.
 #[test]
 fn a_row_two_entries_could_be_goes_to_the_top_of_its_page() {
-    use crate::core::navigation::entry_place;
-    let entry = |text: &str, top: u16| crate::ContentsEntry {
+    use crate::core::navigation::tapped_entry;
+    let entry = |text: &str, entry: u32, top: u16| crate::ContentsEntry {
         tab: 1,
         text: text.into(),
         page: Some(2),
         depth: 0,
-        entry: 0,
+        entry,
         top,
         expandable: false,
         expanded: false,
     };
-    let list = [entry("Notes", 200), entry("Notes", 600), entry("Intro", 300), entry("Plain", 0)];
-    let row = |text: &str| host_row(&entry(text, 0));
-    assert_eq!(entry_place(&list, &row("Notes")), None, "two the same aren't told apart by a guess");
-    assert_eq!(entry_place(&list, &row("Intro")), Some(0.3));
-    assert_eq!(entry_place(&list, &row("Plain")), None, "no place is the page's top");
-    assert_eq!(entry_place(&list, &row("Missing")), None);
+    let list = [entry("Notes", 0, 200), entry("Notes", 1, 600), entry("Intro", 2, 300), entry("Plain", 3, 0)];
+    let row = |text: &str| host_row(&entry(text, 0, 0));
+    assert_eq!(tapped_entry(&list, &row("Notes")), None, "two the same aren't told apart by a guess");
+    assert_eq!(tapped_entry(&list, &row("Intro")), Some((2, Some(0.3))));
+    assert_eq!(
+        tapped_entry(&list, &row("Plain")),
+        Some((3, None)),
+        "no place is the page's top, and the entry is named"
+    );
+    assert_eq!(tapped_entry(&list, &row("Missing")), None);
 }
 
 /// The page view of the tab shown, scrolled by the person's hand (the kit's [`HeadlessApp::person_scrolls`]) so the top of its view is `thousandths` down
@@ -352,5 +364,28 @@ fn scrolling_down_a_page_moves_the_mark_through_the_page_views_wake_own_and_gene
             marked(want);
             assert_eq!(app.sidebar().contents_current, Some(want), "generated {generated}: {what}");
         }
+    }
+}
+
+/// Failure (S3 of the second review): a click on a contents row is found again by its place once the view lands, so the one clicked isn't marked when
+/// another entry is at the same place (ties go to the later), or when the file's outline says no places (`/Fit`: the last of the page is marked). The
+/// click names its entry, and that entry is current when the view has landed; an agent's `goto --entry` is the same command.
+#[test]
+fn the_entry_clicked_is_current_with_another_at_its_place_or_none_placed() {
+    for (dests, case) in [
+        (&["[3 0 R /XYZ 0 520 0]", "[3 0 R /XYZ 0 520 0]", "[4 0 R /Fit]"][..], "two at one place"),
+        (&["[3 0 R /Fit]", "[3 0 R /Fit]", "[3 0 R /Fit]"][..], "three with no place"),
+    ] {
+        let disk = crate::testkit::headless::Disk::new();
+        let file = disk.file("placed.pdf", &outlined(dests));
+        let app = disk.start();
+        app.open(&file);
+        let entries = rows(&app);
+        app.act(UiAction::Row {
+            row: host_row(&entries[0]),
+            adding: false,
+        });
+        app.settle();
+        assert_eq!(app.sidebar().contents_current, Some(0), "{case}: the one clicked");
     }
 }

@@ -27,7 +27,7 @@ impl<L: DocLoader> Session<L> {
     /// line said with it ([`ViewSaid`]) is the page view's word, kept with it while the tab is hot or warm, and never written.
     pub fn view_told_of(&mut self, id: TabId, said: impl Into<ViewSaid>, stamp: u64) -> bool {
         let ViewSaid { place, line } = said.into();
-        if self.tabs.tab(id).is_none() || !self.mail.view_told_of(id, stamp, line) {
+        if self.tabs.tab(id).is_none() || !self.mail.view_told_of(id, stamp, line, (place.anchor_page, place.within)) {
             return false;
         }
         if let Some(tab) = self.tabs.tab_mut(id)

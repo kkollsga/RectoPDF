@@ -59,7 +59,7 @@ impl<L: DocLoader> Session<L> {
                     _ => toc,
                 };
                 // The note isn't an entry: the host draws it over the contents, and the rail counts entries.
-                rail_filled = contents_rows(shown, tab, self.lists.order(tab.id), reading_line(self, tab), &mut rows);
+                rail_filled = contents_rows(shown, tab, self.lists.order(tab.id), &reading_here(self, tab), &mut rows);
             }
         }
         let edited = self.tabs.active().is_some_and(|id| self.lists.is_edited(id));
@@ -103,7 +103,8 @@ impl<L: DocLoader> Session<L> {
         let toc = self.shown_contents(id)?;
         let tab = self.tabs.tab(id)?;
         let order = self.lists.order(id);
-        let chain = following_chain(&toc, order, reading_line(self, tab), &Placed::of(tab, order));
+        let placed = Placed::of(tab, order);
+        let chain = following_chain(&toc, section_here(&toc, order, &reading_here(self, tab), &placed));
         let has_children = toc.entries().get(entry as usize + 1).is_some_and(|next| next.parent == entry);
         if !has_children {
             return None;
@@ -160,6 +161,28 @@ fn reading_line<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> (u32, u1
     })
 }
 
+/// **Where the reader is, for the contents:** the [`reading_line`], and the contents entry a jump took the reader to while that jump still holds
+/// (`recto goto --entry`, a click on a row; mail's `Sent`): on its way, or arrived with the view not moved from where it put the reader, the place the tab
+/// has being on the tab's page. That entry is the current one whatever the line says, so the one clicked is marked even with another at its place or a
+/// hair below it, on a page whose outline says no places, and where the end of the document stops the view short of it.
+struct Here {
+    line: (u32, u16),
+    /// The page the jump went to, as the session counts pages, and the entry.
+    jumped: Option<(u32, u32)>,
+}
+
+fn reading_here<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> Here {
+    let anchor = tab
+        .reading
+        .place
+        .filter(|place| place.page == tab.page)
+        .map(|place| (place.anchor_page, place.within));
+    Here {
+        line: reading_line(session, tab),
+        jumped: session.mail.jumped_entry(tab.id, anchor),
+    }
+}
+
 /// Which pages of the file have entries whose places mean something: not those with an unsaved turn (or any page, with the view turned), whose frame isn't the
 /// file's, where every entry reads as at its page's top.
 struct Placed {
@@ -199,8 +222,17 @@ pub fn reading_band<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> Opti
     }
     let toc = shown_contents_of(session, tab)?;
     let order = session.lists.order(tab.id);
-    let (at_page, top) = reading_line(session, tab);
+    let here = reading_here(session, tab);
+    let (at_page, top) = here.line;
     let page = original_page(at_page, order)?;
+    if jumped_entry(&toc, order, &here).is_some() {
+        // The entry jumped to is current until the person moves the view: a band of the one place the view is at, which their first step leaves.
+        return Some(recto_core::Band {
+            page: at_page,
+            lo: top,
+            hi: top + 1,
+        });
+    }
     let placed = Placed::of(tab, order);
     let band = toc.band_at(page, top, |at| placed.page(at));
     Some(recto_core::Band { page: at_page, ..band })
@@ -212,10 +244,10 @@ pub fn reading_band<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> Opti
 /// With unsaved page edits, entries follow their pages to their new positions. An entry whose page was deleted stays
 /// without a number, and pages added from another PDF belong to no section. While the tab's list is asleep, where any entry's page is now isn't known:
 /// none has a number, and none is the section being read.
-fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, order: Order<'_>, line: (u32, u16), rows: &mut Vec<SidebarRow<'a>>) -> usize {
+fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, order: Order<'_>, reading: &Here, rows: &mut Vec<SidebarRow<'a>>) -> usize {
     let placed = Placed::of(tab, order);
-    let here = section_here(toc, order, line, &placed);
-    let chain = following_chain(toc, order, line, &placed);
+    let here = section_here(toc, order, reading, &placed);
+    let chain = following_chain(toc, here);
     let folds = tab.folds.as_deref();
     // Whether each entry's own children show: it's shown, and open. Entries come in document order, so a parent is always decided first.
     let mut children_show = vec![false; toc.entries().len()];
@@ -279,16 +311,36 @@ fn original_page(page: u32, order: Order<'_>) -> Option<u32> {
     }
 }
 
-/// The entry for the section being read, in the file's own page numbers: the one with the greatest place at or above the top of the reader's view, own
-/// contents and generated alike ([`Toc::current_at`]).
-fn section_here(toc: &Toc, order: Order<'_>, (page, top): (u32, u16), placed: &Placed) -> Option<usize> {
-    original_page(page, order).and_then(|page| toc.current_at(page, top, |at| placed.page(at)))
+/// The entry for the section being read, in the file's own page numbers: the entry a jump took the reader to while it holds ([`Here`]), else the one with
+/// the greatest place at or above the line, own contents and generated alike ([`Toc::current_at`]).
+fn section_here(toc: &Toc, order: Order<'_>, here: &Here, placed: &Placed) -> Option<usize> {
+    let (page, top) = here.line;
+    jumped_entry(toc, order, here).or_else(|| original_page(page, order).and_then(|page| toc.current_at(page, top, |at| placed.page(at))))
+}
+
+/// The entry a jump took the reader to, if it's one of these contents on the page the jump went to: contents changed since (generated ones chosen, or
+/// edits) don't mark another entry by its number.
+fn jumped_entry(toc: &Toc, order: Order<'_>, here: &Here) -> Option<usize> {
+    let (page, entry) = here.jumped?;
+    let at = toc.entries().get(entry as usize)?;
+    (at.page != NONE && original_page(page, order) == Some(at.page)).then_some(entry as usize)
+}
+
+/// Whether `entry` is one of the contents the sidebar shows for a tab, on its zero-based `page` as the session counts pages: what a jump to an entry must
+/// be (`recto goto --entry`).
+#[must_use]
+pub fn entry_is_on<L: DocLoader>(session: &Session<L>, tab: &TabRecord, entry: u32, page: u32) -> bool {
+    shown_contents_of(session, tab).is_some_and(|toc| {
+        toc.entries()
+            .get(entry as usize)
+            .is_some_and(|at| at.page != NONE && original_page(page, session.lists.order(tab.id)) == Some(at.page))
+    })
 }
 
 /// The section being read and every section it's in, which following the place keeps open.
-fn following_chain(toc: &Toc, order: Order<'_>, line: (u32, u16), placed: &Placed) -> HashSet<u32> {
+fn following_chain(toc: &Toc, here: Option<usize>) -> HashSet<u32> {
     let mut open = HashSet::new();
-    let mut cursor = section_here(toc, order, line, placed).map_or(NONE, |i| u32::try_from(i).unwrap_or(NONE));
+    let mut cursor = here.map_or(NONE, |i| u32::try_from(i).unwrap_or(NONE));
     while cursor != NONE && open.insert(cursor) {
         cursor = toc.entries().get(cursor as usize).map_or(NONE, |e| e.parent);
     }
