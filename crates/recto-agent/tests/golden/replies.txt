@@ -722,15 +722,9 @@
   refused cmd=unknown code=bad_command
 {"cmd":"print","to_pdf":{}}
   refused cmd=unknown code=bad_command
-{"cmd":"print","to_pdf":null}
-  refused cmd=unknown code=bad_command
-{"cmd":"print"}
-  refused cmd=unknown code=bad_command
 {"cmd":"print","to_pdf":"/d/x.pdf","anyway":{}}
   refused cmd=unknown code=bad_command
 {"cmd":"print","to_pdf":"/d/x.pdf","anyway":null}
-  refused cmd=unknown code=bad_command
-["print"]
   refused cmd=unknown code=bad_command
 {"cmd":"Print"}
   refused cmd=unknown code=bad_command

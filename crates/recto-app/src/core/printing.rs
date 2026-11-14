@@ -2,13 +2,20 @@
 //! (S2, 2026-11-14: one action, one implementation), run by the one executor as theirs, into a new file of the app's own: the same command an agent sends,
 //! with its checks (a quiet run's files, the tab held while it prints, a file that asks not to be copied) and its words. The window watches it
 //! ([`recto_agent::print::PrintWatch`]), saying how far it's got by the page, with Stop beside it; and the host hands the file to the system's printing, which
-//! never asks the app to draw anything on the UI thread. The file goes when the print's done with it.
+//! never asks the app to draw anything on the UI thread.
+//!
+//! **The file has no name** (PLAN, "the person can't print a document they opened with its password"): it's unlinked before its first byte is written,
+//! and the host is given `/dev/fd/N`, which CoreGraphics opens and maps. This app holds the descriptor from the host's taking it until the system's printing
+//! says it's done with it; nothing else in the app can open the file (the file wall, `recto_platform::document_file`, refuses `/dev/fd/N` and any file
+//! with no link, for every actor), and the kernel frees it when the last holder lets go, however the app ends. Rust never opens it by its path: the
+//! window's CoreGraphics does, in Swift.
 //!
 //! At rest there's nothing: no thread, worker, file or buffer. One print at a time; asking again while one's being prepared says so.
 //!
 //! - **A PDF's flag against printing is ignored** (owner, 2026-11-08: "Ignore the flag"): no notice and no refusal, and nothing here reads it.
 //! - **A print to a file is an export.** When the panel's answer saves or previews a PDF rather than printing on paper, a file that asks not to be copied gets the notice a copy has, with "Print anyway" (owner, 2026-11-08: exports ask "anyway" like Copy). Print to paper never asks.
-//! - **Nothing's left behind.** Stop, closing the tab and quitting each stop the preparing at the next page, and its file goes; a launch removes the files of a run that died (`recto-print-PID-*` of a process that's gone).
+//! - **Nothing's left behind.** Stop, closing the tab and quitting each stop the preparing at the next page, and its file goes with its descriptor. A
+//!   launch still removes the named files of a run of 0.1.0 that died (`recto-print-PID-*` of a process that's gone): for one release.
 
 use super::{CoreCall, HostAction, SelectionNotice, lock, person};
 use crate::queue::CoreQueue;
@@ -18,6 +25,7 @@ use recto_agent::{AgentError, Code, Command, TabRef};
 use recto_reader::Engine;
 use recto_session::TabId;
 use serde_json::Value;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -26,8 +34,11 @@ use std::sync::{Arc, Mutex, Weak};
 const STOP_ID: &str = "print.stop";
 /// A notice's "Print anyway", followed by the notice's number.
 const ANYWAY_PREFIX: &str = "print.anyway.";
-/// Where a print's file starts its name, followed by the process's number.
+/// Where a print's file started its name, followed by the process's number, before it had none: for the sweep at launch.
 const FILE_PREFIX: &str = "recto-print-";
+/// The files the system's printing has at once, past which the oldest one's descriptor goes: one is the usual, and CoreGraphics maps a file as it opens it,
+/// so a descriptor let go of early takes nothing from a print under way.
+const MAX_HANDING: usize = 4;
 
 /// **What the print panel was answered with:** the tab it was opened for, all the pages or a range from 1, just the selection's pages, and whether the
 /// system's printing saves or previews a PDF (a print to a file, which is an export) rather than printing on paper.
@@ -59,14 +70,15 @@ pub struct Printing {
     tab: AtomicU32,
     done: AtomicU32,
     of: AtomicU32,
+    /// Counts the prints asked for, for a QA print's file name ([`Printing::qa_target_for`]).
     generation: AtomicU64,
     serial: AtomicU64,
     /// The host's number for the print asked for, which its file comes back with ([`Panel::serial`]).
     asked_by: AtomicU64,
-    /// A print's file for the host, with the host's number for the answer it was asked by.
-    ready: Mutex<Option<(PathBuf, u64)>>,
-    /// The host has the file and the system's printing is running.
-    handing: AtomicBool,
+    /// A print's file, with no name, for the host, with the host's number for the answer it was asked by.
+    ready: Mutex<Option<(File, u64)>>,
+    /// The files the host has taken, each until the system's printing is done with it: their descriptors, which keep them, as they have no name.
+    handing: Mutex<Vec<File>>,
     notice: Mutex<Option<Said>>,
     /// What the notice with this number refused, for its "Print anyway", and the host's number for the answer it was asked by.
     refused: Mutex<Option<(u64, (Print, u64))>>,
@@ -86,6 +98,7 @@ impl Printing {
         self.done.store(0, Ordering::SeqCst);
         self.of.store(pages, Ordering::SeqCst);
         self.asked_by.store(asked_by, Ordering::SeqCst);
+        self.generation.fetch_add(1, Ordering::SeqCst);
         self.dismiss_notice();
         true
     }
@@ -102,7 +115,7 @@ impl Printing {
     }
 
     pub fn busy(&self) -> bool {
-        self.running.load(Ordering::SeqCst) || lock(&self.ready).is_some() || self.handing.load(Ordering::SeqCst)
+        self.running.load(Ordering::SeqCst) || lock(&self.ready).is_some() || !lock(&self.handing).is_empty()
     }
 
     /// The line by the page while pages are being prepared, or what went wrong.
@@ -157,20 +170,14 @@ impl Printing {
         Some(request)
     }
 
-    /// The next file of the app's own a print goes to ([`temp_path`]).
-    fn next_file(&self) -> PathBuf {
-        temp_path(self.generation.fetch_add(1, Ordering::SeqCst) + 1)
-    }
-
     /// **The command a notice's "Print anyway" sends,** once, if that notice is still the one showing and no other print is asked for: what it refused,
-    /// asked again anyway, to a new file, for the same answer of the host's.
+    /// asked again anyway, for the same answer of the host's.
     pub(crate) fn anyway(&self, serial: u64) -> Option<Command> {
         let (mut print, asked_by) = self.take_refused(serial)?;
         if !self.ask(0, asked_by) {
             return None;
         }
         print.anyway = true;
-        print.to_pdf = self.next_file();
         Some(Command::from(print))
     }
 
@@ -193,25 +200,34 @@ impl Printing {
         Some(written)
     }
 
-    /// The file to print, once, for the host to hand to the system, with the host's number for the answer it was asked by.
+    /// **The file to print, once, for the host to hand to the system,** with the host's number for the answer it was asked by: `/dev/fd/N`, this app's
+    /// descriptor of a file with no name, which it keeps open until [`Self::finished`] is told that same path. Read from its start, as a descriptor opened
+    /// through `/dev/fd` shares this one's place in the file.
     pub fn take_ready(&self) -> Option<(PathBuf, u64)> {
-        let ready = lock(&self.ready).take();
-        if ready.is_some() {
-            self.handing.store(true, Ordering::SeqCst);
+        use std::io::Seek;
+        let (mut file, serial) = lock(&self.ready).take()?;
+        // A file that can't be read from its start goes now, and nothing's printed: the host is told of no file.
+        file.rewind().ok()?;
+        let path = descriptor_path(&file)?;
+        let mut handing = lock(&self.handing);
+        if handing.len() >= MAX_HANDING {
+            handing.remove(0);
         }
-        ready
+        handing.push(file);
+        Some((path, serial))
     }
 
-    /// The system's printing is done with a file, however it went: it goes, if it's one of ours, and a QA print to a file is published where it was asked for.
+    /// **The system's printing is done with the file at `path`,** however it went: its descriptor goes, and with it the file, if `path` is one this app
+    /// handed out and still holds. Any other path, a stale one or one the host made up, lets nothing go, and no path the host gives is ever removed: the
+    /// print's file has no name to remove. A QA print to a file is published where it was asked for.
     pub fn finished(&self, path: &str) {
-        remove_if_ours(Path::new(path), &print_folder(), std::process::id());
+        lock(&self.handing).retain(|file| !is_at(file, path));
         if let Some((written, out)) = lock(&self.qa_target).take() {
             if written.exists() && recto_agent::publish_picture(&written, &out).is_err() {
                 self.say("The print couldn't be put there: a file is already there, and it won't be replaced.", false);
             }
             let _ = std::fs::remove_file(&written);
         }
-        self.handing.store(false, Ordering::SeqCst);
     }
 
     pub fn has_ready(&self) -> bool {
@@ -223,12 +239,11 @@ impl Printing {
         self.cancel.store(true, Ordering::SeqCst);
     }
 
-    /// The app's quitting: preparing stops at the next page, and a file the host hasn't taken goes now. One the system's printing has is the system's until it's done, and a launch removes it if this run never hears.
+    /// The app's quitting: preparing stops at the next page, and a file the host hasn't taken goes now, with its descriptor. One the system's printing has
+    /// is the system's until it's done, and goes with the app.
     pub fn quitting(&self) {
         self.cancel();
-        if let Some((path, _)) = lock(&self.ready).take() {
-            let _ = std::fs::remove_file(path);
-        }
+        lock(&self.ready).take();
     }
 }
 
@@ -238,19 +253,27 @@ fn print_folder() -> PathBuf {
     recto_platform::local::system_temp_dir().unwrap_or_else(std::env::temp_dir)
 }
 
-/// **Where a print's file goes:** the user's own temp folder, made new, with a name nobody can work out: 64 bits from the system's random source
-/// ([`recto_platform::local::random_u64`]) after this process's number and the print's. v0.1.0 named it `recto-print-PID-N.pdf`, and as the process's
-/// number is in `status`, an agent at Control could `open` the print of a file that asks not to be copied while the system's printing had it, and draw
-/// its pages with no `--anyway` and nothing logged (found 2026-11-14).
-fn temp_path(generation: u64) -> PathBuf {
-    print_folder().join(format!(
-        "{FILE_PREFIX}{}-{generation}-{:016x}.pdf",
-        std::process::id(),
-        recto_platform::local::random_u64()
-    ))
+/// **The path the host opens a print's file by:** `/dev/fd/N`, the descriptor's own, as the file has no name. None where there's no such thing.
+fn descriptor_path(file: &File) -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        Some(PathBuf::from(format!("/dev/fd/{}", file.as_raw_fd())))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file;
+        None
+    }
 }
 
-/// The process a print file's name says made it, if it's one of ours: `recto-print-PID-N-HEX.pdf`, or `recto-print-PID-N.pdf` as v0.1.0 named them.
+/// Whether `path` is the one [`descriptor_path`] gave for `file`.
+fn is_at(file: &File, path: &str) -> bool {
+    descriptor_path(file).is_some_and(|own| own.as_os_str() == path)
+}
+
+/// The process a print file's name says made it, if it's one of ours: `recto-print-PID-N.pdf` as v0.1.0 named them, or `recto-print-PID-N-HEX.pdf` as
+/// builds after it did, before the file had no name.
 fn maker_of(name: &str) -> Option<u32> {
     let rest = name.strip_prefix(FILE_PREFIX)?.strip_suffix(".pdf")?;
     let (pid, rest) = rest.split_once('-')?;
@@ -258,13 +281,6 @@ fn maker_of(name: &str) -> Option<u32> {
     generation.parse::<u64>().ok()?;
     u64::from_str_radix(unguessable, 16).ok()?;
     pid.parse().ok()
-}
-
-/// A print file goes if it's this process's, in this folder.
-fn remove_if_ours(path: &Path, folder: &Path, pid: u32) {
-    if path.parent() == Some(folder) && path.file_name().and_then(|name| name.to_str()).and_then(maker_of) == Some(pid) {
-        let _ = std::fs::remove_file(path);
-    }
 }
 
 /// **The files of runs that died.** Each print file in `folder` made by a process that `alive` says is gone is removed, and nothing else: not this run's, not a live one's, not a file of any other name. Says how many went. Bounded by the folder's own listing, read once.
@@ -281,7 +297,8 @@ fn sweep_stale(folder: &Path, alive: impl Fn(u32) -> bool) -> usize {
     removed
 }
 
-/// At launch, off the UI thread on a short-lived thread of its own: the print files of runs that died go. Only on a Mac, where a process's number can be asked about.
+/// At launch, off the UI thread on a short-lived thread of its own: the print files of runs that died go. Only on a Mac, where a process's number can be
+/// asked about. Kept for one release after 0.1.0, whose prints had names (PLAN).
 pub fn sweep_at_launch() {
     if !cfg!(target_os = "macos") {
         return;
@@ -341,8 +358,8 @@ pub fn row<'a>(parts: &super::row_parts::RowParts<'a>, asked: &super::menu_rows:
     ))
 }
 
-/// **The print panel's answer, as the person's command:** `print` of the pages it chose, at the resolution a print takes, to a new file of the app's own
-/// for the host to hand to the system's printing, asked for at once ([`Printing::ask`]). Nothing to print, or a print asked for already, and nothing's
+/// **The print panel's answer, as the person's command:** `print` of the pages it chose, at the resolution a print takes, to the window's printing (no
+/// file named: [`recto_agent::print::PrintTo::Window`]), asked for at once ([`Printing::ask`]). Nothing to print, or a print asked for already, and nothing's
 /// sent. On the UI thread: what's published and short locks on the page view.
 ///
 /// **On paper it never asks** whether a file that asks not to be copied may be printed (SPEC, Printing: "Print to paper never asks"; owner, 2026-11-08,
@@ -358,6 +375,10 @@ pub fn chosen(engine: &Engine, printing: &Printing, panel: Panel) -> Option<Comm
         .and_then(|(_, range)| range)
         .map(|range| (range.start.page, range.end.page));
     let (first, last) = chosen_range(engine.points().page_count(), panel.all, panel.first, panel.last, selection)?;
+    // FOR THE OWNER, NOT DECIDED (PLAN, "the person can't print a document they opened with its password", point 6): Save as PDF or Open in Preview
+    // from the system's panel (`panel.to_file`) of a document the person opened with its password makes an unencrypted copy of it, with only the copy
+    // flag's "Print anyway" step. Recommended, and built: no step of its own. If the owner says otherwise, the notice goes here, said as the copy flag's
+    // is (`Printing::say`), before anything is asked.
     if !printing.ask(last - first + 1, panel.serial) {
         printing.say("A print is already being prepared.", false);
         return None;
@@ -366,7 +387,7 @@ pub fn chosen(engine: &Engine, printing: &Printing, panel: Panel) -> Option<Comm
         tab: TabRef::Id(TabId(panel.tab)),
         pages: Some(format!("{first}-{last}")),
         dpi: print::DEFAULT_DPI,
-        to_pdf: printing.next_file(),
+        to_pdf: None,
         anyway: recto_agent::copying::print_anyway(panel.to_file),
     }))
 }
@@ -413,6 +434,12 @@ impl PrintWatch for Watch {
         open && !printing.cancel.load(Ordering::SeqCst)
     }
 
+    /// The file goes to the host, in place of one the host never took, which goes now with its descriptor: nothing else would ever let it go.
+    fn ready(&self, file: File) {
+        let asked_by = self.printing.asked_by.load(Ordering::SeqCst);
+        drop(lock(&self.printing.ready).replace((file, asked_by)));
+    }
+
     /// What came of it is said by [`answered`], which ends the print once its file is the host's, so nothing sees it neither preparing nor ready (review
     /// of S2, S1). A command that panicked is answered by nobody: it ends here.
     fn end(&self) {
@@ -424,7 +451,7 @@ impl PrintWatch for Watch {
     }
 }
 
-/// **What came of the person's print, said:** its file ready for the host, with a note if a page printed smaller; a file that asks not to be copied, with
+/// **What came of the person's print, said:** its file ready for the host (given it by [`Watch::ready`]), with a note if a page printed smaller; a file that asks not to be copied, with
 /// "Print anyway"; nothing if it was stopped; or the refusal's own words, whatever refused it, before it ran or as it did.
 pub fn answered(parts: &super::answer_parts::AnswerParts<'_>, ran: &person::Ran<'_>) {
     let Command::Read(Read::Print(asked)) = ran.command else { return };
@@ -443,10 +470,6 @@ fn said(printing: &Printing, asked: &Print, result: &Result<Value, AgentError>) 
         Ok(answer) => {
             if let Some(note) = scaled_down(answer).scaled_down_note() {
                 printing.say(note, false);
-            }
-            // A file the host never took goes as this one takes its place: nothing else would ever remove it.
-            if let Some((untaken, _)) = lock(&printing.ready).replace((asked.to_pdf.clone(), asked_by)) {
-                remove_if_ours(&untaken, &print_folder(), std::process::id());
             }
         }
         Err(error) => match said_as(error) {
@@ -641,33 +664,45 @@ mod tests {
         assert_eq!(chosen_range(0, true, 1, 1, None), None);
     }
 
-    /// Failure: finishing a print removes a file that isn't one of this app's prints, or another run's.
+    /// Failure (condition 2 of the design's acceptance, 2026-11-14): the host's word that the system's printing is done lets go of another print's file, as a
+    /// stale or made-up `/dev/fd/N` would if it were matched loosely, or is taken as a file name and removes whatever is at that path. Two files handed out:
+    /// a path of no file of ours, a named file's path, and the other's path each let go only of what they name, and the named file stays.
     #[test]
-    fn only_a_print_file_of_ours_is_removed() {
-        let folder = std::env::temp_dir();
-        let elsewhere = folder.join(format!("not-a-print-{}.pdf", std::process::id()));
-        std::fs::write(&elsewhere, b"keep").unwrap();
-        remove_if_ours(&elsewhere, &folder, std::process::id());
-        assert!(elsewhere.exists());
-        std::fs::remove_file(&elsewhere).unwrap();
-        let ours = temp_path(9_999_999);
-        std::fs::write(&ours, b"print").unwrap();
-        remove_if_ours(&ours, &folder, std::process::id() + 1);
-        assert!(ours.exists(), "another run's");
-        remove_if_ours(&ours, &folder, std::process::id());
-        assert!(!ours.exists());
+    fn the_hosts_done_lets_go_only_of_its_own_file_and_removes_nothing() {
+        use crate::core::headless::printing::{unnamed_file, unnamed_files_held};
+        let printing = Printing::default();
+        let before = unnamed_files_held();
+        let (one, two) = (unnamed_file(b"one"), unnamed_file(b"two"));
+        *lock(&printing.ready) = Some((one, 1));
+        let (one_path, _) = printing.take_ready().expect("the first");
+        *lock(&printing.ready) = Some((two, 2));
+        let (two_path, _) = printing.take_ready().expect("the second");
+        let named = recto_testpdf::TempDir::new("print-done-");
+        let kept = named.join("kept.pdf");
+        std::fs::write(&kept, b"keep").expect("a named file");
+        let held = || unnamed_files_held().len() - before.len();
+        assert_eq!(held(), 2, "both held while the system's printing has them");
+        for stray in ["/dev/fd/999999", kept.to_str().expect("a path"), "", "/dev/fd/"] {
+            printing.finished(stray);
+            assert_eq!(held(), 2, "{stray:?} let go of a file it doesn't name");
+        }
+        assert!(kept.exists(), "a path the host gives is never removed");
+        printing.finished(two_path.to_str().expect("a path"));
+        assert_eq!(held(), 1, "the second let go, by its own path");
+        assert!(printing.busy(), "the first is still the system's");
+        printing.finished(two_path.to_str().expect("a path"));
+        assert_eq!(held(), 1, "its path again lets go of nothing more");
+        printing.finished(one_path.to_str().expect("a path"));
+        assert_eq!((held(), printing.busy()), (0, false));
     }
 
-    /// Failure: a print's file has a name anyone can work out from the app's process number and a count; or a name of the new form isn't known as one of
-    /// ours, so a run that died leaves it.
+    /// Failure: a run of 0.1.0, or of a build after it, that died mid-print leaves its named print file for good, as a name of either form isn't known as a
+    /// print's.
     #[test]
-    fn a_print_files_name_cant_be_worked_out_and_is_known_as_ours() {
-        let (one, again) = (temp_path(1), temp_path(1));
-        assert_ne!(one, again, "the same print's number gives another name each time");
-        for path in [&one, &again] {
-            let name = path.file_name().and_then(|name| name.to_str()).expect("a name");
-            assert_eq!(maker_of(name), Some(std::process::id()), "{name} is known as this run's");
-        }
+    fn the_names_prints_had_are_known_as_a_runs() {
+        assert_eq!(maker_of("recto-print-41-3.pdf"), Some(41), "0.1.0's");
+        assert_eq!(maker_of("recto-print-41-3-00ff00ff00ff00ff.pdf"), Some(41), "a build's after it");
+        assert_eq!(maker_of("recto-print-41-x.pdf"), None);
     }
 
     /// Failure: a run that died mid-print leaves its print file in the temp folder for ever, or the sweep at launch removes a live run's, this run's, or a file that only looks like one.
@@ -709,7 +744,7 @@ mod tests {
             tab: TabRef::Id(TabId(1)),
             pages: Some("1-2".into()),
             dpi: 300,
-            to_pdf: temp_path(1),
+            to_pdf: None,
             anyway: false,
         };
         let serial = printing.say("This file's permissions ask that it isn't copied.", true);
@@ -726,36 +761,39 @@ mod tests {
             (request.tab, request.pages, request.dpi, true),
             "the same print, anyway"
         );
-        assert_ne!(again.to_pdf, request.to_pdf, "to a new file");
+        assert_eq!(again.to_pdf, None, "to the window's printing, as the print it refused");
         assert!(printing.anyway(serial).is_none(), "once");
     }
 
     /// Failure: an update quits the app while a print's file is ready but not yet handed to the system, or while the system's printing has it: `busy` must hold through both, not only while pages are drawn.
     #[test]
     fn a_print_is_busy_until_the_system_is_done_with_it() {
+        use crate::core::headless::printing::{unnamed_file, unnamed_files_held};
         let printing = Printing::default();
+        let before = unnamed_files_held();
         assert!(!printing.busy());
-        let path = temp_path(9_999_998);
-        std::fs::write(&path, b"print").unwrap();
-        *lock(&printing.ready) = Some((path.clone(), 1));
+        *lock(&printing.ready) = Some((unnamed_file(b"print"), 1));
         assert!(printing.busy(), "ready for the host");
-        assert_eq!(printing.take_ready(), Some((path.clone(), 1)));
+        let (path, asked_by) = printing.take_ready().expect("the file");
+        assert_eq!(asked_by, 1);
+        assert_eq!(std::fs::read(&path).expect("the host reads it by its path"), b"print", "from its start");
         assert!(printing.busy(), "the system's printing has it");
         printing.finished(path.to_str().unwrap());
         assert!(!printing.busy());
-        assert!(!path.exists(), "its file goes");
+        assert_eq!(unnamed_files_held(), before, "its file goes with its descriptor");
     }
 
-    /// Failure: quitting leaves a prepared file the host never took in the temp folder, or doesn't stop the preparing.
+    /// Failure: quitting leaves a prepared file the host never took held, or doesn't stop the preparing.
     #[test]
     fn quitting_stops_the_print_and_takes_its_file() {
+        use crate::core::headless::printing::{unnamed_file, unnamed_files_held};
         let printing = Printing::default();
-        let path = temp_path(9_999_997);
-        std::fs::write(&path, b"print").unwrap();
-        *lock(&printing.ready) = Some((path.clone(), 1));
+        let before = unnamed_files_held();
+        *lock(&printing.ready) = Some((unnamed_file(b"print"), 1));
         printing.quitting();
         assert!(printing.cancel.load(Ordering::SeqCst));
-        assert!(!path.exists() && !printing.busy());
+        assert!(!printing.busy());
+        assert_eq!(unnamed_files_held(), before, "its file goes with its descriptor");
     }
 }
 

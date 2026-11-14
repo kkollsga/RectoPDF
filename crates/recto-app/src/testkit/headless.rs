@@ -81,6 +81,14 @@ impl Disk {
         }
     }
 
+    /// **A session on it isn't confined to the temp folders,** as one on the user's own state folder isn't: for a test of what must hold where the quiet
+    /// run's wall doesn't (`recto_control::quiet::folders_for`). Its files are still the test's, in a temp folder.
+    #[must_use]
+    pub fn as_the_users_own(mut self) -> Self {
+        self.paths.overridden = false;
+        self
+    }
+
     /// The state folder's paths: the record, the backups, the socket.
     #[must_use]
     pub fn paths(&self) -> &StatePaths {

@@ -260,31 +260,31 @@ pub struct DocFacts {
     pub renderer_only: bool,
 }
 
-/// Opens a file for the lazy reader. Only a plain file: opening a pipe would wait for a writer for ever, and a device could be anything.
-fn open_reader(path: &Path) -> Result<IndexedReader, OpenError> {
-    let meta = std::fs::metadata(path).map_err(|e| match e.kind() {
-        ErrorKind::NotFound => OpenError::NotFound,
-        ErrorKind::PermissionDenied => OpenError::NotAllowed,
-        _ => OpenError::NotPdf,
+/// **A document's file, through the file wall** ([`recto_platform::document_file`]): only a regular file with a name, never a path into `/dev`, so a
+/// descriptor the app holds on a file with no name (the person's print) can't be opened again by a path. Refused as the reader always refused: not there,
+/// not allowed, or not a PDF, which is also the wall's own answer, the same as for a folder or a pipe.
+fn open_source(path: &Path) -> Result<FileSource, OpenError> {
+    use recto_platform::document_file::{self, Refused};
+    let file = document_file::open_regular(path).map_err(|refused| match refused {
+        Refused::Look(error) => match error.kind() {
+            ErrorKind::NotFound => OpenError::NotFound,
+            ErrorKind::PermissionDenied => OpenError::NotAllowed,
+            _ => OpenError::NotPdf,
+        },
+        Refused::Open(_) => OpenError::NotAllowed,
+        Refused::NotADocument => OpenError::NotPdf,
     })?;
-    if !meta.is_file() {
-        return Err(OpenError::NotPdf);
-    }
-    let source = FileSource::open(path).map_err(|_| OpenError::NotAllowed)?;
-    checked_reader(IndexedReader::open(source))
+    FileSource::from_file(file).map_err(|_| OpenError::NotAllowed)
+}
+
+/// Opens a file for the lazy reader, through the file wall ([`open_source`]).
+fn open_reader(path: &Path) -> Result<IndexedReader, OpenError> {
+    checked_reader(IndexedReader::open(open_source(path)?))
 }
 
 /// [`open_reader`] with a small cache of objects and object streams, for one read that resolves many objects packed in the same streams, as a page of links does: without it each is a fresh inflate of its stream. It lives as long as the reader, which is one read.
 pub(crate) fn open_reader_cached(path: &Path) -> Result<IndexedReader, OpenError> {
-    let meta = std::fs::metadata(path).map_err(|e| match e.kind() {
-        ErrorKind::NotFound => OpenError::NotFound,
-        ErrorKind::PermissionDenied => OpenError::NotAllowed,
-        _ => OpenError::NotPdf,
-    })?;
-    if !meta.is_file() {
-        return Err(OpenError::NotPdf);
-    }
-    let source = FileSource::open(path).map_err(|_| OpenError::NotAllowed)?;
+    let source = open_source(path)?;
     checked_reader(IndexedReader::open_cached(
         source,
         lopdf::IndexedReaderOptions::default(),
@@ -318,15 +318,7 @@ pub use recto_platform::{MAX_PASSWORD_BYTES, Password};
 
 /// [`inspect`] with a password the person typed. A wrong one is [`OpenError::PasswordNeeded`], as no password is. The file's closed again when this returns, and the password isn't kept here.
 pub fn inspect_with_password(path: &Path, password: &Password) -> Result<DocFacts, OpenError> {
-    let meta = std::fs::metadata(path).map_err(|e| match e.kind() {
-        ErrorKind::NotFound => OpenError::NotFound,
-        ErrorKind::PermissionDenied => OpenError::NotAllowed,
-        _ => OpenError::NotPdf,
-    })?;
-    if !meta.is_file() {
-        return Err(OpenError::NotPdf);
-    }
-    let source = FileSource::open(path).map_err(|_| OpenError::NotAllowed)?;
+    let source = open_source(path)?;
     // lopdf takes this copy out of the options and drops it once it's derived the file's key, without overwriting it: a copy that remains, listed in `docs/engineering/opening.md`. The options are moved in, so there's nothing left here to clear.
     let options = lopdf::IndexedReaderOptions {
         password: Some(password.bytes().to_vec()),
@@ -368,6 +360,21 @@ const PERMISSION_COPY: i64 = 1 << 4;
 pub fn copy_restricted(path: &Path) -> Result<bool, OpenError> {
     let reader = open_reader(path)?;
     Ok(restricted_by(&reader))
+}
+
+/// **[`copy_restricted`] through a file already open, with the password the person typed for it** (PLAN, "the person can't print a document they opened
+/// with its password"): a file that opens only with a password can't be read without it, so [`copy_restricted`] fails on it, and a caller that took the
+/// failure as "not restricted" would let a print to a file of such a document past its "anyway". Read through the very file the renderer has open, so
+/// the flag is that file's, whatever is at its path now. A wrong password is [`OpenError::PasswordNeeded`]. The file's closed again when this returns,
+/// and the password isn't kept here.
+pub fn copy_restricted_with_password(file: std::fs::File, password: &Password) -> Result<bool, OpenError> {
+    let source = FileSource::from_file(file).map_err(|_| OpenError::NotAllowed)?;
+    // As in `inspect_with_password`: lopdf takes this copy and drops it once it's derived the file's key.
+    let options = lopdf::IndexedReaderOptions {
+        password: Some(password.bytes().to_vec()),
+        ..lopdf::IndexedReaderOptions::default()
+    };
+    Ok(restricted_by(&checked_reader(IndexedReader::open_with_options(source, options))?))
 }
 
 /// [`copy_restricted`] on bytes in memory: the same read, for the fuzzer.

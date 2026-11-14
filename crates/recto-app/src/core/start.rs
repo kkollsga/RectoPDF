@@ -100,9 +100,10 @@ impl Inner {
             watchers: Mutex::new(None),
         });
         host.listen();
-        // The person's own Find reads a document they opened with a password through its key, as the page views draw it.
-        let find_keys = Arc::clone(&keys);
-        host.session.set_find_keys(Arc::new(move |path: &std::path::Path| find_keys.for_path(path)));
+        // The person's own Find and Print read a document they opened with a password through its key, as the page views draw it, by the file's identity.
+        let persons_keys = Arc::clone(&keys);
+        host.session
+            .set_persons_keys(recto_agent::keys::PersonsKeys::new(move |identity| persons_keys.get(identity)));
         let backups = recto_control::host::backups_folder(&paths);
         recto_core::save::prune_backups(&backups, std::time::SystemTime::now());
         let save_step = Arc::new(AtomicU8::new(0));

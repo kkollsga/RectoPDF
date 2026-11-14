@@ -63,8 +63,8 @@ impl<A: SessionAccess> SessionAccess for Acting<'_, A> {
     fn effect(&self, effect: crate::Effect) {
         self.access.effect(effect);
     }
-    fn find_keys(&self, actor: Actor) -> Option<find::KeyLookup> {
-        self.access.find_keys(actor)
+    fn persons_keys(&self, actor: Actor) -> Option<crate::keys::PersonsKeys> {
+        self.access.persons_keys(actor)
     }
     fn reads_later(&self) -> Option<&dyn later::ReadLater> {
         self.access.reads_later()

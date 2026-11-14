@@ -10,15 +10,15 @@ use crate::testkit::headless::{Disk, HeadlessApp, WAIT_LIMIT};
 
 /// What the print panel answered: all the pages or a range from 1, the selection's pages, and whether it prints to a file (a PDF saved or previewed).
 #[derive(Clone, Copy)]
-struct Panel {
-    all: bool,
-    first: u32,
-    last: u32,
-    selection_only: bool,
-    to_file: bool,
+pub(super) struct Panel {
+    pub(super) all: bool,
+    pub(super) first: u32,
+    pub(super) last: u32,
+    pub(super) selection_only: bool,
+    pub(super) to_file: bool,
 }
 
-const ALL: Panel = Panel {
+pub(super) const ALL: Panel = Panel {
     all: true,
     first: 1,
     last: 1,
@@ -27,7 +27,7 @@ const ALL: Panel = Panel {
 };
 
 /// **The panel answered, as the host answers it:** the tab showing and what was chosen, through the one way a person's action comes in.
-fn answer(app: &HeadlessApp, panel: Panel) {
+pub(super) fn answer(app: &HeadlessApp, panel: Panel) {
     let tab = lock(&app.core().published).reader.shown_tab;
     let Panel {
         all,
@@ -48,7 +48,7 @@ fn answer(app: &HeadlessApp, panel: Panel) {
 }
 
 /// The notice by the page as the window shows it now: its words and its button's title.
-fn notice(app: &HeadlessApp) -> String {
+pub(super) fn notice(app: &HeadlessApp) -> String {
     match app.reader().selection_notice {
         None => "-".into(),
         Some(notice) => format!("{:?} [{}]", notice.text, notice.action_title.unwrap_or_default()),
@@ -56,30 +56,36 @@ fn notice(app: &HeadlessApp) -> String {
 }
 
 /// **The file the print made, taken as the host takes it and let go as the system's printing does:** the width in points of each page in it, which says
-/// which pages of the document it holds, as each page of the test files has its own width. Its file is new and the user's alone while it's there, and it
-/// goes when it's let go. "none" if there's no file for the host.
-fn printed(app: &HeadlessApp) -> String {
+/// which pages of the document it holds, as each page of the test files has its own width. Its file has no name and is the user's alone while it's there,
+/// and it goes with its descriptor when it's let go. "none" if there's no file for the host.
+pub(super) fn printed(app: &HeadlessApp) -> String {
+    let before = unnamed_files_held();
     let Some((path, _)) = app.core().tools.printing().take_ready() else {
         return "none".into();
     };
-    let bytes = std::fs::read(&path).expect("the print's file");
+    let bytes = std::fs::read(&path).expect("the print's file, by the path the host is given");
     let text = String::from_utf8_lossy(&bytes);
     let widths: Vec<&str> = text
         .match_indices("/MediaBox [0 0 ")
         .filter_map(|(at, found)| text[at + found.len()..].split(' ').next())
         .collect();
-    // The user's own: readable and writable by them alone, in their own temp folder, which only they can open.
-    let (file_mode, folder_mode, owner) = {
+    let (links, mode, owner) = {
         use std::os::unix::fs::MetadataExt;
-        let (file, folder) = (
-            std::fs::metadata(&path).expect("the file"),
-            std::fs::metadata(path.parent().expect("its folder")).expect("its folder"),
-        );
-        (file.mode() & 0o777, folder.mode() & 0o077, file.uid())
+        let file = std::fs::metadata(&path).expect("the file");
+        (file.nlink(), file.mode() & 0o777, file.uid())
     };
-    assert_eq!((file_mode, folder_mode, owner), (0o600, 0, own_uid()), "{} is the user's alone", path.display());
+    assert_eq!(
+        (links, mode, owner),
+        (0, 0o600, own_uid()),
+        "{} has no name and is the user's alone",
+        path.display()
+    );
     app.core().tools.printing().finished(path.to_str().expect("a path"));
-    assert!(!path.exists(), "the print's file goes once the system's printing is done with it");
+    let after = unnamed_files_held();
+    assert!(
+        after.len() < before.len() || before.iter().any(|held| !after.contains(held)),
+        "the print's file goes with its descriptor once the system's printing is done with it: {before:?} then {after:?}"
+    );
     format!("[{}]", widths.join(","))
 }
 
@@ -90,8 +96,9 @@ fn own_uid() -> u32 {
     std::fs::metadata(probe.path()).expect("a folder of ours").uid()
 }
 
-/// The print files of this process's in the system's temp folder, made or half made: what a stopped print must not leave.
-fn print_files_left() -> Vec<String> {
+/// The print files of this process's in the system's temp folder, made or half made, named as prints were before they had no name, or as the unnamed one
+/// is for the moment before it's unlinked: what no print may leave, or have while it's prepared.
+pub(super) fn print_files_left() -> Vec<String> {
     let folder = recto_platform::local::system_temp_dir().unwrap_or_else(std::env::temp_dir);
     let pid = std::process::id();
     std::fs::read_dir(folder)
@@ -99,14 +106,44 @@ fn print_files_left() -> Vec<String> {
             entries
                 .flatten()
                 .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .filter(|name| name.starts_with(&format!("recto-print-{pid}-")) || name.starts_with(&format!(".recto-{pid}-")))
+                .filter(|name| {
+                    name.starts_with(&format!("recto-print-{pid}-")) || name.starts_with(&format!(".recto-{pid}-")) || name.starts_with(".recto-unnamed-")
+                })
                 .collect()
         })
         .unwrap_or_default()
 }
 
+/// **The files with no name this process holds a descriptor of,** by inode, with each one's permissions, sorted: where the person's print's file is while
+/// it's anywhere, as nothing else can reach it. Counted before and after a step, the difference is what the step made or let go.
+pub(crate) fn unnamed_files_held() -> Vec<(u64, u32)> {
+    use std::os::unix::fs::MetadataExt;
+    let mut held: Vec<(u64, u32)> = std::fs::read_dir("/dev/fd")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| std::fs::metadata(entry.path()).ok())
+        .filter(|meta| meta.is_file() && meta.nlink() == 0)
+        .map(|meta| (meta.ino(), meta.mode() & 0o777))
+        .collect();
+    held.sort_unstable();
+    held.dedup();
+    held
+}
+
+/// A file with no name holding `bytes`, as a print's is, for a test of what holds it.
+pub(crate) fn unnamed_file(bytes: &[u8]) -> std::fs::File {
+    use std::io::Write;
+    let folder = recto_testpdf::TempDir::new("unnamed-");
+    let path = folder.join("print");
+    let mut file = std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path).expect("a file");
+    std::fs::remove_file(&path).expect("unlinked");
+    file.write_all(bytes).expect("written");
+    file
+}
+
 /// A print held once it's this many pages in, till the test lets it go: the sender that lets it go.
-fn hold_at(page: u32) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+pub(super) fn hold_at(page: u32) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
     let (told, held) = std::sync::mpsc::channel();
     let (go, waiting) = std::sync::mpsc::channel();
     *lock(&AT_PAGE) = Some((page, (told, waiting)));
@@ -240,6 +277,71 @@ fn a_persons_print_does_what_it_did() {
     assert_eq!(print_files_left(), Vec::<String>::new(), "nothing's left once each print's file went");
 }
 
+/// **Failure (PLAN, "the person can't print a document they opened with its password", the design's point 3): the person's print has a name on disk,**
+/// where an agent at any level could open it while it's there (0.1.0 named it `recto-print-PID-N.pdf`) and a crash would leave it, a plain copy of a
+/// document opened with its password once Print reads one; or it's readable by others; or its descriptor outlives the print on some ending. While it's
+/// prepared (held mid-way) and once it's ready: nothing of it in the temp folder by any name, and one file with no link held, 0600. After each ending (done,
+/// Stop, the tab closed, quitting with it ready): none held. A crash or a kill is covered by the link count of 0 from the file's making: the kernel frees a
+/// file with no link when its last descriptor closes, which a process's end does, however it ends.
+#[test]
+fn the_persons_print_has_no_name() {
+    let disk = Disk::new();
+    let doc = disk.file("widths.pdf", &widths(3));
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    let before = unnamed_files_held();
+    let made = || -> Vec<(u64, u32)> { unnamed_files_held().into_iter().filter(|held| !before.contains(held)).collect() };
+    let held_mid_way = |step: &str| {
+        let (held, go) = hold_at(1);
+        answer(&app, ALL);
+        held.recv_timeout(WAIT_LIMIT).expect("the print held at its first page");
+        assert_eq!(print_files_left(), Vec::<String>::new(), "{step}: nothing by a name while it's prepared");
+        let now = made();
+        assert!(now.len() == 1 && now[0].1 == 0o600, "{step}: one file with no name, the user's alone: {now:?}");
+        go
+    };
+
+    drop(held_mid_way("done"));
+    app.settle();
+    assert!(app.core().tools.printing().has_ready(), "ready for the host");
+    assert_eq!(print_files_left(), Vec::<String>::new(), "nothing by a name once it's ready");
+    assert_eq!(made().len(), 1, "held while it's ready");
+    assert_ne!(printed(&app), "none");
+    assert_eq!(made(), Vec::new(), "done: let go");
+
+    let go = held_mid_way("stopped");
+    let stop = app.reader().selection_notice.and_then(|notice| notice.action_id).expect("Stop");
+    app.act(UiAction::Menu { id: stop });
+    drop(go);
+    app.settle();
+    assert_eq!(
+        (printed(&app), made()),
+        ("none".into(), Vec::new()),
+        "stopped: nothing for the host, nothing held"
+    );
+
+    let go = held_mid_way("the tab closed");
+    app.act(UiAction::Menu { id: "file.close".into() });
+    app.wait_until("the tab closed", || app.tabs().is_empty());
+    drop(go);
+    app.settle();
+    assert_eq!(
+        (printed(&app), made()),
+        ("none".into(), Vec::new()),
+        "the tab closed: nothing for the host, nothing held"
+    );
+
+    app.open(&doc);
+    app.settle();
+    answer(&app, ALL);
+    app.settle();
+    assert_eq!(made().len(), 1, "ready");
+    app.core().tools.printing().quitting();
+    assert_eq!(made(), Vec::new(), "quitting with it ready: let go");
+    assert_eq!(print_files_left(), Vec::<String>::new());
+}
+
 /// Failure (S2, the coordinator's word on 2026-11-14: "a person's action that fails says so"): a person's print refused before its command ran (by a
 /// quiet run's files, as here, or a page list that can't be read) says nothing, as the window's watch over it never began; or it leaves the window
 /// thinking a print's being prepared. The refusal's own words are said, and nothing is prepared or left for the host.
@@ -312,14 +414,16 @@ fn an_agent_cant_find_the_persons_print_file() {
     let app = disk.start();
     app.open(&restricted);
     app.settle();
-    // Prepared, and not yet let go by the system's printing: the file is there, as long as the printer takes.
+    // Prepared, and not yet let go by the system's printing: the file is there, as long as the printer takes, with no name.
+    let before = unnamed_files_held();
     answer(&app, ALL);
     app.settle();
     let folder = recto_platform::local::system_temp_dir().unwrap_or_else(std::env::temp_dir);
     assert!(
-        app.core().tools.printing().has_ready() && !print_files_left().is_empty(),
+        app.core().tools.printing().has_ready() && unnamed_files_held().len() > before.len(),
         "the print's file is there"
     );
+    assert_eq!(print_files_left(), Vec::<String>::new(), "by no name");
     let guessed = folder.join(format!("recto-print-{}-1.pdf", std::process::id()));
     let opened = app.recto(Level::Full, &["open", guessed.to_str().expect("a path")]);
     let mut told = Vec::new();
@@ -483,9 +587,8 @@ fn a_hand_off_waits_for_the_persons_print_to_be_handed_over() {
     assert!(app.core().hand_off_check().safe, "nothing in flight once it's done");
 }
 
-/// Failure (review of S2): a print's file the host never took is left in the temp folder for good when the next print's file takes its place, as two
-/// prints answered in a row with nothing handing the first to the system did. The first goes as the second comes; once the second is done with, nothing's
-/// left.
+/// Failure (review of S2): a print's file the host never took is held for good when the next print's file takes its place, as two prints answered in a
+/// row with nothing handing the first to the system did. The first's descriptor goes as the second comes; once the second is done with, nothing's held.
 #[test]
 fn a_print_file_the_host_never_took_goes_when_the_next_comes() {
     let disk = Disk::new();
@@ -493,19 +596,22 @@ fn a_print_file_the_host_never_took_goes_when_the_next_comes() {
     let app = disk.start();
     app.open(&doc);
     app.settle();
+    let before = unnamed_files_held();
     answer(&app, ALL);
     app.settle();
-    let first = print_files_left();
+    let first = unnamed_files_held();
     answer(&app, ALL);
     app.settle();
-    let after = print_files_left();
-    assert_eq!(after.len(), 1, "one file, the second's: {first:?} then {after:?}");
-    assert!(
-        first.iter().all(|name| !after.contains(name)),
-        "the first's file went: {first:?} then {after:?}"
+    let after = unnamed_files_held();
+    assert_eq!(
+        (first.len(), after.len()),
+        (before.len() + 1, before.len() + 1),
+        "one file held, then the second's alone: {before:?}, {first:?}, {after:?}"
     );
+    assert_ne!(first, after, "the first's file went");
     assert_ne!(printed(&app), "none");
-    assert_eq!(print_files_left(), Vec::<String>::new(), "nothing's left");
+    assert_eq!(unnamed_files_held(), before, "nothing's held");
+    assert_eq!(print_files_left(), Vec::<String>::new(), "nothing has a name");
 }
 
 /// **Failure (S2's follow-up (4)): a print reads its pages when its thread starts,** so a ⌘R pressed in the same instant, after the print was asked, was

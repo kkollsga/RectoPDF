@@ -5,7 +5,7 @@
 //!   to [`COMMAND_WAIT`]. The window draws what the session publishes as it comes, so the person's query returns as it starts, and a step asked for before
 //!   its hit is known is kept for when it is ([`Effect::FindStepPending`]).
 //! - **The person's field is theirs.** What they type stays in the field as the draft whether it can be found or not, and it's found with their passwords, so
-//!   a document they opened with one is searched for them. An agent's `find` never gets those keys ([`crate::SessionAccess::find_keys`]).
+//!   a document they opened with one is searched for them. An agent's `find` never gets those keys ([`crate::SessionAccess::persons_keys`]).
 //! - **A6: a person's Find shows the sidebar it's in; an agent's `find` doesn't rearrange the person's window.** Find opens for both, and only the person's
 //!   brings the sidebar back.
 
@@ -130,13 +130,15 @@ impl<A: crate::SessionAccess> Run<'_, A> {
             }
             let typed = &query[..end];
             events.push(Event::FindOpened { tab: None, page: None });
-            return begin_keyed(access, typed, access.find_keys(self.actor)).map(drop).inspect_err(|_| {
-                self.finding.clear();
-                // Refused as the tab's edits don't fit its file: kept as the query, so the window keeps the refusal against what it was refused on, the line
-                // under the field says why, and it's found once they fit again. Any other refusal (too long, nothing to find) leaves only the draft.
-                let unfit = access.with(|s| s.tabs().active().is_some_and(|id| !basis(s, id).fit.fits()));
-                access.with(|s| s.viewing_mut().set_find(true, if unfit { typed } else { "" }, typed));
-            });
+            return begin_keyed(access, typed, access.persons_keys(self.actor).map(|keys| keys.for_find()))
+                .map(drop)
+                .inspect_err(|_| {
+                    self.finding.clear();
+                    // Refused as the tab's edits don't fit its file: kept as the query, so the window keeps the refusal against what it was refused on, the line
+                    // under the field says why, and it's found once they fit again. Any other refusal (too long, nothing to find) leaves only the draft.
+                    let unfit = access.with(|s| s.tabs().active().is_some_and(|id| !basis(s, id).fit.fits()));
+                    access.with(|s| s.viewing_mut().set_find(true, if unfit { typed } else { "" }, typed));
+                });
         }
         let generation = begin(access, query)?;
         if access.finding().is_some() {
@@ -210,7 +212,7 @@ impl<A: crate::SessionAccess> Run<'_, A> {
             return Ok(false);
         };
         if self.at_the_window() {
-            begin_keyed(self.access, &query, self.access.find_keys(self.actor))?;
+            begin_keyed(self.access, &query, self.access.persons_keys(self.actor).map(|keys| keys.for_find()))?;
         } else {
             let generation = begin(self.access, &query)?;
             self.finding.wait(generation, self.deadline.saturating_duration_since(Instant::now()));
