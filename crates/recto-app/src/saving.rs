@@ -451,7 +451,10 @@ mod tests {
         let busy = crate::settled::under_way(&crate::settled::watched!(app.core()), crate::settled::PageViews::AtRest);
         drop(go);
         app.settle();
-        assert!(busy.iter().any(|what| what.contains("signature")), "settled with a signature look's word not queued: {busy:?}");
+        assert!(
+            busy.iter().any(|what| what.contains("signature")),
+            "settled with a signature look's word not queued: {busy:?}"
+        );
     }
 
     /// Failure (review round 1 of stage 2): the Close prompt offers Save where Save is off, so the answer is a refusal. With Save off it offers Save As, and says why; otherwise Save, as before.

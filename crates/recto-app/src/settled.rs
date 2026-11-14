@@ -7,17 +7,17 @@
 //!   due now (the record's write, a tab's dormancy, a try at the record's lock, a restore's or the launch's patience), not nudged since and not past the time it
 //!   parked till. A deadline due later (a cool-down, a retry in seconds) is not under way: on the kit's clock it's exact, as only the test moves that clock;
 //! - **what runs off it and comes back to it**, each counted until after it has queued what it found: files being read, a password being tried, the person's
-//!   commands on threads of their own and agents' commands in flight, the window's saves, a snapshot on its way to the clipboard, a print's pages being
+//!   commands on threads of their own and agents' commands in flight, a try at the record's lock out or a late keep's read that the person's commands are
+//!   held for ([`crate::core::Lifecycle::keeping_thread_out`]), the window's saves, a snapshot on its way to the clipboard, a print's pages being
 //!   prepared, the looks at other tabs' and woken tabs' files, at a file's signatures and at generated contents, Find's thread, and the record's writer
 //!   running or a write due now;
 //! - **the page views**, by whether a host draws them ([`PageViews`]): each one's last job's end told ([`recto_reader::Engine::wait_settled`]), and either drawn
 //!   as far as it shows (a window) or its thread resting with everything asked of it seen (the kit, which has no view to draw).
 //!
 //! **What's left out, and why.** The sleep files' writer ([`crate::sleep_queue::Leaving`]): it queues nothing for the session, so it can't leave the session
-//! unsettled, and a test that reads a sleep file or its counts waits for that write by name (some settle on purpose with it held mid-write). A late try at the
-//! record's lock and a late keep's read, each on a thread of its own: the deadline that starts a try is counted (the session thread acts on it before it's at
-//! rest), the thread it starts isn't, as tests hold it on purpose and wait for what it decides by name, and the life's keeping isn't the session's to read
-//! from here. A test that holds a page view's thread (`Seam::Worker`) waits for the session's part with the host's turns (`host_turns`), as the kit's settle
+//! unsettled, and a test that reads a sleep file or its counts waits for that write by name (some settle on purpose with it held mid-write). A late keep's read
+//! once its restore's patience is over (`LettingGo`): nothing waits on it then, and the lock it keeps till it's out is waited for by name. A test that holds
+//! a try or a late keep's read at its seam waits for the rest with `settled_but_the_held_thread` (`late_lock`'s). A test that holds a page view's thread (`Seam::Worker`) waits for the session's part with the host's turns (`host_turns`), as the kit's settle
 //! waits for the page view at rest. The updater's check and install, each on a thread of its own: in the real app a check is a network fetch, and
 //! installing or waiting lasts until a hand-off, so counting them would have `qa wait` wait those out; the kit's update tests wait for the updater by its
 //! status, by name (`wait_for_status`), and its end says only that the window should look again. The search index, which the kit has off and which says
@@ -221,6 +221,11 @@ fn off_the_session_thread(inner: &Watched<'_>, busy: &mut Vec<String>) {
     if inner.saver.is_writing() {
         busy.push("the record being written".to_string());
     }
+    // A try at the record's lock out, or a late keep's read that what the person did is held for: each tells the session thread what it found, then the
+    // life hears it.
+    if inner.life.keeping_thread_out() {
+        busy.push("a try at the record's lock, or a late keep's read, out on its thread".to_string());
+    }
     // Its thread goes once it's said how its last query ended, which the session thread takes as Find's news.
     if inner.host.session.finder().has_thread() {
         busy.push("Find looking".to_string());
@@ -254,6 +259,28 @@ mod tests {
         assert!(
             busy.iter().any(|what| what.contains("deadline")),
             "settled with a try at the record's lock due and not made: {busy:?}"
+        );
+    }
+
+    /// Failure (review of `build/settled-gaps`, 2026-11-14): a late keep's saved session, read on the try's thread, wasn't counted, so settle could answer
+    /// with the person's commands held for it (the session thread keeps them till the restore's in). Held in that read: it's under way.
+    #[test]
+    fn a_late_keeps_read_out_isnt_settled() {
+        let disk = Disk::new();
+        let before = recto_control::record_store::RecordStore::open(disk.paths(), recto_control::record_store::Flavor::App);
+        assert!(before.holds_the_record(), "the copy before keeps the record");
+        let app = disk.builder().another_keeps().start();
+        gate::hold(&[Seam::State]);
+        drop(before);
+        app.advance(crate::lifecycle::keeping::TRY_EVERY_MS);
+        app.wait_until("the late keep's read held", || app.waiting(Seam::State) > 0);
+        let busy = under_way(&super::watched!(app.core()), PageViews::AtRest);
+        gate::open(Seam::State);
+        app.wait_until("the read's thread back", || !app.core().life.keeping_thread_out());
+        app.settle();
+        assert!(
+            busy.iter().any(|what| what.contains("record's lock")),
+            "settled with the late keep's read out: {busy:?}"
         );
     }
 

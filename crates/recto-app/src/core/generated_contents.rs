@@ -64,6 +64,10 @@ mod tests {
         let busy = crate::settled::under_way(&crate::settled::watched!(app.core()), crate::settled::PageViews::AtRest);
         drop(for_the_look);
         assert!(busy.iter().any(|what| what.contains("generated contents")), "{busy:?}");
-        assert_eq!(app.core().tools.contents_looks().load(std::sync::atomic::Ordering::SeqCst), 0, "none left counted");
+        assert_eq!(
+            app.core().tools.contents_looks().load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "none left counted"
+        );
     }
 }
