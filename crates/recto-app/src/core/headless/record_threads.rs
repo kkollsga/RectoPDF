@@ -136,9 +136,18 @@ fn a_thread_of_the_records_held_as_the_app_ends_writes_nothing_after_it() {
         let Held { case, app, seam, before } = held();
         let host = Arc::downgrade(&app.core().listener);
         let parts = Parts::of(&app);
+        // What the app was told last, looked at as it ended and again once its threads are gone: kept for the look only, and let go before the end's checks.
+        let (life, told) = (Arc::clone(&app.core().life), Arc::clone(&app.core().host));
+        let said = || (life.keeping(), crate::lock(&told.notice).clone());
         let mut at_end = None;
-        let disk = app.kill_holding(seam, |disk| at_end = Some(state_folder(disk)));
-        let at_end = at_end.expect("looked at as the app ended");
+        let disk = app.kill_holding(seam, |disk| at_end = Some((state_folder(disk), said())));
+        let (at_end, said_at_end) = at_end.expect("looked at as the app ended");
+        assert_eq!(
+            said(),
+            said_at_end,
+            "{case}: the app was told something after its end (how it keeps the record, or its notice)"
+        );
+        drop((life, told));
         assert_eq!(host.strong_count(), 0, "{case}: something still holds the way to the host after the app's end");
         let now = state_folder(&disk);
         assert!(

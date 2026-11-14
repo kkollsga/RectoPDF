@@ -137,6 +137,10 @@ impl Keeper {
         recto_platform::slow::pause(recto_platform::slow::Seam::State);
         let misreads = self.life.update_facts.misreads();
         let loaded = if misreads { Loaded::Nothing } else { self.store.load() };
+        // The app ended while this read (a process's end, the headless kit's kill, which lets the store go): it's told nothing more, so nothing's claimed.
+        if self.store.has_let_go() {
+            return;
+        }
         self.desk().claimed();
         if !self.life.keeping().claims() {
             return;
@@ -163,7 +167,8 @@ impl Keeper {
         if self.store.holds_the_record() {
             return true;
         }
-        if keeping == crate::lifecycle::keeping::Keeping::Keeps {
+        // An ended app's straggler (its store let go, as a process's end lets it go) tells the app nothing more: no "not kept", no notice.
+        if keeping == crate::lifecycle::keeping::Keeping::Keeps && !self.store.has_let_go() {
             self.desk().lock_lost();
         }
         false
