@@ -155,6 +155,11 @@ fn agent_told(pages: usize, word: &str) -> Vec<String> {
     assert_ne!(super::printing::printed(&app), "none", "the person's print printed");
     app.settle();
     told.push(format!("printed and let go heard: {:?}", watching.heard()));
+    // The person's snapshot of a box on page 1 (S2's follow-up (1): their own `snapshot` to the clipboard, read with their password), then a paste of
+    // its SVG: what an agent hears and sees once each is done.
+    snapshot_and_paste(&app);
+    told.push(format!("snapshot and paste heard: {:?}", watching.heard()));
+    agent_looks(&app, "snapshot taken", &mut told);
     // An edit whose taking depends on the document's length.
     app.person(r##"{"cmd":"page_delete","tab":"#1","pages":"4"}"##);
     app.settle();
@@ -191,6 +196,39 @@ fn agent_told(pages: usize, word: &str) -> Vec<String> {
     told
 }
 
+/// The person's snapshot of a box on page 1 with the snapshot tool, as the bridge's mouse calls take it, then a paste of its promised SVG: each of their
+/// own, read with their password. The tool's turned off after.
+fn snapshot_and_paste(app: &HeadlessApp) {
+    let inner = app.core();
+    let tool = inner.tools.tool();
+    inner.perform(crate::core::snapshot_tool::TOGGLE_ID.into());
+    app.settle();
+    let engine = inner.panes.reading_engine(&inner.engine);
+    let at = |x: f64, y: f64| engine.points().document_point(0, x, y).expect("page 1 is laid out");
+    let (x, y) = at(30.0, 30.0);
+    let _ = tool.press(&engine, 0, x, y);
+    let (x, y) = at(300.0, 200.0);
+    let _ = tool.drag(&engine, 0, x, y);
+    let _ = tool.release(&engine, 0);
+    app.act(UiAction::SnapshotTaken);
+    app.wait_until("the snapshot's answered", || !tool.busy());
+    app.settle();
+    let offer = tool
+        .take_offer(&inner.panes.engines(&inner.engine))
+        .expect("the person's snapshot of their document");
+    let svg = app
+        .act(UiAction::Pasted {
+            serial: offer.serial,
+            uti: recto_agent::extract::UTI_SVG.into(),
+        })
+        .understood
+        .then(|| tool.wait_for_paste())
+        .flatten();
+    assert!(svg.is_some_and(|svg| !svg.is_empty()), "the paste's SVG of the person's document");
+    inner.perform(crate::core::snapshot_tool::TOGGLE_ID.into());
+    app.settle();
+}
+
 /// What an agent at Full is told by a look at the session as a whole while the person prints: `tabs`, `session show`, `sidebar`, what `status` says of
 /// the session (its tab count: the rest is the server's own), and of `session check` the busy words alone (`busy: printing` for as long as a print takes
 /// is accepted: `docs/engineering/opening.md`). None of it names the print's descriptor (`/dev/fd/N`), the app's own number given only to the window.
@@ -213,7 +251,7 @@ fn agent_looks(app: &HeadlessApp, when: &str, told: &mut Vec<String>) {
 /// it runs) or a look at the session as a whole: an agent watching every group at every level, and looking with `tabs`, `session show` and `sidebar`,
 /// is told the same while the person opens, draws, turns to page 2 and 4, scrolls, Finds, prints all of it (while it's prepared, once it's ready, once
 /// it's let go), deletes page 4 and closes a three-page protected document saying
-/// "Locked" as a five-page one saying "Hidden", where page 4 is past the end of one, so the delete takes in only the other (its `edited`, its undo, its
+/// "Locked" as a five-page one saying "Hidden" (and takes a snapshot of page 1 and pastes its SVG, S2's follow-up (1)), where page 4 is past the end of one, so the delete takes in only the other (its `edited`, its undo, its
 /// `edits_changed` would tell), Find finds three hits in one and none in the other, and the close comes while the draw of the last page (3 in one, 4 in
 /// the other) is done and its word not yet told, so a `page_drawn` about a tab that's gone would tell.
 #[test]
