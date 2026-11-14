@@ -96,6 +96,11 @@ impl RecordStore {
         self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some()
     }
 
+    /// Whether this store has let go for good ([`Self::let_go`]): an ended app's, whose stragglers are told nothing more.
+    pub fn has_let_go(&self) -> bool {
+        self.gone.load(Ordering::SeqCst)
+    }
+
     /// Why this store isn't keeping the record, as it was when it last asked for it: `None` while it keeps it.
     pub fn why_not_keeping(&self) -> Option<String> {
         if self.holds_the_record() {
@@ -189,6 +194,22 @@ impl Drop for RecordStore {
 mod tests {
     use super::*;
     use crate::record_store::Flavor;
+
+    /// Failure: a store that has let go for good says it hasn't, so an ended app's straggler goes on stepping its app's keeping of the record as if it were
+    /// still running; or one that's only given its lock back (a late try's) says it has, so a running app stops minding a lock it lost. False while it keeps
+    /// the record and after a give-back; true from its let-go on.
+    #[test]
+    fn a_store_says_it_has_let_go_from_its_let_go_and_not_before() {
+        let root = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "lg");
+        let paths = crate::state::StatePaths::overridden(&root).unwrap();
+        paths.prepare().unwrap();
+        let store = RecordStore::open(&paths, Flavor::App);
+        assert!(store.holds_the_record() && !store.has_let_go(), "keeping it");
+        store.give_back();
+        assert!(!store.holds_the_record() && !store.has_let_go(), "given back is not let go");
+        store.let_go();
+        assert!(store.has_let_go(), "let go");
+    }
 
     /// Failure (third read, 2026-11-13, 4c): a try at the lock looks whether its store has let go, a `let_go` comes while it opens the lock file, and the try
     /// then keeps the lock it took: a store that has let go for good holds the record, and the updater, asking, hears this copy keeps it. The let-go landing

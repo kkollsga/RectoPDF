@@ -33,7 +33,7 @@ impl Inner {
             "save_from" => self.qa_save_from(value),
             "dormant_after" => match value.parse::<u32>() {
                 Ok(seconds) => {
-                    self.sleeper.set_after(seconds);
+                    self.on_disk.sleeper().set_after(seconds);
                     self.core.push(CoreCall::Reconcile);
                     Ok(())
                 }
@@ -41,7 +41,7 @@ impl Inner {
             },
             "live_budget" => match value.parse::<u64>() {
                 Ok(mib) => {
-                    self.sleeper.set_budget(mib.saturating_mul(1024 * 1024));
+                    self.on_disk.sleeper().set_budget(mib.saturating_mul(1024 * 1024));
                     Ok(())
                 }
                 Err(_) => Err(usage("It's a number of MiB.".to_string())),
@@ -54,7 +54,7 @@ impl Inner {
             }
             "sleep_write_gap" => match value.parse::<u32>() {
                 Ok(seconds) => {
-                    self.sleeper.set_write_gap(seconds);
+                    self.on_disk.sleeper().set_write_gap(seconds);
                     Ok(())
                 }
                 Err(_) => Err(usage("It's a number of seconds.".to_string())),

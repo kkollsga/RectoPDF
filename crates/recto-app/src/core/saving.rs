@@ -29,13 +29,13 @@ impl SaveSupport for AppSaving {
 
     fn before_writing(&self, _tab: TabId) {
         if let Some(inner) = self.saver.inner() {
-            self.saver.write_journals_now(&inner);
+            self.saver.write_journals_now(inner.on_disk.keeper(), inner.on_disk.sleeper());
         }
     }
 
     fn note_on_disk(&self, tab: TabId, target: FileStamp) -> Result<(), String> {
         let inner = self.saver.inner().ok_or("the app is going away")?;
-        self.saver.write_journals_now(&inner);
+        self.saver.write_journals_now(inner.on_disk.keeper(), inner.on_disk.sleeper());
         let name = inner.host.session.with_session(|session| session.journals().name_of(tab).map(String::from));
         match name {
             // A session that keeps no journal has no crash to carry a save across.
