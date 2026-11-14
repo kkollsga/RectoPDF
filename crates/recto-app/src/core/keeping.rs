@@ -7,16 +7,16 @@
 //! settles still settles (the third read's blocker, 2026-11-13).
 //!
 //! **The order of a try** (the reviews of 2026-11-13):
-//! 1. On the session thread, at its deadline: the window is looked at, and if it's as it was read, one try goes out ([`try_the_lock`]), on a thread of its own,
+//! 1. On the session thread, at its deadline: the window is looked at, and if it's as it was read, one try goes out ([`Keeper::try_the_lock`]), on a thread of its own,
 //!    as the store's `try_lock` opens a file ([`recto_control::record_store::RecordStore::try_to_keep`]). None is due while one is out. With no thread to be
 //!    had, or a person's command under way on its own thread (its change isn't in to be looked at), it's a try that didn't get the lock.
 //! 2. Back on the session thread ([`try_back`]): the window is looked at again first, so whatever the person did while it was out counts before the lock does,
 //!    then the machine decides. Kept: the try's thread reads. Otherwise a lock it brought is **given back on the session thread, before the call ends**: an
 //!    unlock and a close of a descriptor already open, which wait on no disk (the open, which can, stays on the try's thread). So no later try can find a stale
 //!    lock taken, or have it released under it by a thread that woke late (the third read, 3).
-//! 3. Restoring, on the try's thread ([`read_late`]): the saved session is read as a launch reads it, then the read's thread claims the record (only while the
+//! 3. Restoring, on the try's thread ([`Keeper::read_late`]): the saved session is read as a launch reads it, then the read's thread claims the record (only while the
 //!    patience isn't over), and only then tells the updater this copy keeps it, falls back from a record it can't read after an update that kept ending, and
-//!    counts its tabs. Meanwhile every writer writes nothing ([`may_write`]), what the person does waits (the session thread holds it back, as at a launch), and
+//!    counts its tabs. Meanwhile every writer writes nothing ([`Keeper::may_write`]), what the person does waits (the session thread holds it back, as at a launch), and
 //!    agents are refused. For [`crate::lifecycle::keeping::RESTORING_PATIENCE_MS`] at most, until it claims: past it, the window goes on as it is, what waited
 //!    runs, the notice says it won't be remembered, the updater hears it's a second copy (the installer sees the new version started, with no tab count, and the
 //!    install's left for the next launch that keeps the record), and the lock is given back once the read's thread is out of its read and says so: never while
@@ -28,10 +28,11 @@
 //! **What moved for 4** (the third read, 2026-11-13): a late keep's read told the updater of the launch (`Updater::launched`, which settles the install as the
 //! copy that keeps the record) before it read; now it tells it after the read and the claim. Going back for a version that keeps failing is decided there too,
 //! so a late keep's read happens before that decision; a launch that got the lock at once still tells the updater before it reads, as always
-//! ([`super::launching::read`]). Falling back stays after telling, as it needs what telling settles.
+//! ([`Keeper::read`]). Falling back stays after telling, as it needs what telling settles.
 //!
 //! The read itself is about 2.3 ms for a session of 100 tabs each with a journal (median of 20, release build, this Mac under a load of about 4, 2026-11-13).
 
+use super::keeper::Keeper;
 use super::*;
 use crate::lifecycle::keeping::{Event as KeepingEvent, Keeping};
 use std::hash::{Hash as _, Hasher as _};
@@ -39,17 +40,17 @@ use std::hash::{Hash as _, Hasher as _};
 /// **The keeping desk: what [`crate::lifecycle::keeping`] decides, carried out, and nothing else.** It owns one rule: every keeping event goes through
 /// [`Desk::step`] or [`Desk::try_back`] and is carried by [`crate::lifecycle::keeping::carry`], with nothing between (no other code in the app makes a keeping
 /// step: the life makes one only with the desk's [`Carrier`], which only this file can build). It borrows only what its methods read, each said on the method: the life, the host (the
-/// session, the notice, what's under way), the record's store, the queue and the updater; and `app`, the whole app, which is there only for [`Carrier::ask`]'s
-/// spawn of the try's thread, whose read (`try_the_lock`, `read_late`) takes it whole until the record's slice (S5) gives them parts. Six references, held so
-/// by a check when it's built, made for a call and dropped with it: no lock, thread or allocation of its own. Each is the app's own handle (`&Arc`), so what a
-/// thread needs of it can be cloned for that thread (the updater's telling now; the try's thread once S5 gives it parts) and `app` can go.
+/// session, the notice, what's under way), the record's store, the queue and the updater; and the record's keeper they're all borrowed from
+/// ([`Keeper`]), which [`Carrier::ask`]'s spawn of the try's thread holds instead of the app (R3.7 S5: the desk's hold on the whole app is gone). Six
+/// references, held so by a check when it's built, made for a call and dropped with it: no lock, thread or allocation of its own. Made only by
+/// [`Keeper::desk`].
 pub(super) struct Desk<'a> {
     life: &'a Arc<Lifecycle>,
     host: &'a Arc<AppHost>,
     store: &'a Arc<recto_control::record_store::RecordStore>,
     core: &'a Arc<CoreQueue>,
     updates: &'a Arc<recto_update::updater::Updater>,
-    app: &'a Arc<Inner>,
+    keeper: &'a Arc<Keeper>,
 }
 
 const _: () = assert!(
@@ -58,15 +59,22 @@ const _: () = assert!(
 );
 
 impl<'a> Desk<'a> {
-    /// The desk for a call, from the app's parts.
-    pub(super) fn of(app: &'a Arc<Inner>) -> Self {
+    /// The desk for a call, from the keeper's handles: [`Keeper::desk`]'s, and no one else's.
+    pub(super) fn new(
+        life: &'a Arc<Lifecycle>,
+        host: &'a Arc<AppHost>,
+        store: &'a Arc<recto_control::record_store::RecordStore>,
+        core: &'a Arc<CoreQueue>,
+        updates: &'a Arc<recto_update::updater::Updater>,
+        keeper: &'a Arc<Keeper>,
+    ) -> Self {
         Self {
-            life: &app.life,
-            host: &app.host,
-            store: &app.saver.store,
-            core: &app.core,
-            updates: &app.updates,
-            app,
+            life,
+            host,
+            store,
+            core,
+            updates,
+            keeper,
         }
     }
 
@@ -173,6 +181,16 @@ impl<'a> Desk<'a> {
         self.life.keeping().restoring().then_some(*loaded)
     }
 
+    /// A late keep's read is in, on the try's thread: claimed, if its patience isn't over ([`Keeper::read_late`]).
+    pub(super) fn claimed(&self) {
+        let _ = self.step(KeepingEvent::Claimed);
+    }
+
+    /// A writer found this copy keeping the record with the store holding no lock: "not kept", which says so ([`Keeper::may_write`]).
+    pub(super) fn lock_lost(&self) {
+        let _ = self.step(KeepingEvent::LockLost);
+    }
+
     /// **A step of keeping the record, carried out:** every step anyone makes of it but a try's coming back ([`Self::try_back`], which carries out its own with the
     /// try's thread to tell), so the one place keeping settles is where the updater is told of a launch held back. Says what the host is told: the window made
     /// again from a late try's restore, for the caller to tell it once the session thread's call has ended.
@@ -202,66 +220,6 @@ impl<'a> Desk<'a> {
     }
 }
 
-/// **A try at the record's lock, on a thread of its own:** the store's one `try_lock` (an open of the lock file, which a sleeping disk can make slow), told to the
-/// session thread, which decides; with the lock, this thread then reads the saved session if it's told to, or ends, the session thread having given the lock
-/// back itself.
-fn try_the_lock(inner: &Arc<Inner>, verdict: std::sync::mpsc::Sender<Verdict>, heard: &std::sync::mpsc::Receiver<Verdict>) {
-    let got = inner.saver.store.try_to_keep();
-    recto_platform::slow::pause(recto_platform::slow::Seam::RecordLock);
-    inner.core.push(CoreCall::TryBack(TryBack { got, verdict }));
-    if !got {
-        return;
-    }
-    // Nothing heard: the session thread gave the lock back, or ended (the app's going, and the process takes the lock with it).
-    if let Ok(Verdict::Read(appearance_then)) = heard.recv() {
-        read_late(inner, appearance_then);
-    }
-}
-
-/// **A late try's saved session read,** on the try's thread, and handed to the session thread, which takes it in. Read first, as a launch's is, with the lock
-/// held and nothing written by anyone else; then claimed, which only a restore whose patience isn't over can be; and only claimed, the updater's told this copy
-/// keeps the record, and falls back from a record it can't read after an update that kept ending. Not claimed (the patience ran out while it read), it's
-/// dropped, and the session thread hears this thread is out of its read and gives the lock back. A panic on the way says so too, by the guard, so the restore's
-/// end never waits on a thread that's gone.
-fn read_late(inner: &Arc<Inner>, appearance_then: record::Appearance) {
-    struct Out<'a>(&'a Inner, bool);
-    impl Drop for Out<'_> {
-        fn drop(&mut self) {
-            if !self.1 {
-                self.0.core.push(CoreCall::LateRead(None));
-            }
-        }
-    }
-    let mut out = Out(inner, false);
-    #[cfg(test)]
-    assert!(!PANIC_IN_THE_LATE_READ.load(Ordering::SeqCst), "a test's panic in the late read");
-    // Where a test holds the read inside it, as a slow disk does.
-    recto_platform::slow::pause(recto_platform::slow::Seam::State);
-    let misreads = inner.life.update_facts.misreads();
-    let loaded = if misreads { Loaded::Nothing } else { inner.saver.store.load() };
-    let _ = Desk::of(inner).step(KeepingEvent::Claimed);
-    if !inner.life.keeping().claims() {
-        return;
-    }
-    if inner.life.update_facts.tell(&inner.updates) == recto_update::updater::AtLaunch::Exit {
-        std::process::exit(0);
-    }
-    let loaded = updates::fall_back_if_unreadable(&inner.updates, &inner.saver.store, loaded);
-    updates::note_tabs_read(&loaded);
-    out.1 = true;
-    inner.core.push(CoreCall::LateRead(Some(Box::new((loaded, appearance_then)))));
-}
-
-/// A test's read that panics, in its own process (each test is one).
-#[cfg(test)]
-static PANIC_IN_THE_LATE_READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Makes the late keep's read panic on its thread, for a test of what ends the restore then.
-#[cfg(test)]
-pub(crate) fn panic_in_the_late_read() {
-    PANIC_IN_THE_LATE_READ.store(true, Ordering::SeqCst);
-}
-
 /// What the session thread decided about a try that came back with the lock, for the try's thread: the one thing it does with it. A lock that isn't kept is
 /// given back by the session thread itself, and the try's thread is told nothing.
 #[derive(Debug)]
@@ -279,6 +237,11 @@ pub struct TryBack {
 }
 
 impl TryBack {
+    /// A try back: whether it got the lock, and where the decision about it goes ([`Keeper::try_the_lock`]).
+    pub(super) fn new(got: bool, verdict: std::sync::mpsc::Sender<Verdict>) -> Self {
+        Self { got, verdict }
+    }
+
     /// A try that didn't get the lock, as made on the session thread when no thread could make it: no thread hears the decision.
     fn without_the_lock() -> Self {
         Self {
@@ -315,43 +278,6 @@ pub(crate) fn refuses_a_restore(life: &Lifecycle) -> bool {
     life.keeping() == Keeping::LettingGo
 }
 
-/// **Whether a writer of the record may write now:** this copy holds the record's lock and keeps the record, from the launch or since a late try's saved session
-/// is in. Not while it's trying (a try may be back with the lock and not yet decided on), restoring (what it would gather is the window before the restore), or
-/// once it's settled not to keep it. Looked at by every writer before it takes the saver's gate, so one that can't write never waits for it, and again under it.
-/// **Keeping the record with the store holding no lock** isn't skipped in silence: the writer steps the machine to "not kept", which says so (the belt for the
-/// third read's 3).
-pub(crate) fn may_write(inner: &Inner) -> bool {
-    let keeping = inner.life.keeping();
-    if !keeping.writes() {
-        return false;
-    }
-    if inner.saver.store.holds_the_record() {
-        return true;
-    }
-    if keeping == Keeping::Keeps
-        && let Some(inner) = inner.saver.inner()
-    {
-        let _ = Desk::of(&inner).step(KeepingEvent::LockLost);
-    }
-    false
-}
-
-/// **The one question a sleep file's writer asks of the record, and nothing else:** [`may_write`], asked as each write is about to go. The sleeper's writes
-/// take this and not any closure, so none can be made without asking; it's built only by [`asks`].
-pub(crate) struct KeepsRecord<'a>(&'a Inner);
-
-impl KeepsRecord<'_> {
-    /// Whether this copy may write now ([`may_write`]).
-    pub(crate) fn may_write(&self) -> bool {
-        may_write(self.0)
-    }
-}
-
-/// The question, for the sleeper's writes ([`KeepsRecord`]).
-pub(crate) fn asks(inner: &Inner) -> KeepsRecord<'_> {
-    KeepsRecord(inner)
-}
-
 /// **The app's side of carrying out a step:** the try's thread to tell, when a try is back, and what the host is told once the call's over. **Only the desk
 /// makes one** (its fields are private to this file), and the life steps keeping the record only with one ([`Lifecycle::step_keeping`],
 /// [`Lifecycle::tried`]), which it carries what the step came to: so no other code makes a keeping step, and none is made without being carried out.
@@ -370,11 +296,11 @@ impl crate::lifecycle::keeping::Carry for Carrier<'_> {
             return;
         }
         let (verdict, heard) = std::sync::mpsc::channel();
-        let asking = Arc::clone(self.desk.app);
+        let asking = Arc::clone(self.desk.keeper);
         let sent = std::thread::Builder::new()
             .name("recto-record-lock".into())
             .stack_size(512 * 1024)
-            .spawn(move || try_the_lock(&asking, verdict, &heard));
+            .spawn(move || asking.try_the_lock(verdict, &heard));
         if sent.is_err() {
             self.desk.core.push(CoreCall::TryBack(TryBack::without_the_lock()));
         }

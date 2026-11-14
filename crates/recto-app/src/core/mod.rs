@@ -25,6 +25,7 @@ pub mod controls;
 mod editing;
 #[cfg(test)]
 mod headless;
+pub(crate) mod keeper;
 pub(crate) mod keeping;
 mod launching;
 mod life;
@@ -183,7 +184,8 @@ pub struct Inner {
     pub(crate) listener: Arc<dyn crate::Listener>,
     pub published: Mutex<Published>,
     pub saver: Arc<Saver>,
-    pub(crate) sleeper: sleeper::Sleeper,
+    /// **What's kept on disk** ([`sleeper::OnDisk`]): the record's keeper and the sleeper, held by the threads that write them in the app's place.
+    pub(crate) on_disk: sleeper::OnDisk,
     pub qa: Option<Arc<QaBridge>>,
     /// Passwords typed for protected files that are open, shared with every page view's workers. Memory only.
     pub(crate) keys: Arc<recto_reader::engine::Keyring>,
@@ -357,7 +359,7 @@ impl Inner {
         // The first showing is copied under its short lock and the answer built after it's let go, so nothing the answer reads (the life, the sleeper, the
         // store, whose writer holds its own lock across a flush to the disk) is waited on holding the lock the window takes as it's shown.
         let first_shown = self.life.first_shown();
-        json!({ "first_shown": first_shown, "remade": self.life.remade(), "sleep": self.sleeper.report(), "writes": writes, "appends": appends, "wrote_bytes": wrote_bytes(), "failed": self.saver.has_failed() })
+        json!({ "first_shown": first_shown, "remade": self.life.remade(), "sleep": self.on_disk.sleeper().report(), "writes": writes, "appends": appends, "wrote_bytes": wrote_bytes(), "failed": self.saver.has_failed() })
     }
 
     /// The person touched the app: the life notes it ([`Lifecycle::note_input`]), and a notice they've moved on from goes.

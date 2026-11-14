@@ -37,6 +37,7 @@ mod quiet_files;
 mod quit;
 mod reading_later;
 mod recent;
+mod record_threads;
 mod selection;
 mod sidebar;
 mod sleep_counts;

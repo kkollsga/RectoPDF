@@ -122,6 +122,14 @@ impl Inner {
             Arc::clone(&update_hooks) as Arc<dyn recto_update::updater::Host>,
             update_seams.updater,
         );
+        let life = Arc::new(Lifecycle::new(Arc::clone(&clock)));
+        let keeper = keeper::Keeper::new(
+            Arc::clone(&saver.store),
+            Arc::clone(&life),
+            Arc::clone(&host),
+            Arc::clone(&core),
+            Arc::clone(&updates),
+        );
         let inner = Arc::new(Self {
             updates,
             host: Arc::clone(&host),
@@ -131,10 +139,10 @@ impl Inner {
             listener: Arc::clone(&listener),
             published: Mutex::new(Published::empty()),
             saver: Arc::clone(&saver),
-            sleeper: sleeper::Sleeper::new(Arc::clone(&clock)),
+            on_disk: sleeper::OnDisk::new(keeper, Arc::new(sleeper::Sleeper::new(clock))),
             qa,
             keys,
-            life: Arc::new(Lifecycle::new(clock)),
+            life,
             serving: Serving {
                 paths: Some(paths),
                 socket,

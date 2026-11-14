@@ -2,6 +2,8 @@
 //! each of its parts, and what each lets other code reach. What every control sends and the host is told is held by the coverage test's golden
 //! (`coverage.rs`); what a person's action allocates on the window's thread, by `tests/inner_allocations.rs`, in a binary of its own for its allocator.
 
+use crate::core::keeper::Keeper;
+use crate::core::sleeper::{OnDisk, Sleeper};
 use crate::core::{AppState, Inner, Lifecycle, Published, Serving, Tools, Window};
 use std::mem::size_of;
 
@@ -22,6 +24,9 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
         ("Tools", size_of::<Tools>()),
         ("Published", size_of::<Published>()),
         ("AppState", size_of::<AppState>()),
+        ("Sleeper", size_of::<Sleeper>()),
+        ("OnDisk", size_of::<OnDisk>()),
+        ("Keeper", size_of::<Keeper>()),
     ];
     let names: Vec<&str> = sizes.iter().map(|(name, _)| *name).collect();
     assert_eq!(names, BUDGETS.map(|(name, _)| name), "the types held");
@@ -40,15 +45,21 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
 /// more from the sleep branch's sleeper, held inline: the cool-down queue (`sleep_queue::Leaving`, where `main` had the queue under its lock alone) with its
 /// condition variable, its wait, its writer's panic seam, a test's hold and the queue's own counts, the answer slots an agent's asked sleep waits on, the
 /// ticket counter, and the hurry going to the background asks for; and Tools' and Inner's 8 more for Find's fingerprint of what the host was last told it
-/// draws (`find::Field`, R3.7 S2's fix: Find announced with nothing changed). One of each per app, not per tab or page view.
-const BUDGETS: [(&str, usize); 7] = [
-    ("Inner", 5072),
+/// draws (`find::Field`, R3.7 S2's fix: Find announced with nothing changed). And the sleeper on its own, at its size on 2026-11-14 (608 bytes, inside
+/// Inner's then), before R3.7 S5 moves it behind an `Arc` of its own, where Inner's budget no longer sees it. Then S5 itself: Inner 5,072 to 4,480 (the
+/// sleeper's 608 out, `OnDisk`'s two `Arc`s, 16, in), and the record's keeper, 40 (five handles the app already has, held once more so the record's threads
+/// hold it and not the app). One of each per app, not per tab or page view.
+const BUDGETS: [(&str, usize); 10] = [
+    ("Inner", 4480),
     ("Lifecycle", 344),
     ("Serving", 1064),
     ("Window", 464),
     ("Tools", 1448),
     ("Published", 808),
     ("AppState", 248),
+    ("Sleeper", 608),
+    ("OnDisk", 16),
+    ("Keeper", 40),
 ];
 
 /// Failure: a move widens what other code can reach of the app's state: a part's field made `pub`, a part given `Default` or `Clone` so it can be built
@@ -67,6 +78,8 @@ fn what_the_apps_state_lets_other_code_reach_is_listed() {
         "Prompts",
         "Published",
         "AppState",
+        "OnDisk",
+        "Keeper",
     ];
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     // The core's files, and the prompts' own, whose type the tools hand to the bridge.
@@ -118,7 +131,7 @@ Inner.pub updates: Arc<recto_update::updater::Updater>
 Inner.pub window: Window
 Inner.pub(crate) keys: Arc<recto_reader::engine::Keyring>
 Inner.pub(crate) listener: Arc<dyn crate::Listener>
-Inner.pub(crate) sleeper: sleeper::Sleeper
+Inner.pub(crate) on_disk: sleeper::OnDisk
 Inner::pub fn act(self: &Arc<Self>, action: UiAction) -> Acted
 Inner::pub fn bar_now(&self) -> Vec<crate::menus::MenuModel>
 Inner::pub fn begin_restore(self: &Arc<Self>)
@@ -128,12 +141,10 @@ Inner::pub fn close_answered(self: &Arc<Self>, tab: u32, choice: CloseChoice) ->
 Inner::pub fn close_prompt(&self) -> ClosePrompt
 Inner::pub fn dismiss_selection_notice(&self)
 Inner::pub fn gather_record(&self) -> (SessionRecord, PlaceDelta)
-Inner::pub fn go_dormant(&self, tabs: &[TabId], why: Why) -> usize
 Inner::pub fn hand_off(&self, limit: Duration) -> Result<HandOffReport, HandOffError>
 Inner::pub fn hand_off_cancelled(&self)
 Inner::pub fn hand_off_check(&self) -> HandOffCheck
 Inner::pub fn hand_off_quit_now(&self) -> bool
-Inner::pub fn memory_pressure(&self, critical: bool)
 Inner::pub fn menu_item_enabled(&self, id: String) -> bool
 Inner::pub fn note_input(&self)
 Inner::pub fn notice_read(&self)
@@ -163,7 +174,16 @@ Inner::pub fn window_opened(&self)
 Inner::pub fn window_replaced(&self)
 Inner::pub(crate) fn carry_out_quit(self: &Arc<Self>, out: Option<Out>)
 Inner::pub(crate) fn carry_out_quit_answer(&self, out: Out)
-Inner::pub(super) fn starts_sleep_writer(&self) -> StartsWriter<'_>
+Keeper (pub struct)
+Keeper::pub(crate) fn asks(self: &Arc<Self>) -> KeepsRecord<'_>
+Keeper::pub(crate) fn may_write(self: &Arc<Self>) -> bool
+Keeper::pub(super) fn begin_restore(self: &Arc<Self>)
+Keeper::pub(super) fn desk(self: &Arc<Self>) -> Desk<'_>
+Keeper::pub(super) fn new(store: Arc<RecordStore>, life: Arc<Lifecycle>, host: Arc<AppHost>, core: Arc<CoreQueue>, updates: Arc<recto_update::updater::Updater>) -> Arc<Self>
+Keeper::pub(super) fn refused(self: &Arc<Self>) -> Option<StoreError>
+Keeper::pub(super) fn session(&self) -> &recto_control::host::SessionHost<recto_agent::DrawableLoader>
+Keeper::pub(super) fn store(&self) -> &Arc<RecordStore>
+Keeper::pub(super) fn try_the_lock(self: &Arc<Self>, verdict: std::sync::mpsc::Sender<Verdict>, heard: &std::sync::mpsc::Receiver<Verdict>)
 LaunchFacts (pub struct)
 LaunchFacts::pub fn first_frame_shown(&self, updates: &recto_update::updater::Updater)
 LaunchFacts::pub fn note(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String)
@@ -213,6 +233,12 @@ Lifecycle::pub(super) fn keeping_due(&self) -> Option<Duration>
 Lifecycle::pub(super) fn life(&self) -> crate::lifecycle::Life
 Lifecycle::pub(super) fn step_keeping(&self, event: crate::lifecycle::keeping::Event, to: &mut super::keeping::Carrier<'_>)
 Lifecycle::pub(super) fn tried(&self, got: bool, busy: impl FnOnce() -> bool, to: &mut super::keeping::Carrier<'_>)
+OnDisk (pub struct)
+OnDisk::pub(crate) fn downgrade(&self) -> LetGo
+OnDisk::pub(crate) fn keeper(&self) -> &Arc<Keeper>
+OnDisk::pub(crate) fn sleeper(&self) -> &Arc<Sleeper>
+OnDisk::pub(super) fn new(keeper: Arc<Keeper>, sleeper: Arc<Sleeper>) -> Self
+OnDisk::pub(super) fn starts_writer(&self) -> StartsWriter<'_>
 Printing (pub struct, derives Default)
 Printing::pub fn busy(&self) -> bool
 Printing::pub fn cancel(&self)

@@ -108,7 +108,7 @@ pub fn apply_restored(
         Loaded::Nothing if first_time => migrate_older_settings(inner),
         _ => {}
     }
-    let (say_notice, remake) = keeping::Desk::of(inner).taken_in(&inner.window, other_instance, first_time, reads);
+    let (say_notice, remake) = inner.on_disk.keeper().desk().taken_in(&inner.window, other_instance, first_time, reads);
     if !say_notice {
         notice = None;
     }
@@ -285,12 +285,19 @@ pub fn session_thread(inner: &Arc<Inner>) {
     let mut deferred: Vec<CoreCall> = Vec::new();
     // What a held person's command runs by when it's let go: on a thread of its own, as `person::submit` sends it.
     let submit = |command| person::submit(inner, command);
+    // What a tab's going dormant reaches beyond the sleeper, for the run: borrowed from the app, which outlives this thread's loop.
+    let going_dormant = sleeper::GoingDormant::new(
+        sleeper::OnHand::new(&inner.host.session, &inner.panes, &inner.engine),
+        &inner.on_disk,
+        &inner.saver,
+        &inner.core.frozen,
+    );
     loop {
         // Parked for the queue and the state's one deadline, and nothing else.
         let Some(call) = inner.core.next_or_due(|| {
             [
                 inner.saver.wait_for_due(),
-                inner.sleeper.wait_for_due(),
+                inner.on_disk.sleeper().wait_for_due(),
                 inner.life.due(),
                 inner.life.keeping_due(),
             ]
@@ -305,17 +312,18 @@ pub fn session_thread(inner: &Arc<Inner>) {
             if inner.life.due().is_some_and(|wait| wait.is_zero()) {
                 restore_patience_over(inner);
             }
-            keeping::Desk::of(inner).when_due(&inner.window, &reads);
+            inner.on_disk.keeper().desk().when_due(&inner.window, &reads);
             release_held(&inner.life, &inner.core, &mut deferred, submit);
             if inner.saver.wait_for_due().is_some_and(|wait| wait.is_zero()) {
                 inner.saver.spawn_writer();
             }
-            if inner.sleeper.wait_for_due().is_some_and(|wait| wait.is_zero())
+            if inner.on_disk.sleeper().wait_for_due().is_some_and(|wait| wait.is_zero())
                 && let Some(due) = inner
-                    .sleeper
+                    .on_disk
+                    .sleeper()
                     .dormancy_due(&inner.host.session, inner.life.reads_running() > 0 || inner.core.frozen.load(Ordering::SeqCst))
             {
-                inner.go_dormant(&due, sleeper::Why::LeftAlone);
+                inner.on_disk.sleeper().go_dormant(&going_dormant, &due, sleeper::Why::LeftAlone);
                 // With what's gone, the page view lets go of it too, and the next deadline's worked out.
                 inner.core.push(CoreCall::Reconcile);
             }
@@ -341,7 +349,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             }
             // A late try's saved session: taken in as the state is at a launch, while it's still restoring, and dropped after its patience.
             CoreCall::LateRead(read) => {
-                let Some(loaded) = keeping::Desk::of(inner).late_read(read) else {
+                let Some(loaded) = inner.on_disk.keeper().desk().late_read(read) else {
                     release_held(&inner.life, &inner.core, &mut deferred, submit);
                     after_call(inner, &mut synced, &mut reads, events);
                     continue;
@@ -359,17 +367,17 @@ pub fn session_thread(inner: &Arc<Inner>) {
                 }
             }
             CoreCall::SleepTabs(tabs, why) => {
-                inner.go_dormant(&tabs, why);
+                inner.on_disk.sleeper().go_dormant(&going_dormant, &tabs, why);
             }
-            CoreCall::MemoryPressure(critical) => inner.memory_pressure(critical),
+            CoreCall::MemoryPressure(critical) => inner.on_disk.sleeper().memory_pressure(&going_dormant, critical),
             CoreCall::WokenFileIsOther(id, status, against) => woken_file_is_other(inner, &mut reads, id, status, against),
-            CoreCall::LookAgain(id) => inner.sleeper.check_woken_file(&inner.host.session, &inner.core, id),
+            CoreCall::LookAgain(id) => inner.on_disk.sleeper().check_woken_file(&inner.host.session, &inner.core, id),
             CoreCall::FileLength(id, pages, version) => file_length(inner, &mut reads, id, pages, version),
             CoreCall::Events(list) => events.extend(list),
             CoreCall::GeneratedFinished => generated_contents::look_again(inner),
             CoreCall::GeneratedView(id, view, version) => host.session.with_session(|session| session.set_generated_view_for(id, view, version)),
             CoreCall::Find(call) => find::act(inner, call, &mut events),
-            CoreCall::TryBack(back) => keeping::Desk::of(inner).try_back(&inner.window, &reads, back),
+            CoreCall::TryBack(back) => inner.on_disk.keeper().desk().try_back(&inner.window, &reads, back),
             CoreCall::Run(run) => {
                 let _ = person::run(inner, &mut reads, *run, &mut events);
             }
@@ -395,7 +403,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
 
 /// **What every call on the session thread ends with,** the state's coming in too (review 1: it went on without the events it made being announced, or a flush that waited on a read being told it was done): generated contents and Find kept up with the session, the host's view made from it, flushes with nothing left to read let go, and what happened announced.
 pub fn after_call(inner: &Arc<Inner>, synced: &mut Synced, reads: &mut FileReads, mut events: Vec<Event>) {
-    keeping::Desk::of(inner).look_after_call(&inner.window, reads);
+    inner.on_disk.keeper().desk().look_after_call(&inner.window, reads);
     generated_contents::look_if_chosen(inner);
     find::keep_up(inner);
     reconcile(inner, synced, &mut events);

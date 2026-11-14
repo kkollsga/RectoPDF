@@ -106,7 +106,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &menu_rows::Asked<'_>) -> Option<me
 /// `CoreCall::LookAtShown`, on the session thread.
 pub fn look_at_shown(inner: &Arc<Inner>) {
     for id in inner.host.session.with_session(|session| session.panes()) {
-        inner.sleeper.check_woken_file(&inner.host.session, &inner.core, id);
+        inner.on_disk.sleeper().check_woken_file(&inner.host.session, &inner.core, id);
     }
 }
 

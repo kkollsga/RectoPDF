@@ -13,15 +13,9 @@ impl Inner {
     }
 
     /// Reads the state, on a thread of its own, and hears `restore_ready` when it's applied. It's what the window waits for, up to `restore_patience_seconds`: its frame and the place on it come from what's read.
+    /// The record's keeper reads it ([`keeper::Keeper::begin_restore`]); the bridge's entry point.
     pub fn begin_restore(self: &Arc<Self>) {
-        let inner = Arc::clone(self);
-        let spawned = std::thread::Builder::new()
-            .name("recto-restore".into())
-            .stack_size(1024 * 1024)
-            .spawn(move || read_state(&inner));
-        if spawned.is_err() {
-            self.core.push(CoreCall::Restored(Box::new(Loaded::Nothing)));
-        }
+        self.on_disk.keeper().begin_restore();
     }
 
     /// The state hasn't been read in time, or a restored tab's file isn't answering. What's on the screen goes on without it.
@@ -96,35 +90,4 @@ impl Inner {
             Some(crate::lifecycle::Out::Keeping(_)) => {}
         }
     }
-}
-
-/// **The state read and handed to the session thread,** on a thread that can wait: at the launch ([`Inner::begin_restore`]), and once a late try has got the
-/// record's lock ([`super::keeping`]), the one way the state is read for a launch. **The lock is asked for once:** one wait of the store's patience, whose
-/// answer the updater is told ([`updates::LaunchFacts::hold_or_tell`]) and the read goes by, so a lock that comes after the wait can't be got by the read with the updater
-/// still held back (the review's blocker of 2026-11-13); it's the late try's to take. The updater's told of a copy that keeps the record before anything's read,
-/// so a version that keeps failing goes back here and not by reading on.
-pub(super) fn read_state(inner: &Arc<Inner>) {
-    let loaded = read(inner);
-    inner.core.push(CoreCall::Restored(Box::new(loaded)));
-}
-
-/// The launch's state, read as [`read_state`] says. A late try's read is its own ([`super::keeping`]): it tells the updater after it reads, once it has claimed
-/// the record, so a read that runs past its patience is a second copy's.
-pub(super) fn read(inner: &Arc<Inner>) -> Loaded {
-    let misreads = inner.life.update_facts.misreads();
-    let keeps = inner.saver.store.wait_for_lock();
-    if inner.life.update_facts.hold_or_tell(keeps, &inner.updates) == recto_update::updater::AtLaunch::Exit {
-        std::process::exit(0);
-    }
-    recto_platform::slow::pause(recto_platform::slow::Seam::State);
-    let loaded = if !keeps {
-        Loaded::OtherInstance
-    } else if misreads {
-        Loaded::Nothing
-    } else {
-        inner.saver.store.load()
-    };
-    let loaded = updates::fall_back_if_unreadable(&inner.updates, &inner.saver.store, loaded);
-    updates::note_tabs_read(&loaded);
-    loaded
 }
