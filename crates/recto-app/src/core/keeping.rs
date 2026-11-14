@@ -278,6 +278,22 @@ pub(crate) fn may_write(inner: &Inner) -> bool {
     false
 }
 
+/// **The one question a sleep file's writer asks of the record, and nothing else:** [`may_write`], asked as each write is about to go. The sleeper's writes
+/// take this and not any closure, so none can be made without asking; it's built only by [`asks`].
+pub(crate) struct KeepsRecord<'a>(&'a Inner);
+
+impl KeepsRecord<'_> {
+    /// Whether this copy may write now ([`may_write`]).
+    pub(crate) fn may_write(&self) -> bool {
+        may_write(self.0)
+    }
+}
+
+/// The question, for the sleeper's writes ([`KeepsRecord`]).
+pub(crate) fn asks(inner: &Inner) -> KeepsRecord<'_> {
+    KeepsRecord(inner)
+}
+
 /// **A step of keeping the record, carried out:** every step anyone makes of it but a try's coming back ([`try_back`], which carries out its own with the try's
 /// thread to tell), so the one place keeping settles is where the updater is told of a launch held back. Says what the host is told: the window made again
 /// from a late try's restore, for the caller to tell it once the session thread's call has ended.

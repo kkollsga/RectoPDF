@@ -308,7 +308,10 @@ pub fn session_thread(inner: &Arc<Inner>) {
                 inner.saver.spawn_writer();
             }
             if inner.sleeper.wait_for_due().is_some_and(|wait| wait.is_zero())
-                && let Some(due) = inner.dormancy_due()
+                && let Some(due) = inner.sleeper.dormancy_due(
+                    &inner.host.session,
+                    inner.life.reads_running.load(Ordering::SeqCst) > 0 || inner.core.frozen.load(Ordering::SeqCst),
+                )
             {
                 inner.go_dormant(&due, sleeper::Why::LeftAlone);
                 // With what's gone, the page view lets go of it too, and the next deadline's worked out.
@@ -356,11 +359,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             }
             CoreCall::MemoryPressure(critical) => inner.memory_pressure(critical),
             CoreCall::WokenFileIsOther(id, status, against) => woken_file_is_other(inner, &mut reads, id, status, against),
-            CoreCall::LookAgain(id) => {
-                if let Some(inner) = inner.saver.inner() {
-                    sleeper::check_woken_file(&inner, id);
-                }
-            }
+            CoreCall::LookAgain(id) => inner.sleeper.check_woken_file(&inner.host.session, &inner.core, id),
             CoreCall::FileLength(id, pages, version) => file_length(inner, &mut reads, id, pages, version),
             CoreCall::Events(list) => events.extend(list),
             CoreCall::GeneratedFinished => generated_contents::look_again(inner),

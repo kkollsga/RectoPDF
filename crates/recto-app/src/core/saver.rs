@@ -199,7 +199,7 @@ impl Saver {
             return;
         };
         // Going to the background's hurry of the sleep files' cool-down, carried out here, off the UI thread, with `urgent` taken first.
-        let urgent = take_urgent_then_hurry(&self.urgent, || inner.sleeper.hurry_leaving_if_asked(|| inner.start_sleep_writer()));
+        let urgent = take_urgent_then_hurry(&self.urgent, || inner.sleeper.hurry_leaving_if_asked(inner.starts_sleep_writer()));
         let due = app::pass(self.pending(urgent), now);
         // A copy that doesn't keep the record writes nothing, and that's what it's for, not a failure: the window says it won't be remembered, and not that its
         // state couldn't be saved. Nor does one still trying for the lock, or whose saved session is being read back after a late try: what it would gather is
@@ -307,7 +307,7 @@ impl Saver {
     }
 
     /// **The same, asked for by `asked_by`** (`session save`): an agent's leaves the sleep files' cool-down alone, as a quit's and a hand-off's don't, and what
-    /// came of the tab on screen's sleep file is kept under its ticket ([`Inner::sleep_at_flush`]).
+    /// came of the tab on screen's sleep file is kept under its ticket ([`super::sleeper::Sleeper::sleep_at_flush`]).
     pub fn flush_by(&self, force: bool, limit: Duration, asked_by: Option<crate::sleeper::Asked>) -> Result<FlushReport, StoreError> {
         let Some(inner) = self.inner() else {
             return Err(StoreError {
@@ -381,9 +381,16 @@ impl Saver {
         }
         let verify_us = micros(verified);
         // The tab on screen's sleep file, for the next launch's first frame. Nothing depends on it, so it's no part of what's read back or forced to the drive, and it comes after the state: with sleep files queued for a slow disk, a quit's 5 s ran out waiting here, and it went without the state (slow mode, 2026-11-11). It waits for others being written for what's left of this flush's time, and past that is skipped and counted. If nothing's changed, nothing's written.
-        // Then what's waiting in the cool-down, hurried and waited for within what's left of the time ([`Inner::sleep_at_flush`]).
-        inner.sleeper.hurry_leaving_if_asked(|| inner.start_sleep_writer());
-        inner.sleep_at_flush(asked_by, began + limit);
+        // Then what's waiting in the cool-down, hurried and waited for within what's left of the time ([`super::sleeper::Sleeper::sleep_at_flush`]).
+        inner.sleeper.hurry_leaving_if_asked(inner.starts_sleep_writer());
+        inner.sleeper.sleep_at_flush(
+            &super::sleeper::OnHand::new(&inner.host.session, &inner.panes, &inner.engine),
+            &self.store,
+            &super::keeping::asks(&inner),
+            asked_by,
+            began + limit,
+            inner.starts_sleep_writer(),
+        );
         let (record_bytes, journal_bytes) = self.store.sizes();
         self.last_record_write.store(self.now(), Ordering::SeqCst);
         *lock(&self.last_error) = None;
