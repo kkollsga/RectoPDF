@@ -504,6 +504,10 @@ impl Reader {
         }
     }
 }
-// size: one for each job planned and not yet ended, in flight only (a page view's queue and its workers), never per idle tab. 80 and 72 bytes until
-// 2026-11-14; 88 and 80 with `asked`, the place clock a draw's news is judged by (the second review's S-3). Held so a field added is a deliberate change.
-const _: () = assert!(size_of::<Job>() == 88 && size_of::<JobPlan>() == 80, "a job grew");
+// size: one for each job planned and not yet ended, in flight only (a page view's queue and its workers), never per idle tab. 80 and 72 bytes on a Mac
+// (a 24-byte path) until 2026-11-14; 88 and 80 with `asked`, the place clock a draw's news is judged by (the second review's S-3). Held, past the path's
+// own size, which differs by system, so a field added is a deliberate change.
+const _: () = assert!(
+    size_of::<Job>() == 64 + size_of::<PathBuf>() && size_of::<JobPlan>() == 56 + size_of::<PathBuf>(),
+    "a job grew"
+);
