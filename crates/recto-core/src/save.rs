@@ -29,12 +29,11 @@ pub use crate::save_error::SaveError;
 use crate::save_error::{from_append, from_rewrite, refused_on_open};
 use crate::signatures::value_is_signature;
 use lopdf::{
-    AppendDestination, AppendError, AppendOptions, AppendWriter, Dictionary, EncodedStreamReader, FileSource, IndexedReader, IndexedReaderOptions,
-    IndexedSignatureKind, Object, ObjectId, PageMapEntry, RewriteChanges, RewriteError, RewriteOptions, RewritePolicy,
+    AppendDestination, AppendError, AppendOptions, AppendWriter, Dictionary, FileSource, IndexedReader, IndexedReaderOptions, IndexedSignatureKind, Object,
+    ObjectId, PageMapEntry, RewriteChanges, RewriteError, RewriteOptions, RewritePolicy,
 };
 use recto_platform::FileStamp;
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -135,9 +134,11 @@ mod in_memory;
 pub use annotate::{GoneHighlight, HIGHLIGHT_RGB, MAX_EDGE, MAX_GONE, MAX_RECTS, MarksWritten, NewHighlight, RECT_SLACK};
 pub use in_memory::{highlights_in_memory, plan_in_memory, plan_in_memory_within, rewrite_in_memory, signatures_and_keep_in_memory};
 mod copying;
+mod streams;
 pub use crate::signatures::{SignatureFacts, persons_signature, signature_facts, signature_facts_of};
 use catalog::{catalog_additions, update_catalog};
 use copying::*;
+use streams::{EncodedRead, LazyStream};
 
 pub(crate) fn catalog(reader: &IndexedReader) -> Option<Dictionary> {
     match reader.trailer_entry_owned(b"Root").ok()?? {
@@ -366,7 +367,7 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
             Target::NewFile(_) | Target::Replace(_) => recto_platform::local::carry_origin(&original, written),
         };
         attributes_missed.set(!matches!(carried, Ok(0)));
-        check_pages(written, &expected.borrow())?;
+        plan.check_written(written, &expected.borrow(), (&reader, &map, request.pages, writer))?;
         let stamp = recto_platform::file_stamp(written)?;
         prepared_stamp = Some(stamp);
         let mut hooks = hooks_cell.borrow_mut();
@@ -1386,52 +1387,27 @@ fn held_size(object: &Object, depth: usize) -> u64 {
     }
 }
 
-/// A copied stream's stored bytes, opened at the first read.
-struct LazyStream<'c> {
-    source: &'c IndexedReader,
-    id: ObjectId,
-    open: Option<EncodedRead>,
-}
-
-impl Read for LazyStream<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.open.is_none() {
-            let descriptor = self
-                .source
-                .resolve_stream_descriptor(self.id)
-                .map_err(|_| std::io::Error::other("a stream's bytes couldn't be read"))?;
-            self.open = Some(EncodedRead(
-                descriptor
-                    .open_plain_encoded()
-                    .map_err(|_| std::io::Error::other("a stream's bytes couldn't be read"))?,
-            ));
+impl Plan {
+    /// **Reads the written file back, page by page, before anything's moved:** the pages are the objects written, in that order. After a rewrite, where
+    /// its highlights went and what left the file's lists is read from it too (`annotate`'s read-back), as the rewrite takes out more than the plan
+    /// did. A failure here is `InvalidData`, which the save reports as a failed check.
+    fn check_written(
+        &self,
+        written: &Path,
+        expected: &[ObjectId],
+        (original, map, pages, writer): (&IndexedReader, &lopdf::PageMap, &[PageRef], Writer),
+    ) -> std::io::Result<()> {
+        let bad = |what: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, what.to_string());
+        let reader = open_for_save(written).map_err(|_| bad("doesn't open"))?;
+        let written_map = reader.page_map().map_err(|_| bad("no page tree"))?;
+        if written_map.len() != expected.len() || written_map.iter().zip(expected).any(|(entry, id)| entry.id() != *id) {
+            return Err(bad("pages out of place"));
         }
-        let read = self.open.as_mut().map_or(Ok(0), |open| open.read(buf))?;
-        if read == 0 {
-            self.open = None;
+        if writer == Writer::Rewrite {
+            self.highlights.read_back((original, map, pages), (&reader, expected)).map_err(bad)?;
         }
-        Ok(read)
+        Ok(())
     }
-}
-
-/// A stream's stored bytes, read as they are, a piece at a time.
-struct EncodedRead(EncodedStreamReader);
-
-impl Read for EncodedRead {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.0.read_chunk(buf).map_err(|_| std::io::Error::other("a stream's bytes couldn't be read"))
-    }
-}
-
-/// **Reads the written file back, page by page, before anything's moved:** the pages are the objects written, in that order. A failure here is `InvalidData`, which the save reports as a failed check.
-fn check_pages(written: &Path, expected: &[ObjectId]) -> std::io::Result<()> {
-    let bad = |what: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, what.to_string());
-    let reader = open_for_save(written).map_err(|_| bad("doesn't open"))?;
-    let map = reader.page_map().map_err(|_| bad("no page tree"))?;
-    if map.len() != expected.len() || map.iter().zip(expected).any(|(entry, id)| entry.id() != *id) {
-        return Err(bad("pages out of place"));
-    }
-    Ok(())
 }
 
 /// **The one backup of an original, made before its first save over itself** (owner, 2026-11-08). An APFS clone where it can be, which costs no space until the original's blocks are gone, or else a copy, synced. Named for the file's real path, so a later save of the same file finds it and makes none: it's the original, not the last version. Says where it went, or `None` if there already was one.

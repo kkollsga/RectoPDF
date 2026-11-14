@@ -15,7 +15,7 @@
 use super::{Dictionary, IndexedReader, Object, ObjectId, PageRef, SaveError, Sink};
 use crate::nav::Frame;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// The highlight's colour, `0xRRGGBB`: the one place it's said (coordinator's default, Q1, 2026-11-14: Preview's yellow), for the file and the screen.
 pub const HIGHLIGHT_RGB: u32 = 0xFF_E1_4D;
@@ -81,6 +81,8 @@ pub(super) struct Highlights {
     structural: Vec<ObjectId>,
     /// What's been written, as the plan writes it.
     written: RefCell<MarksWritten>,
+    /// Each of the request's highlights' annotation, by its place in the request, once written: what a read-back finds it by.
+    made: RefCell<Vec<ObjectId>>,
 }
 
 impl Highlights {
@@ -99,6 +101,7 @@ impl Highlights {
             other => other,
         })?;
         out.written.borrow_mut().placed = vec![(u32::MAX, [0.0; 4]); request.highlights.len()];
+        out.made = RefCell::new(vec![(0, 0); request.highlights.len()]);
         Ok(out)
     }
 
@@ -183,14 +186,107 @@ impl Highlights {
             ap.set("N", Object::Reference(appearance));
             annotation.set("AP", Object::Dictionary(ap));
             let index = u32::try_from(annots.len()).map_err(|_| SaveError::TooLarge)?;
-            annots.push(Object::Reference(writer.add(Object::Dictionary(annotation))?));
+            let id = writer.add(Object::Dictionary(annotation))?;
+            annots.push(Object::Reference(id));
             if let Some(slot) = self.written.borrow_mut().placed.get_mut(*asked) {
                 *slot = (index, rect);
+            }
+            if let Some(slot) = self.made.borrow_mut().get_mut(*asked) {
+                *slot = id;
             }
         }
         page.set("Annots", Object::Array(annots));
         Ok(())
     }
+}
+
+impl Highlights {
+    /// **Where everything went, as the file a rewrite wrote has it** (second review of R4.3, S2). A rewrite takes more out of kept pages' lists
+    /// than this module did (a link to a deleted page, a signature widget on a signed file's copy, a reference to what the file doesn't have), so
+    /// places worked out before it wrote can be wrong. Read back from `written`, whose pages are `ids` by position: each highlight written is found
+    /// by its object, and what left each of the file's own pages' lists is found by walking the list as the file had it against the list written,
+    /// in order (a rewrite only takes items out, and the new highlights come last). A list several pages share is walked once.
+    pub(super) fn read_back(
+        &self,
+        (original, map, pages): (&IndexedReader, &lopdf::PageMap, &[PageRef]),
+        (written, ids): (&IndexedReader, &[ObjectId]),
+    ) -> Result<(), &'static str> {
+        let list_of = |reader: &IndexedReader, id: Option<&ObjectId>| match id.map(|id| reader.resolve_object(*id)) {
+            Some(Ok(Object::Dictionary(page))) => {
+                let shared = page.get(b"Annots").ok().and_then(|list| list.as_reference().ok());
+                (shared, annots_of(reader, &page))
+            }
+            _ => (None, Vec::new()),
+        };
+        let mut work = 0u64;
+        let mut charge = |items: usize| {
+            work = work.saturating_add(1 + items as u64);
+            if work > MAX_READ_BACK { Err("too many annotations to place") } else { Ok(()) }
+        };
+        let mut done = self.written.borrow_mut();
+        let made = self.made.borrow();
+        for (position, asked) in &self.by_position {
+            let (_, list) = list_of(written, ids.get(*position as usize));
+            charge(list.len())?;
+            let places: HashMap<ObjectId, u32> = list
+                .iter()
+                .enumerate()
+                .filter_map(|(at, item)| Some((item.as_reference().ok()?, u32::try_from(at).ok()?)))
+                .collect();
+            for (at, _) in asked {
+                let place = made.get(*at).and_then(|id| places.get(id)).ok_or("a highlight isn't where it was written")?;
+                done.placed.get_mut(*at).ok_or("a highlight isn't where it was written")?.0 = *place;
+            }
+        }
+        let mut walked: HashMap<(ObjectId, ObjectId), Vec<u32>> = HashMap::new();
+        done.removed.clear();
+        for (position, page) in pages.iter().enumerate().filter(|(_, page)| page.source == 0) {
+            let (Ok(position), Some(entry)) = (u32::try_from(position), map.get(page.page as usize)) else {
+                return Err("a page that isn't the file's");
+            };
+            let ((was_shared, was), (now_shared, now)) = (list_of(original, Some(&entry.id())), list_of(written, ids.get(position as usize)));
+            let key = was_shared.zip(now_shared);
+            let gone = match key.and_then(|key| walked.get(&key)) {
+                Some(gone) => gone.clone(),
+                None => {
+                    charge(was.len() + now.len())?;
+                    let gone = left_out(&was, &now);
+                    if let Some(key) = key {
+                        walked.insert(key, gone.clone());
+                    }
+                    gone
+                }
+            };
+            done.removed.extend(gone.into_iter().map(|index| (position, index)));
+        }
+        Ok(())
+    }
+}
+
+/// Most a read-back looks at, in pages and list items: far past any real file's annotations.
+const MAX_READ_BACK: u64 = 64 << 20;
+
+/// The places in `was` of the items `now` doesn't have, `now` being `was` with some taken out and perhaps more after: each item of `was` in turn is
+/// the next of `now`'s, or gone. An item is the same one as an object of its own by its number, and written in place by its kind and `/Rect` (which
+/// a rewrite leaves as they were); anything else by its value.
+fn left_out(was: &[Object], now: &[Object]) -> Vec<u32> {
+    let same = |a: &Object, b: &Object| match (a, b) {
+        (Object::Reference(a), Object::Reference(b)) => a.0 == b.0,
+        (Object::Dictionary(a), Object::Dictionary(b)) => {
+            a.get(b"Subtype").ok() == b.get(b"Subtype").ok() && numbers_of(a.get(b"Rect").ok()) == numbers_of(b.get(b"Rect").ok())
+        }
+        (a, b) => a == b,
+    };
+    let mut next = 0;
+    let mut out = Vec::new();
+    for (at, item) in was.iter().enumerate() {
+        if now.get(next).is_some_and(|kept| same(item, kept)) {
+            next += 1;
+        } else if let Ok(at) = u32::try_from(at) {
+            out.push(at);
+        }
+    }
+    out
 }
 
 /// A rectangle's four numbers, `[left, bottom, right, top]` as the corners come, if it is four finite numbers.

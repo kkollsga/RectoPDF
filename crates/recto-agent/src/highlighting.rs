@@ -644,4 +644,73 @@ mod tests {
         run(&mut session, Command::from(save)).expect("saved");
         assert_eq!(both(&file.0), [0, 0], "drawn on neither page once it's saved out");
     }
+
+    /// **Failure (second review of R4.3, S2): the history names the wrong place for a highlight a rewrite wrote**: the save reported the place it worked
+    /// out before the rewrite took a link to a deleted page out of the same list, so an undo after it hides another place (here past the list's end)
+    /// and the next save refuses it. A contents page whose first link goes to page 5: page 5 deleted, a line highlighted on page 1, Save, undo: the
+    /// place taken out is the highlight's, and the next Save takes out exactly it, the note beside it staying.
+    #[test]
+    fn an_undo_after_a_rewrite_names_the_highlights_place() {
+        let mut objects = vec![
+            recto_testpdf::Object::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+            recto_testpdf::Object::Dict("<< /Type /Pages /Kids [3 0 R 7 0 R 8 0 R 9 0 R 10 0 R] /Count 5 >>".into()),
+            recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [5 0 R 6 0 R] >>".into()),
+            recto_testpdf::Object::Stream {
+                dict: String::new(),
+                data: text_lines(&["Contents of this document"]),
+            },
+            recto_testpdf::Object::Dict("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /Dest [10 0 R /Fit] >>".into()),
+            recto_testpdf::Object::Dict("<< /Type /Annot /Subtype /Text /Rect [500 20 520 40] /Contents (A note) >>".into()),
+        ];
+        objects.extend((0..4).map(|_| recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".into())));
+        let file = TempPdf::new("contents.pdf", &recto_testpdf::build(&objects));
+        let mut session = Session::new(crate::DrawableLoader);
+        let run = |session: &mut Session<crate::DrawableLoader>, command: Command| run_command(session, Level::Full, &command);
+        let open = crate::commands::tabs::Open {
+            path: file.0.clone(),
+            page: None,
+        };
+        run(&mut session, Command::from(open)).unwrap();
+        let highlight = crate::commands::highlight::Highlight {
+            tab: TabRef::default(),
+            page: Some(1),
+            to_page: None,
+            chars: Some("0-7".into()),
+            at: None,
+            to: None,
+            unit: None,
+        };
+        let delete = crate::commands::editing::PageDelete {
+            tab: TabRef::default(),
+            pages: "5".into(),
+        };
+        // The delete first: with no copy kept of the file's pages here, its step rolls off at the save, and the highlight's stays above it.
+        run(&mut session, Command::from(delete)).expect("deleted");
+        run(&mut session, Command::from(highlight)).expect("highlighted");
+        let save = || {
+            Command::from(crate::commands::saving::Save {
+                tab: TabRef::default(),
+                out: None,
+                replace: false,
+            })
+        };
+        run(&mut session, save()).expect("saved");
+        let found = recto_core::highlights::page_highlights(&file.0, 0).unwrap().found;
+        assert_eq!(found.len(), 1, "the highlight is the file's");
+        run(&mut session, Command::from(crate::commands::editing::Undo { tab: TabRef::default() })).expect("undo");
+        let listed = list(&Direct(RefCell::new(&mut session), None), &TabRef::default(), None).unwrap();
+        assert_eq!(
+            listed["removed"][0]["index"].as_u64(),
+            Some(u64::from(found[0].index)),
+            "the place taken out is the highlight's: {listed}"
+        );
+        run(&mut session, save()).expect("saved again");
+        assert!(recto_core::highlights::page_highlights(&file.0, 0).unwrap().found.is_empty());
+        let reader = lopdf::IndexedReader::open(lopdf::FileSource::open(&file.0).unwrap()).unwrap();
+        let map = reader.page_map().unwrap();
+        let lopdf::Object::Dictionary(page) = reader.resolve_object(map.get(0).unwrap().id()).unwrap() else {
+            panic!("page 1")
+        };
+        assert_eq!(page.get(b"Annots").unwrap().as_array().unwrap().len(), 1, "the note stays");
+    }
 }

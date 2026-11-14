@@ -2174,3 +2174,51 @@ fn a_page_or_catalog_dressed_as_an_annotation_is_never_taken_out() {
     let reader = IndexedReader::open(FileSource::open(&path).unwrap()).unwrap();
     assert_eq!(reader.page_map().unwrap().len(), 2, "the catalog and both pages stay");
 }
+
+/// **Failure (second review of R4.3, S2): after a rewrite the save reports places in `/Annots` the written file doesn't have**: it says where things
+/// went before lopdf writes, and the rewrite then takes more out of kept pages' lists (here a link on page 1 to page 3, which this save deletes). So
+/// the history names the wrong place, and a later undo hides another annotation, or the next save refuses. Each place reported holds, in the file
+/// written, a `/Highlight` with the `/Rect` reported; and what the save says left page 1's list is what did.
+#[test]
+fn a_rewrite_reports_the_places_the_written_file_has() {
+    let dir = Dir::new();
+    let bytes = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R 6 0 R 7 0 R] /Count 3 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [5 0 R 8 0 R] >>".into()),
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["Contents"]),
+        },
+        Raw::Dict("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /Dest [7 0 R /Fit] >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Highlight /Rect [50 600 150 612] >>".into()),
+    ]);
+    let path = dir.write("contents.pdf", &bytes);
+    let order = own(&[(0, 0), (1, 0)]);
+    let line = [[40.0, 100.0, 100.0, 12.0]];
+    let highlights = [save::NewHighlight { position: 0, rects: &line }];
+    let asked = SaveRequest {
+        highlights: &highlights,
+        ..request(&path, 3, &order, &[])
+    };
+    let outcome = save::save(&asked, Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!(outcome.writer, Writer::Rewrite);
+    let left = annotations_of(&path, 0);
+    assert_eq!(
+        left.iter().map(|(kind, ..)| kind.as_slice()).collect::<Vec<_>>(),
+        vec![&b"Highlight"[..], b"Highlight"],
+        "the link to the deleted page went"
+    );
+    let (index, rect) = outcome.marks.placed[0];
+    let (kind, quad, _) = &left[index as usize];
+    assert_eq!(kind, b"Highlight");
+    let bounds = |pick: fn(f32, f32) -> f32, from: usize| quad.iter().skip(from).step_by(2).copied().reduce(pick).unwrap();
+    assert_eq!(
+        [bounds(f32::min, 0), bounds(f32::min, 1), bounds(f32::max, 0), bounds(f32::max, 1)],
+        rect,
+        "the place reported holds the highlight written, at its /Rect"
+    );
+    assert_eq!(outcome.marks.removed, vec![(0, 0)], "the link, by its place as it was");
+}
