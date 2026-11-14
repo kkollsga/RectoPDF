@@ -329,6 +329,12 @@ impl CoreQueue {
         self.ready.notify_one();
     }
 
+    /// Waits on the session thread's parks begun, for a test to know a wait on it is waiting, in a test build.
+    #[cfg(test)]
+    pub(crate) fn park_waits(&self) -> usize {
+        self.park_waits.load(Ordering::SeqCst)
+    }
+
     /// How many times a `Reconcile` has been pushed, each counted, in a test build.
     #[cfg(test)]
     pub(crate) fn reconciles_asked(&self) -> usize {

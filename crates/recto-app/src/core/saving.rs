@@ -96,16 +96,20 @@ pub fn start_save(inner: &Arc<super::Inner>, tab: TabId, out: Option<std::path::
             let inner = Arc::clone(&inner);
             move || {
                 let here = crate::queue::lane::hold_here(Some(turn));
+                #[cfg(test)]
+                inner.core.holds.at("save_starting");
                 run_save(&inner, tab, out, close_after, answered);
                 drop(here);
                 inner.tools.save_ui().step.store(0, Ordering::SeqCst);
                 inner.core.push(super::CoreCall::Reconcile);
                 // Counted running until what it came to is queued, as the app's settled goes by the count ([`crate::settled`]).
                 inner.tools.save_ui().running.fetch_sub(1, Ordering::SeqCst);
+                super::running::ended(&inner.core);
             }
         });
         if spawned.is_err() {
             inner.tools.save_ui().running.fetch_sub(1, Ordering::SeqCst);
+            super::running::ended(&inner.core);
             inner.tools.save_ui().set_problem(Some(app::not_started()));
             inner.core.push(super::CoreCall::Reconcile);
         }

@@ -160,7 +160,6 @@ impl Running {
 /// for what's running to land ([`super::quitting`]), as the session thread parks again once nudged.
 pub(super) struct Counted {
     counted: Option<super::life::PersonRunning>,
-    life: Arc<super::Lifecycle>,
     core: Arc<crate::queue::CoreQueue>,
 }
 
@@ -168,7 +167,6 @@ impl Counted {
     pub(super) fn new(life: &Arc<super::Lifecycle>, core: &Arc<crate::queue::CoreQueue>) -> Self {
         Self {
             counted: Some(life.person_running()),
-            life: Arc::clone(life),
             core: Arc::clone(core),
         }
     }
@@ -177,9 +175,7 @@ impl Counted {
 impl Drop for Counted {
     fn drop(&mut self) {
         drop(self.counted.take());
-        if self.life.persons_running() == 0 {
-            self.core.nudge();
-        }
+        super::running::ended(&self.core);
     }
 }
 

@@ -120,7 +120,7 @@ fn tabs_just_opened_come_back_when_their_sleep_files_are_late() {
     drop(app.quit());
 }
 
-/// Failure (final review N4): a quit during a read that's stuck wrote nothing at all, as what's right for a hand-off isn't for a quit: there the update waits,
+/// Failure (final review N4): a quit during a read that's stuck wrote nothing at all (or waited for it for good), as what's right for a hand-off isn't for a quit: there the update waits,
 /// but here the app's going anyway, and the reader's place came back as page 1. A file's read held back, the reader moved meanwhile, a quit: the next launch is
 /// at the place. (Replaces the app test `a_quit_during_a_stuck_read_still_writes`: nothing of it was the window's.)
 #[test]
@@ -134,7 +134,20 @@ fn a_quit_during_a_stuck_read_still_writes() {
     });
     app.wait_until("the other file's read to be under way", || app.core().life.reads_running() > 0);
     app.recto(recto_agent::Level::Full, &["goto", "12"]).expect("goto");
-    let answer = app.ask_to_quit();
+    // A file's read is waited for, as what the open does is in the record, within the quit's patience (review of the lane, D6): past it, it writes.
+    app.core().quit_requested();
+    app.wait_until("the quit's answer, past its patience for the stuck read", || {
+        app.advance(crate::listener::QUIT_PATIENCE_MS);
+        quit_answers(&app) > 0
+    });
+    let answer = app
+        .heard()
+        .into_iter()
+        .find_map(|heard| match heard {
+            crate::testkit::Heard::QuitAnswer(answer) => Some(answer),
+            _ => None,
+        })
+        .expect("an answer");
     assert!(answer.go, "{answer:?}");
     // The real app's process ends with the read still stuck; here the read is let go so the core can end, with the quit already written and the app frozen.
     app.core().qa_session_verb("hold_reads", "off").expect("a QA verb").expect("reads let go");
@@ -312,4 +325,63 @@ fn an_agents_edit_landing_after_the_quit_is_asked_comes_back() {
     app.settle();
     assert_eq!(highlights(&app), 1, "the agent's highlight is back");
     drop(app.quit());
+}
+
+/// Whether the quit has decided: answered, or waiting for what's running (a wait on the session thread's next park begun since `waits`).
+fn quit_decided(app: &HeadlessApp, waits: usize) -> bool {
+    quit_answers(app) > 0 || app.core().core.park_waits() > waits
+}
+
+/// **Failure (review of the lane, D6): ⌘S then ⌘Q at once slipped through the quit's wait,** between the Save's count as the person's (dropped as its
+/// thread was started) and its count as a command (taken as its thread reaches the host): the quit saw nothing running and wrote the record under the
+/// save. What's running is one definition, the window's saves in it: the quit waits for the save, held as its thread starts, and answers once it's done.
+#[test]
+fn a_quit_asked_as_a_save_starts_waits_for_it() {
+    let disk = Disk::new();
+    let doc = disk.pdf("a.pdf", 2);
+    let app = disk.start();
+    app.open(&doc);
+    app.act(crate::core::controls::UiAction::Menu { id: "rotate.right".into() });
+    app.settle();
+    let (held, go) = app.hold_next("save_starting");
+    app.act(crate::core::controls::UiAction::Menu { id: "file.save".into() });
+    held.recv_timeout(crate::testkit::headless::WAIT_LIMIT)
+        .expect("the save held as its thread starts");
+    let waits = app.core().core.park_waits();
+    app.core().quit_requested();
+    app.wait_until("the quit to answer or wait", || quit_decided(&app, waits));
+    assert_eq!(quit_answers(&app), 0, "the quit waits for the save");
+    drop(go);
+    app.wait_until("the quit's answer", || quit_answers(&app) > 0);
+    let disk = app.quit_anyway();
+    let app = disk.start();
+    app.settle();
+    assert!(!app.reader().edited, "saved, and the record written after it");
+    drop(app.quit());
+}
+
+/// **Failure (review of the lane, D7): an agent's read in flight held the quit,** as every command through the host was waited for: a text or a render
+/// on a slow file kept the person's quit waiting out its patience. A quit waits only for what can change what it writes: with an agent's read held, it
+/// answers at once, on the kit's clock unmoved.
+#[test]
+fn an_agents_read_in_flight_doesnt_hold_a_quit() {
+    let disk = Disk::new();
+    let doc = disk.pdf("a.pdf", 2);
+    let app = disk.start();
+    app.open(&doc);
+    let (held, go) = app.hold_next("text");
+    std::thread::scope(|scope| {
+        let agent = std::thread::Builder::new()
+            .name("recto-test-agent".into())
+            .spawn_scoped(scope, || app.agent(recto_agent::Level::ReadOnly, r#"{"cmd":"text","tab":"active","page":1}"#))
+            .expect("the agent's thread");
+        held.recv_timeout(crate::testkit::headless::WAIT_LIMIT).expect("the agent's read held");
+        let waits = app.core().core.park_waits();
+        app.core().quit_requested();
+        app.wait_until("the quit to answer or wait", || quit_decided(&app, waits));
+        assert_eq!(quit_answers(&app), 1, "answered with the agent's read still held");
+        drop(go);
+        let _ = agent.join().expect("the agent's thread");
+    });
+    drop(app.quit_anyway());
 }

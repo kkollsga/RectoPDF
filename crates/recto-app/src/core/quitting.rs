@@ -60,8 +60,8 @@ impl Inner {
         }
     }
 
-    /// Everything written, on the quit's own thread, with a flush on another so a disk that doesn't answer can't hold the answer past [`QUIT_PATIENCE`]; then
-    /// what that came to, stepped.
+    /// Everything written, on the quit's own thread, once what can change it has landed, with a flush on another so a disk that doesn't answer can't hold
+    /// the answer: the wait and the write within [`QUIT_PATIENCE`] together. Then what that came to, stepped.
     fn write_for_quit(self: &Arc<Self>) {
         let inner = Arc::clone(self);
         let refused = cfg!(any(test, feature = "testkit")) && QUIT_THREAD_REFUSED.load(std::sync::atomic::Ordering::SeqCst);
@@ -73,29 +73,37 @@ impl Inner {
         }
         .and_then(|builder| {
             builder.spawn(move || {
-                // What's running as the quit is asked, the person's commands (their edits waiting their turn among them) and agents', lands first, so
-                // what it does is in the record: at most the patience on the app's clock, woken as the last of them ends (the session thread parks
-                // again once nudged). Past it, the record's written without what's still running, as it always was, and that is lost.
-                let until = inner.life.now_ms().saturating_add(crate::listener::QUIT_PATIENCE_MS);
+                // One deadline for the wait and the write together (review of the lane, D7), on the app's clock: what can change what the quit writes
+                // lands first, the person's commands (their edits parked in the lane among them), their saves, a file being read for a command, and
+                // commands that change something, so what it does is in the record; woken as each ends (the session thread parks again once nudged).
+                // An agent's read isn't waited for. Past the wait's part, what's still parked is dropped together, and the record's written without
+                // what's still running, as it always was, and that is lost.
+                let wait_until = inner.life.now_ms().saturating_add(crate::listener::QUIT_PATIENCE_MS.saturating_sub(FLUSH_MS));
                 loop {
                     let parks = inner.core.parks();
-                    if inner.life.persons_running() == 0 && inner.host.running.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                    if !super::running::Running::now(&inner).changes_what_a_quit_writes() {
                         break;
                     }
-                    let left = until.saturating_sub(inner.life.now_ms());
+                    let left = wait_until.saturating_sub(inner.life.now_ms());
                     if left == 0 {
-                        // What's still parked goes together, so no later edit of the person's is had without an earlier one (review of the lane, D4).
+                        // So no later edit of the person's is had without an earlier one (review of the lane, D4).
                         inner.core.lane().drop_parked();
+                        break;
+                    }
+                    // A session thread that has ended parks no more: waiting for it would spin.
+                    if inner.core.has_ended() {
                         break;
                     }
                     inner.core.wait_next_park(parks, Duration::from_millis(left));
                 }
+                // The write has the rest: the patience's last part, so the two together are the patience.
+                let rest = Duration::from_millis(FLUSH_MS);
                 let (sender, receiver) = std::sync::mpsc::channel();
                 let flushing = Arc::clone(&inner);
                 let _ = std::thread::Builder::new().name("recto-flush".into()).stack_size(512 * 1024).spawn(move || {
-                    let _ = sender.send(flushing.saver.flush(false, Duration::from_secs(2)));
+                    let _ = sender.send(flushing.saver.flush(false, rest));
                 });
-                let outcome = receiver.recv_timeout(QUIT_PATIENCE);
+                let outcome = receiver.recv_timeout(rest);
                 let written = matches!(outcome, Ok(Ok(_))) || !inner.saver.store.holds_the_record();
                 let unsaved_tabs = inner.host.session.unsaved_tabs().len();
                 let out = inner.life.step(Event::QuitWritten { written, unsaved_tabs });
@@ -114,6 +122,10 @@ impl Inner {
         }
     }
 }
+
+/// The part of the quit's patience kept for writing what it writes, after its wait for what's running, which has the rest: the flush's own limit, as it
+/// was before the quit waited (review of the lane, D7: the wait and the write were 5 s and then 5 s more).
+const FLUSH_MS: u64 = 2_000;
 
 /// A test's way to have the quit's thread not start, as a system out of threads would refuse it. Read only in a test's build.
 pub(crate) static QUIT_THREAD_REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

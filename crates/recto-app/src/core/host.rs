@@ -18,6 +18,8 @@ pub struct AppHost {
     pub saver: Arc<Saver>,
     /// Commands running now, which an update waits for. Not the ones that only ask about the state.
     pub running: AtomicU32,
+    /// Those of them anything of which can be in what a quit writes, which a quit waits for ([`super::command_kinds::changes`]).
+    pub changing: AtomicU32,
     /// An update is under way, past the last look: what's written is what comes back, so nothing more is done.
     pub handing_off: AtomicBool,
     /// What a read of the record told the reader, while they've not moved on.
@@ -42,10 +44,14 @@ impl AppHost {
             );
         }
         // Counted first, and then looked: a hand-off that's set this flag and sees no count can't have this one slip past both looks. Past the last look, a change would be lost: what's been written is what comes back.
+        let changes = !asks_only && super::command_kinds::changes(command);
         if !asks_only {
             self.running.fetch_add(1, Ordering::SeqCst);
+            if changes {
+                self.changing.fetch_add(1, Ordering::SeqCst);
+            }
             if self.handing_off.load(Ordering::SeqCst) && origin.held_back_by_a_freeze() {
-                self.command_ended();
+                self.command_ended(changes);
                 return Err(
                     AgentError::new(Code::BUSY, "The app is being updated, so this wasn't done.", recto_agent::exit::BUSY)
                         .then("Try again in a moment, when it's back."),
@@ -56,7 +62,7 @@ impl AppHost {
         self.core.holds.at(command.tag());
         let result = self.run_counted(actor, command, events);
         if !asks_only {
-            self.command_ended();
+            self.command_ended(changes);
         }
         result
     }
@@ -132,12 +138,14 @@ impl Host for AppHost {
 }
 
 impl AppHost {
-    /// **A command counted in [`Self::running`] has ended:** the last one wakes a quit waiting for it to land ([`super::quitting`]), as the session thread
-    /// parks again once nudged.
-    pub fn command_ended(&self) {
-        if self.running.fetch_sub(1, Ordering::SeqCst) == 1 {
-            self.core.nudge();
+    /// **A command counted in [`Self::running`] has ended,** and in [`Self::changing`] if it `changes`: said to what waits for what's running
+    /// ([`super::running::ended`]).
+    pub fn command_ended(&self, changes: bool) {
+        self.running.fetch_sub(1, Ordering::SeqCst);
+        if changes {
+            self.changing.fetch_sub(1, Ordering::SeqCst);
         }
+        super::running::ended(&self.core);
     }
 
     /// Where a command goes, by its declared route: the app's own to [`Self::run_app`], the rest to the session.
