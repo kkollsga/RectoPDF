@@ -63,7 +63,7 @@ pub(crate) const ROWS_LINKS: &[Spec] = &[Spec {
 }];
 
 /// A jump to a page, by its number or by what the file calls it. Back comes here again.
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+#[derive(Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Goto {
     #[serde(default)]
@@ -76,6 +76,30 @@ pub struct Goto {
     /// it. Past either end is that end, as a link's is.
     #[serde(default)]
     pub within: Option<f64>,
+    /// The contents entry this goes to, by its number as `contents` gives it, as a click on its row does: it's the one marked as being read from when the
+    /// view lands until the reader scrolls or jumps again, even with another entry at the same place. Refused unless it's an entry of the contents the
+    /// sidebar shows for the tab, on that page. Left out of what's sent when there's none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<u32>,
+}
+
+/// Said as it's sent: `entry` only when there is one, so a `goto` that names none reads as it always has, in a log and the wire's golden alike.
+impl std::fmt::Debug for Goto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            tab,
+            page,
+            label,
+            within,
+            entry,
+        } = self;
+        let mut said = f.debug_struct("Goto");
+        said.field("tab", tab).field("page", page).field("label", label).field("within", within);
+        if entry.is_some() {
+            said.field("entry", entry);
+        }
+        said.finish()
+    }
 }
 
 impl Cmd for Goto {
@@ -96,25 +120,44 @@ impl Cmd for Goto {
         Runs::Session
     }
     fn log_details(&self) -> Value {
-        let Self { tab, page, label, within } = self;
-        json!({ "tab": super::log_tab(tab), "page": page, "by_label": label.is_some(), "within": within })
+        let Self {
+            tab,
+            page,
+            label,
+            within,
+            entry,
+        } = self;
+        let mut details = json!({ "tab": super::log_tab(tab), "page": page, "by_label": label.is_some(), "within": within });
+        if let Some(entry) = entry {
+            details["entry"] = json!(entry);
+        }
+        details
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         cx.access.take_places();
         match (self.page, &self.label) {
             (Some(page), None) => cx.access.with(|s| {
                 let id = select(s, &self.tab)?;
+                // A page that's there, and the entry not on it: a page that isn't there is `go_to`'s to refuse.
+                let at = page.checked_sub(1).filter(|at| *at < s.pages().count(id));
+                if let (Some(entry), Some(at)) = (self.entry, at)
+                    && !s.tabs().tab(id).is_some_and(|tab| recto_session::entry_is_on(s, tab, entry, at))
+                {
+                    return Err(not_that_entry(entry, page));
+                }
                 go_to(s, id, page, self.within.unwrap_or(0.0), cx.actor.author())?;
+                if let Some(entry) = self.entry {
+                    s.mail_mut().jump_is_to_entry(id, entry);
+                }
                 cx.events.push(page_now(s, id));
                 Ok(where_json(s, id))
             }),
-            (None, Some(label)) if self.within.is_none() => linking::goto_label(cx.access, cx.actor.author(), &self.tab, label, cx.events),
-            (None, Some(_)) => Err(AgentError::new(
-                Code::USAGE,
-                "`--within` is how far down a page, and goes with a page number, not a label.",
-                exit::USAGE,
-            )
-            .then("`recto goto 12 --within 0.3`.")),
+            (None, Some(label)) if self.within.is_none() && self.entry.is_none() => {
+                linking::goto_label(cx.access, cx.actor.author(), &self.tab, label, cx.events)
+            }
+            (None, Some(_)) => Err(
+                AgentError::new(Code::USAGE, "`--within` and `--entry` go with a page number, not a label.", exit::USAGE).then("`recto goto 12 --within 0.3`."),
+            ),
             _ => Err(AgentError::new(
                 Code::USAGE,
                 "`goto` takes a page number, or `goto label` what the file calls a page, and not both.",
@@ -126,6 +169,16 @@ impl Cmd for Goto {
     fn human(data: &Value) -> String {
         place(data)
     }
+}
+
+/// The refusal of `goto --entry` for an entry that isn't one of the contents shown, on that page.
+fn not_that_entry(entry: u32, page: u32) -> AgentError {
+    AgentError::new(
+        Code::NO_SUCH_ENTRY,
+        format!("Entry {entry} isn't one of the contents the sidebar shows on page {page}."),
+        exit::NOT_FOUND,
+    )
+    .then("`recto contents` gives each entry's number and page (`contents --generated` when generated contents are shown).")
 }
 
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
@@ -269,6 +322,13 @@ pub(crate) const ROWS_GOTO: &[Spec] = &[
                 kind: Kind::Fraction,
                 required: false,
                 help: "How far down the page to land, from 0, its top, to 1, its bottom, as a link's destination says. The top if left out.",
+            },
+            Arg {
+                key: "entry",
+                flag: Some("--entry"),
+                kind: Kind::Count(100_000),
+                required: false,
+                help: "The contents entry this goes to, by its number as `contents` gives it, as a click on its row does: it's the one marked as being read until the tab is scrolled or jumps again. It has to be on that page.",
             },
             TAB,
         ],

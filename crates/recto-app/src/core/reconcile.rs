@@ -114,12 +114,15 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
         synced.map = shown.map.clone();
         synced.page = shown.page;
         synced.warm = shown.warm.clone();
+        engine.points().set_band(shown.band.map(|band| (band.page, band.lo, band.hi)));
         return send_jump(engine, shown);
     }
     if synced.spread != Some(shown.spread) {
         engine.set_spread(reader_spread(shown.spread));
         synced.spread = Some(shown.spread);
     }
+    // Set with each pass, so a band the page view has woken this for is set again, and wakes it again if the top of the view is still out of it.
+    engine.points().set_band(shown.band.map(|band| (band.page, band.lo, band.hi)));
     let sent = send_jump(engine, shown);
     if sent.is_some() {
         synced.page = shown.page;

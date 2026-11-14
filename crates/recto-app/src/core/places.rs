@@ -119,7 +119,15 @@ impl Said {
                 if said.hot == Some(id) && own != Some(id) {
                     continue;
                 }
-                session.view_told_of(id, place_record(&saved), said.stamp);
+                let line = (saved.line.0, recto_core::thousandths(saved.line.1));
+                session.view_told_of(
+                    id,
+                    recto_session::ViewSaid {
+                        place: place_record(&saved),
+                        line,
+                    },
+                    said.stamp,
+                );
             }
         }
         went

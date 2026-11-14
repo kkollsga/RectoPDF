@@ -341,10 +341,13 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
 
     /// **What the window does with how the person's `find` went:** a step kept for its hit forgotten when Find closes, and for a query, ⌘F or a step, why
     /// what they typed can't be found on the line under the field (`too_long`), or nothing. Then the host's told, as Find's view isn't in what `reconcile`
-    /// compares.
+    /// compares, with the field as the record has it now ([`Self::field_from_record`]): the command changed the record and started the hits, and told
+    /// before the field had them, the host drew the hits under a field shown closed and empty.
     pub fn answered(&self, ask: &FindAsk, too_long: bool) {
+        let record = self.session.with_session(|s| s.viewing().find().clone());
         {
             let mut field = lock(self.field);
+            Self::field_from_record(&mut field, &record);
             if *ask == FindAsk::Close {
                 field.pending_step = None;
             } else if matches!(ask, FindAsk::Query(_) | FindAsk::Open | FindAsk::Step { .. }) {
@@ -352,6 +355,16 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
             }
         }
         self.tell();
+    }
+
+    /// **The field as the record has it:** whether Find's open and what's typed in it. Says whether that moved it.
+    fn field_from_record(field: &mut Field, record: &recto_session::record::FindRecord) -> bool {
+        let moved = field.open != record.open || field.text != record.draft;
+        if moved {
+            field.open = record.open;
+            field.text.clone_from(&record.draft);
+        }
+        moved
     }
 
     /// **The host told Find changed, if what it draws of Find did** since it was last told, and only then: what the session thread does after each change to
@@ -415,15 +428,7 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
     pub fn keep_up(&self) {
         let session = self.session;
         let (record, now) = session.with_session(|s| (s.viewing().find().clone(), s.tabs().active().map(|id| (id, find::basis(s, id)))));
-        let moved = {
-            let mut field = lock(self.field);
-            let moved = field.open != record.open || field.text != record.draft;
-            if moved {
-                field.open = record.open;
-                field.text.clone_from(&record.draft);
-            }
-            moved
-        };
+        let moved = Self::field_from_record(&mut lock(self.field), &record);
         // The host is told, as Find's view isn't in what `reconcile` compares: a draft or an open that came from the record, as from an agent or a restore, would otherwise wait for something else to change.
         if moved {
             self.tell();

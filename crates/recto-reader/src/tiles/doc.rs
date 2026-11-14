@@ -28,6 +28,17 @@ impl Docs {
         self.hot.and_then(|tab| self.views.get(&tab))
     }
 
+    /// The shown tab's contents band, as the core computed it for the page at the top of its view: the page, and the thousandths of it between which the same
+    /// entry is current, or none. Set with each pass for the tab showing, so a band the view has woken the core for is set again, and wakes it again if the top of
+    /// the view is still out of it. Past one past the page's end isn't a place, so it's held there.
+    pub(crate) fn set_band(&mut self, band: Option<(u32, u16, u16)>) {
+        let Some(doc) = self.hot.and_then(|tab| self.views.get_mut(&tab)) else {
+            return;
+        };
+        let end = recto_core::TOP_SCALE + 1;
+        doc.band = band.map_or((super::place::NONE_PAGE, 0, 0), |(page, lo, hi)| (page, lo.min(end), hi.min(end)));
+    }
+
     pub(crate) fn hot_tab(&self) -> Option<u32> {
         self.hot
     }
@@ -99,10 +110,20 @@ pub(crate) struct DocView {
     pub(super) map: PageMap,
     pub(super) place: DocPlace,
     pub(super) drawing: DocDrawing,
+    /// **The stretch of a page in which the same contents entry is current,** as the core computed it for the page at the top of the view: the page (none is
+    /// `u32::MAX`), then the thousandths of it from `lo` up to but not including `hi`, the top bit of `hi` saying the view has woken the core for it. The core
+    /// sets one with each pass for the tab shown. A scroll step that leaves it wakes the core once, by the wake a page change already has, and none after it
+    /// does until the core sends a new band, so the compare is one layout lookup and two integer compares on the view's own thread, under the lock the step
+    /// already holds. Fractions of a page don't change with zoom, spread or window size, so a layout change needs no new band; a stale one (the contents
+    /// changed, or a page moved by an edit) costs at most one wake the core answers with a new band, and can't hide a change for longer than the pass that
+    /// follows what made it stale, which sends one every time.
+    pub(super) band: (u32, u16, u16),
 }
 
-// size: one for each hot and warm tab. 672 bytes on 2026-11-13, before and after it was cut into its place and its drawing; held there, so a field added to it, or to its layout or page map, is a deliberate change.
-const _: () = assert!(size_of::<DocView>() <= 672, "a tab the page view holds grew");
+// size: one for each hot and warm tab (a pane's page view holds a few). 672 bytes on 2026-11-13, before and after it was cut into its place and its drawing; 680 with
+// the contents' band (2026-11-14, allowed: +8 per shown view). Tried and not held at 672: the band in `Place` (56 to 64, over its guard), in `Reader` (2096 to 2104, over
+// its guard), and as an `Option` or a packed tuple in `DocView` (680 either way). A field added to it, or to its layout or page map, is a deliberate change.
+const _: () = assert!(size_of::<DocView>() <= 680, "a tab the page view holds grew");
 
 /// Where the reader is in a tab, and how it's shown.
 #[derive(Debug)]
@@ -195,6 +216,7 @@ impl DocView {
                 versions: HashMap::new(),
                 left_pictures: None,
             },
+            band: (u32::MAX, 0, 0),
         }
     }
 }

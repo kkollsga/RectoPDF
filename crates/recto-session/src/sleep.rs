@@ -18,8 +18,9 @@ pub const SLEEP_KIND: &str = "recto-sleep";
 /// format is never read, and is removed at its first read, as any that doesn't read is: it can always be rebuilt from the PDF. 1, with no field, was
 /// written up to 2026-11-14 (0.1.0 included), and could hold a picture of a page added from a file only the renderer needed a password for, drawn with the
 /// password the person typed for that file's own tab, which no page is drawn with since. One of a newer format is read: what it adds, this build passes
-/// over. Costs one wake from the PDF per tab, once, after the update.
-pub const SLEEP_FORMAT: u32 = 2;
+/// over. 2 held no entry's place down its page, which the contents' current entry is found by now: a tab woken from one would mark the last entry of its
+/// page. Costs one wake from the PDF per tab, once, after the update.
+pub const SLEEP_FORMAT: u32 = 3;
 
 /// Pictures in one file: enough for the pages one window shows at an ordinary zoom, side by side too, where a view has twice the pages, each a quarter of the pixels. A view of more than this comes up with those and sharpens. An older build reads a file with more as damaged, and rebuilds it from the PDF.
 pub const MAX_SLEEP_PICTURES: usize = 12;
@@ -96,6 +97,9 @@ struct Meta {
     version: Option<u64>,
     truncated: bool,
     toc: Vec<(String, u32, u32, u8)>,
+    /// Each entry's place down its page, in thousandths from the top, in the entries' order. Empty when no entry has one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tops: Vec<u16>,
     /// The file's page labels, as `(start, first, style, prefix)`, so a tab that wakes from here shows `iv` as it did. An older file has none, and the tab shows numbers until its PDF is read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     labels: Vec<(u32, u32, u8, String)>,
@@ -209,6 +213,8 @@ pub fn encode_sleep(sleep: &SleepFile) -> Vec<u8> {
         .iter()
         .map(|entry| (sleep.toc.title(entry).to_string(), entry.page, entry.parent, entry.depth))
         .collect();
+    let tops: Vec<u16> = sleep.toc.entries().iter().map(|entry| entry.top).collect();
+    let tops = if tops.iter().all(|top| *top == 0) { Vec::new() } else { tops };
     let mut lines = Vec::new();
     let mut packed = Vec::new();
     for picture in sleep.pictures.iter().take(MAX_SLEEP_PICTURES) {
@@ -235,6 +241,7 @@ pub fn encode_sleep(sleep: &SleepFile) -> Vec<u8> {
         version: sleep.version,
         truncated: sleep.toc.truncated,
         toc,
+        tops,
         labels,
         labels_truncated: sleep.toc.labels.truncated,
         usual: sleep.usual,
@@ -275,7 +282,10 @@ pub fn decode_sleep(bytes: &[u8], newest: u32) -> Result<SleepFile, RecordError>
         })
     });
     let lines: Vec<TocLine<'_>> = lines.collect::<Option<_>>().ok_or(bad("contents out of range"))?;
-    let mut toc = Toc::from_lines(&lines, meta.truncated);
+    if meta.tops.len() > meta.toc.len() {
+        return Err(bad("more places than entries"));
+    }
+    let mut toc = Toc::from_lines(&lines, meta.truncated).with_tops(&meta.tops);
     if meta
         .labels
         .iter()

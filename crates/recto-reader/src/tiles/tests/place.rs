@@ -395,6 +395,7 @@ fn a_saved_place_comes_back_to_the_pixel() {
         document_height: height,
         magnification: 1.75,
         page_size: Some(letter()),
+        line: (0, 0.0),
     };
     reader.activate(1, 100, 40, map(), &[], Some(saved), Spread::Single);
     let ops = reader.host.take_ops();
@@ -592,4 +593,223 @@ fn last_scroll_to(reader: &mut Reader) -> f64 {
         .rev()
         .find_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None })
         .expect("a scroll")
+}
+
+/// A view whose top is `thousandths` down page `page`.
+fn top_on(reader: &Reader, page: u32, thousandths: f64) -> Viewport {
+    let rect = reader.docs.shown().unwrap().layout.rect(page);
+    let mut at = view(0.0);
+    at.y = rect.y + thousandths / 1000.0 * rect.height;
+    at
+}
+
+/// A reader arrived on page 5 with the top of its view `at` thousandths down, the contents' band set to `[lo, hi)` and nothing moved.
+fn with_band(lo: u16, hi: u16, at: f64) -> Reader {
+    let mut reader = reader_on(100);
+    reader.place.scrolled_to = 0;
+    settle(&mut reader);
+    reader.jump_to(5, 0.0);
+    let Some(Op::ScrollTo { seq, .. }) = reader.host.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else {
+        panic!("no scroll")
+    };
+    let mut there = top_on(&reader, 5, at);
+    there.scrolled_to = seq;
+    reader.set_viewport(there);
+    reader.place.take_moved_page();
+    reader.docs.views.get_mut(&1).unwrap().band = (5, lo, hi);
+    reader
+}
+
+/// Failure (the contents' current entry follows a scroll): reading down a page wakes the core only when the page changes, so the mark stays on the first entry
+/// of a page to its foot. Leaving the band wakes it; staying in it doesn't (a wake per scroll step would cost every step); and the one wake is for the whole
+/// crossing: scroll steps back and forth over the edge, as a trackpad resting on it or rubber-banding, wake once until the core sends a band.
+#[test]
+fn leaving_the_band_wakes_the_core_once_until_it_sends_another() {
+    let mut reader = with_band(300, 600, 310.0);
+    for top in (310..=590).step_by(10) {
+        reader.set_viewport(top_on(&reader, 5, f64::from(top)));
+        assert_eq!(reader.place.take_moved_page(), None, "inside the band at {top}");
+    }
+    let mut wakes = 0;
+    for step in 0..60 {
+        // Across the edge at 600 and back, 30 steps each way.
+        let top = if step < 30 { 595 + step } else { 625 - (step - 30) };
+        reader.set_viewport(top_on(&reader, 5, f64::from(top)));
+        wakes += usize::from(reader.place.take_moved_page().is_some());
+    }
+    assert_eq!(wakes, 1, "one wake for the crossing, whatever the steps over the edge");
+    // The core sends a band for where the reader is now: it wakes again on leaving that one.
+    reader.docs.views.get_mut(&1).unwrap().band = (5, 595, 640);
+    reader.set_viewport(top_on(&reader, 5, 700.0));
+    assert!(reader.place.take_moved_page().is_some(), "and leaving the new band wakes again");
+}
+
+/// Failure: a band narrower than the pixel's rounding, or none at all (a page of a file with no places, or a page with an unsaved turn), wakes the core on
+/// every scroll step, or a view with no band wakes at all.
+#[test]
+fn a_narrow_band_wakes_once_and_no_band_never() {
+    let mut reader = with_band(500, 503, 501.0);
+    let wakes: usize = (0..40)
+        .map(|step| {
+            reader.set_viewport(top_on(&reader, 5, if step % 2 == 0 { 520.0 } else { 495.0 }));
+            usize::from(reader.place.take_moved_page().is_some())
+        })
+        .sum();
+    assert_eq!(wakes, 1, "a band of 3 thousandths");
+    let mut none = reader_on(100);
+    none.place.scrolled_to = 0;
+    settle(&mut none);
+    none.place.take_moved_page();
+    for top in [100.0, 400.0, 5.0] {
+        none.set_viewport(top_on(&none, 0, top));
+        assert_eq!(none.place.take_moved_page(), None, "no band, no wake");
+    }
+}
+
+/// Failure: side by side, the top of the view is taken against the other page of the row (a page of another height), so the band is left too soon or too late. The
+/// row's page is the one the session has, and the line is the top of the view, down its rect.
+#[test]
+fn side_by_side_the_top_of_the_view_is_down_the_page_the_reader_is_on() {
+    let mut reader = reader_on(100);
+    reader.place.scrolled_to = 0;
+    reader.set_spread(Spread::TwoUp);
+    // The left page of row 0 is twice the right one's height.
+    settle_sized(&mut reader, PageBox { width: 612.0, height: 1584.0 });
+    reader.place.take_moved_page();
+    let left = reader.docs.shown().unwrap().layout.rect(0);
+    let right = reader.docs.shown().unwrap().layout.rect(1);
+    assert!(left.height > right.height * 1.5, "the pages differ: {} and {}", left.height, right.height);
+    reader.docs.views.get_mut(&1).unwrap().band = (0, 0, 400);
+    // A top 30% down the left page is more than 40% down the right one: leaving the band by the right page's reckoning, and not by the left's.
+    let mut at = view(0.0);
+    at.y = left.y + 0.30 * left.height;
+    reader.set_viewport(at);
+    assert_eq!(reader.place.take_moved_page(), None, "on the left page, 300 of 1000");
+    at.y = left.y + 0.45 * left.height;
+    reader.set_viewport(at);
+    assert!(reader.place.take_moved_page().is_some(), "450 of 1000 is out of the band");
+}
+
+/// Failure (S2 of the second review): the core reads the places, then sets the band some time later in the same pass; a scroll step in between is checked
+/// against the old band, whose wake was already spent, and the new band is set without a look at where the view is now, so the mark stays where the
+/// view was until some later step leaves the new band. A band set with the view already outside it wakes the core once, and one with the view inside doesn't.
+#[test]
+fn a_band_set_with_the_view_already_outside_it_wakes_the_core_once() {
+    let mut reader = with_band(300, 600, 310.0);
+    crate::tiles::set_band(&mut reader, Some((5, 300, 600)));
+    assert_eq!(reader.place.take_moved_page(), None, "inside: no wake");
+    crate::tiles::set_band(&mut reader, Some((5, 400, 600)));
+    assert!(reader.place.take_moved_page().is_some(), "the view, at 310, is already above the band");
+    reader.set_viewport(top_on(&reader, 5, 320.0));
+    assert_eq!(reader.place.take_moved_page(), None, "and that was the wake for it");
+    crate::tiles::set_band(&mut reader, Some((6, 0, 600)));
+    assert!(reader.place.take_moved_page().is_some(), "a band on another page");
+}
+
+/// Where the view can scroll to at most, as the host's clip view holds it: the document's foot less the view, and the room below the last row.
+fn scroll_end(reader: &Reader, height: f64) -> f64 {
+    let layout = &reader.docs.shown().unwrap().layout;
+    layout.document_height() + layout.end_room().1 - height
+}
+
+/// Failure (S1 of the second review): the line the current entry is found by was the top of the view, which can't come within a view-height of the
+/// document's end, so the entries in the last view-height could never become current by scrolling, and at the very bottom the page number said the last
+/// page while the mark sat pages up. Scrolling down a ten-page document whose last three pages hold seven entries, a step at a time, each entry becomes
+/// current in turn, none skipped and none out of order, and the last is current at the bottom.
+#[test]
+fn scrolling_down_to_the_end_makes_every_entry_current_in_order_and_the_last_at_the_bottom() {
+    let tops: [(u32, u16); 9] = [(0, 0), (4, 300), (7, 100), (7, 800), (8, 0), (8, 500), (9, 200), (9, 600), (9, 950)];
+    let lines: Vec<recto_core::TocLine<'_>> = tops
+        .iter()
+        .map(|(page, _)| recto_core::TocLine {
+            title: "t",
+            page: *page,
+            parent: recto_core::NONE,
+            depth: 0,
+        })
+        .collect();
+    let toc = recto_core::Toc::from_lines(&lines, false).with_tops(&tops.map(|(_, top)| top));
+    let mut reader = reader_on(10);
+    reader.place.scrolled_to = 0;
+    settle(&mut reader);
+    let height = view(0.0).height;
+    let end = scroll_end(&reader, height);
+    assert!(end > 9.0 * height, "a document many views long: {end}");
+    let mut seen: Vec<usize> = Vec::new();
+    let mut y: f64 = 0.0;
+    loop {
+        reader.set_viewport(view(y.min(end)));
+        let (_, place) = reader.places()[0];
+        let current = toc.current_at(place.line.0, recto_core::thousandths(place.line.1), |_| true);
+        if let Some(current) = current
+            && seen.last() != Some(&current)
+        {
+            seen.push(current);
+        }
+        if y >= end {
+            break;
+        }
+        y += 4.0;
+    }
+    assert_eq!(seen, (0..tops.len()).collect::<Vec<_>>(), "each entry in turn, the last at the bottom");
+}
+
+/// Failure: the line the current entry is found by jumps back up as the view goes down (the mark would flicker back), is above the top of the view (an entry
+/// the reader has scrolled past isn't current yet), or doesn't reach the last page's foot exactly at the end of the scroll (the last entry is never current).
+/// Over random documents (page counts, sizes, a page to a row or two: the order in a row of one) and view heights, from the top to the end of the scroll.
+#[test]
+fn the_line_goes_only_down_is_never_above_the_view_and_reaches_the_last_foot_at_the_end() {
+    let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut next = move |below: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % below
+    };
+    for case in 0..300 {
+        let count = 1 + next(40) as u32;
+        let spread = [Spread::Single, Spread::TwoUp, Spread::TwoUpCover][next(3) as usize];
+        let mut layout = PageLayout::new(count);
+        layout.set_frame(1168.0);
+        layout.seed_usual(letter());
+        layout.set_spread(spread);
+        for _ in 0..next(5) {
+            let size = PageBox {
+                width: 200.0 + next(800) as f32,
+                height: 100.0 + next(2000) as f32,
+            };
+            layout.set_page_size(next(u64::from(count)) as u32, size);
+        }
+        let height = 50.0 + next(3000) as f64;
+        let end = layout.document_height() + layout.end_room().1 - height;
+        let last = (count - 1, 1.0);
+        if height > layout.document_height() {
+            assert_eq!(
+                super::super::place::reading_line(&layout, 0.0, height, 0),
+                layout.anchor_for(0.0, 0),
+                "case {case}: held whole, the top"
+            );
+            continue;
+        }
+        let mut was = (0, 0.0);
+        let mut y = -layout.end_room().0;
+        loop {
+            let at = y.min(end);
+            // The reader's page as the page view has it in a row of one; side by side its row's first.
+            let page = layout.page_at(at + height / 3.0);
+            let line = super::super::place::reading_line(&layout, at, height, page);
+            // Side by side, which page of a row a place is said on goes by the reader's page (two-page spreads are a follow-up of their own), so the order
+            // is held in a row of one, and the end everywhere.
+            if spread == Spread::Single {
+                assert!(line >= was, "case {case}: back up from {was:?} to {line:?} at {at} of {end}");
+                assert!(line >= layout.anchor_for(at, page), "case {case}: above the top of the view at {at}");
+            }
+            was = line;
+            if at >= end {
+                assert_eq!(line, last, "case {case}: the end of the scroll is the last page's foot");
+                break;
+            }
+            y += 1.0 + next(40) as f64;
+        }
+    }
 }

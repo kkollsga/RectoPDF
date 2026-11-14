@@ -141,7 +141,7 @@ pub(crate) fn contents<A: SessionAccess>(
         return Ok(unavailable());
     }
     let verdict = recto_core::verdict::judge(&facts.toc, facts.page_count);
-    let mut answer = listing(&file, &facts.toc, None, from, limit, depth)?;
+    let mut answer = listing(&file, &facts.toc, from, limit, depth)?;
     answer["verdict"] = json!(verdict.code());
     if verdict.offers() {
         answer["verdict_note"] = json!(format!(
@@ -171,8 +171,7 @@ fn generated_contents<A: SessionAccess>(access: &A, tab: &TabRef, from: Option<u
         return Err(AgentError::new(Code::GENERATING_FAILED, "Generated contents were made but couldn't be read back.", exit::FAILED).then("Ask again."));
     };
     let toc = made.toc();
-    let places: Vec<u16> = made.entries.iter().map(|entry| entry.place).collect();
-    let mut answer = listing(&file, &toc, Some(&places), from, limit, depth)?;
+    let mut answer = listing(&file, &toc, from, limit, depth)?;
     answer["generated"] = json!(true);
     answer["state"] = json!("ready");
     answer["note"] = json!(if made.entries.is_empty() {
@@ -186,15 +185,9 @@ fn generated_contents<A: SessionAccess>(access: &A, tab: &TabRef, from: Option<u
     Ok(answer)
 }
 
-/// A piece of a list of contents, the file's own or generated, with `place` beside each entry when there are places.
-fn listing(
-    file: &TabFile,
-    toc: &recto_core::Toc,
-    places: Option<&[u16]>,
-    from: Option<u32>,
-    limit: Option<u32>,
-    depth: Option<u8>,
-) -> Result<Value, AgentError> {
+/// A piece of a list of contents, the file's own or generated, each entry with its `place` down its page in thousandths (0 when the file or the helper
+/// gives none, which is its page's top), as a click on its row goes there.
+fn listing(file: &TabFile, toc: &recto_core::Toc, from: Option<u32>, limit: Option<u32>, depth: Option<u8>) -> Result<Value, AgentError> {
     let limit = crate::positive_limit(limit, DEFAULT_CONTENTS, MAX_CONTENTS)?;
     let from = from.unwrap_or(0) as usize;
     let shape = OutlineShape::of(toc.entries().iter().map(|entry| (entry.depth, entry.page)));
@@ -213,11 +206,7 @@ fn listing(
                 })
                 .flatten();
             // Its number, which `contents fold` names it by.
-            let mut item = json!({ "entry": index, "depth": entry.depth, "page": page.map(|page| page + 1), "untrusted": { "title": toc.title(entry) } });
-            if let Some(place) = places.and_then(|places| places.get(*index)) {
-                item["place"] = json!(place);
-            }
-            item
+            json!({ "entry": index, "depth": entry.depth, "page": page.map(|page| page + 1), "place": entry.top, "untrusted": { "title": toc.title(entry) } })
         })
         .collect();
     let next_from = (from + entries.len() < visible.len()).then_some(from + entries.len());

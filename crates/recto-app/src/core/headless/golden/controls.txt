@@ -96,7 +96,7 @@ UiAction::PaneRead | sent [{"cmd":"compare","tabs":null,"sync":null,"off":false,
 UiAction::Chevron | sent [{"cmd":"contents_fold","entry":0,"tab":"#3"}] | host None understood true | heard model_changed
 UiAction::Open | sent [{"cmd":"open","path":"<files>/c.pdf","page":null}] | host None understood true | heard ops_ready model_changed
 UiAction::OpenRecent | sent [{"cmd":"open","path":"<files>/c.pdf","page":null}] | host None understood true | heard ops_ready model_changed
-UiAction::FindTyped | sent [{"cmd":"find","query":"page","next":false,"previous":false,"jump":false,"hit":null,"open":false,"close":false,"limit":null}] | host None understood true | heard model_changed*4
+UiAction::FindTyped | sent [{"cmd":"find","query":"page","next":false,"previous":false,"jump":false,"hit":null,"open":false,"close":false,"limit":null}] | host None understood true | heard model_changed+
 UiAction::FindOpen | sent [{"cmd":"find","query":null,"next":false,"previous":false,"jump":false,"hit":null,"open":true,"close":false,"limit":null}] | host None understood true | heard model_changed
 UiAction::FindClose | sent [{"cmd":"find","query":null,"next":false,"previous":false,"jump":false,"hit":null,"open":false,"close":true,"limit":null}] | host None understood true | heard model_changed
 UiAction::FindReturn | sent [{"cmd":"find","query":null,"next":true,"previous":false,"jump":true,"hit":null,"open":false,"close":false,"limit":null}] | host None understood true | heard model_changed

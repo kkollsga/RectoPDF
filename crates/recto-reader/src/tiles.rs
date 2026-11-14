@@ -39,6 +39,7 @@ use jobs::{MAX_KEYLESS, PlanKind};
 pub(crate) use jobs::{Renew, Work};
 use place::Place;
 pub use place::place_stamp;
+pub(crate) use place::set_band;
 use pointer::Pointer;
 use scratch::Scratch;
 use wake::Waking;
@@ -218,6 +219,10 @@ pub struct SavedPlace {
     pub magnification: f64,
     /// The size pages are taken to be, so there's no size to wait for on the first frame.
     pub page_size: Option<PageBox>,
+    /// **The line the contents' current entry is found by,** the page and how far down it (`place::reading_line`): the top of the view, but in the last
+    /// view-height of the scroll on its way to the last page's foot. Said with the place it was read with, and only for the session's contents: not saved,
+    /// not restored (what a place given to [`Reader::activate`] says here is passed over) and not used by Back. A warm tab's is its anchor.
+    pub line: (u32, f64),
 }
 
 #[cfg(test)]
@@ -400,6 +405,8 @@ impl Reader {
             .views
             .entry(tab)
             .or_insert_with(|| DocView::from_saved(tab, pages, page, &map, saved, spread, margins, floor));
+        // A band is for the tab it was made for, as it was: the core sends the tab's own again with this pass.
+        doc.band = (place::NONE_PAGE, 0, 0);
         // A save wrote the pages that were shown, each as it was shown: another version of the file, with nothing on the screen to move.
         let carried = !doc.map.same_pages(&map) && map.follows.is_some() && doc.map.own == map.follows && doc.layout.count() == pages;
         // Back on the page it was left on, and it's back at the same place in that page. A tall page's reader isn't sent to its top.

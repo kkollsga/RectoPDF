@@ -197,3 +197,27 @@ fn find_tells_the_host_only_what_changed_what_it_draws() {
         "a note is a change"
     );
 }
+
+/// Failure (a small finding of the contents fixes' second review): the person's query changes the record (Find open, the words in the field) and starts
+/// the hits, and what the window does with how it went told the host before the field had the record: the first announcement's view had the hits with
+/// the field closed and empty, and only the next one opened it. The first announcement shows the field as the record has it.
+#[test]
+fn the_first_announcement_of_a_query_shows_the_field_open_with_its_words() {
+    let rig = Rig::new();
+    let field = Arc::clone(&rig.field);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen_in = Arc::clone(&seen);
+    let listener = FakeListener::checking(move |_| {
+        let field = lock(&field);
+        lock(&seen_in).push((field.open, field.text.clone()));
+    });
+    // The command's own change, as `find` makes it: the record, and hits on their way.
+    rig.session.with_session(|session| session.viewing_mut().set_find(true, "word", "word"));
+    rig.session.finder().with_results(&mut |results| {
+        let (generation, progress) = (results.generation, results.progress);
+        results.add(generation, Vec::new(), &progress);
+    });
+    rig.with(&listener, |find| find.answered(&FindAsk::Query("word".into()), false));
+    let seen = lock(&seen).clone();
+    assert_eq!(seen.first(), Some(&(true, "word".to_string())), "{seen:?}");
+}

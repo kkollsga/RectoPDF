@@ -139,3 +139,253 @@ fn the_chevron_folds_generated_contents() {
     assert_ne!(rows(&twins.person), before, "the chevron folded nothing");
     assert_eq!(rows(&twins.person), rows(&twins.agent), "the same rows as the command leaves");
 }
+
+/// A file of three pages with a flat outline of six entries, three on page 1, two on page 2 and one on page 3, each with its place down the page as the
+/// file's own `/XYZ` says (the last has none).
+fn several_to_a_page() -> Vec<u8> {
+    outlined(&[
+        "[3 0 R /XYZ 0 800 0]",
+        "[3 0 R /XYZ 0 520 0]",
+        "[3 0 R /XYZ 0 200 0]",
+        "[4 0 R /XYZ 0 700 0]",
+        "[4 0 R /XYZ 0 300 0]",
+        "[5 0 R /Fit]",
+    ])
+}
+
+/// A file of three pages, 800 points high, with a flat outline of an entry for each destination given, `Entry 0` on: its pages are objects 3, 4 and 5.
+fn outlined(dests: &[&str]) -> Vec<u8> {
+    let mut objects = vec![
+        recto_testpdf::Object::Dict("<< /Type /Catalog /Pages 2 0 R /Outlines 6 0 R >>".into()),
+        recto_testpdf::Object::Dict("<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 /MediaBox [0 0 600 800] >>".into()),
+        recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R >>".into()),
+        recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R >>".into()),
+        recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R >>".into()),
+        recto_testpdf::Object::Dict(format!(
+            "<< /Type /Outlines /First 7 0 R /Last {} 0 R /Count {} >>",
+            6 + dests.len(),
+            dests.len()
+        )),
+    ];
+    for (at, dest) in dests.iter().enumerate() {
+        let next = if at + 1 < dests.len() {
+            format!("/Next {} 0 R", 8 + at)
+        } else {
+            String::new()
+        };
+        let prev = if at > 0 { format!("/Prev {} 0 R", 6 + at) } else { String::new() };
+        objects.push(recto_testpdf::Object::Dict(format!(
+            "<< /Title (Entry {at}) /Parent 6 0 R {next} {prev} /Dest {dest} >>"
+        )));
+    }
+    recto_testpdf::build(&objects)
+}
+
+/// The same entries as generated contents: what the helper found, with its places in thousandths.
+fn generated_several_to_a_page() -> Arc<recto_core::Toc> {
+    let line = |title, page| recto_core::TocLine {
+        title,
+        page,
+        parent: recto_core::NONE,
+        depth: 0,
+    };
+    let lines = [
+        line("Entry 0", 0),
+        line("Entry 1", 0),
+        line("Entry 2", 0),
+        line("Entry 3", 1),
+        line("Entry 4", 1),
+        line("Entry 5", 2),
+    ];
+    Arc::new(recto_core::Toc::from_lines(&lines, false).with_tops(&[0, 350, 750, 125, 625, 0]))
+}
+
+/// The row the window reports for a contents entry, as `core.contentsRows` makes it and the click hands it back.
+fn host_row(entry: &crate::ContentsEntry) -> crate::SidebarRow {
+    crate::SidebarRow {
+        kind: crate::RowKind::Contents,
+        tab: entry.tab,
+        text: entry.text.to_string(),
+        page: entry.page,
+        depth: entry.depth,
+        current: false,
+        rail_filled: false,
+        rail_first: false,
+        rail_last: false,
+        notice: None,
+        action: None,
+        expandable: entry.expandable,
+        expanded: entry.expanded,
+        in_comparison: false,
+    }
+}
+
+fn rows(app: &HeadlessApp) -> Vec<crate::ContentsEntry> {
+    crate::lock(&app.core().published).contents.to_vec()
+}
+
+fn shows_generated(app: &HeadlessApp) {
+    let id = TabId(app.reader().shown_tab);
+    app.core().host.session.with_session(|session| {
+        session.set_generated_view(id, GeneratedView::Ready(generated_several_to_a_page()));
+        session.tabs_mut().choose_generated(id, true);
+    });
+    app.send(CoreCall::Reconcile);
+    app.settle();
+}
+
+/// Failure (finding 3 of the contents fixes, and the rule it holds): after going to a contents entry by the click on its row, a page that holds several
+/// entries marks another than the one gone to (the last of the page, or the one above), so the contents scroll to the wrong row and the reader's place isn't
+/// the entry's. Every entry of a file's own contents and of generated ones, in turn, from another place each time.
+#[test]
+fn after_going_to_any_entry_that_entry_is_current_own_and_generated() {
+    for generated in [false, true] {
+        let disk = crate::testkit::headless::Disk::new();
+        let file = disk.file("several.pdf", &several_to_a_page());
+        let app = disk.start();
+        app.open(&file);
+        if generated {
+            shows_generated(&app);
+        }
+        let entries = rows(&app);
+        assert_eq!(entries.len(), 6, "generated: {generated}");
+        for index in (0..entries.len()).rev().chain(0..entries.len()) {
+            app.act(UiAction::Row {
+                row: host_row(&entries[index]),
+                adding: false,
+            });
+            app.settle();
+            assert_eq!(
+                app.sidebar().contents_current,
+                Some(index as u32),
+                "generated: {generated}, after going to entry {index}"
+            );
+        }
+    }
+}
+
+/// Failure: the person's click on an entry lands somewhere than the agent's way to the same entry (`goto` with the page, how far down and the entry), or
+/// isn't made the same way (a different trail, event or record), or Back after it doesn't return to where the reader was.
+#[test]
+fn a_click_on_an_entry_is_the_agents_goto_to_its_place_and_back_returns() {
+    let twins = Twins::with_generating(&[("several.pdf", several_to_a_page())]);
+    let tab = twins.person.reader().shown_tab;
+    let entries = rows(&twins.person);
+    let line = format!(r##"{{"cmd":"goto","tab":"#{tab}","page":2,"within":0.625,"entry":4}}"##);
+    let (said, agent_said) = twins.both(
+        UiAction::Row {
+            row: host_row(&entries[4]),
+            adding: false,
+        },
+        &line,
+    );
+    assert_eq!(said, agent_said, "the same said");
+    twins.assert_same("a click on entry 4 and goto 2 within 0.625", &["by_agent"]);
+    assert_eq!(twins.person.sidebar().contents_current, Some(4));
+    let page = |app: &HeadlessApp| {
+        app.core()
+            .host
+            .session
+            .with_session(|s| s.tabs().active().and_then(|id| s.tabs().tab(id)).map(|tab| tab.page))
+    };
+    assert_eq!(page(&twins.person), Some(1));
+    twins.person.act(UiAction::Menu { id: "go.back".into() });
+    twins.person.settle();
+    assert_eq!(page(&twins.person), Some(0), "Back returns to where the reader was");
+    assert_eq!(twins.person.sidebar().contents_current, Some(0));
+}
+
+/// Failure: a row that the published entries can't name goes to a place by guess: two entries with the same words, page and depth land at the first's or the
+/// second's place, or an entry with no place lands anywhere than the page's top.
+#[test]
+fn a_row_two_entries_could_be_goes_to_the_top_of_its_page() {
+    use crate::core::navigation::tapped_entry;
+    let entry = |text: &str, entry: u32, top: u16| crate::ContentsEntry {
+        tab: 1,
+        text: text.into(),
+        page: Some(2),
+        depth: 0,
+        entry,
+        top,
+        expandable: false,
+        expanded: false,
+    };
+    let list = [entry("Notes", 0, 200), entry("Notes", 1, 600), entry("Intro", 2, 300), entry("Plain", 3, 0)];
+    let row = |text: &str| host_row(&entry(text, 0, 0));
+    assert_eq!(tapped_entry(&list, &row("Notes")), None, "two the same aren't told apart by a guess");
+    assert_eq!(tapped_entry(&list, &row("Intro")), Some((2, Some(0.3))));
+    assert_eq!(
+        tapped_entry(&list, &row("Plain")),
+        Some((3, None)),
+        "no place is the page's top, and the entry is named"
+    );
+    assert_eq!(tapped_entry(&list, &row("Missing")), None);
+}
+
+/// The page view of the tab shown, scrolled by the person's hand (the kit's [`HeadlessApp::person_scrolls`]) so the top of its view is `thousandths` down
+/// page `page` (counted from 0) of the file of [`several_to_a_page`]: the page view alone is told, as it is by a scroll, with no jump and no goto. `at` is
+/// where the view is, which the first call finds the page view at the top of the document.
+fn scroll_to(app: &HeadlessApp, at: &mut f64, page: u32, thousandths: f64) {
+    let engine = app.core().panes.reading_engine(&app.core().engine);
+    let (_, y) = engine
+        .points()
+        .document_point(page, 0.0, thousandths / 1000.0 * 800.0)
+        .expect("a page of the shown tab");
+    app.person_scrolls(y - *at);
+    *at = y;
+}
+
+/// Failure (the review of finding 3, the one that was missed): the page view wakes the core only for a change of page, so reading down a page by scroll leaves
+/// the mark on the first entry to the foot of the page. Scrolling the page view alone (no jump, no goto) so the top of the view reaches each entry in turn
+/// wakes the core, and `settle` waits until the mark has moved, for the file's own contents and for generated ones.
+#[test]
+fn scrolling_down_a_page_moves_the_mark_through_the_page_views_wake_own_and_generated() {
+    for generated in [false, true] {
+        let disk = crate::testkit::headless::Disk::new();
+        let file = disk.file("several.pdf", &several_to_a_page());
+        let app = disk.start();
+        app.open(&file);
+        if generated {
+            shows_generated(&app);
+        }
+        app.settle();
+        // The entries on page 1 are 0, 350 and 750 thousandths down it (the file's own at y = 800, 520 and 200 of 800; the generated ones are made so).
+        let (middle, last, mut at) = (350.0, 750.0, 0.0);
+        // The wake alone: nothing here asks for a look, so what moves the mark is the page view telling the core, and waiting is for that to land.
+        scroll_to(&app, &mut at, 0, 10.0);
+        let marked = |want: u32| app.wait_until("the mark moved by the page view's wake", || app.sidebar().contents_current == Some(want));
+        marked(0);
+        for (top, want, what) in [
+            (middle + 20.0, 1, "the second has reached the top"),
+            (last + 20.0, 2, "the third has"),
+            (5.0, 0, "and back up"),
+        ] {
+            scroll_to(&app, &mut at, 0, top);
+            marked(want);
+            assert_eq!(app.sidebar().contents_current, Some(want), "generated {generated}: {what}");
+        }
+    }
+}
+
+/// Failure (S3 of the second review): a click on a contents row is found again by its place once the view lands, so the one clicked isn't marked when
+/// another entry is at the same place (ties go to the later), or when the file's outline says no places (`/Fit`: the last of the page is marked). The
+/// click names its entry, and that entry is current when the view has landed; an agent's `goto --entry` is the same command.
+#[test]
+fn the_entry_clicked_is_current_with_another_at_its_place_or_none_placed() {
+    for (dests, case) in [
+        (&["[3 0 R /XYZ 0 520 0]", "[3 0 R /XYZ 0 520 0]", "[4 0 R /Fit]"][..], "two at one place"),
+        (&["[3 0 R /Fit]", "[3 0 R /Fit]", "[3 0 R /Fit]"][..], "three with no place"),
+    ] {
+        let disk = crate::testkit::headless::Disk::new();
+        let file = disk.file("placed.pdf", &outlined(dests));
+        let app = disk.start();
+        app.open(&file);
+        let entries = rows(&app);
+        app.act(UiAction::Row {
+            row: host_row(&entries[0]),
+            adding: false,
+        });
+        app.settle();
+        assert_eq!(app.sidebar().contents_current, Some(0), "{case}: the one clicked");
+    }
+}

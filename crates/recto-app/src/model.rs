@@ -211,6 +211,8 @@ pub struct ContentsEntry {
     pub depth: u8,
     /// Its entry in the list, and whether it folds and is open.
     pub entry: u32,
+    /// How far down its page the entry is, in thousandths: where tapping it goes. 0 when it has no place.
+    pub top: u16,
     pub expandable: bool,
     pub expanded: bool,
 }
@@ -340,6 +342,7 @@ fn contents_change(model: &SidebarModel<'_>, counts: &RowCounts, held: &Held) ->
                 && row.depth == entry.depth
                 && row.text == entry.text.as_ref()
                 && row.entry == entry.entry
+                && row.top == entry.top
                 && row.expanded == entry.expanded
                 && row.expandable == entry.expandable
         });
@@ -360,6 +363,7 @@ fn contents_change(model: &SidebarModel<'_>, counts: &RowCounts, held: &Held) ->
                 page: row.page,
                 depth: row.depth,
                 entry: row.entry,
+                top: row.top,
                 expandable: row.expandable,
                 expanded: row.expanded,
             })
@@ -843,6 +847,8 @@ pub struct PaneSnapshot {
     pub jump: Option<recto_session::trail::Stop>,
     /// Its contents and page labels, shared, so a link's hint can say a page by its label without asking the session.
     pub toc: Option<Arc<recto_core::Toc>>,
+    /// Where on the page at the top of its view the contents' current entry changes, for its page view to wake the core when the top of the view leaves it.
+    pub band: Option<recto_core::Band>,
 }
 
 pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, first: bool, panes: &[TabId]) -> Option<PaneSnapshot> {
@@ -906,6 +912,7 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
     let saved = session.tabs().place_to_show(id).map(|place| SavedPlace {
         page: place.page,
         anchor: (place.anchor_page, place.within),
+        line: (place.anchor_page, place.within),
         x: place.x,
         y: place.y,
         document_height: place.document_height,
@@ -933,6 +940,7 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
         title: tab.name.to_string(),
         jump: None,
         toc: session.warm().toc(id).cloned(),
+        band: recto_session::reading_band(session, tab),
     })
 }
 
@@ -1651,6 +1659,7 @@ mod tests {
             page: Some(1),
             depth: 0,
             entry: 0,
+            top: 0,
             expandable: false,
             expanded: false,
         };
@@ -1677,6 +1686,7 @@ mod tests {
             page: Some(1),
             depth: u8::try_from(text.matches('.').count()).unwrap(),
             entry: 0,
+            top: 0,
             expandable: false,
             expanded: false,
         };

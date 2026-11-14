@@ -33,6 +33,7 @@
 {"cmd":"Tap"}
 {"cmd":"goto"}
 {"cmd":"goto","tab":"#2","page":3,"label":"iv"}
+{"cmd":"goto","page":3,"within":0.25,"entry":2}
 {"cmd":"goto","extra":1}
 {"cmd":"goto","tab":{}}
 {"cmd":"goto","tab":null}

@@ -1,7 +1,7 @@
 //! **The place:** where the reader is in the tab showing, the jumps sent to the host and whether it's arrived, what the reader's own scroll was, and the page the session's told of.
 
 use super::{DocView, HOST_ROUNDING, MAX_ATTACH_PER_TURN, Op, Reader, SavedPlace, Viewport};
-use crate::layout::Spread;
+use crate::layout::{PageLayout, Spread};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// **The place clock:** one count for the whole process, moved on, under the page view's lock, by everything that moves where a page view says a tab is:
@@ -12,6 +12,52 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// panes, which are made afresh) and a count of each view's own couldn't order one view's read against another's. **Only the order of two stamps taken in
 /// one process means anything, never a stamp's value:** two headless apps in one test share the clock, so a test never asserts a stamp's number.
 static PLACE_CLOCK: AtomicU64 = AtomicU64::new(0);
+
+/// A band with no page: none is set. A band's `hi` is at most one past [`recto_core::TOP_SCALE`], so the top bit of the word it's kept in says whether the view has woken the core for it.
+pub(super) const NONE_PAGE: u32 = u32::MAX;
+pub(super) const BAND_WOKE: u16 = 0x8000;
+
+/// **Sets the shown tab's contents band** (`Docs::set_band`) and, under the same lock, looks at once whether the top of the view is already outside it,
+/// as a scroll step taken between the core's read of the places and this would have been: such a step was checked against the band before, with its
+/// wake already spent, and the core would not hear of it until the next. Outside, it wakes the core once, as leaving it by a scroll does.
+pub(crate) fn set_band(reader: &mut Reader, band: Option<(u32, u16, u16)>) {
+    reader.docs.set_band(band);
+    let viewport = reader.viewport;
+    let place = &mut reader.place;
+    // Not while a jump is on its way: where the view is isn't where it's going (as `Place::track` has it), and the core has the jump.
+    if let (None, Some(page), Some(doc)) = (
+        place.jump,
+        place.last_view_page,
+        reader.docs.hot.and_then(|tab| reader.docs.views.get_mut(&tab)),
+    ) {
+        place.leaves_the_band(doc, viewport, page);
+    }
+}
+
+/// **The line the contents' current entry is found by,** for a view whose top is `y` and that is `height` high, with the reader on `page`: the page and how
+/// far down it (0 to 1). The one rule for the page view's band (`Place::leaves_the_band`) and for the session, which has it from [`Reader::places`].
+///
+/// It is the top of the view, until the view is within one view-height of the end of its scroll (the document's foot less the view, and the room the
+/// host leaves below the last row: [`PageLayout::end_room`]). Over that last view-height of scrolling it travels, evenly, from the top of the view to the
+/// foot of the last page, which it reaches as the view reaches the end: `y + along × (foot − end)`, `along` going from 0 to 1. So it moves continuously
+/// and never back as the view goes down, is never above the top of the view, and passes every place down to the last page's foot: every entry becomes
+/// current by scrolling, in order, and the last one at the bottom. Without this, the top of the view can't come within a view-height of the end, and the
+/// entries there could only be reached by a click. A document the view holds whole doesn't scroll, and its line is the top of the view.
+pub(super) fn reading_line(layout: &PageLayout, y: f64, height: f64, page: u32) -> (u32, f64) {
+    let count = layout.count();
+    let document = layout.document_height();
+    if count == 0 || !y.is_finite() || !height.is_finite() || height <= 0.0 || height > document {
+        return layout.anchor_for(y, page);
+    }
+    let end = document + layout.end_room().1 - height;
+    let start = (end - height).max(0.0);
+    let along = if end > start { ((y - start) / (end - start)).clamp(0.0, 1.0) } else { 1.0 };
+    if along >= 1.0 {
+        return (count - 1, 1.0);
+    }
+    let last = layout.rect(count - 1);
+    layout.anchor_for(y + along * (last.y + last.height - end).max(0.0), page)
+}
 
 /// Moves the place clock on, saying where it's come to.
 pub(super) fn tick() -> u64 {
@@ -117,6 +163,23 @@ impl Place {
             self.last_view_page = Some(page);
             self.moved_page = Some(page);
         }
+        self.leaves_the_band(doc, viewport, page);
+    }
+
+    /// **Wakes the core when the top of the view leaves the stretch of a page in which the same contents entry is current** (`DocView::band`), by the wake a
+    /// page change has, and only once until the core sends another. The line is [`reading_line`]'s, as the session has it: the view's top, and in the
+    /// last view-height of the scroll on its way to the last page's foot; a few lookups of the layout and integer compares.
+    fn leaves_the_band(&mut self, doc: &mut DocView, viewport: Viewport, page: u32) {
+        let (band_page, lo, hi_woke) = doc.band;
+        if band_page == NONE_PAGE || hi_woke & BAND_WOKE != 0 {
+            return;
+        }
+        let (at_page, within) = reading_line(&doc.layout, viewport.y, viewport.height, page);
+        let top = recto_core::thousandths(within);
+        if at_page != band_page || top < lo || top >= hi_woke {
+            doc.band.2 |= BAND_WOKE;
+            self.moved_page = Some(page);
+        }
     }
 
     /// Whether the last viewport was the reader scrolling, which another pane follows with synced scroll. Asking clears it.
@@ -189,20 +252,26 @@ impl Reader {
                 let page_size = doc.layout.usual_size();
                 if self.docs.hot == Some(doc.tab) {
                     let page = self.place.last_view_page?;
-                    // Not yet arrived where it's been sent: what the view says is about somewhere else.
-                    let (x, y) = if self.place.jump.is_some() {
+                    // Not yet arrived where it's been sent: what the view says is about somewhere else, and the line is where it's going.
+                    let (x, y, line) = if self.place.jump.is_some() {
                         (
                             doc.place.scroll_x,
                             doc.place.exact_y.map_or_else(|| doc.layout.anchor_y(doc.place.anchor), |(y, _)| y),
+                            doc.place.anchor,
                         )
                     } else {
-                        (self.viewport.x, self.viewport.y)
+                        (
+                            self.viewport.x,
+                            self.viewport.y,
+                            reading_line(&doc.layout, self.viewport.y, self.viewport.height, page),
+                        )
                     };
                     Some((
                         doc.tab,
                         SavedPlace {
                             page,
                             anchor: doc.place.anchor,
+                            line,
                             x,
                             y,
                             document_height: doc.layout.document_height(),
@@ -218,6 +287,7 @@ impl Reader {
                         SavedPlace {
                             page,
                             anchor,
+                            line: anchor,
                             x: doc.place.scroll_x,
                             y,
                             document_height: doc.layout.document_height(),
