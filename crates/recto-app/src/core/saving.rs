@@ -145,8 +145,13 @@ fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
                 .as_array()
                 .map(|notes| notes.iter().filter_map(|note| note.as_str()).collect())
                 .unwrap_or_default();
+            // A save that wrote nothing (a Save chosen while a highlight landed, refused after all) leaves the line by the page as it is: it may say why
+            // (second review of the lane, 5).
+            let written = data["written"].as_bool() != Some(false);
             if notes.is_empty() {
-                inner.window.notices().take_notice();
+                if written {
+                    inner.window.notices().take_notice();
+                }
             } else {
                 inner.window.notices().say(notes.join(" "));
             }

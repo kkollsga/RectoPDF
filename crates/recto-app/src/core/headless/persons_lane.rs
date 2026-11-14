@@ -647,3 +647,27 @@ fn a_stay_after_the_quits_patience_says_the_edits_dropped() {
     record_folder_writable(&app, true);
     drop(app.quit());
 }
+
+/// **Failure (second review of the lane, 5): a Save chosen while a highlight landed took the highlight's refusal off the page.** With the highlight refused,
+/// the Save found nothing to save and cleared the line by the page as a save does, so the person never saw why nothing was highlighted. A save that
+/// writes nothing leaves the line as it is.
+#[test]
+fn a_save_with_nothing_to_save_leaves_the_refusal_showing() {
+    let disk = Disk::new();
+    let doc = disk.pdf("fresh.pdf", 1);
+    let app = disk.start();
+    app.open(&doc);
+    selects(&app, (0, 0), (0, 0));
+    let (held, go) = app.hold_next("highlight");
+    menu(&app, HIGHLIGHT_ID);
+    held.recv_timeout(WAIT_LIMIT).expect("held");
+    menu(&app, "file.save");
+    drop(go);
+    app.settle();
+    let notice = app.reader().selection_notice.map(|notice| notice.text);
+    assert_eq!(
+        notice.as_deref(),
+        Some("Couldn't highlight: there's no text selected there."),
+        "the refusal still showing"
+    );
+}
