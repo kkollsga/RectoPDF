@@ -88,7 +88,7 @@ fn in_state(state: State) -> (HeadlessApp, UpdateBed, Option<RecordStore>, Vec<S
             setup.push(full(&app, &format!(r#"{{"cmd":"update_install","zip":{}}}"#, serde_json::json!(zip))));
         }
         State::UnderWay => {
-            app.core().sheet_changed(true);
+            app.core().life.sheet_changed(true);
             bed.releases.offer(NEW);
             setup.push(full(&app, r#"{"cmd":"update_check"}"#));
             setup.push(full(&app, r#"{"cmd":"update_install"}"#));
@@ -140,7 +140,7 @@ fn answers_now() -> Vec<String> {
             let (app, _bed, held, setup) = in_state(state);
             // A sheet open, so an install that starts waits for it and goes no further: each answer after it is given in one state, not wherever the
             // install had got to.
-            app.core().sheet_changed(true);
+            app.core().life.sheet_changed(true);
             for answer in setup {
                 lines.push(format!("{state:?} {actor} setup | {answer}"));
             }
@@ -208,7 +208,7 @@ fn chosen(id: &str, on: bool, by_agent: Option<&str>) -> String {
     bed.releases.offer(NEW);
     app.agent(Level::Full, r#"{"cmd":"update_check"}"#).expect("checked");
     // A sheet open, so *Update Now* starts an install that waits for it and goes no further.
-    app.core().sheet_changed(true);
+    app.core().life.sheet_changed(true);
     app.settle();
     app.keep_sent();
     drop(app.listener().take());

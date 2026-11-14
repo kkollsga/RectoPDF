@@ -26,7 +26,7 @@ impl Inner {
             return HostAction::None;
         }
         // A window up without the state is made again once it's in, and what was done to it would go with it.
-        if !updates::takes_input_now(self.window_interactive(), &id) {
+        if !updates::takes_input_now(self.life.window_interactive(), &id) {
             return HostAction::None;
         }
         super::menu_rows::row(self, &id).map_or(HostAction::None, |row| super::menu_rows::by_person(self, row))
@@ -36,7 +36,7 @@ impl Inner {
     pub fn menu_item_enabled(&self, id: String) -> bool {
         use menus::Enable;
         let Some(rule) = menus::enable_rule(&id) else { return false };
-        if !updates::takes_input_now(self.window_interactive(), &id) {
+        if !updates::takes_input_now(self.life.window_interactive(), &id) {
             return false;
         }
         let reader = |pick: fn(&ReaderView) -> bool| pick(&lock(&self.published).reader);
@@ -63,12 +63,7 @@ impl Inner {
     pub fn can_save(&self) -> bool {
         let reader = lock(&self.published).reader.clone();
         // Not under a sheet: the close prompt's own Save is how to save then.
-        !reader.home && reader.edited && reader.save_enabled && self.life.sheets.load(Ordering::SeqCst) == 0
-    }
-
-    /// Whether the window takes what a person does: once it's been made from the state, or once the state's been waited for long enough. Until then it's shown and takes nothing, as it's made again from the state when that comes, and what was done to it would go with it.
-    pub fn window_interactive(&self) -> bool {
-        self.life.takes_input()
+        !reader.home && reader.edited && reader.save_enabled && self.life.sheets_open() == 0
     }
 
     /// The menu bar as it stands, as recto-app's lists: what `AppCore::menu_bar` converts, and the palette lists.

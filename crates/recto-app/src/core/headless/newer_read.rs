@@ -511,7 +511,7 @@ fn a_jump_for_a_tab_held_for_its_file_waits_for_the_next_look() {
     let b_tab = recto_session::TabId(app.tabs()[0].tab);
     let inner = std::sync::Arc::clone(app.core());
     // Held as when its file's being looked at, before it's shown in a pane.
-    *crate::lock(&inner.life.holding_tab) = Some(b_tab);
+    inner.life.set_holding_tab(Some(b_tab));
     agent(&app, &format!(r##"{{"cmd":"goto","tab":"#{}","page":5,"within":0.8}}"##, b_tab.0));
     agent(&app, &format!(r##"{{"cmd":"compare","toggle":"#{}"}}"##, b_tab.0));
     app.settle();
@@ -519,7 +519,7 @@ fn a_jump_for_a_tab_held_for_its_file_waits_for_the_next_look() {
     let stop = waiting.expect("the jump still waiting while the tab's held");
     assert_eq!((stop.page, here.map(|here| here.page)), (4, Some(4)), "on page 5");
     assert!((stop.within - 0.8).abs() < 0.01, "0.8 of the way down: {stop:?}");
-    *crate::lock(&inner.life.holding_tab) = None;
+    inner.life.set_holding_tab(None);
     app.send(crate::queue::CoreCall::Reconcile);
     app.settle();
     let pane = (0..inner.panes.count())

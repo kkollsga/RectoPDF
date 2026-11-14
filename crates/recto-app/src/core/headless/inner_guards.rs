@@ -136,7 +136,6 @@ Inner::pub fn hand_off_quit_now(&self) -> bool
 Inner::pub fn memory_pressure(&self, critical: bool)
 Inner::pub fn menu_item_enabled(&self, id: String) -> bool
 Inner::pub fn note_input(&self)
-Inner::pub fn note_nearby(&self)
 Inner::pub fn notice_read(&self)
 Inner::pub fn perform(self: &Arc<Self>, id: String) -> HostAction
 Inner::pub fn qa_save_from(&self, written: &str) -> Result<(), AgentError>
@@ -144,27 +143,22 @@ Inner::pub fn qa_session_verb(&self, verb: &str, value: &str) -> Option<Result<(
 Inner::pub fn quit_requested(self: &Arc<Self>)
 Inner::pub fn quit_stayed(&self)
 Inner::pub fn ready(&self, open: &[PathBuf])
-Inner::pub fn ready_to_show(&self) -> bool
 Inner::pub fn recent_files(&self) -> Vec<RecentFile>
 Inner::pub fn record_report(&self) -> Value
-Inner::pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str)
 Inner::pub fn restore_patience_over(&self)
 Inner::pub fn save_as(self: &Arc<Self>, tab: u32, path: String)
 Inner::pub fn save_panel(&self) -> SavePanelModel
 Inner::pub fn save_problem_answered(&self, save_as: bool) -> super::HostAction
 Inner::pub fn set_frozen(&self, frozen: bool)
-Inner::pub fn sheet_changed(&self, open: bool)
 Inner::pub fn shown_with_state(&self)
 Inner::pub fn shutdown(&self)
 Inner::pub fn sidebar_tabs(&self) -> Vec<SidebarRow>
 Inner::pub fn start(start: Start) -> Result<Arc<Self>, String>
 Inner::pub fn start_with(start: Start, update_seams: updates::UpdateSeams) -> Result<Arc<Self>, String>
 Inner::pub fn state_json(&self) -> Value
-Inner::pub fn state_read(&self) -> bool
 Inner::pub fn system_pressure(&self, critical: bool)
 Inner::pub fn take_places(&self)
 Inner::pub fn window_closed(&self)
-Inner::pub fn window_interactive(&self) -> bool
 Inner::pub fn window_opened(&self)
 Inner::pub fn window_replaced(&self)
 Inner::pub(crate) fn carry_out_quit(self: &Arc<Self>, out: Option<Out>)
@@ -180,29 +174,45 @@ LaunchFacts::pub(super) fn new() -> Self
 LaunchFacts::pub(super) fn tell(&self, updates: &recto_update::updater::Updater) -> recto_update::updater::AtLaunch
 LaunchFacts::pub(super) fn untold(&self) -> bool
 Lifecycle (pub struct)
-Lifecycle.pub first_shown: Mutex<Option<Value>>
-Lifecycle.pub holding_tab: Mutex<Option<TabId>>
-Lifecycle.pub sheets: AtomicU32
-Lifecycle.pub shown_by_cap: AtomicBool
-Lifecycle.pub started: Instant
 Lifecycle.pub update_facts: updates::LaunchFacts
-Lifecycle.pub window_opened_at: Mutex<Option<Instant>>
-Lifecycle.pub(crate) clock: Arc<dyn crate::clock::Clock>
-Lifecycle.pub(crate) last_input_ms: AtomicU64
-Lifecycle.pub(crate) others_looking: AtomicU32
-Lifecycle.pub(crate) persons_running: AtomicU32
-Lifecycle.pub(crate) qa_hold_reads: AtomicBool
-Lifecycle.pub(crate) reads_running: AtomicU32
 Lifecycle::pub fn may_remake_window(&self) -> bool
 Lifecycle::pub fn new(clock: Arc<dyn crate::clock::Clock>) -> Self
+Lifecycle::pub fn note_input(&self)
+Lifecycle::pub fn note_nearby(&self)
+Lifecycle::pub fn ready_to_show(&self, session: &SessionHost<DrawableLoader>, engine: &recto_reader::Engine) -> bool
+Lifecycle::pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str, session: &SessionHost<DrawableLoader>, engine: &recto_reader::Engine)
+Lifecycle::pub fn seconds_since_start(&self) -> f64
+Lifecycle::pub fn sheet_changed(&self, open: bool)
 Lifecycle::pub fn state_read(&self) -> bool
 Lifecycle::pub fn step(&self, event: crate::lifecycle::Event) -> Option<crate::lifecycle::Out>
+Lifecycle::pub fn window_interactive(&self) -> bool
 Lifecycle::pub(crate) fn due(&self) -> Option<Duration>
+Lifecycle::pub(crate) fn first_shown(&self) -> Option<Value>
+Lifecycle::pub(crate) fn hold_reads(&self, hold: bool)
+Lifecycle::pub(crate) fn holding_tab(&self) -> Option<TabId>
+Lifecycle::pub(crate) fn last_input_ms(&self) -> u64
+Lifecycle::pub(crate) fn looking_at_others(&self)
 Lifecycle::pub(crate) fn now_ms(&self) -> u64
+Lifecycle::pub(crate) fn others_looked_at(&self)
+Lifecycle::pub(crate) fn others_looking(&self) -> bool
+Lifecycle::pub(crate) fn person_running(self: &Arc<Self>) -> PersonRunning
+Lifecycle::pub(crate) fn persons_running(&self) -> u32
+Lifecycle::pub(crate) fn read_finished(&self)
+Lifecycle::pub(crate) fn read_started(&self)
+Lifecycle::pub(crate) fn reads_held(&self) -> bool
+Lifecycle::pub(crate) fn reads_running(&self) -> u32
 Lifecycle::pub(crate) fn remade(&self) -> bool
+Lifecycle::pub(crate) fn set_holding_tab(&self, tab: Option<TabId>)
+Lifecycle::pub(crate) fn sheets_open(&self) -> u32
 Lifecycle::pub(crate) fn shown_with_state(&self) -> bool
-Lifecycle::pub(crate) fn takes_input(&self) -> bool
+Lifecycle::pub(crate) fn take_holding_tab(&self) -> Option<TabId>
 Lifecycle::pub(crate) fn told_to_quit(&self) -> bool
+Lifecycle::pub(crate) fn window_opened(&self)
+Lifecycle::pub(super) fn keeping(&self) -> crate::lifecycle::keeping::Keeping
+Lifecycle::pub(super) fn keeping_due(&self) -> Option<Duration>
+Lifecycle::pub(super) fn life(&self) -> crate::lifecycle::Life
+Lifecycle::pub(super) fn step_keeping(&self, event: crate::lifecycle::keeping::Event, to: &mut super::keeping::Carrier<'_>)
+Lifecycle::pub(super) fn tried(&self, got: bool, busy: impl FnOnce() -> bool, to: &mut super::keeping::Carrier<'_>)
 Printing (pub struct, derives Default)
 Printing::pub fn busy(&self) -> bool
 Printing::pub fn cancel(&self)
