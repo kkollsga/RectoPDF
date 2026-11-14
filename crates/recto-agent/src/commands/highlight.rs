@@ -79,7 +79,7 @@ impl Cmd for Highlight {
     }
 }
 
-/// Takes unsaved highlights away: one by its number, what's under a point, or what a pick touches. One way of naming at a time, refused as it's
+/// Takes highlights away: one made as an edit by its number, or what's under a point, or what a pick touches, the file's own too. One way of naming at a time, refused as it's
 /// read otherwise, before the level or the tab is looked at (`commands/mod.rs`, "A malformed request is refused as malformed first").
 #[derive(Clone, PartialEq, serde::Serialize)]
 #[serde(into = "line::HighlightRemove")]
@@ -155,6 +155,7 @@ impl TryFrom<line::HighlightRemove> for HighlightRemove {
         let what = match (id, page) {
             (Some(id), None) if to_page.is_none() && chars.is_none() && at.is_none() && to.is_none() => RemoveWhat::Id(id),
             (Some(_), _) => return Err(usage(ID_ALONE)),
+            (None, Some(0)) => return Err(usage("Pages count from 1.")),
             (None, Some(page)) if to_page.is_none() && chars.is_none() && to.is_none() && at.is_some() => {
                 let (x, y) = at.as_deref().and_then(point).ok_or_else(|| usage("`--at` is `X,Y` in points."))?;
                 RemoveWhat::At { page, x, y }
@@ -296,6 +297,9 @@ impl Cmd for Highlights {
                 .map_or_else(|| "a page not in the document now".to_string(), |page| format!("page {page}"));
             out.push_str(&format!("\n  #{} on {page}, by the {}", edit["id"], edit["by"].as_str().unwrap_or("user")));
         }
+        if let Some(removed) = data["removed"].as_array().filter(|removed| !removed.is_empty()) {
+            out.push_str(&format!("\n{} of the file's own taken out, unsaved.", removed.len()));
+        }
         if let Some(found) = data["file"]["highlights"].as_array() {
             out.push_str(&format!("\nIn the file, on page {}: {}.", data["file"]["page"], found.len()));
         }
@@ -326,7 +330,7 @@ pub(crate) const ROWS_HIGHLIGHT_REMOVE: &[Spec] = &[Spec {
     tag: "highlight_remove",
     group: GROUP_EDIT,
     access: Access::At(Level::Control),
-    summary: "Takes unsaved highlights away, as one step: by number, under a point, or wherever a pick touches one (with none, every one on the page being read). Highlights already in the file can't be taken out yet, and asking says so.",
+    summary: "Takes highlights away, as one step: those made as edits, by number, under a point, or wherever a pick touches one (with none, every one on the page being read), and the file's own under the point or the pick, which the next save takes out of the file (a rewrite, at Full). The file's own on a page added from another PDF can be removed once the document is saved.",
     args: &[
         Arg {
             key: "id",
@@ -357,7 +361,7 @@ pub(crate) const ROWS_HIGHLIGHTS: &[Spec] = &[Spec {
     tag: "highlights",
     group: GROUP_READ,
     access: Access::At(Level::ReadOnly),
-    summary: "The tab's unsaved highlights, with their numbers and who made them, and with `--page` the file's own on that page. Where they are and their colour, never any text.",
+    summary: "The tab's unsaved highlights, with their numbers and who made them, the file's own taken out and unsaved, and with `--page` the file's own on that page. Where they are and their colour, never any text.",
     args: &[
         Arg {
             key: "page",
@@ -368,7 +372,7 @@ pub(crate) const ROWS_HIGHLIGHTS: &[Spec] = &[Spec {
         },
         TAB,
     ],
-    data: "`{ tab, edits: [ { id, page, rects, by: user|agent, from: edit } ], file: { page, highlights: [ { index, rects, colour, from: file } ], truncated } | null, colour, note }`. `rects` are x, y, width, height in points on the page as the file shows it, from its top left; a page reads at most 256 of the file's highlights.",
+    data: "`{ tab, edits: [ { id, page, rects, by: user|agent, from: edit } ], removed: [ { page, index, from: file, removed: true } ], file: { page, highlights: [ { index, rects, colour, from: file, removed } ], truncated } | null, colour, note }`. `rects` are x, y, width, height in points on the page as the file shows it, from its top left; a page reads at most 256 of the file's highlights.",
     examples: &["recto highlights", "recto highlights --page 3 --json"],
     ..BASE
 }];
@@ -377,8 +381,8 @@ pub(crate) const ROWS_HIGHLIGHTS: &[Spec] = &[Spec {
 mod tests {
     use super::*;
 
-    /// Failure: `highlight remove` with two ways of naming what to take, or none, guesses one; or `--at` that isn't a point is read as one. Each
-    /// refused as it's read, so before the level.
+    /// Failure: `highlight remove` with two ways of naming what to take, or none, guesses one; `--at` that isn't a point is read as one; or page 0
+    /// is read as page 1. Each refused as it's read, so before the level.
     #[test]
     fn highlight_remove_takes_one_way_of_naming_what_goes() {
         let read = |line: line::HighlightRemove| HighlightRemove::try_from(line);
@@ -412,6 +416,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(read(point).unwrap().what, RemoveWhat::At { page: 2, x: 3.0, y: 4.0 });
+        let page_zero = line::HighlightRemove {
+            page: Some(0),
+            at: Some("3,4".into()),
+            ..Default::default()
+        };
+        assert_eq!(refused(page_zero), Some(Code::USAGE), "pages count from 1: page 0 isn't page 1 (review of R4.3)");
         let id = read(line::HighlightRemove {
             id: Some(7),
             ..Default::default()

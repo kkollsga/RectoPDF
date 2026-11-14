@@ -207,7 +207,7 @@ codes! {
     GENERATING_FAILED = "generating_failed", Next::ByExit;
     HAND_OFF_REFUSED = "hand_off_refused", Next::ByExit;
     HARD_LINKS = "hard_links", Next::ByExit;
-    HIGHLIGHT_IN_FILE = "highlight_in_file", Next::Says("Highlights already in the file can't be taken out yet. `recto highlights --page N` says which are edits (`from: edit`).");
+    HIGHLIGHT_IN_ADDED_FILE = "highlight_in_added_file", Next::Says("Save first: once the added PDF's pages are part of the file, its highlights can be removed.");
     HISTORY_FULL = "history_full", Next::ByExit;
     HISTORY_ROLLED_OFF = "history_rolled_off", Next::ByExit;
     INDEX_FAILED = "index_failed", Next::ByExit;

@@ -91,8 +91,9 @@ fn the_page_view_draws_what_the_edits_hold() {
     assert_eq!(given(&app), None, "nothing new of them, nothing given");
 }
 
-/// Failure (E1, coordinator 2026-11-14): a Save leaves a highlight as an unsaved edit, doesn't write it, or leaves its step for Undo to take back as if
-/// it weren't in the file; Undo stays enabled with nothing to undo; an agent's `undo` says it undid something; or a Save that failed drops a step.
+/// Failure (review of R4.3, S2, reversing E1): a Save leaves a highlight as an unsaved edit or doesn't write it; a Save that failed drops a step; or
+/// a Save drops the highlight's step, so ⌘Z after it skips the highlight. Undo after the Save takes the highlight out of the file (a rewrite, so at
+/// Full), and redo after that Save puts it back, as an edit.
 #[test]
 fn a_save_writes_the_highlight_and_undo_goes_past_it() {
     let disk = Disk::new();
@@ -125,15 +126,27 @@ fn a_save_writes_the_highlight_and_undo_goes_past_it() {
     let read = recto_core::highlights::page_highlights(&doc, 0).expect("the saved file reads");
     assert_eq!(read.found.len(), 1, "written into the file");
     assert_eq!(listed(&app)["edits"].as_array().map(Vec::len), Some(0), "and no longer an edit");
-    assert!(
-        !app.core().menu_item_enabled("edit.undo".into()),
-        "nothing to undo: the highlight's step went with the Save"
+    assert!(app.core().menu_item_enabled("edit.undo".into()), "its step goes on past the Save");
+    app.agent(Level::Control, r#"{"cmd":"undo"}"#).expect("undo");
+    app.settle();
+    assert_eq!(
+        listed(&app)["removed"].as_array().map(Vec::len),
+        Some(1),
+        "the file's highlight taken out, unsaved"
     );
-    let undo = app.agent(Level::Control, r#"{"cmd":"undo"}"#);
+    assert_eq!(listed_on(&app, 1)["file"]["highlights"][0]["removed"], true);
+    let refused = app.agent(Level::Control, r##"{"cmd":"save","tab":"active"}"##);
     assert!(
-        undo.is_err_and(|error| error.code == recto_agent::Code::NOTHING_TO_UNDO),
-        "an agent's undo says so"
+        refused.is_err_and(|error| error.code == recto_agent::Code::PERMISSION_DENIED),
+        "taking it out of the file is a rewrite, at Full"
     );
+    app.agent(Level::Full, r##"{"cmd":"save","tab":"active"}"##).expect("save at Full");
+    app.settle();
+    let read = recto_core::highlights::page_highlights(&doc, 0).expect("the saved file reads");
+    assert!(read.found.is_empty(), "gone from the file");
+    app.agent(Level::Control, r#"{"cmd":"redo"}"#).expect("redo");
+    app.settle();
+    assert_eq!(listed(&app)["edits"].as_array().map(Vec::len), Some(1), "back, as an edit to save");
 }
 
 /// Failure: below Full an agent's highlight throws away the user's undone edits, which the edit path's rule keeps; or an agent's own highlight can't
@@ -163,9 +176,10 @@ fn an_agent_below_full_keeps_the_users_undone_edits() {
     assert_eq!(listed(&app)["edits"].as_array().map(Vec::len), Some(1));
 }
 
-/// Failure: asking to take away a highlight that's already in the file does nothing and says nothing, or says there's none there.
+/// Failure (review of R4.3, S2): taking away a highlight that's in the file does nothing, or takes it out of the file at once (an agent's edit is
+/// an edit, saved only by a Save), or undo doesn't put it back.
 #[test]
-fn removing_a_files_own_highlight_says_it_cant_yet() {
+fn a_files_own_highlight_is_taken_out_as_an_edit() {
     let disk = Disk::new();
     let doc = disk.pdf("file.pdf", 1);
     let app = disk.start();
@@ -178,8 +192,19 @@ fn removing_a_files_own_highlight_says_it_cant_yet() {
     let file = listed_on(&app, 1);
     let [x, y, width, height] = ["0", "1", "2", "3"].map(|at| file["file"]["highlights"][0]["rects"][0][at.parse::<usize>().unwrap()].as_f64().unwrap());
     let at = format!("{},{}", x + width / 2.0, y + height / 2.0);
-    let refused = app.recto(Level::Control, &["highlight", "remove", "--page", "1", "--at", &at]);
-    assert!(refused.is_err_and(|error| error.code == recto_agent::Code::HIGHLIGHT_IN_FILE));
+    let before = std::fs::read(&doc).unwrap();
+    app.recto(Level::Control, &["highlight", "remove", "--page", "1", "--at", &at])
+        .expect("taken out");
+    app.settle();
+    assert_eq!(listed(&app)["removed"].as_array().map(Vec::len), Some(1));
+    assert_eq!(std::fs::read(&doc).unwrap(), before, "the file is as it was until a Save");
+    let again = app.recto(Level::Control, &["highlight", "remove", "--page", "1", "--at", &at]);
+    assert!(
+        again.is_err_and(|error| error.code == recto_agent::Code::NO_SUCH_HIGHLIGHT),
+        "already taken out"
+    );
+    app.agent(Level::Control, r#"{"cmd":"undo"}"#).expect("undo");
+    assert_eq!(listed(&app)["removed"].as_array().map(Vec::len), Some(0), "back");
 }
 
 fn listed_on(app: &HeadlessApp, page: u32) -> Value {

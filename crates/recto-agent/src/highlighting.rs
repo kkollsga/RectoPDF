@@ -4,14 +4,16 @@
 //! about the owner's edits. What's highlighted is exactly what `recto select` takes for the same arguments: the pick is read by [`selecting`], and its
 //! rectangles become the highlight's. No text of the document is in any answer here.
 //!
-//! **A file's own highlights** are listed, read through `recto_core::highlights` (geometry and colour, never a string); taking one out isn't built yet
-//! (the coordinator's scope cut, 2026-11-14), and asking says so.
+//! **A file's own highlights** are listed, read through `recto_core::highlights` (geometry and colour, never a string), and taken out by the same
+//! `recto highlight remove` (review of R4.3, S2): an edit like any other, which hides the highlight from the page as drawn until a save takes it out of
+//! the file by a rewrite (`recto_session::edit::marks::FileMark`). Only the tab's own file's: one on a page added from another PDF is refused until
+//! a save makes that page the file's (coordinator, 2026-11-14), for the person and an agent alike.
 
 use crate::Code;
 use crate::selecting::{self, Pick};
 use crate::{Actor, AgentError, Event, SessionAccess, TabRef, exit, locate, select};
 use recto_session::edit::EditError;
-use recto_session::edit::marks::{MarkChange, MarkPage, MarkRect};
+use recto_session::edit::marks::{FileKey, FileMark, MarkChange, MarkPage, MarkRect};
 use recto_session::{Author, TabId};
 use serde_json::{Value, json};
 use std::cell::Cell;
@@ -114,54 +116,79 @@ fn overlaps(a: MarkRect, b: MarkRect) -> bool {
     a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
 }
 
-/// The tab's unsaved highlights that a test says yes to, given each one's page position (none for a page that isn't in the document now).
+/// The tab's unsaved highlights that a test says yes to, given each one's page position (none for a page that isn't in the document now). Each
+/// highlight is on every position its page has; one look along the pages (review of R4.3: it was one for every highlight).
 fn edits_where<A: SessionAccess>(access: &A, id: TabId, mut wanted: impl FnMut(u32, &[MarkRect]) -> bool) -> Vec<u32> {
     access.with(|s| {
         let Some(list) = s.lists().get(id) else { return Vec::new() };
-        list.marks()
-            .iter()
-            .filter(|mark| {
-                let position = list.slots().iter().position(|slot| (slot.source, slot.page) == (mark.source, mark.page));
-                position.is_some_and(|position| wanted(u32::try_from(position).unwrap_or(u32::MAX), &mark.rects))
-            })
-            .map(|mark| mark.id)
-            .collect()
+        let mut ids: Vec<u32> = list
+            .marks()
+            .on_positions(list.slots())
+            .into_iter()
+            .filter(|(position, mark)| wanted(*position, &mark.rects))
+            .map(|(_, mark)| mark.id)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
     })
 }
 
-/// Whether a file highlight is under the test, on these pages: what's said instead when only one of the file's own is there.
-fn in_file<A: SessionAccess>(access: &A, tab: &TabRef, pages: &[u32], wanted: impl Fn(u32, MarkRect) -> bool) -> bool {
-    pages.iter().any(|position| {
-        locate(access, tab, position + 1)
-            .ok()
-            .and_then(|(_, _, source)| recto_core::highlights::page_highlights(&source.path, source.page).ok())
-            .is_some_and(|read| {
-                read.found.iter().flat_map(|found| &found.rects).any(|[x, y, width, height]| {
-                    wanted(
-                        *position,
-                        MarkRect {
-                            x: *x,
-                            y: *y,
-                            width: *width,
-                            height: *height,
-                        },
-                    )
-                })
-            })
-    })
+fn mark_rect([x, y, width, height]: [f32; 4]) -> MarkRect {
+    MarkRect { x, y, width, height }
+}
+
+/// **The file's own highlights a test says yes to, on these pages,** read off the session's lock, as removals name them; those already taken out
+/// are left out. One on a page added from another PDF refuses: see the module's notes.
+fn files_where<A: SessionAccess>(access: &A, id: TabId, pages: &[u32], wanted: &dyn Fn(u32, MarkRect) -> bool) -> Result<Vec<FileMark>, AgentError> {
+    let hidden: Vec<FileKey> = access.with(|s| s.lists().get(id).map_or_else(Vec::new, |list| list.marks().hidden().to_vec()));
+    let mut out = Vec::new();
+    for position in pages {
+        let (_, _, source) = locate(access, &TabRef::Id(id), position + 1)?;
+        let read = recto_core::highlights::page_highlights(&source.path, source.page).map_err(AgentError::from)?;
+        for found in &read.found {
+            if !found.rects.iter().any(|rect| wanted(*position, mark_rect(*rect))) {
+                continue;
+            }
+            if source.added {
+                return Err(AgentError::new(
+                    Code::HIGHLIGHT_IN_ADDED_FILE,
+                    "That highlight came with a PDF added to this one, so it can't be removed until the document is saved. Nothing was removed.",
+                    exit::FAILED,
+                ));
+            }
+            let Some(rect) = found.rect else { continue };
+            let key = FileKey {
+                source: 0,
+                page: source.page,
+                index: found.index,
+                rect,
+            };
+            if hidden.contains(&key) || out.iter().any(|file: &FileMark| file.key == key) {
+                continue;
+            }
+            out.push(FileMark {
+                key,
+                rects: found.rects.iter().copied().map(mark_rect).collect(),
+            });
+        }
+    }
+    Ok(out)
 }
 
 /// Whether a rectangle on a page position is what a removal is about.
 type Touches = Box<dyn Fn(u32, MarkRect) -> bool>;
 
-/// **`recto highlight remove`, and the person's Mark Up > Remove Highlight:** unsaved highlights taken away, as one step. One that's already in the
-/// file can't be yet, and asking for one says so rather than doing nothing.
+/// **`recto highlight remove`, and the person's Mark Up > Remove Highlight:** highlights taken away, as one step: those made as edits, and the file's
+/// own under the point or touched by the pick (taken out of the file by the next save). By number, only one made as an edit.
 pub(crate) fn remove<A: SessionAccess>(access: &A, actor: Actor, events: &mut Vec<Event>, tab: &TabRef, which: Which<'_>) -> Result<Value, AgentError> {
     let id = access.with(|s| select(s, tab))?;
     let (ids, pages, test): (Vec<u32>, Vec<u32>, Touches) = match which {
         Which::Id(number) => (vec![number], Vec::new(), Box::new(|_, _| false)),
         Which::At { page, x, y } => {
-            let position = page.saturating_sub(1);
+            let position = page
+                .checked_sub(1)
+                .ok_or_else(|| AgentError::new(Code::NO_SUCH_PAGE, "Pages count from 1.", exit::NOT_FOUND))?;
             let point = MarkRect {
                 x,
                 y,
@@ -190,55 +217,62 @@ pub(crate) fn remove<A: SessionAccess>(access: &A, actor: Actor, events: &mut Ve
             )
         }
     };
-    if ids.is_empty() {
-        if in_file(access, &TabRef::Id(id), &pages, test) {
-            return Err(AgentError::new(
-                Code::HIGHLIGHT_IN_FILE,
-                "That highlight is in the file already, and taking those out isn't built yet. Nothing was removed.",
-                exit::FAILED,
-            ));
-        }
+    let files = files_where(access, id, &pages, &*test)?;
+    if ids.is_empty() && files.is_empty() {
         return Err(AgentError::new(
             Code::NO_SUCH_HIGHLIGHT,
-            "There's no unsaved highlight there, so nothing was removed.",
+            "There's no highlight there, so nothing was removed.",
             exit::NOT_FOUND,
         ));
     }
-    let did = if ids.len() == 1 {
-        "Removed a highlight.".to_string()
-    } else {
-        format!("Removed {} highlights.", ids.len())
+    let did = match ids.len() + files.len() {
+        1 => "Removed a highlight.".to_string(),
+        many => format!("Removed {many} highlights."),
     };
-    crate::edit(access, actor, &TabRef::Id(id), events, did, |edits| edits.mark(MarkChange::Remove { ids }))
+    let change = if files.is_empty() {
+        MarkChange::Remove { ids }
+    } else {
+        MarkChange::RemoveFile { files, ids }
+    };
+    crate::edit(access, actor, &TabRef::Id(id), events, did, |edits| edits.mark(change))
 }
 
-/// **`recto highlights`:** the tab's unsaved highlights, each with its number, page, lines and who made it; and, with `--page`, the file's own on that
-/// page, by their place in its list, read off the session's lock. Geometry and colour only.
+/// **`recto highlights`:** the tab's unsaved highlights, each with its number, page, lines and who made it; the file's own taken out and unsaved, by
+/// page and place; and, with `--page`, the file's own on that page, by their place in its list, read off the session's lock. Geometry and colour
+/// only.
 pub(crate) fn list<A: SessionAccess>(access: &A, tab: &TabRef, page: Option<u32>) -> Result<Value, AgentError> {
-    let (id, edits) = access.with(|s| {
+    let (id, edits, removed) = access.with(|s| {
         let id = select(s, tab)?;
-        let edits: Vec<Value> = s.lists().get(id).map_or_else(Vec::new, |list| {
-            list.marks()
-                .iter()
-                .map(|mark| {
-                    let position = list.slots().iter().position(|slot| (slot.source, slot.page) == (mark.source, mark.page));
-                    let rects: Vec<[f32; 4]> = mark.rects.iter().map(|rect| [rect.x, rect.y, rect.width, rect.height]).collect();
-                    let by = if mark.by == Author::Agent { "agent" } else { "user" };
-                    json!({ "id": mark.id, "page": position.map(|position| position + 1), "rects": rects, "by": by, "from": "edit" })
-                })
-                .collect()
-        });
-        Ok::<_, AgentError>((id, edits))
+        let Some(list) = s.lists().get(id) else {
+            return Ok::<_, AgentError>((id, Vec::new(), Vec::new()));
+        };
+        let first = list.marks().first_positions(list.slots());
+        let edits: Vec<Value> = list
+            .marks()
+            .iter()
+            .map(|mark| {
+                let rects: Vec<[f32; 4]> = mark.rects.iter().map(|rect| [rect.x, rect.y, rect.width, rect.height]).collect();
+                let by = if mark.by == Author::Agent { "agent" } else { "user" };
+                json!({ "id": mark.id, "page": first.get(&mark.id).map(|position| position + 1), "rects": rects, "by": by, "from": "edit" })
+            })
+            .collect();
+        let removed: Vec<(Option<u32>, FileKey)> = list.marks().hidden().iter().map(|key| (list.position_of(key.page), *key)).collect();
+        Ok((id, edits, removed))
     })?;
+    let listed_removed: Vec<Value> = removed
+        .iter()
+        .map(|(position, key)| json!({ "page": position.map(|position| position + 1), "index": key.index, "from": "file", "removed": true }))
+        .collect();
     let file = match page {
         None => Value::Null,
         Some(page) => {
             let (_, _, source) = locate(access, &TabRef::Id(id), page)?;
             let read = recto_core::highlights::page_highlights(&source.path, source.page).map_err(AgentError::from)?;
+            let taken = |index: u32| !source.added && removed.iter().any(|(_, key)| key.page == source.page && key.index == index);
             let found: Vec<Value> = read
                 .found
                 .iter()
-                .map(|found| json!({ "index": found.index, "rects": found.rects, "colour": found.rgb.map(|rgb| format!("#{rgb:06X}")), "from": "file" }))
+                .map(|found| json!({ "index": found.index, "rects": found.rects, "colour": found.rgb.map(|rgb| format!("#{rgb:06X}")), "from": "file", "removed": taken(found.index) }))
                 .collect();
             json!({ "page": page, "highlights": found, "truncated": read.truncated })
         }
@@ -246,9 +280,10 @@ pub(crate) fn list<A: SessionAccess>(access: &A, tab: &TabRef, page: Option<u32>
     Ok(json!({
         "tab": id.0,
         "edits": edits,
+        "removed": listed_removed,
         "file": file,
         "colour": format!("#{:06X}", recto_core::save::HIGHLIGHT_RGB),
-        "note": "`rects` are x, y, width, height in points on the page as the file shows it, from its top left. `edits` are unsaved, and `recto highlight remove --id N` takes one away; `file` lists the file's own on `--page`, which can't be taken out yet.",
+        "note": "`rects` are x, y, width, height in points on the page as the file shows it, from its top left. `edits` are unsaved, and `recto highlight remove --id N` takes one away. `removed` are the file's own taken out, which the next save takes out of the file; `recto undo` puts one back. `file` lists the file's own on `--page`, and `recto highlight remove --page N --at X,Y` takes one out.",
     }))
 }
 

@@ -119,9 +119,9 @@ pub fn answered(inner: &Arc<Inner>, ran: &person::Ran<'_>) {
     let words = if error.code == Code::NO_TEXT_THERE {
         Some("there's no text selected there")
     } else if error.code == Code::NO_SUCH_HIGHLIGHT {
-        Some("there's no highlight made since the last save there")
-    } else if error.code == Code::HIGHLIGHT_IN_FILE {
-        Some("that highlight is part of the file, and taking those out isn't built yet")
+        Some("there's no highlight there")
+    } else if error.code == Code::HIGHLIGHT_IN_ADDED_FILE {
+        Some("that highlight came with an added PDF, so save first, then it can be removed")
     } else if error.code == Code::CHANGED {
         Some("the pages moved meanwhile, so try again")
     } else {
