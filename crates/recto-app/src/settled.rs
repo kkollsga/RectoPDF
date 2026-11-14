@@ -21,7 +21,10 @@
 //! a try or a late keep's read at its seam waits for the rest with `settled_but_the_held_thread` (`late_lock`'s). A test that holds a page view's thread (`Seam::Worker`) waits for the session's part with the host's turns (`host_turns`), as the kit's settle
 //! waits for the page view at rest. The updater's check and install, each on a thread of its own: in the real app a check is a network fetch, and
 //! installing or waiting lasts until a hand-off, so counting them would have `qa wait` wait those out; the kit's update tests wait for the updater by its
-//! status, by name (`wait_for_status`), and its end says only that the window should look again. The search index, which the kit has off and which says
+//! status, by name (`wait_for_status`), and its end says only that the window should look again. **What of the updater is counted:** its being told of a
+//! launch held back for the record's lock, on a thread of its own once keeping settles (a file read and a path made whole, local and short): until it's
+//! back, `update status` still says the version unknown and no second copy, which is what a read right after a settle met on a starved machine
+//! (`life_script`, 2026-11-14). Counted by a guard dropped however the thread ends, so a panic there can't leave a wait waiting out its limit. The search index, which the kit has off and which says
 //! when it's done in its own words. In the window, its animations and a print's file being handed to the system, which `qa wait` adds itself, as only the
 //! host knows them.
 //!
@@ -291,6 +294,10 @@ fn off_the_session_thread(inner: &Watched<'_>, busy: &mut Vec<String>) {
     // life hears it.
     if inner.life.keeping_thread_out() {
         busy.push("a try at the record's lock, or a late keep's read, out on its thread".to_string());
+    }
+    // The updater told of a launch held back for the record's lock, on a thread of its own: `update status` says what that made it once it's back.
+    if inner.life.update_facts.telling() > 0 {
+        busy.push("the updater being told of the launch".to_string());
     }
     // Its thread goes once it's said how its last query ended, which the session thread takes as Find's news.
     if inner.host.session.finder().has_thread() {

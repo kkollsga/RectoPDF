@@ -256,3 +256,49 @@ fn a_restore_while_a_late_read_is_still_out_is_refused() {
     assert_eq!(record_folder(&disk), on_disk);
     comes_back_at_the_next_launch(disk);
 }
+
+/// Failure (2026-11-14, `life_script` at load 12 to 22): the app said it was settled with the updater not yet told of the launch it held back for the record's
+/// lock, so `update status` right after a settle (or `qa wait`) said the version unknown and no second copy, where the life had settled as a second copy. The
+/// telling is out on a thread of its own: held at the updater's look at the launch, it's named as under way; let through, the settle waits for it and the
+/// updater says a second copy. And a telling whose thread ends in a panic isn't left counted, so no settle waits out its limit for it.
+#[test]
+fn the_app_isnt_settled_till_the_updater_has_the_launch() {
+    let disk = a_saved_session();
+    let before = the_copy_before(&disk);
+    let bed = crate::testkit::update_bed::UpdateBed::new();
+    disk.install_app(crate::testkit::update_bed::OLD);
+    let app = disk.builder().update(&bed).another_keeps().start();
+    for _ in 1..TRIES {
+        next_try_fails(&app);
+    }
+    recto_platform::slow::gate::hold(&[Seam::Launch]);
+    app.advance(TRY_EVERY_MS);
+    app.wait_until("not kept", || app.core().life.keeping() == Keeping::NotKept);
+    app.wait_until("the updater's look at the launch held", || app.waiting(Seam::Launch) > 0);
+    let under_way = crate::settled::under_way(&crate::settled::watched!(app.core()), crate::settled::PageViews::AtRest);
+    assert!(
+        under_way.iter().any(|what| what == "the updater being told of the launch"),
+        "the telling isn't counted: {under_way:?}"
+    );
+    app.let_through(Seam::Launch, 1);
+    app.settle();
+    assert_eq!(
+        app.update_status()["second_copy"],
+        true,
+        "settled, and the updater told: {}",
+        app.update_status()
+    );
+
+    // A telling's thread that panics lets its count go.
+    let life = std::sync::Arc::clone(&app.core().life);
+    let ended = std::thread::spawn(move || {
+        let _counted = crate::core::updates::TellingTheLaunch::begin(&life);
+        panic!("the updater panicked in launched");
+    })
+    .join();
+    assert!(ended.is_err(), "the thread panicked");
+    assert_eq!(app.core().life.update_facts.telling(), 0, "a panicked telling left counted");
+    app.settle();
+    drop(app.quit());
+    drop(before);
+}
