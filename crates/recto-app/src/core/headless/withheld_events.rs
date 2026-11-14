@@ -162,6 +162,9 @@ fn agent_told(pages: usize, word: &str) -> Vec<String> {
     engine.qa().hold_tells(false);
     app.settle();
     told.push(format!("closed: {:?}", watching.heard()));
+    // Anything told after that mark (a Finder's or a helper's late word) is read too.
+    app.settle();
+    told.push(format!("after: {:?}", watching.heard()));
     told
 }
 

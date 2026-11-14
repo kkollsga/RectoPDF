@@ -68,7 +68,8 @@ impl HeadlessApp {
 
 impl Watching {
     /// **Every event the agent was told since it last asked,** each its line's `data`, read up to a mark published after the app settled. Settle first:
-    /// what's still under way may be told after the mark.
+    /// what's still under way may be told after the mark. A settled app has no Find thread, and the Finder says its last word before its thread lets go,
+    /// so a Finder's news is before the mark; a test's last round asks again after one more settle, so anything told later still shows (an empty round).
     ///
     /// # Panics
     ///
