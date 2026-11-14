@@ -35,7 +35,9 @@ back before writing the feature.**
    (`crates/recto-app/src/core/person.rs`) runs a `WAITS` command on a thread of its own and everything else on the core queue. **The person's ordered commands
    (every edit, a save, a print, a close) keep their order through the person's lane** (`crates/recto-app/src/queue/lane.rs`, started in
    `crates/recto-app/src/core/person_lane.rs`): a feature with a new ordered `WAITS` command passes its turn where its command has fixed what it acts on, by
-   `crate::queue::lane::pass_here()` (a print once its pages are read, a save once begun), or at its end.
+   `crate::queue::lane::pass_here()` (a print once its pages are read, a save once begun), or at its end. **A new command is placed twice** in
+   `crates/recto-app/src/core/command_kinds.rs`, whose test names it until it is: ordered or not, and changing (anything it does can be in what a quit
+   writes, so a quit waits for it) or only reading.
    **Registration:** one variant line in a `family!` of `crates/recto-agent/src/commands/mod.rs` (Find: `Find(finding::Find)` in `Move`), plus
    `pub mod <feature>;` in the same file.
 2. **Its typed payload.** When a command's choices are words or flags that can't go together, the payload is a type and its wire form is a `line`
