@@ -1,0 +1,11 @@
+# Highlights
+
+> Part of the engineering notes: [`README.md`](README.md).
+
+**A highlight is an edit like a turn** (R4.3, the pilot of [`../FEATURES.md`](../FEATURES.md)). `recto highlight` (Control) highlights exactly what `recto select` takes for the same arguments, and Mark Up > Highlight (⌃⌘H) sends the person's selection as that command, run for them by the one executor. Its state is `recto_session::edit::marks`: steps of `PageEdits`' one history (`Step::Mark`), so undo, redo, the journal, the Save icon, discard, the close prompt and who made each step hold as for a turn, and the owner's-edits rules too. A highlight belongs to a page by what the page is, `(source, page)`, so it follows its page through moves and turns; across pages it's one step. Its rectangles are in the page's frame, as `select` gives them. `recto highlight remove` takes unsaved ones away (by number, point or pick); one already in the file can't be yet (`highlight_in_file`). `recto highlights` lists them, and with `--page` the file's own (`recto_core::highlights`: geometry and colour, never a string, capped and fuzzed).
+
+**Save** (`recto_core::save::annotate`) writes each as a standard `/Highlight` with `/QuadPoints`, `/C`, `/F 4` and an appearance stream, from numbers it worked out and nothing of the file's; no author, dates or text. It's an append, so a signed file's bytes stay; a certified or locked one is refused. At a confirmed Save the steps that would take a saved highlight out leave the history (coordinator, E1), and a journal that holds highlights says version 2 so an app from before them leaves it alone (E2).
+
+**Drawing.** The app gives the reading pane's page view the tab's set when it changes, the paper does or the tab is shown anew (`core/highlight.rs`), as one op (`Op::Marks`), held to what can be drawn; the page view keeps nothing, and the host (`PageMarks.swift`) draws a layer of each page's, multiplied in the file's yellow, or dimmed and lightening on dark paper. A saved highlight is part of the page PDFium draws, so dark paper turns it over with the page (Q8, a follow-up).
+
+**Costs.** A tab without highlights: nothing (no edit list, no op). A highlight: a 32-byte `Mark` and 16 bytes a line, boxed in its history step. See the hand-back of `build/pilot-highlights` for input to frame and what wasn't measured.
