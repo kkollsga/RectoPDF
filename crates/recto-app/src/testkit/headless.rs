@@ -659,7 +659,7 @@ impl HeadlessApp {
     pub fn handed_off(mut self, bed: &UpdateBed) -> (Plan, Disk) {
         self.wait_until("the app told to quit for an update", || self.listener.count(&Heard::HandOffQuit) > 0);
         let plan = bed.installer.plans().pop().expect("an installer started on a plan");
-        (plan, self.end())
+        (plan, end(&mut self, None))
     }
 
     /// The reader's model, as the window pulls it.
@@ -788,20 +788,13 @@ impl HeadlessApp {
     #[must_use]
     pub fn quit_anyway(mut self) -> Disk {
         self.core().shutdown();
-        self.end()
+        end(&mut self, None)
     }
 
     /// **The app killed:** nothing it was asked is taken, nothing more is written, nothing's drained or flushed, and the disk is as the last write left it.
     #[must_use]
     pub fn kill(mut self) -> Disk {
-        self.end()
-    }
-
-    /// **Lets go of the core, as a process ending does,** whether by a quit's way out or a kill: from this moment nothing more is written, whatever's still
-    /// running; nothing queued for the session thread is taken; every held seam opens, so what waited there goes on to find it can't write; the page views end;
-    /// and every thread that held the core, or the updater, lets go of it.
-    fn end(&mut self) -> Disk {
-        self.end_holding(None)
+        end(&mut self, None)
     }
 
     /// **The app killed with what waits at `seam` still waiting,** let go only once the core has gone and `ended` has looked at the disk as it was then: so a
@@ -809,60 +802,63 @@ impl HeadlessApp {
     /// that order every time, and what it writes after that can be seen. What waits at `seam` must not hold the core, or the end waits for it in vain.
     #[must_use]
     pub fn kill_holding(mut self, seam: Seam, ended: impl FnOnce(&Disk)) -> Disk {
-        self.end_holding(Some((seam, Box::new(ended))))
+        end(&mut self, Some((seam, Box::new(ended))))
     }
+}
 
-    /// [`Self::end`], with one seam left held until the core's gone ([`Self::kill_holding`]).
-    fn end_holding(&mut self, mut holding: Option<(Seam, Box<dyn FnOnce(&Disk) + '_>)>) -> Disk {
-        if let Some(inner) = self.inner.take() {
-            inner.saver.store.let_go();
-            inner.core.abandon();
-            match &holding {
-                Some((held, _)) => Seam::ALL.into_iter().filter(|seam| seam != held).for_each(recto_platform::slow::gate::open),
-                None => recto_platform::slow::gate::open_all(),
-            }
-            for engine in inner.panes.engines(&inner.engine) {
-                engine.shut_down();
-            }
-            let began = Instant::now();
-            while Arc::strong_count(&inner) > 1 {
-                assert!(
-                    began.elapsed() < WAIT_LIMIT,
-                    "the core is still held by {} other(s) {WAIT_LIMIT:?} after it was ended",
-                    Arc::strong_count(&inner) - 1
-                );
-                std::thread::sleep(LOOK_EVERY); // ratchet: poll
-            }
-            // And the updater's threads end with it: an install that had handed off was waiting for its process to go, on a clock that stands still here,
-            // and looks at whether its app has ended instead.
-            let updater = Arc::downgrade(&inner.updates);
-            drop(inner);
-            if let Some((seam, ended)) = holding.take() {
-                ended(self.disk.as_ref().expect("the disk"));
-                recto_platform::slow::gate::open(seam);
-            }
-            let began = Instant::now();
-            while updater.strong_count() > 0 {
-                assert!(
-                    began.elapsed() < WAIT_LIMIT,
-                    "the updater is still held by {} {WAIT_LIMIT:?} after its app ended: an update's thread that didn't end with it",
-                    updater.strong_count()
-                );
-                std::thread::sleep(LOOK_EVERY); // ratchet: poll
-            }
+/// **Lets go of the core, as a process ending does,** whether by a quit's way out or a kill: from this moment nothing more is written, whatever's still running;
+/// nothing queued for the session thread is taken; every held seam opens (but the one `holding` names, let go only once the core's gone and its look at the disk
+/// made: [`HeadlessApp::kill_holding`]), so what waited there goes on to find it can't write; the page views end; and every thread that held the core, or the
+/// updater, lets go of it.
+fn end(app: &mut HeadlessApp, mut holding: Option<(Seam, Box<dyn FnOnce(&Disk) + '_>)>) -> Disk {
+    if let Some(inner) = app.inner.take() {
+        inner.saver.store.let_go();
+        inner.core.abandon();
+        match &holding {
+            Some((held, _)) => Seam::ALL.into_iter().filter(|seam| seam != held).for_each(recto_platform::slow::gate::open),
+            None => recto_platform::slow::gate::open_all(),
         }
-        let mut disk = self.disk.take().expect("the disk");
-        // The time of day moved on with this run's clock, from where it was at its launch.
-        disk.wall_ms = disk.wall_ms.saturating_add(self.clock.now_ms().saturating_sub(self.clock_at_start));
-        disk
+        for engine in inner.panes.engines(&inner.engine) {
+            engine.shut_down();
+        }
+        let began = Instant::now();
+        while Arc::strong_count(&inner) > 1 {
+            assert!(
+                began.elapsed() < WAIT_LIMIT,
+                "the core is still held by {} other(s) {WAIT_LIMIT:?} after it was ended",
+                Arc::strong_count(&inner) - 1
+            );
+            std::thread::sleep(LOOK_EVERY); // ratchet: poll
+        }
+        // And the updater's threads end with it: an install that had handed off was waiting for its process to go, on a clock that stands still here,
+        // and looks at whether its app has ended instead.
+        let updater = Arc::downgrade(&inner.updates);
+        drop(inner);
+        if let Some((seam, ended)) = holding.take() {
+            ended(app.disk.as_ref().expect("the disk"));
+            recto_platform::slow::gate::open(seam);
+        }
+        let began = Instant::now();
+        while updater.strong_count() > 0 {
+            assert!(
+                began.elapsed() < WAIT_LIMIT,
+                "the updater is still held by {} {WAIT_LIMIT:?} after its app ended: an update's thread that didn't end with it",
+                updater.strong_count()
+            );
+            std::thread::sleep(LOOK_EVERY); // ratchet: poll
+        }
     }
+    let mut disk = app.disk.take().expect("the disk");
+    // The time of day moved on with this run's clock, from where it was at its launch.
+    disk.wall_ms = disk.wall_ms.saturating_add(app.clock.now_ms().saturating_sub(app.clock_at_start));
+    disk
 }
 
 impl Drop for HeadlessApp {
     fn drop(&mut self) {
         // A test that failed is unwinding through here: its failure is the one to see, so nothing here adds a second.
         if self.inner.is_some() && !std::thread::panicking() {
-            drop(self.end());
+            drop(end(self, None));
         }
     }
 }

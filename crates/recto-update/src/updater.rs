@@ -21,6 +21,7 @@ mod flow;
 mod handing;
 mod menu;
 mod now;
+mod remembered;
 mod said;
 pub mod seams;
 mod settle;
@@ -322,21 +323,6 @@ impl Updater {
         let _ = local::ensure_private_dir(&self.files.work);
     }
 
-    /// Writes what's remembered, whatever it is by the time the last write's done, off the lock the UI thread asks through. **Never before it's been read:**
-    /// until the launch is told ([`Self::launched`], which reads `updates.json` and sets the facts in the same step) what's held is a fresh file's defaults
-    /// and any switch chosen meanwhile, and writing that would put defaults over what an update proved, what it's watching and the versions that failed. A
-    /// switch chosen then is kept and goes to disk on top of what's read ([`chosen_before`]). Nor by a second copy, whose state folder is another's.
-    fn save(&self) {
-        let _writing = lock(&self.writing);
-        let saved = {
-            let st = lock(&self.st);
-            (st.facts.is_some() && !st.second_copy).then(|| st.saved.clone())
-        };
-        if let Some(saved) = saved {
-            saved.write(&self.files.saved);
-        }
-    }
-
     /// Whether the switch is on, by what was chosen or by what this build starts with.
     #[must_use]
     pub fn switch_on(&self) -> bool {
@@ -352,18 +338,6 @@ impl Updater {
         }
         self.save_soon();
         self.host.changed();
-    }
-
-    /// Writes what's remembered on a thread of its own, as this may be the UI thread.
-    fn save_soon(self: &Arc<Self>) {
-        let me = Arc::clone(self);
-        let written = std::thread::Builder::new()
-            .name("recto-update-save".into())
-            .stack_size(128 * 1024)
-            .spawn(move || me.save());
-        if written.is_err() {
-            self.save();
-        }
     }
 
     fn offered_here(&self, st: &St) -> Option<String> {
@@ -390,7 +364,7 @@ impl Updater {
         let current = facts.version.clone();
         let mut saved = Saved::read(&self.files.saved);
         // A switch chosen before now is kept, on top of what's read, and saved with it; again as the facts are set, for one chosen while this read on.
-        let mut dirty_at_launch = chosen_before(&lock(&self.st).saved, &mut saved, &current);
+        let mut dirty_at_launch = remembered::chosen_before(&lock(&self.st).saved, &mut saved, &current);
         let app = facts.app.clone();
         // What's in the state folder and beside the app is the first copy's. This one reads and leaves it.
         let second_copy = !self.host.keeps_the_record();
@@ -453,7 +427,7 @@ impl Updater {
         let early = {
             let mut st = lock(&self.st);
             st.launched_ms = now;
-            dirty |= chosen_before(&st.saved, &mut saved, &current);
+            dirty |= remembered::chosen_before(&st.saved, &mut saved, &current);
             st.saved = saved;
             st.facts = Some(facts);
             st.second_copy = second_copy;
@@ -1213,22 +1187,6 @@ impl Updater {
     }
 }
 
-/// **The switches chosen before the launch was told, kept on top of what's read** ([`Updater::save`] writes nothing before then): `before` is what the updater
-/// held until now, a fresh file's defaults with only what was chosen set; `read` is `updates.json`. *Update automatically* as chosen; *Allow development
-/// builds* as chosen, with the way back to a release it sets ([`Updater::choose_dev_builds`]: off on a development build starts it, on ends it). Says whether
-/// that changed what was read, so it's written.
-fn chosen_before(before: &Saved, read: &mut Saved, current: &str) -> bool {
-    let was = (read.auto_update, read.dev_builds, read.back_to_release);
-    if before.auto_update.is_some() {
-        read.auto_update = before.auto_update;
-    }
-    if let Some(on) = before.dev_builds {
-        read.dev_builds = Some(on);
-        read.back_to_release = !on && crate::version::is_development(current);
-    }
-    was != (read.auto_update, read.dev_builds, read.back_to_release)
-}
-
 /// What's said once a version that didn't work has gone back, by why.
 fn went_back_words(why: &str, version: &str, current: &str) -> String {
     match why {
@@ -1293,6 +1251,7 @@ fn clean_code(code: &str) -> String {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+    mod remembered;
     mod second_copy;
     use super::*;
     use crate::fetch::tests::{Answer, Server};
@@ -1830,92 +1789,6 @@ mod tests {
         assert_eq!(bed.updater.menu_item().title, "Update to 0.2.0…");
         assert!(bed.updater.notice().unwrap().text.starts_with("Couldn't check"), "it says the check failed");
         assert!(lock(&bed.updater.st).saved.failures == 1, "and backs off");
-    }
-
-    /// Failure: the user's choice of off is lost with a record, or turned back on by a launch, so an app they told not to replaces itself anyway. The switch is in this updater's own file.
-    #[test]
-    fn the_switch_is_kept_in_the_updaters_own_file() {
-        let bed = Bed::new("switch-file");
-        assert!(bed.updater.switch_on(), "on, by default, in this build");
-        bed.updater.choose_switch(false);
-        let saved = bed.dir.join("state/updates.json");
-        bed.wait_for("the write", |_| Saved::read(&saved).auto_update == Some(false));
-        let again = Updater::new(&bed.dir.join("state"), bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
-        again.launched(Facts {
-            version: "0.1.0".into(),
-            app: bed.app.clone(),
-            system: "15.0".into(),
-        });
-        assert!(!again.switch_on(), "a launch knows it, whatever's in the record");
-        // And a damaged file errs towards not replacing anything.
-        local::write_private_file(&saved, b"not json").unwrap();
-        let damaged = Updater::new(&bed.dir.join("state"), bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
-        damaged.launched(Facts {
-            version: "0.1.0".into(),
-            app: bed.app.clone(),
-            system: "15.0".into(),
-        });
-        assert!(!damaged.switch_on());
-    }
-
-    /// Failure (review of R3.7 S4, 2026-11-14): a switch chosen before the launch is told (held back for the record's lock, up to a minute after an update)
-    /// is written with a fresh file's defaults around it, over the version proven, its watch, the last update and the versions that failed; and the launch,
-    /// reading that, or setting what it read over the switch, loses the switch too. Nothing's written before the launch has read the file; then it holds what
-    /// was read and both switches, in memory and on disk.
-    #[test]
-    fn nothing_is_written_before_the_launch_has_read_what_is_remembered() {
-        let dir = temp_dir("u-early-switch");
-        let root = dir.join("state");
-        local::ensure_private_dir(&root).unwrap();
-        let install = dir.join("install");
-        std::fs::create_dir_all(&install).unwrap();
-        let app = fake_app(&install, "0.1.0");
-        let server = Server::start();
-        let files = Files::in_state(&root);
-        let remembered = Saved {
-            failed: vec!["0.1.5".into()],
-            proven: Some("0.1.0".into()),
-            probation: Some(Probation {
-                version: "0.1.0".into(),
-                since_ms: crate::wall_ms(),
-                running_since_ms: None,
-                early_ends: 1,
-            }),
-            last_update: Some(LastUpdate {
-                from: "0.0.9".into(),
-                to: "0.1.0".into(),
-                gap_ms: 1_500,
-                at_ms: crate::wall_ms(),
-            }),
-            auto_update: Some(true),
-            ..Saved::default()
-        };
-        remembered.write(&files.saved);
-        let was = std::fs::read(&files.saved).unwrap();
-        let updater = Updater::new(&root, server.source(), Arc::new(Fake::default()) as Arc<dyn Host>);
-        updater.choose_switch(false);
-        updater.choose_dev_builds(true);
-        updater.save();
-        assert_eq!(std::fs::read(&files.saved).unwrap(), was, "nothing written before the launch has read it");
-        assert!(!updater.switch_on() && updater.dev_builds_on(), "the switches hold at once");
-        updater.launched(Facts {
-            version: "0.1.0".into(),
-            app,
-            system: "15.0".into(),
-        });
-        let on_disk = Saved::read(&files.saved);
-        for saved in [lock(&updater.st).saved.clone(), on_disk] {
-            assert_eq!(
-                (saved.auto_update, saved.dev_builds),
-                (Some(false), Some(true)),
-                "the switches as chosen: {saved:?}"
-            );
-            assert_eq!(saved.proven.as_deref(), Some("0.1.0"), "{saved:?}");
-            assert_eq!(saved.probation.as_ref().map(|probation| probation.early_ends), Some(1), "{saved:?}");
-            assert!(saved.last_update.is_some(), "{saved:?}");
-            assert_eq!(saved.failed, ["0.1.5"], "{saved:?}");
-        }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Failure: a new version that can't draw counts as having come up, because a first frame showed, so every copy moves to a release that shows no pages. **`first_frame` says what "come up" means.** It proves itself with a drawing, says so to the installer at once if it can't, and counts towards going back if there's no installer to hear. A normal launch asks nothing of the renderer.
