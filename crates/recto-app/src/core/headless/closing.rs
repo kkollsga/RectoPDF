@@ -99,7 +99,7 @@ fn only_the_close_after_a_save_says_the_tab_stayed() {
     app.person(r##"{"cmd":"close","tab":"#1"}"##);
     app.settle();
     assert_eq!(app.tabs().len(), 1, "it stays, with its edit");
-    assert_eq!(crate::lock(&app.core().window.action_notice).clone(), None, "a plain close says nothing");
+    assert_eq!(app.core().window.notices().notice(), None, "a plain close says nothing");
     app.send(CoreCall::Run(Box::new(PersonCommand::finishing(
         recto_agent::parse(r##"{"cmd":"close","tab":"#1"}"##).expect("a command"),
         None,
@@ -107,7 +107,7 @@ fn only_the_close_after_a_save_says_the_tab_stayed() {
     app.settle();
     assert_eq!(app.tabs().len(), 1, "it stays");
     assert_eq!(
-        crate::lock(&app.core().window.action_notice).clone().as_deref(),
+        app.core().window.notices().notice().as_deref(),
         Some(crate::saving::SAVED_NOT_CLOSED),
         "the close after a save says so, in the prompt's words"
     );

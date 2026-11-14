@@ -88,7 +88,7 @@ fn only_a_fourth_pane_says_why_it_wasnt_added() {
     for file in &files {
         app.open(file);
     }
-    let notice = |app: &HeadlessApp| crate::lock(&app.core().window.action_notice).clone();
+    let notice = |app: &HeadlessApp| app.core().window.notices().notice();
     app.act(UiAction::Menu { id: "compare.synced".into() });
     app.settle();
     assert_eq!(notice(&app), None, "no comparison to sync: nothing said");

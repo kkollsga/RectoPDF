@@ -65,7 +65,7 @@ const REAL_X: f64 = 222.0;
 
 /// The window's frame as the host says it, at `x`, as `AppCore::window_changed` sets it.
 fn window_at(app: &HeadlessApp, x: f64) {
-    crate::lock(&app.core().window.app).window = Some(WindowRecord {
+    app.core().window.state_for_tests().window = Some(WindowRecord {
         frame: Rect {
             x,
             y: 40.0,
@@ -951,7 +951,7 @@ fn a_late_keeps_read_that_never_comes_back_or_panics_ends_the_restore() {
 }
 
 /// A late keep held with its saved session being read: the copy before let go, a try took the lock, and the read waits at its seam.
-fn restoring_held(disk: Disk) -> HeadlessApp {
+pub(super) fn restoring_held(disk: Disk) -> HeadlessApp {
     let before = the_copy_before(&disk);
     let app = disk.builder().another_keeps().start();
     recto_platform::slow::gate::hold(&[Seam::State]);
@@ -963,7 +963,7 @@ fn restoring_held(disk: Disk) -> HeadlessApp {
 }
 
 /// The restore let in, and kept.
-fn let_the_restore_in(app: &HeadlessApp) {
+pub(super) fn let_the_restore_in(app: &HeadlessApp) {
     app.let_through(Seam::State, 1);
     app.wait_until("the record kept", || app.core().life.keeping() == Keeping::Keeps);
     app.settle();
@@ -996,7 +996,7 @@ fn an_appearance_chosen_while_the_saved_session_is_read_stays() {
         Appearance::System,
         "as the copy before left it"
     );
-    crate::lock(&app.core().window.app).appearance = Appearance::Dark;
+    app.core().window.state_for_tests().appearance = Appearance::Dark;
     app.core().saver.view_changed();
     let_the_restore_in(&app);
     assert_eq!(tab_names(&app), ["a", "b"]);
@@ -1014,7 +1014,7 @@ fn an_ordinary_late_state_keeps_the_appearance_the_window_shows_once_it_takes_in
     let app = a_saved_session().builder().hold(&[Seam::State]).start();
     app.advance(u64::try_from(crate::core::updates::INPUT_PATIENCE.as_millis()).expect("ms"));
     assert!(app.core().life.window_interactive(), "past its patience, the window takes input");
-    crate::lock(&app.core().window.app).appearance = Appearance::Dark;
+    app.core().window.state_for_tests().appearance = Appearance::Dark;
     app.core().saver.view_changed();
     app.let_state_in();
     app.settle();
@@ -1043,7 +1043,7 @@ fn changing_the_paper_or_the_appearance_while_it_tries_stops_it() {
             app.settle();
             assert_eq!(app.reader().note, not_kept_words(), "said at once");
         } else {
-            crate::lock(&app.core().window.app).appearance = recto_session::record::Appearance::Dark;
+            app.core().window.state_for_tests().appearance = recto_session::record::Appearance::Dark;
             app.core().saver.view_changed();
         }
         drop(before);

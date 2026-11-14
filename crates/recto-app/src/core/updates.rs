@@ -145,7 +145,7 @@ impl Host for Hooks {
     }
 
     fn frontmost(&self) -> bool {
-        self.inner().is_some_and(|inner| lock(&inner.window.app).focus.app_frontmost)
+        self.inner().is_some_and(|inner| inner.window.frontmost())
     }
 
     /// A quiet run reopens quiet, on its own state folder. Only the updater's test mode ever looks at this.
