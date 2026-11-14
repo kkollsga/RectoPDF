@@ -12,6 +12,8 @@ struct StandIn {
     drawn: usize,
     now: Instant,
     fails_until: Option<Instant>,
+    /// What its small pictures are drawn in, black but where a test says.
+    colour: [u8; 4],
 }
 
 impl StandIn {
@@ -22,6 +24,7 @@ impl StandIn {
             drawn: 0,
             now: Instant::now(),
             fails_until: None,
+            colour: [0, 0, 0, 0xFF],
         }
     }
 
@@ -58,8 +61,9 @@ impl LookSource for StandIn {
             not_drawable_now()?;
         }
         self.draws.pop_front().unwrap_or(Ok(()))?;
+        let colour = self.colour;
         surface
-            .with_pixels(|pixels| pixels.as_chunks_mut::<4>().0.iter_mut().for_each(|pixel| *pixel = [0, 0, 0, 0xFF]))
+            .with_pixels(|pixels| pixels.as_chunks_mut::<4>().0.iter_mut().for_each(|pixel| *pixel = colour))
             .expect("a surface of the test's own");
         Ok(TileResult::Done(Tile {
             kind: TileKind::Grey,
@@ -183,4 +187,28 @@ fn a_picture_of_the_whole_page_at_hand_decides_with_nothing_drawn() {
         PageLook::dark_page()
     );
     assert_eq!(doc.drawn, 0);
+}
+
+/// Failure (review of 2026-11-13, S4, and the second review of 2026-11-14): a page with no images is decided from a tile that isn't the whole of it, as when `covers_page` takes any tile for the page, so a white page whose dark band fills that tile is dimmed whole. The real-file test of it (`looks_on_real_files.rs`, `a_white_page_whose_band_fills_its_first_tile_turns_over`) catches it only while its top left tile is drawn first; this asks which picture decided, whatever the order: a dark tile of part of a white page decides nothing, and the page is decided from its small picture, white, with one draw; a dark tile that's the whole page decides it, with none. Seen failing with `covers_page` always saying yes.
+#[test]
+fn only_a_tile_that_is_the_whole_page_decides_it() {
+    let tile = PixelSurface::create(64, 64).unwrap();
+    tile.with_pixels(|pixels| pixels.as_chunks_mut::<4>().0.iter_mut().for_each(|pixel| *pixel = [0, 0, 0, 0xFF]))
+        .unwrap();
+    let part = TileRect { x: 0, y: 0, width: 64, height: 64 };
+    let mut doc = StandIn {
+        colour: [0xFF, 0xFF, 0xFF, 0xFF],
+        ..StandIn::new(Some(Vec::new()), [])
+    };
+    let mut looks = Looks::default();
+    // At a scale of 1 a letter page is 612 by 792: the tile is its top left corner.
+    assert_eq!(*page_look(&mut doc, &mut looks, 0, 1, None, Some((&tile, part, 1.0)), Instant::now()).unwrap(), PageLook::text(), "a corner of a white page");
+    assert_eq!(doc.drawn, 1, "decided from its small picture");
+    // At 64 / 792 the whole page is 49 by 64.
+    let (mut doc, mut looks) = (StandIn::new(Some(Vec::new()), []), Looks::default());
+    let whole = TileRect { x: 0, y: 0, width: 49, height: 64 };
+    let scale = 64.0 / 792.0;
+    assert_eq!(recto_proto::device_size(612.0, 792.0, scale).ok(), Some((49, 64)), "the made page's size at that scale");
+    assert_eq!(*page_look(&mut doc, &mut looks, 0, 1, None, Some((&tile, whole, scale)), Instant::now()).unwrap(), PageLook::dark_page(), "a dark tile that's the whole page");
+    assert_eq!(doc.drawn, 0, "nothing drawn for it");
 }

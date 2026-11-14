@@ -1498,41 +1498,31 @@ mod tests {
                 "a navy page with {name}"
             );
         }
-        // Half and half: the line is half the background, so a page 40% dark turns over and one 60% dark stays.
+        // Half and half: the line is half the background, so a page 40% dark turns over and one 60% dark stays, by the background's own tone, with no text to count either way (with it the 40% page was 0.48 dark).
         for (share, dark) in [(0.4, false), (0.6, true)] {
-            let pixels = made_page(&[([0.0, 0.0, 1.0, share], Part::Dark)], WHITE, INK);
+            let pixels = made_page(&[([0.0, 0.0, 1.0, share], Part::Dark)], WHITE, WHITE);
             let look = PageLook::decide(Some(&[]), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1);
             assert_eq!(look.dim, dark, "a page {share} dark: {look:?}");
         }
     }
 
-    /// Failure (review of 2026-11-13, B1): a white-backed picture is cut out of the background the dark test judges, so a minor dark area decides the page. On a slide with a dark title band over 15% of it and a white-backed chart over 70%, the "background" was the 30% left, half of it dark: the page was dimmed whole and the white chart showed at luma about 175, the owner's complaint of 2026-11-07 back again. A white-backed picture is light background: the page is judged with it, so it turns over and the chart turns with it, with the band on top or down the side, at several sizes. Seen failing with every image's box taken out of the background.
+    /// Failure (review of 2026-11-13, B1): a white-backed picture, a chart or a scan, is cut out of the background the dark test reads, so a dark part beside it is all that's left and decides the page: it's dimmed whole, its picture grey-white, the owner's complaint of 2026-11-07 back again. A white-backed picture is light background, read as it is. With the ring (second review, 2026-11-14), a dark band or footer along one side beside it leaves a ring mostly white, and can't show this: the six band cases this test had, and a scan with a dark footer, passed with every box cut out. A dark frame round the picture can: its ring is dark, and with the picture read under half of its background is, so it turns over, the picture with it; cut out, the frame was all of it. The other side: a navy page with a white-backed chart over 40% is dark, navy most of its background and all of its ring, and stays as it is, dimmed with its chart (owner, 2026-11-13: "whatever pictures it has"). Seen failing with every image's box cut out of the background (the frames), and with the background's line at 0.7 (the navy page).
     #[test]
-    fn a_white_backed_chart_beside_a_dark_band_turns_over_with_its_page() {
-        let mut cases: Vec<([f64; 4], [f64; 4])> = [0.10, 0.15, 0.25, 0.35]
-            .into_iter()
-            .map(|band| ([0.0, 0.0, 1.0, band], [0.05, band + 0.02, 0.95, 0.97]))
-            .collect();
-        cases.extend([0.15, 0.3].into_iter().map(|band| ([0.0, 0.0, band, 1.0], [band + 0.02, 0.05, 0.97, 0.95])));
-        for (band, chart) in cases {
-            let pixels = made_page(&[(band, Part::Dark), (chart, Part::Chart)], WHITE, INK);
-            let look = PageLook::decide(Some(&[sides(chart)]), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1);
+    fn a_white_backed_picture_is_light_background_for_the_dark_test() {
+        for (picture, part) in [([0.08, 0.08, 0.92, 0.92], Part::Chart), ([0.06, 0.06, 0.94, 0.94], Part::Scan)] {
+            let pixels = made_page(&[(picture, part)], [20, 24, 32], LIGHT_TEXT);
+            let look = PageLook::decide(Some(&[sides(picture)]), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1);
             assert!(
-                !look.dim && look.keep.is_empty() && look.whiten.iter().map(|image| image.sides).eq([sides(chart)]),
-                "a dark band {band:?} beside a chart {chart:?}: {look:?}"
+                !look.dim && look.keep.is_empty() && look.whiten.iter().map(|image| image.sides).eq([sides(picture)]),
+                "a white-backed picture {picture:?} in a dark frame: {look:?}"
             );
         }
-    }
-
-    /// Failure (review of 2026-11-13, B1): a white-backed scan over 85% of a page with a dark footer over 8% is dimmed whole, its scan a bright grey box, as the footer was more than half of what the scan left. The scan is the page's background, and light: the page turns over, the scan with it. Seen failing with every image's box taken out of the background.
-    #[test]
-    fn a_white_backed_scan_with_a_dark_footer_turns_over() {
-        let scan = [0.03, 0.02, 0.97, 0.92];
-        let pixels = made_page(&[(scan, Part::Scan), ([0.0, 0.92, 1.0, 1.0], Part::Dark)], WHITE, INK);
-        let look = PageLook::decide(Some(&[sides(scan)]), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1);
-        assert!(
-            !look.dim && look.keep.is_empty() && look.whiten.iter().map(|image| image.sides).eq([sides(scan)]),
-            "{look:?}"
+        let chart = [0.1, 0.3, 0.9, 0.8];
+        let pixels = made_page(&[(chart, Part::Chart)], NAVY, LIGHT_TEXT);
+        assert_eq!(
+            PageLook::decide(Some(&[sides(chart)]), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1),
+            PageLook::dark_page(),
+            "a navy page with a white-backed chart over 40%"
         );
     }
 
