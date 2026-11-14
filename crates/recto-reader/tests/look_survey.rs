@@ -429,6 +429,7 @@ fn wakes() {
                     usual: Some(PageBox { width, height }),
                     sizes: Vec::new(),
                     pictures,
+                    handed_back: false,
                 },
             );
             let map = PageMap {

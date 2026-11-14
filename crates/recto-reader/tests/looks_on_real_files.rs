@@ -519,6 +519,7 @@ fn woken_onto_a_sleep_picture_a_dark_page_stays_dark() {
                 paper: PaperKind::Dark,
                 surface: picture,
             }],
+            handed_back: false,
         };
         let (shown, report) = shown_on_dark_paper_after(&file.0, 2, page, Policy::default(), view(0.0), |engine| {
             engine.waking().note_wake(1, Instant::now());
@@ -773,6 +774,7 @@ fn dark_paper_view_costs() {
                     paper: PaperKind::Dark,
                     surface: picture,
                 }],
+                handed_back: false,
             },
         );
         let started = Instant::now();
