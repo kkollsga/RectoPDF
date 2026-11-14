@@ -691,6 +691,7 @@ Keyring::pub fn len(&self) -> usize
 Keyring::pub fn set(&self, identity: (u64, u64), password: Arc<recto_core::Password>)
 Links (pub struct, derives Clone, Copy)
 Links::pub fn at(&self, x: f64, y: f64) -> Option<crate::links::LinkHit>
+Links::pub fn clicked_for_qa(&self, hit: crate::links::LinkHit) [qa feature only]
 Links::pub fn own_file_page(&self, position: u32) -> Option<u32>
 Links::pub fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<u32>
 Links::pub fn take_clicked(&self) -> Option<crate::links::LinkHit>
@@ -728,6 +729,7 @@ Pointer::pub(crate) fn dismiss_selection_notice(&mut self)
 Pointer::pub(crate) fn forget_reveal(&mut self)
 Pointer::pub(crate) fn forget_reveal_with(&mut self, page: u32)
 Pointer::pub(crate) fn has_selection(&self) -> bool
+Pointer::pub(crate) fn link_clicked_for_qa(&mut self, hit: crate::links::LinkHit) [qa feature only]
 Pointer::pub(crate) fn selection_can_be_sent(&self, pages: u32) -> bool
 Pointer::pub(crate) fn selection_notice(&self) -> Option<Notice>
 Pointer::pub(crate) fn selection_range(&self) -> Option<recto_index::select::Range>
