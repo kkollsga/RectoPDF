@@ -30,17 +30,24 @@ tier that can see each failure, and shots light and dark.
 4. **The executor.** `run` calls the feature's own function with `Cx`, which carries the session, the `Actor` and the events
    (Find: `command` in `crates/recto-agent/src/find/command.rs`). There is one executor, `execute` in `crates/recto-agent/src/lib.rs`: it checks the
    level (`Actor::may`), the quiet run's files (`quiet_files::check`) and a protected document (`ABOUT`) before `run` is called. A difference
-   between a person and an agent is asked of `Actor` (`sees_protected`, `at_the_window`, `author`) and never written as a branch of its own. What the
-   window must do afterwards is an `Effect` (`crates/recto-agent/src/effect.rs`). What others hear is an `Event` (`crates/recto-agent/src/event.rs`),
-   sent only when something changed.
+   between a person and an agent is asked of `Actor` (`sees_protected`, `at_the_window`, `author`) and never written as a branch of its own. What
+   others hear is an `Event` (`crates/recto-agent/src/event.rs`), sent only when something changed. `Effect` (`crates/recto-agent/src/effect.rs`) and
+   `CoreCall::Find` are Find's own channel to the window, not an extension point: a feature that needs the window to act after its command calls back
+   first.
 5. **The CLI.** Nothing to write: `recto` parses every row (`parse_cli` in `crates/recto-agent/src/table.rs`) and prints `human`. Bless the help and
    wire goldens (`RECTO_BLESS=1`, `crates/recto-agent/tests/golden/`) and read their diff: it is the review of the command's surface.
 6. **The window's control and its translation.** A control is a `UiAction` (`crates/recto-app/src/core/controls.rs`). `Inner::act` has one arm per
    control that calls the feature's pure translation in `crates/recto-app/src/core/<feature>.rs` (Find: `typed`, `opened`, `step` in
    `crates/recto-app/src/core/find.rs`). That translation returns the *same* command an agent sends, and `submit` in
-   `crates/recto-app/src/core/person.rs` runs it as the person. A menu item is a row (Find: `row` in `crates/recto-app/src/core/find.rs`),
-   registered in one line of `ROWS` in `crates/recto-app/src/core/menu_rows.rs`. Its title, key, enable rule and action are still written in
-   `crates/recto-app/src/menus.rs` (`find_entries`, `enable_rule`, `action`): three short lines in a shared file.
+   `crates/recto-app/src/core/person.rs` runs it as the person. **How it went is shown to the person by the feature's `answered`, one line in
+   `ANSWERED` there** (Find: `answered` in `crates/recto-app/src/core/find.rs`): without it a refusal shows the person nothing, as an agent's words
+   are never shown to them. A menu item is a row (Find: `row`), registered in one line of `ROWS` in `crates/recto-app/src/core/menu_rows.rs`. Its
+   title, key, enable rule and action are still written in `crates/recto-app/src/menus.rs`, a hub: Find's take about a dozen lines in five places
+   there (`find_entries` and its `chain`, the ids under an `Enable` rule, three `action` arms, two `Action` variants).
+   **Find's other reaches are not the pattern.** The pattern is one line each: a `UiAction` variant and its arm, a `ROWS` line, an `ANSWERED` line,
+   one forwarding export per view in `crates/recto-ffi/src/lib.rs`. Find also has a `CoreCall` variant of its own (`crates/recto-app/src/queue.rs`)
+   with its arm and a step every pass in `crates/recto-app/src/core/session.rs`, a hook on its events by name in `crates/recto-app/src/core/host.rs`,
+   and a share of the sidebar's layout in the bridge: a feature that needs any of those asks first.
 7. **What it publishes.** The window draws view models that are pure functions of state (`crates/recto-app/src/model.rs`). `reconcile`
    (`crates/recto-app/src/core/reconcile.rs`) publishes them after each pass, and the `Listener` (`crates/recto-app/src/listener.rs`) tells the host
    to pull. A feature with its own view publishes it from its own module (Find: `FindView`).
@@ -85,7 +92,9 @@ tier that can see each failure, and shots light and dark.
 | What parts expose | `crates/recto-session/src/tests/parts.rs`, `crates/recto-reader/src/surface.rs`, `crates/recto-app/src/core/headless/inner_guards.rs` | a part's reach widened: a reviewer must see that line |
 | Fuzzing | `crates/recto-fuzz/src/targets/agent.rs` | parsing a hostile line panics or runs past its budget (every command's line is reached through the table) |
 
-All the registration guards run in every `--quick` (`GUARD_TESTS` in `tools/check-scope.sh`). A failure names the item and says what to do.
+The guards named in `GUARD_TESTS` (`tools/check-scope.sh`) run in every `--quick` whatever changed; the rest (the walks in
+`crates/recto-agent/src/policy_guards.rs`, the parts' listings, fuzzing) run with their crate's tests, in `--quick` when that crate changed and in
+every full run. A failure names the item and says what to do.
 Don't loosen a guard or raise a baseline: call back (`docs/agent-instructions/worker-testing.md`, "Call back at an edge case").
 
 ## Hand-back
