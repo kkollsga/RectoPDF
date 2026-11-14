@@ -2677,7 +2677,7 @@ fn files_holding(root: &std::path::Path, needle: &[u8]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Failure (review O1, O9): a protected PDF just says it needs a password and can't be opened; a wrong password opens it, or the tries aren't counted; the right one doesn't draw its pages or show its contents to the person; once it's open an agent gets anything decrypted from it, at any level, through `sidebar`, `where`, `tabs`, `contents`, `facts`, `search` or `text`; or the password reaches the state folder, while the app runs or after it quits.
+/// Failure (review O1, O9): a protected PDF just says it needs a password and can't be opened; a wrong password opens it, or the tries aren't counted; the right one doesn't draw its pages or show its contents to the person; once it's open an agent gets anything decrypted from it, at any level, through `sidebar`, `where`, `tabs`, `contents`, `facts`, `search` or `text`; the person's print of it says "This PDF needs a password." (v0.1.0), or leaves a named file in the temp folder; or the password reaches the state folder, while the app runs or after it quits.
 #[test]
 fn a_protected_pdf_asks_for_its_password_and_keeps_it_nowhere() {
     let Some(run) = Run::start() else { return };
@@ -2733,6 +2733,25 @@ fn a_protected_pdf_asks_for_its_password_and_keeps_it_nowhere() {
         }
     }
     run.state.set_level(Level::Full);
+    // The person's print of it through the system's printing, as File > Print hands it over (PLAN, "the person can't print a document they opened with
+    // its password"): its pages print, read with the password, from a file with no name that the system opens as `/dev/fd/N`, and nothing of it is in
+    // the temp folder by any name.
+    let out = file.0.with_file_name(format!("locked-printed-{}.pdf", std::process::id()));
+    run.ok(&["qa", "print-to-pdf", out.to_str().unwrap()]);
+    let printed = wait_for(&run, |state| state["printing"]["busy"] == false);
+    let facts = State::at(Level::Full).json(&["local", out.to_str().unwrap(), "facts", "--json"]).0;
+    let named: Vec<String> = std::fs::read_dir(std::env::temp_dir())
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(&format!("recto-print-{}-", run.pid)) || name.starts_with(&format!(".recto-{}-", run.pid)))
+        .collect();
+    assert!(
+        facts["data"]["pages"] == 2 && printed["app"]["copy_notice"].is_null() && named.is_empty(),
+        "the person's print of it: {facts}, {}, left by a name: {named:?}",
+        printed["app"]["copy_notice"]
+    );
+    std::fs::remove_file(&out).unwrap();
     run.ok(&["session", "save"]);
     assert!(
         files_holding(&run.state.root, b"open sesame").is_empty(),

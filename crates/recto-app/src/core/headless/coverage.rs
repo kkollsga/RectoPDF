@@ -302,23 +302,10 @@ fn sent_by(name: &str, make: impl FnOnce(&HeadlessApp) -> UiAction) -> Did {
             let wire = command.wire();
             let again = recto_agent::parse(&wire).unwrap_or_else(|error| panic!("{name}: {wire} isn't a line an agent can send: {error:?}"));
             assert_eq!(format!("{again:?}"), format!("{command:?}"), "{name}: {wire} reads back as another command");
-            print_file_named(&wire.replace(&app.disk().files().display().to_string(), "<files>"))
+            wire.replace(&app.disk().files().display().to_string(), "<files>")
         })
         .collect();
     Did { sent, why, acted, heard }
-}
-
-/// A command's line with the file a person's print goes to named as such: a new name of the app's own in the system's temp folder, which nobody can guess
-/// and so is another on every run.
-fn print_file_named(wire: &str) -> String {
-    let Some(at) = wire.find(r#""to_pdf":""#).map(|at| at + r#""to_pdf":""#.len()) else {
-        return wire.to_string();
-    };
-    let end = wire[at..].find('"').map_or(wire.len(), |end| at + end);
-    if !wire[at..end].contains("/recto-print-") {
-        return wire.to_string();
-    }
-    format!("{}<a print file of the app's own>{}", &wire[..at], &wire[end..])
 }
 
 /// A Listener call's kind, with nothing it carried: what the golden holds of the host being told.

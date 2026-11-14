@@ -102,6 +102,9 @@ snapshot level=full tab=Some("#2") about=Some("#2") protected_ok=false draws=tru
 print level=full tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"anyway":false,"dpi":300,"pages":null,"tab":"active","untrusted":{"file":"x.pdf"}}
 print level=full tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"anyway":true,"dpi":3,"pages":"2-3","tab":"#2","untrusted":{"file":"x.pdf"}}
 print level=full tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"anyway":false,"dpi":300,"pages":null,"tab":"active","untrusted":{"file":"x.pdf"}}
+print level=full tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"anyway":false,"dpi":300,"pages":null,"tab":"active","untrusted":null}
+print level=full tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"anyway":false,"dpi":300,"pages":null,"tab":"active","untrusted":null}
+print level=full tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"anyway":false,"dpi":300,"pages":null,"tab":"active","untrusted":null}
 print level=full tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"anyway":true,"dpi":3,"pages":"2-3","tab":"#2","untrusted":{"file":"x.pdf"}}
 text level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"page":3,"tab":"active"}
 text level=read_only tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"page":3,"tab":"#2"}

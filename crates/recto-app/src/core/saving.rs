@@ -136,10 +136,7 @@ fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
     let mut events = Vec::new();
     super::person::sent(&inner.serving, &command);
     // It holds its turn in the person's lane, so it was asked before any freeze there is now, and goes through it.
-    match inner
-        .host
-        .run_as(recto_agent::Actor::Person, &command, &mut events, crate::queue::Origin::TurnCame)
-    {
+    match inner.host.run_for_person(&command, &mut events, crate::queue::Origin::TurnCame) {
         Ok(data) => {
             let notes: Vec<&str> = data["notes"]
                 .as_array()

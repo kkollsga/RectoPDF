@@ -444,7 +444,7 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
             && let Some(plan) = self.plan_or_say_why(active, basis, &record.query)
         {
             // The person's own Find, with their passwords, so a document they opened with one is searched through its key, page by page, and nothing of it goes to a corpus.
-            let plan = match session.find_keys() {
+            let plan = match session.persons_find_keys() {
                 Some(keys) => plan.with_keys(keys),
                 None => plan,
             };

@@ -116,6 +116,9 @@ fn a_watcher_hears_nothing_of_a_protected_documents_place_or_find() {
 /// Control, then Full, each round the person reading and closing Find; at each level what `tabs`, `session show` and `sidebar` say; the person deleting
 /// page 4, which takes only in a document that has one, and what's heard and said then; and the person closing the tab at the end.
 fn agent_told(pages: usize, word: &str) -> Vec<String> {
+    // The person's print opens the protected file in a fresh worker: its answers mustn't turn on how fast a starved worker opens (PLAN, the print's
+    // starved Open), so every renderer gets a deadline it always meets, as the comparison walks do.
+    recto_render_service::page_deadline_for_this_process(std::time::Duration::from_secs(20));
     let disk = Disk::new();
     let file = protected(&disk, pages, word);
     let app = disk.start();
@@ -132,6 +135,26 @@ fn agent_told(pages: usize, word: &str) -> Vec<String> {
             told.push(format!("{level:?} {look:?}: {:?}", app.recto(level, look)));
         }
     }
+    // The person prints all of it (PLAN, "the person can't print a document they opened with its password"): what an agent hears and sees while it's
+    // being prepared (held after its first page, so its pages are 1 of 3 and 1 of 5) and once its file is the host's and let go.
+    let (held, go) = super::printing::hold_at(1);
+    super::printing::answer(&app, super::printing::ALL);
+    held.recv_timeout(crate::testkit::headless::WAIT_LIMIT)
+        .expect("the print held after its first page");
+    app.wait_until("the window says it's preparing", || app.core().tools.printing().notice().is_some());
+    told.push(format!("printing heard: {:?}", watching.heard()));
+    agent_looks(&app, "printing", &mut told);
+    assert!(
+        told.last().is_some_and(|line| line.contains("\"printing\"")),
+        "`session check` says a print is under way: {told:?}"
+    );
+    drop(go);
+    app.settle();
+    told.push(format!("printed heard: {:?}", watching.heard()));
+    agent_looks(&app, "printed, not yet taken", &mut told);
+    assert_ne!(super::printing::printed(&app), "none", "the person's print printed");
+    app.settle();
+    told.push(format!("printed and let go heard: {:?}", watching.heard()));
     // An edit whose taking depends on the document's length.
     app.person(r##"{"cmd":"page_delete","tab":"#1","pages":"4"}"##);
     app.settle();
@@ -168,10 +191,28 @@ fn agent_told(pages: usize, word: &str) -> Vec<String> {
     told
 }
 
+/// What an agent at Full is told by a look at the session as a whole while the person prints: `tabs`, `session show`, `sidebar`, what `status` says of
+/// the session (its tab count: the rest is the server's own), and of `session check` the busy words alone (`busy: printing` for as long as a print takes
+/// is accepted: `docs/engineering/opening.md`). None of it names the print's descriptor (`/dev/fd/N`), the app's own number given only to the window.
+fn agent_looks(app: &HeadlessApp, when: &str, told: &mut Vec<String>) {
+    for look in [&["tabs"][..], &["session", "show"], &["sidebar"]] {
+        told.push(format!("{when} {look:?}: {:?}", app.recto(Level::Full, look)));
+    }
+    told.push(format!("{when} status tabs: {}", recto_control::host::Host::tab_count(&*app.core().host)));
+    let check = app.recto(Level::Full, &["session", "check"]).expect("session check");
+    let busy: Vec<&Value> = check["busy"].as_array().into_iter().flatten().map(|item| &item["code"]).collect();
+    told.push(format!("{when} session check busy: {busy:?}"));
+    assert!(
+        told.iter().all(|line| !line.contains("/dev/fd")),
+        "an agent was told the print's descriptor: {told:#?}"
+    );
+}
+
 /// Failure (independent review of phase R, S1; the walk of events beside the commands' walk in `recto-agent`'s `policy_guards`): something of a document
 /// the person opened with its password reaches an agent that sends nothing about it, by an event (a page drawn, the place, Find's hits, its news while
 /// it runs) or a look at the session as a whole: an agent watching every group at every level, and looking with `tabs`, `session show` and `sidebar`,
-/// is told the same while the person opens, draws, turns to page 2 and 4, scrolls, Finds, deletes page 4 and closes a three-page protected document saying
+/// is told the same while the person opens, draws, turns to page 2 and 4, scrolls, Finds, prints all of it (while it's prepared, once it's ready, once
+/// it's let go), deletes page 4 and closes a three-page protected document saying
 /// "Locked" as a five-page one saying "Hidden", where page 4 is past the end of one, so the delete takes in only the other (its `edited`, its undo, its
 /// `edits_changed` would tell), Find finds three hits in one and none in the other, and the close comes while the draw of the last page (3 in one, 4 in
 /// the other) is done and its word not yet told, so a `page_drawn` about a tab that's gone would tell.
