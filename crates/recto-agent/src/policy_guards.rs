@@ -522,12 +522,34 @@ fn a_file_that_asks_not_to_be_copied_asks_anyway_of_every_copy() {
     assert!(tried.len() >= 7, "the commands that copy: {tried:?}");
 }
 
-/// What writes a file over one that's there, as a line of source can say it: `fs::write(` (with or without `std::`), `File::create(`, and an
-/// `OpenOptions` set to `.truncate(true)` or `.create(true)`. Not seen: an aliased import (`use std::fs::write as put`), a call through a helper in
-/// another crate, or a builder whose `create`/`truncate` takes a variable.
-const WRITES_OVER: &[&str] = &["fs::write(", "File::create(", ".truncate(true)", ".create(true)"];
+/// What writes a file over one that's there, or moves one onto it, as a line of source can say it: `fs::write(` (with or without `std::`),
+/// `File::create(`, `File::options`, `rename(`, `fs::copy(`, and an `OpenOptions` set to `.truncate(true)`, `.create(true)`, or `.write(true)` with no
+/// `create_new` in its statement (the lines up to its `;`). Not seen: an aliased import (`use std::fs::write as put`), a call through a helper in
+/// another crate, or a builder whose options take a variable.
+const WRITES_OVER: &[&str] = &[
+    "fs::write(",
+    "File::create(",
+    "File::options",
+    "rename(",
+    "fs::copy(",
+    ".truncate(true)",
+    ".create(true)",
+    ".write(true)",
+];
+
+/// The writes that replace a file on purpose, each with why: by its file, and the words of the line.
+const REPLACES_ON_PURPOSE: &[(&str, &str, &str)] = &[
+    // The agent skill's own file in the folder `recto skill --install` was pointed at, sealed, replaced whole only when it's the one this made
+    // (`skill.rs` checks the seal first); never a document.
+    (
+        "skill.rs",
+        "std::fs::rename(&temp, path)",
+        "the skill file this made, replaced whole after its seal is checked",
+    ),
+];
 
 /// A source's lines outside test items: an item under `#[cfg(test)]` is left out to its end, braces counted as written (as `tests/codes.rs` reads them).
+/// An item with no body (a `mod x;`, a field, a variant) ends at its `;` or `,`.
 fn production_lines(source: &str) -> Vec<(usize, &str)> {
     let mut lines = Vec::new();
     let mut skipping: Option<(bool, i64)> = None;
@@ -558,17 +580,58 @@ fn production_lines(source: &str) -> Vec<(usize, &str)> {
                 _ => {}
             }
         }
-        if (*opened && *depth <= 0) || (!*opened && line.trim_end().ends_with(';')) {
+        if (*opened && *depth <= 0) || (!*opened && (line.trim_end().ends_with(';') || line.trim_end().ends_with(','))) {
             skipping = None;
         }
     }
     lines
 }
 
+/// Failure (review of R4.2): a `#[cfg(test)]` on a field or a variant skipped every production line after it up to the next `;`, so a write there went
+/// unseen. Test items are left out to their end, and the production lines after them are read.
+#[test]
+fn a_test_only_field_doesnt_hide_the_lines_after_it() {
+    let source = "struct A {\n    #[cfg(test)]\n    seen: u8,\n    kept: u8,\n}\nfn b() {\n    let _ = std::fs::write(x, y);\n}\n#[cfg(test)]\nmod tests {\n    fn c() {}\n}\nfn d() {}\n";
+    let read: Vec<&str> = production_lines(source).into_iter().map(|(_, line)| line.trim()).collect();
+    assert_eq!(
+        read,
+        ["struct A {", "kept: u8,", "}", "fn b() {", "let _ = std::fs::write(x, y);", "}", "fn d() {}"]
+    );
+}
+
+/// The file and line of each write in `text`'s production lines that could go over a file, less those replacing one on purpose.
+fn writes_over(name: &str, text: &str) -> Vec<(usize, String)> {
+    let lines = production_lines(text);
+    let mut found = Vec::new();
+    for (index, (at, line)) in lines.iter().enumerate() {
+        let code = line.split("//").next().unwrap_or_default();
+        let Some(form) = WRITES_OVER.iter().find(|form| code.contains(**form)) else {
+            continue;
+        };
+        // A `.write(true)` is a write over a file only if its statement doesn't make the file new.
+        if *form == ".write(true)" {
+            let statement: String = lines[index.saturating_sub(4)..]
+                .iter()
+                .take(12)
+                .map(|(_, line)| *line)
+                .collect::<Vec<_>>()
+                .join("\n");
+            if statement.contains("create_new(true)") {
+                continue;
+            }
+        }
+        if REPLACES_ON_PURPOSE.iter().any(|(file, words, _)| name == *file && code.contains(words)) {
+            continue;
+        }
+        found.push((at + 1, line.trim().to_string()));
+    }
+    found
+}
+
 /// Failure (AGENTS.md rule 5, R4.2 W1): code in `recto-agent` writes a file its own way, which can go over a file that's there, the person's own
-/// included. The early word, before any walk: no production line of the crate's sources writes a file but through `OwnTemp` and `publish` (or a save
-/// through the lopdf writers), which never replace anything. [`no_command_writes_over_a_file_thats_there`] is the guard that counts: it holds what a
-/// command does, whatever its code says.
+/// included. The early word, before any walk: no production line of the crate's sources writes or moves a file but through `OwnTemp` and `publish`
+/// (which make it new and never replace anything; a save goes through the lopdf writers in `recto-core`), or is in [`REPLACES_ON_PURPOSE`] with why.
+/// [`no_command_writes_over_a_file_thats_there`] is the guard that counts: it holds what a command does, whatever its code says.
 #[test]
 fn nothing_in_the_crate_writes_a_file_but_through_its_one_way() {
     let mut folders = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
@@ -589,12 +652,11 @@ fn nothing_in_the_crate_writes_a_file_but_through_its_one_way() {
             }
             read += 1;
             let text = std::fs::read_to_string(&path).unwrap();
-            for (at, line) in production_lines(&text) {
-                let code = line.split("//").next().unwrap_or_default();
-                if WRITES_OVER.iter().any(|form| code.contains(form)) {
-                    found.push(format!("{}:{}: {}", path.display(), at + 1, line.trim()));
-                }
-            }
+            found.extend(
+                writes_over(&name, &text)
+                    .into_iter()
+                    .map(|(line, words)| format!("{}:{line}: {words}", path.display())),
+            );
         }
     }
     assert!(read > 50, "the crate's sources were read: {read} files");
@@ -604,4 +666,29 @@ fn nothing_in_the_crate_writes_a_file_but_through_its_one_way() {
          `render::publish_picture`, which never replace anything:\n{}",
         found.join("\n")
     );
+    // Each exception is still there to be excepted: one whose line went is taken out of the list.
+    for (file, words, _) in REPLACES_ON_PURPOSE {
+        let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(file)).unwrap();
+        assert!(text.contains(words), "{file} no longer has `{words}`: take it out of REPLACES_ON_PURPOSE");
+    }
+}
+
+/// Failure: the scan misses a form it says it sees, or takes a write that makes its file new for one that doesn't.
+#[test]
+fn the_scan_sees_each_form_it_names() {
+    for form in [
+        "std::fs::write(out, b)",
+        "fs::write(out, b)",
+        "File::create(out)",
+        "std::fs::File::options().append(true).open(out)",
+        "std::fs::rename(a, b)",
+        "std::fs::copy(a, b)",
+        "OpenOptions::new().truncate(true).open(out)",
+        "OpenOptions::new().create(true).open(out)",
+        "OpenOptions::new().write(true).open(out)",
+    ] {
+        assert_eq!(writes_over("x.rs", &format!("fn f() {{\n    let _ = {form};\n}}\n")).len(), 1, "{form}");
+    }
+    let made_new = "fn f() {\n    let _ = OpenOptions::new()\n        .write(true)\n        .create_new(true)\n        .open(out);\n}\n";
+    assert!(writes_over("x.rs", made_new).is_empty(), "create_new on the next line makes it new");
 }
