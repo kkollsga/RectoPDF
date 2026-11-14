@@ -97,7 +97,7 @@ pub fn end_with_starter(limit: Duration, owner: Option<u32>, state: Option<std::
         };
         eprintln!("recto: this quiet run ended, as {why}.");
         if let Some(inner) = ending.upgrade() {
-            super::updates::forget_a_quiet_copy(inner.qa.is_some(), &inner.updates);
+            super::updates::forget_a_quiet_copy(inner.qa.as_deref(), &inner.updates);
         }
         std::process::exit(124);
     });

@@ -515,14 +515,14 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
     }
 }
 
-/// On the way out, at a quit or as a quiet run ends with what started it: a quiet run's copy is a test's or a script's, and the system registered it when it was started, so it's forgotten again and the one install stays the only RectoPDF in Open With. Never the one install itself. Returns at once: the tool outlives the process. Which copy is this process's own executable's bundle, known from the start: what the host tells the updater comes later, and a run can end first (CI, 2026-11-12). `quiet`: this is a quiet run (the app has QA).
-pub fn forget_a_quiet_copy(quiet: bool, updates: &recto_update::updater::Updater) {
+/// On the way out, at a quit or as a quiet run ends with what started it: a quiet run's copy is a test's or a script's, and the system registered it when it was started, so it's forgotten again and the one install stays the only RectoPDF in Open With. Never the one install itself. Returns at once: the tool outlives the process. Which copy is this process's own executable's bundle, known from the start: what the host tells the updater comes later, and a run can end first (CI, 2026-11-12). Whether this is a quiet run is the app's QA, there only in one (`qa`), so no caller can say a person's app is one.
+pub(crate) fn forget_a_quiet_copy(qa: Option<&super::qa::QaBridge>, updates: &recto_update::updater::Updater) {
     let own = std::env::current_exe()
         .ok()
         .and_then(|program| program.canonicalize().ok())
         .and_then(|program| recto_update::rules::bundle_of(&program));
     if let Some(app) = own.or_else(|| updates.app())
-        && recto_update::rules::forgets_itself(quiet, &app)
+        && recto_update::rules::forgets_itself(qa.is_some(), &app)
     {
         recto_platform::registry::forget_soon(&app);
     }
@@ -595,7 +595,7 @@ pub fn has_setting(id: &str) -> bool {
 /// **What `recto update` and `recto settings` come to,** for the person and an agent alike: the executor's one route for them ([`super::host`]). The level's been
 /// checked. What each answers, and in what words, is here; a setting changed by any route is written soon and redraws the window (the updater's own word to
 /// the host, and the session thread's look).
-pub fn command(updates: &Arc<recto_update::updater::Updater>, launch: &LaunchFacts, core: &CoreQueue, command: &Command) -> Result<Value, AgentError> {
+pub(crate) fn command(updates: &Arc<recto_update::updater::Updater>, launch: &LaunchFacts, core: &CoreQueue, command: &Command) -> Result<Value, AgentError> {
     match command {
         Command::Updates(recto_agent::commands::Updates::UpdateStatus(_)) => Ok(updates.report()),
         // While the launch is held back for the record's lock (`LaunchFacts`), nothing of an update begins, by anyone's asking.
