@@ -605,6 +605,15 @@ Owner, 2026-11-12: "all features should be implemented once. That's the rule. Cl
   - [ ] One new-file writer (`OwnTemp` + `publish`) for print-to-path, Save As and the skill file
   - [ ] Found on the contact sheet: `qa click-row fold:N` does nothing on generated contents (`contents fold` does); folding the section that holds the current entry leaves no row marked; the current generated row seems chosen by page, not place (at the top of page 1 the last heading on it is marked and NAME scrolls out of view); `qa state`'s `menu_bar` lists system Edit items (AutoFill, Passwords…) with empty ids, which the control coverage may not see
 - [ ] R4.3 Pilot: one real feature from phase 4 built this way and measured against the review's exit numbers, then a process review and what it teaches into the guide. 1–2 d
+  (`build/pilot-highlights`, 2026-11-14: highlights built by `docs/FEATURES.md`, handed back for review; its follow-ups:)
+  - [ ] Remove a file's own highlight: a rewrite at Save (so it's really gone), hidden before Save in the worker's draw by its `/Annots` index checked against its `/Rect`, the page's tiles drawn again (the coordinator's scope cut, option (a)). About 1 d
+  - [ ] Undo takes a saved highlight back (after the one above; E1: today a Save drops the steps that would take a saved highlight out)
+  - [ ] All highlights drawn as layers, the file's too, so a saved one looks on dark paper as an unsaved one does (Q8: PDFium draws a saved one with the page)
+  - [ ] Print and export of unsaved highlights (Q9: they print once saved; their answers say nothing of them today)
+  - [ ] Repay `whole crates/recto-app/src::Inner` (raised 98 → 100 for `highlight::row` and `highlight::answered`): `menu_rows::Rows` and person.rs's `ANSWERED` pass the parts a row and an answer need instead of `Inner`. 21 of the 98 are such a function today (14 rows, 7 answers), and each leaves the count. Before phase R is called done (coordinator, 2026-11-14)
+  - [ ] Mark Up > Remove Highlight enabled only while the selection touches an unsaved highlight (Q2's default); it's enabled with any selection today, and with none there it says so
+  - [ ] A read-back through PDFium's own annotation calls (count, subtype, rectangle) through the worker; today the independent read is PDFium's drawing of the saved page (`a_saved_highlight_is_drawn_by_pdfium_where_its_text_is`), which catches placement, not the annotation's fields
+  - [ ] `pane_snapshot` builds a tab's highlights for the page view on every pass while it has some (an allocation a pass, nothing for a tab without): kept by the list's change count if a measurement says it's worth it
 
 **Done when** (measured on the pilot): `--quick` ≤ 60 s and reaching the app's logic; a typical local full check ≤ 240 s (514 s today); CI ≤ 10 min and under 10% red; about 110 app-launching tests (217), none checking a Rust decision; a new command is one file and one line; nothing a person can do that an agent can't; the pilot touches shared files for registration only and needs at most one follow-up merge.
 
