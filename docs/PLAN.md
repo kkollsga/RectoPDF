@@ -897,6 +897,6 @@ Real digital signatures to the official standards, signature trust checks, Windo
 
 ## Decisions waiting on you
 
-None right now.
+The open ones are listed under "Waiting on the owner" in "What is left, in order", near the top. What follows is the record of earlier ones.
 
 - **Phase R, 2026-11-12:** go-ahead given ("Yes you have the goahead"). Taken as the coordinator's recommendations, not the owner's own words, and open to change: a local full check may run only the tests a change can affect, with CI still running everything on every branch before it merges (R0.2); the pilot feature for R4.3 is highlight annotations.
