@@ -303,8 +303,8 @@ fn off_the_session_thread(inner: &Watched<'_>, busy: &mut Vec<String>) {
         busy.push("the updater being told of the launch".to_string());
     }
     // Its thread goes once it's said how its last query ended, which the session thread takes as Find's news.
-    if inner.host.session.finder().has_thread() {
-        busy.push("Find looking".to_string());
+    if let Some((run, progress)) = inner.host.session.finder().looking() {
+        busy.push(format!("Find looking (run {run}, page {} of {})", progress.pages_done, progress.pages));
     }
 }
 
