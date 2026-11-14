@@ -423,7 +423,9 @@ impl std::fmt::Debug for crate::record::EditsRecord {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MarkStepRecord {
     #[serde(rename = "a")]
-    Add(#[serde(deserialize_with = "crate::record::capped::<_, _, MAX_MARK_PAGES>")] Vec<MarkRecord>),
+    // A step that puts highlights back holds as many as one removal took, which is up to every one the list has: read with the cap they were
+    // written under (review of R4.3, S1: read at a highlight's 64 pages, a removal of 65 lost the whole list at the next compaction).
+    Add(#[serde(deserialize_with = "crate::record::capped::<_, _, MAX_MARKS>")] Vec<MarkRecord>),
     #[serde(rename = "x")]
     Remove(#[serde(deserialize_with = "crate::record::capped::<_, _, MAX_MARKS>")] Vec<u32>),
 }
@@ -652,6 +654,42 @@ mod tests {
             Err(super::super::EditError::NoSuchHighlight),
             "all named, or none taken"
         );
+    }
+
+    /// Failure (review of R4.3, S1): one step removes more highlights than one highlight has pages, its record is read with the smaller cap, and the
+    /// journal's next base doesn't parse, so the whole list, the owner's turns with it, is lost. Held at 65 (one past that cap) through a record and a
+    /// journal's compaction, and at the step's own cap plus one, which is refused.
+    #[test]
+    fn a_removal_of_many_reads_back_from_the_journal() {
+        use crate::record::{JournalHeader, MARKED_JOURNAL_VERSION, journal_start, parse_journal};
+        let mut edits = super::super::PageEdits::new(2);
+        edits.rotate(0, 1, 1).unwrap();
+        for _ in 0..65 {
+            add(&mut edits, 1);
+        }
+        let ids: Vec<u32> = edits.marks().iter().map(|mark| mark.id).collect();
+        edits.mark(MarkChange::Remove { ids }).unwrap();
+        let header = JournalHeader::new(1, std::path::Path::new("/d/a.pdf"), None, 2, 0);
+        let read = parse_journal(&journal_start(&header, Some(&edits.to_record())), MARKED_JOURNAL_VERSION).unwrap();
+        assert!(!read.lost_lines, "the base reads");
+        let (back, _) = super::super::PageEdits::replay(2, read.base.as_ref(), &read.ops).unwrap();
+        assert_eq!(
+            back.to_record(),
+            edits.to_record(),
+            "the whole list, its turn and its 65 removed highlights to undo"
+        );
+        let too_many = MarkStepRecord::Add(vec![
+            MarkRecord {
+                id: 0,
+                source: 0,
+                page: 0,
+                rects: vec![rect()],
+                by: AuthorName::Owner
+            };
+            MAX_MARKS + 1
+        ]);
+        let json = serde_json::to_vec(&too_many).unwrap();
+        assert!(serde_json::from_slice::<MarkStepRecord>(&json).is_err(), "past the step's own cap it's refused");
     }
 
     /// Failure: what a journal or a record says of highlights doesn't bring the list back as it was, so a crash, a sleep or a restart loses a highlight,
