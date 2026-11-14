@@ -81,14 +81,17 @@ fn find_tells_the_host_when_what_it_pulls_changed_and_only_then() {
             }
             let before = pulled(&app);
             let page = app.reader();
+            app.hear_events();
             app.listener().take();
             run(&app, line);
             let told = app.listener().take().iter().filter(|heard| **heard == Heard::ModelChanged).count();
             let changed = pulled(&app) != before;
+            // What watchers hear follows the same rule: nothing for a command that changed nothing.
+            let events = crate::core::headless::twins::names(&app.heard_events()).len();
             // A command that moves the page, or starts a search (a typed query, or Find opened again over a query kept), has more than one change to announce: Find's, and the page's or the hits'.
             let more_than_one = line.contains("query") || state.contains("kept") || app.reader() != page;
-            table += &format!("{state:34} {name:22} changed {changed:5} told {told}\n");
-            if (told > 0) != changed || (!more_than_one && told > 1) {
+            table += &format!("{state:34} {name:22} changed {changed:5} told {told} events {events}\n");
+            if (!changed && events > 0) || (told > 0) != changed || (!more_than_one && told > 1) {
                 wrong.push(format!("{state} / {name}: changed {changed}, told {told}"));
             }
         }
