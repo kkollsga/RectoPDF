@@ -13,6 +13,8 @@ type Held = (&'static str, Sender<()>, Receiver<()>);
 #[derive(Default)]
 pub struct Holds {
     next: Mutex<Vec<Held>>,
+    /// Steps the next of which panics there, as a hostile file met at that step would: what a thread left by a panic leaves behind is tested so.
+    panics: Mutex<Vec<&'static str>>,
 }
 
 impl Holds {
@@ -26,8 +28,20 @@ impl Holds {
         (held, go)
     }
 
-    /// A step named `at`: if it's the one asked for, it says so and waits to be let go, at most the kit's limit.
+    /// The next step named `at` panics there.
+    pub(crate) fn panic_next(&self, at: &'static str) {
+        crate::lock(&self.panics).push(at);
+    }
+
+    /// A step named `at`: if it's the one asked for, it says so and waits to be let go, at most the kit's limit; or panics, if that was asked.
     pub(crate) fn at(&self, at: &str) {
+        let panics = {
+            let mut panics = crate::lock(&self.panics);
+            panics.iter().position(|name| *name == at).map(|found| panics.remove(found))
+        };
+        if let Some(name) = panics {
+            panic!("a panic seeded at {name}, for a test");
+        }
         let held = {
             let mut next = crate::lock(&self.next);
             next.iter().position(|(name, ..)| *name == at).map(|found| next.remove(found))
