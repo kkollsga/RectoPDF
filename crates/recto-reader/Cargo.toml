@@ -25,3 +25,6 @@ serde_json.workspace = true
 # For a test's protected file, which only lopdf's writer encrypts. Already in the tree through recto-core.
 lopdf.workspace = true
 recto-testpdf.workspace = true
+# The crate's own `qa` feature for its tests in `tests/`, as its unit tests have it: `Engine::qa().system_takes_only_when_told`, so the kernel doesn't
+# empty a surface a test is about to read (2026-11-14: `a_replaced_file_gets_its_pages_looked_at_again_on_dark_paper` read [0, 0, 0] from one).
+recto-reader = { path = ".", features = ["qa"] }

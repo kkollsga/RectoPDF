@@ -89,6 +89,7 @@ fn shown_on_dark_paper_after(
         },
         Arc::new(Quiet),
     );
+    engine.qa().system_takes_only_when_told();
     let at = |y: f64| Viewport { y, ..viewport };
     engine.set_viewport(at(0.0));
     engine.set_paper(PaperKind::Dark);
@@ -701,6 +702,7 @@ fn dark_paper_view_costs() {
             },
             Arc::new(Quiet),
         );
+        engine.qa().system_takes_only_when_told();
         engine.set_viewport(view(0.0));
         engine.set_paper(PaperKind::Dark);
         engine

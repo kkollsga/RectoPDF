@@ -185,7 +185,7 @@ Inner::pub fn note_input(&self)
 Inner::pub fn notice_read(&self)
 Inner::pub fn perform(self: &Arc<Self>, id: String) -> HostAction
 Inner::pub fn qa_save_from(&self, written: &str) -> Result<(), AgentError>
-Inner::pub fn qa_session_verb(&self, verb: &str, value: &str) -> Option<Result<(), AgentError>>
+Inner::pub fn qa_session_verb(&self, verb: &str, value: &str) -> Option<Result<Option<serde_json::Value>, AgentError>>
 Inner::pub fn quit_requested(self: &Arc<Self>)
 Inner::pub fn quit_stayed(&self)
 Inner::pub fn ready(&self, open: &[PathBuf])
@@ -222,6 +222,7 @@ Keeper::pub(super) fn try_the_lock(self: &Arc<Self>, verdict: std::sync::mpsc::S
 LaunchFacts (pub struct)
 LaunchFacts::pub fn first_frame_shown(&self, updates: &recto_update::updater::Updater)
 LaunchFacts::pub fn note(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String)
+LaunchFacts::pub(crate) fn telling(&self) -> u32
 LaunchFacts::pub(super) fn held(&self) -> bool
 LaunchFacts::pub(super) fn hold_or_tell(&self, keeps: bool, updates: &recto_update::updater::Updater) -> recto_update::updater::AtLaunch
 LaunchFacts::pub(super) fn misreads(&self) -> bool

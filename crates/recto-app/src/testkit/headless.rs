@@ -236,6 +236,9 @@ impl Builder {
             update_seams,
         )
         .expect("the core starts");
+        // The kernel empties what's marked discardable whenever it's short of memory, at moments no test chooses: here a test says when (`qa
+        // memory-pressure discard`, `Engine::empty_discardable`), or what it comes back to is there.
+        inner.engine.qa().system_takes_only_when_told();
         inner.on_disk.sleeper().set_leaving_wait(self.leaving_wait_ms);
         // As the app does unless another copy has it: a test whose app isn't keeping the record would test another path, without saying so.
         assert!(

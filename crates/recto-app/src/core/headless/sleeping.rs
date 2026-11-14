@@ -98,7 +98,7 @@ fn a_flush_counts_the_tab_on_screens_sleep_file_it_skipped_and_writes_it_given_t
 /// The view the host would have, at the top of the document, the page at its fit: a small window at one pixel a point, so each picture is a tenth of a
 /// Retina window's and a test's every show and draw is quick under CI's limits (the file's tests took about 60 s of test time under `--like-ci` in a
 /// 1168 by 900 Retina window, 2026-11-14). What's decided doesn't depend on a picture's size, except where a test says so ([`retina_view`]).
-fn window_view() -> recto_reader::Viewport {
+pub(super) fn window_view() -> recto_reader::Viewport {
     recto_reader::Viewport {
         x: 0.0,
         y: 0.0,

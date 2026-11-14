@@ -686,8 +686,8 @@ row 171 qa live-budget: 7af4e63c8341ce1a 455 bytes
 help qa live-budget: 1162ecfc9f49c678 215 bytes
 usage qa live-budget: 0614fd0f488de24b 28 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 172 qa memory-pressure: c725b34844c67810 754 bytes
-help qa memory-pressure: 08d7de5e4406aa79 510 bytes
+row 172 qa memory-pressure: 72a180fdbec1e522 801 bytes
+help qa memory-pressure: 8c879bb899677545 557 bytes
 usage qa memory-pressure: 913aa01052b3dabe 32 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
 family status: cbf29ce484222325 0 bytes
@@ -751,6 +751,6 @@ family settings: cbf29ce484222325 0 bytes
 family skill: 263c8540bc3d3bc9 284 bytes
 family budget: aec822ae884cf326 558 bytes
 family qa: b77b6ff269bfbc6a 12682 bytes
-help --json: 3e2b98c13e0ca4f1 133547 bytes
+help --json: 8db6bad558139acf 133594 bytes
 SKILL.md: 1a1255891b87467d 25191 bytes
 REFERENCE.md: e24a35ee9cdf5395 82520 bytes

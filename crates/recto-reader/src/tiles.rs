@@ -31,6 +31,8 @@ pub(crate) mod sleep_draw;
 mod wake;
 mod zoom;
 
+#[cfg(any(test, feature = "qa"))]
+pub(crate) use cache::system_takes_only_when_told;
 use cache::{TileCache, TileKey};
 use doc::Issue;
 pub(crate) use doc::{DocView, Docs};
@@ -674,7 +676,7 @@ impl Reader {
                 && !entry.discardable
             {
                 if let Some(surface) = &entry.surface {
-                    surface.set_discardable();
+                    cache::let_system_take(surface);
                 }
                 entry.discardable = true;
             }
@@ -864,7 +866,7 @@ impl Reader {
             && !entry.discardable
         {
             if let Some(surface) = &entry.surface {
-                surface.set_discardable();
+                cache::let_system_take(surface);
             }
             entry.discardable = true;
             self.cache.evict(&mut self.host);
