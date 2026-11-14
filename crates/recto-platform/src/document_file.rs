@@ -5,8 +5,9 @@
 //! **Why:** the person's print of a document they opened with its password is a plain PDF with no name, which the app holds by a descriptor while it's
 //! prepared and while the system prints it. `/dev/fd/N` opens a descriptor of this process again, so a path an agent names could reach a copy no name
 //! leads to. Three checks, each refusing with [`Refused::NotADocument`]:
-//! 1. **A path into `/dev`**, as it's spelt or where its links lead ([`leads_into_devices`]), refused before anything is opened or looked at, a link to
-//!    nowhere included: the answer for `/dev/fd/N` is the same whether N is open, and whatever it is.
+//! 1. **A path into `/dev`**, as it's spelt ([`spelt_into_devices`], with no call to the disk, before anything is looked at: a command's first check)
+//!    or where its links lead ([`leads_into_devices`], on the thread that reads, a link to nowhere included): the answer for `/dev/fd/N` is the same
+//!    whether N is open, and whatever it is.
 //! 2. **Not a regular file** (a folder, a pipe, a device), by the descriptor once it's open, and before it's opened by [`open_regular`] for a caller
 //!    that mustn't wait (a pipe would wait for a writer for ever): the structure reader's and the index's opens, as they always looked first. The page
 //!    view's and a worker's open ([`open`]) runs on a thread of its own that may wait, as for a file on a dead volume, and refuses it once it's open.
@@ -107,7 +108,67 @@ fn has_a_link(_: &std::fs::Metadata) -> bool {
 /// link to nowhere judged by where it points, so a link to a descriptor that isn't open is answered as one to a descriptor that is.
 #[must_use]
 pub fn leads_into_devices(path: &Path) -> bool {
+    seams::wait_if_held(path);
     leads_within(path, MAX_LINKS)
+}
+
+/// **A test's hold on the wall's look at one path** (`realpath`, `readlink`, a parent's), as a file on a volume that doesn't answer holds it: for the
+/// test that the look never runs on a thread that mustn't wait. Each hold ends when it's dropped, or at [`seams::LIMIT`].
+#[cfg(feature = "test-seams")]
+pub mod seams {
+    use std::path::{Path, PathBuf};
+    use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+    use std::time::Duration;
+
+    /// The longest a look waits, so a test that fails with one held doesn't hang.
+    pub const LIMIT: Duration = Duration::from_secs(60);
+    /// The path held, and how many looks wait at it.
+    static HELD: Mutex<(Option<PathBuf>, usize)> = Mutex::new((None, 0));
+    static LET_GO: Condvar = Condvar::new();
+
+    fn held() -> MutexGuard<'static, (Option<PathBuf>, usize)> {
+        HELD.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Holds every look at `path` until this is dropped.
+    #[must_use]
+    pub struct Hold;
+
+    impl Drop for Hold {
+        fn drop(&mut self) {
+            held().0 = None;
+            LET_GO.notify_all();
+        }
+    }
+
+    /// Holds the looks at `path`.
+    pub fn hold(path: &Path) -> Hold {
+        held().0 = Some(path.to_path_buf());
+        Hold
+    }
+
+    /// How many looks wait at the held path now.
+    #[must_use]
+    pub fn waiting() -> usize {
+        held().1
+    }
+
+    pub(super) fn wait_if_held(path: &Path) {
+        let mut state = held();
+        if state.0.as_deref() != Some(path) {
+            return;
+        }
+        state.1 += 1;
+        let (mut state, _) = LET_GO
+            .wait_timeout_while(state, LIMIT, |state| state.0.as_deref() == Some(path))
+            .unwrap_or_else(PoisonError::into_inner);
+        state.1 -= 1;
+    }
+}
+
+#[cfg(not(feature = "test-seams"))]
+mod seams {
+    pub(super) fn wait_if_held(_: &std::path::Path) {}
 }
 
 fn leads_within(path: &Path, links: u8) -> bool {
@@ -134,7 +195,30 @@ fn leads_within(path: &Path, links: u8) -> bool {
 }
 
 fn under_devices(path: &Path) -> bool {
-    cfg!(unix) && path.starts_with("/dev")
+    spelt_into_devices(path)
+}
+
+/// **Whether a whole path, as it's spelt, is under `/dev`:** `.` and `//` taken out, `..` taken back, and `dev` matched whatever its case, as a
+/// case-insensitive root reaches the devices by `/DEV` too. No call to the disk, so it's for a thread that mustn't wait (the person's open on the
+/// session thread); where links lead is [`leads_into_devices`]'s, on the thread that reads. A relative path is never under it: it's refused as such.
+#[must_use]
+pub fn spelt_into_devices(path: &Path) -> bool {
+    use std::path::Component;
+    if !cfg!(unix) || !path.is_absolute() {
+        return false;
+    }
+    let mut parts = Vec::new();
+    for part in path.components() {
+        match part {
+            Component::Prefix(_) | Component::RootDir => parts.clear(),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop();
+            }
+            Component::Normal(name) => parts.push(name),
+        }
+    }
+    parts.first().is_some_and(|first| first.eq_ignore_ascii_case("dev"))
 }
 
 #[cfg(all(test, unix))]
@@ -182,6 +266,9 @@ mod tests {
             "/dev/stdin".into(),
             "/dev/null".into(),
             "/dev".into(),
+            // A case-insensitive root reaches the devices by any case.
+            format!("/DEV/fd/{n}"),
+            format!("/Dev/fd/{n}"),
         ];
         for (k, spelling) in spellings.iter().enumerate() {
             assert!(refused(Path::new(spelling)), "{spelling}");
@@ -197,6 +284,15 @@ mod tests {
         assert!(refused(&folder.join(n.to_string())), "through a linked folder");
         assert!(refused(&folder.join("999")), "through a linked folder, to one that isn't open");
         assert!(matches!(admit(&held), Err(Refused::NotADocument)), "the descriptor's own check");
+        for spelling in [
+            format!("/DEV/fd/{n}"),
+            format!("/Dev/fd/{n}"),
+            format!("//dev/./fd/{n}"),
+            format!("/usr/../dev/fd/{n}"),
+            "/dev".into(),
+        ] {
+            assert!(spelt_into_devices(Path::new(&spelling)), "spelt: {spelling}");
+        }
     }
 
     /// **Failure (the wall refusing a person's file):** a plain file, one reached through a link, one with a second name or held open elsewhere is
@@ -220,6 +316,10 @@ mod tests {
         assert!(
             !leads_into_devices(&dir.join("missing/../dev")),
             "a name like a device's in a folder of the person's"
+        );
+        assert!(
+            !spelt_into_devices(&dir.join("dev/fd/3")) && !spelt_into_devices(Path::new("dev/fd/3")),
+            "`dev` not at the root"
         );
     }
 }

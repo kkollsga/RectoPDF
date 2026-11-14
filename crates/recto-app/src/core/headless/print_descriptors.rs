@@ -151,61 +151,84 @@ fn an_agent_cannot_open_the_persons_print_by_its_descriptor() {
     );
 }
 
-/// The refusal an agent at Full gets for opening `path`, whole, as JSON: what twins must be equal in.
+/// The refusal an agent at Full gets for opening `path`: what twins must be equal in, all of it but the file's name as the agent gave it, which a quiet
+/// run's refusal says back (`untrusted.file`, the last part of the path asked for).
 fn refusal_of(app: &HeadlessApp, path: &str) -> String {
     match app.recto(Level::Full, &["open", path]) {
         Ok(answer) => format!("OPENED {answer}"),
-        Err(error) => format!("{} {} {:?} {:?} {:?}", error.code, error.exit, error.message, error.next, error.untrusted),
+        Err(error) => {
+            let said_back = Path::new(path).file_name().map(|name| serde_json::json!({ "file": name.to_string_lossy() }));
+            let untrusted = error.untrusted.as_deref().filter(|untrusted| Some(*untrusted) != said_back.as_ref());
+            format!("{} {} {:?} {:?} {untrusted:?}", error.code, error.exit, error.message, error.next)
+        }
     }
 }
 
 /// **Failure (S1's twins): the refusal of `/dev/fd/N` says whether N is open, and so when a print is held**: before the wall a descriptor not open was
-/// "no such file", one on a named file opened it, and one on a file with no link opened that. Every path under `/dev` gets the one refusal before
-/// anything is looked at, the same whatever is behind it, and so does a link to one in a temp folder, a link to a descriptor that isn't open included;
-/// and the person who tries it is told the same by the page.
+/// "no such file", one on a named file opened it, and one on a file with no link opened that. A link into `/dev` is caught on the thread that reads, not
+/// by its spelling, after the session has looked for a tab with that file: it finds none, as a file reached through `/dev/fd` has devfs's device number.
+/// Every path under `/dev`, in any case and
+/// spelling, gets the one refusal, the same whatever is behind it, and so does a link to one in a temp folder, a link to a descriptor that isn't open
+/// and one to a tab's own file included; and the person who tries it is told the same by the page.
 #[test]
 fn every_path_into_dev_gets_one_refusal_whatever_is_behind_it() {
     use std::os::fd::AsRawFd;
     let disk = Disk::new().as_the_users_own();
     let named = disk.pdf("named.pdf", 1);
+    let tabbed = disk.pdf("tabbed.pdf", 1);
     let app = disk.start();
+    app.open(&tabbed);
     let unnamed = unnamed_file(&std::fs::read(&named).expect("a PDF's bytes"));
     let open_elsewhere = std::fs::File::open(&named).expect("a named file held open");
+    let a_tabs_file = std::fs::File::open(&tabbed).expect("the file a tab has open");
+    let fd = unnamed.as_raw_fd();
     let paths: Vec<String> = [
-        format!("/dev/fd/{}", unnamed.as_raw_fd()),
+        format!("/dev/fd/{fd}"),
         format!("/dev/fd/{}", open_elsewhere.as_raw_fd()),
+        format!("/dev/fd/{}", a_tabs_file.as_raw_fd()),
         "/dev/fd/999".into(),
         "/dev/stdin".into(),
         "/dev/null".into(),
         "/dev".into(),
-        format!("//dev/./fd/{}", unnamed.as_raw_fd()),
+        format!("//dev/./fd/{fd}"),
+        format!("/DEV/fd/{fd}"),
+        format!("/Dev/fd/{fd}"),
+        format!("/usr/../dev/fd/{fd}"),
     ]
     .into();
-    let links: Vec<PathBuf> = paths
-        .iter()
-        .enumerate()
-        .map(|(n, target)| {
-            let link = app.disk().files().join(format!("twin-{n}.pdf"));
-            std::os::unix::fs::symlink(target, &link).expect("a link");
-            link
-        })
-        .collect();
-    let mut answers: Vec<(String, String)> = paths.iter().map(|path| (path.clone(), refusal_of(&app, path))).collect();
-    answers.extend(links.iter().map(|link| (link.display().to_string(), refusal_of(&app, path_str(link)))));
-    let first = answers[0].1.clone();
-    assert!(first.starts_with("not_pdf "), "the wall's refusal: {first}");
-    for (path, answer) in &answers {
-        assert_eq!(answer, &first, "{path} is told otherwise than {}", answers[0].0);
-    }
-    assert!(app.tabs().is_empty(), "nothing opened");
+    let links = |app: &HeadlessApp| -> Vec<PathBuf> {
+        paths
+            .iter()
+            .enumerate()
+            .map(|(n, target)| {
+                let link = app.disk().files().join(format!("twin-{n}.pdf"));
+                std::os::unix::fs::symlink(target, &link).expect("a link");
+                link
+            })
+            .collect()
+    };
+    let answers = |app: &HeadlessApp| -> Vec<(String, String)> {
+        let mut answers: Vec<(String, String)> = paths.iter().map(|path| (path.clone(), refusal_of(app, path))).collect();
+        answers.extend(links(app).iter().map(|link| (link.display().to_string(), refusal_of(app, path_str(link)))));
+        answers
+    };
+    let all_alike = |answers: &[(String, String)], code: &str| {
+        let first = &answers[0].1;
+        assert!(first.starts_with(code), "the wall's refusal: {first}");
+        for (path, answer) in answers {
+            assert_eq!(answer, first, "{path} is told otherwise than {}", answers[0].0);
+        }
+    };
+    all_alike(&answers(&app), "not_pdf ");
+    assert_eq!(app.tabs().len(), 1, "nothing opened");
     app.open(Path::new(&paths[0]));
     assert_eq!(
         app.core().window.notices().open_failure().as_deref(),
         Some(recto_core::OpenError::NotPdf.message()),
         "the person is told by the page as for any file that isn't a PDF"
     );
-    assert!(app.tabs().is_empty(), "nothing opened for the person");
-    drop((unnamed, open_elsewhere));
+    assert_eq!(app.tabs().len(), 1, "nothing opened for the person");
+    drop((unnamed, open_elsewhere, a_tabs_file));
 }
 
 /// **Failure (the wall refusing what a person opens): a file the person can open today is refused by the wall**, as one reached through a link, one with
@@ -238,4 +261,26 @@ fn the_wall_leaves_every_file_a_person_opens() {
         }
         assert_eq!(app.tabs().len(), n + 1, "{} opened", path.display());
     }
+}
+
+/// **Failure (the re-read's SF-A): the wall's look at a path ran on the session thread for the person's Open** (`realpath`, a link read, a parent's),
+/// so a file on a volume that doesn't answer, its look held here, stopped the session thread answering anything, where the person's open was built to
+/// read off it (`run_for_person_reading_later`). With the look held, a later call is taken and shown, nothing is opened yet, and once it's let go the file
+/// opens.
+#[test]
+fn the_persons_open_doesnt_wait_on_the_session_thread_for_the_walls_look() {
+    use recto_platform::document_file::seams;
+    let disk = Disk::new().as_the_users_own();
+    let file = disk.pdf("slow.pdf", 1);
+    let app = disk.start();
+    let held = seams::hold(&file);
+    app.person(&format!(r#"{{"cmd":"open","path":{}}}"#, serde_json::Value::from(path_str(&file))));
+    app.wait_until("the wall's look at the file is held", || seams::waiting() > 0);
+    let paper = if app.reader().paper == "dark" { "white" } else { "dark" };
+    app.person(&format!(r#"{{"cmd":"view","paper":"{paper}"}}"#));
+    app.wait_until("a later call taken while the look is held", || app.reader().paper == paper);
+    assert!(app.tabs().is_empty(), "nothing opened while its look is held");
+    drop(held);
+    app.settle();
+    assert_eq!(app.tabs().len(), 1, "opened once it's let go");
 }
