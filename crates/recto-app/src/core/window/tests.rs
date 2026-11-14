@@ -309,7 +309,8 @@ fn the_systems_appearance_is_kept_as_the_bridge_kept_it() {
 #[test]
 fn the_app_in_front_is_kept_as_the_bridge_kept_it() {
     // (in front before, in front now, the window key) → (what the writer was asked for, what the session thread was sent)
-    let table: [((bool, bool, bool), (Kept, &[&str])); 5] = [
+    type Row = ((bool, bool, bool), (Kept, &'static [&'static str]));
+    let table: [Row; 5] = [
         ((true, false, false), (Kept::AtOnce, &[])),
         ((false, true, true), (Kept::InItsTime, &["LookAtShown"])),
         ((false, true, false), (Kept::InItsTime, &["LookAtShown"])),

@@ -1088,8 +1088,20 @@ mod tests {
         // Each method: a call that changes something, and one that can't (`None` for a method that always changes what's drawn).
         type Call = Box<dyn Fn(&mut Results)>;
         let table: Vec<(&str, Call, Option<Call>)> = vec![
-            ("begin_on", Box::new(move |r| drop(r.begin_on(&find_plan, "word"))), None),
-            ("begin", Box::new(move |r| drop(r.begin(tab, "other", 10))), None),
+            (
+                "begin_on",
+                Box::new(move |r| {
+                    let _ = r.begin_on(&find_plan, "word");
+                }),
+                None,
+            ),
+            (
+                "begin",
+                Box::new(move |r| {
+                    let _ = r.begin(tab, "other", 10);
+                }),
+                None,
+            ),
             ("refused", Box::new(move |r| r.refused(tab, "word", basis, "No.".into())), None),
             ("clear", Box::new(Results::clear), None),
             (
@@ -1104,18 +1116,34 @@ mod tests {
             ),
             (
                 "step",
-                Box::new(|r| drop(r.step(true, (0, 0)))),
+                Box::new(|r| {
+                    let _ = r.step(true, (0, 0));
+                }),
                 // From the last hit while the query runs: it waits for one past it, and nothing's gone to.
                 Some(Box::new(|r| {
                     r.current = Some(1);
-                    drop(r.step(true, (0, 0)));
+                    {
+                        let _ = r.step(true, (0, 0));
+                    };
                 })),
             ),
-            ("choose", Box::new(|r| drop(r.choose(1))), Some(Box::new(|r| drop(r.choose(9))))),
+            (
+                "choose",
+                Box::new(|r| {
+                    let _ = r.choose(1);
+                }),
+                Some(Box::new(|r| {
+                    let _ = r.choose(9);
+                })),
+            ),
             (
                 "choose_place",
-                Box::new(|r| drop(r.choose_place((5, 0)))),
-                Some(Box::new(|r| drop(r.choose_place((9, 9))))),
+                Box::new(|r| {
+                    let _ = r.choose_place((5, 0));
+                }),
+                Some(Box::new(|r| {
+                    let _ = r.choose_place((9, 9));
+                })),
             ),
         ];
         let mut named: Vec<&str> = table.iter().map(|(name, ..)| *name).collect();
