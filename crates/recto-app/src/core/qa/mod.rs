@@ -453,9 +453,9 @@ impl QaBridge {
         if let Some(inner) = self.inner()
             && let Some(result) = inner.qa_session_verb(verb, value)
         {
-            result?;
+            let answer = result?;
             self.core.flush(ANSWER_AFTER_CLICK);
-            return self.ask("state", "");
+            return answer.map_or_else(|| self.ask("state", ""), Ok);
         }
         match verb {
             // What ends the app answers first, as nothing can after.

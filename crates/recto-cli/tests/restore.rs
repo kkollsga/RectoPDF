@@ -1037,7 +1037,8 @@ fn a_launch_doesnt_show_a_picture_of_a_file_thats_been_replaced() {
     run.ok(&["open", file.to_str().unwrap()]);
     run.settled();
     // The system takes back what's discardable whenever it likes, the page's preview with it once its tiles cover it: the picture's made from those.
-    run.ok(&["qa", "memory-pressure", "discard"]);
+    let emptied = run.ok(&["qa", "memory-pressure", "discard"])["emptied"].as_u64().unwrap();
+    assert!(emptied > 0, "the system took nothing, so this doesn't test a picture made from the tiles");
     // What it asks of the app is waited for as anything is, or a hand-off on a starved machine finds it still going and refuses.
     run.settled();
     run.hand_off();
@@ -1401,7 +1402,8 @@ fn a_launch_goes_up_from_the_sleep_file() {
     run.ok(&["goto", "4"]);
     run.settled();
     let before = run.report();
-    run.ok(&["qa", "memory-pressure", "discard"]);
+    let emptied = run.ok(&["qa", "memory-pressure", "discard"])["emptied"].as_u64().unwrap();
+    assert!(emptied > 0, "the system took nothing, so this doesn't test a picture made from the tiles");
     // What it asks of the app is waited for as anything is, or a hand-off on a starved machine finds it still going and refuses.
     run.settled();
     run.hand_off();

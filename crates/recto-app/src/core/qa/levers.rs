@@ -10,8 +10,16 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 impl Inner {
-    /// A QA verb that needs no window. `None` if it's for the host. Calls what the UI will.
-    pub fn qa_session_verb(&self, verb: &str, value: &str) -> Option<Result<(), AgentError>> {
+    /// A QA verb that needs no window. `None` if it's for the host. Calls what the UI will. `Some` answer of its own for a verb that has one (`memory-pressure
+    /// discard`: how many surfaces it emptied); the others are answered with the state.
+    pub fn qa_session_verb(&self, verb: &str, value: &str) -> Option<Result<Option<serde_json::Value>, AgentError>> {
+        // The system taking back what's marked discardable, which it does without a word whenever it needs the pages. Says how many it emptied, so a test
+        // that forces it knows it took something, and doesn't pass on what was never discardable.
+        if verb == "memory_pressure" && value == "discard" {
+            let emptied: usize = self.panes.engines(&self.engine).iter().map(recto_reader::Engine::empty_discardable).sum();
+            self.core.push(CoreCall::Reconcile);
+            return Some(Ok(Some(serde_json::json!({ "emptied": emptied }))));
+        }
         let usage = |words: String| AgentError::new(Code::USAGE, words, recto_agent::exit::USAGE);
         let session = &self.host.session;
         let result = match verb {
@@ -69,13 +77,6 @@ impl Inner {
                     self.system_pressure(value == "system-critical");
                     Ok(())
                 }
-                // The system taking back what's marked discardable, which it does without a word whenever it needs the pages.
-                "discard" => {
-                    for engine in self.panes.engines(&self.engine) {
-                        engine.empty_discardable();
-                    }
-                    Ok(())
-                }
                 _ => Err(usage("It's `warning`, `critical` or `discard`.".to_string())),
             },
             "note_input" => {
@@ -89,7 +90,7 @@ impl Inner {
             _ => return None,
         };
         self.core.push(CoreCall::Reconcile);
-        Some(result)
+        Some(result.map(|()| None))
     }
 
     /// **What a Save does around its writing, with the writing done by the test,** for crash and restore tests: keeps what's needed, notes what's coming and flushes that, puts the file in place, and confirms. Every step but the writing is the real one, and it's refused where Save would be.
