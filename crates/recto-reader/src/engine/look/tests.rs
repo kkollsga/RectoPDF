@@ -154,7 +154,7 @@ fn a_look_to_be_tried_again_is_never_handed_on_or_kept() {
     let (mut doc, mut looks) = (StandIn::failing_for(start, Some(Duration::from_secs(1))), Looks::default());
     let at = |doc: &mut StandIn, looks: &mut Looks, tenths| {
         doc.now = start + seconds(tenths);
-        tile_look(doc, looks, 0, 1, (None, None), doc.now)
+        tile_look(doc, looks, 0, 1, None, None, doc.now)
     };
     assert!(matches!(at(&mut doc, &mut looks, 0), Err(Outcome::LookLater)), "the try that failed");
     assert!(matches!(at(&mut doc, &mut looks, 10), Err(Outcome::LookLater)), "asked before its time");

@@ -869,6 +869,7 @@ TileCache (pub(crate) struct, derives Debug)
 TileCache::pub(crate) fn empty_discardable(&mut self) -> usize
 TileCache::pub(crate) fn set_share(&mut self, views: usize, host: &mut HostQueue)
 TileKey (pub(super) struct, derives Clone, Copy, Debug, PartialEq, Eq, Hash)
+Tries (private struct, derives Clone, Copy, Debug)
 Unopened (private enum)
 Viewport (pub struct, derives Clone, Copy, Debug, Default, PartialEq)
 Viewport.pub backing: f64

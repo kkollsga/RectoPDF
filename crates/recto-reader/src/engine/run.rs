@@ -466,7 +466,8 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                             &mut open.looks,
                             job.source_page,
                             job.generation,
-                            (whole.map(|rect| (surface, rect)), tile),
+                            whole.map(|rect| (surface, rect)),
+                            tile,
                             Instant::now(),
                         );
                         if let Err(Outcome::Unstarted { heavy }) = look {

@@ -129,10 +129,11 @@ pub(super) fn tile_look(
     looks: &mut Looks,
     page: u32,
     generation: u64,
-    pictures: (Option<(&PixelSurface, TileRect)>, Option<(&PixelSurface, TileRect, f32)>),
+    whole: Option<(&PixelSurface, TileRect)>,
+    tile: Option<(&PixelSurface, TileRect, f32)>,
     now: Instant,
 ) -> Result<Arc<PageLook>, Outcome> {
-    page_look(doc, looks, page, generation, pictures.0, pictures.1, now).map_err(|no| match no {
+    page_look(doc, looks, page, generation, whole, tile, now).map_err(|no| match no {
         NoLook::Stale => Outcome::Cancelled,
         NoLook::Again => Outcome::LookLater,
         NoLook::Unstarted { heavy } => Outcome::Unstarted { heavy },

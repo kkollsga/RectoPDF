@@ -1590,16 +1590,16 @@ mod tests {
     /// Failure (second review of 2026-11-14): a navy page with a photo under half of it, the shape where only the dark rule decides, as under [`MOSTLY_PICTURE`] a page that isn't dark turns over whatever its background, comes out light blue; or one with a white text box beside the photo, or with the photo running off one side. Its ring is navy where the photo doesn't cover it, and it stays as it is, dimmed. Seen failing with the ring's line past 1.
     #[test]
     fn a_navy_page_with_a_photo_under_half_of_it_stays_dark() {
-        let cases: [(&str, &[([f64; 4], Part)]); 3] = [
-            ("a photo over 45%", &[(centred_photo(0.45), Part::Photo)]),
+        let cases = [
+            ("a photo over 45%", vec![(centred_photo(0.45), Part::Photo)]),
             (
                 "a photo and a white text box",
-                &[([0.55, 0.2, 0.95, 0.75], Part::Photo), ([0.05, 0.2, 0.5, 0.75], Part::Light)],
+                vec![([0.55, 0.2, 0.95, 0.75], Part::Photo), ([0.05, 0.2, 0.5, 0.75], Part::Light)],
             ),
-            ("a photo off its right side over 45%", &[([0.45, 0.1, 1.0, 0.92], Part::Photo)]),
+            ("a photo off its right side over 45%", vec![([0.45, 0.1, 1.0, 0.92], Part::Photo)]),
         ];
         for (name, parts) in cases {
-            let pixels = made_page(parts, NAVY, LIGHT_TEXT);
+            let pixels = made_page(&parts, NAVY, LIGHT_TEXT);
             let boxes: Vec<[u16; 4]> = parts
                 .iter()
                 .filter(|(_, part)| matches!(part, Part::Photo))
