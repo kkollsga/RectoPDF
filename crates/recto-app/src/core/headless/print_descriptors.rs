@@ -169,7 +169,7 @@ fn refusal_of(app: &HeadlessApp, path: &str) -> String {
 /// by its spelling, after the session has looked for a tab with that file: it finds none, as a file reached through `/dev/fd` has devfs's device number.
 /// Every path under `/dev`, in any case and
 /// spelling, gets the one refusal, the same whatever is behind it, and so does a link to one in a temp folder, a link to a descriptor that isn't open
-/// and one to a tab's own file included; and the person who tries it is told the same by the page.
+/// and one to a tab's own file included; the person who tries it is told the same by the page; and in a confined quiet run every one is refused alike.
 #[test]
 fn every_path_into_dev_gets_one_refusal_whatever_is_behind_it() {
     use std::os::fd::AsRawFd;
@@ -228,6 +228,9 @@ fn every_path_into_dev_gets_one_refusal_whatever_is_behind_it() {
         "the person is told by the page as for any file that isn't a PDF"
     );
     assert_eq!(app.tabs().len(), 1, "nothing opened for the person");
+    // A quiet run's session is confined to the temp folders, whose rule speaks first: one refusal for every twin there too.
+    let confined = Disk::new().start();
+    all_alike(&answers(&confined), "outside_quiet_run ");
     drop((unnamed, open_elsewhere, a_tabs_file));
 }
 
