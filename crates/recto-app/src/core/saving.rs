@@ -68,13 +68,13 @@ impl SaveSupport for AppSaving {
     }
 }
 
-/// **A save from the window, off the UI thread,** through the same command an agent's `recto save` runs, as the person's. `out` makes it a Save As. `close_after` closes the tab once it's saved, for the close prompt's Save. A hand-off waits for it, as it's a running command.
 /// **Whether Save can be chosen now,** from what's published: never waits. Not under a sheet: the close prompt's own Save is how to save then.
 pub fn can_save(published: &std::sync::Mutex<super::Published>, life: &super::Lifecycle) -> bool {
     let reader = super::lock(published).reader.clone();
     !reader.home && reader.edited && reader.save_enabled && life.sheets_open() == 0
 }
 
+/// **A save from the window, off the UI thread,** through the same command an agent's `recto save` runs, as the person's. `out` makes it a Save As. `close_after` closes the tab once it's saved, for the close prompt's Save. A hand-off waits for it, as it's a running command.
 pub fn start_save(inner: &Arc<super::Inner>, tab: TabId, out: Option<std::path::PathBuf>, close_after: bool) {
     // When the person answered Save As's sheet: a file made at that name after this isn't one they agreed to replace (review).
     let answered = std::time::SystemTime::now();
