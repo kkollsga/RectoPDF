@@ -194,11 +194,13 @@ impl Sleeper {
     }
 
     /// How long a pushed-out tab's sleep file waits, for tests.
+    #[cfg(any(test, feature = "testkit"))]
     pub(crate) fn set_leaving_wait(&self, ms: u64) {
         self.leaving.set_wait(ms);
     }
 
     /// The writer looks at the queue again, as the clock's moved on (a test's clock, which no timeout follows).
+    #[cfg(any(test, feature = "testkit"))]
     pub(crate) fn poke_leaving(&self) {
         self.leaving.poke();
     }
