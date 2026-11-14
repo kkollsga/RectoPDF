@@ -178,7 +178,7 @@ Inner::pub fn window_opened(&self)
 Inner::pub fn window_replaced(&self)
 Inner::pub(crate) fn carry_out_quit(self: &Arc<Self>, out: Option<Out>)
 Inner::pub(crate) fn carry_out_quit_answer(&self, out: Out)
-Inner::pub(super) fn start_sleep_writer(&self)
+Inner::pub(super) fn starts_sleep_writer(&self) -> StartsWriter<'_>
 Lifecycle (pub struct)
 Lifecycle.pub first_shown: Mutex<Option<Value>>
 Lifecycle.pub holding_tab: Mutex<Option<TabId>>

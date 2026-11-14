@@ -274,22 +274,22 @@ impl Sleeper {
 
     /// **Everything waiting is written now, without waiting for the cool-down** (memory pressure, a quit, a hand-off), with a writer started for it by `start`
     /// if there's none, as after one panicked. Not the UI thread's: that's [`Self::hurry_leaving_soon`].
-    fn hurry_leaving(&self, start: impl FnOnce()) {
+    fn hurry_leaving(&self, start: StartsWriter<'_>) {
         if self.leaving.hurry() {
-            start();
+            start.start();
         }
     }
 
     /// **Everything waiting is written now, and waited for until `until`** (a quit's, a hand-off's), a writer started for it by `start` if there's none: past
     /// it, or with no writer to be had, what's left is written after or not at all, which costs those tabs only their quick way back. Says whether it all went.
-    fn drain_leaving(&self, until: Instant, start: impl FnOnce()) -> bool {
+    fn drain_leaving(&self, until: Instant, start: StartsWriter<'_>) -> bool {
         self.hurry_leaving(start);
         self.leaving.drain(until)
     }
 
     /// **A hurry going to the background asked for, carried out:** what waits in the cool-down is due now, under the queue's lock, and a writer's started by
     /// `start` if there's none (as after one panicked). Called by the saver's pass and at the end of a flush, never on the UI thread.
-    pub(super) fn hurry_leaving_if_asked(&self, start: impl FnOnce()) {
+    pub(super) fn hurry_leaving_if_asked(&self, start: StartsWriter<'_>) {
         if self.background_hurry.swap(false, Ordering::SeqCst) {
             self.hurry_leaving(start);
         }
@@ -410,7 +410,7 @@ impl Sleeper {
         keeps: &KeepsRecord<'_>,
         asked: Option<app::Asked>,
         until: Instant,
-        start_writer: impl FnOnce(),
+        start_writer: StartsWriter<'_>,
     ) {
         let agent = asked.filter(|asked| matches!(asked.by, recto_agent::Actor::Agent(_)));
         if let Some(id) = on_hand.session.with_session(|session| session.tabs().active()) {
@@ -428,7 +428,7 @@ impl Sleeper {
     /// `shown` is the tab being shown: what's queued for it was copied as it left, so it's taken back, not written, and said for its first frame
     /// ([`give_sleep_view`]); it's queued again when it next leaves.
     /// A writer's started by `start_writer` if the queue says there's none.
-    pub(super) fn queue_those_leaving(&self, on_hand: &OnHand<'_>, shown: TabId, start_writer: impl FnOnce()) -> Option<(SleepFacts, SleepMaterial)> {
+    pub(super) fn queue_those_leaving(&self, on_hand: &OnHand<'_>, shown: TabId, start_writer: StartsWriter<'_>) -> Option<(SleepFacts, SleepMaterial)> {
         let back = self.leaving.take_back(shown);
         let left = on_hand.session.with_session(|session| session.sleeper().take_left_warm());
         let now = self.millis();
@@ -439,18 +439,18 @@ impl Sleeper {
             }
         }
         if start {
-            start_writer();
+            start_writer.start();
         }
         back
     }
 
     /// A tab going dormant by itself: its sleep file, from what's on hand now, queued for the one writer, started by `start_writer` if there's none.
-    pub(super) fn queue_sleep_for(&self, on_hand: &OnHand<'_>, id: TabId, start_writer: impl FnOnce()) {
+    pub(super) fn queue_sleep_for(&self, on_hand: &OnHand<'_>, id: TabId, start_writer: StartsWriter<'_>) {
         let Some((facts, material)) = on_hand.facts_and_material(id) else {
             return;
         };
         if self.leaving.push(facts, material, Leaves::Dormant, self.millis()) {
-            start_writer();
+            start_writer.start();
         }
     }
 
@@ -599,7 +599,7 @@ impl Inner {
                     .write_sleep_for(&on_hand, &self.saver.store, &super::keeping::asks(self), id, By::Asked(asked.by), None);
                 self.sleeper.answer(asked, outcome);
             } else {
-                self.sleeper.queue_sleep_for(&on_hand, id, || self.start_sleep_writer());
+                self.sleeper.queue_sleep_for(&on_hand, id, self.starts_sleep_writer());
             }
             let list = self.host.session.with_session(|session| session.dormant().list_to_sleep(id));
             // Compacted, and read back. If that doesn't say it's all there, the list stays in memory, and it's looked at again next time it's left alone.
@@ -618,13 +618,28 @@ impl Inner {
         gone
     }
 
-    /// The queue's said there's no writer: one's started.
+    /// What starts the queue's writer when the queue says there's none: the one [`StartsWriter`] there is, for the sleeper's calls that may need one.
     ///
     /// **Stays on the app** (R3.7 S6): the thread it starts holds the app, as the writer asks the record's keeping before each write
     /// ([`super::keeping::asks`]), which is the app's; it goes to the [`Sleeper`] when R3.7 S5 gives the record's keeping a part of its own.
-    pub(super) fn start_sleep_writer(&self) {
-        let Some(inner) = self.saver.inner() else {
-            self.sleeper.leaving.writer_gone();
+    pub(super) fn starts_sleep_writer(&self) -> StartsWriter<'_> {
+        StartsWriter(self)
+    }
+}
+
+/// **The one way the sleep queue's writer is started,** taken by every call of the [`Sleeper`]'s that may find the queue wanting one. Not a closure: the queue
+/// sets its `writer` flag as it says "start one", and a caller that passed something that started nothing left the flag set with no thread, so a hurry
+/// never started one and a quit's drain waited out its whole limit. Its field is private and it's built only by [`Inner::starts_sleep_writer`], so what
+/// it runs is always the writer's start. A borrow of the app, nothing more: no allocation, lock or indirection per call.
+#[derive(Clone, Copy)]
+pub(super) struct StartsWriter<'a>(&'a Inner);
+
+impl StartsWriter<'_> {
+    /// The queue's said there's no writer: one's started, on a thread holding the app. With no app to hold (it's going) or no thread to be had, the queue's
+    /// told there's none after all, so the next that wants one starts it.
+    fn start(self) {
+        let Some(inner) = self.0.saver.inner() else {
+            self.0.sleeper.leaving.writer_gone();
             return;
         };
         let spawned = std::thread::Builder::new()
@@ -632,7 +647,7 @@ impl Inner {
             .stack_size(512 * 1024)
             .spawn(move || inner.sleeper.write_leaving(&inner.saver.store, &super::keeping::asks(&inner)));
         if spawned.is_err() {
-            self.sleeper.leaving.writer_gone();
+            self.0.sleeper.leaving.writer_gone();
         }
     }
 }
@@ -781,7 +796,7 @@ impl Inner {
         let Some(Out::AllGo(critical)) = self.sleeper.step(Event::Pressure { critical }) else {
             return;
         };
-        self.sleeper.hurry_leaving(|| self.start_sleep_writer());
+        self.sleeper.hurry_leaving(self.starts_sleep_writer());
         let tabs = self.host.session.with_session(|session| session.dormant().oldest_first());
         self.go_dormant(&tabs, Why::Pressure);
         for engine in self.panes.engines(&self.engine) {
