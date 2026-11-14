@@ -303,6 +303,46 @@ fn the_systems_appearance_is_kept_as_the_bridge_kept_it() {
     }
 }
 
+/// Failure: going to the back waits for the writer's time, so a quit from the Dock or a logout loses what changed; coming back writes at once for nothing;
+/// coming to the front doesn't look at the files showing (another app may have moved, replaced or deleted one), or a change of key window alone looks at
+/// them; or the app in front and the window key aren't kept: `Inner::frontmost_changed`, as it was before it moved here.
+#[test]
+fn the_app_in_front_is_kept_as_the_bridge_kept_it() {
+    // (in front before, in front now, the window key) → (what the writer was asked for, what the session thread was sent)
+    let table: [((bool, bool, bool), (Kept, &[&str])); 5] = [
+        ((true, false, false), (Kept::AtOnce, &[])),
+        ((false, true, true), (Kept::InItsTime, &["LookAtShown"])),
+        ((false, true, false), (Kept::InItsTime, &["LookAtShown"])),
+        ((true, true, false), (Kept::InItsTime, &[])),
+        ((false, false, false), (Kept::InItsTime, &[])),
+    ];
+    for ((was, frontmost, key), (kept, sent)) in table {
+        let rig = Rig::new();
+        lock(&rig.window.app).focus.app_frontmost = was;
+        rig.window.frontmost_changed(frontmost, key, &rig.saver, &rig.core);
+        let asked = format!("in front {was} → {frontmost}, key {key}");
+        let focus = rig.app().focus;
+        assert_eq!((focus.app_frontmost, focus.window_key), (frontmost, key), "{asked}");
+        assert_eq!(rig.queued(), sent, "{asked}");
+        assert_eq!(rig.kept(), kept, "{asked}");
+    }
+}
+
+/// Failure: where the Settings window is, or that it's closed, isn't kept or isn't written, so it comes back where it was before, or open after it was
+/// closed: the bridge's `settings_window_changed`, kept and written in its own time.
+#[test]
+fn the_settings_window_is_kept_as_the_bridge_kept_it() {
+    let place = SettingsWindow { x: 40.0, y: 50.0 };
+    for (was, now) in [(None, Some(place)), (Some(place), None), (Some(SettingsWindow { x: 1.0, y: 2.0 }), Some(place))] {
+        let rig = Rig::new();
+        lock(&rig.window.app).settings_window = was;
+        rig.window.settings_window_changed(now, &rig.saver);
+        assert_eq!(rig.window.settings_window(), now, "{was:?} → {now:?}");
+        assert_eq!(rig.kept(), Kept::InItsTime, "{was:?} → {now:?}");
+        assert!(rig.queued().is_empty(), "{was:?} → {now:?}: nothing redrawn for it");
+    }
+}
+
 /// What a placement's answer is, in one tuple for a table: saved, the frame, full screen, activate, the sidebar focused, in the background, full screen
 /// when active, in the Dock.
 type Placed = (bool, (f64, f64, f64, f64), bool, bool, bool, bool, bool, bool);
