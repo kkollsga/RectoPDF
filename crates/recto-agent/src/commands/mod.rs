@@ -44,7 +44,7 @@ pub mod scaffold_template;
 
 use crate::Code;
 use crate::table::{self, Access, Spec};
-use crate::{Actor, AgentError, Command, Event, Level, Runs, SessionAccess, TabRef};
+use crate::{Actor, AgentError, Command, Event, Runs, SessionAccess, TabRef};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -128,11 +128,11 @@ pub trait OnlyAsks {
     fn only_asks(&self) -> bool;
 }
 
-/// What a command runs with: the session, who asked and the level that goes by ([`Actor::level`]), and the events it makes.
+/// What a command runs with: the session, who asked, and the events it makes. Whatever turns on who asked is a method of [`Actor`]'s, so there's no
+/// level here to compare.
 pub struct Cx<'a, A> {
     pub access: &'a A,
     pub actor: Actor,
-    pub level: Level,
     pub events: &'a mut Vec<Event>,
 }
 

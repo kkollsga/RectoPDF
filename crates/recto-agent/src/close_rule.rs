@@ -10,7 +10,7 @@
 //!   level, and the person, who sees the tab say so, decides. Unknown is "would lose", not "nothing to lose" (coordinator, 2026-11-13).
 
 use crate::Code;
-use crate::{ASK_FULL, Actor, AgentError, Level, exit};
+use crate::{ASK_FULL, Actor, AgentError, exit};
 use recto_session::edit::PageEdits;
 use recto_session::{DocLoader, Session, TabId};
 
@@ -72,7 +72,7 @@ impl WouldLose {
     /// **Why `close` is refused for `actor`,** if it is, saying all of what it would lose and every way on that's real.
     #[must_use]
     pub fn refusal(&self, actor: Actor) -> Option<AgentError> {
-        if self.unreadable && actor != Actor::Person {
+        if self.unreadable && !actor.may_lose_unread() {
             return Some(
                 AgentError::new(
                     Code::EDITS_UNREADABLE,
@@ -82,7 +82,7 @@ impl WouldLose {
                 .then("Leave the tab open: it tells the user its edits couldn't be read, and closing it is theirs to decide. `recto session show` says what's known of them."),
             );
         }
-        let protected = actor.level() < Level::Full;
+        let protected = actor.held_to_owners_edits();
         let owners_undone = protected && self.owners_undone;
         let owners_anywhere = protected && self.owners_anywhere;
         if !self.unsaved && !owners_undone {
@@ -137,6 +137,7 @@ impl WouldLose {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Level;
 
     /// Failure: the close rule answers one actor otherwise than it says: a person not asked before losing unsaved edits or their own undone steps, an agent
     /// let close over unsaved edits at any level or over the owner's undone steps below Full, or one at Full stopped by the owner's undone steps alone.

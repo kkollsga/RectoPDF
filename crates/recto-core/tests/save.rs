@@ -105,6 +105,9 @@ struct Noted {
 }
 
 impl SaveHooks for Noted {
+    fn may_rewrite(&self) -> bool {
+        true
+    }
     fn step(&mut self, step: SaveStep) {
         self.steps.push(step);
     }
@@ -377,6 +380,9 @@ fn a_file_changed_meanwhile_isnt_saved_over() {
     /// Replaces the file while the save has it written beside it.
     struct Replacer(PathBuf);
     impl SaveHooks for Replacer {
+        fn may_rewrite(&self) -> bool {
+            true
+        }
         fn prepared(&mut self, _written: &Path, _stamp: FileStamp) -> std::io::Result<()> {
             std::fs::write(&self.0, marked(&["SOMEONE ELSE'S"]))
         }
@@ -455,6 +461,9 @@ fn a_rewrite_that_keeps_size_and_time_isnt_saved_onto() {
 fn a_failed_note_leaves_the_file_as_it_was() {
     struct Refuse;
     impl SaveHooks for Refuse {
+        fn may_rewrite(&self) -> bool {
+            true
+        }
         fn prepared(&mut self, _written: &Path, _stamp: FileStamp) -> std::io::Result<()> {
             Err(std::io::Error::other("the journal couldn't be written"))
         }
