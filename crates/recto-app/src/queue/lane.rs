@@ -41,17 +41,21 @@ struct State {
 }
 
 impl Default for Lane {
+    /// Made with room for a few tickets and its lock taken once, so the window's thread allocates nothing for the person's first edits (a ticket each,
+    /// held only while its command is on its way): one small buffer for the app, not one for anything idle.
     fn default() -> Self {
-        Self {
+        let lane = Self {
             state: Mutex::new(State {
                 next: 0,
                 passed: 0,
                 gone: BTreeSet::new(),
-                outstanding: VecDeque::new(),
+                outstanding: VecDeque::with_capacity(8),
                 parked: VecDeque::new(),
                 cap: CAP,
             }),
-        }
+        };
+        drop(lock(&lane.state));
+        lane
     }
 }
 

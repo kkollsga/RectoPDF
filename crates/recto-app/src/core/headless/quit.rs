@@ -292,7 +292,12 @@ fn an_agents_edit_landing_after_the_quit_is_asked_comes_back() {
     app.open(&doc);
     let (held, go) = crate::core::person::hold("highlight");
     std::thread::scope(|scope| {
-        let agent = scope.spawn(|| app.agent(recto_agent::Level::Full, r#"{"cmd":"highlight","tab":"active","page":1,"chars":"0-5"}"#));
+        let agent = std::thread::Builder::new()
+            .name("recto-test-agent".into())
+            .spawn_scoped(scope, || {
+                app.agent(recto_agent::Level::Full, r#"{"cmd":"highlight","tab":"active","page":1,"chars":"0-5"}"#)
+            })
+            .expect("the agent's thread");
         held.recv_timeout(crate::testkit::headless::WAIT_LIMIT)
             .expect("the agent's highlight held in flight");
         app.core().quit_requested();
