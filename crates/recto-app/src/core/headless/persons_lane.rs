@@ -227,7 +227,7 @@ fn an_agents_command_neither_waits_for_the_persons_nor_holds_them_up() {
     while_a_highlight_is_read(&app, HIGHLIGHT_ID, "highlight", || {
         app.agent(Level::Full, r#"{"cmd":"undo"}"#)
             .expect("the agent's undo, answered while the highlight is held");
-        assert_eq!(undo_redo(&app).0, false, "done at once: the turn undone");
+        assert!(!undo_redo(&app).0, "done at once: the turn undone");
     });
     assert_eq!(highlights(&app), (1, 0), "the person's highlight landed");
 }

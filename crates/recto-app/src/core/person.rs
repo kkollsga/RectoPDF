@@ -121,7 +121,11 @@ pub(super) fn on_its_own_thread(command: Command, counted: Running, turn: Option
 
 /// A test's hold on the next command with this tag the app's host runs (or the place named so): it says it's there, then waits to be let go ([`hold`]).
 #[cfg(test)]
-static HOLD: std::sync::Mutex<Option<(&'static str, std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>> = std::sync::Mutex::new(None);
+static HOLD: std::sync::Mutex<Option<(&'static str, Held)>> = std::sync::Mutex::new(None);
+
+/// A test's hold: what tells it's held, and what lets it go.
+#[cfg(test)]
+type Held = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
 
 /// **A test holds the next command tagged `tag` the app's host runs,** in flight and counted running, before the executor has it, as a highlight is while
 /// its pages are read; or the next save as it writes (`save_writing`): what tells it's held, and what lets it go (dropped, it goes too).
@@ -129,7 +133,7 @@ static HOLD: std::sync::Mutex<Option<(&'static str, std::sync::mpsc::Sender<()>,
 pub(crate) fn hold(tag: &'static str) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
     let (told, held) = std::sync::mpsc::channel();
     let (go, waiting) = std::sync::mpsc::channel();
-    *crate::lock(&HOLD) = Some((tag, told, waiting));
+    *crate::lock(&HOLD) = Some((tag, (told, waiting)));
     (held, go)
 }
 
@@ -137,7 +141,7 @@ pub(crate) fn hold(tag: &'static str) -> (std::sync::mpsc::Receiver<()>, std::sy
 #[cfg(test)]
 pub(crate) fn held_at(at: &str) {
     let hold = crate::lock(&HOLD).take_if(|(tag, ..)| *tag == at);
-    if let Some((_, told, go)) = hold {
+    if let Some((_, (told, go))) = hold {
         let _ = told.send(());
         let _ = go.recv_timeout(crate::testkit::headless::WAIT_LIMIT);
     }
