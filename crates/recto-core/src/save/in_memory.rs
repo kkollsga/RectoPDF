@@ -296,4 +296,49 @@ mod tests {
         let taken = writer.position() - began;
         assert!(taken < CAP + 8 * 1024, "{taken} bytes written against a bound of {CAP}");
     }
+
+    /// **Failure (second review of R4.3, SF1): taking a file's highlights out does unbounded work on a hostile file**: each removal read its page and
+    /// cloned its whole list again, unbounded, so 10,000 removals over pages sharing one long list came to about 10⁹ steps. A page's list is read once
+    /// for all its removals, and the work counts against the save's bound: at the bound it's done, one past it it's refused. Here one page lists a
+    /// link and four highlights, and three are taken out: the page and its five items, and the three looked at, are 1 + 5 + 3 = 9.
+    #[test]
+    fn taking_highlights_out_counts_against_the_saves_bound() {
+        let highlight = |y: u32| recto_testpdf::Object::Dict(format!("<< /Type /Annot /Subtype /Highlight /Rect [50 {y} 150 {}] >>", y + 12));
+        let target = recto_testpdf::build(&[
+            recto_testpdf::Object::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+            recto_testpdf::Object::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+            recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [4 0 R 5 0 R 6 0 R 7 0 R 8 0 R] >>".into()),
+            recto_testpdf::Object::Dict("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] >>".into()),
+            highlight(100),
+            highlight(200),
+            highlight(300),
+            highlight(400),
+        ]);
+        let (reader, map) = open_bytes_for_save(&target).unwrap();
+        let order = [PageRef {
+            source: 0,
+            page: 0,
+            quarter_turns: 0,
+        }];
+        let gone: Vec<GoneHighlight> = [3u32, 1, 4]
+            .into_iter()
+            .map(|index| GoneHighlight {
+                position: 0,
+                index,
+                rect: [50.0, 100.0 * index as f32, 150.0, 100.0 * index as f32 + 12.0],
+            })
+            .collect();
+        let request = SaveRequest {
+            path: Path::new("target.pdf"),
+            stamp: None,
+            file_pages: 1,
+            pages: &order,
+            added: &[],
+            highlights: &[],
+            highlights_gone: &gone,
+        };
+        let make = |limit| Plan::make(&reader, &map, &request, &[], signature_facts(&reader), Writer::Rewrite, limit).map(|_| ());
+        assert_eq!(make(9), Ok(()), "at the bound");
+        assert_eq!(make(8), Err(SaveError::TooLarge), "one past it");
+    }
 }

@@ -89,14 +89,19 @@ impl Highlights {
     /// The request's highlights, each checked: on a page the document has, with sound rectangles. One that isn't refuses the save, since an edit
     /// list that says such a thing isn't the one that was made. And the file highlights it takes out, each checked against the file: see
     /// [`GoneHighlight`].
-    pub(super) fn of(request: &super::SaveRequest<'_>, reader: &IndexedReader, map: &lopdf::PageMap, file_pages: u32) -> Result<Self, SaveError> {
+    pub(super) fn of(
+        request: &super::SaveRequest<'_>,
+        (reader, map): (&IndexedReader, &lopdf::PageMap),
+        file_pages: u32,
+        work: &mut u64,
+    ) -> Result<Self, SaveError> {
         let mut out = Self::within(request.highlights, request.pages.len(), MAX_PER_PAGE)?;
         out.file_pages = file_pages;
         if !request.highlights_gone.is_empty() {
             out.structural = map.iter().map(|entry| entry.id()).chain(super::catalog_id(reader)).collect();
             out.structural.sort_unstable();
         }
-        out.gone = gone_checked(request.highlights_gone, request.pages, (reader, map, &out.structural), MAX_GONE).map_err(|error| match error {
+        out.gone = gone_checked(request.highlights_gone, request.pages, (reader, map, &out.structural), MAX_GONE, work).map_err(|error| match error {
             SaveError::EditsDontMatch { .. } => SaveError::EditsDontMatch { file_pages },
             other => other,
         })?;
@@ -315,44 +320,56 @@ fn annotation_at(reader: &IndexedReader, item: &Object) -> Option<Dictionary> {
 }
 
 /// **The file's highlights a save takes out, each checked against the file** (see [`GoneHighlight`]): by position, each page's indexes in order.
-/// At most `most`, none named twice, each on a page of the file itself.
+/// At most `most`, none named twice, each on a page of the file itself. Each page's list is read once for all its removals, and the work (a page,
+/// its list's items, and each removal looked at) counts against the save's bound (second review of R4.3, SF1).
 fn gone_checked(
     gone: &[GoneHighlight],
     pages: &[PageRef],
     (reader, map, structural): (&IndexedReader, &lopdf::PageMap, &[ObjectId]),
     most: usize,
+    work: &mut u64,
 ) -> Result<BTreeMap<u32, Vec<u32>>, SaveError> {
     let refused = SaveError::EditsDontMatch { file_pages: 0 };
     if gone.len() > most {
         return Err(SaveError::TooLarge);
     }
-    let mut out: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    let mut by_position: BTreeMap<u32, Vec<&GoneHighlight>> = BTreeMap::new();
     for asked in gone {
-        let page = pages.get(asked.position as usize).filter(|page| page.source == 0).ok_or(refused.clone())?;
+        by_position.entry(asked.position).or_default().push(asked);
+    }
+    let mut out: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    for (position, asked) in by_position {
+        let page = pages.get(position as usize).filter(|page| page.source == 0).ok_or(refused.clone())?;
         let entry = map.get(page.page as usize).ok_or(refused.clone())?;
         let Ok(Object::Dictionary(dict)) = reader.resolve_object(entry.id()) else {
             return Err(refused);
         };
         let annots = annots_of(reader, &dict);
-        let item = annots.get(asked.index as usize).ok_or(refused.clone())?;
-        let found = annotation_at(reader, item).ok_or(refused.clone())?;
-        let is_highlight = match item {
-            Object::Reference(id) => removable(&found, b"Highlight", *id, structural),
-            _ => is_kind(&found, b"Highlight"),
-        };
-        let rect = numbers_of(found.get(b"Rect").ok()).ok_or(refused.clone())?;
-        let close = rect
-            .iter()
-            .zip(asked.rect)
-            .all(|(there, said)| said.is_finite() && (there - said).abs() <= RECT_SLACK);
-        let indexes = out.entry(asked.position).or_default();
-        if !is_highlight || !close || indexes.contains(&asked.index) {
+        super::charge(work, 1 + annots.len() as u64)?;
+        let mut indexes = Vec::with_capacity(asked.len());
+        for asked in asked {
+            super::charge(work, 1)?;
+            let item = annots.get(asked.index as usize).ok_or(refused.clone())?;
+            let found = annotation_at(reader, item).ok_or(refused.clone())?;
+            let is_highlight = match item {
+                Object::Reference(id) => removable(&found, b"Highlight", *id, structural),
+                _ => is_kind(&found, b"Highlight"),
+            };
+            let rect = numbers_of(found.get(b"Rect").ok()).ok_or(refused.clone())?;
+            let close = rect
+                .iter()
+                .zip(asked.rect)
+                .all(|(there, said)| said.is_finite() && (there - said).abs() <= RECT_SLACK);
+            if !is_highlight || !close {
+                return Err(refused);
+            }
+            indexes.push(asked.index);
+        }
+        indexes.sort_unstable();
+        if indexes.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(refused);
         }
-        indexes.push(asked.index);
-    }
-    for indexes in out.values_mut() {
-        indexes.sort_unstable();
+        out.insert(position, indexes);
     }
     Ok(out)
 }
@@ -360,7 +377,7 @@ fn gone_checked(
 /// Takes the items at `indexes` out of a page's list, and any popup in the list whose `/Parent` is one of them: a popup is the highlight's own
 /// note, and its `/Parent` would keep the highlight reachable in the new file. Gives the places in the list as it was of everything taken out,
 /// ascending, for what names a later item by its place to be counted down; and the objects the file has to lose with them, however else it reaches
-/// them: each highlight that's an object of its own, and its popup, by its `/Popup` or in the list.
+/// them: each highlight that's an object of its own, and its popup, by its `/Popup` or in the list. `indexes` ascending, so each item's a search.
 fn take_out(reader: &IndexedReader, annots: &mut Vec<Object>, indexes: &[u32], structural: &[ObjectId]) -> (Vec<u32>, Vec<ObjectId>) {
     let mut objects: Vec<ObjectId> = Vec::new();
     for item in indexes.iter().filter_map(|index| annots.get(*index as usize)) {
@@ -374,13 +391,15 @@ fn take_out(reader: &IndexedReader, annots: &mut Vec<Object>, indexes: &[u32], s
             objects.push(popup);
         }
     }
+    objects.sort_unstable();
     let highlights: Vec<ObjectId> = objects.clone();
     let mut out = Vec::new();
     let mut at = 0u32;
     annots.retain(|item| {
-        let popup_of_one = annotation_at(reader, item)
-            .is_some_and(|annot| is_kind(&annot, b"Popup") && matches!(annot.get(b"Parent"), Ok(Object::Reference(parent)) if highlights.contains(parent)));
-        let goes = indexes.contains(&at) || popup_of_one;
+        let popup_of_one = annotation_at(reader, item).is_some_and(|annot| {
+            is_kind(&annot, b"Popup") && matches!(annot.get(b"Parent"), Ok(Object::Reference(parent)) if highlights.binary_search(parent).is_ok())
+        });
+        let goes = indexes.binary_search(&at).is_ok() || popup_of_one;
         if goes {
             out.push(at);
             if let Object::Reference(id) = item

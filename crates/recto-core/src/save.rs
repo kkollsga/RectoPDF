@@ -1077,7 +1077,7 @@ impl Plan {
             missing,
             append_cap: sizes.saturating_mul(2).saturating_add(64 * 1024 * 1024),
             fields_left_out,
-            highlights: annotate::Highlights::of(request, reader, map, request.file_pages)?,
+            highlights: annotate::Highlights::of(request, (reader, map), request.file_pages, &mut work)?,
         })
     }
 
