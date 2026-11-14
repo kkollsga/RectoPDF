@@ -238,7 +238,7 @@ fn a_file_opened_before_the_state_is_in_opens_once_it_is() {
     let app = disk.builder().hold(&[recto_platform::slow::Seam::State]).start();
     app.act(UiAction::Open { path: b.display().to_string() });
     assert!(app.core().core.flush(crate::testkit::headless::WAIT_LIMIT), "taken, and any read for it done");
-    assert!(!app.core().state_read(), "the state's still held");
+    assert!(!app.core().life.state_read(), "the state's still held");
     assert_eq!(
         app.core().host.session.with_session(|session| session.tabs().len()),
         0,

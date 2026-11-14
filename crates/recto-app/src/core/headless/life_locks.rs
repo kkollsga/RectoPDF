@@ -25,10 +25,10 @@ fn the_windows_life_calls_answer(app: &HeadlessApp) -> Result<(), String> {
         .spawn(move || {
             let calls: [(&str, &dyn Fn()); 9] = [
                 ("state_read", &|| {
-                    let _ = core.state_read();
+                    let _ = core.life.state_read();
                 }),
                 ("window_interactive", &|| {
-                    let _ = core.window_interactive();
+                    let _ = core.life.window_interactive();
                 }),
                 ("may_remake_window", &|| {
                     let _ = core.life.may_remake_window();

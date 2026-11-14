@@ -1117,7 +1117,7 @@ impl AppCore {
 
     /// Whether the state's been read and taken in. A window that went up without it, past the patience, is made again from it once it has: see the host's `restoreReady`.
     pub fn state_read(&self) -> bool {
-        self.inner.state_read()
+        self.inner.life.state_read()
     }
 
     /// What the host shows has been made from the state that was read.
@@ -1127,7 +1127,7 @@ impl AppCore {
 
     /// Whether the window takes what a person does: once it's been made from the state, or once the state's been waited for long enough. Until then it's shown and takes nothing, as it's made again from the state when that comes, and what was done to it would go with it.
     pub fn window_interactive(&self) -> bool {
-        self.inner.window_interactive()
+        self.inner.life.window_interactive()
     }
 
     /// Whether a state that's come in late has the window made again from it now: Rust's rule, [`recto_app::lifecycle::Life::may_remake_window`].

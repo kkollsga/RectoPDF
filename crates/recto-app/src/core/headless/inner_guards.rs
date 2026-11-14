@@ -168,7 +168,6 @@ Inner::pub fn sidebar_tabs(&self) -> Vec<SidebarRow>
 Inner::pub fn start(start: Start) -> Result<Arc<Self>, String>
 Inner::pub fn start_with(start: Start, update_seams: updates::UpdateSeams) -> Result<Arc<Self>, String>
 Inner::pub fn state_json(&self) -> Value
-Inner::pub fn state_read(&self) -> bool
 Inner::pub fn system_pressure(&self, critical: bool)
 Inner::pub fn take_places(&self)
 Inner::pub fn take_update_alert(&self) -> Option<UpdateAlert>
@@ -177,7 +176,6 @@ Inner::pub fn update_report(&self) -> Value
 Inner::pub fn update_test_clock(&self, ahead_ms: i64) -> bool
 Inner::pub fn update_timer_fired(&self)
 Inner::pub fn window_closed(&self)
-Inner::pub fn window_interactive(&self) -> bool
 Inner::pub fn window_opened(&self)
 Inner::pub fn window_replaced(&self)
 Inner::pub(crate) fn carry_out_quit(self: &Arc<Self>, out: Option<Out>)
@@ -207,11 +205,11 @@ Lifecycle::pub fn may_remake_window(&self) -> bool
 Lifecycle::pub fn new(clock: Arc<dyn crate::clock::Clock>) -> Self
 Lifecycle::pub fn state_read(&self) -> bool
 Lifecycle::pub fn step(&self, event: crate::lifecycle::Event) -> Option<crate::lifecycle::Out>
+Lifecycle::pub fn window_interactive(&self) -> bool
 Lifecycle::pub(crate) fn due(&self) -> Option<Duration>
 Lifecycle::pub(crate) fn now_ms(&self) -> u64
 Lifecycle::pub(crate) fn remade(&self) -> bool
 Lifecycle::pub(crate) fn shown_with_state(&self) -> bool
-Lifecycle::pub(crate) fn takes_input(&self) -> bool
 Lifecycle::pub(crate) fn told_to_quit(&self) -> bool
 Lifecycle::pub(super) fn keeping(&self) -> crate::lifecycle::keeping::Keeping
 Lifecycle::pub(super) fn keeping_due(&self) -> Option<Duration>

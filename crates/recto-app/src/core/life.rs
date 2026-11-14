@@ -105,8 +105,10 @@ impl Lifecycle {
         self.life().remade()
     }
 
-    /// Whether the window takes what a person does, now.
-    pub(crate) fn takes_input(&self) -> bool {
+    /// Whether the window takes what a person does: once it's been made from the state, or once the state's been waited for long enough. Until then it's shown
+    /// and takes nothing, as it's made again from the state when that comes, and what was done to it would go with it. The UI thread asks: the life's lock,
+    /// for a copy.
+    pub fn window_interactive(&self) -> bool {
         let now = self.now_ms();
         self.life().takes_input(now)
     }

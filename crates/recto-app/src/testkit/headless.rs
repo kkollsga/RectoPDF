@@ -318,7 +318,7 @@ impl HostPlay {
             let inner = app.core();
             if !self.launch_done {
                 self.launch_done = true;
-                let with_state = inner.state_read();
+                let with_state = inner.life.state_read();
                 if inner.window.should_open(inner.updates.reopened_by_update()) {
                     inner.window_opened();
                 } else {
@@ -328,7 +328,7 @@ impl HostPlay {
                     inner.shown_with_state();
                 }
                 inner.ready(open);
-            } else if inner.state_read() && inner.life.may_remake_window() {
+            } else if inner.life.state_read() && inner.life.may_remake_window() {
                 self.remade += 1;
                 // The window made again from the state: the old one goes without counting as the person closing it (`windowDidClose` while replacing), and the
                 // new one opens.
@@ -337,7 +337,7 @@ impl HostPlay {
                     inner.window_opened();
                 }
                 inner.shown_with_state();
-            } else if inner.state_read() {
+            } else if inner.life.state_read() {
                 inner.shown_with_state();
             }
         }
@@ -425,7 +425,7 @@ impl HeadlessApp {
 
     /// The state read and taken in, the host's part of that done, and everything it set going settled.
     fn state_taken_in(&self) {
-        self.wait_until("the state to be read and taken in", || self.core().state_read());
+        self.wait_until("the state to be read and taken in", || self.core().life.state_read());
         assert!(self.core().core.flush(WAIT_LIMIT), "what came of the state taken");
         self.host_hears();
         self.settle();

@@ -66,7 +66,7 @@ pub fn apply_restored(
                     // A window that's up and taking input isn't made again from a state that comes now, so what it shows stays, its appearance with it: the host
                     // applies the state's appearance as it hears it (`restoredLate`), and the record says what the window shows. A late keep's window goes by
                     // `keeping::window_as_it_is`.
-                    let shown_as_it_is = app.window_decided && real_window.is_none() && inner.life.takes_input();
+                    let shown_as_it_is = app.window_decided && real_window.is_none() && inner.life.window_interactive();
                     if !shown_as_it_is {
                         app.appearance = saved.appearance;
                     }

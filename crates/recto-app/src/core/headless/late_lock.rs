@@ -189,7 +189,7 @@ fn a_lock_never_let_go_is_said_after_ten_seconds_and_not_before() {
             .name("test-window".into())
             .spawn(move || {
                 let _ = core.ready_to_show();
-                let _ = core.state_read();
+                let _ = core.life.state_read();
                 let _ = crate::lock(&core.published).reader.home;
                 let _ = said.send(core.core.flush(WAIT_LIMIT));
             })
@@ -351,7 +351,7 @@ fn a_lock_let_go_between_the_launchs_wait_and_its_read_still_tells_the_updater()
     crate::core::updates::first_frame_shown(app.core());
     drop(old_on_its_way_out);
     app.let_through(Seam::State, 1);
-    app.wait_until("the state taken in", || app.core().state_read());
+    app.wait_until("the state taken in", || app.core().life.state_read());
     app.settle();
     assert!(!app.core().saver.store.holds_the_record(), "the read didn't take the lock: it's the try's");
     app.advance(TRY_EVERY_MS);
@@ -727,8 +727,8 @@ fn the_window_answers_within(app: &HeadlessApp, limit: std::time::Duration) -> R
     std::thread::Builder::new()
         .name("test-window".into())
         .spawn(move || {
-            let _ = core.state_read();
-            let _ = core.window_interactive();
+            let _ = core.life.state_read();
+            let _ = core.life.window_interactive();
             let _ = core.life.may_remake_window();
             let _ = said.send(());
         })
@@ -996,7 +996,7 @@ fn an_ordinary_late_state_keeps_the_appearance_the_window_shows_once_it_takes_in
     use recto_session::record::Appearance;
     let app = a_saved_session().builder().hold(&[Seam::State]).start();
     app.advance(u64::try_from(crate::core::updates::INPUT_PATIENCE.as_millis()).expect("ms"));
-    assert!(app.core().window_interactive(), "past its patience, the window takes input");
+    assert!(app.core().life.window_interactive(), "past its patience, the window takes input");
     crate::lock(&app.core().window.app).appearance = Appearance::Dark;
     app.core().saver.view_changed();
     app.let_state_in();

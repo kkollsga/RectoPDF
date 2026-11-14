@@ -278,7 +278,7 @@ impl AppHost {
                         .then("Run that command itself, if it has one, at the level it needs."));
                 }
                 inner.tools.palette().close();
-                if inner.core.frozen.load(Ordering::SeqCst) || !super::updates::takes_input_now(inner.window_interactive(), id) {
+                if inner.core.frozen.load(Ordering::SeqCst) || !super::updates::takes_input_now(inner.life.window_interactive(), id) {
                     return Ok(HostAction::None);
                 }
                 Ok(does())

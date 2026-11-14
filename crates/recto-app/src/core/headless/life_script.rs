@@ -90,7 +90,7 @@ impl Script {
             life.hand_off(),
             life.quit(),
             life.frozen(),
-            inner.life.takes_input(),
+            inner.life.window_interactive(),
             inner.life.may_remake_window(),
             inner.host.handing_off.load(Ordering::SeqCst),
             inner.core.frozen.load(Ordering::SeqCst),

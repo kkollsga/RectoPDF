@@ -29,16 +29,11 @@ impl Inner {
         self.core.push(CoreCall::RestorePatienceOver);
     }
 
-    /// Whether the state's been read and taken in. A window that went up without it, past the patience, is made again from it once it has: see the host's `restoreReady`.
-    pub fn state_read(&self) -> bool {
-        self.life.state_read()
-    }
-
     /// The page checks as they are now, gathered for [`showing::decide`]. The UI thread asks, and doesn't wait for the session.
     fn page_checks(&self) -> showing::PageChecks {
         let active = self.host.session.try_with_session(|session| session.tabs().active().is_some());
         showing::PageChecks {
-            state_read: self.state_read(),
+            state_read: self.life.state_read(),
             holding_tab: lock(&self.life.holding_tab).is_some(),
             session_free: active.is_some(),
             has_tab: active.unwrap_or(false),
