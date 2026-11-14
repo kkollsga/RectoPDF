@@ -34,7 +34,7 @@ back before writing the feature.**
    session's thread for long** (it reads pages: Highlight, `page insert`, Save). For a person that changes how it runs: `person::submit`
    (`crates/recto-app/src/core/person.rs`) runs a `WAITS` command on a thread of its own and everything else on the core queue. **The person's ordered commands
    (every edit, a save, a print, a close) keep their order through the person's lane** (`crates/recto-app/src/queue/lane.rs`, started in
-   `core/person_lane.rs`): a feature with a new ordered `WAITS` command passes its turn where its command has fixed what it acts on, by
+   `crates/recto-app/src/core/person_lane.rs`): a feature with a new ordered `WAITS` command passes its turn where its command has fixed what it acts on, by
    `crate::queue::lane::pass_here()` (a print once its pages are read, a save once begun), or at its end.
    **Registration:** one variant line in a `family!` of `crates/recto-agent/src/commands/mod.rs` (Find: `Find(finding::Find)` in `Move`), plus
    `pub mod <feature>;` in the same file.
