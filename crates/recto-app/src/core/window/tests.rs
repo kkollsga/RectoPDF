@@ -49,12 +49,11 @@ impl Rig {
 
     /// What the writer was asked for since the window was made: a look once a rig.
     fn kept(&self) -> Kept {
-        let kept = match self.saver.wait_for_due() {
+        match self.saver.wait_for_due() {
             Some(due) if due.is_zero() => Kept::AtOnce,
             Some(_) => Kept::InItsTime,
             None => Kept::Not,
-        };
-        kept
+        }
     }
 
     /// The calls the session thread was sent since the last look, by name.
@@ -163,7 +162,8 @@ fn screen() -> ScreenInfo {
 fn a_move_is_kept_as_the_bridge_kept_it() {
     let rect = |x, y, width, height| record::Rect { x, y, width, height };
     // (a window told of already, the frame, a screen, full screen) → (its frame, its screen's name, full screen)
-    let table: [(bool, Option<Vec<f64>>, bool, bool, record::Rect, Option<&str>, bool); 6] = [
+    type Row = (bool, Option<Vec<f64>>, bool, bool, record::Rect, Option<&'static str>, bool);
+    let table: [Row; 6] = [
         (false, None, false, true, rect(0.0, 0.0, 1440.0, 900.0), None, true),
         (false, None, true, false, rect(0.0, 0.0, 1440.0, 900.0), None, false),
         (
@@ -327,7 +327,8 @@ fn placed(placement: WindowPlacement) -> Placed {
 fn a_new_window_is_placed_as_the_bridge_placed_it() {
     let (min_width, min_height) = record::WINDOW_MIN;
     // (a window saved, in the Dock, full screen, in front, the sidebar focused, reopened by an update, quiet) → the placement
-    let table: [((bool, bool, bool, bool, bool, bool, bool), Placed); 9] = [
+    type Asked = (bool, bool, bool, bool, bool, bool, bool);
+    let table: [(Asked, Placed); 9] = [
         // No window saved: a new one, wherever the host starts it.
         (
             (false, false, false, true, false, false, false),
