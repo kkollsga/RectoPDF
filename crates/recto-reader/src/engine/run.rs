@@ -26,6 +26,8 @@ const OPEN_PATIENCE: Duration = Duration::from_secs(3);
 const OPEN_LOOK: Duration = Duration::from_millis(20);
 /// A page from a PDF added to this one, which has changed since: its page numbers are about the version it was, so what's there now isn't drawn as it.
 const ADDED_FILE_CHANGED: &str = "This page comes from a PDF that has changed or moved since it was added, so it isn't drawn.";
+/// A page from a PDF added to this one that needs a password: see [`added_needs_password`].
+const ADDED_FILE_NEEDS_PASSWORD: &str = "This page comes from a PDF that needs a password, so it isn't shown here. Open that PDF to see it.";
 /// What a page says while its file doesn't answer.
 const NOT_ANSWERING: &str = "This file isn't answering. Its disk may have gone to sleep or been disconnected.";
 
@@ -70,6 +72,18 @@ pub(super) fn run_guarded(shared: &Shared) {
     }
 }
 
+/// **Nothing to start:** at rest as ever, or, when there was a plan whose surface the system refused, a wait before it's asked again, only while it's planned
+/// (`SurfaceRetry`, in `tiles/jobs.rs`). Workers are let go in the wait as at rest: memory pressure and a refused surface come together.
+fn rest_or_wait_for_a_surface(planned: bool, shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, resting_since: &mut Option<Instant>) {
+    let retry = if planned {
+        Some(lock(&shared.reader).work.surfaces.refused())
+    } else {
+        lock(&shared.reader).work.surfaces.clear();
+        None
+    };
+    rest(shared, renderers, policy, resting_since, retry);
+}
+
 fn run(shared: &Shared) {
     let mut renderers: HashMap<PathBuf, OpenDoc> = HashMap::new();
     let mut wanted = lock(&shared.reader).work.wanted_files();
@@ -107,13 +121,13 @@ fn run(shared: &Shared) {
             changed.tell(shared);
         }
         // Its surface is made with the lock let go, which the UI thread needs on every scroll.
+        let planned = plan.is_some();
         let job = plan.and_then(JobPlan::ready);
-        // Only hot and warm tabs' files keep a renderer. Dropping one kills its worker and closes its file.
-        renderers.retain(|path, _| wanted.contains(path));
+        let_go_of_unwanted(shared, &mut renderers, &wanted);
         openings.retain(|path, _| wanted.contains(path));
         publish_workers(shared, &mut renderers);
         let Some(job) = job else {
-            rest(shared, &mut renderers, &policy, &mut resting_since);
+            rest_or_wait_for_a_surface(planned, shared, &mut renderers, &policy, &mut resting_since);
             continue;
         };
         // **A job for a tab off screen's place ([`SleepDraws`]) starts no worker:** it's done by the one its file has, or not at all. Nor does it put off a big worker's rest, which goes on between its jobs as it does with none.
@@ -132,10 +146,7 @@ fn run(shared: &Shared) {
             continue;
         }
         let mut file_changed = false;
-        // **An added PDF that's changed isn't drawn from** (the saved point's review): a stat, before each job, since drawing goes by path.
-        let expected = lock(&shared.reader).docs.expected_stamp(job.tab, &job.file);
-        let added_changed =
-            expected.is_some_and(|expected| !recto_platform::file_stamp(&job.file).is_ok_and(|now| now.same_contents(expected) && now.inode == expected.inode));
+        let (added_changed, own) = added_file_now(shared, &job);
         let outcome = if added_changed {
             match job.kind {
                 JobKind::Text { .. } => Outcome::TextFailed,
@@ -146,6 +157,7 @@ fn run(shared: &Shared) {
             }
         } else {
             match renderer_for(shared, &mut renderers, &mut openings, &job.file, &service, &policy) {
+                Ok(open) if open.keyed && !own => added_needs_password(&job),
                 Ok(open) => {
                     lock(&shared.reader).work.set_cancel(open.doc.cancel_handle());
                     let outcome = DocRenderer::with_workers(open, |open| &mut open.doc, workers, |open| do_job(open, &job));
@@ -178,6 +190,9 @@ fn run(shared: &Shared) {
                 },
             }
         };
+        let outcome = if own { outcome } else { as_an_added_files(outcome, &job) };
+        // A renderer this job opened with a password for another tab's file goes now, not when the thread next comes round, which may be a long rest.
+        let_go_of_unwanted(shared, &mut renderers, &wanted);
         publish_workers(shared, &mut renderers);
         let drawn = match (&job.kind, &outcome) {
             (
@@ -219,7 +234,6 @@ fn run(shared: &Shared) {
     }
 }
 
-/// With nothing to do, this thread is asleep and costs nothing, but for a worker holding a heavy page's memory: see [`big_workers_rest`].
 /// **What's been asked of the renderers since the thread last came round** ([`Renew`]): one with the wrong version open is dropped, which kills its worker and
 /// closes its file, and the next job opens what's there now; one whose tab is being shown keeps its worker, which says the file's length again to that tab
 /// now if it knows it (a view kept whole has nothing left to draw, so no job would come to say it), or at its next job if it doesn't yet. Says what's to be
@@ -251,7 +265,9 @@ fn renew(
     told
 }
 
-fn rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, resting_since: &mut Option<Instant>) {
+/// With nothing to do, this thread is asleep and costs nothing, but for a worker holding a heavy page's memory: see [`big_workers_rest`]. With `retry`, a
+/// surface is waited for, and the thread wakes by then at the latest. Idle workers go here when the system asks for memory, whichever it is.
+fn rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, resting_since: &mut Option<Instant>, retry: Option<Duration>) {
     shared.settled.notify_all();
     if shared.kill_idle_workers.swap(false, Ordering::SeqCst) {
         for open in renderers.values_mut() {
@@ -259,11 +275,17 @@ fn rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Pol
         }
         publish_workers(shared, renderers);
     }
-    match big_workers_rest(renderers, policy, resting_since) {
-        None => std::thread::park(),
+    match (big_workers_rest(renderers, policy, resting_since), retry) {
+        (None, None) => std::thread::park(),
         // Let go just now: the loop says so before it rests again.
-        Some(left) if left.is_zero() => {}
-        Some(left) => std::thread::park_timeout(left),
+        (Some(left), None) if left.is_zero() => {}
+        (Some(left), None) => std::thread::park_timeout(left),
+        // Waiting for a surface: told here, as the loop would only find the surface refused again, and the wait isn't cut short.
+        (Some(left), Some(retry)) if left.is_zero() => {
+            publish_workers(shared, renderers);
+            std::thread::park_timeout(retry);
+        }
+        (left, Some(retry)) => std::thread::park_timeout(left.map_or(retry, |left| left.min(retry))),
     }
 }
 
@@ -290,9 +312,10 @@ fn big_workers_rest(renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, 
 fn read_links(shared: &Shared, renderers: &HashMap<PathBuf, OpenDoc>, job: Job) {
     // Read from the file's structure, here and with no worker. Only a file a worker already has open and answering, so a disk gone to sleep holds this thread no longer than a draw would: a page that isn't drawn yet has its links read when it is.
     // Through the renderer's own open file and its password, so the links are of the version being drawn, a protected file's too. A file seen replaced and not taken up yet offers none: they'd be the new version's over the old pages.
+    let own = lock(&shared.reader).docs.is_own_file(job.tab, &job.file);
     let links = renderers
         .get(&job.file)
-        .filter(|open| !open.replaced && !open.doc.file_seen_changed())
+        .filter(|open| !open.replaced && !open.doc.file_seen_changed() && (own || !open.keyed))
         .and_then(|open| {
             open.doc.read_structure(|file, password| {
                 recto_core::nav::page_links_in(file, password, &[job.source_page])
@@ -326,6 +349,14 @@ fn publish_workers(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>) {
     *lock(&shared.workers_by_file) = by_file;
 }
 
+/// **Only hot and warm tabs' files keep a renderer, and one given a password the person typed only while its path is the own file of one of them**
+/// ([`OpenDoc::keyed`]). Dropping one kills its worker and closes its file. A keyed one is a password the person typed, and no job of a tab that only
+/// adds its file may use it, so it isn't held for one: otherwise it outlived the tab it was typed for, and a tab opened on the file again, not marked
+/// protected as no key was held to read it with, drew on it with nobody asked (the second review of the measured faults).
+fn let_go_of_unwanted(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, wanted: &[PathBuf]) {
+    renderers.retain(|path, open| wanted.contains(path) && (!open.keyed || lock(&shared.reader).docs.is_a_held_tabs_own_file(path)));
+}
+
 /// A file's renderer, and what's been decided about its pages on dark paper. Each page gets one decision, however many tiles it comes to, at whatever scale.
 struct OpenDoc {
     /// Whoever's asked has been told how long this file is.
@@ -335,6 +366,12 @@ struct OpenDoc {
     looks: Looks,
     /// The file's been seen to be another one in the middle of a job, and whoever's asked hasn't been told yet.
     replaced: bool,
+    /// Its worker was given a password the person typed: for the tab whose own file this is, and no other ([`added_needs_password`]). **The key ends with
+    /// that tab:** a renderer with it is kept only while its path is the own file of a tab the page view holds, hot or warm ([`let_go_of_unwanted`]), not
+    /// as long as any tab wants the path, as a document with a page added from the file does. Dropping it kills its worker, whose copy of the password
+    /// goes with the process, and lets go of its share of the key, which is overwritten when the keyring lets go too: the keyring keeps a key only while
+    /// a tab has its file open, cold ones included, so the password ends when the last tab that owns it closes.
+    keyed: bool,
 }
 
 /// **The renderer has seen its file replaced: what was decided about the old one's pages goes, now, before anything goes by it.** The renderer opens the new file at the start of whichever job comes next, a draw included, so the tile that job draws is of the new file, and the look it's put on dark paper by has to be too. Says whether it had.
@@ -406,6 +443,7 @@ fn renderer_for<'a>(
             .as_ref()
             .filter(|keys| !keys.is_empty())
             .and_then(|keys| keys.get(recto_platform::secret::open_file_identity(&file)?));
+        let keyed = key.is_some();
         let doc = DocRenderer::with_file(file, path, key, config, policy.clone()).map_err(Unopened::Failed)?;
         renderers.insert(
             path.to_path_buf(),
@@ -414,10 +452,48 @@ fn renderer_for<'a>(
                 doc,
                 looks: Looks::default(),
                 replaced: false,
+                keyed,
             },
         );
     }
     renderers.get_mut(path).ok_or(Unopened::Failed(RenderFailure::Unavailable))
+}
+
+/// **A password is for the tab it was typed for** (review round 1 of the measured faults, S1). A page added to another document from a file that needs
+/// one, which the loader that adds pages didn't (a crafted file the two readers see differently, as nothing else needing a password can be added), isn't
+/// drawn, read or linked from with the password the person typed for that file's own tab, and its document isn't asked for one: the page says why and
+/// draws nothing, as any page that can't be drawn. So nothing a password protects is shown in, pictured in the sleep file of, or read by an agent from a
+/// document it wasn't typed for. Workers are shared by path, so it's the job's tab that decides, not who opened the file first. An added file that needs
+/// no password is drawn as ever.
+fn added_needs_password(job: &Job) -> Outcome {
+    match job.kind {
+        JobKind::Text { .. } => Outcome::TextFailed,
+        JobKind::Links => Outcome::Cancelled,
+        _ => Outcome::PageFailed {
+            message: ADDED_FILE_NEEDS_PASSWORD.to_string(),
+            may_pass: false,
+        },
+    }
+}
+
+/// Whether the job's file is an added PDF that's changed since its pages were added, and whether it's the tab's own file. **An added PDF that's changed
+/// isn't drawn from** (the saved point's review): a stat, before each job, since drawing goes by path.
+fn added_file_now(shared: &Shared, job: &Job) -> (bool, bool) {
+    let (expected, own) = {
+        let reader = lock(&shared.reader);
+        (reader.docs.expected_stamp(job.tab, &job.file), reader.docs.is_own_file(job.tab, &job.file))
+    };
+    let changed =
+        expected.is_some_and(|expected| !recto_platform::file_stamp(&job.file).is_ok_and(|now| now.same_contents(expected) && now.inode == expected.inode));
+    (changed, own)
+}
+
+/// What a job for a PDF added to the tab came to: a want of a password is the page's, never its document's ([`added_needs_password`]).
+fn as_an_added_files(outcome: Outcome, job: &Job) -> Outcome {
+    match outcome {
+        Outcome::DocumentFailed { needs_key: true, .. } => added_needs_password(job),
+        outcome => outcome,
+    }
 }
 
 /// A failure that's about the whole file, saying when it's for want of a password, which the app can ask for again.

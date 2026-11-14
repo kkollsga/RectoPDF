@@ -82,7 +82,7 @@ impl<A: SessionAccess> Drop for Ending<'_, A> {
 
 fn from_save(error: &SaveError) -> AgentError {
     let exit = match error {
-        SaveError::Protected | SaveError::AddedFileProtected { .. } => exit::PROTECTED,
+        SaveError::Protected { .. } | SaveError::AddedFileProtected { .. } => exit::PROTECTED,
         _ => exit::FAILED,
     };
     let next = match error {

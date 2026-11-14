@@ -1504,3 +1504,152 @@ fn tab_switch_input_to_first_frame() {
     println!("tab switch, input to sharp (ms, sorted): {sharp:.1?}");
     println!("load: {load}");
 }
+
+/// A real protected file of one page, "Locked page 1", that opens only with `password`.
+#[allow(clippy::disallowed_methods)] // A test fixture built with lopdf's eager writer, which alone encrypts; never over a user's file.
+fn locked(password: &str) -> TempPdf {
+    use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
+    let mut document = lopdf::Document::load_mem(&pages(&[Page::new(text_lines(&["Locked page 1"]))])).unwrap();
+    document.trailer.set(
+        "ID",
+        lopdf::Object::Array(vec![
+            lopdf::Object::string_literal("0123456789abcdef"),
+            lopdf::Object::string_literal("0123456789abcdef"),
+        ]),
+    );
+    let encryption = EncryptionState::try_from(EncryptionVersion::V2 {
+        document: &document,
+        owner_password: "owner",
+        user_password: password,
+        key_length: 128,
+        permissions: Permissions::all(),
+    })
+    .unwrap();
+    document.encrypt(&encryption).unwrap();
+    let mut bytes = Vec::new();
+    document.save_to(&mut bytes).unwrap();
+    TempPdf::new("locked.pdf", &bytes)
+}
+
+/// Failure (review round 1 of the measured faults, S1): the page view's workers open every file with whatever password the keyring holds for it, an
+/// added PDF's too. A file lopdf opens with no password but PDFium asks one for (a crafted `/Encrypt` seen through an update chain) can be added to a
+/// plain document, as the loader that adds pages finds no password needed; once the person has typed its password for its own tab, the plain document's
+/// pages from it were drawn with that password, put in its sleep file, and shown to an agent looking at it. A password is for the tab it was typed for:
+/// the protected file's own tab draws with it, and the same file as a page added to another tab is a page issue and draws nothing, whichever tab's
+/// asked first (a worker for the file is shared by path), and with no password held at all.
+#[test]
+fn a_password_draws_its_own_tabs_file_and_never_a_page_added_from_it() {
+    let protected = locked("right");
+    let plain = document(1);
+    let keys = Arc::new(recto_reader::engine::Keyring::default());
+    let identity = recto_platform::secret::open_file_identity(&std::fs::File::open(&protected.0).unwrap()).unwrap();
+    keys.set(identity, Arc::new(recto_platform::Password::new("right").unwrap()));
+    let added = PageMap {
+        files: vec![plain.0.clone(), protected.0.clone()],
+        slots: Some(vec![(1, 0), (0, 0)]),
+        own: None,
+        turns: None,
+        expected: vec![None, recto_platform::file_stamp(&protected.0).ok()],
+        follows: None,
+    };
+    // With no password held, the added page is the same page issue: its document isn't asked for a password, nor its own pages left undrawn.
+    for (keys, own_tab_first) in [(Some(&keys), true), (Some(&keys), false), (None, false)] {
+        let engine = Engine::new(
+            EngineConfig {
+                keys: keys.cloned(),
+                ..EngineConfig::default()
+            },
+            Arc::new(Events::default()),
+        );
+        engine.set_viewport(view(0.0));
+        if own_tab_first {
+            engine.activate(1, 1, 0, tab_map(&protected), &[], None, recto_reader::layout::Spread::Single);
+            engine.set_viewport(view(0.0));
+            pump(&engine, HANG);
+            assert!(settles(&engine), "{}", engine.report().0);
+            assert_eq!(engine.note(), None, "its own tab draws with its password");
+            assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1, "{}", engine.report().0);
+        }
+        engine.activate(2, 2, 0, added.clone(), &[1], None, recto_reader::layout::Spread::Single);
+        engine.set_viewport(view(0.0));
+        let deadline = Instant::now() + HANG;
+        while engine.note().is_none() && Instant::now() < deadline {
+            pump(&engine, Duration::from_millis(200));
+        }
+        assert!(
+            engine.note().is_some_and(|note| note.contains("comes from a PDF that needs a password")),
+            "a page added from it isn't drawn with the password (own tab first: {own_tab_first}, a password held: {}): {:?}; {}",
+            keys.is_some(),
+            engine.note(),
+            engine.report().0
+        );
+        assert!(engine.take_keyless().is_empty(), "nobody's asked for its password for the plain document");
+        pump(&engine, HANG);
+        assert!(settles(&engine), "{}", engine.report().0);
+        assert!(own_page_drew(&engine), "and the plain document's own page draws: {}", engine.report().0);
+        engine.shut_down();
+    }
+}
+
+/// Brings the plain document's own page, its second, into view beside the added one and says whether anything was drawn: the added page draws nothing.
+fn own_page_drew(engine: &Engine) -> bool {
+    let height = engine.report().0["document_height"].as_f64().expect("laid out");
+    engine.set_viewport(view(height / 2.0 - 450.0));
+    pump(engine, HANG);
+    assert!(settles(engine), "{}", engine.report().0);
+    let report = engine.report().0;
+    report["visible_pages"] == serde_json::json!([1, 2]) && report["tiles"]["attached"].as_u64().is_some_and(|attached| attached >= 1)
+}
+
+/// Failure this guards against: `keyed` goes by the opened file's identity and a job's own file by its path, so a hard link or a symlink to the protected
+/// file, used as the path a page was added from, could have been taken for a file of its own that needs no password. It's refused like the file itself:
+/// its renderer finds the key by identity, and the path isn't the tab's own. The own tab is drawn first, so the key's held and in use.
+#[test]
+fn a_link_to_a_protected_file_added_to_another_document_is_refused_too() {
+    let protected = locked("right");
+    let plain = document(1);
+    let keys = Arc::new(recto_reader::engine::Keyring::default());
+    let identity = recto_platform::secret::open_file_identity(&std::fs::File::open(&protected.0).unwrap()).unwrap();
+    keys.set(identity, Arc::new(recto_platform::Password::new("right").unwrap()));
+    let hard = protected.0.with_file_name("hard-link.pdf");
+    let soft = protected.0.with_file_name("symlink.pdf");
+    std::fs::hard_link(&protected.0, &hard).unwrap();
+    std::os::unix::fs::symlink(&protected.0, &soft).unwrap();
+    for link in [&hard, &soft] {
+        let engine = Engine::new(
+            EngineConfig {
+                keys: Some(Arc::clone(&keys)),
+                ..EngineConfig::default()
+            },
+            Arc::new(Events::default()),
+        );
+        engine.set_viewport(view(0.0));
+        engine.activate(1, 1, 0, tab_map(&protected), &[], None, recto_reader::layout::Spread::Single);
+        engine.set_viewport(view(0.0));
+        pump(&engine, HANG);
+        assert!(settles(&engine), "{}", engine.report().0);
+        assert_eq!(engine.note(), None, "its own tab draws with its password");
+        let added = PageMap {
+            files: vec![plain.0.clone(), link.clone()],
+            slots: Some(vec![(1, 0), (0, 0)]),
+            own: None,
+            turns: None,
+            expected: vec![None, recto_platform::file_stamp(link).ok()],
+            follows: None,
+        };
+        engine.activate(2, 2, 0, added, &[1], None, recto_reader::layout::Spread::Single);
+        engine.set_viewport(view(0.0));
+        let deadline = Instant::now() + HANG;
+        while engine.note().is_none() && Instant::now() < deadline {
+            pump(&engine, Duration::from_millis(200));
+        }
+        assert!(
+            engine.note().is_some_and(|note| note.contains("comes from a PDF that needs a password")),
+            "a page added through {link:?} isn't drawn with the password: {:?}; {}",
+            engine.note(),
+            engine.report().0
+        );
+        assert!(engine.take_keyless().is_empty(), "nobody's asked for its password for the plain document");
+        engine.shut_down();
+    }
+}

@@ -73,6 +73,11 @@ impl Docs {
             .and_then(|at| doc.map.expected.get(at).copied().flatten())
     }
 
+    /// Whether this file is the own file of any tab held, hot or warm: what a renderer given a typed password is kept for.
+    pub(crate) fn is_a_held_tabs_own_file(&self, file: &std::path::Path) -> bool {
+        self.views.values().any(|doc| doc.map.files.first().is_some_and(|own| own == file))
+    }
+
     /// Whether this file is the tab's own, as its length is what a sleep file spoke for.
     pub(crate) fn is_own_file(&self, tab: u32, file: &std::path::Path) -> bool {
         self.views.get(&tab).is_some_and(|doc| doc.map.files.first().is_some_and(|own| own == file))

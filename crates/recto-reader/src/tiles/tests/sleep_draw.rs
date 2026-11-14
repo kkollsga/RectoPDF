@@ -700,3 +700,33 @@ fn a_warm_tab_whose_pages_change_shows_nothing_kept_from_before() {
         "kept from before its pages changed, on a layer: {shown_from_before:?}"
     );
 }
+
+/// Failure (found with the second review's fixes of the measured faults): the tab showing failed as a whole (it needs its password, say), so it draws
+/// nothing until it's opened again, but its page in view, never sized, counted as wanting something for ever: a tab left owing pictures of its place got
+/// none for as long as it showed, which is as long as the person leaves the password sheet, and the asking stayed under way.
+#[test]
+fn a_tab_showing_that_failed_whole_doesnt_hold_up_the_pictures_of_a_tab_left() {
+    let mut reader = Reader::new();
+    reader.set_viewport(view(0.0));
+    reader.activate(1, 40, 0, map(), &[], None, Spread::Single);
+    reader.set_viewport(view(0.0));
+    reader.note_version(Path::new("/d/a.pdf"), 1);
+    settle(&mut reader);
+    reader.set_viewport(view(20_000.0));
+    reader.activate(2, 10, 0, other_tab(2), &[1], None, Spread::Single);
+    reader.set_viewport(view(0.0));
+    assert_eq!(draws(&reader)["owed_tab"], 1, "tab 1 is owed its place");
+    let job = reader.next_job().expect("tab 2 wants something for its view");
+    assert_eq!(job.tab, 2);
+    reader.work.note_started(&job, None);
+    reader.finish(
+        job,
+        Outcome::DocumentFailed {
+            message: "This PDF needs a password.".to_string(),
+            needs_key: true,
+        },
+    );
+    assert!(!reader.view_needs_something(), "a tab that failed whole wants nothing till it's opened again");
+    let next = reader.next_job().expect("tab 1's place is drawn for");
+    assert_eq!(next.tab, 1, "the job is for the tab left: {:?}", next.kind);
+}

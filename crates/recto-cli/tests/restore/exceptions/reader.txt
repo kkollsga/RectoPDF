@@ -6,6 +6,7 @@ reader.looks_held Pages waiting for their look on dark paper to be tried again, 
 reader.selection.text_ Page text held for a selection, which is read again when it's wanted.
 reader.selection.unit What the last press took, words or lines. It says what a shift-click extends by, and nothing that shows.
 reader.sleep_draws. Places drawn for tabs left before they were drawn, counted in its own run: what was drawn is in the sleep files, and warm tabs come back cold.
+reader.surfaces. Surfaces the system refused this process's page view, and whether one is waited for now: about this process, and a new one has asked for none.
 reader.tile_scale Comes from a zoom settled on, and a pinch at another zoom leaves it where it was.
 reader.tiles.attached Fewer are on layers if there's no preview under them: drawing, not state. What's visible is settled either way.
 reader.tiles.kept Tiles held off screen, which a new process doesn't have until it's been somewhere.

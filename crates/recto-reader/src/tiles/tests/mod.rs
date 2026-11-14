@@ -896,6 +896,31 @@ fn pages_in_view_are_held_below_what_the_caps_on_them_keep() {
     );
 }
 
+/// Failure (review round 1 of the measured faults): a preview was held to 4 MiB and nothing else, so a hostile page 0.2 by 260,000 points, at the most a
+/// page is fitted (8) and a Retina backing, asked for a preview of 1 by 1,040,000 pixels, past the 16,384 an IOSurface's edge may be. A machine that
+/// refuses it would be asked again every 8 s for good, as a refusal is taken for "out of surfaces now". No preview is asked for past that edge, and the
+/// page is drawn in tiles as any page with no preview is; an ordinary page's preview is as it was.
+#[test]
+fn no_preview_is_asked_for_past_a_surfaces_longest_edge() {
+    let mut reader = reader_on(1);
+    reader
+        .docs
+        .views
+        .get_mut(&1)
+        .unwrap()
+        .layout
+        .set_page_size(0, PageBox { width: 0.2, height: 260_000.0 });
+    reader.set_viewport(view(0.0));
+    let doc = reader.docs.shown().unwrap();
+    assert_eq!(doc.layout.fit(), crate::layout::MAX_FIT, "the made page is fitted as far as a page goes");
+    assert_eq!(reader.preview_rect(doc, 0, 64.0), None, "a preview past the longest edge");
+    let mut reader = reader_on(1);
+    reader.docs.views.get_mut(&1).unwrap().layout.set_page_size(0, letter());
+    reader.set_viewport(view(0.0));
+    let doc = reader.docs.shown().unwrap();
+    assert!(reader.preview_rect(doc, 0, 64.0).is_some(), "an ordinary page's preview");
+}
+
 /// Failure: a failed page whose problem was let go at the cap is asked for again on every look once it's back in view, so the engine never rests; or a page in view loses its problem at the cap and is asked for at once.
 #[test]
 fn a_failed_page_let_go_at_the_cap_is_asked_for_once_when_its_back() {
