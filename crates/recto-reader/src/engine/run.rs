@@ -59,7 +59,7 @@ pub(super) fn run_guarded(shared: &Shared) {
         let note = reader.note().map(str::to_string);
         let selecting = selecting_news(&mut reader);
         // Told with the view let go: whoever waits for it settled waits for this too, until the thread takes it again or has gone.
-        reader.work.telling = !give_up;
+        reader.work.set_telling(!give_up);
         drop(reader);
         note_change(shared, note);
         tell_selecting(shared, selecting);
@@ -82,7 +82,7 @@ fn rest_or_wait_for_a_surface(planned: bool, shared: &Shared, renderers: &mut Ha
     let retry = {
         let mut reader = lock(&shared.reader);
         // What this turn told is told: the view taken again.
-        reader.work.telling = false;
+        reader.work.set_telling(false);
         if planned {
             Some(reader.work.surfaces.refused())
         } else {
@@ -106,7 +106,7 @@ fn run(shared: &Shared) {
             renderers.clear();
             publish_workers(shared, &mut renderers);
             // Nothing more is told: whoever waits for the view isn't left waiting on the last turn's word.
-            lock(&shared.reader).work.telling = false;
+            lock(&shared.reader).work.set_telling(false);
             shared.settled.notify_all();
             return;
         }
@@ -114,7 +114,7 @@ fn run(shared: &Shared) {
         let (plan, changed) = {
             let mut reader = lock(&shared.reader);
             // What the last turn told is told: the view taken again.
-            reader.work.telling = false;
+            reader.work.set_telling(false);
             let files = reader.work.wanted_files();
             if !Arc::ptr_eq(&files, &wanted) {
                 wanted = files;
@@ -122,17 +122,17 @@ fn run(shared: &Shared) {
             let told = renew(&mut reader, &mut renderers, &mut openings);
             // Said with the page view's lock let go, as a job's saying is.
             if !told.is_empty() {
-                reader.work.telling = true;
+                reader.work.set_telling(true);
                 drop(reader);
                 for (tab, pages, version) in told {
                     shared.events.file_length(tab, pages, version);
                 }
                 reader = lock(&shared.reader);
-                reader.work.telling = false;
+                reader.work.set_telling(false);
             }
             // What the UI thread left is told of as any way of applying it tells it: the selection's notice gone with a selection another pane took, say.
             let changed = take_pending_follow(shared, &mut reader).then(|| Changed::of(&mut reader));
-            reader.work.telling = changed.is_some();
+            reader.work.set_telling(changed.is_some());
             (reader.next_plan(), changed)
         };
         if let Some(changed) = changed {
@@ -161,7 +161,7 @@ fn run(shared: &Shared) {
         };
         {
             let mut reader = lock(&shared.reader);
-            reader.work.telling = false;
+            reader.work.set_telling(false);
             reader.work.note_started(&job, None);
         }
         if matches!(job.kind, JobKind::Links) {
@@ -254,7 +254,7 @@ fn job_ended(shared: &Shared, job: Job, outcome: Outcome, file_changed: bool) {
     let note = reader.note().map(str::to_string);
     let selecting = selecting_news(&mut reader);
     // Its end is told with the view let go: until this thread takes the view again, the view isn't settled, as what's told may queue the session's work.
-    reader.work.telling = true;
+    reader.work.set_telling(true);
     drop(reader);
     shared.before_telling();
     note_change(shared, note);

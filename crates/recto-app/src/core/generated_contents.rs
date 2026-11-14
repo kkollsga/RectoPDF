@@ -3,28 +3,25 @@
 
 use super::{CoreCall, Inner};
 use crate::generated_contents as app;
+use crate::queue::CoreQueue;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The queue, as the one way an answer gets back. Made per call, an `Arc` clone: a look's thread takes its own, and is counted as under way while it holds
 /// it, so until after it has queued what it found ([`Counted`]).
 fn push(inner: &Inner) -> impl app::Push {
-    let core = Arc::clone(&inner.core);
-    let counted = Counted::new(inner.tools.contents_looks());
-    move |id, view, version| {
-        let _counted = &counted;
-        core.push(CoreCall::GeneratedView(id, view, version));
-    }
+    let counted = Counted::new(&inner.core);
+    move |id, view, version| counted.0.push(CoreCall::GeneratedView(id, view, version))
 }
 
-/// **A way back held, counted:** one more for each copy, one fewer as each goes. A look's thread holds its own copy until it ends, after it has queued its
-/// answer, so the app's settled sees it under way till then ([`crate::settled`]); the copy the session thread makes for a call goes with the call.
-struct Counted(Arc<AtomicUsize>);
+/// **A way back to the session thread's queue, counted:** one more for each copy, one fewer as each goes ([`CoreQueue::way_back_taken`]). A look's thread
+/// holds its own copy until it ends, after it has queued its answer, so the app's settled sees it under way till then ([`crate::settled`]); the copy the
+/// session thread makes for a call goes with the call.
+struct Counted(Arc<CoreQueue>);
 
 impl Counted {
-    fn new(count: &Arc<AtomicUsize>) -> Self {
-        count.fetch_add(1, Ordering::SeqCst);
-        Self(Arc::clone(count))
+    fn new(core: &Arc<CoreQueue>) -> Self {
+        core.way_back_taken();
+        Self(Arc::clone(core))
     }
 }
 
@@ -36,7 +33,7 @@ impl Clone for Counted {
 
 impl Drop for Counted {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        self.0.way_back_let_go();
     }
 }
 
@@ -64,10 +61,6 @@ mod tests {
         let busy = crate::settled::under_way(&crate::settled::watched!(app.core()), crate::settled::PageViews::AtRest);
         drop(for_the_look);
         assert!(busy.iter().any(|what| what.contains("generated contents")), "{busy:?}");
-        assert_eq!(
-            app.core().tools.contents_looks().load(std::sync::atomic::Ordering::SeqCst),
-            0,
-            "none left counted"
-        );
+        assert_eq!(app.core().core.ways_back_held(), 0, "none left counted");
     }
 }

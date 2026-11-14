@@ -523,7 +523,7 @@ impl Engine {
         let mut reader = lock(&self.shared.reader);
         loop {
             // And everything the thread that draws had to tell of its last turn told: what it tells may queue the session's work (`Work::telling`).
-            if reader.is_settled() && !reader.work.telling {
+            if reader.is_settled() && !reader.work.telling() {
                 return true;
             }
             let left = deadline.saturating_duration_since(Instant::now());

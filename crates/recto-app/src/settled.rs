@@ -44,8 +44,11 @@ use recto_reader::Engine;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-/// How often a wait looks again while something's under way.
+/// How often a wait looks again while something's under way, at first.
 const LOOK_EVERY: Duration = Duration::from_millis(2);
+/// How far `qa wait`'s pause between looks grows while something stays under way (a long Find, a look at a file on a disk that's stopped answering): the
+/// app it waits on isn't looked at every 2 ms for its whole limit. The kit's stays at [`LOOK_EVERY`], as its tests wait for what's under way to end at once.
+const LOOK_AT_MOST_EVERY: Duration = Duration::from_millis(16);
 
 /// **What the page views are at rest by,** which depends on whether there's a host drawing them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,6 +96,8 @@ pub(crate) use watched;
 struct Look {
     busy: Vec<String>,
     stamp: Vec<u64>,
+    /// The session thread was at rest at this look: the next round needn't ask it to get through its queue.
+    session_at_rest: bool,
 }
 
 /// **Waits for the app to be at rest** (the module's notes), at most `limit`, running `host` each round as the host's own turn. Says what was still under way
@@ -103,9 +108,11 @@ struct Look {
 /// Past `limit`, with what was still under way at the last look.
 pub fn wait(inner: &Watched<'_>, views: PageViews, limit: Duration, mut host: impl FnMut()) -> Result<(), Vec<String>> {
     let began = Instant::now();
+    let (mut pause, mut session_at_rest) = (LOOK_EVERY, false);
     loop {
         let left = limit.saturating_sub(began.elapsed());
-        if !inner.core.flush(left) {
+        // Asked to get through its queue only when the last look found it at work: a flush is a call on the app's own session thread.
+        if !session_at_rest && !inner.core.flush(left) {
             let mut busy = vec!["the session thread didn't get through what was queued, with the files being read".to_string()];
             busy.extend(look(inner, views).busy);
             return Err(busy);
@@ -118,6 +125,7 @@ pub fn wait(inner: &Watched<'_>, views: PageViews, limit: Duration, mut host: im
         }
         host();
         let first = look(inner, views);
+        session_at_rest = first.session_at_rest;
         let last = if first.busy.is_empty() {
             let second = look(inner, views);
             if second.busy.is_empty() && second.stamp == first.stamp {
@@ -134,7 +142,10 @@ pub fn wait(inner: &Watched<'_>, views: PageViews, limit: Duration, mut host: im
                 last.busy
             });
         }
-        std::thread::sleep(LOOK_EVERY.min(limit.saturating_sub(began.elapsed()))); // ratchet: poll
+        std::thread::sleep(pause.min(limit.saturating_sub(began.elapsed()))); // ratchet: poll
+        if views == PageViews::Drawn {
+            pause = (pause * 2).min(LOOK_AT_MOST_EVERY);
+        }
     }
 }
 
@@ -147,10 +158,16 @@ pub fn under_way(inner: &Watched<'_>, views: PageViews) -> Vec<String> {
 fn look(inner: &Watched<'_>, views: PageViews) -> Look {
     let mut busy = Vec::new();
     let mut stamp = Vec::new();
-    match inner.core.at_rest() {
-        Ok(turns) => stamp.push(turns),
-        Err(what) => busy.push(what.to_string()),
-    }
+    let session_at_rest = match inner.core.at_rest() {
+        Ok(turns) => {
+            stamp.push(turns);
+            true
+        }
+        Err(what) => {
+            busy.push(what.to_string());
+            false
+        }
+    };
     off_the_session_thread(inner, &mut busy);
     for (at, engine) in inner.panes.engines(inner.engine).iter().enumerate() {
         match views {
@@ -168,7 +185,7 @@ fn look(inner: &Watched<'_>, views: PageViews) -> Look {
             },
         }
     }
-    Look { busy, stamp }
+    Look { busy, stamp, session_at_rest }
 }
 
 /// What runs off the session thread and comes back to it, still going: each counts itself running until after it has queued what it found.
@@ -197,7 +214,7 @@ fn off_the_session_thread(inner: &Watched<'_>, busy: &mut Vec<String>) {
         busy.push("a print's pages being prepared".to_string());
     }
     // A look at where a tab's generated contents stand, holding its way back to the session thread till it's queued what it found.
-    if inner.tools.contents_looks().load(Ordering::SeqCst) > 0 {
+    if inner.core.ways_back_held() > 0 {
         busy.push("a look at generated contents".to_string());
     }
     // An agent's command in flight on another connection (`qa` commands only ask, so `qa wait` never counts itself).

@@ -222,6 +222,9 @@ pub struct CoreQueue {
     reconcile_queued: AtomicBool,
     /// A hand-off or a quit is writing what comes back, so what a person does from here wouldn't: taps, opens and the rest aren't taken.
     pub frozen: AtomicBool,
+    /// Copies of a way back to this queue held by threads off the session thread that haven't let go of them yet, each until after it's queued what it
+    /// found ([`Self::ways_back_held`]): what the app's settled counts of them ([`crate::settled`]).
+    ways_back: std::sync::atomic::AtomicUsize,
     /// The session thread is to end once it's through what's queued. Only a headless app's quit asks this, to start again on the same disk in the same process; the app's
     /// own session thread never ends, as the process does.
     ended: AtomicBool,
@@ -287,9 +290,24 @@ impl CoreQueue {
         self.ready.notify_one();
     }
 
+    /// A thread off the session thread takes a way back to this queue, counted till it lets go ([`Self::way_back_let_go`]).
+    pub(crate) fn way_back_taken(&self) {
+        self.ways_back.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// A way back taken by [`Self::way_back_taken`] is let go.
+    pub(crate) fn way_back_let_go(&self) {
+        self.ways_back.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// Ways back to this queue held now by threads off the session thread.
+    pub(crate) fn ways_back_held(&self) -> usize {
+        self.ways_back.load(Ordering::SeqCst)
+    }
+
     /// **Whether the session thread is at rest now, by its own account:** nothing queued for it, and it's parked, having found none of its deadlines due
     /// when it last looked, not nudged since (a clock moved, a write asked for) and not past the time it parked till (a deadline that's come due on real
-    /// time and the thread not yet scheduled). Says how many turns it has taken, for a second look to compare ([`crate::core::settled`]), or what it's at.
+    /// time and the thread not yet scheduled). Says how many turns it has taken, for a second look to compare ([`crate::settled`]), or what it's at.
     /// For tests and QA, never the UI thread's: it takes the queue's lock.
     pub fn at_rest(&self) -> Result<u64, &'static str> {
         let calls = lock(&self.calls);

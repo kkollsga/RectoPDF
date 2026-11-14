@@ -832,7 +832,7 @@ pub fn applied_as_the_host(ops: &[recto_reader::Op]) {
     }
 }
 
-/// **Stands in for the host's UI thread,** which the kit has none of, for every test that draws: takes what the page view says, scrolls where it's sent and says where it is now, until the session thread has nothing queued and nothing comes, and (with `settled`) everything's drawn, a tab off screen's place included. Bounded.
+/// **Stands in for the host's UI thread,** which the kit has none of, for every test that draws: takes what the page view says, scrolls where it's sent and says where it is now, until the session thread has nothing queued and nothing comes, and (with `settled`) everything's drawn, a tab off screen's place included, and the app settled by its one definition ([`HeadlessApp::settle`]). Bounded.
 pub fn host_turns(app: &HeadlessApp, view: &mut recto_reader::Viewport, settled: bool) {
     let engine = &app.core().engine;
     let began = std::time::Instant::now();
@@ -854,6 +854,10 @@ pub fn host_turns(app: &HeadlessApp, view: &mut recto_reader::Viewport, settled:
         }
         // Drawing for a tab off screen's place isn't what settling waits for, so it's waited for here too.
         if quiet && (!settled || (engine.wait_settled(std::time::Duration::from_millis(20)) && engine.report().0["sleep_draws"]["under_way"] == false)) {
+            // And settled as the app's one definition has it, the rest of the app included: this only adds the host's turns and the drawing.
+            if settled {
+                app.settle();
+            }
             return;
         }
         assert!(began.elapsed() < WAIT_LIMIT, "the page view didn't come to rest: {}", engine.report().0);
