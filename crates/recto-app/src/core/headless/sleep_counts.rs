@@ -1,0 +1,295 @@
+//! **What the sleeper writes and when, step by step, as a golden** (R3.7 S6's guard, before the sleeper's methods left `Inner`): a scripted run through tabs
+//! pushed out of the warm ones by the person and by an agent, the cool-down, a tab handed back inside it, an agent's `session sleep`, memory pressure, a tab
+//! left alone and a quit's flush, with `qa state`'s `record.sleep` counts and the queue's after each step. No bytes (a file's size goes with the temp folder's
+//! path) and no timings: only what was decided, by whom, and what's on disk.
+
+use crate::testkit::headless::{Disk, HeadlessApp};
+use recto_agent::Level;
+use serde_json::Value;
+
+/// The tab whose file ends with `name`.
+fn tab(app: &HeadlessApp, name: &str) -> String {
+    let id = app.session_json()["tabs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|tab| tab["path"].as_str().is_some_and(|path| path.ends_with(name)))
+        .and_then(|tab| tab["id"].as_u64())
+        .expect("the tab");
+    format!("#{id}")
+}
+
+/// A person's command, as the window runs it, settled.
+fn person(app: &HeadlessApp, words: &[&str]) {
+    let words: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
+    app.person(&recto_agent::table::parse_cli(&words).expect("words").wire());
+    app.settle();
+}
+
+/// An agent's command at Full, settled.
+fn agent(app: &HeadlessApp, words: &[&str]) {
+    app.recto(Level::Full, words).unwrap_or_else(|error| panic!("{words:?}: {error:?}"));
+    app.settle();
+}
+
+/// Waits till nothing's queued, in flight or being written, the clock standing still.
+fn written(app: &HeadlessApp) {
+    app.wait_until("the queue written and its writer gone", || {
+        let leaving = app.record_json()["sleep"]["leaving"].clone();
+        leaving["queued"] == 0 && leaving["in_flight"] == false && leaving["writer"] == false
+    });
+}
+
+/// The documents off screen may hold nothing, and the budget's looked at: a second on, so its once a second has come round, and a call on the session thread,
+/// whose end is where it's looked at. Then what it sent to sleep, written.
+fn over_budget(app: &HeadlessApp) {
+    app.core().qa_session_verb("live_budget", "0").expect("a QA verb").expect("set");
+    app.advance(crate::sleeper::BUDGET_LOOK_EVERY_MS);
+    app.send(crate::core::CoreCall::Reconcile);
+    app.settle();
+    written(app);
+}
+
+/// What's in the window's view drawn, as the host would with its UI thread, till it's at rest.
+fn drawn(app: &HeadlessApp) {
+    let mut view = recto_reader::Viewport {
+        x: 0.0,
+        y: 0.0,
+        width: 1168.0,
+        height: 900.0,
+        frame_width: 1168.0,
+        magnification: 1.0,
+        backing: 2.0,
+        live: false,
+        scrolled_to: u64::MAX,
+    };
+    crate::testkit::headless::applied_as_the_host(&app.core().engine.set_viewport(view));
+    crate::testkit::headless::host_turns(app, &mut view, true);
+}
+
+/// The sleep files in the state folder.
+fn on_disk(app: &HeadlessApp) -> usize {
+    fn walk(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path)
+                } else {
+                    usize::from(path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("sleep-")))
+                }
+            })
+            .sum()
+    }
+    walk(&app.disk().paths().root)
+}
+
+/// One step's line: what was decided, what agents' share has counted, what the queue did, what's on disk.
+fn line(app: &HeadlessApp, step: &str, agent_bytes: &mut u64) -> String {
+    let sleep = app.record_json()["sleep"].clone();
+    let n = |value: &Value| value.as_u64().unwrap_or_else(|| panic!("a count: {sleep}"));
+    let gone = &sleep["gone_dormant"];
+    let agents = n(&sleep["agent_bytes_this_hour"]);
+    let by_agents = match (agents, agents > *agent_bytes) {
+        (0, _) => "none",
+        (_, true) => "rose",
+        (_, false) => "same",
+    };
+    *agent_bytes = agents;
+    let leaving = &sleep["leaving"];
+    format!(
+        "{step} | dormant left_alone {} budget {} pressure {} asked {} | files {} put_off {} paper {} place {} skipped_busy {} | agents' bytes {by_agents}, \
+         share used {} | woken {} pressure_events {} system {}/{} | queue queued {} handed_back {} hurried {} retired {} dropped {} replaced {} \
+         pictures_dropped {} writer_panics {} | on disk {}",
+        n(&gone["left_alone"]),
+        n(&gone["budget"]),
+        n(&gone["pressure"]),
+        n(&gone["asked"]),
+        n(&sleep["sleep_files_written"]),
+        n(&sleep["writes_put_off"]),
+        n(&sleep["writes_for_paper"]),
+        n(&sleep["writes_for_place"]),
+        n(&sleep["writes_skipped_busy"]),
+        n(&sleep["agent_share_used"]),
+        n(&sleep["woken_from_file"]),
+        n(&sleep["pressure_events"]),
+        n(&sleep["system_pressure"]["warning"]),
+        n(&sleep["system_pressure"]["critical"]),
+        n(&leaving["queued"]),
+        n(&leaving["handed_back"]),
+        n(&leaving["hurried"]),
+        n(&leaving["retired"]),
+        n(&leaving["dropped"]),
+        n(&leaving["replaced"]),
+        n(&leaving["pictures_dropped"]),
+        n(&leaving["writer_panics"]),
+        on_disk(app),
+    )
+}
+
+/// What the run below said on 2026-11-14, before the sleeper's methods left `Inner`: one line a step. The last two, the budget's, came after the move, and
+/// were seen to be the same on `main`'s code (a9265ae1) before they were kept.
+const GOLDEN: &str = "\
+the person opens six | dormant left_alone 0 budget 0 pressure 0 asked 0 | files 0 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes none, share used 0 | woken 0 pressure_events 0 system 0/0 | queue queued 3 handed_back 0 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 0
+the person shows t0 inside its wait | dormant left_alone 0 budget 0 pressure 0 asked 0 | files 0 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes none, share used 0 | woken 0 pressure_events 0 system 0/0 | queue queued 3 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 0
+the wait passes | dormant left_alone 0 budget 0 pressure 0 asked 0 | files 3 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes none, share used 0 | woken 0 pressure_events 0 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 3
+an agent opens two, and the wait passes | dormant left_alone 0 budget 0 pressure 0 asked 0 | files 5 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes rose, share used 0 | woken 0 pressure_events 0 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 5
+an agent's session sleep of t6 | dormant left_alone 0 budget 0 pressure 0 asked 1 | files 6 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes rose, share used 0 | woken 0 pressure_events 0 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 6
+memory pressure | dormant left_alone 0 budget 0 pressure 1 asked 1 | files 7 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 0 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 7
+the person shows t1 then t2 | dormant left_alone 0 budget 0 pressure 1 asked 1 | files 7 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 7
+left alone | dormant left_alone 2 budget 0 pressure 1 asked 1 | files 8 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 8
+the person opens four more | dormant left_alone 2 budget 0 pressure 1 asked 1 | files 8 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 1 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 8
+a quit's flush | dormant left_alone 2 budget 0 pressure 1 asked 1 | files 10 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 10
+the budget at nothing, a tab off screen edited | dormant left_alone 2 budget 1 pressure 1 asked 1 | files 11 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 11
+the budget at nothing, a comparison read in its other pane | dormant left_alone 2 budget 2 pressure 1 asked 1 | files 12 put_off 0 paper 0 place 1 skipped_busy 0 | agents' bytes same, share used 0 | woken 3 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 11
+";
+
+/// Failure: a move of the sleeper's code changes what's written or when, or who it's counted against: a tab pushed out and not queued, one handed back and
+/// written anyway, a queue hurried or not, an agent's push-out or `session sleep` counted as the person's (or the other way round), a tab left alone or under
+/// pressure not going, a quit's flush not writing the tab on screen's file; the budget's look costing a tab by the page view being read and not the one that
+/// holds it, or without its edits' history. Each step's counts are compared with the golden, and the first step that differs
+/// is named with each count that moved, what it was and what it is.
+#[test]
+fn what_the_sleeper_writes_and_when_is_as_it_was() {
+    let wait = crate::sleeper::LEAVING_WAIT_MS;
+    let disk = Disk::new();
+    let docs: Vec<_> = (0..12).map(|at| disk.pdf(&format!("t{at}.pdf"), 3)).collect();
+    let app = disk.builder().leaving_wait(wait).start();
+    let mut agents = 0;
+    let mut lines = Vec::new();
+    for doc in &docs[..6] {
+        app.open(doc);
+    }
+    lines.push(line(&app, "the person opens six", &mut agents));
+    person(&app, &["tap", &tab(&app, "t0.pdf")]);
+    lines.push(line(&app, "the person shows t0 inside its wait", &mut agents));
+    app.advance(wait);
+    written(&app);
+    lines.push(line(&app, "the wait passes", &mut agents));
+    for doc in &docs[6..8] {
+        agent(&app, &["open", &doc.display().to_string()]);
+    }
+    app.advance(wait);
+    written(&app);
+    lines.push(line(&app, "an agent opens two, and the wait passes", &mut agents));
+    agent(&app, &["session", "sleep", "--tab", &tab(&app, "t6.pdf")]);
+    written(&app);
+    lines.push(line(&app, "an agent's session sleep of t6", &mut agents));
+    app.core().qa_session_verb("memory_pressure", "warning").expect("a QA verb").expect("pressure");
+    app.settle();
+    written(&app);
+    lines.push(line(&app, "memory pressure", &mut agents));
+    person(&app, &["tap", &tab(&app, "t1.pdf")]);
+    person(&app, &["tap", &tab(&app, "t2.pdf")]);
+    written(&app);
+    lines.push(line(&app, "the person shows t1 then t2", &mut agents));
+    app.core().qa_session_verb("dormant_after", "0").expect("a QA verb").expect("set");
+    app.wait_until("every tab off screen gone dormant", || {
+        app.core().host.session.with_session(|session| session.dormant().oldest_first().is_empty())
+    });
+    app.core().qa_session_verb("dormant_after", "86400").expect("a QA verb").expect("set");
+    app.settle();
+    written(&app);
+    lines.push(line(&app, "left alone", &mut agents));
+    for doc in &docs[8..] {
+        app.open(doc);
+    }
+    lines.push(line(&app, "the person opens four more", &mut agents));
+    app.core().saver.flush(false, crate::testkit::headless::WAIT_LIMIT).expect("the state written");
+    lines.push(line(&app, "a quit's flush", &mut agents));
+    // Nothing's drawn yet, so no tab off screen holds a worker: what one off screen with an edit costs is its history alone. Edited last, it's the newest
+    // off screen, so with the budget at nothing the tabs off screen go, oldest first, up to it and it; with its history left out of what it costs, none.
+    agent(&app, &["page", "delete", "2", "--tab", &tab(&app, "t9.pdf")]);
+    over_budget(&app);
+    lines.push(line(&app, "the budget at nothing, a tab off screen edited", &mut agents));
+    app.core().qa_session_verb("live_budget", "256").expect("a QA verb").expect("set");
+    // t11 drawn, so its file has a worker in the first page view, which keeps it once t11's off screen; then a comparison read in its other pane. The budget
+    // reads a tab's worker in the page view that holds it, so t11 goes; read in the pane being read, it costs nothing and stays.
+    app.core().engine.waking().window_up();
+    drawn(&app);
+    person(&app, &["tap", &tab(&app, "t10.pdf")]);
+    app.person(&format!(r##"{{"cmd":"compare","toggle":"{}"}}"##, tab(&app, "t8.pdf")));
+    app.settle();
+    assert_eq!(app.core().panes.reading(), 1, "the comparison's other pane is the one read");
+    over_budget(&app);
+    lines.push(line(&app, "the budget at nothing, a comparison read in its other pane", &mut agents));
+    drop(app.quit());
+    let now = lines.join("\n") + "\n";
+    if now != GOLDEN {
+        panic!("the sleeper's counts changed: {}\nall now:\n{now}", first_difference(GOLDEN, &now));
+    }
+}
+
+/// A line's counts, by name: each ` | ` group's words, a name's words running up to its value (a number, `0/0`, or `none`, `rose`, `same`), the name led by
+/// its group's first word so that `dormant: pressure` and `woken: pressure_events` stay apart. The first group is the step's name.
+fn fields(line: &str) -> (&str, Vec<(String, &str)>) {
+    let mut groups = line.split(" | ");
+    let step = groups.next().unwrap_or("");
+    let mut fields = Vec::new();
+    for group in groups {
+        let lead = group.split_whitespace().next().unwrap_or("");
+        let mut name: Vec<&str> = Vec::new();
+        for word in group.split_whitespace() {
+            let value = word.trim_end_matches(',');
+            if value.starts_with(|c: char| c.is_ascii_digit()) || matches!(value, "none" | "rose" | "same") {
+                fields.push((format!("{lead}: {}", name.join(" ")), value));
+                name.clear();
+            } else {
+                name.push(word);
+            }
+        }
+    }
+    (step, fields)
+}
+
+/// The first step whose counts differ from the golden's, field by field (name, was, now), and not as two lines of 400 characters.
+fn first_difference(golden: &str, now: &str) -> String {
+    let (golden, now): (Vec<&str>, Vec<&str>) = (golden.lines().collect(), now.lines().collect());
+    let Some(at) = (0..golden.len().max(now.len())).find(|at| golden.get(*at) != now.get(*at)) else {
+        return "the same steps".into();
+    };
+    let (Some(was), Some(is)) = (golden.get(at), now.get(at)) else {
+        return format!(
+            "step {} is only in {}: {}",
+            at + 1,
+            if at < golden.len() { "the golden" } else { "this run" },
+            golden.get(at).or(now.get(at)).copied().unwrap_or("")
+        );
+    };
+    let ((step_was, was), (step_now, is)) = (fields(was), fields(is));
+    if step_was != step_now {
+        return format!("step {} was `{step_was}` and is now `{step_now}`", at + 1);
+    }
+    let mut said = format!("first at step {}, `{step_now}`:", at + 1);
+    for at in 0..was.len().max(is.len()) {
+        let (one, other) = (was.get(at), is.get(at));
+        if one != other {
+            let name = one.or(other).map_or("", |(name, _)| name.as_str());
+            said += &format!(
+                "\n  {name}: was {}, now {}",
+                one.map_or("(none)", |field| field.1),
+                other.map_or("(none)", |field| field.1)
+            );
+        }
+    }
+    said
+}
+
+/// Failure: a golden that differs says only "they differ", or names a field that didn't change, and whoever moved the sleeper's code reads two lines of 400
+/// characters to find which count moved.
+#[test]
+fn a_changed_count_is_named_with_what_it_was_and_is() {
+    let was = "a step | dormant left_alone 2 budget 0 pressure 1 | agents' bytes same, share used 0 | woken 2 system 0/0 | on disk 8\n";
+    let now = "a step | dormant left_alone 2 budget 1 pressure 1 | agents' bytes rose, share used 0 | woken 2 system 0/1 | on disk 8\n";
+    assert_eq!(
+        first_difference(was, now),
+        "first at step 1, `a step`:\n  dormant: budget: was 0, now 1\n  agents': agents' bytes: was same, now rose\n  woken: system: was 0/0, now 0/1"
+    );
+    assert_eq!(
+        first_difference(was, &format!("{was}more | on disk 9\n")),
+        "step 2 is only in this run: more | on disk 9"
+    );
+}

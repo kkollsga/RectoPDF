@@ -156,8 +156,9 @@ fn run(shared: &Shared) {
                 },
             }
         } else {
-            match renderer_for(shared, &mut renderers, &mut openings, &job.file, &service, &policy) {
-                Ok(open) if open.keyed && !own => added_needs_password(&job),
+            match renderer_for(shared, &mut renderers, &mut openings, job.tab, &job.file, &service, &policy) {
+                // Not the tab the password was typed for: as though it had none, so its own tab is asked for it and an added page says why it isn't shown.
+                Ok(open) if !open.serves(job.tab, own) => document_failed(RenderFailure::NeedsPassword),
                 Ok(open) => {
                     lock(&shared.reader).work.set_cancel(open.doc.cancel_handle());
                     let outcome = DocRenderer::with_workers(open, |open| &mut open.doc, workers, |open| do_job(open, &job));
@@ -315,7 +316,7 @@ fn read_links(shared: &Shared, renderers: &HashMap<PathBuf, OpenDoc>, job: Job) 
     let own = lock(&shared.reader).docs.is_own_file(job.tab, &job.file);
     let links = renderers
         .get(&job.file)
-        .filter(|open| !open.replaced && !open.doc.file_seen_changed() && (own || !open.keyed))
+        .filter(|open| !open.replaced && !open.doc.file_seen_changed() && open.serves(job.tab, own))
         .and_then(|open| {
             open.doc.read_structure(|file, password| {
                 recto_core::nav::page_links_in(file, password, &[job.source_page])
@@ -349,12 +350,14 @@ fn publish_workers(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>) {
     *lock(&shared.workers_by_file) = by_file;
 }
 
-/// **Only hot and warm tabs' files keep a renderer, and one given a password the person typed only while its path is the own file of one of them**
-/// ([`OpenDoc::keyed`]). Dropping one kills its worker and closes its file. A keyed one is a password the person typed, and no job of a tab that only
-/// adds its file may use it, so it isn't held for one: otherwise it outlived the tab it was typed for, and a tab opened on the file again, not marked
-/// protected as no key was held to read it with, drew on it with nobody asked (the second review of the measured faults).
+/// **Only hot and warm tabs' files keep a renderer, and one given a password the person typed only while the tab it was given for holds it as its own
+/// file** ([`OpenDoc::keyed_for`]). Dropping one kills its worker and closes its file. A keyed one is a password the person typed, and no job of a tab
+/// that only adds its file may use it, so it isn't held for one: otherwise it outlived the tab it was typed for, and a tab opened on the file again, not
+/// marked protected as no key was held to read it with, drew on it with nobody asked (the second review of the measured faults). Nor is it held for
+/// another tab whose own file is the same: one opened on the file again before this thread came round, with a job of another tab's under way as the
+/// first was closed (a whole-suite run of 2026-11-14), would be that tab.
 fn let_go_of_unwanted(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, wanted: &[PathBuf]) {
-    renderers.retain(|path, open| wanted.contains(path) && (!open.keyed || lock(&shared.reader).docs.is_a_held_tabs_own_file(path)));
+    renderers.retain(|path, open| wanted.contains(path) && open.keyed_for.is_none_or(|tab| lock(&shared.reader).docs.is_own_file(tab, path)));
 }
 
 /// A file's renderer, and what's been decided about its pages on dark paper. Each page gets one decision, however many tiles it comes to, at whatever scale.
@@ -366,12 +369,21 @@ struct OpenDoc {
     looks: Looks,
     /// The file's been seen to be another one in the middle of a job, and whoever's asked hasn't been told yet.
     replaced: bool,
-    /// Its worker was given a password the person typed: for the tab whose own file this is, and no other ([`added_needs_password`]). **The key ends with
-    /// that tab:** a renderer with it is kept only while its path is the own file of a tab the page view holds, hot or warm ([`let_go_of_unwanted`]), not
-    /// as long as any tab wants the path, as a document with a page added from the file does. Dropping it kills its worker, whose copy of the password
-    /// goes with the process, and lets go of its share of the key, which is overwritten when the keyring lets go too: the keyring keeps a key only while
-    /// a tab has its file open, cold ones included, so the password ends when the last tab that owns it closes.
-    keyed: bool,
+    /// Its worker was given a password the person typed, and the tab whose job opened it then: for that tab's jobs on its own file, and no other's
+    /// ([`OpenDoc::serves`], [`added_needs_password`]). **The key ends with that tab:** a renderer with it is kept only while that tab is held, hot or warm,
+    /// with this as its own file ([`let_go_of_unwanted`]), not as long as any tab wants the path, as a document with a page added from the file does, nor
+    /// for another tab on the same file. Dropping it kills its worker, whose copy of the password goes with the process, and lets go of its share of the
+    /// key, which is overwritten when the keyring lets go too: the keyring keeps a key only while a tab has its file open, cold ones included, so the
+    /// password ends when the last tab that owns it closes. `None`: opened with no password, for any tab.
+    keyed_for: Option<u32>,
+}
+
+impl OpenDoc {
+    /// Whether a job of `tab`'s may use this renderer, `own` saying whether the file is the tab's own: any may, with no password given it; with one, only
+    /// the tab it was given for, on its own file.
+    fn serves(&self, tab: u32, own: bool) -> bool {
+        self.keyed_for.is_none_or(|keyed_for| keyed_for == tab && own)
+    }
 }
 
 /// **The renderer has seen its file replaced: what was decided about the old one's pages goes, now, before anything goes by it.** The renderer opens the new file at the start of whichever job comes next, a draw included, so the tile that job draws is of the new file, and the look it's put on dark paper by has to be too. Says whether it had.
@@ -394,10 +406,12 @@ enum Unopened {
 }
 
 /// Opens a file's renderer on a thread of its own, the one part of this that a dead volume can hold up for ever, and waits for it only while the job's still wanted. One file not answering is no reason for a healthy tab to get no tiles. The wait is a look every [`OPEN_LOOK`], and only while a file's being opened.
+/// A password the keyring has for the file is given it for `tab`, the tab whose job opens it ([`OpenDoc::keyed_for`]).
 fn renderer_for<'a>(
     shared: &Shared,
     renderers: &'a mut HashMap<PathBuf, OpenDoc>,
     openings: &mut HashMap<PathBuf, Receiver<Result<File, RenderFailure>>>,
+    tab: u32,
     path: &Path,
     service: &Result<ServiceConfig, RenderFailure>,
     policy: &Policy,
@@ -443,7 +457,7 @@ fn renderer_for<'a>(
             .as_ref()
             .filter(|keys| !keys.is_empty())
             .and_then(|keys| keys.get(recto_platform::secret::open_file_identity(&file)?));
-        let keyed = key.is_some();
+        let keyed_for = key.is_some().then_some(tab);
         let doc = DocRenderer::with_file(file, path, key, config, policy.clone()).map_err(Unopened::Failed)?;
         renderers.insert(
             path.to_path_buf(),
@@ -452,7 +466,7 @@ fn renderer_for<'a>(
                 doc,
                 looks: Looks::default(),
                 replaced: false,
-                keyed,
+                keyed_for,
             },
         );
     }

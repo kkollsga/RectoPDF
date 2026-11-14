@@ -382,7 +382,9 @@ fn a_look_made_before_a_save_landed_changes_nothing() {
 fn a_look_at_a_shown_or_other_tab_made_before_a_save_landed_changes_nothing() {
     type Take = fn(&crate::core::Inner, recto_session::TabId, Option<recto_platform::FileStamp>, recto_session::record::FileStatus) -> bool;
     let looks: [(&str, Take); 2] = [
-        ("before showing", crate::core::sleeper::take_shown_look),
+        ("before showing", |inner, id, stamp, status| {
+            crate::core::sleeper::take_shown_look(&inner.host.session, &inner.core, id, stamp, status)
+        }),
         ("at the others", crate::core::session::take_other_look),
     ];
     for (what, take) in looks {

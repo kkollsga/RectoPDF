@@ -10,7 +10,7 @@ fn crates/recto-agent/src/print.rs::print_with_caps 152
 fn crates/recto-agent/src/render/svg.rs::write_record 154
 fn crates/recto-agent/src/saving.rs::save 151
 fn crates/recto-agent/src/selecting.rs::run_counted 154
-fn crates/recto-app/src/core/reconcile.rs::reconcile 227
+fn crates/recto-app/src/core/reconcile.rs::reconcile 226
 fn crates/recto-cli/src/qa.rs::budget 263
 fn crates/recto-control/src/record_store.rs::load_journals 157
 fn crates/recto-core/src/save.rs::Plan::write 187
@@ -104,7 +104,7 @@ struct crates/recto-session/src/edit.rs::PageEdits 17
 struct crates/recto-session/src/lib.rs::TabRecord 17
 struct crates/recto-session/src/record.rs::TabEntry 19
 struct crates/recto-update/src/plan.rs::Plan 20
-type crates/recto-app/src::Inner 68
+type crates/recto-app/src::Inner 55
 type crates/recto-ffi/src::AppCore 135
 type crates/recto-reader/src::Engine 46
 type crates/recto-reader/src::Reader 82
@@ -113,4 +113,4 @@ type crates/recto-render/src::Walk 64
 type crates/recto-session/src::PageEdits 68
 type crates/recto-session/src::Session 103
 type crates/recto-update/src::Updater 74
-whole crates/recto-app/src::Inner 123
+whole crates/recto-app/src::Inner 120
