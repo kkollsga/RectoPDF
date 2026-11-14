@@ -34,8 +34,9 @@ const PRINTING: &str = "the system's printing taking the file the person's `prin
 /// Why QA's answers are the host's alone.
 const QA: &str = "the host's answer to a QA request an agent's `qa` command sent: it carries what the window did, not an action";
 
-/// **The table:** every `pub fn` in the bridge's `#[uniffi::export] impl AppCore` blocks, with what it is and the `UiAction`s it sends through `act`, by
-/// kind, if any.
+/// **The table:** everything the bridge exports, as uniffi exports it: every fn of an `#[uniffi::export] impl AppCore` block whatever its visibility, by
+/// its name; an exported free function as `fn name`; an exported impl of another type as `Type::name`; an exported trait as `trait Name`. With what it
+/// is, and the `UiAction`s it sends through `act`, by kind, if any.
 const EXPORTS: &[(&str, Is, &[&str])] = &[
     // The one way in.
     ("act", TheWayIn, &[]),
@@ -100,6 +101,11 @@ const EXPORTS: &[(&str, Is, &[&str])] = &[
     ("qa_accessibility_refusal", View, &[]),
     ("thumb_contrast", View, &[]),
     ("fold_action_name", View, &[]),
+    // Not `pub`, and exported all the same, as every fn of an exported impl is.
+    ("can_save", View, &[]),
+    // Free functions, asked before there's an app.
+    ("fn launch_is_quiet", View, &[]),
+    ("fn launch_answers_at_once", View, &[]),
     // The host telling Rust a fact. Those that move the pane being read send it as the person's `compare --reading`, through `act`.
     ("start", Input, &[]),
     ("ready", Input, &[]),
@@ -199,6 +205,11 @@ const EXPORTS: &[(&str, Is, &[&str])] = &[
     ),
     ("qa_answer", HostOnly(QA), &[]),
     ("qa_note_step", HostOnly(QA), &[]),
+    (
+        "trait AppListener",
+        HostOnly("the host's listener, which Rust calls to say something changed: the host implements it, and nothing it does reaches a command"),
+        &[],
+    ),
 ];
 
 /// **What reaches the person's commands from inside `recto-app`, where reading the bridge can't see it,** with where it's to be fixed. Only shrinks: a new
@@ -218,59 +229,102 @@ const KNOWN: &[(&str, &str)] = &[
 /// What may not appear in an export's body: the ways to a person's command other than `act`.
 const FORBIDDEN: &[&str] = &["person::", "submit(", "execute(", ".run(Actor", "run_counted", "printing::start"];
 
-/// One method of the bridge's `impl AppCore` blocks: its name, its text, and whether it's exported.
+/// One fn of the bridge's: its text, and whether uniffi exports it.
 #[derive(Debug)]
 struct Method {
     body: String,
     exported: bool,
 }
 
-/// **The bridge's `AppCore` methods, read from its sources:** every `fn` at the top of an `impl AppCore` block, exported when it's `pub` in a block that
-/// is `#[uniffi::export]`, with its text to its closing brace.
+/// Whether the lines before `at` that are attributes (and their doc comments) hold `#[uniffi::export`.
+fn exported_at(lines: &[&str], at: usize) -> bool {
+    lines[..at]
+        .iter()
+        .rev()
+        .map(|line| line.trim())
+        .take_while(|line| line.starts_with("#[") || line.starts_with("///") || line.starts_with("//!"))
+        .any(|line| line.starts_with("#[uniffi::export"))
+}
+
+/// How deep a line leaves the braces, from `depth` before it.
+fn depth_after(line: &str, depth: i32) -> i32 {
+    depth + line.matches('{').count() as i32 - line.matches('}').count() as i32
+}
+
+/// **What the bridge exports, read from its sources by uniffi's rules:** every fn at the top of an `impl` block that's `#[uniffi::export]`, whatever its
+/// visibility (named by itself for `AppCore`, `Type::name` for another type), an exported free fn (`fn name`), and an exported trait (`trait Name`). The
+/// fns of `AppCore`'s other `impl` blocks are kept too, not exported, for what an export calls of its own.
 fn bridge_methods(sources: &[(String, String)]) -> BTreeMap<String, Method> {
     let mut methods = BTreeMap::new();
+    let mut insert = |file: &str, name: String, body: String, exported: bool| {
+        let duplicate = methods.insert(name.clone(), Method { body, exported });
+        assert!(duplicate.is_none(), "{file}: `{name}` read twice");
+    };
     for (file, text) in sources {
         let lines: Vec<&str> = text.lines().collect();
         let mut at = 0;
         while at < lines.len() {
-            if lines[at].trim() != "impl AppCore {" {
+            let line = lines[at];
+            let exported = exported_at(&lines, at);
+            if let Some(name) = line.strip_prefix("pub trait ").or_else(|| line.strip_prefix("trait ")) {
+                let name: String = name.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                if exported {
+                    insert(file, format!("trait {name}"), String::new(), true);
+                }
                 at += 1;
                 continue;
             }
-            let exported = lines[..at]
-                .iter()
-                .rev()
-                .find(|line| !line.trim().is_empty())
-                .is_some_and(|line| line.trim().starts_with("#[uniffi::export"));
-            let mut depth = 1i32;
+            if let Some(name) = line.strip_prefix("pub fn ").or_else(|| line.strip_prefix("fn ")) {
+                let name: String = name.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                let mut depth = depth_after(line, 0);
+                let mut body = format!("{line}\n");
+                while depth > 0 && at + 1 < lines.len() {
+                    at += 1;
+                    depth = depth_after(lines[at], depth);
+                    body.push_str(lines[at]);
+                    body.push('\n');
+                }
+                if exported {
+                    insert(file, format!("fn {name}"), body, true);
+                }
+                at += 1;
+                continue;
+            }
+            let Some(owner) = line
+                .strip_prefix("impl ")
+                .filter(|rest| rest.trim_end().ends_with('{') && !rest.contains(" for "))
+            else {
+                at += 1;
+                continue;
+            };
+            let owner: String = owner.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            let mut depth = 1;
             at += 1;
-            let mut current: Option<(String, String, bool)> = None;
+            let mut current: Option<(String, String)> = None;
             while at < lines.len() && depth > 0 {
                 let line = lines[at];
-                let trimmed = line.trim_start();
                 if depth == 1 && current.is_none() {
-                    let public = trimmed.strip_prefix("pub fn ");
-                    if let Some(name) = public.or_else(|| trimmed.strip_prefix("fn ")) {
+                    let trimmed = line.trim_start();
+                    let named = ["pub fn ", "pub(crate) fn ", "pub(super) fn ", "fn ", "pub async fn ", "async fn "]
+                        .iter()
+                        .find_map(|head| trimmed.strip_prefix(head));
+                    if let Some(name) = named {
                         let name: String = name.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
-                        current = Some((name, String::new(), public.is_some()));
+                        current = Some((name, String::new()));
                     }
                 }
-                depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
-                if let Some((_, body, _)) = current.as_mut() {
+                depth = depth_after(line, depth);
+                if let Some((_, body)) = current.as_mut() {
                     body.push_str(line);
                     body.push('\n');
                 }
                 if depth == 1
-                    && let Some((name, body, public)) = current.take()
+                    && let Some((name, body)) = current.take()
                 {
-                    let duplicate = methods.insert(
-                        name.clone(),
-                        Method {
-                            body,
-                            exported: exported && public,
-                        },
-                    );
-                    assert!(duplicate.is_none(), "{file}: `{name}` read twice");
+                    let name = if owner == "AppCore" { name } else { format!("{owner}::{name}") };
+                    if exported || owner == "AppCore" {
+                        insert(file, name, body, exported);
+                    }
                 }
                 at += 1;
             }
@@ -389,6 +443,56 @@ fn every_export_is_in_the_table_and_reaches_the_person_only_through_act() {
     assert!(KNOWN.len() <= 2, "a new known exception: fix it instead");
 }
 
+/// **What uniffi really exports, by the bridge's static library,** where one is built from these sources: its `uniffi_recto_ffi_fn_` symbols, the
+/// `AppCore` methods and constructors and the free functions. None if there's no library, `nm` can't read it, or it's older than a source.
+fn exported_by_the_library(sources: &[(String, String)]) -> Option<BTreeSet<String>> {
+    let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
+        || std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"),
+        std::path::PathBuf::from,
+    );
+    let library = target.join("debug/librecto_ffi.a");
+    let built = std::fs::metadata(&library).and_then(|meta| meta.modified()).ok()?;
+    let newest = sources
+        .iter()
+        .filter_map(|(file, _)| std::fs::metadata(file).and_then(|meta| meta.modified()).ok())
+        .max()?;
+    if built < newest {
+        return None;
+    }
+    let listed = std::process::Command::new("nm").args(["-gU"]).arg(&library).output().ok()?;
+    let text = String::from_utf8_lossy(&listed.stdout).into_owned();
+    let names: BTreeSet<String> = text
+        .lines()
+        .filter_map(|line| line.split_whitespace().last()?.strip_prefix("_uniffi_recto_ffi_fn_").map(str::to_string))
+        .filter_map(|symbol| {
+            if let Some(name) = symbol.strip_prefix("method_appcore_").or_else(|| symbol.strip_prefix("constructor_appcore_")) {
+                Some(name.to_string())
+            } else {
+                symbol.strip_prefix("func_").map(|name| format!("fn {name}"))
+            }
+        })
+        .collect();
+    (!names.is_empty()).then_some(names)
+}
+
+/// Failure (review of S2, S2): the reading of the bridge's sources isn't what uniffi exports (a rule of uniffi's it doesn't follow, as `fn can_save`,
+/// exported though not `pub`, went unread), so an export can be outside the table with the test passing. Held against the static library built from these
+/// sources, where there is one: the app's build makes it, and a run without it says so.
+#[test]
+fn the_reading_of_the_bridge_is_what_uniffi_exports() {
+    let sources = bridge_sources();
+    let Some(real) = exported_by_the_library(&sources) else {
+        eprintln!("no static library built from these sources: the reading wasn't held against what uniffi exports this run");
+        return;
+    };
+    let read: BTreeSet<String> = bridge_methods(&sources)
+        .into_iter()
+        .filter(|(name, method)| method.exported && !name.starts_with("trait "))
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(read, real, "what the bridge's sources are read as exporting, against what its library exports");
+}
+
 /// Failure: the reading of the bridge misses what it's for: an export added with no line, one that reaches the core's person's commands directly, as the
 /// bridge's print did, or one that queues a person's call on the session thread itself (what `the_bridge_queues_none_of_a_persons_calls` held before this
 /// replaced it), passes. Each seeded in the bridge's text as it is now: each is found.
@@ -402,13 +506,21 @@ fn a_seeded_export_is_found() {
     let at = printing.find("    pub fn take_print").expect("an export to put one beside");
     printing.insert_str(
         at,
-        "    pub fn print_now(&self) {\n        recto_app::core::person::submit(&self.inner, todo!());\n    }\n\n    pub fn reader_twice(&self) {\n        \
+        "    pub fn print_now(&self) {\n        recto_app::core::person::submit(&self.inner, todo!());\n    }\n\n    fn reader_twice(&self) {\n        \
          self.inner.window.notices();\n    }\n\n",
     );
+    printing.push_str("\n#[uniffi::export]\npub fn print_freely() {\n}\n");
     let methods = bridge_methods(&sources);
     let said = wrong(&methods, &walked());
     assert!(said.iter().any(|line| line.contains("`print_now` is exported and the table")), "{said:#?}");
-    assert!(said.iter().any(|line| line.contains("`reader_twice` is exported and the table")), "{said:#?}");
+    assert!(
+        said.iter().any(|line| line.contains("`reader_twice` is exported and the table")),
+        "not `pub`, and exported: {said:#?}"
+    );
+    assert!(
+        said.iter().any(|line| line.contains("`fn print_freely` is exported and the table")),
+        "a free function: {said:#?}"
+    );
     // Classified, the one calling into the core directly is still found.
     let reached = methods
         .get("print_now")
