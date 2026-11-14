@@ -386,6 +386,8 @@ pub fn watch(printing: Arc<Printing>, core: Arc<CoreQueue>, host: Weak<super::Ap
 
 impl PrintWatch for Watch {
     fn begin(&self, tab: TabId, pages: u32) {
+        // Its pages are read: the person's next edit goes on now, and isn't printed.
+        crate::queue::lane::pass_here();
         let printing = &self.printing;
         // Asked for already, from the answer, unless it came another way. A Stop or a quit since holds: [`Printing::ask`] alone clears it.
         printing.running.store(true, Ordering::SeqCst);

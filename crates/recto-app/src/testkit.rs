@@ -3,6 +3,8 @@
 
 pub mod headless;
 pub(crate) mod heard;
+#[cfg(test)]
+pub(crate) mod holds;
 pub(crate) mod place_seams;
 mod scrolled;
 pub mod update_bed;

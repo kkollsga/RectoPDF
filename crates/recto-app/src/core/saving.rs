@@ -28,6 +28,8 @@ impl SaveSupport for AppSaving {
     }
 
     fn before_writing(&self, _tab: TabId) {
+        // The person's Save has begun, its tab held for it: their next edit goes on now (an agent's save holds no turn here).
+        crate::queue::lane::pass_here();
         if let Some(inner) = self.saver.inner() {
             self.saver.write_journals_now(inner.on_disk.keeper(), inner.on_disk.sleeper());
         }
@@ -56,6 +58,10 @@ impl SaveSupport for AppSaving {
     }
 
     fn step(&self, _tab: TabId, step: SaveStep) {
+        #[cfg(test)]
+        if matches!(step, SaveStep::Writing) {
+            self.core.holds.at("save_writing");
+        }
         let value = match step {
             SaveStep::Checking => 1,
             SaveStep::Writing => 2,
@@ -68,39 +74,52 @@ impl SaveSupport for AppSaving {
     }
 }
 
-/// **Whether Save can be chosen now,** from what's published: never waits. Not under a sheet: the close prompt's own Save is how to save then.
-pub fn can_save(published: &std::sync::Mutex<super::Published>, life: &super::Lifecycle) -> bool {
+/// **Whether Save can be chosen now,** from what's published and the person's lane: never waits. With an edit of the tab showing still landing (a
+/// highlight reading its pages) it can, as the Save is ordered behind it (review of the lane, D3). Not under a sheet: the close prompt's own Save is how to
+/// save then.
+pub fn can_save(published: &std::sync::Mutex<super::Published>, life: &super::Lifecycle, lane: &crate::queue::lane::Lane) -> bool {
     let reader = super::lock(published).reader.clone();
-    !reader.home && reader.edited && reader.save_enabled && life.sheets_open() == 0
+    !reader.home && super::person_lane::once_landed(&reader, lane).edited && reader.save_enabled && life.sheets_open() == 0
 }
 
 /// **A save from the window, off the UI thread,** through the same command an agent's `recto save` runs, as the person's. `out` makes it a Save As. `close_after` closes the tab once it's saved, for the close prompt's Save. A hand-off waits for it, as it's a running command.
 pub fn start_save(inner: &Arc<super::Inner>, tab: TabId, out: Option<std::path::PathBuf>, close_after: bool) {
     // When the person answered Save As's sheet: a file made at that name after this isn't one they agreed to replace (review).
     let answered = std::time::SystemTime::now();
-    let inner = Arc::clone(inner);
-    inner.tools.save_ui().running.fetch_add(1, Ordering::SeqCst);
-    let spawned = std::thread::Builder::new().name("recto-save-file".into()).stack_size(1024 * 1024).spawn({
-        let inner = Arc::clone(&inner);
-        move || {
-            run_save(&inner, tab, out, close_after, answered);
-            inner.tools.save_ui().step.store(0, Ordering::SeqCst);
-            inner.core.push(super::CoreCall::Reconcile);
-            // Counted running until what it came to is queued, as the app's settled goes by the count ([`crate::settled`]).
+    // In its place among the person's edits, so what they asked for before it is in what it writes; on a thread of its own once its turn comes, holding
+    // its turn till it has begun.
+    let app = Arc::downgrade(inner);
+    let save = move |turn: crate::queue::lane::Turn| {
+        let Some(inner) = app.upgrade() else { return };
+        inner.tools.save_ui().running.fetch_add(1, Ordering::SeqCst);
+        let spawned = std::thread::Builder::new().name("recto-save-file".into()).stack_size(1024 * 1024).spawn({
+            let inner = Arc::clone(&inner);
+            move || {
+                let here = crate::queue::lane::hold_here(Some(turn));
+                #[cfg(test)]
+                inner.core.holds.at("save_starting");
+                run_save(&inner, tab, out, close_after, answered);
+                drop(here);
+                inner.tools.save_ui().step.store(0, Ordering::SeqCst);
+                inner.core.push(super::CoreCall::Reconcile);
+                // Counted running until what it came to is queued, as the app's settled goes by the count ([`crate::settled`]).
+                inner.tools.save_ui().running.fetch_sub(1, Ordering::SeqCst);
+                super::running::ended(&inner.core);
+            }
+        });
+        if spawned.is_err() {
             inner.tools.save_ui().running.fetch_sub(1, Ordering::SeqCst);
+            super::running::ended(&inner.core);
+            inner.tools.save_ui().set_problem(Some(app::not_started()));
+            inner.core.push(super::CoreCall::Reconcile);
         }
-    });
-    if spawned.is_err() {
-        inner.tools.save_ui().running.fetch_sub(1, Ordering::SeqCst);
-        inner.tools.save_ui().set_problem(Some(app::not_started()));
-        inner.core.push(super::CoreCall::Reconcile);
-    }
+    };
+    super::person::Person::of(inner).lane().submit_save(tab, Box::new(save));
 }
 
 /// The save of the tab the action was for, whichever is showing by now. A Save As's sheet has already asked whether to replace a file that's there, so one
 /// that's there was agreed to; it's looked at here, off the UI thread (review).
 fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, close_after: bool, answered: std::time::SystemTime) {
-    use recto_control::host::Host;
     let replace = match out.as_deref().map(|out| replace_answered(out, answered)) {
         Some(Err(())) => {
             inner.tools.save_ui().set_problem(Some(app::appeared_after_answer()));
@@ -116,14 +135,23 @@ fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
     });
     let mut events = Vec::new();
     super::person::sent(&inner.serving, &command);
-    match inner.host.run(recto_agent::Actor::Person, &command, &mut events) {
+    // It holds its turn in the person's lane, so it was asked before any freeze there is now, and goes through it.
+    match inner
+        .host
+        .run_as(recto_agent::Actor::Person, &command, &mut events, crate::queue::Origin::TurnCame)
+    {
         Ok(data) => {
             let notes: Vec<&str> = data["notes"]
                 .as_array()
                 .map(|notes| notes.iter().filter_map(|note| note.as_str()).collect())
                 .unwrap_or_default();
+            // A save that wrote nothing (a Save chosen while a highlight landed, refused after all) leaves the line by the page as it is: it may say why
+            // (second review of the lane, 5).
+            let written = data["written"].as_bool() != Some(false);
             if notes.is_empty() {
-                inner.window.notices().take_notice();
+                if written {
+                    inner.window.notices().take_notice();
+                }
             } else {
                 inner.window.notices().say(notes.join(" "));
             }
@@ -186,15 +214,17 @@ impl super::Inner {
         start_save(self, TabId(tab), Some(PathBuf::from(path)), false);
     }
 
-    /// What closing the document showing asks.
+    /// What closing the document showing asks. With an edit of it still landing (a highlight reading its pages), it's asked as for an edited tab, as
+    /// the edit is one by the time a choice runs: Save and Don't Save are ordered behind it ([`crate::queue::lane::Lane::landing`]).
     pub fn close_prompt(&self) -> ClosePrompt {
         let published = super::lock(&self.published);
+        let edited = super::person_lane::once_landed(&published.reader, self.core.lane()).edited;
         // Save offered only where Save works: with it off for a signed document, the way on is Save As's unsigned copy.
-        let save_off = published.reader.edited && !published.reader.save_enabled && !published.reader.saving;
+        let save_off = edited && !published.reader.save_enabled && !published.reader.saving;
         close_prompt(
             published.reader.shown_tab,
             &published.reader.document_name,
-            published.reader.edited,
+            edited,
             published.sidebar.undone_owner_steps,
             save_off,
             self.tools.save_ui().disagreement_now().as_deref(),

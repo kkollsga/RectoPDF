@@ -507,3 +507,27 @@ fn a_print_file_the_host_never_took_goes_when_the_next_comes() {
     assert_ne!(printed(&app), "none");
     assert_eq!(print_files_left(), Vec::<String>::new(), "nothing's left");
 }
+
+/// **Failure (S2's follow-up (4)): a print reads its pages when its thread starts,** so a ⌘R pressed in the same instant, after the print was asked, was
+/// printed. The print holds the person's turn until its pages are read: the turn waits, and is done after.
+#[test]
+fn a_turn_asked_after_a_print_isnt_printed() {
+    let disk = Disk::new();
+    let doc = disk.file("widths.pdf", &widths(2));
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    let (held, go) = app.hold_next("print");
+    answer(&app, ALL);
+    held.recv_timeout(WAIT_LIMIT).expect("the print held before it reads its pages");
+    app.act(UiAction::Menu { id: "rotate.right".into() });
+    assert!(app.core().core.flush(WAIT_LIMIT), "the session thread took the turn");
+    drop(go);
+    app.settle();
+    let (path, _) = app.core().tools.printing().take_ready().expect("the print's file");
+    let bytes = std::fs::read(&path).expect("the print's file");
+    app.core().tools.printing().finished(path.to_str().expect("a path"));
+    let turned = String::from_utf8_lossy(&bytes).matches("/Rotate 90").count();
+    assert_eq!(turned, 0, "printed as the pages were when it was asked");
+    assert!(app.core().menu_item_enabled("edit.undo".into()), "and the turn done after it");
+}

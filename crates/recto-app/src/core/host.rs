@@ -18,6 +18,8 @@ pub struct AppHost {
     pub saver: Arc<Saver>,
     /// Commands running now, which an update waits for. Not the ones that only ask about the state.
     pub running: AtomicU32,
+    /// Those of them anything of which can be in what a quit writes, which a quit waits for ([`super::command_kinds::changes`]).
+    pub changing: AtomicU32,
     /// An update is under way, past the last look: what's written is what comes back, so nothing more is done.
     pub handing_off: AtomicBool,
     /// What a read of the record told the reader, while they've not moved on.
@@ -27,6 +29,44 @@ pub struct AppHost {
 }
 
 impl AppHost {
+    /// **A command run as `origin` says it was asked:** one asked before a freeze whose turn in the person's lane has come goes through it
+    /// ([`crate::queue::Origin::held_back_by_a_freeze`]), as on the session thread's queue; anything else asked now is refused past it.
+    pub fn run_as(&self, actor: Actor, command: &Command, events: &mut Vec<Event>, origin: crate::queue::Origin) -> Result<Value, AgentError> {
+        let asks_only = command.only_asks();
+        // While keeping the record is settling, an agent's command that isn't a look is refused before it's counted, so none is ever under way then
+        // (`keeping::answers_agents`).
+        if matches!(actor, Actor::Agent(_))
+            && !super::keeping::answers_agents(command)
+            && self.saver.inner().is_some_and(|inner| inner.life.keeping().refuses_agents_changes())
+        {
+            return Err(
+                AgentError::new(Code::BUSY, "RectoPDF is still starting, so this wasn't done.", recto_agent::exit::BUSY).then("Try again in a moment."),
+            );
+        }
+        // Counted first, and then looked: a hand-off that's set this flag and sees no count can't have this one slip past both looks. Past the last look, a change would be lost: what's been written is what comes back.
+        let changes = !asks_only && super::command_kinds::changes(command);
+        if !asks_only {
+            self.running.fetch_add(1, Ordering::SeqCst);
+            if changes {
+                self.changing.fetch_add(1, Ordering::SeqCst);
+            }
+            if self.handing_off.load(Ordering::SeqCst) && origin.held_back_by_a_freeze() {
+                self.command_ended(changes);
+                return Err(
+                    AgentError::new(Code::BUSY, "The app is being updated, so this wasn't done.", recto_agent::exit::BUSY)
+                        .then("Try again in a moment, when it's back."),
+                );
+            }
+        }
+        #[cfg(test)]
+        self.core.holds.at(command.tag());
+        let result = self.run_counted(actor, command, events);
+        if !asks_only {
+            self.command_ended(changes);
+        }
+        result
+    }
+
     /// **The session's news reaches the app from the start, and watchers once the socket runs** (slow mode, 2026-11-11: with the socket's first answer late, Find came back with its hits and not the hit gone to). The app heard of Find's hits and of generated contents only once the socket's server ran and attached, so what finished before that, or all of it with the socket another session's, was heard by nobody. Given once, as the session takes it once.
     pub fn listen(self: &Arc<Self>) {
         let core = Arc::clone(&self.core);
@@ -47,34 +87,9 @@ impl AppHost {
 }
 
 impl Host for AppHost {
+    /// A command asked now, an agent's or the person's: a hand-off's or a quit's freeze holds it back.
     fn run(&self, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-        let asks_only = command.only_asks();
-        // While keeping the record is settling, an agent's command that isn't a look is refused before it's counted, so none is ever under way then
-        // (`keeping::answers_agents`).
-        if matches!(actor, Actor::Agent(_))
-            && !super::keeping::answers_agents(command)
-            && self.saver.inner().is_some_and(|inner| inner.life.keeping().refuses_agents_changes())
-        {
-            return Err(
-                AgentError::new(Code::BUSY, "RectoPDF is still starting, so this wasn't done.", recto_agent::exit::BUSY).then("Try again in a moment."),
-            );
-        }
-        // Counted first, and then looked: a hand-off that's set this flag and sees no count can't have this one slip past both looks. Past the last look, a change would be lost: what's been written is what comes back.
-        if !asks_only {
-            self.running.fetch_add(1, Ordering::SeqCst);
-            if self.handing_off.load(Ordering::SeqCst) {
-                self.running.fetch_sub(1, Ordering::SeqCst);
-                return Err(
-                    AgentError::new(Code::BUSY, "The app is being updated, so this wasn't done.", recto_agent::exit::BUSY)
-                        .then("Try again in a moment, when it's back."),
-                );
-            }
-        }
-        let result = self.run_counted(actor, command, events);
-        if !asks_only {
-            self.running.fetch_sub(1, Ordering::SeqCst);
-        }
-        result
+        self.run_as(actor, command, events, crate::queue::Origin::Input)
     }
 
     fn check(&self, condition: Condition, tab: &recto_agent::TabRef, page: Option<u32>) -> ConditionState {
@@ -123,6 +138,16 @@ impl Host for AppHost {
 }
 
 impl AppHost {
+    /// **A command counted in [`Self::running`] has ended,** and in [`Self::changing`] if it `changes`: said to what waits for what's running
+    /// ([`super::running::ended`]).
+    pub fn command_ended(&self, changes: bool) {
+        self.running.fetch_sub(1, Ordering::SeqCst);
+        if changes {
+            self.changing.fetch_sub(1, Ordering::SeqCst);
+        }
+        super::running::ended(&self.core);
+    }
+
     /// Where a command goes, by its declared route: the app's own to [`Self::run_app`], the rest to the session.
     pub fn run_counted(&self, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         match command.route() {
