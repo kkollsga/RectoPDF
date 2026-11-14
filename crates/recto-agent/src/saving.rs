@@ -404,6 +404,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &TabRef, to: &SaveT
         let rolled_off = match stamp {
             Some(now) => {
                 let marks = recto_session::edit::marks::SavedMarks::of(&snapshot.marks, &outcome.marks);
+                debug_assert!(marks.is_some(), "where the highlights went, or their steps roll off unchecked");
                 s.saved(id, now, outcome.pages, saved_as.as_deref(), kept, marks.as_ref())
             }
             None => 0,
