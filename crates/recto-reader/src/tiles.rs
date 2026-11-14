@@ -39,6 +39,7 @@ pub use jobs::{DrawKind, Job, JobKind, JobPlan, Outcome};
 use jobs::{MAX_KEYLESS, PlanKind};
 pub(crate) use jobs::{Renew, Work};
 pub(crate) use marks::tell as tell_marks;
+pub(crate) use marks::{HiddenSets, put_hidden, redraw_own_pages};
 pub use marks::{TabMarks, look as mark_look};
 use place::Place;
 pub use place::place_stamp;

@@ -160,6 +160,7 @@ fn show_in_panes(inner: &Inner, synced: &mut Synced, panes: &[PaneSnapshot], pap
     synced.panes.resize_with(count, PaneSynced::default);
     if panes.is_empty() && synced.panes[0].tab.take().is_some() {
         inner.engine.deactivate();
+        super::highlight::give(&inner.engine, &mut synced.panes[0].marks, TabId(0), None, paper);
     }
     let mut changed = false;
     let mut sent = Vec::new();

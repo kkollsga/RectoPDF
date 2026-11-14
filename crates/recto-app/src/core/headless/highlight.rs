@@ -203,8 +203,23 @@ fn a_files_own_highlight_is_taken_out_as_an_edit() {
         again.is_err_and(|error| error.code == recto_agent::Code::NO_SUCH_HIGHLIGHT),
         "already taken out"
     );
+    assert_eq!(hidden_sets(&app), 1, "the page view's draws leave it out");
     app.agent(Level::Control, r#"{"cmd":"undo"}"#).expect("undo");
+    app.settle();
     assert_eq!(listed(&app)["removed"].as_array().map(Vec::len), Some(0), "back");
+    assert_eq!(hidden_sets(&app), 0, "and the page view holds nothing for it (coordinator, 2026-11-14)");
+    app.agent(Level::Control, r#"{"cmd":"redo"}"#).expect("redo");
+    app.settle();
+    assert_eq!(hidden_sets(&app), 1);
+    app.agent(Level::Full, r##"{"cmd":"discard","tab":"active"}"##).expect("discard");
+    app.agent(Level::Control, r##"{"cmd":"close","tab":"active"}"##).expect("close");
+    app.settle();
+    assert_eq!(hidden_sets(&app), 0, "nor once the tab's closed");
+}
+
+/// The tabs the reading page view holds a set of hidden file highlights for.
+fn hidden_sets(app: &HeadlessApp) -> usize {
+    app.core().panes.reading_engine(&app.core().engine).selection().hidden_sets()
 }
 
 fn listed_on(app: &HeadlessApp, page: u32) -> Value {

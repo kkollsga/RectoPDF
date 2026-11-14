@@ -132,13 +132,38 @@ pub fn answered(inner: &Arc<Inner>, ran: &person::Ran<'_>) {
     }
 }
 
-/// **A tab's highlights made as edits, by page position, for its page view to draw:** each highlight on every position its page has. None for a tab
-/// with none, which is every tab without edits: nothing is made for it.
+/// Sets made lately, by tab and the tick of their list's last change: made again only when it changed (review of R4.3: they were made and compared
+/// on every pass, under the session's lock). On the session thread, which makes them; a few, as each pane shows one tab.
+const SETS_KEPT: usize = 8;
+
+std::thread_local! {
+    static MADE: std::cell::RefCell<Vec<(u32, u64, Arc<TabMarks>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// **A tab's highlights made as edits, by page position, for its page view to draw:** each highlight on every position its page has; and the file's
+/// own it has taken out, for the page view's draws to leave out. None for a tab with none, which is every tab without edits: nothing is made for it.
+/// Made once for each change, and the same set given again until the next ([`SETS_KEPT`]).
 pub fn marks_of<L: DocLoader>(session: &Session<L>, id: TabId) -> Option<Arc<TabMarks>> {
     let list = session.lists().get(id)?;
     if list.marks().is_empty() {
         return None;
     }
+    let tick = list.marks().changes();
+    if let Some(made) = MADE.with_borrow(|made| made.iter().find(|(tab, at, _)| (*tab, *at) == (id.0, tick)).map(|(_, _, set)| Arc::clone(set))) {
+        return Some(made);
+    }
+    let made = make_marks(session, id, list);
+    MADE.with_borrow_mut(|kept| {
+        kept.retain(|(tab, _, _)| *tab != id.0);
+        if kept.len() >= SETS_KEPT {
+            kept.remove(0);
+        }
+        kept.push((id.0, tick, Arc::clone(&made)));
+    });
+    Some(made)
+}
+
+fn make_marks<L: DocLoader>(session: &Session<L>, id: TabId, list: &recto_session::edit::PageEdits) -> Arc<TabMarks> {
     let mut pages: Vec<(u32, Vec<Rect>)> = Vec::new();
     for (position, mark) in list.marks().on_positions(list.slots()) {
         let rects = mark.rects.iter().map(|rect| Rect {
@@ -152,7 +177,23 @@ pub fn marks_of<L: DocLoader>(session: &Session<L>, id: TabId) -> Option<Arc<Tab
             _ => pages.push((position, rects.collect())),
         }
     }
-    Some(Arc::new(TabMarks { tab: id.0, pages }))
+    let hidden = (!list.marks().hidden().is_empty())
+        .then(|| session.tabs().path_of(id))
+        .flatten()
+        .map(|file| (file, Arc::new(hidden_set(list.marks()))));
+    Arc::new(TabMarks { tab: id.0, pages, hidden })
+}
+
+/// The file's own highlights a list has taken out, by page of the file, as the worker that draws them takes them.
+fn hidden_set(marks: &recto_session::edit::marks::Marks) -> recto_proto::hidden::HiddenAnnots {
+    let mut by_page: std::collections::BTreeMap<u32, Vec<(u32, [f32; 4])>> = std::collections::BTreeMap::new();
+    for key in marks.hidden() {
+        by_page.entry(key.page).or_default().push((key.index, key.rect));
+    }
+    recto_proto::hidden::HiddenAnnots {
+        generation: marks.changes(),
+        pages: by_page.into_iter().collect(),
+    }
 }
 
 /// What a pane's page view has been given of highlights.
@@ -163,6 +204,9 @@ pub struct MarksSynced {
     given: Option<(Arc<TabMarks>, PaperKind)>,
     /// What the host has may have some on it, which a tab with none has to clear.
     host_has_some: bool,
+    /// The set of the file's highlights taken out the page view was last given, by tab and file, and its generation: taken back when the pane shows
+    /// another tab or the set's emptied, so the page view keeps none for a tab it doesn't show.
+    hidden_given: Option<(u32, std::path::PathBuf, u64)>,
 }
 
 impl MarksSynced {
@@ -176,6 +220,11 @@ impl MarksSynced {
 /// when the tab has none and some may be there. Nothing otherwise, so a tab without highlights, and every pass with nothing new, costs a comparison
 /// and no op.
 pub fn give(engine: &recto_reader::Engine, synced: &mut MarksSynced, tab: TabId, marks: Option<&Arc<TabMarks>>, paper: PaperKind) {
+    give_hidden(
+        engine,
+        synced,
+        marks.and_then(|marks| marks.hidden.as_ref().map(|(file, set)| (marks.tab, file, set))),
+    );
     match marks {
         Some(marks) => {
             let now = Some((Arc::clone(marks), paper));
@@ -188,11 +237,40 @@ pub fn give(engine: &recto_reader::Engine, synced: &mut MarksSynced, tab: TabId,
         None => {
             synced.given = None;
             if synced.host_has_some {
-                engine.selection().show_marks(&TabMarks { tab: tab.0, pages: Vec::new() }, paper);
+                engine.selection().show_marks(
+                    &TabMarks {
+                        tab: tab.0,
+                        pages: Vec::new(),
+                        hidden: None,
+                    },
+                    paper,
+                );
                 synced.host_has_some = false;
             }
         }
     }
+}
+
+/// **Gives the pane's page view the set of the file's highlights its tab has taken out,** when it's another than it was given, and takes back the one
+/// it was given when the pane shows another tab or the set's gone. A comparison of a key otherwise.
+fn give_hidden(engine: &recto_reader::Engine, synced: &mut MarksSynced, now: Option<(u32, &std::path::PathBuf, &Arc<recto_proto::hidden::HiddenAnnots>)>) {
+    let same = match (&synced.hidden_given, now) {
+        (Some((tab, file, generation)), Some((now_tab, now_file, set))) => (*tab, file, *generation) == (now_tab, now_file, set.generation),
+        (given, now) => given.is_none() && now.is_none(),
+    };
+    if same {
+        return;
+    }
+    let key = now.map(|(tab, file, set)| (tab, file.clone(), set.generation));
+    if let Some((tab, file, _)) = synced.hidden_given.take()
+        && now.is_none_or(|(now_tab, now_file, _)| (now_tab, now_file) != (tab, &file))
+    {
+        engine.selection().show_hidden(tab, &file, None);
+    }
+    if let Some((tab, file, set)) = now {
+        engine.selection().show_hidden(tab, file, Some(Arc::clone(set)));
+    }
+    synced.hidden_given = key;
 }
 
 #[cfg(test)]

@@ -38,6 +38,7 @@ fn what_the_host_is_given_is_held_to_what_can_be_drawn() {
             (2, vec![rect(10.0, 5.0)]),
             (9, vec![rect(10.0, 5.0)]),
         ],
+        hidden: None,
     };
     let reader = &mut reader;
     reader.host.take_ops();
@@ -53,7 +54,38 @@ fn what_the_host_is_given_is_held_to_what_can_be_drawn() {
     let other = TabMarks {
         tab: tab + 1,
         pages: marks.pages.clone(),
+        hidden: None,
     };
     super::super::marks::tell_within(&mut reader.host, &reader.docs, &other, PaperKind::White, (2, 3));
     assert!(reader.host.take_ops().is_empty(), "another tab's set gives nothing");
+}
+
+/// **Failure (review of R4.3, S2): a tab's set of hidden file highlights is kept when it's emptied**, so the page view holds something for a tab with
+/// none, or the map keeps its room; or a set given again draws pages again; or a changed one doesn't draw again the pages either set is on.
+#[test]
+fn a_hidden_set_is_held_only_while_it_hides_something() {
+    use recto_proto::hidden::HiddenAnnots;
+    use std::sync::Arc;
+    let set = |pages: &[u32], generation: u64| {
+        Some(Arc::new(HiddenAnnots {
+            generation,
+            pages: pages.iter().map(|page| (*page, vec![(0, [0.0; 4])])).collect(),
+        }))
+    };
+    let mut sets = super::super::HiddenSets::new();
+    let file = std::path::PathBuf::from("/d/a.pdf");
+    assert_eq!(super::super::put_hidden(&mut sets, 1, file.clone(), set(&[2, 4], 1)), vec![2, 4]);
+    assert!(
+        super::super::put_hidden(&mut sets, 1, file.clone(), set(&[2, 4], 2)).is_empty(),
+        "the same pages hidden: nothing to draw again"
+    );
+    assert_eq!(sets[&(1, file.clone())].generation, 1, "and the worker's set is kept");
+    assert_eq!(super::super::put_hidden(&mut sets, 1, file.clone(), set(&[4, 5], 3)), vec![2, 4, 5]);
+    assert_eq!(
+        super::super::put_hidden(&mut sets, 1, file.clone(), set(&[], 4)),
+        vec![4, 5],
+        "an empty set is none"
+    );
+    assert!(sets.is_empty() && sets.capacity() == 0, "nothing held, not even the room");
+    assert!(super::super::put_hidden(&mut sets, 1, file, None).is_empty());
 }

@@ -230,6 +230,20 @@ impl TileCache {
         }
     }
 
+    /// What's drawn of these positions of a tab goes, told to `host`: their pictures are of something else now (a file's highlight hidden or
+    /// shown again, R4.3).
+    pub(super) fn drop_pages(&mut self, tab: u32, positions: &[u32], host: &mut HostQueue) {
+        let ids: Vec<u64> = self
+            .entries
+            .values()
+            .filter(|entry| entry.tab == tab && positions.contains(&entry.page))
+            .map(|entry| entry.id)
+            .collect();
+        for id in ids {
+            self.forget(id, host);
+        }
+    }
+
     /// Least recently used first, with a page's preview outliving its tiles: it's a fraction of their size, and it's what keeps a page seen a while ago from coming back blank. Bounded, as the entries are, and a look along them only when something has just gone off a layer.
     pub(super) fn evict(&mut self, host: &mut HostQueue) {
         loop {
