@@ -83,11 +83,15 @@ impl PersonsLane<'_> {
             out: None,
             replace: false,
         });
+        // Counted first, then looked at again, as `person::submit` does: frozen since its caller looked, it isn't taken.
+        let counted = person::Counted::new(&self.app.life, &self.app.core);
+        if self.app.core.frozen.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         let turn = self.turn_for(&save).unwrap_or_else(|| {
             debug_assert!(false, "a save is ordered");
             self.app.core.take_turn(tab.0, false)
         });
-        let counted = person::Counted::new(&self.app.life, &self.app.core);
         let start: Start = Box::new(move |turn| {
             start(turn);
             drop(counted);

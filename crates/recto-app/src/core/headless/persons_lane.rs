@@ -584,3 +584,29 @@ fn no_ordered_command_on_the_session_thread_reads_its_file_later() {
     app.settle();
     assert_eq!(app.tabs().len(), 5, "the close was done");
 }
+
+/// **Failure (second review of the lane, 3): a command asked as a hand-off froze ran after its last look.** `submit` looked at the freeze, the hand-off
+/// froze and saw nothing counted, and the command was then counted and run past the freeze (its turn let it through): what it did was lost, as what's on
+/// disk is what comes back. It's counted first and looked at again: frozen between the two, it doesn't run.
+#[test]
+fn a_command_asked_as_a_hand_off_freezes_doesnt_run_after_its_last_look() {
+    let disk = Disk::new();
+    let doc = disk.pdf("a.pdf", 1);
+    let app = disk.start();
+    app.open(&doc);
+    selects(&app, (0, 0), (0, 5));
+    let (held, go) = app.hold_next("submit_looked");
+    std::thread::scope(|scope| {
+        let asked = scope.spawn(|| app.act(UiAction::Menu { id: HIGHLIGHT_ID.into() }));
+        held.recv_timeout(WAIT_LIMIT).expect("the highlight held after submit's look");
+        app.core().set_frozen(true);
+        assert!(app.core().hand_off_check().safe, "the hand-off's last look sees nothing under way");
+        drop(go);
+        asked.join().expect("the window's thread");
+    });
+    app.wait_until("nothing of the person's running", || app.core().life.persons_running() == 0);
+    flush(&app);
+    // Taken again, as a hand-off that didn't go leaves it, to look.
+    app.core().set_frozen(false);
+    assert_eq!(highlights(&app), (0, 0), "not run after the freeze");
+}

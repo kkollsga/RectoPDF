@@ -23,14 +23,23 @@ pub fn submit(inner: &Arc<Inner>, command: Command) -> bool {
     if inner.core.frozen.load(std::sync::atomic::Ordering::SeqCst) {
         return false;
     }
+    #[cfg(test)]
+    inner.core.holds.at("submit_looked");
     let lane = Person::of(inner).lane();
-    let turn = lane.turn_for(&command);
     if super::person_lane::runs_on_its_own_thread(&command) {
-        match turn {
+        // Counted first, then looked at again, as the host's commands are: a hand-off that froze since and saw no count can't have this run past its
+        // last look on the strength of its turn (second review of the lane, 3).
+        let counted = Counted::new(&inner.life, &inner.core);
+        if inner.core.frozen.load(std::sync::atomic::Ordering::SeqCst) {
+            return false;
+        }
+        match lane.turn_for(&command) {
             Some(turn) => lane.submit_waiting(command, turn),
             None => lane.start_waiting(command, None),
         }
+        drop(counted);
     } else {
+        let turn = lane.turn_for(&command);
         let mut run = PersonCommand::input(command);
         run.turn = turn;
         inner.core.push(CoreCall::Run(run));
