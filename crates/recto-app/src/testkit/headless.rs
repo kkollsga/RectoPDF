@@ -256,7 +256,10 @@ impl Builder {
                 format!("{a}.{b}.{c}")
             });
             let development = recto_update::version::is_development(&version).then(|| version.clone());
-            inner.note_update_facts(release.unwrap_or(version), development, app.display().to_string(), "15.0".to_owned());
+            inner
+                .life
+                .update_facts
+                .note(release.unwrap_or(version), development, app.display().to_string(), "15.0".to_owned());
         }
         let app = HeadlessApp {
             inner: Some(inner),

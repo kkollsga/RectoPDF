@@ -311,7 +311,7 @@ fn an_update_whose_old_copy_still_holds_the_record_comes_back_as_it_was() {
     assert_eq!(app.disk().app_version().as_deref(), Some(NEW));
     assert!(app.tabs().is_empty() && app.reader().note.is_none(), "trying, quietly");
     // The window's first frame, as the host tells it: held for when it's known what this copy is.
-    crate::core::updates::first_frame_shown(app.core());
+    app.core().life.update_facts.first_frame_shown(&app.core().updates);
     for _ in 1..9 {
         next_try_fails(&app);
     }
@@ -348,7 +348,7 @@ fn a_lock_let_go_between_the_launchs_wait_and_its_read_still_tells_the_updater()
     let (disk, bed, plan, old_on_its_way_out) = handed_off_with_the_old_copy_holding();
     let app = disk.builder().update(&bed).another_keeps().hold(&[Seam::State]).start();
     // The window's first frame, as the host tells it with the launch held back.
-    crate::core::updates::first_frame_shown(app.core());
+    app.core().life.update_facts.first_frame_shown(&app.core().updates);
     drop(old_on_its_way_out);
     app.let_through(Seam::State, 1);
     app.wait_until("the state taken in", || app.core().life.state_read());
@@ -384,7 +384,7 @@ fn nothing_of_an_update_begins_while_it_tries() {
     let bed = UpdateBed::new();
     let before = the_copy_before(&disk);
     let app = disk.builder().update(&bed).another_keeps().start();
-    crate::core::updates::first_frame_shown(app.core());
+    app.core().life.update_facts.first_frame_shown(&app.core().updates);
     bed.releases.offer(NEW);
     let refused = app
         .core()
@@ -453,7 +453,7 @@ fn an_update_launch_worked_in_before_the_lock_comes_is_a_second_copy_that_starte
     let (disk, bed, plan, old_on_its_way_out) = handed_off_with_the_old_copy_holding();
     let was = state_but_the_launch_ok(&disk);
     let app = disk.builder().update(&bed).another_keeps().start();
-    crate::core::updates::first_frame_shown(app.core());
+    app.core().life.update_facts.first_frame_shown(&app.core().updates);
     next_try_fails(&app);
     next_try_fails(&app);
     let c = app.disk().pdf("c.pdf", 2);
@@ -470,7 +470,7 @@ fn an_update_launch_worked_in_before_the_lock_comes_is_a_second_copy_that_starte
     let next = disk.builder().update(&bed).start();
     assert_eq!(tab_names(&next), ["alpha"], "the next launch restores the session the hand-off wrote");
     assert_eq!(page_of(&next, "alpha.pdf"), 8);
-    crate::core::updates::first_frame_shown(next.core());
+    next.core().life.update_facts.first_frame_shown(&next.core().updates);
     next.wait_until("the install settled: the version proven", || {
         recto_update::saved::Saved::read(&next.disk().update_files().saved).proven.as_deref() == Some(NEW)
     });
@@ -485,7 +485,7 @@ fn an_update_launch_left_alone_keeps_a_lock_that_comes_at_45_seconds() {
     use crate::testkit::update_bed::NEW;
     let (disk, bed, plan, old_on_its_way_out) = handed_off_with_the_old_copy_holding();
     let app = disk.builder().update(&bed).another_keeps().start();
-    crate::core::updates::first_frame_shown(app.core());
+    app.core().life.update_facts.first_frame_shown(&app.core().updates);
     for _ in 1..45 {
         next_try_fails(&app);
     }
@@ -507,7 +507,7 @@ fn an_update_launch_left_alone_keeps_a_lock_that_comes_at_45_seconds() {
 fn an_update_launch_left_alone_for_a_minute_is_a_second_copy_that_started() {
     let (disk, bed, plan, old_on_its_way_out) = handed_off_with_the_old_copy_holding();
     let app = disk.builder().update(&bed).another_keeps().start();
-    crate::core::updates::first_frame_shown(app.core());
+    app.core().life.update_facts.first_frame_shown(&app.core().updates);
     for _ in 1..crate::lifecycle::keeping::TRIES_AFTER_UPDATE {
         next_try_fails(&app);
     }
@@ -535,7 +535,7 @@ fn a_quit_while_it_tries_tells_the_updater_nothing() {
     };
     let was = update_folder(&disk);
     let app = disk.builder().update(&bed).another_keeps().start();
-    crate::core::updates::first_frame_shown(app.core());
+    app.core().life.update_facts.first_frame_shown(&app.core().updates);
     next_try_fails(&app);
     let (answer, disk) = app.quit();
     assert!(answer.go, "{answer:?}");

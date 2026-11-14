@@ -41,6 +41,7 @@ mod sleeping;
 mod tabs;
 mod twins;
 mod update;
+mod update_guards;
 mod update_menu;
 mod view;
 mod window_script;
