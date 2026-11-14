@@ -205,6 +205,20 @@ fn measure(tabs: usize) {
         app.person_scrolls(to - at.get());
         at.set(to);
     });
+    // What an announcement costs on its way to an agent watching (S1's outlet, `recto_control::server`): a page drawn and a move in the tab opened
+    // last, the one a search for it reaches last, asked as the outlet asks on the thread that announces. The "ui" column is that ask; with nobody
+    // watching it isn't made at all.
+    let first_tab = recto_session::TabId(a.tab);
+    case(&app, "events for watchers", tabs, nothing, |app, first| {
+        let mut events = vec![
+            recto_agent::Event::PageDrawn {
+                tab: first_tab,
+                page: if first { 1 } else { 2 },
+            },
+            recto_agent::Event::PageChanged { tab: first_tab, page: 2 },
+        ];
+        recto_control::host::Host::for_watchers(&*app.core().host, &mut events);
+    });
     drop(app.quit());
 }
 
