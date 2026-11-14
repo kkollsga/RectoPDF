@@ -218,9 +218,10 @@ impl Saver {
         }
     }
 
-    /// Whether a writing thread is there, or asked for.
+    /// Whether a writing thread is there, or asked for: started, or owed, a write being due now (as after [`Self::write_soon`]) that the session thread
+    /// starts a writer for when it next looks at its deadline, which it does only once its queue is empty.
     pub fn is_writing(&self) -> bool {
-        self.writer_alive.load(Ordering::SeqCst)
+        self.writer_alive.load(Ordering::SeqCst) || (self.started.load(Ordering::SeqCst) && self.next_due().is_some_and(|wait| wait.is_zero()))
     }
 
     pub fn has_failed(&self) -> bool {
