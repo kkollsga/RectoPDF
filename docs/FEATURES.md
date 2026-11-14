@@ -41,7 +41,18 @@ tier that can see each failure, and shots light and dark.
    `crates/recto-app/src/core/find.rs`). That translation returns the *same* command an agent sends, and `submit` in
    `crates/recto-app/src/core/person.rs` runs it as the person. **How it went is shown to the person by the feature's `answered`, one line in
    `ANSWERED` there** (Find: `answered` in `crates/recto-app/src/core/find.rs`): without it a refusal shows the person nothing, as an agent's words
-   are never shown to them. A menu item is a row (Find: `row`), registered in one line of `ROWS` in `crates/recto-app/src/core/menu_rows.rs`. Its
+   are never shown to them. A menu item is a row (Find: `row`), registered in one line of `ROWS` in `crates/recto-app/src/core/menu_rows.rs`.
+   **Neither is given the app.** A row is `fn row<'a>(parts: &RowParts<'a>, asked: &Asked<'_>) -> Option<Row<'a>>`
+   (`crates/recto-app/src/core/row_parts.rs`), and an answer is `fn answered(parts: &AnswerParts<'_>, ran: &Ran<'_>)`
+   (`crates/recto-app/src/core/answer_parts.rs`). Their fields are private, so what a row or an answer can do is the list of methods
+   on its parts type. Sending a command as the person is `parts.person().submit(command)`. A row's way copies the parts into its closure first
+   (`let parts = *parts;`). When a row or an answer needs something that isn't on the list, the feature adds **one method named for the need**
+   (`can_save`, `fail_open`; not `tools()` or `session()`) to `RowParts` or `AnswerParts`. That is a registration, and it shows in the listing in
+   `crates/recto-app/src/core/headless/inner_guards.rs`. It never reaches a field, and never takes `Inner`. Most of today's methods are a call on one
+   part of the app. A few belong to one feature: `zoom_for_person`, `toggle_snapshot_tool` and `cancel_print` on `RowParts`, `find_handle` on
+   `AnswerParts`, and `save`, `snapshot_anyway` and `print_anyway` on `Person` (each starts the person's run on a thread of its own, which
+   holds the app). A parts type that keeps gaining one feature's methods is turning into a hub: say so in the hand-back. `RowParts` started at 20
+   methods, `AnswerParts` at 11 and `Person` at 6 (2026-11-14). Its
    title, key, enable rule and action are still written in `crates/recto-app/src/menus.rs`, a hub: Find's take about a dozen lines in five places
    there (`find_entries` and its `chain`, the ids under an `Enable` rule, three `action` arms, two `Action` variants).
    **Find's other reaches are not the pattern.** The pattern is one line each: a `UiAction` variant and its arm, a `ROWS` line, an `ANSWERED` line,
@@ -79,7 +90,7 @@ tier that can see each failure, and shots light and dark.
 
 | Guard | Where | It fails when |
 |---|---|---|
-| The ratchet | `tools/ratchet.sh`, `tools/ratchet/baseline.txt` | a file, function, struct, enum or type grew past its budget, or a new test launches the app. Split by concern; never raise the number |
+| The ratchet | `tools/ratchet.sh`, `tools/ratchet/baseline.txt` | a file, function, struct, enum or type grew past its budget, a new test launches the app, or one more function takes the whole `Inner` (a row or an answer that does is the wrong signature: step 6). Split by concern; never raise the number |
 | Every command has a row | `every_command_has_a_row_and_every_session_row_has_a_command` | the command isn't in `every_command` in `crates/recto-agent/src/policy_guards.rs` |
 | Levels | `walking_every_command_at_every_level`, `every_row_is_enforced_at_every_level_over_the_socket` | something is reachable below its row's level, or opens at Off |
 | A protected document | `no_command_tells_an_agent_anything_of_a_protected_document` | an agent's answer differs with the protected document's length or words: check `ABOUT` |
@@ -89,6 +100,7 @@ tier that can see each failure, and shots light and dark.
 | The quiet run's wall | `no_text_argument_reaches_a_file_outside_the_run`, `every_path_a_command_holds_is_declared_a_file` | a file argument isn't `Kind::Path`, or reaches outside a quiet run |
 | Codes | `crates/recto-agent/tests/codes.rs` | a code isn't in the table, or something decides by a code's string or a message's words |
 | Controls | `every_control_is_a_command_or_the_hosts_with_a_reason`, `every_menu_id_has_an_enable_rule` | a control sends no command and isn't on the host's list, or its golden line moved |
+| What a person is shown | `what_a_person_is_shown_after_each_command_is_as_it_was` (`crates/recto-app/src/core/person.rs`) | a feature's answer says other words, or says anything for an agent's refusal: a new answer adds its cases to the table |
 | What parts expose | `crates/recto-session/src/tests/parts.rs`, `crates/recto-reader/src/surface.rs`, `crates/recto-app/src/core/headless/inner_guards.rs` | a part's reach widened: a reviewer must see that line |
 | Fuzzing | `crates/recto-fuzz/src/targets/agent.rs` | parsing a hostile line panics or runs past its budget (every command's line is reached through the table) |
 

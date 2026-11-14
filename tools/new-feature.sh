@@ -94,7 +94,9 @@ new-feature: made $command_file and $tests_file, and one marked line in $command
    3. Its state's home: a component of Session, through crates/recto-session/src/parts.rs (listed in its tests/parts.rs).
    4. Its executor: run() calls the feature's own function; person and agent differ only through Actor.
    5. The CLI comes from its row: read the help golden's diff.
-   6. The window: a UiAction arm in crates/recto-app/src/core/controls.rs and a pure translation in crates/recto-app/src/core/$name.rs; a menu row in core/menu_rows.rs' ROWS.
+   6. The window: a UiAction arm in crates/recto-app/src/core/controls.rs and a pure translation in crates/recto-app/src/core/$name.rs;
+      a menu row, \`fn row<'a>(parts: &RowParts<'a>, asked: &Asked<'_>) -> Option<Row<'a>>\`, in core/menu_rows.rs' ROWS; and its answer,
+      \`fn answered(parts: &AnswerParts<'_>, ran: &Ran<'_>)\`, in core/person.rs' ANSWERED. Neither takes the app: what's missing is one method on the parts.
    7. What it publishes: a view model in crates/recto-app/src/model.rs or its own module.
    8. The bridge forwards (crates/recto-ffi), Swift draws (app/Sources/RectoPDF).
    9. Its QA: qa state, and a verb only for what only the host has (crates/recto-agent/src/commands/qa/rows_features.rs).
