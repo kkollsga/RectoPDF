@@ -265,8 +265,9 @@ Printing::pub fn preparing(&self) -> bool
 Printing::pub fn qa_target_for(&self, out: PathBuf) -> Option<PathBuf>
 Printing::pub fn quitting(&self)
 Printing::pub fn selection_notice(&self) -> Option<SelectionNotice>
-Printing::pub fn take_ready(&self) -> Option<PathBuf>
+Printing::pub fn take_ready(&self) -> Option<(PathBuf, u64)>
 Printing::pub(crate) fn anyway(&self, serial: u64) -> Option<Command>
+Printing::pub(crate) fn not_asked(&self)
 Prompts (pub struct, derives Debug, Default)
 Prompts.pub(crate) link: Mutex<Option<LinkPrompt>>
 Prompts.pub(crate) passwords: Mutex<Asks>

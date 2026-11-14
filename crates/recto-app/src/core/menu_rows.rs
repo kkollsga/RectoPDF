@@ -164,7 +164,9 @@ pub fn by_person(inner: &Arc<Inner>, row: Row<'_>) -> HostAction {
         Row::Command { command, when_run, host } => {
             match when_run {
                 Some(when_run) => super::person::submit_when_run(inner, command, when_run),
-                None => super::person::submit(inner, command),
+                None => {
+                    super::person::submit(inner, command);
+                }
             }
             host
         }

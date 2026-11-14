@@ -57,6 +57,8 @@ pub enum UiAction {
         last: u32,
         selection_only: bool,
         to_file: bool,
+        /// The host's own number for this answer, which the file it makes comes back with.
+        serial: u64,
     },
 }
 

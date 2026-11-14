@@ -69,26 +69,31 @@ extension AppDelegate {
         }
     }
 
-    /// The pages the panel chose, to Rust as the person's action, and the print info kept for when they're ready.
+    /// The pages the panel chose, to Rust as the person's action under a number of the host's, and the print info kept by that number for when they're ready.
     func startPrint(model: PrintModel, info: NSPrintInfo) {
         let settings = info.dictionary()
         let all = (settings[NSPrintInfo.AttributeKey.allPages] as? Bool) ?? true
         let first = (settings[NSPrintInfo.AttributeKey.firstPage] as? Int) ?? 1
         let last = (settings[NSPrintInfo.AttributeKey.lastPage] as? Int) ?? Int(model.pages)
-        pendingPrintInfo = info
         // Saving or previewing a PDF from the panel is a print to a file, which Rust treats as an export; on paper it never asks.
         let toFile = info.jobDisposition != .spool
-        let acted = core.act(action: .print(tab: model.tab, all: all, first: UInt32(max(first, 1)), last: UInt32(max(last, 1)), selectionOnly: info.isSelectionOnly, toFile: toFile))
-        if !acted.understood {
-            pendingPrintInfo = nil
-        }
+        nextPrintSerial += 1
+        let serial = nextPrintSerial
+        let acted = core.act(action: .print(tab: model.tab, all: all, first: UInt32(max(first, 1)), last: UInt32(max(last, 1)), selectionOnly: info.isSelectionOnly, toFile: toFile, serial: serial))
+        if acted.understood { printInfos[serial] = info }
     }
 
     /// Rust says a print's pages are ready: they go to the system's printing, with no panel, as it was answered already. It runs on a thread of its own, and the file goes when it's done.
     func runReadyPrint() {
-        guard let path = core.takePrint() else { return }
-        let info = pendingPrintInfo ?? ((NSPrintInfo.shared.copy() as? NSPrintInfo) ?? NSPrintInfo.shared)
-        pendingPrintInfo = nil
+        guard let ready = core.takePrint() else { return }
+        let path = ready.path
+        // Its own answer's printer and way, or nothing: never another answer's, nor a default printer it wasn't sent to.
+        guard let info = printInfos.removeValue(forKey: ready.serial) else {
+            core.printFinished(path: path)
+            return
+        }
+        // Answers before it whose prints went nowhere (refused, or stopped) won't come back.
+        printInfos = printInfos.filter { $0.key > ready.serial }
         // The range was taken already: the file is just those pages.
         info.dictionary()[NSPrintInfo.AttributeKey.allPages] = true
         info.isSelectionOnly = false
@@ -123,10 +128,11 @@ extension AppDelegate {
         info.rightMargin = 0
         info.topMargin = 0
         info.bottomMargin = 0
-        pendingPrintInfo = info
         let all = first == 0
-        let started = core.act(action: .print(tab: model.tab, all: all, first: max(first, 1), last: max(last, first), selectionOnly: false, toFile: true)).understood
-        if !started { pendingPrintInfo = nil }
+        nextPrintSerial += 1
+        let serial = nextPrintSerial
+        let started = core.act(action: .print(tab: model.tab, all: all, first: max(first, 1), last: max(last, first), selectionOnly: false, toFile: true, serial: serial)).understood
+        if started { printInfos[serial] = info }
         return started
     }
 }

@@ -61,6 +61,8 @@ pub enum UiAction {
         last: u32,
         selection_only: bool,
         to_file: bool,
+        /// The host's own number for this answer, which the file it makes comes back with ([`super::printing::Panel::serial`]).
+        serial: u64,
     },
 }
 
@@ -147,6 +149,7 @@ impl Inner {
                 last,
                 selection_only,
                 to_file,
+                serial,
             } => {
                 let panel = super::printing::Panel {
                     tab,
@@ -155,12 +158,20 @@ impl Inner {
                     last,
                     selection_only,
                     to_file,
+                    serial,
                 };
-                // Nothing to print is an answer not understood, for the host to forget what it kept for the print.
+                // Nothing to print, a print asked for already, or a command not taken as the app hands off: an answer not understood, which the host
+                // keeps nothing for.
                 let Some(print) = super::printing::chosen(&self.panes.reading_engine(&self.engine), self.tools.printing(), panel) else {
+                    self.core.push(super::CoreCall::Reconcile);
                     return Acted::NOT_UNDERSTOOD;
                 };
-                Some(print)
+                self.core.push(super::CoreCall::Reconcile);
+                if !super::person::submit(self, print) {
+                    self.tools.printing().not_asked();
+                    return Acted::NOT_UNDERSTOOD;
+                }
+                return Acted::DONE;
             }
         };
         if let Some(command) = command {

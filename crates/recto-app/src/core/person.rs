@@ -17,10 +17,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// **A person's command, from the window:** on the session thread, as a tap always was, or on a thread of its own if it may hold its thread for long
-/// ([`recto_agent::commands::Cmd::WAITS`]), or isn't the session's to answer. Past a hand-off's last look nothing a person does is taken, as before. Never waits.
-pub fn submit(inner: &Arc<Inner>, command: Command) {
+/// ([`recto_agent::commands::Cmd::WAITS`]), or isn't the session's to answer. Past a hand-off's last look nothing a person does is taken, as before, and
+/// this says false, for a control that has kept something for it (a print). Never waits.
+pub fn submit(inner: &Arc<Inner>, command: Command) -> bool {
     if inner.core.frozen.load(std::sync::atomic::Ordering::SeqCst) {
-        return;
+        return false;
     }
     if command.waits() || command.route() != Runs::Session {
         // Counted first, and then looked: a late try at the record's lock decides on keeping it (and restoring) only with none counted, under the life's lock
@@ -30,12 +31,13 @@ pub fn submit(inner: &Arc<Inner>, command: Command) {
         if inner.life.keeping().restoring() {
             drop(counted);
             inner.core.push(CoreCall::Run(PersonCommand::input(command)));
-            return;
+            return true;
         }
         on_its_own_thread(command, counted);
     } else {
         inner.core.push(CoreCall::Run(PersonCommand::input(command)));
     }
+    true
 }
 
 /// Whether a person's command, as it's queued, is one that runs on a thread of its own: one that may wait, or isn't the session's to answer. Only a command

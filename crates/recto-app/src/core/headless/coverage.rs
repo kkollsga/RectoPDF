@@ -205,6 +205,7 @@ pub(super) fn every_kind(app: &HeadlessApp) -> Vec<(String, UiAction)> {
             last: 3,
             selection_only: false,
             to_file: false,
+            serial: 1,
         },
         UiAction::Print {
             tab,
@@ -213,6 +214,7 @@ pub(super) fn every_kind(app: &HeadlessApp) -> Vec<(String, UiAction)> {
             last: 1,
             selection_only: false,
             to_file: true,
+            serial: 2,
         },
     ];
     actions.into_iter().map(|action| (kind(&action), action)).collect()

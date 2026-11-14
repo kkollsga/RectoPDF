@@ -409,12 +409,8 @@ fn print_with_caps<O: Output>(
 /// only for the person at the window, so an agent's print shows nothing on the person's window and the person's Stop never stops it. What the print does,
 /// and what refuses it, is the command's either way.
 pub trait PrintWatch: Send + Sync {
-    /// A print of `pages` pages of `tab` is starting. Refused, with the words the person is told, if the window is preparing one already.
-    ///
-    /// # Errors
-    ///
-    /// One print at a time is the window's.
-    fn begin(&self, tab: recto_session::TabId, pages: u32) -> Result<(), AgentError>;
+    /// A print of `pages` pages of `tab` is starting. One at a time is the window's, from the person's answer on.
+    fn begin(&self, tab: recto_session::TabId, pages: u32);
     /// `done` pages of `of` are printed. False stops the print, as Stop does.
     fn page(&self, done: u32, of: u32) -> bool;
     /// The print is over, however it went: what came of it is the person's answer, which the window says.

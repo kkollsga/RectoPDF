@@ -43,6 +43,7 @@ fn answer(app: &HeadlessApp, panel: Panel) {
         last,
         selection_only,
         to_file,
+        serial: 1,
     });
 }
 
@@ -58,7 +59,7 @@ fn notice(app: &HeadlessApp) -> String {
 /// which pages of the document it holds, as each page of the test files has its own width. Its file is new and the user's alone while it's there, and it
 /// goes when it's let go. "none" if there's no file for the host.
 fn printed(app: &HeadlessApp) -> String {
-    let Some(path) = app.core().tools.printing().take_ready() else {
+    let Some((path, _)) = app.core().tools.printing().take_ready() else {
         return "none".into();
     };
     let bytes = std::fs::read(&path).expect("the print's file");
@@ -355,5 +356,98 @@ fn a_print_that_fails_mid_way_leaves_nothing() {
     let said = notice(&app);
     assert!(said != "-" && !said.contains("Preparing"), "the failure is said: {said}");
     assert_eq!(printed(&app), "none", "nothing for the host");
+    assert_eq!(print_files_left(), Vec::<String>::new(), "nothing's left");
+}
+
+/// The session held by another thread, as a save or a long read holds it, until the returned sender is dropped: a print's thread can't get past its page
+/// list meanwhile.
+fn session_held(app: &HeadlessApp) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+    let core = std::sync::Arc::clone(app.core());
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        core.host.session.with_session(|_| {
+            held_tx.send(()).expect("the test is waiting");
+            let _ = done_rx.recv_timeout(WAIT_LIMIT);
+        });
+    });
+    held_rx.recv_timeout(WAIT_LIMIT).expect("the session held");
+    (done_tx, holder)
+}
+
+/// Failure (review of S2, S4): between the panel's answer and the print's thread reaching its first page the window didn't know a print was asked for: ⌘P
+/// was enabled again, no "Preparing… [Stop]" showed, and a second panel answered in that gap was taken, so the host kept the second panel's printer and
+/// way (Save as PDF among them) for the first print's file. With the session held, so the first print's thread waits: the notice is there from the
+/// answer, File > Print is off, a second answer isn't understood, and the one file that comes out carries the first answer's number for the host.
+#[test]
+fn a_print_is_asked_at_once_and_a_second_answer_meanwhile_is_refused() {
+    let disk = Disk::new();
+    let doc = disk.file("widths.pdf", &widths(2));
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    let tab = lock(&app.core().published).reader.shown_tab;
+    let print = |all: bool, to_file: bool, serial: u64| UiAction::Print {
+        tab,
+        all,
+        first: 2,
+        last: 2,
+        selection_only: false,
+        to_file,
+        serial,
+    };
+    let (release, holder) = session_held(&app);
+    let first = app.act(print(true, false, 1));
+    let shown = app.core().tools.printing().selection_notice();
+    let print_enabled = app.core().menu_item_enabled("file.print".into());
+    let second = app.act(print(false, true, 2));
+    drop(release);
+    holder.join().expect("the holder");
+    app.settle();
+    assert!(first.understood, "the first answer is taken");
+    let shown = shown.expect("a notice from the answer on");
+    assert!(
+        shown.text.starts_with("Preparing") && shown.action_title.as_deref() == Some("Stop"),
+        "{shown:?}"
+    );
+    assert!(!print_enabled, "File > Print is off once a print is asked for");
+    assert!(!second.understood, "a second answer meanwhile isn't taken");
+    let asked_by = app.core().tools.printing().take_ready().map(|(path, asked_by)| {
+        app.core().tools.printing().finished(path.to_str().expect("a path"));
+        asked_by
+    });
+    assert_eq!(
+        asked_by,
+        Some(1),
+        "one file, for the first answer, which the host prints with that answer's printer and way"
+    );
+    assert_eq!(printed(&app), "none");
+}
+
+/// Failure (review of S2, S4): a quit, or Stop, that lands after the panel's answer and before the print's thread begins is undone when it begins, so the
+/// print goes on and leaves a file for a host that's quitting. With the session held, the quit comes first: nothing's printed and nothing's left.
+#[test]
+fn a_quit_before_the_print_begins_stops_it() {
+    let disk = Disk::new();
+    let doc = disk.file("widths.pdf", &widths(2));
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    let tab = lock(&app.core().published).reader.shown_tab;
+    let (release, holder) = session_held(&app);
+    app.act(UiAction::Print {
+        tab,
+        all: true,
+        first: 1,
+        last: 1,
+        selection_only: false,
+        to_file: false,
+        serial: 3,
+    });
+    app.core().tools.printing().quitting();
+    drop(release);
+    holder.join().expect("the holder");
+    app.settle();
+    assert_eq!(printed(&app), "none", "the quit stopped it");
     assert_eq!(print_files_left(), Vec::<String>::new(), "nothing's left");
 }

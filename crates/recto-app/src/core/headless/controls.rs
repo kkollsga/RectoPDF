@@ -149,6 +149,7 @@ fn every_kind_of_control() -> (crate::testkit::headless::HeadlessApp, Vec<UiActi
             last: 1,
             selection_only: false,
             to_file: false,
+            serial: 1,
         },
         UiAction::Row { row, adding: false },
     ]);

@@ -39,6 +39,8 @@ pub struct Panel {
     pub last: u32,
     pub selection_only: bool,
     pub to_file: bool,
+    /// The host's own number for this answer, which the file it makes comes back with, so the host prints it with this answer's printer and way.
+    pub serial: u64,
 }
 
 /// The line by the page, with its number and button.
@@ -59,19 +61,42 @@ pub struct Printing {
     of: AtomicU32,
     generation: AtomicU64,
     serial: AtomicU64,
-    ready: Mutex<Option<PathBuf>>,
+    /// The host's number for the print asked for, which its file comes back with ([`Panel::serial`]).
+    asked_by: AtomicU64,
+    /// A print's file for the host, with the host's number for the answer it was asked by.
+    ready: Mutex<Option<(PathBuf, u64)>>,
     /// The host has the file and the system's printing is running.
     handing: AtomicBool,
     notice: Mutex<Option<Said>>,
-    /// What the notice with this number refused, for its "Print anyway".
-    refused: Mutex<Option<(u64, Print)>>,
+    /// What the notice with this number refused, for its "Print anyway", and the host's number for the answer it was asked by.
+    refused: Mutex<Option<(u64, (Print, u64))>>,
     /// A QA print to a file: where the system's printing writes, a new name of ours, and where it's published, never over anything.
     qa_target: Mutex<Option<(PathBuf, PathBuf)>>,
 }
 
 impl Printing {
-    /// Pages being prepared, on the print's own thread: Rust's part, which the app's settled waits for ([`crate::settled`]). The host's part, the file handed
-    /// to the system, is in [`Self::busy`].
+    /// **A print is asked for,** at once, on the UI thread, before its command runs: from here to what came of it being said, the window shows it being
+    /// prepared with Stop, File > Print is off, and another answer isn't taken (review of S2, S4). A Stop or a quit from here on holds. False, and nothing
+    /// changed, if one is asked for already.
+    fn ask(&self, pages: u32, asked_by: u64) -> bool {
+        if self.running.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        self.cancel.store(false, Ordering::SeqCst);
+        self.done.store(0, Ordering::SeqCst);
+        self.of.store(pages, Ordering::SeqCst);
+        self.asked_by.store(asked_by, Ordering::SeqCst);
+        self.dismiss_notice();
+        true
+    }
+
+    /// The print asked for won't run after all: its command wasn't taken, as during a hand-off.
+    pub(crate) fn not_asked(&self) {
+        self.running.store(false, Ordering::SeqCst);
+    }
+
+    /// A print asked for, from the answer to what came of it being said: Rust's part, which the app's settled waits for ([`crate::settled`]). The host's
+    /// part, the file handed to the system, is in [`Self::busy`].
     pub fn preparing(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
@@ -125,7 +150,7 @@ impl Printing {
     }
 
     /// What a notice's "Print anyway" names, once, if that notice is still the one showing.
-    fn take_refused(&self, serial: u64) -> Option<Print> {
+    fn take_refused(&self, serial: u64) -> Option<(Print, u64)> {
         let mut refused = lock(&self.refused);
         let request = refused.take_if(|(offered, _)| *offered == serial).map(|(_, request)| request)?;
         lock(&self.notice).take();
@@ -137,9 +162,13 @@ impl Printing {
         temp_path(self.generation.fetch_add(1, Ordering::SeqCst) + 1)
     }
 
-    /// **The command a notice's "Print anyway" sends,** once, if that notice is still the one showing: what it refused, asked again anyway, to a new file.
+    /// **The command a notice's "Print anyway" sends,** once, if that notice is still the one showing and no other print is asked for: what it refused,
+    /// asked again anyway, to a new file, for the same answer of the host's.
     pub(crate) fn anyway(&self, serial: u64) -> Option<Command> {
-        let mut print = self.take_refused(serial)?;
+        let (mut print, asked_by) = self.take_refused(serial)?;
+        if !self.ask(0, asked_by) {
+            return None;
+        }
         print.anyway = true;
         print.to_pdf = self.next_file();
         Some(Command::from(print))
@@ -164,8 +193,8 @@ impl Printing {
         Some(written)
     }
 
-    /// The file to print, once, for the host to hand to the system.
-    pub fn take_ready(&self) -> Option<PathBuf> {
+    /// The file to print, once, for the host to hand to the system, with the host's number for the answer it was asked by.
+    pub fn take_ready(&self) -> Option<(PathBuf, u64)> {
         let ready = lock(&self.ready).take();
         if ready.is_some() {
             self.handing.store(true, Ordering::SeqCst);
@@ -197,7 +226,7 @@ impl Printing {
     /// The app's quitting: preparing stops at the next page, and a file the host hasn't taken goes now. One the system's printing has is the system's until it's done, and a launch removes it if this run never hears.
     pub fn quitting(&self) {
         self.cancel();
-        if let Some(path) = lock(&self.ready).take() {
+        if let Some((path, _)) = lock(&self.ready).take() {
             let _ = std::fs::remove_file(path);
         }
     }
@@ -312,7 +341,8 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
 }
 
 /// **The print panel's answer, as the person's command:** `print` of the pages it chose, at the resolution a print takes, to a new file of the app's own
-/// for the host to hand to the system's printing. Nothing to print, nothing sent. On the UI thread: what's published and short locks on the page view.
+/// for the host to hand to the system's printing, asked for at once ([`Printing::ask`]). Nothing to print, or a print asked for already, and nothing's
+/// sent. On the UI thread: what's published and short locks on the page view.
 ///
 /// **On paper it never asks** whether a file that asks not to be copied may be printed (SPEC, Printing: "Print to paper never asks"; owner, 2026-11-08,
 /// exports only ask "anyway"): the person's print on paper is sent anyway, and only a print to a file is asked about.
@@ -327,6 +357,10 @@ pub fn chosen(engine: &Engine, printing: &Printing, panel: Panel) -> Option<Comm
         .and_then(|(_, range)| range)
         .map(|range| (range.start.page, range.end.page));
     let (first, last) = chosen_range(engine.points().page_count(), panel.all, panel.first, panel.last, selection)?;
+    if !printing.ask(last - first + 1, panel.serial) {
+        printing.say("A print is already being prepared.", false);
+        return None;
+    }
     Some(Command::from(Print {
         tab: TabRef::Id(TabId(panel.tab)),
         pages: Some(format!("{first}-{last}")),
@@ -350,18 +384,14 @@ pub fn watch(printing: Arc<Printing>, core: Arc<CoreQueue>, host: Weak<super::Ap
 }
 
 impl PrintWatch for Watch {
-    fn begin(&self, tab: TabId, pages: u32) -> Result<(), AgentError> {
+    fn begin(&self, tab: TabId, pages: u32) {
         let printing = &self.printing;
-        if printing.running.swap(true, Ordering::SeqCst) {
-            return Err(AgentError::new(Code::BUSY, "A print is already being prepared.", recto_agent::exit::BUSY));
-        }
-        printing.cancel.store(false, Ordering::SeqCst);
+        // Asked for already, from the answer, unless it came another way. A Stop or a quit since holds: [`Printing::ask`] alone clears it.
+        printing.running.store(true, Ordering::SeqCst);
         printing.done.store(0, Ordering::SeqCst);
         printing.of.store(pages, Ordering::SeqCst);
         printing.tab.store(tab.0, Ordering::SeqCst);
-        printing.dismiss_notice();
         self.core.push(CoreCall::Reconcile);
-        Ok(())
     }
 
     fn page(&self, done: u32, of: u32) -> bool {
@@ -380,8 +410,12 @@ impl PrintWatch for Watch {
         open && !printing.cancel.load(Ordering::SeqCst)
     }
 
+    /// What came of it is said by [`answered`], which ends the print once its file is the host's, so nothing sees it neither preparing nor ready (review
+    /// of S2, S1). A command that panicked is answered by nobody: it ends here.
     fn end(&self) {
-        self.printing.running.store(false, Ordering::SeqCst);
+        if std::thread::panicking() {
+            self.printing.running.store(false, Ordering::SeqCst);
+        }
     }
 }
 
@@ -393,24 +427,22 @@ pub fn answered(inner: &Arc<Inner>, ran: &person::Ran<'_>) {
         return;
     }
     let printing = inner.tools.printing();
+    let asked_by = printing.asked_by.load(Ordering::SeqCst);
     match ran.result {
         Ok(answer) => {
             if let Some(note) = scaled_down(answer).scaled_down_note() {
                 printing.say(note, false);
             }
-            *lock(&printing.ready) = Some(asked.to_pdf.clone());
+            *lock(&printing.ready) = Some((asked.to_pdf.clone(), asked_by));
         }
         Err(error) => match said_as(error) {
             Told::Anyway => {
                 // A QA print's target stays, for "Print anyway" to write to.
                 let serial = printing.say(error.message.clone(), true);
-                *lock(&printing.refused) = Some((serial, asked.clone()));
+                *lock(&printing.refused) = Some((serial, (asked.clone(), asked_by)));
             }
             Told::Nothing => {
                 lock(&printing.qa_target).take();
-            }
-            Told::Busy => {
-                printing.say(error.message.clone(), false);
             }
             Told::Words => {
                 let words = if person::not_started(error) {
@@ -423,6 +455,8 @@ pub fn answered(inner: &Arc<Inner>, ran: &person::Ran<'_>) {
             }
         },
     }
+    // Ended once what came of it is the window's and its file the host's: never neither preparing nor ready.
+    printing.running.store(false, Ordering::SeqCst);
     inner.core.push(CoreCall::Reconcile);
     inner.listener.model_changed();
     #[cfg(test)]
@@ -479,8 +513,6 @@ enum Told {
     Anyway,
     /// It was stopped, as the person asked: nothing.
     Nothing,
-    /// Another is being prepared: its words, and the one being prepared keeps all it has.
-    Busy,
     /// Its words.
     Words,
 }
@@ -490,7 +522,6 @@ fn said_as(error: &AgentError) -> Told {
     match error.code {
         Code::COPY_RESTRICTED => Told::Anyway,
         Code::CANCELLED => Told::Nothing,
-        Code::BUSY => Told::Busy,
         _ => Told::Words,
     }
 }
@@ -520,6 +551,7 @@ mod tests {
             last: 1,
             selection_only: false,
             to_file: false,
+            serial: 1,
         });
         held.recv_timeout(WAIT_LIMIT).expect("the print told what came of it");
         assert!(app.core().core.flush(WAIT_LIMIT), "the session thread took the word");
@@ -658,7 +690,7 @@ mod tests {
             anyway: false,
         };
         let serial = printing.say("This file's permissions ask that it isn't copied.", true);
-        *lock(&printing.refused) = Some((serial, request.clone()));
+        *lock(&printing.refused) = Some((serial, (request.clone(), 7)));
         let refused = printing.selection_notice().unwrap();
         assert_eq!(refused.action_id, Some(format!("{ANYWAY_PREFIX}{serial}")));
         assert_eq!(refused.action_title.as_deref(), Some("Print anyway"));
@@ -682,9 +714,9 @@ mod tests {
         assert!(!printing.busy());
         let path = temp_path(9_999_998);
         std::fs::write(&path, b"print").unwrap();
-        *lock(&printing.ready) = Some(path.clone());
+        *lock(&printing.ready) = Some((path.clone(), 1));
         assert!(printing.busy(), "ready for the host");
-        assert_eq!(printing.take_ready(), Some(path.clone()));
+        assert_eq!(printing.take_ready(), Some((path.clone(), 1)));
         assert!(printing.busy(), "the system's printing has it");
         printing.finished(path.to_str().unwrap());
         assert!(!printing.busy());
@@ -697,10 +729,45 @@ mod tests {
         let printing = Printing::default();
         let path = temp_path(9_999_997);
         std::fs::write(&path, b"print").unwrap();
-        *lock(&printing.ready) = Some(path.clone());
+        *lock(&printing.ready) = Some((path.clone(), 1));
         printing.quitting();
         assert!(printing.cancel.load(Ordering::SeqCst));
         assert!(!path.exists() && !printing.busy());
+    }
+}
+
+/// **What the print panel needs to know before it opens,** from what's published and short locks on the page view: the tab showing, its pages, whether
+/// something's selected, and its first page's size. Never waits.
+#[must_use]
+pub fn model(reader: crate::reader_view::ReaderView, engine: &Engine) -> PrintModel {
+    let (width_pt, height_pt) = engine
+        .points()
+        .page_size_shown(0)
+        .map_or((612.0, 792.0), |(width, height)| (f64::from(width), f64::from(height)));
+    PrintModel {
+        tab: reader.shown_tab,
+        pages: engine.points().page_count(),
+        has_selection: engine.selection().has_any(),
+        job_title: reader.document_name,
+        width_pt,
+        height_pt,
+    }
+}
+
+/// **A print's file for the host to hand to the system's printing,** with the host's own number for the panel's answer it was asked by ([`Panel::serial`]):
+/// the host prints it with that answer's printer and way, and with nothing else's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadyPrint {
+    pub path: String,
+    pub serial: u64,
+}
+
+impl From<(PathBuf, u64)> for ReadyPrint {
+    fn from((path, serial): (PathBuf, u64)) -> Self {
+        Self {
+            path: path.to_string_lossy().into_owned(),
+            serial,
+        }
     }
 }
 
