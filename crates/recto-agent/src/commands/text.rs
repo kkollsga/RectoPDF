@@ -282,7 +282,7 @@ impl Cmd for Text {
 /// **A page added from another PDF that needs a password is a page that couldn't be read,** as the page view draws it and `search` counts it: never the
 /// document's want of a password, which the document doesn't have, and nothing of it is read with one.
 fn unreadable_if_added_needs_password(error: AgentError, source: &recto_session::PageSource, page: u32) -> AgentError {
-    if !source.added || error.code != "needs_password" {
+    if !source.added || error.code != crate::code::Code::NEEDS_PASSWORD {
         return error;
     }
     AgentError::new(
