@@ -27,6 +27,16 @@ impl crate::parts::PartMut<'_, PageEdits> {
         self.0.mark(change)
     }
 
+    /// Which page is at a position, by what it is (`source`, page there): what a highlight is held by.
+    pub fn page_at(&self, position: u32) -> Option<(u16, u32)> {
+        self.0.slots().get(position as usize).map(|slot| (slot.source, slot.page))
+    }
+
+    /// [`PageEdits::order_mark`]: whether the pages are in the order a read of them was made in.
+    pub fn order_mark(&self) -> u64 {
+        self.0.order_mark()
+    }
+
     /// How many pages the tab has now, for an edit of all of them. Never none, as a document can't lose its last page, so there's no `is_empty`.
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> u32 {

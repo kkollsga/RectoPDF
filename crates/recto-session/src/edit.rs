@@ -700,12 +700,13 @@ impl PageEdits {
 
     /// Whether the document differs from the file, and so whether anything is waiting to be saved. Undoing everything brings this back to false, and so does getting back to the file by other steps: four quarter turns, or a page moved and moved back. Costs a look along the list after each step, stopping at the first page out of place, which is at most about 100 µs at the 200,000 pages a document may have. See `docs/engineering/agent-interface.md`.
     pub fn is_edited(&self) -> bool {
-        self.differs
+        // Pages as the file has them, but highlights on them, is edited too: what's on a page's pictures (`order_mark`) is the pages alone.
+        self.differs || !self.marks.is_empty()
     }
 
     /// Whether there's anything to go back through, or anything lost to the cap on it. A list with none of this and no difference from the file has nothing left to keep it.
     pub fn has_history(&self) -> bool {
-        !self.history.undo.is_empty() || !self.history.redo.is_empty() || (self.history.dropped && self.differs)
+        !self.history.undo.is_empty() || !self.history.redo.is_empty() || (self.history.dropped && self.is_edited())
     }
 
     /// Whether saving writes the file anew: each of the file's pages isn't there exactly once. `recto_core::save::writer_for`'s rule, worked out when the list changes rather than each time it's asked.
@@ -736,7 +737,6 @@ impl PageEdits {
             .enumerate()
             .any(|(position, slot)| slot.source != 0 || slot.quarter_turns != 0 || slot.page as usize != position)
             || self.slots.len() != self.file_pages
-            || !self.marks.is_empty()
     }
 
     /// Whether there's a step to undo.
@@ -756,12 +756,12 @@ impl PageEdits {
 
     /// Whether throwing this list away would lose anything of the owner's: a step still in the history, undone or not, or one that fell off the capped list and whose effect is still in the page order.
     pub fn holds_owner_edits(&self) -> bool {
-        (self.history.owner_dropped && self.differs) || self.owner_steps_undone() || self.history.undo.iter().any(|entry| entry.by == Author::Owner)
+        (self.history.owner_dropped && self.is_edited()) || self.owner_steps_undone() || self.history.undo.iter().any(|entry| entry.by == Author::Owner)
     }
 
     /// Whether some step fell off the capped undo list, so `undo` can't take everything off.
     pub fn history_dropped(&self) -> bool {
-        self.history.dropped && self.differs
+        self.history.dropped && self.is_edited()
     }
 
     /// Notes, ahead of it, what a save is about to put in place, and what was kept for undoing past it. See [`JournalOp::Saving`].

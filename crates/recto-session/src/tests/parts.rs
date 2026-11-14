@@ -408,6 +408,8 @@ const LISTED: &[&str] = &[
     "PartMut<PageEdits>: pub fn len",
     "PartMut<PageEdits>: pub fn mark",
     "PartMut<PageEdits>: pub fn move_pages",
+    "PartMut<PageEdits>: pub fn order_mark",
+    "PartMut<PageEdits>: pub fn page_at",
     "PartMut<PageEdits>: pub fn rotate",
     "PartMut<PageViewMail>: impl in mail.rs",
     "PartMut<PageViewMail>: pub fn jump_sent",

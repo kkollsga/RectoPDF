@@ -636,6 +636,12 @@ mod tests {
         };
         edits.mark(across).unwrap();
         assert_eq!(edits.marks().len(), 2);
+        assert!(edits.is_edited(), "a highlight is something to save");
+        assert_eq!(
+            edits.order_mark(),
+            0,
+            "and changes nothing of the pages' pictures, which are of the pages as the file has them"
+        );
         assert!(edits.undo());
         assert!(edits.marks().is_empty(), "one undo takes the whole highlight");
         assert!(edits.redo());
