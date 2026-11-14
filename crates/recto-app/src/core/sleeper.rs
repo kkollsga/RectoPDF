@@ -49,7 +49,7 @@ pub struct Sleeper {
     /// Sleep files written off the session's time, waiting for their one writer, and what waits on them: [`crate::sleep_queue::Leaving`].
     leaving: crate::sleep_queue::Leaving,
     /// Looks at files under way, each on a thread of its own: one per tab at most, and [`MAX_LOOKS`] in all.
-    looks: std::sync::Arc<LookSlots>,
+    pub(super) looks: std::sync::Arc<LookSlots>,
     /// **The app's gone to the background and what waits in the cool-down is to be written now:** set on the UI thread, which takes no lock and says no word
     /// ([`Self::hurry_leaving_soon`]), and taken by the saver's pass that going to the background asks for, off the UI thread, which hurries the queue under its
     /// lock and starts a writer if there's none ([`Self::hurry_leaving_if_asked`]).
@@ -99,6 +99,66 @@ impl LookSlots {
 
     pub fn running(&self) -> usize {
         lock(&self.running).len()
+    }
+}
+
+impl LookSlots {
+    /// **Looks at a tab's file before it's shown, for as long as a frame can wait for it.** Another file there means what's held of it is of something else, so the tab's read again, and nothing drawn of the old one is shown: the page view's told its version's changed. Past the time, which is a disk that's gone away, it's shown as it was, and the look goes on on its own thread. A stat, which is microseconds.
+    pub(super) fn look_before_showing(self: &Arc<Self>, session: &SessionHost<DrawableLoader>, core: &Arc<CoreQueue>, id: TabId) {
+        let Some((path, stamp, says_something)) = look_facts(session, id) else {
+            return;
+        };
+        // One look per tab, and so many in all: with a disk that's stopped answering, showing tab after tab adds no threads past them.
+        if !self.start(id) {
+            return;
+        }
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        let core_for_look = std::sync::Arc::clone(core);
+        let slots = std::sync::Arc::clone(self);
+        let looking = std::thread::Builder::new().name("recto-look".into()).stack_size(256 * 1024).spawn(move || {
+            let status = look_at_file(&path, stamp);
+            // A look asked for meanwhile may be about a change made after this one looked: the files showing are looked at again.
+            if slots.finish(id) {
+                core_for_look.push(CoreCall::LookAtShown);
+            }
+            let other = look_is_news(&status, stamp, says_something);
+            // Too late for the frame: it's said the usual way.
+            if send.try_send((other, status.clone())).is_err() && other {
+                core_for_look.push(CoreCall::WokenFileIsOther(id, status, stamp));
+            }
+        });
+        if looking.is_err() {
+            self.finish(id);
+            return;
+        }
+        // Only what's new: a tab whose file is already known to be another, shown again, is neither forgotten nor read again.
+        if let Ok((true, status)) = receive.recv_timeout(LOOK_PATIENCE) {
+            take_shown_look(session, core, id, stamp, status);
+        }
+    }
+
+    /// One thread looks at the one file a tab was woken from its sleep file on, or that's showing when the app comes to the front, and ends. If it's something else now, the session's told, and it's read after all. A tab with a look under way already, or past [`MAX_LOOKS`] in all, isn't looked at now: see [`LookSlots`].
+    pub(super) fn check_woken_file(self: &Arc<Self>, session: &SessionHost<DrawableLoader>, core: &Arc<CoreQueue>, id: TabId) {
+        let Some((path, stamp, says_something)) = look_facts(session, id) else {
+            return;
+        };
+        if !self.start(id) {
+            return;
+        }
+        let (slots, core) = (std::sync::Arc::clone(self), std::sync::Arc::clone(core));
+        let spawned = std::thread::Builder::new().name("recto-look".into()).stack_size(256 * 1024).spawn(move || {
+            let status = look_at_file(&path, stamp);
+            if look_is_news(&status, stamp, says_something) {
+                core.push(CoreCall::WokenFileIsOther(id, status, stamp));
+            }
+            // A look asked for meanwhile may be about a change made after this one looked: the files showing are looked at again.
+            if slots.finish(id) {
+                core.push(CoreCall::LookAtShown);
+            }
+        });
+        if spawned.is_err() {
+            self.finish(id);
+        }
     }
 }
 
@@ -428,6 +488,40 @@ impl Sleeper {
     }
 }
 
+impl Sleeper {
+    /// Works out the next deadline, after anything that can have changed it. A look at the few tabs that hold anything.
+    ///
+    /// **Real time:** how long until the next is due is the session's own clock (`Dormant::next_in`, as every `touch` goes by it); the
+    /// deadline it comes to is on the app's clock.
+    pub(super) fn rearm(&self, session: &SessionHost<DrawableLoader>) {
+        let after = self.after_seconds();
+        let in_seconds = session.with_session(|session| session.dormant().next_in(after));
+        let _ = self.step(Event::Rearm { in_seconds });
+    }
+
+    /// It's come due, on the session thread. Whatever's due goes dormant, unless a file's being read (`reading`) or a hand-off has the app frozen (`frozen`),
+    /// when it looks again shortly.
+    /// **Real time:** which are due is the session's, by its own clock (`seconds_now`).
+    pub(super) fn dormancy_due(&self, session: &SessionHost<DrawableLoader>, reading: bool, frozen: bool) -> Option<Vec<TabId>> {
+        let busy = reading || frozen;
+        self.step(Event::DueNow { busy })?;
+        let after = self.after_seconds();
+        Some(session.with_session(|session| session.dormant().due(after)))
+    }
+
+    /// Tabs just woken from their sleep files: nothing's asked of the PDF on the way, as it may be on a disk that's gone away. Each is looked at on a thread of its own, and if it's turned out to be something else, it's read after all.
+    pub(super) fn check_woken_files(&self, session: &SessionHost<DrawableLoader>, core: &Arc<CoreQueue>) {
+        let woken = session.with_session(|session| session.dormancy_mut().take_woken_from_file());
+        if woken.is_empty() {
+            return;
+        }
+        let _ = self.step(Event::Woken(woken.len()));
+        for id in woken {
+            self.looks.check_woken_file(session, core, id);
+        }
+    }
+}
+
 /// **What a tab's sleep file is made from now:** what the session says of it, and what its page view holds, taken against the pages the session says the tab
 /// has now ([`pages_now`]), so that no picture in it is of a page deleted, moved or turned since it was drawn. The one place that rule is carried out, for a
 /// tab going dormant, one leaving the warm ones and one written in place. Borrowed from the app for one call, holding nothing of its own.
@@ -468,25 +562,6 @@ impl<'a> OnHand<'a> {
 }
 
 impl Inner {
-    /// Works out the next deadline, after anything that can have changed it. A look at the few tabs that hold anything.
-    ///
-    /// **Real time:** how long until the next is due is the session's own clock (`Dormant::next_in`, as every `touch` goes by it); the
-    /// deadline it comes to is on the app's clock.
-    pub fn rearm_dormancy(&self) {
-        let after = self.sleeper.after_seconds();
-        let in_seconds = self.host.session.with_session(|session| session.dormant().next_in(after));
-        let _ = self.sleeper.step(Event::Rearm { in_seconds });
-    }
-
-    /// It's come due, on the session thread. Whatever's due goes dormant, unless a file's being read, when it looks again shortly.
-    /// **Real time:** which are due is the session's, by its own clock (`seconds_now`).
-    pub fn dormancy_due(&self) -> Option<Vec<TabId>> {
-        let busy = self.life.reads_running.load(Ordering::SeqCst) > 0 || self.core.frozen.load(Ordering::SeqCst);
-        self.sleeper.step(Event::DueNow { busy })?;
-        let after = self.sleeper.after_seconds();
-        Some(self.host.session.with_session(|session| session.dormant().due(after)))
-    }
-
     /// **Those tabs go dormant,** on the session thread, those that may: whatever's asking, not the one on screen or one being worked on or saved. Whatever hasn't gone to its journal goes first, or a list couldn't.
     pub fn go_dormant(&self, tabs: &[TabId], why: Why) -> usize {
         let tabs: Vec<(TabId, bool)> = self
@@ -671,20 +746,6 @@ impl Sleeper {
 }
 
 impl Inner {
-    /// Tabs just woken from their sleep files: nothing's asked of the PDF on the way, as it may be on a disk that's gone away. Each is looked at on a thread of its own, and if it's turned out to be something else, it's read after all.
-    pub fn check_woken_files(&self) {
-        let woken = self.host.session.with_session(|session| session.dormancy_mut().take_woken_from_file());
-        if woken.is_empty() {
-            return;
-        }
-        let _ = self.sleeper.step(Event::Woken(woken.len()));
-        if let Some(inner) = self.saver.inner() {
-            for id in woken {
-                check_woken_file(&inner, id);
-            }
-        }
-    }
-
     /// What a tab's first frame shows, for the page view: from the file just read, or its sleep file if nobody's read it, whichever way this tab's been asked for. Only what's about the document as it is now. Each picture says what paper it's for, and only goes on that. On the session thread, with no lock on the page view while the surfaces are made.
     /// `back` is what was taken back from the queue for it, a tab shown again inside its wait: the page view let go of its pictures as it left, and these are
     /// them, held to the same checks as a sleep file's (this version of its file, these pages).
@@ -800,46 +861,9 @@ fn surface_of(picture: &SleepPicture) -> Option<PixelSurface> {
 
 pub use crate::version_of;
 
-/// **Looks at a tab's file before it's shown, for as long as a frame can wait for it.** Another file there means what's held of it is of something else, so the tab's read again, and nothing drawn of the old one is shown: the page view's told its version's changed. Past the time, which is a disk that's gone away, it's shown as it was, and the look goes on on its own thread. A stat, which is microseconds.
-pub fn look_before_showing(inner: &Inner, id: TabId) {
-    let Some((path, stamp, says_something)) = look_facts(inner, id) else {
-        return;
-    };
-    // One look per tab, and so many in all: with a disk that's stopped answering, showing tab after tab adds no threads past them.
-    if !inner.sleeper.looks.start(id) {
-        return;
-    }
-    let (send, receive) = std::sync::mpsc::sync_channel(1);
-    let core = std::sync::Arc::clone(&inner.core);
-    let slots = std::sync::Arc::clone(&inner.sleeper.looks);
-    let looking = std::thread::Builder::new().name("recto-look".into()).stack_size(256 * 1024).spawn(move || {
-        let status = look_at_file(&path, stamp);
-        // A look asked for meanwhile may be about a change made after this one looked: the files showing are looked at again.
-        if slots.finish(id) {
-            core.push(CoreCall::LookAtShown);
-        }
-        let other = look_is_news(&status, stamp, says_something);
-        // Too late for the frame: it's said the usual way.
-        if send.try_send((other, status.clone())).is_err() && other {
-            core.push(CoreCall::WokenFileIsOther(id, status, stamp));
-        }
-    });
-    if looking.is_err() {
-        inner.sleeper.looks.finish(id);
-        return;
-    }
-    // Only what's new: a tab whose file is already known to be another, shown again, is neither forgotten nor read again.
-    if let Ok((true, status)) = receive.recv_timeout(LOOK_PATIENCE) {
-        take_shown_look(inner, id, stamp, status);
-    }
-}
-
 /// What a look at a tab's file starts from: its path, its stamp, and whether the tab says something of its file now (a change under its edits, a file gone).
-fn look_facts(inner: &Inner, id: TabId) -> Option<(std::path::PathBuf, Option<recto_platform::FileStamp>, bool)> {
-    inner
-        .host
-        .session
-        .with_session(|session| Some((session.tabs().path_of(id)?, session.tabs().own_stamp(id), session.notices().said(id).is_some())))
+fn look_facts(session: &SessionHost<DrawableLoader>, id: TabId) -> Option<(std::path::PathBuf, Option<recto_platform::FileStamp>, bool)> {
+    session.with_session(|session| Some((session.tabs().path_of(id)?, session.tabs().own_stamp(id), session.notices().said(id).is_some())))
 }
 
 /// **Whether a look at a tab's file, made against `stamp`, is for the session to hear.** Not looked at is nothing. The file found as `stamp` says is nothing
@@ -856,47 +880,25 @@ pub(crate) fn look_is_news(status: &FileStatus, stamp: Option<recto_platform::Fi
 
 /// What a look at a tab being shown found, made against `stamp`, taken in in time for its frame: on news, what's held is forgotten and the file read again.
 /// A save meanwhile moves the stamp, and a look against the old one is about nothing now. Says whether it was news.
-pub(crate) fn take_shown_look(inner: &Inner, id: TabId, stamp: Option<recto_platform::FileStamp>, status: FileStatus) -> bool {
-    if !inner
-        .host
-        .session
-        .with_session(|session| session.tabs().own_stamp(id) == stamp && session.apply_file_status(id, status))
-    {
+pub(crate) fn take_shown_look(
+    session: &SessionHost<DrawableLoader>,
+    core: &CoreQueue,
+    id: TabId,
+    stamp: Option<recto_platform::FileStamp>,
+    status: FileStatus,
+) -> bool {
+    if !session.with_session(|session| session.tabs().own_stamp(id) == stamp && session.apply_file_status(id, status)) {
         return false;
     }
-    inner.host.session.with_session(|session| session.sleeper().forget_read(id));
+    session.with_session(|session| session.sleeper().forget_read(id));
     // The read, against the stamp as it is now that the news is in.
-    let now = inner.host.session.with_session(|session| session.tabs().own_stamp(id));
-    inner.core.push(CoreCall::WokenFileIsOther(id, FileStatus::NotLooked, now));
+    let now = session.with_session(|session| session.tabs().own_stamp(id));
+    core.push(CoreCall::WokenFileIsOther(id, FileStatus::NotLooked, now));
     true
 }
 
 /// How long a tab being shown waits for a look at its file.
 const LOOK_PATIENCE: Duration = Duration::from_millis(30);
-
-/// One thread looks at the one file a tab was woken from its sleep file on, or that's showing when the app comes to the front, and ends. If it's something else now, the session's told, and it's read after all. A tab with a look under way already, or past [`MAX_LOOKS`] in all, isn't looked at now: see [`LookSlots`].
-pub fn check_woken_file(inner: &std::sync::Arc<Inner>, id: TabId) {
-    let Some((path, stamp, says_something)) = look_facts(inner, id) else {
-        return;
-    };
-    if !inner.sleeper.looks.start(id) {
-        return;
-    }
-    let (slots, core) = (std::sync::Arc::clone(&inner.sleeper.looks), std::sync::Arc::clone(&inner.core));
-    let spawned = std::thread::Builder::new().name("recto-look".into()).stack_size(256 * 1024).spawn(move || {
-        let status = look_at_file(&path, stamp);
-        if look_is_news(&status, stamp, says_something) {
-            core.push(CoreCall::WokenFileIsOther(id, status, stamp));
-        }
-        // A look asked for meanwhile may be about a change made after this one looked: the files showing are looked at again.
-        if slots.finish(id) {
-            core.push(CoreCall::LookAtShown);
-        }
-    });
-    if spawned.is_err() {
-        inner.sleeper.looks.finish(id);
-    }
-}
 
 /// **What the session says a tab's pages are now,** as its page view would be given them: what a sleep file's pictures are checked against, so that none is of a page that's been deleted, moved or turned since it was drawn.
 fn pages_now<L: recto_session::DocLoader>(session: &recto_session::Session<L>, id: TabId) -> Option<recto_reader::tiles::PageMap> {

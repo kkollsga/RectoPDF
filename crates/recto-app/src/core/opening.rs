@@ -108,7 +108,7 @@ pub fn look_at_shown(inner: &Arc<Inner>) {
     let host = &inner.host;
     if let Some(inner) = inner.saver.inner() {
         for id in host.session.with_session(|session| session.panes()) {
-            sleeper::check_woken_file(&inner, id);
+            inner.sleeper.looks.check_woken_file(&inner.host.session, &inner.core, id);
         }
     }
 }

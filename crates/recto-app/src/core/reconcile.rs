@@ -179,7 +179,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let panes_now = inner.host.session.with_session(|session| session.panes());
     for (pane, id) in panes_now.iter().enumerate() {
         if synced.panes.get(pane).and_then(|shown| shown.tab) != Some(*id) && nothing_held {
-            sleeper::look_before_showing(inner, *id);
+            inner.sleeper.looks.look_before_showing(&inner.host.session, &inner.core, *id);
         }
     }
     // What the page views say of where they are goes in the session first, the tabs they're about to let go of among it, as a cold tab holds nothing there.
@@ -379,8 +379,8 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         inner.listener.model_changed();
     }
     // What's left alone comes due from here, and what's off screen may be over its budget.
-    inner.check_woken_files();
-    inner.rearm_dormancy();
+    inner.sleeper.check_woken_files(&inner.host.session, &inner.core);
+    inner.sleeper.rearm(&inner.host.session);
     inner
         .sleeper
         .look_at_budget(&sleeper::OnHand::new(&inner.host.session, &inner.panes, &inner.engine), &inner.core);

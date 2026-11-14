@@ -109,11 +109,9 @@ Inner::pub fn bar_now(&self) -> Vec<crate::menus::MenuModel>
 Inner::pub fn begin_restore(self: &Arc<Self>)
 Inner::pub fn can_save(&self) -> bool
 Inner::pub fn carry_out(&self, out: Option<crate::lifecycle::Out>)
-Inner::pub fn check_woken_files(&self)
 Inner::pub fn close_answered(self: &Arc<Self>, tab: u32, choice: CloseChoice) -> HostAction
 Inner::pub fn close_prompt(&self) -> ClosePrompt
 Inner::pub fn dismiss_selection_notice(&self)
-Inner::pub fn dormancy_due(&self) -> Option<Vec<TabId>>
 Inner::pub fn forget_a_quiet_copy(&self)
 Inner::pub fn frontmost_changed(&self, app: bool, window_key: bool)
 Inner::pub fn gather_record(&self) -> (SessionRecord, PlaceDelta)
@@ -138,7 +136,6 @@ Inner::pub fn quit_requested(self: &Arc<Self>)
 Inner::pub fn quit_stayed(&self)
 Inner::pub fn ready(&self, open: &[PathBuf])
 Inner::pub fn ready_to_show(&self) -> bool
-Inner::pub fn rearm_dormancy(&self)
 Inner::pub fn recent_files(&self) -> Vec<RecentFile>
 Inner::pub fn record_report(&self) -> Value
 Inner::pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str)
