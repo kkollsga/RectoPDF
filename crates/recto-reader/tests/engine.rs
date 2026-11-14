@@ -1577,7 +1577,7 @@ fn a_password_draws_its_own_tabs_file_and_never_a_page_added_from_it() {
             pump(&engine, Duration::from_millis(200));
         }
         assert!(
-            engine.note().is_some_and(|note| note.contains("needs a password, so it isn't shown here")),
+            engine.note().is_some_and(|note| note.contains("comes from a PDF that needs a password")),
             "a page added from it isn't drawn with the password (own tab first: {own_tab_first}, a password held: {}): {:?}; {}",
             keys.is_some(),
             engine.note(),
@@ -1586,6 +1586,70 @@ fn a_password_draws_its_own_tabs_file_and_never_a_page_added_from_it() {
         assert!(engine.take_keyless().is_empty(), "nobody's asked for its password for the plain document");
         pump(&engine, HANG);
         assert!(settles(&engine), "{}", engine.report().0);
+        assert!(own_page_drew(&engine), "and the plain document's own page draws: {}", engine.report().0);
+        engine.shut_down();
+    }
+}
+
+/// Brings the plain document's own page, its second, into view beside the added one and says whether anything was drawn: the added page draws nothing.
+fn own_page_drew(engine: &Engine) -> bool {
+    let height = engine.report().0["document_height"].as_f64().expect("laid out");
+    engine.set_viewport(view(height / 2.0 - 450.0));
+    pump(engine, HANG);
+    assert!(settles(engine), "{}", engine.report().0);
+    let report = engine.report().0;
+    report["visible_pages"] == serde_json::json!([1, 2]) && report["tiles"]["attached"].as_u64().is_some_and(|attached| attached >= 1)
+}
+
+/// Failure this guards against: `keyed` goes by the opened file's identity and a job's own file by its path, so a hard link or a symlink to the protected
+/// file, used as the path a page was added from, could have been taken for a file of its own that needs no password. It's refused like the file itself:
+/// its renderer finds the key by identity, and the path isn't the tab's own. The own tab is drawn first, so the key's held and in use.
+#[test]
+fn a_link_to_a_protected_file_added_to_another_document_is_refused_too() {
+    let protected = locked("right");
+    let plain = document(1);
+    let keys = Arc::new(recto_reader::engine::Keyring::default());
+    let identity = recto_platform::secret::open_file_identity(&std::fs::File::open(&protected.0).unwrap()).unwrap();
+    keys.set(identity, Arc::new(recto_platform::Password::new("right").unwrap()));
+    let hard = protected.0.with_file_name("hard-link.pdf");
+    let soft = protected.0.with_file_name("symlink.pdf");
+    std::fs::hard_link(&protected.0, &hard).unwrap();
+    std::os::unix::fs::symlink(&protected.0, &soft).unwrap();
+    for link in [&hard, &soft] {
+        let engine = Engine::new(
+            EngineConfig {
+                keys: Some(Arc::clone(&keys)),
+                ..EngineConfig::default()
+            },
+            Arc::new(Events::default()),
+        );
+        engine.set_viewport(view(0.0));
+        engine.activate(1, 1, 0, tab_map(&protected), &[], None, recto_reader::layout::Spread::Single);
+        engine.set_viewport(view(0.0));
+        pump(&engine, HANG);
+        assert!(settles(&engine), "{}", engine.report().0);
+        assert_eq!(engine.note(), None, "its own tab draws with its password");
+        let added = PageMap {
+            files: vec![plain.0.clone(), link.clone()],
+            slots: Some(vec![(1, 0), (0, 0)]),
+            own: None,
+            turns: None,
+            expected: vec![None, recto_platform::file_stamp(link).ok()],
+            follows: None,
+        };
+        engine.activate(2, 2, 0, added, &[1], None, recto_reader::layout::Spread::Single);
+        engine.set_viewport(view(0.0));
+        let deadline = Instant::now() + HANG;
+        while engine.note().is_none() && Instant::now() < deadline {
+            pump(&engine, Duration::from_millis(200));
+        }
+        assert!(
+            engine.note().is_some_and(|note| note.contains("comes from a PDF that needs a password")),
+            "a page added through {link:?} isn't drawn with the password: {:?}; {}",
+            engine.note(),
+            engine.report().0
+        );
+        assert!(engine.take_keyless().is_empty(), "nobody's asked for its password for the plain document");
         engine.shut_down();
     }
 }
