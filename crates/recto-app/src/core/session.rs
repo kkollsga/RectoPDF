@@ -133,40 +133,41 @@ pub fn apply_restored(
         start_serving(inner);
     }
     // What waited for the state: at the launch, and what the person did while a late keep's restore was read.
-    release(inner, deferred);
+    release(&inner.core, deferred, |command| person::submit(inner, command));
     ready
 }
 
 /// What the person did while a late keep's restore was read, let go once it's no longer restoring without the restore coming in (its patience ran out, or its
-/// thread ended): it runs on the window as it is. Not before the launch's state is read, when what waits is an open, which waits for that.
-fn release_held(inner: &Arc<Inner>, deferred: &mut Vec<CoreCall>) {
-    if deferred.is_empty() || !inner.life.state_read() || inner.life.keeping().restoring() {
+/// thread ended): it runs on the window as it is. Not before the launch's state is read, when what waits is an open, which waits for that. Reads the life;
+/// `submit` sends a person's command to a thread of its own (`person::submit`).
+fn release_held(life: &Lifecycle, core: &CoreQueue, deferred: &mut Vec<CoreCall>, submit: impl FnMut(recto_agent::Command)) {
+    if deferred.is_empty() || !life.state_read() || life.keeping().restoring() {
         return;
     }
-    release(inner, deferred);
+    release(core, deferred, submit);
 }
 
-/// **What waited, let go:** each call back on the queue, in the order it came; a person's command that runs on a thread of its own sent there again.
-fn release(inner: &Arc<Inner>, deferred: &mut Vec<CoreCall>) {
+/// **What waited, let go:** each call back on the queue, in the order it came; a person's command that runs on a thread of its own sent there again, by `submit`.
+fn release(core: &CoreQueue, deferred: &mut Vec<CoreCall>, mut submit: impl FnMut(recto_agent::Command)) {
     for call in deferred.drain(..) {
         match call {
-            CoreCall::Run(run) if person::on_a_thread_of_its_own(&run) => person::submit(inner, run.command),
-            call => inner.core.push(call),
+            CoreCall::Run(run) if person::on_a_thread_of_its_own(&run) => submit(run.command),
+            call => core.push(call),
         }
     }
 }
 
 /// **Whether a call waits, and holds it if it does:** an open, for the launch's state, as what's opened goes over what comes back; and anything the person
 /// does, for a late keep's restore, so what they ask for last lands on the restored session (a command, Find's step on the page, and a command that runs on a
-/// thread of its own, held when it was asked for: see `person::submit`). A command of the last kind that's no longer held goes to its own thread.
-fn hold(inner: &Arc<Inner>, call: CoreCall, deferred: &mut Vec<CoreCall>) -> Option<CoreCall> {
-    if waits(&call, inner.life.state_read(), inner.life.keeping().restoring()) {
+/// thread of its own, held when it was asked for: see `person::submit`). A command of the last kind that's no longer held goes to its own thread, by `submit`.
+fn hold(life: &Lifecycle, call: CoreCall, deferred: &mut Vec<CoreCall>, submit: impl FnOnce(recto_agent::Command)) -> Option<CoreCall> {
+    if waits(&call, life.state_read(), life.keeping().restoring()) {
         deferred.push(call);
         return None;
     }
     match call {
         CoreCall::Run(run) if person::on_a_thread_of_its_own(&run) => {
-            person::submit(inner, run.command);
+            submit(run.command);
             None
         }
         call => Some(call),
@@ -282,6 +283,8 @@ pub fn session_thread(inner: &Arc<Inner>) {
     let mut synced = Synced::default();
     let mut reads = FileReads::default();
     let mut deferred: Vec<CoreCall> = Vec::new();
+    // What a held person's command runs by when it's let go: on a thread of its own, as `person::submit` sends it.
+    let submit = |command| person::submit(inner, command);
     loop {
         // Parked for the queue and the state's one deadline, and nothing else.
         let Some(call) = inner.core.next_or_due(|| {
@@ -303,7 +306,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
                 restore_patience_over(inner);
             }
             keeping::when_due(inner, &reads);
-            release_held(inner, &mut deferred);
+            release_held(&inner.life, &inner.core, &mut deferred, submit);
             if inner.saver.wait_for_due().is_some_and(|wait| wait.is_zero()) {
                 inner.saver.spawn_writer();
             }
@@ -316,7 +319,9 @@ pub fn session_thread(inner: &Arc<Inner>) {
             }
             continue;
         };
-        let Some(call) = hold(inner, call, &mut deferred) else { continue };
+        let Some(call) = hold(&inner.life, call, &mut deferred, submit) else {
+            continue;
+        };
         let mut events = Vec::new();
         let host = &inner.host;
         match call {
@@ -335,7 +340,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             // A late try's saved session: taken in as the state is at a launch, while it's still restoring, and dropped after its patience.
             CoreCall::LateRead(read) => {
                 let Some(loaded) = keeping::late_read(inner, read) else {
-                    release_held(inner, &mut deferred);
+                    release_held(&inner.life, &inner.core, &mut deferred, submit);
                     after_call(inner, &mut synced, &mut reads, events);
                     continue;
                 };
