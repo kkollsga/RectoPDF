@@ -9,13 +9,33 @@ exists, in every `--quick` and `--full` run.
 **Done means** an agent can do it, see it and prove it: a command, the CLI, the window's control sending that command, a QA look, tests at the cheapest
 tier that can see each failure, and shots light and dark.
 
+## Make room first
+
+A feature does not start by growing a hub. Before step 1, look at the files it will touch (`tools/ratchet.sh --report main` on a trial branch says how
+much each shared file grew) and ask of each whether the feature's lines would push it past a budget or put the feature's logic in a shared file. If so,
+**the extension point is its own commit, first, and moves code unchanged**, with the guard that pins what the move must not change already in place
+(`AGENTS.md`, "Guards go in before a move"). The highlights pilot (R4.3) made room with nine such commits before its first line (`git log --grep="R4.3
+extension point"`): `PageEdits`' undo history became one part, `History` (private, in `crates/recto-session/src/edit.rs`), so a new kind of step (`Step::Mark`) joined
+a list and not a type with 60 methods; a save's catalog additions, copying and in-memory form moved to `crates/recto-core/src/save/catalog.rs`,
+`crates/recto-core/src/save/copying.rs` and `crates/recto-core/src/save/in_memory.rs`, so the new annotations had a file (`crates/recto-core/src/save/annotate.rs`) beside them; the record's checks and its capped-list reader
+moved to `crates/recto-session/src/record/validate.rs` and `crates/recto-session/src/record/capped.rs`, where the new step's checks went; the page view's known images moved to
+`crates/recto-render-service/src/host/images.rs`; what the pointer looks like over a page moved out of the bridge. What it did not make room for it paid
+for later, with a debt: a row and an answer that took the whole `Inner` (whole-`Inner` 98 to 100, repaid by `RowParts` and `AnswerParts`: step 6),
+and a field on the page view's shared state (`Shared` 15 to 16, repaid by `workers::Seen`). **If room can't be made from what the feature owns, call
+back before writing the feature.**
+
 ## The path
 
 1. **The command, its level and its words.** It goes in one file, `crates/recto-agent/src/commands/<feature>.rs` (Find: `crates/recto-agent/src/commands/finding.rs`).
    It holds a payload type that implements `Cmd`. None of `Cmd`'s properties has a default, so the compiler asks for each one: `TAG`, `ROWS`,
    `DRAWS`, `READS_PAGES`, `PROTECTED_OK`, `ABOUT` (whose document it reads, for the protected gate), `WAITS`, `tab`, `access`, `route`, `log_details`,
    `run` and `human`. Its rows (`Spec` in `crates/recto-agent/src/table.rs`) are the CLI's grammar, the help and the **level** (`Access::At`).
-   `log_details` holds numbers and cleaned names, never document text. `human` gives the plain words.
+   `log_details` holds numbers and cleaned names, never document text. `human` gives the plain words. **`WAITS` is true when the command may hold the
+   session's thread for long** (it reads pages: Highlight, `page insert`, Save). For a person that changes how it runs: `person::submit`
+   (`crates/recto-app/src/core/person.rs`) runs a `WAITS` command on a thread of its own and everything else on the core queue, so **the person's next
+   action, a Undo, can run before the waiting command lands** and undo the step before it (the pilot's ⌃⌘H then a quick ⌘Z, PLAN R4.3: a fault, its design
+   an ordered lane for a person's edits). Until that lane exists, a feature with a `WAITS` command a person sends from a control tests that control and
+   an Undo in the order a person gives them, and says in its hand-back that it has the exposure.
    **Registration:** one variant line in a `family!` of `crates/recto-agent/src/commands/mod.rs` (Find: `Find(finding::Find)` in `Move`), plus
    `pub mod <feature>;` in the same file.
 2. **Its typed payload.** When a command's choices are words or flags that can't go together, the payload is a type and its wire form is a `line`
@@ -24,6 +44,15 @@ tier that can see each failure, and shots light and dark.
 3. **Its state's home.** If the session must remember something, it belongs to one component of `Session`, reached through an accessor in
    `crates/recto-session/src/parts.rs`. Outside the crate it is changed only through a `PartMut` handle's setters (Find: `FindRecord` in
    `crates/recto-session/src/viewing.rs`, `viewing()` and `viewing_mut()`). A new component is listed in `crates/recto-session/src/tests/parts.rs`.
+   **A new record is persisted, guarded and fuzzed** (files on disk are hostile, rule 6). If it is saved in the record or a journal, it is a variant
+   of `JournalOp`/`StepRecord` in `crates/recto-session/src/record.rs` with caps on every list (`crates/recto-session/src/record/capped.rs`; `MAX_MARKS`, `MAX_MARK_RECTS` and
+   `MAX_MARK_LINES` in `crates/recto-session/src/edit/marks.rs`), its checks in `crates/recto-session/src/record/validate.rs` (`MarkRecord::all_fit`), and a version bump for the
+   journal that holds it, so an older app refuses what it can't read (`MARKED_JOURNAL_VERSION`, `journal_marked`). **A size guard:** what the history
+   charges for a step is tested against what it really holds (`what_a_highlight_step_will_hold_is_what_it_holds`, which first walked only two of
+   four step kinds and passed with the others wrong: walk every variant), and a field added to a shared struct stays under its compile-time size
+   (`size_of::<Shared>() <= 2784` in `crates/recto-reader/src/engine/selection.rs`). **A fuzz target:** the one that parses the record, the proto frame
+   or the file the feature reads reaches the new record by construction, not by luck (`crates/recto-fuzz/src/targets/record.rs`, `crates/recto-fuzz/src/targets/edits.rs`,
+   `crates/recto-fuzz/src/targets/pdf.rs` for what a save writes and a file's own annotations, `crates/recto-fuzz/src/targets/proto.rs` for a frame to the worker); the hostile corpus grows with it.
    State the window needs and the session doesn't is the app's (Find: `crates/recto-app/src/find.rs`). The app's life (launch, keeping, quitting)
    is `Lifecycle` in `crates/recto-app/src/core/life.rs`, whose pure machine is `crates/recto-app/src/lifecycle/`, and the record's lock is carried
    out by the keeping desk (`Desk`, `Carrier`) in `crates/recto-app/src/core/keeping.rs`. A feature that needs a step of the life asks first.
@@ -34,6 +63,13 @@ tier that can see each failure, and shots light and dark.
    others hear is an `Event` (`crates/recto-agent/src/event.rs`), sent only when something changed. `Effect` (`crates/recto-agent/src/effect.rs`) and
    `CoreCall::Find` are Find's own channel to the window, not an extension point: a feature that needs the window to act after its command calls back
    first.
+   **A command that changes the file goes through the one writer** (rule 5): a new kind of change is a plan the lopdf writer in
+   `crates/recto-core/src/save.rs` carries out, with its own file under `crates/recto-core/src/save/` (highlights: `crates/recto-core/src/save/annotate.rs`, which dresses the
+   new annotations, and reads the written file back to say where each went: `MarksWritten`), and a function in the session's own history that carries
+   the steps *on* past a Save (`crates/recto-session/src/edit/marks/saved.rs`: the history goes on after a Save, and what can't be carried is counted
+   as rolled off, never dropped quietly). What a Save would lose of the owner's steps is refused below Full (`owner_edits_at_stake`), and the walk in
+   `crates/recto-agent/src/policy_guards.rs` starts from the new step, done and undone. A removal from the file is a rewrite, which an agent needs Full for.
+   The bound on the work (pages read, objects touched) is the save's, not the feature's. Never write through PDFium.
 5. **The CLI.** Nothing to write: `recto` parses every row (`parse_cli` in `crates/recto-agent/src/table.rs`) and prints `human`. Bless the help and
    wire goldens (`RECTO_BLESS=1`, `crates/recto-agent/tests/golden/`) and read their diff: it is the review of the command's surface.
 6. **The window's control and its translation.** A control is a `UiAction` (`crates/recto-app/src/core/controls.rs`). `Inner::act` has one arm per
@@ -66,6 +102,15 @@ tier that can see each failure, and shots light and dark.
 7. **What it publishes.** The window draws view models that are pure functions of state (`crates/recto-app/src/model.rs`). `reconcile`
    (`crates/recto-app/src/core/reconcile.rs`) publishes them after each pass, and the `Listener` (`crates/recto-app/src/listener.rs`) tells the host
    to pull. A feature with its own view publishes it from its own module (Find: `FindView`).
+   **Everything that changes what a page shows reaches every renderer,** not only the one on screen. The pilot's set of file highlights a person took
+   out and hasn't saved is drawn without them by the worker (`crates/recto-proto/src/hidden.rs`, `crates/recto-render-service/src/host/hidden.rs`,
+   `crates/recto-render/src/pdfium/hidden.rs`, set in memory and never written), and the same set had to reach the page view's draws and its in-flight
+   ones (`crates/recto-reader/src/engine/run.rs`: a draw landing after the set changed isn't kept), the thumbnails and the sleep pictures, a print, an
+   export and an agent's render, snapshot and SVG (`crates/recto-agent/src/highlighting.rs`, `hidden_in`), the person's Snapshot tool, and search. It
+   was found by review three times, one renderer each. `every_renderer_that_draws_a_tab_is_given_its_set` in `crates/recto-agent/src/highlighting.rs`
+   now scans the app's crates for every renderer opened outside tests and lists each in `RENDERERS` with what it is for: a feature that changes the
+   picture adds a row to that kind of list and the scan fails until each renderer says whether it gets the change. Make the set once a change, not once a
+   pass (`a_tabs_set_is_made_once_a_change` in `crates/recto-app/src/core/highlight.rs`, by the tick of the list's last change), and let it go with a closed or sleeping tab.
 8. **The bridge and the host's drawing.** `crates/recto-ffi` converts types and forwards, one line per call, under a size budget the ratchet holds
    (Find: `find_view` in `crates/recto-ffi/src/lib.rs`, types in `crates/recto-ffi/src/find.rs`). A person's actions all go through the one export,
    `act`. Swift only draws and reports what was done (Find: `app/Sources/RectoPDF/FindPane.swift`). A rule found in Swift is a bug (rule 2).
@@ -106,11 +151,22 @@ tier that can see each failure, and shots light and dark.
 | Controls | `every_control_is_a_command_or_the_hosts_with_a_reason`, `every_menu_id_has_an_enable_rule` | a control sends no command and isn't on the host's list, or its golden line moved |
 | What a person is shown | `what_a_person_is_shown_after_each_command_is_as_it_was` (`crates/recto-app/src/core/person.rs`) | a feature's answer says other words, or says anything for an agent's refusal: a new answer adds its cases to the table |
 | What parts expose | `crates/recto-session/src/tests/parts.rs`, `crates/recto-reader/src/surface.rs`, `crates/recto-app/src/core/headless/inner_guards.rs` | a part's reach widened: a reviewer must see that line |
+| Every renderer | `every_renderer_that_draws_a_tab_is_given_its_set` in `crates/recto-agent/src/highlighting.rs` | a renderer opened outside tests isn't in `RENDERERS`, or draws a tab's pages without the set of what the tab changed |
 | Fuzzing | `crates/recto-fuzz/src/targets/agent.rs` | parsing a hostile line panics or runs past its budget (every command's line is reached through the table) |
 
 The guards named in `GUARD_TESTS` (`tools/check-scope.sh`) run in every `--quick` whatever changed; the rest (the walks in
 `crates/recto-agent/src/policy_guards.rs`, the parts' listings, fuzzing) run with their crate's tests, in `--quick` when that crate changed and in
 every full run. A failure names the item and says what to do.
+**When a registration raises a guard.** A new feature can't avoid a few lines in shared files, and a few of the guards count them: the ratchet's
+whole-`Inner` count, a struct's fields, a type's methods, a file's lines. The pilot raised two (whole-`Inner` 98 to 100, `Shared` 15 to 16). The way
+through: (1) look first for the registration that doesn't raise one, a row and an answer that take the parts types (step 6) and not `Inner`; (2) if the
+count really must rise, it is a **debt with a date**: a hand edit of `tools/ratchet/baseline.txt` that a reviewer sees, its reason in the commit, and a line in
+`docs/PLAN.md` that says who repays it and by when; never a quiet raise, and never in a worker's branch without a call back; (3) code moved unchanged
+keeps its entries with `tools/ratchet.sh --moved <old> <new>`, and a number that has shrunk is locked in with `tools/ratchet.sh --update`; (4) when a
+merge leaves `tools/ratchet/baseline.txt` in conflict (two branches each lowered a number, or each added a key), `tools/ratchet.sh --resolve` writes the
+merge from git's three versions, then `tools/ratchet.sh` runs on the merged tree, since two branches adding to the same thing can make the true number
+higher than either side's, and that is raised only by a hand edit. `tools/ratchet.sh --report main` says which shared files the branch touched and by how
+many lines: the hand-back quotes it.
 Don't loosen a guard or raise a baseline: call back (`docs/agent-instructions/worker-testing.md`, "Call back at an edge case").
 
 ## Hand-back
