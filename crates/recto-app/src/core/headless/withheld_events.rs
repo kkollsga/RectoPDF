@@ -370,20 +370,20 @@ fn the_helpers_news_of_a_protected_file_doesnt_reach_a_watcher() {
     );
 }
 
-/// What an agent watching, and looking at each level, is told while the person takes a snapshot of page 1 of a protected document and pastes its SVG.
+/// What an agent watching at Full, which hears all a lower level does, and looking at each level, is told once the person has taken a snapshot of page 1
+/// of a protected document and pasted its SVG: one snapshot and one paste, as the concern needs (three, one a level, took 2.1 to 3.5 s a run under
+/// `--like-ci`).
 fn agent_told_of_a_snapshot(pages: usize, word: &str) -> Vec<String> {
     // The person's snapshot opens the protected file in a fresh worker: as for the print, every renderer gets a deadline it always meets.
     recto_render_service::page_deadline_for_this_process(std::time::Duration::from_secs(20));
     let disk = Disk::new();
     let file = protected(&disk, pages, word);
     let app = disk.start();
-    let mut watching = app.agent_watches(Level::ReadOnly);
+    let mut watching = app.agent_watches(Level::Full);
     person_unlocks(&app, &file);
-    let mut told = Vec::new();
+    snapshot_and_paste(&app);
+    let mut told = vec![format!("heard: {:?}", watching.heard())];
     for level in [Level::ReadOnly, Level::Control, Level::Full] {
-        watching.set_level(level);
-        snapshot_and_paste(&app);
-        told.push(format!("{level:?} heard: {:?}", watching.heard()));
         for look in [&["tabs"][..], &["session", "show"], &["sidebar"]] {
             told.push(format!("{level:?} {look:?}: {:?}", app.recto(level, look)));
         }
@@ -392,8 +392,8 @@ fn agent_told_of_a_snapshot(pages: usize, word: &str) -> Vec<String> {
 }
 
 /// **Failure (S2's follow-up (1)): the person's own snapshot of a document they opened with its password tells an agent something of it,** by an event
-/// or a look at the session, now that it's the person's `snapshot` and `image` commands read with their password. An agent watching at each level, and
-/// looking with `tabs`, `session show` and `sidebar`, is told the same while the person takes a box on page 1 and pastes its SVG, of a three-page
+/// or a look at the session, now that it's the person's `snapshot` and `image` commands read with their password. An agent watching, and looking with
+/// `tabs`, `session show` and `sidebar` at each level, is told the same once the person has taken a box on page 1 and pasted its SVG, of a three-page
 /// protected document saying "Locked" as of a five-page one saying "Hidden".
 #[test]
 fn a_persons_snapshot_tells_an_agent_the_same_of_two_protected_documents() {
