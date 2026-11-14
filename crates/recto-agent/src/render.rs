@@ -561,21 +561,6 @@ pub(crate) fn with_time_taken_of(mut error: AgentError, ms: u64) -> AgentError {
     error
 }
 
-/// A failure's words without how long it took ([`with_time_taken`]), which is measured and not about the document: for a comparison of what two runs
-/// said. Only the suffix that adds, with a time as [`crate::human::duration`] words it, is taken off.
-#[cfg(test)]
-pub(crate) fn without_time_taken(message: &str) -> &str {
-    let Some((words, time)) = message.rsplit_once(TIME_TAKEN.0) else {
-        return message;
-    };
-    let Some(time) = time.strip_suffix(TIME_TAKEN.1) else { return message };
-    let worded = |unit: &str, number: &str| {
-        time.strip_suffix(unit)
-            .is_some_and(|figure| !figure.is_empty() && figure.chars().all(|c| c.is_ascii_digit() || (number == "." && c == '.')))
-    };
-    if worded(" ms", "") || worded(" s", ".") { words } else { message }
-}
-
 fn write_error_to_agent(error: &std::io::Error) -> AgentError {
     if error.kind() == std::io::ErrorKind::FileTooLarge {
         AgentError::new(Code::OUTPUT_TOO_LARGE, "This picture would be larger than RectoPDF will write.", exit::FAILED)
@@ -827,6 +812,21 @@ pub(crate) fn budget(path: &Path, args: &BudgetArgs) -> Result<Value, AgentError
         data["samples"] = Value::Array(samples);
     }
     Ok(data)
+}
+
+/// A failure's words without how long it took ([`with_time_taken`]), which is measured and not about the document: for a comparison of what two runs
+/// said. Only the suffix that adds, with a time as [`crate::human::duration`] words it, is taken off.
+#[cfg(test)]
+pub(crate) fn without_time_taken(message: &str) -> &str {
+    let Some((words, time)) = message.rsplit_once(TIME_TAKEN.0) else {
+        return message;
+    };
+    let Some(time) = time.strip_suffix(TIME_TAKEN.1) else { return message };
+    let worded = |unit: &str, number: &str| {
+        time.strip_suffix(unit)
+            .is_some_and(|figure| !figure.is_empty() && figure.chars().all(|c| c.is_ascii_digit() || (number == "." && c == '.')))
+    };
+    if worded(" ms", "") || worded(" s", ".") { words } else { message }
 }
 
 #[cfg(test)]
