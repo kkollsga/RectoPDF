@@ -40,17 +40,17 @@ fn rotate_pages_now(session: &recto_session::Session<DrawableLoader>, actor: Act
 
 /// **What the window says of a person's Rotate:** why it couldn't, by the page, in the session's words; and once it has, any line that was there goes, as
 /// the panel's Rotate always had it. An Undo or Redo with nothing to do says nothing, as before.
-pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
+pub fn answered(parts: &super::answer_parts::AnswerParts<'_>, ran: &person::Ran<'_>) {
     if !matches!(ran.command, Command::Edit(Edit::PageRotate(_))) {
         return;
     }
     match (ran.result, ran.refused()) {
         (Ok(_), _) => {
-            inner.window.notices().take_notice();
+            parts.take_notice();
         }
         (Err(_), Some(error)) => {
             if let Some(words) = person::session_words(error) {
-                person::say(inner, format!("Couldn't rotate: {words}"));
+                parts.say(format!("Couldn't rotate: {words}"));
             }
         }
         (Err(_), None) => {}
@@ -59,7 +59,7 @@ pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
 
 /// **Editing's menu ids** ([`super::menu_rows`]): the panel's Rotate is `page rotate`, every page or in edit mode the page being read, by the session as it is
 /// when it runs; Undo, Redo and Clear History are `undo`, `redo` and `clear-history` on the tab being read; the panel's Done is `edit mode off`.
-pub fn row<'a>(_: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+pub fn row<'a>(_: &super::row_parts::RowParts<'a>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
     use super::menu_rows::Row;
     let active = || recto_agent::TabRef::Active;
     Some(match asked.action.as_ref()? {

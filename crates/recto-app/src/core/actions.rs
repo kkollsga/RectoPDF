@@ -29,7 +29,8 @@ impl Inner {
         if !updates::takes_input_now(self.life.window_interactive(), &id) {
             return HostAction::None;
         }
-        super::menu_rows::row(self, &id).map_or(HostAction::None, |row| super::menu_rows::by_person(self, row))
+        let parts = super::row_parts::RowParts::of(self);
+        super::menu_rows::row_in(&parts, &id).map_or(HostAction::None, |row| super::menu_rows::by_person(&parts, row))
     }
 
     /// Whether a menu item can be chosen now. Asked when a menu opens and on its key. By the item's rule in `menus`: an id without one can't be chosen.
@@ -61,9 +62,7 @@ impl Inner {
 
     /// Whether Save does anything now: the tab showing has unsaved edits and isn't being saved.
     pub fn can_save(&self) -> bool {
-        let reader = lock(&self.published).reader.clone();
-        // Not under a sheet: the close prompt's own Save is how to save then.
-        !reader.home && reader.edited && reader.save_enabled && self.life.sheets_open() == 0
+        super::saving::can_save(&self.published, &self.life)
     }
 
     /// The menu bar as it stands, as recto-app's lists: what `AppCore::menu_bar` converts, and the palette lists.

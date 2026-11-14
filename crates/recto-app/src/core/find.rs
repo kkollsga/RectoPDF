@@ -3,6 +3,8 @@
 //! `find --hit N`, the command an agent sends, run for the person by the one executor. What it shows and when the host is told are `crate::find`'s; this
 //! hands it the app's parts it reaches, as a [`FindHandle`], and converts what comes back.
 
+use super::answer_parts::AnswerParts;
+use super::row_parts::RowParts;
 use super::{Inner, person};
 use crate::find::{self as app, FindHandle};
 pub use crate::find::{FIELD_HEIGHT, FindCall, Heights, ROW_HEIGHT, heights};
@@ -16,13 +18,34 @@ use std::sync::Arc;
 
 /// What Find reaches of the app, for one call.
 pub(super) fn handle<R>(inner: &Inner, step: impl FnOnce(&FindHandle<'_, dyn crate::Listener>) -> R) -> R {
+    handle_with(
+        &inner.host.session,
+        &inner.tools,
+        &inner.core,
+        &inner.panes,
+        &inner.engine,
+        &*inner.listener,
+        step,
+    )
+}
+
+/// What Find reaches of the app, from its parts, for one call: [`handle`]'s, and an answer's ([`super::answer_parts::AnswerParts::find_handle`]).
+pub(super) fn handle_with<R>(
+    session: &recto_control::host::SessionHost<recto_agent::DrawableLoader>,
+    tools: &super::Tools,
+    core: &crate::queue::CoreQueue,
+    panes: &crate::panes::Panes,
+    engine: &recto_reader::Engine,
+    listener: &(dyn crate::Listener + 'static),
+    step: impl FnOnce(&FindHandle<'_, dyn crate::Listener>) -> R,
+) -> R {
     step(&FindHandle {
-        session: &inner.host.session,
-        field: inner.tools.find_field(),
-        frozen: &inner.core.frozen,
-        panes: &inner.panes,
-        engine: &inner.engine,
-        listener: &*inner.listener,
+        session,
+        field: tools.find_field(),
+        frozen: &core.frozen,
+        panes,
+        engine,
+        listener,
     })
 }
 
@@ -44,26 +67,28 @@ fn carry_out(inner: &Inner, effect: Effect) {
 
 /// **What the window does with how the person's Find went:** why what they typed can't be found, on the line under the field, as a query too long; and a
 /// step kept for its hit forgotten when Find closes ([`FindHandle::answered`]).
-pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
+pub fn answered(parts: &AnswerParts<'_>, ran: &person::Ran<'_>) {
     let Command::Move(Move::Find(asked)) = ran.command else {
         return;
     };
-    // A query refused as too long, by the rule that refuses it: what was typed, or for ⌘F and a step what the field holds, which they find again (the query,
-    // or the draft if there's none). Never by the refusal's words. Worked out before the field is locked, as it reads the session.
-    let too_long = matches!(asked.ask, FindAsk::Query(_) | FindAsk::Open | FindAsk::Step { .. })
-        && ran.refused().is_some_and(|error| error.code == Code::BAD_QUERY)
-        && match &asked.ask {
-            FindAsk::Query(query) => recto_agent::find::too_long_query(query),
-            _ => inner.host.session.with_session(|s| {
-                let find = s.viewing().find();
-                recto_agent::find::too_long_query(if find.query.is_empty() { &find.draft } else { &find.query })
-            }),
-        };
-    handle(inner, |find| find.answered(&asked.ask, too_long));
+    parts.find_handle(|find| {
+        // A query refused as too long, by the rule that refuses it: what was typed, or for ⌘F and a step what the field holds, which they find again (the
+        // query, or the draft if there's none). Never by the refusal's words. Worked out before the field is locked, as it reads the session.
+        let too_long = matches!(asked.ask, FindAsk::Query(_) | FindAsk::Open | FindAsk::Step { .. })
+            && ran.refused().is_some_and(|error| error.code == Code::BAD_QUERY)
+            && match &asked.ask {
+                FindAsk::Query(query) => recto_agent::find::too_long_query(query),
+                _ => find.session.with_session(|s| {
+                    let find = s.viewing().find();
+                    recto_agent::find::too_long_query(if find.query.is_empty() { &find.draft } else { &find.query })
+                }),
+            };
+        find.answered(&asked.ask, too_long);
+    });
 }
 
 /// **Find's menu ids** ([`super::menu_rows`]): ⌘F is `find --open`, and then the field takes the keyboard; ⌘G and ⇧⌘G are `find --next|--previous`, a step.
-pub fn row<'a>(_: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+pub fn row<'a>(_: &RowParts<'a>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
     use super::menu_rows::Row;
     Some(match asked.action.as_ref()? {
         crate::menus::Action::FindOpen => Row::Command {

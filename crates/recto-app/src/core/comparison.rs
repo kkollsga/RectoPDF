@@ -2,22 +2,21 @@
 //! `compare --reading`, and the context menu's separate or synced scroll is `compare --sync`, the commands an agent sends, run for the person. A pane's cold
 //! file is read off the session thread, and the command runs again once it's in, as a tap's does. Each pane's layout is `view`'s.
 
-use super::{Inner, person};
+use super::person;
 use recto_agent::Code;
 use recto_agent::commands::words::OnOff;
 use recto_agent::commands::{Move, compare::Compare};
 use recto_agent::{AgentError, Command, TabRef};
 use recto_session::TabId;
 use recto_session::compare::CompareError;
-use std::sync::Arc;
 
 /// **What the window says when a person's ⌘-click couldn't be done:** why, by the page, in the session's words for a comparison (a fourth pane), as the
 /// ⌘-click always said. A pane that couldn't be read, or scroll with no comparison to sync, said nothing and says nothing.
-pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
+pub fn answered(parts: &super::answer_parts::AnswerParts<'_>, ran: &person::Ran<'_>) {
     if let (Command::Move(Move::Compare(Compare::Toggle(_))), Some(error)) = (ran.command, ran.refused())
         && let Some(words) = compare_words(error)
     {
-        inner.window.notices().say(words.to_string());
+        parts.notice(words.to_string());
     }
 }
 
@@ -35,7 +34,7 @@ pub fn reading(tab: TabId) -> Command {
 }
 
 /// **The comparison's menu ids** ([`super::menu_rows`]): the context menu's separate or synced scroll is `compare --sync off|on`.
-pub fn row<'a>(_: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+pub fn row<'a>(_: &super::row_parts::RowParts<'a>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
     let crate::menus::Action::SetSynced(on) = asked.action.as_ref()? else {
         return None;
     };

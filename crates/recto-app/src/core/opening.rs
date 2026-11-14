@@ -46,15 +46,15 @@ pub fn before(inner: &Inner, reads: &mut FileReads, command: &Command) {
 ///
 /// **And once a person's open has:** a file that needs a password asks for it, on the system's sheet, rather than only saying it needs one; any other file
 /// that didn't open says why by the window, in the session's words.
-pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
+pub fn answered(parts: &super::answer_parts::AnswerParts<'_>, ran: &person::Ran<'_>) {
     match (ran.command, ran.refused()) {
-        (Command::Move(Move::RecentClear(_)), None) if ran.result.is_ok() => inner.saver.write_soon(),
+        (Command::Move(Move::RecentClear(_)), None) if ran.result.is_ok() => parts.write_soon(),
         (Command::Move(Move::Open(Open { path, .. })), Some(error)) if error.code == Code::lower(OpenError::PasswordNeeded.code()) => {
-            lock(&inner.tools.prompts().passwords).ask(passwords::Target::File, path);
+            parts.ask_password(path);
         }
         (Command::Move(Move::Open(_)), Some(error)) => {
             if let Some(words) = person::session_words(error) {
-                inner.window.notices().fail_open(words.to_string());
+                parts.fail_open(words.to_string());
             }
         }
         _ => {}
@@ -73,11 +73,12 @@ pub fn is_open(command: &Command) -> bool {
 
 /// **Opening's menu ids** ([`super::menu_rows`]): an Open Recent file is `open` on the very file the menu showed, read off the session thread as every open
 /// the window makes is, and nothing once it's left the list; Clear Menu is `recent clear`; Open… shows the system's panel.
-pub fn row<'a>(inner: &'a Arc<Inner>, asked: &menu_rows::Asked<'_>) -> Option<menu_rows::Row<'a>> {
+pub fn row<'a>(parts: &super::row_parts::RowParts<'a>, asked: &menu_rows::Asked<'_>) -> Option<menu_rows::Row<'a>> {
     use menu_rows::Row;
+    let parts = *parts;
     match (asked.action.as_ref()?, asked.id) {
         (menus::Action::OpenRecent(key), _) => {
-            let path = recent_path(&lock(&inner.published).recent, key);
+            let path = parts.published(|published| recent_path(&published.recent, key));
             Some(path.map_or(Row::Nothing, |path| {
                 Row::own_way(
                     Open {
@@ -86,7 +87,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &menu_rows::Asked<'_>) -> Option<me
                     },
                     "an open is read off the session thread, on its own queue, as every open the window makes is",
                     move || {
-                        open_for_person(&inner.life, &inner.core, path);
+                        parts.open(path);
                         HostAction::None
                     },
                 )
