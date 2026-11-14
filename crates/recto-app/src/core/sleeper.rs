@@ -544,16 +544,24 @@ impl Sleeper {
     }
 }
 
-/// **What a tab's sleep file is made from now:** what the session says of it, and what its page view holds, taken against the pages the session says the tab
-/// has now ([`pages_now`]), so that no picture in it is of a page deleted, moved or turned since it was drawn. The one place that rule is carried out, for a
-/// tab going dormant, one leaving the warm ones and one written in place. Borrowed from the app for one call, holding nothing of its own.
+/// **The session and the page views, borrowed from the app for one of the sleeper's calls,** which reads them and owns neither. It's for three things:
+/// - **what a tab's sleep file is made from now** ([`Self::facts_and_material`], [`Self::material`]): what the session says of it, and what its page view
+///   holds, taken against the pages the session says the tab has now ([`pages_now`]), so that no picture in it is of a page deleted, moved or turned since it
+///   was drawn. The one place that rule is carried out, for a tab going dormant, one leaving the warm ones and one written in place;
+/// - **which page view holds a tab** ([`Self::engine_for`]), for what the budget's look costs it;
+/// - **the session**, for the looks at woken tabs' files and the next deadline at the end of a call ([`Sleeper::after_a_call`]).
+///
+/// **Nothing else of the app goes in it.** The record's store, its keeping ([`KeepsRecord`]), the writer's start ([`StartsWriter`]), the core queue and the
+/// clock are each passed on their own to the calls that need them, so what a call reaches is in its signature; added here, they'd make this the app by another
+/// name, a context every call gets whole. Nor any state of its own: the assertion below holds it at its three borrows.
 pub struct OnHand<'a> {
     session: &'a SessionHost<DrawableLoader>,
     panes: &'a Panes,
     engine: &'a Engine,
 }
 
-/// Built for each call that queues or writes a sleep file, so it holds its borrows and nothing else. Failure caught: a field of its own added.
+/// Built for each of the sleeper's calls that reads the session or the page views, so it holds its three borrows and nothing else. Failure caught: a field
+/// added, of the app's or its own.
 const _: () = assert!(std::mem::size_of::<OnHand<'static>>() == 3 * std::mem::size_of::<usize>());
 
 impl<'a> OnHand<'a> {
