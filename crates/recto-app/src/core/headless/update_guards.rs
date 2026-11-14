@@ -477,36 +477,36 @@ fn told_and_ended(
 /// updater and not the app, and the tell goes on without it: the updater's way back to the app finds nothing, reads that as a version that can't draw a page,
 /// and writes `launch_failed`, the installer's word to roll back, over a launch that kept the record and had already settled the install (or one that came up
 /// as a second copy). The tell held at the updater's first frame and the app ended under it, in that order every time: nothing in the update folder changes
-/// after the app has ended, byte for byte, `launch_failed` included. Ended after the tell instead, the installer saw it up as it should have.
+/// after the app has ended, byte for byte, `launch_failed` included. Ended after the tell instead, the installer saw it up as it should have. (A second copy
+/// ended after its tell is `late_lock`'s `an_update_launch_left_alone_for_a_minute_is_a_second_copy_that_started`; each case here costs a launch's wait for
+/// the lock, about a second here and five under CI's limits.)
 #[test]
 fn an_app_ended_while_the_updater_is_told_writes_nothing_after_it() {
-    for kept in [true, false] {
-        for ended_first in [true, false] {
-            let (at_end, disk, plan, was) = told_and_ended(kept, ended_first);
-            let files = disk.update_files();
-            let now = folder_bytes(&files.root);
-            let case = format!("kept {kept}, ended before the first frame {ended_first}");
-            assert!(!files.launch_failed().exists(), "{case}: never told to roll back");
+    for (kept, ended_first) in [(true, true), (true, false), (false, true)] {
+        let (at_end, disk, plan, was) = told_and_ended(kept, ended_first);
+        let files = disk.update_files();
+        let now = folder_bytes(&files.root);
+        let case = format!("kept {kept}, ended before the first frame {ended_first}");
+        assert!(!files.launch_failed().exists(), "{case}: never told to roll back");
+        assert!(
+            now == at_end,
+            "{case}: written after the app ended: {:?}",
+            now.keys().filter(|path| at_end.get(*path) != now.get(*path)).collect::<Vec<_>>()
+        );
+        if !kept {
             assert!(
-                now == at_end,
-                "{case}: written after the app ended: {:?}",
-                now.keys().filter(|path| at_end.get(*path) != now.get(*path)).collect::<Vec<_>>()
+                state_but_the_launch_ok(&disk) == was,
+                "{case}: the record, updates.json and the plan as they were"
             );
-            if !kept {
-                assert!(
-                    state_but_the_launch_ok(&disk) == was,
-                    "{case}: the record, updates.json and the plan as they were"
-                );
-            }
-            match (ended_first, kept) {
-                (true, _) => assert!(!files.launch_ok().exists(), "{case}: nothing said to the installer"),
-                (false, true) => assert_eq!(installer_sees(&disk, &plan), Ok(()), "{case}"),
-                (false, false) => assert_eq!(
-                    super::late_lock::launch_ok_says(&disk).map(|(_, tabs)| tabs),
-                    Some(None),
-                    "{case}: a second copy started, with no tab count"
-                ),
-            }
+        }
+        match (ended_first, kept) {
+            (true, _) => assert!(!files.launch_ok().exists(), "{case}: nothing said to the installer"),
+            (false, true) => assert_eq!(installer_sees(&disk, &plan), Ok(()), "{case}"),
+            (false, false) => assert_eq!(
+                super::late_lock::launch_ok_says(&disk).map(|(_, tabs)| tabs),
+                Some(None),
+                "{case}: a second copy started, with no tab count"
+            ),
         }
     }
 }
