@@ -1297,12 +1297,12 @@ impl AppCore {
 
     /// The Settings window, as it stands.
     pub fn settings_model(&self) -> updates::SettingsModel {
-        self.inner.settings_model()
+        updates::settings_model(&self.inner.updates)
     }
 
     /// What an update chosen from the menu came to, as an alert, when there's no window to say it in. Taken once: the host shows it, app-modal.
     pub fn take_update_alert(&self) -> Option<updates::UpdateAlert> {
-        self.inner.take_update_alert()
+        updates::take_alert(&self.inner.updates, &self.inner.window)
     }
 
     /// The alert's been answered: what it said has been read.

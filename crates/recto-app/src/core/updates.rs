@@ -532,6 +532,50 @@ pub fn setting_command(id: &str, on: bool) -> Option<Command> {
     Some(command)
 }
 
+/// The Settings window, as it stands: Rust's rows, words and rules ([`recto_update::updater::Updater`]'s).
+pub fn settings_model(updates: &recto_update::updater::Updater) -> SettingsModel {
+    let development = updates.source().mode == Mode::Development;
+    let hint = updates.auto_update_hint(crate::privacy::CHECK_EITHER_WAY);
+    let mut rows = vec![
+            SettingRow {
+                id: AUTO_UPDATE_ROW.to_owned(),
+                title: "Update automatically".to_owned(),
+                hint,
+                on: updates.switch_on(),
+                enabled: !development,
+            },
+            SettingRow {
+                id: DEV_BUILDS_ROW.to_owned(),
+                title: "Allow development builds".to_owned(),
+                hint: "Lets a development build replace RectoPDF, once you haven't used it for 5 minutes. Off, only releases are installed, and a development build goes back to the latest release.".to_owned(),
+                on: updates.dev_builds_on(),
+                enabled: !development,
+            },
+    ];
+    // Rust's rule: only on a development build, or while it's on.
+    rows.retain(|row| row.id != DEV_BUILDS_ROW || updates.shows_dev_builds_switch());
+    SettingsModel {
+        title: "Settings".to_owned(),
+        rows,
+        action: updates.settings_action().map(|action| SettingsAction {
+            id: UPDATE_NOW_ROW.to_owned(),
+            title: action.title,
+            hint: action.hint,
+            button: action.button,
+            enabled: action.enabled,
+        }),
+        status: updates.status_line(),
+        privacy_title: crate::privacy::STATEMENT_TITLE.to_owned(),
+        privacy_url: crate::privacy::statement_url(),
+    }
+}
+
+/// **What an update chosen from the menu came to, as an alert,** taken once: with the window showing, the margin says it, and nothing more is put up.
+pub fn take_alert(updates: &recto_update::updater::Updater, window: &super::Window) -> Option<UpdateAlert> {
+    let words = updates.menu().take_alert()?;
+    alert_for(words, window.showing())
+}
+
 /// Whether Settings has this switch or button, for QA's `settings` verb.
 pub fn has_setting(id: &str) -> bool {
     matches!(id, AUTO_UPDATE_ROW | DEV_BUILDS_ROW | UPDATE_NOW_ROW)
@@ -653,51 +697,6 @@ impl Inner {
     fn set_auto_update(&self, on: bool) {
         self.updates.choose_switch(on);
         self.core.push(CoreCall::Reconcile);
-    }
-
-    /// With the window open, the margin says it, and nothing more is put up.
-    pub fn take_update_alert(&self) -> Option<UpdateAlert> {
-        let words = self.updates.menu().take_alert()?;
-        let app = lock(&self.window.app);
-        let in_dock = app.window.as_ref().is_some_and(|window| window.minimised);
-        alert_for(words, !app.window_closed && !in_dock)
-    }
-
-    pub fn settings_model(&self) -> SettingsModel {
-        let development = self.updates.source().mode == Mode::Development;
-        let hint = self.updates.auto_update_hint(crate::privacy::CHECK_EITHER_WAY);
-        let mut rows = vec![
-                SettingRow {
-                    id: AUTO_UPDATE_ROW.to_owned(),
-                    title: "Update automatically".to_owned(),
-                    hint,
-                    on: self.updates.switch_on(),
-                    enabled: !development,
-                },
-                SettingRow {
-                    id: DEV_BUILDS_ROW.to_owned(),
-                    title: "Allow development builds".to_owned(),
-                    hint: "Lets a development build replace RectoPDF, once you haven't used it for 5 minutes. Off, only releases are installed, and a development build goes back to the latest release.".to_owned(),
-                    on: self.updates.dev_builds_on(),
-                    enabled: !development,
-                },
-        ];
-        // Rust's rule: only on a development build, or while it's on.
-        rows.retain(|row| row.id != DEV_BUILDS_ROW || self.updates.shows_dev_builds_switch());
-        SettingsModel {
-            title: "Settings".to_owned(),
-            rows,
-            action: self.updates.settings_action().map(|action| SettingsAction {
-                id: UPDATE_NOW_ROW.to_owned(),
-                title: action.title,
-                hint: action.hint,
-                button: action.button,
-                enabled: action.enabled,
-            }),
-            status: self.updates.status_line(),
-            privacy_title: crate::privacy::STATEMENT_TITLE.to_owned(),
-            privacy_url: crate::privacy::statement_url(),
-        }
     }
 
     /// The hand-off isn't going ahead.

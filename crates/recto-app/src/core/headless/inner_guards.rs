@@ -157,7 +157,6 @@ Inner::pub fn save_as(self: &Arc<Self>, tab: u32, path: String)
 Inner::pub fn save_panel(&self) -> SavePanelModel
 Inner::pub fn save_problem_answered(&self, save_as: bool) -> super::HostAction
 Inner::pub fn set_frozen(&self, frozen: bool)
-Inner::pub fn settings_model(&self) -> SettingsModel
 Inner::pub fn sheet_changed(&self, open: bool)
 Inner::pub fn shown_with_state(&self)
 Inner::pub fn shutdown(&self)
@@ -168,7 +167,6 @@ Inner::pub fn state_json(&self) -> Value
 Inner::pub fn state_read(&self) -> bool
 Inner::pub fn system_pressure(&self, critical: bool)
 Inner::pub fn take_places(&self)
-Inner::pub fn take_update_alert(&self) -> Option<UpdateAlert>
 Inner::pub fn update_command(&self, command: &Command) -> Result<Value, AgentError>
 Inner::pub fn window_closed(&self)
 Inner::pub fn window_interactive(&self) -> bool
@@ -299,6 +297,7 @@ Window::pub fn set_sidebar_width(&self, width: f64, core: &CoreQueue)
 Window::pub fn settings_window(&self) -> Option<SettingsWindow>
 Window::pub fn settings_window_changed(&self, place: Option<SettingsWindow>, saver: &Saver)
 Window::pub fn should_open(&self, reopened: bool) -> bool
+Window::pub fn showing(&self) -> bool
 Window::pub(super) fn closed(&self)
 Window::pub(super) fn opened(&self)
 Window::pub(super) fn replaced(&self, held: Vec<(usize, recto_index::select::Range)>)

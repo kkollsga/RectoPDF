@@ -76,7 +76,7 @@ fn the_menus_check_is_the_agents_check_and_alerts_only_with_no_window() {
         window_shut(&person, shut);
         assert_eq!(sent(&person, menu), [CHECK]);
         assert_eq!(status(&person), status(&agent));
-        let alert = person.core().take_update_alert();
+        let alert = crate::core::updates::take_alert(&person.core().updates, &person.core().window);
         assert_eq!(alert.is_some(), shut, "window shut: {shut}, alert: {alert:?}");
     }
 }
@@ -93,7 +93,10 @@ fn the_menus_update_whose_offer_has_gone_checks() {
         app.person(INSTALL_NOW);
     });
     assert_eq!(lines, [INSTALL_NOW, CHECK]);
-    assert!(app.core().take_update_alert().is_some(), "the check's answer as an alert");
+    assert!(
+        crate::core::updates::take_alert(&app.core().updates, &app.core().window).is_some(),
+        "the check's answer as an alert"
+    );
     let refused = app.agent(Level::Full, INSTALL_NOW).expect_err("nothing on offer");
     assert_eq!(refused.code, "nothing_on_offer");
 }
@@ -112,7 +115,10 @@ fn settings_choices_are_the_agents_commands_and_the_button_alone_does_no_more() 
         });
     });
     assert_eq!(lines, [INSTALL_NOW]);
-    assert!(app.core().take_update_alert().is_none(), "nothing alerted");
+    assert!(
+        crate::core::updates::take_alert(&app.core().updates, &app.core().window).is_none(),
+        "nothing alerted"
+    );
     let lines = sent(&app, |app| {
         app.act(UiAction::SettingChosen {
             id: AUTO_UPDATE_ROW.to_owned(),
@@ -123,5 +129,8 @@ fn settings_choices_are_the_agents_commands_and_the_button_alone_does_no_more() 
     let (agent, _agent_bed) = running(false);
     agent.agent(Level::Full, r#"{"cmd":"settings","auto_update":"off"}"#).expect("set");
     agent.settle();
-    assert_eq!(app.core().settings_model(), agent.core().settings_model());
+    assert_eq!(
+        crate::core::updates::settings_model(&app.core().updates),
+        crate::core::updates::settings_model(&agent.core().updates)
+    );
 }

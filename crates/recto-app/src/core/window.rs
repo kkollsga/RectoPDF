@@ -359,6 +359,13 @@ impl Window {
         lock(&self.app).window_closed
     }
 
+    /// **Whether the window is showing:** open, and not in the Dock. Where the margin can say something; with none, it's said in an alert.
+    pub fn showing(&self) -> bool {
+        let app = lock(&self.app);
+        let in_dock = app.window.as_ref().is_some_and(|window| window.minimised);
+        !app.window_closed && !in_dock
+    }
+
     /// Where the Settings window was, if it was open.
     pub fn settings_window(&self) -> Option<SettingsWindow> {
         lock(&self.app).settings_window

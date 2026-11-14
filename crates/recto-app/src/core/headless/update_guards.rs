@@ -233,7 +233,7 @@ fn chosen(id: &str, on: bool, by_agent: Option<&str>) -> String {
             .map(|kind| if kind == "model_changed" { "model_changed+" } else { kind })
             .collect();
     }
-    let model = app.core().settings_model();
+    let model = crate::core::updates::settings_model(&app.core().updates);
     let rows: Vec<String> = model.rows.iter().map(|row| format!("{}={}/{}", row.id, row.on, row.enabled)).collect();
     format!(
         "{} | {answer} | sent {sent:?} | heard {heard:?} | rows {rows:?} action {:?}",
