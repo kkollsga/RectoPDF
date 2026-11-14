@@ -2,9 +2,11 @@
 //! page, with `/QuadPoints`, its colour and an appearance stream, so other readers draw it as RectoPDF does. Highlights are additions, so they go into
 //! an appended revision like a turn, and a signed file's bytes stay as they were (AGENTS.md rule 5).
 //!
-//! **Everything written here is made from numbers this module worked out** (coordinator, 2026-11-14): the rectangles come from a selection, held to
-//! [`MAX_EDGE`] and finite, and are turned into the page's own coordinates here; no byte of any annotation already in the file is copied into what's
-//! written. Nothing names who made it, when, or what text it covers: no `/T`, no dates, no `/Contents`, no `/NM` (coordinator, Q10).
+//! **Every new object written here is made from numbers this module worked out** (coordinator, 2026-11-14): the rectangles come from a selection,
+//! held to [`MAX_EDGE`] and finite, and are turned into the page's own coordinates here. The page's `/Annots` list is written again with its own
+//! entries first, as the file had them (a reference stays a reference, and an annotation the file wrote in place in the list is carried as it was):
+//! nothing of an existing annotation is read into a new one. Nothing names who made it, when, or what text it covers: no `/T`, no dates, no
+//! `/Contents`, no `/NM` (coordinator, Q10).
 //!
 //! **Where a highlight sits.** Its rectangles are in the page's frame as `recto select` gives them: points from the top left, y down, past the crop and
 //! turned by the page's own `/Rotate` ([`crate::nav::Frame`], the frame links are drawn in). A save puts them back into the page's own coordinates by
@@ -261,8 +263,17 @@ mod tests {
         for key in [&b"T"[..], b"M", b"CreationDate", b"Contents", b"NM"] {
             assert!(!made.annotation.has(key), "nothing about who or when: {}", String::from_utf8_lossy(key));
         }
+        // The appearance: the colour set, then each quad as a closed path, filled; drawn within the box the annotation says.
         let content = String::from_utf8(made.appearance.content.clone()).unwrap();
-        assert_eq!(content, "/G0 gs 1 0.882 0.302 rg\n50 720 m\n150 720 l\n150 708 l\n50 708 l\nh\nf\n");
+        let words: Vec<&str> = content.split_whitespace().collect();
+        let colour = words.iter().position(|word| *word == "rg").expect("a fill colour");
+        let rgb: Vec<f32> = words[colour - 3..colour].iter().map(|word| word.parse().unwrap()).collect();
+        for (channel, shift) in rgb.iter().zip([16, 8, 0]) {
+            assert!((channel * 255.0 - ((HIGHLIGHT_RGB >> shift) & 0xFF) as f32).abs() < 0.5, "{content}");
+        }
+        let ops: Vec<&str> = words.iter().copied().filter(|word| word.parse::<f32>().is_err()).collect();
+        assert_eq!(&ops[ops.len() - 6..], ["m", "l", "l", "l", "h", "f"], "{content}");
+        assert_eq!(made.appearance.dict.get(b"BBox").unwrap(), made.annotation.get(b"Rect").unwrap());
     }
 
     /// Failure: a request naming a page past the document, an empty highlight, a rectangle with a NaN or an enormous edge, too many rectangles, or too
