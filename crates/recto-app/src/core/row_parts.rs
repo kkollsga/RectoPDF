@@ -1,0 +1,143 @@
+//! **What a feature's menu rows may read of the app and do in it** ([`super::menu_rows`]): the argument every row is given, in place of the app. Its fields
+//! are private, so what a row may do is the list of methods below, each named for the need; a row that needs something else adds one method here, named
+//! for that need, which the listing in `headless/inner_guards.rs` shows to a reviewer (docs/FEATURES.md, step 6). Most are a call on one of the app's
+//! parts; [`RowParts::zoom_for_person`], [`RowParts::toggle_snapshot_tool`] and [`RowParts::cancel_print`] are one feature's each. What starts on a thread
+//! of its own as the person is [`RowParts::person`]'s.
+//!
+//! Built once for each menu id asked about ([`RowParts::of`]), from references the app already holds: nothing is copied, locked or allocated to make it.
+
+use super::person::Person;
+use super::{Inner, Lifecycle, Published, Serving, Tools, Window, lock};
+use crate::Listener;
+use crate::panes::Panes;
+use crate::queue::{CoreCall, CoreQueue};
+use recto_reader::Engine;
+use recto_reader::tiles::Zoom;
+use recto_session::TabId;
+use recto_update::updater::Updater;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+/// **What a feature's menu rows may read of the app and do in it,** for one menu id asked about. Shared references only; a row's way copies it into its
+/// closure.
+#[derive(Clone, Copy)]
+pub struct RowParts<'a> {
+    published: &'a Mutex<Published>,
+    panes: &'a Panes,
+    engine: &'a Engine,
+    tools: &'a Tools,
+    window: &'a Window,
+    life: &'a Lifecycle,
+    core: &'a CoreQueue,
+    listener: &'a dyn Listener,
+    updates: &'a Updater,
+    host: &'a super::AppHost,
+    serving: &'a Serving,
+    person: Person<'a>,
+}
+
+impl<'a> RowParts<'a> {
+    /// The rows' parts of `app`.
+    pub fn of(app: &'a Arc<Inner>) -> Self {
+        Self {
+            published: &app.published,
+            panes: &app.panes,
+            engine: &app.engine,
+            tools: &app.tools,
+            window: &app.window,
+            life: &app.life,
+            core: &app.core,
+            listener: &*app.listener,
+            updates: &app.updates,
+            host: &app.host,
+            serving: &app.serving,
+            person: Person::of(app),
+        }
+    }
+
+    /// What the session thread last published, read under its lock: never the session's.
+    pub fn published<R>(&self, read: impl FnOnce(&Published) -> R) -> R {
+        read(&lock(self.published))
+    }
+
+    /// The tab in the pane being read, if it has one.
+    pub fn reading_tab(&self) -> Option<TabId> {
+        self.panes.tab_of(self.panes.reading())
+    }
+
+    /// The person's selection in the pane being read: its tab, and its range if it has one.
+    pub fn selected(&self) -> Option<(u32, Option<recto_index::select::Range>)> {
+        self.panes.reading_engine(self.engine).selection().hot()
+    }
+
+    /// The person's selection in the pane being read, to the system's clipboard, by the page view's own copy; `anyway` once they've said to copy a
+    /// protected document's text.
+    pub fn copy_selection(&self, anyway: bool) {
+        self.panes.reading_engine(self.engine).selection().copy(anyway);
+    }
+
+    /// Everything selected in the pane being read.
+    pub fn select_all(&self) {
+        self.panes.reading_engine(self.engine).selection().select_all();
+    }
+
+    /// Whether Save can be chosen now, as the menu says ([`super::saving::can_save`]).
+    pub fn can_save(&self) -> bool {
+        super::saving::can_save(self.published, self.life)
+    }
+
+    /// Whether the updates' menu item installs, rather than checks.
+    pub fn update_installs(&self) -> bool {
+        self.updates.menu_installs()
+    }
+
+    /// Marks the person's next update command as the menu's, unless one is marked already: whether it marked it.
+    pub fn mark_update_menu(&self) -> bool {
+        self.updates.menu().mark()
+    }
+
+    /// The zoom's own: the person's `view --zoom`, run here and now on the thread that asked ([`super::zoom::for_person`]).
+    pub fn zoom_for_person(&self, zoom: Zoom) -> bool {
+        super::zoom::for_person(self.host, self.serving, zoom)
+    }
+
+    /// The tools panel open or shut.
+    pub fn toggle_panel(&self) {
+        self.window.toggle_panel();
+    }
+
+    /// The host told its model changed, to draw it again.
+    pub fn tell_host(&self) {
+        self.listener.model_changed();
+    }
+
+    /// The session thread asked to publish again.
+    pub fn reconcile(&self) {
+        self.core.push(CoreCall::Reconcile);
+    }
+
+    /// A file the person opens ([`super::opening::open_for_person`]).
+    pub fn open(&self, path: PathBuf) {
+        super::opening::open_for_person(self.life, self.core, path);
+    }
+
+    /// ⌘K's palette opened.
+    pub fn open_palette(&self) {
+        self.tools.palette().open();
+    }
+
+    /// The snapshot tool's own: the pointer's tool on or off.
+    pub fn toggle_snapshot_tool(&self) {
+        self.tools.tool().toggle();
+    }
+
+    /// Printing's own: the person's print being prepared stopped.
+    pub fn cancel_print(&self) {
+        self.tools.printing().cancel();
+    }
+
+    /// What the person may start on a thread of its own.
+    pub fn person(&self) -> Person<'a> {
+        self.person
+    }
+}

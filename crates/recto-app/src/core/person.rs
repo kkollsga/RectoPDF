@@ -5,6 +5,7 @@
 //! What the window does around a person's command, beyond the command, is each feature's, one line each in the lists below: before it runs ([`BEFORE`]), and
 //! once it has ([`ANSWERED`]), as the words a refusal is said in, a password asked for or a list kept at once.
 
+use super::answer_parts::AnswerParts;
 use super::{FileReads, Inner};
 use crate::queue::{CoreCall, Origin, PersonCommand, Reading};
 use recto_agent::Code;
@@ -38,6 +39,46 @@ pub fn submit(inner: &Arc<Inner>, command: Command) {
     }
 }
 
+/// **What a person may start from a menu row or an answer, as the person:** a command, and the feature's own runs that take a thread of their own (a
+/// Save with the window's progress, a refused snapshot or print taken anyway). Each starts on its own thread, which holds the app to run it and to answer
+/// how it went, so this holds the app; its field is private to this file, so a row or an answer can do these and nothing more of the app through it.
+#[derive(Clone, Copy)]
+pub struct Person<'a> {
+    app: &'a Arc<Inner>,
+}
+
+impl<'a> Person<'a> {
+    /// The person's way into `app`.
+    pub fn of(app: &'a Arc<Inner>) -> Self {
+        Self { app }
+    }
+
+    /// A command as the person's ([`submit`]).
+    pub fn submit(self, command: Command) {
+        submit(self.app, command);
+    }
+
+    /// A command as the person's, made what it is by the session as it is when it runs ([`submit_when_run`]).
+    pub fn submit_when_run(self, command: Command, when_run: crate::queue::WhenRun) {
+        submit_when_run(self.app, command, when_run);
+    }
+
+    /// Saving's own: the person's Save of `tab`, on a thread of its own with the window's progress ([`super::saving::start_save`]).
+    pub fn save(self, tab: recto_session::TabId) {
+        super::saving::start_save(self.app, tab, None, false);
+    }
+
+    /// The snapshot tool's own: a notice's Copy anyway, for the person's snapshot it refused ([`super::snapshot_tool::anyway`]).
+    pub fn snapshot_anyway(self, serial: u64) {
+        super::snapshot_tool::anyway(self.app, serial);
+    }
+
+    /// Printing's own: a notice's Print anyway, for the person's print it refused ([`super::printing::anyway`]).
+    pub fn print_anyway(self, serial: u64) {
+        super::printing::anyway(self.app, serial);
+    }
+}
+
 /// Whether a person's command, as it's queued, is one that runs on a thread of its own: one that may wait, or isn't the session's to answer. Only a command
 /// held while a late keep's restore was read is queued so ([`submit`]), and it goes to its thread once it's let go.
 pub(crate) fn on_a_thread_of_its_own(run: &PersonCommand) -> bool {
@@ -51,7 +92,7 @@ fn on_its_own_thread(command: Command, counted: Running) {
         let mut events = Vec::new();
         sent(&inner.serving, &command);
         let result = recto_control::host::Host::run(&*inner.host, Actor::Person, &command, &mut events);
-        answered(&inner, &command, Origin::Input, &result);
+        answered(&AnswerParts::of(&inner), &command, Origin::Input, &result);
         inner.core.push(CoreCall::Events(events));
         drop(counted);
     });
@@ -107,7 +148,7 @@ const BEFORE: &[fn(&Inner, &mut FileReads, &Command)] = &[super::opening::before
 /// **What the window does with how a person's command went,** feature by feature, one line each: a failure in the person's own words, from the feature
 /// it's about, and the window's own steps after (a list kept at once). A failure no feature has words for is said nothing of, as the window's own calls said
 /// nothing (an Undo with nothing to undo); an agent's words, which name `recto` commands and levels, are never shown to a person.
-const ANSWERED: &[fn(&Arc<Inner>, &Ran<'_>)] = &[
+const ANSWERED: &[fn(&AnswerParts<'_>, &Ran<'_>)] = &[
     super::navigation::answered,
     super::opening::answered,
     super::closing::answered,
@@ -118,10 +159,10 @@ const ANSWERED: &[fn(&Arc<Inner>, &Ran<'_>)] = &[
     super::updates::answered,
 ];
 
-fn answered(inner: &Arc<Inner>, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {
+fn answered(parts: &AnswerParts<'_>, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {
     let ran = Ran { command, origin, result };
     for answer in ANSWERED {
-        answer(inner, &ran);
+        answer(parts, &ran);
     }
 }
 
@@ -157,9 +198,9 @@ pub fn session_words(error: &AgentError) -> Option<&'static str> {
 }
 
 /// A line by the page in the person's words, which goes by itself.
-pub fn say(inner: &Inner, words: String) {
-    inner.window.notices().say(words);
-    inner.core.push(CoreCall::Reconcile);
+pub fn say(notices: &super::window::Notices, core: &crate::queue::CoreQueue, words: String) {
+    notices.say(words);
+    core.push(CoreCall::Reconcile);
 }
 
 /// Runs a person's command now. Its answer is nobody's but a test's: the window draws what the session publishes.
@@ -175,7 +216,7 @@ pub fn run(inner: &Arc<Inner>, reads: &mut FileReads, run: PersonCommand, events
             Ok(resolved) => resolved,
             Err(error) => {
                 let result = Err(error);
-                answered(inner, &command, origin, &result);
+                answered(&AnswerParts::of(inner), &command, origin, &result);
                 return result;
             }
         },
@@ -197,7 +238,7 @@ pub fn run(inner: &Arc<Inner>, reads: &mut FileReads, run: PersonCommand, events
         .host
         .session
         .run_reading_later(Actor::Person, &command, events, &later, &super::find::effects_now(inner));
-    answered(inner, &command, origin, &result);
+    answered(&AnswerParts::of(inner), &command, origin, &result);
     result
 }
 
@@ -301,7 +342,7 @@ mod tests {
             let notices = inner.window.notices();
             notices.say("before".into());
             notices.clear_open_failure();
-            super::answered(&inner, &command, origin, &result);
+            super::answered(&super::AnswerParts::of(&inner), &command, origin, &result);
             (notices.notice(), notices.open_failure())
         };
         let said = |words: &str| (Some(words.to_string()), None);

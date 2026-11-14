@@ -4,8 +4,10 @@
 //!
 //! What decides is here or in `recto_agent::highlighting`; the host only draws.
 
+use crate::core::answer_parts::AnswerParts;
 use crate::core::menu_rows::{Agents, Asked, Row};
-use crate::core::{Inner, person};
+use crate::core::person;
+use crate::core::row_parts::RowParts;
 use crate::menus::HostAction;
 use crate::menus::{MenuEntry, MenuModel};
 use recto_agent::commands::Edit;
@@ -84,7 +86,7 @@ fn pick_of(range: Range) -> (u32, Option<u32>, String) {
 
 /// **The Mark Up menu's ids** ([`super::menu_rows`]): each takes the person's selection, which is theirs alone, and sends it as the command an
 /// agent has for itself, `recto highlight` or `recto highlight remove`, run as the person's. Nothing selected sends nothing.
-pub fn row<'a>(inner: &'a Arc<Inner>, asked: &Asked<'_>) -> Option<Row<'a>> {
+pub fn row<'a>(parts: &RowParts<'a>, asked: &Asked<'_>) -> Option<Row<'a>> {
     let make: fn(u32, Range) -> Command = match asked.id {
         HIGHLIGHT_ID => highlight_of,
         REMOVE_ID => remove_of,
@@ -95,13 +97,13 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &Asked<'_>) -> Option<Row<'a>> {
     } else {
         "`recto highlight remove`"
     };
+    let parts = *parts;
     Some(Row::window(
         "the person's selection, which only they have; an agent picks with the command's own arguments",
         Agents::ItsOwn(instead),
         move || {
-            let selected = inner.panes.reading_engine(&inner.engine).selection().hot();
-            if let Some((tab, Some(range))) = selected {
-                person::submit(inner, make(tab, range));
+            if let Some((tab, Some(range))) = parts.selected() {
+                parts.person().submit(make(tab, range));
             }
             HostAction::None
         },
@@ -109,7 +111,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &Asked<'_>) -> Option<Row<'a>> {
 }
 
 /// **How a person's highlight went, in words for them:** a refusal said by the page, as an agent's words are never shown to the person.
-pub fn answered(inner: &Arc<Inner>, ran: &person::Ran<'_>) {
+pub fn answered(parts: &AnswerParts<'_>, ran: &person::Ran<'_>) {
     let doing = match ran.command {
         Command::Edit(Edit::Highlight(_)) => "Couldn't highlight",
         Command::Edit(Edit::HighlightRemove(_)) => "Couldn't remove the highlight",
@@ -129,7 +131,7 @@ pub fn answered(inner: &Arc<Inner>, ran: &person::Ran<'_>) {
         person::session_words(error)
     };
     if let Some(words) = words {
-        person::say(inner, format!("{doing}: {words}"));
+        parts.say(format!("{doing}: {words}"));
     }
 }
 

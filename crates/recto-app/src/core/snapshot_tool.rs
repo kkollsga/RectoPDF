@@ -307,16 +307,17 @@ pub fn tab_came_forward(inner: &super::Inner) {
 
 /// **The snapshot tool's menu ids** ([`super::menu_rows`]), all the window's alone: toggling the tool, and a notice's "Copy anyway", which takes again only
 /// what that notice refused.
-pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+pub fn row<'a>(parts: &super::row_parts::RowParts<'a>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
     use super::menu_rows::Row;
+    let parts = *parts;
     if asked.id == TOGGLE_ID {
         return Some(Row::window(
             "the snapshot tool is what the pointer does in the window",
             super::menu_rows::Agents::AT_FULL,
             move || {
-                inner.tools.tool().toggle();
-                inner.core.push(super::CoreCall::Reconcile);
-                inner.listener.model_changed();
+                parts.toggle_snapshot_tool();
+                parts.reconcile();
+                parts.tell_host();
                 super::HostAction::None
             },
         ));
@@ -326,13 +327,20 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
         "a notice's Copy anyway, for the person's own snapshot it refused, to the system's pasteboard: their decision, where an agent's is `--anyway`, which is logged",
         super::menu_rows::Agents::ItsOwn("`recto snapshot --anyway`"),
         move || {
-            if let Some(job) = serial.parse().ok().and_then(|serial| inner.tools.tool().take_refused(serial)) {
-                start(inner, Job { anyway: true, ..job });
+            if let Ok(serial) = serial.parse() {
+                parts.person().snapshot_anyway(serial);
             }
-            inner.core.push(super::CoreCall::Reconcile);
+            parts.reconcile();
             super::HostAction::None
         },
     ))
+}
+
+/// **A notice's Copy anyway,** for the person's snapshot it refused, if it's still the one refused: taken again, as theirs ([`super::person::Person`]).
+pub(super) fn anyway(inner: &Arc<Inner>, serial: u64) {
+    if let Some(job) = inner.tools.tool().take_refused(serial) {
+        start(inner, Job { anyway: true, ..job });
+    }
 }
 
 /// What the notice says when a snapshot couldn't be taken, in Rust's words, and whether it offers "Copy anyway".

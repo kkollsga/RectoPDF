@@ -63,19 +63,20 @@ pub fn as_command(id: &str, recent: &[RecentFile]) -> Option<recto_agent::Comman
 }
 
 /// **The palette's menu id** ([`super::menu_rows`]): ⌘K opens it, in the sidebar, so the sidebar's shown first, and its field takes the keyboard.
-pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+pub fn row<'a>(parts: &super::row_parts::RowParts<'a>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
     if asked.action != Some(crate::menus::Action::PaletteOpen) {
         return None;
     }
+    let parts = *parts;
     Some(super::menu_rows::Row::window(
         "the palette's field takes the person's keyboard",
         super::menu_rows::Agents::Never,
         move || {
-            if lock(&inner.published).reader.sidebar_hidden {
-                super::person::submit(inner, super::viewing::show_sidebar());
+            if parts.published(|published| published.reader.sidebar_hidden) {
+                parts.person().submit(super::viewing::show_sidebar());
             }
-            inner.tools.palette().open();
-            inner.listener.model_changed();
+            parts.open_palette();
+            parts.tell_host();
             HostAction::FocusPalette
         },
     ))

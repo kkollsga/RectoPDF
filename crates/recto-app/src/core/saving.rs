@@ -69,6 +69,12 @@ impl SaveSupport for AppSaving {
 }
 
 /// **A save from the window, off the UI thread,** through the same command an agent's `recto save` runs, as the person's. `out` makes it a Save As. `close_after` closes the tab once it's saved, for the close prompt's Save. A hand-off waits for it, as it's a running command.
+/// **Whether Save can be chosen now,** from what's published: never waits. Not under a sheet: the close prompt's own Save is how to save then.
+pub fn can_save(published: &std::sync::Mutex<super::Published>, life: &super::Lifecycle) -> bool {
+    let reader = super::lock(published).reader.clone();
+    !reader.home && reader.edited && reader.save_enabled && life.sheets_open() == 0
+}
+
 pub fn start_save(inner: &Arc<super::Inner>, tab: TabId, out: Option<std::path::PathBuf>, close_after: bool) {
     // When the person answered Save As's sheet: a file made at that name after this isn't one they agreed to replace (review).
     let answered = std::time::SystemTime::now();
@@ -135,8 +141,9 @@ fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
 
 /// **Saving's menu ids** ([`super::menu_rows`]): File > Save, ⌘S and the Save icon are `save`, the person's on a thread of its own with the window's progress
 /// and problems, and only when Save can be chosen; Save As opens its sheet, whose answer is `UiAction::SaveAs`.
-pub fn row<'a>(inner: &'a Arc<super::Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+pub fn row<'a>(parts: &super::row_parts::RowParts<'a>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
     use super::menu_rows::Row;
+    let parts = *parts;
     match (asked.action.as_ref()?, asked.id) {
         (crate::menus::Action::Save, _) => Some(Row::own_way(
             recto_agent::commands::saving::Save {
@@ -146,9 +153,9 @@ pub fn row<'a>(inner: &'a Arc<super::Inner>, asked: &super::menu_rows::Asked<'_>
             },
             "the person's Save runs on a thread of its own, with the window's progress and its problems answered in the window",
             move || {
-                let shown = super::lock(&inner.published).reader.shown_tab;
-                if inner.can_save() && shown != 0 {
-                    start_save(inner, TabId(shown), None, false);
+                let shown = parts.published(|published| published.reader.shown_tab);
+                if parts.can_save() && shown != 0 {
+                    parts.person().save(TabId(shown));
                 }
                 super::HostAction::None
             },
