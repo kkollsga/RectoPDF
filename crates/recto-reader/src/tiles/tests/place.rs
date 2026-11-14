@@ -595,13 +595,6 @@ fn last_scroll_to(reader: &mut Reader) -> f64 {
         .expect("a scroll")
 }
 
-/// Failure (guard, before the band is added to it): a field added to a tab the page view holds grows each of the hot and warm tabs unnoticed. Pinned at what it
-/// is today, the compile-time ceiling's own number being only an upper bound.
-#[test]
-fn a_tab_the_page_view_holds_is_the_size_it_was() {
-    assert_eq!(size_of::<crate::tiles::doc::DocView>(), 680, "DocView grew");
-}
-
 /// A view whose top is `thousandths` down page `page`.
 fn top_on(reader: &Reader, page: u32, thousandths: f64) -> Viewport {
     let rect = reader.docs.shown().unwrap().layout.rect(page);

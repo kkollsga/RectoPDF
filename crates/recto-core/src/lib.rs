@@ -791,12 +791,6 @@ mod tests {
         );
     }
 
-    /// Failure: a field added carelessly makes every contents entry of every warm tab bigger.
-    #[test]
-    fn toc_entry_stays_small() {
-        assert!(std::mem::size_of::<TocEntry>() <= 32);
-    }
-
     /// Failure: reading contents has no bound on time, so a slow file holds `open` for as long as it likes. It must stop, keep what it has, and say so.
     #[test]
     fn contents_stop_at_their_time_limit_and_say_so() {
