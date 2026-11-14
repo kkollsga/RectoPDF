@@ -175,18 +175,18 @@ impl Toc {
         self.nearest(page, top, |_| true).map(|(at, _)| at)
     }
 
-    /// [`Self::section_at_place`] for the reader's eye line `eye` thousandths down `page`, which an entry's top may be [`TOP_SLACK`] below: the place a view
-    /// reports is rounded to a pixel, and an entry jumped to lies a hair below it. `placed` says whether a page's entries' tops mean anything: not on a
+    /// [`Self::section_at_place`] for the top of the reader's view, `top` thousandths down `page`, which an entry's top may be [`TOP_SLACK`] below: the place a
+    /// view reports is rounded to a pixel, and an entry jumped to (whose top the jump puts on the view's top) may lie a hair below it. `placed` says whether a page's entries' tops mean anything: not on a
     /// page with an unsaved turn, whose frame isn't the file's, where every entry is at the page's top.
-    pub fn current_at(&self, page: u32, eye: u16, placed: impl Fn(u32) -> bool) -> Option<usize> {
-        self.nearest(page, eye.saturating_add(TOP_SLACK), placed).map(|(at, _)| at)
+    pub fn current_at(&self, page: u32, top: u16, placed: impl Fn(u32) -> bool) -> Option<usize> {
+        self.nearest(page, top.saturating_add(TOP_SLACK), placed).map(|(at, _)| at)
     }
 
-    /// Which entry is current while the eye line stays in `[lo, hi)` thousandths of `page`, so the page view can tell the core when it leaves, and no
+    /// Which entry is current while the top of the view stays in `[lo, hi)` thousandths of `page`, so the page view can tell the core when it leaves, and no
     /// oftener. Always the whole page when no entry on it is below the current one, which is the page's whole way for a file with no places.
-    pub fn band_at(&self, page: u32, eye: u16, placed: impl Fn(u32) -> bool) -> Band {
+    pub fn band_at(&self, page: u32, top: u16, placed: impl Fn(u32) -> bool) -> Band {
         let key = |entry: &TocEntry| (entry.page, if placed(entry.page) { entry.top } else { 0 });
-        let current = self.nearest(page, eye.saturating_add(TOP_SLACK), &placed).map(|(_, key)| key);
+        let current = self.nearest(page, top.saturating_add(TOP_SLACK), &placed).map(|(_, key)| key);
         let lo = current
             .filter(|(at_page, _)| *at_page == page)
             .map_or(0, |(_, top)| top.saturating_sub(TOP_SLACK));
@@ -212,11 +212,11 @@ impl Toc {
     }
 }
 
-/// How far past the reader's eye line an entry may be and still be the one being read, in thousandths of the page: the place a view reports is rounded to a
-/// pixel (about 4 points of a letter page), and a click lands an entry's top on the view's top, above the eye line, so this covers only the rounding.
+/// How far past the top of the reader's view an entry may be and still be the one being read, in thousandths of the page: the place a view reports is rounded
+/// to a pixel (about 4 points of a letter page), and a click lands an entry's top on the view's top, so this covers only the rounding.
 pub const TOP_SLACK: u16 = 5;
 
-/// A stretch of one page in which the same entry is current: thousandths from `lo` up to but not including `hi`. Past the page's end, `hi` is one past
+/// A stretch of one page in which the same entry is current while the top of the view is in it: thousandths from `lo` up to but not including `hi`. Past the page's end, `hi` is one past
 /// [`TOP_SCALE`], so no place on it leaves it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Band {
@@ -697,9 +697,9 @@ mod tests {
     /// Failure: the entry being read is the last of the outline's order at or above the place, so entries out of order on a page (a file's outline needn't
     /// be sorted) mark one below the reader, an unplaced entry after a placed one hides the placed one it is below, or entries at one place pick the first.
     #[test]
-    fn the_entry_being_read_is_the_greatest_place_at_or_above_the_eye_and_ties_go_to_the_later() {
+    fn the_entry_being_read_is_the_greatest_place_at_or_above_the_top_and_ties_go_to_the_later() {
         let toc = placed_toc(&[(0, 600), (0, 100), (0, 400)]);
-        let at = |eye| toc.current_at(0, eye, |_| true);
+        let at = |top| toc.current_at(0, top, |_| true);
         assert_eq!((at(50), at(150), at(450), at(700)), (None, Some(1), Some(2), Some(0)), "out of order");
         let toc = placed_toc(&[(0, 300), (0, 0)]);
         assert_eq!(
@@ -716,7 +716,7 @@ mod tests {
     /// Failure: the place a view reports is rounded to a pixel, and an entry jumped to lies a hair below it, so the entry the reader jumped to isn't the
     /// current one (or, with more slack than the rounding, one the reader hasn't reached is). Fails with [`TOP_SLACK`] at 0.
     #[test]
-    fn an_entry_a_pixel_below_the_eye_is_the_one_being_read_and_one_further_is_not() {
+    fn an_entry_a_pixel_below_the_top_is_the_one_being_read_and_one_further_is_not() {
         let toc = placed_toc(&[(0, 100), (0, 300)]);
         assert_eq!(toc.current_at(0, 297, |_| true), Some(1), "a pixel or two above it");
         assert_eq!(toc.current_at(0, 300 - TOP_SLACK - 1, |_| true), Some(0), "a little more is the one before");
@@ -753,8 +753,8 @@ mod tests {
                 hi: 600 - TOP_SLACK
             }
         );
-        for eye in band.lo..band.hi {
-            assert_eq!(toc.current_at(0, eye, |_| true), Some(1), "{eye}");
+        for top in band.lo..band.hi {
+            assert_eq!(toc.current_at(0, top, |_| true), Some(1), "{top}");
         }
         assert_ne!(toc.current_at(0, band.hi, |_| true), Some(1));
         assert_ne!(toc.current_at(0, band.lo - 1, |_| true), Some(1));

@@ -149,11 +149,11 @@ fn assert_facts_hold(facts: &DocFacts, file_bytes: u64) {
         if let Some(found) = toc.section_at(page) {
             assert!(found < toc.entries().len());
         }
-        for eye in [0, 500, recto_core::TOP_SCALE] {
-            if let Some(found) = toc.current_at(page, eye, |_| true) {
+        for top in [0, 500, recto_core::TOP_SCALE] {
+            if let Some(found) = toc.current_at(page, top, |_| true) {
                 assert!(found < toc.entries().len());
             }
-            let band = toc.band_at(page, eye, |_| true);
+            let band = toc.band_at(page, top, |_| true);
             assert!(band.lo <= band.hi || band.hi == 0, "{band:?}");
         }
         if let Some(label) = toc.labels.label(page) {

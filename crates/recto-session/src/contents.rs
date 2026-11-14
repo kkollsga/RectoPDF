@@ -59,7 +59,7 @@ impl<L: DocLoader> Session<L> {
                     _ => toc,
                 };
                 // The note isn't an entry: the host draws it over the contents, and the rail counts entries.
-                rail_filled = contents_rows(shown, tab, self.lists.order(tab.id), reading_eye(self, tab), &mut rows);
+                rail_filled = contents_rows(shown, tab, self.lists.order(tab.id), reading_line(self, tab), &mut rows);
             }
         }
         let edited = self.tabs.active().is_some_and(|id| self.lists.is_edited(id));
@@ -103,7 +103,7 @@ impl<L: DocLoader> Session<L> {
         let toc = self.shown_contents(id)?;
         let tab = self.tabs.tab(id)?;
         let order = self.lists.order(id);
-        let chain = following_chain(&toc, tab, order, reading_eye(self, tab), &Placed::of(tab, order));
+        let chain = following_chain(&toc, order, reading_line(self, tab), &Placed::of(tab, order));
         let has_children = toc.entries().get(entry as usize + 1).is_some_and(|next| next.parent == entry);
         if !has_children {
             return None;
@@ -144,17 +144,19 @@ fn thousandths(within: f32) -> u16 {
     (within.clamp(0.0, 1.0) * f32::from(TOP_SCALE)).round() as u16
 }
 
-/// **How far down its page the reader's eye line is,** in thousandths, which the current entry is found by: where a jump the page view hasn't taken yet is
-/// going (the entry's top, on the view's top, which is above the eye line), else the eye line the view last told of on this page, else the place's own
-/// fraction, which is the view's top and so above the eye line, as after a restart, before the view has said.
-fn reading_eye<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> u16 {
+/// **The line the contents' current entry is found by:** the page at the top of the reader's view, as the session counts pages, and how far down it, in
+/// thousandths. An entry is current once its top is at or above this, so a heading becomes current as it reaches the top of the view, and an entry jumped to
+/// (whose top the jump puts on the view's top) stays current. It is where a jump the page view hasn't taken yet is going, else the place the page view last
+/// told of for the page the tab is on (its anchor, which is the top of the view and may be the page before the one the page number says, at the foot of it),
+/// else the top of the tab's page, as before the view has said.
+fn reading_line<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> (u32, u16) {
     if let Some(jump) = crate::trail::jump_here(session, tab) {
-        return thousandths(jump.within);
+        return (jump.page, thousandths(jump.within));
     }
-    session
-        .mail
-        .eye_of(tab.id, tab.page)
-        .unwrap_or_else(|| thousandths(crate::trail::here_of(session, tab).within))
+    tab.reading
+        .place
+        .filter(|place| place.page == tab.page)
+        .map_or((tab.page, 0), |place| (place.anchor_page, thousandths(place.within as f32)))
 }
 
 /// Which pages of the file have entries whose places mean something: not those with an unsaved turn (or any page, with the view turned), whose frame isn't the
@@ -186,9 +188,9 @@ impl Placed {
     }
 }
 
-/// **Where the entry being read changes,** for the tab being read: the stretch of its page in which the same entry stays current, in the page's thousandths,
-/// for the page view to tell the core when the reader leaves, and no oftener. `None` where nothing can be said: no contents shown, or the page isn't the file's
-/// own. The page is the session's (edits counted), as the page view counts.
+/// **Where the entry being read changes,** for the tab being read: the stretch of the page at the top of the view in which the same entry stays current, in
+/// the page's thousandths, for the page view to tell the core when the top of the view leaves it, and no oftener. `None` where nothing can be said: no
+/// contents shown, or the page isn't the file's own. The page is the session's (edits counted), as the page view counts.
 #[must_use]
 pub fn reading_band<L: DocLoader>(session: &Session<L>, id: TabId) -> Option<recto_core::Band> {
     let tab = session.tabs.tab(id)?;
@@ -197,10 +199,11 @@ pub fn reading_band<L: DocLoader>(session: &Session<L>, id: TabId) -> Option<rec
     }
     let toc = session.shown_contents(id)?;
     let order = session.lists.order(id);
-    let page = original_page(tab, order)?;
+    let (at_page, top) = reading_line(session, tab);
+    let page = original_page(at_page, order)?;
     let placed = Placed::of(tab, order);
-    let band = toc.band_at(page, reading_eye(session, tab), |at| placed.page(at));
-    Some(recto_core::Band { page: tab.page, ..band })
+    let band = toc.band_at(page, top, |at| placed.page(at));
+    Some(recto_core::Band { page: at_page, ..band })
 }
 
 /// Adds the visible contents rows: every top-level entry, plus the chapter being read opened down to the current
@@ -209,10 +212,10 @@ pub fn reading_band<L: DocLoader>(session: &Session<L>, id: TabId) -> Option<rec
 /// With unsaved page edits, entries follow their pages to their new positions. An entry whose page was deleted stays
 /// without a number, and pages added from another PDF belong to no section. While the tab's list is asleep, where any entry's page is now isn't known:
 /// none has a number, and none is the section being read.
-fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, order: Order<'_>, eye: u16, rows: &mut Vec<SidebarRow<'a>>) -> usize {
+fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, order: Order<'_>, line: (u32, u16), rows: &mut Vec<SidebarRow<'a>>) -> usize {
     let placed = Placed::of(tab, order);
-    let here = section_here(toc, tab, order, eye, &placed);
-    let chain = following_chain(toc, tab, order, eye, &placed);
+    let here = section_here(toc, order, line, &placed);
+    let chain = following_chain(toc, order, line, &placed);
     let folds = tab.folds.as_deref();
     // Whether each entry's own children show: it's shown, and open. Entries come in document order, so a parent is always decided first.
     let mut children_show = vec![false; toc.entries().len()];
@@ -266,25 +269,26 @@ fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, order: Order<'_>, eye: u16, 
     0
 }
 
-/// The tab's page in the file's own numbers, as its contents are in: none for a page added from another PDF, or while its list is asleep.
-fn original_page(tab: &TabRecord, order: Order<'_>) -> Option<u32> {
+/// A page of the tab as the session counts it, in the file's own numbers, as its contents are in: none for a page added from another PDF, or while its list
+/// is asleep.
+fn original_page(page: u32, order: Order<'_>) -> Option<u32> {
     match order {
-        Order::Edited(edits) => edits.slots().get(tab.page as usize).filter(|s| s.source == 0).map(|s| s.page),
-        Order::File => Some(tab.page),
+        Order::Edited(edits) => edits.slots().get(page as usize).filter(|s| s.source == 0).map(|s| s.page),
+        Order::File => Some(page),
         Order::Unknown => None,
     }
 }
 
-/// The entry for the section being read, in the file's own page numbers: the one with the greatest place at or above the reader's eye line, own contents and
-/// generated alike ([`Toc::current_at`]).
-fn section_here(toc: &Toc, tab: &TabRecord, order: Order<'_>, eye: u16, placed: &Placed) -> Option<usize> {
-    original_page(tab, order).and_then(|page| toc.current_at(page, eye, |at| placed.page(at)))
+/// The entry for the section being read, in the file's own page numbers: the one with the greatest place at or above the top of the reader's view, own
+/// contents and generated alike ([`Toc::current_at`]).
+fn section_here(toc: &Toc, order: Order<'_>, (page, top): (u32, u16), placed: &Placed) -> Option<usize> {
+    original_page(page, order).and_then(|page| toc.current_at(page, top, |at| placed.page(at)))
 }
 
 /// The section being read and every section it's in, which following the place keeps open.
-fn following_chain(toc: &Toc, tab: &TabRecord, order: Order<'_>, eye: u16, placed: &Placed) -> HashSet<u32> {
+fn following_chain(toc: &Toc, order: Order<'_>, line: (u32, u16), placed: &Placed) -> HashSet<u32> {
     let mut open = HashSet::new();
-    let mut cursor = section_here(toc, tab, order, eye, placed).map_or(NONE, |i| u32::try_from(i).unwrap_or(NONE));
+    let mut cursor = section_here(toc, order, line, placed).map_or(NONE, |i| u32::try_from(i).unwrap_or(NONE));
     while cursor != NONE && open.insert(cursor) {
         cursor = toc.entries().get(cursor as usize).map_or(NONE, |e| e.parent);
     }

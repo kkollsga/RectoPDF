@@ -115,3 +115,17 @@ fn entries_without_places_keep_the_last_of_the_page_and_places_order_the_rest() 
 fn an_entry_with_a_place_is_no_bigger() {
     assert_eq!(std::mem::size_of::<TocEntry>(), 20);
 }
+
+/// Open time of a file whose outline has 100,000 entries on three pages, each with a place: every entry's frame is read once per page, not once per entry.
+/// Ignored: it prints the time, for `cargo nextest run --run-ignored only -E 'test(a_huge_outline)'` before and after a change to how frames are read.
+#[test]
+#[ignore = "a measurement"]
+fn a_huge_outline_opens_in_the_time_pages_cost_not_entries() {
+    let count = 100_000usize;
+    let dests: Vec<String> = (0..count).map(|at| format!("[{} 0 R /XYZ 0 {} 0]", 3 + at % 3, 800 - (at % 700))).collect();
+    let refs: Vec<&str> = dests.iter().map(String::as_str).collect();
+    let file = file_with(&refs);
+    let began = std::time::Instant::now();
+    let toc = inspect(&file.0).unwrap().toc;
+    println!("{} entries read in {:?}", toc.entries().len(), began.elapsed());
+}

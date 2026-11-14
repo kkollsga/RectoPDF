@@ -376,6 +376,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     }
     drop(published);
     if changed {
+        eprintln!("MC reconcile thread={:?}", std::thread::current().name());
         inner.listener.model_changed();
     }
     // What's left alone comes due from here, and what's off screen may be over its budget.

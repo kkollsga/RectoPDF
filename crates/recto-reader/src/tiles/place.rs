@@ -13,10 +13,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// one process means anything, never a stamp's value:** two headless apps in one test share the clock, so a test never asserts a stamp's number.
 static PLACE_CLOCK: AtomicU64 = AtomicU64::new(0);
 
-/// How far down a page an eye line at `eye_y` is, in thousandths, held to the page: its rect starts at `top` and is `height` tall, as shown.
-pub(super) fn eye_line(eye_y: f64, top: f64, height: f64) -> u16 {
-    (((eye_y - top) / height.max(1.0)).clamp(0.0, 1.0) * f64::from(recto_core::TOP_SCALE)).round() as u16
+/// How far down a page a fraction of it is, in thousandths of the page.
+pub(super) fn thousandths(within: f64) -> u16 {
+    (within.clamp(0.0, 1.0) * f64::from(recto_core::TOP_SCALE)).round() as u16
 }
+
+/// A band with no page: none is set. A band's `hi` is at most one past [`recto_core::TOP_SCALE`], so the top bit of the word it's kept in says whether the view has woken the core for it.
+pub(super) const NONE_PAGE: u32 = u32::MAX;
+pub(super) const BAND_WOKE: u16 = 0x8000;
 
 /// Moves the place clock on, saying where it's come to.
 pub(super) fn tick() -> u64 {
@@ -125,16 +129,18 @@ impl Place {
         self.leaves_the_band(doc, viewport, page);
     }
 
-    /// **Wakes the core when the eye line leaves the stretch of the page in which the same contents entry is current** (`DocView::band`), by the wake a page
-    /// change has, and only once until the core sends another. The eye line is the one the page choice above uses, a third of the view down.
+    /// **Wakes the core when the top of the view leaves the stretch of a page in which the same contents entry is current** (`DocView::band`), by the wake a
+    /// page change has, and only once until the core sends another. The line is the view's top: the page and the fraction down it the place keeps as its
+    /// anchor, found from the view's height here with the one lookup the anchor already uses.
     fn leaves_the_band(&mut self, doc: &mut DocView, viewport: Viewport, page: u32) {
-        let Some((band_page, lo, hi, woke)) = doc.band.as_mut().filter(|band| !band.3) else {
+        let (band_page, lo, hi_woke) = doc.band;
+        if band_page == NONE_PAGE || hi_woke & BAND_WOKE != 0 {
             return;
-        };
-        let rect = doc.layout.rect(page);
-        let eye = eye_line(viewport.y + viewport.height / 3.0, rect.y, rect.height);
-        if page != *band_page || eye < *lo || eye >= *hi {
-            *woke = true;
+        }
+        let (at_page, within) = doc.layout.anchor_for(viewport.y, page);
+        let top = thousandths(within);
+        if at_page != band_page || top < lo || top >= hi_woke {
+            doc.band.2 |= BAND_WOKE;
             self.moved_page = Some(page);
         }
     }

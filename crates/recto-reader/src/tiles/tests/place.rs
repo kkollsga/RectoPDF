@@ -601,15 +601,15 @@ fn a_tab_the_page_view_holds_is_the_size_it_was() {
     assert_eq!(size_of::<crate::tiles::doc::DocView>(), 680, "DocView grew");
 }
 
-/// A view whose eye line (a third of the way down it) is `thousandths` down page `page`.
-fn eye_on(reader: &Reader, page: u32, thousandths: f64) -> Viewport {
+/// A view whose top is `thousandths` down page `page`.
+fn top_on(reader: &Reader, page: u32, thousandths: f64) -> Viewport {
     let rect = reader.docs.shown().unwrap().layout.rect(page);
     let mut at = view(0.0);
-    at.y = rect.y + thousandths / 1000.0 * rect.height - at.height / 3.0;
+    at.y = rect.y + thousandths / 1000.0 * rect.height;
     at
 }
 
-/// A reader arrived on page 5 with eye line `at` thousandths down, the contents' band set to `[lo, hi)` and nothing moved.
+/// A reader arrived on page 5 with the top of its view `at` thousandths down, the contents' band set to `[lo, hi)` and nothing moved.
 fn with_band(lo: u16, hi: u16, at: f64) -> Reader {
     let mut reader = reader_on(100);
     reader.place.scrolled_to = 0;
@@ -618,11 +618,11 @@ fn with_band(lo: u16, hi: u16, at: f64) -> Reader {
     let Some(Op::ScrollTo { seq, .. }) = reader.host.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else {
         panic!("no scroll")
     };
-    let mut there = eye_on(&reader, 5, at);
+    let mut there = top_on(&reader, 5, at);
     there.scrolled_to = seq;
     reader.set_viewport(there);
     reader.place.take_moved_page();
-    reader.docs.views.get_mut(&1).unwrap().band = Some((5, lo, hi, false));
+    reader.docs.views.get_mut(&1).unwrap().band = (5, lo, hi);
     reader
 }
 
@@ -632,21 +632,21 @@ fn with_band(lo: u16, hi: u16, at: f64) -> Reader {
 #[test]
 fn leaving_the_band_wakes_the_core_once_until_it_sends_another() {
     let mut reader = with_band(300, 600, 310.0);
-    for eye in (310..=590).step_by(10) {
-        reader.set_viewport(eye_on(&reader, 5, f64::from(eye)));
-        assert_eq!(reader.place.take_moved_page(), None, "inside the band at {eye}");
+    for top in (310..=590).step_by(10) {
+        reader.set_viewport(top_on(&reader, 5, f64::from(top)));
+        assert_eq!(reader.place.take_moved_page(), None, "inside the band at {top}");
     }
     let mut wakes = 0;
     for step in 0..60 {
         // Across the edge at 600 and back, 30 steps each way.
-        let eye = if step < 30 { 595 + step } else { 625 - (step - 30) };
-        reader.set_viewport(eye_on(&reader, 5, f64::from(eye)));
+        let top = if step < 30 { 595 + step } else { 625 - (step - 30) };
+        reader.set_viewport(top_on(&reader, 5, f64::from(top)));
         wakes += usize::from(reader.place.take_moved_page().is_some());
     }
     assert_eq!(wakes, 1, "one wake for the crossing, whatever the steps over the edge");
     // The core sends a band for where the reader is now: it wakes again on leaving that one.
-    reader.docs.views.get_mut(&1).unwrap().band = Some((5, 595, 640, false));
-    reader.set_viewport(eye_on(&reader, 5, 700.0));
+    reader.docs.views.get_mut(&1).unwrap().band = (5, 595, 640);
+    reader.set_viewport(top_on(&reader, 5, 700.0));
     assert!(reader.place.take_moved_page().is_some(), "and leaving the new band wakes again");
 }
 
@@ -657,7 +657,7 @@ fn a_narrow_band_wakes_once_and_no_band_never() {
     let mut reader = with_band(500, 503, 501.0);
     let wakes: usize = (0..40)
         .map(|step| {
-            reader.set_viewport(eye_on(&reader, 5, if step % 2 == 0 { 520.0 } else { 495.0 }));
+            reader.set_viewport(top_on(&reader, 5, if step % 2 == 0 { 520.0 } else { 495.0 }));
             usize::from(reader.place.take_moved_page().is_some())
         })
         .sum();
@@ -666,16 +666,16 @@ fn a_narrow_band_wakes_once_and_no_band_never() {
     none.place.scrolled_to = 0;
     settle(&mut none);
     none.place.take_moved_page();
-    for eye in [100.0, 900.0, 5.0] {
-        none.set_viewport(eye_on(&none, 0, eye));
+    for top in [100.0, 400.0, 5.0] {
+        none.set_viewport(top_on(&none, 0, top));
         assert_eq!(none.place.take_moved_page(), None, "no band, no wake");
     }
 }
 
-/// Failure: side by side, the eye line is taken against the other page of the row (a page of another height), so the band is left too soon or too late. The
-/// row's page is the one the session has, and the eye line is the row's, down its rect.
+/// Failure: side by side, the top of the view is taken against the other page of the row (a page of another height), so the band is left too soon or too late. The
+/// row's page is the one the session has, and the line is the top of the view, down its rect.
 #[test]
-fn side_by_side_the_eye_line_is_down_the_page_the_reader_is_on() {
+fn side_by_side_the_top_of_the_view_is_down_the_page_the_reader_is_on() {
     let mut reader = reader_on(100);
     reader.place.scrolled_to = 0;
     reader.set_spread(Spread::TwoUp);
@@ -685,13 +685,13 @@ fn side_by_side_the_eye_line_is_down_the_page_the_reader_is_on() {
     let left = reader.docs.shown().unwrap().layout.rect(0);
     let right = reader.docs.shown().unwrap().layout.rect(1);
     assert!(left.height > right.height * 1.5, "the pages differ: {} and {}", left.height, right.height);
-    reader.docs.views.get_mut(&1).unwrap().band = Some((0, 0, 400, false));
-    // An eye line 30% down the left page is more than 40% down the right one: leaving the band by the right page's reckoning, and not by the left's.
+    reader.docs.views.get_mut(&1).unwrap().band = (0, 0, 400);
+    // A top 30% down the left page is more than 40% down the right one: leaving the band by the right page's reckoning, and not by the left's.
     let mut at = view(0.0);
-    at.y = left.y + 0.30 * left.height - at.height / 3.0;
+    at.y = left.y + 0.30 * left.height;
     reader.set_viewport(at);
     assert_eq!(reader.place.take_moved_page(), None, "on the left page, 300 of 1000");
-    at.y = left.y + 0.45 * left.height - at.height / 3.0;
+    at.y = left.y + 0.45 * left.height;
     reader.set_viewport(at);
     assert!(reader.place.take_moved_page().is_some(), "450 of 1000 is out of the band");
 }

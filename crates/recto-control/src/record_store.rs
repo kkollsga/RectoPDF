@@ -2342,8 +2342,9 @@ mod tests {
         let (_, _, body) = record::open_sealed(recto_session::sleep::SLEEP_KIND, &written, CURRENT_VERSION).unwrap();
         let end = body.iter().position(|byte| *byte == b'\n').unwrap();
         let mut meta: serde_json::Value = serde_json::from_slice(&body[..end]).unwrap();
-        // As the build before this one wrote it: the previous format, and no places.
-        meta["sleep_format"] = (recto_session::sleep::SLEEP_FORMAT - 1).into();
+        // As the build before this one wrote it: format 2, and no places. A literal, not `SLEEP_FORMAT - 1`, which is whatever the format is now and so passes
+        // whether or not the bump to 3 happened: this holds that the format that had no places is never read.
+        meta["sleep_format"] = 2.into();
         meta.as_object_mut().unwrap().remove("tops");
         let mut older = serde_json::to_vec(&meta).unwrap();
         older.extend_from_slice(&body[end..]);
