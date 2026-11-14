@@ -313,6 +313,22 @@ fn naming_the_plain_tab(command: &Command) -> Command {
 /// `arranged`: a fresh session each time, so what one command did can't hide what another gave. The files' folders, which differ from run to run, are
 /// said alike.
 fn told(secret: u32, level: Level, command: &Command, arranged: Arrangement) -> String {
+    let (access, locked, plain) = arranged_session(secret, arranged);
+    let command = if arranged.naming_locked {
+        command.clone()
+    } else {
+        naming_the_plain_tab(command)
+    };
+    let mut events = Vec::new();
+    let result = execute(&access, Actor::Agent(level), &command, &mut events);
+    format!("{} {events:?}", said(result))
+        .replace(locked.folder().to_str().unwrap(), "<locked>")
+        .replace(plain.folder().to_str().unwrap(), "<plain>")
+}
+
+/// `locked.pdf` (`#1`, `secret`'s) opened with its password beside a plain tab (`#2`), the one `arranged` says being read; with the two files, which go
+/// when they're dropped.
+fn arranged_session(secret: u32, arranged: Arrangement) -> (Mutex<Session<crate::DrawableLoader>>, TempPdf, TempPdf) {
     let locked = TempPdf::new("locked.pdf", &secret_pdf(secret));
     let plain = TempPdf::new("plain.pdf", &pdf(3));
     let mut session = Session::new(crate::DrawableLoader);
@@ -320,20 +336,22 @@ fn told(secret: u32, level: Level, command: &Command, arranged: Arrangement) -> 
     let other = session.open(&plain.0).unwrap();
     session.tabs_mut().note_password_used(id);
     session.tap(if arranged.reading_locked { id } else { other }).unwrap();
-    let command = if arranged.naming_locked {
-        command.clone()
-    } else {
-        naming_the_plain_tab(command)
-    };
-    let access = Mutex::new(session);
-    let mut events = Vec::new();
-    let result = execute(&access, Actor::Agent(level), &command, &mut events).map(|mut answer| {
-        unmeasured(&mut answer);
-        answer
-    });
-    format!("{result:?} {events:?}")
-        .replace(locked.folder().to_str().unwrap(), "<locked>")
-        .replace(plain.folder().to_str().unwrap(), "<plain>")
+    (Mutex::new(session), locked, plain)
+}
+
+/// What an answer or a refusal says, with what's measured as it runs left out: from an answer, [`unmeasured`]; from a refusal's words, how long it took,
+/// which a slow refusal says ([`crate::render::without_time_taken`]).
+fn said(result: Result<Value, crate::AgentError>) -> String {
+    let result = result
+        .map(|mut answer| {
+            unmeasured(&mut answer);
+            answer
+        })
+        .map_err(|mut refused| {
+            refused.message = crate::render::without_time_taken(&refused.message).to_owned();
+            refused
+        });
+    format!("{result:?}")
 }
 
 /// An answer with what's measured as it runs left out (times, the process's and a worker's memory, open handles), which differ from run to run
@@ -360,6 +378,7 @@ fn unmeasured(value: &mut Value) {
 /// [`commands::About::Nothing`], or reads the document being read and says `Its`, fails here, not only where someone remembers to look.
 #[test]
 fn no_command_tells_an_agent_anything_of_a_protected_document() {
+    deadlines_met();
     let mut differs = Vec::new();
     for command in every_command() {
         for level in LEVELS {
@@ -372,6 +391,57 @@ fn no_command_tells_an_agent_anything_of_a_protected_document() {
         }
     }
     assert!(differs.is_empty(), "told something of the protected document:\n{}", differs.join("\n"));
+}
+
+/// Failure (independent review of phase R, S1, and its follow-up on `edited`): the person's own command on a document they opened with its password is
+/// heard by a watcher with something read from it: the page it turned to, its length in an edit's news, whether an edit took (deleting page 10 takes in
+/// one twin and not the other), Find at a hit, a draw. Every command, and that delete, run as the person in each of [`ARRANGEMENTS`] on the two sessions
+/// whose protected document differs, is heard alike once its events are past the rule every event leaving for
+/// watchers meets ([`crate::withheld::for_agents`], applied where they leave, `recto_control::server::outlet`). What the person is told back isn't compared:
+/// it's theirs. The walk of what the person's window, its draws and the Finder announce, over the app's socket, is `recto-app`'s
+/// `an_agent_is_told_the_same_of_two_protected_documents`.
+#[test]
+fn no_persons_command_is_heard_with_anything_of_a_protected_document() {
+    deadlines_met();
+    let mut differs = Vec::new();
+    // Past the end of the shorter twin (9 pages) and not of the longer (11): an edit whose taking depends on the length.
+    let past_one_end = Command::from(commands::editing::PageDelete {
+        tab: "#1".into(),
+        pages: "10".into(),
+    });
+    for command in every_command().into_iter().chain([past_one_end]) {
+        for arranged in ARRANGEMENTS {
+            let (one, two) = (heard(1, &command, arranged), heard(2, &command, arranged));
+            if one != two {
+                differs.push(format!("{} as the person, {arranged:?}:\n  {one}\n  {two}", command.tag()));
+            }
+        }
+    }
+    assert!(differs.is_empty(), "heard something of the protected document:\n{}", differs.join("\n"));
+}
+
+/// What a watcher hears of `command` run as the person, in the arrangement [`told`] makes.
+fn heard(secret: u32, command: &Command, arranged: Arrangement) -> String {
+    let (access, locked, plain) = arranged_session(secret, arranged);
+    let command = if arranged.naming_locked {
+        command.clone()
+    } else {
+        naming_the_plain_tab(command)
+    };
+    let mut events = Vec::new();
+    let _ = execute(&access, Actor::Person, &command, &mut events);
+    crate::withheld::for_agents(&access.lock().unwrap(), None, &mut events);
+    format!("{events:?}")
+        .replace(locked.folder().to_str().unwrap(), "<locked>")
+        .replace(plain.folder().to_str().unwrap(), "<plain>")
+}
+
+/// **The twins' answers don't turn on the machine's speed:** every renderer in this test's process gets a page deadline it always meets, so the
+/// hidden-text check (a draw of the page at 2x, left unchecked past the deadline) runs to its end for both twins. Under load the check ran out of time on
+/// one twin only, and the walks told them apart by it (`copy`'s `pages_unchecked`, the draw `text` notes when the check ran), failing 1 of 20 like CI
+/// (2026-11-14). The check still runs: what it does is compared, not switched off.
+fn deadlines_met() {
+    recto_render_service::page_deadline_for_this_process(std::time::Duration::from_secs(20));
 }
 
 /// A real PDF of `count` pages, each with its number in words.
@@ -824,4 +894,17 @@ fn the_scan_sees_each_form_it_names() {
     }
     let made_new = "fn f() {\n    let _ = OpenOptions::new()\n        .write(true)\n        .create_new(true)\n        .open(out);\n}\n";
     assert!(writes_over("x.rs", made_new).is_empty(), "create_new on the next line makes it new");
+}
+
+/// Failure (seen once under load, 2026-11-14): the walk above told the twins apart on how long a refusal took ("The picture couldn't be saved there." on
+/// one, "... That took 183 ms." on the other), which a slow refusal adds to its words and isn't the document. A refusal whose time is on one twin only is
+/// said alike, and one whose words really differ still isn't.
+#[test]
+fn a_refusals_time_is_left_out_and_its_words_are_not() {
+    let refused = |message: &str| -> Result<Value, crate::AgentError> { Err(crate::AgentError::new(crate::Code::WRITE_FAILED, message, 1)) };
+    let words = "The picture couldn't be saved there.";
+    let slow = crate::render::with_time_taken_of(crate::AgentError::new(crate::Code::WRITE_FAILED, words, 1), 183);
+    assert_ne!(slow.message, words, "a slow refusal says how long it took");
+    assert_eq!(said(Err(slow)), said(refused(words)));
+    assert_ne!(said(refused(words)), said(refused("The picture couldn't be saved here.")));
 }

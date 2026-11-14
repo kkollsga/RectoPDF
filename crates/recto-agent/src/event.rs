@@ -6,6 +6,7 @@
 
 use recto_session::{Closed, DocLoader, Session, TabId};
 use serde_json::{Value, json};
+use std::path::PathBuf;
 
 /// Something that happened in the session. Its line on the wire is [`Event::to_json`], and the tests in `tests/event_wire.rs` hold that to what it was before the events were a type.
 #[derive(Clone, Debug, PartialEq)]
@@ -23,15 +24,15 @@ pub enum Event {
     TabClosed {
         tab: TabId,
     },
-    /// The place in a tab moved, 1-based. `None` for a document opened with a password, whose place an agent isn't told.
+    /// The place in a tab moved, 1-based. Never told of a document opened with a password ([`crate::withheld`]).
     PageChanged {
         tab: TabId,
-        page: Option<u32>,
+        page: u32,
     },
-    /// A tab's edits changed. `pages` is `None` for a protected document.
+    /// A tab's edits changed, and its length now. Never told of a document opened with a password ([`crate::withheld`]).
     EditsChanged {
         tab: TabId,
-        pages: Option<u32>,
+        pages: u32,
         edited: bool,
     },
     Saved {
@@ -48,21 +49,26 @@ pub enum Event {
         page: u32,
         code: &'static str,
     },
+    /// The helpers' news is about a file: `path`, which isn't said on the wire, is what [`crate::withheld`] judges it by.
     IndexingStarted {
+        path: PathBuf,
         corpus: String,
     },
     /// `code` and `pages` are the helper's own report, passed on as it gave them.
     IndexingFinished {
+        path: PathBuf,
         corpus: String,
         state: String,
         code: Value,
         pages: Value,
     },
     ContentsGenerating {
+        path: PathBuf,
         file: String,
     },
     /// `elapsed_ms` and `helper_peak_bytes` are the helper's own numbers, passed on as it gave them.
     ContentsGenerated {
+        path: PathBuf,
         file: String,
         state: &'static str,
         code: Option<String>,
@@ -88,14 +94,20 @@ pub enum Event {
         panes: Vec<TabId>,
         synced: bool,
     },
-    /// Find is looking.
-    FindRunning,
-    /// Find is open, at a hit's page (1-based) if it has gone to one.
+    /// Find is looking. `tab` is the document it's searching, which isn't said on the wire: it's what [`crate::withheld`] judges the event by.
+    FindRunning {
+        tab: Option<TabId>,
+    },
+    /// Find is open, at a hit's page (1-based) if it has gone to one. `tab`, not said on the wire, is the hit's document; none for Find opened over the
+    /// document being read.
     FindOpened {
+        tab: Option<TabId>,
         page: Option<u32>,
     },
     FindClosed,
+    /// A search ended. `tab`, not said on the wire, is the document it searched.
     FindFinished {
+        tab: Option<TabId>,
         hits: u64,
     },
 }
@@ -118,7 +130,7 @@ impl Event {
             Self::ContentsGenerated { .. } => "contents_generated",
             Self::LevelChanged { .. } => "level_changed",
             Self::ViewSettingsChanged { .. } | Self::LayoutChanged { .. } | Self::ComparisonChanged { .. } => "view_changed",
-            Self::FindRunning | Self::FindOpened { .. } | Self::FindClosed => "find_changed",
+            Self::FindRunning { .. } | Self::FindOpened { .. } | Self::FindClosed => "find_changed",
             Self::FindFinished { .. } => "find_finished",
         }
     }
@@ -134,7 +146,7 @@ impl Event {
             Self::ContentsGenerating { .. } | Self::ContentsGenerated { .. } => "contents",
             Self::LevelChanged { .. } => "access",
             Self::ViewSettingsChanged { .. } | Self::LayoutChanged { .. } | Self::ComparisonChanged { .. } => "view",
-            Self::FindRunning | Self::FindOpened { .. } | Self::FindClosed | Self::FindFinished { .. } => "find",
+            Self::FindRunning { .. } | Self::FindOpened { .. } | Self::FindClosed | Self::FindFinished { .. } => "find",
         }
     }
 
@@ -148,15 +160,18 @@ impl Event {
             Self::Saved { tab, writer } => json!({ "tab": tab.0, "writer": writer }),
             Self::PageDrawn { tab, page } => json!({ "tab": tab.0, "page": page }),
             Self::PageFailed { tab, page, code } => json!({ "tab": tab.0, "page": page, "code": code }),
-            Self::IndexingStarted { corpus } => json!({ "corpus": corpus }),
-            Self::IndexingFinished { corpus, state, code, pages } => json!({ "corpus": corpus, "state": state, "code": code, "pages": pages }),
-            Self::ContentsGenerating { file } => json!({ "file": file }),
+            Self::IndexingStarted { corpus, .. } => json!({ "corpus": corpus }),
+            Self::IndexingFinished {
+                corpus, state, code, pages, ..
+            } => json!({ "corpus": corpus, "state": state, "code": code, "pages": pages }),
+            Self::ContentsGenerating { file, .. } => json!({ "file": file }),
             Self::ContentsGenerated {
                 file,
                 state,
                 code,
                 elapsed_ms,
                 helper_peak_bytes,
+                ..
             } => json!({ "file": file, "state": state, "code": code, "elapsed_ms": elapsed_ms, "helper_peak_bytes": helper_peak_bytes }),
             Self::LevelChanged { level, was } => json!({ "level": level, "was": was }),
             Self::ViewSettingsChanged { paper, sidebar } => json!({ "paper": paper, "sidebar": sidebar }),
@@ -164,11 +179,11 @@ impl Event {
             Self::ComparisonChanged { panes, synced } => {
                 json!({ "comparison": panes.iter().map(|tab| tab.0).collect::<Vec<_>>(), "sync": if *synced { "on" } else { "off" } })
             }
-            Self::FindRunning => json!({ "running": true }),
-            Self::FindOpened { page: None } => json!({ "open": true }),
-            Self::FindOpened { page: Some(page) } => json!({ "open": true, "page": page }),
+            Self::FindRunning { .. } => json!({ "running": true }),
+            Self::FindOpened { page: None, .. } => json!({ "open": true }),
+            Self::FindOpened { page: Some(page), .. } => json!({ "open": true, "page": page }),
             Self::FindClosed => json!({ "open": false }),
-            Self::FindFinished { hits } => json!({ "hits": hits }),
+            Self::FindFinished { hits, .. } => json!({ "hits": hits }),
         };
         out["event"] = json!(self.name());
         out
@@ -211,20 +226,21 @@ pub fn switched<L: DocLoader>(session: &Session<L>, switched: Option<TabId>, eve
     }
 }
 
-/// What watchers are told when the person moves to another page: which tab, and its page, unless it's a protected document's, whose place was read with its password.
-pub fn page_changed<L: DocLoader>(session: &Session<L>, id: TabId, page: u32) -> Event {
-    let page = (!session.tabs().withheld_from_agents(id)).then_some(page);
+/// What watchers are told when the person moves to another page: which tab, and its page. A protected document's is never told: that's decided where
+/// events leave for agents ([`crate::withheld`]), once for every event.
+pub fn page_changed(id: TabId, page: u32) -> Event {
     Event::PageChanged { tab: id, page }
 }
 
 /// The same, for the page the tab is on now: after a jump, a step back, a go-to or a link, the page the session landed on.
 pub fn page_now<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
-    page_changed(session, id, session.tabs().tab(id).map_or(1, |tab| tab.page + 1))
+    page_changed(id, session.tabs().tab(id).map_or(1, |tab| tab.page + 1))
 }
 
-/// What watchers are told when a tab's edits change, wherever they were changed from: an agent, the panel or the Edit menu.
+/// What watchers are told when a tab's edits change, wherever they were changed from: an agent, the panel or the Edit menu. A protected document's are
+/// never told: that's decided where events leave for agents ([`crate::withheld`]).
 pub fn edits_changed<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
-    let pages = (!session.tabs().withheld_from_agents(id)).then(|| session.pages().count(id));
+    let pages = session.pages().count(id);
     Event::EditsChanged {
         tab: id,
         pages,
@@ -263,34 +279,39 @@ pub fn comparison_changed<L: DocLoader>(session: &Session<L>) -> Event {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    /// One of each variant, with the group it must be in. The `match` makes a new variant fail to compile here until it has a sample.
-    fn samples() -> Vec<Event> {
-        let tab = TabId(1);
+    /// One of each variant, about `tab` and its file `path` where it's about one: the one list every test of all the events walks (here, and
+    /// [`crate::withheld`]'s). The `match` makes a new variant fail to compile here until it has a sample.
+    pub(crate) fn samples_about(tab: TabId, path: &std::path::Path) -> Vec<Event> {
+        let path = path.to_path_buf();
         let samples = vec![
             Event::TabOpened { tab, name: None },
             Event::TabActivated { tab, name: None },
             Event::TabClosed { tab },
-            Event::PageChanged { tab, page: None },
-            Event::EditsChanged {
-                tab,
-                pages: None,
-                edited: false,
-            },
+            Event::PageChanged { tab, page: 1 },
+            Event::EditsChanged { tab, pages: 1, edited: false },
             Event::Saved { tab, writer: "lopdf" },
             Event::PageDrawn { tab, page: 1 },
             Event::PageFailed { tab, page: 1, code: "x" },
-            Event::IndexingStarted { corpus: String::new() },
+            Event::IndexingStarted {
+                path: path.clone(),
+                corpus: String::new(),
+            },
             Event::IndexingFinished {
+                path: path.clone(),
                 corpus: String::new(),
                 state: String::new(),
                 code: Value::Null,
                 pages: Value::Null,
             },
-            Event::ContentsGenerating { file: String::new() },
+            Event::ContentsGenerating {
+                path: path.clone(),
+                file: String::new(),
+            },
             Event::ContentsGenerated {
+                path,
                 file: String::new(),
                 state: "done",
                 code: None,
@@ -304,10 +325,10 @@ mod tests {
                 panes: Vec::new(),
                 synced: false,
             },
-            Event::FindRunning,
-            Event::FindOpened { page: None },
+            Event::FindRunning { tab: Some(tab) },
+            Event::FindOpened { tab: None, page: None },
             Event::FindClosed,
-            Event::FindFinished { hits: 0 },
+            Event::FindFinished { tab: Some(tab), hits: 0 },
         ];
         for event in &samples {
             match event {
@@ -327,13 +348,17 @@ mod tests {
                 | Event::ViewSettingsChanged { .. }
                 | Event::LayoutChanged { .. }
                 | Event::ComparisonChanged { .. }
-                | Event::FindRunning
+                | Event::FindRunning { .. }
                 | Event::FindOpened { .. }
                 | Event::FindClosed
                 | Event::FindFinished { .. } => {}
             }
         }
         samples
+    }
+
+    fn samples() -> Vec<Event> {
+        samples_about(TabId(1), std::path::Path::new("/d/a.pdf"))
     }
 
     /// Failure: an event's name or group is in the code and not in the table the reference and `--events` read, so a watcher is told of an event it can't select, or the reference lists one that never comes. The two lists hold exactly the same names and groups.

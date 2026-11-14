@@ -122,8 +122,8 @@ impl Default for Policy {
             retire_bytes: 64 * 1024 * 1024,
             // About 80 pages of text a tile at a time, or 30 regions of a heavy map, for a restart of 17 ms or the map's own load.
             surface_bytes_cap: 1024 * 1024 * 1024,
-            // Platform §2.6. The slowest real page at 2x took 939 ms.
-            page_deadline: Duration::from_secs(5),
+            // Platform §2.6. The slowest real page at 2x took 939 ms ([`crate::page_deadline`]).
+            page_deadline: crate::page_deadline::starting(),
             // Spike §12: a stale render is gone within 100 ms, by return or kill.
             cancel_grace: Duration::from_millis(90),
             idle_exit: Duration::from_secs(30),

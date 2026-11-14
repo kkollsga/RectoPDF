@@ -104,6 +104,10 @@ impl Host for AppHost {
         self.session.acted_tab(command)
     }
 
+    fn for_watchers(&self, events: &mut Vec<Event>) {
+        self.session.for_watchers(events);
+    }
+
     fn attach(&self, notify: Notifier) {
         // The session's been told since the start, by `listen`: from now its news goes on to watchers too.
         *lock(&self.watchers) = Some(notify);

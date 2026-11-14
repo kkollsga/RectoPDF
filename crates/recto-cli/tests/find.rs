@@ -174,7 +174,7 @@ fn a_query_started_mid_run_stops_the_first() {
                 if event.name() == "find_finished" {
                     finished.fetch_add(1, Ordering::SeqCst);
                 }
-                if matches!(event, recto_agent::Event::FindRunning) && !started_second.swap(true, Ordering::SeqCst) {
+                if matches!(event, recto_agent::Event::FindRunning { .. }) && !started_second.swap(true, Ordering::SeqCst) {
                     host_for_news.find_begin("page 7 of").unwrap();
                 }
             }

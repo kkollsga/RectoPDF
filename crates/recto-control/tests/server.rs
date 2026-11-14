@@ -70,7 +70,7 @@ impl Host for Stand {
             Command::Move(recto_agent::commands::Move::Goto(recto_agent::commands::linking::Goto { page, .. })) => {
                 events.push(Event::PageChanged {
                     tab: recto_session::TabId(1),
-                    page: *page,
+                    page: page.unwrap_or(1),
                 });
                 Ok(json!({ "page": page }))
             }
@@ -105,6 +105,9 @@ impl Host for Stand {
     fn access_is_off(&self) {
         self.told_off.fetch_add(1, Ordering::SeqCst);
     }
+
+    /// A stand-in with no documents: nothing of one to hold back.
+    fn for_watchers(&self, _events: &mut Vec<Event>) {}
 
     fn unsaved_tabs(&self) -> Vec<(TabId, String)> {
         self.unsaved.lock().unwrap().clone()

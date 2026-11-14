@@ -316,7 +316,7 @@ fn back_overtaken_by_synced_scroll(pages_down: f64, followed_to: u32) {
         .filter(|event| matches!(event, recto_agent::Event::PageChanged { tab, .. } if *tab == a_id))
         .collect();
     assert!(
-        matches!(moves.as_slice(), [recto_agent::Event::PageChanged { page: Some(page), .. }] if *page == followed_to + 1),
+        matches!(moves.as_slice(), [recto_agent::Event::PageChanged { page, .. }] if *page == followed_to + 1),
         "the view's page said once, as the reader's move: {moves:?}"
     );
     // Nothing sends Back's jump again: the view arrives where it was last sent, which is where it followed to.

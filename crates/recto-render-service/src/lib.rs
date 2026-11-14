@@ -34,6 +34,7 @@ pub use budget::{
     measure_budget, measure_viewport, page_box_region, page_device_size, plan_regions,
 };
 pub use host::contents::{ContentsDone, ContentsEvent, ContentsRequest};
+mod page_deadline;
 #[cfg(feature = "test-seams")]
 mod test_deadline;
 pub use host::{
@@ -42,7 +43,7 @@ pub use host::{
 };
 pub use recto_proto::{CharRecord, TILE_EDGE, TileKind, TileRect};
 #[cfg(feature = "test-seams")]
-pub use test_deadline::under_page_deadline_for_test;
+pub use test_deadline::{page_deadline_for_this_process, under_page_deadline_for_test};
 
 /// Exit codes the worker uses to say why it left. Anything else, or a signal, reads as a crash.
 pub mod exit_code {
