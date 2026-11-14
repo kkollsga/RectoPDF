@@ -47,12 +47,26 @@ pub(super) fn runs_on_its_own_thread(command: &Command) -> bool {
     command.waits() || command.route() != recto_agent::Runs::Session
 }
 
-/// **Whether an ordered command is an edit that lands later** ([`crate::queue::lane::Lane::landing`]): one that can change the document, run on a thread
-/// of its own, so the session publishes what it did only once it lands: a highlight, its removal, and an inserted page (which no window path sends today).
-/// Not an undo, a turn or a close, which the session thread runs in the order taken; not a save or a print, which change no edit.
+/// **Whether an ordered command is an edit that lands later** ([`crate::queue::lane::Lane::landing`]): [`super::command_kinds`] says, by its tag, in a
+/// list with no default.
+pub use super::command_kinds::lands_later;
+
+/// **The tab showing as it will be once an edit of it that's landing has landed** (review of the lane, D1 and D3): edited, with a step to undo. What
+/// Undo's and Save's enablement and the close prompt go by, from what's published and the lane: never waits.
 #[must_use]
-pub fn lands_later(command: &Command) -> bool {
-    runs_on_its_own_thread(command) && matches!(command, Command::Edit(Edit::Highlight(_) | Edit::HighlightRemove(_) | Edit::PageInsert(_)))
+pub fn once_landed(reader: &crate::reader_view::ReaderView, lane: &crate::queue::lane::Lane) -> OnceLanded {
+    let landing = lane.landing(reader.shown_tab);
+    OnceLanded {
+        edited: reader.edited || landing,
+        can_undo: reader.can_undo || landing,
+    }
+}
+
+/// What [`once_landed`] says of the tab showing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OnceLanded {
+    pub edited: bool,
+    pub can_undo: bool,
 }
 
 /// **The person's lane, as the app uses it** ([`person::Person::lane`]): a ticket for each ordered command, its start now or when its turn comes.

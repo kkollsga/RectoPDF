@@ -79,7 +79,7 @@ impl SaveSupport for AppSaving {
 /// save then.
 pub fn can_save(published: &std::sync::Mutex<super::Published>, life: &super::Lifecycle, lane: &crate::queue::lane::Lane) -> bool {
     let reader = super::lock(published).reader.clone();
-    !reader.home && (reader.edited || lane.landing(reader.shown_tab)) && reader.save_enabled && life.sheets_open() == 0
+    !reader.home && super::person_lane::once_landed(&reader, lane).edited && reader.save_enabled && life.sheets_open() == 0
 }
 
 /// **A save from the window, off the UI thread,** through the same command an agent's `recto save` runs, as the person's. `out` makes it a Save As. `close_after` closes the tab once it's saved, for the close prompt's Save. A hand-off waits for it, as it's a running command.
@@ -218,7 +218,7 @@ impl super::Inner {
     /// the edit is one by the time a choice runs: Save and Don't Save are ordered behind it ([`crate::queue::lane::Lane::landing`]).
     pub fn close_prompt(&self) -> ClosePrompt {
         let published = super::lock(&self.published);
-        let edited = published.reader.edited || self.core.lane().landing(published.reader.shown_tab);
+        let edited = super::person_lane::once_landed(&published.reader, self.core.lane()).edited;
         // Save offered only where Save works: with it off for a signed document, the way on is Save As's unsigned copy.
         let save_off = edited && !published.reader.save_enabled && !published.reader.saving;
         close_prompt(

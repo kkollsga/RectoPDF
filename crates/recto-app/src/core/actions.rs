@@ -54,7 +54,7 @@ impl Inner {
             Enable::Close => reader(|reader| !reader.home && !reader.saving),
             Enable::ClearRecent => !lock(&self.published).recent.is_empty(),
             // With an edit of the tab showing still landing, an Undo is ordered behind it and undoes it (review of the lane, D3).
-            Enable::Undo => reader(|reader| reader.can_undo) || self.core.lane().landing(lock(&self.published).reader.shown_tab),
+            Enable::Undo => super::person_lane::once_landed(&lock(&self.published).reader, self.core.lane()).can_undo,
             Enable::Redo => reader(|reader| reader.can_redo),
             Enable::Back => reader(|reader| reader.can_go_back),
             Enable::Forward => reader(|reader| reader.can_go_forward),
