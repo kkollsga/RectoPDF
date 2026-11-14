@@ -475,6 +475,47 @@ fn no_command_below_full_loses_the_owners_edits() {
     assert!(lost.is_empty(), "the owner's edits lost below Full:\n{}", lost.join("\n"));
 }
 
+/// **Failure (second review of R4.3): a save below Full that would drop the owner's steps is made**, losing them. The walk above saves only where
+/// a save may be made; here the owner has highlighted page 4, saved, and deleted page 4, so their highlight's step names a page the next save
+/// leaves out. An agent's `save` at Control is refused with `owner_edits_at_stake`, and the owner's steps and the file are as they were.
+#[test]
+fn a_save_below_full_that_would_drop_the_owners_steps_is_refused() {
+    let file = TempPdf::new("owners.pdf", &pdf(4));
+    let access = opened(&file.0);
+    let id = access.lock().unwrap().tabs().active().expect("the owner's tab");
+    let save = || {
+        Command::from(commands::saving::Save {
+            tab: "#1".into(),
+            out: None,
+            replace: false,
+        })
+    };
+    let highlight = Command::from(commands::highlight::Highlight {
+        tab: "#1".into(),
+        page: Some(4),
+        to_page: None,
+        chars: Some("0-3".into()),
+        at: None,
+        to: None,
+        unit: None,
+    });
+    let delete = Command::from(commands::editing::PageDelete {
+        tab: "#1".into(),
+        pages: "4".into(),
+    });
+    for step in [highlight, save(), delete] {
+        execute(&access, Actor::Person, &step, &mut Vec::new()).expect("the owner's step");
+    }
+    let (steps, bytes) = (owners_steps(&access, id), std::fs::read(&file.0).unwrap());
+    let refused = execute(&access, Actor::Agent(Level::Control), &save(), &mut Vec::new());
+    assert!(
+        refused.as_ref().is_err_and(|error| error.code == crate::Code::OWNER_EDITS_AT_STAKE),
+        "{refused:?}"
+    );
+    assert_eq!(owners_steps(&access, id), steps, "the owner's steps are all there");
+    assert_eq!(std::fs::read(&file.0).unwrap(), bytes, "and the file as it was");
+}
+
 /// The arguments of kind [`crate::table::Kind::Path`] a command writes a new file to, and those it reads one from. Every such argument is one or the
 /// other ([`every_file_argument_is_read_or_written`]).
 const WRITES: &[&str] = &["out", "to_pdf"];
