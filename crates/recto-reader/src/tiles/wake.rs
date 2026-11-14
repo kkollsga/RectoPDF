@@ -160,8 +160,6 @@ pub(super) fn in_view_of(doc: &DocView, pages: &[u32], from: f64, height: f64) -
         .collect()
 }
 
-/// Copies a tile's pixels into a picture of its page, a step-sized box of them to each pixel. A pixel past the edge of either is left.
-#[allow(clippy::too_many_arguments)]
 /// A colour as the host has it (`0xRRGGBB`, as a page's paper and a tile of one colour are said), as a picture's pixel.
 fn bgra_of(rgb: u32) -> [u8; 4] {
     [(rgb & 0xFF) as u8, ((rgb >> 8) & 0xFF) as u8, ((rgb >> 16) & 0xFF) as u8, 0xFF]
@@ -184,6 +182,8 @@ fn paint_into(rect: TileRect, step: u32, rgb: u32, picture: &mut [u8], width: u3
     }
 }
 
+/// Copies a tile's pixels into a picture of its page, a step-sized box of them to each pixel. A pixel past the edge of either is left.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn shrink_into(
     source: &[u8],
     stride: usize,
