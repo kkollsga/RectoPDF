@@ -73,6 +73,21 @@ impl Inner {
         }
         .and_then(|builder| {
             builder.spawn(move || {
+                // What's running as the quit is asked, the person's commands (their edits waiting their turn among them) and agents', lands first, so
+                // what it does is in the record: at most the patience on the app's clock, woken as the last of them ends (the session thread parks
+                // again once nudged). Past it, the record's written without what's still running, as it always was, and that is lost.
+                let until = inner.life.now_ms().saturating_add(crate::listener::QUIT_PATIENCE_MS);
+                loop {
+                    let parks = inner.core.parks();
+                    if inner.life.persons_running() == 0 && inner.host.running.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                        break;
+                    }
+                    let left = until.saturating_sub(inner.life.now_ms());
+                    if left == 0 {
+                        break;
+                    }
+                    inner.core.wait_next_park(parks, Duration::from_millis(left));
+                }
                 let (sender, receiver) = std::sync::mpsc::channel();
                 let flushing = Arc::clone(&inner);
                 let _ = std::thread::Builder::new().name("recto-flush".into()).stack_size(512 * 1024).spawn(move || {

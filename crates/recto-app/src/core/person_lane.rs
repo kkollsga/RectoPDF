@@ -65,7 +65,7 @@ impl PersonsLane<'_> {
     /// **A person's ordered command that runs on a thread of its own** (one that may wait): started now if it's its turn, or parked till it is, counted
     /// as the person's running meanwhile. Never waits.
     pub fn submit_waiting(self, command: Command, turn: Turn) {
-        let counted = self.app.life.person_running();
+        let counted = person::Counted::new(&self.app.life, &self.app.core);
         let app = Arc::downgrade(self.app);
         let start: Start = Box::new(move |turn| {
             let started = app.upgrade().map(|inner| person::Person::of(&inner).lane().start_waiting(command, Some(turn)));
@@ -77,7 +77,7 @@ impl PersonsLane<'_> {
     /// **The person's Save of `tab`, asked:** started now if it's its turn, or parked till it is. `start` runs it, holding its turn.
     pub fn submit_save(self, tab: TabId, start: Start) {
         let turn = self.app.core.take_turn(tab.0);
-        let counted = self.app.life.person_running();
+        let counted = person::Counted::new(&self.app.life, &self.app.core);
         let start: Start = Box::new(move |turn| {
             start(turn);
             drop(counted);
@@ -167,7 +167,7 @@ impl PersonsLane<'_> {
                 return None;
             }
         };
-        let counted = self.app.life.person_running();
+        let counted = person::Counted::new(&self.app.life, &self.app.core);
         let core = Arc::downgrade(&self.app.core);
         let start: Start = Box::new(move |turn| {
             if let Some(core) = core.upgrade() {

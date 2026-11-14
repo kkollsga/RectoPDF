@@ -166,15 +166,42 @@ pub fn not_started(error: &AgentError) -> bool {
 /// running for good, so a hand-off waited on it to the end of its patience and the tests' settle never settled (review, 2026-11-13).
 /// The life's count goes first as it's dropped (fields drop in the order they're declared), then the app, as when this let go of the count itself.
 pub(super) struct Running {
-    _counted: super::life::PersonRunning,
+    _counted: Counted,
     inner: Arc<Inner>,
 }
 
 impl Running {
     pub(super) fn start(inner: Arc<Inner>) -> Self {
         Self {
-            _counted: inner.life.person_running(),
+            _counted: Counted::new(&inner.life, &inner.core),
             inner,
+        }
+    }
+}
+
+/// **A person's command counted as running, until this is dropped,** on its thread or waiting its turn in the lane: the last to go wakes a quit waiting
+/// for what's running to land ([`super::quitting`]), as the session thread parks again once nudged.
+pub(super) struct Counted {
+    counted: Option<super::life::PersonRunning>,
+    life: Arc<super::Lifecycle>,
+    core: Arc<crate::queue::CoreQueue>,
+}
+
+impl Counted {
+    pub(super) fn new(life: &Arc<super::Lifecycle>, core: &Arc<crate::queue::CoreQueue>) -> Self {
+        Self {
+            counted: Some(life.person_running()),
+            life: Arc::clone(life),
+            core: Arc::clone(core),
+        }
+    }
+}
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        drop(self.counted.take());
+        if self.life.persons_running() == 0 {
+            self.core.nudge();
         }
     }
 }

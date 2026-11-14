@@ -256,20 +256,26 @@ fn a_close_asks_while_an_edit_of_its_tab_is_landing() {
     app.settle();
 }
 
-/// Failure (coordinator, 2026-11-14): a quit with the person's edits waiting holds up its answer for them, or drops them as it freezes. The answer comes,
-/// and the waiting Undo still runs once the highlight lands, as an edit asked before the quit.
+/// Failure (coordinator, 2026-11-14): a quit with the person's edits waiting drops them as it freezes, or writes the record before they've run. The quit
+/// waits for them as for any command running, the waiting Undo runs past the freeze once the highlight lands, and the record has both: at the next launch
+/// the highlight is there to redo and the turn to undo.
 #[test]
-fn a_quit_with_edits_waiting_answers_and_they_still_run() {
+fn a_quit_with_edits_waiting_runs_them_before_it_writes() {
     let app = with_a_step_before();
+    let answers = |app: &HeadlessApp| app.heard().iter().filter(|heard| matches!(heard, crate::testkit::Heard::QuitAnswer(_))).count();
     while_a_highlight_is_read(&app, HIGHLIGHT_ID, "highlight", || {
         menu(&app, "edit.undo");
         flush(&app);
-        let answer = app.ask_to_quit();
-        assert!(answer.go, "answered, and not held for what waits: {answer:?}");
+        app.core().quit_requested();
     });
+    app.wait_until("the quit's answer", || answers(&app) == 1);
+    let disk = app.quit_anyway();
+    let app = disk.start();
+    app.settle();
     assert_eq!(
         undo_redo(&app),
         (true, true),
-        "the undo ran past the freeze: the highlight to redo, the turn to undo"
+        "the undo ran past the freeze, before the write: the highlight to redo, the turn to undo"
     );
+    drop(app.quit());
 }

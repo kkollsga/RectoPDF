@@ -63,7 +63,7 @@ impl Host for AppHost {
         if !asks_only {
             self.running.fetch_add(1, Ordering::SeqCst);
             if self.handing_off.load(Ordering::SeqCst) {
-                self.running.fetch_sub(1, Ordering::SeqCst);
+                self.command_ended();
                 return Err(
                     AgentError::new(Code::BUSY, "The app is being updated, so this wasn't done.", recto_agent::exit::BUSY)
                         .then("Try again in a moment, when it's back."),
@@ -74,7 +74,7 @@ impl Host for AppHost {
         super::person::held_at(command.tag());
         let result = self.run_counted(actor, command, events);
         if !asks_only {
-            self.running.fetch_sub(1, Ordering::SeqCst);
+            self.command_ended();
         }
         result
     }
@@ -125,6 +125,14 @@ impl Host for AppHost {
 }
 
 impl AppHost {
+    /// **A command counted in [`Self::running`] has ended:** the last one wakes a quit waiting for it to land ([`super::quitting`]), as the session thread
+    /// parks again once nudged.
+    pub fn command_ended(&self) {
+        if self.running.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.core.nudge();
+        }
+    }
+
     /// Where a command goes, by its declared route: the app's own to [`Self::run_app`], the rest to the session.
     pub fn run_counted(&self, actor: Actor, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         match command.route() {
