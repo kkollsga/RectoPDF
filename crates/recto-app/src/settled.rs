@@ -12,7 +12,8 @@
 //!   prepared, the looks at other tabs' and woken tabs' files, at a file's signatures and at generated contents, Find's thread, and the record's writer
 //!   running or a write due now;
 //! - **the page views**, by whether a host draws them ([`PageViews`]): each one's last job's end told ([`recto_reader::Engine::wait_settled`]), and either drawn
-//!   as far as it shows (a window) or its thread resting with everything asked of it seen (the kit, which has no view to draw).
+//!   as far as it shows (a window) or its thread resting with everything asked of it seen and nothing left for the host to take (the kit, which has no
+//!   view to draw).
 //!
 //! **What's left out, and why.** The sleep files' writer ([`crate::sleep_queue::Leaving`]): it queues nothing for the session, so it can't leave the session
 //! unsettled, and a test that reads a sleep file or its counts waits for that write by name (some settle on purpose with it held mid-write). A late keep's read
