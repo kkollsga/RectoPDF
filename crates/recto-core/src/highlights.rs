@@ -9,13 +9,20 @@
 //! - every rectangle given is finite, of some area, and inside the page as it's shown, clamped to it (coordinator, 2026-11-14).
 //!
 //! Rectangles are in the page's frame, as `recto select` and links give them: points from the top left, y down, past the crop and turned by the
-//! page's own `/Rotate`. Removing a file's highlight isn't built yet (the coordinator's scope cut, 2026-11-14), so nothing here writes.
+//! page's own `/Rotate`. Nothing here writes: a highlight's place in its list and its `/Rect` are what a removal names it by (review of R4.3, S2), and
+//! the save checks both against the file before it takes it out (`crate::save::GoneHighlight`).
+//!
+//! A read of one page also stops at [`MAX_READ_TIME`], as a read of links does, and says it was cut short (review of R4.3).
 
 use crate::nav::{Frame, frame_of};
 use crate::{OpenError, deref, open_bytes, open_reader_cached};
 use lopdf::{Dictionary, IndexedReader, Object};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// Longest one page's read takes, whatever the file: past it what's found is given, and `truncated` says so.
+pub const MAX_READ_TIME: Duration = Duration::from_millis(500);
 
 /// Most annotations looked at on one page, highlights or not.
 pub const MAX_PAGE_ANNOTS: usize = 8192;
@@ -33,6 +40,9 @@ pub struct FileHighlight {
     pub rects: Vec<[f32; 4]>,
     /// Its colour, `0xRRGGBB`, if it says one that can be read.
     pub rgb: Option<u32>,
+    /// Its `/Rect` in the page's own coordinates, `[left, bottom, right, top]`, if it has one of four finite numbers: with `index`, what a removal
+    /// names it by.
+    pub rect: Option<[f32; 4]>,
 }
 
 /// A page's highlights.
@@ -60,6 +70,7 @@ struct Limits {
     annots: usize,
     highlights: usize,
     quads: usize,
+    deadline: Instant,
 }
 
 impl Default for Limits {
@@ -68,6 +79,7 @@ impl Default for Limits {
             annots: MAX_PAGE_ANNOTS,
             highlights: MAX_PAGE_HIGHLIGHTS,
             quads: MAX_QUADS,
+            deadline: Instant::now() + MAX_READ_TIME,
         }
     }
 }
@@ -92,6 +104,10 @@ fn highlights_of(reader: &IndexedReader, page: u32, limits: Limits) -> PageHighl
     };
     out.truncated = annots.len() > limits.annots;
     for (index, item) in annots.iter().take(limits.annots).enumerate() {
+        if Instant::now() >= limits.deadline {
+            out.truncated = true;
+            break;
+        }
         let Some(Object::Dictionary(annot)) = deref(reader, item) else { continue };
         if !matches!(annot.get(b"Subtype"), Ok(Object::Name(kind)) if kind == b"Highlight") {
             continue;
@@ -109,6 +125,7 @@ fn highlights_of(reader: &IndexedReader, page: u32, limits: Limits) -> PageHighl
             index: u32::try_from(index).unwrap_or(u32::MAX),
             rects,
             rgb: colour_of(reader, &annot),
+            rect: rect_of(reader, &annot),
         });
     }
     out
@@ -172,6 +189,16 @@ fn rects_of(reader: &IndexedReader, annot: &Dictionary, frame: Frame, (width, he
     (shown, cut)
 }
 
+/// `/Rect` as four finite numbers, its corners in order.
+fn rect_of(reader: &IndexedReader, annot: &Dictionary) -> Option<[f32; 4]> {
+    let Some(Object::Array(items)) = annot.get(b"Rect").ok().and_then(|rect| deref(reader, rect)) else {
+        return None;
+    };
+    let edges: Vec<f32> = items.iter().map(|item| number(reader, item)).collect::<Option<_>>()?;
+    let [x0, y0, x1, y1] = <[f32; 4]>::try_from(edges).ok()?;
+    Some([x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)])
+}
+
 /// `/C` of three numbers from 0 to 1, as `0xRRGGBB`.
 fn colour_of(reader: &IndexedReader, annot: &Dictionary) -> Option<u32> {
     let Some(Object::Array(items)) = annot.get(b"C").ok().and_then(|colour| deref(reader, colour)) else {
@@ -215,7 +242,8 @@ mod tests {
             vec![FileHighlight {
                 index: 1,
                 rects: vec![[50.0, 80.0, 100.0, 12.0]],
-                rgb: Some(0xFFFF00)
+                rgb: Some(0xFFFF00),
+                rect: Some([0.0, 0.0, 1.0, 1.0]),
             }]
         );
         assert!(!read.truncated);
@@ -262,6 +290,7 @@ mod tests {
             annots: 3,
             highlights: 2,
             quads: 1,
+            ..Limits::default()
         };
         let at = highlights_of(&page_with(&[ONE, ONE], ""), 0, small);
         assert_eq!((at.found.len(), at.truncated), (2, false));
@@ -271,5 +300,17 @@ mod tests {
         assert_eq!((annots.found.len(), annots.truncated), (0, true), "a fourth annotation isn't looked at");
         let quads = highlights_of(&page_with(&[two_quads], ""), 0, small);
         assert_eq!((quads.found[0].rects.len(), quads.truncated), (1, true), "a second quadrilateral");
+    }
+
+    /// Failure (review of R4.3): a page's read has no time limit, as a read of links has, so a page of costly annotations holds an agent's
+    /// `recto highlights` and a removal's look for as long as it takes. Held with the time already up: nothing's read, and it says it was cut short.
+    #[test]
+    fn a_read_stops_at_its_time_and_says_so() {
+        let late = Limits {
+            deadline: Instant::now(),
+            ..Limits::default()
+        };
+        let read = highlights_of(&page_with(&[ONE], ""), 0, late);
+        assert_eq!((read.found.len(), read.truncated), (0, true));
     }
 }
