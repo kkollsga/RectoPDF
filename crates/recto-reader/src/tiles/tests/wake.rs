@@ -495,33 +495,54 @@ fn settle_drawn_as(reader: &mut Reader, kind: impl Fn(&JobKind) -> TileKind) {
     reader.applied();
 }
 
+/// A reader on a page whose tiles came back of one colour: all red, or a red band of the top row's tiles over paper, with the page's preview then taken by
+/// the system. The picture of the page in view for a sleep file, and how many tile pixels a picture pixel is.
+fn picture_from_the_tiles(band_only: bool) -> (RawPicture, u32) {
+    const RED: u32 = 0xFF_00_00;
+    let mut reader = reader_on(5);
+    reader.note_version(Path::new("/d/a.pdf"), 1);
+    settle_drawn_as(&mut reader, |kind| match kind {
+        JobKind::Draw {
+            rect, what: DrawKind::Tile, ..
+        } => TileKind::Blank {
+            rgb: if !band_only || rect.y == 0 { RED } else { PaperKind::White.rgb() },
+        },
+        _ => TileKind::Colour,
+    });
+    assert!(reader.cache.empty_discardable() > 0, "the preview, off its layer, taken by the system");
+    let tile_scale = reader.docs.shown().unwrap().drawing.tile_scale;
+    let picture = reader.pictures_in_view(1).into_iter().next().expect("a picture of the page in view");
+    let step = (tile_scale / picture.scale).round() as u32;
+    (picture, step)
+}
+
 /// Failure (2026-11-14, `a_launch_doesnt_show_a_picture_of_a_file_thats_been_replaced` at load 77, and 0.1.0 has it): with the system having taken a page's
 /// preview, as it does under memory pressure once the page's tiles cover it, the page's picture for a sleep file is made from its tiles, and a tile of one
 /// colour, which has no surface, was left out. A page of one colour had no picture at all, so the next launch went up on bare paper, and a page with a band
-/// of colour was pictured with paper where the band is. Each tile of one colour is painted in its colour.
+/// of colour was pictured with paper where the band is. Each tile of one colour is painted in its colour, where it is and at the picture's scale, and the
+/// picture is the same however the cache holds its tiles.
 #[test]
 fn a_picture_made_from_the_tiles_has_their_one_colour_tiles_in_it() {
-    const RED: u32 = 0xFF_00_00;
     const RED_BGRA: [u8; 4] = [0, 0, 0xFF, 0xFF];
-    for band_only in [false, true] {
-        let mut reader = reader_on(5);
-        reader.note_version(Path::new("/d/a.pdf"), 1);
-        settle_drawn_as(&mut reader, |kind| match kind {
-            JobKind::Draw {
-                rect, what: DrawKind::Tile, ..
-            } if !band_only || rect.y == 0 => TileKind::Blank { rgb: RED },
-            _ => TileKind::Colour,
-        });
-        let label = if band_only { "a band across the top" } else { "a page of one colour" };
-        assert!(reader.cache.empty_discardable() > 0, "{label}: the preview, off its layer, taken by the system");
-        let pictures = reader.pictures_in_view(1);
-        let picture = pictures.first().unwrap_or_else(|| panic!("{label}: no picture of the page in view"));
-        assert_eq!(picture.page, 0);
-        let pixels = picture.bgra.as_chunks::<4>().0;
-        assert_eq!(pixels[0], RED_BGRA, "{label}: the top left is red");
-        if !band_only {
-            let other = pixels.iter().filter(|pixel| **pixel != RED_BGRA).count();
-            assert_eq!(other, 0, "{label}: all of its {} by {} red", picture.width, picture.height);
-        }
+    let (picture, _) = picture_from_the_tiles(false);
+    assert_eq!(picture.page, 0);
+    let other = picture.bgra.as_chunks::<4>().0.iter().filter(|pixel| **pixel != RED_BGRA).count();
+    assert_eq!(other, 0, "a page of one colour: all of its {} by {} red", picture.width, picture.height);
+
+    let (band, step) = picture_from_the_tiles(true);
+    let pixels = band.bgra.as_chunks::<4>().0;
+    let at_row = |row: u32| pixels[(row * band.width) as usize];
+    let rows = recto_proto::TILE_EDGE / step;
+    assert!(rows > 1 && rows < band.height, "the band is {rows} of the picture's {} rows", band.height);
+    assert_eq!(at_row(0), RED_BGRA, "the band's top is red");
+    assert_eq!(
+        at_row(rows - 1),
+        RED_BGRA,
+        "the band's last row, its tiles' edge at the picture's scale, is red"
+    );
+    assert_ne!(at_row(rows), RED_BGRA, "the row below the band, the next row of tiles', isn't");
+    // The cache's order is a new one each time; the picture isn't.
+    for _ in 0..8 {
+        assert!(picture_from_the_tiles(true).0.bgra == band.bgra, "the same tiles made another picture");
     }
 }

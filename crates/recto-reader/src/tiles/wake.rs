@@ -491,7 +491,9 @@ impl Reader {
             return Some(picture);
         }
         // Otherwise the sharpest tiles there are of this page, at whole steps down: those of one colour too, which have no surface, painted in their colour.
-        let ids: Vec<u64> = self
+        // One-colour tiles first, then those with pixels, each in the order they were drawn: where two meet in a pixel rounded both ways, the pixels win, and
+        // the picture is the same whatever order the cache holds them in.
+        let mut ids: Vec<(bool, u64)> = self
             .cache
             .entries
             .values()
@@ -505,8 +507,10 @@ impl Reader {
                     && entry.version.is_some()
                     && self.docs.is_current(entry)
             })
-            .map(|entry| entry.id)
+            .map(|entry| (entry.surface.is_some(), entry.id))
             .collect();
+        ids.sort_unstable();
+        let ids: Vec<u64> = ids.into_iter().map(|(_, id)| id).collect();
         let finest = ids
             .iter()
             .filter_map(|id| self.cache.entries.get(id))
