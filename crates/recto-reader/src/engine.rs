@@ -201,6 +201,7 @@ impl Engine {
         if self.shared.stopping.load(Ordering::SeqCst) {
             return;
         }
+        self.shared.asked_of_thread();
         let mut thread = lock(&self.thread);
         match &*thread {
             Some(running) => running.unpark(),

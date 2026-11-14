@@ -648,10 +648,20 @@ impl QaBridge {
             std::thread::sleep(ANIMATION_POLL.min(left()));
         }
         loop {
-            // What's been asked of the session thread comes first: an `open` it hasn't reached yet isn't settled, it's not started.
-            if !(self.core.flush(left()) && self.engines().iter().all(|engine| engine.wait_settled(left()))) {
-                return Err(AgentError::new(Code::TIMED_OUT, "The page view didn't settle in time.", exit::TIMED_OUT)
-                    .then("`recto qa state` shows what it's still waiting for."));
+            // The app at rest, as the one definition has it (`crate::settled`): the session thread through what's queued with nothing due now, what comes back
+            // to it done, and every page view drawn with its last job's end told, seen twice with nothing handed on between.
+            let at_rest = match self.inner() {
+                Some(inner) => crate::settled::wait(&inner, crate::settled::PageViews::Drawn, left(), || {}),
+                None if self.core.flush(left()) && self.engines().iter().all(|engine| engine.wait_settled(left())) => Ok(()),
+                None => Err(vec!["the page view".to_string()]),
+            };
+            if let Err(busy) = at_rest {
+                return Err(AgentError::new(
+                    Code::TIMED_OUT,
+                    format!("The app didn't settle in time: still under way, {}.", busy.join("; ")),
+                    exit::TIMED_OUT,
+                )
+                .then("`recto qa state` shows what it's still waiting for."));
             }
             let running = self.ask("animations", "")?;
             // A snapshot on its way to the clipboard is about to change what `qa copied` and the notice say.

@@ -738,6 +738,7 @@ Points::pub fn page_count(&self) -> u32
 Points::pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)>
 Points::pub fn page_turns(&self, page: u32) -> u8
 Qa (pub struct, derives Clone, Copy) [qa feature only]
+Qa::pub fn at_rest(&self) -> Option<(u64, u64)> [qa feature only]
 Qa::pub fn follow_is_pending(&self) -> bool [qa feature only]
 Qa::pub fn hold_asks(&self, ask: Ask, on: bool) [qa feature only]
 Qa::pub fn hold_busy(&self, on: bool) [qa feature only]

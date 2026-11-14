@@ -43,6 +43,7 @@ pub(super) fn run_guarded(shared: &Shared) {
     loop {
         // Everything shared is behind locks that don't care about poison, and is brought back into line below.
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(shared))).is_ok() {
+            shared.thread_ended();
             return;
         }
         panics_in_a_row = if last_panic.is_some_and(|last| last.elapsed() < PANICS_FORGOTTEN_AFTER) {
@@ -69,6 +70,7 @@ pub(super) fn run_guarded(shared: &Shared) {
             signal_ops(shared);
         }
         if give_up {
+            shared.thread_ended();
             return;
         }
     }
@@ -108,6 +110,7 @@ fn run(shared: &Shared) {
             shared.settled.notify_all();
             return;
         }
+        let seen = shared.round_begins();
         let (plan, changed) = {
             let mut reader = lock(&shared.reader);
             // What the last turn told is told: the view taken again.
@@ -142,6 +145,7 @@ fn run(shared: &Shared) {
         openings.retain(|path, _| wanted.contains(path));
         publish_workers(shared, &mut renderers);
         let Some(job) = job else {
+            shared.rests(seen);
             rest_or_wait_for_a_surface(planned, shared, &mut renderers, &policy, &mut resting_since);
             continue;
         };

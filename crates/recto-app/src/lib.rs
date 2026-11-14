@@ -24,6 +24,7 @@ pub mod reader_view;
 pub mod records;
 pub mod saver;
 pub mod saving;
+pub mod settled;
 pub mod sidebar_access;
 pub mod sleep_queue;
 pub mod sleep_writer;

@@ -3,7 +3,7 @@
 
 use super::{Engine, Shared, lock};
 #[cfg(any(test, feature = "qa"))]
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 #[cfg(any(test, feature = "qa"))]
 use std::sync::{Condvar, Mutex, PoisonError};
 #[cfg(any(test, feature = "qa"))]
@@ -40,6 +40,11 @@ pub(super) struct QaHolds {
     tells_held: AtomicBool,
     /// How many wait at that hold, for [`Qa::wait_for_held_tell`], and how many of them may go ([`Qa::let_a_tell_go`]).
     tells: Mutex<Tells>,
+    /// **Whether the thread that draws is at rest** ([`Qa::at_rest`]): the asks made of it (each wake from outside), the turns it has begun, and the asks it
+    /// had seen when it began the turn it's resting in ([`BUSY`] while it isn't resting, [`ENDED`] once it's gone).
+    asks: AtomicU64,
+    rounds: AtomicU64,
+    rest_seen: AtomicU64,
 }
 
 /// The tells waiting at [`Qa::hold_tells`], and those let go.
@@ -49,6 +54,13 @@ struct Tells {
     waiting: u32,
     let_go: u32,
 }
+
+/// [`QaHolds::rest_seen`] while the thread that draws is in a turn.
+#[cfg(any(test, feature = "qa"))]
+const BUSY: u64 = u64::MAX;
+/// [`QaHolds::rest_seen`] once the thread that draws has gone (stopped, or given up after its panics): nothing more comes of it.
+#[cfg(any(test, feature = "qa"))]
+const ENDED: u64 = u64::MAX - 1;
 
 impl Shared {
     /// Whether QA holds this view busy ([`Qa::hold_busy`]). Never, in a build without the `qa` feature.
@@ -88,8 +100,46 @@ impl Shared {
     }
 }
 
-/// What [`Shared`] notes for [`Qa::hold_tells`]: nothing at all in a build without the `qa` feature.
+/// What [`Shared`] notes for [`Qa::at_rest`] and [`Qa::hold_tells`]: nothing at all in a build without the `qa` feature.
 impl Shared {
+    /// Something's been asked of the thread that draws: it's woken for it.
+    #[inline]
+    pub(super) fn asked_of_thread(&self) {
+        #[cfg(any(test, feature = "qa"))]
+        self.qa.asks.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The thread that draws begins a turn: says the asks it has seen, to rest with ([`Self::rests`]).
+    #[inline]
+    pub(super) fn round_begins(&self) -> u64 {
+        #[cfg(any(test, feature = "qa"))]
+        {
+            self.qa.rest_seen.store(BUSY, Ordering::SeqCst);
+            self.qa.rounds.fetch_add(1, Ordering::SeqCst);
+            self.qa.asks.load(Ordering::SeqCst)
+        }
+        #[cfg(not(any(test, feature = "qa")))]
+        {
+            0
+        }
+    }
+
+    /// The thread that draws found nothing to start in the turn it began having seen `seen` asks, and rests.
+    #[inline]
+    pub(super) fn rests(&self, seen: u64) {
+        #[cfg(any(test, feature = "qa"))]
+        self.qa.rest_seen.store(seen, Ordering::SeqCst);
+        #[cfg(not(any(test, feature = "qa")))]
+        let _ = seen;
+    }
+
+    /// The thread that draws has gone.
+    #[inline]
+    pub(super) fn thread_ended(&self) {
+        #[cfg(any(test, feature = "qa"))]
+        self.qa.rest_seen.store(ENDED, Ordering::SeqCst);
+    }
+
     /// After a job's end, the view let go, before what came of it is told: waits here while QA holds tells ([`Qa::hold_tells`]).
     #[inline]
     pub(super) fn before_telling(&self) {
@@ -211,5 +261,17 @@ impl Qa<'_> {
         let qa = &self.engine.shared.qa;
         qa.tells.lock().unwrap_or_else(PoisonError::into_inner).let_go += 1;
         qa.changed.notify_all();
+    }
+
+    /// **Whether the thread that draws is at rest:** resting, having begun its turn after the last thing asked of it, so nothing asked waits for it, no job
+    /// runs and what its last job came to has been told; or gone. With it, a stamp that moves with every ask and every turn, so two looks with the same stamp
+    /// saw nothing happen between them. `None` while it's busy. Never started, it's at rest.
+    #[must_use]
+    pub fn at_rest(&self) -> Option<(u64, u64)> {
+        let qa = &self.engine.shared.qa;
+        let rounds = qa.rounds.load(Ordering::SeqCst);
+        let seen = qa.rest_seen.load(Ordering::SeqCst);
+        let asks = qa.asks.load(Ordering::SeqCst);
+        (seen == ENDED || seen == asks).then_some((rounds, asks))
     }
 }

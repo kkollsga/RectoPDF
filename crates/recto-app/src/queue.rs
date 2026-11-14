@@ -175,10 +175,49 @@ impl Flushed {
     }
 }
 
+/// **What's queued, and what the session thread is doing by its own account,** under the queue's one lock: what it does is written as it takes a call or a
+/// deadline and as it parks, each under the lock it holds then anyway, so whoever asks [`CoreQueue::at_rest`] with that lock held sees it as it is.
+#[derive(Default)]
+struct Calls {
+    queue: VecDeque<CoreCall>,
+    /// Times the session thread has taken something, a call or a deadline that came due: two looks at rest with the same count saw nothing taken between them.
+    turns: u64,
+    doing: Doing,
+}
+
+impl std::ops::Deref for Calls {
+    type Target = VecDeque<CoreCall>;
+    fn deref(&self) -> &Self::Target {
+        &self.queue
+    }
+}
+
+impl std::ops::DerefMut for Calls {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.queue
+    }
+}
+
+/// What the session thread is doing, as it last said under the queue's lock.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Doing {
+    /// Not yet at its queue.
+    #[default]
+    Starting,
+    /// Back at its queue, looking at it and at its deadlines.
+    Looking,
+    /// In a call it took.
+    Call,
+    /// Acting on a deadline that came due.
+    Due,
+    /// Waiting for a call, or till `until`, when its soonest deadline is due (`None`: it has none). Nudged, it's looking again.
+    Parked { until: Option<Instant> },
+}
+
 /// The session thread's queue. A parked thread at rest, so an open app takes no wake-ups for it.
 #[derive(Default)]
 pub struct CoreQueue {
-    calls: Mutex<VecDeque<CoreCall>>,
+    calls: Mutex<Calls>,
     ready: Condvar,
     reconcile_queued: AtomicBool,
     /// A hand-off or a quit is writing what comes back, so what a person does from here wouldn't: taps, opens and the rest aren't taken.
@@ -227,7 +266,7 @@ impl CoreQueue {
     /// **The session thread ends now, with nothing more taken,** as a process that's killed takes nothing it was asked. Only a headless app's kill asks this.
     pub fn abandon(&self) {
         // A flush another thread waits on among them is never marked done: it waits out its own limit, as nothing more is done.
-        drop(std::mem::take(&mut *lock(&self.calls)));
+        drop(std::mem::take(&mut lock(&self.calls).queue));
         self.reconcile_queued.store(false, Ordering::SeqCst);
         self.end();
     }
@@ -239,27 +278,69 @@ impl CoreQueue {
 
     /// Wakes whoever's waiting on this, to look at its deadline again.
     pub fn nudge(&self) {
-        let _calls = lock(&self.calls);
+        let mut calls = lock(&self.calls);
+        // What it found when it parked may not hold now: it's looking again until it says otherwise.
+        if matches!(calls.doing, Doing::Parked { .. }) {
+            calls.doing = Doing::Looking;
+        }
+        drop(calls);
         self.ready.notify_one();
+    }
+
+    /// **Whether the session thread is at rest now, by its own account:** nothing queued for it, and it's parked, having found none of its deadlines due
+    /// when it last looked, not nudged since (a clock moved, a write asked for) and not past the time it parked till (a deadline that's come due on real
+    /// time and the thread not yet scheduled). Says how many turns it has taken, for a second look to compare ([`crate::core::settled`]), or what it's at.
+    /// For tests and QA, never the UI thread's: it takes the queue's lock.
+    pub fn at_rest(&self) -> Result<u64, &'static str> {
+        let calls = lock(&self.calls);
+        if self.has_ended() {
+            return Ok(calls.turns);
+        }
+        if !calls.queue.is_empty() {
+            return Err("calls queued for the session thread");
+        }
+        match calls.doing {
+            Doing::Parked { until } if until.is_none_or(|until| Instant::now() < until) => Ok(calls.turns),
+            Doing::Parked { .. } => Err("a deadline of the session thread's come due, the thread not yet back at it"),
+            Doing::Looking => Err("the session thread looking at its deadlines again"),
+            Doing::Starting => Err("the session thread not yet at its queue"),
+            Doing::Call => Err("the session thread in a call"),
+            Doing::Due => Err("the session thread acting on a deadline that's due"),
+        }
     }
 
     /// The next call, or `None` when `deadline` says something's due, or the thread is to end: one wait for both, so the state's one deadline costs no thread or timer of its own. `deadline` is asked again on every wake, and no more than that.
     pub fn next_or_due(&self, deadline: impl Fn() -> Option<Duration>) -> Option<CoreCall> {
         let mut calls = lock(&self.calls);
         loop {
+            calls.doing = Doing::Looking;
             if let Some(call) = calls.pop_front() {
                 if matches!(call, CoreCall::Reconcile) {
                     self.reconcile_queued.store(false, Ordering::SeqCst);
                 }
+                calls.turns += 1;
+                calls.doing = Doing::Call;
                 return Some(call);
             }
             if self.has_ended() {
                 return None;
             }
             calls = match deadline() {
-                None => self.ready.wait(calls).unwrap_or_else(PoisonError::into_inner),
-                Some(wait) if wait.is_zero() => return None,
-                Some(wait) => self.ready.wait_timeout(calls, wait).unwrap_or_else(PoisonError::into_inner).0,
+                None => {
+                    calls.doing = Doing::Parked { until: None };
+                    self.ready.wait(calls).unwrap_or_else(PoisonError::into_inner)
+                }
+                Some(wait) if wait.is_zero() => {
+                    calls.turns += 1;
+                    calls.doing = Doing::Due;
+                    return None;
+                }
+                Some(wait) => {
+                    calls.doing = Doing::Parked {
+                        until: Instant::now().checked_add(wait),
+                    };
+                    self.ready.wait_timeout(calls, wait).unwrap_or_else(PoisonError::into_inner).0
+                }
             };
         }
     }
@@ -339,6 +420,34 @@ mod tests {
         assert!(!queue.reconcile_queued.load(Ordering::SeqCst));
         queue.push(CoreCall::Reconcile);
         assert_eq!(lock(&queue.calls).len(), 1);
+    }
+
+    /// Failure (the settled audit, 2026-11-14, gap 3): "settled" answered while the session thread had a deadline due now and hadn't acted on it, because
+    /// nothing looked at what the thread itself had found. At rest is only parked with nothing queued: not before it's at its queue, not once nudged to look
+    /// again (the clock moved), not past the time it parked till (a deadline come due on real time, the thread not yet scheduled), and not with a call
+    /// queued; and each turn it takes moves the count two looks compare.
+    #[test]
+    fn the_session_thread_is_at_rest_only_parked_with_nothing_due() {
+        let queue = CoreQueue::default();
+        assert!(queue.at_rest().is_err(), "not yet at its queue");
+        lock(&queue.calls).doing = Doing::Parked { until: None };
+        let turns = queue.at_rest().expect("parked with no deadline");
+        queue.nudge();
+        assert!(queue.at_rest().is_err(), "nudged to look at its deadlines again");
+        lock(&queue.calls).doing = Doing::Parked {
+            until: Instant::now().checked_sub(Duration::from_millis(1)),
+        };
+        assert!(queue.at_rest().is_err(), "past the time it parked till");
+        lock(&queue.calls).doing = Doing::Parked {
+            until: Instant::now().checked_add(Duration::from_secs(60)),
+        };
+        assert_eq!(queue.at_rest(), Ok(turns), "parked till a deadline due later");
+        queue.push(tap(1));
+        assert!(queue.at_rest().is_err(), "a call queued");
+        assert!(queue.next_or_due(|| None).is_some());
+        assert!(queue.next_or_due(|| Some(Duration::ZERO)).is_none(), "a deadline due now");
+        assert_eq!(lock(&queue.calls).turns, turns + 2, "a call and a deadline, each a turn");
+        assert!(queue.at_rest().is_err(), "acting on the deadline");
     }
 
     /// Failure: a test's kill takes what the app was asked as a killed process never would (a tap, an open, a look), so a kill test passes on work that a real
