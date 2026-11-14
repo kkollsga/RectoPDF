@@ -110,6 +110,8 @@ app.menu_bar[].items[].checked
 app.menu_bar[].items[].enabled
 app.menu_bar[].items[].id
 app.menu_bar[].items[].key
+app.menu_bar[].items[].mask
+app.menu_bar[].items[].system
 app.menu_bar[].items[].title
 app.menu_bar[].title
 app.note
