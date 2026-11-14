@@ -1,8 +1,10 @@
 //! **What a feature's answer to a person's command may read of the app and do in it** ([`super::person`]'s list of answers): the argument every answer is
 //! given, in place of the app, on the thread the command ran on. Its fields are private, so what an answer may do is the list of methods below, each named
 //! for the need; an answer that needs something else adds one method here, named for that need, which the listing in `headless/inner_guards.rs` shows to a
-//! reviewer (docs/FEATURES.md, step 6). [`AnswerParts::find_handle`] is Find's own. What starts on a thread of its own as the person is
-//! [`AnswerParts::person`]'s.
+//! reviewer (docs/FEATURES.md, step 6). Of its 11 methods (2026-11-14), `say` is shared by four answers and the other nine serve one feature each.
+//! **[`AnswerParts::find_handle`] is the one wide reach:** Find's own, it hands the answer a `FindHandle` whose fields are `pub` (the session, the panes,
+//! the page view, the listener), so any answer that calls it can reach those; only Find's does, and narrowing it to what Find's answer needs is in PLAN.
+//! What starts on a thread of its own as the person is [`AnswerParts::person`]'s.
 //!
 //! Built once for each command answered ([`AnswerParts::of`]), from references the app already holds: nothing is copied, locked or allocated to make it.
 
@@ -84,7 +86,7 @@ impl<'a> AnswerParts<'a> {
         lock(&self.tools.prompts().passwords).ask(passwords::Target::File, path);
     }
 
-    /// Find's own: what Find reaches of the app, for one call ([`super::find::handle_with`]).
+    /// Find's own: what Find reaches of the app, for one call ([`super::find::handle_with`]). Wide: the handle's fields are `pub`, the session among them.
     pub fn find_handle<R>(&self, step: impl FnOnce(&FindHandle<'_, dyn Listener>) -> R) -> R {
         super::find::handle_with(self.session, self.tools, self.core, self.panes, self.engine, self.listener, step)
     }

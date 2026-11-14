@@ -1,8 +1,10 @@
 //! **What a feature's menu rows may read of the app and do in it** ([`super::menu_rows`]): the argument every row is given, in place of the app. Its fields
 //! are private, so what a row may do is the list of methods below, each named for the need; a row that needs something else adds one method here, named
-//! for that need, which the listing in `headless/inner_guards.rs` shows to a reviewer (docs/FEATURES.md, step 6). Most are a call on one of the app's
-//! parts; [`RowParts::zoom_for_person`], [`RowParts::toggle_snapshot_tool`] and [`RowParts::cancel_print`] are one feature's each. What starts on a thread
-//! of its own as the person is [`RowParts::person`]'s.
+//! for that need, which the listing in `headless/inner_guards.rs` shows to a reviewer (docs/FEATURES.md, step 6). Of its 18 methods (2026-11-14), 13 serve
+//! one feature each (reading_tab viewing's; selected highlights'; copy_selection, select_all and toggle_panel the window's own rows'; can_save saving's;
+//! update_installs and mark_update_menu the updates'; zoom_for_person the zoom's; open opening's; open_palette the palette's; toggle_snapshot_tool the
+//! snapshot tool's; cancel_print printing's), four are shared (published, tell_host, reconcile, person), and one makes it. What starts on a thread of its
+//! own as the person is [`RowParts::person`]'s, which a way marked `Agents::AsTheMenu` never calls: an agent's palette run executes that way.
 //!
 //! Built once for each menu id asked about ([`RowParts::of`]), from references the app already holds: nothing is copied, locked or allocated to make it.
 

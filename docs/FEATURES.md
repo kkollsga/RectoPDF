@@ -48,11 +48,14 @@ tier that can see each failure, and shots light and dark.
    on its parts type. Sending a command as the person is `parts.person().submit(command)`. A row's way copies the parts into its closure first
    (`let parts = *parts;`). When a row or an answer needs something that isn't on the list, the feature adds **one method named for the need**
    (`can_save`, `fail_open`; not `tools()` or `session()`) to `RowParts` or `AnswerParts`. That is a registration, and it shows in the listing in
-   `crates/recto-app/src/core/headless/inner_guards.rs`. It never reaches a field, and never takes `Inner`. Most of today's methods are a call on one
-   part of the app. A few belong to one feature: `zoom_for_person`, `toggle_snapshot_tool` and `cancel_print` on `RowParts`, `find_handle` on
-   `AnswerParts`, and `save`, `snapshot_anyway` and `print_anyway` on `Person` (each starts the person's run on a thread of its own, which
-   holds the app). A parts type that keeps gaining one feature's methods is turning into a hub: say so in the hand-back. `RowParts` started at 20
-   methods, `AnswerParts` at 11 and `Person` at 6 (2026-11-14). Its
+   `crates/recto-app/src/core/headless/inner_guards.rs`. It never reaches a field, and never takes `Inner`. Most of today's methods serve one
+   feature each: 13 of `RowParts`' 18 (four are shared, one makes it), 9 of `AnswerParts`' 11 (`say` is shared), and `save`, `snapshot_anyway`
+   and `print_anyway` of `Person`'s 6 (each starts the person's run on a thread of its own, which holds the app). **`find_handle` on `AnswerParts`
+   is the one wide reach:** it hands an answer a `FindHandle` whose fields are `pub` (the session, the panes, the page view, the listener), so it is
+   Find's alone and no other answer calls it. **A way marked `Agents::AsTheMenu` never calls `parts.person()`:** an agent's palette run executes that
+   way, and nothing an agent sends may run as the person (AGENTS.md, "One action, one implementation"). A parts type that keeps gaining one
+   feature's methods is turning into a hub: say so in the hand-back. The counts, by the ratchet's parser, on 2026-11-14: `RowParts` 18 methods,
+   `AnswerParts` 11, `Person` 6. Its
    title, key, enable rule and action are still written in `crates/recto-app/src/menus.rs`, a hub: Find's take about a dozen lines in five places
    there (`find_entries` and its `chain`, the ids under an `Enable` rule, three `action` arms, two `Action` variants).
    **Find's other reaches are not the pattern.** The pattern is one line each: a `UiAction` variant and its arm, a `ROWS` line, an `ANSWERED` line,
