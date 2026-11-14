@@ -447,6 +447,21 @@ mod tests {
         yellow_within(doc, page, [0.0, 0.0, f32::MAX, f32::MAX])
     }
 
+    /// [`yellow`]'s pixels of a PNG inside `[left, top, right, bottom]`, in its pixels.
+    fn yellow_in_png(png: &[u8], [left, top, right, bottom]: [f32; 4]) -> usize {
+        let recto_svg::verify::Embedded::Png { width, channels, pixels, .. } = recto_svg::verify::read_png(png) else {
+            panic!("a PNG")
+        };
+        pixels
+            .chunks(channels)
+            .enumerate()
+            .filter(|(at, pixel)| {
+                let (x, y) = ((at % width as usize) as f32 + 0.5, (at / width as usize) as f32 + 0.5);
+                x > left && x < right && y > top && y < bottom && pixel[2] < 160 && pixel[0] > 200 && pixel[1] > 150
+            })
+            .count()
+    }
+
     /// [`yellow`]'s pixels inside `[left, top, right, bottom]` of a page, in points from its top left: one highlight's, and not a note's icon.
     fn yellow_within(doc: &mut recto_render_service::DocRenderer, page: u32, [left, top, right, bottom]: [f32; 4]) -> usize {
         let (width, _, pixels) = drawn_at(doc, page);
@@ -557,16 +572,15 @@ mod tests {
                 anyway: false,
             };
             run(session, Command::from(snapshot)).expect("snapshot");
-            (std::fs::read(out).unwrap(), std::fs::read(shot).unwrap())
+            // Yellow inside the highlight's rectangle, in each (both at a pixel a point, from the page's top left), not whole pictures compared.
+            let inside = [x + 1.0, y + 1.0, x + width - 1.0, y + height - 1.0];
+            [out, shot].map(|path| yellow_in_png(&std::fs::read(path).unwrap(), inside))
         };
         let with = pictures(&mut session, "with");
+        assert!(with.iter().all(|yellow| *yellow > 50), "the file's highlight is in both: {with:?}");
         run(&mut session, Command::from(remove)).expect("taken out");
         // A picture an agent makes of the tab follows the person's unsaved removal (coordinator, 2026-11-14): it isn't in it, and undone, it is.
-        let without = pictures(&mut session, "without");
-        assert!(
-            without.0 != with.0 && without.1 != with.1,
-            "render and snapshot leave out a highlight taken out"
-        );
+        assert_eq!(pictures(&mut session, "without"), [0, 0], "render and snapshot leave out a highlight taken out");
         run(&mut session, Command::from(crate::commands::editing::Undo { tab: TabRef::default() })).expect("undo");
         assert_eq!(pictures(&mut session, "undone"), with, "and put it back once that's undone");
         run(&mut session, Command::from(crate::commands::editing::Redo { tab: TabRef::default() })).expect("redo");
