@@ -298,9 +298,12 @@ mod tests {
 
     /// A page drawn by PDFium in the worker, at one pixel a point: its width, height, and BGRA pixels, top row first.
     fn drawn(path: &std::path::Path) -> (u32, u32, Vec<u8>) {
-        let mut doc = crate::render::open_for_text(path).expect("a worker");
+        drawn_by(&mut crate::render::open_for_text(path).expect("a worker"))
+    }
+
+    fn drawn_by(doc: &mut recto_render_service::DocRenderer) -> (u32, u32, Vec<u8>) {
         let (mut size, mut pixels, mut row) = ((0, 0), Vec::new(), Vec::new());
-        draw_whole_page(&mut doc, 0, 1.0, 0, &OutputCaps::default(), &mut None, |event| {
+        draw_whole_page(doc, 0, 1.0, 0, &OutputCaps::default(), &mut None, |event| {
             match event {
                 PageEvent::Begin { width, height } => {
                     size = (width, height);
@@ -395,5 +398,78 @@ mod tests {
                 "{extra:?}: {inside_changed} of {inside_white} of the highlight's white went yellow"
             );
         }
+    }
+
+    /// Pixels a highlight's yellow is on: the blue taken down, the red left.
+    fn yellow(doc: &mut recto_render_service::DocRenderer) -> usize {
+        let (_, _, pixels) = drawn_by(doc);
+        pixels
+            .chunks_exact(4)
+            .filter(|pixel| pixel[0] < 160 && pixel[2] > 200 && pixel[1] > 150)
+            .count()
+    }
+
+    /// **Failure (review of R4.3, S2): a file's highlight taken out and unsaved is still drawn by the worker**, or stays hidden once undone, or a
+    /// set names another annotation than the file has there (the file changed on disk since) and hides it anyway, or a renderer that draws one file
+    /// for two tabs (one's own file, the other's added pages) shows one tab's removal in the other's view. PDFium draws the page each time.
+    #[test]
+    fn a_hidden_file_highlight_isnt_drawn_and_only_in_its_own_tabs_view() {
+        use recto_proto::hidden::HiddenAnnots;
+        use std::sync::Arc;
+        let file = TempPdf::new("marked.pdf", &pages(&[Page::new(text_lines(&["Highlighted words on a page"]))]));
+        let mut session = Session::new(crate::DrawableLoader);
+        let run = |session: &mut Session<crate::DrawableLoader>, command: Command| run_command(session, Level::Full, &command);
+        run(
+            &mut session,
+            Command::from(crate::commands::tabs::Open {
+                path: file.0.clone(),
+                page: None,
+            }),
+        )
+        .unwrap();
+        let highlight = crate::commands::highlight::Highlight {
+            tab: TabRef::default(),
+            page: Some(1),
+            to_page: None,
+            chars: Some("0-11".into()),
+            at: None,
+            to: None,
+            unit: None,
+        };
+        run(&mut session, Command::from(highlight)).expect("highlighted");
+        run(
+            &mut session,
+            Command::from(crate::commands::saving::Save {
+                tab: TabRef::default(),
+                out: None,
+                replace: false,
+            }),
+        )
+        .expect("saved");
+        let found = recto_core::highlights::page_highlights(&file.0, 0).unwrap().found.remove(0);
+        let (index, rect) = (found.index, found.rect.unwrap());
+        let set = |generation: u64, rect: [f32; 4]| {
+            Some(Arc::new(HiddenAnnots {
+                generation,
+                pages: vec![(0, vec![(index, rect)])],
+            }))
+        };
+        let mut doc = crate::render::open_for_text(&file.0).expect("a worker");
+        let shown = yellow(&mut doc);
+        assert!(shown > 50, "the file's highlight is drawn: {shown}");
+        doc.hidden.draw_for(2, set(1, rect));
+        assert_eq!(yellow(&mut doc), 0, "taken out, it isn't");
+        doc.hidden.draw_for(1, None);
+        assert_eq!(yellow(&mut doc), shown, "another tab's view of the same file has it");
+        doc.hidden.draw_for(2, set(1, rect));
+        assert_eq!(yellow(&mut doc), 0, "and back in the first view, it's out again");
+        doc.hidden.draw_for(2, None);
+        assert_eq!(yellow(&mut doc), shown, "undone, it's drawn again");
+        let moved = [rect[0] + 2.0, rect[1], rect[2] + 2.0, rect[3]];
+        doc.hidden.draw_for(2, set(2, moved));
+        assert_eq!(yellow(&mut doc), shown, "a set that isn't what the file has there hides nothing");
+        let mut fresh = crate::render::open_for_text(&file.0).expect("a worker");
+        fresh.hidden.draw_for(2, set(3, rect));
+        assert_eq!(yellow(&mut fresh), 0, "a worker started with a set hides from its first draw");
     }
 }

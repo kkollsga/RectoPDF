@@ -1,7 +1,7 @@
 apptest crates/recto-cli/tests 200
 ffi crates/recto-ffi/src 2116
 file crates/recto-index/src/corpus.rs 1686
-file crates/recto-render-service/src/host.rs 2123
+file crates/recto-render-service/src/host.rs 2132
 file crates/recto-render/src/pdfium/contents.rs 2885
 file crates/recto-update/src/updater.rs 2495
 fn crates/recto-agent/src/print.rs::print_with_caps 152
@@ -92,7 +92,7 @@ struct crates/recto-control/src/server.rs::Loop 21
 struct crates/recto-index/src/chrome.rs::EdgeLine 20
 struct crates/recto-platform/src/isolate_mac.rs::TaskVmInfo 20
 struct crates/recto-render-service/src/budget.rs::BudgetReport 20
-struct crates/recto-render-service/src/host.rs::DocRenderer 23
+struct crates/recto-render-service/src/host.rs::DocRenderer 24
 struct crates/recto-render-service/src/host.rs::Policy 16
 struct crates/recto-render-service/src/host.rs::RenderStats 17
 struct crates/recto-render/src/pdfium/contents.rs::Walk 44

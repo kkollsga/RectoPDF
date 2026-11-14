@@ -1,6 +1,7 @@
 //! A document's renderer, from the host's side. See the crate's notes for the rules.
 
 pub mod contents;
+pub mod hidden;
 mod images;
 mod slot;
 
@@ -581,6 +582,8 @@ struct Worker {
     walled: bool,
     /// Jobs in a row after which its footprint couldn't be read, or read as nothing.
     unread_footprints: u32,
+    /// The set of the file's highlights it leaves out, by tab and generation: [`hidden`].
+    hidden_sent: Option<(u32, u64)>,
 }
 
 /// The kind of worker a job needs.
@@ -776,6 +779,8 @@ pub struct DocRenderer {
     remembered: Vec<PageMemory>,
     /// What's known of pages' images, for those asked about: [`images::Known`].
     images: images::Known,
+    /// The file's highlights the tab a job draws for has taken out and not saved: [`hidden`].
+    pub hidden: hidden::HiddenWanted,
     file_changed: bool,
     /// The slot, from an export's wait, on its way to the worker it's for.
     waited_ticket: Option<HeavyTicket>,
@@ -843,6 +848,7 @@ impl DocRenderer {
             workers: Workers::MayStart,
             remembered: Vec::new(),
             images: images::Known::default(),
+            hidden: hidden::HiddenWanted::default(),
             left_out: LeftOut::default(),
             file_changed: false,
             waited_ticket: None,
@@ -1517,16 +1523,18 @@ impl DocRenderer {
                 }
                 worker.surface_bytes_sent += surface.len() as u64;
             }
-            let outcome = worker.exchange(frame, handles, &watch).and_then(|mut reply| {
-                if reply.kind == Kind::Failed {
-                    let (answered, code) = proto::decode_failed(&reply.payload).map_err(|error| Stop::Killed(KillReason::Rejected(error.0)))?;
-                    if answered != job_id {
-                        return Err(Stop::Killed(KillReason::Rejected("a failure for a different job")));
+            let outcome = hidden::bring(worker, &mut self.hidden, &watch)
+                .and_then(|()| worker.exchange(frame, handles, &watch))
+                .and_then(|mut reply| {
+                    if reply.kind == Kind::Failed {
+                        let (answered, code) = proto::decode_failed(&reply.payload).map_err(|error| Stop::Killed(KillReason::Rejected(error.0)))?;
+                        if answered != job_id {
+                            return Err(Stop::Killed(KillReason::Rejected("a failure for a different job")));
+                        }
+                        return Err(Stop::Refused(code));
                     }
-                    return Err(Stop::Refused(code));
-                }
-                decode(&mut reply).map_err(|error| Stop::Killed(KillReason::Rejected(error.0)))
-            });
+                    decode(&mut reply).map_err(|error| Stop::Killed(KillReason::Rejected(error.0)))
+                });
             self.stats.jobs += 1;
             match outcome {
                 Ok(value) => {
@@ -2004,6 +2012,7 @@ impl Worker {
             heavy: false,
             walled: false,
             unread_footprints: 0,
+            hidden_sent: None,
         };
         let started = Instant::now();
         let limit = policy.start_timeout;
