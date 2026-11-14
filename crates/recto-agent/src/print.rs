@@ -7,7 +7,10 @@
 //! - **A page too large to draw whole at the resolution asked** (A0 at 300 dpi is about 139 Mpx, past the 100 Mpx any export may be) prints at the most it can be, and says so, rather than failing the print.
 //! - **A PDF's flag against printing is ignored** (owner, 2026-11-08: "Ignore the flag"): nothing here reads it. A print to a PDF *file* is an export, so a file that asks not to be copied asks "anyway" (owner, the same day), and print to paper never does.
 //! - **The person's print never has a name on disk** ([`PrintTo::Window`]): it's written to a file unlinked before its first byte, whose descriptor the
-//!   window hands to the system's printing, so the kernel frees it when the window lets it go or the app ends, a crash and a kill included.
+//!   window hands to the system's printing, so the kernel frees it when the window lets it go or the app ends, a crash and a kill included. No path
+//!   reaches it in the app: every open of a document by its path goes through the file wall (`recto_platform::document_file`), which refuses `/dev`
+//!   and a file with no link, so `/dev/fd/N` doesn't open it again for an agent at any level. What the system then does with it (its spooler's copy, a
+//!   Save as PDF) is the system's: `docs/engineering/opening.md`.
 //! - **SSD cost.** The app's print is written once to a file with no name and freed when the system's printing is done with it: about 0.3 MB a page of text at 300 dpi and up to about 50 MB a page of a dense map, held to [`MAX_BYTES`] in all. That's one write of what's printed, which the system's own print spooling would make anyway.
 
 use crate::Code;
@@ -479,7 +482,8 @@ pub(crate) enum PrintTo<'a> {
     /// `recto print --to-pdf`: a new file there, whole or not at all, as any export.
     File(&'a Path),
     /// **The person's print at the window:** a file with no name, theirs alone ([`OwnTemp::create_unnamed`]), handed to the window's printing once it's
-    /// whole ([`PrintWatch::ready`]). It never has a name on disk, so nothing can open it but through the window, and it's gone when the window lets it go
+    /// whole ([`PrintWatch::ready`]). It never has a name on disk, and the file wall refuses a path to its descriptor (`/dev/fd/N`), so nothing in the
+    /// app opens it but the window's printing, and it's gone when the window lets it go
     /// or the app ends, however it ends. With the person's passwords for their own pages: only a print with no name gets them, so a document opened with
     /// its password is never printed to a file with a name, however the app ends.
     Window(&'a dyn PrintWatch, Option<&'a PersonsKeys>),

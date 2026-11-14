@@ -6,7 +6,9 @@
 //!
 //! **The file has no name** (PLAN, "the person can't print a document they opened with its password"): it's unlinked before its first byte is written,
 //! and the host is given `/dev/fd/N`, which CoreGraphics opens and maps. This app holds the descriptor from the host's taking it until the system's printing
-//! says it's done with it; nothing else can open the file, and the kernel frees it when the last holder lets go, however the app ends.
+//! says it's done with it; nothing else in the app can open the file (the file wall, `recto_platform::document_file`, refuses `/dev/fd/N` and any file
+//! with no link, for every actor), and the kernel frees it when the last holder lets go, however the app ends. Rust never opens it by its path: the
+//! window's CoreGraphics does, in Swift.
 //!
 //! At rest there's nothing: no thread, worker, file or buffer. One print at a time; asking again while one's being prepared says so.
 //!
