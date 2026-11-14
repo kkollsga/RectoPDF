@@ -26,12 +26,21 @@ pub fn hidden_in<L: recto_session::DocLoader>(
     id: TabId,
     source: &recto_session::PageSource,
 ) -> Option<std::sync::Arc<recto_proto::hidden::HiddenAnnots>> {
-    if source.added {
-        return None;
-    }
-    // The whole file's set, whatever the page: a worker leaves out only what's on the page it draws, and one set for every page of the file is
-    // what lets a print's pages share one worker (a set goes to it only when it's another).
+    for_page(tab_set(s, id).as_ref(), source)
+}
+
+/// **The tab's whole set**, whatever the page: a worker leaves out only what's on the page it draws, and one set for every page of the file is what
+/// lets a print's pages share one worker (a set goes to it only when it's another), and one `Arc` (second review of R4.3, SF3).
+pub(crate) fn tab_set<L: recto_session::DocLoader>(s: &recto_session::Session<L>, id: TabId) -> Option<std::sync::Arc<recto_proto::hidden::HiddenAnnots>> {
     s.lists().get(id)?.marks().hidden_annots()
+}
+
+/// [`tab_set`] for a page of the tab: none for one added from another PDF.
+pub(crate) fn for_page(
+    set: Option<&std::sync::Arc<recto_proto::hidden::HiddenAnnots>>,
+    source: &recto_session::PageSource,
+) -> Option<std::sync::Arc<recto_proto::hidden::HiddenAnnots>> {
+    set.filter(|_| !source.added).cloned()
 }
 
 /// [`hidden_in`], through the session's access.
@@ -811,5 +820,64 @@ mod tests {
         assert_eq!(drawn(&mut doc), 0, "hidden at both its places");
         doc.hidden.draw_for(1, None);
         assert_eq!(drawn(&mut doc), before, "undone, it's drawn again");
+    }
+
+    /// **Failure (second review of R4.3, SF3): a print makes the tab's set again for every page**, under the session's lock, and each page holds its
+    /// own: at the cap of removals (10,000) and 2,000 pages, some 20 million entries grouped and about 400 MB held. One set, shared by the file's
+    /// pages; none for none taken out.
+    #[test]
+    fn a_print_shares_one_set_among_its_pages() {
+        let file = TempPdf::new(
+            "printed.pdf",
+            &pages(&[
+                Page::new(text_lines(&["Highlighted words on a page"])),
+                Page::new(text_lines(&["Another page"])),
+                Page::new(text_lines(&["A third page"])),
+            ]),
+        );
+        let mut session = Session::new(crate::DrawableLoader);
+        let run = |session: &mut Session<crate::DrawableLoader>, command: Command| run_command(session, Level::Full, &command);
+        let open = crate::commands::tabs::Open {
+            path: file.0.clone(),
+            page: None,
+        };
+        run(&mut session, Command::from(open)).unwrap();
+        let printed = crate::print::print_pages_in(&mut session, &TabRef::default(), None).unwrap();
+        assert!(printed.iter().all(|page| page.hidden.is_none()), "none taken out, no set");
+        let highlight = crate::commands::highlight::Highlight {
+            tab: TabRef::default(),
+            page: Some(1),
+            to_page: None,
+            chars: Some("0-11".into()),
+            at: None,
+            to: None,
+            unit: None,
+        };
+        run(&mut session, Command::from(highlight)).expect("highlighted");
+        let save = crate::commands::saving::Save {
+            tab: TabRef::default(),
+            out: None,
+            replace: false,
+        };
+        run(&mut session, Command::from(save)).expect("saved");
+        let found = recto_core::highlights::page_highlights(&file.0, 0).unwrap().found.remove(0);
+        let [x, y, width, height] = found.rects[0];
+        let remove = crate::commands::highlight::HighlightRemove {
+            tab: TabRef::default(),
+            what: crate::commands::highlight::RemoveWhat::At {
+                page: 1,
+                x: x + width / 2.0,
+                y: y + height / 2.0,
+            },
+        };
+        run(&mut session, Command::from(remove)).expect("taken out");
+        let printed = crate::print::print_pages_in(&mut session, &TabRef::default(), None).unwrap();
+        let first = printed[0].hidden.clone().expect("a set");
+        assert!(
+            printed
+                .iter()
+                .all(|page| page.hidden.as_ref().is_some_and(|set| std::sync::Arc::ptr_eq(set, &first))),
+            "one set, shared"
+        );
     }
 }

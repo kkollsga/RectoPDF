@@ -118,10 +118,12 @@ pub fn print_pages<A: SessionAccess>(access: &A, tab: &TabRef, pages: Option<&st
                     .then("Print a range of pages at a time, with `--pages`."),
             );
         }
+        // Made once and shared by the file's pages (second review of R4.3, SF3).
+        let set = crate::highlighting::tab_set(s, id);
         (start..end)
             .map(|position| {
                 let source = s.page_source(id, position).ok_or_else(no_such_page)?;
-                let hidden = crate::highlighting::hidden_in(s, id, &source);
+                let hidden = crate::highlighting::for_page(set.as_ref(), &source);
                 Ok((source, hidden))
             })
             .collect::<Result<Vec<_>, _>>()
