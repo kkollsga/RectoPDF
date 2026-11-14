@@ -984,17 +984,8 @@ impl PageEdits {
         self.commit(Step::Remove { start, len })
     }
 
-    /// Adds every page of another PDF at a position, as dropping it into the page view does.
-    pub fn insert_pdf(&mut self, at: u32, path: &Path, page_count: u32) -> Result<(), EditError> {
-        self.insert_pdf_stamped(at, path, page_count, None)
-    }
-
-    /// [`Self::insert_pdf`], noting which version of the file this is.
-    pub fn insert_pdf_stamped(&mut self, at: u32, path: &Path, page_count: u32, stamp: Option<FileStamp>) -> Result<(), EditError> {
-        self.insert_pdf_noting(at, path, page_count, stamp, false)
-    }
-
-    /// [`Self::insert_pdf_stamped`], noting whether it's a protected file.
+    /// Adds every page of another PDF at a position, as dropping it into the page view does, noting which version of the file this is (`None` if it
+    /// couldn't be looked at) and whether it's a protected file.
     pub fn insert_pdf_noting(&mut self, at: u32, path: &Path, page_count: u32, stamp: Option<FileStamp>, protected: bool) -> Result<(), EditError> {
         if at > self.len() {
             return Err(EditError::OutOfRange);
@@ -1287,7 +1278,7 @@ mod tests {
     #[test]
     fn dropping_a_pdf_inserts_its_pages_at_the_position() {
         let mut edits = PageEdits::new(3);
-        edits.insert_pdf(1, Path::new("/d/tide.pdf"), 2).unwrap();
+        edits.insert_pdf_noting(1, Path::new("/d/tide.pdf"), 2, None, false).unwrap();
         let rows: Vec<_> = edits.slots().iter().map(|s| (s.source, s.page)).collect();
         assert_eq!(rows, [(0, 0), (1, 0), (1, 1), (0, 1), (0, 2)]);
         assert_eq!(edits.added_sources().len(), 1);
@@ -1298,8 +1289,8 @@ mod tests {
     #[test]
     fn the_same_pdf_dropped_twice_shares_a_source() {
         let mut edits = PageEdits::new(1);
-        edits.insert_pdf(1, Path::new("/d/a.pdf"), 1).unwrap();
-        edits.insert_pdf(2, Path::new("/d/a.pdf"), 1).unwrap();
+        edits.insert_pdf_noting(1, Path::new("/d/a.pdf"), 1, None, false).unwrap();
+        edits.insert_pdf_noting(2, Path::new("/d/a.pdf"), 1, None, false).unwrap();
         assert_eq!(edits.added_sources().len(), 1);
         edits.rotate(1, 1, 1).unwrap();
         assert_eq!((edits.slots()[1].quarter_turns, edits.slots()[2].quarter_turns), (1, 0));
@@ -1313,7 +1304,7 @@ mod tests {
         edits.move_pages(0, 2, 3).unwrap();
         edits.rotate(2, 3, 1).unwrap();
         edits.delete(1, 2).unwrap();
-        edits.insert_pdf(2, Path::new("/d/x.pdf"), 4).unwrap();
+        edits.insert_pdf_noting(2, Path::new("/d/x.pdf"), 4, None, false).unwrap();
         let end = edits.slots().to_vec();
         assert!(edits.is_edited());
         while edits.undo() {}
@@ -1354,13 +1345,13 @@ mod tests {
         moved.move_pages(3, 1, 0).unwrap();
         assert!(!moved.is_edited());
         let mut added = PageEdits::new(2);
-        added.insert_pdf(2, Path::new("/d/a.pdf"), 1).unwrap();
+        added.insert_pdf_noting(2, Path::new("/d/a.pdf"), 1, None, false).unwrap();
         assert!(added.is_edited(), "an added page is a difference");
         added.delete(2, 1).unwrap();
         assert!(!added.is_edited(), "and taking it away again isn't");
         let mut swapped = PageEdits::new(2);
         swapped.delete(1, 1).unwrap();
-        swapped.insert_pdf(1, Path::new("/d/same.pdf"), 1).unwrap();
+        swapped.insert_pdf_noting(1, Path::new("/d/same.pdf"), 1, None, false).unwrap();
         assert!(swapped.is_edited(), "a page from another file isn't this file's, whatever its number");
         // Past the cap, an odd number of swaps differs and an even number doesn't, whatever fell off.
         let mut past = PageEdits::new(2);
@@ -1391,8 +1382,11 @@ mod tests {
         assert_eq!(edits.delete(5, 1), Err(EditError::OutOfRange));
         assert_eq!(edits.rotate(0, u32::MAX, 1), Err(EditError::OutOfRange));
         assert_eq!(edits.move_pages(0, 1, u32::MAX), Err(EditError::OutOfRange));
-        assert_eq!(edits.insert_pdf(9, Path::new("/d/a.pdf"), 1), Err(EditError::OutOfRange));
-        assert_eq!(edits.insert_pdf(0, Path::new("/d/a.pdf"), MAX_PAGES as u32), Err(EditError::TooManyPages));
+        assert_eq!(edits.insert_pdf_noting(9, Path::new("/d/a.pdf"), 1, None, false), Err(EditError::OutOfRange));
+        assert_eq!(
+            edits.insert_pdf_noting(0, Path::new("/d/a.pdf"), MAX_PAGES as u32, None, false),
+            Err(EditError::TooManyPages)
+        );
         assert_eq!(order(&edits), [0, 1]);
         assert!(!edits.is_edited());
     }
@@ -1404,7 +1398,7 @@ mod tests {
         let mut heavy = PageEdits::new(pages);
         for round in 0..96 {
             heavy.delete(0, pages - 1).unwrap();
-            heavy.insert_pdf(0, Path::new("/d/full.pdf"), pages - 1).unwrap();
+            heavy.insert_pdf_noting(0, Path::new("/d/full.pdf"), pages - 1, None, false).unwrap();
             assert!(
                 heavy.history_bytes() <= MAX_HISTORY_BYTES + MAX_PAGES * 8,
                 "round {round}: {}",
@@ -1512,10 +1506,10 @@ mod tests {
         as_agent(&mut edits, |edits| {
             // An insert holds nothing until it's undone, and a delete holds its pages until it's undone. So undoing each pair below leaves the bytes where they were, and the two inserts under them go past the cap with nothing older left to let go of.
             for _ in 0..2 {
-                edits.insert_pdf(0, Path::new("/d/part.pdf"), 4_999).unwrap();
+                edits.insert_pdf_noting(0, Path::new("/d/part.pdf"), 4_999, None, false).unwrap();
             }
             for _ in 0..44 {
-                edits.insert_pdf(0, Path::new("/d/part.pdf"), 190_000).unwrap();
+                edits.insert_pdf_noting(0, Path::new("/d/part.pdf"), 190_000, None, false).unwrap();
                 edits.delete(0, 190_000).unwrap();
             }
         });
@@ -1578,7 +1572,7 @@ mod tests {
                 if edits.delete(0, count).is_err() {
                     break;
                 }
-                edits.insert_pdf(0, Path::new("/d/full.pdf"), count).unwrap();
+                edits.insert_pdf_noting(0, Path::new("/d/full.pdf"), count, None, false).unwrap();
             }
             // The steps on top are its own inserts, and undoing one takes on all its pages.
             while edits.history.undo.len() > 1 {
@@ -1603,7 +1597,7 @@ mod tests {
     fn adding_nothing_is_no_step() {
         let mut edits = PageEdits::new(3);
         edits.journal_from_now();
-        edits.insert_pdf_stamped(0, Path::new("/d/none.pdf"), 0, None).unwrap();
+        edits.insert_pdf_noting(0, Path::new("/d/none.pdf"), 0, None, false).unwrap();
         assert!(!edits.can_undo() && edits.journal_waiting().unwrap().1.is_empty());
     }
 
@@ -1653,7 +1647,7 @@ mod tests {
                     refused = true;
                     break;
                 }
-                edits.insert_pdf(0, Path::new("/d/full.pdf"), count).unwrap();
+                edits.insert_pdf_noting(0, Path::new("/d/full.pdf"), count, None, false).unwrap();
             }
         });
         assert!(refused, "the bytes reach the cap");
@@ -1665,7 +1659,7 @@ mod tests {
         edits.rotate(1, 2, 1).unwrap();
         as_agent(edits, |edits| edits.delete(0, 1).unwrap());
         edits
-            .insert_pdf_stamped(
+            .insert_pdf_noting(
                 1,
                 Path::new("/d/added.pdf"),
                 3,
@@ -1675,6 +1669,7 @@ mod tests {
                     device: 7,
                     inode: 6,
                 }),
+                false,
             )
             .unwrap();
         edits.move_pages(0, 2, 3).unwrap();
@@ -1804,7 +1799,7 @@ mod tests {
         }
         let journaled = edits.journal.as_ref().map(|outbox| (outbox.seq, outbox.ops.len()));
         edits.acting = Author::Agent;
-        assert_eq!(edits.insert_pdf(0, Path::new("/d/a.pdf"), 1), Err(EditError::HistoryFull));
+        assert_eq!(edits.insert_pdf_noting(0, Path::new("/d/a.pdf"), 1, None, false), Err(EditError::HistoryFull));
         assert!(edits.added.is_empty(), "the refused file stayed on the list");
         assert_eq!(
             edits.journal.as_ref().map(|outbox| (outbox.seq, outbox.ops.len())),
@@ -1812,7 +1807,7 @@ mod tests {
             "and in the journal"
         );
         edits.acting = Author::Owner;
-        edits.insert_pdf(0, Path::new("/d/b.pdf"), 1).unwrap();
+        edits.insert_pdf_noting(0, Path::new("/d/b.pdf"), 1, None, false).unwrap();
         assert_eq!(edits.slots()[0].source, 1, "the next file is the first");
     }
 
@@ -1820,9 +1815,9 @@ mod tests {
     #[test]
     fn the_nearest_copy_of_a_page_is_found() {
         let mut edits = PageEdits::new(1);
-        edits.insert_pdf(1, Path::new("/d/a.pdf"), 1).unwrap();
-        edits.insert_pdf(2, Path::new("/d/b.pdf"), 1).unwrap();
-        edits.insert_pdf(3, Path::new("/d/a.pdf"), 1).unwrap();
+        edits.insert_pdf_noting(1, Path::new("/d/a.pdf"), 1, None, false).unwrap();
+        edits.insert_pdf_noting(2, Path::new("/d/b.pdf"), 1, None, false).unwrap();
+        edits.insert_pdf_noting(3, Path::new("/d/a.pdf"), 1, None, false).unwrap();
         assert_eq!(edits.nearest_position(1, 0, 0), Some(1));
         assert_eq!(edits.nearest_position(1, 0, 3), Some(3));
         assert_eq!(edits.nearest_position(9, 0, 0), None);
