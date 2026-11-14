@@ -189,9 +189,12 @@ impl Sleeper<'_> {
         self.warm.forget(id);
     }
 
-    /// Tabs just pushed out of the warm ones, and what their sleep files would say. There's a sleep file for any tab that's gone cold, by whatever way.
-    pub fn take_left_warm(&mut self) -> Vec<SleepFacts> {
+    /// Tabs just pushed out of the warm ones, what their sleep files would say, and whose command pushed each out. There's a sleep file for any tab that's gone
+    /// cold, by whatever way.
+    pub fn take_left_warm(&mut self) -> Vec<(SleepFacts, crate::Author)> {
         let left = self.dormancy.take_left();
-        left.into_iter().filter_map(|(id, toc)| self.look().sleep_facts_with(id, &toc)).collect()
+        left.into_iter()
+            .filter_map(|(id, toc, by)| Some((self.look().sleep_facts_with(id, &toc)?, by)))
+            .collect()
     }
 }

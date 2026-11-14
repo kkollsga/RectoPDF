@@ -6,7 +6,8 @@
 use super::*;
 use crate::sleeper::{OTHERS_FIRST_FOR_MS, SLEEP_BYTES_PER_HOUR};
 
-const WHYS: [Why; 4] = [Why::LeftAlone, Why::Budget, Why::Pressure, Why::Asked];
+const PERSON: recto_agent::Actor = recto_agent::Actor::Person;
+const WHYS: [Why; 4] = [Why::LeftAlone, Why::Budget, Why::Pressure, Why::Asked(crate::sleeper::Asked::by(PERSON))];
 const HOUR_MS: u64 = 3_600_000;
 
 /// Every way to put `lengths[i]` steps of each of the sequences in one order: each as a list of which sequence's next step comes.
@@ -55,7 +56,7 @@ fn going_dormant_by_itself_is_queued_and_only_being_asked_writes_in_place() {
             out,
             Some(Out::GoDormant {
                 tabs: vec![TabId(1), TabId(2)],
-                in_place: why == Why::Asked
+                in_place: matches!(why, Why::Asked(_))
             }),
             "{why:?}"
         );
@@ -155,10 +156,10 @@ fn every_order_of_writes_the_gap_and_the_hour_keeps_the_ssd_rule() {
     let gap_ms = u64::from(SLEEP_WRITE_EVERY_SECONDS) * 1000;
     let (one, two, filler) = (TabId(1), TabId(2), TabId(9));
     let steps = [
-        Happens::Write(one, By::Queue),
-        Happens::Write(one, By::Asked),
+        Happens::Write(one, By::Queue(recto_session::Author::Owner)),
+        Happens::Write(one, By::Asked(PERSON)),
         Happens::Write(one, By::Flush),
-        Happens::Write(two, By::Queue),
+        Happens::Write(two, By::Queue(recto_session::Author::Owner)),
         Happens::Advance(gap_ms),
         Happens::Advance(HOUR_MS),
         Happens::FillTheHour,
@@ -194,6 +195,7 @@ fn every_order_of_writes_the_gap_and_the_hour_keeps_the_ssd_rule() {
                             there: true,
                             pictures_allowed: true,
                             there_for_other_paper: false,
+                            there_for_other_place: false,
                         },
                         now,
                     );
@@ -230,22 +232,23 @@ fn a_tab_with_no_file_gets_its_facts_and_a_protected_one_never_gets_pictures() {
                 there,
                 pictures_allowed,
                 there_for_other_paper: false,
+                there_for_other_place: false,
             },
             10,
         )
     };
     let _ = machine.step(Event::Wrote { id: TabId(1), bytes: 100 }, 10);
     assert_eq!(
-        write(&mut machine, By::Queue, false, true),
+        write(&mut machine, By::Queue(recto_session::Author::Owner), false, true),
         Some(Out::Write(Write::FactsOnly)),
         "within its gap, no file"
     );
     assert_eq!(
-        write(&mut machine, By::Queue, true, true),
+        write(&mut machine, By::Queue(recto_session::Author::Owner), true, true),
         Some(Out::Write(Write::PutOff)),
         "within its gap, a file"
     );
-    for by in [By::Flush, By::Asked, By::Queue] {
+    for by in [By::Flush, By::Asked(PERSON), By::Queue(recto_session::Author::Owner)] {
         assert_eq!(
             write(&mut machine, by, false, false),
             Some(Out::Write(Write::FactsOnly)),
@@ -263,7 +266,10 @@ fn a_tab_with_no_file_gets_its_facts_and_a_protected_one_never_gets_pictures() {
         },
         10,
     );
-    assert_eq!(write(&mut machine, By::Queue, true, true), Some(Out::Write(Write::WithPictures)));
+    assert_eq!(
+        write(&mut machine, By::Queue(recto_session::Author::Owner), true, true),
+        Some(Out::Write(Write::WithPictures))
+    );
 }
 
 /// Failure (d65da39 and 80af1aa, slow mode 2026-11-11: a quit after opening tabs lost them, as its flush waited behind every sleep file queued): the queue's
@@ -317,10 +323,11 @@ fn what_is_remembered_of_writes_stays_within_the_gap() {
     assert_eq!(machine.remembered(), 1, "those older than the gap have gone");
     let write = Event::Write {
         id: TabId(5),
-        by: By::Queue,
+        by: By::Queue(recto_session::Author::Owner),
         there: true,
         pictures_allowed: true,
         there_for_other_paper: false,
+        there_for_other_place: false,
     };
     assert_eq!(machine.step(write, now), Some(Out::Write(Write::WithPictures)));
     assert_eq!(
@@ -428,11 +435,8 @@ fn older_pictures_of_the_pages_at_its_place_stand_and_the_others_go() {
         "those at the place, not the one beside"
     );
     assert_eq!(pages_of(&with_older_pictures(file_with(&[]), Some(there.clone()), &[13])), vec![13]);
-    // One page of the place has none: the file can't cover it.
-    assert_eq!(
-        pages_of(&with_older_pictures(file_with(&[]), Some(there.clone()), &[13, 14])),
-        Vec::<u32>::new()
-    );
+    // One page of the place has none (a spread whose other page never got a picture): the one it has still stands, as nothing newer is on hand for it.
+    assert_eq!(pages_of(&with_older_pictures(file_with(&[]), Some(there.clone()), &[13, 14])), vec![13]);
     // A place with no pages (a closed window, no layout) is a place nothing is owed at.
     assert_eq!(pages_of(&with_older_pictures(file_with(&[]), Some(there.clone()), &[])), Vec::<u32>::new());
     // Another list, or another version, or no file: as before, nothing from it.
@@ -447,6 +451,39 @@ fn older_pictures_of_the_pages_at_its_place_stand_and_the_others_go() {
     assert_eq!(pages_of(&with_older_pictures(file_with(&[19]), Some(there), &[19])), vec![19]);
 }
 
+/// Failure (the sleep branch's second review, 2026-11-13): with nothing on hand, the older pictures stood only if the file had one of every page in view, and
+/// with something on hand none stood at all, so a spread with one page that never got a picture lost the other page's older picture at the next write, and a
+/// page drawn anew threw away its neighbour's: a wake half bare, or bare, for nothing. An older picture of a page in view stands when nothing newer is on hand
+/// for that page and it's of the same list, page count and version, and of the paper of what's on hand when anything is.
+#[test]
+fn an_older_picture_stands_for_a_page_in_view_with_nothing_newer() {
+    let there = file_with(&[4, 5, 30]);
+    assert_eq!(
+        pages_of(&with_older_pictures(file_with(&[]), Some(there.clone()), &[4, 6])),
+        vec![4],
+        "nothing on hand"
+    );
+    assert_eq!(
+        pages_of(&with_older_pictures(file_with(&[5]), Some(there.clone()), &[4, 5])),
+        vec![5, 4],
+        "5 drawn anew, 4's older one beside it, and not 5's older one"
+    );
+    let mut dark_now = file_with(&[5]);
+    dark_now.pictures[0].dark = true;
+    assert_eq!(
+        pages_of(&with_older_pictures(dark_now, Some(there.clone()), &[4, 5])),
+        vec![5],
+        "4's older one is of the other paper"
+    );
+    let mut other_pages = there;
+    other_pages.pages = 41;
+    assert_eq!(
+        pages_of(&with_older_pictures(file_with(&[5]), Some(other_pages), &[4, 5])),
+        vec![5],
+        "another page count"
+    );
+}
+
 /// Failure (the first worker's quiet run of 2026-11-13, `02-wake-at-once-dark.png`): a tab slept again inside its gap after the look changed kept a file whose
 /// pictures were all for the other paper, so its wake was bare paper. And the other way: letting that through spends the SSD rule on every sleep, not once a
 /// change of look. Inside the gap: the same paper again is put off as before; a file for the other paper is written once, and counted; then it's this paper's,
@@ -459,10 +496,11 @@ fn a_file_for_the_other_paper_is_written_once_a_change_of_look_inside_the_gap_an
         machine.step(
             Event::Write {
                 id,
-                by: By::Queue,
+                by: By::Queue(recto_session::Author::Owner),
                 there: true,
                 pictures_allowed,
                 there_for_other_paper: other_paper,
+                there_for_other_place: false,
             },
             10,
         )
@@ -510,4 +548,278 @@ fn a_file_is_for_the_other_paper_only_when_every_picture_in_it_is() {
     assert!(!there_for_other_paper(Some(&light), None), "nothing on hand");
     assert!(!there_for_other_paper(Some(&file_with(&[])), Some(true)), "no pictures there");
     assert!(!there_for_other_paper(None, Some(true)), "no file");
+}
+
+/// Failure (a quiet run of 2026-11-13: of pages 2, 4, 7, 8 and 9 each left, slept and woken in turn, only the first woke from its sleep picture): a tab slept
+/// again at another place inside its gap had the write put off, so the file kept its picture of the place before and the wake was bare. And the other way:
+/// letting it through for a tab slept again at the same place spends the SSD rule for nothing. Inside the gap: the same place again is put off as before; a
+/// file showing nothing of the place is written once, and counted; then it shows this place, so the next is put off; a move to another place is one more
+/// write; a protected tab is never let through for it; and once the hour's cap (one for the whole app, not each tab) is reached, none, at the cap plus one.
+#[test]
+fn a_file_of_another_place_is_written_once_a_move_inside_the_gap_and_never_past_the_hour() {
+    let mut machine = SleepWriter::default();
+    let (one, two) = (TabId(1), TabId(2));
+    let write = |machine: &mut SleepWriter, id, other_place, pictures_allowed| {
+        machine.step(
+            Event::Write {
+                id,
+                by: By::Asked(PERSON),
+                there: true,
+                pictures_allowed,
+                there_for_other_paper: false,
+                there_for_other_place: other_place,
+            },
+            10,
+        )
+    };
+    let _ = machine.step(Event::Wrote { id: one, bytes: 100 }, 10);
+    assert_eq!(
+        write(&mut machine, one, false, true),
+        Some(Out::Write(Write::PutOff)),
+        "the same place, inside the gap"
+    );
+    let mut written = 0;
+    for moved in 0..2 {
+        assert_eq!(write(&mut machine, one, true, true), Some(Out::Write(Write::WithPictures)), "move {moved}");
+        let _ = machine.step(Event::Wrote { id: one, bytes: 100 }, 10);
+        written += 1;
+        assert_eq!(write(&mut machine, one, false, true), Some(Out::Write(Write::PutOff)), "after move {moved}");
+    }
+    assert_eq!(machine.counts().writes_for_place, written, "one write for each move, and no more");
+    assert_eq!(machine.counts().writes_for_paper, 0);
+    assert_eq!(
+        write(&mut machine, one, true, false),
+        Some(Out::Write(Write::PutOff)),
+        "protected: no pictures to put right"
+    );
+    // The hour's cap is the app's: another tab's files fill it to one byte short, and one more file takes it over.
+    let used = 2 * 100 + 100;
+    let _ = machine.step(
+        Event::Wrote {
+            id: two,
+            bytes: SLEEP_BYTES_PER_HOUR - used - 1,
+        },
+        10,
+    );
+    assert_eq!(
+        write(&mut machine, one, true, true),
+        Some(Out::Write(Write::WithPictures)),
+        "one byte of room in the hour"
+    );
+    let _ = machine.step(Event::Wrote { id: one, bytes: 1 }, 10);
+    assert_eq!(write(&mut machine, one, true, true), Some(Out::Write(Write::PutOff)), "the hour's cap holds");
+    assert_eq!(machine.counts().writes_for_place, written + 1);
+}
+
+fn material_of(pages: &[u32], dark: bool, in_view: &[u32]) -> recto_reader::SleepMaterial {
+    recto_reader::SleepMaterial {
+        pictures: pages
+            .iter()
+            .map(|page| recto_reader::RawPicture {
+                page: *page,
+                scale: 0.5,
+                width: 1,
+                height: 1,
+                paper: if dark {
+                    recto_reader::PaperKind::Dark
+                } else {
+                    recto_reader::PaperKind::White
+                },
+                bgra: vec![0; 4],
+            })
+            .collect(),
+        in_view: in_view.to_vec(),
+        // The version `file_with`'s files are of.
+        version: Some(9),
+        ..Default::default()
+    }
+}
+
+/// Failure: the test of a file's place says it shows nothing of the place when it shows every page there that has a picture on hand, on this paper (a second
+/// write of the same, against the SSD rule), or says it does when its only picture of a page there is for the other paper, or of a page beside the place (a
+/// bare wake); or asks for a write when what's on hand has no picture of the place either.
+#[test]
+fn a_file_is_of_another_place_when_it_lacks_a_page_in_view_that_has_a_picture_on_hand() {
+    let now = file_with(&[]);
+    let other = |there: &SleepFile, material: &recto_reader::SleepMaterial| there_for_other_place(Some(there), &now, material);
+    let at_two = file_with(&[2]);
+    assert!(other(&at_two, &material_of(&[4], false, &[4])), "left at page 4, a file of page 2");
+    assert!(!other(&at_two, &material_of(&[2], false, &[2])), "the same page");
+    assert!(!other(&file_with(&[2, 3, 4]), &material_of(&[3, 4], false, &[3, 4])), "every page there shown");
+    assert!(other(&file_with(&[2, 5]), &material_of(&[3, 4], false, &[3, 4])), "pages beside the place");
+    assert!(other(&at_two, &material_of(&[2], true, &[2])), "page 2 on white paper, dark now");
+    assert!(other(&file_with(&[]), &material_of(&[4], false, &[4])), "a file of facts only");
+    assert!(!other(&at_two, &material_of(&[], false, &[4])), "nothing on hand");
+    assert!(!other(&at_two, &material_of(&[5], false, &[4])), "nothing on hand of the place");
+    assert!(!other(&at_two, &material_of(&[4], false, &[])), "nothing in view");
+    assert!(!there_for_other_place(None, &now, &material_of(&[4], false, &[4])), "no file");
+}
+
+/// Failure (the cool-down's review, 2026-11-13, S2): a two-page spread with one page pictured in the file there was put off, as "a page there is shown", and
+/// woke half bare though both pages were on hand. A page in view that has a picture on hand and none in the file makes the file another place's; a page in view
+/// with nothing on hand asks nothing (there'd be nothing to write of it).
+#[test]
+fn a_spread_with_one_page_pictured_is_written_when_both_are_on_hand() {
+    let now = file_with(&[]);
+    assert!(
+        there_for_other_place(Some(&file_with(&[2])), &now, &material_of(&[2, 3], false, &[2, 3])),
+        "the spread's other page is on hand and not in the file"
+    );
+    assert!(
+        !there_for_other_place(Some(&file_with(&[2])), &now, &material_of(&[2], false, &[2, 3])),
+        "the other page has nothing on hand: a write would add nothing"
+    );
+}
+
+/// Failure (the cool-down's review, 2026-11-13, S2): a file written at page 5, then page 5 rotated and the tab left inside the gap: the file's picture of page 5
+/// made it "the place", so the write was put off, and the wake refused the file for its other list of pages and was bare. A file of another list, page count
+/// or version than now shows nothing of the place, whatever its pictures; and with nothing on hand to keep, the older pictures go by the same rule.
+#[test]
+fn a_file_of_another_list_pages_or_version_shows_nothing_of_the_place() {
+    let now = file_with(&[]);
+    let material = material_of(&[5], false, &[5]);
+    assert!(
+        !there_for_other_place(Some(&file_with(&[5])), &now, &material),
+        "the same list, a picture of the place"
+    );
+    let mut rotated = file_with(&[5]);
+    rotated.list_seq += 1;
+    assert!(there_for_other_place(Some(&rotated), &now, &material), "another list: a page rotated since");
+    let mut fewer = file_with(&[5]);
+    fewer.pages -= 1;
+    assert!(there_for_other_place(Some(&fewer), &now, &material), "another page count");
+    let mut other_version = file_with(&[5]);
+    other_version.version = Some(10);
+    assert!(there_for_other_place(Some(&other_version), &now, &material), "another version");
+    let mut unknown = file_with(&[5]);
+    unknown.version = None;
+    assert!(there_for_other_place(Some(&unknown), &now, &material), "a file that says no version");
+}
+
+/// Write a tab's file as the app does: the machine's word, then an agent's file measured before it's written ([`Event::AgentSize`]: `bytes` with pictures,
+/// a fifth of it as facts alone), then what it came to. Says the last word the machine gave.
+fn write_as_the_app(machine: &mut SleepWriter, id: u32, by: By, there: bool, bytes: u64) -> Option<Out> {
+    let goes = |out: &Option<Out>| matches!(out, Some(Out::Write(Write::WithPictures | Write::FactsOnly) | Out::ShareCut(Write::FactsOnly)));
+    let mut out = machine.step(
+        Event::Write {
+            id: TabId(id),
+            by,
+            there,
+            pictures_allowed: true,
+            there_for_other_paper: false,
+            there_for_other_place: false,
+        },
+        10,
+    );
+    let mut pictures = matches!(out, Some(Out::Write(Write::WithPictures)));
+    while by.agent() && goes(&out) {
+        let size = if pictures { bytes } else { bytes / 5 };
+        match machine.step(Event::AgentSize { bytes: size, pictures, there }, 10) {
+            None => break,
+            cut @ Some(Out::ShareCut(Write::FactsOnly)) if pictures => (out, pictures) = (cut, false),
+            other => return other,
+        }
+    }
+    if goes(&out) {
+        let _ = machine.step(
+            Event::Wrote {
+                id: TabId(id),
+                bytes: if pictures { bytes } else { bytes / 5 },
+            },
+            10,
+        );
+    }
+    out
+}
+
+/// Failure (the cool-down's review, 2026-11-13, S3, and the second review): one hour's cap anyone could use up: an agent looping a move and `session sleep`
+/// used the app's whole hour (then 4 MiB, about 57 writes), after which every wake of the person's was bare for the hour; then the share was asked only before a
+/// file, so an agent's last file passed it by a whole file, and tabs an agent's taps pushed out were the person's. With the caps set small: an agent's files go
+/// up to its share and the one that wouldn't fit is put off, never written past it, and so is every agent-caused one after, a tab its command pushed out too;
+/// a tab with no file gets its facts alone while they fit; the person's own routes still have the rest; and what the agent is told comes from the write's own
+/// outcome.
+#[test]
+fn an_agents_sleep_files_stop_at_its_share_and_the_persons_still_have_the_hour() {
+    let agent = By::Asked(recto_agent::Actor::Agent(recto_agent::Level::Full));
+    let pushed_by_agent = By::Queue(recto_session::Author::Agent);
+    let mut machine = SleepWriter::default();
+    let _ = machine.step(Event::SetAgentHourCap(250), 10);
+    let _ = machine.step(Event::SetHourCap(1_000), 10);
+    // Each a tab of its own, so the gap holds nothing back: the share is what's asked.
+    assert_eq!(write_as_the_app(&mut machine, 1, agent, true, 100), Some(Out::Write(Write::WithPictures)));
+    assert_eq!(
+        write_as_the_app(&mut machine, 2, pushed_by_agent, true, 100),
+        Some(Out::Write(Write::WithPictures)),
+        "a tab an agent pushed out"
+    );
+    assert_eq!(
+        write_as_the_app(&mut machine, 3, agent, true, 100),
+        Some(Out::ShareCut(Write::PutOff)),
+        "200 of 250 used: a file of 100 doesn't fit, so it isn't written past the share"
+    );
+    assert_eq!(machine.counts().agent_share_used, 1);
+    let told = machine
+        .share_words(
+            Outcome {
+                write: Write::PutOff,
+                cut_for_share: true,
+            },
+            false,
+            10,
+        )
+        .expect("the agent is told");
+    assert!(told.contains("wasn't written") && told.contains("60 minutes"), "{told}");
+    assert_eq!(
+        write_as_the_app(&mut machine, 4, pushed_by_agent, true, 10),
+        Some(Out::ShareCut(Write::PutOff)),
+        "nor a small one after, for pictures"
+    );
+    // A tab with no file: its facts alone, while they fit, and said so.
+    assert_eq!(
+        write_as_the_app(&mut machine, 5, agent, false, 100),
+        Some(Out::ShareCut(Write::FactsOnly)),
+        "20 bytes of facts fit"
+    );
+    let told = machine
+        .share_words(
+            Outcome {
+                write: Write::FactsOnly,
+                cut_for_share: true,
+            },
+            false,
+            10,
+        )
+        .expect("told");
+    assert!(told.contains("without pictures"), "{told}");
+    assert_eq!(
+        write_as_the_app(&mut machine, 6, agent, false, 200),
+        Some(Out::ShareCut(Write::PutOff)),
+        "40 bytes of facts don't"
+    );
+    assert_eq!(machine.counts().agent_share_used, 4, "once for each write cut short");
+    assert!(
+        machine
+            .share_words(
+                Outcome {
+                    write: Write::WithPictures,
+                    cut_for_share: false
+                },
+                false,
+                10
+            )
+            .is_none(),
+        "nothing to tell"
+    );
+    // The person's routes: a tab their own action pushed out, and their own asking.
+    let person_pushed = By::Queue(recto_session::Author::Owner);
+    assert_eq!(
+        write_as_the_app(&mut machine, 7, person_pushed, true, 100),
+        Some(Out::Write(Write::WithPictures)),
+        "a tab the person pushed out"
+    );
+    assert_eq!(
+        write_as_the_app(&mut machine, 8, By::Asked(PERSON), true, 100),
+        Some(Out::Write(Write::WithPictures)),
+        "the person's own asking"
+    );
 }

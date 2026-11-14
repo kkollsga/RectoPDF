@@ -1,4 +1,4 @@
-apptest crates/recto-cli/tests 201
+apptest crates/recto-cli/tests 200
 ffi crates/recto-ffi/src 2130
 file crates/recto-core/src/save.rs 2105
 file crates/recto-index/src/corpus.rs 1686
@@ -26,7 +26,7 @@ impl crates/recto-reader/src/layout.rs::PageLayout 49
 impl crates/recto-reader/src/selection.rs::Selecting 41
 impl crates/recto-render-service/src/host.rs::DocRenderer 59
 impl crates/recto-render/src/pdfium/contents.rs::Walk 64
-impl crates/recto-session/src/edit.rs::PageEdits 69
+impl crates/recto-session/src/edit.rs::PageEdits 68
 impl crates/recto-update/src/updater.rs::Updater 44
 sleep app/qa/links-shots.sh 1
 sleep app/qa/opening-shots.sh 1
@@ -110,7 +110,7 @@ type crates/recto-reader/src::Engine 46
 type crates/recto-reader/src::Reader 82
 type crates/recto-render-service/src::DocRenderer 64
 type crates/recto-render/src::Walk 64
-type crates/recto-session/src::PageEdits 69
+type crates/recto-session/src::PageEdits 68
 type crates/recto-session/src::Session 103
 type crates/recto-update/src::Updater 74
 whole crates/recto-app/src::Inner 127

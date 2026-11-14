@@ -35,12 +35,14 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
 }
 
 /// The budgets, in bytes: the sizes on 2026-11-13, before the moves, with Inner's 16 bytes more from main's merge that evening (`Panes`' plan keeping when
-/// its zoom was asked, R3.6a); Lifecycle's 48 more from the record's-lock retry: the launch held back from the updater (`LaunchFacts`' `held` and the
-/// first frame's time beside the facts), the window `touched` since the launch, and the keeping state the life holds (`lifecycle::keeping`), one of each per
-/// app, not per tab or page view; and Tools' and Inner's 8 more for Find's fingerprint of what the host was last told it draws (`find::Field`, R3.7 S2's
-/// fix: Find announced with nothing changed).
+/// its zoom was asked, R3.6a), and Lifecycle's 48 more from the record's-lock retry: the launch held back from the updater (`LaunchFacts`' `held` and the
+/// first frame's time beside the facts), the window `touched` since the launch, and the keeping state the life holds (`lifecycle::keeping`); Inner's 184
+/// more from the sleep branch's sleeper, held inline: the cool-down queue (`sleep_queue::Leaving`, where `main` had the queue under its lock alone) with its
+/// condition variable, its wait, its writer's panic seam, a test's hold and the queue's own counts, the answer slots an agent's asked sleep waits on, the
+/// ticket counter, and the hurry going to the background asks for; and Tools' and Inner's 8 more for Find's fingerprint of what the host was last told it
+/// draws (`find::Field`, R3.7 S2's fix: Find announced with nothing changed). One of each per app, not per tab or page view.
 const BUDGETS: [(&str, usize); 7] = [
-    ("Inner", 4888),
+    ("Inner", 5072),
     ("Lifecycle", 344),
     ("Serving", 1064),
     ("Window", 464),
@@ -128,7 +130,6 @@ Inner::pub fn dismiss_selection_notice(&self)
 Inner::pub fn dormancy_due(&self) -> Option<Vec<TabId>>
 Inner::pub fn forget_a_quiet_copy(&self)
 Inner::pub fn gather_record(&self) -> (SessionRecord, PlaceDelta)
-Inner::pub fn give_sleep_view(&self, engine: &recto_reader::Engine, id: TabId)
 Inner::pub fn go_dormant(&self, tabs: &[TabId], why: Why) -> usize
 Inner::pub fn hand_off(&self, limit: Duration) -> Result<HandOffReport, HandOffError>
 Inner::pub fn hand_off_cancelled(&self)
@@ -145,7 +146,6 @@ Inner::pub fn notice_read(&self)
 Inner::pub fn perform(self: &Arc<Self>, id: String) -> HostAction
 Inner::pub fn qa_save_from(&self, written: &str) -> Result<(), AgentError>
 Inner::pub fn qa_session_verb(&self, verb: &str, value: &str) -> Option<Result<(), AgentError>>
-Inner::pub fn queue_those_leaving(&self)
 Inner::pub fn quit_requested(self: &Arc<Self>)
 Inner::pub fn quit_stayed(&self)
 Inner::pub fn ready(&self, open: &[PathBuf])
@@ -180,10 +180,13 @@ Inner::pub fn window_closed(&self)
 Inner::pub fn window_interactive(&self) -> bool
 Inner::pub fn window_opened(&self)
 Inner::pub fn window_replaced(&self)
-Inner::pub fn write_sleep_for(&self, id: TabId, by: By)
-Inner::pub fn write_sleep_for_until(&self, id: TabId, until: Instant)
 Inner::pub(crate) fn carry_out_quit(self: &Arc<Self>, out: Option<Out>)
 Inner::pub(crate) fn carry_out_quit_answer(&self, out: Out)
+Inner::pub(super) fn give_sleep_view(&self, engine: &recto_reader::Engine, id: TabId, back: Option<(SleepFacts, SleepMaterial)>)
+Inner::pub(super) fn queue_those_leaving(&self, shown: TabId) -> Option<(SleepFacts, SleepMaterial)>
+Inner::pub(super) fn sleep_at_flush(&self, asked: Option<app::Asked>, until: Instant)
+Inner::pub(super) fn start_sleep_writer(&self)
+Inner::pub(super) fn write_sleep_for(&self, id: TabId, by: By) -> Option<Outcome>
 Lifecycle (pub struct)
 Lifecycle.pub first_shown: Mutex<Option<Value>>
 Lifecycle.pub holding_tab: Mutex<Option<TabId>>

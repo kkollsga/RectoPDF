@@ -285,6 +285,31 @@ impl AddedSource {
     }
 }
 
+/// **A list's edits said to be someone's,** given by [`PageEdits::acting`]: the owner's again, with none of the owner's steps to push out, when it's
+/// dropped, by returning or by a panic. A step that panics is caught by the server and the session's lock recovers, so a reset after the step would
+/// leave the next edits counted as the agent's, and may push the owner's steps out.
+pub(crate) struct ActingOn<'e>(&'e mut PageEdits);
+
+impl std::ops::Deref for ActingOn<'_> {
+    type Target = PageEdits;
+    fn deref(&self) -> &PageEdits {
+        self.0
+    }
+}
+
+impl std::ops::DerefMut for ActingOn<'_> {
+    fn deref_mut(&mut self) -> &mut PageEdits {
+        self.0
+    }
+}
+
+impl Drop for ActingOn<'_> {
+    fn drop(&mut self) {
+        self.0.acting = Author::Owner;
+        self.0.may_push_owner = false;
+    }
+}
+
 impl PageEdits {
     pub fn new(page_count: u32) -> Self {
         let slots = (0..page_count)
@@ -901,14 +926,12 @@ impl PageEdits {
         let_go
     }
 
-    /// Sets whose steps the next edits are. For the session alone.
-    pub(crate) fn act_as(&mut self, by: Author) {
+    /// **Whose steps the next edits are,** and whether they may push the owner's steps out of the history (at Full, where that's the holder's call),
+    /// for as long as what this gives is held. For the session alone.
+    pub(crate) fn acting(&mut self, by: Author, may_push_owner: bool) -> ActingOn<'_> {
         self.acting = by;
-    }
-
-    /// Lets the next edits push the owner's steps out of the history, at Full, where that's the holder's call.
-    pub(crate) fn let_owner_steps_go(&mut self, may: bool) {
-        self.may_push_owner = may;
+        self.may_push_owner = may_push_owner;
+        ActingOn(self)
     }
 
     /// Where a page of the tab's own PDF now sits, if it's still there.
@@ -1395,9 +1418,30 @@ mod tests {
     }
 
     fn as_agent(edits: &mut PageEdits, change: impl FnOnce(&mut PageEdits)) {
-        edits.act_as(Author::Agent);
-        change(edits);
-        edits.act_as(Author::Owner);
+        change(&mut edits.acting(Author::Agent, false));
+    }
+
+    /// An agent at Full, whose edits may push the owner's steps out of the history.
+    fn as_agent_at_full(edits: &mut PageEdits, change: impl FnOnce(&mut PageEdits)) {
+        change(&mut edits.acting(Author::Agent, true));
+    }
+
+    /// **Failure: an edit that panics while it's an agent's leaves the list's next edits the agent's,** and free to push the owner's steps out: the
+    /// server catches the panic and the session's lock recovers, so the person's next step would be recorded as the agent's, which an agent may then
+    /// throw away.
+    #[test]
+    fn an_edit_that_panics_leaves_the_next_edits_the_owners() {
+        let mut edits = PageEdits::new(3);
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            as_agent_at_full(&mut edits, |edits| {
+                edits.rotate(0, 1, 1).unwrap();
+                panic!("an edit's own bug");
+            });
+        }));
+        assert!(caught.is_err(), "the edit panicked");
+        assert!(!edits.may_push_owner, "nothing may push the owner's steps out after it");
+        edits.rotate(1, 1, 1).unwrap();
+        assert_eq!(edits.undo.last().map(|step| step.by), Some(Author::Owner), "the next step is the owner's");
     }
 
     /// Failure: an undone step forgets whose it was, or a redo makes it someone else's, so the owner's edits read as an agent's once they've been undone and back, and an agent may then throw them away.
@@ -1492,9 +1536,7 @@ mod tests {
         assert!(!edits.history_dropped());
         assert_eq!(edits.undo.len(), MAX_UNDO);
         // At Full, it goes through.
-        edits.let_owner_steps_go(true);
-        as_agent(&mut edits, |edits| edits.rotate(1, 1, 1).unwrap());
-        edits.let_owner_steps_go(false);
+        as_agent_at_full(&mut edits, |edits| edits.rotate(1, 1, 1).unwrap());
         assert!(edits.history_dropped() && edits.holds_owner_edits());
         // With nothing of the owner's in it, an agent's steps simply roll.
         let mut agents = PageEdits::new(3);
@@ -1542,9 +1584,7 @@ mod tests {
         assert!(refused, "the bytes reach the cap");
         assert_eq!(edits.undo[0].by, Author::Owner, "the owner's step is still at the bottom");
         assert!(!edits.owner_step_dropped);
-        edits.let_owner_steps_go(true);
-        as_agent(&mut edits, |edits| assert_eq!(edits.try_undo(), Ok(true)));
-        edits.let_owner_steps_go(false);
+        as_agent_at_full(&mut edits, |edits| assert_eq!(edits.try_undo(), Ok(true)));
     }
 
     /// Failure (review T21): a PDF of no pages added makes a step of nothing, which a replay refuses, so everything after it was lost.

@@ -75,11 +75,11 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
         return None;
     }
     if synced.tab != Some(id) || synced.pages != shown.pages || synced.map != shown.map {
-        inner.queue_those_leaving();
-        // Whichever way it's been asked for, the first frame's what its sleep file has, if it's got one and nothing's held of this tab.
+        let back = inner.queue_those_leaving(id);
+        // Whichever way it's been asked for, the first frame's what its sleep file has, or what was waiting to be one, if nothing's held of this tab.
         if !engine.waking().holds(id.0) {
             engine.waking().note_wake(id.0, Instant::now());
-            inner.give_sleep_view(engine, id);
+            inner.give_sleep_view(engine, id, back);
         }
         engine.activate(
             id.0,

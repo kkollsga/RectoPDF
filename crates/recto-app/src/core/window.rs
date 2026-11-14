@@ -104,7 +104,8 @@ impl Window {
         !(app.window_closed && reopened)
     }
 
-    /// The app became the active one or stopped, and the window key or not. Going to the background writes what's changed: from there, nobody's watching.
+    /// The app became the active one or stopped, and the window key or not. Going to the background writes what's changed, and hurries the sleep files'
+    /// cool-down ([`Saver::went_to_background`]): from there, nobody's watching.
     pub fn frontmost_changed(&self, app: bool, window_key: bool, saver: &Saver, core: &CoreQueue) {
         let mut state = lock(&self.app);
         let went_back = state.focus.app_frontmost && !app;
@@ -113,7 +114,7 @@ impl Window {
         state.focus.window_key = window_key;
         drop(state);
         if went_back {
-            saver.write_soon()
+            saver.went_to_background()
         } else {
             saver.view_changed()
         }

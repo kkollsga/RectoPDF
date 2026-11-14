@@ -69,11 +69,7 @@ impl<L: DocLoader> Session<L> {
         if journaling {
             edits.journal_from_now();
         }
-        edits.act_as(by);
-        edits.let_owner_steps_go(may_push_owner);
-        let result = change(&mut crate::parts::PartMut(edits));
-        edits.act_as(Author::Owner);
-        edits.let_owner_steps_go(false);
+        let result = change(&mut crate::parts::PartMut(&mut edits.acting(by, may_push_owner)));
         if result.is_ok() {
             self.after_change(id, place);
         } else {
@@ -345,11 +341,7 @@ impl<L: DocLoader> Session<L> {
         let place = self.place_of(id);
         let may_push_owner = self.lists.may_push_owner(by);
         let Some(edits) = self.lists.get_mut(id) else { return Ok(false) };
-        edits.act_as(by);
-        edits.let_owner_steps_go(may_push_owner);
-        let result = step(edits);
-        edits.act_as(Author::Owner);
-        edits.let_owner_steps_go(false);
+        let result = step(&mut edits.acting(by, may_push_owner));
         let stepped = result.map_err(SessionError::Edit)?;
         if stepped {
             self.after_change(id, place);
