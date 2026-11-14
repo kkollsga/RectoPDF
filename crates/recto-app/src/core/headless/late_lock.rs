@@ -188,7 +188,7 @@ fn a_lock_never_let_go_is_said_after_ten_seconds_and_not_before() {
         std::thread::Builder::new()
             .name("test-window".into())
             .spawn(move || {
-                let _ = core.ready_to_show();
+                let _ = core.life.ready_to_show(core.page_checks());
                 let _ = core.life.state_read();
                 let _ = crate::lock(&core.published).reader.home;
                 let _ = said.send(core.core.flush(WAIT_LIMIT));

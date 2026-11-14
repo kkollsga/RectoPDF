@@ -1180,7 +1180,7 @@ impl AppCore {
 
     /// Whether what the window would show now is right: the place on the layers, or nothing to wait for. Then, or once the patience is over, it shows. A short lock, asked only until it's showing.
     pub fn ready_to_show(&self) -> bool {
-        self.inner.ready_to_show()
+        self.inner.life.ready_to_show(self.inner.page_checks())
     }
 
     /// The window has just been put on the screen, showing this, and `why`: `ready` when `ready_to_show` said yes, `patience` when the host's timer ran out. For QA to see what the first frame was.
@@ -1188,7 +1188,9 @@ impl AppCore {
         for engine in self.inner.panes.engines(&self.inner.engine) {
             engine.waking().window_up();
         }
-        self.inner.record_window_shown(home, tile_layers, &why);
+        self.inner
+            .life
+            .record_window_shown(home, tile_layers, &why, &self.inner.engine.report().0, self.inner.page_checks());
         // The installer's waiting for this, off this thread, as it writes a small file and may start a worker, and only for a version that's new here.
         let inner = Arc::clone(&self.inner);
         let _ = std::thread::Builder::new()

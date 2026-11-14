@@ -142,17 +142,16 @@ Inner::pub fn memory_pressure(&self, critical: bool)
 Inner::pub fn menu_item_enabled(&self, id: String) -> bool
 Inner::pub fn note_input(&self)
 Inner::pub fn notice_read(&self)
+Inner::pub fn page_checks(&self) -> showing::PageChecks
 Inner::pub fn perform(self: &Arc<Self>, id: String) -> HostAction
 Inner::pub fn qa_save_from(&self, written: &str) -> Result<(), AgentError>
 Inner::pub fn qa_session_verb(&self, verb: &str, value: &str) -> Option<Result<(), AgentError>>
 Inner::pub fn quit_requested(self: &Arc<Self>)
 Inner::pub fn quit_stayed(&self)
 Inner::pub fn ready(&self, open: &[PathBuf])
-Inner::pub fn ready_to_show(&self) -> bool
 Inner::pub fn rearm_dormancy(&self)
 Inner::pub fn recent_files(&self) -> Vec<RecentFile>
 Inner::pub fn record_report(&self) -> Value
-Inner::pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str)
 Inner::pub fn restore_patience_over(&self)
 Inner::pub fn save_as(self: &Arc<Self>, tab: u32, path: String)
 Inner::pub fn save_panel(&self) -> SavePanelModel
@@ -212,6 +211,8 @@ Lifecycle::pub fn may_remake_window(&self) -> bool
 Lifecycle::pub fn new(clock: Arc<dyn crate::clock::Clock>) -> Self
 Lifecycle::pub fn note_input(&self)
 Lifecycle::pub fn note_nearby(&self)
+Lifecycle::pub fn ready_to_show(&self, checks: showing::PageChecks) -> bool
+Lifecycle::pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str, report: &Value, checks: showing::PageChecks)
 Lifecycle::pub fn sheet_changed(&self, open: bool)
 Lifecycle::pub fn state_read(&self) -> bool
 Lifecycle::pub fn step(&self, event: crate::lifecycle::Event) -> Option<crate::lifecycle::Out>

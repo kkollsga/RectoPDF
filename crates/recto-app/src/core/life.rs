@@ -1,10 +1,10 @@
 //! **The app's life as the core keeps it** ([`Lifecycle`]): the pure machine ([`crate::lifecycle::Life`]) under its lock, the clock it steps by, and what the
 //! window's and the session's threads count and note beside it.
 
-use super::updates;
+use super::{SHOW_PATIENCE, showing, updates};
 use crate::lock;
 use recto_session::TabId;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -167,6 +167,35 @@ impl Lifecycle {
     pub fn note_input(&self) {
         self.last_input_ms.store(self.now_ms(), Ordering::Relaxed);
         self.touched.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether the window may be shown now, by [`showing::decide`] on the page checks the app gathered ([`super::Inner::page_checks`]); what it said is kept
+    /// for the record. The UI thread's.
+    pub fn ready_to_show(&self, checks: showing::PageChecks) -> bool {
+        let opened = lock(&self.window_opened_at).map(|at| at.elapsed());
+        let decision = showing::decide(opened, self.started.elapsed(), checks);
+        self.shown_by_cap.store(decision == showing::Show::Cap, Ordering::Relaxed);
+        decision != showing::Show::Wait
+    }
+
+    /// **What the window's first showing had on it, and why it was shown.** `why` is `ready` (the page checks passed), `cap` (Rust's cap ran out: the host
+    /// asked and was told yes) or `patience` (the host's timer showed it). The rest is the page view's `report` and how the page `checks` were at the show,
+    /// both gathered by the app in that order, written once per window. The UI thread's.
+    pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str, report: &Value, checks: showing::PageChecks) {
+        let why = if why == "ready" && self.shown_by_cap.load(Ordering::Relaxed) {
+            "cap"
+        } else {
+            why
+        };
+        let opened = lock(&self.window_opened_at).map(|at| at.elapsed());
+        *lock(&self.first_shown) = Some(json!({
+            "home": home, "page": report["page"], "scroll_y": report["scroll_y"], "scroll_x": report["scroll_x"], "magnification": report["magnification"], "settled": report["settled"], "tab": report["tab"],
+            "tile_layers": tile_layers, "ms_from_start": self.started.elapsed().as_secs_f64() * 1000.0,
+            "why": why,
+            "ms_since_window_opened": opened.map(|opened| opened.as_secs_f64() * 1000.0),
+            "patience_ms": SHOW_PATIENCE.as_millis() as u64,
+            "when_shown": { "state_read": checks.state_read, "holding_tab": checks.holding_tab, "session_free": checks.session_free, "has_tab": checks.has_tab, "on_place": checks.on_place, "showable": checks.showable },
+        }));
     }
 
     /// Whether the host's been told to quit for a hand-off that's written.
