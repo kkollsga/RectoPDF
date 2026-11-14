@@ -155,11 +155,6 @@ fn agent_told(pages: usize, word: &str) -> Vec<String> {
     assert_ne!(super::printing::printed(&app), "none", "the person's print printed");
     app.settle();
     told.push(format!("printed and let go heard: {:?}", watching.heard()));
-    // The person's snapshot of a box on page 1 (S2's follow-up (1): their own `snapshot` to the clipboard, read with their password), then a paste of
-    // its SVG: what an agent hears and sees once each is done.
-    snapshot_and_paste(&app);
-    told.push(format!("snapshot and paste heard: {:?}", watching.heard()));
-    agent_looks(&app, "snapshot taken", &mut told);
     // An edit whose taking depends on the document's length.
     app.person(r##"{"cmd":"page_delete","tab":"#1","pages":"4"}"##);
     app.settle();
@@ -327,7 +322,7 @@ fn agent_looks(app: &HeadlessApp, when: &str, told: &mut Vec<String>) {
 /// it runs) or a look at the session as a whole: an agent watching every group at every level, and looking with `tabs`, `session show` and `sidebar`,
 /// is told the same while the person opens, draws, turns to page 2 and 4, scrolls, Finds, prints all of it (while it's prepared, once it's ready, once
 /// it's let go), deletes page 4 and closes a three-page protected document saying
-/// "Locked" as a five-page one saying "Hidden" (and takes a snapshot of page 1 and pastes its SVG, S2's follow-up (1)), where page 4 is past the end of one, so the delete takes in only the other (its `edited`, its undo, its
+/// "Locked" as a five-page one saying "Hidden", where page 4 is past the end of one, so the delete takes in only the other (its `edited`, its undo, its
 /// `edits_changed` would tell), Find finds three hits in one and none in the other, and the close comes while the draw of the last page (3 in one, 4 in
 /// the other) is done and its word not yet told, so a `page_drawn` about a tab that's gone would tell.
 #[test]
@@ -373,4 +368,41 @@ fn the_helpers_news_of_a_protected_file_doesnt_reach_a_watcher() {
             .is_some_and(|name| name.starts_with("contents_") || name.starts_with("indexing_"))),
         "the watcher heard the helpers' news of the protected file: {heard:?}"
     );
+}
+
+/// What an agent watching, and looking at each level, is told while the person takes a snapshot of page 1 of a protected document and pastes its SVG.
+fn agent_told_of_a_snapshot(pages: usize, word: &str) -> Vec<String> {
+    // The person's snapshot opens the protected file in a fresh worker: as for the print, every renderer gets a deadline it always meets.
+    recto_render_service::page_deadline_for_this_process(std::time::Duration::from_secs(20));
+    let disk = Disk::new();
+    let file = protected(&disk, pages, word);
+    let app = disk.start();
+    let mut watching = app.agent_watches(Level::ReadOnly);
+    person_unlocks(&app, &file);
+    let mut told = Vec::new();
+    for level in [Level::ReadOnly, Level::Control, Level::Full] {
+        watching.set_level(level);
+        snapshot_and_paste(&app);
+        told.push(format!("{level:?} heard: {:?}", watching.heard()));
+        for look in [&["tabs"][..], &["session", "show"], &["sidebar"]] {
+            told.push(format!("{level:?} {look:?}: {:?}", app.recto(level, look)));
+        }
+    }
+    told
+}
+
+/// **Failure (S2's follow-up (1)): the person's own snapshot of a document they opened with its password tells an agent something of it,** by an event
+/// or a look at the session, now that it's the person's `snapshot` and `image` commands read with their password. An agent watching at each level, and
+/// looking with `tabs`, `session show` and `sidebar`, is told the same while the person takes a box on page 1 and pastes its SVG, of a three-page
+/// protected document saying "Locked" as of a five-page one saying "Hidden".
+#[test]
+fn a_persons_snapshot_tells_an_agent_the_same_of_two_protected_documents() {
+    let (one, two) = (agent_told_of_a_snapshot(3, "Locked"), agent_told_of_a_snapshot(5, "Hidden"));
+    let differs: Vec<String> = one.iter().zip(&two).filter(|(a, b)| a != b).map(|(a, b)| format!("  {a}\n  {b}")).collect();
+    assert!(
+        differs.is_empty(),
+        "the agent was told something of the protected document:\n{}",
+        differs.join("\n")
+    );
+    assert_eq!(one.len(), two.len());
 }
