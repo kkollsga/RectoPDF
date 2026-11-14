@@ -1103,6 +1103,42 @@ mod tests {
         );
     }
 
+    /// **Failure (review of R4.3, should-fix): an agent's large removal of highlights trims the owner's oldest steps** out of the capped history, as
+    /// the inverse of a removal holds the highlights it took. Held at the bytes' cap plus one, with the caps set small for this thread: the agent's
+    /// removal that would push the owner's turn out is refused (`HistoryFull`), and the turn is still there to undo; at Full it may.
+    #[test]
+    fn an_agents_large_removal_cant_trim_the_owners_oldest_steps() {
+        let mut edits = super::super::PageEdits::new(3);
+        edits.rotate(0, 1, 1).unwrap();
+        edits.acting = Author::Agent;
+        for _ in 0..4 {
+            add(&mut edits, 1);
+        }
+        let ids: Vec<u32> = edits.marks().iter().map(|mark| mark.id).collect();
+        let removal = MarkChange::Remove { ids: ids.clone() };
+        // The removal's inverse holds the four highlights; the cap is one byte short of what the history would then hold.
+        let inverse: usize = edits.marks().iter().map(Mark::held_bytes).sum();
+        let would_hold = edits.history.bytes + inverse;
+        super::super::tests::HISTORY_CAPS.with(|caps| caps.set(Some((1000, would_hold - 1))));
+        assert_eq!(
+            edits.mark(removal.clone()),
+            Err(super::super::EditError::HistoryFull),
+            "an agent may not push the owner's turn out"
+        );
+        assert_eq!(edits.marks().len(), 4, "nothing was removed");
+        assert_eq!(
+            edits.history.undo.first().map(|entry| entry.by),
+            Some(Author::Owner),
+            "the owner's turn is still the oldest step"
+        );
+        super::super::tests::HISTORY_CAPS.with(|caps| caps.set(Some((1000, would_hold))));
+        assert!(edits.clone().mark(removal.clone()).is_ok(), "at the cap itself it's made");
+        super::super::tests::HISTORY_CAPS.with(|caps| caps.set(Some((1000, would_hold - 1))));
+        edits.may_push_owner = true;
+        assert!(edits.mark(removal).is_ok(), "at Full the holder may");
+        super::super::tests::HISTORY_CAPS.with(|caps| caps.set(None));
+    }
+
     /// Failure (review of R4.3, S2): a removal of the file's highlight doesn't come back from the journal or the record as it was, so a crash or a
     /// restart shows the highlight again, loses the step, or lets an app from before highlights read the journal and lose it.
     #[test]

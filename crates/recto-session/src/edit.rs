@@ -24,6 +24,15 @@ pub const MAX_UNDO: usize = 1000;
 /// Bytes of pages held for undo and redo, per PDF. A step is usually a few bytes, but one that removes 200,000 pages holds 1.6 MB of them. The oldest go first, and the last step always stays.
 pub const MAX_HISTORY_BYTES: usize = 64 * 1024 * 1024;
 
+/// The history's caps, [`MAX_UNDO`] steps and [`MAX_HISTORY_BYTES`]; a test sets them small, on its own thread, to hold a rule at the cap plus one.
+fn history_caps() -> (usize, usize) {
+    #[cfg(test)]
+    if let Some(caps) = tests::HISTORY_CAPS.with(std::cell::Cell::get) {
+        return caps;
+    }
+    (MAX_UNDO, MAX_HISTORY_BYTES)
+}
+
 /// Who made an edit step. Agents may throw away agents' edits, and only someone at Full may throw away the owner's. SPEC decision log, 2026-11-07.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Author {
@@ -1168,8 +1177,9 @@ impl PageEdits {
         if self.acting != Author::Agent || self.may_push_owner {
             return false;
         }
+        let (most_steps, most_bytes) = history_caps();
         for entry in &self.history.undo {
-            if steps <= 1 || (steps <= MAX_UNDO && bytes <= MAX_HISTORY_BYTES) {
+            if steps <= 1 || (steps <= most_steps && bytes <= most_bytes) {
                 return false;
             }
             if entry.by == Author::Owner {
@@ -1227,13 +1237,14 @@ impl PageEdits {
 
     /// Holds the history to its caps, oldest undo first. Anything dropped means the original can't be reached by undoing, and `is_edited` keeps saying so. A dropped undo step's effect stays in the page order, so nothing of it is lost. A dropped redo step is gone, so an owner's isn't dropped, and the steps deeper than it can't be either, since a redo step only applies to the state before it. That can't go far over the cap: the pages a list can hold to redo are the pages of its steps, which a document's length and this cap bound to [`MAX_HISTORY_BYTES`] plus one document.
     fn trim_history(&mut self) {
-        while self.history.undo.len() > MAX_UNDO || (self.history.bytes > MAX_HISTORY_BYTES && self.history.undo.len() > 1) {
+        let (most_steps, most_bytes) = history_caps();
+        while self.history.undo.len() > most_steps || (self.history.bytes > most_bytes && self.history.undo.len() > 1) {
             let dropped = self.history.undo.remove(0);
             self.history.bytes -= dropped.step.held_bytes();
             self.history.dropped = true;
             self.history.owner_dropped |= dropped.by == Author::Owner;
         }
-        while self.history.bytes > MAX_HISTORY_BYTES && self.history.redo.len() > 1 && self.history.redo[0].by == Author::Agent {
+        while self.history.bytes > most_bytes && self.history.redo.len() > 1 && self.history.redo[0].by == Author::Agent {
             let dropped = self.history.redo.remove(0);
             self.history.bytes -= dropped.step.held_bytes();
         }
@@ -1334,6 +1345,8 @@ mod tests {
     std::thread_local! {
         /// Looks along the whole document, on this thread, for tests that count them.
         static LOOKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        /// The history's caps for this thread's test, when it sets them small ([`super::history_caps`]).
+        pub(super) static HISTORY_CAPS: std::cell::Cell<Option<(usize, usize)>> = const { std::cell::Cell::new(None) };
     }
 
     pub(super) fn count_look() {
