@@ -595,15 +595,21 @@ impl<'a> Reader<'a> {
     /// (`added_needs_password` in `recto-reader`), and what a password protects never shows as a hit in a document it wasn't typed for.
     fn key_of(&mut self, file: u16) -> Option<std::sync::Arc<recto_core::Password>> {
         let keys = self.plan.keys.as_ref()?;
-        let path = &self.plan.files.get(usize::from(file))?.path;
-        if self.plan.files.first().is_none_or(|own| own.path != *path) {
+        if !self.is_own_file(file) {
             return None;
         }
+        let path = &self.plan.files.get(usize::from(file))?.path;
         let known = &mut self.file_keys[usize::from(file)];
         if known.is_none() {
             *known = Some(keys(path));
         }
         known.clone().flatten()
+    }
+
+    /// Whether this file is the document's own, a page added from that same file included, rather than another PDF added to it.
+    fn is_own_file(&self, file: u16) -> bool {
+        let path = self.plan.files.get(usize::from(file)).map(|source| &source.path);
+        path.is_some_and(|path| self.plan.files.first().is_some_and(|own| own.path == *path))
     }
 
     fn route_of(&mut self, file: u16, only_counting: bool) -> FileRoute {
@@ -700,11 +706,15 @@ impl<'a> Reader<'a> {
     /// One page's text, by a worker. `read_again_live` is that its corpus has it as failed, so this can only say it still is.
     fn read_live<'s>(&mut self, file: u16, page: u32, live: &'s mut Option<recto_index::Normalized>, read_again_live: bool) -> Result<Got<'s>, AgentError> {
         let key = self.key_of(file);
+        // **A PDF added from a file that needs a password is a page that couldn't be read,** as the page view draws it (`added_needs_password` in
+        // `recto-reader`): skipped and counted, and the search goes on. Never the document's want of a password, which the document doesn't have.
+        let added = !self.is_own_file(file);
         let source = &self.plan.files[usize::from(file)];
         self.used_scan = true;
         let renderer = match worker_for(&mut self.current, file, source, key) {
             Ok(Some(renderer)) => renderer,
             Err(_) if read_again_live => return Ok(Got::Failed),
+            Err(RenderFailure::NeedsPassword) if added => return Ok(Got::Failed),
             Ok(None) | Err(RenderFailure::NotFound) if source.added || source.expected.is_some() => {
                 self.changed.push(file);
                 return Ok(Got::Failed);
@@ -715,6 +725,7 @@ impl<'a> Reader<'a> {
         let characters = match renderer.page_characters(page, true, false) {
             Ok(characters) => characters,
             Err(_) if read_again_live => return Ok(Got::Failed),
+            Err(RenderFailure::NeedsPassword) if added => return Ok(Got::Failed),
             Err(
                 failure @ (RenderFailure::NeedsPassword
                 | RenderFailure::NotFound

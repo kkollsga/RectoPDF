@@ -1,6 +1,8 @@
 //! **What keeps a document's pages out of a sleep file is that a password was needed to open it,** not that its file is encrypted on disk, on the app's own
 //! core: a file encrypted with an empty user password (permissions only, as `un_report_un_sdg2023.pdf` in the corpus is) opens with no password, has nothing a
-//! sleep file could give away, and has one like any other; a file that needed the person's password never has one, before or after it's typed.
+//! sleep file could give away, and has one like any other; a file that needed the person's password never has one, before or after it's typed. And a
+//! password is for the tab it was typed for: a page added to another document from a file only the renderer needs one for is never drawn or read with
+//! it, the key ends with its tab, and that page is one that couldn't be read to Find and an agent's search.
 
 use super::files::locked_allowing;
 use crate::testkit::headless::{Disk, HeadlessApp};
@@ -373,5 +375,66 @@ fn a_file_opened_again_after_the_tab_its_password_was_typed_for_closed_asks_for_
         "B's page from it still says why it isn't shown: {:?}",
         app.core().engine.note()
     );
+    drop(app.quit());
+}
+
+/// A plain document of two pages with the crafted file's page added between them, at page 2: every page says "page", the added one "Locked page 1".
+fn plain_with_the_crafted_page_in_the_middle(disk: Disk) -> HeadlessApp {
+    let crafted = disk.file("crafted.pdf", &locked_for_one_reader("right"));
+    let plain = disk.pdf("plain.pdf", 2);
+    let app = disk.start();
+    opened_by_the_person(&app, &plain, None);
+    full(&app, &["page", "insert", crafted.to_str().unwrap(), "--at", "2"]);
+    assert_eq!(full(&app, &["edits"])["pages"], 3);
+    app
+}
+
+/// Failure (the second review of the measured faults): the person's Find over a plain document with a page added from a file only the renderer needs a
+/// password for stopped dead at that page: "This PDF needs a password." though the document needs none, the hits before it shown and nothing after it
+/// searched. A page that needs a password, from a file that isn't the document's own, is a page that couldn't be read, as the page view has it: skipped,
+/// counted, and said as such, and the search goes on.
+#[test]
+fn find_in_a_plain_document_goes_past_a_page_added_from_a_file_that_needs_a_password() {
+    let disk = Disk::new();
+    let app = plain_with_the_crafted_page_in_the_middle(disk);
+    app.act(crate::core::controls::UiAction::FindTyped { text: "page".into() });
+    app.settle();
+    app.wait_until("Find ended", || {
+        let view = crate::core::find::view(app.core());
+        !view.running && !view.status.is_empty()
+    });
+    let view = crate::core::find::view(app.core());
+    let pages: Vec<String> = crate::core::find::rows(app.core(), 0, view.row_count)
+        .into_iter()
+        .filter(|row| row.kind == crate::find::FindRowKind::Page)
+        .map(|row| row.label)
+        .collect();
+    assert_eq!(pages.len(), 2, "hits on the pages before and after it, none on it: {pages:?}; {}", view.status);
+    assert!(pages[0].contains('1') && pages[1].contains('3'), "{pages:?}");
+    assert!(
+        view.status.ends_with("1 page couldn't be read"),
+        "says what's true, as for any page that couldn't be read: {}",
+        view.status
+    );
+    assert!(!view.status.contains("password"), "{}", view.status);
+    drop(app.quit());
+}
+
+/// Failure, the agent's side of the same: `search` over that document exited `needs_password` on a document it may read, and `text` on the added page
+/// said the document needed one. `search` returns the hits before and after it, with the page among those that couldn't be read; `text` of that page says
+/// it couldn't be read, as for any page that can't be, and of the others reads them.
+#[test]
+fn an_agents_search_and_text_in_a_plain_document_go_past_a_page_added_from_a_file_that_needs_a_password() {
+    let disk = Disk::new();
+    let app = plain_with_the_crafted_page_in_the_middle(disk);
+    let found = full(&app, &["search", "page"]);
+    let pages: Vec<u64> = found["hits"].as_array().unwrap().iter().filter_map(|hit| hit["page"].as_u64()).collect();
+    assert_eq!(pages, [1, 3], "{found}");
+    assert_eq!(found["coverage"]["failed_pages"], serde_json::json!([2]), "{found}");
+    let refused = app
+        .recto(recto_agent::Level::Full, &["text", "--page", "2"])
+        .expect_err("the added page can't be read");
+    assert_eq!(refused.code, "page_unreadable", "{refused:?}");
+    assert_eq!(full(&app, &["text", "--page", "3"])["untrusted"]["text"], "plain.pdf page 2");
     drop(app.quit());
 }

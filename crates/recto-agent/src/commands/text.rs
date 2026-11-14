@@ -264,7 +264,7 @@ impl Cmd for Text {
         let (access, events) = (cx.access, &mut *cx.events);
         {
             let (id, position, source) = locate(access, tab, *page)?;
-            let read = render::text(&source.path, source.page + 1);
+            let read = render::text(&source.path, source.page + 1).map_err(|error| unreadable_if_added_needs_password(error, &source, *page));
             let drew = read.as_ref().is_ok_and(|data| data["hidden_text"]["checked"] == true);
             if drew || read.is_err() {
                 note_draw(access, id, position, read.as_ref().err().map(|error| error.code.as_str()), events);
@@ -277,6 +277,19 @@ impl Cmd for Text {
     fn human(data: &Value) -> String {
         page_text(data)
     }
+}
+
+/// **A page added from another PDF that needs a password is a page that couldn't be read,** as the page view draws it and `search` counts it: never the
+/// document's want of a password, which the document doesn't have, and nothing of it is read with one.
+fn unreadable_if_added_needs_password(error: AgentError, source: &recto_session::PageSource, page: u32) -> AgentError {
+    if !source.added || error.code != "needs_password" {
+        return error;
+    }
+    AgentError::new(
+        crate::code::Code::PAGE_UNREADABLE,
+        format!("Page {page} couldn't be read: it comes from another PDF added to this one, which needs a password."),
+        crate::exit::FAILED,
+    )
 }
 
 /// What a click, a drag or a range of characters takes: the text, and where it shows on each page.
