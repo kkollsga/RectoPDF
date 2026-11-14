@@ -934,7 +934,7 @@ Work.pub(crate) surfaces: SurfaceRetry
 Work::pub(crate) fn hold_drawing(&mut self, on: bool)
 Work::pub(crate) fn note_started(&mut self, job: &Job, cancel: Option<CancelHandle>)
 Work::pub(crate) fn set_cancel(&mut self, cancel: CancelHandle)
-Work::pub(crate) fn set_telling(&mut self, on: bool)
+Work::pub(crate) fn set_telling(&mut self, on: bool) -> bool
 Work::pub(crate) fn take_keyless(&mut self) -> Vec<PathBuf>
 Work::pub(crate) fn take_renewals(&mut self) -> Vec<(PathBuf, Renew)>
 Work::pub(crate) fn telling(&self) -> bool

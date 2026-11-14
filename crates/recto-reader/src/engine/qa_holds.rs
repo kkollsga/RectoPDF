@@ -48,6 +48,9 @@ pub(super) struct QaHolds {
     /// Waits for the thread to rest begun ([`Qa::wait_resting`]), for a test to know its wait is waiting before it lets the thread rest.
     #[cfg(test)]
     rest_waits: AtomicU64,
+    /// Waits begun in [`Engine::wait_settled`], for a test to know a wait is waiting before it lets the thread go on.
+    #[cfg(test)]
+    pub(super) settled_waits: AtomicU64,
 }
 
 /// The tells waiting at [`Qa::hold_tells`], and those let go.
@@ -332,9 +335,42 @@ mod tests {
         fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
     }
 
+    /// Failure (second review of `build/settled-gaps`, 2026-11-14): the thread that draws said it had told what came of a job, by clearing its flag, without
+    /// telling anyone, so a wait for the view drawn that woke at the job's end and found it still telling slept on through whatever the thread did next
+    /// (drawing for a tab off screen's place, which tells nobody till it ends), against `wait_settled`'s own word. A view with nothing left to draw but its
+    /// last word, a wait begun on it, and the thread saying that word is told, as it does each time it takes the view again: the wait is told so, and ends
+    /// before its limit. This holds the rule at the place it's kept (`all_told`), not a real thread's run into drawing outside the view.
+    #[test]
+    fn a_view_whose_last_word_is_told_wakes_a_wait_for_it_drawn() {
+        let engine = Engine::new(EngineConfig::default(), Arc::new(Quiet));
+        let _ = super::super::lock(&engine.shared.reader).work.set_telling(true);
+        assert!(!engine.wait_settled(Duration::ZERO), "not settled while its last word is untold");
+        let waits = engine.shared.qa.settled_waits.load(Ordering::SeqCst);
+        let (said, heard) = std::sync::mpsc::channel();
+        let waiting = engine.clone();
+        let began = Instant::now();
+        let limit = Duration::from_secs(20);
+        let waiter = std::thread::spawn(move || {
+            let asked = Instant::now();
+            let settled = waiting.wait_settled(limit);
+            // A wait that ran its whole limit wasn't told, whatever it found then: `wait_settled` looks once more as its limit ends.
+            let _ = said.send(settled && asked.elapsed() < limit);
+        });
+        while engine.shared.qa.settled_waits.load(Ordering::SeqCst) <= waits {
+            assert!(began.elapsed() < limit, "no wait began");
+            std::thread::yield_now();
+        }
+        super::super::run::all_told(&engine.shared, &mut super::super::lock(&engine.shared.reader));
+        let told = heard.recv().expect("an answer");
+        waiter.join().expect("the waiter");
+        assert!(told, "the wait ran out its limit: its word told wasn't told to it");
+    }
+
     /// Failure (review of `build/settled-gaps`, 2026-11-14, the wakes): a wait for the view's thread to rest that isn't told as it rests waits out its
     /// limit, which the app's settled shortens to a couple of milliseconds a round and so hides. With no fallback (the whole limit given to the wait), and
-    /// the wait begun while the thread is held in a job (`Seam::Worker`), the wait ends because it was told as the thread rested.
+    /// the wait begun while the thread is held in a job (`Seam::Worker`), the wait ends because it was told as the thread rested. What it proves: the
+    /// thread's notices reach a wait for it to rest. What it doesn't: which notice, as the job's end tells a waiter too, and when the thread has rested by
+    /// then that one is enough (with every notice of the thread's taken out it runs out its limit).
     #[test]
     fn a_wait_for_the_view_to_rest_is_told_as_it_rests() {
         use recto_platform::slow::{Seam, gate};
@@ -380,7 +416,7 @@ mod tests {
         let (said, heard) = std::sync::mpsc::channel();
         let waiting = engine.clone();
         let waiter = std::thread::spawn(move || {
-            let _ = said.send(waiting.qa().wait_resting(Duration::from_secs(2)));
+            let _ = said.send(waiting.qa().wait_resting(Duration::from_secs(20)));
         });
         while engine.shared.qa.rest_waits.load(Ordering::SeqCst) <= waits {
             assert!(began.elapsed() < Duration::from_secs(20), "no wait began");

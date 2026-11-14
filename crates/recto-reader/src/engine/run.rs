@@ -90,7 +90,7 @@ fn rest_or_wait_for_a_surface(
         let mut reader = lock(&shared.reader);
         // What this turn told is told: the view taken again. Resting is said under the view's lock, which whoever waits for it to rest looks under
         // (`Qa::wait_resting`), and told as it rests ([`rest`]), so the word can't fall between their look and their wait.
-        reader.work.set_telling(false);
+        all_told(shared, &mut reader);
         shared.rests(seen);
         if planned {
             Some(reader.work.surfaces.refused())
@@ -115,7 +115,7 @@ fn run(shared: &Shared) {
             renderers.clear();
             publish_workers(shared, &mut renderers);
             // Nothing more is told: whoever waits for the view isn't left waiting on the last turn's word.
-            lock(&shared.reader).work.set_telling(false);
+            all_told(shared, &mut lock(&shared.reader));
             shared.settled.notify_all();
             return;
         }
@@ -123,7 +123,7 @@ fn run(shared: &Shared) {
         let (plan, changed) = {
             let mut reader = lock(&shared.reader);
             // What the last turn told is told: the view taken again.
-            reader.work.set_telling(false);
+            all_told(shared, &mut reader);
             let files = reader.work.wanted_files();
             if !Arc::ptr_eq(&files, &wanted) {
                 wanted = files;
@@ -137,7 +137,7 @@ fn run(shared: &Shared) {
                     shared.events.file_length(tab, pages, version);
                 }
                 reader = lock(&shared.reader);
-                reader.work.set_telling(false);
+                all_told(shared, &mut reader);
             }
             // What the UI thread left is told of as any way of applying it tells it: the selection's notice gone with a selection another pane took, say.
             let changed = take_pending_follow(shared, &mut reader).then(|| Changed::of(&mut reader));
@@ -169,7 +169,7 @@ fn run(shared: &Shared) {
         };
         {
             let mut reader = lock(&shared.reader);
-            reader.work.set_telling(false);
+            all_told(shared, &mut reader);
             reader.work.note_started(&job, None);
         }
         if matches!(job.kind, JobKind::Links) {
@@ -227,6 +227,14 @@ fn run(shared: &Shared) {
         let_go_of_unwanted(shared, &mut renderers, &wanted);
         publish_workers(shared, &mut renderers);
         job_ended(shared, job, outcome, file_changed);
+    }
+}
+
+/// **What the thread told of its last turn is told,** said with the view's lock held: whoever waits for the view settled is woken, as it may be settled
+/// now, and the thread may go straight on to work that settles nothing in view (drawing for a tab off screen's place), which tells nobody till it ends.
+pub(super) fn all_told(shared: &Shared, reader: &mut crate::tiles::Reader) {
+    if reader.work.set_telling(false) {
+        shared.settled.notify_all();
     }
 }
 

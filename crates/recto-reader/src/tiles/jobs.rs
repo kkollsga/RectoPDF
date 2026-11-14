@@ -401,9 +401,10 @@ impl Work {
         }
     }
 
-    /// The thread that draws lets go of the view to tell what came of its turn (`true`), or has taken it again (`false`): what [`Self::telling`] says.
-    pub(crate) fn set_telling(&mut self, on: bool) {
-        self.telling = on;
+    /// The thread that draws lets go of the view to tell what came of its turn (`true`), or has taken it again (`false`): what [`Self::telling`] says. Says
+    /// whether it was telling, so whoever waits for the view settled is told it's through ([`crate::Engine::wait_settled`]).
+    pub(crate) fn set_telling(&mut self, on: bool) -> bool {
+        std::mem::replace(&mut self.telling, on)
     }
 
     /// Whether the thread that draws is telling what came of its last turn, with the view let go.

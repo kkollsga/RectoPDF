@@ -530,6 +530,8 @@ impl Engine {
             if left.is_zero() {
                 return false;
             }
+            #[cfg(test)]
+            self.shared.qa.settled_waits.fetch_add(1, Ordering::SeqCst);
             reader = self.shared.settled.wait_timeout(reader, left).unwrap_or_else(PoisonError::into_inner).0;
         }
     }
