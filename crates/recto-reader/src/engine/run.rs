@@ -74,16 +74,15 @@ pub(super) fn run_guarded(shared: &Shared) {
 }
 
 /// **Nothing to start:** at rest as ever, or, when there was a plan whose surface the system refused, a wait before it's asked again, only while it's planned
-/// (`SurfaceRetry`, in `tiles/jobs.rs`).
+/// (`SurfaceRetry`, in `tiles/jobs.rs`). Workers are let go in the wait as at rest: memory pressure and a refused surface come together.
 fn rest_or_wait_for_a_surface(planned: bool, shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, resting_since: &mut Option<Instant>) {
-    if planned {
-        let wait = lock(&shared.reader).work.surfaces.refused();
-        shared.settled.notify_all();
-        std::thread::park_timeout(wait);
+    let retry = if planned {
+        Some(lock(&shared.reader).work.surfaces.refused())
     } else {
         lock(&shared.reader).work.surfaces.clear();
-        rest(shared, renderers, policy, resting_since);
-    }
+        None
+    };
+    rest(shared, renderers, policy, resting_since, retry);
 }
 
 fn run(shared: &Shared) {
@@ -239,8 +238,9 @@ fn run(shared: &Shared) {
     }
 }
 
-/// With nothing to do, this thread is asleep and costs nothing, but for a worker holding a heavy page's memory: see [`big_workers_rest`].
-fn rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, resting_since: &mut Option<Instant>) {
+/// With nothing to do, this thread is asleep and costs nothing, but for a worker holding a heavy page's memory: see [`big_workers_rest`]. With `retry`, a
+/// surface is waited for, and the thread wakes by then at the latest. Idle workers go here when the system asks for memory, whichever it is.
+fn rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, resting_since: &mut Option<Instant>, retry: Option<Duration>) {
     shared.settled.notify_all();
     if shared.kill_idle_workers.swap(false, Ordering::SeqCst) {
         for open in renderers.values_mut() {
@@ -248,11 +248,17 @@ fn rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Pol
         }
         publish_workers(shared, renderers);
     }
-    match big_workers_rest(renderers, policy, resting_since) {
-        None => std::thread::park(),
+    match (big_workers_rest(renderers, policy, resting_since), retry) {
+        (None, None) => std::thread::park(),
         // Let go just now: the loop says so before it rests again.
-        Some(left) if left.is_zero() => {}
-        Some(left) => std::thread::park_timeout(left),
+        (Some(left), None) if left.is_zero() => {}
+        (Some(left), None) => std::thread::park_timeout(left),
+        // Waiting for a surface: told here, as the loop would only find the surface refused again, and the wait isn't cut short.
+        (Some(left), Some(retry)) if left.is_zero() => {
+            publish_workers(shared, renderers);
+            std::thread::park_timeout(retry);
+        }
+        (left, Some(retry)) => std::thread::park_timeout(left.map_or(retry, |left| left.min(retry))),
     }
 }
 

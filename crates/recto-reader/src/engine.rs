@@ -1546,4 +1546,94 @@ mod tests {
         assert!(report["tiles"]["attached"].as_u64().unwrap() >= 1, "{report}");
         engine.shut_down();
     }
+
+    /// The engine for one page of `file`, with every surface it asks for refused from the start (the first wait `first`), and what it hands the host
+    /// let go of as the host would. Its size and traits jobs start the file's worker, which needs no surface, and the draw after them waits.
+    fn waiting_for_a_surface(file: &recto_testpdf::TempPdf, policy: Option<recto_render_service::Policy>, first: Duration) -> Engine {
+        crate::tiles::surface_seam::refuse(u32::MAX, first);
+        let engine = Engine::new(
+            EngineConfig {
+                policy,
+                ..EngineConfig::default()
+            },
+            Arc::new(Quiet),
+        );
+        engine.activate(
+            1,
+            1,
+            0,
+            PageMap {
+                files: vec![file.0.clone()],
+                ..PageMap::default()
+            },
+            &[],
+            None,
+            crate::layout::Spread::Single,
+        );
+        let view = crate::tiles::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 900.0,
+            frame_width: 800.0,
+            magnification: 1.0,
+            backing: 2.0,
+            live: false,
+            scrolled_to: u64::MAX,
+        };
+        for op in engine.set_viewport(view) {
+            if let Op::Attach { surface, .. } = op {
+                recto_platform::surface::PixelSurface::release_for_host(surface);
+            }
+        }
+        let began = Instant::now();
+        while !(engine.report().0["surfaces"]["retry_pending"] == true && !engine.workers().pids().is_empty()) {
+            assert!(
+                began.elapsed() < Duration::from_secs(20),
+                "a worker and a wait for a surface: {}",
+                engine.report().0
+            );
+            std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
+        }
+        engine
+    }
+
+    /// Waits, at most 20 s, for the engine to have no worker, and says whether it came to that.
+    fn workers_gone(engine: &Engine) -> bool {
+        let began = Instant::now();
+        while !engine.workers().pids().is_empty() {
+            if began.elapsed() >= Duration::from_secs(20) {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
+        }
+        true
+    }
+
+    /// Failure (review round 1 of the measured faults, S2): while a page in view waits for a surface the system refused, the thread that draws only
+    /// parked out the wait, and never did what it does at rest: so memory pressure, which comes just when the system's short and refusing, never let an
+    /// idle worker go while refusals lasted, and a worker holding a heavy page's hundreds of megabytes kept them through the outage. With every surface
+    /// refused and the first wait a minute, memory pressure lets the idle worker go at once, and a worker counted big (any worker, here) goes at its
+    /// time of 300 ms, both far inside the wait.
+    #[test]
+    fn workers_are_let_go_while_a_surface_is_waited_for() {
+        let file = recto_testpdf::TempPdf::new(
+            "waiting.pdf",
+            &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["A page whose surface is refused"]))]),
+        );
+        let engine = waiting_for_a_surface(&file, None, Duration::from_secs(60));
+        engine.memory_pressure(false);
+        assert!(workers_gone(&engine), "memory pressure let the idle worker go: {}", engine.report().0);
+        engine.shut_down();
+        let policy = recto_render_service::Policy {
+            retire_bytes: 1,
+            heavy_idle_exit: Duration::from_millis(300),
+            ..recto_render_service::Policy::default()
+        };
+        let engine = waiting_for_a_surface(&file, Some(policy), Duration::from_secs(60));
+        assert!(workers_gone(&engine), "the big worker went at its time: {}", engine.report().0);
+        assert_eq!(engine.report().0["surfaces"]["retry_pending"], true, "while the surface is still waited for");
+        crate::tiles::surface_seam::refuse(0, Duration::from_millis(1));
+        engine.shut_down();
+    }
 }
