@@ -241,7 +241,7 @@ impl crate::parts::PartMut<'_, PageViewMail> {
     }
 
     /// **The jump just made in a tab goes to this contents entry** (`recto goto --entry`, a click on a contents row): it's the current entry from here
-    /// until the view, having arrived, is moved from where the jump put it, or another jump is made ([`Sent`]). The caller has checked the entry is one of
+    /// until the view, having arrived, is moved from where the jump put it, or another jump is made (the mail's `Sent`). The caller has checked the entry is one of
     /// the tab's contents on the jump's page. Nothing without a jump waiting.
     pub fn jump_is_to_entry(&mut self, id: TabId, entry: u32) {
         if let Some((.., to_entry)) = self.0.jumps.iter_mut().find(|(tab, ..)| *tab == id) {
