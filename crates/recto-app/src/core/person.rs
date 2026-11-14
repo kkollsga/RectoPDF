@@ -44,9 +44,19 @@ pub(crate) fn on_a_thread_of_its_own(run: &PersonCommand) -> bool {
     run.origin == Origin::Input && run.fetched.is_none() && (run.command.waits() || run.command.route() != Runs::Session)
 }
 
+/// What the person is told when their command's thread couldn't be started, before its feature's own words, if it has any.
+pub const NOT_STARTED: &str = "That couldn't be started. Try again in a moment.";
+
+/// A test's: the next person's command that runs on a thread of its own finds it can't start one.
+#[cfg(test)]
+static NO_THREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// A person's command that may hold its thread for long, as the window's Save always ran: through the host, counted for a hand-off, and what it did told.
+/// A thread that can't be started is said, as a refusal of the command: the person is never left with a click that did nothing.
 fn on_its_own_thread(command: Command, counted: Running) {
-    let spawned = std::thread::Builder::new().name("recto-person".into()).stack_size(1024 * 1024).spawn(move || {
+    let inner = Arc::clone(&counted.inner);
+    let kept = command.clone();
+    let spawned = spawn(move || {
         let inner = Arc::clone(&counted.inner);
         let mut events = Vec::new();
         sent(&inner.serving, &command);
@@ -56,7 +66,29 @@ fn on_its_own_thread(command: Command, counted: Running) {
         drop(counted);
     });
     // The thread that didn't start took its count with it, as the closure holding it was dropped.
-    drop(spawned);
+    if spawned.is_err() {
+        not_started(&inner, &kept);
+    }
+}
+
+/// A person's command's own thread, started: or, for a test that said so ([`NO_THREAD`]), not, as when the system has none to give.
+fn spawn(run: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
+    #[cfg(test)]
+    if NO_THREAD.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        return Err(std::io::Error::other("no thread, for a test"));
+    }
+    std::thread::Builder::new()
+        .name("recto-person".into())
+        .stack_size(1024 * 1024)
+        .spawn(run)
+        .map(drop)
+}
+
+/// A person's command whose thread couldn't be started: said in the person's words, then answered as refused, so its feature can say more of its own.
+fn not_started(inner: &Arc<Inner>, command: &Command) {
+    say(inner, NOT_STARTED.to_string());
+    let refused = Err(AgentError::new(Code::BUSY, NOT_STARTED, recto_agent::exit::BUSY));
+    answered(inner, command, Origin::Input, &refused);
 }
 
 /// **A person's command counted as running for a hand-off** until it's dropped: as its thread ends, however it ends. A command that panicked was counted
@@ -270,6 +302,28 @@ mod tests {
         assert_eq!(inner.life.persons_running(), 0);
     }
     use recto_session::SessionError;
+
+    /// Failure (S2, the coordinator's word on 2026-11-14: "a person's action that fails says so"): a person's command that may wait, as a print, whose
+    /// thread can't be started is dropped with nothing said, so the person clicked and nothing happened. Its thread made to fail: the person is told, in
+    /// words Rust owns, and nothing is left counted as running.
+    #[test]
+    fn a_persons_command_whose_thread_cant_start_says_so() {
+        let app = crate::testkit::headless::HeadlessApp::start();
+        let doc = app.disk().pdf("a.pdf", 1);
+        app.open(&doc);
+        app.settle();
+        let out = app.disk().files().join("out.pdf");
+        let line = format!(r#"{{"cmd":"print","to_pdf":{}}}"#, serde_json::Value::from(out.display().to_string()));
+        let command = recto_agent::parse(&line).expect("a print");
+        assert!(command.waits(), "a command that runs on a thread of its own");
+        super::NO_THREAD.store(true, std::sync::atomic::Ordering::SeqCst);
+        super::submit(app.core(), command);
+        app.settle();
+        let notice = app.reader().selection_notice.map(|notice| notice.text);
+        assert_eq!(notice.as_deref(), Some(super::NOT_STARTED), "the person is told");
+        assert_eq!(app.core().life.persons_running(), 0, "nothing is left counted as running");
+        assert!(!out.exists(), "nothing ran");
+    }
 
     /// Failure: a person's refused edit is said in an agent's words (naming `recto` commands or a level), or a refusal the session made in the person's
     /// words is said as nothing. The session's own refusals keep their words, and an agent's refusal has none for the person.
