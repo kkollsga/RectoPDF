@@ -1411,6 +1411,12 @@ check "a filter that matches nothing says so" "2 yes" "$rc $(printf '%s' "$out" 
 rm -f "$CALLS.policy"; : > "$CALLS"
 LIKE_CI_LIMITS='' STUB_LIST='alpha t1' tools/check.sh --like-ci 'test(=t1)' > /dev/null 2>&1
 check "with the limits off (LIKE_CI_LIMITS=''), no taskpolicy, and 3 at once for a test that isn't the app's" "no 1" "$([ -s "$CALLS.policy" ] && echo yes || echo no) $(grep -c -- '--workspace -j 3 -E test(=t1)' "$CALLS")"
+# Failure (2026-11-14): a worker read a slow-seam run like CI as the slow stage, though the clamp stretches each seam's sleep several times (a 40 ms sleep
+# took 349 ms), and looked for a fault in a time-out that was the stretch. With RECTO_QA_SLOW set and the limits on, it says so before it runs; not without.
+slow_said='each seam'"'"'s sleep is stretched several times its profile'
+out=$(RECTO_QA_SLOW='worker=40' STUB_LIST='alpha t1' tools/check.sh --like-ci 'test(=t1)' 2>&1)
+has "with the slow seams on, it says the clamp stretches them" "$slow_said" "$out"
+check "and not with the limits off, or with no seam slow" "no no" "$(RECTO_QA_SLOW='worker=40' LIKE_CI_LIMITS='' STUB_LIST='alpha t1' tools/check.sh --like-ci 'test(=t1)' 2>&1 | grep -q "$slow_said" && echo yes || echo no) $(env -u RECTO_QA_SLOW STUB_LIST='alpha t1' tools/check.sh --like-ci 'test(=t1)' 2>&1 | grep -q "$slow_said" && echo yes || echo no)"
 
 }
 

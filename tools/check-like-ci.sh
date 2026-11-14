@@ -28,6 +28,17 @@ like-ci: database (every copy registered here before is still known), a virtual 
 SAID
 }
 
+# With the slow seams on (RECTO_QA_SLOW) and the limits, before it runs: each seam's sleep is a timer, which the background clamp stretches, so the seams are
+# several times their profile here and a run of them is not the slow stage (2026-11-14: a 40 ms sleep took 349 ms under `taskpolicy -c background` and 48 ms
+# without; Find over 180 pages with the worker's answers 40 ms late took 35 s clamped and 8.5 s not, and the hand-off test ran past its app's 3 minutes).
+like_ci_slow_said() {
+  [ -n "${RECTO_QA_SLOW:-}" ] && [ -n "$1" ] || return 0
+  cat <<'SAID'
+like-ci: RECTO_QA_SLOW is set: under the background clamp each seam's sleep is stretched several times its profile (a 40 ms sleep took about 350 ms here,
+like-ci: 2026-11-14), so this isn't the slow stage, and a time-out in this run isn't by itself a fault. LIKE_CI_LIMITS='' runs the seams as their profile says.
+SAID
+}
+
 # Runs `tools/check.sh --like-ci <args>`. Exits with the tests' result.
 like_ci_main() {
   local target="" profile=ci jobs="" times=1
@@ -53,6 +64,7 @@ like_ci_main() {
       local shown=${jobs:-4}
       echo "like-ci: the $target part as CI runs it: profile $profile, $shown at once, tests held by: ${CHECK_LIKE_CI_WRAP:-nothing}."
       like_ci_cant
+      like_ci_slow_said "$limits"
       [ -z "$jobs" ] || export NEXTEST_TEST_THREADS=$jobs
       # A part's run, never remembered or stamped; everything in it, as on CI; the slow stage left out, as on CI.
       exec env CHECK_PART="$target" CHECK_ALL=1 HEAVY_RETRY=1 tools/check.sh --full
@@ -71,6 +83,7 @@ like_ci_main() {
   [ -n "$jobs" ] || { [ "$app" = 1 ] && jobs=4 || jobs=3; }
   echo "like-ci: $(printf '%s\n' "$listed" | wc -l | tr -d ' ') test(s), $times time(s): profile $profile, $jobs at once, tests held by: ${CHECK_LIKE_CI_WRAP:-nothing}."
   like_ci_cant
+  like_ci_slow_said "$limits"
   tools/pdfium.sh >/dev/null
   if [ "$app" = 1 ]; then
     HEAVY_CLASS=normal tools/sysguard/heavy.sh app/build.sh > "${TMPDIR:-/tmp}/like-ci-build.$$" 2>&1 || {
