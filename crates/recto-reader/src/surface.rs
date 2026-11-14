@@ -688,7 +688,7 @@ Links::pub fn take_clicked(&self) -> Option<crate::links::LinkHit>
 LowResNote (pub(super) struct, derives Debug)
 Next (pub(super) enum, derives Clone, Copy, Debug, PartialEq, Eq)
 NoLook (private enum)
-Op (pub enum, derives Clone, Debug, PartialEq)
+Op (pub enum, derives Debug, PartialEq)
 OpenDoc (private struct)
 Outcome (pub enum, derives Debug)
 Owed (pub(super) struct, derives Debug)
