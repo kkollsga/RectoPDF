@@ -107,6 +107,15 @@ fn prepare(app: &HeadlessApp, name: &str) {
         app.agent(Level::Full, r#"{"cmd":"page_rotate","pages":"1","degrees":90}"#).expect("an edit");
         app.settle();
     }
+    // A click on a link to page 2, half way down, as the page view says one landed when the mouse came up on it.
+    if name == "UiAction::LinkClicked" {
+        let engine = app.core().panes.reading_engine(&app.core().engine);
+        engine.links().clicked_for_qa(recto_reader::links::LinkHit {
+            page: 0,
+            rect: [0.0; 4],
+            target: recto_core::nav::LinkTarget::Page { page: 1, within: Some(0.5) },
+        });
+    }
     // A hit's row, which needs hits.
     if name == "UiAction::FindChoose" {
         app.agent(Level::Full, r#"{"cmd":"find","query":"page"}"#).expect("found");
@@ -168,6 +177,8 @@ pub(super) fn every_kind(app: &HeadlessApp) -> Vec<(String, UiAction)> {
         UiAction::FindChoose { row: 1 },
         UiAction::PageTyped { text: "2".into() },
         UiAction::Swiped { delta_x: 1.0 },
+        // A click that came up on a link, which [`prepare`] makes the page view say it landed on.
+        UiAction::LinkClicked { pane: 0 },
         UiAction::ZoomTyped {
             text: "150".into(),
             decimal: ".".into(),
@@ -242,6 +253,7 @@ fn kind(action: &UiAction) -> String {
         UiAction::FindChoose { .. } => "FindChoose",
         UiAction::PageTyped { .. } => "PageTyped",
         UiAction::Swiped { .. } => "Swiped",
+        UiAction::LinkClicked { .. } => "LinkClicked",
         UiAction::ZoomTyped { .. } => "ZoomTyped",
         UiAction::ToggleSidebar => "ToggleSidebar",
         UiAction::PaletteRun { .. } => "PaletteRun",

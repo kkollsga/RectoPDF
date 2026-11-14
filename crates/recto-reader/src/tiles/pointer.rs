@@ -42,6 +42,12 @@ impl Pointer {
         self.linking.take_clicked()
     }
 
+    /// A click made to have landed on a link, for QA ([`crate::links::Linking::clicked_for_qa`]).
+    #[cfg(any(test, feature = "qa"))]
+    pub(crate) fn link_clicked_for_qa(&mut self, hit: crate::links::LinkHit) {
+        self.linking.clicked_for_qa(hit);
+    }
+
     /// Pages whose links are held, for a test: nothing outside asks since R3.6 found `Engine::link_pages_held` called by nobody.
     #[cfg(test)]
     pub(crate) fn link_pages_held(&self) -> usize {

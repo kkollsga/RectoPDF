@@ -111,7 +111,8 @@ fn measure(tabs: usize) {
                 within: Some(0.3),
             },
         };
-        crate::core::follow_link(inner, 0, &engine, hit);
+        engine.links().clicked_for_qa(hit);
+        app.act(UiAction::LinkClicked { pane: 0 });
     });
     case(&app, "typed page", tabs, nothing, |app, first| {
         app.act(UiAction::PageTyped {

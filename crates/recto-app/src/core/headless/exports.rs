@@ -127,7 +127,7 @@ const EXPORTS: &[(&str, Is, &[&str])] = &[
     ("memory_pressure", Input, &[]),
     ("selection_press", Input, &["PaneRead"]),
     ("selection_drag", Input, &[]),
-    ("selection_release", Input, &[]),
+    ("selection_release", Input, &["LinkClicked"]),
     // The person's own notices, which no agent sees: their time is up, or the person dismissed them.
     ("dismiss_selection_notice", Input, &[]),
     ("update_alert_answered", Input, &[]),
@@ -217,8 +217,7 @@ const EXPORTS: &[(&str, Is, &[&str])] = &[
 const KNOWN: &[(&str, &str)] = &[
     (
         "selection_release",
-        "a link clicked sends `goto` or `back` as the person through `person::submit` in `reconcile::follow_link`, not `act`; and with the snapshot tool on, \
-         the release takes a snapshot through `extract` in `snapshot_tool::start`, outside the executor (PLAN, S2's follow-ups)",
+        "with the snapshot tool on, the release takes a snapshot through `extract` in `snapshot_tool::start`, outside the executor (PLAN, S2's follow-ups)",
     ),
     (
         "clipboard_data",

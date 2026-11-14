@@ -961,9 +961,7 @@ impl AppCore {
             return self.inner.tools.tool().release(&self.inner, &engine, pane as usize);
         }
         let ops = engine.selection().release().into_iter().map(ReaderOp::from).collect();
-        if let Some(hit) = engine.links().take_clicked() {
-            follow_link(&self.inner, pane as usize, &engine, hit);
-        }
+        self.inner.act(UiAction::LinkClicked { pane });
         ops
     }
 

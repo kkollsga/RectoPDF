@@ -48,6 +48,8 @@ pub enum UiAction {
     SaveAs { tab: u32, path: String },
     /// A switch in Settings.
     SettingChosen { id: String, on: bool },
+    /// The mouse came up on a page in this pane after a press: the link the click landed on, if any, is followed. The bridge's own, from `selection_release`.
+    LinkClicked { pane: u32 },
     /// The print panel answered with Print, for the tab it was opened for: all the pages or a range from 1, or just the selection's, on paper or, with
     /// `to_file`, to a PDF the system's printing saves or previews.
     Print {
