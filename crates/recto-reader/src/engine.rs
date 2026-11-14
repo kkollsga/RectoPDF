@@ -328,12 +328,6 @@ impl Engine {
         self.after(reader);
     }
 
-    /// **The contents' band for the page at the top of the tab showing's view:** the page, and the thousandths of it between which the same contents entry is
-    /// current. Leaving it wakes the core once, by the wake a page change has, and then not until this is set again, which the core does with each pass.
-    pub fn set_band(&self, band: Option<(u32, u16, u16)>) {
-        lock(&self.shared.reader).set_band(band);
-    }
-
     /// Lays the tab showing out another way, keeping the place in it.
     pub fn set_spread(&self, spread: crate::layout::Spread) {
         let mut reader = lock(&self.shared.reader);

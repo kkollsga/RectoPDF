@@ -173,16 +173,6 @@ impl Place {
 }
 
 impl Reader {
-    /// **The contents' band for the page at the top of the view,** as the core computed it: the page, and the thousandths of it between which the same entry is
-    /// current, or none. Set with each pass for the tab showing, so a band the view has woken the core for is set again, and wakes it again if the top of the view
-    /// is still out of it. Past one past the page's end isn't a place, so it's held there.
-    pub fn set_band(&mut self, band: Option<(u32, u16, u16)>) {
-        let Some(doc) = self.docs.hot.and_then(|tab| self.docs.views.get_mut(&tab)) else {
-            return;
-        };
-        let end = recto_core::TOP_SCALE + 1;
-        doc.band = band.map_or((NONE_PAGE, 0, 0), |(page, lo, hi)| (page, lo.min(end), hi.min(end)));
-    }
     /// The least room either side of the pages, as a comparison's pane has it. The place is kept.
     pub fn set_margins(&mut self, left: f64, right: f64) {
         self.margins = (left, right);

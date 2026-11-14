@@ -28,6 +28,17 @@ impl Docs {
         self.hot.and_then(|tab| self.views.get(&tab))
     }
 
+    /// The shown tab's contents band, as the core computed it for the page at the top of its view: the page, and the thousandths of it between which the same
+    /// entry is current, or none. Set with each pass for the tab showing, so a band the view has woken the core for is set again, and wakes it again if the top of
+    /// the view is still out of it. Past one past the page's end isn't a place, so it's held there.
+    pub(crate) fn set_band(&mut self, band: Option<(u32, u16, u16)>) {
+        let Some(doc) = self.hot.and_then(|tab| self.views.get_mut(&tab)) else {
+            return;
+        };
+        let end = recto_core::TOP_SCALE + 1;
+        doc.band = band.map_or((super::place::NONE_PAGE, 0, 0), |(page, lo, hi)| (page, lo.min(end), hi.min(end)));
+    }
+
     pub(crate) fn hot_tab(&self) -> Option<u32> {
         self.hot
     }
