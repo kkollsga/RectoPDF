@@ -44,7 +44,10 @@ fn an_action_searches_the_tabs_no_more_a_tab_with_more_tabs() {
         });
         app.settle();
         let asked = app.reader().password_prompt.expect("the protected file asks for its password");
-        app.core().password_answered(asked.id, Some("right".into()));
+        app.core()
+            .tools
+            .prompts()
+            .password_answered(asked.id, Some("right".into()), &app.core().core, &app.core().window);
         for file in &files {
             app.open(file);
         }

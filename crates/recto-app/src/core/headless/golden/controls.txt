@@ -20,9 +20,9 @@ file.print | sent [] | host ShowPrintPanel understood true | heard nothing
 file.save | sent [{"cmd":"save","tab":"#3","out":null,"replace":false}] | host None understood true | heard model_changed+ ops_ready+ model_changed+
 file.save_as | sent [] | host ShowSavePanel understood true | heard nothing
 file.settings | sent [] | host ShowSettings understood true | heard nothing
-find.next | sent [{"cmd":"find","query":null,"next":true,"previous":false,"jump":false,"hit":null,"open":false,"close":false,"limit":null}] | host None understood true | heard model_changed*2
-find.open | sent [{"cmd":"find","query":null,"next":false,"previous":false,"jump":false,"hit":null,"open":true,"close":false,"limit":null}] | host FocusFind understood true | heard model_changed*2
-find.previous | sent [{"cmd":"find","query":null,"next":false,"previous":true,"jump":false,"hit":null,"open":false,"close":false,"limit":null}] | host None understood true | heard model_changed*2
+find.next | sent [{"cmd":"find","query":null,"next":true,"previous":false,"jump":false,"hit":null,"open":false,"close":false,"limit":null}] | host None understood true | heard model_changed
+find.open | sent [{"cmd":"find","query":null,"next":false,"previous":false,"jump":false,"hit":null,"open":true,"close":false,"limit":null}] | host FocusFind understood true | heard model_changed
+find.previous | sent [{"cmd":"find","query":null,"next":false,"previous":true,"jump":false,"hit":null,"open":false,"close":false,"limit":null}] | host None understood true | heard model_changed
 go.back | sent [{"cmd":"back","tab":"active"}] | host None understood true | heard nothing
 go.forward | sent [{"cmd":"forward","tab":"active"}] | host None understood true | heard nothing
 go.page | sent [] | host ShowGoTo understood true | heard nothing
@@ -63,9 +63,9 @@ palette file.open | sent [] | host ShowOpenPanel understood true | heard nothing
 palette file.print | sent [] | host ShowPrintPanel understood true | heard nothing
 palette file.save | sent [{"cmd":"save","tab":"#3","out":null,"replace":false}] | host None understood true | heard model_changed+ ops_ready+ model_changed+
 palette file.save_as | sent [] | host ShowSavePanel understood true | heard nothing
-palette find.next | sent [{"cmd":"find","query":null,"next":true,"previous":false,"jump":false,"hit":null,"open":false,"close":false,"limit":null}] | host FocusFind understood true | heard model_changed*2
-palette find.open | sent [{"cmd":"find","query":null,"next":false,"previous":false,"jump":false,"hit":null,"open":true,"close":false,"limit":null}] | host FocusFind understood true | heard model_changed*2
-palette find.previous | sent [{"cmd":"find","query":null,"next":false,"previous":true,"jump":false,"hit":null,"open":false,"close":false,"limit":null}] | host FocusFind understood true | heard model_changed*2
+palette find.next | sent [{"cmd":"find","query":null,"next":true,"previous":false,"jump":false,"hit":null,"open":false,"close":false,"limit":null}] | host FocusFind understood true | heard model_changed
+palette find.open | sent [{"cmd":"find","query":null,"next":false,"previous":false,"jump":false,"hit":null,"open":true,"close":false,"limit":null}] | host FocusFind understood true | heard model_changed
+palette find.previous | sent [{"cmd":"find","query":null,"next":false,"previous":true,"jump":false,"hit":null,"open":false,"close":false,"limit":null}] | host FocusFind understood true | heard model_changed
 palette go.back | sent [{"cmd":"back","tab":"active"}] | host None understood true | heard nothing
 palette go.forward | sent [{"cmd":"forward","tab":"active"}] | host None understood true | heard nothing
 palette go.page | sent [] | host ShowGoTo understood true | heard nothing
@@ -97,9 +97,9 @@ UiAction::Chevron | sent [{"cmd":"contents_fold","entry":0,"tab":"#3"}] | host N
 UiAction::Open | sent [{"cmd":"open","path":"<files>/c.pdf","page":null}] | host None understood true | heard ops_ready model_changed
 UiAction::OpenRecent | sent [{"cmd":"open","path":"<files>/c.pdf","page":null}] | host None understood true | heard ops_ready model_changed
 UiAction::FindTyped | sent [{"cmd":"find","query":"page","next":false,"previous":false,"jump":false,"hit":null,"open":false,"close":false,"limit":null}] | host None understood true | heard model_changed*4
-UiAction::FindOpen | sent [{"cmd":"find","query":null,"next":false,"previous":false,"jump":false,"hit":null,"open":true,"close":false,"limit":null}] | host None understood true | heard model_changed*2
+UiAction::FindOpen | sent [{"cmd":"find","query":null,"next":false,"previous":false,"jump":false,"hit":null,"open":true,"close":false,"limit":null}] | host None understood true | heard model_changed
 UiAction::FindClose | sent [{"cmd":"find","query":null,"next":false,"previous":false,"jump":false,"hit":null,"open":false,"close":true,"limit":null}] | host None understood true | heard model_changed
-UiAction::FindReturn | sent [{"cmd":"find","query":null,"next":true,"previous":false,"jump":true,"hit":null,"open":false,"close":false,"limit":null}] | host None understood true | heard model_changed*2
+UiAction::FindReturn | sent [{"cmd":"find","query":null,"next":true,"previous":false,"jump":true,"hit":null,"open":false,"close":false,"limit":null}] | host None understood true | heard model_changed
 UiAction::FindChoose | sent [{"cmd":"find","query":null,"next":false,"previous":false,"jump":false,"hit":0,"open":false,"close":false,"limit":null}] | host None understood true | heard ops_ready model_changed
 UiAction::PageTyped | sent [{"cmd":"goto","tab":"#3","page":null,"label":"2","within":null}] | host None understood true | heard ops_ready model_changed
 UiAction::Swiped | sent [{"cmd":"back","tab":"active"}] | host None understood true | heard nothing

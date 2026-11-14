@@ -47,7 +47,7 @@ pub struct Printing {
     cancel: AtomicBool,
     done: AtomicU32,
     of: AtomicU32,
-    pub generation: AtomicU64,
+    generation: AtomicU64,
     serial: AtomicU64,
     ready: Mutex<Option<PathBuf>>,
     /// The host has the file and the system's printing is running.
@@ -56,7 +56,7 @@ pub struct Printing {
     /// What the notice with this number refused, for its "Print anyway".
     refused: Mutex<Option<(u64, Request)>>,
     /// A QA print to a file: where the system's printing writes, a new name of ours, and where it's published, never over anything.
-    pub qa_target: Mutex<Option<(PathBuf, PathBuf)>>,
+    qa_target: Mutex<Option<(PathBuf, PathBuf)>>,
 }
 
 impl Printing {
@@ -115,6 +115,25 @@ impl Printing {
         refused.take();
         lock(&self.notice).take();
         Some(request)
+    }
+
+    /// **For QA's print to a PDF through the system's printing:** where it should write, a new name of ours beside `out`, which is published at `out` when
+    /// it's done ([`Self::finished`]), never over anything. None if `out` isn't absolute, is there already, or the name of ours is taken.
+    pub fn qa_target_for(&self, out: PathBuf) -> Option<PathBuf> {
+        let folder = out.parent()?;
+        if !out.is_absolute() || std::fs::symlink_metadata(&out).is_ok() {
+            return None;
+        }
+        let written = folder.join(format!(
+            ".recto-print-{}-{}.pdf",
+            std::process::id(),
+            self.generation.load(Ordering::SeqCst) + 1
+        ));
+        if std::fs::symlink_metadata(&written).is_ok() {
+            return None;
+        }
+        *lock(&self.qa_target) = Some((written.clone(), out));
+        Some(written)
     }
 
     /// The file to print, once, for the host to hand to the system.
@@ -236,7 +255,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
             "stops the person's print being prepared for the system's print panel",
             super::menu_rows::Agents::Never,
             move || {
-                inner.tools.printing.cancel();
+                inner.tools.printing().cancel();
                 HostAction::None
             },
         ));
@@ -246,7 +265,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
         "a notice's Print anyway, for the person's own print it refused: their decision, where an agent's is `print --anyway`, which is logged",
         super::menu_rows::Agents::ItsOwn("`recto print --anyway`"),
         move || {
-            if let Some(request) = serial.parse().ok().and_then(|serial| inner.tools.printing.take_refused(serial)) {
+            if let Some(request) = serial.parse().ok().and_then(|serial| inner.tools.printing().take_refused(serial)) {
                 start(inner, Request { anyway: true, ..request });
             }
             inner.core.push(CoreCall::Reconcile);
@@ -257,7 +276,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
 
 /// Starts preparing a print of `range`, pages counted from 1 as the tab has them now, off the UI thread.
 pub fn start(inner: &Arc<Inner>, request: Request) -> bool {
-    let printing = &inner.tools.printing;
+    let printing = inner.tools.printing();
     if printing.running.swap(true, Ordering::SeqCst) {
         printing.say("A print is already being prepared.", false);
         return false;
@@ -272,7 +291,7 @@ pub fn start(inner: &Arc<Inner>, request: Request) -> bool {
     inner.core.push(CoreCall::Reconcile);
     let runner = Arc::clone(inner);
     let spawned = std::thread::Builder::new().name("recto-print".into()).stack_size(STACK).spawn(move || {
-        let printing = &runner.tools.printing;
+        let printing = runner.tools.printing();
         let pages = format!("{first}-{last}");
         let tab = request.tab;
         let listed = runner
@@ -353,6 +372,30 @@ fn said_as(error: &recto_agent::AgentError) -> Told {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: QA's print to a PDF writes over a file that's there, writes to a relative place, or takes a name of ours a file already has, as the bridge's
+    /// `print_qa_target` refused before it moved here (R3.7, S2): the target is a new name beside `out`, kept for the print's end to publish, and nothing else.
+    #[test]
+    fn a_qa_prints_target_is_new_and_beside_where_it_goes() {
+        let folder = recto_testpdf::TempDir::new("pqa-");
+        let printing = Printing::default();
+        assert_eq!(printing.qa_target_for(PathBuf::from("relative.pdf")), None, "not absolute");
+        assert_eq!(printing.qa_target_for(PathBuf::from("/")), None, "no folder");
+        let there = folder.join("there.pdf");
+        std::fs::write(&there, b"x").expect("a file");
+        assert_eq!(printing.qa_target_for(there), None, "a file's there already");
+        assert!(lock(&printing.qa_target).is_none(), "nothing kept for a refusal");
+        let out = folder.join("out.pdf");
+        let written = printing.qa_target_for(out.clone()).expect("a target");
+        assert_eq!(
+            written,
+            folder.join(format!(".recto-print-{}-1.pdf", std::process::id())),
+            "the next print's name, beside it"
+        );
+        assert_eq!(*lock(&printing.qa_target), Some((written.clone(), out.clone())), "kept for the print's end");
+        std::fs::write(&written, b"x").expect("taken");
+        assert_eq!(printing.qa_target_for(out), None, "the name of ours taken");
+    }
 
     /// Failure (R2.5): a print to a file that asks not to be copied says its words with no "Print anyway", or a stopped print says it failed, as its refusal
     /// was told apart by a code's string. By named codes: restricted offers Print anyway, stopped says nothing, anything else its words.

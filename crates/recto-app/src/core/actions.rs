@@ -48,8 +48,8 @@ impl Inner {
             }
             Enable::Update => self.updates.menu_item().enabled,
             Enable::Save => self.can_save(),
-            Enable::Print => reader(|reader| !reader.home && reader.shown_tab != 0) && !self.tools.printing.busy(),
-            Enable::SaveAs => reader(|reader| !reader.home && !reader.saving) && self.tools.save_ui.disagreement_now().is_none(),
+            Enable::Print => reader(|reader| !reader.home && reader.shown_tab != 0) && !self.tools.printing().busy(),
+            Enable::SaveAs => reader(|reader| !reader.home && !reader.saving) && self.tools.save_ui().disagreement_now().is_none(),
             Enable::Close => reader(|reader| !reader.home && !reader.saving),
             Enable::ClearRecent => !lock(&self.published).recent.is_empty(),
             Enable::Undo => reader(|reader| reader.can_undo),
@@ -92,7 +92,7 @@ impl Inner {
             &self.updates.menu_item().title,
             &items,
         );
-        bar.push(crate::snapshot_menu::tools_menu(self.tools.tool.is_on()));
+        bar.push(crate::snapshot_menu::tools_menu(self.tools.tool().is_on()));
         bar
     }
 
@@ -102,8 +102,8 @@ impl Inner {
             engine.selection().dismiss_notice();
         }
         lock(&self.window.action_notice).take();
-        self.tools.tool.dismiss_notice();
-        self.tools.printing.dismiss_notice();
+        self.tools.tool().dismiss_notice();
+        self.tools.printing().dismiss_notice();
         self.updates.dismiss_notice();
         self.core.push(CoreCall::Reconcile);
     }

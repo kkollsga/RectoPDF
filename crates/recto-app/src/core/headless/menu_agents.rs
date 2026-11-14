@@ -163,7 +163,10 @@ fn edit_modes_rotate_by_an_agent_is_the_page_it_was_resolved_on() {
     });
     app.settle();
     let id = app.reader().password_prompt.expect("it asks for its password").id;
-    app.core().password_answered(id, Some("right".into()));
+    app.core()
+        .tools
+        .prompts()
+        .password_answered(id, Some("right".into()), &app.core().core, &app.core().window);
     app.settle();
     let plain = app.disk().pdf("plain.pdf", 5);
     app.open(&plain);
@@ -200,7 +203,10 @@ fn an_agents_copy_puts_nothing_of_a_protected_document_on_the_clipboard() {
     });
     app.settle();
     let id = app.reader().password_prompt.expect("it asks for its password").id;
-    app.core().password_answered(id, Some("right".into()));
+    app.core()
+        .tools
+        .prompts()
+        .password_answered(id, Some("right".into()), &app.core().core, &app.core().window);
     app.settle();
     app.act(crate::core::controls::UiAction::Menu { id: "edit.select_all".into() });
     app.settle();

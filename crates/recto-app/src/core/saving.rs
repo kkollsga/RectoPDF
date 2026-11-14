@@ -73,19 +73,19 @@ pub fn start_save(inner: &Arc<super::Inner>, tab: TabId, out: Option<std::path::
     // When the person answered Save As's sheet: a file made at that name after this isn't one they agreed to replace (review).
     let answered = std::time::SystemTime::now();
     let inner = Arc::clone(inner);
-    inner.tools.save_ui.running.fetch_add(1, Ordering::SeqCst);
+    inner.tools.save_ui().running.fetch_add(1, Ordering::SeqCst);
     let spawned = std::thread::Builder::new().name("recto-save-file".into()).stack_size(1024 * 1024).spawn({
         let inner = Arc::clone(&inner);
         move || {
             run_save(&inner, tab, out, close_after, answered);
-            inner.tools.save_ui.running.fetch_sub(1, Ordering::SeqCst);
-            inner.tools.save_ui.step.store(0, Ordering::SeqCst);
+            inner.tools.save_ui().running.fetch_sub(1, Ordering::SeqCst);
+            inner.tools.save_ui().step.store(0, Ordering::SeqCst);
             inner.core.push(super::CoreCall::Reconcile);
         }
     });
     if spawned.is_err() {
-        inner.tools.save_ui.running.fetch_sub(1, Ordering::SeqCst);
-        inner.tools.save_ui.set_problem(Some(app::not_started()));
+        inner.tools.save_ui().running.fetch_sub(1, Ordering::SeqCst);
+        inner.tools.save_ui().set_problem(Some(app::not_started()));
         inner.core.push(super::CoreCall::Reconcile);
     }
 }
@@ -96,7 +96,7 @@ fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
     use recto_control::host::Host;
     let replace = match out.as_deref().map(|out| replace_answered(out, answered)) {
         Some(Err(())) => {
-            inner.tools.save_ui.set_problem(Some(app::appeared_after_answer()));
+            inner.tools.save_ui().set_problem(Some(app::appeared_after_answer()));
             return;
         }
         Some(Ok(replace)) => replace,
@@ -116,14 +116,14 @@ fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
                 .map(|notes| notes.iter().filter_map(|note| note.as_str()).collect())
                 .unwrap_or_default();
             *super::lock(&inner.window.action_notice) = (!notes.is_empty()).then(|| notes.join(" "));
-            inner.tools.save_ui.set_problem(None);
+            inner.tools.save_ui().set_problem(None);
             // Watchers hear it was saved before they hear it closed.
             inner.core.push(super::CoreCall::Events(std::mem::take(&mut events)));
             if close_after {
                 super::closing::after_save(inner, id);
             }
         }
-        Err(error) => inner.tools.save_ui.set_problem(Some(app::problem_for(&error))),
+        Err(error) => inner.tools.save_ui().set_problem(Some(app::problem_for(&error))),
     }
     inner.core.push(super::CoreCall::Events(events));
 }
@@ -185,13 +185,13 @@ impl super::Inner {
             published.reader.edited,
             published.sidebar.undone_owner_steps,
             save_off,
-            self.tools.save_ui.disagreement_now().as_deref(),
+            self.tools.save_ui().disagreement_now().as_deref(),
         )
     }
 
     /// A save's problem was answered: with Save As, its sheet opens.
     pub fn save_problem_answered(&self, save_as: bool) -> super::HostAction {
-        self.tools.save_ui.set_problem(None);
+        self.tools.save_ui().set_problem(None);
         self.core.push(super::CoreCall::Reconcile);
         if save_as { super::HostAction::ShowSavePanel } else { super::HostAction::None }
     }

@@ -50,7 +50,7 @@ pub fn follow_link(inner: &Arc<Inner>, pane: usize, engine: &Engine, hit: recto_
         },
         recto_core::nav::LinkTarget::History { back } => person::submit(inner, super::navigation::step(back)),
         recto_core::nav::LinkTarget::Web(address) => {
-            inner.tools.prompts.ask_link(&address);
+            inner.tools.prompts().ask_link(&address);
             inner.core.push(CoreCall::Reconcile);
         }
         recto_core::nav::LinkTarget::Refused(why) => notice(inner, why.message()),
@@ -261,7 +261,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             tabs.active(),
         )
     });
-    let asked = lock(&inner.tools.prompts.passwords).tabs_asked();
+    let asked = lock(&inner.tools.prompts().passwords).tabs_asked();
     let closed: Vec<TabId> = if asked.is_empty() {
         Vec::new()
     } else {
@@ -271,7 +271,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             .with_session(|session| asked.into_iter().filter(|id| session.tabs().tab(*id).is_none()).collect())
     };
     let password_prompt = {
-        let mut asks = lock(&inner.tools.prompts.passwords);
+        let mut asks = lock(&inner.tools.prompts().passwords);
         asks.showing_tab(active_tab, &closed);
         if let Some((id, path)) = wants
             && !asks.declined(id)
@@ -304,8 +304,8 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             offers_copy_anyway: notice.offers_copy_anyway,
             fades: notice.fades,
         }),
-        printing: inner.tools.printing.selection_notice(),
-        tool: inner.tools.tool.selection_notice(),
+        printing: inner.tools.printing().selection_notice(),
+        tool: inner.tools.tool().selection_notice(),
         action: lock(&inner.window.action_notice).clone(),
         update: inner.updates.notice().map(|notice| (notice.text, notice.fades)),
     }
@@ -332,13 +332,13 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
                 note: save.note,
                 tooltip: save.tooltip,
             },
-            print_ready: inner.tools.printing.has_ready(),
+            print_ready: inner.tools.printing().has_ready(),
         },
     );
     // The sheets that ask something are the bridge's, and ride beside the model. These three assignments go when the saving, linking and passwords modules move to recto-app.
     let mut reader = ReaderView::from(model);
-    reader.save_problem = inner.tools.save_ui.problem();
-    reader.link_prompt = lock(&inner.tools.prompts.link).clone();
+    reader.save_problem = inner.tools.save_ui().problem();
+    reader.link_prompt = lock(&inner.tools.prompts().link).clone();
     reader.password_prompt = password_prompt;
     let pane_tocs: Vec<Option<Arc<recto_core::Toc>>> = facts.panes.iter().map(|shown| shown.toc.clone()).collect();
     let crate::SidebarParts {
@@ -400,7 +400,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
 /// it's known. A file nothing can save (opened with its password, or whose readers disagree) has Save and Save As off.
 fn save_state_now(inner: &Inner, reading: &crate::model::ReadingFacts) -> crate::saving::SaveState {
     let core_queue = Arc::clone(&inner.core);
-    let save_ui = &inner.tools.save_ui;
+    let save_ui = inner.tools.save_ui();
     let signature = if reading.edited {
         reading
             .file
