@@ -71,6 +71,9 @@ impl Cmd for EditMode {
     const PROTECTED_OK: bool = true;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }

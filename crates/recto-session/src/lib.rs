@@ -70,7 +70,7 @@ use recto_core::{DocFacts, NONE, OpenError, Toc};
 use recto_platform::{FileStamp, file_stamp};
 #[cfg(debug_assertions)]
 pub use registry::searched;
-pub use registry::{Tabs, withheld_tab};
+pub use registry::{Tabs, place_shown, withheld_tab};
 pub use saves::Saves;
 pub use sleeper::Sleeper;
 use std::collections::{HashMap, HashSet};

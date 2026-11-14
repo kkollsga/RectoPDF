@@ -28,6 +28,9 @@ impl Cmd for Links {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -110,6 +113,9 @@ impl Cmd for Goto {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -150,11 +156,9 @@ impl Cmd for Goto {
                     s.mail_mut().jump_is_to_entry(id, entry);
                 }
                 cx.events.push(page_now(s, id));
-                Ok(where_json(s, id))
+                Ok(where_json(s, cx.actor, id))
             }),
-            (None, Some(label)) if self.within.is_none() && self.entry.is_none() => {
-                linking::goto_label(cx.access, cx.actor.author(), &self.tab, label, cx.events)
-            }
+            (None, Some(label)) if self.within.is_none() && self.entry.is_none() => linking::goto_label(cx.access, cx.actor, &self.tab, label, cx.events),
             (None, Some(_)) => Err(
                 AgentError::new(Code::USAGE, "`--within` and `--entry` go with a page number, not a label.", exit::USAGE).then("`recto goto 12 --within 0.3`."),
             ),
@@ -196,6 +200,9 @@ impl Cmd for Back {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::Trail { back: true }
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -213,7 +220,7 @@ impl Cmd for Back {
         let Self { tab } = self;
         let (access, events) = (cx.access, &mut *cx.events);
         access.take_places();
-        linking::step(access, cx.actor.author(), tab, true, events)
+        linking::step(access, cx.actor, tab, true, events)
     }
     fn human(data: &Value) -> String {
         place(data)
@@ -235,6 +242,9 @@ impl Cmd for Forward {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::Trail { back: false }
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -252,7 +262,7 @@ impl Cmd for Forward {
         let Self { tab } = self;
         let (access, events) = (cx.access, &mut *cx.events);
         access.take_places();
-        linking::step(access, cx.actor.author(), tab, false, events)
+        linking::step(access, cx.actor, tab, false, events)
     }
     fn human(data: &Value) -> String {
         place(data)
@@ -278,6 +288,9 @@ impl Cmd for Follow {
     const ABOUT: super::About = super::About::Its;
     // It reads the page's links from its file in place.
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -294,7 +307,7 @@ impl Cmd for Follow {
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self { tab, page, link } = self;
         let (access, events) = (cx.access, &mut *cx.events);
-        linking::follow(access, cx.actor.author(), tab, *page, *link, events)
+        linking::follow(access, cx.actor, tab, *page, *link, events)
     }
     fn human(data: &Value) -> String {
         place(data)

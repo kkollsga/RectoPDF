@@ -66,13 +66,14 @@ pub fn needs_the_session(events: &[Event]) -> bool {
 /// The session's own [`recto_session::Tabs::withheld_from_agents`] keeps its meaning, as every other caller asks it of a tab that's open (a command's
 /// gate on the tab it selected, what a sleep file may hold, the window's model).
 pub fn for_agents<L: DocLoader>(session: &Session<L>, finding: Option<TabId>, events: &mut Vec<Event>) {
-    let withheld = |id: TabId| session.tabs().tab(id).is_none() || session.tabs().withheld_from_agents(id);
+    // Its document's, or where it is, as a tab's place can be withheld while its document isn't: it follows a protected one's (S2), which
+    // `compare::place_withheld_of` states once. Find's news says where its hit is, and so where a step from the place went (S2's round).
+    let withheld = |id: TabId| session.tabs().tab(id).is_none_or(|tab| recto_session::compare::place_withheld_of(session, tab));
     // Asked once a batch, and only if Find's in it.
     let mut reading_withheld = None;
     events.retain(|event| match about(event) {
         About::Nothing | About::Listed(_) => true,
-        // Its document's news, or a tab's whose place follows a protected one's (S2): `Session::place_withheld`, the one statement of that.
-        About::Document(id) => !(session.tabs().tab(id).is_none() || recto_session::compare::place_withheld(session, id)),
+        About::Document(id) => !withheld(id),
         About::File(path) => !session.tabs().for_path(path).is_some_and(|id| session.tabs().withheld_from_agents(id)),
         About::Find(named) => {
             let reading = *reading_withheld.get_or_insert_with(|| session.tabs().active().is_some_and(withheld) || finding.is_some_and(withheld));

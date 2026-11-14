@@ -39,8 +39,9 @@ mod route;
 mod search;
 mod selecting;
 pub mod tab_ref;
+pub use place::place_withheld_refusal;
 pub use tab_ref::TabRef;
-mod place;
+pub mod place;
 pub mod skill;
 pub mod table;
 pub mod unfit;
@@ -530,34 +531,27 @@ pub fn restore_would_lose_owners_edits() -> AgentError {
 /// What `session show` says, from the record and the session. No more of a document than `tabs` gives, and what the owner typed in Find only at Control, and
 /// not while the document being read is one they opened with its password, as what they looked for in it says what they saw there. Called with the session
 /// held.
-pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept: Value) -> Value {
+pub fn session_show_json<L: DocLoader>(session: &Session<L>, actor: Actor, kept: Value) -> Value {
+    let level = actor.level();
     let tabs: Vec<Value> = session
         .tabs()
         .iter()
         .take(MAX_TABS_LISTED as usize)
         .map(|tab| {
             let notice = session.notices().said(tab.id).map(|said| json!({ "code": said.code, "message": said.message }));
-            let place = session.tabs().place_to_show(tab.id);
             // A protected document's place and length were read with its password, its zoom fits its pages' size, and what's said of its file and of its
             // edits (whose taking can turn on its length) is left out as `tabs` leaves it out; its layout as `view` leaves it out.
             if session.tabs().withheld_from_agents(tab.id) {
                 return json!({ "tab": tab.id.0, "protected": true, "page": null, "pages": null, "zoom": null, "within_page": null, "layout": null, "edited": null, "can_undo": null, "can_redo": null, "notice": null });
             }
             // A tab whose place follows a protected one's (S2): its length is its own, where it is isn't.
-            let place_withheld = recto_session::compare::place_withheld_of(session, tab);
-            let place = place.filter(|_| !place_withheld);
-            json!({ "tab": tab.id.0, "page": (!place_withheld).then_some(tab.page + 1), "pages": session.pages().count(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.filter(|place| place.anchor_page == place.page).map(|place| place.within), "layout": tab.spread.name(), "edited": session.lists().is_edited(tab.id), "can_undo": session.lists().undo_and_redo(tab.id).0, "can_redo": session.lists().undo_and_redo(tab.id).1, "notice": notice })
+            let place = place::place_for(session, actor, tab);
+            json!({ "tab": tab.id.0, "page": place.as_ref().map(place::Place::page), "pages": session.pages().count(tab.id), "zoom": place.as_ref().and_then(place::Place::zoom), "within_page": place.as_ref().and_then(place::Place::within), "layout": tab.spread.name(), "edited": session.lists().is_edited(tab.id), "can_undo": session.lists().undo_and_redo(tab.id).0, "can_redo": session.lists().undo_and_redo(tab.id).1, "notice": notice })
         })
         .collect();
-    // The record's sizes and counts move with what it holds of a protected tab (its place, length and edits): left out while one's open (S2).
+    // The record's sizes and counts move with what it holds of a withheld tab: left out while one's open (S2).
     let mut kept = kept;
-    if session.tabs().iter().any(recto_session::withheld_tab) {
-        for key in ["record_bytes", "journal_bytes", "writes", "appends", "wrote_bytes"] {
-            if kept.get(key).is_some() {
-                kept[key] = Value::Null;
-            }
-        }
-    }
+    place::withhold_record_numbers(session, actor, &mut kept);
     let find = session.viewing().find();
     let mut find_json = json!({ "open": find.open, "has_text": !find.query.is_empty() || !find.draft.is_empty() });
     let reading_withheld = session.tabs().active().is_some_and(|id| session.tabs().withheld_from_agents(id));
@@ -590,6 +584,12 @@ pub fn execute<A: SessionAccess>(access: &A, actor: Actor, command: &Command, ev
         && access.with(|s| select(s, selector).is_ok_and(|id| s.tabs().withheld_from_agents(id)))
     {
         return Err(protected_refusal());
+    }
+    // What starts from where a tab is, an agent can't do while that place follows a protected document's (S2's round): [`place`].
+    if let Some(selector) = command.about()
+        && access.with(|s| select(s, selector).is_ok_and(|id| place::refuses(s, actor, command.starts_from(), id)))
+    {
+        return Err(place::place_withheld_refusal());
     }
     // A command about a tab is someone working on it, so it doesn't go dormant from under them, and what it reads is there to read. Every route's through here.
     let held = command.tab_selector().and_then(|selector| {
@@ -719,9 +719,9 @@ fn require_absolute(path: &Path) -> Result<(), AgentError> {
 }
 
 /// What's side by side: each pane's tab, its page and length, the one being read, synced or separate, and what's said about lengths.
-pub fn compare_json<L: DocLoader>(session: &Session<L>) -> Value {
+pub fn compare_json<L: DocLoader>(session: &Session<L>, actor: Actor) -> Value {
     let comparison = session.comparison();
-    let withheld = recto_session::compare::comparison_withheld(session);
+    let withheld = !actor.sees_protected() && recto_session::compare::comparison_withheld(session);
     let (tabs, pages) = (session.tabs(), session.pages());
     let active = tabs.active();
     let pane = |id: TabId| {
@@ -731,7 +731,7 @@ pub fn compare_json<L: DocLoader>(session: &Session<L>) -> Value {
             json!({ "tab": id.0, "protected": true, "page": null, "pages": null, "reading": reading, "untrusted": { "name": &*tab.name } })
         } else {
             // A pane that follows a protected one's place (S2) says its length, and not where it is.
-            json!({ "tab": id.0, "page": (!recto_session::compare::place_withheld(session, id)).then_some(tab.page + 1), "pages": pages.count(id), "reading": reading, "untrusted": { "name": &*tab.name } })
+            json!({ "tab": id.0, "page": place::place_for(session, actor, tab).as_ref().map(place::Place::page), "pages": pages.count(id), "reading": reading, "untrusted": { "name": &*tab.name } })
         })
     };
     let panes: Vec<Value> = comparison
@@ -865,9 +865,9 @@ fn edit<A: SessionAccess>(
         note_agent_at_full(s, actor);
         s.edit_pages_as(id, actor.author(), change)?;
         events.push(edits_changed(s, id));
-        let mut data = edit_state_json(s, id);
+        let mut data = edit_state_json(s, actor, id);
         data["did"] = json!(did);
-        Ok(with_place_note(s, id, data))
+        Ok(with_place_note(s, actor, id, data))
     })
 }
 
@@ -927,13 +927,14 @@ fn refuse_discard_of_owners_edits<L: DocLoader>(session: &Session<L>, id: TabId,
     Err(error)
 }
 
-/// Says when the page being read went away, so the tab is on another one.
-fn with_place_note<L: DocLoader>(session: &mut Session<L>, id: TabId, mut data: Value) -> Value {
+/// Says when the page being read went away, so the tab is on another one: not to an agent while its place is withheld, as which page went says where
+/// it was.
+fn with_place_note<L: DocLoader>(session: &mut Session<L>, actor: Actor, id: TabId, mut data: Value) -> Value {
     if session.mail_mut().take_place_lost()
-        && let Some(tab) = session.tabs().tab(id)
+        && let Some(place) = session.tabs().tab(id).and_then(|tab| place::place_for(session, actor, tab))
     {
         data["page_was_removed"] = json!(true);
-        data["place_note"] = json!(format!("The page this tab was on was removed, so it's now on page {}.", tab.page + 1));
+        data["place_note"] = json!(format!("The page this tab was on was removed, so it's now on page {}.", place.page()));
     }
     data
 }
@@ -945,14 +946,16 @@ pub const UNSAVED_NOTE: &str = "These edits aren't saved: the file on disk is un
 pub const USER_EDITS_UNDONE_NOTE: &str =
     "The user's edits on this tab are undone, not gone: `recto redo` brings them back, and closing would lose them. Nothing has been saved.";
 
-fn edit_state_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
+fn edit_state_json<L: DocLoader>(session: &Session<L>, actor: Actor, id: TabId) -> Value {
     let edited = session.lists().is_edited(id);
     let user_edits_undone = session.lists().has_undone_owner_steps(id);
+    let tab = session.tabs().tab(id);
     json!({
         "tab": id.0,
         "pages": session.pages().count(id),
-        "file_pages": session.tabs().tab(id).map(|t| t.page_count),
-        "page": session.tabs().tab(id).map(|t| t.page + 1),
+        "file_pages": tab.map(|t| t.page_count),
+        // Where it is, as `where` says it: not to an agent while it follows a protected document's place (S2's round).
+        "page": tab.and_then(|tab| place::place_for(session, actor, tab)).as_ref().map(place::Place::page),
         "edited": edited,
         // The user's undone edits aren't in the file, and closing would lose them, so nothing about this says "saved".
         "saved": !edited && !user_edits_undone,
@@ -970,8 +973,8 @@ pub const KEPT_LABEL: &str = "this file, as it was before a save";
 const MAX_EDIT_RUNS: usize = 1000;
 
 /// The edited page order, as runs of pages from one file with one rotation.
-fn edits_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
-    let mut data = edit_state_json(session, id);
+fn edits_json<L: DocLoader>(session: &Session<L>, actor: Actor, id: TabId) -> Value {
+    let mut data = edit_state_json(session, actor, id);
     let Some(edits) = session.lists().get(id) else {
         data["runs"] = json!([]);
         data["runs_truncated"] = json!(false);
@@ -1106,7 +1109,8 @@ pub fn check_condition<A: SessionAccess>(access: &A, condition: Condition, tab: 
     access.with(|s| match condition {
         Condition::IndexingDone | Condition::ContentsGenerated => ConditionState::Waiting,
         Condition::TabOpen => match select(s, tab) {
-            Ok(id) => ConditionState::Met(where_json(s, id)),
+            // A waiter is an agent.
+            Ok(id) => ConditionState::Met(where_json(s, Actor::Agent(Level::ReadOnly), id)),
             Err(error) if error.exit == exit::AMBIGUOUS => ConditionState::Failed(error),
             Err(_) => ConditionState::Waiting,
         },
@@ -1186,7 +1190,7 @@ fn label_hits<A: SessionAccess>(access: &A, tab: &TabRef, answer: &mut Value) {
     });
 }
 
-fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
+fn where_json<L: DocLoader>(session: &Session<L>, actor: Actor, id: TabId) -> Value {
     let (tabs, lists, pages) = (session.tabs(), session.lists(), session.pages());
     let Some(tab) = tabs.tab(id) else { return Value::Null };
     let edited = lists.is_edited(id);
@@ -1197,14 +1201,14 @@ fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
         return json!({ "tab": id.0, "sel": format!("#{}", id.0), "protected": true, "protected_note": PROTECTED_NOTE, "page": null, "pages": null, "file_pages": null, "active": active, "edited": null, "untrusted": { "name": &*tab.name } });
     }
     // A tab whose place follows a protected one's, or was left by it (S2): its own length and words are its own, where it is isn't.
-    let place_withheld = recto_session::compare::place_withheld_of(session, tab);
-    let label = pages.label_differs(id, tab.page).filter(|_| !place_withheld);
+    let place = place::place_for(session, actor, tab);
+    let label = place.as_ref().and_then(place::Place::label);
     let (can_go_back, can_go_forward) = tabs.can_go_back_and_forward(id);
     let undone = lists.has_undone_owner_steps(id);
     let mut out = json!({
         "tab": id.0,
         "sel": format!("#{}", id.0),
-        "page": (!place_withheld).then_some(tab.page + 1),
+        "page": place.as_ref().map(place::Place::page),
         "has_label": label.is_some(),
         "pages": pages.count(id),
         "file_pages": tab.page_count,
@@ -1220,7 +1224,7 @@ fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
         "untrusted": { "name": &*tab.name, "label": label },
     });
     // Said only when it is, so a tab whose place isn't withheld answers as it always did.
-    if place_withheld {
+    if place.is_none() {
         out["place_withheld"] = json!(true);
     }
     out
@@ -1230,54 +1234,67 @@ fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
 const DEFAULT_TABS_LISTED: u32 = 200;
 const MAX_TABS_LISTED: u32 = 1000;
 
-fn tabs_json<L: DocLoader>(session: &Session<L>, from: Option<u32>, limit: Option<u32>) -> Result<Value, AgentError> {
+fn tabs_json<L: DocLoader>(session: &Session<L>, actor: Actor, from: Option<u32>, limit: Option<u32>) -> Result<Value, AgentError> {
     let from = from.unwrap_or(0) as usize;
     let limit = positive_limit(limit, DEFAULT_TABS_LISTED, MAX_TABS_LISTED)?;
-    let tabs: Vec<Value> = session.tabs().iter().skip(from).take(limit).map(|t| where_json(session, t.id)).collect();
+    let tabs: Vec<Value> = session.tabs().iter().skip(from).take(limit).map(|t| where_json(session, actor, t.id)).collect();
     let end = from + tabs.len();
     Ok(json!({ "tabs": tabs, "count": session.tabs().len(), "next_from": (end < session.tabs().len()).then_some(end) }))
 }
 
-fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
+fn sidebar_json<L: DocLoader>(session: &Session<L>, actor: Actor) -> Value {
     let model = session.sidebar();
-    // A protected document's contents rows and notes, its place and how far into its contents the rail is were read with its password: its tab row stays, with no page.
-    let withheld = |id: TabId| session.tabs().withheld_from_agents(id);
-    let active_withheld = session.tabs().active().is_some_and(withheld);
-    let rows: Vec<Value> = model
-        .rows
-        .iter()
-        .filter(|row| row.kind == RowKind::Tab || !withheld(row.tab))
-        .map(|row| {
-            if row.kind == RowKind::Tab && withheld(row.tab) {
-                return json!({ "kind": "tab", "tab": row.tab.0, "protected": true, "page": null, "depth": row.depth, "current": row.current, "expandable": false, "expanded": false, "untrusted": { "text": row.text } });
-            }
+    // What's withheld of a tab's rows, worked out once at its tab row, which comes before its contents rows, from the tabs in the same order: (its tab,
+    // its document's protected, its place withheld from `actor`). A protected document's contents rows and notes, its place and how far into its
+    // contents the rail is were read with its password: its tab row stays, with no page. A tab whose place is withheld has its contents rows left out,
+    // as which are listed and open follows where the reader is (S2's round).
+    let mut in_order = session.tabs().iter();
+    let mut of = (TabId(0), false, false);
+    let mut rows = Vec::with_capacity(model.rows.len());
+    for row in &model.rows {
+        if row.kind == RowKind::Tab || row.tab != of.0 {
+            let tab = in_order.find(|tab| tab.id == row.tab).or_else(|| session.tabs().tab(row.tab));
+            let protected = tab.is_some_and(recto_session::withheld_tab);
+            of = (
+                row.tab,
+                protected,
+                protected || tab.is_some_and(|tab| place::place_for(session, actor, tab).is_none()),
+            );
+        }
+        let (_, protected, place_withheld) = of;
+        rows.push(match row.kind {
+            RowKind::Tab if protected => json!({ "kind": "tab", "tab": row.tab.0, "protected": true, "page": null, "depth": row.depth, "current": row.current, "expandable": false, "expanded": false, "untrusted": { "text": row.text } }),
+            _ if protected => continue,
             // A note's words are Rust's, so they're not marked as the file's.
-            if row.kind == RowKind::Note {
-                return json!({ "kind": "note", "tab": row.tab.0, "text": row.text, "hover": row.notice, "action": row.action.map(recto_session::ContentsAction::id) });
+            RowKind::Note => json!({ "kind": "note", "tab": row.tab.0, "text": row.text, "hover": row.notice, "action": row.action.map(recto_session::ContentsAction::id) }),
+            RowKind::Contents if place_withheld => continue,
+            kind => {
+                let mut said = json!({
+                    "kind": match kind { RowKind::Tab => "tab", _ => "contents" },
+                    "tab": row.tab.0,
+                    "page": row.page,
+                    "depth": row.depth,
+                    "current": row.current,
+                    "expandable": row.expandable,
+                    "expanded": row.expanded,
+                    "untrusted": { "text": row.text },
+                });
+                // Where a click on a contents row goes down its page, as `contents` lists it.
+                if kind == RowKind::Contents {
+                    said["place"] = json!(row.top);
+                }
+                said
             }
-            // A tab whose place follows a protected one's (S2) has its contents listed, but not which entry it's at, nor its page.
-            let place_withheld = recto_session::compare::place_withheld(session, row.tab);
-            let mut said = json!({
-                "kind": match row.kind { RowKind::Tab => "tab", _ => "contents" },
-                "tab": row.tab.0,
-                "page": if row.kind == RowKind::Tab && place_withheld { None } else { row.page },
-                "depth": row.depth,
-                "current": row.current && !(row.kind == RowKind::Contents && place_withheld),
-                "expandable": row.expandable,
-                "expanded": row.expanded,
-                "untrusted": { "text": row.text },
-            });
-            // Where a click on a contents row goes down its page, as `contents` lists it.
-            if row.kind == RowKind::Contents {
-                said["place"] = json!(row.top);
-            }
-            said
-        })
-        .collect();
-    if active_withheld {
+        });
+    }
+    let active = session.tabs().active();
+    if active.is_some_and(|id| session.tabs().withheld_from_agents(id)) {
         return json!({ "rows": rows, "rail_filled": 0, "toc_open": false, "place": "", "protected": true, "protected_note": PROTECTED_NOTE, "edited": null, "undone_owner_steps": null });
     }
-    if session.tabs().active().is_some_and(|id| recto_session::compare::place_withheld(session, id)) {
+    if active
+        .and_then(|id| session.tabs().tab(id))
+        .is_some_and(|tab| place::place_for(session, actor, tab).is_none())
+    {
         return json!({ "rows": rows, "rail_filled": 0, "toc_open": model.toc_open, "place": "", "place_withheld": true, "edited": model.edited, "undone_owner_steps": model.undone_owner_steps });
     }
     json!({ "rows": rows, "rail_filled": model.rail_filled, "toc_open": model.toc_open, "place": model.place, "edited": model.edited, "undone_owner_steps": model.undone_owner_steps })
@@ -3194,7 +3211,7 @@ mod tests {
             Some(recto_session::trail::Stop::new(1, 0.45)),
             "where a click on its row goes"
         );
-        let current: Vec<Value> = sidebar_json(&s)["rows"]
+        let current: Vec<Value> = sidebar_json(&s, Actor::Agent(Level::ReadOnly))["rows"]
             .as_array()
             .unwrap()
             .iter()
@@ -3434,9 +3451,13 @@ mod protected_tests {
         let id = session.open(Path::new("/d/locked.pdf")).unwrap();
         session.open(Path::new("/d/plain.pdf")).unwrap();
         let kept = || json!({ "kept": true, "holds_the_record": true, "beside_newer": false, "record_bytes": 812, "journal_bytes": 40, "writes": 3, "appends": 2, "wrote_bytes": 1200, "notice": null });
-        assert_eq!(session_show_json(&session, Level::Full, kept())["record"], kept(), "no tab withheld: as it was");
+        assert_eq!(
+            session_show_json(&session, Actor::Agent(Level::Full), kept())["record"],
+            kept(),
+            "no tab withheld: as it was"
+        );
         session.tabs_mut().note_password_used(id);
-        let record = session_show_json(&session, Level::Full, kept())["record"].clone();
+        let record = session_show_json(&session, Actor::Agent(Level::Full), kept())["record"].clone();
         for key in ["record_bytes", "journal_bytes", "writes", "appends", "wrote_bytes"] {
             assert!(record[key].is_null(), "{key}: {record}");
         }
@@ -3467,7 +3488,7 @@ mod protected_tests {
             assert!(session.notices().said(tab).is_some(), "a notice to keep back");
         }
         session.viewing_mut().set_find(true, "secret", "");
-        let shown = |session: &Session<Unlocked>| session_show_json(session, Level::Control, Value::Null);
+        let shown = |session: &Session<Unlocked>| session_show_json(session, Actor::Agent(Level::Control), Value::Null);
         let reading_locked = shown(&session);
         let (locked, plain) = (&reading_locked["tabs"][0], &reading_locked["tabs"][1]);
         for key in ["notice", "zoom", "layout", "edited", "can_undo", "can_redo"] {
@@ -3619,7 +3640,7 @@ mod protected_tests {
                 session.tap(id).unwrap();
             }
         }
-        let shown = session_show_json(&session, Level::Full, Value::Null);
+        let shown = session_show_json(&session, Actor::Agent(Level::Full), Value::Null);
         assert!(!leaks(&shown), "{shown}");
         let mut told = vec![page_changed(id, 3), edits_changed(&session, id)];
         withheld::for_agents(&session, None, &mut told);

@@ -299,6 +299,7 @@ codes! {
     PATTERN_TOO_LARGE = "pattern_too_large", Next::ByExit;
     PERMISSION_DENIED = "permission_denied", Next::ByExit;
     PERSONS_OWN = "persons_own", Next::ByExit;
+    PLACE_WITHHELD = "place_withheld", Next::Says("`recto goto` a page first.");
     PREPARE_FAILED = "prepare_failed", Next::ByExit;
     PROTECTED = "protected", Next::Says("Tell the user. Only they can allow an agent to read a protected document, and this version can't ask them, so work on another file.");
     QA_FAILED = "qa_failed", Next::ByExit;

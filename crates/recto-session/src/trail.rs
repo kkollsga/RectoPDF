@@ -96,11 +96,14 @@ impl Trail {
     }
 
     /// A jump from `here`: it's marked to come back to, and the way forward goes, all of it for the person's jump and only an agent's own stops for an agent's. A jump to where the reader already is marks nothing.
+    ///
+    /// A jump from a place withheld from agents is always marked, from the place it goes to and beside a stop at the same place alike: whether a stop
+    /// was left would say whether the jump went where following had left the tab (S2's round).
     pub fn jumped(&mut self, here: Stop, to: Stop, by_agent: bool) {
-        if here.same_place(to) {
+        if here.same_place(to) && !here.from_withheld {
             return;
         }
-        if !self.back.last().is_some_and(|last| last.same_place(here)) {
+        if here.from_withheld || !self.back.last().is_some_and(|last| last.same_place(here)) {
             push_capped(&mut self.back, here.by(by_agent));
         }
         if by_agent {
@@ -206,7 +209,7 @@ impl<L: DocLoader> Session<L> {
 
     /// A jump, by the person or an agent. An agent's marks give way to the person's: see [`trail`].
     pub fn jump_as(&mut self, id: TabId, page: u32, within: f64, by: Author) -> Result<(), SessionError> {
-        let here = self.marked_here(id).ok_or(SessionError::NoSuchTab)?;
+        let here = marked_here(self, id).ok_or(SessionError::NoSuchTab)?;
         let to = trail::Stop::new(page.min(self.pages().count(id).saturating_sub(1)), within);
         let tab = self.tabs.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
         tab.reading.trail.get_or_insert_default().jumped(here, to, by == Author::Agent);
@@ -215,7 +218,7 @@ impl<L: DocLoader> Session<L> {
 
     /// Back (`back`) or forward in a tab's trail, by the person or an agent. Says whether there was anywhere to go.
     pub fn step_as(&mut self, id: TabId, back: bool, by: Author) -> Result<bool, SessionError> {
-        let here = self.marked_here(id).ok_or(SessionError::NoSuchTab)?;
+        let here = marked_here(self, id).ok_or(SessionError::NoSuchTab)?;
         let agent = by == Author::Agent;
         let Some(trail) = self.tabs.tab_mut(id).and_then(|tab| tab.reading.trail.as_deref_mut()) else {
             return Ok(false);
@@ -238,12 +241,6 @@ impl<L: DocLoader> Session<L> {
         Ok(true)
     }
 
-    /// [`Self::here`], marked if the place is withheld from agents: what a stop made from it is.
-    fn marked_here(&self, id: TabId) -> Option<trail::Stop> {
-        let tab = self.tabs.tab(id)?;
-        Some(here_of(self, tab).withheld(compare::place_withheld_of(self, tab)))
-    }
-
     fn land(&mut self, id: TabId, to: trail::Stop) -> Result<(), SessionError> {
         self.go_to(id, to.page)?;
         self.mail.jump(id, to);
@@ -260,6 +257,12 @@ pub(crate) fn jump_here<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> 
         .waiting_jump(tab.id)
         .filter(on_page)
         .or_else(|| session.mail.jump_on_its_way(tab.id).filter(on_page))
+}
+
+/// [`Session::here`], marked if the place is withheld from agents: what a stop made from it is. A function, not a method more on the session.
+fn marked_here<L: DocLoader>(session: &Session<L>, id: TabId) -> Option<trail::Stop> {
+    let tab = session.tabs.tab(id)?;
+    Some(here_of(session, tab).withheld(compare::place_withheld_of(session, tab)))
 }
 
 /// [`Session::here`] for a tab in hand, so a walk over every tab needn't look each up again.

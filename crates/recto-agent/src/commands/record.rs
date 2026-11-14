@@ -24,6 +24,9 @@ impl Cmd for SessionShow {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }
@@ -39,7 +42,7 @@ impl Cmd for SessionShow {
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         // What the record says is the host's to look up, and isn't asked with the session held.
         let kept = cx.access.records()?.kept();
-        Ok(cx.access.with(|session| session_show_json(session, cx.level, kept)))
+        Ok(cx.access.with(|session| session_show_json(session, cx.actor, kept)))
     }
     fn human(data: &Value) -> String {
         show_words(data)
@@ -62,6 +65,9 @@ impl Cmd for SessionSleep {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -102,6 +108,9 @@ impl Cmd for SessionSave {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }
@@ -153,6 +162,9 @@ impl Cmd for SessionRestore {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }
@@ -208,6 +220,9 @@ impl Cmd for SessionCheck {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }

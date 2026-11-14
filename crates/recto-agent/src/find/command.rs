@@ -98,7 +98,7 @@ pub(crate) fn command<A: crate::SessionAccess>(
     if !access.answer_read() {
         return Ok(Value::Null);
     }
-    Ok(answer(access, run.finding, listed, went))
+    Ok(answer(access, actor, run.finding, listed, went))
 }
 
 /// Whether a query's running.
@@ -274,7 +274,7 @@ impl<A: crate::SessionAccess> Run<'_, A> {
 }
 
 /// Where Find stands, for an answer.
-fn answer<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, listed: usize, went: Option<(u32, Hit)>) -> Value {
+fn answer<A: crate::SessionAccess>(access: &A, _actor: Actor, finding: &dyn Finding, listed: usize, went: Option<(u32, Hit)>) -> Value {
     let record = access.with(|s| s.viewing().find().clone());
     // Hits from a document the person opened with a password are text read with it: none of them goes to an agent, whichever tab is being read now.
     let mut about = None;

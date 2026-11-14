@@ -456,9 +456,17 @@ enum Followed {
     LeftThenJumped,
     /// That, then the person's Back onto the followed place.
     PersonWentBack,
+    /// Left, with a stop the person made before it followed, and then the person's Back to that stop, leaving the followed place on the way forward.
+    PersonWentBackFromIt,
 }
 
-const FOLLOWED: [Followed; 4] = [Followed::Following, Followed::Left, Followed::LeftThenJumped, Followed::PersonWentBack];
+const FOLLOWED: [Followed; 5] = [
+    Followed::Following,
+    Followed::Left,
+    Followed::LeftThenJumped,
+    Followed::PersonWentBack,
+    Followed::PersonWentBackFromIt,
+];
 
 /// `locked.pdf` (`#1`, `secret`'s) opened with its password, and a plain 30-page `plain.pdf` (`#2`) being read beside it in a comparison, placed as
 /// `followed` says: where following took it is the protected document's last page, so the twins differ in where the plain tab is, and in nothing else
@@ -470,6 +478,9 @@ fn following_session(secret: u32, followed: Followed) -> (Mutex<Session<crate::D
     let id = session.open(&locked.0).unwrap();
     let other = session.open(&plain.0).unwrap();
     session.tabs_mut().note_password_used(id);
+    if matches!(followed, Followed::PersonWentBackFromIt) {
+        session.jump_as(other, 2, 0.0, recto_session::Author::Owner).unwrap();
+    }
     session.compare(&[id, other], Some(other)).unwrap();
     session.set_compare_synced(true);
     session.go_to(other, 6 + 2 * secret).unwrap();
@@ -479,7 +490,7 @@ fn following_session(secret: u32, followed: Followed) -> (Mutex<Session<crate::D
     if matches!(followed, Followed::LeftThenJumped | Followed::PersonWentBack) {
         session.jump_as(other, 0, 0.0, recto_session::Author::Agent).unwrap();
     }
-    if matches!(followed, Followed::PersonWentBack) {
+    if matches!(followed, Followed::PersonWentBack | Followed::PersonWentBackFromIt) {
         assert!(session.step_as(other, true, recto_session::Author::Owner).unwrap());
     }
     (Mutex::new(session), locked, plain)
@@ -493,7 +504,6 @@ fn following_session(secret: u32, followed: Followed) -> (Mutex<Session<crate::D
 #[test]
 fn no_command_tells_an_agent_where_a_tab_that_followed_a_protected_one_is() {
     deadlines_met();
-    let mut differs = Vec::new();
     // Page 9 is where following leaves the plain tab in the first twin, and not in the second.
     let on_the_followed_page = [
         Command::from(commands::linking::Goto {
@@ -510,27 +520,74 @@ fn no_command_tells_an_agent_where_a_tab_that_followed_a_protected_one_is() {
     ];
     let steps = [(true, false), (false, false), (true, true)]
         .map(|(forward, jump)| Command::from(commands::finding::Find::from(commands::finding::FindAsk::Step { forward, jump })));
-    for command in every_command().into_iter().chain(on_the_followed_page).chain(steps) {
-        let command = naming_the_plain_tab(&command);
-        for level in LEVELS {
-            for followed in FOLLOWED {
-                let told = |secret: u32| {
-                    let (access, locked, plain) = following_session(secret, followed);
-                    let mut events = Vec::new();
-                    let result = execute(&access, Actor::Agent(level), &command, &mut events);
-                    crate::withheld::for_agents(&access.lock().unwrap(), None, &mut events);
-                    format!("{} {events:?}", said(result))
-                        .replace(locked.folder().to_str().unwrap(), "<locked>")
-                        .replace(plain.folder().to_str().unwrap(), "<plain>")
-                };
-                let (one, two) = (told(1), told(2));
-                if one != two {
-                    differs.push(format!("{} at {level:?}, {followed:?}:\n  {one}\n  {two}", command.tag()));
-                }
-            }
-        }
-    }
+    let commands: Vec<Command> = every_command()
+        .into_iter()
+        .chain(on_the_followed_page)
+        .chain(steps)
+        .map(|command| naming_the_plain_tab(&command))
+        .collect();
+    // Each arrangement on a thread of its own, as each run is a fresh session on files of its own: the walk is about 16 s of work.
+    let differs: Vec<String> = std::thread::scope(|scope| {
+        let walks: Vec<_> = FOLLOWED
+            .map(|followed| {
+                let commands = &commands;
+                scope.spawn(move || {
+                    let mut differs = Vec::new();
+                    for command in commands {
+                        for level in LEVELS {
+                            let told = |secret: u32| {
+                                let (access, locked, plain) = following_session(secret, followed);
+                                let mut events = Vec::new();
+                                let result = execute(&access, Actor::Agent(level), command, &mut events);
+                                crate::withheld::for_agents(&access.lock().unwrap(), None, &mut events);
+                                format!("{} {events:?}", said(result))
+                                    .replace(locked.folder().to_str().unwrap(), "<locked>")
+                                    .replace(plain.folder().to_str().unwrap(), "<plain>")
+                            };
+                            let (one, two) = (told(1), told(2));
+                            if one != two {
+                                differs.push(format!("{} at {level:?}, {followed:?}:\n  {one}\n  {two}", command.tag()));
+                            }
+                        }
+                    }
+                    differs
+                })
+            })
+            .into_iter()
+            .collect();
+        walks.into_iter().flat_map(|walk| walk.join().expect("a walk")).collect()
+    });
     assert!(differs.is_empty(), "told where the plain tab is:\n{}", differs.join("\n"));
+}
+
+/// Failure (security review of S2's round): a command that starts from where a tab is says it doesn't ([`commands::Cmd::starts_from`]), so an agent's
+/// runs while that place follows a protected document's and tells it; or one that doesn't is refused for it. Each of [`every_command`], and each way of
+/// asking Find, against the reviewed list: Back and Forward start from the place to a stop on the trail; Find's steps and its hit by index, and folding
+/// a contents section (against what following the place opens), from the place; every other command names its pages, or none.
+#[test]
+fn what_starts_from_the_place_is_as_listed() {
+    use commands::FromPlace;
+    use commands::finding::{Find, FindAsk};
+    let listed = |command: &Command| match (command.tag(), command) {
+        ("back", _) => FromPlace::Trail { back: true },
+        ("forward", _) => FromPlace::Trail { back: false },
+        ("contents_fold", _) => FromPlace::Place,
+        _ => FromPlace::No,
+    };
+    for command in every_command() {
+        assert_eq!(command.starts_from(), listed(&command), "{}", command.tag());
+    }
+    for (ask, from) in [
+        (FindAsk::Query("x".into()), FromPlace::No),
+        (FindAsk::Open, FromPlace::No),
+        (FindAsk::Close, FromPlace::No),
+        (FindAsk::Look, FromPlace::No),
+        (FindAsk::Step { forward: true, jump: false }, FromPlace::Place),
+        (FindAsk::Step { forward: false, jump: true }, FromPlace::Place),
+        (FindAsk::Hit(0), FromPlace::Place),
+    ] {
+        assert_eq!(Command::from(Find::from(ask.clone())).starts_from(), from, "find {ask:?}");
+    }
 }
 
 /// **The twins' answers don't turn on the machine's speed:** every renderer in this test's process gets a page deadline it always meets, so the
@@ -850,7 +907,7 @@ const REPLACES_ON_PURPOSE: &[(&str, &str, &str)] = &[
 
 /// A source's lines outside test items: an item under `#[cfg(test)]` is left out to its end, braces counted as written (as `tests/codes.rs` reads them).
 /// An item with no body (a `mod x;`, a field, a variant) ends at its `;` or `,`.
-fn production_lines(source: &str) -> Vec<(usize, &str)> {
+pub(crate) fn production_lines(source: &str) -> Vec<(usize, &str)> {
     let mut lines = Vec::new();
     let mut skipping: Option<(bool, i64)> = None;
     for (at, line) in source.lines().enumerate() {

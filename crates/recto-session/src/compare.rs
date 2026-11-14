@@ -372,6 +372,14 @@ pub fn withheld_in_memory<L: DocLoader>(session: &Session<L>) -> bool {
         .any(|tab| tab.file.placed_by_withheld || tab.reading.trail.as_deref().is_some_and(trail::Trail::holds_withheld))
 }
 
+/// **A tab's place stays withheld from agents after a move made from it:** the person's step of Find from a withheld place lands on the next hit, which
+/// says where it started from, as Back onto a stop made from one does ([`Session::step_as`]).
+pub fn withhold_place<L: DocLoader>(session: &mut Session<L>, id: TabId) {
+    if let Some(tab) = session.tabs.tab_mut(id) {
+        set_placed_by_withheld(tab, &mut session.mail, true);
+    }
+}
+
 /// Sets whether a tab's place was set while it followed a withheld tab. When that changes, the pages noted as drawn in it go: drawn where it was before,
 /// they'd say where it went (`wait page-drawn`).
 pub(crate) fn set_placed_by_withheld(tab: &mut crate::TabRecord, mail: &mut crate::mail::PageViewMail, withheld: bool) {

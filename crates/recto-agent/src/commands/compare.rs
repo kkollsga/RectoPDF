@@ -204,6 +204,9 @@ impl Cmd for Compare {
     const ABOUT: super::About = super::About::Nothing;
     // A pane's cold file is read in place here, or, on the window's session thread, off it and the command run again once it's in (`later`).
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }
@@ -274,9 +277,14 @@ impl Cmd for Compare {
 /// **Run again from the start once a pane's file is in** (`later`), on the window's session thread: so nothing changes before every read it needs is done,
 /// and each form is one change however many times it runs before then.
 fn compare<A: SessionAccess>(access: &A, actor: Actor, asked: &Compare, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-    if !actor.sees_protected() && access.with(|s| would_sync_a_withheld_pane(s, asked)) {
-        return Err(protected_refusal());
-    }
+    // An agent's synced comparison with a protected pane is refused in the same hold of the session as the change, after any pane's file is read, so a
+    // person's ⌘-click can't come between the two (S2's round).
+    let refuse = |s: &Session<A::Loader>| {
+        if !actor.sees_protected() && would_sync_a_withheld_pane(s, asked) {
+            return Err(protected_refusal());
+        }
+        Ok(())
+    };
     let mut changed = false;
     match asked {
         Compare::Look => {}
@@ -294,17 +302,29 @@ fn compare<A: SessionAccess>(access: &A, actor: Actor, asked: &Compare, events: 
             for (id, path) in access.with(|s| s.wake_for_compare(&ids)) {
                 read_ahead(access, |_| Some((id, path)))?;
             }
-            changed |= access.with(|s| s.compare(&ids, Some(reading))).map_err(refused)?;
-            if let Some(sync) = sync {
-                changed |= set_synced(access, *sync)?;
-            }
+            changed |= access.with(|s| {
+                refuse(s)?;
+                let mut changed = s.compare(&ids, Some(reading)).map_err(refused)?;
+                if let Some(sync) = sync {
+                    changed |= set_synced(s, *sync)?;
+                }
+                Ok::<_, AgentError>(changed)
+            })?;
         }
-        Compare::Sync(sync) => changed |= set_synced(access, *sync)?,
+        Compare::Sync(sync) => {
+            changed |= access.with(|s| {
+                refuse(s)?;
+                set_synced(s, *sync)
+            })?;
+        }
         Compare::Toggle(selector) => {
             let id = access.with(|s| select(s, selector))?;
             // The tab joining, or the pane read next if the one being read leaves.
             read_ahead(access, |s| s.wake_for_compare_click(id))?;
-            let change = access.with(|s| s.toggle_compare(id)).map_err(refused)?;
+            let change = access.with(|s| {
+                refuse(s)?;
+                s.toggle_compare(id).map_err(refused)
+            })?;
             changed |= change != recto_session::compare::CompareChange::Nothing;
         }
         Compare::Reading(selector) => {
@@ -324,7 +344,7 @@ fn compare<A: SessionAccess>(access: &A, actor: Actor, asked: &Compare, events: 
     }
     // The window's own, for the person, draws what the session publishes: SessionAccess::answer_read.
     Ok(if access.answer_read() {
-        access.with(|s| compare_json(s))
+        access.with(|s| compare_json(s, actor))
     } else {
         Value::Null
     })
@@ -354,8 +374,8 @@ fn would_sync_a_withheld_pane<L: DocLoader>(s: &Session<L>, asked: &Compare) -> 
 }
 
 /// Synced scroll or separate, for the comparison there is. Says whether that's a change.
-fn set_synced<A: SessionAccess>(access: &A, sync: OnOff) -> Result<bool, AgentError> {
-    access.with(|s| s.set_compare_synced(sync.is_on())).ok_or_else(|| {
+fn set_synced<L: DocLoader>(s: &mut Session<L>, sync: OnOff) -> Result<bool, AgentError> {
+    s.set_compare_synced(sync.is_on()).ok_or_else(|| {
         AgentError::new(Code::NOT_COMPARING, "There's no comparison to sync.", exit::NOT_FOUND)
             .then("`recto compare --tabs \"#1,#2\"` puts two side by side first.")
     })

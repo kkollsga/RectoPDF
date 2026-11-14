@@ -69,6 +69,12 @@ pub trait Cmd {
     /// the network or the clock, or on the window's session thread itself. The window runs such a command on a thread of its own, never on its session thread,
     /// which the person's every tap goes through (R2.3). One that forgot could stop the window answering.
     const WAITS: bool;
+    /// **Whether it starts from where the tab it acts on is** (security review of S2's round): a step of Find from the place, Back and Forward, a section
+    /// folded against what following the place opens. A tab's place can be withheld from agents while its document isn't (it follows, or was left by
+    /// following, a protected one in a synced comparison: [`recto_session::compare::place_withheld`]), and what such a command does says that place, so
+    /// [`crate::execute`] refuses an agent's while it is (`place_withheld`). A method, as Find's depends on what's asked; no default, so a new command
+    /// says it. One that set an absolute place (`goto`) is [`FromPlace::No`]: it lets the withheld place go.
+    fn starts_from(&self) -> FromPlace;
     /// The selector of the tab it acts on, which `execute` holds awake for as long as it runs. One that forgot could see its tab go dormant mid-command.
     fn tab(&self) -> Option<&TabRef>;
     /// Who may run it. Most say their row's level, [`row_access`]; some depend on what's asked.
@@ -92,6 +98,17 @@ pub enum About {
     Reading,
     /// No document's: what it answers about tabs (a list, the sidebar, a comparison) leaves a protected one's out itself.
     Nothing,
+}
+
+/// What a command starts from: see [`Cmd::starts_from`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FromPlace {
+    /// Nothing of where the tab is: an absolute place, a page it names, or none.
+    No,
+    /// Where the tab is.
+    Place,
+    /// Where the tab is, to the stop on its trail Back (`back`) or Forward goes to, which may have been made from a withheld place.
+    Trail { back: bool },
 }
 
 /// The tab a command's [`Cmd::ABOUT`] comes to: the one `execute` asks about before anything of it is read.
@@ -254,6 +271,12 @@ macro_rules! family {
             pub fn tab(&self) -> Option<&TabRef> {
                 match self {
                     $(Self::$variant(command) => $crate::commands::Cmd::tab(command),)*
+                }
+            }
+
+            pub fn starts_from(&self) -> $crate::commands::FromPlace {
+                match self {
+                    $(Self::$variant(command) => $crate::commands::Cmd::starts_from(command),)*
                 }
             }
 

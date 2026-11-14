@@ -249,8 +249,7 @@ impl Tabs {
 
     /// Where to bring a tab back to: only if it's still about the page the tab is on, as a `goto` while it was cold leaves it not.
     pub fn place_to_show(&self, id: TabId) -> Option<PlaceRecord> {
-        let tab = self.tab(id)?;
-        tab.reading.place.filter(|place| place.page == tab.page)
+        place_shown(self.tab(id)?)
     }
 
     /// What's selected in a tab. Carried across a restart, and nothing else here reads it. The crate's: from outside, a selection is noted only by
@@ -349,4 +348,9 @@ impl crate::parts::PartMut<'_, Tabs> {
 /// again by its number.
 pub fn withheld_tab(tab: &TabRecord) -> bool {
     tab.file.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.file.notice(), Some(FileNotice::NeedsPassword))
+}
+
+/// [`Tabs::place_to_show`], for a tab in hand: the exact place the page view last said, while it's on the page the tab is.
+pub fn place_shown(tab: &TabRecord) -> Option<PlaceRecord> {
+    tab.reading.place.filter(|place| place.page == tab.page)
 }
