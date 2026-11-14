@@ -192,7 +192,7 @@ fn sent_on_page_5() -> (Session<Labelled>, TabId) {
     let id = s.open(Path::new("/d/book.pdf")).unwrap();
     s.jump(id, 4, 0.8).unwrap();
     let jump = s.mail().waiting_jump(id).expect("a jump waiting");
-    s.mail_mut().jump_sent(id, jump, 10);
+    s.mail_mut().jump_sent(id, jump, 10, 0);
     assert_eq!(s.mail().waiting_jump(id), None, "sent, it no longer waits");
     (s, id)
 }
@@ -226,7 +226,7 @@ fn a_read_after_the_send_taken_in_before_the_look_says_so_tells_of_it() {
     s.jump(id, 4, 0.8).unwrap();
     let jump = s.mail().waiting_jump(id).unwrap();
     assert!(s.view_told_of(id, on_page_5(0.7), 20));
-    s.mail_mut().jump_sent(id, jump, 15);
+    s.mail_mut().jump_sent(id, jump, 15, 0);
     assert_eq!(s.here(id), Some(trail::Stop::new(4, 0.7)), "the read at 20 came after the send at 15");
 }
 
@@ -239,7 +239,7 @@ fn a_newer_jump_waiting_stays_waiting_when_the_look_says_it_sent_the_old_one() {
     s.jump(id, 4, 0.8).unwrap();
     let peeked = s.mail().waiting_jump(id).unwrap();
     s.jump(id, 4, 0.2).unwrap();
-    s.mail_mut().jump_sent(id, peeked, 10);
+    s.mail_mut().jump_sent(id, peeked, 10, 0);
     assert_eq!(
         s.mail().waiting_jump(id),
         Some(trail::Stop::new(4, 0.2)),

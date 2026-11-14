@@ -732,7 +732,7 @@ impl Reader {
         if let Some(magnification) = self.docs.shown().map(|doc| doc.place.magnification) {
             self.viewport.magnification = magnification;
             self.host.ops.push_back(Op::Magnify { value: magnification });
-            self.place.jump = Some(u64::MAX);
+            self.place.wait_for_the_new_window();
         }
         self.lay_out();
         if let Some(across) = self.docs.shown().map(|doc| doc.place.scroll_x) {

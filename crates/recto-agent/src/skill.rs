@@ -425,7 +425,7 @@ mod tests {
         let at = |tag: &str| TABLE.iter().find(|spec| spec.tag == tag).and_then(needs);
         for level in [Level::Off, Level::ReadOnly, Level::Control, Level::Full] {
             let words = level.allows().to_lowercase();
-            let saves = at("save").is_some_and(|needed| needed <= level);
+            let saves = at("save").is_some_and(|needed| crate::actor::allowed(level, crate::table::Access::At(needed)));
             assert!(!saves || !words.contains("nothing reaches a file"), "{level:?}: {words}");
             if at("save") == Some(level) {
                 assert!(words.contains("save"), "{level:?} saves: {words}");

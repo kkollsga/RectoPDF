@@ -180,7 +180,7 @@ impl Host for Hooks {
             .serving
             .paths
             .as_ref()
-            .is_some_and(|paths| recto_control::levels::current(paths) == recto_agent::Level::Full)
+            .is_some_and(|paths| recto_control::levels::current(paths).takes_a_build())
     }
 
     fn can_draw(&self) -> bool {

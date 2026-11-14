@@ -144,6 +144,7 @@ fn page_changed_is_the_real_page_and_nothing_for_a_protected_document() {
             label: None,
             within: None,
             entry: None,
+            link: false,
         }),
     );
     assert_eq!(events, [Event::PageChanged { tab: a, page: 10 }]);

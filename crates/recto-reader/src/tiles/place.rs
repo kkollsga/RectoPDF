@@ -2,6 +2,7 @@
 
 use super::{DocView, HOST_ROUNDING, MAX_ATTACH_PER_TURN, Op, Reader, SavedPlace, Viewport};
 use crate::layout::{PageLayout, Spread};
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// **The place clock:** one count for the whole process, moved on, under the page view's lock, by everything that moves where a page view says a tab is:
@@ -71,21 +72,31 @@ pub fn place_stamp() -> u64 {
     PLACE_CLOCK.load(Ordering::SeqCst)
 }
 
-/// What a job planned now carries as its `asked` ([`super::Job::asked`]): the place clock, or, while a jump sent to the host hasn't arrived, a stamp
-/// before every send, 0. **Until the host arrives where a jump sent it, the view is still where it was,** and what's planned is planned from there; the
-/// jump's send moved the clock on, so stamped with the clock such a draw would count as asked after the send, and a jump that let a place withheld from
-/// agents go would be followed by news of the pages around where it was (the third review: refreshes in that gap were told as `page_drawn` around the
-/// old place). Stamped 0, the session's mail drops it for a tab whose place was let go ([`recto_session`]'s `draw_is_told`), and tells it for every
-/// other tab as before, whose cutoff is 0. One branch a plan.
+/// What a job planned now carries as its `asked` ([`super::Job::asked`]): the place clock, or, while a jump sent to the host hasn't arrived, the clock
+/// just before the first send since the view last arrived. **Until the host arrives where a jump sent it, the view is still where it was,** and what's
+/// planned is planned from there; the jump's send moved the clock on, so stamped with the clock such a draw would count as asked after the send, and a
+/// jump that let a place withheld from agents go would be followed by news of the pages around where it was (the third review: refreshes in that gap
+/// were told as `page_drawn` around the old place). Stamped as asked before the send, the session's mail drops it for a tab whose place that send let go
+/// ([`recto_session`]'s `draw_is_told`), and tells a later jump's, whose first send is past the release (the fourth review's item 3: stamped 0, every
+/// later jump's draws in a tab once let go were dropped too, and `wait page-drawn` there could miss for good). One branch a plan.
 pub(super) fn asked_now(place: &Place) -> u64 {
-    if place.jump.is_some() { 0 } else { place_stamp() }
+    if place.jump.is_some() {
+        place.jump_sent_at.saturating_sub(1)
+    } else {
+        place_stamp()
+    }
 }
 
 /// Built only in the tiles module ([`Place::new`]), as each of [`Reader`]'s parts is (see there): the engine reaches it through `Reader`'s field for the three takes below.
 #[derive(Debug)]
 pub(crate) struct Place {
     pub(super) next_seq: u64,
-    pub(super) jump: Option<u64>,
+    /// The scroll sent the host that it hasn't said it arrived at yet. Its sequence numbers start at 1, so `None` costs no word of its own.
+    pub(super) jump: Option<NonZeroU64>,
+    /// **The place clock at the first send since the view last arrived** ([`Place::start_jump`]): while a jump is on its way the view is still where it was
+    /// then, whatever's sent after (another jump, a change of layout sending the place again), so what's planned meanwhile is asked before it
+    /// ([`asked_now`]).
+    pub(super) jump_sent_at: u64,
     pub(super) scrolled_to: u64,
     pub(super) last_view_page: Option<u32>,
     pub(super) moved_page: Option<u32>,
@@ -104,6 +115,7 @@ impl Place {
         Self {
             next_seq: 1,
             jump: None,
+            jump_sent_at: 0,
             scrolled_to: 0,
             last_view_page: None,
             moved_page: None,
@@ -114,10 +126,34 @@ impl Place {
 
     /// A scroll to send the host: its sequence number, which the host says back once it's arrived, with the place clock moved on.
     pub(super) fn send(&mut self) -> u64 {
+        self.send_at().0
+    }
+
+    /// [`Self::send`], saying also where the place clock came to.
+    fn send_at(&mut self) -> (u64, u64) {
         let seq = self.next_seq;
         self.next_seq += 1;
-        tick();
+        (seq, tick())
+    }
+
+    /// **A jump sent to the host,** to wait for its arrival: its sequence number. The clock at its send is kept as when the view was last where it is,
+    /// unless a jump is already on its way, which the view hasn't arrived at either ([`Self::jump_sent_at`]).
+    pub(super) fn start_jump(&mut self) -> u64 {
+        let (seq, at) = self.send_at();
+        if self.jump.is_none() {
+            self.jump_sent_at = at;
+        }
+        self.jump = NonZeroU64::new(seq);
         seq
+    }
+
+    /// The host's view is new, at the top and no zoom, and is sent back to the place: until it's arrived, what it says isn't the reader moving, and what's
+    /// planned is planned before the scroll that sends it back.
+    pub(super) fn wait_for_the_new_window(&mut self) {
+        if self.jump.is_none() {
+            self.jump_sent_at = place_stamp().saturating_add(1);
+        }
+        self.jump = Some(NonZeroU64::MAX);
     }
 
     /// What the new viewport says of the reader: whether it was their own scroll, and whether the host arrived where it was sent.
@@ -149,7 +185,7 @@ impl Place {
         };
         if let Some(jump) = self.jump {
             // Still on its way: where the view is now isn't where it's going, and taken for the place, it would be where it ends up on the next layout. On arrival the place is left as it was sent, to the pixel.
-            if self.scrolled_to >= jump {
+            if self.scrolled_to >= jump.get() {
                 self.jump = None;
                 // Where it arrived can be another page than was asked, as when a pane's narrower than the view the place was taken in, or a place deep in a page puts the next one where the reader's eye is. The session's page goes with it, or the two disagree, and the place isn't brought back after a restart.
                 if self.last_view_page != Some(page) {
@@ -242,8 +278,7 @@ impl Reader {
         doc.place.anchor = (page, within);
         let y = doc.layout.anchor_y((page, within));
         doc.place.exact_y = Some((y, doc.layout.document_height()));
-        let seq = self.place.send();
-        self.place.jump = Some(seq);
+        let seq = self.place.start_jump();
         let moved = self.place.last_view_page != Some(page);
         self.place.last_view_page = Some(page);
         if moved {
@@ -346,8 +381,7 @@ impl Reader {
         let y = doc.layout.jump_y(page);
         // To the pixel while the layout holds: the first page's jump goes above it, to the margin, which its anchor can't say.
         doc.place.exact_y = Some((y, doc.layout.document_height()));
-        let seq = self.place.send();
-        self.place.jump = Some(seq);
+        let seq = self.place.start_jump();
         self.place.last_view_page = Some(page);
         // The session sent this, so it has this page: a page a move before it went to (a follow, say) is about a place it's left, and taken from the view
         // after, it would send the session where the view isn't.
@@ -363,8 +397,7 @@ impl Reader {
             return;
         };
         let y = doc.place_y();
-        let seq = self.place.send();
-        self.place.jump = Some(seq);
+        let seq = self.place.start_jump();
         self.place.last_view_page = Some(page.min(doc.layout.count().saturating_sub(1)));
         self.host.ops.push_back(Op::ScrollTo { y, seq });
     }
@@ -386,8 +419,9 @@ impl Reader {
             bottom_room,
         });
         let seq = self.place.send();
+        // Sent again where it was going: still the same wait, from the same first send.
         if self.place.jump.is_some() {
-            self.place.jump = Some(seq);
+            self.place.jump = NonZeroU64::new(seq);
         }
         self.host.ops.push_back(Op::ScrollTo { y, seq });
     }

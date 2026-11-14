@@ -31,6 +31,7 @@ pub(crate) fn every_command() -> Vec<Command> {
             label: None,
             within: None,
             entry: None,
+            link: false,
         }),
         Command::from(crate::commands::linking::Goto {
             tab: tab(),
@@ -38,6 +39,7 @@ pub(crate) fn every_command() -> Vec<Command> {
             label: None,
             within: Some(0.25),
             entry: Some(0),
+            link: false,
         }),
         Command::from(crate::commands::linking::Links { tab: tab(), page: 1 }),
         Command::from(crate::commands::linking::Follow { tab: tab(), page: 1, link: 1 }),
@@ -568,6 +570,7 @@ fn no_command_tells_an_agent_where_a_tab_that_followed_a_protected_one_is() {
             label: None,
             within: None,
             entry: None,
+            link: false,
         }),
         Command::from(commands::editing::PageDelete {
             tab: "#1".into(),
@@ -688,6 +691,7 @@ fn the_walks_commands() -> Vec<Command> {
             label: None,
             within: None,
             entry: None,
+            link: false,
         }),
         Command::from(commands::highlight::Highlights { tab: tab(), page: None }),
         Command::from(pick(false)),
@@ -743,11 +747,43 @@ fn no_agent_command_lets_a_withheld_place_go() {
     assert!(differs.is_empty(), "told where the plain tab is:\n{}", differs.join("\n"));
 }
 
+/// Failure (the fourth security review, item 2; the coordinator's decision of 2026-11-14): the person's click on a link lets a withheld place go, so an
+/// agent, which can list the document's links and the page each is on, learns from the place given after it which page following had left the tab on.
+/// Each of the person's jumps as the window sends it, on a plain tab left by following: a page by its number (`goto`), by what's typed in the go-to field
+/// (`goto label`) and a contents row naming no entry (`goto --within`) let it go; a link (`goto --link`), and `follow` as the person, keep it withheld.
+#[test]
+fn the_persons_link_keeps_a_withheld_place_withheld() {
+    let plain = recto_session::TabId(2);
+    let goto = |page: Option<u32>, label: Option<&str>, within: Option<f64>, link: bool| {
+        Command::from(commands::linking::Goto {
+            tab: crate::TabRef::Id(plain),
+            page,
+            label: label.map(str::to_string),
+            within,
+            entry: None,
+            link,
+        })
+    };
+    for (route, command, lets_go) in [
+        ("a page by its number", goto(Some(4), None, None, false), true),
+        ("the go-to field", goto(None, Some("4"), None, false), true),
+        ("a contents row", goto(Some(4), None, Some(0.3), false), true),
+        ("a link", goto(Some(4), None, Some(0.3), true), false),
+        ("a link to the top of a page", goto(Some(4), None, None, true), false),
+    ] {
+        let (access, _locked, _plain) = following_session(1, Followed::Left);
+        execute(&access, Actor::Person, &command, &mut Vec::new()).unwrap_or_else(|error| panic!("{route}: {error:?}"));
+        let session = access.lock().unwrap();
+        assert_eq!(!recto_session::compare::place_withheld(&session, plain), lets_go, "{route}: lets the place go");
+        assert_eq!(session.tabs().tab(plain).unwrap().page, 3, "{route}: the person went where they asked");
+    }
+}
+
 /// Failure (security review of S2's round): a command that starts from where a tab is says it doesn't ([`commands::Cmd::starts_from`]), so an agent's
 /// runs while that place follows a protected document's and tells it; or one that doesn't is refused for it. Each of [`every_command`], and each way of
 /// asking Find, against the reviewed list: Back and Forward start from the place to a stop on the trail; Find's steps, and folding a contents section
-/// (against what following the place opens), from the place; every other command names its pages, or none, and a Find hit chosen by its index is an
-/// absolute move, as `goto` is (the second review, D-1), which the person's lets a withheld place go by and an agent's doesn't (D-A).
+/// (against what following the place opens), from the place; every other command names its pages, or none, and a Find hit chosen by its index names
+/// its hit, and moves the tab as a jump from the place, which keeps a withheld place withheld, the person's too (the fourth review's item 1).
 #[test]
 fn what_starts_from_the_place_is_as_listed() {
     use commands::FromPlace;

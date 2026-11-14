@@ -165,7 +165,11 @@ fn show_in_panes(inner: &Inner, synced: &mut Synced, panes: &[PaneSnapshot], pap
         let Some(engine) = inner.panes.engine(&inner.engine, pane) else { continue };
         changed |= synced.panes[pane].tab != Some(snapshot.id);
         super::highlight::before_showing(&engine, &mut synced.panes[pane].marks, snapshot.marks.as_ref());
-        sent.extend(show_in_pane(inner, &engine, &mut synced.panes[pane], snapshot));
+        // Each jump with the page view it was sent to, by its number (`Panes::set_count`).
+        let view = u8::try_from(pane).unwrap_or(u8::MAX);
+        sent.extend(show_in_pane(inner, &engine, &mut synced.panes[pane], snapshot).map(|(id, stop, stamp)| (id, stop, stamp, view)));
+        #[cfg(any(test, feature = "testkit"))]
+        inner.serving.place_seams.pane_shown(pane);
         super::highlight::give(&engine, &mut synced.panes[pane].marks, snapshot.id, snapshot.marks.as_ref(), paper);
     }
     places::jumps_sent(inner, &sent);

@@ -43,6 +43,12 @@ pub trait EngineEvents: Send + Sync {
     /// A page was drawn, or couldn't be.
     /// A page of `tab` drawn, or not, by a job planned when the place clock was at `asked` ([`crate::tiles::Job::asked`]).
     fn page_drawn(&self, tab: u32, page: u32, failure: Option<&'static str>, asked: u64);
+    /// [`Self::page_drawn`], by the page view the app numbers `view` (a comparison's pane): what an app that gives each page view events of its own
+    /// passes on, so a draw by one view can be told from another's that held the same tab for a moment. The page view itself doesn't know its number.
+    fn page_drawn_by(&self, view: u8, tab: u32, page: u32, failure: Option<&'static str>, asked: u64) {
+        let _ = view;
+        self.page_drawn(tab, page, failure, asked);
+    }
     /// A copy is ready for the host to take.
     fn copy_ready(&self) {}
     /// A file's been seen to be another than the one opened, so the session should look at it.

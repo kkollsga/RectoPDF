@@ -61,9 +61,7 @@ impl AppHost {
         let asks_only = command.only_asks();
         // While keeping the record is settling, an agent's command that isn't a look is refused before it's counted, so none is ever under way then
         // (`keeping::answers_agents`).
-        if matches!(actor, Actor::Agent(_))
-            && !super::keeping::answers_agents(command)
-            && self.saver.inner().is_some_and(|inner| inner.life.keeping().refuses_agents_changes())
+        if actor.is_agent() && !super::keeping::answers_agents(command) && self.saver.inner().is_some_and(|inner| inner.life.keeping().refuses_agents_changes())
         {
             return Err(
                 AgentError::new(Code::BUSY, "RectoPDF is still starting, so this wasn't done.", recto_agent::exit::BUSY).then("Try again in a moment."),
@@ -397,8 +395,13 @@ impl EngineEvents for EngineHooks {
         self.core.push(CoreCall::Reconcile);
     }
 
+    /// Pane 0's page view's draws, numbered 0; the other panes' come by [`Self::page_drawn_by`] with theirs (`panes::PaneEvents`).
     fn page_drawn(&self, tab: u32, page: u32, failure: Option<&'static str>, asked: u64) {
-        self.core.push(CoreCall::Page(page, failure, TabId(tab), asked));
+        self.page_drawn_by(0, tab, page, failure, asked);
+    }
+
+    fn page_drawn_by(&self, view: u8, tab: u32, page: u32, failure: Option<&'static str>, asked: u64) {
+        self.core.push(CoreCall::Page(page, failure, TabId(tab), asked, view));
     }
 
     fn file_length(&self, tab: u32, pages: u32, version: u64) {

@@ -91,7 +91,7 @@ pub mod exit {
 }
 
 /// What an agent is allowed to do, set by the user. Ordered from least to most.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Level {
     Off,
@@ -768,14 +768,24 @@ fn read_soon<A: SessionAccess>(access: &A, plan: impl FnOnce(&mut Session<A::Loa
 }
 
 /// Goes to a one-based page. A page that isn't there is refused here rather than clamped, so an agent can't believe it's somewhere it isn't.
-/// `recto goto`: a jump, so Back comes here again, as following a link does.
-fn go_to<L: DocLoader>(session: &mut Session<L>, id: TabId, page: u32, within: f64, by: Author) -> Result<(), AgentError> {
+/// `recto goto`: a jump, so Back comes here again, as following a link does; `chosen` says whether it's a link's ([`recto_session::trail::Chosen`]).
+fn go_to<L: DocLoader>(
+    session: &mut Session<L>,
+    id: TabId,
+    page: u32,
+    within: f64,
+    by: Author,
+    chosen: recto_session::trail::Chosen,
+) -> Result<(), AgentError> {
     let position = page
         .checked_sub(1)
         .filter(|position| *position < session.pages().count(id))
         .ok_or_else(no_such_page)?;
     // An agent's mark gives way to the person's in the trail. How far down is clamped to the page there, as a link's is.
-    session.jump_as(id, position, within, by)?;
+    match chosen {
+        recto_session::trail::Chosen::ByItself => session.jump_as(id, position, within, by)?,
+        recto_session::trail::Chosen::FromPlace => recto_session::trail::jump_from_place(session, id, position, within, by)?,
+    }
     Ok(())
 }
 
@@ -3075,6 +3085,7 @@ mod tests {
                 label: None,
                 within: Some(0.25),
                 entry: Some(entry),
+                link: false,
             })
         };
         let page = |s: &Session<Fake>| s.tabs().tab(TabId(1)).unwrap().page;
@@ -3095,6 +3106,7 @@ mod tests {
             label: Some("1".into()),
             within: None,
             entry: Some(0),
+            link: false,
         });
         assert_eq!(run(&mut s, Level::Control, &with_label).unwrap_err().code, "usage");
     }
@@ -3173,6 +3185,7 @@ mod tests {
                 label: None,
                 within: None,
                 entry: None,
+                link: false,
             }),
         )
         .unwrap_err();
@@ -3187,6 +3200,7 @@ mod tests {
                     label: None,
                     within: None,
                     entry: None,
+                    link: false,
                 })
             )
             .unwrap_err()
@@ -3203,6 +3217,7 @@ mod tests {
                     label: None,
                     within: None,
                     entry: None,
+                    link: false,
                 })
             )
             .unwrap()["page"],
@@ -3487,6 +3502,7 @@ mod protected_tests {
                     label: None,
                     within: None,
                     entry: None,
+                    link: false,
                 }),
                 Command::from(crate::commands::linking::Goto {
                     tab: tab.clone(),
@@ -3494,6 +3510,7 @@ mod protected_tests {
                     label: Some("ii".into()),
                     within: None,
                     entry: None,
+                    link: false,
                 }),
                 Command::from(crate::commands::linking::Links { tab: tab.clone(), page: 1 }),
                 Command::from(crate::commands::linking::Follow {
@@ -3548,7 +3565,7 @@ mod protected_tests {
                     }
                 }
             }
-            if level >= Level::ReadOnly {
+            if actor::allowed(level, table::Access::At(Level::ReadOnly)) {
                 for command in [
                     Command::from(crate::commands::reading::Facts { tab: tab.clone() }),
                     Command::from(crate::commands::reading::Contents {

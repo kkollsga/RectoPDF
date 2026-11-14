@@ -355,12 +355,17 @@ fn record_seeds() -> Vec<Vec<u8>> {
             1,
         )
         .into_bytes();
+    // A list of them that can't be read, which withholds every tab's place (the fourth review's item 4).
+    let withheld_unreadable = String::from_utf8_lossy(&body)
+        .replacen("\"next_id\"", "\"withheld_places\":[1,{\"a\":[2]},-3],\"next_id\"", 1)
+        .into_bytes();
     vec![
         record,
         journal,
         body,
         compared,
         withheld,
+        withheld_unreadable,
         lines,
         br#"{"seq":1,"active":1,"places":[[1,3,{"page":3,"anchor_page":3,"within":0.5,"x":0,"y":10,"document_height":900,"zoom":1.5}]]}"#.to_vec(),
     ]

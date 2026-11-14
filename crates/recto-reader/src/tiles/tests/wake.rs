@@ -51,7 +51,7 @@ fn the_tabs_sleep_view_is_its_first_frame() {
     assert!(doc.layout.is_known(3), "the page table's taken up");
     assert_eq!(doc.layout.size(3), PageBox { width: 300.0, height: 400.0 });
     assert_eq!(reader.cache.entries.len(), 1, "the one for a page that's there");
-    let scrolled = reader.place.jump.unwrap_or(0);
+    let scrolled = reader.place.jump.map_or(0, std::num::NonZeroU64::get);
     let ops = reader.set_viewport(Viewport {
         scrolled_to: scrolled,
         ..view(0.0)
@@ -74,7 +74,7 @@ fn the_tabs_sleep_view_is_its_first_frame() {
     bare.note_wake(1, Instant::now());
     bare.activate(1, 5, 0, map(), &[], Some(saved), Spread::Single);
     bare.host.take_ops();
-    let scrolled = bare.place.jump.unwrap_or(0);
+    let scrolled = bare.place.jump.map_or(0, std::num::NonZeroU64::get);
     bare.set_viewport(Viewport {
         scrolled_to: scrolled,
         ..view(0.0)
@@ -303,7 +303,7 @@ fn a_window_can_go_up_with_a_picture_on_every_page() {
     assert!(!reader.is_showable(), "still being sent to its place, with nothing on it");
     // And it says why, for the record of the window's first showing: a slow page and a missed wake read differently there.
     assert_eq!(reader.not_showable(), Some(crate::tiles::NotShowable::Jump));
-    let scrolled = reader.place.jump.unwrap_or(0);
+    let scrolled = reader.place.jump.map_or(0, std::num::NonZeroU64::get);
     reader.set_viewport(Viewport {
         scrolled_to: scrolled,
         ..view(0.0)
@@ -330,7 +330,7 @@ fn a_window_can_go_up_with_a_picture_on_every_page() {
     );
     reader.activate(2, 1, 0, map(), &[], Some(saved), Spread::Single);
     reader.host.take_ops();
-    let scrolled = reader.place.jump.unwrap_or(0);
+    let scrolled = reader.place.jump.map_or(0, std::num::NonZeroU64::get);
     reader.set_viewport(Viewport {
         scrolled_to: scrolled,
         ..view(0.0)
@@ -380,7 +380,7 @@ fn woken_with(pages: &[u32], unattached: bool) -> (Reader, WakeReport) {
     }
     reader.activate(1, 5, 0, map(), &[], Some(saved), Spread::Single);
     reader.host.take_ops();
-    let scrolled = reader.place.jump.unwrap_or(0);
+    let scrolled = reader.place.jump.map_or(0, std::num::NonZeroU64::get);
     reader.set_viewport(Viewport {
         scrolled_to: scrolled,
         ..view(0.0)

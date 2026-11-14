@@ -11,11 +11,13 @@ use crate::{Author, MAX_TABS};
 use recto_platform::FileStamp;
 mod capped;
 mod validate;
+mod withheld;
 pub(crate) use capped::capped;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 pub use validate::{added_fits, validate_edits};
+pub use withheld::WithheldPlaces;
 
 /// What this build writes, and the newest it reads.
 pub const CURRENT_VERSION: u32 = 1;
@@ -797,11 +799,12 @@ pub struct SessionRecord {
     /// **The tabs whose place is withheld from agents on their own account,** by id as `active` and the comparison name them: each was left by following a
     /// protected document in a synced comparison and the person hasn't moved it by a jump since (`compare::place_withheld`). Kept so a restart doesn't give
     /// an agent where following left it (the second review, S-4). Read up to [`crate::MAX_TABS`]; an id that names no tab is nothing, and one named twice
-    /// is one. Part of the bare record ([`without_what_deltas_carry`]), so a change to it is written whole, never as a line of places alone. Left out when
-    /// empty, so a record with nothing withheld is byte for byte as before, and an older app ignores it (no new version: a field with a default). Here and
-    /// not in each tab entry, which is at its fields' budget (the third review, D-C).
-    #[serde(default, deserialize_with = "capped::<_, _, { crate::MAX_TABS }>", skip_serializing_if = "Vec::is_empty")]
-    pub withheld_places: Vec<u32>,
+    /// is one. A list that can't be read (past the cap, or not a list of ids) withholds every tab's place, and the rest of the record is read as usual
+    /// ([`WithheldPlaces`], the fourth review's item 4). Part of the bare record ([`without_what_deltas_carry`]), so a change to it is written whole, never
+    /// as a line of places alone. Left out when empty, so a record with nothing withheld is byte for byte as before, and an older app ignores it (no new
+    /// version: a field with a default). Here and not in each tab entry, which is at its fields' budget (the third review, D-C).
+    #[serde(default, skip_serializing_if = "WithheldPlaces::is_empty")]
+    pub withheld_places: WithheldPlaces,
 }
 
 /// Most recent files read from a record: past the list's own cap, so a record from a build with a longer one still reads.
@@ -1524,7 +1527,7 @@ mod tests {
             tabs,
             comparison: None,
             recent: Vec::new(),
-            withheld_places: Vec::new(),
+            withheld_places: WithheldPlaces::default(),
         }
     }
 

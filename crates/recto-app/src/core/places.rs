@@ -97,10 +97,13 @@ impl Said {
         let in_panes = session.panes();
         let mut went = Vec::new();
         for (pane, said) in self.panes.into_iter().enumerate() {
+            // And only from the pane the session has the tab in: while a comparison's tabs shift, a look shows a tab in its new pane before the pane it's
+            // leaving is given another, and a read between has it in both, the one it's leaving where it was before a jump sent to the other (the
+            // fourth review's item 5).
             let own = said.hot.filter(|hot| {
                 let was = session.tabs().tab(*hot).map(|tab| tab.page);
                 let waits = waiting.iter().any(|(id, _)| id == hot);
-                was.is_some_and(|was| is_views_own(given.get(pane).copied().flatten(), *hot, was, waits))
+                in_panes.get(pane) == Some(hot) && was.is_some_and(|was| is_views_own(given.get(pane).copied().flatten(), *hot, was, waits))
             });
             // A reader's move is the session's only for the tab the session still has in that pane.
             if let (Some(id), Some(page)) = (own.filter(|id| in_panes.get(pane) == Some(id)), said.moved) {
@@ -153,15 +156,15 @@ impl Said {
     }
 }
 
-/// **The jumps the look's page views were really sent,** each with the place clock its send came to, said to the session under a lock of its own, as the
-/// sends are made with the session let go: each is where the reader is until a read at or past its send is taken in.
-pub fn jumps_sent(inner: &Inner, sent: &[(TabId, Stop, u64)]) {
+/// **The jumps the look's page views were really sent,** each with the place clock its send came to and the page view it went to, said to the session
+/// under a lock of its own, as the sends are made with the session let go: each is where the reader is until a read at or past its send is taken in.
+pub fn jumps_sent(inner: &Inner, sent: &[(TabId, Stop, u64, u8)]) {
     if sent.is_empty() {
         return;
     }
     inner.host.session.with_session(|session| {
-        for (id, to, stamp) in sent {
-            session.mail_mut().jump_sent(*id, *to, *stamp);
+        for (id, to, stamp, view) in sent {
+            session.mail_mut().jump_sent(*id, *to, *stamp, *view);
         }
     });
 }

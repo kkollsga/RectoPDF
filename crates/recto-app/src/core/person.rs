@@ -485,6 +485,7 @@ mod tests {
             label: Some("xii".into()),
             within: None,
             entry: None,
+            link: false,
         });
         let open = Command::from(Open {
             path: "/nowhere/a.pdf".into(),
