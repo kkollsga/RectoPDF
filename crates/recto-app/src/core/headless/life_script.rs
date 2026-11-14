@@ -148,15 +148,28 @@ fn script_lines() -> Vec<String> {
     script.launched("lock late, kept", &app, Some(app.disk()));
     next_try_fails(&app);
     script.step("lock late, kept", "a try that fails", &app, Some(app.disk()));
-    // A hand-off while it tries: stopped, and taken up again where it was as the hand-off is undone (it can't write a record it doesn't keep).
-    let handed = app.core().hand_off(std::time::Duration::from_secs(5));
+    // Half a try's wait on, a hand-off while it tries: the trying stopped, the hand-off refused (a copy that doesn't keep the record can't write it) and
+    // undone, and the trying taken up again where it was, with its next try a whole wait from then and not the half that was left: what the machine's
+    // Stopped and Resumed come to, as nothing can be looked at in between.
+    app.advance(TRY_EVERY_MS / 2);
+    let due = || {
+        app.core()
+            .life
+            .keeping_due()
+            .map_or_else(|| "none".to_owned(), |due| due.as_millis().to_string())
+    };
+    let due_before = due();
+    let handed = match app.core().hand_off(std::time::Duration::from_secs(5)) {
+        Ok(_) => "written".to_owned(),
+        Err(crate::hand_off::HandOffError::NotSaved { code, .. }) => format!("refused {code}"),
+        Err(crate::hand_off::HandOffError::Busy { items }) => format!("busy {}", items.len()),
+    };
     script.step(
         "lock late, kept",
-        if handed.is_ok() {
-            "a hand-off while it tries, written"
-        } else {
-            "a hand-off while it tries, refused and undone"
-        },
+        &format!(
+            "a hand-off half a try's wait in, {handed}, next try due in {due_before} ms before and {} ms after",
+            due()
+        ),
         &app,
         Some(app.disk()),
     );
