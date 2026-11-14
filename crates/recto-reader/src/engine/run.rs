@@ -27,6 +27,8 @@ const OPEN_PATIENCE: Duration = Duration::from_secs(3);
 const OPEN_LOOK: Duration = Duration::from_millis(20);
 /// A page from a PDF added to this one, which has changed since: its page numbers are about the version it was, so what's there now isn't drawn as it.
 const ADDED_FILE_CHANGED: &str = "This page comes from a PDF that has changed or moved since it was added, so it isn't drawn.";
+/// A page from a PDF added to this one that needs a password: see [`added_needs_password`].
+const ADDED_FILE_NEEDS_PASSWORD: &str = "This page comes from a PDF that needs a password, so it isn't shown here. Open that PDF to see it.";
 /// What a page says while its file doesn't answer.
 const NOT_ANSWERING: &str = "This file isn't answering. Its disk may have gone to sleep or been disconnected.";
 
@@ -144,7 +146,10 @@ fn run(shared: &Shared) {
         }
         let mut file_changed = false;
         // **An added PDF that's changed isn't drawn from** (the saved point's review): a stat, before each job, since drawing goes by path.
-        let expected = lock(&shared.reader).docs.expected_stamp(job.tab, &job.file);
+        let (expected, own) = {
+            let reader = lock(&shared.reader);
+            (reader.docs.expected_stamp(job.tab, &job.file), reader.docs.is_own_file(job.tab, &job.file))
+        };
         let added_changed =
             expected.is_some_and(|expected| !recto_platform::file_stamp(&job.file).is_ok_and(|now| now.same_contents(expected) && now.inode == expected.inode));
         let outcome = if added_changed {
@@ -157,6 +162,7 @@ fn run(shared: &Shared) {
             }
         } else {
             match renderer_for(shared, &mut renderers, &mut openings, &job.file, &service, &policy) {
+                Ok(open) if open.keyed && !own => added_needs_password(&job),
                 Ok(open) => {
                     lock(&shared.reader).work.set_cancel(open.doc.cancel_handle());
                     let outcome = DocRenderer::with_workers(open, |open| &mut open.doc, workers, |open| do_job(open, &job));
@@ -187,6 +193,10 @@ fn run(shared: &Shared) {
                     may_pass: true,
                 },
             }
+        };
+        let outcome = match outcome {
+            Outcome::DocumentFailed { needs_key: true, .. } if !own => added_needs_password(&job),
+            outcome => outcome,
         };
         publish_workers(shared, &mut renderers);
         let drawn = match (&job.kind, &outcome) {
@@ -269,9 +279,10 @@ fn big_workers_rest(renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, 
 fn read_links(shared: &Shared, renderers: &HashMap<PathBuf, OpenDoc>, job: Job) {
     // Read from the file's structure, here and with no worker. Only a file a worker already has open and answering, so a disk gone to sleep holds this thread no longer than a draw would: a page that isn't drawn yet has its links read when it is.
     // Through the renderer's own open file and its password, so the links are of the version being drawn, a protected file's too. A file seen replaced and not taken up yet offers none: they'd be the new version's over the old pages.
+    let own = lock(&shared.reader).docs.is_own_file(job.tab, &job.file);
     let links = renderers
         .get(&job.file)
-        .filter(|open| !open.replaced && !open.doc.file_seen_changed())
+        .filter(|open| !open.replaced && !open.doc.file_seen_changed() && (own || !open.keyed))
         .and_then(|open| {
             open.doc.read_structure(|file, password| {
                 recto_core::nav::page_links_in(file, password, &[job.source_page])
@@ -314,6 +325,8 @@ struct OpenDoc {
     looks: HashMap<u32, Arc<PageLook>>,
     /// The file's been seen to be another one in the middle of a job, and whoever's asked hasn't been told yet.
     replaced: bool,
+    /// Its worker was given a password the person typed: for the tab whose own file this is, and no other ([`added_needs_password`]).
+    keyed: bool,
 }
 
 /// **The renderer has seen its file replaced: what was decided about the old one's pages goes, now, before anything goes by it.** The renderer opens the new file at the start of whichever job comes next, a draw included, so the tile that job draws is of the new file, and the look it's put on dark paper by has to be too. Says whether it had.
@@ -479,6 +492,7 @@ fn renderer_for<'a>(
             .as_ref()
             .filter(|keys| !keys.is_empty())
             .and_then(|keys| keys.get(recto_platform::secret::open_file_identity(&file)?));
+        let keyed = key.is_some();
         let doc = DocRenderer::with_file(file, path, key, config, policy.clone()).map_err(Unopened::Failed)?;
         renderers.insert(
             path.to_path_buf(),
@@ -487,10 +501,28 @@ fn renderer_for<'a>(
                 doc,
                 looks: HashMap::new(),
                 replaced: false,
+                keyed,
             },
         );
     }
     renderers.get_mut(path).ok_or(Unopened::Failed(RenderFailure::Unavailable))
+}
+
+/// **A password is for the tab it was typed for** (review round 1 of the measured faults, S1). A page added to another document from a file that needs
+/// one, which the loader that adds pages didn't (a crafted file the two readers see differently, as nothing else needing a password can be added), isn't
+/// drawn, read or linked from with the password the person typed for that file's own tab, and its document isn't asked for one: the page says why and
+/// draws nothing, as any page that can't be drawn. So nothing a password protects is shown in, pictured in the sleep file of, or read by an agent from a
+/// document it wasn't typed for. Workers are shared by path, so it's the job's tab that decides, not who opened the file first. An added file that needs
+/// no password is drawn as ever.
+fn added_needs_password(job: &Job) -> Outcome {
+    match job.kind {
+        JobKind::Text { .. } => Outcome::TextFailed,
+        JobKind::Links => Outcome::Cancelled,
+        _ => Outcome::PageFailed {
+            message: ADDED_FILE_NEEDS_PASSWORD.to_string(),
+            may_pass: false,
+        },
+    }
 }
 
 /// A failure that's about the whole file, saying when it's for want of a password, which the app can ask for again.

@@ -200,3 +200,101 @@ fn a_page_added_from_an_encrypted_pdf_anyone_may_open_keeps_the_documents_pictur
     );
     drop(app.quit());
 }
+
+/// A file the two readers see differently: [`locked_allowing`]'s, opened only with `password` by PDFium, with a newer section on the end whose trailer
+/// doesn't name the `/Encrypt` the older one does. lopdf reads the newest trailer and the file as plain, so the loader that adds pages finds no password
+/// needed; PDFium honours the older one and asks for it. A crafted file can do this, and nothing else needing a password can be added to a document.
+fn locked_for_one_reader(password: &str) -> Vec<u8> {
+    let mut bytes = locked_allowing(password, 1, Permissions::all());
+    let number_after = |key: &[u8]| -> String {
+        let at = bytes.windows(key.len()).rposition(|window| window == key).expect("the key") + key.len();
+        String::from_utf8_lossy(&bytes[at..])
+            .split(|c: char| !c.is_ascii_digit() && c != ' ')
+            .next()
+            .unwrap()
+            .trim()
+            .to_string()
+    };
+    let (size, root, prev) = (number_after(b"/Size "), number_after(b"/Root "), number_after(b"startxref\n"));
+    let here = bytes.len();
+    bytes.extend(
+        format!(
+            "xref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size {size} /Root {root} R /Prev {prev} /ID [(0123456789abcdef) (0123456789abcdef)] >>\nstartxref\n{here}\n%%EOF\n"
+        )
+        .as_bytes(),
+    );
+    bytes
+}
+
+/// Every sleep file in the state folder, read back: the pages each has a picture of.
+fn pictured_pages(app: &HeadlessApp) -> Vec<Vec<u32>> {
+    let mut folders = vec![app.disk().paths().root.clone()];
+    let mut found = Vec::new();
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if entry.file_name().to_string_lossy().starts_with("sleep-") {
+                let sleep = recto_session::sleep::decode_sleep(&std::fs::read(&path).expect("a sleep file"), recto_session::record::CURRENT_VERSION)
+                    .expect("a sleep file that reads");
+                found.push(sleep.pictures.iter().map(|picture| picture.page).collect());
+            }
+        }
+    }
+    found
+}
+
+/// Failure (review round 1 of the measured faults, S1): a password was used for every file a page view's worker opened, an added PDF's too. A crafted
+/// file lopdf reads with no password while PDFium asks for one is opened by the person, who types its password; the same file is added to a plain
+/// document, as the loader finds no password needed; that document's page from it was drawn with the person's password, pictured in its sleep file,
+/// and on screen for an agent to look at. A password is for the tab it was typed for: the page in the plain document says why it isn't shown and draws
+/// nothing, its sleep file has no picture of it, and its own pages draw as ever.
+#[test]
+fn a_page_added_from_a_file_only_one_reader_needs_a_password_for_is_never_drawn_with_it() {
+    let disk = Disk::new();
+    let crafted = disk.file("crafted.pdf", &locked_for_one_reader("right"));
+    let plain = disk.pdf("plain.pdf", 2);
+    let other = disk.pdf("other.pdf", 2);
+    let app = disk.start();
+    app.core().engine.waking().window_up();
+    // Opened as the person opens it: the loader reads it as plain, and the page view's worker finds it needs a password, which is asked for and typed.
+    app.act(crate::core::controls::UiAction::Open {
+        path: crafted.display().to_string(),
+    });
+    app.settle();
+    drawn(&app);
+    app.settle();
+    let prompt = app.reader().password_prompt.expect("its password is asked for, as PDFium needs one");
+    app.core().password_answered(prompt.id, Some("right".into()));
+    app.settle();
+    drawn(&app);
+    assert!(app.reader().password_prompt.is_none(), "the password opened it");
+    assert_eq!(app.core().engine.note(), None, "its own tab draws with the password");
+    opened_by_the_person(&app, &plain, None);
+    let added = app.recto(recto_agent::Level::Full, &["page", "insert", crafted.to_str().unwrap(), "--at", "1"]);
+    assert!(added.is_ok(), "the loader reads it as plain, so it's added: {added:?}");
+    // The view keeps the reader's place, now page 2: the added page is brought into view, where a sleep file would picture it.
+    full(&app, &["goto", "1"]);
+    drawn(&app);
+    assert!(
+        app.core().engine.note().is_some_and(|note| note.contains("needs a password")),
+        "the plain document's page from it says why it isn't shown: {:?}; {}; {}",
+        app.core().engine.note(),
+        app.core().engine.report().0,
+        full(&app, &["edits"])
+    );
+    assert!(app.reader().password_prompt.is_none(), "and the plain document isn't asked for a password");
+    opened_by_the_person(&app, &other, None);
+    full(&app, &["session", "sleep", "--tab", &format!("#{}", tab_named(&app, "plain.pdf"))]);
+    app.settle();
+    let pictured = pictured_pages(&app);
+    assert_eq!(
+        pictured.len(),
+        1,
+        "the plain document's sleep file alone: {pictured:?}; {}",
+        app.record_json()["sleep"]
+    );
+    assert!(!pictured[0].contains(&0), "with no picture of the page from the crafted file: {pictured:?}");
+    drop(app.quit());
+}

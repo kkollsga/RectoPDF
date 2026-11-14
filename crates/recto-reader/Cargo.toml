@@ -22,4 +22,6 @@ recto-render-service.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# For a test's protected file, which only lopdf's writer encrypts. Already in the tree through recto-core.
+lopdf.workspace = true
 recto-testpdf.workspace = true
