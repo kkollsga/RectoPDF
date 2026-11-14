@@ -323,20 +323,7 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
         highlights: &highlights,
         highlights_gone: &snapshot.marks.gone,
     };
-    // The owner's steps about the file's highlights on a page this save leaves out can't be carried past it: theirs to lose.
-    if let Err(refused) = access.with(|s| actor.refuse_owner_edits_at_stake(s, crate::actor::Stake::SaveDropsSteps(id))) {
-        drop(ending);
-        return Err(refused);
-    }
-    let writer = recto_core::save::writer_for_request(&request);
-    // Below Control nothing saves at all: the table refuses it.
-    if writer == Writer::Rewrite
-        && let Err(refused) = actor.refuse_rewrite(if snapshot.marks.gone.is_empty() {
-            Rewrite::RemovesPages
-        } else {
-            Rewrite::TakesOutHighlight
-        })
-    {
+    if let Err(refused) = refuse_for_whom(access, actor, id, &request) {
         drop(ending);
         return Err(refused);
     }
@@ -404,6 +391,20 @@ pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveT
         support.after_save(id);
     }
     Ok(data)
+}
+
+/// **What this actor may not save,** once what the save would write is known: the owner's steps about the file's highlights on a page it leaves out,
+/// which can't be carried past it, and a rewrite, each below Full. (Below Control nothing saves at all: the table refuses it.)
+fn refuse_for_whom<A: SessionAccess>(access: &A, actor: Actor, id: TabId, request: &SaveRequest<'_>) -> Result<(), AgentError> {
+    access.with(|s| actor.refuse_owner_edits_at_stake(s, crate::actor::Stake::SaveDropsSteps(id)))?;
+    if recto_core::save::writer_for_request(request) == Writer::Rewrite {
+        actor.refuse_rewrite(if request.highlights_gone.is_empty() {
+            Rewrite::RemovesPages
+        } else {
+            Rewrite::TakesOutHighlight
+        })?;
+    }
+    Ok(())
 }
 
 struct Hooks<'a, A: SessionAccess> {
