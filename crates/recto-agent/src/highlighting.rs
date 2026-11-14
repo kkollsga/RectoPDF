@@ -471,5 +471,31 @@ mod tests {
         let mut fresh = crate::render::open_for_text(&file.0).expect("a worker");
         fresh.hidden.draw_for(2, set(3, rect));
         assert_eq!(yellow(&mut fresh), 0, "a worker started with a set hides from its first draw");
+        drop((doc, fresh));
+        // Taken out by the command, and saved: the file has it no more.
+        let [x, y, width, height] = found.rects[0];
+        let remove = crate::commands::highlight::HighlightRemove {
+            tab: TabRef::default(),
+            what: crate::commands::highlight::RemoveWhat::At {
+                page: 1,
+                x: x + width / 2.0,
+                y: y + height / 2.0,
+            },
+        };
+        run(&mut session, Command::from(remove)).expect("taken out");
+        run(
+            &mut session,
+            Command::from(crate::commands::saving::Save {
+                tab: TabRef::default(),
+                out: None,
+                replace: false,
+            }),
+        )
+        .expect("saved");
+        assert_eq!(
+            yellow(&mut crate::render::open_for_text(&file.0).expect("a worker")),
+            0,
+            "saved, it's gone from the file"
+        );
     }
 }
