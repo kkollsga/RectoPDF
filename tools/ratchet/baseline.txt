@@ -108,4 +108,4 @@ type crates/recto-render/src::Walk 64
 type crates/recto-session/src::PageEdits 68
 type crates/recto-session/src::Session 103
 type crates/recto-update/src::Updater 74
-whole crates/recto-app/src::Inner 98
+whole crates/recto-app/src::Inner 100
