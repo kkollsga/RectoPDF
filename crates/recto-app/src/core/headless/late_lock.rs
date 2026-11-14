@@ -951,7 +951,7 @@ fn a_late_keeps_read_that_never_comes_back_or_panics_ends_the_restore() {
 }
 
 /// A late keep held with its saved session being read: the copy before let go, a try took the lock, and the read waits at its seam.
-fn restoring_held(disk: Disk) -> HeadlessApp {
+pub(super) fn restoring_held(disk: Disk) -> HeadlessApp {
     let before = the_copy_before(&disk);
     let app = disk.builder().another_keeps().start();
     recto_platform::slow::gate::hold(&[Seam::State]);
@@ -963,7 +963,7 @@ fn restoring_held(disk: Disk) -> HeadlessApp {
 }
 
 /// The restore let in, and kept.
-fn let_the_restore_in(app: &HeadlessApp) {
+pub(super) fn let_the_restore_in(app: &HeadlessApp) {
     app.let_through(Seam::State, 1);
     app.wait_until("the record kept", || app.core().life.keeping() == Keeping::Keeps);
     app.settle();
