@@ -57,9 +57,10 @@ decisions whose absence cost RectoPDF the most restructuring, by what each step 
 however small the app looks.
 
 1. **Three crates, not two: the core, a toolkit-free app core, a binding crate that only forwards (§2.10).** And a
-   headless kit that starts the app core in process, acts, reads the view models and quits, in milliseconds. *Earned
-   by:* RectoPDF's binding crate at 14,468 lines with its central functions untested, 217 app-launching tests, and a
-   restructuring track (R1) whose main step alone was planned at 5 to 7 days.
+   headless kit that starts the app core in process, acts, reads the view models and quits, in milliseconds, with
+   stand-ins that have the real thing's sizes and clamps. *Earned by:* RectoPDF's binding crate at 14,468 lines with its
+   central functions untested, 217 app-launching tests, and a restructuring track (R1) whose main step alone was planned
+   at 5 to 7 days.
 2. **One executor, `run(action, actor)`, and the CLI before the window (§2.9, §4).** The bridge exports one `act` for a
    person's actions and the view models; every control builds the command an agent would send; a test proves every
    control maps to a command or to a short host-only list. Payloads are types; refusal codes are a closed table. *Earned
@@ -96,8 +97,9 @@ however small the app looks.
 12. **Failure evidence and CI's conditions here (§6.9):** a failing test leaves its evidence and a rerun line; a local
     mode runs a test as CI's slower machine does. *Earned by:* 12.5 hours of red `main` in five stretches, each long one
     the same failure coming back push after push.
-13. **CI with a time budget, a ledger of its times and a watcher after each push (§6.6, §6.9).** *Earned by:* CI at 33,
-    18, 28, 25 and 28 minutes in one day before anyone set a budget.
+13. **CI with a time budget, a ledger of its times and a watcher after each push, and a decided cache (§6.6, §6.9).**
+    *Earned by:* CI at 33, 18, 28, 25 and 28 minutes in one day before anyone set a budget, and a 5.8 GB build cache
+    costing 118 to 214 s a run to restore.
 14. **The UI-thread watchdog before the first slow call, and the memory guards before the first per-item struct (§2.4,
     §3.6):** `size_of` asserts, the cost of one more idle item, input to frame at 1, 100 and 1,000 items, work per
     action counted.
@@ -105,7 +107,9 @@ however small the app looks.
     every few merges, a process review every fourth merge, each with numbers from their source.
 16. **The feature page, the brief template and a scaffold, with the first feature (§5.2).** One page that walks a real
     feature's files, a brief that names where the feature lives and which shared files it may touch, and a scaffold
-    whose `--remove` takes only what it made.
+    whose `--remove` takes only what it made. A visible change's hand-back carries real-app shots and the state report
+    of what changed, looked at before it's handed back (§5.3): a change that passed two reviews and every check drew an
+    empty list in the real app.
 17. **Other machines, if any (§9, §10),** and the Apple Developer Program early if the app needs the Keychain, File
     Provider or clean downloads (§8.3).
 
@@ -579,9 +583,11 @@ restructuring track of its own.
 - **A headless kit from the first screen:** start the app core in process, act as the person or an agent, settle
   (§2.13), read the view models, quit, kill and start again. RectoPDF's starts, settles and quits in about 30 ms. Most
   of a feature's tests live here.
-- **Give the kit the geometry a window has.** RectoPDF's kit view was 0 high, so it couldn't produce any ordering that
-  depends on where something lands on screen; a fix right after a jump was wrong during ordinary scrolling, and every
-  test had moved by jumping.
+- **Give the kit's stand-ins the real thing's sizes, limits and clamps,** or have the tests that depend on them say so.
+  RectoPDF's kit page view was 0 points high, so it couldn't produce any ordering that depends on where something lands
+  on screen (a fix right after a jump was wrong during ordinary scrolling, and every test had moved by jumping), and
+  "the view can't scroll past the end" never happened in any test: a rule that was wrong for the last screen-height of
+  every document passed every test, and a second review found it by reading.
 - **View models are a pure function of state,** built in one function with plain inputs and tested directly. A function
   that both projects state and drives work can't be tested, and it grows.
 - **Launch the real app in a test only for what only it has:** drawing, the toolkit, the OS's lifecycle. Name what such
@@ -1069,6 +1075,13 @@ settled rules don't cover and reports it after.
 - **Look at the screenshots before the user does,** on one contact sheet, light and dark: about 10 of the owner's 25
   findings on RectoPDF were visible in a shot or a state report. Open an image before acting on what a report says it
   shows (§6.4).
+- **A change a person can see is seen in the real app before it merges, not after.** A RectoPDF contents-sidebar change
+  passed two independent reviews, its full check, 12 new in-process tests and 20 CI-like rounds, and merged
+  (2026-11-14); the coordinator's shots minutes later showed the list drawn empty whenever no entry was current, a state
+  the change made newly possible at the top of a document. Nothing in process had looked at the real list. So the
+  worker's proof of a visible change includes real-app shots and the state report of what changed, looked at before
+  hand-back; and a new state the model can now be in ("nothing is current") is walked through the host's drawing, not
+  only through Rust's view model.
 - **Before the merge:** read the check's exit code and last lines in their own step, never chained into a merge (a
   branch was merged over a failed check that way); keep its whole output until the branch merges; check the merged
   result (§6.1) and what the branch adds (§12.1). Merge with `--no-ff` and a message that says what users get, with the
@@ -1330,6 +1343,16 @@ crate or only in the app.
   CI back is the coordinator's next task, before another feature. The budget is lowered when five green runs in a row
   are well under it and never raised without the user. A branch that adds seconds says how many and why. RectoPDF's
   budget is 21 minutes; runs ranged 16:34 to 24:15, so runner variance alone is most of the margin.
+- **Know where CI's seconds are before cutting them** (an analysis of 12 green RectoPDF runs, 43483423253 to
+  43564852096, on 2026-11-14; the proposals below are not yet done). The app tier (199 tests launching the real app, 4
+  at a time) is throughput-bound: its wall is its tests' summed seconds over 4, and it alone moved 267 to 486 s between
+  runs (correlation 0.93 with the job's total) while the in-process tests stayed flat, so one app-test second removed
+  saves a quarter second of wall and nothing else moves the budget as much. The build cache was 5.8 GB, and restoring it
+  cost 118 to 214 s every run (download-bound), with a 118 to 136 s save on a miss: decide on day one what goes in a CI
+  cache (no incremental data, no stale test binaries, no per-run output) and print its size in every run. About 40% of
+  the in-process tier's time is compiling test binaries, not running tests. And the one real growth in 12 hours was the
+  app-core package, 354 to 505 tests and 76 to 173 test-seconds, at about 0.6 s per new kit test against a median test
+  of 0.03 s: the cost of starting the headless app is the lever that holds a growing suite.
 - **Give every kind of test a home in the crate it tests.** One RectoPDF crate's `tests/` held 21,000 lines for 1,700
   lines of source, and any edit to six crates relinked all 23 of its test binaries.
 - **Share build artifacts between steps:** a separate check, lint run and test build compile the workspace three times

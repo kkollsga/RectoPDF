@@ -115,10 +115,12 @@ Each of these is in the repo (cited) and in no section of the guide:
 | 23 | CI crept to 33, 18, 28, 25 and 28 minutes in a day | PROCESS 2026-11-12 evening | A CI-time ledger and budget from the first CI run; a stern warning on every check when the median is over | not in the guide | §6.6 |
 | 24 | About 25 branches merged in a night on reports and checks; the review after found an agent route to the person's actions, an action implemented twice, a ratchet hole | AGENTS; PLAN | An independent review of every branch, given the code and rules, not the report | §5.3 (no cadence, no "without the report") | §5.3 |
 | 25 | The pilot's scope cut (a Save drops the steps that would undo a saved highlight) contradicted the owner's rule of 2026-11-07 ("after a save you might still have regrets") | `build/pilot-highlights` (unmerged) PLAN lines, `aa23152e`; OWNER-RULES | Behaviour decisions are checked against the written owner rules first; product decisions are the owner's | not in the guide | §5.8 |
-| 26 | The test kit's view was 0 high, so a fix right after a jump was wrong during ordinary scrolling; every test moved by jumping | PLAN R2.4 notes | The test kit has real geometry; the reviewer asks which input no test uses | not in the guide | §5.3, §2.10 |
+| 26 | The test kit's view was 0 high, so a fix right after a jump was wrong during ordinary scrolling (every test moved by jumping), and "the view can't scroll past the end" never happened in a test: a rule wrong for the last screen-height of every document passed every test and was found by a second review's reading | PLAN R2.4 notes; `build/contents-fixes` review (merge `01c06a6b`) | The kit's stand-ins have the real thing's sizes, limits and clamps, or the tests that depend on them say so; the reviewer asks which input no test uses | not in the guide | §2.10, §5.3 |
 | 27 | Two or three full checks' app tiers at once took the machine to a load of 100 to 150 | PLAN, `build/one-app-tier` | One app tier at a time across worktrees, a lock with a bounded wait | §7.1 partly | §8.1 |
+| 28 | A contents-sidebar change passed two reviews, its full check, 12 new in-process tests and 20 CI-like rounds, and merged; shots minutes later showed the list drawn empty whenever no entry was current, a state the change made newly possible | merge of `build/contents-fixes` (`01c06a6b`), 2026-11-14, from the coordinator | A visible change's proof includes real-app shots and the state report of what changed, looked at before hand-back; a new model state is walked through the host's drawing | not in the guide | §5.3, §0.2, the feature brief |
+| 29 | CI's seconds: the app tier (199 tests, 4 at a time) moved 267 to 486 s between runs (correlation 0.93 with the total); a 5.8 GB build cache cost 118 to 214 s to restore every run; about 40% of the in-process tier was compiling test binaries; the app-core package grew 76 to 173 test-seconds in 12 hours at about 0.6 s per kit test | the coordinator's analysis of runs 43483423253 to 43564852096 (raw data not in git) | Decide the CI cache's contents on day one and print its size each run; count app-test seconds as a quarter second of wall each; keep the headless app's start cheap | not in the guide | §6.6, §0.2 |
 
-27 rows.
+29 rows.
 
 ## 6. What the rewrite keeps without re-verifying
 
@@ -133,9 +135,9 @@ Out of reach from this repo, kept as written, tidied for wording and de-duplicat
 | | Lines | Lines at one 120-column wrap | Words |
 |---|---:|---:|---:|
 | Before | 1,713 | 1,811 (its tail sections were unwrapped) | 22,643 |
-| After | 1,941 | 1,941 | 25,421 |
+| After | 1,964 | 1,964 | 25,875 |
 
-The rewrite is about 12% longer in words. The coordinator asked for no longer if possible; folding the tail in and cutting duplicates
+The rewrite is about 14% longer in words (12% before three lessons added on the coordinator's request, 2026-11-14). The coordinator asked for no longer if possible; folding the tail in and cutting duplicates
 paid for about a third of what was added. What was added, each for its row in §5:
 - §0.2 the first week, in order (about 1,000 words; replaces old §14's 28 lines): the day-one path the owner asked for, each item with the
   incident that earned it.
