@@ -120,7 +120,7 @@ a quit's flush | dormant left_alone 2 budget 0 pressure 1 asked 1 | files 10 put
 /// Failure: a move of the sleeper's code changes what's written or when, or who it's counted against: a tab pushed out and not queued, one handed back and
 /// written anyway, a queue hurried or not, an agent's push-out or `session sleep` counted as the person's (or the other way round), a tab left alone or under
 /// pressure not going, a quit's flush not writing the tab on screen's file. Each step's counts are compared with the golden, and the first step that differs
-/// is named with both lines.
+/// is named with each count that moved, what it was and what it is.
 #[test]
 fn what_the_sleeper_writes_and_when_is_as_it_was() {
     let wait = crate::sleeper::LEAVING_WAIT_MS;
@@ -172,15 +172,77 @@ fn what_the_sleeper_writes_and_when_is_as_it_was() {
     drop(app.quit());
     let now = lines.join("\n") + "\n";
     if now != GOLDEN {
-        let golden: Vec<&str> = GOLDEN.lines().collect();
-        let first = lines
-            .iter()
-            .zip(golden.iter().chain(std::iter::repeat(&"(none)")))
-            .find(|(now, was)| now != *was);
-        panic!(
-            "the sleeper's counts changed; first step that differs:\n  was: {}\n  now: {}\nall now:\n{now}",
-            first.map_or("", |pair| pair.1),
-            first.map_or("", |pair| pair.0.as_str())
-        );
+        panic!("the sleeper's counts changed: {}\nall now:\n{now}", first_difference(GOLDEN, &now));
     }
+}
+
+/// A line's counts, by name: each ` | ` group's words, a name's words running up to its value (a number, `0/0`, or `none`, `rose`, `same`), the name led by
+/// its group's first word so that `dormant: pressure` and `woken: pressure_events` stay apart. The first group is the step's name.
+fn fields(line: &str) -> (&str, Vec<(String, &str)>) {
+    let mut groups = line.split(" | ");
+    let step = groups.next().unwrap_or("");
+    let mut fields = Vec::new();
+    for group in groups {
+        let lead = group.split_whitespace().next().unwrap_or("");
+        let mut name: Vec<&str> = Vec::new();
+        for word in group.split_whitespace() {
+            let value = word.trim_end_matches(',');
+            if value.starts_with(|c: char| c.is_ascii_digit()) || matches!(value, "none" | "rose" | "same") {
+                fields.push((format!("{lead}: {}", name.join(" ")), value));
+                name.clear();
+            } else {
+                name.push(word);
+            }
+        }
+    }
+    (step, fields)
+}
+
+/// The first step whose counts differ from the golden's, field by field (name, was, now), and not as two lines of 400 characters.
+fn first_difference(golden: &str, now: &str) -> String {
+    let (golden, now): (Vec<&str>, Vec<&str>) = (golden.lines().collect(), now.lines().collect());
+    let Some(at) = (0..golden.len().max(now.len())).find(|at| golden.get(*at) != now.get(*at)) else {
+        return "the same steps".into();
+    };
+    let (Some(was), Some(is)) = (golden.get(at), now.get(at)) else {
+        return format!(
+            "step {} is only in {}: {}",
+            at + 1,
+            if at < golden.len() { "the golden" } else { "this run" },
+            golden.get(at).or(now.get(at)).copied().unwrap_or("")
+        );
+    };
+    let ((step_was, was), (step_now, is)) = (fields(was), fields(is));
+    if step_was != step_now {
+        return format!("step {} was `{step_was}` and is now `{step_now}`", at + 1);
+    }
+    let mut said = format!("first at step {}, `{step_now}`:", at + 1);
+    for at in 0..was.len().max(is.len()) {
+        let (one, other) = (was.get(at), is.get(at));
+        if one != other {
+            let name = one.or(other).map_or("", |(name, _)| name.as_str());
+            said += &format!(
+                "\n  {name}: was {}, now {}",
+                one.map_or("(none)", |field| field.1),
+                other.map_or("(none)", |field| field.1)
+            );
+        }
+    }
+    said
+}
+
+/// Failure: a golden that differs says only "they differ", or names a field that didn't change, and whoever moved the sleeper's code reads two lines of 400
+/// characters to find which count moved.
+#[test]
+fn a_changed_count_is_named_with_what_it_was_and_is() {
+    let was = "a step | dormant left_alone 2 budget 0 pressure 1 | agents' bytes same, share used 0 | woken 2 system 0/0 | on disk 8\n";
+    let now = "a step | dormant left_alone 2 budget 1 pressure 1 | agents' bytes rose, share used 0 | woken 2 system 0/1 | on disk 8\n";
+    assert_eq!(
+        first_difference(was, now),
+        "first at step 1, `a step`:\n  dormant: budget: was 0, now 1\n  agents': agents' bytes: was same, now rose\n  woken: system: was 0/0, now 0/1"
+    );
+    assert_eq!(
+        first_difference(was, &format!("{was}more | on disk 9\n")),
+        "step 2 is only in this run: more | on disk 9"
+    );
 }
