@@ -216,6 +216,8 @@ pub struct LaunchFacts(Mutex<Launch>);
 #[derive(Default)]
 struct Launch {
     facts: Option<Facts>,
+    /// The facts have been told (or taken to be told): what's noted after that is a launch's, told already, and noted no more.
+    told: bool,
     /// Held back: the record's lock didn't come at the launch. Until the updater's been told and has heard of the first frame.
     held: bool,
     /// The first frame, shown while they were held, by the updater's wall clock. Kept here and not in the updater's own early frame
@@ -225,16 +227,29 @@ struct Launch {
     first_frame_at: Option<u64>,
 }
 
+impl Launch {
+    /// The facts taken to be told, and told from now on, whoever tells them.
+    fn take_to_tell(&mut self) -> Option<Facts> {
+        let facts = self.facts.take();
+        self.told |= facts.is_some();
+        facts
+    }
+}
+
 impl LaunchFacts {
     /// At launch: nothing known, nothing held.
     pub(super) fn new() -> Self {
         Self(Mutex::new(Launch::default()))
     }
 
-    /// What this copy of the app is, from the host, before the state's read.
+    /// What this copy of the app is, from the host, before the state's read. Once told, a launch's facts stay told: noted again, nothing.
     pub fn note(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String) {
+        let mut launch = lock(&self.0);
+        if launch.told {
+            return;
+        }
         // Resolved where the rest of what's asked of the disk is, on the thread that reads the state.
-        lock(&self.0).facts = Some(Facts {
+        launch.facts = Some(Facts {
             version: recto_update::version::running(&version, dev_version.as_deref()),
             app: PathBuf::from(bundle_path),
             system: system_version,
@@ -280,7 +295,7 @@ impl LaunchFacts {
     /// **The updater told of the launch** ([`recto_update::updater::Updater::launched`]) with what the host knows, once: the facts are taken, so a second
     /// telling has nothing to tell. Whether this copy keeps the record is the store's answer as it stands ([`Hooks::keeps_the_record`]). On a thread that can wait.
     pub(super) fn tell(&self, updates: &recto_update::updater::Updater) -> recto_update::updater::AtLaunch {
-        let Some(facts) = lock(&self.0).facts.take() else {
+        let Some(facts) = lock(&self.0).take_to_tell() else {
             return recto_update::updater::AtLaunch::GoOn;
         };
         updates.launched(facts)
@@ -316,7 +331,7 @@ impl LaunchFacts {
     fn take_held(&self) -> Option<Option<Facts>> {
         let (facts, held) = {
             let mut launch = lock(&self.0);
-            (launch.facts.take(), launch.held)
+            (launch.take_to_tell(), launch.held)
         };
         if facts.is_none() && !held {
             return None;
@@ -963,6 +978,36 @@ mod tests {
         assert_eq!(told(), 2, "kept: told at once");
         assert!(!kept.held() && kept.take_held().is_none(), "and nothing held");
     }
+
+    /// Failure (review of R3.7 S4, 2026-11-14): what the host says of this copy, noted again after the launch was told, arms the facts again, so the next
+    /// telling (a late keep's read, a settling's tell) tells the updater of the launch a second time: the install settled twice, an unstarted launch counted
+    /// twice towards going back. Told once, by either way of telling, a note after that tells nothing.
+    #[test]
+    fn a_note_after_the_launch_is_told_tells_nothing_more() {
+        let (app, _bed, launch) = on_the_bed();
+        let updates = &app.core().updates;
+        let note_again = || {
+            launch.note(OLD_VERSION.to_owned(), None, app.disk().app().display().to_string(), "15.0".to_owned());
+        };
+        launch.tell(updates);
+        assert_eq!(told(), 1);
+        note_again();
+        assert_eq!(launch.tell(updates), recto_update::updater::AtLaunch::GoOn);
+        assert_eq!(told(), 1, "told once: a note after it tells nothing");
+        assert!(!launch.untold());
+
+        let held = LaunchFacts::new();
+        held.note(OLD_VERSION.to_owned(), None, app.disk().app().display().to_string(), "15.0".to_owned());
+        held.hold_or_tell(false, updates);
+        let facts = held.take_held().expect("held back");
+        tell(&held, updates, facts);
+        assert_eq!(told(), 2, "the held launch told, by the settling's tell");
+        held.note(OLD_VERSION.to_owned(), None, app.disk().app().display().to_string(), "15.0".to_owned());
+        assert!(held.take_held().is_none() && held.tell(updates) == recto_update::updater::AtLaunch::GoOn);
+        assert_eq!(told(), 2, "and a note after it tells nothing");
+    }
+
+    const OLD_VERSION: &str = crate::testkit::update_bed::OLD;
 
     /// Failure (the record's-lock retry's rules, now the part's): a first frame shown while the launch is held back is told before the launch (so a late keep
     /// says it came up with no tabs read), or lost; or the updater, once told of a held launch, never hears of the first frame. Kept while held, the first
