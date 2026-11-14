@@ -158,7 +158,7 @@ impl AppHost {
             Command::Move(Move::Palette(Palette { query, run, limit })) => self.run_palette(actor, query, run, limit, events),
             Command::Updates(_) => {
                 let inner = self.saver.inner().ok_or_else(recto_agent::update_needs_app)?;
-                super::updates::command(&inner.updates, &inner.life.update_facts, &inner.core, command)
+                super::updates::command(&inner.updates, &inner.life.update_facts, command)
             }
             // Declared the app's with nothing here to answer it: the session says it needs the app, and the guard on this routing says that's wrong.
             _ => self.run_session(actor, command, events),

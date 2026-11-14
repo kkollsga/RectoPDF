@@ -2,7 +2,6 @@
 
 use super::ScreenInfo;
 use super::{CoreCall, Inner, lock};
-use crate::queue::CoreQueue;
 use recto_agent::Code;
 use recto_agent::{AgentError, Command, exit};
 use recto_control::record_store::Loaded;
@@ -593,9 +592,9 @@ pub fn has_setting(id: &str) -> bool {
 }
 
 /// **What `recto update` and `recto settings` come to,** for the person and an agent alike: the executor's one route for them ([`super::host`]). The level's been
-/// checked. What each answers, and in what words, is here; a setting changed by any route is written soon and redraws the window (the updater's own word to
-/// the host, and the session thread's look).
-pub(crate) fn command(updates: &Arc<recto_update::updater::Updater>, launch: &LaunchFacts, core: &CoreQueue, command: &Command) -> Result<Value, AgentError> {
+/// checked. What each answers, and in what words, is here; a setting changed by any route is written soon and redraws the window: the updater's own word to
+/// the host ([`Hooks::changed`]), which asks the session thread for its look and tells the host the model changed.
+pub(crate) fn command(updates: &Arc<recto_update::updater::Updater>, launch: &LaunchFacts, command: &Command) -> Result<Value, AgentError> {
     match command {
         Command::Updates(recto_agent::commands::Updates::UpdateStatus(_)) => Ok(updates.report()),
         // While the launch is held back for the record's lock (`LaunchFacts`), nothing of an update begins, by anyone's asking.
@@ -611,7 +610,7 @@ pub(crate) fn command(updates: &Arc<recto_update::updater::Updater>, launch: &La
         }
         Command::Updates(recto_agent::commands::Updates::UpdateDevBuilds(recto_agent::commands::updates::UpdateDevBuilds { set })) => {
             if let Some(set) = set {
-                set_dev_builds(updates, core, set.is_on());
+                updates.choose_dev_builds(set.is_on());
             }
             Ok(dev_builds_answer(updates))
         }
@@ -645,7 +644,7 @@ pub(crate) fn command(updates: &Arc<recto_update::updater::Updater>, launch: &La
         }
         Command::Updates(recto_agent::commands::Updates::Settings(recto_agent::commands::updates::Settings { auto_update })) => {
             if let Some(on) = auto_update {
-                set_auto_update(updates, core, on.is_on());
+                updates.choose_switch(on.is_on());
             }
             Ok(settings_answer(updates))
         }
@@ -673,11 +672,6 @@ fn install_build(updates: &Arc<recto_update::updater::Updater>, zip: &Path, now:
     Ok(json!({ "started": true, "version": version, "waits_ms": waits_ms, "team": team, "words": words }))
 }
 
-fn set_dev_builds(updates: &Arc<recto_update::updater::Updater>, core: &CoreQueue, on: bool) {
-    updates.choose_dev_builds(on);
-    core.push(CoreCall::Reconcile);
-}
-
 fn dev_builds_answer(updates: &recto_update::updater::Updater) -> Value {
     let on = updates.dev_builds_on();
     let back = updates.report()["back_to_release"] == true;
@@ -700,12 +694,6 @@ fn settings_answer(updates: &recto_update::updater::Updater) -> Value {
         format!("Update automatically: {}.", if on { "on" } else { "off" })
     };
     json!({ "auto_update": on, "words": words })
-}
-
-/// The switch, however it's changed. Written out soon, with the rest of the state.
-fn set_auto_update(updates: &Arc<recto_update::updater::Updater>, core: &CoreQueue, on: bool) {
-    updates.choose_switch(on);
-    core.push(CoreCall::Reconcile);
 }
 
 impl Inner {

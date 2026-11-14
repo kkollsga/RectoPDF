@@ -389,7 +389,6 @@ fn nothing_of_an_update_begins_while_it_tries() {
     let refused = crate::core::updates::command(
         &app.core().updates,
         &app.core().life.update_facts,
-        &app.core().core,
         &recto_agent::parse(r#"{"cmd":"update_check"}"#).expect("a command"),
     )
     .expect_err("not yet");
@@ -410,7 +409,6 @@ fn nothing_of_an_update_begins_while_it_tries() {
     let refused = crate::core::updates::command(
         &app.core().updates,
         &app.core().life.update_facts,
-        &app.core().core,
         &recto_agent::parse(r#"{"cmd":"update_install","now":true}"#).expect("a command"),
     )
     .expect_err("a second copy");
