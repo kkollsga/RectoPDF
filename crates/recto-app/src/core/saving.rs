@@ -200,15 +200,17 @@ impl super::Inner {
         start_save(self, TabId(tab), Some(PathBuf::from(path)), false);
     }
 
-    /// What closing the document showing asks.
+    /// What closing the document showing asks. With an edit of it still landing (a highlight reading its pages), it's asked as for an edited tab, as
+    /// the edit is one by the time a choice runs: Save and Don't Save are ordered behind it ([`crate::queue::lane::Lane::landing`]).
     pub fn close_prompt(&self) -> ClosePrompt {
         let published = super::lock(&self.published);
+        let edited = published.reader.edited || self.core.lane().landing(published.reader.shown_tab);
         // Save offered only where Save works: with it off for a signed document, the way on is Save As's unsigned copy.
-        let save_off = published.reader.edited && !published.reader.save_enabled && !published.reader.saving;
+        let save_off = edited && !published.reader.save_enabled && !published.reader.saving;
         close_prompt(
             published.reader.shown_tab,
             &published.reader.document_name,
-            published.reader.edited,
+            edited,
             published.sidebar.undone_owner_steps,
             save_off,
             self.tools.save_ui().disagreement_now().as_deref(),

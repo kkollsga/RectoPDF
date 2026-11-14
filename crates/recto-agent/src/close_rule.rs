@@ -61,7 +61,9 @@ impl WouldLose {
         }
     }
 
-    /// Whether a person is asked before the close: it would lose unsaved edits, or their own undone steps.
+    /// Whether a person is asked before the close: it would lose unsaved edits, or their own undone steps, or an edit of theirs is still landing (a
+    /// highlight reading its pages), which is asked as unsaved edits are, as it is one by the time their choice runs. Never so for an agent's close:
+    /// [`Self::of`] has no `landing`.
     #[must_use]
     pub fn asks_the_person(&self) -> bool {
         self.unsaved || self.owners_undone || self.landing

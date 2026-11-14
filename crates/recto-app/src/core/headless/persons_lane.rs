@@ -314,6 +314,87 @@ fn a_close_asks_while_an_edit_of_its_tab_is_landing() {
     app.settle();
 }
 
+/// **Failure (review of the lane, D1a): a close asks the person when nothing that changes the document is landing.** Every ordered command's ticket
+/// counted as "an edit landing", so Print then ⌘W, and ⌘W ⌘W, on a clean tab raised the close prompt, which `main` never did. Only an edit that lands later
+/// (a highlight or its removal) asks: with a print held and a close waiting behind it, ⌘W and ⌘W again close without asking, and the tab goes once the
+/// print's pages are read.
+#[test]
+fn a_close_asks_only_for_an_edit_that_lands_later() {
+    let disk = Disk::new();
+    let doc = disk.pdf("a.pdf", 2);
+    let app = disk.start();
+    app.open(&doc);
+    let out = app.disk().files().join("printed.pdf");
+    let (held, go) = hold("print");
+    app.person(&format!(r#"{{"cmd":"print","to_pdf":{}}}"#, Value::from(out.display().to_string())));
+    held.recv_timeout(WAIT_LIMIT).expect("the print held before it reads its pages");
+    assert_eq!(menu(&app, "file.close"), HostAction::None, "Print then ⌘W: closed without asking, as on main");
+    flush(&app);
+    assert_eq!(app.core().core.lane().parked(), 1, "the close waits behind the print");
+    assert_eq!(menu(&app, "file.close"), HostAction::None, "⌘W ⌘W: not asked for the first close's own ticket");
+    drop(go);
+    app.settle();
+    assert!(app.tabs().is_empty(), "closed once the print's pages were read");
+}
+
+/// What became of the close prompt's choice, made while a highlight of the tab showing landed (or was refused): the tabs left, the highlights in the
+/// file, and the save's problem shown, if any.
+fn close_prompt_answered(choice: crate::saving::CloseChoice, refused: bool) -> (usize, usize, bool) {
+    let disk = Disk::new();
+    let doc = disk.pdf("a.pdf", 1);
+    let app = disk.start();
+    app.open(&doc);
+    let tab = app.reader().shown_tab;
+    selects(&app, (0, 0), (0, if refused { 0 } else { 5 }));
+    let (held, go) = hold("highlight");
+    menu(&app, HIGHLIGHT_ID);
+    held.recv_timeout(WAIT_LIMIT).expect("held");
+    assert_eq!(menu(&app, "file.close"), HostAction::ConfirmClose, "asked: the highlight is landing");
+    let prompt = app.core().close_prompt();
+    let titles: Vec<&str> = prompt.buttons.iter().map(|button| button.title.as_str()).collect();
+    assert_eq!(
+        (prompt.message.as_str(), titles),
+        ("Do you want to save the changes you made to “a.pdf”?", vec!["Save", "Cancel", "Don't Save"]),
+        "the ordinary unsaved-changes prompt"
+    );
+    app.core().close_answered(tab, choice);
+    drop(go);
+    app.settle();
+    let in_file = recto_core::highlights::page_highlights(&doc, 0).expect("the file reads").found.len();
+    (app.tabs().len(), in_file, app.core().tools.save_ui().problem().is_some())
+}
+
+/// **Failure (review of the lane, D1b and c, Serious): ⌃⌘H then ⌘W on a clean tab offered only Close and Cancel,** and Close threw the highlight away:
+/// the prompt was built from what the session had published, which didn't have the highlight yet. It's the unsaved-changes prompt, and each choice runs
+/// after the highlight lands: Save writes it and closes, Don't Save throws it away and closes, Cancel keeps it. With the highlight refused after all, Save
+/// and Don't Save still close, and nothing is said of a save with nothing to save.
+#[test]
+fn the_close_prompt_while_a_highlight_lands_offers_save_and_each_choice_does_what_it_says() {
+    use crate::saving::CloseChoice;
+    assert_eq!(close_prompt_answered(CloseChoice::Save, false), (0, 1, false), "Save: written, closed");
+    assert_eq!(
+        close_prompt_answered(CloseChoice::DontSave, false),
+        (0, 0, false),
+        "Don't Save: thrown away, closed"
+    );
+    assert_eq!(
+        close_prompt_answered(CloseChoice::Cancel, false),
+        (1, 0, false),
+        "Cancel: the tab stays, unsaved"
+    );
+    assert_eq!(
+        close_prompt_answered(CloseChoice::Save, true),
+        (0, 0, false),
+        "refused, Save: closed, no problem said"
+    );
+    assert_eq!(close_prompt_answered(CloseChoice::DontSave, true), (0, 0, false), "refused, Don't Save: closed");
+    assert_eq!(
+        close_prompt_answered(CloseChoice::Cancel, true),
+        (1, 0, false),
+        "refused, Cancel: the tab stays"
+    );
+}
+
 /// Failure (coordinator, 2026-11-14): a quit with the person's edits waiting drops them as it freezes, or writes the record before they've run. The quit
 /// waits for them as for any command running, the waiting Undo runs past the freeze once the highlight lands, and the record has both: at the next launch
 /// the highlight is there to redo and the turn to undo.
