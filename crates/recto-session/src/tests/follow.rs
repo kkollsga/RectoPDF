@@ -72,7 +72,9 @@ fn folding_ends_a_move_and_opening_goes_straight_there() {
     };
     follow.reached(Some(0), view(0.0), 0.0, false);
     assert_eq!(follow.reached(Some(100), view(0.0), 1.0, false), FollowMove::Move);
-    assert_eq!(follow.reached(None, view(0.0), 1.1, false), FollowMove::Stay);
+    // Folded, the contents publish no rows.
+    let folded = ContentsView { rows: 0, ..view(0.0) };
+    assert_eq!(follow.reached(None, folded, 1.1, false), FollowMove::Stay);
     assert!(!follow.is_moving(), "nothing's left running");
     assert_eq!(follow.step(0.0, 1.0 / 60.0), None);
     assert!(matches!(follow.reached(Some(100), view(0.0), 2.0, false), FollowMove::SetTo(_)));
@@ -467,4 +469,73 @@ fn rows_changing_above_carry_the_move_with_them() {
     follow.shifted(-112.0);
     let path = run_frames(&mut follow, y - 112.0);
     assert!((path.last().unwrap() - (anchor_y(115) - 112.0)).abs() < 1.0, "{path:?}");
+}
+
+/// Failure (the first real-app run after the current entry went by place, 2026-11-14): a tab's contents shown with no entry current, the reader being
+/// above the document's first entry, were never placed: the follow saw "no row" as "nothing changed" and left the scroll where another tab's long list
+/// had it, past the end of this one, so the list drew no rows at all. Shown with nothing current, the list goes to its top, or where a restore left it;
+/// following, a place that goes above the first entry goes to the top as any place does; a list the reader scrolled is left where they put it.
+#[test]
+fn a_list_shown_with_nothing_current_is_placed_at_its_top() {
+    let mut follow = ContentsFollow::default();
+    let view = |scroll_y: f64, rows: u32| ContentsView { scroll_y, height: 364.0, rows };
+    // Another tab's long list, scrolled far down, then this tab's 13 rows with nothing current.
+    follow.reached(Some(1500), view(0.0, 2000), 0.0, false);
+    follow.new_contents();
+    assert_eq!(follow.reached(None, view(41_000.0, 13), 1.0, false), FollowMove::SetTo(0.0), "the list's top");
+    assert_eq!(follow.reached(None, view(0.0, 13), 1.1, false), FollowMove::Stay, "placed once");
+    // As a restore left it, clamped to the list.
+    let mut restored = ContentsFollow::default();
+    restored.resume_at(5000.0, true);
+    assert_eq!(
+        restored.reached(None, view(0.0, 40), 0.0, false),
+        FollowMove::SetTo(40.0 * CONTENTS_ROW_HEIGHT - 364.0)
+    );
+    // Following, reading back up above the first entry goes to the top.
+    let mut reading = ContentsFollow::default();
+    reading.reached(Some(30), view(0.0, 200), 0.0, false);
+    let at = anchor_y_in(30, 364.0);
+    assert_eq!(
+        reading.reached(None, view(at, 200), 1.0, true),
+        FollowMove::SetTo(0.0),
+        "with Reduce Motion, at once"
+    );
+    // Scrolled by the reader, it stays where they put it.
+    let mut theirs = ContentsFollow::default();
+    theirs.reached(Some(30), view(0.0, 200), 0.0, false);
+    theirs.user_scrolled(1.0);
+    assert_eq!(theirs.reached(None, view(900.0, 200), 1.5, false), FollowMove::Stay);
+}
+
+fn anchor_y_in(row: u32, height: f64) -> f64 {
+    (f64::from(row) + 0.5) * CONTENTS_ROW_HEIGHT - height * FOLLOW_ANCHOR
+}
+
+/// Failure (the update test after the fix above, `a_development_build_goes_in_by_the_same_hand_off`: the contents' scroll 314 before an update and 316.5
+/// after): at a launch the list can be shown for a moment with nothing current, before the restored place is taken in. Placing it there used up the
+/// restore's scroll, the area's height then settled (which places the list again), and the first real row put it at its anchor instead of where it was
+/// left. The restore's scroll is kept until a real row places the list; the person's own scroll ends it.
+#[test]
+fn a_restored_scroll_outlasts_a_moment_with_nothing_current() {
+    let view = |scroll_y: f64| ContentsView {
+        scroll_y,
+        height: 298.2,
+        rows: 28,
+    };
+    let mut follow = ContentsFollow::default();
+    follow.resume_at(314.0, true);
+    assert_eq!(follow.reached(None, view(0.0), 0.0, false), FollowMove::SetTo(314.0));
+    follow.view_changed();
+    assert_eq!(
+        follow.reached(Some(14), view(314.0), 0.1, false),
+        FollowMove::SetTo(314.0),
+        "where it was left, not row 14's anchor"
+    );
+    assert_eq!(follow.reached(Some(14), view(314.0), 0.2, false), FollowMove::Stay);
+    // Scrolled by the person before a row came: theirs stays.
+    let mut theirs = ContentsFollow::default();
+    theirs.resume_at(314.0, true);
+    theirs.reached(None, view(0.0), 0.0, false);
+    theirs.user_scrolled(0.5);
+    assert_eq!(theirs.reached(Some(14), view(100.0), 1.0, false), FollowMove::Stay);
 }

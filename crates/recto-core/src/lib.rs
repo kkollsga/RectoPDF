@@ -733,6 +733,23 @@ mod tests {
         assert_eq!(toc.current_at(0, 1000, |_| true), None, "an earlier page has none");
     }
 
+    /// The coordinator's decision of 2026-11-14, pinned: before the document's first entry nothing is current (the first heading is marked as it reaches
+    /// the top of the view), and above a later page's first entry the page before's last entry is. Failure: the first entry marked before it's reached,
+    /// or a later page's top with nothing marked.
+    #[test]
+    fn before_the_first_entry_nothing_is_current_and_above_a_later_pages_first_the_page_befores_last_is() {
+        let toc = placed_toc(&[(0, 91), (0, 500), (1, 200), (3, 300)]);
+        let at = |page, top| toc.current_at(page, top, |_| true);
+        assert_eq!(
+            (at(0, 0), at(0, 91 - TOP_SLACK - 1)),
+            (None, None),
+            "the document's top, its first entry 91 down"
+        );
+        assert_eq!(at(0, 91 - TOP_SLACK), Some(0), "the first entry as it reaches the top");
+        assert_eq!((at(1, 0), at(1, 150)), (Some(1), Some(1)), "page 2 above its first entry: page 1's last");
+        assert_eq!(at(3, 0), Some(2), "page 4 above its first entry, after a page with none: page 2's last");
+    }
+
     /// Failure: the place a view reports is rounded to a pixel, and an entry jumped to lies a hair below it, so the entry the reader jumped to isn't the
     /// current one (or, with more slack than the rounding, one the reader hasn't reached is). Fails with [`TOP_SLACK`] at 0.
     #[test]
