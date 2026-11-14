@@ -140,10 +140,19 @@ pub struct Builder {
     update: Option<UpdateBed>,
     state_late: bool,
     held: Vec<Seam>,
+    leaving_wait_ms: u64,
     another_keeps: bool,
 }
 
 impl Builder {
+    /// **A pushed-out tab's sleep file waits this long** on the fake clock ([`crate::sleeper::LEAVING_WAIT_MS`] in the app). None by default, so a test of
+    /// anything else has its sleep files written as it settles, and doesn't wait out a cool-down its clock won't move through.
+    #[must_use]
+    pub fn leaving_wait(mut self, ms: u64) -> Self {
+        self.leaving_wait_ms = ms;
+        self
+    }
+
     /// With the search index and generated contents, as the app has them. Off by default: they start threads of their own that a test of anything else needn't wait for.
     #[must_use]
     pub fn indexing(mut self, on: bool) -> Self {
@@ -228,6 +237,7 @@ impl Builder {
             update_seams,
         )
         .expect("the core starts");
+        inner.sleeper.set_leaving_wait(self.leaving_wait_ms);
         // As the app does unless another copy has it: a test whose app isn't keeping the record would test another path, without saying so.
         assert!(
             self.another_keeps || inner.saver.store.holds_the_record(),
@@ -368,6 +378,12 @@ impl DiskBuilder {
     #[must_use]
     pub fn hold(mut self, seams: &[Seam]) -> Self {
         self.builder = self.builder.hold(seams);
+        self
+    }
+
+    #[must_use]
+    pub fn leaving_wait(mut self, ms: u64) -> Self {
+        self.builder = self.builder.leaving_wait(ms);
         self
     }
 
@@ -601,6 +617,7 @@ impl HeadlessApp {
     pub fn advance(&self, ms: u64) {
         self.clock.advance(ms);
         self.core().core.nudge();
+        self.core().sleeper.poke_leaving();
     }
 
     /// The person touched the app now, by the clock, as the host's event monitor says.

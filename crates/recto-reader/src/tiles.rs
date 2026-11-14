@@ -34,15 +34,15 @@ use cache::{TileCache, TileKey};
 use doc::Issue;
 pub(crate) use doc::{DocView, Docs};
 use host::HostQueue;
-pub(crate) use jobs::Work;
 pub use jobs::{DrawKind, Job, JobKind, JobPlan, Outcome};
 use jobs::{MAX_KEYLESS, PlanKind};
+pub(crate) use jobs::{Renew, Work};
 use place::Place;
 pub use place::place_stamp;
 use pointer::Pointer;
 use scratch::Scratch;
 use wake::Waking;
-pub use wake::{RawPicture, SleepMaterial, SleepShot, SleepView, WakeReport, WakeStock};
+pub use wake::{RawPicture, SleepMaterial, SleepShot, SleepSource, SleepView, WakeReport, WakeStock};
 
 pub use zoom::{MAX_ZOOM, MIN_ZOOM, ZOOM_STEP, Zoom, typed_zoom, zoom_after_scroll, zoom_percent};
 
@@ -361,7 +361,7 @@ impl Reader {
     /// **A password's been given for a file:** its renderer opens again with it, and what an open without it found, that it needs one, is forgotten, so its pages are asked for afresh.
     pub fn key_given(&mut self, path: &std::path::Path) {
         self.work.keyless.retain(|file| file != path);
-        self.work.reopen_files.push(path.to_path_buf());
+        self.work.renew(Some(&path.to_path_buf()), jobs::Renew::Reopen);
         for doc in self.docs.views.values_mut() {
             if doc.map.files.iter().any(|file| file == path) {
                 doc.drawing.problem = None;
@@ -379,6 +379,9 @@ impl Reader {
     #[allow(clippy::too_many_arguments)]
     pub fn activate(&mut self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>, spread: Spread) {
         self.keep_only(warm, tab);
+        // Its file's length is said again by a worker that has said it already, as the session counts a tab woken from its sleep file unchecked till it hears
+        // it, and a tab is woken to be shown here, whether or not its view was let go of on the way (a sleep and a wake can fall into one look).
+        self.work.renew(map.files.first(), jobs::Renew::TellLength(tab));
         // The tab showing taken up again, as a turn of its pages does: the reader stays where they are.
         let staying = self.docs.hot == Some(tab);
         // What was selected when a renderer saw the file replaced, for a save that turns out to have written what was shown.
@@ -425,7 +428,7 @@ impl Reader {
         if !doc.map.same_pages(&map) || doc.layout.count() != pages {
             // Another version of its file: a worker that's running has the old one open, and goes on drawing that.
             if doc.map.own != map.own {
-                self.work.reopen_files.extend(map.files.first().cloned());
+                self.work.renew(map.files.first(), jobs::Renew::Reopen);
             }
             if carried {
                 // **A save leaves the view as it was** (owner: "perfect" state recovery): the pages keep their sizes as shown, so the fit, the zoom shown, the place and the layout don't move. Only what's drawn is of the new file, and is drawn again.

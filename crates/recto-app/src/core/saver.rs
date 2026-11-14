@@ -168,7 +168,8 @@ impl Saver {
             self.urgent.store(false, Ordering::SeqCst);
             return;
         };
-        let urgent = self.urgent.swap(false, Ordering::SeqCst);
+        // Going to the background's hurry of the sleep files' cool-down, carried out here, off the UI thread, with `urgent` taken first.
+        let urgent = take_urgent_then_hurry(&self.urgent, || inner.sleeper.hurry_leaving_if_asked(|| inner.start_sleep_writer()));
         let due = app::pass(self.pending(urgent), now);
         // A copy that doesn't keep the record writes nothing, and that's what it's for, not a failure: the window says it won't be remembered, and not that its
         // state couldn't be saved. Nor does one still trying for the lock, or whose saved session is being read back after a late try: what it would gather is
@@ -254,6 +255,8 @@ impl Saver {
         if work.retired.is_empty() && work.appends.is_empty() {
             return None;
         }
+        // Sleep files about to be removed: nothing queued for them is written after.
+        inner.sleeper.retire(&work.retired);
         let (outcome, failed) = self.store.write_journals(work, force);
         let written: Vec<(recto_session::TabId, String)> = outcome.written.iter().map(|(id, _, name)| (*id, name.clone())).collect();
         inner.host.session.with_session(|session| session.journal_desk().outcome(outcome));
@@ -270,6 +273,12 @@ impl Saver {
 
     /// **Writes everything now, reads it back, and says whether it's all there.** What's waiting and what's in memory are taken in one look, so an edit made in between can't be in one and not the other. `force` makes the drive itself flush everything a launch would read, older writes included, which only a hand-off needs. Waits for the session thread and the disk, so it's for a thread that can.
     pub fn flush(&self, force: bool, limit: Duration) -> Result<FlushReport, StoreError> {
+        self.flush_by(force, limit, None)
+    }
+
+    /// **The same, asked for by `asked_by`** (`session save`): an agent's leaves the sleep files' cool-down alone, as a quit's and a hand-off's don't, and what
+    /// came of the tab on screen's sleep file is kept under its ticket ([`Inner::sleep_at_flush`]).
+    pub fn flush_by(&self, force: bool, limit: Duration, asked_by: Option<crate::sleeper::Asked>) -> Result<FlushReport, StoreError> {
         let Some(inner) = self.inner() else {
             return Err(StoreError {
                 code: "not_ready",
@@ -342,9 +351,9 @@ impl Saver {
         }
         let verify_us = micros(verified);
         // The tab on screen's sleep file, for the next launch's first frame. Nothing depends on it, so it's no part of what's read back or forced to the drive, and it comes after the state: with sleep files queued for a slow disk, a quit's 5 s ran out waiting here, and it went without the state (slow mode, 2026-11-11). It waits for others being written for what's left of this flush's time, and past that is skipped and counted. If nothing's changed, nothing's written.
-        if let Some(id) = inner.host.session.with_session(|session| session.tabs().active()) {
-            inner.write_sleep_for_until(id, began + limit);
-        }
+        // Then what's waiting in the cool-down, hurried and waited for within what's left of the time ([`Inner::sleep_at_flush`]).
+        inner.sleeper.hurry_leaving_if_asked(|| inner.start_sleep_writer());
+        inner.sleep_at_flush(asked_by, began + limit);
         let (record_bytes, journal_bytes) = self.store.sizes();
         self.last_record_write.store(self.now(), Ordering::SeqCst);
         *lock(&self.last_error) = None;
@@ -365,6 +374,16 @@ impl Saver {
 
 /// Why a flush can't write now, if it can't: see [`super::keeping::may_write`]. The saved session being read back after a late try at the lock isn't written over
 /// by the window before it; a copy that doesn't keep the record says so as the store does.
+/// **Takes `urgent` for a pass, and then carries out the hurry of the sleep files' cool-down if it's asked** ([`super::sleeper`]'s
+/// `hurry_leaving_if_asked`). Going to the background stores the hurry and then `urgent` (`App::frontmost_changed`), so taking them the other way round,
+/// a pass that sees `urgent` sees the hurry too; the hurry first could miss one stored just after it's looked at, and take `urgent`, and the hurry would
+/// wait for a pass that may not come till the next edit or a quit, or at all with no writer left.
+fn take_urgent_then_hurry(urgent: &AtomicBool, hurry_if_asked: impl FnOnce()) -> bool {
+    let urgent = urgent.swap(false, Ordering::SeqCst);
+    hurry_if_asked();
+    urgent
+}
+
 fn refused(inner: &Inner) -> Option<StoreError> {
     if super::keeping::may_write(inner) {
         return None;
@@ -421,5 +440,52 @@ impl Inner {
             }
         }
         record
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::take_urgent_then_hurry;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// **Failure: a pass takes going to the background's `urgent` without its hurry,** when the UI thread's two stores (the hurry, then `urgent`) land
+    /// between the pass's two reads: the sleep files' cool-down then isn't hurried by the write going to the background asked for, and waits for a pass that
+    /// may not come till the next edit or a quit, or at all once the writer's gone. The UI's stores are put at each point between and after the reads.
+    #[test]
+    fn a_pass_that_takes_urgent_carries_out_the_hurry_stored_before_it() {
+        for lands_after_the_hurry_is_looked_at in [false, true] {
+            let (urgent, hurry) = (AtomicBool::new(false), AtomicBool::new(false));
+            let going_to_the_background = || {
+                hurry.store(true, Ordering::SeqCst);
+                urgent.store(true, Ordering::SeqCst);
+            };
+            let mut hurried = false;
+            let took_urgent = take_urgent_then_hurry(&urgent, || {
+                if !lands_after_the_hurry_is_looked_at {
+                    going_to_the_background();
+                }
+                hurried = hurry.swap(false, Ordering::SeqCst);
+                if lands_after_the_hurry_is_looked_at {
+                    going_to_the_background();
+                }
+            });
+            let at = if lands_after_the_hurry_is_looked_at {
+                "after the hurry's looked at"
+            } else {
+                "before it"
+            };
+            assert!(
+                !took_urgent || hurried,
+                "the stores landed {at}: urgent taken, and the hurry left for a pass that may not come"
+            );
+            assert!(
+                took_urgent || urgent.load(Ordering::SeqCst),
+                "the stores landed {at}: urgent stays for the next pass"
+            );
+            assert!(
+                hurried || hurry.load(Ordering::SeqCst),
+                "the stores landed {at}: the hurry stays for the pass urgent brings"
+            );
+        }
     }
 }

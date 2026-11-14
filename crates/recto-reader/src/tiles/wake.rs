@@ -18,6 +18,8 @@ pub struct SleepView {
     pub usual: Option<PageBox>,
     pub sizes: Vec<(u32, PageBox)>,
     pub pictures: Vec<SleepShot>,
+    /// Not read from a file: what the tab left with, handed back to it shown again inside its cool-down, so its wake says so ([`WakeStock::HandedBack`]).
+    pub handed_back: bool,
 }
 
 /// A picture for a page, in a surface of its own.
@@ -64,6 +66,15 @@ pub(super) const MAX_SLEEP_SHOTS: usize = 12;
 /// What a tab held off screen keeps of the pictures it was left with, in all. A letter page at a Retina window's fit is 730 KiB, so a page to a row has its view kept, and a view of many small pages keeps the first few: the rest come from what's here when it goes to sleep, as before.
 pub(super) const MAX_LEFT_PICTURE_BYTES: usize = 4 * 1024 * 1024;
 
+/// Where a wake's sleep pictures came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SleepSource {
+    /// Read from the tab's sleep file.
+    File,
+    /// What the tab left with, handed back to it shown again inside its cool-down, with no file read.
+    HandedBack,
+}
+
 /// What a wake had to show when it began: whether a picture covered the view at the place the tab was left at, and where it came from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WakeStock {
@@ -74,6 +85,9 @@ pub enum WakeStock {
     Nothing,
     /// A picture of every page in view was here, at least one of them from the tab's sleep file.
     SleepFile,
+    /// The same, from what the tab left with, handed back to it shown again inside its cool-down, with no file read: a wake from memory, told apart from one
+    /// from disk.
+    HandedBack,
     /// A picture of every page in view was here, all of them from what the tile cache kept.
     Cache,
 }
@@ -81,7 +95,7 @@ pub enum WakeStock {
 impl WakeStock {
     /// Whether the first frame was owed a page: the wake began with something covering the view.
     pub fn covered_the_view(self) -> bool {
-        matches!(self, Self::SleepFile | Self::Cache)
+        matches!(self, Self::SleepFile | Self::HandedBack | Self::Cache)
     }
 
     pub fn word(self) -> &'static str {
@@ -89,6 +103,7 @@ impl WakeStock {
             Self::NotLooked => "not_looked",
             Self::Nothing => "nothing",
             Self::SleepFile => "sleep_file",
+            Self::HandedBack => "handed_back",
             Self::Cache => "cache",
         }
     }
@@ -98,8 +113,8 @@ impl WakeStock {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WakeReport {
     pub tab: u32,
-    /// It came from a sleep file.
-    pub from_sleep: bool,
+    /// It came from a sleep file's pictures, and which: read from a file, or handed back from memory ([`SleepView::handed_back`]).
+    pub from_sleep: Option<SleepSource>,
     pub first_frame_us: Option<u64>,
     pub sharp_us: Option<u64>,
     /// Frames the host applied with a visible page bare, once it was at its place.
@@ -230,7 +245,7 @@ impl Waking {
                 began,
                 WakeReport {
                     tab,
-                    from_sleep: false,
+                    from_sleep: None,
                     ..WakeReport::default()
                 },
             ));
@@ -303,6 +318,7 @@ impl Waking {
         let whole = !in_view.is_empty() && in_view.iter().all(|page| have.contains_key(page));
         let had = match (whole, sleep_in_view > 0) {
             (false, _) => WakeStock::Nothing,
+            (true, true) if report.from_sleep == Some(SleepSource::HandedBack) => WakeStock::HandedBack,
             (true, true) => WakeStock::SleepFile,
             (true, false) => WakeStock::Cache,
         };
@@ -603,6 +619,7 @@ impl Reader {
             doc.layout.set_page_size(page, size);
         }
         let count = doc.layout.count();
+        let handed_back = view.handed_back;
         let mut any = false;
         let mut gave = 0u16;
         for shot in view.pictures {
@@ -642,7 +659,7 @@ impl Reader {
         if let Some((_, report)) = &mut self.wake.waking
             && report.tab == tab
         {
-            report.from_sleep = any;
+            report.from_sleep = any.then_some(if handed_back { SleepSource::HandedBack } else { SleepSource::File });
             report.sleep_pictures = gave;
         }
     }

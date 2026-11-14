@@ -27,6 +27,7 @@ fn the_tabs_sleep_view_is_its_first_frame() {
         9,
         SleepView {
             version: None,
+            handed_back: false,
             usual: Some(letter()),
             sizes: Vec::new(),
             pictures: vec![shot(0, PixelSurface::create(153, 198).unwrap())],
@@ -37,6 +38,7 @@ fn the_tabs_sleep_view_is_its_first_frame() {
         1,
         SleepView {
             version: None,
+            handed_back: false,
             usual: Some(letter()),
             sizes: vec![(3, PageBox { width: 300.0, height: 400.0 })],
             pictures: vec![shot(0, surface), shot(500, PixelSurface::create(153, 198).unwrap())],
@@ -60,7 +62,7 @@ fn the_tabs_sleep_view_is_its_first_frame() {
     reader.host.unapplied = true;
     reader.applied();
     let wake = reader.wake.last_wake().unwrap();
-    assert!(wake.from_sleep);
+    assert_eq!(wake.from_sleep, Some(crate::tiles::SleepSource::File));
     assert!(wake.first_frame_us.is_some(), "{wake:?}");
     assert_eq!(wake.sharp_us, None, "not sharp yet");
     assert_eq!(wake.blank_frames, 0);
@@ -288,6 +290,7 @@ fn a_window_can_go_up_with_a_picture_on_every_page() {
         1,
         SleepView {
             version: None,
+            handed_back: false,
             usual: Some(letter()),
             sizes: Vec::new(),
             pictures: Vec::new(),
@@ -314,6 +317,7 @@ fn a_window_can_go_up_with_a_picture_on_every_page() {
         2,
         SleepView {
             version: None,
+            handed_back: false,
             usual: Some(letter()),
             sizes: Vec::new(),
             pictures: vec![shot],
@@ -352,6 +356,7 @@ fn woken_with(pages: &[u32], unattached: bool) -> (Reader, WakeReport) {
             1,
             SleepView {
                 version: None,
+                handed_back: false,
                 usual: Some(letter()),
                 sizes: Vec::new(),
                 pictures: pages

@@ -26,19 +26,31 @@ impl Records for AppRecords {
     }
 
     /// Through the sleeper, as five minutes left alone would: its pictures and its journal too.
-    fn put_to_sleep(&self, tab: TabId) -> Result<Slept, AgentError> {
+    /// What the asker is told of the tab's sleep file is of this sleep's own write, taken back by its own ticket.
+    fn put_to_sleep(&self, tab: TabId, actor: recto_agent::Actor) -> Result<Slept, AgentError> {
         let host = self.host()?;
-        host.core.push(CoreCall::SleepTabs(vec![tab], sleeper::Why::Asked));
+        let inner = host.saver.inner();
+        let asked = inner.as_ref().map_or(sleeper::Asked::by(actor), |inner| inner.sleeper.asking(actor));
+        host.core.push(CoreCall::SleepTabs(vec![tab], sleeper::Why::Asked(asked)));
         host.core.flush(Duration::from_secs(5));
+        let note = inner.and_then(|inner| inner.sleeper.take_asked_words(asked.ticket, false));
         Ok(host.session.with_session(|session| Slept {
             dormant: !session.warm().ids().any(|other| other == tab),
             list_asleep: session.lists().is_asleep(tab),
+            note,
         }))
     }
 
-    fn save(&self) -> Result<Saved, AgentError> {
-        let report = self.host()?.saver.flush(false, Duration::from_secs(5)).map_err(store_error)?;
+    /// An agent's save that its share of the hour kept from writing the tab on screen's sleep file says so, as a crash after it leaves the next launch's first
+    /// frame without a picture.
+    fn save(&self, actor: recto_agent::Actor) -> Result<Saved, AgentError> {
+        let host = self.host()?;
+        let inner = host.saver.inner();
+        let asked = inner.as_ref().map_or(sleeper::Asked::by(actor), |inner| inner.sleeper.asking(actor));
+        let report = host.saver.flush_by(false, Duration::from_secs(5), Some(asked)).map_err(store_error)?;
+        let note = inner.and_then(|inner| inner.sleeper.take_asked_words(asked.ticket, true));
         Ok(Saved {
+            note,
             tabs: report.tabs,
             edited_tabs: report.edited_tabs,
             record_bytes: report.record_bytes,

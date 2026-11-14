@@ -376,11 +376,11 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
     }
     let left = s.sleeper().take_left_warm();
     assert_eq!(
-        left.iter().map(|facts| facts.id).collect::<Vec<_>>(),
+        left.iter().map(|(facts, _)| facts.id).collect::<Vec<_>>(),
         [open, open_to_anyone],
         "the unprotected ones that left: {left:?}"
     );
-    assert_eq!(left[0].sleep.file_pages, 3);
+    assert_eq!(left[0].0.sleep.file_pages, 3);
     assert!(s.sleeper().take_left_warm().is_empty());
     // An encrypted file's pages in a plain document: a file that needs a password can't be added at all, so what's added opens for anyone, and the
     // document keeps its pictures (2026-11-13; before, it lost them).

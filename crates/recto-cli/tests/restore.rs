@@ -1086,32 +1086,6 @@ fn a_rewrite_that_keeps_its_stamp_doesnt_keep_its_picture() {
     assert!(!colours.iter().any(|(_, colours)| colours.contains(&"red")), "{colours:?}");
 }
 
-/// Failure (review follow-up 2): `session sleep` writes a new sleep file every time it's asked, so an agent going tap, move, sleep writes most of a megabyte in ten turns. It keeps to the same limits as anything else that isn't a quit or a hand-off.
-#[test]
-fn session_sleep_keeps_to_the_limits_on_writing() {
-    let state = State::at(Level::Full);
-    let Some(run) = Run::on(&state) else { return };
-    let folder = state.root.join("docs");
-    std::fs::create_dir_all(&folder).unwrap();
-    let (file, other) = (text_document(&folder, "doc.pdf", 12), text_document(&folder, "other.pdf", 2));
-    run.ok(&["open", file.to_str().unwrap()]);
-    run.settled();
-    run.ok(&["open", other.to_str().unwrap()]);
-    run.settled();
-    for turn in 0..5 {
-        run.ok(&["tap", &tab_on(&run, "doc.pdf")]);
-        run.settled();
-        run.ok(&["goto", &format!("{}", turn * 2 + 2)]);
-        run.settled();
-        run.ok(&["tap", &tab_on(&run, "other.pdf")]);
-        run.settled();
-        run.ok(&["session", "sleep", "--tab", &tab_on(&run, "doc.pdf")]);
-    }
-    let sleep = run.report()["record"]["sleep"].clone();
-    assert_eq!(sleep["sleep_files_written"], 1, "one, the first: {sleep}");
-    assert!(sleep["writes_put_off"].as_u64().unwrap() >= 4, "{sleep}");
-}
-
 /// Failure (review follow-up 4): with a tab's edits unreadable just now, `recto text` says there's no such page, for every page, which says nothing of why. It says its edits can't be read.
 #[test]
 fn reading_a_page_says_when_its_edits_cant_be_read() {

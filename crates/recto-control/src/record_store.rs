@@ -15,6 +15,7 @@
 
 /// The record's lock: who keeps it, waiting for it, and letting go of it.
 mod lock;
+mod sleep_files;
 use crate::state::StatePaths;
 use recto_platform::{FileStamp, file_stamp, local};
 use recto_session::edit::{AddedSource, PageEdits};
@@ -23,7 +24,7 @@ use recto_session::record::{
     MAX_PLACES_LOG_BYTES, MAX_RECORD_BYTES, ParsedJournal, PlaceDelta, RecordError, SessionRecord, TabEntry, ViewRecord, closed_journal_name,
     is_closed_journal_name, is_journal_name, journal_is_for, journal_named_is_for,
 };
-use recto_session::sleep::{MAX_SLEEP_FILE_BYTES, SleepFile, decode_sleep, encode_sleep};
+use recto_session::sleep::SleepFile;
 use recto_session::{HistorySource, JournalOutcome, JournalWork, RestoredEdits, TakenHistory};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -40,8 +41,6 @@ const JOURNALS: &str = "journals";
 const MAX_CLOSED_JOURNAL_BYTES: u64 = 1024 * 1024 * 1024;
 /// How long a closed PDF's history waits to be picked up. Owner, 2026-11-07.
 const CLOSED_JOURNAL_DAYS: u64 = 30;
-/// Sleep files in all. About 256 tabs' worth of a whole picture, and more with text, which packs well.
-const MAX_SLEEP_BYTES: u64 = 256 * 1024 * 1024;
 /// Most bytes of journals a launch reads, whatever's there. Real ones are a few kilobytes each. What's past it stays where it is, and those tabs say they couldn't be read.
 const MAX_JOURNAL_BYTES_AT_LAUNCH: u64 = 1024 * 1024 * 1024;
 /// How many damaged states are kept.
@@ -545,7 +544,7 @@ impl RecordStore {
         // Nothing's changed by coming back, unless the journals said otherwise: writing what was read would be a write for nothing.
         progress.whole_crc = as_read;
         drop(progress);
-        prune_sleep_files(&dir.join(JOURNALS));
+        sleep_files::prune_sleep_files(&dir.join(JOURNALS));
         let in_use: Vec<String> = journals
             .values()
             .flat_map(|restored| {
@@ -968,51 +967,6 @@ impl RecordStore {
         self.read_list(name).is_some_and(|restored| restored.edits.to_record() == *base)
     }
 
-    /// **Writes a tab's sleep file,** in one step, as it goes dormant or the app goes away. It's only a way to be quick, so failing here costs nothing but that, and isn't said. Says how many bytes went.
-    pub fn write_sleep(&self, path: &Path, sleep: &SleepFile) -> u64 {
-        recto_platform::slow::pause(recto_platform::slow::Seam::SleepWrite);
-        if self.refuses_writes().is_some() {
-            return 0;
-        }
-        let dir = self.dir();
-        if Self::ensure_dirs(&dir).is_err() {
-            return 0;
-        }
-        self.note_going_back(&dir);
-        let bytes = encode_sleep(sleep);
-        let folder = dir.join(JOURNALS);
-        let file = folder.join(record::sleep_file_name(sleep.file, path));
-        // What's there is this already: nothing's changed, so nothing's written.
-        if read_ours(&file, MAX_SLEEP_FILE_BYTES).ok().flatten().is_some_and(|there| there == bytes) {
-            return 0;
-        }
-        // With no flush: losing one to a crash costs only the quick way, and a torn one's caught by its checksum, so it isn't worth the drive's time or wear.
-        let temp = file.with_extension(format!("tmp{}", std::process::id()));
-        if bytes.len() > MAX_SLEEP_FILE_BYTES || local::write_private_file_unsynced(&temp, &bytes).is_err() || std::fs::rename(&temp, &file).is_err() {
-            let _ = std::fs::remove_file(&temp);
-            return 0;
-        }
-        self.progress().wrote_bytes += bytes.len() as u64;
-        prune_sleep_files(&folder);
-        bytes.len() as u64
-    }
-
-    /// A tab's sleep file, if there's one for this version of this file. The name goes by the stamp, so what's asked for is what's known of the file, and nothing here looks at the PDF, which may be on a disk that's gone away. Whoever's waking the tab looks at that on a thread of its own. **One that doesn't read is removed:** it can always be rebuilt.
-    pub fn read_sleep(&self, stamp: FileStamp, path: &Path) -> Option<SleepFile> {
-        recto_platform::slow::pause(recto_platform::slow::Seam::SleepRead);
-        let file = self.dir().join(JOURNALS).join(record::sleep_file_name(stamp, path));
-        let bytes = read_ours(&file, MAX_SLEEP_FILE_BYTES).ok().flatten()?;
-        match decode_sleep(&bytes, CURRENT_VERSION) {
-            Ok(sleep) if sleep.file.same_contents(stamp) && sleep.file.inode == stamp.inode => Some(sleep),
-            // A newer app's, which isn't this one's to touch.
-            Err(RecordError::Newer(_)) => None,
-            _ => {
-                let _ = std::fs::remove_file(&file);
-                None
-            }
-        }
-    }
-
     /// **Whether a journal on disk says a save is about to put a file of this identity in place,** read back from the file itself. A save checks this before its file's moved, so a crash after the move always finds the note it needs (review: "check the save marker again once it's on disk").
     pub fn journal_says_saving(&self, name: &str, target: FileStamp) -> bool {
         if !is_journal_name(name) {
@@ -1164,34 +1118,6 @@ fn prune_history(folder: &Path, kept_in_use: Option<&[String]>) {
                     .is_some_and(|name| in_use.iter().any(|used| used == name))
             });
         if may_go {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-}
-
-/// Sleep files are held to [`MAX_SLEEP_BYTES`] in all, oldest first, and 30 days: each can be rebuilt. A look at their sizes each time one's written, which is once for a tab going dormant.
-fn prune_sleep_files(folder: &Path) {
-    let now = std::time::SystemTime::now();
-    let mut files: Vec<(u64, PathBuf, u64)> = std::fs::read_dir(folder)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|entry| entry.file_name().to_str().is_some_and(record::is_sleep_name))
-        .filter_map(|entry| {
-            let meta = entry.metadata().ok()?;
-            let age = meta
-                .modified()
-                .ok()
-                .and_then(|modified| now.duration_since(modified).ok())
-                .map_or(0, |age| age.as_secs());
-            Some((age, entry.path(), meta.len()))
-        })
-        .collect();
-    files.sort_unstable_by_key(|(age, ..)| *age);
-    let mut total = 0u64;
-    for (age, path, bytes) in files {
-        total += bytes;
-        if age > CLOSED_JOURNAL_DAYS * 86_400 || total > MAX_SLEEP_BYTES {
             let _ = std::fs::remove_file(path);
         }
     }
@@ -1494,9 +1420,11 @@ pub fn notice_for(loaded: &Loaded) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    use super::sleep_files::{MAX_SLEEP_BYTES, prune_sleep_files};
     use super::*;
     use recto_session::TabId;
     use recto_session::record::{FileRecord, MAIN_KIND, PathField};
+    use recto_session::sleep::encode_sleep;
 
     fn state() -> (recto_testpdf::TempDir, StatePaths) {
         let root = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "rs");
@@ -2244,6 +2172,45 @@ mod tests {
         let lists = HashMap::from([(name.clone(), list.to_record())]);
         store.write_record(&restored.record, &PlaceDelta::default(), false).unwrap();
         store.verify(&restored.record, &lists).expect("it reads back");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// **Failure: an agent's sleep file is written as other bytes than it was measured at, or an unchanged one is written again.** An agent's file is
+    /// measured against agents' share of the hour before it's written, and handed to the store as those bytes ([`RecordStore::write_sleep_bytes`]), so
+    /// what the share counts is what reaches the drive; and nothing's written when the file there is those bytes already (the owner's "reduce SSD wear as
+    /// much as we can"). The person's route ([`RecordStore::write_sleep`]) writes the same file by the same name.
+    #[test]
+    fn a_sleep_file_handed_over_as_bytes_is_written_as_them_and_not_again() {
+        let (root, paths) = state();
+        let store = RecordStore::open(&paths, Flavor::App);
+        let file = root.join("doc.pdf");
+        std::fs::write(&file, b"contents").unwrap();
+        let stamp = file_stamp(&file).unwrap();
+        let sleep = SleepFile {
+            file: stamp,
+            file_pages: 3,
+            pages: 3,
+            list_seq: 0,
+            renderer_only: false,
+            version: None,
+            toc: recto_core::Toc::default(),
+            usual: Some((612.0, 792.0)),
+            sizes: Vec::new(),
+            pictures: Vec::new(),
+        };
+        let measured = encode_sleep(&sleep);
+        let on_disk = root.join("session").join(JOURNALS).join(record::sleep_file_name(stamp, &file));
+        assert_eq!(
+            store.write_sleep_bytes(&file, stamp, &measured),
+            measured.len() as u64,
+            "says it wrote what it was handed"
+        );
+        assert_eq!(std::fs::read(&on_disk).unwrap(), measured, "and wrote exactly that");
+        assert_eq!(store.read_sleep(stamp, &file), Some(sleep.clone()), "which reads back as the file");
+        let wrote = store.wrote_bytes();
+        assert_eq!(store.write_sleep_bytes(&file, stamp, &measured), 0, "unchanged, so nothing's written");
+        assert_eq!(store.write_sleep(&file, &sleep), 0, "nor by the person's route, which makes the same bytes");
+        assert_eq!(store.wrote_bytes(), wrote, "and nothing reached the drive");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

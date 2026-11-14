@@ -74,7 +74,7 @@ impl Reader {
             },
             "documents_held": self.docs.views.len(),
             "left_picture_bytes": self.docs.views.values().filter_map(|doc| doc.drawing.left_pictures.as_ref()).flatten().map(|picture| picture.bgra.len()).sum::<usize>(),
-            "last_wake": self.wake.last_wake().map(|wake| json!({ "tab": wake.tab, "from_sleep": wake.from_sleep, "first_frame_us": wake.first_frame_us, "sharp_us": wake.sharp_us, "blank_frames": wake.blank_frames, "had": wake.had.word(), "sleep_pictures": wake.sleep_pictures, "sleep_in_view": wake.sleep_in_view, "bare_with_picture": wake.bare_with_picture })),
+            "last_wake": self.wake.last_wake().map(|wake| json!({ "tab": wake.tab, "from_sleep": wake.from_sleep.is_some(), "first_frame_us": wake.first_frame_us, "sharp_us": wake.sharp_us, "blank_frames": wake.blank_frames, "had": wake.had.word(), "sleep_pictures": wake.sleep_pictures, "sleep_in_view": wake.sleep_in_view, "bare_with_picture": wake.bare_with_picture })),
             "sleep_draws": super::sleep_draw::SleepDraws::report(self),
             "window_open": self.window_open,
             "selection": self.pointer.selecting.report(),

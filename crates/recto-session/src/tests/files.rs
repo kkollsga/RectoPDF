@@ -40,6 +40,9 @@ fn a_changed_file_goes_on_saying_so_when_its_read() {
     assert_eq!(s.tabs().tab_notice(a), None);
     // With edits, being the same again is the news.
     s.tap(a).unwrap();
+    // Read again on the way, as what was read of the version before went when it was found changed; the test's file isn't there, so its stamp is put back as
+    // a real read would have it.
+    s.apply_file_status(a, FileStatus::Same(now));
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
     let was = s.tabs().own_stamp(a);
     s.apply_file_status(a, FileStatus::Changed(FileStamp { size: 9, ..now }));
