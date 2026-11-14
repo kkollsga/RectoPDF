@@ -341,6 +341,22 @@ pub(crate) fn may_write(inner: &Inner) -> bool {
     false
 }
 
+/// **The one question a sleep file's writer asks of the record, and nothing else:** [`may_write`], asked as each write is about to go. The sleeper's writes
+/// take this and not any closure, so none can be made without asking; it's built only by [`asks`].
+pub(crate) struct KeepsRecord<'a>(&'a Inner);
+
+impl KeepsRecord<'_> {
+    /// Whether this copy may write now ([`may_write`]).
+    pub(crate) fn may_write(&self) -> bool {
+        may_write(self.0)
+    }
+}
+
+/// The question, for the sleeper's writes ([`KeepsRecord`]).
+pub(crate) fn asks(inner: &Inner) -> KeepsRecord<'_> {
+    KeepsRecord(inner)
+}
+
 /// **The app's side of carrying out a step:** the try's thread to tell, when a try is back, and what the host is told once the call's over.
 struct Carrier<'a> {
     desk: &'a Desk<'a>,

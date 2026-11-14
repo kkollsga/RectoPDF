@@ -124,11 +124,9 @@ Inner::pub fn bar_now(&self) -> Vec<crate::menus::MenuModel>
 Inner::pub fn begin_restore(self: &Arc<Self>)
 Inner::pub fn can_save(&self) -> bool
 Inner::pub fn carry_out(&self, out: Option<crate::lifecycle::Out>)
-Inner::pub fn check_woken_files(&self)
 Inner::pub fn close_answered(self: &Arc<Self>, tab: u32, choice: CloseChoice) -> HostAction
 Inner::pub fn close_prompt(&self) -> ClosePrompt
 Inner::pub fn dismiss_selection_notice(&self)
-Inner::pub fn dormancy_due(&self) -> Option<Vec<TabId>>
 Inner::pub fn forget_a_quiet_copy(&self)
 Inner::pub fn gather_record(&self) -> (SessionRecord, PlaceDelta)
 Inner::pub fn go_dormant(&self, tabs: &[TabId], why: Why) -> usize
@@ -137,7 +135,6 @@ Inner::pub fn hand_off_cancelled(&self)
 Inner::pub fn hand_off_check(&self) -> HandOffCheck
 Inner::pub fn hand_off_quit_now(&self) -> bool
 Inner::pub fn has_setting(&self, id: &str) -> bool
-Inner::pub fn look_at_budget(&self)
 Inner::pub fn memory_pressure(&self, critical: bool)
 Inner::pub fn menu_item_enabled(&self, id: String) -> bool
 Inner::pub fn note_input(&self)
@@ -149,7 +146,6 @@ Inner::pub fn qa_session_verb(&self, verb: &str, value: &str) -> Option<Result<(
 Inner::pub fn quit_requested(self: &Arc<Self>)
 Inner::pub fn quit_stayed(&self)
 Inner::pub fn ready(&self, open: &[PathBuf])
-Inner::pub fn rearm_dormancy(&self)
 Inner::pub fn recent_files(&self) -> Vec<RecentFile>
 Inner::pub fn record_report(&self) -> Value
 Inner::pub fn restore_patience_over(&self)
@@ -177,11 +173,7 @@ Inner::pub fn window_opened(&self)
 Inner::pub fn window_replaced(&self)
 Inner::pub(crate) fn carry_out_quit(self: &Arc<Self>, out: Option<Out>)
 Inner::pub(crate) fn carry_out_quit_answer(&self, out: Out)
-Inner::pub(super) fn give_sleep_view(&self, engine: &recto_reader::Engine, id: TabId, back: Option<(SleepFacts, SleepMaterial)>)
-Inner::pub(super) fn queue_those_leaving(&self, shown: TabId) -> Option<(SleepFacts, SleepMaterial)>
-Inner::pub(super) fn sleep_at_flush(&self, asked: Option<app::Asked>, until: Instant)
-Inner::pub(super) fn start_sleep_writer(&self)
-Inner::pub(super) fn write_sleep_for(&self, id: TabId, by: By) -> Option<Outcome>
+Inner::pub(super) fn starts_sleep_writer(&self) -> StartsWriter<'_>
 LaunchFacts (pub struct)
 LaunchFacts::pub fn first_frame_shown(&self, updates: &recto_update::updater::Updater)
 LaunchFacts::pub fn note(&self, version: String, dev_version: Option<String>, bundle_path: String, system_version: String)
