@@ -2,17 +2,17 @@
 # new-feature-test: proves tools/new-feature.sh on a copy of the tree, and tools/doc-paths.sh on a page made to fail. Run after changing either; check.sh
 # runs it in a full run when they change (tool_tests_for, tools/check-scope.sh).
 #
-#   tools/new-feature-test.sh            with the build: clippy on the two crates the scaffold touches, through the queue (about a minute warm)
-#   NEW_FEATURE_TEST_BUILD=0 tools/new-feature-test.sh    everything but the build, in a few seconds
+#   tools/new-feature-test.sh                              a few seconds: no build, since recto-agent's and recto-app's own tests compile the
+#                                                          templates (`scaffold_template`), and the scaffold only puts a name in them
+#   NEW_FEATURE_TEST_BUILD=1 tools/new-feature-test.sh     also clippy on the two crates of a scaffolded copy, through the queue, into the checkout's
+#                                                          target (it leaves that copy's artifacts there: about a minute warm)
 #
-# The copy is the committed tree with the working copies of the scripts under test, at one fixed place under target/ (so cargo's artifacts for it are
-# reused run to run, not made anew under a new name each time), and goes when the test ends.
+# The copy is the committed tree with the working copies of the scripts and templates under test, in a temp folder of its own, gone when the test ends.
 set -uo pipefail
 SOURCE="$(cd "$(dirname "$0")/.." && pwd)"
 target_dir=${CARGO_TARGET_DIR:-target}
 case "$target_dir" in /*) ;; *) target_dir="$SOURCE/$target_dir" ;; esac
-place="$target_dir/new-feature-test"
-tree="$place/tree"
+tree=$(mktemp -d "${TMPDIR:-/tmp}/new-feature-test.XXXXXX")
 trap 'rm -rf "$tree"' EXIT
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t GIT_CONFIG_GLOBAL=/dev/null
 fails=0
@@ -20,9 +20,10 @@ check() { # name, expected, actual
   if [ "$2" = "$3" ]; then echo "ok    $1"; else echo "FAIL  $1: expected [$2], got [$3]"; fails=$((fails + 1)); fi
 }
 
-rm -rf "$tree" && mkdir -p "$tree"
 git -C "$SOURCE" archive HEAD | tar -x -C "$tree"
-for script in new-feature.sh doc-paths.sh doc-paths.py; do cp "$SOURCE/tools/$script" "$tree/tools/$script"; done
+for script in new-feature.sh doc-paths.sh doc-paths.py new-feature/command.rs new-feature/headless.rs; do
+  mkdir -p "$tree/tools/$(dirname "$script")" && cp -p "$SOURCE/tools/$script" "$tree/tools/$script"
+done
 cd "$tree" || exit 1
 git init -q && git add -A && git commit -qm base
 
@@ -34,11 +35,12 @@ check "and one marked line in each of two shared files, nothing else" \
   "crates/recto-agent/src/commands/mod.rs crates/recto-app/src/core/headless/mod.rs" "$(git diff --name-only | tr '\n' ' ' | sed 's/ $//')"
 check "each a mod line" "1 1" "$(git diff -U0 crates/recto-agent/src/commands/mod.rs | grep -c '^+pub mod demo_feature; // new-feature: demo_feature') $(git diff -U0 crates/recto-app/src/core/headless/mod.rs | grep -c '^+mod demo_feature; // new-feature: demo_feature')"
 check "the tree is in rustfmt's layout" "0" "$(cargo fmt --all --check >/dev/null 2>&1; echo $?)"
-check "a test at each tier says what to fill in" "4" "$(cat crates/recto-agent/src/commands/demo_feature.rs crates/recto-app/src/core/headless/demo_feature.rs | grep -c 'fn fill_me_in_demo_feature_')"
+check "a test at each tier, and one for its decisions, says what to fill in" "5" "$(cat crates/recto-agent/src/commands/demo_feature.rs crates/recto-app/src/core/headless/demo_feature.rs | grep -c 'fn fill_me_in_demo_feature_')"
 case "$out" in *"FEATURES.md"*"tools/new-feature.sh --remove demo_feature"*) check "it prints the checklist" ok ok ;; *) check "it prints the checklist" ok "$out" ;; esac
 check "a second time is refused, changing nothing" "1 4" "$(tools/new-feature.sh demo_feature >/dev/null 2>&1; echo $?) $(git status --porcelain | grep -c .)"
 check "a name that isn't a tag is refused" "2" "$(tools/new-feature.sh Demo-Feature >/dev/null 2>&1; echo $?)"
-if [ "${NEW_FEATURE_TEST_BUILD:-1}" != 0 ]; then
+check "nothing of the template's own is in it" "0" "$(cat crates/recto-agent/src/commands/demo_feature.rs crates/recto-app/src/core/headless/demo_feature.rs | grep -c 'template-only\|scaffold_template\|new_feature\|NewFeature')"
+if [ "${NEW_FEATURE_TEST_BUILD:-0}" = 1 ]; then
   # The two crates it touches, their tests included, with the gate's lints. Through the queue, into the checkout's target so its dependencies are reused.
   built=$(CARGO_TARGET_DIR="$target_dir" HEAVY_CLASS=quick "$SOURCE/tools/sysguard/heavy.sh" \
     cargo clippy --locked -p recto-agent -p recto-app --all-targets -- -D warnings 2>&1); rc=$?
@@ -47,6 +49,21 @@ if [ "${NEW_FEATURE_TEST_BUILD:-1}" != 0 ]; then
 fi
 tools/new-feature.sh --remove demo_feature >/dev/null
 check "--remove leaves the tree as it was" "" "$(git status --porcelain)"
+
+# Failure (review): --remove takes a file it didn't make, or another feature's line whose name starts with this one's; a name that is a keyword, a
+# module already there, or a folder already there makes a tree that doesn't build or overwrites what was there.
+tools/new-feature.sh --remove find >/dev/null 2>&1
+check "--remove of a name it didn't make takes nothing" "" "$(git status --porcelain)"
+tools/new-feature.sh page_labels >/dev/null
+tools/new-feature.sh --remove page >/dev/null 2>&1
+check "--remove of a name that starts another's leaves the other's lines" "1 1" "$(grep -c 'mod page_labels; // new-feature: page_labels' crates/recto-agent/src/commands/mod.rs) $(grep -c 'mod page_labels; // new-feature: page_labels' crates/recto-app/src/core/headless/mod.rs)"
+tools/new-feature.sh --remove page_labels >/dev/null
+check "a keyword is refused" "2" "$(tools/new-feature.sh type >/dev/null 2>&1; echo $?)"
+check "a module that's there is refused" "1" "$(tools/new-feature.sh find >/dev/null 2>&1; echo $?)"
+mkdir -p crates/recto-agent/src/commands/thing && touch crates/recto-agent/src/commands/thing/mod.rs
+check "a folder that's there is refused" "1" "$(tools/new-feature.sh thing >/dev/null 2>&1; echo $?)"
+rm -rf crates/recto-agent/src/commands/thing
+check "and none of them changed anything" "" "$(git status --porcelain)"
 
 # Failure: a how-to page names a file or a test that a rename took away, and the check says nothing.
 printf 'See `crates/recto-agent/src/lib.rs`, `execute` and `tools/check.sh --quick`.\n' > good.md

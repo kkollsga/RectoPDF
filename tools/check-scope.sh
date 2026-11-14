@@ -124,13 +124,13 @@ ci_base() {
 
 # Which of the tools' own tests a changed file under TOOLS_PATHS needs, as words (ratchet, hygiene, check, feature) in `tool_tests`. Each test holds the tool it is named
 # for: ratchet-test.sh the ratchet, target-hygiene-test.sh target-hygiene.sh, check-test.sh check.sh and everything it copies into its throwaway repository
-# (the scope, times, rerun, like-ci and push-main scripts, the hooks, the queue), new-feature-test.sh the scaffold and doc-paths.sh (it builds the
-# two crates the scaffold touches, through the queue). A file mapped to none of them runs the first three, as it did before.
+# (the scope, times, rerun, like-ci and push-main scripts, the hooks, the queue), new-feature-test.sh the scaffold and doc-paths.sh (seconds: the
+# templates themselves are compiled by the crates' tests). A file mapped to none of them runs the first three, as it did before.
 tool_tests_for() {
   case "$1" in
     tools/ratchet.sh | tools/ratchet/* | tools/ratchet-test.sh) tool_tests="ratchet" ;;
     tools/target-hygiene.sh | tools/target-hygiene-test.sh) tool_tests="hygiene" ;;
-    tools/new-feature.sh | tools/new-feature-test.sh | tools/doc-paths.sh | tools/doc-paths.py) tool_tests="feature" ;;
+    tools/new-feature.sh | tools/new-feature/* | tools/new-feature-test.sh | tools/doc-paths.sh | tools/doc-paths.py) tool_tests="feature" ;;
     tools/check.sh | tools/check-*.sh | tools/push-main.sh | tools/hooks/* | tools/sysguard/heavy.sh) tool_tests="check" ;;
     *) tool_tests="ratchet hygiene check" ;;
   esac

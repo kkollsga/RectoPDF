@@ -36,6 +36,11 @@ pub mod updates;
 pub mod view;
 pub mod words;
 
+// The scaffold's template (`tools/new-feature.sh`), compiled with the tests so a change that would break what it makes fails here.
+#[cfg(test)]
+#[path = "../../../../tools/new-feature/command.rs"]
+pub mod scaffold_template;
+
 use crate::Code;
 use crate::table::{self, Access, Spec};
 use crate::{Actor, AgentError, Command, Event, Level, Runs, SessionAccess, TabRef};
