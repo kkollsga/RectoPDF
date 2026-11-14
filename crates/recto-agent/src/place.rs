@@ -80,6 +80,15 @@ pub fn refuses<L: DocLoader>(session: &Session<L>, actor: Actor, from: FromPlace
         }
 }
 
+/// **Whether Back and Forward are there, for `actor`:** the person's as the trail has them; an agent's as [`refuses`] would let it go, so whether
+/// they're there says nothing of a place withheld from it, or of whether a jump from one went to where it was (the second review, D-2: a jump to it
+/// leaves a mark only, which the person's Back goes past, and one elsewhere a stop). `where`'s answer and an agent's palette ask it.
+pub(crate) fn trail_offers<L: DocLoader>(session: &Session<L>, actor: Actor, id: TabId) -> (bool, bool) {
+    let (back, forward) = session.tabs().can_go_back_and_forward(id);
+    let refused = |back| refuses(session, actor, FromPlace::Trail { back }, id);
+    (back && !refused(true), forward && !refused(false))
+}
+
 /// The state record's sizes and counts, which an answer gives as the host says them.
 const RECORD_NUMBERS: [&str; 6] = ["record_bytes", "journal_bytes", "writes", "appends", "wrote_bytes", "edited_tabs"];
 

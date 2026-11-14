@@ -224,6 +224,23 @@ fn an_agent_is_told_the_same_of_two_compared_protected_documents() {
     assert_eq!(one.len(), two.len());
 }
 
+/// What `heard` gives, with each page's `page_drawn` once, in the order first heard: how many of a page's tiles are drawn after a jump follows what the
+/// page view had drawn already and how the machine coalesces their notes, not the documents (a remainder, `docs/engineering/opening.md`).
+fn pages_heard(watching: &mut crate::testkit::watching::Watching) -> Vec<Value> {
+    let mut seen = Vec::new();
+    heard(watching)
+        .into_iter()
+        .filter(|event| {
+            event["event"] != "page_drawn" || {
+                let page = (event["tab"].clone(), event["page"].clone());
+                let first = !seen.contains(&page);
+                seen.push(page);
+                first
+            }
+        })
+        .collect()
+}
+
 /// What a watcher heard, less Find's word that a search is running and has finished: each edit to the plain tab finds the person's query again, and how
 /// many of those runs are told apart follows how a busy machine's session thread takes them, not the documents (under `--like-ci` the twins differed in it in each of 10 rounds, 2026-11-14). Find's
 /// news about a tab whose place is withheld is held back whole ([`recto_agent::withheld`]); its hits are the plain document's.
@@ -443,7 +460,7 @@ fn agent_told_through_sequences(pages: usize, word: &str) -> Vec<String> {
     let look = |app: &HeadlessApp, watching: &mut crate::testkit::watching::Watching, step: &str| {
         let mut told = Vec::new();
         let p = format!("#{plain_tab}");
-        told.push(format!("{step} heard: {:?}", heard(watching)));
+        told.push(format!("{step} heard: {:?}", pages_heard(watching)));
         for (level, line) in [
             (Level::ReadOnly, vec!["compare"]),
             (Level::ReadOnly, vec!["where", "--tab", &p]),

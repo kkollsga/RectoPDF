@@ -316,7 +316,7 @@ mod tests {
         fn ops_ready(&self) {}
         fn note_changed(&self) {}
         fn page_moved(&self) {}
-        fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
+        fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>, _asked: u64) {}
     }
 
     /// Makes a pane's page view show a tab of 100 pages with no thread of its own, so what it's asked is applied only by the asks themselves.

@@ -153,13 +153,13 @@ impl Cmd for Find {
     // An agent's query waits for its hits; the person's returns at once, its step kept for when its hit is known, so it's run on the window's session
     // thread as a keystroke.
     const WAITS: bool = false;
-    /// A step goes to the next hit from where the reader is, and a hit by its index is gone to from there for Back: from the place. A query, opening and
-    /// closing Find, and looking at it start from nothing of it.
+    /// A step goes to the next hit from where the reader is: from the place. A hit by its index is an absolute move, as `goto` is: it lets a withheld
+    /// place go, and the stop it leaves for Back is marked (the second review, D-1). A query, opening and closing Find, and looking at it start from
+    /// nothing of it.
     fn starts_from(&self) -> super::FromPlace {
         match self.ask {
             FindAsk::Step { .. } => super::FromPlace::PlaceOrHit,
-            FindAsk::Hit(_) => super::FromPlace::Place,
-            FindAsk::Query(_) | FindAsk::Open | FindAsk::Close | FindAsk::Look => super::FromPlace::No,
+            FindAsk::Query(_) | FindAsk::Open | FindAsk::Close | FindAsk::Look | FindAsk::Hit(_) => super::FromPlace::No,
         }
     }
     /// None held: it's in the document being read, which `execute` asks about for a protected one.

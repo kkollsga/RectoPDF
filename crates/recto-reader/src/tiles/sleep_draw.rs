@@ -372,6 +372,7 @@ impl SleepDraws {
             file,
             source_page,
             generation,
+            asked: super::place::place_stamp(),
             kind,
         })
     }

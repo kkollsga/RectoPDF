@@ -607,7 +607,7 @@ pub fn step<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, forward:
     let mut hit = None;
     finding.with_results(&mut |results| hit = results.step(forward, place).cloned().zip(results.tab));
     let (hit, tab) = hit?;
-    went_to(access, tab, &hit, going);
+    went_to(access, tab, &hit, going, true);
     Some((tab, hit))
 }
 
@@ -639,16 +639,17 @@ pub fn choose<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, index:
     let mut hit = None;
     finding.with_results(&mut |results| hit = results.choose(index).cloned().zip(results.tab));
     let (hit, tab) = hit?;
-    went_to(access, tab, &hit, Going::Jump(by));
+    went_to(access, tab, &hit, Going::Jump(by), false);
     Some((tab, hit))
 }
 
-fn went_to<A: crate::SessionAccess>(access: &A, tab: u32, hit: &Hit, going: Going) {
+/// `stepped`: gone to by a step from the place or the hit gone to last, not chosen by its index.
+fn went_to<A: crate::SessionAccess>(access: &A, tab: u32, hit: &Hit, going: Going, stepped: bool) {
     access.with(|s| {
         s.viewing_mut().set_find_current(Some((hit.page, hit.start)), Some(tab));
         if s.tabs().active().map(|id| id.0) == Some(tab) {
             let id = TabId(tab);
-            // From a withheld place, the hit gone to says where that was, so it stays withheld (S2's round). Only the person's step comes here from
+            // From a withheld place, the hit stepped to says where that was, so it stays withheld (S2's round). Only the person's step comes here from
             // one: an agent's is refused before it starts ([`crate::place`]).
             let from_withheld = recto_session::compare::place_withheld(s, id);
             match going {
@@ -662,7 +663,9 @@ fn went_to<A: crate::SessionAccess>(access: &A, tab: u32, hit: &Hit, going: Goin
                     }
                 }
             }
-            if from_withheld {
+            // A step lands where it does from the place, so the place stays withheld, with or without its jump; a hit chosen by its index is an absolute
+            // move, which let it go (D-1).
+            if from_withheld && stepped {
                 recto_session::compare::withhold_place(s, id);
                 s.viewing_mut().withhold_find_current();
             }

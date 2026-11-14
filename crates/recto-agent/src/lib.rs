@@ -1098,9 +1098,9 @@ pub fn check_condition<A: SessionAccess>(access: &A, condition: Condition, tab: 
     if !matches!(condition, Condition::TabOpen | Condition::TabClosed) && access.with(|s| select(s, tab).is_ok_and(|id| s.tabs().withheld_from_agents(id))) {
         return ConditionState::Failed(protected_refusal());
     }
-    // Which of its pages a tab that follows a protected one draws says where that one is (S2).
+    // Which of its pages a tab that follows a protected one draws says where that one is (S2): refused as the place rule's, not the document's (D-4).
     if condition == Condition::PageDrawn && access.with(|s| select(s, tab).is_ok_and(|id| recto_session::compare::place_withheld(s, id))) {
-        return ConditionState::Failed(protected_refusal());
+        return ConditionState::Failed(place::place_withheld_refusal());
     }
     // Looks at files, so it goes outside the lock.
     if condition == Condition::IndexingDone {
@@ -1206,7 +1206,7 @@ fn where_json<L: DocLoader>(session: &Session<L>, actor: Actor, id: TabId) -> Va
     // A tab whose place follows a protected one's, or was left by it (S2): its own length and words are its own, where it is isn't.
     let place = place::place_for(session, actor, tab);
     let label = place.as_ref().and_then(place::Place::label);
-    let (can_go_back, can_go_forward) = tabs.can_go_back_and_forward(id);
+    let (can_go_back, can_go_forward) = place::trail_offers(session, actor, id);
     let undone = lists.has_undone_owner_steps(id);
     let mut out = json!({
         "tab": id.0,

@@ -342,9 +342,15 @@ pub fn session_thread(inner: &Arc<Inner>) {
             }
             // What was asked before this includes any file being read for it: let go at the end of this call if nothing's being read, or once the last read's done.
             CoreCall::Flush(marker) => reads.flushes.push(marker),
-            CoreCall::Page(page, failure, tab) => {
-                host.session
-                    .with_session(|session| session.mail_mut().note_drawn(DrawNote { tab, page, failure }));
+            CoreCall::Page(page, failure, tab, asked) => {
+                // The draw's one source: one asked of the view before a release of a withheld place goes unnoted and unannounced, for `wait` and
+                // every watcher alike (S-3). The page itself is drawn as ever.
+                if !host
+                    .session
+                    .with_session(|session| session.mail_mut().note_drawn_asked(DrawNote { tab, page, failure }, asked))
+                {
+                    continue;
+                }
                 events.push(match failure {
                     None => Event::PageDrawn { tab, page: page + 1 },
                     Some(code) => Event::PageFailed { tab, page: page + 1, code },

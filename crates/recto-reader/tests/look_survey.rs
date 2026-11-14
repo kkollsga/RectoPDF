@@ -360,7 +360,7 @@ impl recto_reader::engine::EngineEvents for Quiet {
     fn ops_ready(&self) {}
     fn note_changed(&self) {}
     fn page_moved(&self) {}
-    fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
+    fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>, _asked: u64) {}
 }
 
 /// `wakes`: for each file of `RECTO_WAKE_LIST` (a path a line, its pages each a page to measure, two of them for a spread with `2up` after the path), on dark paper, a wake onto a sleep picture of the pages at the top, to the first tile sharper than it and to a sharp tile on every page in view, ten times each, p50 and worst. A wake's first job for a page is a tile, the sleep picture standing for its preview, so a page with no images is decided from a 128 px picture drawn for it where `main` took a page of text's look: run on `main` and on the branch, release, the load written down:

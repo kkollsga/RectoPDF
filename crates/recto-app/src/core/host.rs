@@ -193,16 +193,29 @@ impl AppHost {
             .inner()
             .ok_or_else(|| AgentError::new(Code::BUSY, "The app is going away.", recto_agent::exit::BUSY))?;
         // Nothing of a tab opened with a password, whose name may have been read with it, and files opened lately only at `recto recent`'s level.
+        // In one hold of the session: the tabs left out, and Back and Forward as the gate has them for this actor, so whether they're offered says
+        // nothing of a withheld place (D-2).
+        let (hidden_tabs, hidden_commands) = self.session.with_session(|session| {
+            let hidden_tabs = session
+                .tabs()
+                .iter()
+                .filter(|tab| session.tabs().withheld_from_agents(tab.id))
+                .map(|tab| tab.id.0)
+                .collect();
+            let reading = session.tabs().active();
+            let hidden_commands = [(true, "go.back"), (false, "go.forward")]
+                .into_iter()
+                .filter(|(back, _)| {
+                    reading.is_some_and(|id| recto_agent::place::refuses(session, actor, recto_agent::commands::FromPlace::Trail { back: *back }, id))
+                })
+                .map(|(_, menu)| menu)
+                .collect();
+            (hidden_tabs, hidden_commands)
+        });
         let whom = crate::palette::ForWhom {
-            hidden_tabs: self.session.with_session(|session| {
-                session
-                    .tabs()
-                    .iter()
-                    .filter(|tab| session.tabs().withheld_from_agents(tab.id))
-                    .map(|tab| tab.id.0)
-                    .collect()
-            }),
+            hidden_tabs,
             recent: recto_agent::table::by_tag("recent").is_some_and(|spec| actor.may(spec.access)),
+            hidden_commands,
         };
         let rows = palette::found_for(&inner, query.as_deref().unwrap_or(""), &whom);
         // A tab's name is the file's, so it's marked as the document's words.
@@ -341,8 +354,8 @@ impl EngineEvents for EngineHooks {
         self.core.push(CoreCall::Reconcile);
     }
 
-    fn page_drawn(&self, tab: u32, page: u32, failure: Option<&'static str>) {
-        self.core.push(CoreCall::Page(page, failure, TabId(tab)));
+    fn page_drawn(&self, tab: u32, page: u32, failure: Option<&'static str>, asked: u64) {
+        self.core.push(CoreCall::Page(page, failure, TabId(tab), asked));
     }
 
     fn file_length(&self, tab: u32, pages: u32, version: u64) {

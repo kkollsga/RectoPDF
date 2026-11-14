@@ -279,11 +279,13 @@ impl Cmd for Compare {
 fn compare<A: SessionAccess>(access: &A, actor: Actor, asked: &Compare, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     // An agent's synced comparison with a protected pane is refused in the same hold of the session as the change, after any pane's file is read, so a
     // person's ⌘-click can't come between the two (S2's round).
-    let refuse = |s: &Session<A::Loader>| {
-        if !actor.sees_protected() && would_sync_a_withheld_pane(s, asked) {
-            return Err(protected_refusal());
-        }
-        Ok(())
+    let refuse = |s: &Session<A::Loader>| match would_sync_a_withheld_pane(s, asked) {
+        Some(protected) if !actor.sees_protected() => Err(if protected {
+            protected_refusal()
+        } else {
+            crate::place::place_withheld_refusal()
+        }),
+        _ => Ok(()),
     };
     let mut changed = false;
     match asked {
@@ -354,12 +356,14 @@ fn compare<A: SessionAccess>(access: &A, actor: Actor, asked: &Compare, events: 
 /// protected one's place and stops where it ends, so an agent that made one would read that document's place and length in the other. Decided on the
 /// comparison as it would be after the change: put side by side and synced at once, synced afterwards, or a tab added to a synced one (synced scroll
 /// stays on through a change of tabs). Taking a tab out, separate scroll, and side by side with separate scroll make no pane follow, and are allowed.
-/// Only an agent is asked: the person's own comparison is theirs.
-fn would_sync_a_withheld_pane<L: DocLoader>(s: &Session<L>, asked: &Compare) -> bool {
+/// Only an agent is asked: the person's own comparison is theirs. A pane whose place is withheld, left by following a protected one, is such a pane
+/// too (the second review, S-1): what follows it says where following left it. Says, for such a comparison, whether a pane's document is protected,
+/// for the refusal's code (`protected`, else `place_withheld`).
+fn would_sync_a_withheld_pane<L: DocLoader>(s: &Session<L>, asked: &Compare) -> Option<bool> {
     let synced_now = s.comparison().is_some_and(|comparison| comparison.synced);
     let panes_now = || s.comparison().map(|comparison| comparison.tabs.clone()).unwrap_or_default();
     let (synced, panes) = match asked {
-        Compare::Look | Compare::Off | Compare::Reading(_) | Compare::Sync(OnOff::Off) => return false,
+        Compare::Look | Compare::Off | Compare::Reading(_) | Compare::Sync(OnOff::Off) => return None,
         Compare::Sync(OnOff::On) => (true, panes_now()),
         Compare::Set { tabs, sync } => (
             sync.map_or(synced_now, OnOff::is_on),
@@ -367,10 +371,10 @@ fn would_sync_a_withheld_pane<L: DocLoader>(s: &Session<L>, asked: &Compare) -> 
         ),
         Compare::Toggle(selector) => match select(s, selector) {
             Ok(id) if s.comparison().is_some_and(|comparison| !comparison.contains(id)) => (synced_now, [panes_now(), vec![id]].concat()),
-            _ => return false,
+            _ => return None,
         },
     };
-    synced && panes.iter().any(|id| s.tabs().withheld_from_agents(*id))
+    (synced && recto_session::compare::synced_would_withhold(s, &panes)).then(|| panes.iter().any(|id| s.tabs().withheld_from_agents(*id)))
 }
 
 /// Synced scroll or separate, for the comparison there is. Says whether that's a change.

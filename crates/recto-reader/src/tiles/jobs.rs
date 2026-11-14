@@ -20,6 +20,9 @@ pub struct Job {
     pub file: PathBuf,
     pub source_page: u32,
     pub generation: u64,
+    /// **The place clock as it was planned** ([`super::place::place_stamp`]), under the page view's lock: a draw's end is told with it, so the session
+    /// can drop one asked of the view before a jump that let a place withheld from agents go (`recto_session`'s mail, the second review's S-3).
+    pub asked: u64,
     pub kind: JobKind,
 }
 
@@ -58,6 +61,8 @@ pub struct JobPlan {
     pub file: PathBuf,
     pub source_page: u32,
     pub generation: u64,
+    /// The place clock as it was planned: see [`Job::asked`].
+    pub asked: u64,
     pub(super) kind: PlanKind,
 }
 
@@ -87,6 +92,7 @@ impl JobPlan {
             file,
             source_page,
             generation,
+            asked,
             kind,
         } = self;
         let kind = match kind {
@@ -131,6 +137,7 @@ impl JobPlan {
             file,
             source_page,
             generation,
+            asked,
             kind,
         })
     }
@@ -252,6 +259,7 @@ pub(crate) mod surface_seam {
             file: std::path::PathBuf::from("/d/a.pdf"),
             source_page: 0,
             generation: 0,
+            asked: 0,
             kind: super::PlanKind::Draw {
                 scale: 4.0,
                 rect: crate::tiles::TileRect {
