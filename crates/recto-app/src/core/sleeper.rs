@@ -438,7 +438,7 @@ impl Sleeper {
         until: Instant,
         start_writer: StartsWriter<'_>,
     ) {
-        let agent = asked.filter(|asked| matches!(asked.by, recto_agent::Actor::Agent(_)));
+        let agent = asked.filter(|asked| asked.by.is_agent());
         if let Some(id) = on_hand.session.with_session(|session| session.tabs().active()) {
             let outcome = self.write_sleep_for(on_hand, store, keeps, id, agent.map_or(By::Flush, |asked| By::Asked(asked.by)), Some(until));
             if let Some(asked) = agent {

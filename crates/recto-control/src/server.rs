@@ -603,7 +603,7 @@ impl<H: Host> Loop<H> {
         let was = self.last_level;
         self.last_level = level;
         self.announced = None;
-        if level > was && self.pending.is_some_and(|pending| allowed(level, table::Access::At(pending))) {
+        if level.raises(was) && self.pending.is_some_and(|pending| allowed(level, table::Access::At(pending))) {
             self.pending = None;
         }
         self.publish(&Cleared::server_own(recto_agent::event::level_changed(level, was)));
@@ -674,7 +674,7 @@ impl<H: Host> Loop<H> {
         }
         // Where the user would see it, if they're watching the session's window. The app will show a prompt here instead.
         // Only for something higher than it's said since the level last changed, so a client asking in a loop, or alternating, can't fill the file these go to. A full disk or a closed pipe is no reason to fall over.
-        if self.announced.is_none_or(|said| wanted > said) && self.announcements_left > 0 {
+        if self.announced.is_none_or(|said| wanted.raises(said)) && self.announcements_left > 0 {
             self.announced = Some(wanted);
             self.announcements_left -= 1;
             let _ = writeln!(
@@ -684,7 +684,7 @@ impl<H: Host> Loop<H> {
                 wanted.name()
             );
         }
-        self.pending = Some(self.pending.map_or(wanted, |pending| pending.max(wanted)));
+        self.pending = Some(self.pending.map_or(wanted, |pending| pending.higher(wanted)));
         self.log.record(tag, level, "asked", &json!({ "level": wanted.name() }));
         match timeout_ms {
             None => self.answer(index, tag, &Ok(data)),

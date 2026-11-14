@@ -2089,7 +2089,10 @@ mod tests {
         assert!(text.starts_with("---\nname: recto\n"), "the front matter must come first");
         for name in skill::auto_approved() {
             let spec = TABLE.iter().find(|spec| spec.name == *name).unwrap_or_else(|| panic!("{name}"));
-            assert!(skill::needs(spec).is_some_and(|level| level <= Level::ReadOnly), "{name} isn't read-only");
+            assert!(
+                skill::needs(spec).is_some_and(|level| crate::actor::allowed(Level::ReadOnly, Access::At(level))),
+                "{name} isn't read-only"
+            );
             assert!(text.contains(&format!("Bash(recto {name}*)")), "{name}");
         }
     }

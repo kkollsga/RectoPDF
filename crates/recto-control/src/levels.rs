@@ -72,7 +72,7 @@ pub fn show(paths: &StatePaths, pending: Option<Level>) -> Value {
 
 /// The answer to `recto permission request`. It grants nothing: it says what the user has to do.
 pub fn request_answer(wanted: Level, have: Level) -> Value {
-    if have >= wanted {
+    if recto_agent::actor::allowed(have, recto_agent::table::Access::At(wanted)) {
         return json!({ "level": have.name(), "granted": true, "asked": false });
     }
     json!({
