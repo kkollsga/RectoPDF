@@ -285,6 +285,48 @@ impl Tool {
         }
     }
 
+    /// **What a copy has for the clipboard,** this tool's snapshot or else the selection's text in one of `engines`, as one offer, under a new number: the
+    /// types in order, and which are made only when a paste asks. What was offered before is gone from the clipboard now, its promise with it. The
+    /// bridge's `take_clipboard`.
+    pub fn take_offer(&self, engines: &[Engine]) -> Option<ClipboardOffer> {
+        let mut offered = lock(&self.ready).take().or_else(|| {
+            engines
+                .iter()
+                .find_map(|engine| engine.selection().take_copied())
+                .map(|copied| self.offer_text(copied.text))
+        })?;
+        offered.serial = self.serial.fetch_add(1, Ordering::SeqCst) + 1;
+        let offer = ClipboardOffer {
+            serial: offered.serial,
+            types: offered.items.iter().map(|item| item.uti().to_string()).collect(),
+            promised: offered
+                .items
+                .iter()
+                .filter(|item| matches!(item, ClipItem::Promised { .. }))
+                .map(|item| item.uti().to_string())
+                .collect(),
+        };
+        *lock(&self.offered) = Some(offered);
+        Some(offer)
+    }
+
+    /// **One type's bytes for the offer with this number,** once: one made with the copy is handed over and dropped from here; a promised one is made now,
+    /// as a paste asks for it. The bridge's `clipboard_data`.
+    pub fn offer_data(&self, serial: u64, uti: &str) -> Option<Vec<u8>> {
+        match self.data(serial, uti)? {
+            Data::Ready(bytes) => Some(bytes),
+            Data::Make(promise, cap) => extract::snapshot_svg(&promise.path, promise.page, promise.rect, promise.turns, promise.hidden, cap).ok(),
+        }
+    }
+
+    /// The clipboard has something else on it now: what the offer with this number promised is let go. The bridge's `clipboard_released`.
+    pub fn offer_released(&self, serial: u64) {
+        let mut offered = lock(&self.offered);
+        if offered.as_ref().is_some_and(|offered| offered.serial == serial) {
+            offered.take();
+        }
+    }
+
     /// A text copy, as one offer like any other.
     pub fn offer_text(&self, text: String) -> Offered {
         Offered {

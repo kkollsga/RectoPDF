@@ -47,6 +47,7 @@ mod selection;
 mod sidebar;
 mod sleep_counts;
 mod sleeping;
+mod snapshot_tool;
 mod system_takes;
 mod tabs;
 mod twins;
