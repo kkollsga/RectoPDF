@@ -113,8 +113,8 @@ fn a_watcher_hears_nothing_of_a_protected_documents_place_or_find() {
 }
 
 /// **Everything an agent is told while the person reads a protected file of `pages` pages saying `word`:** a watch on every group, at Read-only, then
-/// Control, then Full, each round the person reading and closing Find; at each level what `tabs`, `session show` and `sidebar` say; and the person
-/// closing the tab at the end.
+/// Control, then Full, each round the person reading and closing Find; at each level what `tabs`, `session show` and `sidebar` say; the person deleting
+/// page 4, which takes only in a document that has one, and what's heard and said then; and the person closing the tab at the end.
 fn agent_told(pages: usize, word: &str) -> Vec<String> {
     let disk = Disk::new();
     let file = protected(&disk, pages, word);
@@ -132,6 +132,13 @@ fn agent_told(pages: usize, word: &str) -> Vec<String> {
             told.push(format!("{level:?} {look:?}: {:?}", app.recto(level, look)));
         }
     }
+    // An edit whose taking depends on the document's length.
+    app.person(r##"{"cmd":"page_delete","tab":"#1","pages":"4"}"##);
+    app.settle();
+    told.push(format!("page 4 deleted: {:?}", watching.heard()));
+    for look in [&["tabs"][..], &["session", "show"], &["sidebar"]] {
+        told.push(format!("page 4 deleted {look:?}: {:?}", app.recto(Level::Full, look)));
+    }
     app.act(UiAction::Menu { id: "file.close".into() });
     app.settle();
     told.push(format!("closed: {:?}", watching.heard()));
@@ -141,8 +148,9 @@ fn agent_told(pages: usize, word: &str) -> Vec<String> {
 /// Failure (independent review of phase R, S1; the walk of events beside the commands' walk in `recto-agent`'s `policy_guards`): something of a document
 /// the person opened with its password reaches an agent that sends nothing about it, by an event (a page drawn, the place, Find's hits, its news while
 /// it runs) or a look at the session as a whole: an agent watching every group at every level, and looking with `tabs`, `session show` and `sidebar`,
-/// is told the same while the person opens, draws, turns to page 2 and 4, scrolls, Finds and closes a three-page protected document saying "Locked" as a
-/// five-page one saying "Hidden", where page 4 is past the end of one and Find finds three hits in one and none in the other.
+/// is told the same while the person opens, draws, turns to page 2 and 4, scrolls, Finds, deletes page 4 and closes a three-page protected document saying
+/// "Locked" as a five-page one saying "Hidden", where page 4 is past the end of one, so the delete takes in only the other (its `edited`, its undo, its
+/// `edits_changed` would tell), and Find finds three hits in one and none in the other.
 #[test]
 fn an_agent_is_told_the_same_of_two_protected_documents() {
     let (one, two) = (agent_told(3, "Locked"), agent_told(5, "Hidden"));

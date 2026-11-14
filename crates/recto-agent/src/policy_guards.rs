@@ -380,16 +380,22 @@ fn no_command_tells_an_agent_anything_of_a_protected_document() {
     assert!(differs.is_empty(), "told something of the protected document:\n{}", differs.join("\n"));
 }
 
-/// Failure (independent review of phase R, S1): the person's own command on a document they opened with its password is heard by a watcher with
-/// something read from it: the page it turned to, its length in an edit's news, Find at a hit, a draw. Every command, run as the person in each of
-/// [`ARRANGEMENTS`] on the two sessions whose protected document differs, is heard alike once its events are past the rule every event leaving for
+/// Failure (independent review of phase R, S1, and its follow-up on `edited`): the person's own command on a document they opened with its password is
+/// heard by a watcher with something read from it: the page it turned to, its length in an edit's news, whether an edit took (deleting page 10 takes in
+/// one twin and not the other), Find at a hit, a draw. Every command, and that delete, run as the person in each of [`ARRANGEMENTS`] on the two sessions
+/// whose protected document differs, is heard alike once its events are past the rule every event leaving for
 /// watchers meets ([`crate::withheld::for_agents`], applied where they leave, `recto_control::server::outlet`). What the person is told back isn't compared:
 /// it's theirs. The walk of what the person's window, its draws and the Finder announce, over the app's socket, is `recto-app`'s
 /// `an_agent_is_told_the_same_of_two_protected_documents`.
 #[test]
 fn no_persons_command_is_heard_with_anything_of_a_protected_document() {
     let mut differs = Vec::new();
-    for command in every_command() {
+    // Past the end of the shorter twin (9 pages) and not of the longer (11): an edit whose taking depends on the length.
+    let past_one_end = Command::from(commands::editing::PageDelete {
+        tab: "#1".into(),
+        pages: "10".into(),
+    });
+    for command in every_command().into_iter().chain([past_one_end]) {
         for arranged in ARRANGEMENTS {
             let (one, two) = (heard(1, &command, arranged), heard(2, &command, arranged));
             if one != two {
