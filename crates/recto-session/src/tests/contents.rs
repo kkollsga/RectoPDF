@@ -541,7 +541,11 @@ fn a_page_with_an_unsaved_turn_is_unplaced_and_has_no_band_to_leave() {
     let (mut s, id) = reading_page_two();
     view_reads(&mut s, id, 1, 1, 0.0);
     assert_eq!(current_of(&s), ["A"], "placed: the top of the view is at A");
+    let tops = |s: &Session<ThreeToAPage>| s.sidebar().rows.iter().filter(|row| row.kind == RowKind::Contents).map(|row| row.top).collect::<Vec<_>>();
+    // Recorded at today's values (the contents module's guard): the rows' places, before the turn and after it.
+    assert_eq!(tops(&s), [0, 300, 600, 0], "an unturned page's rows carry the file's places");
     s.edit_pages(id, |edits| edits.rotate(1, 1, 1)).unwrap();
+    assert_eq!(tops(&s), [0, 0, 0, 0], "a turned-unsaved page's rows are all at its top");
     assert_eq!(current_of(&s), ["C"], "unplaced: the last of the page wherever the view is");
     let band = reading_band(&s, s.tabs().tab(id).unwrap()).expect("a band");
     assert_eq!((band.lo, band.hi), (0, recto_core::TOP_SCALE + 1));
@@ -736,4 +740,65 @@ fn an_entry_clicked_near_the_end_stays_marked_until_a_scroll_by_hand_and_back_do
     s.jump(id, 2, 0.0).unwrap();
     assert!(s.step_as(id, true, Author::Owner).unwrap(), "back");
     assert_eq!(current_of(&s), ["B"], "Back goes by place: the later of two at one place");
+}
+
+/// Every case `contents_note` words, as one log: verdicts x what's made x which list the tab chooses x whether the file has entries of its own.
+fn note_words() -> String {
+    use recto_core::verdict::BadReason::*;
+    let verdicts = [
+        ContentsVerdict::Fine,
+        ContentsVerdict::Missing,
+        ContentsVerdict::LooksBad(GoNowhere),
+        ContentsVerdict::LooksBad(OnePage),
+        ContentsVerdict::LooksBad(TooFew),
+        ContentsVerdict::LooksBad(StopsEarly),
+        ContentsVerdict::LooksBad(SkipsMost),
+        ContentsVerdict::LooksBad(PiledOnOnePage),
+        ContentsVerdict::LooksBad(Misnested),
+    ];
+    let toc = || Arc::new(Toc::from_lines(&[], false));
+    let views = [
+        None,
+        Some(GeneratedView::Making),
+        Some(GeneratedView::Failed("It ran out of room.")),
+        Some(GeneratedView::NoneFound),
+        Some(GeneratedView::NotKept),
+        Some(GeneratedView::Ready(toc())),
+    ];
+    let mut out = String::new();
+    for verdict in verdicts {
+        for view in &views {
+            for choose in [false, true] {
+                for own in [0usize, 7] {
+                    let name = view.as_ref().map_or("none", |view| match view {
+                        GeneratedView::Making => "making",
+                        GeneratedView::Failed(_) => "failed",
+                        GeneratedView::Ready(_) => "ready",
+                        GeneratedView::NoneFound => "none-found",
+                        GeneratedView::NotKept => "not-kept",
+                    });
+                    let said = contents_note(verdict, view.as_ref(), choose, own).map(|(text, hover, action)| (text, hover, action.map(ContentsAction::id)));
+                    out.push_str(&format!("{verdict:?} | {name} | chosen={choose} | own={own}\n  {said:?}\n"));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Failure: the contents' note changes a word, a hover or what a tap does while its code moves (the owner's "quiet line" and its hover are Rust's words, read by
+/// the person and by an agent's `sidebar`). `RECTO_CONTENTS_NOTE_GOLDEN=write` rewrites it, for a change to the words reviewed as one.
+#[test]
+fn the_contents_note_says_the_same_words_in_every_case() {
+    let now = note_words();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tests/contents_note_words.txt");
+    if std::env::var("RECTO_CONTENTS_NOTE_GOLDEN").as_deref() == Ok("write") {
+        std::fs::write(&path, &now).unwrap();
+        return;
+    }
+    let then = std::fs::read_to_string(&path).unwrap();
+    if now != then {
+        let first = now.lines().zip(then.lines()).position(|(a, b)| a != b);
+        panic!("the note's words changed, first at line {first:?}.\nNow:\n{now}");
+    }
 }
