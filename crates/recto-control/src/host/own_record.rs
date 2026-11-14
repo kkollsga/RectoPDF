@@ -211,6 +211,9 @@ mod tests {
                 "ok"
             };
             assert_eq!(said, expected, "{actor:?}");
+            // Refused, the owner's edit is still in the tab; let through, the restore replaced the session with what was saved before it.
+            let edited = host.run(Actor::Person, &parse(r##"{"cmd":"where","tab":"#1"}"##).unwrap(), &mut Vec::new()).expect("where");
+            assert_eq!(edited["edited"], actor == Actor::Agent(Level::Control), "{actor:?}: {edited}");
         }
     }
 
