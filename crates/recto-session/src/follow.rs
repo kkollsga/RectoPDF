@@ -106,11 +106,13 @@ fn follow_rate(distance: f64, height: f64) -> f64 {
 }
 
 impl ContentsFollow {
-    /// The reader scrolled the contents. Whatever was moving stops, right where it is.
+    /// The reader scrolled the contents. Whatever was moving stops, right where it is, and so does a restore's scroll not yet used.
     pub fn user_scrolled(&mut self, now: f64) {
         self.paused = true;
         self.last_user_scroll = now;
         self.moving = None;
+        // Where they put it is where it is: a restore's scroll not yet used up goes.
+        self.resume = None;
     }
 
     /// The pointer came into the contents or left. Nothing's pulled from under it: a move under way stops.
@@ -203,9 +205,12 @@ impl ContentsFollow {
         let place = row.map_or(0.0, |row| (f64::from(row) + 0.5) * CONTENTS_ROW_HEIGHT);
         let furthest = (f64::from(view.rows) * CONTENTS_ROW_HEIGHT - view.height).max(0.0);
         let target = (place - view.height * FOLLOW_ANCHOR).clamp(0.0, furthest);
-        if !self.placed {
+        // A restore's scroll is where the list was left. A launch can show the list a moment with nothing current, before the restored place is taken in,
+        // and the area's height can settle after (which places it again): the restore is kept through that, and used up by the first real row.
+        if !self.placed || (row.is_some() && self.resume.is_some()) {
             self.placed = true;
-            if let Some((y, following)) = self.resume.take() {
+            let resume = if row.is_some() { self.resume.take() } else { self.resume };
+            if let Some((y, following)) = resume {
                 self.paused = !following;
                 return FollowMove::SetTo(y.min(furthest));
             }

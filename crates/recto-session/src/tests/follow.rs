@@ -510,3 +510,32 @@ fn a_list_shown_with_nothing_current_is_placed_at_its_top() {
 fn anchor_y_in(row: u32, height: f64) -> f64 {
     (f64::from(row) + 0.5) * CONTENTS_ROW_HEIGHT - height * FOLLOW_ANCHOR
 }
+
+/// Failure (the update test after the fix above, `a_development_build_goes_in_by_the_same_hand_off`: the contents' scroll 314 before an update and 316.5
+/// after): at a launch the list can be shown for a moment with nothing current, before the restored place is taken in. Placing it there used up the
+/// restore's scroll, the area's height then settled (which places the list again), and the first real row put it at its anchor instead of where it was
+/// left. The restore's scroll is kept until a real row places the list; the person's own scroll ends it.
+#[test]
+fn a_restored_scroll_outlasts_a_moment_with_nothing_current() {
+    let view = |scroll_y: f64| ContentsView {
+        scroll_y,
+        height: 298.2,
+        rows: 28,
+    };
+    let mut follow = ContentsFollow::default();
+    follow.resume_at(314.0, true);
+    assert_eq!(follow.reached(None, view(0.0), 0.0, false), FollowMove::SetTo(314.0));
+    follow.view_changed();
+    assert_eq!(
+        follow.reached(Some(14), view(314.0), 0.1, false),
+        FollowMove::SetTo(314.0),
+        "where it was left, not row 14's anchor"
+    );
+    assert_eq!(follow.reached(Some(14), view(314.0), 0.2, false), FollowMove::Stay);
+    // Scrolled by the person before a row came: theirs stays.
+    let mut theirs = ContentsFollow::default();
+    theirs.resume_at(314.0, true);
+    theirs.reached(None, view(0.0), 0.0, false);
+    theirs.user_scrolled(0.5);
+    assert_eq!(theirs.reached(Some(14), view(100.0), 1.0, false), FollowMove::Stay);
+}
