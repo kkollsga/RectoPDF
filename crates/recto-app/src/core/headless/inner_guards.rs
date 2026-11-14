@@ -167,7 +167,6 @@ Inner::pub fn state_json(&self) -> Value
 Inner::pub fn state_read(&self) -> bool
 Inner::pub fn system_pressure(&self, critical: bool)
 Inner::pub fn take_places(&self)
-Inner::pub fn update_command(&self, command: &Command) -> Result<Value, AgentError>
 Inner::pub fn window_closed(&self)
 Inner::pub fn window_interactive(&self) -> bool
 Inner::pub fn window_opened(&self)

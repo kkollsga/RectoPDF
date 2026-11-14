@@ -386,10 +386,13 @@ fn nothing_of_an_update_begins_while_it_tries() {
     let app = disk.builder().update(&bed).another_keeps().start();
     app.core().life.update_facts.first_frame_shown(&app.core().updates);
     bed.releases.offer(NEW);
-    let refused = app
-        .core()
-        .update_command(&recto_agent::parse(r#"{"cmd":"update_check"}"#).expect("a command"))
-        .expect_err("not yet");
+    let refused = crate::core::updates::command(
+        &app.core().updates,
+        &app.core().life.update_facts,
+        &app.core().core,
+        &recto_agent::parse(r#"{"cmd":"update_check"}"#).expect("a command"),
+    )
+    .expect_err("not yet");
     assert_eq!(refused.code, "not_ready", "{refused:?}");
     app.person(r#"{"cmd":"update_check"}"#);
     app.person(r#"{"cmd":"update_install","now":true}"#);
@@ -404,10 +407,13 @@ fn nothing_of_an_update_begins_while_it_tries() {
     app.advance(TRY_EVERY_MS);
     app.wait_until("the notice", || app.reader().note == not_kept_words());
     app.wait_until("told it's a second copy", || app.update_status()["second_copy"] == true);
-    let refused = app
-        .core()
-        .update_command(&recto_agent::parse(r#"{"cmd":"update_install","now":true}"#).expect("a command"))
-        .expect_err("a second copy");
+    let refused = crate::core::updates::command(
+        &app.core().updates,
+        &app.core().life.update_facts,
+        &app.core().core,
+        &recto_agent::parse(r#"{"cmd":"update_install","now":true}"#).expect("a command"),
+    )
+    .expect_err("a second copy");
     assert_eq!(refused.code, "another_copy", "{refused:?}");
     assert!(bed.installer.plans().is_empty(), "nothing ever started");
     assert!(

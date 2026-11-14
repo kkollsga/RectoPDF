@@ -2,6 +2,7 @@
 
 use super::ScreenInfo;
 use super::{CoreCall, Inner, lock};
+use crate::queue::CoreQueue;
 use recto_agent::Code;
 use recto_agent::{AgentError, Command, exit};
 use recto_control::record_store::Loaded;
@@ -581,124 +582,123 @@ pub fn has_setting(id: &str) -> bool {
     matches!(id, AUTO_UPDATE_ROW | DEV_BUILDS_ROW | UPDATE_NOW_ROW)
 }
 
-impl Inner {
-    /// What `recto update` and `recto settings` come to. The level's been checked.
-    pub fn update_command(&self, command: &Command) -> Result<Value, AgentError> {
-        match command {
-            Command::Updates(recto_agent::commands::Updates::UpdateStatus(_)) => Ok(self.updates.report()),
-            // While the launch is held back for the record's lock (`LaunchFacts`), nothing of an update begins, by anyone's asking.
-            Command::Updates(recto_agent::commands::Updates::UpdateCheck(_) | recto_agent::commands::Updates::UpdateInstall(_))
-                if self.life.update_facts.held() =>
-            {
-                Err(refused_words(&InstallRefused::Starting))
-            }
-            Command::Updates(recto_agent::commands::Updates::UpdateCheck(_)) => {
-                self.updates.check_here(Asked::ByHand);
-                Ok(self.updates.report())
-            }
-            Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: Some(zip), now })) => {
-                self.install_build(zip, *now)
-            }
-            Command::Updates(recto_agent::commands::Updates::UpdateDevBuilds(recto_agent::commands::updates::UpdateDevBuilds { set })) => {
-                if let Some(set) = set {
-                    self.set_dev_builds(set.is_on());
-                }
-                Ok(self.dev_builds_answer())
-            }
-            // The five idle minutes are the owner's rule: the plain command only says what a waiting build waits for. `--now`, the menu and Settings' button are the one call that goes.
-            Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: None, now: false }))
-                if self.updates.waiting_build_words().is_some() =>
-            {
-                let (version, words) = self.updates.waiting_build_words().unwrap_or_default();
-                Ok(json!({ "started": false, "version": version, "words": words }))
-            }
-            Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: None, .. })) => {
-                match self.updates.update_now() {
-                    Ok(version) => Ok(
-                        json!({ "started": true, "version": version, "words": format!("Updating to {version}. RectoPDF downloads and checks it first, then quits and reopens as it was. `recto update status` says how it's going.") }),
-                    ),
-                    Err(InstallRefused::NotInThisBuild) => {
-                        Err(
-                            AgentError::new(Code::DEVELOPMENT_BUILD, "A development build doesn't replace itself.", exit::FAILED)
-                                .then("`recto update check` still says whether there's a new version."),
-                        )
-                    }
-                    Err(InstallRefused::NothingOnOffer) => {
-                        Err(AgentError::new(Code::NOTHING_ON_OFFER, "There's no new version on offer.", exit::FAILED)
-                            .then("`recto update check` looks for one."))
-                    }
-                    Err(InstallRefused::Underway) => Err(
-                        AgentError::new(Code::UPDATE_UNDER_WAY, "An update or a check is already under way.", exit::BUSY)
-                            .then("`recto update status` says how it's going."),
-                    ),
-                    Err(refused) => Err(refused_words(&refused)),
-                }
-            }
-            Command::Updates(recto_agent::commands::Updates::Settings(recto_agent::commands::updates::Settings { auto_update })) => {
-                if let Some(on) = auto_update {
-                    self.set_auto_update(on.is_on());
-                }
-                Ok(self.settings_answer())
-            }
-            _ => Err(recto_agent::update_needs_app()),
+/// **What `recto update` and `recto settings` come to,** for the person and an agent alike: the executor's one route for them ([`super::host`]). The level's been
+/// checked. What each answers, and in what words, is here; a setting changed by any route is written soon and redraws the window (the updater's own word to
+/// the host, and the session thread's look).
+pub fn command(updates: &Arc<recto_update::updater::Updater>, launch: &LaunchFacts, core: &CoreQueue, command: &Command) -> Result<Value, AgentError> {
+    match command {
+        Command::Updates(recto_agent::commands::Updates::UpdateStatus(_)) => Ok(updates.report()),
+        // While the launch is held back for the record's lock (`LaunchFacts`), nothing of an update begins, by anyone's asking.
+        Command::Updates(recto_agent::commands::Updates::UpdateCheck(_) | recto_agent::commands::Updates::UpdateInstall(_)) if launch.held() => {
+            Err(refused_words(&InstallRefused::Starting))
         }
+        Command::Updates(recto_agent::commands::Updates::UpdateCheck(_)) => {
+            updates.check_here(Asked::ByHand);
+            Ok(updates.report())
+        }
+        Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: Some(zip), now })) => {
+            install_build(updates, zip, *now)
+        }
+        Command::Updates(recto_agent::commands::Updates::UpdateDevBuilds(recto_agent::commands::updates::UpdateDevBuilds { set })) => {
+            if let Some(set) = set {
+                set_dev_builds(updates, core, set.is_on());
+            }
+            Ok(dev_builds_answer(updates))
+        }
+        // The five idle minutes are the owner's rule: the plain command only says what a waiting build waits for. `--now`, the menu and Settings' button are the one call that goes.
+        Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: None, now: false }))
+            if updates.waiting_build_words().is_some() =>
+        {
+            let (version, words) = updates.waiting_build_words().unwrap_or_default();
+            Ok(json!({ "started": false, "version": version, "words": words }))
+        }
+        Command::Updates(recto_agent::commands::Updates::UpdateInstall(recto_agent::commands::updates::UpdateInstall { zip: None, .. })) => {
+            match updates.update_now() {
+                Ok(version) => Ok(
+                    json!({ "started": true, "version": version, "words": format!("Updating to {version}. RectoPDF downloads and checks it first, then quits and reopens as it was. `recto update status` says how it's going.") }),
+                ),
+                Err(InstallRefused::NotInThisBuild) => {
+                    Err(
+                        AgentError::new(Code::DEVELOPMENT_BUILD, "A development build doesn't replace itself.", exit::FAILED)
+                            .then("`recto update check` still says whether there's a new version."),
+                    )
+                }
+                Err(InstallRefused::NothingOnOffer) => {
+                    Err(AgentError::new(Code::NOTHING_ON_OFFER, "There's no new version on offer.", exit::FAILED).then("`recto update check` looks for one."))
+                }
+                Err(InstallRefused::Underway) => Err(
+                    AgentError::new(Code::UPDATE_UNDER_WAY, "An update or a check is already under way.", exit::BUSY)
+                        .then("`recto update status` says how it's going."),
+                ),
+                Err(refused) => Err(refused_words(&refused)),
+            }
+        }
+        Command::Updates(recto_agent::commands::Updates::Settings(recto_agent::commands::updates::Settings { auto_update })) => {
+            if let Some(on) = auto_update {
+                set_auto_update(updates, core, on.is_on());
+            }
+            Ok(settings_answer(updates))
+        }
+        _ => Err(recto_agent::update_needs_app()),
     }
+}
 
-    /// `recto update install <zip>`: a development build handed over. Checked here, on the command's own thread, and then it waits for its moment.
-    fn install_build(&self, zip: &Path, now: bool) -> Result<Value, AgentError> {
-        let version = self.updates.install_build(zip, now).map_err(|refused| refused_words(&refused))?;
-        let report = self.updates.report();
-        let waits_ms = report["install_look_in_ms"].as_u64();
-        let team = report["build_team"].as_str().map(str::to_owned);
-        let signed = match &team {
-            Some(team) => format!("It's signed by RectoPDF's developer (team {team})."),
-            None => "It's signed on this Mac, not by RectoPDF's developer, so macOS may ask again for access to folders.".to_owned(),
-        };
-        let words = if now || waits_ms.is_none() {
-            format!("Installing development build {version} now. RectoPDF quits and reopens as it was. {signed} `recto update status` says how it's going.")
-        } else {
-            format!(
-                "Development build {version} is checked, and goes in once RectoPDF hasn't been used for 5 minutes, then reopens as it was. Choose Update to {version}… or add `--now` to go at once. {signed} `recto update status` says how it's going."
-            )
-        };
-        Ok(json!({ "started": true, "version": version, "waits_ms": waits_ms, "team": team, "words": words }))
-    }
+/// `recto update install <zip>`: a development build handed over. Checked here, on the command's own thread, and then it waits for its moment.
+fn install_build(updates: &Arc<recto_update::updater::Updater>, zip: &Path, now: bool) -> Result<Value, AgentError> {
+    let version = updates.install_build(zip, now).map_err(|refused| refused_words(&refused))?;
+    let report = updates.report();
+    let waits_ms = report["install_look_in_ms"].as_u64();
+    let team = report["build_team"].as_str().map(str::to_owned);
+    let signed = match &team {
+        Some(team) => format!("It's signed by RectoPDF's developer (team {team})."),
+        None => "It's signed on this Mac, not by RectoPDF's developer, so macOS may ask again for access to folders.".to_owned(),
+    };
+    let words = if now || waits_ms.is_none() {
+        format!("Installing development build {version} now. RectoPDF quits and reopens as it was. {signed} `recto update status` says how it's going.")
+    } else {
+        format!(
+            "Development build {version} is checked, and goes in once RectoPDF hasn't been used for 5 minutes, then reopens as it was. Choose Update to {version}… or add `--now` to go at once. {signed} `recto update status` says how it's going."
+        )
+    };
+    Ok(json!({ "started": true, "version": version, "waits_ms": waits_ms, "team": team, "words": words }))
+}
 
-    fn set_dev_builds(&self, on: bool) {
-        self.updates.choose_dev_builds(on);
-        self.core.push(CoreCall::Reconcile);
-    }
+fn set_dev_builds(updates: &Arc<recto_update::updater::Updater>, core: &CoreQueue, on: bool) {
+    updates.choose_dev_builds(on);
+    core.push(CoreCall::Reconcile);
+}
 
-    fn dev_builds_answer(&self) -> Value {
-        let on = self.updates.dev_builds_on();
-        let back = self.updates.report()["back_to_release"] == true;
-        let words = match (on, back) {
-            (true, _) => "Allow development builds: on. `recto update install <zip>` installs one, once RectoPDF hasn't been used for 5 minutes.".to_owned(),
-            (false, true) => "Allow development builds: off. This is a development build, so the latest release goes in by itself once there is one and RectoPDF hasn't been touched for 30 minutes.".to_owned(),
-            (false, false) => "Allow development builds: off. RectoPDF installs only releases.".to_owned(),
-        };
-        json!({ "dev_builds": on, "back_to_release": back, "words": words })
-    }
+fn dev_builds_answer(updates: &recto_update::updater::Updater) -> Value {
+    let on = updates.dev_builds_on();
+    let back = updates.report()["back_to_release"] == true;
+    let words = match (on, back) {
+        (true, _) => "Allow development builds: on. `recto update install <zip>` installs one, once RectoPDF hasn't been used for 5 minutes.".to_owned(),
+        (false, true) => "Allow development builds: off. This is a development build, so the latest release goes in by itself once there is one and RectoPDF hasn't been touched for 30 minutes.".to_owned(),
+        (false, false) => "Allow development builds: off. RectoPDF installs only releases.".to_owned(),
+    };
+    json!({ "dev_builds": on, "back_to_release": back, "words": words })
+}
 
-    fn settings_answer(&self) -> Value {
-        let on = self.updates.switch_on();
-        let words = if self.updates.source().mode == Mode::Development {
-            format!(
-                "Update automatically: {}. A local build checks only when asked, and doesn't replace itself.",
-                if on { "on" } else { "off" }
-            )
-        } else {
-            format!("Update automatically: {}.", if on { "on" } else { "off" })
-        };
-        json!({ "auto_update": on, "words": words })
-    }
+fn settings_answer(updates: &recto_update::updater::Updater) -> Value {
+    let on = updates.switch_on();
+    let words = if updates.source().mode == Mode::Development {
+        format!(
+            "Update automatically: {}. A local build checks only when asked, and doesn't replace itself.",
+            if on { "on" } else { "off" }
+        )
+    } else {
+        format!("Update automatically: {}.", if on { "on" } else { "off" })
+    };
+    json!({ "auto_update": on, "words": words })
+}
 
-    /// The switch, however it's changed. Written out soon, with the rest of the state.
-    fn set_auto_update(&self, on: bool) {
-        self.updates.choose_switch(on);
-        self.core.push(CoreCall::Reconcile);
-    }
+/// The switch, however it's changed. Written out soon, with the rest of the state.
+fn set_auto_update(updates: &Arc<recto_update::updater::Updater>, core: &CoreQueue, on: bool) {
+    updates.choose_switch(on);
+    core.push(CoreCall::Reconcile);
+}
 
+impl Inner {
     /// The hand-off isn't going ahead.
     pub fn hand_off_cancelled(&self) {
         self.carry_out(self.life.step(crate::lifecycle::Event::HandOffUndone));
