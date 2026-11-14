@@ -47,15 +47,19 @@ pub fn follow_link(inner: &Arc<Inner>, pane: usize, engine: &Engine, hit: recto_
     match hit.target {
         recto_core::nav::LinkTarget::Page { page, within } => match engine.links().position_in_same_file(hit.page, page) {
             Some(position) => person::submit(inner, super::navigation::link_to_page(tab, position, within)),
-            None => person::say(inner, "The page this link goes to isn't in the document as it's been edited.".to_string()),
+            None => person::say(
+                inner.window.notices(),
+                &inner.core,
+                "The page this link goes to isn't in the document as it's been edited.".to_string(),
+            ),
         },
         recto_core::nav::LinkTarget::History { back } => person::submit(inner, super::navigation::step(back)),
         recto_core::nav::LinkTarget::Web(address) => {
             inner.tools.prompts().ask_link(&address);
             inner.core.push(CoreCall::Reconcile);
         }
-        recto_core::nav::LinkTarget::Refused(why) => person::say(inner, why.message().to_string()),
-        recto_core::nav::LinkTarget::Nowhere => person::say(inner, "This link goes nowhere in this document.".to_string()),
+        recto_core::nav::LinkTarget::Refused(why) => person::say(inner.window.notices(), &inner.core, why.message().to_string()),
+        recto_core::nav::LinkTarget::Nowhere => person::say(inner.window.notices(), &inner.core, "This link goes nowhere in this document.".to_string()),
     }
 }
 

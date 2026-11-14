@@ -2,7 +2,10 @@
 //! each of its parts, and what each lets other code reach. What every control sends and the host is told is held by the coverage test's golden
 //! (`coverage.rs`); what a person's action allocates on the window's thread, by `tests/inner_allocations.rs`, in a binary of its own for its allocator.
 
+use crate::core::answer_parts::AnswerParts;
 use crate::core::keeper::Keeper;
+use crate::core::person::Person;
+use crate::core::row_parts::RowParts;
 use crate::core::sleeper::{OnDisk, Sleeper};
 use crate::core::window::Notices;
 use crate::core::{AppState, Inner, Lifecycle, Published, Serving, Tools, Window};
@@ -29,6 +32,9 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
         ("Sleeper", size_of::<Sleeper>()),
         ("OnDisk", size_of::<OnDisk>()),
         ("Keeper", size_of::<Keeper>()),
+        ("RowParts", size_of::<RowParts<'static>>()),
+        ("AnswerParts", size_of::<AnswerParts<'static>>()),
+        ("Person", size_of::<Person<'static>>()),
     ];
     let names: Vec<&str> = sizes.iter().map(|(name, _)| *name).collect();
     assert_eq!(names, BUDGETS.map(|(name, _)| name), "the types held");
@@ -53,8 +59,10 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
 /// hold it and not the app). And S2b's window's notices, 80 (its two locks, out of `Window`, whose size holds: the tab they're about stays in its padding).
 /// Serving 1,064 to 1,040 with S1's outlet (`recto_control::server`): an announcer is one reference to the outlet its server shares, where it was a
 /// channel's sender and a descriptor of its own, and the waiting server holds that reference in place of its sender. One of each per app, not per tab or
-/// page view.
-const BUDGETS: [(&str, usize); 11] = [
+/// page view. And what a menu row and a person's answer are given in place of the app (`build/registries`): `RowParts`, 104 (twelve references, the
+/// listener's two words), `AnswerParts`, 88 (ten), and the `Person` they carry, 8 (one): made on the stack for one menu id or one answered command, never
+/// kept.
+const BUDGETS: [(&str, usize); 14] = [
     ("Inner", 4480),
     ("Lifecycle", 344),
     ("Serving", 1040),
@@ -66,6 +74,9 @@ const BUDGETS: [(&str, usize); 11] = [
     ("Sleeper", 608),
     ("OnDisk", 16),
     ("Keeper", 40),
+    ("RowParts", 104),
+    ("AnswerParts", 88),
+    ("Person", 8),
 ];
 
 /// Failure: a move widens what other code can reach of the app's state: a part's field made `pub`, a part given `Default` or `Clone` so it can be built
@@ -88,6 +99,9 @@ fn what_the_apps_state_lets_other_code_reach_is_listed() {
         "AppState",
         "OnDisk",
         "Keeper",
+        "RowParts",
+        "AnswerParts",
+        "Person",
     ];
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     // The core's files, and the prompts' own, whose type the tools hand to the bridge.
@@ -108,6 +122,18 @@ fn what_the_apps_state_lets_other_code_reach_is_listed() {
 /// What the app's state and its parts let other code reach, sorted, with printing's (R3.7, S2: its two `pub` fields the bridge reaches become methods) and the
 /// prompts' (the bridge answers a sheet; the queue of passwords and the link's sheet are the app's). Each change is deliberate: see [`what_the_apps_state_lets_other_code_reach_is_listed`].
 const SURFACE: &str = r"
+AnswerParts (pub struct, derives Clone, Copy)
+AnswerParts::pub fn ask_password(&self, path: &Path)
+AnswerParts::pub fn fail_open(&self, words: String)
+AnswerParts::pub fn find_handle<R>(&self, step: impl FnOnce(&FindHandle<'_, dyn Listener>) -> R) -> R
+AnswerParts::pub fn notice(&self, words: String)
+AnswerParts::pub fn person(&self) -> Person<'a>
+AnswerParts::pub fn say(&self, words: String)
+AnswerParts::pub fn take_notice(&self)
+AnswerParts::pub fn unmark_update_menu(&self)
+AnswerParts::pub fn update_menu_marked(&self) -> bool
+AnswerParts::pub fn write_soon(&self)
+AnswerParts::pub(in crate::core) fn of(app: &'a Arc<Inner>) -> Self
 AppState (pub struct, derives Clone, Debug)
 AppState.pub(super) app_hidden: bool
 AppState.pub(super) appearance: Appearance
@@ -256,6 +282,13 @@ OnDisk::pub(crate) fn keeper(&self) -> &Arc<Keeper>
 OnDisk::pub(crate) fn sleeper(&self) -> &Arc<Sleeper>
 OnDisk::pub(super) fn new(keeper: Arc<Keeper>, sleeper: Arc<Sleeper>) -> Self
 OnDisk::pub(super) fn starts_writer(&self) -> StartsWriter<'_>
+Person (pub struct, derives Clone, Copy)
+Person::pub fn print_anyway(self, serial: u64)
+Person::pub fn save(self, tab: recto_session::TabId)
+Person::pub fn snapshot_anyway(self, serial: u64)
+Person::pub fn submit(self, command: Command)
+Person::pub fn submit_when_run(self, command: Command, when_run: crate::queue::WhenRun)
+Person::pub(in crate::core) fn of(app: &'a Arc<Inner>) -> Self
 Printing (pub struct, derives Default)
 Printing::pub fn busy(&self) -> bool
 Printing::pub fn cancel(&self)
@@ -286,6 +319,25 @@ Published.pub tabs: Arc<Vec<crate::SidebarRow>>
 Published::pub fn empty() -> Self
 Restoring (pub struct)
 Restoring::pub(in crate::core) fn new(record: &'a SessionRecord, real: Option<&'a AppState>, appearance_then: Option<Appearance>) -> Self
+RowParts (pub struct, derives Clone, Copy)
+RowParts::pub fn can_save(&self) -> bool
+RowParts::pub fn cancel_print(&self)
+RowParts::pub fn copy_selection(&self, anyway: bool)
+RowParts::pub fn mark_update_menu(&self) -> bool
+RowParts::pub fn open(&self, path: PathBuf)
+RowParts::pub fn open_palette(&self)
+RowParts::pub fn person(&self) -> Person<'a>
+RowParts::pub fn published<R>(&self, read: impl FnOnce(&Published) -> R) -> R
+RowParts::pub fn reading_tab(&self) -> Option<TabId>
+RowParts::pub fn reconcile(&self)
+RowParts::pub fn select_all(&self)
+RowParts::pub fn selected(&self) -> Option<(u32, Option<recto_index::select::Range>)>
+RowParts::pub fn tell_host(&self)
+RowParts::pub fn toggle_panel(&self)
+RowParts::pub fn toggle_snapshot_tool(&self)
+RowParts::pub fn update_installs(&self) -> bool
+RowParts::pub fn zoom_for_person(&self, zoom: Zoom) -> bool
+RowParts::pub(in crate::core) fn of(app: &'a Arc<Inner>) -> Self
 Serving (pub struct)
 Serving.pub paths: Option<StatePaths>
 Serving.pub(crate) announcer: Mutex<Option<Announcer>>

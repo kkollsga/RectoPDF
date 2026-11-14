@@ -479,32 +479,33 @@ fn misreads_the_record(facts: Option<&Facts>) -> bool {
 /// by the time it runs is answered as the menu always did, by the person's `update check`, a follow-up of the window's, still marked as the menu's; and what
 /// the menu asked for that didn't start, or a check that's said what it found, puts nothing more up as an alert. Settings' button is never the menu's, and
 /// nothing follows it.
-pub fn answered(inner: &Arc<Inner>, ran: &super::person::Ran<'_>) {
+pub fn answered(parts: &super::answer_parts::AnswerParts<'_>, ran: &super::person::Ran<'_>) {
     use recto_agent::commands::Updates;
     use recto_agent::commands::updates::{UpdateCheck, UpdateInstall};
     let Command::Updates(asked) = ran.command else { return };
-    if !inner.updates.menu().marked() {
+    if !parts.update_menu_marked() {
         return;
     }
     match (asked, ran.refused()) {
         (Updates::UpdateInstall(UpdateInstall { zip: None, now: true }), Some(error))
             if matches!(error.code, Code::NOTHING_ON_OFFER | Code::DEVELOPMENT_BUILD) =>
         {
-            super::person::submit(inner, Command::from(UpdateCheck {}));
+            parts.person().submit(Command::from(UpdateCheck {}));
         }
-        (Updates::UpdateCheck(_), _) | (_, Some(_)) => inner.updates.menu().unmark(),
+        (Updates::UpdateCheck(_), _) | (_, Some(_)) => parts.unmark_update_menu(),
         _ => {}
     }
 }
 
 /// **The updates' menu ids** ([`super::menu_rows`]): *Update to X…* is `update install --now` and *Check for Updates…* `update check`, by what the updater
 /// offers now; Settings opens its window, whose switches are `UiAction::SettingChosen`.
-pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+pub fn row<'a>(parts: &super::row_parts::RowParts<'a>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
     use super::menu_rows::Row;
     use recto_agent::commands::updates::{UpdateCheck, UpdateInstall};
     match (asked.action.as_ref()?, asked.id) {
         (crate::menus::Action::Update, _) => {
-            let command = if inner.updates.menu_installs() {
+            let parts = *parts;
+            let command = if parts.update_installs() {
                 Command::from(UpdateInstall { zip: None, now: true })
             } else {
                 Command::from(UpdateCheck {})
@@ -513,8 +514,8 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
                 command.clone(),
                 "the person's is said in an alert too when there's no document window to say it in (the updater's mark), on a thread of its own. With something under way the item can't be chosen; a choice that races it sends nothing, so the mark isn't put on someone else's, and that is the window's alone: the command does nothing then for anyone (a check under way isn't started again, and an install is refused `update_under_way`)",
                 move || {
-                    if inner.updates.menu().mark() {
-                        super::person::submit(inner, command);
+                    if parts.mark_update_menu() {
+                        parts.person().submit(command);
                     }
                     super::HostAction::None
                 },

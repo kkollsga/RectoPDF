@@ -247,8 +247,9 @@ pub fn chosen_range(pages: u32, all: bool, first: u32, last: u32, selection: Opt
 
 /// **Printing's menu ids** ([`super::menu_rows`]), all the window's alone: Print… opens the system's panel, Stop stops the print being prepared for it, and a
 /// notice's "Print anyway" asks again only what that notice refused.
-pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
+pub fn row<'a>(parts: &super::row_parts::RowParts<'a>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
     use super::menu_rows::Row;
+    let parts = *parts;
     if asked.id == "file.print" {
         return Some(Row::host(
             "opens the system's print panel for the person",
@@ -261,7 +262,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
             "stops the person's print being prepared for the system's print panel",
             super::menu_rows::Agents::Never,
             move || {
-                inner.tools.printing().cancel();
+                parts.cancel_print();
                 HostAction::None
             },
         ));
@@ -271,13 +272,20 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
         "a notice's Print anyway, for the person's own print it refused: their decision, where an agent's is `print --anyway`, which is logged",
         super::menu_rows::Agents::ItsOwn("`recto print --anyway`"),
         move || {
-            if let Some(request) = serial.parse().ok().and_then(|serial| inner.tools.printing().take_refused(serial)) {
-                start(inner, Request { anyway: true, ..request });
+            if let Ok(serial) = serial.parse() {
+                parts.person().print_anyway(serial);
             }
-            inner.core.push(CoreCall::Reconcile);
+            parts.reconcile();
             HostAction::None
         },
     ))
+}
+
+/// **A notice's Print anyway,** for the person's print it refused, if it's still the one refused: asked again, as theirs ([`super::person::Person`]).
+pub(super) fn anyway(inner: &Arc<Inner>, serial: u64) {
+    if let Some(request) = inner.tools.printing().take_refused(serial) {
+        start(inner, Request { anyway: true, ..request });
+    }
 }
 
 /// Starts preparing a print of `range`, pages counted from 1 as the tab has them now, off the UI thread.
