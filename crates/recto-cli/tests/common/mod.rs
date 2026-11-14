@@ -7,6 +7,8 @@ pub mod app;
 pub mod bed_folder;
 /// What a failing test that started the app leaves behind, and how to run it again.
 pub mod evidence;
+/// The record's lock, taken by a test once a run that's ended has let it go.
+pub mod record_lock;
 /// A process's threads by name, for a count's failure to say which they were.
 pub mod threads;
 

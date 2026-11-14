@@ -868,13 +868,8 @@ fn shot(run: &Run<'_>, name: &str) {
 /// once it has read the state without the lock, so it's trying again by then, whatever the machine's speed.
 fn a_quick_reopen_let_go(bed: &Bed, file: &std::path::Path, saved: Option<(f64, f64)>) -> (f64, f64) {
     let after_its_wait = saved.is_some();
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(bed.state.root.join("run/session.lock"))
-        .unwrap();
-    lock.try_lock().unwrap();
+    // The second time, the first launch has only just ended, and its process's descriptors can still be closing.
+    let lock = crate::common::record_lock::take_once_free(&bed.state);
     let run = if after_its_wait {
         let run = bed.start();
         let status = bed.status(&run);
