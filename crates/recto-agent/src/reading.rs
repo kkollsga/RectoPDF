@@ -22,6 +22,8 @@ pub(crate) struct TabFile {
     renderer_only: bool,
     /// For each of the file's pages, its place now. Only for an edited tab.
     positions: Option<Vec<u32>>,
+    /// The pages whose entries' places mean something in the view the reader has.
+    placed: recto_session::Placed,
     /// The file isn't the one those edits' page numbers came from.
     changed: bool,
     /// What the file was when those page numbers were made, to look at it against, as [`recto_session::recorded_version_is_current`] reads it.
@@ -68,6 +70,7 @@ fn tab_file<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<TabFile, Agent
                 edited: s.lists().is_edited(id),
                 renderer_only: record.renderer_only,
                 positions,
+                placed: recto_session::placed_of(s, id).ok_or_else(|| AgentError::new(Code::NO_SUCH_TAB, "That tab isn't open.", exit::NOT_FOUND))?,
                 changed: false,
                 check_against: s.notices().own_file_expected(id),
             })
@@ -206,7 +209,7 @@ fn listing(file: &TabFile, toc: &recto_core::Toc, from: Option<u32>, limit: Opti
                 })
                 .flatten();
             // Its number, which `contents fold` names it by.
-            json!({ "entry": index, "depth": entry.depth, "page": page.map(|page| page + 1), "place": entry.top, "untrusted": { "title": toc.title(entry) } })
+            json!({ "entry": index, "depth": entry.depth, "page": page.map(|page| page + 1), "place": recto_session::entry_place(entry, &file.placed), "untrusted": { "title": toc.title(entry) } })
         })
         .collect();
     let next_from = (from + entries.len() < visible.len()).then_some(from + entries.len());

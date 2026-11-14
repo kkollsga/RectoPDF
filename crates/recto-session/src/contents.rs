@@ -185,9 +185,21 @@ fn reading_here<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> Here {
 
 /// Which pages of the file have entries whose places mean something: not those with an unsaved turn (or any page, with the view turned), whose frame isn't the
 /// file's, where every entry reads as at its page's top.
-struct Placed {
+pub struct Placed {
     all_turned: bool,
     turned: HashSet<u32>,
+}
+
+/// **How far down its page an entry is, in thousandths, as a click on it and `recto contents` both say:** the file's place, or 0, the page's top, for an
+/// entry with no page or on a page whose places mean nothing (an unsaved turn, or the view turned). The one answer, for every caller.
+pub fn entry_place(entry: &recto_core::TocEntry, placed: &Placed) -> u16 {
+    if entry.page != NONE && placed.page(entry.page) { entry.top } else { 0 }
+}
+
+/// The tab's pages whose entries' places mean something, as its edits and view stand. `None` for a tab that isn't open.
+pub fn placed_of<L: DocLoader>(session: &Session<L>, id: TabId) -> Option<Placed> {
+    let tab = session.tabs.tab(id)?;
+    Some(Placed::of(tab, session.lists.order(id)))
 }
 
 impl Placed {
@@ -207,7 +219,8 @@ impl Placed {
         }
     }
 
-    fn page(&self, page: u32) -> bool {
+    /// Whether the places of the entries on this page of the file mean anything.
+    pub fn page(&self, page: u32) -> bool {
         !self.all_turned && !self.turned.contains(&page)
     }
 }
@@ -280,7 +293,7 @@ fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, order: Order<'_>, reading: &
             notice: None,
             action: None,
             entry: at,
-            top: if entry.page != NONE && placed.page(entry.page) { entry.top } else { 0 },
+            top: entry_place(entry, &placed),
             expandable,
             expanded,
         });
@@ -352,4 +365,76 @@ fn section_open(folds: Option<&[(u32, bool)]>, chain: &HashSet<u32>, entry: u32)
     folds
         .and_then(|folds| folds.iter().rev().find(|(at, _)| *at == entry))
         .map_or_else(|| chain.contains(&entry), |(_, open)| *open)
+}
+
+/// What a tap on the contents' note does. The note is Rust's: its words and what it does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentsAction {
+    Generate,
+    ShowGenerated,
+    ShowOwn,
+    /// Stop making them.
+    Stop,
+}
+
+impl ContentsAction {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Generate => "contents.generate",
+            Self::ShowGenerated => "contents.show_generated",
+            Self::ShowOwn => "contents.show_own",
+            Self::Stop => "contents.stop",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        [Self::Generate, Self::ShowGenerated, Self::ShowOwn, Self::Stop]
+            .into_iter()
+            .find(|action| action.id() == id)
+    }
+}
+
+/// The note over a tab's contents: a short line at rest, and what it means on hover. `None` for contents that are fine and shown as they are. Owner, 2026-11-06: "the left sidebar menu is a bit too complicated (visually noisy)", so it's one quiet line, and the rest waits for the pointer.
+pub fn contents_note(
+    verdict: ContentsVerdict,
+    view: Option<&GeneratedView>,
+    choose_generated: bool,
+    own_entries: usize,
+) -> Option<(&'static str, &'static str, Option<ContentsAction>)> {
+    const MADE: &str =
+        "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.";
+    match view {
+        Some(GeneratedView::Ready(_)) if choose_generated => Some((
+            "Generated contents",
+            if own_entries > 0 {
+                "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong. Click to show the file's own."
+            } else {
+                MADE
+            },
+            (own_entries > 0).then_some(ContentsAction::ShowOwn),
+        )),
+        Some(GeneratedView::Ready(_)) => Some(("Show generated contents", MADE, Some(ContentsAction::ShowGenerated))),
+        Some(GeneratedView::Making) => Some((
+            "Generating contents\u{2026}",
+            "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.",
+            Some(ContentsAction::Stop),
+        )),
+        Some(GeneratedView::Failed(words)) => Some(("Couldn't generate contents", words, Some(ContentsAction::Generate))),
+        Some(GeneratedView::NoneFound) => Some((
+            "No headings found",
+            "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.",
+            None,
+        )),
+        _ if verdict.offers() || choose_generated => Some((
+            "Generate contents",
+            match verdict {
+                ContentsVerdict::Missing => {
+                    "This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed."
+                }
+                _ => "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.",
+            },
+            Some(ContentsAction::Generate),
+        )),
+        _ => None,
+    }
 }
