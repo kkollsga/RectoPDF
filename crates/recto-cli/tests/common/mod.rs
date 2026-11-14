@@ -139,6 +139,16 @@ impl State {
         &self.paths.socket
     }
 
+    /// Waits until nothing answers at this state's socket, failing 15 s after `began`: a process that can't be asked about any more can still be
+    /// closing it, and a run started on the same folder before it has is refused as already running (a full check at a load of 27, 2026-11-14).
+    #[allow(dead_code)] // Not every test binary starts the app.
+    pub fn wait_for_socket_to_close(&self, began: std::time::Instant) {
+        while std::os::unix::net::UnixStream::connect(&self.paths.socket).is_ok() {
+            assert!(began.elapsed() < Duration::from_secs(15), "the socket stayed");
+            std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
+        }
+    }
+
     pub fn log_text(&self) -> String {
         [&self.paths.log, &self.paths.old_log, &self.paths.other_log, &self.paths.old_other_log]
             .iter()

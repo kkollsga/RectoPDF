@@ -798,6 +798,7 @@ version = "0.1.0"
 name = "recto-reader"
 version = "0.1.0"
 dependencies = [
+ "lopdf",
  "recto-core",
  "recto-index",
  "recto-platform",

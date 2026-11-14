@@ -331,7 +331,9 @@ fn going_dormant_has_one_deadline_and_goes_by_being_left_alone() {
     assert!(s.dormant().oldest_first().len() < MAX_WARM);
 }
 
-/// Failure: a protected PDF's contents go in a sleep file, in the clear, or a tab pushed out of the warm ones goes cold with no sleep file, so it wakes the slow way.
+/// Failure: a protected PDF's contents go in a sleep file, in the clear, or a tab pushed out of the warm ones goes cold with no sleep file, so it wakes the slow
+/// way. Protected is a file a password was needed to open (here opened with the person's, `open_unlocked`); one that's encrypted but opens with no password
+/// (the sleep-costs run of 2026-11-13: `un_report_un_sdg2023.pdf`, which never had a sleep file) has one like any other.
 #[test]
 fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
     struct Protected;
@@ -340,7 +342,7 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
             Ok(DocFacts {
                 page_count: 3,
                 byte_len: 1,
-                encrypted: path.ends_with("locked.pdf"),
+                encrypted: path.ends_with("locked.pdf") || path.ends_with("open-to-anyone.pdf"),
                 version: "1.7".into(),
                 title: None,
                 toc: Toc::default(),
@@ -358,42 +360,80 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
     let mut s = Session::new(Protected);
     s.dormancy_mut().set_sleep_files(true);
     let open = s.open(&file("open.pdf")).unwrap();
-    let locked = s.open(&file("locked.pdf")).unwrap();
+    let locked_file = file("locked.pdf");
+    let locked_facts = s.loader().load(&locked_file).unwrap();
+    let locked = s.open_unlocked(&locked_file, locked_facts, file_stamp(&locked_file).ok()).unwrap();
+    let open_to_anyone = s.open(&file("open-to-anyone.pdf")).unwrap();
     assert!(s.dormant().sleep_facts(open).is_some());
     assert!(s.dormant().sleep_facts(locked).is_none(), "its contents don't go on disk");
     assert!(s.dormant().sleep_to_read(locked).is_none());
+    assert!(
+        s.dormant().sleep_facts(open_to_anyone).is_some_and(|facts| facts.pictures_allowed),
+        "encrypted, but opened with no password: nothing a sleep file could give away"
+    );
     for at in 0..MAX_WARM {
         s.open(&file(&format!("{at}.pdf"))).unwrap();
     }
     let left = s.sleeper().take_left_warm();
     assert_eq!(
         left.iter().map(|(facts, _)| facts.id).collect::<Vec<_>>(),
-        [open],
-        "the unprotected one that left: {left:?}"
+        [open, open_to_anyone],
+        "the unprotected ones that left: {left:?}"
     );
     assert_eq!(left[0].0.sleep.file_pages, 3);
     assert!(s.sleeper().take_left_warm().is_empty());
-    // A protected file's pages in a plain document: its facts are fine, and no picture is.
+    // An encrypted file's pages in a plain document: a file that needs a password can't be added at all, so what's added opens for anyone, and the
+    // document keeps its pictures (2026-11-13; before, it lost them).
     let plain = s.open(&file("plain.pdf")).unwrap();
     assert!(s.dormant().sleep_facts(plain).unwrap().pictures_allowed);
-    let locked_file = file("locked.pdf");
-    let facts = s.loader().load(&locked_file).unwrap();
-    s.insert_pdf_with_facts(plain, Author::Owner, 0, &locked_file, &facts, file_stamp(&locked_file).ok())
+    let open_file = file("open-to-anyone.pdf");
+    let facts = s.loader().load(&open_file).unwrap();
+    assert!(facts.encrypted);
+    s.insert_pdf_with_facts(plain, Author::Owner, 0, &open_file, &facts, file_stamp(&open_file).ok())
         .unwrap();
     assert!(
-        !s.dormant().sleep_facts(plain).unwrap().pictures_allowed,
-        "a page from a protected file means no pictures"
-    );
-    assert!(s.lists().get(plain).unwrap().added_sources()[0].protected);
-    // Carried through its journal, so it's known after a restart.
-    let record = s.lists().edits_record(plain).unwrap();
-    assert!(record.added[0].protected);
-    assert!(PageEdits::from_record(&record).unwrap().has_protected_pages());
-    assert!(s.undo_edit(plain));
-    assert!(
         s.dormant().sleep_facts(plain).unwrap().pictures_allowed,
-        "with those pages gone from the document, it's fine again"
+        "a page from a file anyone may open keeps the document's pictures"
     );
+    assert!(!s.lists().get(plain).unwrap().added_sources()[0].protected);
+    // A journal written before, with a page it called protected: carried through, so the document has no pictures till those pages are gone.
+    let mut edits = PageEdits::new(3);
+    edits.insert_pdf_noting(0, &file("old.pdf"), 1, None, true).unwrap();
+    let record = edits.to_record();
+    assert!(record.added[0].protected);
+    let mut read = PageEdits::from_record(&record).unwrap();
+    assert!(read.has_protected_pages(), "an old record's flag still holds");
+    read.delete(0, 1).unwrap();
+    assert!(!read.has_protected_pages(), "with those pages gone from the document, it's fine again");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Failure (review round 1 of the measured faults, S3): a page added before 2026-11-13 from an encrypted file was recorded as protected, and such a
+/// journal is still read. Since then an added page is never marked so, and nothing held what an old flag still means: the document it's taken into has
+/// no pictures in its sleep file until those pages are gone. The same list unflagged has them, so it's the flag that decides.
+#[test]
+fn a_tab_taking_up_an_old_journals_protected_page_has_no_sleep_pictures() {
+    let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-old-protected-");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = journaled(3);
+    s.dormancy_mut().set_sleep_files(true);
+    for (name, protected) in [("flagged.pdf", true), ("unflagged.pdf", false)] {
+        let path = dir.join(name);
+        std::fs::write(&path, b"a file").unwrap();
+        let id = s.open(&path).unwrap();
+        // As a journal written before reads back: a page added at the front, its source flagged as the old rule had it.
+        let mut written = PageEdits::new(3);
+        written.insert_pdf_noting(0, &dir.join("added.pdf"), 1, None, protected).unwrap();
+        let read = PageEdits::from_record(&written.to_record()).unwrap();
+        s.journal_desk()
+            .take_up_history(id, &format!("journal-00000000000000{}.log", if protected { "a1" } else { "a2" }), read, 1);
+        assert_eq!(s.lists().get(id).map(PageEdits::len), Some(4), "{name}: the list was taken up");
+        let facts = s.dormant().sleep_facts(id).unwrap_or_else(|| panic!("{name} has sleep facts"));
+        assert_eq!(
+            facts.pictures_allowed, !protected,
+            "{name}: pictures only without a page the old journal called protected"
+        );
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

@@ -78,7 +78,8 @@ pub(super) enum PlanKind {
 }
 
 impl JobPlan {
-    /// Makes its surface. A new one for each job: see [`Self::take_surface`]. `None` if it can't be made, which leaves things as if there'd been nothing to do.
+    /// Makes its surface. A new one for each job: see [`Self::take_surface`]. `None` if it can't be made: the system has no surface for it now, which the
+    /// thread that draws waits out and asks again (`SurfaceRetry`), as the plan is still there.
     pub fn ready(self) -> Option<Job> {
         let Self {
             tab,
@@ -97,14 +98,23 @@ impl JobPlan {
                 let surface = match what {
                     DrawKind::Preview => Self::take_surface(rect.width, rect.height)?,
                     DrawKind::Tile => Self::take_surface(TILE_EDGE, TILE_EDGE)?,
-                    DrawKind::Region => loop {
-                        let surface = Self::take_surface(rect.width, rect.height)?;
-                        // A surface's rows can be padded, which can take it over the cap. A row of tiles less is always under.
-                        if u64::from(surface.stride()) * u64::from(rect.height) <= MAX_REGION_BYTES || rect.height <= TILE_EDGE {
-                            break surface;
+                    DrawKind::Region => {
+                        // Across no more than the view, but held to the longest edge too, in whole tiles: a surface past it can never be made. And held
+                        // to the cap by its rows before it's made, in whole tiles, so no surface over it is asked for only to be let go.
+                        (rect.width, rect.height) = (rect.width.min(super::MAX_SURFACE_EDGE), rect.height.min(super::MAX_SURFACE_EDGE));
+                        let rows = MAX_REGION_BYTES / (u64::from(rect.width.max(1)) * 4);
+                        rect.height = rect
+                            .height
+                            .min((u32::try_from(rows).unwrap_or(u32::MAX) / TILE_EDGE * TILE_EDGE).max(TILE_EDGE));
+                        loop {
+                            let surface = Self::take_surface(rect.width, rect.height)?;
+                            // A surface's rows can be padded, which can take it over the cap. A row of tiles less is always under.
+                            if u64::from(surface.stride()) * u64::from(rect.height) <= MAX_REGION_BYTES || rect.height <= TILE_EDGE {
+                                break surface;
+                            }
+                            rect.height -= TILE_EDGE;
                         }
-                        rect.height -= TILE_EDGE;
-                    },
+                    }
                 };
                 JobKind::Draw {
                     scale,
@@ -127,7 +137,155 @@ impl JobPlan {
 
     /// A new surface for each job, never one that's been used. A worker can read and write a surface it was sent for as long as it lives, whatever it's told, so a surface used twice is a way from one file's worker to another file's pixels. It costs 51 µs more a tile than reusing one, nearly all of it the first touch of its pages: 67 against 16, p50.
     fn take_surface(width: u32, height: u32) -> Option<PixelSurface> {
+        #[cfg(test)]
+        if surface_seam::refused() {
+            return None;
+        }
+        #[cfg(test)]
+        surface_seam::note_asked(width, height);
         PixelSurface::create(width, height).ok()
+    }
+}
+
+/// **A page in view that wants a picture the system has no surface for now** (found 2026-11-13: an hour of tab switching in one process ran the system out
+/// of IOSurfaces, `IOSurfaceCreate` said "out of memory" for a 380 by 537 preview, and the thread that draws parked for good with that job still planned, so
+/// the page stayed bare paper, never settled, and only a scroll or another ask would have woken it).
+///
+/// **Only the system's refusal is asked again, as nothing a PDF says can ask for a surface no machine could make:** every surface a job asks for is held
+/// to a size before it's made. A tile is [`TILE_EDGE`] square (1 MiB); a preview at most `MAX_PREVIEW_BYTES` (4 MiB), or there's none; a region at most
+/// [`MAX_REGION_BYTES`] (32 MiB), a row of tiles less at a time ([`JobPlan::ready`]), across no more than the view; none has an edge past the
+/// system's 16,384 pixels (`MAX_SURFACE_EDGE`); and a page too large to draw at the zoom is
+/// a page issue before any surface is asked for (`page_plan`). So a refusal is "out of surfaces now", and worth asking again.
+///
+/// **The wait:** 1 s after the first refusal in a row, doubling to 8 s ([`Self::FIRST_WAIT`], [`Self::LONGEST_WAIT`]), and back to 1 s once a surface is made.
+/// Only while a plan's surface is refused: when the plan goes (the tab left, the page scrolled away, the window closed), whatever changed it wakes the thread,
+/// it finds nothing to do and rests as ever, with no timer. Meanwhile the view isn't settled, and `qa state`'s `reader.surfaces` says why.
+#[derive(Debug, Default)]
+pub(crate) struct SurfaceRetry {
+    /// Surfaces refused in this page view's life, held at 65,535: two bytes, in room `Work` already had.
+    refused: u16,
+    /// Refused in a row, since a surface was last made or nothing was wanted: held at [`Self::DOUBLINGS`] and one, where the wait is at its longest.
+    in_a_row: u8,
+}
+
+impl SurfaceRetry {
+    /// The wait after the first refusal in a row.
+    pub(crate) const FIRST_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+    /// The longest wait: three doublings of the first.
+    pub(crate) const LONGEST_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
+
+    /// A plan's surface was refused: counted, and how long to wait before asking again.
+    pub(crate) fn refused(&mut self) -> std::time::Duration {
+        self.refused = self.refused.saturating_add(1);
+        self.in_a_row = (self.in_a_row + 1).min(Self::DOUBLINGS as u8 + 1);
+        Self::wait_after(u32::from(self.in_a_row), Self::first_wait())
+    }
+
+    /// A surface was made, or nothing's wanted: no retry is pending.
+    pub(crate) fn clear(&mut self) {
+        self.in_a_row = 0;
+    }
+
+    /// How many times the first wait doubles before it's the longest: three, from 1 s to 8 s.
+    const DOUBLINGS: u32 = (Self::LONGEST_WAIT.as_millis() / Self::FIRST_WAIT.as_millis()).ilog2();
+
+    /// The wait after `in_a_row` refusals, starting from `first` and doubling [`Self::DOUBLINGS`] times at most.
+    fn wait_after(in_a_row: u32, first: std::time::Duration) -> std::time::Duration {
+        first.saturating_mul(1 << in_a_row.saturating_sub(1).min(Self::DOUBLINGS))
+    }
+
+    fn first_wait() -> std::time::Duration {
+        #[cfg(test)]
+        if let Some(first) = surface_seam::first_wait() {
+            return first;
+        }
+        Self::FIRST_WAIT
+    }
+
+    /// For `qa state`: how many were refused, and whether a page in view waits for one now.
+    pub(crate) fn report(&self) -> serde_json::Value {
+        serde_json::json!({ "refused": self.refused, "retry_pending": self.in_a_row > 0 })
+    }
+}
+
+/// **A test's seam:** the next `count` surfaces are refused as the system refuses one, and the first wait is `first` instead of a second, so a test sees
+/// the retry without waiting out real seconds. This crate's tests only: a build of the app has no such switch.
+#[cfg(test)]
+pub(crate) mod surface_seam {
+    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+    static REFUSE: AtomicU32 = AtomicU32::new(0);
+    static FIRST_WAIT_MS: AtomicU64 = AtomicU64::new(0);
+
+    pub(crate) fn refuse(count: u32, first: std::time::Duration) {
+        FIRST_WAIT_MS.store(u64::try_from(first.as_millis()).unwrap_or(u64::MAX).max(1), Ordering::SeqCst);
+        REFUSE.store(count, Ordering::SeqCst);
+    }
+
+    pub(super) fn refused() -> bool {
+        REFUSE.try_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(1)).is_ok()
+    }
+
+    std::thread_local! {
+        /// The most bytes of any surface this thread has asked for, by its unpadded rows.
+        static LARGEST_ASKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    pub(super) fn note_asked(width: u32, height: u32) {
+        LARGEST_ASKED.with(|largest| largest.set(largest.get().max(u64::from(width) * u64::from(height) * 4)));
+    }
+
+    pub(super) fn first_wait() -> Option<std::time::Duration> {
+        Some(FIRST_WAIT_MS.load(Ordering::SeqCst))
+            .filter(|ms| *ms > 0)
+            .map(std::time::Duration::from_millis)
+    }
+
+    /// Failure (the second review of the measured faults): a region's surface was made at the size asked, up to 16,384 pixels on an edge, and only then
+    /// held to [`super::MAX_REGION_BYTES`], a row of tiles less and another surface at a time: a region of a large page at a high zoom asked the system for
+    /// a surface of up to 1 GiB, and up to sixty more, to keep one of 32 MiB. Its height is worked out from the cap first, so no surface asked for is
+    /// over it but by its rows' padding, and the region made is still within it.
+    #[test]
+    fn a_regions_surface_is_held_to_its_cap_before_it_is_made() {
+        let plan = super::JobPlan {
+            tab: 1,
+            position: 0,
+            file: std::path::PathBuf::from("/d/a.pdf"),
+            source_page: 0,
+            generation: 0,
+            kind: super::PlanKind::Draw {
+                scale: 4.0,
+                rect: crate::tiles::TileRect {
+                    x: 0,
+                    y: 0,
+                    width: 4096,
+                    height: 16_384,
+                },
+                what: crate::tiles::DrawKind::Region,
+                paper: crate::paper::PaperKind::White,
+            },
+        };
+        let job = plan.ready().expect("a region");
+        let crate::tiles::JobKind::Draw { rect, surface, .. } = &job.kind else {
+            panic!("a draw")
+        };
+        assert!(u64::from(surface.stride()) * u64::from(rect.height) <= super::MAX_REGION_BYTES, "{rect:?}");
+        assert_eq!(rect.height % super::TILE_EDGE, 0, "in whole tiles: {rect:?}");
+        let largest = LARGEST_ASKED.with(std::cell::Cell::get);
+        assert!(largest <= super::MAX_REGION_BYTES, "no surface asked for over the cap: {largest} bytes");
+    }
+
+    /// Failure: the wait doesn't back off, or backs off past its cap, so a machine out of surfaces is asked every second for good, or a page waits minutes
+    /// after the system has surfaces again. 1, 2, 4, 8, 8 s, by the rule alone.
+    #[test]
+    fn the_wait_doubles_from_a_second_to_eight() {
+        let waits: Vec<u64> = (1..=6)
+            .map(|n| super::SurfaceRetry::wait_after(n, super::SurfaceRetry::FIRST_WAIT).as_secs())
+            .collect();
+        assert_eq!(waits, [1, 2, 4, 8, 8, 8]);
+        assert_eq!(
+            super::SurfaceRetry::wait_after(4, super::SurfaceRetry::FIRST_WAIT),
+            super::SurfaceRetry::LONGEST_WAIT
+        );
     }
 }
 
@@ -214,6 +372,8 @@ pub(crate) struct Work {
     /// For QA: nothing's drawn, so a first frame stays to be looked at.
     pub(super) hold_drawing: bool,
     pub(super) wanted_files: Arc<Vec<PathBuf>>,
+    /// Surfaces the system refused a page in view, and whether one's waited for now ([`SurfaceRetry`]): the thread that draws notes them, and QA reads them.
+    pub(crate) surfaces: SurfaceRetry,
 }
 
 // size: held at what it was on 2026-11-13 (macOS, debug and release alike) before R3.6 moved `Reader`'s methods onto its parts, so the move, or a field added later, can't grow it unseen.
@@ -224,6 +384,7 @@ impl Work {
     pub(super) fn new() -> Self {
         Self {
             running: None,
+            surfaces: SurfaceRetry::default(),
             next_generation: 1,
             wanted_files: Arc::new(Vec::new()),
             gave_up: false,
@@ -278,6 +439,8 @@ impl Work {
             JobKind::Text { check } => (true, check),
             _ => (false, false),
         };
+        // Started, so its surface, if it needed one, was made: no retry is pending.
+        self.surfaces.clear();
         self.running = Some(Running {
             tab: job.tab,
             position: job.position,

@@ -85,16 +85,61 @@ impl HostQueue {
     /// The window closed: nothing's there to take what's waiting.
     pub(super) fn close(&mut self) {
         // Nothing's there to take them. What was waiting is thrown away, and each `Attach` holds a reference to a surface, which goes with it.
-        for op in self.ops.drain(..) {
-            if let Op::Attach { surface, .. } = op {
-                PixelSurface::release_for_host(surface);
-            }
-        }
+        self.release_waiting();
         // Their room too: a closed window holds nothing here.
         self.ops = VecDeque::new();
         self.to_discard = Vec::new();
         self.handed_to_host = Vec::new();
         self.unapplied = false;
         self.more_to_attach = false;
+    }
+}
+
+impl HostQueue {
+    /// Each `Attach` waiting holds a reference to its surface for the host, which only the host or this lets go of.
+    fn release_waiting(&mut self) {
+        for op in self.ops.drain(..) {
+            if let Op::Attach { surface, .. } = op {
+                PixelSurface::release_for_host(surface);
+            }
+        }
+    }
+}
+
+/// **An `Attach` never outlives its queue unreleased,** however the queue goes: a comparison's pane let go with tiles still waiting for its layers
+/// (`Engine::shut_down`, then the page view dropped, while the window's page area had already stopped taking ops), as well as a window closing. Before
+/// (2026-11-13), only a closed window gave them back, so a pane let go mid-draw kept each waiting tile's surface for the rest of the app's life: a turn's
+/// attachments (8) at up to 1 MiB a tile and 4 MiB a preview, for every pane let go that way. In the one place every way of going passes through.
+impl Drop for HostQueue {
+    fn drop(&mut self) {
+        self.release_waiting();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Failure (2026-11-13, found looking for the headless kit's surface leak in the window): a page view let go with an `Attach` still waiting, as a
+    /// comparison's pane is, kept the host's reference to that tile's surface for good. Dropped with one waiting, the surface is held by its maker alone.
+    #[test]
+    fn a_queue_let_go_with_a_tile_waiting_lets_go_of_its_surface() {
+        let surface = recto_platform::surface::PixelSurface::create(16, 16).expect("a surface");
+        let before = surface.reference_count();
+        let mut queue = super::HostQueue::new();
+        queue.ops.push_back(super::Op::Attach {
+            id: 1,
+            page: 0,
+            x: 0.0,
+            y: 0.0,
+            width: 16.0,
+            height: 16.0,
+            surface: surface.retained_for_host(),
+            rgb: None,
+            crop_width: 16.0,
+            crop_height: 16.0,
+            below: false,
+        });
+        assert_eq!(surface.reference_count(), before + 1, "the host's reference, waiting");
+        drop(queue);
+        assert_eq!(surface.reference_count(), before, "let go with its queue");
     }
 }

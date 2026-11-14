@@ -1478,4 +1478,163 @@ mod tests {
         let kind = onto_dark_paper(&mut pixels, rect, 8, TileKind::Blank { rgb: 0xFF_FF_FF }, DarkTile::Dim, true);
         assert!(matches!(kind, TileKind::Blank { rgb } if rgb == dim_rgb(0xFF_FF_FF)), "{kind:?}");
     }
+
+    /// Failure (2026-11-13, the scripted hour of tab switching: `IOSurfaceCreate` "out of memory" for a preview): a page in view whose surface the system
+    /// refused parked the thread that draws for good with the job still planned, so the page stayed bare paper and the view never settled, until something
+    /// else woke the thread. With the next three surfaces refused (the first wait 20 ms, not a second, by the test's seam), the page is drawn once they
+    /// can be made and the view settles; while one's waited for, the view isn't settled and `reader.surfaces` says a retry is pending; after, it says how
+    /// many were refused and that none is pending, so a view at rest has no timed wake.
+    #[test]
+    fn a_page_whose_surface_was_refused_is_drawn_once_one_can_be_made() {
+        let file = recto_testpdf::TempPdf::new(
+            "refused.pdf",
+            &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&[
+                "A page, drawn once a surface can be made",
+            ]))]),
+        );
+        crate::tiles::surface_seam::refuse(3, Duration::from_millis(20));
+        let engine = Engine::new(EngineConfig::default(), Arc::new(Quiet));
+        engine.activate(
+            1,
+            1,
+            0,
+            PageMap {
+                files: vec![file.0.clone()],
+                ..PageMap::default()
+            },
+            &[],
+            None,
+            crate::layout::Spread::Single,
+        );
+        let view = crate::tiles::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 900.0,
+            frame_width: 800.0,
+            magnification: 1.0,
+            backing: 2.0,
+            live: false,
+            scrolled_to: u64::MAX,
+        };
+        let release = |ops: Vec<Op>| {
+            for op in ops {
+                if let Op::Attach { surface, .. } = op {
+                    recto_platform::surface::PixelSurface::release_for_host(surface);
+                }
+            }
+        };
+        release(engine.set_viewport(view));
+        let (began, mut saw_pending) = (Instant::now(), false);
+        loop {
+            release(engine.drain());
+            engine.applied();
+            let report = engine.report().0;
+            if report["surfaces"]["retry_pending"] == true {
+                saw_pending = true;
+                assert_eq!(report["settled"], false, "waiting for a surface isn't settled: {report}");
+            }
+            if engine.wait_settled(Duration::from_millis(10)) {
+                break;
+            }
+            // Far past the 140 ms the three waits take: only a thread that never asks again reaches it.
+            assert!(began.elapsed() < Duration::from_secs(20), "the page was never drawn: {report}");
+        }
+        let report = engine.report().0;
+        assert!(saw_pending, "{report}");
+        assert_eq!(report["surfaces"]["refused"], 3, "{report}");
+        assert_eq!(report["surfaces"]["retry_pending"], false, "{report}");
+        assert!(report["tiles"]["attached"].as_u64().unwrap() >= 1, "{report}");
+        engine.shut_down();
+    }
+
+    /// The engine for one page of `file`, with every surface it asks for refused from the start (the first wait `first`), and what it hands the host
+    /// let go of as the host would. Its size and traits jobs start the file's worker, which needs no surface, and the draw after them waits.
+    fn waiting_for_a_surface(file: &recto_testpdf::TempPdf, policy: Option<recto_render_service::Policy>, first: Duration) -> Engine {
+        crate::tiles::surface_seam::refuse(u32::MAX, first);
+        let engine = Engine::new(
+            EngineConfig {
+                policy,
+                ..EngineConfig::default()
+            },
+            Arc::new(Quiet),
+        );
+        engine.activate(
+            1,
+            1,
+            0,
+            PageMap {
+                files: vec![file.0.clone()],
+                ..PageMap::default()
+            },
+            &[],
+            None,
+            crate::layout::Spread::Single,
+        );
+        let view = crate::tiles::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 900.0,
+            frame_width: 800.0,
+            magnification: 1.0,
+            backing: 2.0,
+            live: false,
+            scrolled_to: u64::MAX,
+        };
+        for op in engine.set_viewport(view) {
+            if let Op::Attach { surface, .. } = op {
+                recto_platform::surface::PixelSurface::release_for_host(surface);
+            }
+        }
+        let began = Instant::now();
+        while !(engine.report().0["surfaces"]["retry_pending"] == true && !engine.workers().pids().is_empty()) {
+            assert!(
+                began.elapsed() < Duration::from_secs(20),
+                "a worker and a wait for a surface: {}",
+                engine.report().0
+            );
+            std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
+        }
+        engine
+    }
+
+    /// Waits, at most 20 s, for the engine to have no worker, and says whether it came to that.
+    fn workers_gone(engine: &Engine) -> bool {
+        let began = Instant::now();
+        while !engine.workers().pids().is_empty() {
+            if began.elapsed() >= Duration::from_secs(20) {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
+        }
+        true
+    }
+
+    /// Failure (review round 1 of the measured faults, S2): while a page in view waits for a surface the system refused, the thread that draws only
+    /// parked out the wait, and never did what it does at rest: so memory pressure, which comes just when the system's short and refusing, never let an
+    /// idle worker go while refusals lasted, and a worker holding a heavy page's hundreds of megabytes kept them through the outage. With every surface
+    /// refused and the first wait a minute, memory pressure lets the idle worker go at once, and a worker counted big (any worker, here) goes at its
+    /// time of 300 ms, both far inside the wait.
+    #[test]
+    fn workers_are_let_go_while_a_surface_is_waited_for() {
+        let file = recto_testpdf::TempPdf::new(
+            "waiting.pdf",
+            &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["A page whose surface is refused"]))]),
+        );
+        let engine = waiting_for_a_surface(&file, None, Duration::from_secs(60));
+        engine.memory_pressure(false);
+        assert!(workers_gone(&engine), "memory pressure let the idle worker go: {}", engine.report().0);
+        engine.shut_down();
+        let policy = recto_render_service::Policy {
+            retire_bytes: 1,
+            heavy_idle_exit: Duration::from_millis(300),
+            ..recto_render_service::Policy::default()
+        };
+        let engine = waiting_for_a_surface(&file, Some(policy), Duration::from_secs(60));
+        assert!(workers_gone(&engine), "the big worker went at its time: {}", engine.report().0);
+        assert_eq!(engine.report().0["surfaces"]["retry_pending"], true, "while the surface is still waited for");
+        crate::tiles::surface_seam::refuse(0, Duration::from_millis(1));
+        engine.shut_down();
+    }
 }

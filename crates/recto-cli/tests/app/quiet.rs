@@ -400,6 +400,8 @@ fn the_run_befores_messages_are_kept_for_one_launch() {
     owner.kill().unwrap();
     owner.wait().unwrap();
     ends(pid, "the process it was started for was killed");
+    // A process that can't be asked about any more can still be closing its socket, as `Run`'s own wait knows.
+    state.wait_for_socket_to_close(std::time::Instant::now());
     let said = std::fs::read_to_string(&state.paths.server_messages).unwrap_or_default();
     assert!(said.contains("this quiet run ended"), "the first run said why it ended: {said:?}");
     let run = Run::on(&state).unwrap();

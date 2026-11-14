@@ -2267,6 +2267,45 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// Failure (the second review of the measured faults): a sleep file written before 2026-11-14, which can hold a picture of a page drawn with a password
+    /// typed for another tab, was read and its pictures shown, as nothing in it said it was older. It isn't read, and it's removed, so the tab reads its PDF
+    /// once and its next sleep file is of the format now.
+    #[test]
+    fn a_sleep_file_written_before_its_format_was_said_is_removed_at_first_read() {
+        let (root, paths) = state();
+        let store = RecordStore::open(&paths, Flavor::App);
+        let file = root.join("doc.pdf");
+        std::fs::write(&file, b"contents").unwrap();
+        let stamp = file_stamp(&file).unwrap();
+        let sleep = SleepFile {
+            file: stamp,
+            file_pages: 3,
+            pages: 3,
+            list_seq: 0,
+            renderer_only: false,
+            version: None,
+            toc: recto_core::Toc::default(),
+            usual: Some((612.0, 792.0)),
+            sizes: Vec::new(),
+            pictures: Vec::new(),
+        };
+        assert!(store.write_sleep(&file, &sleep) > 0);
+        assert_eq!(store.read_sleep(stamp, &file), Some(sleep.clone()), "today's reads");
+        let on_disk = root.join("session").join(JOURNALS).join(record::sleep_file_name(stamp, &file));
+        // As an earlier build wrote it: the same, with no format said.
+        let written = std::fs::read(&on_disk).unwrap();
+        let (_, _, body) = record::open_sealed(recto_session::sleep::SLEEP_KIND, &written, CURRENT_VERSION).unwrap();
+        let end = body.iter().position(|byte| *byte == b'\n').unwrap();
+        let mut meta: serde_json::Value = serde_json::from_slice(&body[..end]).unwrap();
+        meta.as_object_mut().unwrap().remove("sleep_format");
+        let mut older = serde_json::to_vec(&meta).unwrap();
+        older.extend_from_slice(&body[end..]);
+        std::fs::write(&on_disk, record::seal(recto_session::sleep::SLEEP_KIND, 0, &older)).unwrap();
+        assert_eq!(store.read_sleep(stamp, &file), None, "an earlier build's isn't read");
+        assert!(!on_disk.exists(), "and it's removed");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     /// Failure: sleep files grow without end over thousands of tabs. They're held to their limit, oldest first, and that doesn't touch anything else.
     #[test]
     fn sleep_files_stay_within_their_limit() {

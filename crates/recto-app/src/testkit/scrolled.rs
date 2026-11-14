@@ -28,7 +28,7 @@ impl HeadlessApp {
     pub fn person_scrolls(&self, dy: f64) {
         let inner = self.core();
         let scroll = self.person_scroll_ahead(dy);
-        drop(inner.panes.viewport(&inner.engine, inner.panes.reading(), true, scroll));
+        super::headless::applied_as_the_host(&inner.panes.viewport(&inner.engine, inner.panes.reading(), true, scroll).0);
     }
 
     /// [`Self::person_scrolls`], with the view's arrival where it was last sent told of now and the reader's own scroll by `dy` given back, for the test to
@@ -37,7 +37,9 @@ impl HeadlessApp {
     pub fn person_scroll_ahead(&self, dy: f64) -> recto_reader::Viewport {
         let inner = self.core();
         let reading = inner.panes.reading_engine(&inner.engine);
-        self.note_scrolls_sent(&reading.drain());
+        let drained = reading.drain();
+        self.note_scrolls_sent(&drained);
+        super::headless::applied_as_the_host(&drained);
         reading.applied();
         let mut view = crate::lock(&self.view);
         let viewport = |(y, seq): (f64, u64)| recto_reader::Viewport {
@@ -49,7 +51,7 @@ impl HeadlessApp {
         };
         if let Some(sent) = view.sent.take() {
             view.at = sent;
-            drop(inner.panes.viewport(&inner.engine, inner.panes.reading(), false, viewport(sent)));
+            super::headless::applied_as_the_host(&inner.panes.viewport(&inner.engine, inner.panes.reading(), false, viewport(sent)).0);
         }
         view.at.0 += dy;
         viewport(view.at)

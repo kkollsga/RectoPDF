@@ -313,10 +313,7 @@ impl<'a> Run<'a> {
             std::thread::sleep(Duration::from_millis(10));
         }
         // A process that can't be asked about any more can still be closing its sockets. It's gone when nothing answers there.
-        while std::os::unix::net::UnixStream::connect(&self.state.paths.socket).is_ok() {
-            assert!(began.elapsed() < Duration::from_secs(15), "the socket stayed");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        self.state.wait_for_socket_to_close(began);
         self.done = true;
     }
 
