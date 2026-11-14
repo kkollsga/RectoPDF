@@ -362,7 +362,6 @@ impl<L: Listener + ?Sized> FindHandle<'_, L> {
         self.session.finder().with_results(&mut |results| version = results.version());
         let changed = lock(self.field).tells(version);
         if changed {
-            eprintln!("MC find.tell v={version} thread={:?}", std::thread::current().name());
             self.listener.model_changed();
         }
     }
