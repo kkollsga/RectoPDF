@@ -78,11 +78,20 @@ pub(super) fn run_guarded(shared: &Shared) {
 
 /// **Nothing to start:** at rest as ever, or, when there was a plan whose surface the system refused, a wait before it's asked again, only while it's planned
 /// (`SurfaceRetry`, in `tiles/jobs.rs`). Workers are let go in the wait as at rest: memory pressure and a refused surface come together.
-fn rest_or_wait_for_a_surface(planned: bool, shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, resting_since: &mut Option<Instant>) {
+fn rest_or_wait_for_a_surface(
+    planned: bool,
+    seen: u64,
+    shared: &Shared,
+    renderers: &mut HashMap<PathBuf, OpenDoc>,
+    policy: &Policy,
+    resting_since: &mut Option<Instant>,
+) {
     let retry = {
         let mut reader = lock(&shared.reader);
-        // What this turn told is told: the view taken again.
+        // What this turn told is told: the view taken again. Resting is said under the view's lock, which whoever waits for it to rest looks under
+        // (`Qa::wait_resting`), and told as it rests ([`rest`]), so the word can't fall between their look and their wait.
         reader.work.set_telling(false);
+        shared.rests(seen);
         if planned {
             Some(reader.work.surfaces.refused())
         } else {
@@ -145,8 +154,7 @@ fn run(shared: &Shared) {
         openings.retain(|path, _| wanted.contains(path));
         publish_workers(shared, &mut renderers);
         let Some(job) = job else {
-            shared.rests(seen);
-            rest_or_wait_for_a_surface(planned, shared, &mut renderers, &policy, &mut resting_since);
+            rest_or_wait_for_a_surface(planned, seen, shared, &mut renderers, &policy, &mut resting_since);
             continue;
         };
         // **A job for a tab off screen's place ([`SleepDraws`]) starts no worker:** it's done by the one its file has, or not at all. Nor does it put off a big worker's rest, which goes on between its jobs as it does with none.

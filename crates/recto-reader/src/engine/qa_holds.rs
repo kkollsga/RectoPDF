@@ -45,6 +45,9 @@ pub(super) struct QaHolds {
     asks: AtomicU64,
     rounds: AtomicU64,
     rest_seen: AtomicU64,
+    /// Waits for the thread to rest begun ([`Qa::wait_resting`]), for a test to know its wait is waiting before it lets the thread rest.
+    #[cfg(test)]
+    rest_waits: AtomicU64,
 }
 
 /// The tells waiting at [`Qa::hold_tells`], and those let go.
@@ -137,7 +140,13 @@ impl Shared {
     #[inline]
     pub(super) fn thread_ended(&self) {
         #[cfg(any(test, feature = "qa"))]
-        self.qa.rest_seen.store(ENDED, Ordering::SeqCst);
+        {
+            // Under the view's lock, as resting is, and told: a wait for it to rest ends.
+            let reader = lock(&self.reader);
+            self.qa.rest_seen.store(ENDED, Ordering::SeqCst);
+            drop(reader);
+            self.settled.notify_all();
+        }
     }
 
     /// After a job's end, the view let go, before what came of it is told: waits here while QA holds tells ([`Qa::hold_tells`]).
@@ -278,10 +287,14 @@ impl Qa<'_> {
     }
 
     /// **Waits, at most `limit`, for the thread that draws to rest** with everything asked of it seen (what [`Self::at_rest`] asks, but the host's part):
-    /// woken as it rests, so a wait for the app at rest looks again then rather than on a timer. Says whether it rested.
+    /// woken as it rests, so a wait for the app at rest looks again then rather than on a timer. Says whether it rested, or was told it had, before the
+    /// limit: `false` is a wait that ran out its limit untold. Looked at under the view's lock, which the thread says it rests (or has gone) under, and is
+    /// told after: so no word falls between this look and the wait. An ask made meanwhile (which moves `asks` without the lock) ends the rest it's about,
+    /// and this waits on for the next.
     pub fn wait_resting(&self, limit: Duration) -> bool {
         let shared = &self.engine.shared;
         let deadline = Instant::now() + limit;
+        let mut reader = lock(&shared.reader);
         loop {
             let seen = shared.qa.rest_seen.load(Ordering::SeqCst);
             if seen == ENDED || seen == shared.qa.asks.load(Ordering::SeqCst) {
@@ -291,14 +304,14 @@ impl Qa<'_> {
             if left.is_zero() {
                 return false;
             }
-            // Told as it rests; a word that falls between the look and the wait costs at most a couple of milliseconds.
-            let reader = lock(&shared.reader);
-            drop(
-                shared
-                    .settled
-                    .wait_timeout(reader, left.min(Duration::from_millis(2)))
-                    .unwrap_or_else(PoisonError::into_inner),
-            );
+            #[cfg(test)]
+            shared.qa.rest_waits.fetch_add(1, Ordering::SeqCst);
+            let (now, waited) = shared.settled.wait_timeout(reader, left).unwrap_or_else(PoisonError::into_inner);
+            // Its limit ran out, untold: said as that, whatever's true now.
+            if waited.timed_out() {
+                return false;
+            }
+            reader = now;
         }
     }
 }
@@ -317,6 +330,72 @@ mod tests {
         fn note_changed(&self) {}
         fn page_moved(&self) {}
         fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
+    }
+
+    /// Failure (review of `build/settled-gaps`, 2026-11-14, the wakes): a wait for the view's thread to rest that isn't told as it rests waits out its
+    /// limit, which the app's settled shortens to a couple of milliseconds a round and so hides. With no fallback (the whole limit given to the wait), and
+    /// the wait begun while the thread is held in a job (`Seam::Worker`), the wait ends because it was told as the thread rested.
+    #[test]
+    fn a_wait_for_the_view_to_rest_is_told_as_it_rests() {
+        use recto_platform::slow::{Seam, gate};
+        let file = recto_testpdf::TempPdf::new(
+            "rests.pdf",
+            &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["A page drawn once the worker answers"]))]),
+        );
+        gate::hold(&[Seam::Worker]);
+        let engine = Engine::new(EngineConfig::default(), Arc::new(Quiet));
+        engine.activate(
+            1,
+            1,
+            0,
+            PageMap {
+                files: vec![file.0.clone()],
+                ..PageMap::default()
+            },
+            &[],
+            None,
+            crate::layout::Spread::Single,
+        );
+        for op in engine.set_viewport(crate::tiles::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 900.0,
+            frame_width: 800.0,
+            magnification: 1.0,
+            backing: 2.0,
+            live: false,
+            scrolled_to: u64::MAX,
+        }) {
+            if let crate::tiles::Op::Attach { surface, .. } = op {
+                recto_platform::surface::PixelSurface::release_for_host(surface);
+            }
+        }
+        let began = Instant::now();
+        while gate::waiting(Seam::Worker) == 0 {
+            assert!(began.elapsed() < Duration::from_secs(20), "no job held at the worker");
+            std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
+        }
+        let waits = engine.shared.qa.rest_waits.load(Ordering::SeqCst);
+        let (said, heard) = std::sync::mpsc::channel();
+        let waiting = engine.clone();
+        let waiter = std::thread::spawn(move || {
+            let _ = said.send(waiting.qa().wait_resting(Duration::from_secs(2)));
+        });
+        while engine.shared.qa.rest_waits.load(Ordering::SeqCst) <= waits {
+            assert!(began.elapsed() < Duration::from_secs(20), "no wait began");
+            std::thread::yield_now();
+        }
+        gate::open(Seam::Worker);
+        let told = heard.recv().expect("an answer");
+        waiter.join().expect("the waiter");
+        for op in engine.drain() {
+            if let crate::tiles::Op::Attach { surface, .. } = op {
+                recto_platform::surface::PixelSurface::release_for_host(surface);
+            }
+        }
+        engine.shut_down();
+        assert!(told, "the wait ran out its limit: the rest wasn't told");
     }
 
     /// Failure (review of `build/settled-gaps`, 2026-11-14): the kit's settle takes the page views' layer changes as the host would, then looks; a job that

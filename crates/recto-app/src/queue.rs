@@ -224,6 +224,9 @@ pub struct CoreQueue {
     /// Told when the session thread parks, for a wait for it to be through ([`Self::wait_parked`]). Nobody waits on it but a test's or QA's settled, and a
     /// notice with no waiter is an atomic look.
     parked: Condvar,
+    /// Waits on `parked` begun, for a test to know its wait is waiting before it lets the thread park.
+    #[cfg(test)]
+    park_waits: std::sync::atomic::AtomicUsize,
     reconcile_queued: AtomicBool,
     /// A hand-off or a quit is writing what comes back, so what a person does from here wouldn't: taps, opens and the rest aren't taken.
     pub frozen: AtomicBool,
@@ -322,17 +325,27 @@ impl CoreQueue {
     }
 
     /// **Waits for the session thread to park with nothing queued,** at most `limit`: told as it parks, so the app's settled looks once it's through
-    /// rather than on a timer ([`crate::settled`]). Returns at once if it has, or has ended.
-    pub fn wait_parked(&self, limit: Duration) {
+    /// rather than on a timer ([`crate::settled`]). Returns at once if it has, or has ended. Says whether it was so, or was told so, before the limit: `false`
+    /// is a wait that ran out its limit untold. The thread parks, and is
+    /// told of, under the queue's lock this looks under, so no word falls between the look and the wait.
+    pub fn wait_parked(&self, limit: Duration) -> bool {
         let deadline = Instant::now() + limit;
         let mut calls = lock(&self.calls);
         while !(self.has_ended() || calls.queue.is_empty() && matches!(calls.doing, Doing::Parked { .. })) {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return;
+                return false;
             }
-            calls = self.parked.wait_timeout(calls, left).unwrap_or_else(PoisonError::into_inner).0;
+            #[cfg(test)]
+            self.park_waits.fetch_add(1, Ordering::SeqCst);
+            let (now, waited) = self.parked.wait_timeout(calls, left).unwrap_or_else(PoisonError::into_inner);
+            // Its limit ran out, untold: said as that, whatever's true now.
+            if waited.timed_out() {
+                return false;
+            }
+            calls = now;
         }
+        true
     }
 
     /// How many times the session thread has parked, for [`Self::wait_next_park`].
@@ -342,16 +355,24 @@ impl CoreQueue {
 
     /// **Waits, at most `limit`, for the session thread to park after the `seen`th time:** what runs off it and comes back to it queues its word, which
     /// the thread takes and then parks, so a wait for that work wakes as it's taken rather than on a timer ([`crate::settled`]).
-    pub fn wait_next_park(&self, seen: u64, limit: Duration) {
+    pub fn wait_next_park(&self, seen: u64, limit: Duration) -> bool {
         let deadline = Instant::now() + limit;
         let mut calls = lock(&self.calls);
         while calls.parks <= seen && !self.has_ended() {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return;
+                return false;
             }
-            calls = self.parked.wait_timeout(calls, left).unwrap_or_else(PoisonError::into_inner).0;
+            #[cfg(test)]
+            self.park_waits.fetch_add(1, Ordering::SeqCst);
+            let (now, waited) = self.parked.wait_timeout(calls, left).unwrap_or_else(PoisonError::into_inner);
+            // Its limit ran out, untold: said as that, whatever's true now.
+            if waited.timed_out() {
+                return false;
+            }
+            calls = now;
         }
+        true
     }
 
     /// **Whether the session thread is at rest now, by its own account:** nothing queued for it, and it's parked, having found none of its deadlines due
@@ -491,6 +512,66 @@ mod tests {
         assert!(!queue.reconcile_queued.load(Ordering::SeqCst));
         queue.push(CoreCall::Reconcile);
         assert_eq!(lock(&queue.calls).len(), 1);
+    }
+
+    /// Waits until a wait on `parked` has begun, so a test lets the thread park only once something waits for the word.
+    fn until_a_park_wait(queue: &CoreQueue, waits: usize) {
+        let began = Instant::now();
+        while queue.park_waits.load(Ordering::SeqCst) <= waits {
+            assert!(began.elapsed() < Duration::from_secs(10), "no wait began");
+            std::thread::yield_now();
+        }
+    }
+
+    /// Failure (review of `build/settled-gaps`, 2026-11-14, the wakes): a wait for the session thread that isn't told as the thread parks waits out its
+    /// limit, which the app's settled shortens to a couple of milliseconds a round and so hides; under `--like-ci` those milliseconds were 66 test-seconds of
+    /// the package. With no fallback (the whole limit given to the wait), each wait ends because it was told: as the thread parks after a call
+    /// (`wait_parked`), and as it parks again after taking another (`wait_next_park`), each with its wait begun before the thread moves.
+    #[test]
+    fn a_wait_for_the_session_thread_is_told_as_it_parks() {
+        let queue = Arc::new(CoreQueue::default());
+        let (take, taking) = std::sync::mpsc::channel::<()>();
+        let session = {
+            let queue = Arc::clone(&queue);
+            std::thread::spawn(move || {
+                while taking.recv().is_ok() {
+                    let _ = queue.next_or_due(|| None);
+                }
+            })
+        };
+        // In a call: a wait for it to park, begun, and then the thread lets go of its call and parks.
+        queue.push(tap(1));
+        take.send(()).expect("the thread");
+        let waits = queue.park_waits.load(Ordering::SeqCst);
+        let (said, heard) = std::sync::mpsc::channel();
+        let waiter = {
+            let queue = Arc::clone(&queue);
+            std::thread::spawn(move || {
+                let _ = said.send(queue.wait_parked(Duration::from_secs(2)));
+            })
+        };
+        until_a_park_wait(&queue, waits);
+        take.send(()).expect("the thread");
+        assert!(heard.recv().expect("an answer"), "the wait ran out its limit: the park wasn't told");
+        waiter.join().expect("the waiter");
+        // Parked: a wait for the next park, begun, and then a call it takes and parks after.
+        let parks = queue.parks();
+        let waits = queue.park_waits.load(Ordering::SeqCst);
+        let (said, heard) = std::sync::mpsc::channel();
+        let waiter = {
+            let queue = Arc::clone(&queue);
+            std::thread::spawn(move || {
+                let _ = said.send(queue.wait_next_park(parks, Duration::from_secs(2)));
+            })
+        };
+        until_a_park_wait(&queue, waits);
+        queue.push(tap(2));
+        take.send(()).expect("the thread");
+        assert!(heard.recv().expect("an answer"), "the wait ran out its limit: the next park wasn't told");
+        waiter.join().expect("the waiter");
+        drop(take);
+        queue.end();
+        session.join().expect("the session thread");
     }
 
     /// Failure (the settled audit, 2026-11-14, gap 3): "settled" answered while the session thread had a deadline due now and hadn't acted on it, because
