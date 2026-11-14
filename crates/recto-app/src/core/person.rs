@@ -158,7 +158,7 @@ pub fn session_words(error: &AgentError) -> Option<&'static str> {
 
 /// A line by the page in the person's words, which goes by itself.
 pub fn say(inner: &Inner, words: String) {
-    *lock(&inner.window.action_notice) = Some(words);
+    inner.window.notices().say(words);
     inner.core.push(CoreCall::Reconcile);
 }
 

@@ -2,7 +2,9 @@
 //! appearance, the Settings window), the contents' follow, the UI thread's hang watchdog, and the notices that go by themselves. Its opening, replacing and
 //! closing are `Inner`'s, as they reach the page views and the saver, and they call what's here.
 
+mod notices;
 mod placement;
+pub(super) use notices::Notices;
 pub use placement::WindowPlacement;
 
 use super::saver::Saver;
@@ -28,11 +30,10 @@ pub struct Window {
     pub(super) dark: AtomicBool,
     /// The sidebar's panel is open: its row toggles it and a restore sets it.
     pub(super) panel_open: AtomicBool,
-    pub(super) open_failure: Mutex<Option<String>>,
-    /// Why something the reader chose couldn't be done, or what a save has to say, as a notice that goes by itself.
-    pub(super) action_notice: Mutex<Option<String>>,
+    /// What it says by the page: a notice that goes by itself, and why an open failed.
+    notices: Notices,
     /// The tab showing when the window was last brought up to date: a notice is about what was on screen, so it goes with a change of tab.
-    pub(super) notice_tab: AtomicU32,
+    notice_tab: AtomicU32,
 }
 
 impl Window {
@@ -60,10 +61,24 @@ impl Window {
             panel_open: AtomicBool::new(false),
             contents_follow: Mutex::new(ContentsFollow::default()),
             watchdog,
-            open_failure: Mutex::new(None),
-            action_notice: Mutex::new(None),
+            notices: Notices::new(),
             notice_tab: AtomicU32::new(0),
         }
+    }
+
+    /// What the window says by the page, and why an open failed.
+    pub(super) fn notices(&self) -> &Notices {
+        &self.notices
+    }
+
+    /// **The window's brought up to date showing `tab`:** if that's another tab than the last time, the notice, which was about what was on screen, goes. Says
+    /// whether it was another tab.
+    pub(super) fn shows_tab(&self, tab: u32) -> bool {
+        let another = self.notice_tab.swap(tab, Ordering::SeqCst) != tab;
+        if another {
+            self.notices.take_notice();
+        }
+        another
     }
 
     /// The host's own part of the record, with the notice the session as a whole has now, as `notice` reads it (the host's, under its own lock). Called

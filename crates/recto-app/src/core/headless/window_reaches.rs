@@ -123,12 +123,12 @@ fn a_saved_window_comes_back_as_it_did_each_way() {
 
 /// The notice that goes by itself, as the window keeps it.
 fn notice(app: &HeadlessApp) -> Option<String> {
-    crate::lock(&app.core().window.action_notice).clone()
+    app.core().window.notices().notice()
 }
 
 /// Why an open failed, as the window keeps it.
 fn open_failure(app: &HeadlessApp) -> Option<String> {
-    crate::lock(&app.core().window.open_failure).clone()
+    app.core().window.notices().open_failure()
 }
 
 /// The notice as the window draws it.

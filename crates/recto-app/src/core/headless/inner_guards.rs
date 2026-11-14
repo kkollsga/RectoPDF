@@ -4,6 +4,7 @@
 
 use crate::core::keeper::Keeper;
 use crate::core::sleeper::{OnDisk, Sleeper};
+use crate::core::window::Notices;
 use crate::core::{AppState, Inner, Lifecycle, Published, Serving, Tools, Window};
 use std::mem::size_of;
 
@@ -21,6 +22,7 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
         ("Lifecycle", size_of::<Lifecycle>()),
         ("Serving", size_of::<Serving>()),
         ("Window", size_of::<Window>()),
+        ("Notices", size_of::<Notices>()),
         ("Tools", size_of::<Tools>()),
         ("Published", size_of::<Published>()),
         ("AppState", size_of::<AppState>()),
@@ -48,12 +50,14 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
 /// draws (`find::Field`, R3.7 S2's fix: Find announced with nothing changed). And the sleeper on its own, at its size on 2026-11-14 (608 bytes, inside
 /// Inner's then), before R3.7 S5 moves it behind an `Arc` of its own, where Inner's budget no longer sees it. Then S5 itself: Inner 5,072 to 4,480 (the
 /// sleeper's 608 out, `OnDisk`'s two `Arc`s, 16, in), and the record's keeper, 40 (five handles the app already has, held once more so the record's threads
-/// hold it and not the app). One of each per app, not per tab or page view.
-const BUDGETS: [(&str, usize); 10] = [
+/// hold it and not the app). And S2b's window's notices, 80 (its two locks, out of `Window`, whose size holds: the tab they're about stays in its padding). One
+/// of each per app, not per tab or page view.
+const BUDGETS: [(&str, usize); 11] = [
     ("Inner", 4480),
     ("Lifecycle", 344),
     ("Serving", 1064),
     ("Window", 464),
+    ("Notices", 80),
     ("Tools", 1448),
     ("Published", 808),
     ("AppState", 248),
@@ -73,6 +77,7 @@ fn what_the_apps_state_lets_other_code_reach_is_listed() {
         "Lifecycle",
         "Serving",
         "Window",
+        "Notices",
         "Tools",
         "Printing",
         "Prompts",
@@ -234,6 +239,14 @@ Lifecycle::pub(super) fn keeping_due(&self) -> Option<Duration>
 Lifecycle::pub(super) fn life(&self) -> crate::lifecycle::Life
 Lifecycle::pub(super) fn step_keeping(&self, event: crate::lifecycle::keeping::Event, to: &mut super::keeping::Carrier<'_>)
 Lifecycle::pub(super) fn tried(&self, got: bool, busy: impl FnOnce() -> bool, to: &mut super::keeping::Carrier<'_>)
+Notices (pub struct)
+Notices::pub(in crate::core) fn clear_open_failure(&self)
+Notices::pub(in crate::core) fn fail_open(&self, words: String)
+Notices::pub(in crate::core) fn notice(&self) -> Option<String>
+Notices::pub(in crate::core) fn open_failure(&self) -> Option<String>
+Notices::pub(in crate::core) fn say(&self, words: String)
+Notices::pub(in crate::core) fn take_notice(&self) -> Option<String>
+Notices::pub(super) fn new() -> Self
 OnDisk (pub struct)
 OnDisk::pub(crate) fn downgrade(&self) -> LetGo
 OnDisk::pub(crate) fn keeper(&self) -> &Arc<Keeper>
@@ -287,12 +300,9 @@ Tools::pub(crate) fn find_field(&self) -> &Mutex<crate::find::Field>
 Tools::pub(crate) fn palette(&self) -> &crate::palette::Palette
 Tools::pub(crate) fn save_ui(&self) -> &saving::SaveUi
 Window (pub struct)
-Window.pub(super) action_notice: Mutex<Option<String>>
 Window.pub(super) app: Mutex<AppState>
 Window.pub(super) contents_follow: Mutex<ContentsFollow>
 Window.pub(super) dark: AtomicBool
-Window.pub(super) notice_tab: AtomicU32
-Window.pub(super) open_failure: Mutex<Option<String>>
 Window.pub(super) panel_open: AtomicBool
 Window::pub fn app_record(&self, notice: impl FnOnce() -> Option<String>) -> AppRecord
 Window::pub fn appearance_choice(&self) -> &'static str
@@ -328,7 +338,9 @@ Window::pub fn settings_window_changed(&self, place: Option<SettingsWindow>, sav
 Window::pub fn should_open(&self, reopened: bool) -> bool
 Window::pub fn showing(&self) -> bool
 Window::pub(super) fn closed(&self)
+Window::pub(super) fn notices(&self) -> &Notices
 Window::pub(super) fn opened(&self)
 Window::pub(super) fn replaced(&self, held: Vec<(usize, recto_index::select::Range)>)
+Window::pub(super) fn shows_tab(&self, tab: u32) -> bool
 Window::pub(super) fn take_selections_held(&self) -> Vec<(usize, recto_index::select::Range)>
 ";

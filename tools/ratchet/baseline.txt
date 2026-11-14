@@ -6,7 +6,7 @@ file crates/recto-render/src/pdfium/contents.rs 2885
 file crates/recto-update/src/updater.rs 2495
 fn crates/recto-agent/src/render/svg.rs::write_record 154
 fn crates/recto-agent/src/selecting.rs::run_counted 154
-fn crates/recto-app/src/core/reconcile.rs::reconcile 226
+fn crates/recto-app/src/core/reconcile.rs::reconcile 225
 fn crates/recto-cli/src/qa.rs::budget 263
 fn crates/recto-control/src/record_store.rs::load_journals 157
 fn crates/recto-core/src/save.rs::save 194
@@ -108,4 +108,4 @@ type crates/recto-render/src::Walk 64
 type crates/recto-session/src::PageEdits 68
 type crates/recto-session/src::Session 103
 type crates/recto-update/src::Updater 74
-whole crates/recto-app/src::Inner 100
+whole crates/recto-app/src::Inner 99

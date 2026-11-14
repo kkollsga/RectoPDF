@@ -560,7 +560,7 @@ impl FileReads {
             return;
         }
         if self.running.len() >= MAX_FILE_READS {
-            *lock(&inner.window.open_failure) = Some(TOO_MANY_READS.to_string());
+            inner.window.notices().fail_open(TOO_MANY_READS.to_string());
             return;
         }
         let core = Arc::clone(&inner.core);
@@ -605,7 +605,7 @@ impl FileReads {
             self.running.insert(what);
             inner.life.read_started();
         } else {
-            *lock(&inner.window.open_failure) = Some(TOO_MANY_READS.to_string());
+            inner.window.notices().fail_open(TOO_MANY_READS.to_string());
         }
     }
 

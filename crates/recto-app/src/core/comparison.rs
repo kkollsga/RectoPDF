@@ -2,7 +2,7 @@
 //! `compare --reading`, and the context menu's separate or synced scroll is `compare --sync`, the commands an agent sends, run for the person. A pane's cold
 //! file is read off the session thread, and the command runs again once it's in, as a tap's does. Each pane's layout is `view`'s.
 
-use super::{Inner, lock, person};
+use super::{Inner, person};
 use recto_agent::Code;
 use recto_agent::commands::words::OnOff;
 use recto_agent::commands::{Move, compare::Compare};
@@ -17,7 +17,7 @@ pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
     if let (Command::Move(Move::Compare(Compare::Toggle(_))), Some(error)) = (ran.command, ran.refused())
         && let Some(words) = compare_words(error)
     {
-        *lock(&inner.window.action_notice) = Some(words.to_string());
+        inner.window.notices().say(words.to_string());
     }
 }
 

@@ -47,22 +47,16 @@ pub fn follow_link(inner: &Arc<Inner>, pane: usize, engine: &Engine, hit: recto_
     match hit.target {
         recto_core::nav::LinkTarget::Page { page, within } => match engine.links().position_in_same_file(hit.page, page) {
             Some(position) => person::submit(inner, super::navigation::link_to_page(tab, position, within)),
-            None => notice(inner, "The page this link goes to isn't in the document as it's been edited."),
+            None => person::say(inner, "The page this link goes to isn't in the document as it's been edited.".to_string()),
         },
         recto_core::nav::LinkTarget::History { back } => person::submit(inner, super::navigation::step(back)),
         recto_core::nav::LinkTarget::Web(address) => {
             inner.tools.prompts().ask_link(&address);
             inner.core.push(CoreCall::Reconcile);
         }
-        recto_core::nav::LinkTarget::Refused(why) => notice(inner, why.message()),
-        recto_core::nav::LinkTarget::Nowhere => notice(inner, "This link goes nowhere in this document."),
+        recto_core::nav::LinkTarget::Refused(why) => person::say(inner, why.message().to_string()),
+        recto_core::nav::LinkTarget::Nowhere => person::say(inner, "This link goes nowhere in this document.".to_string()),
     }
-}
-
-/// A line by the page that goes by itself, in Rust's words.
-pub fn notice(inner: &Inner, words: &str) {
-    *lock(&inner.window.action_notice) = Some(words.to_string());
-    inner.core.push(CoreCall::Reconcile);
 }
 
 /// **Shows a tab in a pane,** or brings what's shown up to date: another tab, another list of pages, a layout, a page an agent sent it to, or the warm tabs. A tab a pane's page view hasn't held starts from its sleep file's pictures, as any wake does.
@@ -226,8 +220,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let pane_pages = std::mem::take(&mut facts.pane_pages);
     let shown_tab = facts.reading.shown_tab();
     // A notice about one document doesn't stay over another: a save's note, seen on the next tab, would read as being about that one.
-    if inner.window.notice_tab.swap(shown_tab, Ordering::SeqCst) != shown_tab {
-        lock(&inner.window.action_notice).take();
+    if inner.window.shows_tab(shown_tab) {
         snapshot_tool::tab_came_forward(inner);
     }
     let save = save_state_now(inner, &facts.reading);
@@ -302,7 +295,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     }
     let reading_engine = inner.panes.reading_engine(&inner.engine);
     let note = crate::NoteSources {
-        open_failure: lock(&inner.window.open_failure).clone(),
+        open_failure: inner.window.notices().open_failure(),
         save_failed: inner.saver.has_failed(),
         problem,
         session: lock(&inner.host.notice).as_deref().and_then(record::notices::words).map(str::to_string),
@@ -318,7 +311,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         }),
         printing: inner.tools.printing().selection_notice(),
         tool: inner.tools.tool().selection_notice(),
-        action: lock(&inner.window.action_notice).clone(),
+        action: inner.window.notices().notice(),
         update: inner.updates.notice().map(|notice| (notice.text, notice.fades)),
     }
     .notice();

@@ -97,7 +97,7 @@ impl Inner {
         for engine in self.panes.engines(&self.engine) {
             engine.selection().dismiss_notice();
         }
-        lock(&self.window.action_notice).take();
+        self.window.notices().take_notice();
         self.tools.tool().dismiss_notice();
         self.tools.printing().dismiss_notice();
         self.updates.dismiss_notice();
