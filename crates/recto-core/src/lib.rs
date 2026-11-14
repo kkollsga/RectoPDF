@@ -86,7 +86,13 @@ pub struct TocEntry {
     /// Index of the parent entry, or [`NONE`].
     pub parent: u32,
     pub depth: u8,
+    /// How far down its page the entry is, in thousandths of the page as shown (0 to [`TOP_SCALE`]), or 0 when the file or the helper doesn't say. Entries
+    /// of one page are ordered by it, so the one being read is found by place and not by page alone.
+    pub top: u16,
 }
+
+/// A place down a page, as thousandths of its height from the top: [`TocEntry::top`]'s scale, and the one generated contents keep.
+pub const TOP_SCALE: u16 = 1000;
 
 /// A document's contents, compact and in document order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -123,6 +129,7 @@ impl Toc {
                 page: line.page,
                 parent: line.parent,
                 depth: line.depth,
+                top: 0,
             });
         }
         Self {
@@ -137,6 +144,16 @@ impl Toc {
         &self.entries
     }
 
+    /// These contents with each entry's place down its page, in thousandths from the top, as `tops` says in the entries' order. What a file or a helper
+    /// says is not believed: a value past [`TOP_SCALE`] is the bottom of the page, and entries `tops` doesn't reach stay unplaced (0).
+    #[must_use]
+    pub fn with_tops(mut self, tops: &[u16]) -> Self {
+        for (entry, top) in self.entries.iter_mut().zip(tops) {
+            entry.top = (*top).min(TOP_SCALE);
+        }
+        self
+    }
+
     pub fn title(&self, entry: &TocEntry) -> &str {
         let start = entry.title_start as usize;
         self.titles.get(start..start + entry.title_len as usize).unwrap_or("")
@@ -148,7 +165,15 @@ impl Toc {
 
     /// The last entry at or before a zero-based page, which is the section being read.
     pub fn section_at(&self, page: u32) -> Option<usize> {
-        self.entries.iter().rposition(|e| e.page != NONE && e.page <= page)
+        self.section_at_place(page, TOP_SCALE)
+    }
+
+    /// The last entry at or above a place: on an earlier page, or on `page` and no further down than `top` thousandths of it. An entry with no place (0) is at
+    /// the top of its page, so a file that says none keeps what [`Self::section_at`] always did: the last entry of the page.
+    pub fn section_at_place(&self, page: u32, top: u16) -> Option<usize> {
+        self.entries
+            .iter()
+            .rposition(|e| e.page != NONE && (e.page < page || (e.page == page && e.top <= top)))
     }
 }
 
@@ -339,13 +364,15 @@ fn read_toc_within(reader: &IndexedReader, limit: Duration) -> Option<Toc> {
     let outlines = deref(reader, root.get(b"Outlines").ok()?)?;
     let first = outlines.as_dict().ok()?.get(b"First").ok()?.as_reference().ok()?;
 
-    let pages: HashMap<ObjectId, u32> = reader
-        .page_map()
-        .ok()?
-        .iter()
-        .enumerate()
-        .filter_map(|(index, page)| Some((page.id(), u32::try_from(index).ok()?)))
-        .collect();
+    let map = reader.page_map().ok()?;
+    let pages = Pages {
+        index: map
+            .iter()
+            .enumerate()
+            .filter_map(|(index, page)| Some((page.id(), u32::try_from(index).ok()?)))
+            .collect(),
+        map: &map,
+    };
 
     let mut titles = String::new();
     let mut entries = Vec::new();
@@ -375,12 +402,14 @@ fn read_toc_within(reader: &IndexedReader, limit: Duration) -> Option<Toc> {
         };
         titles.push_str(&title);
         let index = u32::try_from(entries.len()).ok()?;
+        let (page, top) = target_page(reader, root, &node, &pages, &walk).unwrap_or((NONE, 0));
         entries.push(TocEntry {
             title_start,
             title_len,
-            page: target_page(reader, root, &node, &pages, &walk).unwrap_or(NONE),
+            page,
             parent,
             depth,
+            top,
         });
         if let Ok(next) = node.get(b"Next").and_then(Object::as_reference) {
             stack.push((next, parent, depth));
@@ -397,6 +426,12 @@ fn read_toc_within(reader: &IndexedReader, limit: Duration) -> Option<Toc> {
         truncated: truncated || walk.visits_left.get() == 0 || walk.cut_short.get(),
         labels: nav::PageLabels::default(),
     })
+}
+
+/// The document's pages, for finding which a destination is on and how that page is framed.
+struct Pages<'a> {
+    index: HashMap<ObjectId, u32>,
+    map: &'a lopdf::PageMap,
 }
 
 /// What's left for following named destinations, shared across the whole outline.
@@ -418,7 +453,8 @@ impl NameWalk {
     }
 }
 
-fn target_page(reader: &IndexedReader, root: &Dictionary, node: &Dictionary, pages: &HashMap<ObjectId, u32>, walk: &NameWalk) -> Option<u32> {
+/// The page an outline entry goes to, and how far down it, if the file says and it can be known: the entry's own `Dest` or `GoTo` action.
+fn target_page(reader: &IndexedReader, root: &Dictionary, node: &Dictionary, pages: &Pages<'_>, walk: &NameWalk) -> Option<(u32, u16)> {
     let dest = match node.get(b"Dest") {
         Ok(dest) => deref(reader, dest)?,
         Err(_) => {
@@ -433,13 +469,21 @@ fn target_page(reader: &IndexedReader, root: &Dictionary, node: &Dictionary, pag
     page_of_dest(reader, root, &dest, pages, walk, 0)
 }
 
-fn page_of_dest(reader: &IndexedReader, root: &Dictionary, dest: &Object, pages: &HashMap<ObjectId, u32>, walk: &NameWalk, hops: u8) -> Option<u32> {
+fn page_of_dest(reader: &IndexedReader, root: &Dictionary, dest: &Object, pages: &Pages<'_>, walk: &NameWalk, hops: u8) -> Option<(u32, u16)> {
     // A named destination can name another, and a file can make that a loop.
     if hops > 4 {
         return None;
     }
     match dest {
-        Object::Array(items) => pages.get(&items.first()?.as_reference().ok()?).copied(),
+        Object::Array(items) => {
+            let page = pages.index.get(&items.first()?.as_reference().ok()?).copied()?;
+            // How far down, in the frame the reader's place is in. The file's number is not believed: not a number, or off the page, is no place; and a
+            // quarter-turned page's top is a shown left, which says nothing (`Frame::within`).
+            let top = nav::dest_top(items)
+                .and_then(|top| nav::frame_of(reader, pages.map.get(page as usize)?).within(top))
+                .map_or(0, |within| (within * f32::from(TOP_SCALE)).round() as u16);
+            Some((page, top))
+        }
         Object::Name(name) => {
             let dests = deref(reader, root.get(b"Dests").ok()?)?;
             let found = deref(reader, dests.as_dict().ok()?.get(name).ok()?)?;

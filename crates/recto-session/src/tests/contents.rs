@@ -306,3 +306,61 @@ fn a_folded_section_holding_the_current_entry_is_current_itself() {
     s.toggle_contents_section(id, 1);
     assert_eq!(current(&s), (vec!["One a i".to_string()], 3), "opened again, the entry itself");
 }
+
+/// Failure (finding 3 of the contents fixes): the current entry is chosen by page, so at the top of a page that holds several entries the last of them
+/// (further down the page) is marked and the contents scroll past the ones above it. The last entry at or above the reader's place is the current one: on
+/// an earlier page, or on this page and no further down than the reader. The same for a file's own contents and for generated ones, which share the one
+/// function; and entries with no place keep the last of their page.
+#[test]
+fn the_current_entry_is_the_last_at_or_above_the_place_own_and_generated() {
+    struct Placed;
+    fn toc(tops: &[u16]) -> Toc {
+        let line = |title, page| TocLine {
+            title,
+            page,
+            parent: NONE,
+            depth: 0,
+        };
+        Toc::from_lines(&[line("Before", 0), line("A", 1), line("B", 1), line("C", 1), line("After", 2)], false).with_tops(tops)
+    }
+    impl DocLoader for Placed {
+        fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
+            Ok(DocFacts {
+                page_count: 10,
+                byte_len: 1,
+                encrypted: false,
+                version: "1.7".into(),
+                title: None,
+                toc: toc(&[0, 0, 300, 600, 0]),
+                renderer_only: false,
+            })
+        }
+    }
+    fn current(s: &Session<Placed>) -> Vec<String> {
+        s.sidebar()
+            .rows
+            .iter()
+            .filter(|row| row.kind == RowKind::Contents && row.current)
+            .map(|row| row.text.to_string())
+            .collect()
+    }
+    let mut s = Session::new(Placed);
+    let id = s.open(Path::new("/d/a.pdf")).unwrap();
+    for (within, expected) in [(0.0, "A"), (0.29, "A"), (0.30, "B"), (0.45, "B"), (0.61, "C"), (0.99, "C")] {
+        s.jump(id, 1, within).unwrap();
+        assert_eq!(current(&s), [expected], "{within} of the way down page 2");
+    }
+    s.jump(id, 2, 0.0).unwrap();
+    assert_eq!(current(&s), ["After"], "the next page's entry once the reader's there");
+    // Generated ones: the same function, with the places the helper found.
+    s.tabs_mut().choose_generated(id, true);
+    s.set_generated_view(id, GeneratedView::Ready(Arc::new(toc(&[0, 0, 500, 900, 0]))));
+    for (within, expected) in [(0.0, "A"), (0.51, "B"), (0.95, "C")] {
+        s.jump(id, 1, within).unwrap();
+        assert_eq!(current(&s), [expected], "generated, {within} of the way down");
+    }
+    // No places: the last of the page wherever the reader is on it, as it always was.
+    s.set_generated_view(id, GeneratedView::Ready(Arc::new(toc(&[]))));
+    s.jump(id, 1, 0.0).unwrap();
+    assert_eq!(current(&s), ["C"]);
+}

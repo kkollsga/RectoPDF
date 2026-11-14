@@ -158,23 +158,7 @@ impl<L: DocLoader> Session<L> {
     /// views was taken in after the session thread's look sent the jump, the read having been made before the send. Which read is newer, and whether it came
     /// after a send, goes by the place clock ([`Self::view_told_of`], [`PartMut::jump_sent`](crate::PartMut::jump_sent)): the newer read wins, whoever took it in.
     pub fn here(&self, id: TabId) -> Option<trail::Stop> {
-        let tab = self.tabs.tab(id)?;
-        // Only while it's still where the tab is: a move since that sent the page view no jump of its own, as Find's step, is the newer.
-        let on_page = |stop: &trail::Stop| stop.page == tab.page;
-        if let Some(jump) = self
-            .mail
-            .waiting_jump(id)
-            .filter(on_page)
-            .or_else(|| self.mail.jump_on_its_way(id).filter(on_page))
-        {
-            return Some(trail::Stop::new(jump.page, f64::from(jump.within)));
-        }
-        let within = tab
-            .reading
-            .place
-            .filter(|place| place.page == tab.page && place.anchor_page == tab.page)
-            .map_or(0.0, |place| place.within);
-        Some(trail::Stop::new(tab.page, within))
+        Some(here_of(self, self.tabs.tab(id)?))
     }
 
     /// **A jump:** following a link, a contents entry, or going to a page by its number or label. Where the reader was is marked for Back, and the way forward goes. The page is held to the document, and the page view lands `within` the way down it.
@@ -302,4 +286,25 @@ mod tests {
         });
         assert_eq!(trail.back(), [Stop::new(0, 0.5)]);
     }
+}
+
+/// [`Session::here`] for a tab in hand, so a walk over every tab needn't look each up again.
+pub(crate) fn here_of<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> trail::Stop {
+    let id = tab.id;
+    // Only while it's still where the tab is: a move since that sent the page view no jump of its own, as Find's step, is the newer.
+    let on_page = |stop: &trail::Stop| stop.page == tab.page;
+    if let Some(jump) = session
+        .mail
+        .waiting_jump(id)
+        .filter(on_page)
+        .or_else(|| session.mail.jump_on_its_way(id).filter(on_page))
+    {
+        return trail::Stop::new(jump.page, f64::from(jump.within));
+    }
+    let within = tab
+        .reading
+        .place
+        .filter(|place| place.page == tab.page && place.anchor_page == tab.page)
+        .map_or(0.0, |place| place.within);
+    trail::Stop::new(tab.page, within)
 }

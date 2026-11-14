@@ -211,6 +211,8 @@ pub struct ContentsEntry {
     pub depth: u8,
     /// Its entry in the list, and whether it folds and is open.
     pub entry: u32,
+    /// How far down its page the entry is, in thousandths: where tapping it goes. 0 when it has no place.
+    pub top: u16,
     pub expandable: bool,
     pub expanded: bool,
 }
@@ -340,6 +342,7 @@ fn contents_change(model: &SidebarModel<'_>, counts: &RowCounts, held: &Held) ->
                 && row.depth == entry.depth
                 && row.text == entry.text.as_ref()
                 && row.entry == entry.entry
+                && row.top == entry.top
                 && row.expanded == entry.expanded
                 && row.expandable == entry.expandable
         });
@@ -360,6 +363,7 @@ fn contents_change(model: &SidebarModel<'_>, counts: &RowCounts, held: &Held) ->
                 page: row.page,
                 depth: row.depth,
                 entry: row.entry,
+                top: row.top,
                 expandable: row.expandable,
                 expanded: row.expanded,
             })
@@ -1651,6 +1655,7 @@ mod tests {
             page: Some(1),
             depth: 0,
             entry: 0,
+            top: 0,
             expandable: false,
             expanded: false,
         };
@@ -1677,6 +1682,7 @@ mod tests {
             page: Some(1),
             depth: u8::try_from(text.matches('.').count()).unwrap(),
             entry: 0,
+            top: 0,
             expandable: false,
             expanded: false,
         };

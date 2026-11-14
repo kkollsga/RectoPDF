@@ -184,11 +184,11 @@ fn recent_path(recent: &[RecentFile], key: &str) -> Option<PathBuf> {
 
 /// **What a row of the sidebar comes to, tapped** (`adding` for a ⌘- or ⌃-click): a tab's is `tap`, or with `adding` `compare --toggle`; a contents row's
 /// is `goto` its page, and the note over a tab's contents is its action, whichever the click. A contents row with no page does nothing.
-pub fn row_command(row: SidebarRow, adding: bool, panes: &panes::Panes, engine: &Engine) -> Option<Command> {
+pub fn row_command(row: SidebarRow, adding: bool, panes: &panes::Panes, engine: &Engine, contents: &[crate::ContentsEntry]) -> Option<Command> {
     match (row.kind, row.page) {
         (crate::RowKind::Tab, _) if adding => Some(super::comparison::toggle(TabId(row.tab))),
         (crate::RowKind::Tab, _) => Some(tap(TabId(row.tab))),
-        (crate::RowKind::Contents, Some(page)) => Some(super::navigation::contents_tapped(panes, engine, TabId(row.tab), page)),
+        (crate::RowKind::Contents, Some(page)) => Some(super::navigation::contents_tapped(panes, engine, contents, &row, page)),
         (crate::RowKind::Contents, None) => None,
         (crate::RowKind::Note, _) => row
             .action

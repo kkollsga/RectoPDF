@@ -51,15 +51,27 @@ fn goto(tab: TabId, page: Option<u32>, label: Option<String>, within: Option<f64
     .into()
 }
 
-/// A contents row tapped: `goto` its page, on its tab.
-pub fn contents_tapped(panes: &panes::Panes, engine: &Engine, tab: TabId, page: u32) -> Command {
+/// A contents row tapped: `goto` its page, on its tab, and as far down it as the entry is, so the entry is the one being read when the view lands.
+pub fn contents_tapped(panes: &panes::Panes, engine: &Engine, contents: &[crate::ContentsEntry], row: &crate::SidebarRow, page: u32) -> Command {
+    let tab = TabId(row.tab);
     let showing = (0..panes.count()).any(|pane| panes.tab_of(pane) == Some(tab));
     let shown = if showing {
         panes.engine_for_tab(engine, tab).points().page_count()
     } else {
         0
     };
-    goto(tab, Some(contents_page(page, shown)), None, None)
+    goto(tab, Some(contents_page(page, shown)), None, entry_place(contents, row).map(f64::from))
+}
+
+/// How far down its page the entry a tapped row names is, from 0 to 1, if the published entries say it and only one entry is that row. A row doesn't name its
+/// entry, so it's found by what it shows (its tab, words, page, depth and whether it folds); two the same are not told apart by a guess, and an entry with no
+/// place has none: either goes to the page's top. The words are the file's, and are only compared.
+pub fn entry_place(contents: &[crate::ContentsEntry], row: &crate::SidebarRow) -> Option<f32> {
+    let mut same = contents.iter().filter(|entry| {
+        entry.tab == row.tab && entry.page == row.page && entry.depth == row.depth && entry.expandable == row.expandable && *entry.text == *row.text
+    });
+    let (Some(entry), None) = (same.next(), same.next()) else { return None };
+    (entry.top > 0).then(|| f32::from(entry.top) / f32::from(recto_core::TOP_SCALE))
 }
 
 /// A link to a page of this document, clicked: `goto` that page and as far down it as the link says, from the page view's hit, with nothing read again.

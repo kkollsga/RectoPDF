@@ -176,7 +176,8 @@ impl Generated {
             });
             open.push((entry.depth, depth, u32::try_from(index).unwrap_or(NONE)));
         }
-        Toc::from_lines(&lines, self.truncated)
+        let tops: Vec<u16> = self.entries.iter().map(|entry| entry.place).collect();
+        Toc::from_lines(&lines, self.truncated).with_tops(&tops)
     }
 }
 

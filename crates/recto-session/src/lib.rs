@@ -253,6 +253,8 @@ pub struct SidebarRow<'a> {
     pub action: Option<ContentsAction>,
     /// A contents row's entry in its list.
     pub entry: u32,
+    /// How far down its page the entry is, in thousandths: where tapping it goes. 0 for a row that isn't one, or an entry with no place.
+    pub top: u16,
     /// It has sections under it, so it has a chevron to fold them.
     pub expandable: bool,
     /// Those sections show.
