@@ -37,4 +37,6 @@ serde_json.workspace = true
 recto-agent = { path = ".", features = ["test-words"] }
 # To make an encrypted file with permissions, as nothing else here writes one.
 lopdf.workspace = true
+# The policy walks set the page deadline long, so the hidden-text check's outcome doesn't turn on the machine's speed.
+recto-render-service = { workspace = true, features = ["test-seams"] }
 recto-testpdf.workspace = true

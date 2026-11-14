@@ -378,6 +378,7 @@ fn unmeasured(value: &mut Value) {
 /// [`commands::About::Nothing`], or reads the document being read and says `Its`, fails here, not only where someone remembers to look.
 #[test]
 fn no_command_tells_an_agent_anything_of_a_protected_document() {
+    deadlines_met();
     let mut differs = Vec::new();
     for command in every_command() {
         for level in LEVELS {
@@ -401,6 +402,7 @@ fn no_command_tells_an_agent_anything_of_a_protected_document() {
 /// `an_agent_is_told_the_same_of_two_protected_documents`.
 #[test]
 fn no_persons_command_is_heard_with_anything_of_a_protected_document() {
+    deadlines_met();
     let mut differs = Vec::new();
     // Past the end of the shorter twin (9 pages) and not of the longer (11): an edit whose taking depends on the length.
     let past_one_end = Command::from(commands::editing::PageDelete {
@@ -432,6 +434,14 @@ fn heard(secret: u32, command: &Command, arranged: Arrangement) -> String {
     format!("{events:?}")
         .replace(locked.folder().to_str().unwrap(), "<locked>")
         .replace(plain.folder().to_str().unwrap(), "<plain>")
+}
+
+/// **The twins' answers don't turn on the machine's speed:** every renderer in this test's process gets a page deadline it always meets, so the
+/// hidden-text check (a draw of the page at 2x, left unchecked past the deadline) runs to its end for both twins. Under load the check ran out of time on
+/// one twin only, and the walks told them apart by it (`copy`'s `pages_unchecked`, the draw `text` notes when the check ran), failing 1 of 20 like CI
+/// (2026-11-14). The check still runs: what it does is compared, not switched off.
+fn deadlines_met() {
+    recto_render_service::page_deadline_for_this_process(std::time::Duration::from_secs(20));
 }
 
 /// A real PDF of `count` pages, each with its number in words.

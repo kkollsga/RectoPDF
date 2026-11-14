@@ -2,7 +2,24 @@
 //! crate's own tests turn on: a release build has no such function.
 
 use crate::DocRenderer;
+use std::sync::OnceLock;
 use std::time::Duration;
+
+/// The page deadline every renderer made in this process starts with, once a test has set it.
+static THIS_PROCESS: OnceLock<Duration> = OnceLock::new();
+
+/// **For a test whose outcome would otherwise turn on the machine's speed:** every renderer made in this process from now on starts with `deadline`
+/// as its page deadline (its host's wait and its worker's own), so a job that takes long on a starved machine (the hidden-text check's draw of a page at
+/// 2x, which past the deadline is left unchecked) ends as it would on a quiet one. Set once a process; later calls change nothing. A test that wants a
+/// deadline met sets it long (its own wait limit); a test of what a deadline does uses [`under_page_deadline_for_test`].
+#[doc(hidden)]
+pub fn page_deadline_for_this_process(deadline: Duration) {
+    let _ = THIS_PROCESS.set(deadline);
+}
+
+pub(crate) fn this_process() -> Option<Duration> {
+    THIS_PROCESS.get().copied()
+}
 
 /// **For tests: runs `job` with `deadline` as the renderer's page deadline,** and puts the policy's own back after, however `job` ends. The policy is fixed when
 /// a renderer is made, so a test of what a job past its deadline leaves behind could only make the whole renderer short of time, and the ordinary job after it
