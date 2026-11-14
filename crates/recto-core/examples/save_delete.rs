@@ -91,6 +91,7 @@ fn main() {
             pages: &order,
             added: &added,
             highlights: &[],
+            highlights_gone: &[],
         };
         recto_core::save::save(&request, Target::Same, None, &mut recto_core::save::NoHooks).expect("the page is added");
         pages = 2;
@@ -111,6 +112,7 @@ fn main() {
         pages: &order,
         added: &[],
         highlights: &[],
+        highlights_gone: &[],
     };
     let (written_before, footprint_before, peak_before) = counters();
     let started = Instant::now();

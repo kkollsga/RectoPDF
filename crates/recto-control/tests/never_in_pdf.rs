@@ -95,6 +95,7 @@ fn a_saved_pdf_has_nothing_of_the_history_in_it() {
         pages: &order,
         added: &added_files,
         highlights: &[],
+        highlights_gone: &[],
     };
     let needed = session.lists().own_pages_needed(tab);
     assert_eq!(needed, [1], "the history can put back the deleted page, and only that");

@@ -331,6 +331,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &TabRef, to: &SaveT
         pages: &pages,
         added: &added,
         highlights: &highlights,
+        highlights_gone: &[],
     };
     let target = match to {
         SaveTo::Same => Target::Same,
@@ -503,20 +504,20 @@ fn answer<L: recto_session::DocLoader>(
             list_words(&kept_words)
         )
     });
-    if outcome.pages_removed > 0 && outcome.resources_left_whole > 0 {
+    if outcome.pages_removed > 0 && outcome.warnings.resources_left_whole > 0 {
         notes.push(if one {
             "Some of what the deleted page drew with is shared with pages that stayed, in a way that couldn't be checked, so it was left in the file."
         } else {
             "Some of what the deleted pages drew with is shared with pages that stayed, in a way that couldn't be checked, so it was left in the file."
         });
     }
-    if outcome.form_fields_left_out {
+    if outcome.warnings.form_fields_left_out {
         notes.push("This document's own form couldn't be read, so the form fields on the added pages weren't joined to it: they show, and can't be filled in.");
     }
-    if outcome.attributes_missed {
+    if outcome.warnings.attributes_missed {
         notes.push("Some of the file's Finder information, such as tags or who may open it, couldn't be kept on the saved file.");
     }
-    if outcome.durability_warning {
+    if outcome.warnings.durability_warning {
         notes.push("The file was saved, but the disk didn't confirm it, so a power cut in the next moments could bring back the old version.");
     }
     if rolled_off > 0 {
@@ -617,6 +618,7 @@ mod tests {
                 pages,
                 added: &[],
                 highlights: &[],
+                highlights_gone: &[],
             }
         }
         let (whole, turned) = (&whole[..], &turned[..]);

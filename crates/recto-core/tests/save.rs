@@ -63,6 +63,7 @@ fn request<'a>(path: &'a Path, file_pages: u32, pages: &'a [PageRef], added: &'a
         pages,
         added,
         highlights: &[],
+        highlights_gone: &[],
     }
 }
 
@@ -365,6 +366,7 @@ fn a_file_changed_meanwhile_isnt_saved_over() {
         pages: &order,
         added: &[],
         highlights: &[],
+        highlights_gone: &[],
     };
     assert_eq!(
         save::save(&stale, Target::Same, None, &mut save::NoHooks),
@@ -418,6 +420,7 @@ fn a_rewrite_that_keeps_size_and_time_isnt_saved_onto() {
         pages: &order,
         added: &[],
         highlights: &[],
+        highlights_gone: &[],
     };
     let copy = dir.0.join("copy.pdf");
     // In place: the same number, size and time, five pages.
@@ -934,6 +937,7 @@ fn no_stamp_is_no_save() {
         pages: &order,
         added: &[],
         highlights: &[],
+        highlights_gone: &[],
     };
     assert_eq!(save::save(&unstamped, Target::Same, None, &mut save::NoHooks), Err(SaveError::FileChanged));
 }
@@ -1870,4 +1874,201 @@ fn a_highlight_on_an_added_page_and_on_a_page_turned_by_an_edit_is_where_it_was_
         "the added page keeps its own and gains the highlight"
     );
     assert_eq!(copied[1].1, vec![40.0, 200.0, 140.0, 200.0, 40.0, 188.0, 140.0, 188.0]);
+}
+
+/// A page with a link, a highlight with its popup note, and a second highlight: `/Annots [link, highlight, popup, highlight]`. The first
+/// highlight's `/Rect` is `[50 700 150 712]`, the second's `[50 600 150 612]`.
+fn with_file_highlights() -> Vec<u8> {
+    build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [5 0 R 6 0 R 8 0 R 9 0 R] >>".into()),
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["Words"]),
+        },
+        Raw::Dict("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Highlight /Rect [50 700 150 712] /QuadPoints [50 712 150 712 50 700 150 700] /AP << /N 7 0 R >> /Popup 8 0 R /Contents (GONENOTE) >>".into()),
+        Raw::Stream {
+            dict: "/Type /XObject /Subtype /Form /BBox [50 700 150 712]".into(),
+            data: b"GONEAPPEARANCE 1 1 0 rg 50 700 100 12 re f".to_vec(),
+        },
+        Raw::Dict("<< /Type /Annot /Subtype /Popup /Rect [200 700 300 760] /Parent 6 0 R >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Highlight /Rect [50 600 150 612] /QuadPoints [50 612 150 612 50 600 150 600] /Contents (KEPTNOTE) >>".into()),
+    ])
+}
+
+/// Failure (review of R4.3, S2): taking a file's highlight out is appended, so it's still in the file's bytes and an earlier revision, or its
+/// appearance or its popup keeps it reachable, or the other highlight on the page goes too, or the save doesn't say where what's left now is.
+/// It's a rewrite: the highlight, its appearance and its note are nowhere in the new file, and the other highlight is, one place down.
+#[test]
+fn a_file_highlight_taken_out_is_gone_from_the_file() {
+    let dir = Dir::new();
+    let path = dir.write("marked.pdf", &with_file_highlights());
+    let order = own(&[(0, 0)]);
+    let gone = [save::GoneHighlight {
+        position: 0,
+        index: 1,
+        rect: [50.0, 700.0, 150.0, 712.0],
+    }];
+    let line = [[40.0, 100.0, 100.0, 12.0]];
+    let highlights = [save::NewHighlight { position: 0, rects: &line }];
+    let asked = SaveRequest {
+        highlights: &highlights,
+        highlights_gone: &gone,
+        ..request(&path, 1, &order, &[])
+    };
+    assert_eq!(save::writer_for_request(&asked), Writer::Rewrite);
+    let outcome = save::save(&asked, Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!(outcome.writer, Writer::Rewrite);
+    let bytes = std::fs::read(&path).unwrap();
+    for mark in ["GONENOTE", "GONEAPPEARANCE", "/Popup"] {
+        assert!(!contains(&bytes, mark), "{mark} is still in the file");
+    }
+    assert!(contains(&bytes, "KEPTNOTE"), "the other highlight stays");
+    let left = annotations_of(&path, 0);
+    assert_eq!(
+        left.iter().map(|(kind, ..)| kind.as_slice()).collect::<Vec<_>>(),
+        vec![&b"Link"[..], b"Highlight", b"Highlight"]
+    );
+    assert_eq!(
+        outcome.marks.removed,
+        vec![(0, 1), (0, 2)],
+        "the highlight and its note, by their places as they were"
+    );
+    assert_eq!(outcome.marks.placed.len(), 1);
+    assert_eq!(outcome.marks.placed[0].0, 2, "the new one goes after what's left");
+    assert_eq!(
+        left[2].1[..2],
+        [outcome.marks.placed[0].1[0], outcome.marks.placed[0].1[3]],
+        "at the /Rect it says"
+    );
+}
+
+/// Failure (review of R4.3, S2): the file changed since the removal was asked (another app moved the highlight, or put something else at its place),
+/// and the save takes out whatever is there now. Refused, with the file as it was: another kind of annotation there, or a `/Rect` further than half a
+/// point from what the removal says, or a place past the list, or one place named twice.
+#[test]
+fn a_removal_that_doesnt_match_the_file_refuses_the_save() {
+    let dir = Dir::new();
+    let path = dir.write("marked.pdf", &with_file_highlights());
+    let before = std::fs::read(&path).unwrap();
+    let order = own(&[(0, 0)]);
+    let right = [50.0, 700.0, 150.0, 712.0];
+    let near = [50.4, 699.6, 150.0, 712.0];
+    let cases: [&[save::GoneHighlight]; 5] = [
+        &[save::GoneHighlight {
+            position: 0,
+            index: 0,
+            rect: right,
+        }],
+        &[save::GoneHighlight {
+            position: 0,
+            index: 1,
+            rect: [50.0, 700.0, 151.0, 712.0],
+        }],
+        &[save::GoneHighlight {
+            position: 0,
+            index: 7,
+            rect: right,
+        }],
+        &[save::GoneHighlight {
+            position: 1,
+            index: 1,
+            rect: right,
+        }],
+        &[
+            save::GoneHighlight {
+                position: 0,
+                index: 1,
+                rect: right,
+            },
+            save::GoneHighlight {
+                position: 0,
+                index: 1,
+                rect: right,
+            },
+        ],
+    ];
+    for gone in cases {
+        let asked = SaveRequest {
+            highlights_gone: gone,
+            ..request(&path, 1, &order, &[])
+        };
+        let saved = save::save(&asked, Target::Same, None, &mut save::NoHooks);
+        assert!(matches!(saved, Err(SaveError::EditsDontMatch { file_pages: 1 })), "{gone:?}: {saved:?}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    let close = [save::GoneHighlight {
+        position: 0,
+        index: 1,
+        rect: near,
+    }];
+    let asked = SaveRequest {
+        highlights_gone: &close,
+        ..request(&path, 1, &order, &[])
+    };
+    assert!(
+        save::save(&asked, Target::Same, None, &mut save::NoHooks).is_ok(),
+        "within half a point it's that highlight"
+    );
+}
+
+/// Failure (review of R4.3, S2): taking a highlight out of a signed file rewrites the signed bytes, or an agent below Full gets the rewrite. Over the
+/// file it's refused as a delete is (Save As makes an unsigned copy without it), and a caller that may not rewrite is refused before anything's written.
+#[test]
+fn a_removal_on_a_signed_file_is_an_unsigned_copy_and_needs_a_rewrite_allowed() {
+    let dir = Dir::new();
+    let path = dir.write("signed.pdf", &signed(false, false));
+    let line = [[10.0, 10.0, 50.0, 10.0]];
+    let highlights = [save::NewHighlight { position: 0, rects: &line }];
+    let order = own(&[(0, 0)]);
+    let added = SaveRequest {
+        highlights: &highlights,
+        ..request(&path, 1, &order, &[])
+    };
+    let outcome = save::save(&added, Target::Same, None, &mut save::NoHooks).unwrap();
+    let (index, rect) = outcome.marks.placed[0];
+    let before = std::fs::read(&path).unwrap();
+    let gone = [save::GoneHighlight { position: 0, index, rect }];
+    let asked = SaveRequest {
+        highlights_gone: &gone,
+        ..request(&path, 1, &order, &[])
+    };
+    assert_eq!(save::save(&asked, Target::Same, None, &mut save::NoHooks), Err(SaveError::SignedNeedsCopy));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    struct NoRewrite;
+    impl SaveHooks for NoRewrite {
+        fn may_rewrite(&self) -> bool {
+            false
+        }
+    }
+    let copy = path.with_file_name("copy.pdf");
+    assert_eq!(
+        save::save(&asked, Target::NewFile(&copy), None, &mut NoRewrite),
+        Err(SaveError::RewriteNotAllowed)
+    );
+    assert!(!copy.exists());
+    let outcome = save::save(&asked, Target::NewFile(&copy), None, &mut save::NoHooks).unwrap();
+    assert_eq!((outcome.writer, outcome.signatures_removed), (Writer::Rewrite, 1));
+    assert_unsigned(&copy);
+    assert!(annotations_of(&copy, 0).iter().all(|(kind, ..)| kind != b"Highlight"), "without the highlight");
+    assert_eq!(std::fs::read(&path).unwrap(), before, "the original keeps its signature and its highlight");
+}
+
+/// Failure (review of R4.3, S3): the save doesn't say the size a page an edit turned was shown at, so the history's highlights on it can't be put in
+/// the frame the page has after the save. Said for a turned page only, in its frame before the turn: a page the file turns itself is shown on its side.
+#[test]
+fn a_save_says_the_size_a_turned_page_was_shown_at() {
+    let dir = Dir::new();
+    let page = |extra: &str| {
+        let mut page = Page::new(text_lines(&["Words"]));
+        page.media = (300.0, 500.0);
+        page.page_extra = extra.into();
+        page
+    };
+    let path = dir.write("turned.pdf", &pages(&[page(""), page("/Rotate 90"), page("")]));
+    let order = own(&[(0, 1), (1, 3), (2, 0)]);
+    let outcome = save::save(&request(&path, 3, &order, &[]), Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!(outcome.marks.turned, vec![(0, [300.0, 500.0]), (1, [500.0, 300.0])]);
 }

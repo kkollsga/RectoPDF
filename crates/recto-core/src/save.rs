@@ -78,6 +78,8 @@ pub struct SaveRequest<'a> {
     pub added: &'a [AddedFile<'a>],
     /// Highlights made as edits, by their page's position in `pages`.
     pub highlights: &'a [NewHighlight<'a>],
+    /// Highlights already in the file to take out (review of R4.3, S2), which makes the save a rewrite.
+    pub highlights_gone: &'a [GoneHighlight],
 }
 
 /// Where a save goes.
@@ -130,7 +132,7 @@ pub fn open_for_save(path: &Path) -> Result<IndexedReader, SaveError> {
 mod annotate;
 mod catalog;
 mod in_memory;
-pub use annotate::{HIGHLIGHT_RGB, NewHighlight};
+pub use annotate::{GoneHighlight, HIGHLIGHT_RGB, MAX_GONE, MarksWritten, NewHighlight, RECT_SLACK};
 pub use in_memory::{plan_in_memory, plan_in_memory_within, rewrite_in_memory, signatures_and_keep_in_memory};
 mod copying;
 pub use crate::signatures::{SignatureFacts, persons_signature, signature_facts, signature_facts_of};
@@ -178,11 +180,22 @@ fn removed_signatures(summary: &lopdf::RewriteSummary) -> (usize, bool) {
 /// allows none of it.
 fn changes_pages(request: &SaveRequest<'_>) -> bool {
     !request.highlights.is_empty()
+        || !request.highlights_gone.is_empty()
         || request
             .pages
             .iter()
             .enumerate()
             .any(|(at, page)| page.source != 0 || page.page as usize != at || page.quarter_turns != 0)
+}
+
+/// Which writer a request needs: [`writer_for`] its pages, and a rewrite to take a highlight out of the file, so it's gone from it rather than left in
+/// an earlier revision.
+pub fn writer_for_request(request: &SaveRequest<'_>) -> Writer {
+    if request.highlights_gone.is_empty() {
+        writer_for(request.file_pages, request.pages)
+    } else {
+        Writer::Rewrite
+    }
 }
 
 /// Which writer these edits need. Every page of the file has to be there exactly once for an append: a page that's gone was deleted, and a deleted page's objects would stay readable in an appended file.
@@ -219,8 +232,6 @@ pub struct SaveOutcome {
     pub pages: u32,
     /// Usage rights were dropped from the new revision.
     pub usage_rights_removed: bool,
-    /// Some of the file's extended attributes or its ACL couldn't be carried to the new file.
-    pub attributes_missed: bool,
     /// Objects something kept names that the file doesn't have, so they went as nothing, as viewers read them: an added page's, or, in a rewrite, anything's. MuPDF and poppler can repair what a copy drops, so this is a warning.
     pub objects_missing: u64,
     /// Pages the file had that it doesn't now.
@@ -229,16 +240,27 @@ pub struct SaveOutcome {
     pub signatures_removed: u32,
     /// What a rewrite kept that's the document's rather than a page's, which can repeat what was on a removed page. `None` for an append.
     pub document_data_kept: Option<DocumentData>,
+    /// What it warns of, beside what it did.
+    pub warnings: SaveWarnings,
+    /// Where the highlights written went, what was taken out, and the sizes turned pages were shown at, for the history that goes on (R4.3).
+    pub marks: MarksWritten,
+    /// The file as it is now.
+    pub stamp: Option<FileStamp>,
+    /// Where the one backup of the original went, if this save made it.
+    pub backup: Option<PathBuf>,
+}
+
+/// **What a saved file warns of** (grouped out of [`SaveOutcome`] unchanged, R4.3, to make room for what a save says of highlights).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SaveWarnings {
+    /// Some of the file's extended attributes or its ACL couldn't be carried to the new file.
+    pub attributes_missed: bool,
     /// Shared resource dictionaries a removed page used that couldn't be searched, so what only it drew may still be in the file.
     pub resources_left_whole: u64,
     /// The document's own form couldn't be read, so added pages' fields weren't joined to it: they draw, and can't be filled.
     pub form_fields_left_out: bool,
     /// The file was replaced, but its folder couldn't be synced, so a power cut in the next moments could bring the old one back.
     pub durability_warning: bool,
-    /// The file as it is now.
-    pub stamp: Option<FileStamp>,
-    /// Where the one backup of the original went, if this save made it.
-    pub backup: Option<PathBuf>,
 }
 
 /// What a save asks of whoever's saving.
@@ -273,10 +295,7 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
     unchanged().then_some(()).ok_or(SaveError::FileChanged)?;
     let map = reader.page_map().map_err(|_| SaveError::Damaged)?;
     let real_pages = u32::try_from(map.len()).map_err(|_| SaveError::Damaged)?;
-    if real_pages != request.file_pages {
-        return Err(SaveError::EditsDontMatch { file_pages: real_pages });
-    }
-    if request.pages.is_empty() {
+    if real_pages != request.file_pages || request.pages.is_empty() {
         return Err(SaveError::EditsDontMatch { file_pages: real_pages });
     }
     let sources = open_added(request)?;
@@ -303,7 +322,7 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
     if !copy && facts.certified && changes_pages {
         return Err(SaveError::BreaksCertification);
     }
-    let mut writer = writer_for(real_pages, request.pages);
+    let mut writer = writer_for_request(request);
     // The same look at the file's bytes the rewrite takes, so what Save offers and what the rewrite refuses agree.
     if !copy && writer == Writer::Rewrite && (facts.has_persons_signature() || persons_signature(&reader)) {
         return Err(SaveError::SignedNeedsCopy);
@@ -387,14 +406,12 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
                 new_len: appended.summary.new_len,
                 pages,
                 usage_rights_removed: plan.drop_usage_rights,
-                attributes_missed: attributes_missed.get(),
                 objects_missing: plan.missing,
                 pages_removed,
                 signatures_removed: 0,
                 document_data_kept: None,
-                resources_left_whole: 0,
-                form_fields_left_out: plan.fields_left_out,
-                durability_warning: appended.durability_warning.is_some(),
+                warnings: plan.warnings(attributes_missed.get(), 0, appended.durability_warning.is_some()),
+                marks: MarksWritten::default(),
                 stamp: None,
                 backup,
             }
@@ -436,14 +453,16 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
                 new_len: summary.new_len,
                 pages,
                 usage_rights_removed: rights,
-                attributes_missed: attributes_missed.get(),
                 objects_missing: plan.missing.saturating_add(summary.objects_missing.len() as u64),
                 pages_removed,
                 signatures_removed: u32::try_from(persons).unwrap_or(u32::MAX),
                 document_data_kept: Some(DocumentData::from(&summary.document_data_kept)),
-                resources_left_whole: (summary.removal.resources_left_whole.len() as u64).saturating_add(summary.removal.resource_dictionaries_unlisted),
-                form_fields_left_out: plan.fields_left_out,
-                durability_warning: rewritten.durability_warning.is_some(),
+                warnings: plan.warnings(
+                    attributes_missed.get(),
+                    (summary.removal.resources_left_whole.len() as u64).saturating_add(summary.removal.resource_dictionaries_unlisted),
+                    rewritten.durability_warning.is_some(),
+                ),
+                marks: MarksWritten::default(),
                 stamp: None,
                 backup,
             }
@@ -453,6 +472,7 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
     // What it was as it was written, which the rename keeps: a look now could see another app's write in the moment since, and take it as this save's.
     Ok(SaveOutcome {
         stamp: prepared_stamp,
+        marks: plan.highlights.written(),
         ..outcome
     })
 }
@@ -949,6 +969,16 @@ fn top_field_names(reader: &IndexedReader, work: &mut u64) -> Result<Option<Hash
 }
 
 impl Plan {
+    /// What a save of this plan warns of, from what the writing found.
+    fn warnings(&self, attributes_missed: bool, resources_left_whole: u64, durability_warning: bool) -> SaveWarnings {
+        SaveWarnings {
+            attributes_missed,
+            resources_left_whole,
+            form_fields_left_out: self.fields_left_out,
+            durability_warning,
+        }
+    }
+
     fn make(
         reader: &IndexedReader,
         map: &lopdf::PageMap,
@@ -1046,7 +1076,7 @@ impl Plan {
             missing,
             append_cap: sizes.saturating_mul(2).saturating_add(64 * 1024 * 1024),
             fields_left_out,
-            highlights: annotate::Highlights::of(request.highlights, request.pages.len(), request.file_pages)?,
+            highlights: annotate::Highlights::of(request, reader, map, request.file_pages)?,
         })
     }
 
@@ -1083,7 +1113,8 @@ impl Plan {
                     if turned || self.highlights.on(ids.len()) {
                         let mut dict = page_dict(reader, id)?;
                         dict.set("Rotate", Object::Integer(*degrees));
-                        self.highlights.dress(ids.len(), frame_of(reader, entry), reader, &mut dict, (writer, cap))?;
+                        self.highlights
+                            .dress((ids.len(), page.quarter_turns), frame_of(reader, entry), reader, &mut dict, (writer, cap))?;
                         writer.put(id, Object::Dictionary(dict))?;
                     }
                     ids.push(id);
@@ -1107,7 +1138,8 @@ impl Plan {
                 dict.set("Parent", Object::Reference(tree));
                 dict.set("Rotate", Object::Integer(*degrees));
                 // A page the tree lists twice is one object in the file, and can't take one new version for each place: the second is a copy of it.
-                self.highlights.dress(ids.len(), frame_of(reader, entry), reader, &mut dict, (writer, cap))?;
+                self.highlights
+                    .dress((ids.len(), page.quarter_turns), frame_of(reader, entry), reader, &mut dict, (writer, cap))?;
                 if used_own.insert(id) {
                     writer.put(id, Object::Dictionary(dict))?;
                     ids.push(id);
@@ -1151,7 +1183,8 @@ impl Plan {
                     dict.set("Parent", Object::Reference(tree));
                 }
                 dict.set("Rotate", Object::Integer(*degrees));
-                self.highlights.dress(ids.len(), frame_of(source, entry), source, &mut dict, (writer, cap))?;
+                self.highlights
+                    .dress((ids.len(), page.quarter_turns), frame_of(source, entry), source, &mut dict, (writer, cap))?;
                 if used_copy[at].insert(entry.id().0) {
                     writer.put(new_id, Object::Dictionary(dict))?;
                     ids.push(new_id);

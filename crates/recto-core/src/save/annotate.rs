@@ -12,8 +12,9 @@
 //! turned by the page's own `/Rotate` ([`crate::nav::Frame`], the frame links are drawn in). A save puts them back into the page's own coordinates by
 //! the same frame read from the file being written, so a rotated or cropped page gets its highlight where it was shown.
 
-use super::{Dictionary, IndexedReader, Object, SaveError, Sink};
+use super::{Dictionary, IndexedReader, Object, PageRef, SaveError, Sink};
 use crate::nav::Frame;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 /// The highlight's colour, `0xRRGGBB`: the one place it's said (coordinator's default, Q1, 2026-11-14: Preview's yellow), for the file and the screen.
@@ -24,6 +25,12 @@ pub const MAX_EDGE: f32 = 200_000.0;
 pub const MAX_PER_PAGE: usize = 10_000;
 pub const MAX_RECTS: usize = 4096;
 
+/// Most highlights already in a file one save takes out: as many as a document may hold hidden (`recto_session`'s removals of a file's highlights
+/// are held to this).
+pub const MAX_GONE: usize = 10_000;
+/// How far a file highlight's `/Rect` may be from what the removal says it was, in points, and still be that highlight.
+pub const RECT_SLACK: f32 = 0.5;
+
 /// One highlight to write: the position of its page in the saved document, and its lines, `[x, y, width, height]` in the page's frame.
 #[derive(Clone, Copy, Debug)]
 pub struct NewHighlight<'a> {
@@ -31,25 +38,69 @@ pub struct NewHighlight<'a> {
     pub rects: &'a [[f32; 4]],
 }
 
-/// What a save writes of highlights, by page position. Owned, so the plan doesn't borrow the request.
+/// **A highlight already in the file, to take out at this save** (review of R4.3, S2): its page's position in the document saved, which has to be a
+/// page of the file itself, its place in that page's `/Annots`, and its `/Rect` as the file has it (`[left, bottom, right, top]`). The save takes it out
+/// only if the item there is a `/Highlight` whose `/Rect` is that, within [`RECT_SLACK`]; anything else refuses the save, as the file isn't what the
+/// removal was about. Taking something out of a file is a rewrite, so what was removed is gone from it, not just unlisted.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GoneHighlight {
+    pub position: u32,
+    pub index: u32,
+    pub rect: [f32; 4],
+}
+
+/// **What a save did with highlights, for the history that goes on past it** (review of R4.3, S2 and S3).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MarksWritten {
+    /// For each of the request's highlights, in its order: its place in its page's `/Annots` in the saved file, and the `/Rect` it was written with.
+    pub placed: Vec<(u32, [f32; 4])>,
+    /// Each page an edit turned, by its position: its width and height as shown before that turn, which the rectangles of highlights on it are in.
+    pub turned: Vec<(u32, [f32; 2])>,
+    /// Each item taken out of a page's list, by the page's position and its place in the list as the file had it: the highlights asked for and
+    /// their popups. What names a later item on that page by its place counts down by those before it.
+    pub removed: Vec<(u32, u32)>,
+}
+
+/// Every number in it was worked out by the save from finite rectangles, so equality is an equivalence.
+impl Eq for MarksWritten {}
+
+/// What a save writes of highlights, and takes out, by page position. Owned, so the plan doesn't borrow the request.
 #[derive(Default)]
 pub(super) struct Highlights {
-    by_position: BTreeMap<u32, Vec<Box<[[f32; 4]]>>>,
+    /// Each page's highlights to write, with their place in the request.
+    by_position: BTreeMap<u32, Vec<(usize, Box<[[f32; 4]]>)>>,
+    /// Each page's file highlights to take out, by their place in its list, ascending.
+    gone: BTreeMap<u32, Vec<u32>>,
     /// How long the file being saved is, for a refusal to say.
     file_pages: u32,
+    /// What's been written, as the plan writes it.
+    written: RefCell<MarksWritten>,
 }
 
 impl Highlights {
     /// The request's highlights, each checked: on a page the document has, with sound rectangles. One that isn't refuses the save, since an edit
-    /// list that says such a thing isn't the one that was made.
-    pub(super) fn of(highlights: &[NewHighlight<'_>], pages: usize, file_pages: u32) -> Result<Self, SaveError> {
-        Self::within(highlights, pages, MAX_PER_PAGE).map(|out| Self { file_pages, ..out })
+    /// list that says such a thing isn't the one that was made. And the file highlights it takes out, each checked against the file: see
+    /// [`GoneHighlight`].
+    pub(super) fn of(request: &super::SaveRequest<'_>, reader: &IndexedReader, map: &lopdf::PageMap, file_pages: u32) -> Result<Self, SaveError> {
+        let mut out = Self::within(request.highlights, request.pages.len(), MAX_PER_PAGE)?;
+        out.file_pages = file_pages;
+        out.gone = gone_checked(request.highlights_gone, request.pages, reader, map, MAX_GONE).map_err(|error| match error {
+            SaveError::EditsDontMatch { .. } => SaveError::EditsDontMatch { file_pages },
+            other => other,
+        })?;
+        out.written.borrow_mut().placed = vec![(u32::MAX, [0.0; 4]); request.highlights.len()];
+        Ok(out)
     }
 
-    /// [`Self::of`], with the limit a page's highlights have set small for a test.
+    /// What's been written, once the plan has.
+    pub(super) fn written(&self) -> MarksWritten {
+        self.written.take()
+    }
+
+    /// [`Self::of`]'s highlights to write, with the limit a page's highlights have set small for a test.
     fn within(highlights: &[NewHighlight<'_>], pages: usize, per_page: usize) -> Result<Self, SaveError> {
         let mut out = Self::default();
-        for highlight in highlights {
+        for (at, highlight) in highlights.iter().enumerate() {
             let sound = |rect: &[f32; 4]| rect.iter().all(|edge| edge.is_finite() && edge.abs() <= MAX_EDGE) && rect[2] > 0.0 && rect[3] > 0.0;
             let on_page = (highlight.position as usize) < pages;
             if !on_page || highlight.rects.is_empty() || highlight.rects.len() > MAX_RECTS || !highlight.rects.iter().all(sound) {
@@ -61,14 +112,14 @@ impl Highlights {
             if page.len() >= per_page {
                 return Err(SaveError::TooLarge);
             }
-            page.push(highlight.rects.into());
+            page.push((at, highlight.rects.into()));
         }
         Ok(out)
     }
 
-    /// Whether the page at this position gets any.
+    /// Whether the page at this position gets any, or has any taken out.
     pub(super) fn on(&self, position: usize) -> bool {
-        u32::try_from(position).is_ok_and(|position| self.by_position.contains_key(&position))
+        u32::try_from(position).is_ok_and(|position| self.by_position.contains_key(&position) || self.gone.contains_key(&position))
     }
 
     /// **Puts the page's highlights on it:** each annotation and its appearance written as new objects, and the page's `/Annots` a list of what it had
@@ -78,33 +129,149 @@ impl Highlights {
     /// **Refuses rather than leaves one out** (review of R4.3): a highlight whose rectangles come to no finite place on this page's frame, as a hostile
     /// box can make them, stops the save, which would otherwise say done with that highlight missing from the file. And the save's bound on what it
     /// appends is asked before each annotation, so one page's thousands of highlights can't write gigabytes before it's looked at.
+    ///
+    /// **Takes out the file's highlights the request names** on this page, first, with any popup that belongs to one, so nothing in the new file
+    /// reaches them; and says where each written one went (its place in the list and its `/Rect`) and, for a page an edit turns (`turns`), the
+    /// size it was shown at before that turn: [`MarksWritten`].
     pub(super) fn dress<'c>(
         &self,
-        position: usize,
+        (position, turns): (usize, u8),
         frame: Frame,
         reader: &IndexedReader,
         page: &mut Dictionary,
         (writer, cap): (&mut impl Sink<'c>, u64),
     ) -> Result<(), SaveError> {
-        let Some(highlights) = u32::try_from(position).ok().and_then(|position| self.by_position.get(&position)) else {
+        let Ok(at) = u32::try_from(position) else { return Ok(()) };
+        if turns % 4 != 0 {
+            let (width, height) = (frame.right - frame.left, frame.top - frame.bottom);
+            let shown = if frame.turns % 2 == 1 { [height, width] } else { [width, height] };
+            self.written.borrow_mut().turned.push((at, shown));
+        }
+        let (highlights, gone) = (self.by_position.get(&at), self.gone.get(&at));
+        if highlights.is_none() && gone.is_none() {
             return Ok(());
-        };
+        }
         let mut annots = annots_of(reader, page);
-        for rects in highlights {
+        if let Some(gone) = gone {
+            let removed = take_out(reader, &mut annots, gone);
+            self.written.borrow_mut().removed.extend(removed.into_iter().map(|index| (at, index)));
+        }
+        for (asked, rects) in highlights.into_iter().flatten() {
             if writer.taken() > cap {
                 return Err(SaveError::TooLarge);
             }
             let made = annotation(frame, rects).ok_or(SaveError::EditsDontMatch { file_pages: self.file_pages })?;
+            let rect = numbers_of(made.annotation.get(b"Rect").ok()).unwrap_or([0.0; 4]);
             let appearance = writer.add(Object::Stream(made.appearance))?;
             let mut annotation = made.annotation;
             let mut ap = Dictionary::new();
             ap.set("N", Object::Reference(appearance));
             annotation.set("AP", Object::Dictionary(ap));
+            let index = u32::try_from(annots.len()).map_err(|_| SaveError::TooLarge)?;
             annots.push(Object::Reference(writer.add(Object::Dictionary(annotation))?));
+            if let Some(slot) = self.written.borrow_mut().placed.get_mut(*asked) {
+                *slot = (index, rect);
+            }
         }
         page.set("Annots", Object::Array(annots));
         Ok(())
     }
+}
+
+/// A rectangle's four numbers, `[left, bottom, right, top]` as the corners come, if it is four finite numbers.
+fn numbers_of(object: Option<&Object>) -> Option<[f32; 4]> {
+    let items = object?.as_array().ok()?;
+    let mut out = [0.0f32; 4];
+    if items.len() != 4 {
+        return None;
+    }
+    for (slot, item) in out.iter_mut().zip(items) {
+        *slot = item.as_float().ok().filter(|value| value.is_finite())?;
+    }
+    Some([out[0].min(out[2]), out[1].min(out[3]), out[0].max(out[2]), out[1].max(out[3])])
+}
+
+/// The annotation an item of a list is, read through `reader`.
+fn annotation_at(reader: &IndexedReader, item: &Object) -> Option<Dictionary> {
+    match item {
+        Object::Dictionary(dict) => Some(dict.clone()),
+        Object::Reference(id) => match reader.resolve_object(*id).ok()? {
+            Object::Dictionary(dict) => Some(dict),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// **The file's highlights a save takes out, each checked against the file** (see [`GoneHighlight`]): by position, each page's indexes in order.
+/// At most `most`, none named twice, each on a page of the file itself.
+fn gone_checked(
+    gone: &[GoneHighlight],
+    pages: &[PageRef],
+    reader: &IndexedReader,
+    map: &lopdf::PageMap,
+    most: usize,
+) -> Result<BTreeMap<u32, Vec<u32>>, SaveError> {
+    let refused = SaveError::EditsDontMatch { file_pages: 0 };
+    if gone.len() > most {
+        return Err(SaveError::TooLarge);
+    }
+    let mut out: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    for asked in gone {
+        let page = pages.get(asked.position as usize).filter(|page| page.source == 0).ok_or(refused.clone())?;
+        let entry = map.get(page.page as usize).ok_or(refused.clone())?;
+        let Ok(Object::Dictionary(dict)) = reader.resolve_object(entry.id()) else {
+            return Err(refused);
+        };
+        let annots = annots_of(reader, &dict);
+        let found = annots
+            .get(asked.index as usize)
+            .and_then(|item| annotation_at(reader, item))
+            .ok_or(refused.clone())?;
+        let is_highlight = matches!(found.get(b"Subtype"), Ok(Object::Name(kind)) if kind == b"Highlight");
+        let rect = numbers_of(found.get(b"Rect").ok()).ok_or(refused.clone())?;
+        let close = rect
+            .iter()
+            .zip(asked.rect)
+            .all(|(there, said)| said.is_finite() && (there - said).abs() <= RECT_SLACK);
+        let indexes = out.entry(asked.position).or_default();
+        if !is_highlight || !close || indexes.contains(&asked.index) {
+            return Err(refused);
+        }
+        indexes.push(asked.index);
+    }
+    for indexes in out.values_mut() {
+        indexes.sort_unstable();
+    }
+    Ok(out)
+}
+
+/// Takes the items at `indexes` out of a page's list, and any popup in the list whose `/Parent` is one of them: a popup is the highlight's own
+/// note, and its `/Parent` would keep the highlight reachable in the new file. Gives the places in the list as it was of everything taken out,
+/// ascending, for what names a later item by its place to be counted down.
+fn take_out(reader: &IndexedReader, annots: &mut Vec<Object>, indexes: &[u32]) -> Vec<u32> {
+    let ids: Vec<lopdf::ObjectId> = indexes
+        .iter()
+        .filter_map(|index| match annots.get(*index as usize) {
+            Some(Object::Reference(id)) => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let mut out = Vec::new();
+    let mut at = 0u32;
+    annots.retain(|item| {
+        let popup_of_one = annotation_at(reader, item).is_some_and(|annot| {
+            matches!(annot.get(b"Subtype"), Ok(Object::Name(kind)) if kind == b"Popup")
+                && matches!(annot.get(b"Parent"), Ok(Object::Reference(parent)) if ids.contains(parent))
+        });
+        let goes = indexes.contains(&at) || popup_of_one;
+        if goes {
+            out.push(at);
+        }
+        at += 1;
+        !goes
+    });
+    out
 }
 
 /// A page's `/Annots` as a list of its own, whatever form the file gave it: written in place, or named. Anything else is no list, so what's
@@ -281,17 +448,20 @@ mod tests {
     #[test]
     fn what_a_save_is_asked_to_write_is_checked() {
         let good = [[1.0, 1.0, 5.0, 5.0]];
-        assert!(Highlights::of(&[NewHighlight { position: 0, rects: &good }], 1, 1).is_ok());
+        assert!(Highlights::within(&[NewHighlight { position: 0, rects: &good }], 1, MAX_PER_PAGE).is_ok());
         let bad: [&[[f32; 4]]; 4] = [&[], &[[f32::NAN, 1.0, 5.0, 5.0]], &[[1.0, 1.0, MAX_EDGE * 2.0, 5.0]], &[[1.0, 1.0, 0.0, 5.0]]];
         for rects in bad {
-            assert!(Highlights::of(&[NewHighlight { position: 0, rects }], 1, 1).is_err(), "{rects:?}");
+            assert!(
+                Highlights::within(&[NewHighlight { position: 0, rects }], 1, MAX_PER_PAGE).is_err(),
+                "{rects:?}"
+            );
         }
         assert!(
-            Highlights::of(&[NewHighlight { position: 1, rects: &good }], 1, 1).is_err(),
+            Highlights::within(&[NewHighlight { position: 1, rects: &good }], 1, MAX_PER_PAGE).is_err(),
             "a page past the end"
         );
         let many = vec![[1.0, 1.0, 5.0, 5.0]; MAX_RECTS + 1];
-        assert!(Highlights::of(&[NewHighlight { position: 0, rects: &many }], 1, 1).is_err());
+        assert!(Highlights::within(&[NewHighlight { position: 0, rects: &many }], 1, MAX_PER_PAGE).is_err());
         let three = [NewHighlight { position: 0, rects: &good }; 3];
         assert!(Highlights::within(&three[..2], 1, 2).is_ok());
         assert!(matches!(Highlights::within(&three, 1, 2), Err(SaveError::TooLarge)));

@@ -68,6 +68,7 @@ pub fn plan_in_memory_within(target: &[u8], added: &[u8], work_limit: u64) -> Re
         pages: &order,
         added: &added_file,
         highlights: &highlights,
+        highlights_gone: &[],
     };
     let sources = vec![Some((source, source_map))];
     let plan = Plan::make(
@@ -132,6 +133,7 @@ pub fn rewrite_in_memory(target: &[u8], added: &[u8], with_added: bool) -> Resul
         pages: &order,
         added: &added_file,
         highlights: &[],
+        highlights_gone: &[],
     };
     let sources = vec![Some((source, source_map))];
     let plan = Plan::make(&reader, &map, &request, &sources, signature_facts(&reader), Writer::Rewrite, MAX_COPY_WORK)?;
@@ -212,6 +214,7 @@ mod tests {
             pages: &order,
             added: &[],
             highlights: &highlights,
+            highlights_gone: &[],
         };
         let mut plan = Plan::make(&reader, &map, &request, &[], signature_facts(&reader), Writer::Append, MAX_COPY_WORK).unwrap();
         const CAP: u64 = 8 * 1024;
