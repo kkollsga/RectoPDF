@@ -49,7 +49,7 @@ impl crate::Listener for Answering {
     fn hand_off_quit(&self) {}
 }
 
-fn answering_bridge(app: &HeadlessApp) -> Arc<QaBridge> {
+pub(super) fn answering_bridge(app: &HeadlessApp) -> Arc<QaBridge> {
     let inner = app.core();
     let listener = Arc::new(Answering::default());
     let bridge = Arc::new(QaBridge::new(listener.clone(), inner.engine.clone(), Watchdog::new(), Arc::clone(&inner.core)));

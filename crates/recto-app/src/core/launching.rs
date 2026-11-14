@@ -25,7 +25,7 @@ impl Inner {
 
     /// The window opened: its page views have somewhere to draw again, what was selected on the window it replaced comes back, and the contents go back to where they were.
     pub fn window_opened(&self) {
-        self.life.window_opened();
+        self.life.window_showing().opened();
         let engines = self.panes.engines(&self.engine);
         for engine in &engines {
             engine.window_opened();
@@ -43,6 +43,7 @@ impl Inner {
     pub fn window_replaced(&self) {
         // The host's word that it made the window again: what `record.remade` says.
         let _ = self.life.step(crate::lifecycle::Event::WindowRemade);
+        self.life.window_showing().gone();
         let engines = self.panes.engines(&self.engine);
         // What's selected goes with the window's layers, and comes back on the new one (a selection and Find's hit, under a late state).
         let held: Vec<(usize, recto_index::select::Range)> = engines
@@ -58,6 +59,7 @@ impl Inner {
 
     /// The window closed, by the person or QA: what it showed goes, and the record says it's closed.
     pub fn window_closed(&self) {
+        self.life.window_showing().gone();
         for engine in self.panes.engines(&self.engine) {
             engine.window_closed();
         }

@@ -28,7 +28,8 @@
 //! launch finds none of; and a copy of the record over a week old). No network, and nothing that waits on another thread. Until it's back, `update status`
 //! still says the version unknown and no second copy, which is what a read right after a settle met on a starved machine (`life_script`, 2026-11-14). Counted by a guard dropped however the thread ends, so a panic there can't leave a wait waiting out its limit. The search index, which the kit has off and which says
 //! when it's done in its own words. In the window, its animations and a print's file being handed to the system, which `qa wait` adds itself, as only the
-//! host knows them.
+//! host knows them; and a window up and not yet shown, which the host shows on its page or its patience and gives the keyboard back to only then
+//! (`WindowShowing::not_yet_shown` in `core/life.rs`), which `qa wait` adds too, as the kit has no window to show (CI run 43539671770).
 //!
 //! **Why two looks.** The parts hand work to each other: a page view's job ends and queues the session a look; the session's call asks a page view for a job;
 //! a read's thread ends and queues what it read. Each part is looked at in turn, so one look can see each at rest at a different moment with work passed
