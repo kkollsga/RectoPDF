@@ -14,7 +14,7 @@
 
 use recto_platform::surface::PixelSurface;
 use recto_proto::{TileRect, device_size};
-use recto_reader::paper::{PageLook, sample_pixels};
+use recto_reader::paper::{PageLook, sample_lightness, sample_pixels};
 use recto_render_service::{DocRenderer, Policy, ServiceConfig, TileRequest, TileResult};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -188,8 +188,16 @@ fn pages() {
                 })
                 .collect();
             let (own, own_background) = dark_shares(&picture, w as usize * 4, w, h, &kept, &[128]);
+            // The dark test as `decide` reads it, from the grid, the kept pictures' boxes rounded outward: how much of the background is dark, of the page, and of its ring, and what the share of the page rule (0.35, before review round 2) and the ring rule say.
+            let up = |part: u16, whole: u32| (u64::from(part) * u64::from(whole)).div_ceil(65_535) as usize;
+            let mut holes: Vec<[usize; 4]> = kept.iter().map(|sides| [place(sides[0], w), place(sides[1], h), up(sides[2], w), up(sides[3], h)]).collect();
+            holes.sort_unstable_by_key(|hole| hole[0]);
+            let found = sample_lightness(&picture, w as usize * 4, w, h, &holes);
+            let base = found.points >= 64 && found.of_page >= 0.05 && found.dark >= 0.5;
+            let share_rule = base && found.dark * found.of_page >= 0.35;
+            let ring_rule = base && (found.ring_points < 64 || found.ring >= 0.5);
             println!(
-                "PAGE {name} p{} images={} dim={} keep={} whiten={} background={background:.2} dark {} own_background={own_background:.2} dark_of_it={:.2} dark_of_page={:.3}",
+                "PAGE {name} p{} images={} dim={} keep={} whiten={} background={background:.2} dark {} own_background={own_background:.2} dark_of_it={:.2} dark_of_page={:.3} grid_dark={:.3} grid_of_page={:.3} ring={:.3} ring_points={} share_rule={share_rule} ring_rule={ring_rule}",
                 page + 1,
                 boxes.as_ref().map_or_else(|| "whole".to_string(), |boxes| boxes.len().to_string()),
                 look.dim,
@@ -197,7 +205,11 @@ fn pages() {
                 look.whiten.len(),
                 shares.join(" "),
                 own[0],
-                own[0] * own_background
+                own[0] * own_background,
+                found.dark,
+                found.of_page,
+                found.ring,
+                found.ring_points
             );
         }
     }
