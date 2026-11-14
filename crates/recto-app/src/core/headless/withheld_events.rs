@@ -28,12 +28,12 @@ fn window_view() -> recto_reader::Viewport {
 }
 
 /// A protected file of `pages` pages, each saying "`word` page N".
-fn protected(disk: &Disk, pages: usize, word: &str) -> std::path::PathBuf {
+pub(super) fn protected(disk: &Disk, pages: usize, word: &str) -> std::path::PathBuf {
     disk.file("protected.pdf", &locked_saying(PASSWORD, pages, word, lopdf::encryption::Permissions::all()))
 }
 
 /// The person opens `file` and types its password into the sheet, settled.
-fn person_unlocks(app: &HeadlessApp, file: &Path) {
+pub(super) fn person_unlocks(app: &HeadlessApp, file: &Path) {
     app.open(file);
     let prompt = app.reader().password_prompt.expect("a protected file asks for its password");
     app.core()
