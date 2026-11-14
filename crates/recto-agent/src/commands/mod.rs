@@ -59,7 +59,8 @@ pub trait Cmd {
     const READS_PAGES: bool;
     /// It reads nothing of a document, so it may act on one the user opened with its password (closing it, asking where it is).
     const PROTECTED_OK: bool;
-    /// **Whose document it reads, for the protected gate** in [`crate::execute`]: the tab it names, the document being read whatever it names, or no
+    /// **Whose document it reads, for the protected gate** in [`crate::execute`], for a command the session answers (`Runs::Session`; the app's own
+    /// commands, `run_app`, have no protected gate today): the tab it names, the document being read whatever it names, or no
     /// document's. One that would read the document being read and answered `Nothing` would give an agent what the person opened with a password, so
     /// it has no default, and the walk in `policy_guards` runs every command with that document being read.
     const ABOUT: About;
