@@ -402,8 +402,6 @@ impl Saver {
     }
 }
 
-/// Why a flush can't write now, if it can't: see [`super::keeping::may_write`]. The saved session being read back after a late try at the lock isn't written over
-/// by the window before it; a copy that doesn't keep the record says so as the store does.
 /// **Takes `urgent` for a pass, and then carries out the hurry of the sleep files' cool-down if it's asked** ([`super::sleeper`]'s
 /// `hurry_leaving_if_asked`). Going to the background stores the hurry and then `urgent` (`Saver::went_to_background`), so taking them the other way round,
 /// a pass that sees `urgent` sees the hurry too; the hurry first could miss one stored just after it's looked at, and take `urgent`, and the hurry would
@@ -414,6 +412,8 @@ fn take_urgent_then_hurry(urgent: &AtomicBool, hurry_if_asked: impl FnOnce()) ->
     urgent
 }
 
+/// Why a flush can't write now, if it can't: see [`super::keeping::may_write`]. The saved session being read back after a late try at the lock isn't written over
+/// by the window before it; a copy that doesn't keep the record says so as the store does.
 fn refused(inner: &Inner) -> Option<StoreError> {
     if super::keeping::may_write(inner) {
         return None;
