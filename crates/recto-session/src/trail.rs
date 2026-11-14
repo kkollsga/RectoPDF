@@ -276,22 +276,10 @@ impl<L: DocLoader> Session<L> {
         self.jump_as(id, page, within, Author::Owner)
     }
 
-    /// A jump, by the person or an agent. An agent's marks give way to the person's: see [`trail`].
-    ///
-    /// **Who lets a withheld place go, stated once** (the third review; the coordinator's D-A of 2026-11-14): only the person's own jump, an absolute
-    /// place they chose, lets it go, with what came of it, to the page it's on too, so a jump there says nothing a jump elsewhere wouldn't (D-1, S-2). An
-    /// agent's jump moves the tab as ever and leaves its place withheld: every route an agent has to a jump (`goto` by page, label or entry, `open
-    /// --page`, a link it follows, a Find hit by its index, a palette or menu row) comes here as [`Author::Agent`], so no guess of an agent's can be
-    /// checked against where following left the tab, by what it's told or what's drawn after, for as long as the place is withheld.
+    /// A jump to a place chosen by itself, by the person or an agent: a page by its number, label or contents entry. An agent's marks give way to the
+    /// person's: see [`trail`]. Whether it lets a withheld place go: `jump_with`, below.
     pub fn jump_as(&mut self, id: TabId, page: u32, within: f64, by: Author) -> Result<(), SessionError> {
-        let here = marked_here(self, id).ok_or(SessionError::NoSuchTab)?;
-        let to = trail::Stop::new(page.min(self.pages().count(id).saturating_sub(1)), within);
-        if by == Author::Owner {
-            compare::let_go_of_place(self, id);
-        }
-        let tab = self.tabs.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
-        tab.reading.trail.get_or_insert_default().jumped(here, to, by == Author::Agent);
-        self.land(id, to)
+        jump_with(self, id, page, within, by, Chosen::ByItself)
     }
 
     /// Back (`back`) or forward in a tab's trail, by the person or an agent. Says whether there was anywhere to go.
@@ -331,6 +319,41 @@ impl<L: DocLoader> Session<L> {
         self.mail.jump(id, to);
         Ok(())
     }
+}
+
+/// **How the place a jump goes to was chosen:** by itself, or from where the tab is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chosen {
+    /// A page by its number, its label or a contents entry: where it goes says nothing of where the tab was.
+    ByItself,
+    /// **From where the tab is** (the fourth review, items 1 and 2; the coordinator's decision of 2026-11-14): a link, whose target is tied to the page it
+    /// was clicked on, and an agent can list the document's links and work back to that page; and a Find hit chosen from the list, which the app brings
+    /// into view only as far as it isn't already, so when it's in view the place hasn't moved at all.
+    FromPlace,
+}
+
+/// **A jump chosen from where the tab is** ([`Chosen::FromPlace`]): a link followed, by anyone, or a Find hit chosen from the list. It moves the tab and
+/// marks the trail as any jump does, and leaves a withheld place withheld. A function, not a method more on the session.
+pub fn jump_from_place<L: DocLoader>(session: &mut Session<L>, id: TabId, page: u32, within: f64, by: Author) -> Result<(), SessionError> {
+    jump_with(session, id, page, within, by, Chosen::FromPlace)
+}
+
+/// **Who lets a withheld place go, stated once** (the third review's D-A, the fourth's items 1 and 2; the coordinator's decisions of 2026-11-14): only the
+/// person's own jump to a place chosen by itself (a page by its number or label, the contents) lets it go, with what came of it, to the page it's on too,
+/// so a jump there says nothing a jump elsewhere wouldn't (D-1, S-2). An agent's jump of any kind moves the tab as ever and leaves its place withheld:
+/// every route an agent has to a jump (`goto` by page, label or entry, `open --page`, a link it follows, a Find hit by its index, a palette or menu row)
+/// comes here as [`Author::Agent`], so no guess of an agent's can be checked against where following left the tab, by what it's told or what's drawn
+/// after, for as long as the place is withheld. And a jump chosen from where the tab is ([`Chosen::FromPlace`]), the person's too, leaves it withheld:
+/// where it lands is a function of the place.
+fn jump_with<L: DocLoader>(session: &mut Session<L>, id: TabId, page: u32, within: f64, by: Author, chosen: Chosen) -> Result<(), SessionError> {
+    let here = marked_here(session, id).ok_or(SessionError::NoSuchTab)?;
+    let to = trail::Stop::new(page.min(session.pages().count(id).saturating_sub(1)), within);
+    if by == Author::Owner && chosen == Chosen::ByItself {
+        compare::let_go_of_place(session, id);
+    }
+    let tab = session.tabs.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
+    tab.reading.trail.get_or_insert_default().jumped(here, to, by == Author::Agent);
+    session.land(id, to)
 }
 
 /// The jump a tab's page view hasn't taken, or was sent and no read since has told of, while the tab is still on the page it goes to: where the session has

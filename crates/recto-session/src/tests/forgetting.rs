@@ -62,7 +62,7 @@ fn busy(s: &mut Session<FakeLoader>) -> (TabId, TabId) {
     });
     s.jump(a, 3, 0.0).unwrap();
     s.jump(a, 2, 0.5).unwrap();
-    s.mail_mut().jump_sent(a, trail::Stop::new(2, 0.5), 2);
+    s.mail_mut().jump_sent(a, trail::Stop::new(2, 0.5), 2, 0);
     s.jump(a, 3, 0.0).unwrap();
     s.compare(&[a, b], Some(a)).unwrap();
     // After the comparison, which shows each tab in turn: only the tab on screen keeps a generated list.
@@ -159,7 +159,7 @@ fn a_jump_sent_goes_with_an_edit_a_save_and_dormancy() {
         s.go_to(a, 4).unwrap();
         assert!(s.view_told_of(a, place_on(4, 0.6), 5), "{route}: made before the send");
         s.jump(a, 4, 0.8).unwrap();
-        s.mail_mut().jump_sent(a, trail::Stop::new(4, 0.8), 10);
+        s.mail_mut().jump_sent(a, trail::Stop::new(4, 0.8), 10, 0);
         assert_eq!(s.here(a), Some(trail::Stop::new(4, 0.8)), "{route}: the jump sent");
         match route {
             "edit" => s.edit_pages(a, |edits| edits.rotate(0, 1, 1)).unwrap(),
