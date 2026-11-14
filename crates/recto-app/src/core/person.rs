@@ -354,6 +354,7 @@ struct Later<'a> {
 impl ReadLater for Later<'_> {
     /// As a tap's read always was: the tab the person last asked for is the one wanted, and a command for one they've left by the time it's read doesn't run.
     fn wake(&self, tab: recto_session::TabId, path: PathBuf) {
+        refuse_an_ordered_command(self.command);
         let mut reads = self.reads.borrow_mut();
         reads.wanted_tab = Some(tab);
         reads.then.insert(Reading::Tab(tab), Box::new(self.command.clone()));
@@ -366,6 +367,7 @@ impl ReadLater for Later<'_> {
         if let Some((_, fetched)) = self.fetched.borrow_mut().take_if(|(read, _)| read == path) {
             return Some(fetched);
         }
+        refuse_an_ordered_command(self.command);
         let mut reads = self.reads.borrow_mut();
         reads.wanted_tab = None;
         reads.then.insert(Reading::File(path.to_path_buf()), Box::new(self.command.clone()));
@@ -373,6 +375,17 @@ impl ReadLater for Later<'_> {
         reads.forget_unless_running(&Reading::File(path.to_path_buf()));
         None
     }
+}
+
+/// **No ordered command reads later** (review of the lane, D9): its turn in the person's lane goes as it's dropped at the end of [`run`], so one that went
+/// to read here would let an edit asked after it act first. None does today (only a tap, an open and a comparison read later); one that's made to must
+/// first carry its turn through the read, in `reads.then`, to the run again.
+fn refuse_an_ordered_command(command: &Command) {
+    debug_assert!(
+        !super::person_lane::ordered(command),
+        "{} is one of the person's ordered commands and reads its file later: carry its turn through the read (`reads.then`) first",
+        command.tag()
+    );
 }
 
 /// What a read finished for a person's command comes to: the command again, with what was read, to run in the same call that took the read in, as the

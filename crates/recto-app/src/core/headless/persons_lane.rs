@@ -545,3 +545,43 @@ fn past_the_quits_patience_whats_parked_is_dropped_together() {
     assert!(!undo_redo(&app).1, "nothing undone: the undo went with the highlight asked before it");
     drop(app.quit());
 }
+
+/// **Failure (review of the lane, D9): an ordered command on the session thread that reads its file first passes its turn as it goes to read,** so an
+/// edit asked after it acts first. No ordered command reads later today (only a tap, an open and a comparison do), so a turn is never let go at the read;
+/// `person::Later` refuses an ordered command there in a debug build, as its turn would have to be carried through the read first. This holds today's:
+/// each of the person's ordered commands on the session thread, on a cold tab with reads held, starts no read and is done at once.
+#[test]
+fn no_ordered_command_on_the_session_thread_reads_its_file_later() {
+    let app = HeadlessApp::start();
+    let files: Vec<_> = (0..6).map(|at| app.disk().pdf(&format!("f{at}.pdf"), 3)).collect();
+    for file in &files {
+        app.open(file);
+    }
+    app.settle();
+    // Without sleep files, a cold tab's waking reads its PDF.
+    app.core().host.session.with_session(|session| session.dormancy_mut().set_sleep_files(false));
+    let inner = app.core();
+    inner.life.hold_reads(true);
+    for line in [
+        r##"{"cmd":"page_rotate","tab":"#1","pages":"all","degrees":90}"##,
+        r##"{"cmd":"page_move","tab":"#2","pages":"1","to":2}"##,
+        r##"{"cmd":"page_delete","tab":"#3","pages":"1"}"##,
+        r##"{"cmd":"undo","tab":"#1"}"##,
+        r##"{"cmd":"redo","tab":"#1"}"##,
+        r##"{"cmd":"discard","tab":"#2"}"##,
+        r##"{"cmd":"clear_history","tab":"#3"}"##,
+        r##"{"cmd":"close","tab":"#4"}"##,
+    ] {
+        assert!(
+            super::super::person_lane::ordered(&recto_agent::parse(line).expect("a command")),
+            "{line} is ordered"
+        );
+        app.person(line);
+        flush(&app);
+        assert_eq!(inner.life.reads_running(), 0, "{line} started no read");
+        assert_eq!(inner.core.lane().parked(), 0, "{line} done at once");
+    }
+    inner.life.hold_reads(false);
+    app.settle();
+    assert_eq!(app.tabs().len(), 5, "the close was done");
+}
