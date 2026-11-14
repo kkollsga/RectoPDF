@@ -12,6 +12,7 @@
 //! worker whose [`VERSION`] differs, which can't happen in one signed app unless something is wrong.
 
 pub mod contents;
+pub mod hidden;
 pub mod jpeg;
 
 /// Bumped on any change to a layout below.
@@ -84,6 +85,9 @@ pub enum Kind {
     Contents = 33,
     ImagesRequest = 14,
     Images = 15,
+    /// The file's highlights a worker leaves out of what it draws, and its answer. See [`hidden`].
+    HiddenAnnots = 34,
+    HiddenTaken = 35,
 }
 
 impl Kind {
@@ -106,6 +110,8 @@ impl Kind {
             33 => Self::Contents,
             14 => Self::ImagesRequest,
             15 => Self::Images,
+            34 => Self::HiddenAnnots,
+            35 => Self::HiddenTaken,
             _ => return Err(ProtoError("unknown frame kind")),
         })
     }
@@ -130,6 +136,8 @@ impl Kind {
             Self::Contents => contents::MAX_CONTENTS_FRAME,
             Self::ImagesRequest => SIZE_REQUEST_LEN as u32,
             Self::Images => (8 + MAX_IMAGE_BOXES * IMAGE_BOX_LEN) as u32,
+            Self::HiddenAnnots => hidden::MAX_HIDDEN_FRAME,
+            Self::HiddenTaken => hidden::HIDDEN_TAKEN_LEN,
         }
     }
 }

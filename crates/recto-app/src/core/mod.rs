@@ -4,6 +4,7 @@
 pub mod actions;
 pub mod find;
 pub mod generated_contents;
+pub mod highlight;
 pub mod host;
 pub mod palette;
 pub mod printing;

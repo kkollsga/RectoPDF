@@ -20,6 +20,7 @@ fn svg_args<'a>(file: &'a TempPdf, page: u32, out: &'a Path, extra: &[&'a str]) 
         text: None,
         scale: crate::render::default_scale(),
         strip_metadata: false,
+        hidden: None,
     };
     let mut words = extra.iter();
     while let Some(word) = words.next() {
@@ -70,7 +71,7 @@ fn said_of(file: &TempPdf, out: &Path) -> String {
 /// What `render` draws, which is PDFium's real rule, as its count of red pixels.
 fn red_in_render(file: &TempPdf) -> usize {
     let out = file.0.with_file_name(format!("render-{}.png", std::process::id()));
-    let drawn = crate::render::render(&file.0, 1, 2.0, &out);
+    let drawn = crate::render::render(&file.0, 1, 2.0, &out, None);
     assert!(drawn.is_ok(), "{drawn:?}");
     let image = read_png(&std::fs::read(&out).unwrap());
     std::fs::remove_file(&out).unwrap();
@@ -1665,7 +1666,7 @@ fn stripping_takes_the_metadata_and_leaves_the_picture() {
     let picture = |jpeg: &[u8]| {
         let file = doc_with_jpeg(jpeg.to_vec());
         let out = file.0.with_file_name("drawn.png");
-        let drawn = crate::render::render(&file.0, 1, crate::render::default_scale(), &out);
+        let drawn = crate::render::render(&file.0, 1, crate::render::default_scale(), &out, None);
         assert!(drawn.is_ok(), "{drawn:?}");
         let bytes = std::fs::read(&out).unwrap();
         std::fs::remove_file(&out).unwrap();

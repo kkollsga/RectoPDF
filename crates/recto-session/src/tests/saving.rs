@@ -17,6 +17,7 @@ fn a_close_after_save_keeps_what_came_in_since() {
         3,
         None,
         None,
+        None,
     );
     s.edit_pages(id, |edits| edits.rotate(1, 1, 1)).unwrap();
     assert_eq!(s.close_after_save(id).map(|closed| closed.is_some()), Ok(false), "an edit since: it stays");
@@ -52,9 +53,9 @@ fn a_save_says_which_version_it_moved_on_from_and_only_while_it_holds() {
     s.apply_file_status(id, FileStatus::Same(stamp(1)));
     assert_eq!(s.saved_from(id), None, "nothing's been saved");
     s.edit_pages(id, |edits| edits.rotate(0, 1, 1)).unwrap();
-    s.saved(id, stamp(2), 3, None, None);
+    s.saved(id, stamp(2), 3, None, None, None);
     assert_eq!(s.saved_from(id), Some(stamp(1)));
-    s.saved(id, stamp(3), 3, None, None);
+    s.saved(id, stamp(3), 3, None, None, None);
     assert_eq!(s.saved_from(id), Some(stamp(2)), "the last save's");
     s.apply_file_status(id, FileStatus::Changed(stamp(4)));
     assert_eq!(s.saved_from(id), None, "the file changed outside since");
@@ -62,7 +63,7 @@ fn a_save_says_which_version_it_moved_on_from_and_only_while_it_holds() {
     for n in 0..(MAX_SAVED_OVER as u64 * 3) {
         let other = s.open(Path::new(&format!("/d/o{n}.pdf"))).unwrap();
         s.apply_file_status(other, FileStatus::Same(stamp(100 + n)));
-        s.saved(other, stamp(1000 + n), 3, None, None);
+        s.saved(other, stamp(1000 + n), 3, None, None, None);
     }
     assert!(s.saves.remembered() <= MAX_SAVED_OVER);
 }
@@ -133,7 +134,7 @@ fn a_save_marks_a_point_that_undo_goes_past_and_comes_back_to() {
     // A failed save: nothing's called, and all of it is as it was.
     assert!(s.lists().is_edited(a) && s.lists().get(a).unwrap().can_undo());
     let before: Vec<_> = (0..4).map(|at| s.page_source(a, at).unwrap().page).collect();
-    assert_eq!(s.saved(a, target, 4, None, Some(keeping)), 0, "nothing had to go");
+    assert_eq!(s.saved(a, target, 4, None, Some(keeping), None), 0, "nothing had to go");
     assert!(!s.lists().is_edited(a), "it reads as saved");
     assert!(!s.sidebar().edited);
     assert_eq!(s.pages().count(a), 4);
@@ -192,7 +193,7 @@ fn a_saved_history_is_a_new_journal_that_comes_back_the_same() {
         device: 1,
         inode: 2,
     };
-    s.saved(a, target, 3, None, Some(kept(KEPT_A, 100)));
+    s.saved(a, target, 3, None, Some(kept(KEPT_A, 100)), None);
     assert!(
         s.journals().has_pending(),
         "it wants writing at once, as a crash would otherwise find the old one"
@@ -228,7 +229,7 @@ fn a_step_whose_pages_cant_be_kept_rolls_off_and_says_so() {
         device: 1,
         inode: 2,
     };
-    assert_eq!(s.saved(a, target, 5, None, None), 2, "the delete, and the older rotation with it");
+    assert_eq!(s.saved(a, target, 5, None, None, None), 2, "the delete, and the older rotation with it");
     assert!(!s.lists().is_edited(a));
     assert_eq!(s.tabs().tab(a).unwrap().file.notice().map(|notice| notice.code()), Some("history_rolled_off"));
     assert!(s.notices().said(a).map(|said| said.message).is_some_and(|words| words.contains("Undo")));
@@ -251,7 +252,7 @@ fn a_step_whose_pages_cant_be_kept_rolls_off_and_says_so() {
     s.edit_pages(a, |e| e.move_pages(0, 1, 2)).unwrap();
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
     assert!(!s.lists().get(a).unwrap().needs_own_pages());
-    assert_eq!(s.saved(a, target, 6, None, None), 0);
+    assert_eq!(s.saved(a, target, 6, None, None, None), 0);
     assert_eq!(s.tabs().tab(a).unwrap().file.notice(), None);
     assert!(s.undo_edit(a) && s.undo_edit(a) && s.lists().is_edited(a));
 }
@@ -269,11 +270,11 @@ fn copies_kept_stay_within_the_limit() {
         inode: 2,
     };
     s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
-    assert_eq!(s.saved(a, target, 9, None, Some(kept(KEPT_A, big))), 0);
+    assert_eq!(s.saved(a, target, 9, None, Some(kept(KEPT_A, big)), None), 0);
     s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
     assert_eq!(s.lists().get(a).unwrap().kept_sources().count(), 1);
     assert_eq!(
-        s.saved(a, target, 8, None, Some(kept(KEPT_B, big))),
+        s.saved(a, target, 8, None, Some(kept(KEPT_B, big)), None),
         1,
         "two wouldn't fit, so the first's step goes"
     );
@@ -300,7 +301,7 @@ fn save_as_takes_the_history_along() {
         device: 1,
         inode: 2,
     };
-    assert_eq!(s.saved(a, target, 4, Some(Path::new("/e/copy.pdf")), None), 0);
+    assert_eq!(s.saved(a, target, 4, Some(Path::new("/e/copy.pdf")), None, None), 0);
     assert_eq!(s.tabs().path_of(a).unwrap(), Path::new("/e/copy.pdf"));
     assert_eq!(&*s.tabs().tab(a).unwrap().name, "copy");
     assert!(!s.lists().is_edited(a));
@@ -332,14 +333,14 @@ fn a_save_of_something_else_ends_the_history() {
         device: 1,
         inode: 2,
     };
-    assert_eq!(s.saved(a, target, 3, None, Some(kept(KEPT_A, 100))), 1);
+    assert_eq!(s.saved(a, target, 3, None, Some(kept(KEPT_A, 100)), None), 1);
     assert!(s.lists().get(a).is_none());
     assert_eq!(s.pages().count(a), 3);
     assert_eq!(s.tabs().tab(a).unwrap().file.notice().map(|notice| notice.code()), Some("history_rolled_off"));
     assert_eq!(s.journal_desk().work().retired.iter().filter(|name| *name == KEPT_A).count(), 1);
     // A tab with no list has nothing to carry, and a file kept for it goes.
     let b = s.open(Path::new("/d/b.pdf")).unwrap();
-    assert_eq!(s.saved(b, target, 5, None, Some(kept(KEPT_B, 100))), 0);
+    assert_eq!(s.saved(b, target, 5, None, Some(kept(KEPT_B, 100)), None), 0);
     assert_eq!(s.journal_desk().work().retired, [KEPT_B]);
 }
 
@@ -364,7 +365,7 @@ fn clearing_a_history_removes_its_files_and_keeps_unsaved_work() {
         s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
         let mut files = HashMap::new();
         write_journal(&mut s, &mut files);
-        s.saved(a, target, 4, None, Some(kept(KEPT_A, 100)));
+        s.saved(a, target, 4, None, Some(kept(KEPT_A, 100)), None);
         write_journal(&mut s, &mut files);
         assert!(s.lists().get(a).is_some_and(PageEdits::can_undo));
         assert_eq!(files.len(), 1);
@@ -425,7 +426,7 @@ fn clearing_a_history_removes_its_files_and_keeps_unsaved_work() {
     let mut s = journaled(5);
     let a = s.open(Path::new("/d/a.pdf")).unwrap();
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
-    s.saved(a, target, 5, None, None);
+    s.saved(a, target, 5, None, None, None);
     assert!(s.lists().get(a).is_some_and(PageEdits::can_undo));
     s.apply_file_status(a, FileStatus::Changed(now));
     assert!(s.lists().get(a).is_none());
@@ -514,7 +515,7 @@ fn a_save_left_under_way_by_a_restore_says_nothing_of_the_tab_with_its_number() 
     );
     // The old save finishes, as the saver of the replaced session goes on to.
     s.save_prepared(old, stamp_for(7), None);
-    assert_eq!(s.saved(old, stamp_for(7), 9, None, None), 0);
+    assert_eq!(s.saved(old, stamp_for(7), 9, None, None, None), 0);
     s.end_save(old);
     assert_eq!(s.tabs().own_stamp(restored), version, "the restored tab keeps its version");
     assert_eq!(s.lists().edits_record(restored), list, "and its list, with nothing noted of a save");
@@ -525,7 +526,7 @@ fn a_save_left_under_way_by_a_restore_says_nothing_of_the_tab_with_its_number() 
         s.begin_save(restored, false).unwrap().is_some(),
         "once the old save has ended, a new one begins"
     );
-    s.saved(restored, replaced_stamp(1), 9, None, None);
+    s.saved(restored, replaced_stamp(1), 9, None, None, None);
     s.end_save(restored);
     assert_eq!(s.tabs().own_stamp(restored), Some(replaced_stamp(1)), "and its word is believed");
 }
@@ -545,7 +546,7 @@ fn saves_left_under_way_past_the_cap_are_all_doubted() {
     assert_eq!(s.saves.abandoned_len(), saves::MAX_ABANDONED_SAVES, "the list holds its cap");
     for id in &ids {
         let version = s.tabs().own_stamp(*id);
-        assert_eq!(s.saved(*id, stamp_for(99), 10, None, None), 0);
+        assert_eq!(s.saved(*id, stamp_for(99), 10, None, None, None), 0);
         assert_eq!(s.tabs().own_stamp(*id), version, "no old save is believed, the oldest or the newest");
         assert_eq!(s.begin_save(*id, true).unwrap_err(), SessionError::Saving);
     }

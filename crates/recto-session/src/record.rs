@@ -9,10 +9,13 @@
 use crate::edit::{MAX_HISTORY_BYTES, MAX_PAGES, MAX_SOURCES};
 use crate::{Author, MAX_TABS};
 use recto_platform::FileStamp;
-use serde::de::{Deserializer, SeqAccess, Visitor};
+mod capped;
+mod validate;
+pub(crate) use capped::capped;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+pub use validate::{added_fits, validate_edits};
 
 /// What this build writes, and the newest it reads.
 pub const CURRENT_VERSION: u32 = 1;
@@ -44,6 +47,9 @@ pub const MAX_EXPANDED_SLOTS: u64 = (MAX_HISTORY_BYTES / size_of::<crate::edit::
 pub const MAIN_KIND: &str = "recto-session";
 /// A kind of file: one tab's journal.
 pub const JOURNAL_KIND: &str = "recto-journal";
+/// A journal whose base holds highlights says this version, so an app from before them leaves it as it is rather than reading it without them; one with
+/// none is [`CURRENT_VERSION`], which that app reads. [`parse_journal`] is asked with this to read both.
+pub const MARKED_JOURNAL_VERSION: u32 = 2;
 
 /// A window's or screen's place on the desktop, in the system's own points.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -848,6 +854,7 @@ pub enum StepRecord {
         #[serde(deserialize_with = "capped::<_, _, MAX_RUNS>")]
         runs: Vec<SlotRun>,
     },
+    Mark(crate::edit::marks::MarkStepRecord),
 }
 
 /// Runs one list may have: one per slot.
@@ -886,7 +893,7 @@ pub struct EntryRecord {
 }
 
 /// A whole list of edits at one moment: the page order, the PDFs added, and the history with who made each step. A journal's base after it's been compacted, and what QA reads.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditsRecord {
     pub file_pages: u32,
     #[serde(deserialize_with = "capped::<_, _, MAX_RUNS>")]
@@ -901,6 +908,20 @@ pub struct EditsRecord {
     pub history_dropped: bool,
     #[serde(default)]
     pub owner_step_dropped: bool,
+    /// Highlights made as edits. A journal whose base has any is [`MARKED_JOURNAL_VERSION`], which an app from before them leaves alone.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "capped::<_, _, { crate::edit::marks::MAX_MARKS }>"
+    )]
+    pub marks: Vec<crate::edit::marks::MarkRecord>,
+    /// Highlights of the file taken out and unsaved (review of R4.3, S2). A journal whose base has any is [`MARKED_JOURNAL_VERSION`].
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "capped::<_, _, { crate::edit::marks::MAX_HIDDEN }>"
+    )]
+    pub hidden: Vec<crate::edit::marks::FileKey>,
 }
 
 /// One thing that happened to a tab's edits, as a line of its journal. Only what was asked for, forwards: replaying these through the same checked calls brings back the page order and the whole of the history, with whose each step is, so what a hostile journal can do is limited to what those calls allow. A rotation is about 25 bytes, and an added PDF is a reference to it.
@@ -926,6 +947,8 @@ pub enum JournalOp {
     /// A copy of the file as it is now has been kept, for undoing past that save. Goes ahead of the `Saving` it's for.
     #[serde(rename = "k")]
     Keeping(AddedRecord),
+    #[serde(rename = "h")]
+    Mark(crate::edit::marks::MarkOp),
 }
 
 /// A journal's first line.
@@ -990,7 +1013,11 @@ pub fn journal_lines(ops: &[JournalOp]) -> Vec<u8> {
 
 /// A new journal's beginning: its header, and a base if it's been compacted.
 pub fn journal_start(header: &JournalHeader, base: Option<&EditsRecord>) -> Vec<u8> {
-    let mut out = journal_line(&serde_json::to_vec(header).unwrap_or_default());
+    let marked = base.is_some_and(crate::edit::marks::record_has_marks).then(|| JournalHeader {
+        version: MARKED_JOURNAL_VERSION,
+        ..header.clone()
+    });
+    let mut out = journal_line(&serde_json::to_vec(marked.as_ref().unwrap_or(header)).unwrap_or_default());
     if let Some(base) = base {
         let base = BaseLine { base: base.clone() };
         out.extend_from_slice(&journal_line(&serde_json::to_vec(&base).unwrap_or_default()));
@@ -1010,7 +1037,7 @@ pub struct ParsedJournal {
     pub lost_lines: bool,
 }
 
-fn read_line(bytes: &[u8]) -> Option<(&[u8], usize)> {
+pub(crate) fn read_line(bytes: &[u8]) -> Option<(&[u8], usize)> {
     let end = bytes.iter().position(|byte| *byte == b'\n')?;
     let line = &bytes[..end];
     let (crc, json) = (line.get(..8)?, line.get(9..)?);
@@ -1153,28 +1180,6 @@ pub fn without_what_deltas_carry(record: &SessionRecord) -> SessionRecord {
         tab.place = None;
     }
     bare
-}
-
-/// A list that stops being read past its cap, rather than growing to whatever a file says.
-fn capped<'de, D: Deserializer<'de>, T: Deserialize<'de>, const CAP: usize>(deserializer: D) -> Result<Vec<T>, D::Error> {
-    struct Capped<T, const CAP: usize>(std::marker::PhantomData<T>);
-    impl<'de, T: Deserialize<'de>, const CAP: usize> Visitor<'de> for Capped<T, CAP> {
-        type Value = Vec<T>;
-        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(formatter, "a list of at most {CAP}")
-        }
-        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<T>, A::Error> {
-            let mut list = Vec::new();
-            while let Some(item) = seq.next_element()? {
-                if list.len() >= CAP {
-                    return Err(serde::de::Error::custom("too long"));
-                }
-                list.push(item);
-            }
-            Ok(list)
-        }
-    }
-    deserializer.deserialize_seq(Capped::<T, CAP>(std::marker::PhantomData))
 }
 
 /// Why a file wasn't taken. None of them is a panic.
@@ -1369,102 +1374,6 @@ pub fn validate_record(record: &SessionRecord) -> Result<(), RecordError> {
         return Err(bad("the notice"));
     }
     Ok(())
-}
-
-fn runs_slots(runs: &[SlotRun]) -> u64 {
-    runs.iter().map(|run| u64::from(run.2)).sum()
-}
-
-/// Whether every run is a real range of a real file: as many pages as it says that file has, not just as many as fit in a number.
-fn runs_fit(runs: &[SlotRun], file_pages: u32, added: &[AddedRecord]) -> bool {
-    runs.iter().all(|run| {
-        let length = if run.0 == 0 {
-            Some(file_pages)
-        } else {
-            added.get(usize::from(run.0) - 1).map(|source| source.page_count)
-        };
-        run.2 > 0 && run.3 < 4 && length.is_some_and(|length| u64::from(run.1) + u64::from(run.2) <= u64::from(length))
-    })
-}
-
-/// Follows a list of steps, newest first, from a document this long, for the length alone. What's checked is exactly what `PageEdits::apply` relies on having been checked, so a step that passes can't index out of range there.
-fn steps_fit(steps: &[EntryRecord], mut length: u64, file_pages: u32, added: &[AddedRecord]) -> Result<(), RecordError> {
-    let bad = RecordError::Damaged;
-    for entry in steps.iter().rev() {
-        match &entry.step {
-            StepRecord::Rotate { start, len, quarter_turns } => {
-                if *len == 0 || u64::from(*start) + u64::from(*len) > length || *quarter_turns > 3 {
-                    return Err(bad("a step out of range"));
-                }
-            }
-            StepRecord::Move { start, len, to } => {
-                if *len == 0 || u64::from(*start) + u64::from(*len) > length || u64::from(*to) + u64::from(*len) > length {
-                    return Err(bad("a step out of range"));
-                }
-            }
-            StepRecord::Remove { start, len } => {
-                if u64::from(*start) + u64::from(*len) > length {
-                    return Err(bad("a step out of range"));
-                }
-                length -= u64::from(*len);
-            }
-            StepRecord::Restore { start, runs } => {
-                if !runs_fit(runs, file_pages, added) || u64::from(*start) > length {
-                    return Err(bad("a step out of range"));
-                }
-                length += runs_slots(runs);
-                if length > MAX_PAGES as u64 {
-                    return Err(bad("too many pages"));
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Everything `PageEdits` relies on, checked before any run is expanded, as a run of a few bytes can claim billions of pages.
-pub fn validate_edits(edits: &EditsRecord) -> Result<(), RecordError> {
-    let bad = RecordError::Damaged;
-    let sources = edits.added.len();
-    if sources > MAX_SOURCES || edits.undo.len() > MAX_JOURNAL_STEPS || edits.redo.len() > MAX_JOURNAL_STEPS {
-        return Err(bad("too long a list"));
-    }
-    if !runs_fit(&edits.pages, edits.file_pages, &edits.added) {
-        return Err(bad("a page out of range"));
-    }
-    let length = runs_slots(&edits.pages);
-    if length == 0 && edits.file_pages > 0 {
-        return Err(bad("a document with no pages"));
-    }
-    if length > MAX_PAGES as u64 || edits.file_pages as usize > MAX_PAGES {
-        return Err(bad("too many pages"));
-    }
-    let held = edits.undo.iter().chain(&edits.redo).fold(0u64, |sum, entry| match &entry.step {
-        StepRecord::Restore { runs, .. } => sum.saturating_add(runs_slots(runs)),
-        _ => sum,
-    });
-    if held > MAX_EXPANDED_SLOTS {
-        return Err(bad("too much history"));
-    }
-    steps_fit(&edits.undo, length, edits.file_pages, &edits.added)?;
-    steps_fit(&edits.redo, length, edits.file_pages, &edits.added)?;
-    for added in &edits.added {
-        if !added_fits(added) {
-            return Err(bad("an added file"));
-        }
-    }
-    Ok(())
-}
-
-/// Whether an added file's a possible one: a path that fits, a length that does, and a kept one named as those are.
-pub fn added_fits(added: &AddedRecord) -> bool {
-    added.path.fits()
-        && added.page_count as usize <= MAX_PAGES
-        && (!added.kept
-            || added
-                .path
-                .to_path()
-                .is_some_and(|path| path.file_name().and_then(|name| name.to_str()).is_some_and(is_kept_name)))
 }
 
 /// What a look at a file found.
@@ -1909,10 +1818,40 @@ mod tests {
             redo: Vec::new(),
             history_dropped: false,
             owner_step_dropped: false,
+            marks: Vec::new(),
+            hidden: Vec::new(),
         };
         assert!(validate_edits(&good).is_ok());
         let by = AuthorName::Owner;
+        let mark = |page: u32| crate::edit::marks::MarkRecord {
+            id: 0,
+            source: 0,
+            page,
+            rects: vec![crate::edit::marks::MarkRect {
+                x: 1.0,
+                y: 1.0,
+                width: 5.0,
+                height: 5.0,
+            }],
+            by,
+        };
         let cases: Vec<EditsRecord> = vec![
+            // A highlight on a page the file hasn't, or on a PDF that was never added, in the list or in a step.
+            EditsRecord {
+                marks: vec![mark(3)],
+                ..good.clone()
+            },
+            EditsRecord {
+                marks: vec![crate::edit::marks::MarkRecord { source: 1, ..mark(0) }],
+                ..good.clone()
+            },
+            EditsRecord {
+                undo: vec![EntryRecord {
+                    by,
+                    step: StepRecord::Mark(crate::edit::marks::MarkStepRecord::Add(vec![mark(9)])),
+                }],
+                ..good.clone()
+            },
             EditsRecord {
                 pages: vec![SlotRun(0, 0, u32::MAX, 0)],
                 ..good.clone()

@@ -4,7 +4,18 @@ use super::*;
 
 impl<L: DocLoader> Session<L> {
     /// **The one method a confirmed Save or Save As calls, and it marks a saved point.** Owner, 2026-11-07: "after a save you might still have regrets and want to make changes. But you definitely don't want history to leak into the pdf file". What was written is the file now, so the document reads as saved, and the history goes on: undoing past this makes it unsaved again, and back to here reads as saved. A failed save calls nothing, and everything stays. `saved_as` moves the tab if it went to another file, and the history goes with it. `kept` is what [`Self::save_prepared`] was told, and a Save As has the old file itself for that. What a step can't get pages from rolls off: see [`PageEdits::rebase_on_saved`], and the tab says so. The steps around it, and what a crash at each does, are in `docs/engineering/state-record.md`. Says how many steps rolled off.
-    pub fn saved(&mut self, id: TabId, now: FileStamp, pages: u32, saved_as: Option<&Path>, kept: Option<edit::AddedSource>) -> usize {
+    ///
+    /// `marks` is what the save said it did with the highlights ([`edit::marks::SavedMarks`]), which the history goes on from; `None` when the
+    /// save wrote none and took none out, or that isn't known.
+    pub fn saved(
+        &mut self,
+        id: TabId,
+        now: FileStamp,
+        pages: u32,
+        saved_as: Option<&Path>,
+        kept: Option<edit::AddedSource>,
+        marks: Option<&edit::marks::SavedMarks>,
+    ) -> usize {
         // A save of the session a restore replaced says nothing of the tab that has its number now.
         if self.saves.doubted(id) {
             return 0;
@@ -30,7 +41,7 @@ impl<L: DocLoader> Session<L> {
             })
         });
         self.journal_desk().retire_sleep_file(id);
-        let rebased = self.lists.get_mut(id).map(|list| list.rebase_on_saved(pages, kept.clone()));
+        let rebased = self.lists.get_mut(id).map(|list| list.rebase_on_saved(pages, kept.clone(), marks));
         let mut rolled_off = 0;
         match rebased {
             // There's no list, so no history. A file kept for it isn't needed.
@@ -107,6 +118,7 @@ impl<L: DocLoader> Session<L> {
                 added: list.added_sources().to_vec(),
                 holds_owner_edits: list.holds_owner_edits(),
                 needs_own_pages: list.needs_own_pages(),
+                marks: edit::marks::SaveMarks::of(list),
             },
             // A Save As of the document as it is: every page in its place.
             None if even_unedited => {
@@ -125,6 +137,7 @@ impl<L: DocLoader> Session<L> {
                     added: Vec::new(),
                     holds_owner_edits: false,
                     needs_own_pages: false,
+                    marks: edit::marks::SaveMarks::default(),
                 }
             }
             None => return Ok(None),

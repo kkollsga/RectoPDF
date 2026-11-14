@@ -38,7 +38,7 @@ fn use_a_record(bytes: &[u8]) {
 }
 
 fn use_a_journal(bytes: &[u8]) {
-    let parsed = match record::parse_journal(bytes, CURRENT_VERSION) {
+    let parsed = match record::parse_journal(bytes, record::MARKED_JOURNAL_VERSION) {
         Ok(parsed) => parsed,
         Err(RecordError::Newer(_) | RecordError::Damaged(_)) => return,
     };
@@ -66,7 +66,7 @@ fn use_a_journal(bytes: &[u8]) {
     // A save of whatever this is, and clearing it: each has to leave a list that reads back.
     let mut saved = edits.clone();
     let pages = saved.len();
-    if saved.rebase_on_saved(pages, None).is_some() {
+    if saved.rebase_on_saved(pages, None, None).is_some() {
         PageEdits::from_record(&saved.to_record()).expect("a list after a save reads back");
     }
     let mut session = Session::new(NamedLoader);

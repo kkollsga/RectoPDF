@@ -107,6 +107,39 @@ pub fn no_such_page(typed: &str) -> String {
     format!("No page is called \u{201C}{}\u{201D}.", recto_core::clean_line(typed))
 }
 
+/// **What the pointer looks like over a page (`link`, `ibeam`, `arrow` or `crosshair`), and what a link under it says.** A link's page not read yet says nothing for now and is read next, so the
+/// look comes with the next move. A short lock on the page view, and `tocs` the pane's contents from the published state, never the session's. Out
+/// of the bridge (R4.3), so the bridge had room for the highlights' op.
+pub fn pointer_look(
+    engine: Option<recto_reader::Engine>,
+    snapshot_on: bool,
+    tocs: impl FnOnce() -> Option<std::sync::Arc<Toc>>,
+    x: f64,
+    y: f64,
+) -> (&'static str, Option<String>) {
+    let Some(engine) = engine else {
+        return ("arrow", None);
+    };
+    // The snapshot tool's pointer is a crosshair wherever it is, and a link isn't followed while it's on.
+    if snapshot_on {
+        return ("crosshair", None);
+    }
+    if let Some(hit) = engine.links().at(x, y) {
+        let hint = match &hit.target {
+            recto_core::nav::LinkTarget::Page { page, .. } => match engine.links().position_in_same_file(hit.page, *page) {
+                Some(position) => {
+                    let toc = tocs();
+                    Some(page_words(position, engine.links().own_file_page(position), toc.as_deref()))
+                }
+                None => Some("The page this link goes to isn't in the document as it's been edited".to_string()),
+            },
+            other => hint_for(other),
+        };
+        return ("link", hint);
+    }
+    (if engine.selection().is_over_text(x, y) { "ibeam" } else { "arrow" }, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

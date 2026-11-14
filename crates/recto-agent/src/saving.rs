@@ -105,6 +105,16 @@ fn from_save(error: &SaveError) -> AgentError {
     AgentError::new(Code::lower(error.code()), error.message(), exit).then(next)
 }
 
+/// A save that would drop the owner's steps about the file's highlights, which below Full isn't the agent's to make.
+fn owner_steps_at_stake() -> AgentError {
+    AgentError::new(
+        Code::OWNER_EDITS_AT_STAKE,
+        "Nothing was saved: the user has undo steps about highlights on a page this save leaves out, which it would drop.",
+        exit::PERMISSION,
+    )
+    .then("Ask them to save, or put the page back first.")
+}
+
 fn needs_full(what: &str) -> AgentError {
     let mut error = AgentError::new(Code::PERMISSION_DENIED, format!("{what} needs Full access."), exit::PERMISSION);
     error.next = "Run `recto permission request full`, which tells the user what to allow. Nothing else raises this.".to_string();
@@ -229,6 +239,35 @@ fn as_said(error: SaveError, request: &SaveRequest<'_>, to: &SaveTo) -> SaveErro
     }
 }
 
+/// What a save is asked to write, from the tab's snapshot: its pages in order, the PDFs they come from, and its highlights on their pages' positions.
+fn request_parts(snapshot: &recto_session::SaveSnapshot) -> (Vec<PageRef>, Vec<AddedFile<'_>>, Vec<recto_core::save::NewHighlight<'_>>) {
+    let pages = snapshot
+        .slots
+        .iter()
+        .map(|slot| PageRef {
+            source: slot.source,
+            page: slot.page,
+            quarter_turns: slot.quarter_turns,
+        })
+        .collect();
+    let added = snapshot
+        .added
+        .iter()
+        .map(|added| AddedFile {
+            path: &added.path,
+            page_count: added.page_count,
+            stamp: added.stamp,
+        })
+        .collect();
+    let highlights = snapshot
+        .marks
+        .highlights
+        .iter()
+        .map(|(position, rects)| recto_core::save::NewHighlight { position: *position, rects })
+        .collect();
+    (pages, added, highlights)
+}
+
 /// **Saves a tab.** The one way an agent, the CLI or the app saves.
 pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &TabRef, to: &SaveTo, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     let mut to = to.clone();
@@ -290,36 +329,31 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &TabRef, to: &SaveT
         drop(ending);
         return Err(refusal);
     }
-    let pages: Vec<PageRef> = snapshot
-        .slots
-        .iter()
-        .map(|slot| PageRef {
-            source: slot.source,
-            page: slot.page,
-            quarter_turns: slot.quarter_turns,
-        })
-        .collect();
-    let writer = recto_core::save::writer_for(snapshot.file_pages, &pages);
-    if writer == Writer::Rewrite && level < Level::Full && level >= Level::Control {
-        drop(ending);
-        return Err(needs_full("A save that removes pages for good"));
-    }
-    let added: Vec<AddedFile<'_>> = snapshot
-        .added
-        .iter()
-        .map(|added| AddedFile {
-            path: &added.path,
-            page_count: added.page_count,
-            stamp: added.stamp,
-        })
-        .collect();
+    let (pages, added, highlights) = request_parts(&snapshot);
     let request = SaveRequest {
         path: &snapshot.path,
         stamp: snapshot.stamp,
         file_pages: snapshot.file_pages,
         pages: &pages,
         added: &added,
+        highlights: &highlights,
+        highlights_gone: &snapshot.marks.gone,
     };
+    // The owner's steps about the file's highlights on a page this save leaves out can't be carried past it (coordinator, 2026-11-14): theirs to
+    // lose, so below Full the save isn't made. Such a save is a rewrite too, which below Full is refused anyway; this says why.
+    if level < Level::Full && access.with(|s| s.lists().get(id).is_some_and(recto_session::edit::marks::drops_owner_steps)) {
+        drop(ending);
+        return Err(owner_steps_at_stake());
+    }
+    let writer = recto_core::save::writer_for_request(&request);
+    if writer == Writer::Rewrite && level < Level::Full && level >= Level::Control {
+        drop(ending);
+        return Err(needs_full(if snapshot.marks.gone.is_empty() {
+            "A save that removes pages for good"
+        } else {
+            "A save that takes a highlight out of the file for good"
+        }));
+    }
     let target = match to {
         SaveTo::Same => Target::Same,
         SaveTo::As { out, replace: false } => Target::NewFile(out),
@@ -368,7 +402,11 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &TabRef, to: &SaveT
             .stamp
             .or_else(|| recto_platform::file_stamp(saved_as.as_deref().unwrap_or(&snapshot.path)).ok());
         let rolled_off = match stamp {
-            Some(now) => s.saved(id, now, outcome.pages, saved_as.as_deref(), kept),
+            Some(now) => {
+                let marks = recto_session::edit::marks::SavedMarks::of(&snapshot.marks, &outcome.marks);
+                debug_assert!(marks.is_some(), "where the highlights went, or their steps roll off unchecked");
+                s.saved(id, now, outcome.pages, saved_as.as_deref(), kept, marks.as_ref())
+            }
             None => 0,
         };
         s.end_save(id);
@@ -491,20 +529,20 @@ fn answer<L: recto_session::DocLoader>(
             list_words(&kept_words)
         )
     });
-    if outcome.pages_removed > 0 && outcome.resources_left_whole > 0 {
+    if outcome.pages_removed > 0 && outcome.warnings.resources_left_whole > 0 {
         notes.push(if one {
             "Some of what the deleted page drew with is shared with pages that stayed, in a way that couldn't be checked, so it was left in the file."
         } else {
             "Some of what the deleted pages drew with is shared with pages that stayed, in a way that couldn't be checked, so it was left in the file."
         });
     }
-    if outcome.form_fields_left_out {
+    if outcome.warnings.form_fields_left_out {
         notes.push("This document's own form couldn't be read, so the form fields on the added pages weren't joined to it: they show, and can't be filled in.");
     }
-    if outcome.attributes_missed {
+    if outcome.warnings.attributes_missed {
         notes.push("Some of the file's Finder information, such as tags or who may open it, couldn't be kept on the saved file.");
     }
-    if outcome.durability_warning {
+    if outcome.warnings.durability_warning {
         notes.push("The file was saved, but the disk didn't confirm it, so a power cut in the next moments could bring back the old version.");
     }
     if rolled_off > 0 {
@@ -604,6 +642,8 @@ mod tests {
                 file_pages: 2,
                 pages,
                 added: &[],
+                highlights: &[],
+                highlights_gone: &[],
             }
         }
         let (whole, turned) = (&whole[..], &turned[..]);

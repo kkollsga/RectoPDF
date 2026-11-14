@@ -553,6 +553,7 @@ fn recent_files<L: DocLoader>(session: &Session<L>) -> Vec<RecentFile> {
 
 /// **Reads everything a pass needs of the session,** in one go. Called under the session's one lock, so what it returns is of one moment. Takes nothing out of the session: the caller takes each pane's jump.
 pub fn read<L: DocLoader>(session: &Session<L>, held: &Held) -> Facts {
+    crate::core::highlight::forget_old_sets(session);
     let active = session.tabs().active();
     let panes = session.panes();
     let snapshots: Vec<PaneSnapshot> = panes
@@ -847,6 +848,8 @@ pub struct PaneSnapshot {
     pub jump: Option<recto_session::trail::Stop>,
     /// Its contents and page labels, shared, so a link's hint can say a page by its label without asking the session.
     pub toc: Option<Arc<recto_core::Toc>>,
+    /// Its highlights made as edits, for its page view to draw; none for a tab with none.
+    pub marks: Option<Arc<recto_reader::tiles::TabMarks>>,
     /// Where on the page at the top of its view the contents' current entry changes, for its page view to wake the core when the top of the view leaves it.
     pub band: Option<recto_core::Band>,
 }
@@ -940,6 +943,7 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
         title: tab.name.to_string(),
         jump: None,
         toc: session.warm().toc(id).cloned(),
+        marks: crate::core::highlight::marks_of(session, id),
         band: recto_session::reading_band(session, tab),
     })
 }

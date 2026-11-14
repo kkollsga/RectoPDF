@@ -1,15 +1,78 @@
 //! Where a page's images are, from the host's side, for dark paper: asked of a worker once a page, as a walk over its objects that decodes nothing, and remembered, up to a cap. See `docs/engineering/paper.md`.
 
-use super::{DocRenderer, JobFailure, MAX_ASKING_KILLS, PageDrawState, RenderFailure, WorkerClass};
+use super::{DocRenderer, JobFailure, KillReason, MAX_ASKING_KILLS, MAX_FAILED_PAGES, PageDrawState, RenderFailure, WorkerClass};
 use recto_proto::{self as proto, Kind, ProtoError};
+use std::collections::HashMap;
 
 /// Pages whose images are remembered, at 64 boxes of 8 bytes each at most. Many more than the tiles and previews kept, so a page can't have tiles on the screen from before it was forgotten.
 const MAX_IMAGE_PLACES: usize = 4096;
 
+/// **What's known of pages' images,** for those asked about (out of `DocRenderer`'s fields unchanged, R4.3, to make room for the hidden highlights).
+#[derive(Debug, Default)]
+pub(super) struct Known {
+    /// Each page's largest image in source pixels.
+    traits: Vec<(u32, u64)>,
+    /// Where each page's images are.
+    places: HashMap<u32, Option<Vec<[u16; 4]>>>,
+    /// `places` has been forgotten, past its cap, and nobody's been told.
+    places_cleared: bool,
+}
+
+impl Known {
+    /// The file is another now: nothing known of its pages holds.
+    pub(super) fn forget(&mut self) {
+        self.traits.clear();
+        self.places.clear();
+    }
+}
+
 impl DocRenderer {
+    /// The largest image on a page in source pixels, a hint for how to draw it. Remembered per page, up to a cap. If looking at the page stops a worker, that's noted as drawing would have noted
+    /// it, and the answer is zero. Likewise if `generation` goes stale, without remembering that.
+    pub fn largest_image_pixels(&mut self, page: u32, generation: u64) -> Result<u64, RenderFailure> {
+        if let Some(&(_, pixels)) = self.images.traits.iter().find(|(known, _)| *known == page) {
+            return Ok(pixels);
+        }
+        if self.page_draw_state(page) != PageDrawState::Sharp || self.control.is_stale(generation) || self.stopped() {
+            return Ok(0);
+        }
+        let job_id = self.next_job_id();
+        let frame = proto::encode_traits_request(job_id, page);
+        // Loads this page, which is what the next job for it needs anyway, so it leaves nothing that could explain that job failing.
+        let reply = self.run_job(job_id, page, false, WorkerClass::Normal, Some(generation), &[], &frame, |reply| {
+            match reply.kind {
+                Kind::Traits => {
+                    let traits = proto::PageTraits::decode(&reply.payload)?;
+                    if traits.job_id == job_id {
+                        Ok(traits.largest_image_pixels)
+                    } else {
+                        Err(ProtoError("traits answer a different job"))
+                    }
+                }
+                _ => Err(ProtoError("the wrong kind of reply to a traits request")),
+            }
+        });
+        let pixels = match reply {
+            Ok(pixels) => pixels,
+            Err(JobFailure::StaleKilled) => return Ok(0),
+            // At what scale isn't known, so it holds at every one, until a lower zoom's own draw says otherwise. Which is the same as the page's load being too heavy.
+            Err(JobFailure::Stopped(KillReason::MemoryLimit)) => {
+                self.set_draw(page, 0.0, PageDrawState::NeedsHeavy);
+                0
+            }
+            Err(JobFailure::Stopped(reason)) => return Err(self.give_up_drawing(page, 0.0, reason)),
+            Err(failure) => return Err(failure.into()),
+        };
+        if self.images.traits.len() >= MAX_FAILED_PAGES {
+            self.images.traits.remove(0);
+        }
+        self.images.traits.push((page, pixels));
+        Ok(pixels)
+    }
+
     /// Where a page's images are, as parts of the page in 65535ths, or `None` if it isn't known: this job went stale, the page isn't one that can be asked about, or the asking failed or was refused, as a page with more images than an answer holds is. Those aren't "there are no images", and a caller mustn't treat them so. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it. `Err` is only [`RenderFailure::WouldStart`]: not asked, as the job may use only the worker that's there ([`super::Workers::OnlyTheOneThere`]) and that one couldn't. That's no answer about the page either, and a caller mustn't decide anything from it and keep it, as it would from `None`.
     pub fn image_boxes(&mut self, page: u32, generation: u64) -> Result<Option<Vec<[u16; 4]>>, RenderFailure> {
-        if let Some(known) = self.image_places.get(&page) {
+        if let Some(known) = self.images.places.get(&page) {
             return Ok(known.clone());
         }
         // Stale says nothing about the page, so nothing's remembered.
@@ -52,16 +115,16 @@ impl DocRenderer {
             }
         };
         // One decision a page: its tiles are drawn at different times, and none of them may disagree. What's cached past this cap is long off the screen.
-        if self.image_places.len() >= MAX_IMAGE_PLACES {
-            self.image_places.clear();
-            self.image_places_cleared = true;
+        if self.images.places.len() >= MAX_IMAGE_PLACES {
+            self.images.places.clear();
+            self.images.places_cleared = true;
         }
-        self.image_places.insert(page, boxes.clone());
+        self.images.places.insert(page, boxes.clone());
         Ok(boxes)
     }
 
     /// Whether the places of a page's images have been forgotten since this was last asked, with a lot of pages looked up. It says nothing about the file: it's for whoever decided something from those places, which might not be decided the same way twice.
     pub fn take_image_places_cleared(&mut self) -> bool {
-        std::mem::take(&mut self.image_places_cleared)
+        std::mem::take(&mut self.images.places_cleared)
     }
 }

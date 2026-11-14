@@ -51,7 +51,7 @@ impl AppCore {
     pub fn clipboard_data(&self, serial: u64, uti: String) -> Option<Vec<u8>> {
         match self.inner.tools.tool().data(serial, &uti)? {
             Data::Ready(bytes) => Some(bytes),
-            Data::Make(promise, cap) => extract::snapshot_svg(&promise.path, promise.page, promise.rect, promise.turns, cap).ok(),
+            Data::Make(promise, cap) => extract::snapshot_svg(&promise.path, promise.page, promise.rect, promise.turns, promise.hidden, cap).ok(),
         }
     }
 

@@ -34,13 +34,32 @@ pub const MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// The most files a print keeps a worker open on at once: an edited tab can hold pages from several PDFs, and each worker costs memory.
 const MAX_OPEN_FILES: usize = 2;
 
-/// One page to print: where it really is, and its unsaved quarter turns.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// **The renderer a page is printed with:** a worker per file, the most recent kept, as pages of one file usually come together; told which of the
+/// file's own highlights the tab has taken out (moved out of `print_with_caps` unchanged but for that, R4.3).
+fn renderer_for<'a>(open: &'a mut Vec<(PathBuf, DocRenderer)>, page: &PrintPage, config: &ServiceConfig) -> Result<&'a mut DocRenderer, AgentError> {
+    let at = match open.iter().position(|(path, _)| *path == page.path) {
+        Some(at) => at,
+        None => {
+            if open.len() >= MAX_OPEN_FILES {
+                open.remove(0);
+            }
+            open.push((page.path.clone(), DocRenderer::new(&page.path, None, config.clone(), Policy::default())?));
+            open.len() - 1
+        }
+    };
+    let doc = &mut open[at].1;
+    doc.hidden.draw_for(0, page.hidden.clone());
+    Ok(doc)
+}
+
+/// One page to print: where it really is, its unsaved quarter turns, and the file's own highlights its tab has taken out, unsaved.
+#[derive(Clone, Debug, PartialEq)]
 pub struct PrintPage {
     pub path: PathBuf,
     /// From 0, in that file.
     pub page: u32,
     pub quarter_turns: u8,
+    pub hidden: crate::render::Hidden,
 }
 
 /// How a print went.
@@ -99,13 +118,19 @@ pub fn print_pages<A: SessionAccess>(access: &A, tab: &TabRef, pages: Option<&st
                     .then("Print a range of pages at a time, with `--pages`."),
             );
         }
+        // Made once and shared by the file's pages (second review of R4.3, SF3).
+        let set = crate::highlighting::tab_set(s, id);
         (start..end)
-            .map(|position| s.page_source(id, position).ok_or_else(no_such_page))
+            .map(|position| {
+                let source = s.page_source(id, position).ok_or_else(no_such_page)?;
+                let hidden = crate::highlighting::for_page(set.as_ref(), &source);
+                Ok((source, hidden))
+            })
             .collect::<Result<Vec<_>, _>>()
     })?;
     sources
         .into_iter()
-        .map(|source| {
+        .map(|(source, hidden)| {
             if !source.is_current() {
                 return Err(source_changed(&source.path));
             }
@@ -113,6 +138,7 @@ pub fn print_pages<A: SessionAccess>(access: &A, tab: &TabRef, pages: Option<&st
                 path: source.path,
                 page: source.page,
                 quarter_turns: source.quarter_turns,
+                hidden,
             })
         })
         .collect()
@@ -270,18 +296,7 @@ fn print_with_caps<O: Output>(
         if !progress(index as u32, pages.len() as u32) {
             return Err(AgentError::new(Code::CANCELLED, "The print was stopped.", exit::FAILED));
         }
-        // A worker per file, the most recent kept: pages of one file usually come together.
-        let at = match open.iter().position(|(path, _)| *path == page.path) {
-            Some(at) => at,
-            None => {
-                if open.len() >= MAX_OPEN_FILES {
-                    open.remove(0);
-                }
-                open.push((page.path.clone(), DocRenderer::new(&page.path, None, config.clone(), Policy::default())?));
-                open.len() - 1
-            }
-        };
-        let doc = &mut open[at].1;
+        let doc = renderer_for(&mut open, page, config)?;
         // Asked once: the page written says this size, and the drawing goes by the same answer.
         let (width_points, height_points) = doc.page_size(page.page)?;
         let page_scale = if fits_at(width_points, height_points, scale, caps) {
@@ -459,11 +474,13 @@ mod tests {
                 path: file.0.clone(),
                 page: 1,
                 quarter_turns: 0,
+                hidden: None,
             },
             PrintPage {
                 path: file.0.clone(),
                 page: 0,
                 quarter_turns: 1,
+                hidden: None,
             },
         ];
         let mut out = MemoryOut::new(64 * 1024 * 1024);
@@ -525,11 +542,13 @@ mod tests {
                 path: file.0.clone(),
                 page: 0,
                 quarter_turns: 0,
+                hidden: None,
             },
             PrintPage {
                 path: file.0.clone(),
                 page: 1,
                 quarter_turns: 0,
+                hidden: None,
             },
         ];
         // Letter at 72 dpi is 484 kpx, so a cap of 200 kpx makes every page too large.
@@ -562,6 +581,7 @@ mod tests {
             path: file.0.clone(),
             page: 0,
             quarter_turns: 0,
+            hidden: None,
         };
         let config = ServiceConfig::discover().unwrap();
         let mut out = MemoryOut::new(1024 * 1024);

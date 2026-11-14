@@ -12,6 +12,7 @@ fn kind_of(op: &Op) -> &'static str {
         Op::Attach { .. } => "Attach",
         Op::Detach { .. } => "Detach",
         Op::Highlight { .. } => "Highlight",
+        Op::Marks { .. } => "Marks",
     }
 }
 

@@ -90,7 +90,8 @@ case "$*" in
   "qa shot "*) echo '{"settled":true}' ;;
   "select "*) echo '{"data":{"pages":[{"rects":[[0,0,9,9],[0,0,9,9],[0,0,9,9],[0,0,9,9],[0,0,9,9],[0,0,9,9],[0,0,9,9]]}]}}' ;;
   "contents --generated --json") echo '{"data":{"entries":[{"entry":1,"depth":0},{"entry":2,"depth":1}]}}' ;;
-  "qa as-person page rotate"*) echo true > "$st/edited" ;;
+  "qa as-person page rotate"* | "qa menu markup.highlight") echo true > "$st/edited" ;;
+  "qa as-person undo") echo false > "$st/edited" ;;
   "qa menu file.close") echo '{"kind":"close_prompt"}' > "$st/sheet" ;;
   "qa as-person open"*) echo '{"kind":"password"}' > "$st/sheet" ;;
   "qa sheet-answer"* | "qa password") echo null > "$st/sheet" ;;
@@ -116,7 +117,7 @@ check "every call, the first stop and the trap's included, goes to a state folde
 check "and the calls before the first run and in the trap are among them" "yes" "$(head -1 "$sheet/log" | grep -q '/state-none'$'\t''stop' && tail -1 "$sheet/log" | grep -q $'\t''stop$' && echo yes)"
 contact_sheet "$sheet/out2" "palette-type"; rc=$?
 check "a step that fails stops the run" "1" "$rc"
-check "naming the step" "1" "$(grep -c 'FAILED (light, after shot 10): recto qa palette-type zoom' "$sheet/out2/notes.txt")"
+check "naming the step" "1" "$(grep -c 'FAILED (light, after shot 11): recto qa palette-type zoom' "$sheet/out2/notes.txt")"
 check "and nothing after it ran" "0" "$(grep -c 'edit mode on' "$sheet/log")"
 
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi

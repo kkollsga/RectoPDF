@@ -87,6 +87,7 @@ impl Inner {
             &self.updates.menu_item().title,
             &items,
         );
+        bar.push(super::highlight::mark_up_menu());
         bar.push(crate::snapshot_menu::tools_menu(self.tools.tool().is_on()));
         bar
     }

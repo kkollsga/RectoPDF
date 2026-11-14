@@ -81,6 +81,7 @@ fn a_dormant_tabs_list_goes_to_disk_and_comes_back_by_every_route() {
                     },
                     4,
                     None,
+                    None,
                     None
                 ),
                 1

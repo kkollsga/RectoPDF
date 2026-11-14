@@ -1103,7 +1103,7 @@ fn the_panel_opens_and_does_what_it_says() {
     wait_for(&run, |state| state["app"]["panel"]["open"] == false);
 }
 
-/// Failure: the menu bar isn't what Rust lists, or the star's margins aren't the same to the right and above, or Show Agent Icon doesn't hide the star, or isn't remembered, or the page's scroller still runs under where the star is, or the full way with a star there. Owner, 2026-11-07: "To save horizontal space the scrollbar can stop below the agent icon. Add an option in the macos top bar to turn off agent bar (hides the icon), enable + - and command - scroll for zooming".
+/// Failure: the menu bar isn't what Rust lists, or the star's margins aren't the same to the right and above, or Show Agent Icon doesn't hide the star, or isn't remembered, or the page's scroller still runs under where the star is, or the full way with a star there; or Mark Up's Highlight isn't on ⌃⌘H, or can be chosen with nothing selected (R4.3). Owner, 2026-11-07: "To save horizontal space the scrollbar can stop below the agent icon. Add an option in the macos top bar to turn off agent bar (hides the icon), enable + - and command - scroll for zooming".
 #[test]
 fn the_menu_bar_and_the_agent_icon() {
     let Some(run) = Run::start() else { return };
@@ -1118,7 +1118,29 @@ fn the_menu_bar_and_the_agent_icon() {
         .map(|menu| menu["title"].as_str().unwrap())
         .collect();
     // The Go menu has Back, Forward and Go to Page…, as SPEC lists the menus.
-    assert_eq!(titles, ["RectoPDF", "File", "Edit", "View", "Go", "Tools"], "{state}");
+    assert_eq!(titles, ["RectoPDF", "File", "Edit", "View", "Go", "Mark Up", "Tools"], "{state}");
+    // Mark Up > Highlight on ⌃⌘H, as AppKit has it (R4.3): with nothing selected, it and Remove Highlight can't be chosen.
+    let mark_up = state["app"]["menu_bar"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|menu| menu["title"] == "Mark Up")
+        .unwrap();
+    let highlight = &mark_up["items"][0];
+    assert_eq!(
+        (highlight["id"].as_str(), highlight["key"].as_str()),
+        (Some("markup.highlight"), Some("h")),
+        "{mark_up}"
+    );
+    assert_eq!(
+        highlight["mask"].as_u64().map(|mask| mask & (1 << 18 | 1 << 20)),
+        Some(1 << 18 | 1 << 20),
+        "⌃⌘: {mark_up}"
+    );
+    assert!(
+        mark_up["items"].as_array().unwrap().iter().all(|item| item["enabled"] == false),
+        "nothing selected: {mark_up}"
+    );
     // What AppKit adds to a menu (AutoFill and Passwords… in an Edit menu) says it is the system's; every item with an id is ours, and not the system's: an
     // item of ours that lost its id or its tag fails here instead of hiding among the system's. AppKit may add none, so none is not required.
     let items: Vec<&Value> = state["app"]["menu_bar"]
@@ -3480,7 +3502,7 @@ fn a_snapshot_of_a_turned_page_is_copied_turned() {
     let items = clipboard_items(&run);
     assert_eq!(items[0]["type"], "public.png", "{items:?}");
     let digest = |bytes: &[u8]| sha2::Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
-    let picture = |turns: u8| match recto_agent::extract::snapshot_clip(&file.0, 0, rect, turns, false, &recto_agent::extract::ClipStop::default()) {
+    let picture = |turns: u8| match recto_agent::extract::snapshot_clip(&file.0, 0, rect, (turns, None), false, &recto_agent::extract::ClipStop::default()) {
         recto_agent::extract::ClipOutcome::Ready(clip) => digest(clip.items[0].bytes().unwrap()),
         other => panic!("{other:?}"),
     };

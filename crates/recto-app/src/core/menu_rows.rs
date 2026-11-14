@@ -127,6 +127,7 @@ const ROWS: &[(&str, Rows)] = &[
     ("editing", super::editing::row),
     ("navigation", super::navigation::row),
     ("find", super::find::row),
+    ("highlight", super::highlight::row),
     ("comparison", super::comparison::row),
     ("closing", super::closing::row),
     ("saving", super::saving::row),

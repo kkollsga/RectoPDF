@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// **What a caller's page edit may do to a tab's list: move, turn or delete pages, and nothing else** (R3.5b). The closure handed to
+/// **What a caller's page edit may do to a tab's list: move, turn or delete pages, add or take away a highlight, and nothing else** (R3.5b). The closure handed to
 /// [`Session::edit_pages_as`] gets this, not `&mut PageEdits`, so it can't put a new list in the tab's place, which would take the owner's edits past
 /// the close and discard rules and drop the author marking and journaling set on the list it replaced, and can't add another PDF's pages, which go only
 /// through [`Session::insert_pdf_with_facts`] and its check that a quiet run's file is in its folders. These are what the executor's commands do.
@@ -20,6 +20,21 @@ impl crate::parts::PartMut<'_, PageEdits> {
     /// [`PageEdits::delete`].
     pub fn delete(&mut self, start: u32, len: u32) -> Result<(), EditError> {
         self.0.delete(start, len)
+    }
+
+    /// [`PageEdits::mark`]: a highlight added, or one made as an edit taken away.
+    pub fn mark(&mut self, change: crate::edit::marks::MarkChange) -> Result<(), EditError> {
+        self.0.mark(change)
+    }
+
+    /// Which page is at a position, by what it is (`source`, page there): what a highlight is held by.
+    pub fn page_at(&self, position: u32) -> Option<(u16, u32)> {
+        self.0.slots().get(position as usize).map(|slot| (slot.source, slot.page))
+    }
+
+    /// [`PageEdits::order_mark`]: whether the pages are in the order a read of them was made in.
+    pub fn order_mark(&self) -> u64 {
+        self.0.order_mark()
     }
 
     /// How many pages the tab has now, for an edit of all of them. Never none, as a document can't lose its last page, so there's no `is_empty`.

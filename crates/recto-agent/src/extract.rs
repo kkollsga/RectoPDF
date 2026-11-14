@@ -25,6 +25,9 @@ pub const MAX_CLIP_ITEM: usize = 32 * 1024 * 1024;
 pub const MAX_CLIP_TOTAL: usize = 64 * 1024 * 1024;
 
 /// The pasteboard type of each kind of thing, by its uniform type identifier, which is what a Mac's clipboard goes by.
+/// The file's own highlights a tab has taken out, for a drawing of one of its pages: see [`crate::hidden_in`].
+pub type Hidden = Option<std::sync::Arc<recto_proto::hidden::HiddenAnnots>>;
+
 pub const UTI_PNG: &str = "public.png";
 pub const UTI_JPEG: &str = "public.jpeg";
 pub const UTI_SVG: &str = "public.svg-image";
@@ -122,6 +125,8 @@ pub(crate) struct SnapshotAsked<'a> {
     pub out: Option<&'a Path>,
     pub scale: f32,
     pub anyway: bool,
+    /// The file's own highlights the tab has taken out, left out of a picture (R4.3).
+    pub hidden: crate::render::Hidden,
 }
 
 fn format_of(name: &str) -> Result<Format, AgentError> {
@@ -177,6 +182,7 @@ pub(crate) fn snapshot_command(asked: &SnapshotAsked<'_>) -> Result<Value, Agent
     }
     refuse_if_restricted(asked.path, page, asked.anyway)?;
     let mut doc = open_for_text(asked.path)?;
+    doc.hidden.draw_for(0, asked.hidden.clone());
     let (temp, file) = OwnTemp::create(out)?;
     let written = RefCell::new(FileOut(file));
     let mut data = json!({ "page": asked.page, "rect": asked.rect, "as": format.name(), "out": out, "anyway": asked.anyway });
@@ -403,13 +409,16 @@ fn image_note(copied: &CopiedImage, left_off: &[&str]) -> String {
 /// The app's snapshot of a box: PNG, text, SVG and JPG, all on the clipboard at once (SPEC section 6), each as far as it fits. The PNG and JPG come from one drawing; the SVG is promised, and made by [`snapshot_svg`] only if a paste asks for it. `rect` is on the page as the file shows it, from its top left. Opens a worker of its own and can wait for the larger limit, so it's for a job thread. `page` is from 0.
 ///
 /// **The pictures are of the page as it's seen** (coordinator's decision, 2026-11-08): `quarter_turns` is how far the reader shows it turned, by an unsaved turn or the view's, and the PNG and JPG come out turned by as much, as the SVG does from [`snapshot_svg`]. The owner's rotate-all is for turning a sideways scan, and a snapshot of it mustn't come out sideways again.
-pub fn snapshot_clip(path: &Path, page: u32, rect: [f32; 4], quarter_turns: u8, anyway: bool, stop: &ClipStop) -> ClipOutcome {
+///
+/// `hidden`: the file's own highlights the tab has taken out, left out of every picture as the page view leaves them out ([`crate::hidden_in`]).
+pub fn snapshot_clip(path: &Path, page: u32, rect: [f32; 4], (quarter_turns, hidden): (u8, Hidden), anyway: bool, stop: &ClipStop) -> ClipOutcome {
     let run = || -> Result<ClipOutcome, AgentError> {
         crate::render::check_scale_and_box(DEFAULT_SCALE, Some(rect))?;
         if !anyway && snapshot::copy_restricted(path, None, page) {
             return Ok(ClipOutcome::Restricted);
         }
         let mut doc = open_for_text(path)?;
+        doc.hidden.draw_for(0, hidden);
         stop.attach(&doc);
         let caps = OutputCaps::default();
         // Text is an extra: a page whose characters can't be read still gives its picture.
@@ -459,9 +468,11 @@ pub fn snapshot_clip(path: &Path, page: u32, rect: [f32; 4], quarter_turns: u8, 
 }
 
 /// **A snapshot's SVG, made when a paste asks for it**: `export svg --rect`'s drawing with text as outlines only, so hidden text stays out as it does from the text item, into at most `cap` bytes, turned by `quarter_turns` as [`snapshot_clip`]'s pictures are. Whether the file may be copied was settled when the snapshot was taken. Opens a worker of its own and waits for it, for as long as the paste is waiting. `page` is from 0.
-pub fn snapshot_svg(path: &Path, page: u32, rect: [f32; 4], quarter_turns: u8, cap: usize) -> Result<Vec<u8>, AgentError> {
+/// `hidden` as for [`snapshot_clip`].
+pub fn snapshot_svg(path: &Path, page: u32, rect: [f32; 4], quarter_turns: u8, hidden: Hidden, cap: usize) -> Result<Vec<u8>, AgentError> {
     crate::render::check_scale_and_box(DEFAULT_SCALE, Some(rect))?;
     let mut doc = open_for_text(path)?;
+    doc.hidden.draw_for(0, hidden);
     in_memory(cap.min(MAX_CLIP_ITEM), |out| {
         crate::render::write_svg_box(
             &mut doc,

@@ -519,7 +519,9 @@ fn renderer_for<'a>(
             },
         );
     }
-    renderers.get_mut(path).ok_or(Unopened::Failed(RenderFailure::Unavailable))
+    let open = renderers.get_mut(path).ok_or(Unopened::Failed(RenderFailure::Unavailable))?;
+    open.doc.hidden.draw_for(tab, super::selection::hidden_for(shared, tab, path));
+    Ok(open)
 }
 
 /// **A password is for the tab it was typed for** (review round 1 of the measured faults, S1). A page added to another document from a file that needs

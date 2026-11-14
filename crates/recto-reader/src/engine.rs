@@ -85,6 +85,7 @@ struct Shared {
     /// release app has no such field.
     #[cfg(any(test, feature = "qa"))]
     qa: qa_holds::QaHolds,
+    hidden: Mutex<crate::tiles::HiddenSets>, // The file's highlights each tab shown has taken out, unsaved: `Selection::show_hidden`.
 }
 
 /// The tick ([`asked`]) of the newest ask of each kind applied to the view, each moved on only with the view's lock held, so an ask asked before it isn't
@@ -189,6 +190,7 @@ impl Engine {
             applied: Applied::default(),
             #[cfg(any(test, feature = "qa"))]
             qa: qa_holds::QaHolds::default(),
+            hidden: Mutex::default(),
         });
         Self {
             shared,

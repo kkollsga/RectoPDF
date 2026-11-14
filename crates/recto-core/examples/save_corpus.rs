@@ -86,6 +86,8 @@ fn save_one(copy: &Path, other: &Path) -> Result<String, String> {
         file_pages: pages,
         pages: &order,
         added: &added,
+        highlights: &[],
+        highlights_gone: &[],
     };
     let started = Instant::now();
     let outcome = recto_core::save::save(&request, Target::Same, None, &mut recto_core::save::NoHooks).map_err(|error| error.code().to_string())?;

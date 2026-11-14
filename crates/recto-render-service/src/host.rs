@@ -1,6 +1,7 @@
 //! A document's renderer, from the host's side. See the crate's notes for the rules.
 
 pub mod contents;
+pub mod hidden;
 mod images;
 mod slot;
 
@@ -16,7 +17,6 @@ use recto_proto::{
     self as proto, CharBox, CharRecord, FailCode, Kind, PageFrame, PageSize, ProtoError, RegionReply, RenderJob, TextJob, TextReply, TileKind, TileRect,
     TileReply, TileStatus, device_size,
 };
-use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
@@ -582,6 +582,8 @@ struct Worker {
     walled: bool,
     /// Jobs in a row after which its footprint couldn't be read, or read as nothing.
     unread_footprints: u32,
+    /// The set of the file's highlights it leaves out, by tab and generation: [`hidden`].
+    hidden_sent: Option<(u32, u64)>,
 }
 
 /// The kind of worker a job needs.
@@ -772,15 +774,13 @@ pub struct DocRenderer {
     counted_from: CountedFrom,
     /// Of those since then, the ones that don't count towards stopping the document.
     left_out: LeftOut,
-    /// `image_places` has been forgotten, past its cap, and nobody's been told.
-    image_places_cleared: bool,
     /// Whether the job under way may start a worker: [`Self::with_workers`].
     workers: Workers,
     remembered: Vec<PageMemory>,
-    /// Each page's largest image in source pixels, for those asked about.
-    traits: Vec<(u32, u64)>,
-    /// Where each page's images are, for those asked about.
-    image_places: HashMap<u32, Option<Vec<[u16; 4]>>>,
+    /// What's known of pages' images, for those asked about: [`images::Known`].
+    images: images::Known,
+    /// The file's highlights the tab a job draws for has taken out and not saved: [`hidden`].
+    pub hidden: hidden::HiddenWanted,
     file_changed: bool,
     /// The slot, from an export's wait, on its way to the worker it's for.
     waited_ticket: Option<HeavyTicket>,
@@ -847,9 +847,8 @@ impl DocRenderer {
             counted_from: CountedFrom::default(),
             workers: Workers::MayStart,
             remembered: Vec::new(),
-            traits: Vec::new(),
-            image_places: HashMap::new(),
-            image_places_cleared: false,
+            images: images::Known::default(),
+            hidden: hidden::HiddenWanted::default(),
             left_out: LeftOut::default(),
             file_changed: false,
             waited_ticket: None,
@@ -1030,49 +1029,6 @@ impl DocRenderer {
     /// 4. [`RenderFailure::PageFailed`], remembered.
     pub fn render_tile<'a>(&mut self, request: &TileRequest, surface: impl Into<Target<'a>>) -> Result<TileResult, RenderFailure> {
         self.draw_with(request, surface.into(), DrawPurpose::OnScreen, 0)
-    }
-
-    /// The largest image on a page in source pixels, a hint for how to draw it. Remembered per page, up to a cap. If looking at the page stops a worker, that's noted as drawing would have noted
-    /// it, and the answer is zero. Likewise if `generation` goes stale, without remembering that.
-    pub fn largest_image_pixels(&mut self, page: u32, generation: u64) -> Result<u64, RenderFailure> {
-        if let Some(&(_, pixels)) = self.traits.iter().find(|(known, _)| *known == page) {
-            return Ok(pixels);
-        }
-        if self.page_draw_state(page) != PageDrawState::Sharp || self.control.is_stale(generation) || self.stopped() {
-            return Ok(0);
-        }
-        let job_id = self.next_job_id();
-        let frame = proto::encode_traits_request(job_id, page);
-        // Loads this page, which is what the next job for it needs anyway, so it leaves nothing that could explain that job failing.
-        let reply = self.run_job(job_id, page, false, WorkerClass::Normal, Some(generation), &[], &frame, |reply| {
-            match reply.kind {
-                Kind::Traits => {
-                    let traits = proto::PageTraits::decode(&reply.payload)?;
-                    if traits.job_id == job_id {
-                        Ok(traits.largest_image_pixels)
-                    } else {
-                        Err(ProtoError("traits answer a different job"))
-                    }
-                }
-                _ => Err(ProtoError("the wrong kind of reply to a traits request")),
-            }
-        });
-        let pixels = match reply {
-            Ok(pixels) => pixels,
-            Err(JobFailure::StaleKilled) => return Ok(0),
-            // At what scale isn't known, so it holds at every one, until a lower zoom's own draw says otherwise. Which is the same as the page's load being too heavy.
-            Err(JobFailure::Stopped(KillReason::MemoryLimit)) => {
-                self.set_draw(page, 0.0, PageDrawState::NeedsHeavy);
-                0
-            }
-            Err(JobFailure::Stopped(reason)) => return Err(self.give_up_drawing(page, 0.0, reason)),
-            Err(failure) => return Err(failure.into()),
-        };
-        if self.traits.len() >= MAX_FAILED_PAGES {
-            self.traits.remove(0);
-        }
-        self.traits.push((page, pixels));
-        Ok(pixels)
     }
 
     /// Draws a region of the page in one pass, cut into tiles of `tile_edge` for the caller to hand out. Cheaper than one pass per tile whenever several tiles are needed: see
@@ -1567,16 +1523,18 @@ impl DocRenderer {
                 }
                 worker.surface_bytes_sent += surface.len() as u64;
             }
-            let outcome = worker.exchange(frame, handles, &watch).and_then(|mut reply| {
-                if reply.kind == Kind::Failed {
-                    let (answered, code) = proto::decode_failed(&reply.payload).map_err(|error| Stop::Killed(KillReason::Rejected(error.0)))?;
-                    if answered != job_id {
-                        return Err(Stop::Killed(KillReason::Rejected("a failure for a different job")));
+            let outcome = hidden::bring(worker, &mut self.hidden, &watch)
+                .and_then(|()| worker.exchange(frame, handles, &watch))
+                .and_then(|mut reply| {
+                    if reply.kind == Kind::Failed {
+                        let (answered, code) = proto::decode_failed(&reply.payload).map_err(|error| Stop::Killed(KillReason::Rejected(error.0)))?;
+                        if answered != job_id {
+                            return Err(Stop::Killed(KillReason::Rejected("a failure for a different job")));
+                        }
+                        return Err(Stop::Refused(code));
                     }
-                    return Err(Stop::Refused(code));
-                }
-                decode(&mut reply).map_err(|error| Stop::Killed(KillReason::Rejected(error.0)))
-            });
+                    decode(&mut reply).map_err(|error| Stop::Killed(KillReason::Rejected(error.0)))
+                });
             self.stats.jobs += 1;
             match outcome {
                 Ok(value) => {
@@ -1773,8 +1731,7 @@ impl DocRenderer {
         self.bury_worker();
         self.file_changed = true;
         self.forget_failures();
-        self.traits.clear();
-        self.image_places.clear();
+        self.images.forget();
         self.page_count = None;
         self.version = None;
         match File::open(&self.path) {
@@ -1804,8 +1761,7 @@ impl DocRenderer {
         if seen_changed || file_stamp(&self.path).ok() != self.opened_stamp {
             self.file_changed |= !seen_changed;
             self.forget_failures();
-            self.traits.clear();
-            self.image_places.clear();
+            self.images.forget();
             self.page_count = None;
             self.version = None;
             return match File::open(&self.path) {
@@ -2056,6 +2012,7 @@ impl Worker {
             heavy: false,
             walled: false,
             unread_footprints: 0,
+            hidden_sent: None,
         };
         let started = Instant::now();
         let limit = policy.start_timeout;
