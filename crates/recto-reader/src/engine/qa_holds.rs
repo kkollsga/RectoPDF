@@ -264,14 +264,89 @@ impl Qa<'_> {
     }
 
     /// **Whether the thread that draws is at rest:** resting, having begun its turn after the last thing asked of it, so nothing asked waits for it, no job
-    /// runs and what its last job came to has been told; or gone. With it, a stamp that moves with every ask and every turn, so two looks with the same stamp
-    /// saw nothing happen between them. `None` while it's busy. Never started, it's at rest.
+    /// runs and what its last job came to has been told; or gone; and nothing it made left for the host to take (its layer changes). With it, a stamp that
+    /// moves with every ask and every turn, so two looks with the same stamp saw nothing happen between them. `None` while it's busy. Never started, it's at
+    /// rest.
     #[must_use]
     pub fn at_rest(&self) -> Option<(u64, u64)> {
         let qa = &self.engine.shared.qa;
         let rounds = qa.rounds.load(Ordering::SeqCst);
         let seen = qa.rest_seen.load(Ordering::SeqCst);
         let asks = qa.asks.load(Ordering::SeqCst);
-        (seen == ENDED || seen == asks).then_some((rounds, asks))
+        let resting = seen == ENDED || seen == asks;
+        (resting && !lock(&self.engine.shared.reader).host.has_ops()).then_some((rounds, asks))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Engine, EngineConfig};
+    use crate::tiles::PageMap;
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    struct Quiet;
+    impl super::super::EngineEvents for Quiet {
+        fn ops_ready(&self) {}
+        fn note_changed(&self) {}
+        fn page_moved(&self) {}
+        fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
+    }
+
+    /// Failure (review of `build/settled-gaps`, 2026-11-14): the kit's settle takes the page views' layer changes as the host would, then looks; a job that
+    /// ended between the two left its changes untaken, and the view's thread, resting, said it was at rest, so settle said so too. At rest is also nothing
+    /// left for the host: the thread resting with a page's layers not taken isn't.
+    #[test]
+    fn a_view_whose_layers_the_host_hasnt_taken_isnt_at_rest() {
+        let file = recto_testpdf::TempPdf::new(
+            "untaken.pdf",
+            &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["A page whose layers wait for the host"]))]),
+        );
+        let engine = Engine::new(EngineConfig::default(), Arc::new(Quiet));
+        engine.activate(
+            1,
+            1,
+            0,
+            PageMap {
+                files: vec![file.0.clone()],
+                ..PageMap::default()
+            },
+            &[],
+            None,
+            crate::layout::Spread::Single,
+        );
+        let ops = engine.set_viewport(crate::tiles::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 900.0,
+            frame_width: 800.0,
+            magnification: 1.0,
+            backing: 2.0,
+            live: false,
+            scrolled_to: u64::MAX,
+        });
+        let release = |ops: Vec<crate::tiles::Op>| {
+            for op in ops {
+                if let crate::tiles::Op::Attach { surface, .. } = op {
+                    recto_platform::surface::PixelSurface::release_for_host(surface);
+                }
+            }
+        };
+        release(ops);
+        let qa = &engine.shared.qa;
+        let began = Instant::now();
+        // The thread resting with everything asked of it seen, and nothing taken by the host since it began.
+        while !(qa.rest_seen.load(Ordering::SeqCst) == qa.asks.load(Ordering::SeqCst) && engine.report().0["counts"]["drawn"].as_u64().unwrap_or(0) > 0) {
+            assert!(began.elapsed() < Duration::from_secs(20), "the page was never drawn: {}", engine.report().0);
+            std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
+        }
+        assert!(super::super::lock(&engine.shared.reader).host.has_ops(), "layers left for the host");
+        let untaken = engine.qa().at_rest();
+        release(engine.drain());
+        engine.applied();
+        assert_eq!(untaken, None, "at rest with layers the host hasn't taken");
+        engine.shut_down();
     }
 }
