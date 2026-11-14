@@ -252,20 +252,60 @@ fn secret_pdf(secret: u32) -> Vec<u8> {
     )
 }
 
-/// What an agent at `level` is told by `command`, and what it hears, with `locked.pdf` (`#1`) opened with its password and being read, beside a plain
-/// tab: a fresh session each time, so what one command did can't hide what another gave. The files' folders, which differ from run to run, are said
-/// alike.
-fn told(secret: u32, level: Level, command: &Command) -> String {
+/// Which tab is being read, and which one the command names, when it names one: the protected `#1` or the plain `#2`.
+#[derive(Clone, Copy, Debug)]
+struct Arrangement {
+    reading_locked: bool,
+    naming_locked: bool,
+}
+
+/// The three arrangements: the protected tab read and named; read and the plain one named, so a command that reads the document being read whatever it
+/// names (`Reading`) is told from one that reads the tab it names (`Its`); and the plain one read with the protected one named.
+const ARRANGEMENTS: [Arrangement; 3] = [
+    Arrangement {
+        reading_locked: true,
+        naming_locked: true,
+    },
+    Arrangement {
+        reading_locked: true,
+        naming_locked: false,
+    },
+    Arrangement {
+        reading_locked: false,
+        naming_locked: true,
+    },
+];
+
+/// `command` naming the plain tab (`#2`) in place of the protected one (`#1`), as its line says it.
+fn naming_the_plain_tab(command: &Command) -> Command {
+    let mut fields = fields(command);
+    for value in fields.values_mut() {
+        if value == "#1" {
+            *value = Value::from("#2");
+        }
+    }
+    crate::parse(&Value::Object(fields).to_string()).expect("its own line, naming the other tab")
+}
+
+/// What an agent at `level` is told by `command`, and what it hears, with `locked.pdf` (`#1`) opened with its password beside a plain tab (`#2`), as
+/// `arranged`: a fresh session each time, so what one command did can't hide what another gave. The files' folders, which differ from run to run, are
+/// said alike.
+fn told(secret: u32, level: Level, command: &Command, arranged: Arrangement) -> String {
     let locked = TempPdf::new("locked.pdf", &secret_pdf(secret));
     let plain = TempPdf::new("plain.pdf", &pdf(3));
     let mut session = Session::new(crate::DrawableLoader);
     let id = session.open(&locked.0).unwrap();
-    session.open(&plain.0).unwrap();
+    let other = session.open(&plain.0).unwrap();
     session.tabs_mut().note_password_used(id);
-    session.tap(id).unwrap();
+    session.tap(if arranged.reading_locked { id } else { other }).unwrap();
+    let command = if arranged.naming_locked {
+        command.clone()
+    } else {
+        naming_the_plain_tab(command)
+    };
     let access = Mutex::new(session);
     let mut events = Vec::new();
-    let result = execute(&access, Actor::Agent(level), command, &mut events).map(|mut answer| {
+    let result = execute(&access, Actor::Agent(level), &command, &mut events).map(|mut answer| {
         unmeasured(&mut answer);
         answer
     });
@@ -274,13 +314,13 @@ fn told(secret: u32, level: Level, command: &Command) -> String {
         .replace(plain.folder().to_str().unwrap(), "<plain>")
 }
 
-/// An answer with what's measured as it runs (times, the process's memory) left out: those differ from run to run whatever the document, and the
-/// twins' documents are the same size.
+/// An answer with what's measured as it runs left out (times, the process's and a worker's memory, open handles), which differ from run to run
+/// whatever the document. Everything else is compared, the files' sizes included: the twins' protected documents differ in length, words and size.
 fn unmeasured(value: &mut Value) {
     match value {
         Value::Object(fields) => {
             for (key, field) in fields.iter_mut() {
-                if key.ends_with("_ms") || key.ends_with("_bytes") {
+                if key == "ms" || key.ends_with("_ms") || key.ends_with("footprint_bytes") || matches!(key.as_str(), "worker_peak_bytes" | "open_handles") {
                     *field = Value::Null;
                 } else {
                     unmeasured(field);
@@ -293,17 +333,19 @@ fn unmeasured(value: &mut Value) {
 }
 
 /// Failure (agent report §5.5, R4.2 P1 and P2): something of a document the person opened with its password reaches an agent at some level, by a command
-/// added later or one whose gate was forgotten: its length, place or words in an answer, a refusal or an event. Every command runs at every level
-/// on two sessions whose protected document differs, and must say the same on both. A command that reads the document being read and says
-/// [`commands::About::Nothing`] fails here, not only where someone remembers to look.
+/// added later or one whose gate was forgotten: its length, place, size or words in an answer, a refusal or an event. Every command runs at every level,
+/// in each of [`ARRANGEMENTS`], on two sessions whose protected document differs, and must say the same on both. A command that reads a tab and says
+/// [`commands::About::Nothing`], or reads the document being read and says `Its`, fails here, not only where someone remembers to look.
 #[test]
 fn no_command_tells_an_agent_anything_of_a_protected_document() {
     let mut differs = Vec::new();
     for command in every_command() {
         for level in LEVELS {
-            let (one, two) = (told(1, level, &command), told(2, level, &command));
-            if one != two {
-                differs.push(format!("{} at {level:?}:\n  {one}\n  {two}", command.tag()));
+            for arranged in ARRANGEMENTS {
+                let (one, two) = (told(1, level, &command, arranged), told(2, level, &command, arranged));
+                if one != two {
+                    differs.push(format!("{} at {level:?}, {arranged:?}:\n  {one}\n  {two}", command.tag()));
+                }
             }
         }
     }
@@ -326,34 +368,44 @@ fn opened(file: &Path) -> Mutex<Session<crate::DrawableLoader>> {
     access
 }
 
-/// How many of the owner's steps `#1`'s history holds, done and undone, and whether one of them fell off it. (Counted, not compared by value: an undo
-/// keeps a step as its inverse until it's redone, and moving one step between the two is what undo and redo are.)
-fn owners_steps(access: &Mutex<Session<crate::DrawableLoader>>) -> (usize, bool) {
+/// How many of the owner's steps the tab's history holds, done and undone. (Counted, not compared by value: an undo keeps a step as its inverse until
+/// it's redone, and moving one step between the two is what undo and redo are.)
+fn owners_steps(access: &Mutex<Session<crate::DrawableLoader>>, id: recto_session::TabId) -> usize {
     let session = access.lock().unwrap();
-    let Some(record) = session.tabs().active().and_then(|id| session.lists().edits_record(id)) else {
-        return (0, false);
-    };
-    let owners = record
-        .undo
-        .iter()
-        .chain(&record.redo)
-        .filter(|entry| entry.by == recto_session::record::AuthorName::Owner)
-        .count();
-    (owners, record.owner_step_dropped)
+    session.lists().edits_record(id).map_or(0, |record| {
+        record
+            .undo
+            .iter()
+            .chain(&record.redo)
+            .filter(|entry| entry.by == recto_session::record::AuthorName::Owner)
+            .count()
+    })
 }
 
 /// Failure (SPEC decision 20, R4.2 L1): an agent below Full throws away some of the owner's unsaved edits, by a command added later or a rule
 /// forgotten in one: a step of theirs, done or undone, gone from the history, or their file's bytes changed. Every command runs at ReadOnly and
-/// Control, each on a fresh session whose owner has turned three pages and undone one, and afterwards the owner's steps are all there, none fell off,
-/// and the file is byte for byte what it was, or, for `save`, which an agent at Control may do by appending, everything that was in it is still there.
+/// Control, each on a fresh session whose owner has turned three pages and undone one, with the files it reads real ones (an `open`, a `page insert`
+/// reach their rules); afterwards the owner's three steps are all there, and the file is byte for byte what it was, or, for `save`, which an agent at
+/// Control may do by appending, everything that was in it is still there. A step pushed off the end of a full history is the history's own rule,
+/// held by `an_agent_cant_push_the_owners_steps_out_of_the_history` in `recto-session`.
 #[test]
 fn no_command_below_full_loses_the_owners_edits() {
+    let other = TempPdf::new("other.pdf", &pdf(2));
     let mut lost = Vec::new();
     for command in every_command() {
+        // The files it reads, real ones.
+        let mut asked = fields(&command);
+        for key in READS {
+            if asked.get(*key).is_some_and(Value::is_string) {
+                asked.insert((*key).to_string(), Value::from(other.0.to_str().unwrap()));
+            }
+        }
+        let command = crate::parse(&Value::Object(asked).to_string()).expect("its own line, with a real file");
         for level in [Level::ReadOnly, Level::Control] {
             let file = TempPdf::new("owners.pdf", &pdf(4));
             let bytes = std::fs::read(&file.0).unwrap();
             let access = opened(&file.0);
+            let id = access.lock().unwrap().tabs().active().expect("the owner's tab");
             for page in ["1", "2", "3"] {
                 let turn = Command::from(commands::editing::PageRotate {
                     tab: "#1".into(),
@@ -369,14 +421,16 @@ fn no_command_below_full_loses_the_owners_edits() {
                 &mut Vec::new(),
             )
             .expect("the owner's undo");
-            let before = owners_steps(&access);
-            assert_eq!(before, (3, false), "the owner's three steps, one undone");
+            assert_eq!(owners_steps(&access, id), 3, "the owner's three steps, one undone");
             let result = execute(&access, Actor::Agent(level), &command, &mut Vec::new());
-            let after = owners_steps(&access);
+            let after = owners_steps(&access, id);
             let now = std::fs::read(&file.0).unwrap();
             let kept = if command.tag() == "save" { now.starts_with(&bytes) } else { now == bytes };
-            if after != before || !kept {
-                lost.push(format!("{} at {level:?}: {result:?}\n  before {before:?}\n  after {after:?}", command.tag()));
+            if after != 3 || !kept {
+                lost.push(format!(
+                    "{} at {level:?}: {result:?}\n  the owner's steps now {after}, the file kept: {kept}",
+                    command.tag()
+                ));
             }
         }
     }
