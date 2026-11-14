@@ -46,11 +46,12 @@ impl Running {
     }
 
     /// **The quit's: what can change what it writes** (the record, a journal, a document's file): the person's commands, their parked edits among
-    /// them, the window's saves, files being read for a command, and commands that change something (an agent's edit, a jump). Not a sheet, a print, or an
-    /// agent's read, render or export, which a quit doesn't wait for (D7).
+    /// them, the window's saves, and commands that change something (an agent's edit, a jump). Not a sheet, a print, an agent's read, render or export
+    /// (D7), or a file being read, which on a dead volume would hold every quit (second review of the lane, 2): the record is written without what it
+    /// would have opened, as on `main`.
     #[must_use]
     pub fn changes_what_a_quit_writes(&self) -> bool {
-        self.persons > 0 || self.saves > 0 || self.reads > 0 || self.changing > 0
+        self.persons > 0 || self.saves > 0 || self.changing > 0
     }
 }
 
