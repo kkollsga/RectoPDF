@@ -24,6 +24,10 @@ use std::sync::Arc;
 /// (coordinator, 2026-11-14).
 pub const FULL: &str = "That wasn't done: too many edits are waiting for the one before. Try again in a moment.";
 
+/// What the person is told when they stay after a quit whose patience ran out with edits of theirs still waiting, which were dropped together
+/// ([`crate::queue::lane::Lane::drop_for_quit`]): Rust's words, by the page, once (second review of the lane, 4).
+pub const DROPPED_AT_QUIT: &str = "Some edits weren't done: the app was quitting. Try them again.";
+
 /// **Whether a person's command keeps its place among their edits**: [`super::command_kinds`] says, by its tag, in a list with no default.
 pub use super::command_kinds::ordered;
 
@@ -108,6 +112,8 @@ impl PersonsLane<'_> {
                 drop((start, turn));
                 person::say(self.app.window.notices(), &self.app.core, FULL.to_string());
             }
+            // Dropped with what was waiting at a quit: said if the person stays ([`DROPPED_AT_QUIT`]).
+            Asked::Dropped(start, turn) => drop((start, turn)),
         }
     }
 
@@ -157,6 +163,10 @@ impl PersonsLane<'_> {
                 _ => None,
             };
             lane.name(turn, tab.map_or(0, |tab| tab.0));
+        }
+        // Asked before a quit's patience ran out, and dropped with what waited: it goes without acting.
+        if turn.as_ref().is_some_and(|turn| lane.is_dropped(turn)) {
+            return None;
         }
         let turn = match turn {
             Some(turn) if !lane.may_run(&turn) => turn,

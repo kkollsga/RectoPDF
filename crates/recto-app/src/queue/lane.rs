@@ -53,6 +53,10 @@ struct State {
     parked: VecDeque<(u64, Weak<super::CoreQueue>, Start)>,
     /// [`CAP`], or a test's smaller one.
     cap: usize,
+    /// Tickets below this were asked before a quit's patience ran out and hadn't acted yet: they go without acting when they ask ([`Lane::drop_for_quit`]).
+    dropped_below: u64,
+    /// Something the person asked for was dropped so, and they haven't been told.
+    dropped_untold: bool,
 }
 
 impl State {
@@ -84,6 +88,8 @@ impl Default for Lane {
                 outstanding: VecDeque::with_capacity(8),
                 parked: VecDeque::new(),
                 cap: CAP,
+                dropped_below: 0,
+                dropped_untold: false,
             }),
         };
         drop(lock(&lane.state));
@@ -99,6 +105,8 @@ pub enum Asked {
     Parked,
     /// Too many parked already: not taken. Its turn passes as it's dropped.
     Full(Start, Turn),
+    /// Asked before a quit's patience ran out, and dropped with everything after it ([`Lane::drop_for_quit`]). Its turn passes as it's dropped.
+    Dropped(Start, Turn),
 }
 
 /// **A ticket in the lane, held by its command until the state it acts on is fixed:** passed as it's dropped, however the command ends (done, refused,
@@ -161,6 +169,11 @@ impl Lane {
     /// that's so.
     pub fn ask(&self, mut turn: Turn, start: Start) -> Asked {
         let mut state = lock(&self.state);
+        if turn.ticket < state.dropped_below {
+            state.dropped_untold = true;
+            drop(state);
+            return Asked::Dropped(start, turn);
+        }
         if state.may_run(turn.ticket) {
             return Asked::Now(start, turn);
         }
@@ -178,6 +191,32 @@ impl Lane {
         let at = state.parked.partition_point(|(parked, ..)| *parked < ticket);
         state.parked.insert(at, (ticket, queue, start));
         Asked::Parked
+    }
+
+    /// **Whether `turn` was dropped at a quit** ([`Self::drop_for_quit`]), for a command about to act without asking: it goes without acting.
+    pub fn is_dropped(&self, turn: &Turn) -> bool {
+        let mut state = lock(&self.state);
+        let dropped = turn.ticket < state.dropped_below;
+        state.dropped_untold |= dropped;
+        dropped
+    }
+
+    /// **A quit's patience ran out with the person's edits still waiting:** what's parked goes, all of it together, and so does every ticket handed out
+    /// so far that hasn't acted yet (an undo queued and not yet taken by the session thread), as it asks; what's under way goes on. So what the person
+    /// asked for is done as a prefix, never a later edit without an earlier one (review of the lane, D4; second review, 4).
+    pub fn drop_for_quit(&self) {
+        let parked = {
+            let mut state = lock(&self.state);
+            state.dropped_below = state.next;
+            state.dropped_untold |= !state.parked.is_empty();
+            take_parked(&mut state)
+        };
+        drop(parked);
+    }
+
+    /// Whether edits were dropped at a quit that the person hasn't been told of, which they are now.
+    pub fn take_dropped_untold(&self) -> bool {
+        std::mem::take(&mut lock(&self.state).dropped_untold)
     }
 
     /// Whether `turn`'s command may act now ([`State::may_run`]).
@@ -200,17 +239,9 @@ impl Lane {
     }
 
     /// **What's parked goes, all of it together,** with what it holds (the app's count of it): at the queue's end (a headless app's kill), as the queue
-    /// takes nothing more; and as a quit's patience ends with it still parked, so no later edit is had without an earlier one (review of the lane, D4).
-    /// What's under way goes on; what was parked behind it never starts.
+    /// takes nothing more.
     pub fn drop_parked(&self) {
-        let parked = {
-            let mut state = lock(&self.state);
-            let parked = std::mem::take(&mut state.parked);
-            state
-                .outstanding
-                .retain(|outstanding| !parked.iter().any(|(ticket, ..)| *ticket == outstanding.ticket));
-            parked
-        };
+        let parked = take_parked(&mut lock(&self.state));
         drop(parked);
     }
 
@@ -234,6 +265,15 @@ impl Lane {
     pub fn set_cap(&self, cap: usize) {
         lock(&self.state).cap = cap;
     }
+}
+
+/// What's parked, taken out, its tickets no longer outstanding: dropped by the caller outside the lane's lock, with what each holds.
+fn take_parked(state: &mut State) -> VecDeque<(u64, Weak<super::CoreQueue>, Start)> {
+    let parked = std::mem::take(&mut state.parked);
+    state
+        .outstanding
+        .retain(|outstanding| !parked.iter().any(|(ticket, ..)| *ticket == outstanding.ticket));
+    parked
 }
 
 std::thread_local! {
@@ -322,6 +362,7 @@ mod tests {
             }
             Asked::Parked => "parked",
             Asked::Full(..) => "full",
+            Asked::Dropped(..) => "dropped",
         }
     }
 
@@ -378,6 +419,26 @@ mod tests {
         started.pass("highlight");
         started.pass("undo");
         assert_eq!(ask(&queue, &started, "next", 1), "now", "the refused one's ticket passed");
+    }
+
+    /// Failure (second review of the lane, 4): an undo queued for the session thread and not yet taken when a quit's patience dropped what was parked
+    /// runs later without the edit before it, undoing the wrong step. Every ticket handed out before the drop goes without acting as it asks; the person
+    /// is told once; a ticket asked after the drop acts as ever.
+    #[test]
+    fn a_ticket_handed_out_before_a_quits_drop_goes_without_acting() {
+        let queue = Arc::new(CoreQueue::default());
+        let started = Started::new();
+        assert_eq!(ask(&queue, &started, "highlight", 1), "now");
+        assert_eq!(ask(&queue, &started, "second highlight", 1), "parked");
+        let undo = queue.take_turn(0, false);
+        queue.lane().drop_for_quit();
+        assert_eq!(queue.lane().parked(), 0, "the parked one dropped");
+        assert!(queue.lane().is_dropped(&undo), "the queued undo, not yet taken, goes too");
+        assert!(matches!(queue.lane().ask(undo, started.start("undo")), Asked::Dropped(..)));
+        assert!(queue.lane().take_dropped_untold() && !queue.lane().take_dropped_untold(), "told once");
+        started.pass("highlight");
+        assert_eq!(started.order(), ["highlight"], "nothing dropped ran");
+        assert_eq!(ask(&queue, &started, "after", 1), "now", "asked after: acts");
     }
 
     /// Failure: a close asks the person for an edit of another tab still landing, or not for its own (the coordinator's Q4, 2026-11-14); or for a

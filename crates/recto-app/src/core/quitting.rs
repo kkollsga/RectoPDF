@@ -15,6 +15,10 @@ impl Inner {
     pub fn quit_stayed(&self) {
         let out = self.life.step(Event::QuitStayed);
         self.carry_out(out);
+        // Edits of the person's dropped as the quit's patience ran out are said, once, now they're staying (second review of the lane, 4).
+        if self.core.lane().take_dropped_untold() {
+            super::person::say(self.window.notices(), &self.core, super::person_lane::DROPPED_AT_QUIT.to_string());
+        }
     }
 
     /// Ends the socket, on the way out. Returns at once.
@@ -86,7 +90,7 @@ impl Inner {
                     let left = wait_until.saturating_sub(inner.life.now_ms());
                     if left == 0 {
                         // So no later edit of the person's is had without an earlier one (review of the lane, D4).
-                        inner.core.lane().drop_parked();
+                        inner.core.lane().drop_for_quit();
                         break;
                     }
                     // A session thread that has ended parks no more: waiting for it would spin.

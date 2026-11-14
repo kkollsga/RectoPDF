@@ -610,3 +610,40 @@ fn a_command_asked_as_a_hand_off_freezes_doesnt_run_after_its_last_look() {
     app.core().set_frozen(false);
     assert_eq!(highlights(&app), (0, 0), "not run after the freeze");
 }
+
+/// The state folder's own part that the record goes in, made so it can't be written (so a quit asks, and can be stayed), or writable again.
+#[cfg(unix)]
+fn record_folder_writable(app: &HeadlessApp, writable: bool) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let folder = app.core().saver.store.main_folder();
+    std::fs::create_dir_all(&folder).expect("the record's folder");
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(if writable { 0o700 } else { 0o500 })).expect("the record's folder");
+}
+
+/// **Failure (second review of the lane, 4): edits dropped at a quit's patience were dropped in silence,** and a person who then chose Stay saw edits
+/// they'd asked for simply not done. Stayed, the page says so once, in Rust's words; the first highlight, in flight, stands, and the undo dropped with the
+/// second highlight before it doesn't run.
+#[cfg(unix)]
+#[test]
+fn a_stay_after_the_quits_patience_says_the_edits_dropped() {
+    let app = with_a_step_before();
+    record_folder_writable(&app, false);
+    let go = two_highlights_and_an_undo_parked_and_a_quit(&app);
+    app.wait_until("the quit's question, past its patience", || {
+        app.advance(crate::listener::QUIT_PATIENCE_MS);
+        quit_answers(&app) == 1
+    });
+    app.stay();
+    flush(&app);
+    let notice = |app: &HeadlessApp| app.reader().selection_notice.map(|notice| notice.text);
+    assert_eq!(notice(&app).as_deref(), Some(crate::core::person_lane::DROPPED_AT_QUIT), "said by the page");
+    drop(go);
+    app.settle();
+    assert_eq!(highlights(&app), (1, 0), "the first highlight stands, the second wasn't done");
+    assert_eq!(undo_redo(&app), (true, false), "no undo ran");
+    app.core().dismiss_selection_notice();
+    app.settle();
+    assert_eq!(notice(&app), None, "said once");
+    record_folder_writable(&app, true);
+    drop(app.quit());
+}
