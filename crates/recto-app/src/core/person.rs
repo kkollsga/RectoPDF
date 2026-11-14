@@ -271,6 +271,161 @@ mod tests {
     }
     use recto_session::SessionError;
 
+    /// **Failure (a guard before the answers are given the app's parts and not the app, `build/registries`):** what a person is shown after a command of
+    /// theirs ran changes: a refusal said in other words or by another line (the page's notice, or the open failure under the field), one said where it
+    /// was said nothing (an agent's refusal, which names `recto` and levels, or a close refused that wasn't the prompt's), or a rotate that went leaving
+    /// the line there. Each feature's answer, through the one list, as the session thread calls it.
+    #[test]
+    fn what_a_person_is_shown_after_each_command_is_as_it_was() {
+        use super::Origin;
+        use recto_agent::commands::compare::Compare;
+        use recto_agent::commands::editing::PageRotate;
+        use recto_agent::commands::highlight::{Highlight, HighlightRemove, RemoveWhat};
+        use recto_agent::commands::linking::Goto;
+        use recto_agent::commands::tabs::{Close, Open};
+        use recto_agent::{Code, Command, TabRef};
+        use recto_core::OpenError;
+        use recto_session::TabId;
+        use recto_session::compare::CompareError;
+
+        let app = crate::testkit::headless::HeadlessApp::start();
+        let inner = std::sync::Arc::clone(app.core());
+        let agents = |code: Code| {
+            Err(AgentError::new(
+                code,
+                "an agent's words, naming `recto` and Full access",
+                recto_agent::exit::PERMISSION,
+            ))
+        };
+        let shown = |command: Command, origin: Origin, result: Result<serde_json::Value, AgentError>| {
+            let notices = inner.window.notices();
+            notices.say("before".into());
+            notices.clear_open_failure();
+            super::answered(&inner, &command, origin, &result);
+            (notices.notice(), notices.open_failure())
+        };
+        let said = |words: &str| (Some(words.to_string()), None);
+        let left = (Some("before".to_string()), None);
+        let goto = Command::from(Goto {
+            tab: TabRef::Id(TabId(1)),
+            page: None,
+            label: Some("xii".into()),
+            within: None,
+            entry: None,
+        });
+        let open = Command::from(Open {
+            path: "/nowhere/a.pdf".into(),
+            page: None,
+        });
+        let close = Command::from(Close { tab: TabRef::Id(TabId(1)) });
+        let rotate = Command::from(PageRotate {
+            tab: "active".into(),
+            pages: "all".into(),
+            degrees: 90,
+        });
+        let compare = Command::from(Compare::Toggle(TabRef::Id(TabId(1))));
+        let highlight = Command::Edit(recto_agent::commands::Edit::Highlight(Highlight {
+            tab: TabRef::Id(TabId(1)),
+            page: Some(1),
+            to_page: None,
+            chars: Some("0-4".into()),
+            at: None,
+            to: None,
+            unit: None,
+        }));
+        let remove = Command::Edit(recto_agent::commands::Edit::HighlightRemove(HighlightRemove {
+            tab: TabRef::Id(TabId(1)),
+            what: RemoveWhat::Pick {
+                page: Some(1),
+                to_page: None,
+                chars: Some("0-4".into()),
+                at: None,
+                to: None,
+            },
+        }));
+        let cases = [
+            (
+                "a typed page that's none",
+                shown(goto.clone(), Origin::Input, agents(Code::NO_SUCH_PAGE)),
+                said(&crate::linking::no_such_page("xii")),
+            ),
+            ("a goto that went", shown(goto, Origin::Input, Ok(serde_json::Value::Null)), left.clone()),
+            (
+                "a file that isn't a PDF",
+                shown(open.clone(), Origin::Input, Err(SessionError::Open(OpenError::NotPdf).into())),
+                (Some("before".into()), Some(SessionError::Open(OpenError::NotPdf).message().to_string())),
+            ),
+            (
+                "an open refused in an agent's words",
+                shown(open, Origin::Input, agents(Code::PERMISSION_DENIED)),
+                left.clone(),
+            ),
+            (
+                "the prompt's close, after its save, with an edit since",
+                shown(close.clone(), Origin::Finishing, agents(Code::UNSAVED_CHANGES)),
+                said(crate::saving::SAVED_NOT_CLOSED),
+            ),
+            ("File > Close refused", shown(close, Origin::Input, agents(Code::UNSAVED_CHANGES)), left.clone()),
+            (
+                "a rotate refused by the session",
+                shown(rotate.clone(), Origin::Input, Err(SessionError::Saving.into())),
+                said(&format!("Couldn't rotate: {}", SessionError::Saving.message())),
+            ),
+            (
+                "a rotate refused in an agent's words",
+                shown(rotate.clone(), Origin::Input, agents(Code::WOULD_CLEAR_REDO)),
+                left.clone(),
+            ),
+            ("a rotate that went", shown(rotate, Origin::Input, Ok(serde_json::Value::Null)), (None, None)),
+            (
+                "a fourth pane",
+                shown(compare.clone(), Origin::Input, agents(Code::lower(CompareError::TooMany.code()))),
+                said(CompareError::TooMany.message()),
+            ),
+            (
+                "a pane that couldn't be read",
+                shown(compare, Origin::Input, agents(Code::PERMISSION_DENIED)),
+                left.clone(),
+            ),
+            (
+                "a highlight where there's no text",
+                shown(highlight.clone(), Origin::Input, agents(Code::NO_TEXT_THERE)),
+                said("Couldn't highlight: there's no text selected there."),
+            ),
+            (
+                "a highlight refused by the session",
+                shown(highlight.clone(), Origin::Input, Err(SessionError::Saving.into())),
+                said(&format!("Couldn't highlight: {}.", SessionError::Saving.message())),
+            ),
+            (
+                "a highlight refused in an agent's words",
+                shown(highlight, Origin::Input, agents(Code::WOULD_CLEAR_REDO)),
+                left.clone(),
+            ),
+            (
+                "a removal with nothing there",
+                shown(remove.clone(), Origin::Input, agents(Code::NO_SUCH_HIGHLIGHT)),
+                said("Couldn't remove the highlight: there's no highlight there."),
+            ),
+            (
+                "a removal of an added file's",
+                shown(remove.clone(), Origin::Input, agents(Code::HIGHLIGHT_IN_ADDED_FILE)),
+                said("Couldn't remove the highlight: that highlight came with an added PDF, so save first, then it can be removed."),
+            ),
+            (
+                "a removal as the pages moved",
+                shown(remove, Origin::Input, agents(Code::CHANGED)),
+                said("Couldn't remove the highlight: the pages moved meanwhile, so try again."),
+            ),
+        ];
+        let wrong: Vec<String> = cases
+            .into_iter()
+            .filter(|(_, now, was)| now != was)
+            .map(|(case, now, was)| format!("{case}: shown {now:?}, was {was:?}"))
+            .collect();
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
     /// Failure: a person's refused edit is said in an agent's words (naming `recto` commands or a level), or a refusal the session made in the person's
     /// words is said as nothing. The session's own refusals keep their words, and an agent's refusal has none for the person.
     #[test]
