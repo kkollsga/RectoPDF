@@ -1215,7 +1215,7 @@ fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
             if row.kind == RowKind::Note {
                 return json!({ "kind": "note", "tab": row.tab.0, "text": row.text, "hover": row.notice, "action": row.action.map(recto_session::ContentsAction::id) });
             }
-            json!({
+            let mut said = json!({
                 "kind": match row.kind { RowKind::Tab => "tab", _ => "contents" },
                 "tab": row.tab.0,
                 "page": row.page,
@@ -1224,7 +1224,12 @@ fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
                 "expandable": row.expandable,
                 "expanded": row.expanded,
                 "untrusted": { "text": row.text },
-            })
+            });
+            // Where a click on a contents row goes down its page, as `contents` lists it.
+            if row.kind == RowKind::Contents {
+                said["place"] = json!(row.top);
+            }
+            said
         })
         .collect();
     if active_withheld {
@@ -3091,6 +3096,67 @@ mod tests {
             entry: Some(0),
         });
         assert_eq!(run(&mut s, Level::Control, &with_label).unwrap_err().code, "usage");
+    }
+
+    /// Failure (S4 of the second review): `contents` gave an entry's place only for generated contents and the sidebar gave none, so an agent couldn't go
+    /// where a click on a file's own entry goes: it landed at the page's top, with another entry marked. Each entry's `place` is listed, own contents and
+    /// the sidebar's rows alike (0 for one the file gives no place), and `goto` with it and the entry goes where the row's click goes.
+    #[test]
+    fn an_agent_has_each_entrys_place_and_goes_where_its_row_goes() {
+        #[derive(Clone)]
+        struct Placed;
+        impl DocLoader for Placed {
+            fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
+                let line = |title, page| recto_core::TocLine {
+                    title,
+                    page,
+                    parent: recto_core::NONE,
+                    depth: 0,
+                };
+                Ok(DocFacts {
+                    page_count: 10,
+                    byte_len: 1,
+                    encrypted: false,
+                    version: "1.7".into(),
+                    title: None,
+                    toc: Toc::from_lines(&[line("Top", 1), line("Lower", 1)], false).with_tops(&[0, 450]),
+                    renderer_only: false,
+                })
+            }
+        }
+        let mut s = Session::new(Placed);
+        s.open(Path::new("/d/a.pdf")).unwrap();
+        let listed = run(&mut s, Level::ReadOnly, &crate::parse(r#"{"cmd":"contents"}"#).unwrap()).unwrap();
+        let places: Vec<Value> = listed["entries"].as_array().unwrap().iter().map(|entry| entry["place"].clone()).collect();
+        assert_eq!(places, [json!(0), json!(450)], "{listed}");
+        let sidebar = run(&mut s, Level::ReadOnly, &crate::parse(r#"{"cmd":"sidebar"}"#).unwrap()).unwrap();
+        let rows: Vec<Value> = sidebar["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["kind"] == "contents")
+            .map(|row| row["place"].clone())
+            .collect();
+        assert_eq!(rows, [json!(0), json!(450)], "{sidebar}");
+        run(
+            &mut s,
+            Level::Control,
+            &crate::parse(r#"{"cmd":"goto","page":2,"within":0.45,"entry":1}"#).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            s.mail().waiting_jump(TabId(1)),
+            Some(recto_session::trail::Stop::new(1, 0.45)),
+            "where a click on its row goes"
+        );
+        let current: Vec<Value> = sidebar_json(&s)["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["current"] == true && row["kind"] == "contents")
+            .map(|row| row["untrusted"]["text"].clone())
+            .collect();
+        assert_eq!(current, [json!("Lower")]);
     }
 
     /// Failure: an agent goes to a page that isn't there, the session clamps it, and it believes it's on that page.
