@@ -40,6 +40,33 @@ fn written(app: &HeadlessApp) {
     });
 }
 
+/// The documents off screen may hold nothing, and the budget's looked at: a second on, so its once a second has come round, and a call on the session thread,
+/// whose end is where it's looked at. Then what it sent to sleep, written.
+fn over_budget(app: &HeadlessApp) {
+    app.core().qa_session_verb("live_budget", "0").expect("a QA verb").expect("set");
+    app.advance(crate::sleeper::BUDGET_LOOK_EVERY_MS);
+    app.send(crate::core::CoreCall::Reconcile);
+    app.settle();
+    written(app);
+}
+
+/// What's in the window's view drawn, as the host would with its UI thread, till it's at rest.
+fn drawn(app: &HeadlessApp) {
+    let mut view = recto_reader::Viewport {
+        x: 0.0,
+        y: 0.0,
+        width: 1168.0,
+        height: 900.0,
+        frame_width: 1168.0,
+        magnification: 1.0,
+        backing: 2.0,
+        live: false,
+        scrolled_to: u64::MAX,
+    };
+    crate::testkit::headless::applied_as_the_host(&app.core().engine.set_viewport(view));
+    crate::testkit::headless::host_turns(app, &mut view, true);
+}
+
 /// The sleep files in the state folder.
 fn on_disk(app: &HeadlessApp) -> usize {
     fn walk(dir: &std::path::Path) -> usize {
@@ -103,7 +130,8 @@ fn line(app: &HeadlessApp, step: &str, agent_bytes: &mut u64) -> String {
     )
 }
 
-/// What the run below said on 2026-11-14, before the sleeper's methods left `Inner`: one line a step.
+/// What the run below said on 2026-11-14, before the sleeper's methods left `Inner`: one line a step. The last two, the budget's, came after the move, and
+/// were seen to be the same on `main`'s code (a9265ae1) before they were kept.
 const GOLDEN: &str = "\
 the person opens six | dormant left_alone 0 budget 0 pressure 0 asked 0 | files 0 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes none, share used 0 | woken 0 pressure_events 0 system 0/0 | queue queued 3 handed_back 0 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 0
 the person shows t0 inside its wait | dormant left_alone 0 budget 0 pressure 0 asked 0 | files 0 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes none, share used 0 | woken 0 pressure_events 0 system 0/0 | queue queued 3 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 0
@@ -115,11 +143,14 @@ the person shows t1 then t2 | dormant left_alone 0 budget 0 pressure 1 asked 1 |
 left alone | dormant left_alone 2 budget 0 pressure 1 asked 1 | files 8 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 8
 the person opens four more | dormant left_alone 2 budget 0 pressure 1 asked 1 | files 8 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 1 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 8
 a quit's flush | dormant left_alone 2 budget 0 pressure 1 asked 1 | files 10 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 10
+the budget at nothing, a tab off screen edited | dormant left_alone 2 budget 1 pressure 1 asked 1 | files 11 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 11
+the budget at nothing, a comparison read in its other pane | dormant left_alone 2 budget 2 pressure 1 asked 1 | files 12 put_off 0 paper 0 place 1 skipped_busy 0 | agents' bytes same, share used 0 | woken 3 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 11
 ";
 
 /// Failure: a move of the sleeper's code changes what's written or when, or who it's counted against: a tab pushed out and not queued, one handed back and
 /// written anyway, a queue hurried or not, an agent's push-out or `session sleep` counted as the person's (or the other way round), a tab left alone or under
-/// pressure not going, a quit's flush not writing the tab on screen's file. Each step's counts are compared with the golden, and the first step that differs
+/// pressure not going, a quit's flush not writing the tab on screen's file; the budget's look costing a tab by the page view being read and not the one that
+/// holds it, or without its edits' history. Each step's counts are compared with the golden, and the first step that differs
 /// is named with each count that moved, what it was and what it is.
 #[test]
 fn what_the_sleeper_writes_and_when_is_as_it_was() {
@@ -169,6 +200,22 @@ fn what_the_sleeper_writes_and_when_is_as_it_was() {
     lines.push(line(&app, "the person opens four more", &mut agents));
     app.core().saver.flush(false, crate::testkit::headless::WAIT_LIMIT).expect("the state written");
     lines.push(line(&app, "a quit's flush", &mut agents));
+    // Nothing's drawn yet, so no tab off screen holds a worker: what one off screen with an edit costs is its history alone. Edited last, it's the newest
+    // off screen, so with the budget at nothing the tabs off screen go, oldest first, up to it and it; with its history left out of what it costs, none.
+    agent(&app, &["page", "delete", "2", "--tab", &tab(&app, "t9.pdf")]);
+    over_budget(&app);
+    lines.push(line(&app, "the budget at nothing, a tab off screen edited", &mut agents));
+    app.core().qa_session_verb("live_budget", "256").expect("a QA verb").expect("set");
+    // t11 drawn, so its file has a worker in the first page view, which keeps it once t11's off screen; then a comparison read in its other pane. The budget
+    // reads a tab's worker in the page view that holds it, so t11 goes; read in the pane being read, it costs nothing and stays.
+    app.core().engine.waking().window_up();
+    drawn(&app);
+    person(&app, &["tap", &tab(&app, "t10.pdf")]);
+    app.person(&format!(r##"{{"cmd":"compare","toggle":"{}"}}"##, tab(&app, "t8.pdf")));
+    app.settle();
+    assert_eq!(app.core().panes.reading(), 1, "the comparison's other pane is the one read");
+    over_budget(&app);
+    lines.push(line(&app, "the budget at nothing, a comparison read in its other pane", &mut agents));
     drop(app.quit());
     let now = lines.join("\n") + "\n";
     if now != GOLDEN {
