@@ -54,8 +54,21 @@ const BUDGETS: [(&str, usize); 7] = [
 /// the commit that means it, so each widening and narrowing is in a diff.
 #[test]
 fn what_the_apps_state_lets_other_code_reach_is_listed() {
-    let types = ["Inner", "Lifecycle", "Serving", "Window", "Tools", "Printing", "Published", "AppState"];
-    let files = recto_testpdf::surface::rust_files(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core"));
+    let types = [
+        "Inner",
+        "Lifecycle",
+        "Serving",
+        "Window",
+        "Tools",
+        "Printing",
+        "Prompts",
+        "Published",
+        "AppState",
+    ];
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    // The core's files, and the prompts' own, whose type the tools hand to the bridge.
+    let mut files = recto_testpdf::surface::rust_files(&src.join("core"));
+    files.push(src.join("prompts.rs"));
     let now = recto_testpdf::surface::listing(
         &files,
         recto_testpdf::surface::Scope {
@@ -68,7 +81,8 @@ fn what_the_apps_state_lets_other_code_reach_is_listed() {
     }
 }
 
-/// What the app's state and its parts let other code reach, sorted, with printing's (R3.7, S2: its two `pub` fields the bridge reaches become methods). Each change is deliberate: see [`what_the_apps_state_lets_other_code_reach_is_listed`].
+/// What the app's state and its parts let other code reach, sorted, with printing's (R3.7, S2: its two `pub` fields the bridge reaches become methods) and the
+/// prompts' (the bridge answers a sheet; the queue of passwords and the link's sheet are the app's). Each change is deliberate: see [`what_the_apps_state_lets_other_code_reach_is_listed`].
 const SURFACE: &str = r"
 AppState (pub struct, derives Clone, Debug)
 AppState.pub app_hidden: bool
@@ -204,6 +218,12 @@ Printing::pub fn qa_target_for(&self, out: PathBuf) -> Option<PathBuf>
 Printing::pub fn quitting(&self)
 Printing::pub fn selection_notice(&self) -> Option<SelectionNotice>
 Printing::pub fn take_ready(&self) -> Option<PathBuf>
+Prompts (pub struct, derives Debug, Default)
+Prompts.pub(crate) link: Mutex<Option<LinkPrompt>>
+Prompts.pub(crate) passwords: Mutex<Asks>
+Prompts::pub fn link_answered(&self, id: u64, open: bool, core: &CoreQueue) -> Option<String>
+Prompts::pub fn password_answered(&self, id: u64, password: Option<String>, core: &Arc<CoreQueue>, window: &Window)
+Prompts::pub(crate) fn ask_link(&self, address: &str)
 Published (pub struct)
 Published.pub contents: Arc<Vec<ContentsEntry>>
 Published.pub pane_tocs: Vec<Option<Arc<recto_core::Toc>>>

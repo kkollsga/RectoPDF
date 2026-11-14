@@ -9,17 +9,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Default)]
 pub struct Prompts {
-    /// The files waiting for a password, in turn.
-    pub passwords: Mutex<Asks>,
-    /// The address a link asked to open, while its sheet is up.
-    pub link: Mutex<Option<LinkPrompt>>,
+    /// The files waiting for a password, in turn. The app's own: the bridge answers a sheet by [`Self::password_answered`] alone.
+    pub(crate) passwords: Mutex<Asks>,
+    /// The address a link asked to open, while its sheet is up. The bridge answers it by [`Self::link_answered`] alone.
+    pub(crate) link: Mutex<Option<LinkPrompt>>,
     /// How many link sheets were asked for, for their ids.
     links_made: AtomicU64,
 }
 
 impl Prompts {
     /// A link asked to open `address`: its sheet, with the next id, in place of any before it.
-    pub fn ask_link(&self, address: &str) {
+    pub(crate) fn ask_link(&self, address: &str) {
         let id = self.links_made.fetch_add(1, Ordering::SeqCst) + 1;
         *lock(&self.link) = Some(prompt_for(id, address));
     }
