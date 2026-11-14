@@ -806,12 +806,12 @@ fn deadlines_met() {
 }
 
 /// A real PDF of `count` pages, each with its number in words.
-fn pdf(count: usize) -> Vec<u8> {
+pub(crate) fn pdf(count: usize) -> Vec<u8> {
     pages(&(0..count).map(|at| Page::new(text_lines(&[&format!("Page {}", at + 1)]))).collect::<Vec<_>>())
 }
 
 /// A real session on `file`, opened as the person opens one: tab `#1`.
-fn opened(file: &Path) -> Mutex<Session<crate::DrawableLoader>> {
+pub(crate) fn opened(file: &Path) -> Mutex<Session<crate::DrawableLoader>> {
     let access = Mutex::new(Session::new(crate::DrawableLoader));
     let open = Command::from(commands::tabs::Open {
         path: file.to_path_buf(),
@@ -967,7 +967,7 @@ fn every_file_argument_is_read_or_written() {
 }
 
 /// The command's fields, as it goes on the wire.
-fn fields(command: &Command) -> serde_json::Map<String, Value> {
+pub(crate) fn fields(command: &Command) -> serde_json::Map<String, Value> {
     match serde_json::from_str(&command.wire()) {
         Ok(Value::Object(fields)) => fields,
         _ => panic!("{} isn't an object on the wire", command.tag()),
@@ -1027,7 +1027,7 @@ fn no_command_writes_over_a_file_thats_there() {
 /// A PDF whose permissions ask that it isn't copied, opened without a password. Built in memory: lopdf's eager writer is the only one that encrypts, and
 /// nothing here goes near a user's file.
 #[allow(clippy::disallowed_methods)]
-fn restricted() -> Vec<u8> {
+pub(crate) fn restricted() -> Vec<u8> {
     use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
     let mut document = lopdf::Document::load_mem(&pdf(2)).unwrap();
     document.trailer.set(

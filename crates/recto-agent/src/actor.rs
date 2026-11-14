@@ -72,6 +72,9 @@ impl Actor {
 }
 
 #[cfg(test)]
+mod pins_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
