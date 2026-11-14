@@ -185,7 +185,7 @@ Inner::pub fn note_input(&self)
 Inner::pub fn notice_read(&self)
 Inner::pub fn perform(self: &Arc<Self>, id: String) -> HostAction
 Inner::pub fn qa_save_from(&self, written: &str) -> Result<(), AgentError>
-Inner::pub fn qa_session_verb(&self, verb: &str, value: &str) -> Option<Result<(), AgentError>>
+Inner::pub fn qa_session_verb(&self, verb: &str, value: &str) -> Option<Result<Option<serde_json::Value>, AgentError>>
 Inner::pub fn quit_requested(self: &Arc<Self>)
 Inner::pub fn quit_stayed(&self)
 Inner::pub fn ready(&self, open: &[PathBuf])
