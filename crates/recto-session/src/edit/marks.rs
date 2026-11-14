@@ -130,6 +130,15 @@ impl MarkStep {
         }
     }
 
+    /// What its inverse will hold, from the highlights it acts on: a removal's is the highlights it takes, an addition's their numbers. The same
+    /// sum [`Self::held_bytes`] makes of the inverse once it's applied.
+    pub(super) fn inverse_held_bytes(&self, marks: &Marks) -> usize {
+        match self {
+            Self::Add(added) => size_of::<u32>() * added.iter().filter(|mark| marks.get(mark.id).is_none()).count(),
+            Self::Remove(ids) => ids.iter().filter_map(|id| marks.get(*id)).map(Mark::held_bytes).sum(),
+        }
+    }
+
     pub(super) fn to_record(&self) -> MarkStepRecord {
         match self {
             Self::Add(marks) => MarkStepRecord::Add(marks.iter().map(Mark::to_record).collect()),
@@ -690,6 +699,32 @@ mod tests {
         ]);
         let json = serde_json::to_vec(&too_many).unwrap();
         assert!(serde_json::from_slice::<MarkStepRecord>(&json).is_err(), "past the step's own cap it's refused");
+    }
+
+    /// Failure (review of R4.3, should-fix 1): what the history is asked it will hold after a highlight's step isn't what it then holds, so the check
+    /// that keeps an agent's steps from pushing the owner's out of the capped history is under-asked of, and an agent's removal of many highlights
+    /// trims the owner's oldest steps. Every kind of highlight step, its prediction against the history's own count after it, undone and redone.
+    #[test]
+    fn what_a_highlight_step_will_hold_is_what_it_holds() {
+        let mut edits = super::super::PageEdits::new(3);
+        for page in [0, 1, 2, 2] {
+            edits.mark(one(0, page, vec![rect(); 40])).unwrap();
+        }
+        let ids: Vec<u32> = edits.marks().iter().map(|mark| mark.id).collect();
+        let changes = [MarkChange::Remove { ids }, one(0, 1, vec![rect(); 7])];
+        for change in changes {
+            let step = edits.marks.clone().step_for(change.clone(), Author::Agent).unwrap();
+            let predicted = super::super::Step::Mark(Box::new(step)).inverse_held_bytes(&edits.marks);
+            let before = edits.history.bytes;
+            edits.mark(change).unwrap();
+            assert_eq!(edits.history.bytes - before, predicted, "what it was asked against is what it holds");
+        }
+        for _ in 0..2 {
+            let top = edits.history.undo.last().unwrap();
+            let predicted = edits.history.bytes - top.step.held_bytes() + top.step.inverse_held_bytes(&edits.marks);
+            assert!(edits.undo());
+            assert_eq!(edits.history.bytes, predicted, "an undo, as try_undo asks");
+        }
     }
 
     /// Failure: what a journal or a record says of highlights doesn't bring the list back as it was, so a crash, a sleep or a restart loses a highlight,

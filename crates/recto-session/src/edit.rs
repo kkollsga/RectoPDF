@@ -170,9 +170,12 @@ impl Step {
         }
     }
 
-    fn inverse_held_bytes(&self) -> usize {
+    /// What its inverse would hold, given the highlights it would act on: a highlight's removal holds the highlights it takes (review of R4.3,
+    /// should-fix 1: without them an agent's large removal was under-asked of, and could push the owner's oldest steps out).
+    fn inverse_held_bytes(&self, marks: &Marks) -> usize {
         match self {
             Self::Remove { len, .. } => *len as usize * size_of::<PageSlot>(),
+            Self::Mark(step) => step.inverse_held_bytes(marks),
             _ => 0,
         }
     }
@@ -1105,7 +1108,7 @@ impl PageEdits {
     /// [`Self::undo`], or says it would push the owner's steps out of the history. An undo can hold more than the step did: undoing an insert holds its pages.
     pub fn try_undo(&mut self) -> Result<bool, EditError> {
         let Some(top) = self.history.undo.last() else { return Ok(false) };
-        let bytes = self.history.bytes - top.step.held_bytes() + top.step.inverse_held_bytes();
+        let bytes = self.history.bytes - top.step.held_bytes() + top.step.inverse_held_bytes(&self.marks);
         if self.pushes_owner(self.history.undo.len() - 1, bytes) {
             return Err(EditError::HistoryFull);
         }
@@ -1115,7 +1118,7 @@ impl PageEdits {
     /// [`Self::redo`], with the same check.
     pub fn try_redo(&mut self) -> Result<bool, EditError> {
         let Some(top) = self.history.redo.last() else { return Ok(false) };
-        let bytes = self.history.bytes - top.step.held_bytes() + top.step.inverse_held_bytes();
+        let bytes = self.history.bytes - top.step.held_bytes() + top.step.inverse_held_bytes(&self.marks);
         if self.pushes_owner(self.history.undo.len() + 1, bytes) {
             return Err(EditError::HistoryFull);
         }
@@ -1169,7 +1172,10 @@ impl PageEdits {
     fn commit(&mut self, step: Step) -> Result<(), EditError> {
         // What the step clears from redo isn't held any more.
         let held_by_redo: usize = self.history.redo.iter().map(|entry| entry.step.held_bytes()).sum();
-        if self.pushes_owner(self.history.undo.len() + 1, self.history.bytes - held_by_redo + step.inverse_held_bytes()) {
+        if self.pushes_owner(
+            self.history.undo.len() + 1,
+            self.history.bytes - held_by_redo + step.inverse_held_bytes(&self.marks),
+        ) {
             return Err(EditError::HistoryFull);
         }
         let by: AuthorName = self.acting.into();
