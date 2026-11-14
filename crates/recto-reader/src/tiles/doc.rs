@@ -109,8 +109,9 @@ pub(crate) struct DocView {
     pub(super) band: (u32, u16, u16),
 }
 
-// size: one for each hot and warm tab. 672 bytes on 2026-11-13, before and after it was cut into its place and its drawing; 680 with the contents' band (8 bytes,
-// TRIED AND NOT HELD AT 672: the band in `DocView` as a packed tuple, in `Place` (56 to 64), in `Reader` (2096 to 2104); awaiting the coordinator's allowance of +8 per shown view). A field added to it, or to its layout or page map, is a deliberate change.
+// size: one for each hot and warm tab (a pane's page view holds a few). 672 bytes on 2026-11-13, before and after it was cut into its place and its drawing; 680 with
+// the contents' band (2026-11-14, allowed: +8 per shown view). Tried and not held at 672: the band in `Place` (56 to 64, over its guard), in `Reader` (2096 to 2104, over
+// its guard), and as an `Option` or a packed tuple in `DocView` (680 either way). A field added to it, or to its layout or page map, is a deliberate change.
 const _: () = assert!(size_of::<DocView>() <= 680, "a tab the page view holds grew");
 
 /// Where the reader is in a tab, and how it's shown.

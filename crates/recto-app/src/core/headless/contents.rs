@@ -309,3 +309,48 @@ fn a_row_two_entries_could_be_goes_to_the_top_of_its_page() {
     assert_eq!(entry_place(&list, &row("Plain")), None, "no place is the page's top");
     assert_eq!(entry_place(&list, &row("Missing")), None);
 }
+
+/// The page view of the tab shown, scrolled by the person's hand (the kit's [`HeadlessApp::person_scrolls`]) so the top of its view is `thousandths` down
+/// page `page` (counted from 0) of the file of [`several_to_a_page`]: the page view alone is told, as it is by a scroll, with no jump and no goto. `at` is
+/// where the view is, which the first call finds the page view at the top of the document.
+fn scroll_to(app: &HeadlessApp, at: &mut f64, page: u32, thousandths: f64) {
+    let engine = app.core().panes.reading_engine(&app.core().engine);
+    let (_, y) = engine
+        .points()
+        .document_point(page, 0.0, thousandths / 1000.0 * 800.0)
+        .expect("a page of the shown tab");
+    app.person_scrolls(y - *at);
+    *at = y;
+}
+
+/// Failure (the review of finding 3, the one that was missed): the page view wakes the core only for a change of page, so reading down a page by scroll leaves
+/// the mark on the first entry to the foot of the page. Scrolling the page view alone (no jump, no goto) so the top of the view reaches each entry in turn
+/// wakes the core, and `settle` waits until the mark has moved, for the file's own contents and for generated ones.
+#[test]
+fn scrolling_down_a_page_moves_the_mark_through_the_page_views_wake_own_and_generated() {
+    for generated in [false, true] {
+        let disk = crate::testkit::headless::Disk::new();
+        let file = disk.file("several.pdf", &several_to_a_page());
+        let app = disk.start();
+        app.open(&file);
+        if generated {
+            shows_generated(&app);
+        }
+        app.settle();
+        // The entries on page 1 are 0, 350 and 750 thousandths down it (the file's own at y = 800, 520 and 200 of 800; the generated ones are made so).
+        let (middle, last, mut at) = (350.0, 750.0, 0.0);
+        // The wake alone: nothing here asks for a look, so what moves the mark is the page view telling the core, and waiting is for that to land.
+        scroll_to(&app, &mut at, 0, 10.0);
+        let marked = |want: u32| app.wait_until("the mark moved by the page view's wake", || app.sidebar().contents_current == Some(want));
+        marked(0);
+        for (top, want, what) in [
+            (middle + 20.0, 1, "the second has reached the top"),
+            (last + 20.0, 2, "the third has"),
+            (5.0, 0, "and back up"),
+        ] {
+            scroll_to(&app, &mut at, 0, top);
+            marked(want);
+            assert_eq!(app.sidebar().contents_current, Some(want), "generated {generated}: {what}");
+        }
+    }
+}

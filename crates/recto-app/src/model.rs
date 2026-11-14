@@ -847,6 +847,8 @@ pub struct PaneSnapshot {
     pub jump: Option<recto_session::trail::Stop>,
     /// Its contents and page labels, shared, so a link's hint can say a page by its label without asking the session.
     pub toc: Option<Arc<recto_core::Toc>>,
+    /// Where on the page at the top of its view the contents' current entry changes, for its page view to wake the core when the top of the view leaves it.
+    pub band: Option<recto_core::Band>,
 }
 
 pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, first: bool, panes: &[TabId]) -> Option<PaneSnapshot> {
@@ -937,6 +939,7 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
         title: tab.name.to_string(),
         jump: None,
         toc: session.warm().toc(id).cloned(),
+        band: recto_session::reading_band(session, id),
     })
 }
 

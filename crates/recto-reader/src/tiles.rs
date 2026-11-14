@@ -400,6 +400,8 @@ impl Reader {
             .views
             .entry(tab)
             .or_insert_with(|| DocView::from_saved(tab, pages, page, &map, saved, spread, margins, floor));
+        // A band is for the tab it was made for, as it was: the core sends the tab's own again with this pass.
+        doc.band = (place::NONE_PAGE, 0, 0);
         // A save wrote the pages that were shown, each as it was shown: another version of the file, with nothing on the screen to move.
         let carried = !doc.map.same_pages(&map) && map.follows.is_some() && doc.map.own == map.follows && doc.layout.count() == pages;
         // Back on the page it was left on, and it's back at the same place in that page. A tall page's reader isn't sent to its top.

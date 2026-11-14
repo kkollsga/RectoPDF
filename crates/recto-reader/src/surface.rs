@@ -635,6 +635,7 @@ Engine::pub fn reading_anchor(&self) -> Option<(u32, f64)>
 Engine::pub fn report(&self) -> ReaderReport
 Engine::pub fn same_as(&self, other: &Self) -> bool
 Engine::pub fn selection(&self) -> Selection<'_>
+Engine::pub fn set_band(&self, band: Option<(u32, u16, u16)>)
 Engine::pub fn set_margins(&self, left: f64, right: f64)
 Engine::pub fn set_paper(&self, paper: PaperKind)
 Engine::pub fn set_share(&self, views: usize)
@@ -787,6 +788,7 @@ Reader::pub fn running_is_wanted(&self) -> bool
 Reader::pub fn select_all(&mut self)
 Reader::pub fn selection_drag(&mut self, x: f64, y: f64)
 Reader::pub fn selection_press(&mut self, x: f64, y: f64, clicks: u32, shift: bool)
+Reader::pub fn set_band(&mut self, band: Option<(u32, u16, u16)>)
 Reader::pub fn set_margins(&mut self, left: f64, right: f64)
 Reader::pub fn set_paper(&mut self, paper: PaperKind)
 Reader::pub fn set_spread(&mut self, spread: Spread)
