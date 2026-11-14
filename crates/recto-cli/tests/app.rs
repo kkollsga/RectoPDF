@@ -1119,6 +1119,13 @@ fn the_menu_bar_and_the_agent_icon() {
         .collect();
     // The Go menu has Back, Forward and Go to Page…, as SPEC lists the menus.
     assert_eq!(titles, ["RectoPDF", "File", "Edit", "View", "Go", "Tools"], "{state}");
+    // Every item is ours with an id, or marked as the system's (AppKit adds AutoFill and Passwords… to an Edit menu): an item of ours with no id is a bug, and
+    // no longer hides among the system's.
+    for item in state["app"]["menu_bar"].as_array().unwrap().iter().flat_map(|menu| menu["items"].as_array().unwrap()) {
+        let system = item["system"].as_bool().unwrap_or_else(|| panic!("an item without `system`: {item}"));
+        assert!(system || !item["id"].as_str().unwrap().is_empty(), "an item of ours has no id: {item} in {state}");
+        assert!(item["mask"].is_u64(), "an item without its modifier mask: {item}");
+    }
     let view = &state["app"]["menu_bar"][3]["items"];
     let names: Vec<&str> = view.as_array().unwrap().iter().map(|item| item["title"].as_str().unwrap()).collect();
     // Paper is View > Paper, its submenu's items following it (the owner's default of 2026-11-08).

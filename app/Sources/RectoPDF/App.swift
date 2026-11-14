@@ -442,6 +442,7 @@ final class Bridge: AppListener, @unchecked Sendable {
                 let item = menu.addItem(withTitle: entry.title, action: isSystem ? NSSelectorFromString(entry.systemAction) : #selector(menuChosen(_:)), keyEquivalent: entry.key)
                 item.target = isSystem ? nil : self
                 item.representedObject = entry.id
+                item.identifier = AppDelegate.builtItem
                 if entry.id == "app.services" {
                     let services = NSMenu(title: entry.title)
                     item.submenu = services
