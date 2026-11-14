@@ -820,7 +820,7 @@ impl PageEdits {
     ///
     /// `pages` not being this list's length means what was written isn't this list, so none of it is about that file. `None` says so.
     ///
-    /// `marks` is what the save said it did with highlights ([`marks::SavedMarks`]), which the history's highlights go on from: see [`marks::saved`].
+    /// `marks` is what the save said it did with highlights ([`marks::SavedMarks`]), which the history's highlights go on from: see `marks::saved`.
     /// `None` when that isn't known, as for a save a crash interrupted.
     pub fn rebase_on_saved(&mut self, pages: u32, kept: Option<AddedSource>, marks: Option<&marks::SavedMarks>) -> Option<Rebased> {
         if pages as usize != self.slots.len() {

@@ -15,7 +15,7 @@
 //! **A highlight already in the file** (review of R4.3, S2) is taken out as an edit too: a [`FileMark`] names it by its page, its place in the
 //! page's `/Annots` and its `/Rect`, and holds its lines for the history. While unsaved it's hidden ([`Marks::hidden`], keys only: the worker that
 //! draws the page leaves it out), and the next save takes it out of the file by a rewrite. Undo puts it back. The history goes on past that save
-//! ([`saved`]): a highlight a save wrote is then a file's highlight, so undoing it takes it out of the file.
+//! (`saved`): a highlight a save wrote is then a file's highlight, so undoing it takes it out of the file.
 
 use super::Author;
 use crate::record::{AddedRecord, AuthorName};
@@ -1137,6 +1137,37 @@ mod tests {
         edits.may_push_owner = true;
         assert!(edits.mark(removal).is_ok(), "at Full the holder may");
         super::super::tests::HISTORY_CAPS.with(|caps| caps.set(None));
+    }
+
+    /// **Measurement, not a check** (review of R4.3): what a reconcile pass did with a tab's highlights before (every page looked through the whole
+    /// list, `old`) and does now (`on_positions` indexes by page). 10,000 highlights on a 1,000-page document. Run with
+    /// `cargo test --release -p recto-session -- --ignored --nocapture reconcile_pass_cost`.
+    #[test]
+    #[ignore = "a measurement, run by hand in release"]
+    fn reconcile_pass_cost() {
+        let mut edits = super::super::PageEdits::new(1000);
+        for at in 0..10_000u32 {
+            edits.mark(one(0, at % 1000, vec![rect()])).unwrap();
+        }
+        let old = |marks: &Marks, slots: &[super::super::PageSlot]| {
+            let mut out = Vec::new();
+            for (position, slot) in slots.iter().enumerate() {
+                for mark in marks.iter().filter(|mark| (mark.source, mark.page) == (slot.source, slot.page)) {
+                    out.push((position, mark.id));
+                }
+            }
+            out.len()
+        };
+        let time = |what: &str, work: &dyn Fn() -> usize| {
+            let started = std::time::Instant::now();
+            let mut found = 0;
+            for _ in 0..20 {
+                found = work();
+            }
+            eprintln!("{what}: {:?} a pass ({found} placed)", started.elapsed() / 20);
+        };
+        time("before (each page through the list)", &|| old(edits.marks(), edits.slots()));
+        time("now (indexed by page)", &|| edits.marks().on_positions(edits.slots()).len());
     }
 
     /// Failure (review of R4.3, S2): a removal of the file's highlight doesn't come back from the journal or the record as it was, so a crash or a

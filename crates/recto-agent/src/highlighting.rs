@@ -439,7 +439,9 @@ mod tests {
     fn yellow(doc: &mut recto_render_service::DocRenderer) -> usize {
         let (_, _, pixels) = drawn_by(doc);
         pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|pixel| pixel[0] < 160 && pixel[2] > 200 && pixel[1] > 150)
             .count()
     }
