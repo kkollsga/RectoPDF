@@ -232,7 +232,7 @@ impl Cmd for Compare {
         details
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        compare(cx.access, self, cx.events)
+        compare(cx.access, cx.actor, self, cx.events)
     }
     fn human(data: &Value) -> String {
         match data["panes"].as_array() {
@@ -246,6 +246,8 @@ impl Cmd for Compare {
                             text(&pane["untrusted"]["name"]),
                             if pane["protected"] == true {
                                 "protected".to_string()
+                            } else if pane["page"].is_null() {
+                                format!("{} pages, where it is not given: it follows a protected document", pane["pages"])
                             } else {
                                 format!("page {} of {}", pane["page"], pane["pages"])
                             },
@@ -271,7 +273,10 @@ impl Cmd for Compare {
 ///
 /// **Run again from the start once a pane's file is in** (`later`), on the window's session thread: so nothing changes before every read it needs is done,
 /// and each form is one change however many times it runs before then.
-fn compare<A: SessionAccess>(access: &A, asked: &Compare, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+fn compare<A: SessionAccess>(access: &A, actor: Actor, asked: &Compare, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    if !actor.sees_protected() && access.with(|s| would_sync_a_withheld_pane(s, asked)) {
+        return Err(protected_refusal());
+    }
     let mut changed = false;
     match asked {
         Compare::Look => {}
@@ -323,6 +328,29 @@ fn compare<A: SessionAccess>(access: &A, asked: &Compare, events: &mut Vec<Event
     } else {
         Value::Null
     })
+}
+
+/// **Whether `asked` would leave a synced comparison with a pane withheld from agents** (security review of phase R, S2): synced, a pane follows the
+/// protected one's place and stops where it ends, so an agent that made one would read that document's place and length in the other. Decided on the
+/// comparison as it would be after the change: put side by side and synced at once, synced afterwards, or a tab added to a synced one (synced scroll
+/// stays on through a change of tabs). Taking a tab out, separate scroll, and side by side with separate scroll make no pane follow, and are allowed.
+/// Only an agent is asked: the person's own comparison is theirs.
+fn would_sync_a_withheld_pane<L: DocLoader>(s: &Session<L>, asked: &Compare) -> bool {
+    let synced_now = s.comparison().is_some_and(|comparison| comparison.synced);
+    let panes_now = || s.comparison().map(|comparison| comparison.tabs.clone()).unwrap_or_default();
+    let (synced, panes) = match asked {
+        Compare::Look | Compare::Off | Compare::Reading(_) | Compare::Sync(OnOff::Off) => return false,
+        Compare::Sync(OnOff::On) => (true, panes_now()),
+        Compare::Set { tabs, sync } => (
+            sync.map_or(synced_now, OnOff::is_on),
+            tabs.as_slice().iter().filter_map(|selector| select(s, selector).ok()).collect(),
+        ),
+        Compare::Toggle(selector) => match select(s, selector) {
+            Ok(id) if s.comparison().is_some_and(|comparison| !comparison.contains(id)) => (synced_now, [panes_now(), vec![id]].concat()),
+            _ => return false,
+        },
+    };
+    synced && panes.iter().any(|id| s.tabs().withheld_from_agents(*id))
 }
 
 /// Synced scroll or separate, for the comparison there is. Says whether that's a change.
@@ -386,7 +414,7 @@ pub(crate) const ROWS_COMPARE: &[Spec] = &[Spec {
             help: "Which of the tabs side by side is read, as moving the pointer into its pane does. Nothing on screen moves. Goes alone.",
         },
     ],
-    data: "`{ comparing, panes: [{ tab, page, pages, reading, untrusted: { name } }], sync, sync_from, note, max_panes }`. `note` says when synced documents differ in length.",
+    data: "`{ comparing, panes: [{ tab, page, pages, reading, untrusted: { name } }], sync, sync_from, note, max_panes }`. `note` says when synced documents differ in length. While a pane is a document the user opened with its password, `note` and `sync_from` are null, and a pane synced to it has no `page`; an agent can't turn synced scroll on with such a pane (exit 8, `protected`).",
     emits: &["view_changed", "tab_activated"],
     examples: &[
         "recto compare",

@@ -141,10 +141,13 @@ impl<L: DocLoader> Session<L> {
     /// Moves a tab to a zero-based page, clamped to the document. A jump its page view was sent is about the page it's left.
     pub fn go_to(&mut self, id: TabId, page: u32) -> Result<(), SessionError> {
         let pages = self.pages().count(id);
+        let following = compare::follows_withheld(self, id);
         let tab = self.tabs.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
         let page = page.min(pages.saturating_sub(1));
         if tab.page != page {
             tab.page = page;
+            // Set while it follows a withheld tab, and let go by the next move made otherwise: [`compare::place_withheld`].
+            tab.file.placed_by_withheld = following;
             tab.place_dirty = true;
             self.mail.forget_jump_on_its_way(id);
         }

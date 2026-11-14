@@ -176,3 +176,34 @@ fn the_pane_read_next_is_read_ahead() {
     assert!(read_ahead > loads);
     assert_eq!(back.tabs().active(), Some(ids[0]));
 }
+
+/// Failure (security review of phase R, S2): a tab's place says where a protected one is and goes on saying it: while it follows one in a synced
+/// comparison it isn't withheld, or it's let go as soon as sync is off though it's still on the page following left it on, or it stays withheld after it's
+/// moved otherwise. Withheld while it follows; after sync is off, only if it moved while it followed, and until its next move made otherwise; the protected
+/// tab is withheld throughout, and a comparison of two plain tabs withholds nothing.
+#[test]
+fn a_tab_that_follows_a_withheld_one_has_its_place_withheld_until_moved_otherwise() {
+    let mut s = session(10);
+    let [plain, other, locked] = ["plain", "other", "locked"].map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap());
+    s.tabs_mut().note_password_used(locked);
+    s.compare(&[plain, other], None).unwrap();
+    s.set_compare_synced(true);
+    s.go_to(plain, 4).unwrap();
+    assert!(
+        !compare::place_withheld(&s, plain) && !compare::place_withheld(&s, other),
+        "two plain tabs synced"
+    );
+    s.compare(&[locked, plain], Some(locked)).unwrap();
+    assert!(compare::place_withheld(&s, plain), "it follows the protected one");
+    s.set_compare_synced(false);
+    assert!(!compare::place_withheld(&s, plain), "it didn't move while it followed");
+    s.set_compare_synced(true);
+    s.go_to(plain, 7).unwrap();
+    s.set_compare_synced(false);
+    assert!(compare::place_withheld(&s, plain), "left where following put it");
+    s.end_compare();
+    assert!(compare::place_withheld(&s, plain), "and after the comparison ends");
+    assert!(compare::place_withheld(&s, locked), "the protected tab, throughout");
+    s.go_to(plain, 2).unwrap();
+    assert!(!compare::place_withheld(&s, plain), "moved otherwise");
+}

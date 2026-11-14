@@ -322,6 +322,35 @@ impl<L: DocLoader> Session<L> {
     }
 }
 
+/// **Whether where a tab is is kept from agents** (SPEC: nothing of a document opened with a password goes to an agent, not its length or place;
+/// security review of phase R, S2): it's such a document ([`crate::registry::Tabs::withheld_from_agents`]); or it follows one, in a synced comparison
+/// with it, so its place moves with that one's and stops where it ends; or it was left by following one and hasn't been moved otherwise since. The one
+/// statement of it: the boundary events leave by, and every answer that says a tab's place, ask this. At most three panes looked at. A function of the
+/// comparison's, not a method more on the session.
+pub fn place_withheld<L: DocLoader>(session: &Session<L>, id: TabId) -> bool {
+    session.tabs.tab(id).is_some_and(|tab| place_withheld_of(session, tab))
+}
+
+/// [`place_withheld`], for a tab in hand.
+pub fn place_withheld_of<L: DocLoader>(session: &Session<L>, tab: &crate::TabRecord) -> bool {
+    crate::withheld_tab(tab) || tab.file.placed_by_withheld || follows_withheld(session, tab.id)
+}
+
+/// Whether `id` is in a synced comparison with a tab withheld from agents, and isn't that tab.
+pub(crate) fn follows_withheld<L: DocLoader>(session: &Session<L>, id: TabId) -> bool {
+    session.comparison.as_ref().is_some_and(|comparison| {
+        comparison.synced && comparison.contains(id) && comparison.tabs.iter().any(|other| *other != id && session.tabs.withheld_from_agents(*other))
+    })
+}
+
+/// Whether the comparison there is has a pane withheld from agents: its lengths and where synced scroll started each pane aren't said to one.
+pub fn comparison_withheld<L: DocLoader>(session: &Session<L>) -> bool {
+    session
+        .comparison
+        .as_ref()
+        .is_some_and(|comparison| comparison.tabs.iter().any(|id| session.tabs.withheld_from_agents(*id)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

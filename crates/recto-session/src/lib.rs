@@ -68,9 +68,9 @@ use record::{
 use recto_core::verdict::ContentsVerdict;
 use recto_core::{DocFacts, NONE, OpenError, Toc};
 use recto_platform::{FileStamp, file_stamp};
-pub use registry::Tabs;
 #[cfg(debug_assertions)]
 pub use registry::searched;
+pub use registry::{Tabs, withheld_tab};
 pub use saves::Saves;
 pub use sleeper::Sleeper;
 use std::collections::{HashMap, HashSet};
@@ -155,7 +155,7 @@ pub struct TabRecord {
 }
 
 /// A tab's file: where it is, which version of it the tab is about, whether it's protected, and what the reader's told of it.
-// size: asserted <= 72 at compile time, 2 of them padding. Held per tab, including cold ones.
+// size: asserted <= 72 at compile time, 1 of them padding (`placed_by_withheld` took the other). Held per tab, including cold ones.
 #[derive(Debug)]
 struct TabFile {
     /// Its folder's number in the session's folders.
@@ -172,6 +172,11 @@ struct TabFile {
     encrypted: bool,
     /// Its file was opened with a password the person typed, this session or one before (it's in the record). Unlike `encrypted`, which a file anyone may open has too, this means what's known of it was decrypted for the person, so nothing of it goes to an agent: see [`Tabs::withheld_from_agents`].
     password: bool,
+    /// Its place was last set while it followed a tab withheld from agents in a synced comparison, so where it was left says how far that one goes: kept
+    /// from agents until its place is next set otherwise ([`compare::place_withheld`]). Here, beside `password`, as the other thing about a tab an agent
+    /// isn't told, and in the padding this part already had, so it costs no tab a byte. In memory only: a restart forgets it, and a tab left so shows
+    /// its place again (said in `docs/engineering/opening.md`).
+    placed_by_withheld: bool,
 }
 
 /// Where the reader is in a tab: the exact place, what's selected, and Back and Forward.

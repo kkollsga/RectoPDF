@@ -217,9 +217,7 @@ impl Tabs {
 
     /// **Nothing of this tab's file goes to an agent:** it was opened with a password the person typed, or it needs one, and what the record has of it (its length, its place) was read with one. Reading a protected document needs the person's consent for that document (agent report §5.5), which isn't built, so it's refused outright. `encrypted` alone isn't this: a file anyone may open can be encrypted too.
     pub fn withheld_from_agents(&self, id: TabId) -> bool {
-        self.tab(id).is_some_and(|tab| {
-            tab.file.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.file.notice(), Some(FileNotice::NeedsPassword))
-        })
+        self.tab(id).is_some_and(withheld_tab)
     }
 
     /// What a tab's own file was when its page numbers were recorded, for a caller listing pages by file.
@@ -345,4 +343,10 @@ impl crate::parts::PartMut<'_, Tabs> {
     pub fn note_password_used(&mut self, id: TabId) {
         self.0.note_password_used(id);
     }
+}
+
+/// [`Tabs::withheld_from_agents`], the one rule, for a tab in hand: so a walk over every tab, or an answer that has the tab's record, needn't look it up
+/// again by its number.
+pub fn withheld_tab(tab: &TabRecord) -> bool {
+    tab.file.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.file.notice(), Some(FileNotice::NeedsPassword))
 }

@@ -49,6 +49,8 @@ impl<L: DocLoader> Session<L> {
                             news: _,
                             encrypted: _,
                             password,
+                            // In memory only: the record has no place for it, and isn't given one (the coordinator's decision, 2026-11-14).
+                            placed_by_withheld: _,
                         },
                     reading: TabPlace { place, selection, trail },
                 } = tab;
@@ -182,6 +184,7 @@ impl<L: DocLoader> Session<L> {
                     news: fit::FileNews::restored(notice, elsewhere),
                     encrypted: false,
                     password: entry.password,
+                    placed_by_withheld: false,
                 },
                 reading: TabPlace {
                     place: entry.place,

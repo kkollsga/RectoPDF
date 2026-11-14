@@ -71,7 +71,8 @@ pub fn for_agents<L: DocLoader>(session: &Session<L>, finding: Option<TabId>, ev
     let mut reading_withheld = None;
     events.retain(|event| match about(event) {
         About::Nothing | About::Listed(_) => true,
-        About::Document(id) => !withheld(id),
+        // Its document's news, or a tab's whose place follows a protected one's (S2): `Session::place_withheld`, the one statement of that.
+        About::Document(id) => !(session.tabs().tab(id).is_none() || recto_session::compare::place_withheld(session, id)),
         About::File(path) => !session.tabs().for_path(path).is_some_and(|id| session.tabs().withheld_from_agents(id)),
         About::Find(named) => {
             let reading = *reading_withheld.get_or_insert_with(|| session.tabs().active().is_some_and(withheld) || finding.is_some_and(withheld));

@@ -134,8 +134,8 @@ row 33 tap: b79757e6d1355b2a 520 bytes
 help tap: 2473883e86632044 286 bytes
 usage tap: b93fb5ec44154222 15 bytes
 by tag tap: 56d7c0194448c8a2 3 bytes
-row 34 compare: a1930258b3a35fec 2130 bytes
-help compare: f54fe544a20fdb85 1646 bytes
+row 34 compare: b16841af5366cd54 2341 bytes
+help compare: 1031357d4da60bad 1857 bytes
 usage compare: ba123af283329af0 95 bytes
 by tag compare: 56d12ea086274034 7 bytes
 row 35 contents fold: 6c0402c533307739 925 bytes
@@ -751,6 +751,6 @@ family settings: cbf29ce484222325 0 bytes
 family skill: 263c8540bc3d3bc9 284 bytes
 family budget: aec822ae884cf326 558 bytes
 family qa: b77b6ff269bfbc6a 12682 bytes
-help --json: 3e2b98c13e0ca4f1 133547 bytes
+help --json: 97b215b9349d2279 133758 bytes
 SKILL.md: 1a1255891b87467d 25191 bytes
-REFERENCE.md: e24a35ee9cdf5395 82520 bytes
+REFERENCE.md: 3c6ac065f1808380 82731 bytes
