@@ -48,6 +48,7 @@ fn goto(tab: TabId, page: Option<u32>, label: Option<String>, within: Option<f64
         label,
         within,
         entry,
+        link: false,
     }
     .into()
 }
@@ -86,10 +87,18 @@ pub fn tapped_entry(contents: &[crate::ContentsEntry], row: &crate::SidebarRow) 
     Some((entry.entry, (entry.top > 0).then(|| recto_core::fraction_down(entry.top))))
 }
 
-/// A link to a page of this document, clicked: `goto` that page and as far down it as the link says, from the page view's hit, with nothing read again.
-/// `position` counts from 0, with edits counted.
+/// A link to a page of this document, clicked: `goto --link` that page and as far down it as the link says, from the page view's hit, with nothing read
+/// again: a link's jump, which keeps a place withheld from agents withheld (the fourth review's item 2). `position` counts from 0, with edits counted.
 pub fn link_to_page(tab: TabId, position: u32, within: Option<f32>) -> Command {
-    goto(tab, Some(position + 1), None, within.map(f64::from), None)
+    Goto {
+        tab: recto_agent::TabRef::Id(tab),
+        page: Some(position + 1),
+        label: None,
+        within: within.map(f64::from),
+        entry: None,
+        link: true,
+    }
+    .into()
 }
 
 /// Return in the go-to field: `goto label`, a label the file uses or a page number, on the pane being read's tab. `None` if it's nothing to look up.

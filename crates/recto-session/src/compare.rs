@@ -369,8 +369,8 @@ pub fn synced_would_withhold<L: DocLoader>(session: &Session<L>, panes: &[TabId]
     panes.iter().any(|id| session.tabs.tab(*id).is_some_and(withheld_by_itself))
 }
 
-/// **Lets a withheld place go, with all that came of it,** as the person's own jump sets an absolute place (the second review, D-1 and S-2; only the
-/// person's, by [`Session::jump_as`]'s rule, D-A of the third review): the flag; the tab's draw
+/// **Lets a withheld place go, with all that came of it,** as the person's own jump to a place chosen by itself sets one (the second review, D-1 and S-2; only the
+/// person's, by `trail::jump_with`'s rule, D-A of the third review and the fourth's items 1 and 2): the flag; the tab's draw
 /// notes and a jump on its way, drawn or sent from where it was; the exact place the page view last said, which on the page the jump goes to too would
 /// say how far down it following had left the tab, and its zoom only then; and every draw of the tab from before the jump's send, which the mail drops
 /// as it's told (the mail's `release`). Nothing for a tab whose place isn't withheld on its own account, nor one that follows: what

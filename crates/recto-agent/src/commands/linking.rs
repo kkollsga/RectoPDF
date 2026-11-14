@@ -6,6 +6,7 @@ use crate::Code;
 use crate::human::*;
 use crate::table::*;
 use crate::*;
+use recto_session::trail::Chosen;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fmt::Write;
@@ -84,9 +85,14 @@ pub struct Goto {
     /// sidebar shows for the tab, on that page. Left out of what's sent when there's none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<u32>,
+    /// **A link's jump** (the window's click on a link to a page of this document): where it goes is tied to the page it was clicked on, so it's chosen
+    /// from where the tab is, and a place withheld from agents stays withheld, whoever sends it ([`recto_session::trail::Chosen::FromPlace`], the fourth
+    /// review's item 2). Anyone may send it: it only ever keeps a place withheld. Left out of what's sent when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub link: bool,
 }
 
-/// Said as it's sent: `entry` only when there is one, so a `goto` that names none reads as it always has, in a log and the wire's golden alike.
+/// Said as it's sent: `entry` and `link` only when there's one, so a `goto` that names neither reads as it always has, in a log and the wire's golden alike.
 impl std::fmt::Debug for Goto {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self {
@@ -95,11 +101,15 @@ impl std::fmt::Debug for Goto {
             label,
             within,
             entry,
+            link,
         } = self;
         let mut said = f.debug_struct("Goto");
         said.field("tab", tab).field("page", page).field("label", label).field("within", within);
         if entry.is_some() {
             said.field("entry", entry);
+        }
+        if *link {
+            said.field("link", link);
         }
         said.finish()
     }
@@ -132,10 +142,14 @@ impl Cmd for Goto {
             label,
             within,
             entry,
+            link,
         } = self;
         let mut details = json!({ "tab": super::log_tab(tab), "page": page, "by_label": label.is_some(), "within": within });
         if let Some(entry) = entry {
             details["entry"] = json!(entry);
+        }
+        if *link {
+            details["link"] = json!(true);
         }
         details
     }
@@ -151,17 +165,23 @@ impl Cmd for Goto {
                 {
                     return Err(not_that_entry(entry, page));
                 }
-                go_to(s, id, page, self.within.unwrap_or(0.0), cx.actor.author())?;
+                let chosen = if self.link { Chosen::FromPlace } else { Chosen::ByItself };
+                go_to(s, id, page, self.within.unwrap_or(0.0), cx.actor.author(), chosen)?;
                 if let Some(entry) = self.entry {
                     s.mail_mut().jump_is_to_entry(id, entry);
                 }
                 cx.events.push(page_now(s, id));
                 Ok(where_json(s, cx.actor, id))
             }),
-            (None, Some(label)) if self.within.is_none() && self.entry.is_none() => linking::goto_label(cx.access, cx.actor, &self.tab, label, cx.events),
-            (None, Some(_)) => Err(
-                AgentError::new(Code::USAGE, "`--within` and `--entry` go with a page number, not a label.", exit::USAGE).then("`recto goto 12 --within 0.3`."),
-            ),
+            (None, Some(label)) if self.within.is_none() && self.entry.is_none() && !self.link => {
+                linking::goto_label(cx.access, cx.actor, &self.tab, label, cx.events)
+            }
+            (None, Some(_)) => Err(AgentError::new(
+                Code::USAGE,
+                "`--within`, `--entry` and `--link` go with a page number, not a label.",
+                exit::USAGE,
+            )
+            .then("`recto goto 12 --within 0.3`.")),
             _ => Err(AgentError::new(
                 Code::USAGE,
                 "`goto` takes a page number, or `goto label` what the file calls a page, and not both.",

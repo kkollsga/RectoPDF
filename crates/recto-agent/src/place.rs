@@ -61,7 +61,9 @@ pub fn place_withheld_refusal() -> AgentError {
         "This tab's place follows a document the user opened with its password, so nothing that starts from where it is can be done by an agent.",
         exit::PROTECTED,
     )
-    .then("Its place is given again once the user has gone to a page in that tab themselves. Nothing an agent does gives it back.")
+    .then(
+        "Its place is given again once the user has gone to a page in that tab themselves, by its number or the contents. Nothing an agent does gives it back.",
+    )
 }
 
 /// **The gate:** whether `actor`'s command that starts `from` the place of tab `id` is refused: an agent's, while the tab's place is withheld, or Back or
