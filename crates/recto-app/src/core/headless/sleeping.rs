@@ -1269,8 +1269,16 @@ fn a_tab_shown_again_inside_its_cool_down_wakes_from_memory_and_nothing_is_writt
         full(&app, &["tap", &format!("#{}", tab_named(&app, name))]);
         host_turns(&app, &mut view, true);
     }
+    // The writer has looked at the queue since the clock moved, and gone back to waiting: only then does "not written" say it chose not to. The kit's
+    // settle doesn't wait for the sleep files' writer (`crate::settled`), so without this the look could come before the writer had woken.
+    let waits = app.record_json()["sleep"]["leaving"]["waits"].as_u64().expect("the writer's waits");
     app.advance(wait - 1);
     app.settle();
+    app.wait_until("the sleep files' writer to look at the queue at the new time", || {
+        let leaving = app.record_json()["sleep"]["leaving"].clone();
+        // Back to waiting, or (written early) through the queue and gone.
+        leaving["in_flight"] == false && (leaving["waits"].as_u64().is_some_and(|now| now > waits) || leaving["writer"] == false)
+    });
     assert!(!sleep_files_on_disk(&app).contains(&sleep_file_of(&app, a)), "written before its wait was up");
     app.advance(1);
     app.wait_until("a's sleep file written at its wait", || {
