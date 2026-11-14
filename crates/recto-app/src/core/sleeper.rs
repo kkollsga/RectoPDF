@@ -141,17 +141,19 @@ impl Sleeper {
     }
 
     /// What sleep files may come to in an hour, for a test of the cap at the cap and one past it.
-    pub fn set_hour_cap(&self, bytes: u64) {
+    #[cfg(test)]
+    pub(super) fn set_hour_cap(&self, bytes: u64) {
         let _ = self.step(Event::SetHourCap(bytes));
     }
 
     /// What agents' sleep files may come to of it, for a test of the share at the share and one past it.
-    pub fn set_agent_hour_cap(&self, bytes: u64) {
+    #[cfg(test)]
+    pub(super) fn set_agent_hour_cap(&self, bytes: u64) {
         let _ = self.step(Event::SetAgentHourCap(bytes));
     }
 
     /// **A sleep file asked for by `by`,** with a ticket of its own to take what came of it back by ([`Self::take_asked_words`]).
-    pub fn asking(&self, by: recto_agent::Actor) -> app::Asked {
+    pub(super) fn asking(&self, by: recto_agent::Actor) -> app::Asked {
         app::Asked {
             by,
             ticket: self.tickets.fetch_add(1, Ordering::SeqCst) + 1,
@@ -173,7 +175,7 @@ impl Sleeper {
     /// **What an agent is told of the sleep file it asked for under `ticket`**, in Rust's words, from that write's own outcome: put off, or its facts written
     /// without pictures, as agents' share of the hour is used, and when it comes back; nothing if it wasn't cut short. `on_screen`: the tab on screen's, at
     /// the agent's `session save`.
-    pub fn take_asked_words(&self, ticket: u64, on_screen: bool) -> Option<String> {
+    pub(super) fn take_asked_words(&self, ticket: u64, on_screen: bool) -> Option<String> {
         let outcome = {
             let mut answers = lock(&self.answers);
             let at = answers.iter().position(|(kept, _)| *kept == ticket)?;
@@ -187,23 +189,23 @@ impl Sleeper {
     }
 
     /// These sleep files are about to be removed, as retired: nothing queued for them is written after ([`crate::sleep_queue::LeavingQueue::retire`]).
-    pub fn retire(&self, names: &[String]) {
+    pub(super) fn retire(&self, names: &[String]) {
         self.leaving.retire(names);
     }
 
     /// How long a pushed-out tab's sleep file waits, for tests.
-    pub fn set_leaving_wait(&self, ms: u64) {
+    pub(crate) fn set_leaving_wait(&self, ms: u64) {
         self.leaving.set_wait(ms);
     }
 
     /// The writer looks at the queue again, as the clock's moved on (a test's clock, which no timeout follows).
-    pub fn poke_leaving(&self) {
+    pub(crate) fn poke_leaving(&self) {
         self.leaving.poke();
     }
 
     /// **Everything waiting is written now, without waiting for the cool-down** (memory pressure, a quit, a hand-off), with a writer started for it by `start`
     /// if there's none, as after one panicked. Not the UI thread's: that's [`Self::hurry_leaving_soon`].
-    pub fn hurry_leaving(&self, start: impl FnOnce()) {
+    fn hurry_leaving(&self, start: impl FnOnce()) {
         if self.leaving.hurry() {
             start();
         }
@@ -211,14 +213,14 @@ impl Sleeper {
 
     /// **Everything waiting is written now, and waited for until `until`** (a quit's, a hand-off's), a writer started for it by `start` if there's none: past
     /// it, or with no writer to be had, what's left is written after or not at all, which costs those tabs only their quick way back. Says whether it all went.
-    pub fn drain_leaving(&self, until: Instant, start: impl FnOnce()) -> bool {
+    fn drain_leaving(&self, until: Instant, start: impl FnOnce()) -> bool {
         self.hurry_leaving(start);
         self.leaving.drain(until)
     }
 
     /// **A hurry going to the background asked for, carried out:** what waits in the cool-down is due now, under the queue's lock, and a writer's started by
     /// `start` if there's none (as after one panicked). Called by the saver's pass and at the end of a flush, never on the UI thread.
-    pub fn hurry_leaving_if_asked(&self, start: impl FnOnce()) {
+    pub(super) fn hurry_leaving_if_asked(&self, start: impl FnOnce()) {
         if self.background_hurry.swap(false, Ordering::SeqCst) {
             self.hurry_leaving(start);
         }
@@ -226,13 +228,13 @@ impl Sleeper {
 
     /// The next sleep writer panics as it starts, for a test of what's left after one.
     #[cfg(test)]
-    pub fn panic_next_leaving_writer(&self) {
+    pub(super) fn panic_next_leaving_writer(&self) {
         self.leaving.panic_next_writer();
     }
 
     /// **The app's gone to the background:** what's waiting is to be written now, by the saver's pass the caller asks for next (`Saver::write_soon`), which
     /// carries it out off this thread ([`Self::hurry_leaving_if_asked`]). The UI thread's: one atomic store, no lock, no word to the writer.
-    pub fn hurry_leaving_soon(&self) {
+    pub(super) fn hurry_leaving_soon(&self) {
         self.background_hurry.store(true, Ordering::SeqCst);
     }
 
@@ -365,7 +367,7 @@ impl Inner {
 
     /// Writes a tab's sleep file from what's known of it now, if that's anything new, waiting behind the one being written: as being asked has it, or a flush.
     /// Says what came of it, if anything was decided.
-    pub fn write_sleep_for(&self, id: TabId, by: By) -> Option<Outcome> {
+    pub(super) fn write_sleep_for(&self, id: TabId, by: By) -> Option<Outcome> {
         self.write_sleep_now_for(id, by, None)
     }
 
@@ -376,7 +378,7 @@ impl Inner {
     /// **Asked for by an agent** (`session save`), the cool-down is left alone (what waits stays waiting) and the tab on screen's file is held to the agent's
     /// share of the hour: an agent's save in a loop cut every cool-down short on demand. What came of that write is kept under the agent's ticket, for its
     /// answer to say if its share cut it short.
-    pub fn sleep_at_flush(&self, asked: Option<app::Asked>, until: Instant) {
+    pub(super) fn sleep_at_flush(&self, asked: Option<app::Asked>, until: Instant) {
         let agent = asked.filter(|asked| matches!(asked.by, recto_agent::Actor::Agent(_)));
         if let Some(id) = self.host.session.with_session(|session| session.tabs().active()) {
             let outcome = self.write_sleep_now_for(id, agent.map_or(By::Flush, |asked| By::Asked(asked.by)), Some(until));
@@ -493,7 +495,7 @@ impl Inner {
     /// **Tabs pushed out of the warm ones, their sleep files queued,** with their pictures copied just before the page view lets go of them: a quick copy of each, of those whose time's come, queued as it's made, so what's held is the queue's cap and the one being copied. Packing a photograph takes long enough to hold up whatever's asked for next, so the one writer does that ([`crate::sleep_queue`]). Each waits [`crate::sleeper::LEAVING_WAIT_MS`] first (the cool-down on the write). A flush hurries what's waiting and waits for it for what's left of its time, then writes the tab on screen's file.
     /// `shown` is the tab being shown: what's queued for it was copied as it left, so it's taken back, not written, and said for its first frame
     /// ([`Self::give_sleep_view`]); it's queued again when it next leaves.
-    pub fn queue_those_leaving(&self, shown: TabId) -> Option<(SleepFacts, SleepMaterial)> {
+    pub(super) fn queue_those_leaving(&self, shown: TabId) -> Option<(SleepFacts, SleepMaterial)> {
         let back = self.sleeper.leaving.take_back(shown);
         let left = self.host.session.with_session(|session| session.sleeper().take_left_warm());
         let now = self.sleeper.millis();
@@ -535,7 +537,7 @@ impl Inner {
     }
 
     /// The queue's said there's no writer: one's started.
-    pub(crate) fn start_sleep_writer(&self) {
+    pub(super) fn start_sleep_writer(&self) {
         let Some(inner) = self.saver.inner() else {
             self.sleeper.leaving.writer_gone();
             return;
@@ -590,7 +592,7 @@ impl Inner {
     /// What a tab's first frame shows, for the page view: from the file just read, or its sleep file if nobody's read it, whichever way this tab's been asked for. Only what's about the document as it is now. Each picture says what paper it's for, and only goes on that. On the session thread, with no lock on the page view while the surfaces are made.
     /// `back` is what was taken back from the queue for it, a tab shown again inside its wait: the page view let go of its pictures as it left, and these are
     /// them, held to the same checks as a sleep file's (this version of its file, these pages).
-    pub fn give_sleep_view(&self, engine: &recto_reader::Engine, id: TabId, back: Option<(SleepFacts, SleepMaterial)>) {
+    pub(super) fn give_sleep_view(&self, engine: &recto_reader::Engine, id: TabId, back: Option<(SleepFacts, SleepMaterial)>) {
         let read = self.host.session.with_session(|session| session.dormancy_mut().take_sleep_read(id));
         // What was waiting first: it's what the tab left with last, newer than any file on disk for it, which may be of where it was the time before. Held to
         // the check a sleep file's pictures are.

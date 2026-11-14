@@ -104,27 +104,27 @@ pub struct LeavingQueue {
     counts: Counts,
 }
 
-/// What's come of the tabs queued, counted for `qa state`.
+/// What's come of the tabs queued, counted for `qa state`. Each a `u32`: one per tab leaving at the most, which a session doesn't come near 4 billion of.
 #[derive(Default)]
 struct Counts {
-    writers_started: u64,
+    writers_started: u32,
     /// Tabs queued again, whose older one went for the newer.
-    replaced: u64,
+    replaced: u32,
     /// Tabs that lost their pictures to the byte cap.
-    pictures_dropped: u64,
+    pictures_dropped: u32,
     /// Tabs whose sleep file wasn't written, past the cap on tabs.
-    dropped: u64,
+    dropped: u32,
     /// Taken for writing, and not written, as something newer was.
-    stale_skipped: u64,
+    stale_skipped: u32,
     /// Queued, and gone as their files were retired.
-    retired: u64,
+    retired: u32,
     /// Queued, and handed back to a tab shown again inside its wait.
-    handed_back: u64,
+    handed_back: u32,
     /// Taken out of their cool-down to be written now, past the cap on tabs.
-    hurried: u64,
-    writer_panics: u64,
+    hurried: u32,
+    writer_panics: u32,
     /// Times the writer waited on the queue's condition: each ends with a word or its timeout, so a writer that spins would show here.
-    waits: u64,
+    waits: u32,
 }
 
 impl LeavingQueue {
@@ -262,7 +262,7 @@ impl LeavingQueue {
     /// Whether the one in flight is still to be written: asked with the one-at-a-time lock held, so a newer write either came before, and this isn't written, or comes after it.
     pub fn still_wanted(&mut self) -> bool {
         let stale = self.in_flight.as_ref().is_some_and(|flight| flight.stale || flight.retired);
-        self.counts.stale_skipped += u64::from(stale);
+        self.counts.stale_skipped += u32::from(stale);
         !stale
     }
 
