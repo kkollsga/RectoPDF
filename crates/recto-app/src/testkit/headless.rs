@@ -895,3 +895,27 @@ mod host_stand_in_tests {
         assert_eq!(surface.reference_count(), before, "let go, as the window lets go of a layer's contents");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::HeadlessApp;
+
+    /// Failure (`late_lock_order`'s belt test, once in a 47-test run at a load of about 30, 2026-11-14: "Keeps" read where a writer would have found
+    /// "NotKept"): [`HeadlessApp::settle`] returned with a write asked for (`write_soon`) that no writer had started, and the test read the state before any
+    /// writer had looked. Settle's flush is a call on the session thread's queue, and that thread takes a queued call before it looks at its deadlines, so the
+    /// flush came back with the write due and its writer not yet started, and nothing else was under way. Forced: the session thread held between two calls
+    /// while the write is asked for, where settle's flush finds it; what settle counts as under way must name the write.
+    #[test]
+    fn a_write_asked_for_and_not_yet_started_keeps_settle_waiting() {
+        let app = HeadlessApp::start();
+        let held = app.hold_session_thread();
+        app.core().saver.write_soon();
+        let busy = app.under_way();
+        drop(held);
+        app.settle();
+        assert!(
+            busy.iter().any(|what| what == "the record being written"),
+            "settle would have returned: {busy:?}"
+        );
+    }
+}
