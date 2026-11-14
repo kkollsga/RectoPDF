@@ -315,11 +315,9 @@ const LANDS_NOW: &[&str] = &[
 /// after isn't (coordinator, 2026-11-14). A plain `snapshot` or `image` is a read, and a paste's SVG isn't ordered, as the system's paste waits for it.
 #[must_use]
 pub fn ordered(command: &Command) -> bool {
-    use recto_agent::commands::Read;
-    match command {
-        Command::Read(Read::Snapshot(asked)) => asked.to_clipboard && asked.format != "svg",
-        Command::Read(Read::Image(asked)) => asked.to_clipboard,
-        _ => ORDERED.contains(&command.tag()),
+    match recto_agent::clipboard::kind_of(command) {
+        Some(kind) => kind != recto_agent::clipboard::ClipboardKind::Paste,
+        None => ORDERED.contains(&command.tag()),
     }
 }
 

@@ -14,6 +14,7 @@
 
 use super::{HighlightRect, Inner, ReaderOp, SelectionNotice, lock};
 pub use crate::snapshot_menu::{TOGGLE_ID, is_menu_id};
+use recto_agent::clipboard::{ClipboardKind, kind_of};
 use recto_agent::commands::Read;
 use recto_agent::commands::export::{Image, Snapshot};
 use recto_agent::extract::{self, Clip, ClipItem, ClipStop};
@@ -81,11 +82,9 @@ impl Job {
 
     /// The job a command of the tool's is, read back from it: none for any other command, a paste's SVG included.
     fn of(command: &Command) -> Option<Self> {
-        let (tab, page, wanted, anyway) = match command {
-            Command::Read(Read::Snapshot(asked)) if asked.to_clipboard && asked.format != "svg" => {
-                (&asked.tab, asked.page, Wanted::Box { rect: asked.rect }, asked.anyway)
-            }
-            Command::Read(Read::Image(asked)) if asked.to_clipboard => {
+        let (tab, page, wanted, anyway) = match (kind_of(command)?, command) {
+            (ClipboardKind::Box, Command::Read(Read::Snapshot(asked))) => (&asked.tab, asked.page, Wanted::Box { rect: asked.rect }, asked.anyway),
+            (ClipboardKind::Click, Command::Read(Read::Image(asked))) => {
                 let [x, y] = asked.at?;
                 (&asked.tab, asked.page, Wanted::Image { x, y }, asked.anyway)
             }
@@ -103,7 +102,7 @@ impl Job {
 
 /// Whether a command is the person's paste of a promised SVG.
 fn is_paste(command: &Command) -> bool {
-    matches!(command, Command::Read(Read::Snapshot(asked)) if asked.to_clipboard && asked.format == "svg")
+    kind_of(command) == Some(ClipboardKind::Paste)
 }
 
 /// What to say by the page about the last snapshot, with its number.
@@ -569,7 +568,7 @@ fn start(inner: &Arc<Inner>, job: Job) {
 /// or, for a paste's SVG, the paste told it's done.
 pub fn answered(parts: &super::answer_parts::AnswerParts<'_>, ran: &super::person::Ran<'_>) {
     let person = parts.person();
-    if is_paste(ran.command) || Job::of(ran.command).is_some() {
+    if kind_of(ran.command).is_some() {
         parts.snapshot_answered(|tool| answer(tool, person, ran));
     }
 }

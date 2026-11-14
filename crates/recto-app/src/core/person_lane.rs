@@ -281,8 +281,8 @@ fn named(mut command: Command, active: Option<TabId>) -> Command {
 #[cfg(test)]
 mod tests {
     /// Failure: a command that changes a document or fixes what's read of it goes around the lane (and can run before an edit asked ahead of it), or one
-    /// that only moves the view waits in it behind a highlight's read. Every edit but the list and edit mode, a save, a print and a close are ordered; a
-    /// jump, a tap, Find, the view, edit mode and the reads aren't.
+    /// that only moves the view waits in it behind a highlight's read. Every edit but the list and edit mode, a save, a print, a close and the snapshot
+    /// tool's box and click are ordered; a jump, a tap, Find, the view, edit mode, the reads and a paste's SVG aren't.
     #[test]
     fn what_keeps_its_order_is_what_changes_or_fixes_a_document() {
         let ordered = |line: &str| super::ordered(&recto_agent::parse(line).expect("a command"));
@@ -297,6 +297,9 @@ mod tests {
             r#"{"cmd":"highlight_remove","id":1}"#,
             r#"{"cmd":"print","to_pdf":"/tmp/a.pdf"}"#,
             r#"{"cmd":"close"}"#,
+            // The snapshot tool's box and click, as a print: each holds its turn until its page is found.
+            r#"{"cmd":"snapshot","page":1,"rect":[0,0,9,9],"as":"png","to_clipboard":true}"#,
+            r#"{"cmd":"image","page":1,"at":[1,1],"to_clipboard":true}"#,
         ] {
             assert!(ordered(line), "{line} keeps its order");
         }
@@ -307,6 +310,9 @@ mod tests {
             r#"{"cmd":"edit_mode","set":"on"}"#,
             r#"{"cmd":"view","sidebar":"off"}"#,
             r#"{"cmd":"text","page":1}"#,
+            // A snapshot to a file is a read, and a paste's SVG is waited for by the system's paste, so it can't wait in the lane.
+            r#"{"cmd":"snapshot","page":1,"rect":[0,0,9,9],"as":"png","out":"/tmp/a.png"}"#,
+            r#"{"cmd":"snapshot","page":1,"rect":[0,0,9,9],"as":"svg","to_clipboard":true}"#,
         ] {
             assert!(!ordered(line), "{line} goes as it always has");
         }

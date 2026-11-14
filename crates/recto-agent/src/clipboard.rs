@@ -5,8 +5,49 @@
 //!
 //! **What a snapshot is, by where it goes,** is [`crate::extract::drawn_for`]'s, in one place.
 
+use crate::commands::Read;
+use crate::commands::export::{Image, Snapshot};
 use crate::extract::{Clip, ClipStop};
-use crate::{AgentError, Code, exit};
+use crate::{AgentError, Code, Command, exit};
+
+/// **What a command to the window's clipboard is, the one place that says** (the branch's review, F1): the snapshot tool's box, its click on an image, or
+/// a paste of a box's promised SVG. The person's lane orders the box and the click and not the paste, and the tool reads its answers back by it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipboardKind {
+    /// `snapshot --to-clipboard`, every type at once.
+    Box,
+    /// `image --at x,y --to-clipboard`.
+    Click,
+    /// `snapshot --as svg --to-clipboard`: the promised SVG, made for the paste waiting for it.
+    Paste,
+}
+
+impl Snapshot {
+    /// What this is to the window's clipboard, if it goes there.
+    #[must_use]
+    pub fn clipboard_kind(&self) -> Option<ClipboardKind> {
+        self.to_clipboard
+            .then(|| if self.format == "svg" { ClipboardKind::Paste } else { ClipboardKind::Box })
+    }
+}
+
+impl Image {
+    /// What this is to the window's clipboard, if it goes there.
+    #[must_use]
+    pub fn clipboard_kind(&self) -> Option<ClipboardKind> {
+        self.to_clipboard.then_some(ClipboardKind::Click)
+    }
+}
+
+/// What a command is to the window's clipboard: none for any but a `snapshot` or `image` to it.
+#[must_use]
+pub fn kind_of(command: &Command) -> Option<ClipboardKind> {
+    match command {
+        Command::Read(Read::Snapshot(asked)) => asked.clipboard_kind(),
+        Command::Read(Read::Image(asked)) => asked.clipboard_kind(),
+        _ => None,
+    }
+}
 
 /// **The window's side of the person's snapshot to the clipboard:** the stop a newer snapshot or a quit sets, what's made for the clipboard, and the bytes a
 /// paste is waiting for. Implemented by the app; a session with no window has none.
