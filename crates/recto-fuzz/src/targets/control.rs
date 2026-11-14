@@ -51,6 +51,9 @@ impl Host for Guarded {
     fn acted_tab(&self, command: &Command) -> Option<TabId> {
         self.0.acted_tab(command)
     }
+    fn for_watchers(&self, events: &mut Vec<Event>) {
+        self.0.for_watchers(events);
+    }
 }
 
 struct Running {

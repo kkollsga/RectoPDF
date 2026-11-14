@@ -109,7 +109,7 @@ impl Said {
                     let now = session.tabs().tab(id).map_or(page, |tab| tab.page);
                     // Announced when the page changed, and only then: a page view settling on the page the session already has is no news.
                     if was != Some(now) {
-                        events.push(recto_agent::page_changed(session, id, now + 1));
+                        events.push(recto_agent::page_changed(id, now + 1));
                         went.push((pane, now));
                     }
                 }

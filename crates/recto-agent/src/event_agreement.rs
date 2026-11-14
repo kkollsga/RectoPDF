@@ -146,14 +146,16 @@ fn page_changed_is_the_real_page_and_nothing_for_a_protected_document() {
             entry: None,
         }),
     );
-    assert_eq!(events, [Event::PageChanged { tab: a, page: Some(10) }]);
+    assert_eq!(events, [Event::PageChanged { tab: a, page: 10 }]);
     assert_eq!(event::page_now(&session, a), events[0], "the app's jump says the same");
     // A jump past the end lands on the last page, and that's what's said, not what was asked.
     session.jump(a, 0, 0.0).unwrap();
     session.jump(a, 99, 0.0).unwrap();
-    assert_eq!(event::page_now(&session, a), Event::PageChanged { tab: a, page: Some(10) });
+    assert_eq!(event::page_now(&session, a), Event::PageChanged { tab: a, page: 10 });
     session.tabs_mut().note_password_used(b);
     assert!(session.tabs().withheld_from_agents(b));
-    assert_eq!(event::page_now(&session, b), Event::PageChanged { tab: b, page: None });
-    assert_eq!(event::page_now(&session, b).to_json()["page"], Value::Null);
+    // Where events leave for agents, a protected document's move isn't told at all ([`crate::withheld`]).
+    let mut told = vec![event::page_now(&session, b), event::page_now(&session, a)];
+    crate::withheld::for_agents(&session, None, &mut told);
+    assert_eq!(told, [Event::PageChanged { tab: a, page: 10 }]);
 }

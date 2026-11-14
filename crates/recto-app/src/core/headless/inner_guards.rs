@@ -50,12 +50,14 @@ fn the_apps_state_and_its_parts_stay_within_their_budgets() {
 /// draws (`find::Field`, R3.7 S2's fix: Find announced with nothing changed). And the sleeper on its own, at its size on 2026-11-14 (608 bytes, inside
 /// Inner's then), before R3.7 S5 moves it behind an `Arc` of its own, where Inner's budget no longer sees it. Then S5 itself: Inner 5,072 to 4,480 (the
 /// sleeper's 608 out, `OnDisk`'s two `Arc`s, 16, in), and the record's keeper, 40 (five handles the app already has, held once more so the record's threads
-/// hold it and not the app). And S2b's window's notices, 80 (its two locks, out of `Window`, whose size holds: the tab they're about stays in its padding). One
-/// of each per app, not per tab or page view.
+/// hold it and not the app). And S2b's window's notices, 80 (its two locks, out of `Window`, whose size holds: the tab they're about stays in its padding).
+/// Serving 1,064 to 1,040 with S1's outlet (`recto_control::server`): an announcer is one reference to the outlet its server shares, where it was a
+/// channel's sender and a descriptor of its own, and the waiting server holds that reference in place of its sender. One of each per app, not per tab or
+/// page view.
 const BUDGETS: [(&str, usize); 11] = [
     ("Inner", 4480),
     ("Lifecycle", 344),
-    ("Serving", 1064),
+    ("Serving", 1040),
     ("Window", 464),
     ("Notices", 80),
     ("Tools", 1448),

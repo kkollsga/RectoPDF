@@ -7,7 +7,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-# Seams only this crate's own tests use (`under_page_deadline_for_test`). Turned on by the dev-dependency on itself below and by nothing in the app's
+# Seams only tests use (`under_page_deadline_for_test`, `page_deadline_for_this_process`). Turned on by this crate's dev-dependency on itself below and
+# `recto-agent`'s for its policy walks, and by nothing in the app's
 # dependency graph, so a release `recto-ffi` or `recto-cli` doesn't contain them.
 test-seams = []
 

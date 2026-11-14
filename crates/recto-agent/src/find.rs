@@ -663,13 +663,14 @@ fn went_to<A: crate::SessionAccess>(access: &A, tab: u32, hit: &Hit, going: Goin
     });
 }
 
-/// **What watchers hear when a hit is gone to,** whoever went (R2.3, C5g): the page the hit's on, and Find at that page, as the hit gone to changed. No page
-/// for a document the person opened with its password.
-pub fn heard_going_to<L: DocLoader>(session: &Session<L>, tab: u32, hit: &Hit, events: &mut Vec<crate::Event>) {
+/// **What watchers hear when a hit is gone to,** whoever went (R2.3, C5g): the page the hit's on, and Find at that page, as the hit gone to changed.
+/// Neither is told of a document the person opened with its password ([`crate::withheld`]).
+pub fn heard_going_to(tab: u32, hit: &Hit, events: &mut Vec<crate::Event>) {
     let id = TabId(tab);
-    events.push(crate::page_changed(session, id, hit.page + 1));
+    events.push(crate::page_changed(id, hit.page + 1));
     events.push(crate::Event::FindOpened {
-        page: (!session.tabs().withheld_from_agents(id)).then_some(hit.page + 1),
+        tab: Some(id),
+        page: Some(hit.page + 1),
     });
 }
 

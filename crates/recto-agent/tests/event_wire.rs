@@ -13,9 +13,7 @@ const GOLDEN: &[(&str, &str)] = &[
     ("tab_activated", r#"{"event":"tab_activated","tab":4,"untrusted":{"name":"b.pdf"}}"#),
     ("tab_closed", r#"{"event":"tab_closed","tab":5}"#),
     ("page_changed", r#"{"event":"page_changed","page":7,"tab":5}"#),
-    ("page_changed withheld", r#"{"event":"page_changed","page":null,"tab":5}"#),
     ("edits_changed", r#"{"edited":true,"event":"edits_changed","pages":12,"tab":5}"#),
-    ("edits_changed withheld", r#"{"edited":false,"event":"edits_changed","pages":null,"tab":5}"#),
     ("saved", r#"{"event":"saved","tab":5,"writer":"lopdf"}"#),
     ("page_drawn", r#"{"event":"page_drawn","page":2,"tab":5}"#),
     ("page_failed", r#"{"code":"render_failed","event":"page_failed","page":2,"tab":5}"#),
@@ -65,24 +63,8 @@ fn made() -> Vec<(&'static str, Event)> {
             },
         ),
         ("tab_closed", Event::TabClosed { tab }),
-        ("page_changed", Event::PageChanged { tab, page: Some(7) }),
-        ("page_changed withheld", Event::PageChanged { tab, page: None }),
-        (
-            "edits_changed",
-            Event::EditsChanged {
-                tab,
-                pages: Some(12),
-                edited: true,
-            },
-        ),
-        (
-            "edits_changed withheld",
-            Event::EditsChanged {
-                tab,
-                pages: None,
-                edited: false,
-            },
-        ),
+        ("page_changed", Event::PageChanged { tab, page: 7 }),
+        ("edits_changed", Event::EditsChanged { tab, pages: 12, edited: true }),
         ("saved", Event::Saved { tab, writer: "lopdf" }),
         ("page_drawn", Event::PageDrawn { tab, page: 2 }),
         (
@@ -93,20 +75,34 @@ fn made() -> Vec<(&'static str, Event)> {
                 code: "render_failed",
             },
         ),
-        ("indexing_started", Event::IndexingStarted { corpus: "ab12".into() }),
+        (
+            "indexing_started",
+            Event::IndexingStarted {
+                path: "/d/a.pdf".into(),
+                corpus: "ab12".into(),
+            },
+        ),
         (
             "indexing_finished",
             Event::IndexingFinished {
+                path: "/d/a.pdf".into(),
                 corpus: "ab12".into(),
                 state: "done".into(),
                 code: Value::Null,
                 pages: json!(40),
             },
         ),
-        ("contents_generating", Event::ContentsGenerating { file: "cd34".into() }),
+        (
+            "contents_generating",
+            Event::ContentsGenerating {
+                path: "/d/a.pdf".into(),
+                file: "cd34".into(),
+            },
+        ),
         (
             "contents_generated",
             Event::ContentsGenerated {
+                path: "/d/a.pdf".into(),
                 file: "cd34".into(),
                 state: "done",
                 code: Some("ok".into()),
@@ -124,11 +120,17 @@ fn made() -> Vec<(&'static str, Event)> {
                 synced: true,
             },
         ),
-        ("find_changed running", Event::FindRunning),
-        ("find_changed opened", Event::FindOpened { page: None }),
-        ("find_changed at a hit", Event::FindOpened { page: Some(9) }),
+        ("find_changed running", Event::FindRunning { tab: Some(n(1)) }),
+        ("find_changed opened", Event::FindOpened { tab: None, page: None }),
+        (
+            "find_changed at a hit",
+            Event::FindOpened {
+                tab: Some(n(1)),
+                page: Some(9),
+            },
+        ),
         ("find_changed closed", Event::FindClosed),
-        ("find_finished", Event::FindFinished { hits: 17 }),
+        ("find_finished", Event::FindFinished { tab: Some(n(1)), hits: 17 }),
     ]
 }
 

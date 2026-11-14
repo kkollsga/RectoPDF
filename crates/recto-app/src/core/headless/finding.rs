@@ -72,7 +72,7 @@ fn return_in_find_is_heard_with_one_page_changed() {
                 _ => None,
             })
             .collect();
-        assert_eq!(pages, [Some(to)], "{heard:?}");
+        assert_eq!(pages, [to], "{heard:?}");
     }
 }
 
@@ -94,10 +94,17 @@ fn a_persons_step_is_heard_as_an_agents() {
         app.settle();
         let heard = app.heard_events();
         assert_eq!(names(&heard), ["page_changed", "find_changed"], "{what}: {heard:?}");
-        let recto_agent::Event::PageChanged { page, .. } = &heard[0] else {
+        let recto_agent::Event::PageChanged { tab, page } = &heard[0] else {
             unreachable!()
         };
-        assert_eq!(heard[1], recto_agent::Event::FindOpened { page: *page }, "{what}: Find at the hit's page");
+        assert_eq!(
+            heard[1],
+            recto_agent::Event::FindOpened {
+                tab: Some(*tab),
+                page: Some(*page)
+            },
+            "{what}: Find at the hit's page"
+        );
     }
 }
 
@@ -221,7 +228,8 @@ fn a_query_too_long_is_said_and_not_searched() {
 
 /// Failure (rule 6, R2.3 C5g): an agent's `find`, in any form, on a document the person opened with its password, gets a hit, a page or a count read with
 /// the password, at any level, or the person's own Find there finds nothing, as their passwords went with the command. The person's Find finds its hits and
-/// goes to one, and what watchers hear of it has no page; every form of an agent's `find` is refused, or says nothing of what's in it.
+/// goes to one, and watchers are told nothing of it where events leave for them (`Host::for_watchers`); every form of an agent's `find` is refused, or says
+/// nothing of what's in it, and what it's heard as tells watchers no page.
 #[test]
 fn an_agents_find_gets_nothing_of_a_protected_tab_and_the_persons_finds_it() {
     let app = HeadlessApp::start();
@@ -247,8 +255,11 @@ fn an_agents_find_gets_nothing_of_a_protected_tab_and_the_persons_finds_it() {
     app.settle();
     let heard = app.heard_events();
     assert_eq!(names(&heard), ["page_changed", "find_changed", "page_changed", "find_changed"]);
-    let shown = format!("{heard:?}");
-    assert!(!shown.contains("Some("), "no page for watchers: {shown}");
+    let told = |mut events: Vec<recto_agent::Event>| {
+        recto_control::host::Host::for_watchers(&*app.core().host, &mut events);
+        events
+    };
+    assert_eq!(told(heard), [], "nothing of the protected document for watchers");
     let leaks = |value: &serde_json::Value| {
         let text = value.to_string();
         text.contains("Locked page") || text.contains("\"hits_total\":3") || text.contains("\"page\":2")
@@ -266,7 +277,8 @@ fn an_agents_find_gets_nothing_of_a_protected_tab_and_the_persons_finds_it() {
             let (result, said) = app.agent_heard(level, line);
             let answer = result.unwrap_or_else(|error| serde_json::json!(format!("{error:?}")));
             assert!(!leaks(&answer), "{level:?} {line}: {answer}");
-            assert!(!format!("{said:?}").contains("Some("), "{level:?} {line}: {said:?}");
+            let said = told(said);
+            assert!(!format!("{said:?}").contains("page"), "{level:?} {line}: {said:?}");
         }
     }
     app.settle();
