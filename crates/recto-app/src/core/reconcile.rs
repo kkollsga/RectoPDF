@@ -47,22 +47,16 @@ pub fn follow_link(inner: &Arc<Inner>, pane: usize, engine: &Engine, hit: recto_
     match hit.target {
         recto_core::nav::LinkTarget::Page { page, within } => match engine.links().position_in_same_file(hit.page, page) {
             Some(position) => person::submit(inner, super::navigation::link_to_page(tab, position, within)),
-            None => notice(inner, "The page this link goes to isn't in the document as it's been edited."),
+            None => person::say(inner, "The page this link goes to isn't in the document as it's been edited.".to_string()),
         },
         recto_core::nav::LinkTarget::History { back } => person::submit(inner, super::navigation::step(back)),
         recto_core::nav::LinkTarget::Web(address) => {
             inner.tools.prompts().ask_link(&address);
             inner.core.push(CoreCall::Reconcile);
         }
-        recto_core::nav::LinkTarget::Refused(why) => notice(inner, why.message()),
-        recto_core::nav::LinkTarget::Nowhere => notice(inner, "This link goes nowhere in this document."),
+        recto_core::nav::LinkTarget::Refused(why) => person::say(inner, why.message().to_string()),
+        recto_core::nav::LinkTarget::Nowhere => person::say(inner, "This link goes nowhere in this document.".to_string()),
     }
-}
-
-/// A line by the page that goes by itself, in Rust's words.
-pub fn notice(inner: &Inner, words: &str) {
-    *lock(&inner.window.action_notice) = Some(words.to_string());
-    inner.core.push(CoreCall::Reconcile);
 }
 
 /// **Shows a tab in a pane,** or brings what's shown up to date: another tab, another list of pages, a layout, a page an agent sent it to, or the warm tabs. A tab a pane's page view hasn't held starts from its sleep file's pictures, as any wake does.
@@ -97,15 +91,7 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
         );
         synced.spread = Some(shown.spread);
         // What was selected comes back on the tab it was on, once.
-        let selection = {
-            let mut app = lock(&inner.window.app);
-            if app.selection_resume.as_ref().is_some_and(|(tab, _)| *tab == id) {
-                app.selection_resume.take().map(|(_, selection)| selection)
-            } else {
-                None
-            }
-        };
-        if let Some(selection) = selection {
+        if let Some(selection) = inner.window.take_selection_resume(id) {
             engine
                 .selection()
                 .restore((selection.from_page, selection.from_char), (selection.to_page, selection.to_char));
@@ -156,7 +142,7 @@ fn send_jump(engine: &Engine, shown: &PaneSnapshot) -> Option<(TabId, Stop, u64)
 fn show_in_panes(inner: &Inner, synced: &mut Synced, panes: &[PaneSnapshot], paper: PaperKind) -> bool {
     let count = panes.len().max(1);
     if synced.count != count {
-        let window_open = !lock(&inner.window.app).window_closed;
+        let window_open = !inner.window.is_closed();
         inner.panes.set_count(&inner.engine, count, paper, window_open);
         synced.count = count;
     }
@@ -213,7 +199,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         facts
     });
     // The paper first, so what's asked for next is drawn right.
-    let look = crate::paper_look(facts.chosen_paper, inner.window.dark.load(Ordering::SeqCst));
+    let look = crate::paper_look(facts.chosen_paper, inner.window.is_dark());
     let paper = look.kind;
     if synced.paper != Some(paper) {
         synced.paper = Some(paper);
@@ -226,8 +212,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let pane_pages = std::mem::take(&mut facts.pane_pages);
     let shown_tab = facts.reading.shown_tab();
     // A notice about one document doesn't stay over another: a save's note, seen on the next tab, would read as being about that one.
-    if inner.window.notice_tab.swap(shown_tab, Ordering::SeqCst) != shown_tab {
-        lock(&inner.window.action_notice).take();
+    if inner.window.shows_tab(shown_tab) {
         snapshot_tool::tab_came_forward(inner);
     }
     let save = save_state_now(inner, &facts.reading);
@@ -235,13 +220,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     // The contents follow the tab being read, whichever pane it's in.
     let holding_now = inner.life.holding_tab();
     if synced.active != active && active.is_some() && holding_now != active {
-        let mut follow = lock(&inner.window.contents_follow);
-        follow.new_contents();
-        let mut app = lock(&inner.window.app);
-        match app.contents_resume.take() {
-            Some((tab, scroll)) if Some(tab) == active => follow.resume_at(scroll.y, scroll.following),
-            _ => {}
-        }
+        inner.window.follow_tab(active);
         synced.active = active;
     }
     let panes_changed = show_in_panes(inner, synced, &facts.panes, paper);
@@ -302,7 +281,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     }
     let reading_engine = inner.panes.reading_engine(&inner.engine);
     let note = crate::NoteSources {
-        open_failure: lock(&inner.window.open_failure).clone(),
+        open_failure: inner.window.notices().open_failure(),
         save_failed: inner.saver.has_failed(),
         problem,
         session: lock(&inner.host.notice).as_deref().and_then(record::notices::words).map(str::to_string),
@@ -318,7 +297,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         }),
         printing: inner.tools.printing().selection_notice(),
         tool: inner.tools.tool().selection_notice(),
-        action: lock(&inner.window.action_notice).clone(),
+        action: inner.window.notices().notice(),
         update: inner.updates.notice().map(|notice| (notice.text, notice.fades)),
     }
     .notice();
@@ -338,7 +317,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             pane_views: crate::pane_views(&facts.panes, active, comparing, &engine_notes),
             holding: inner.life.holding_tab().is_some(),
             first_pane_empty: synced.panes.first().is_none_or(|pane| pane.tab.is_none()),
-            sidebar_width: lock(&inner.window.app).sidebar_width,
+            sidebar_width: inner.window.sidebar_width(),
             save: crate::SaveFacts {
                 off: save.off,
                 note: save.note,

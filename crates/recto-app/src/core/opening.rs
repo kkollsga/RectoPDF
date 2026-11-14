@@ -30,7 +30,7 @@ pub fn before(inner: &Inner, reads: &mut FileReads, command: &Command) {
         }
         Command::Move(Move::Open(Open { path, .. })) => {
             reads.wanted_tab = None;
-            *lock(&inner.window.open_failure) = None;
+            inner.window.notices().clear_open_failure();
             let (tab, own) = inner.host.session.with_session(|session| {
                 let tab = session.tabs().for_path(path);
                 (tab, tab.and_then(|id| session.tabs().path_of(id)))
@@ -54,7 +54,7 @@ pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
         }
         (Command::Move(Move::Open(_)), Some(error)) => {
             if let Some(words) = person::session_words(error) {
-                *lock(&inner.window.open_failure) = Some(words.to_string());
+                inner.window.notices().fail_open(words.to_string());
             }
         }
         _ => {}

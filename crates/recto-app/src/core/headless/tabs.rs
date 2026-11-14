@@ -218,7 +218,7 @@ fn the_windows_opens_are_the_agents_open() {
     });
     twins.person.settle();
     assert_eq!(
-        crate::lock(&twins.person.core().window.open_failure).clone().as_deref(),
+        twins.person.core().window.notices().open_failure().as_deref(),
         Some(recto_core::OpenError::NotPdf.message()),
         "the person's words"
     );

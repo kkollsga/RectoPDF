@@ -5,7 +5,6 @@ use super::menu_rows::{Agents, Asked, Row};
 use super::{HostAction, Inner};
 use crate::menus::Action;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 pub fn row<'a>(inner: &'a Arc<Inner>, asked: &Asked<'_>) -> Option<Row<'a>> {
     Some(match (asked.action.as_ref()?, asked.id) {
@@ -44,7 +43,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &Asked<'_>) -> Option<Row<'a>> {
             "the tools panel open or shut is the window's own, and nothing of a document's",
             Agents::AT_FULL,
             move || {
-                inner.window.panel_open.fetch_xor(true, Ordering::SeqCst);
+                inner.window.toggle_panel();
                 inner.listener.model_changed();
                 HostAction::None
             },

@@ -168,7 +168,7 @@ fn a_typed_page_thats_no_page_says_so_in_the_fields_words() {
     app.act(UiAction::PageTyped { text: "zz".into() });
     app.settle();
     assert_eq!(
-        crate::lock(&app.core().window.action_notice).clone(),
+        app.core().window.notices().notice(),
         Some(crate::linking::no_such_page("zz")),
         "the field's words"
     );

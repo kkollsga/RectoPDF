@@ -2,8 +2,13 @@
 //! appearance, the Settings window), the contents' follow, the UI thread's hang watchdog, and the notices that go by themselves. Its opening, replacing and
 //! closing are `Inner`'s, as they reach the page views and the saver, and they call what's here.
 
+mod contents;
+mod notices;
 mod placement;
+mod restore;
+pub(super) use notices::Notices;
 pub use placement::WindowPlacement;
+pub(super) use restore::Restoring;
 
 use super::saver::Saver;
 use super::updates;
@@ -12,7 +17,7 @@ use crate::queue::{CoreCall, CoreQueue};
 use crate::records::ScreenInfo;
 use crate::watchdog::Watchdog;
 use recto_session::record::{self, AppRecord, Appearance, ContentsScroll, FocusRecord, FocusView, Rect, ScreenRecord, SettingsWindow, WindowRecord};
-use recto_session::{ContentsFollow, ContentsRowChange, ContentsView, FollowMove, TabId};
+use recto_session::{ContentsFollow, TabId};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -20,19 +25,18 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 /// notices that go by themselves.
 pub struct Window {
     /// The contents' follow, which the window's opening and the session thread's look at the contents set as well.
-    pub(super) contents_follow: Mutex<ContentsFollow>,
+    contents_follow: Mutex<ContentsFollow>,
     /// What the host tells of the window, for the record: set by the methods here, and by the core's launch, restore and reconcile.
-    pub(super) app: Mutex<AppState>,
+    app: Mutex<AppState>,
     watchdog: Watchdog,
     /// The system's appearance is dark, for the paper's look.
-    pub(super) dark: AtomicBool,
+    dark: AtomicBool,
     /// The sidebar's panel is open: its row toggles it and a restore sets it.
-    pub(super) panel_open: AtomicBool,
-    pub(super) open_failure: Mutex<Option<String>>,
-    /// Why something the reader chose couldn't be done, or what a save has to say, as a notice that goes by itself.
-    pub(super) action_notice: Mutex<Option<String>>,
+    panel_open: AtomicBool,
+    /// What it says by the page: a notice that goes by itself, and why an open failed.
+    notices: Notices,
     /// The tab showing when the window was last brought up to date: a notice is about what was on screen, so it goes with a change of tab.
-    pub(super) notice_tab: AtomicU32,
+    notice_tab: AtomicU32,
 }
 
 impl Window {
@@ -60,10 +64,24 @@ impl Window {
             panel_open: AtomicBool::new(false),
             contents_follow: Mutex::new(ContentsFollow::default()),
             watchdog,
-            open_failure: Mutex::new(None),
-            action_notice: Mutex::new(None),
+            notices: Notices::new(),
             notice_tab: AtomicU32::new(0),
         }
+    }
+
+    /// What the window says by the page, and why an open failed.
+    pub(super) fn notices(&self) -> &Notices {
+        &self.notices
+    }
+
+    /// **The window's brought up to date showing `tab`:** if that's another tab than the last time, the notice, which was about what was on screen, goes. Says
+    /// whether it was another tab.
+    pub(super) fn shows_tab(&self, tab: u32) -> bool {
+        let another = self.notice_tab.swap(tab, Ordering::SeqCst) != tab;
+        if another {
+            self.notices.take_notice();
+        }
+        another
     }
 
     /// The host's own part of the record, with the notice the session as a whole has now, as `notice` reads it (the host's, under its own lock). Called
@@ -230,6 +248,11 @@ impl Window {
         }
     }
 
+    /// Light, dark or the system's, as chosen.
+    pub(super) fn appearance(&self) -> Appearance {
+        lock(&self.app).appearance
+    }
+
     /// Light or dark chosen, by its name; anything else is the system's.
     pub fn set_appearance_choice(&self, choice: &str, saver: &Saver) {
         lock(&self.app).appearance = match choice {
@@ -246,49 +269,29 @@ impl Window {
         core.push(CoreCall::Reconcile);
     }
 
-    /// The reader scrolled the contents themselves, `now` seconds into the launch.
-    pub fn contents_user_scrolled(&self, now: f64) {
-        lock(&self.contents_follow).user_scrolled(now);
+    /// Whether the system's appearance is dark, for the paper's look.
+    pub(super) fn is_dark(&self) -> bool {
+        self.dark.load(Ordering::SeqCst)
     }
 
-    /// The pointer came into the contents or left them.
-    pub fn contents_pointer(&self, inside: bool) {
-        lock(&self.contents_follow).pointer(inside);
+    /// The sidebar's width, held to its limits.
+    pub(super) fn sidebar_width(&self) -> f64 {
+        lock(&self.app).sidebar_width
     }
 
-    /// The place being read is now on this row of the contents, as they are in `view`: what to do about it.
-    pub fn contents_reached(&self, row: Option<u32>, view: ContentsView, now: f64, reduce_motion: bool) -> FollowMove {
-        lock(&self.contents_follow).reached(row, view, now, reduce_motion)
+    /// Whether the app is the active one, as the host last said.
+    pub(super) fn frontmost(&self) -> bool {
+        lock(&self.app).focus.app_frontmost
     }
 
-    /// One frame of a move: where the scroll goes next, or nothing when it's over and the frames should stop. An atomic-sized lock and some arithmetic.
-    pub fn contents_step(&self, position: f64, dt: f64) -> Option<f64> {
-        lock(&self.contents_follow).step(position, dt)
-    }
-
-    /// The contents' area changed height.
-    pub fn contents_view_changed(&self) {
-        lock(&self.contents_follow).view_changed();
-    }
-
-    /// Rows closed or opened: how many points to move the scroll by with no animation, or nothing if the rows are to change in view.
-    pub fn contents_row_change(&self, change: ContentsRowChange, scroll_y: f64) -> Option<f64> {
-        lock(&self.contents_follow).row_change(change, scroll_y)
-    }
-
-    /// Rows above changed, and the host moved its scroll by this many points to match.
-    pub fn contents_shifted(&self, by: f64) {
-        lock(&self.contents_follow).shifted(by);
-    }
-
-    /// Whether the contents follow the place being read.
-    pub fn contents_following(&self) -> bool {
-        lock(&self.contents_follow).is_following()
-    }
-
-    /// Whether the contents are moving to it now.
-    pub fn contents_moving(&self) -> bool {
-        lock(&self.contents_follow).is_moving()
+    /// What was selected on `tab` when the session was saved, to select again as it's first shown: taken, so it comes back once. Nothing for another tab.
+    pub(super) fn take_selection_resume(&self, tab: TabId) -> Option<record::Selection> {
+        let mut app = lock(&self.app);
+        if app.selection_resume.as_ref().is_some_and(|(resumed, _)| *resumed == tab) {
+            app.selection_resume.take().map(|(_, selection)| selection)
+        } else {
+            None
+        }
     }
 
     /// The UI thread has woken, or (`block`) a block of the host's begins on it: true if this began a stretch the hang watchdog times.
@@ -304,6 +307,11 @@ impl Window {
     /// Whether the sidebar's panel is open.
     pub fn panel_open(&self) -> bool {
         self.panel_open.load(Ordering::SeqCst)
+    }
+
+    /// The panel's row: open if it was shut, shut if it was open.
+    pub(super) fn toggle_panel(&self) {
+        self.panel_open.fetch_xor(true, Ordering::SeqCst);
     }
 
     /// What each pane had selected as the window went for another made from the state, taken for the new one to select again.
@@ -327,16 +335,20 @@ impl Window {
     /// The window's going for another made from the state that came in late: what it said about itself since isn't kept, and what each pane had selected,
     /// `held`, is kept for the new one.
     pub(super) fn replaced(&self, held: Vec<(usize, recto_index::select::Range)>) {
-        // What the going window said about itself since the state came in isn't kept: the new one comes from the state. What the host chose about what's out of sight is.
+        // What the going window said about itself since the state came in isn't kept: the new one comes from the state. What the host chose about what's out of sight is,
+        // and so are the saved session's place and selection as the going window left them: one it put back already isn't put back again over what the person
+        // did since, and one it hadn't yet still is, once.
         let mut app = lock(&self.app);
         if let Some(state) = app.from_state.take() {
             let minimised = app.window.as_ref().is_some_and(|window| window.minimised);
             let (hidden, closed) = (app.app_hidden, app.window_closed);
             let decided = (app.hidden_decided, app.minimised_decided, app.window_decided);
+            let resumes = (app.contents_resume.take(), app.selection_resume.take());
             *app = *state;
             app.app_hidden = hidden;
             app.window_closed = closed;
             (app.hidden_decided, app.minimised_decided, app.window_decided) = decided;
+            (app.contents_resume, app.selection_resume) = resumes;
             if let Some(window) = app.window.as_mut() {
                 window.minimised = minimised;
             }
@@ -370,35 +382,41 @@ impl Window {
     pub fn settings_window(&self) -> Option<SettingsWindow> {
         lock(&self.app).settings_window
     }
+
+    /// The window's state itself, for a test to set up or read what the host would have told it.
+    #[cfg(test)]
+    pub(super) fn state_for_tests(&self) -> std::sync::MutexGuard<'_, AppState> {
+        lock(&self.app)
+    }
 }
 
 /// What the host tells Rust about the window, kept for the record. A short lock: the UI thread sets these and a writer copies them.
 #[derive(Clone, Debug)]
 pub struct AppState {
-    pub window: Option<WindowRecord>,
-    pub appearance: Appearance,
-    pub sidebar_width: f64,
+    pub(super) window: Option<WindowRecord>,
+    pub(super) appearance: Appearance,
+    pub(super) sidebar_width: f64,
     /// The active tab's contents. A copy, as they're the host's to scroll.
-    pub contents_y: Option<f64>,
+    pub(super) contents_y: Option<f64>,
     /// Where they go on the tab's first showing, and whose they are then.
-    pub contents_resume: Option<(TabId, ContentsScroll)>,
+    pub(super) contents_resume: Option<(TabId, ContentsScroll)>,
     /// What was selected, to put back on the tab's first showing.
-    pub selection_resume: Option<(TabId, record::Selection)>,
-    pub focus: FocusRecord,
-    pub settings_window: Option<SettingsWindow>,
-    pub window_closed: bool,
+    pub(super) selection_resume: Option<(TabId, record::Selection)>,
+    pub(super) focus: FocusRecord,
+    pub(super) settings_window: Option<SettingsWindow>,
+    pub(super) window_closed: bool,
     /// Hidden with ⌘H, as the record has it.
-    pub app_hidden: bool,
+    pub(super) app_hidden: bool,
     /// The host has asked whether the app comes back hidden, and done it: a restore after that keeps what it did.
-    pub hidden_decided: bool,
+    pub(super) hidden_decided: bool,
     /// The same for the window in the Dock.
-    pub minimised_decided: bool,
+    pub(super) minimised_decided: bool,
     /// And for whether there's a window at all.
-    pub window_decided: bool,
+    pub(super) window_decided: bool,
     /// What the state said, as it was taken in after a window went up without it. That window can report its own size, focus and the rest before it's made again, which a full check on a slow machine saw, so the one made again goes by this: see [`AppCore::window_replaced`].
-    pub from_state: Option<Box<AppState>>,
+    pub(super) from_state: Option<Box<AppState>>,
     /// What each pane had selected as its window went for another made from the state, to be selected again on the new one.
-    pub selections_held: Vec<(usize, recto_index::select::Range)>,
+    pub(super) selections_held: Vec<(usize, recto_index::select::Range)>,
 }
 
 #[cfg(test)]

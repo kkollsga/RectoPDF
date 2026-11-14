@@ -45,7 +45,9 @@ pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
         return;
     }
     match (ran.result, ran.refused()) {
-        (Ok(_), _) => *lock(&inner.window.action_notice) = None,
+        (Ok(_), _) => {
+            inner.window.notices().take_notice();
+        }
         (Err(_), Some(error)) => {
             if let Some(words) = person::session_words(error) {
                 person::say(inner, format!("Couldn't rotate: {words}"));

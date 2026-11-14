@@ -3,7 +3,7 @@
 //! `find --hit N`, the command an agent sends, run for the person by the one executor. What it shows and when the host is told are `crate::find`'s; this
 //! hands it the app's parts it reaches, as a [`FindHandle`], and converts what comes back.
 
-use super::{Inner, lock, person};
+use super::{Inner, person};
 use crate::find::{self as app, FindHandle};
 pub use crate::find::{FIELD_HEIGHT, FindCall, Heights, ROW_HEIGHT, heights};
 pub use crate::find::{FindRow, FindRowKind, FindView};
@@ -109,7 +109,7 @@ pub fn is_open(inner: &Inner) -> bool {
 /// Find's heights in the sidebar, for this much room: its line wrapped at the sidebar's width as the session has it.
 pub fn layout(inner: &Inner, room: f64) -> Heights {
     let shown = view(inner);
-    let width = lock(&inner.window.app).sidebar_width;
+    let width = inner.window.sidebar_width();
     heights(room, shown.open, shown.row_count, app::status_lines(&shown.status, width))
 }
 

@@ -356,7 +356,7 @@ fn a_slow_disk_doesnt_bring_back_what_was_out_of_sight() {
     let app = disk.builder().update(&bed).state_late().start();
     assert_eq!(app.disk().app_version().as_deref(), Some(NEW));
     assert_eq!(app.session_json()["tabs"].as_array().map(Vec::len), Some(1), "the state's in");
-    assert!(crate::lock(&app.core().window.app).window_closed, "still closed: heard {:?}", app.heard());
+    assert!(app.core().window.is_closed(), "still closed: heard {:?}", app.heard());
     assert_eq!(
         app.listener().count(&crate::testkit::Heard::RestoreReady),
         1,

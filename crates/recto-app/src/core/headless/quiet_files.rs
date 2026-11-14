@@ -36,7 +36,7 @@ fn every_route_to_an_open_is_held_to_the_run() {
     app.open(&secret);
     assert!(app.tabs().is_empty(), "the person's open made a tab");
     assert_eq!(
-        crate::lock(&app.core().window.open_failure).as_deref(),
+        app.core().window.notices().open_failure().as_deref(),
         Some(recto_session::confined::OUTSIDE_WORDS),
         "the person is told why"
     );

@@ -19,7 +19,7 @@ pub fn unlocked(
             match identity {
                 None => {
                     lock(&inner.tools.prompts().passwords).failed(ask.id);
-                    *lock(&inner.window.open_failure) = Some(passwords::CANT_KEEP.to_string());
+                    inner.window.notices().fail_open(passwords::CANT_KEEP.to_string());
                 }
                 Some(identity) => {
                     lock(&inner.tools.prompts().passwords).opened(ask.id);
@@ -30,7 +30,7 @@ pub fn unlocked(
                     match ask.target {
                         passwords::Target::File => match host.session.with_session(|session| session.open_unlocked(&ask.path, facts, stamp)) {
                             Ok(id) => events.push(host.session.with_session(|session| recto_agent::event::tab_opened(session, id))),
-                            Err(error) => *lock(&inner.window.open_failure) = Some(error.message().to_string()),
+                            Err(error) => inner.window.notices().fail_open(error.message().to_string()),
                         },
                         passwords::Target::Tab(id) => host.session.with_session(|session| session.unlock(id, facts, stamp)),
                     }
@@ -39,12 +39,12 @@ pub fn unlocked(
         }
         Err(OpenError::PasswordNeeded) => {
             if lock(&inner.tools.prompts().passwords).wrong(ask.id) == passwords::Wrong::Stopped {
-                *lock(&inner.window.action_notice) = Some(passwords::stopped_asking());
+                inner.window.notices().say(passwords::stopped_asking());
             }
         }
         Err(error) => {
             lock(&inner.tools.prompts().passwords).failed(ask.id);
-            *lock(&inner.window.open_failure) = Some(error.message().to_string());
+            inner.window.notices().fail_open(error.message().to_string());
         }
     }
 }
@@ -65,7 +65,7 @@ impl crate::prompts::Prompts {
         let Some(password) = password else {
             // Not something a password could be, which counts as a wrong one.
             if asks.wrong(id) == passwords::Wrong::Stopped {
-                *lock(&window.action_notice) = Some(passwords::stopped_asking());
+                window.notices().say(passwords::stopped_asking());
             }
             drop(asks);
             core.push(CoreCall::Reconcile);

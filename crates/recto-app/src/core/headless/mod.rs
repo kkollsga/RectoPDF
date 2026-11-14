@@ -49,6 +49,7 @@ mod update_guards;
 mod update_menu;
 mod update_saved;
 mod view;
+mod window_reaches;
 mod window_script;
 mod withheld_events;
 

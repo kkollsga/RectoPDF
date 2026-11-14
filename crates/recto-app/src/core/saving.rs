@@ -116,7 +116,11 @@ fn run_save(inner: &super::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
                 .as_array()
                 .map(|notes| notes.iter().filter_map(|note| note.as_str()).collect())
                 .unwrap_or_default();
-            *super::lock(&inner.window.action_notice) = (!notes.is_empty()).then(|| notes.join(" "));
+            if notes.is_empty() {
+                inner.window.notices().take_notice();
+            } else {
+                inner.window.notices().say(notes.join(" "));
+            }
             inner.tools.save_ui().set_problem(None);
             // Watchers hear it was saved before they hear it closed.
             inner.core.push(super::CoreCall::Events(std::mem::take(&mut events)));

@@ -43,7 +43,7 @@ fn status(app: &HeadlessApp) -> serde_json::Value {
 
 /// Whether the document window is shut, as the host says when it's closed.
 fn window_shut(app: &HeadlessApp, shut: bool) {
-    crate::lock(&app.core().window.app).window_closed = shut;
+    app.core().window.state_for_tests().window_closed = shut;
 }
 
 const INSTALL_NOW: &str = r#"{"cmd":"update_install","zip":null,"now":true}"#;
