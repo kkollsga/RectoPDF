@@ -10,15 +10,15 @@ use crate::testkit::headless::{Disk, HeadlessApp, WAIT_LIMIT};
 
 /// What the print panel answered: all the pages or a range from 1, the selection's pages, and whether it prints to a file (a PDF saved or previewed).
 #[derive(Clone, Copy)]
-struct Panel {
-    all: bool,
-    first: u32,
-    last: u32,
-    selection_only: bool,
-    to_file: bool,
+pub(super) struct Panel {
+    pub(super) all: bool,
+    pub(super) first: u32,
+    pub(super) last: u32,
+    pub(super) selection_only: bool,
+    pub(super) to_file: bool,
 }
 
-const ALL: Panel = Panel {
+pub(super) const ALL: Panel = Panel {
     all: true,
     first: 1,
     last: 1,
@@ -27,7 +27,7 @@ const ALL: Panel = Panel {
 };
 
 /// **The panel answered, as the host answers it:** the tab showing and what was chosen, through the one way a person's action comes in.
-fn answer(app: &HeadlessApp, panel: Panel) {
+pub(super) fn answer(app: &HeadlessApp, panel: Panel) {
     let tab = lock(&app.core().published).reader.shown_tab;
     let Panel {
         all,
@@ -48,7 +48,7 @@ fn answer(app: &HeadlessApp, panel: Panel) {
 }
 
 /// The notice by the page as the window shows it now: its words and its button's title.
-fn notice(app: &HeadlessApp) -> String {
+pub(super) fn notice(app: &HeadlessApp) -> String {
     match app.reader().selection_notice {
         None => "-".into(),
         Some(notice) => format!("{:?} [{}]", notice.text, notice.action_title.unwrap_or_default()),
@@ -58,7 +58,7 @@ fn notice(app: &HeadlessApp) -> String {
 /// **The file the print made, taken as the host takes it and let go as the system's printing does:** the width in points of each page in it, which says
 /// which pages of the document it holds, as each page of the test files has its own width. Its file has no name and is the user's alone while it's there,
 /// and it goes with its descriptor when it's let go. "none" if there's no file for the host.
-fn printed(app: &HeadlessApp) -> String {
+pub(super) fn printed(app: &HeadlessApp) -> String {
     let before = unnamed_files_held();
     let Some((path, _)) = app.core().tools.printing().take_ready() else {
         return "none".into();
@@ -98,7 +98,7 @@ fn own_uid() -> u32 {
 
 /// The print files of this process's in the system's temp folder, made or half made, named as prints were before they had no name, or as the unnamed one
 /// is for the moment before it's unlinked: what no print may leave, or have while it's prepared.
-fn print_files_left() -> Vec<String> {
+pub(super) fn print_files_left() -> Vec<String> {
     let folder = recto_platform::local::system_temp_dir().unwrap_or_else(std::env::temp_dir);
     let pid = std::process::id();
     std::fs::read_dir(folder)
@@ -143,7 +143,7 @@ pub(crate) fn unnamed_file(bytes: &[u8]) -> std::fs::File {
 }
 
 /// A print held once it's this many pages in, till the test lets it go: the sender that lets it go.
-fn hold_at(page: u32) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+pub(super) fn hold_at(page: u32) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
     let (told, held) = std::sync::mpsc::channel();
     let (go, waiting) = std::sync::mpsc::channel();
     *lock(&AT_PAGE) = Some((page, (told, waiting)));

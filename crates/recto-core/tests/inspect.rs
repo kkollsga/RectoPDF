@@ -213,8 +213,13 @@ fn chapters_nested_inside_chapter_one_read_as_the_file_has_them_and_look_bad() {
 }
 
 /// A three-page file anyone can open, encrypted with these permissions.
-#[allow(clippy::disallowed_methods)] // A test fixture built with lopdf's eager writer, which alone encrypts; never over a user's file.
 fn encrypted_with(permissions: lopdf::encryption::Permissions) -> Vec<u8> {
+    encrypted_for(permissions, "")
+}
+
+/// A three-page file encrypted with these permissions, opening with `user_password`: anyone, if it's empty.
+#[allow(clippy::disallowed_methods)] // A test fixture built with lopdf's eager writer, which alone encrypts; never over a user's file.
+fn encrypted_for(permissions: lopdf::encryption::Permissions, user_password: &str) -> Vec<u8> {
     use lopdf::encryption::{EncryptionState, EncryptionVersion};
     let mut document = lopdf::Document::load_mem(&three_page_pdf("", &[], "")).unwrap();
     document.trailer.set(
@@ -227,7 +232,7 @@ fn encrypted_with(permissions: lopdf::encryption::Permissions) -> Vec<u8> {
     let state = EncryptionState::try_from(EncryptionVersion::V2 {
         document: &document,
         owner_password: "owner",
-        user_password: "",
+        user_password,
         key_length: 128,
         permissions,
     })
@@ -254,6 +259,23 @@ fn the_copy_flag_is_read_from_the_encryption_dictionary() {
         recto_core::copy_restricted(std::path::Path::new("/nowhere/at/all.pdf")),
         Err(OpenError::NotFound)
     ));
+}
+
+/// Failure (PLAN, "the person can't print a document they opened with its password"): the copy flag of a file that opens only with its password can't be
+/// read, so a caller falls back to "not restricted" and a print to a file of such a document skips its "anyway". Without the password the read fails;
+/// with it, through the open file, the flag is read as it is, for a file that asks and one that doesn't; a wrong password fails as no password does.
+#[test]
+fn the_copy_flag_of_a_password_file_is_read_with_its_password() {
+    use lopdf::encryption::Permissions;
+    use recto_core::{Password, copy_restricted_with_password};
+    let shut = TempPdf::new("shut.pdf", &encrypted_for(Permissions::all() - Permissions::COPYABLE, "open sesame"));
+    let open = TempPdf::new("open.pdf", &encrypted_for(Permissions::all(), "open sesame"));
+    assert_eq!(recto_core::copy_restricted(&shut.0), Err(OpenError::PasswordNeeded), "unreadable without it");
+    let typed = Password::new("open sesame").unwrap();
+    let with = |file: &TempPdf, password: &Password| copy_restricted_with_password(std::fs::File::open(&file.0).unwrap(), password);
+    assert_eq!(with(&shut, &typed), Ok(true));
+    assert_eq!(with(&open, &typed), Ok(false));
+    assert_eq!(with(&shut, &Password::new("wrong").unwrap()), Err(OpenError::PasswordNeeded));
 }
 
 /// A file that opens only with the user password `"open sesame"`, written by lopdf's eager writer, which alone encrypts.

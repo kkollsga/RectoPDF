@@ -1,7 +1,7 @@
 //! **The person's passwords reach a command only by the person's own door** (PLAN, "the person can't print a document they opened with its password",
 //! design point 1): what the server calls never carries them, whatever actor it's given, and the person's door gives them only to the person.
 
-use crate::host::SessionHost;
+use crate::host::{Host, SessionHost};
 use recto_agent::keys::PersonsKeys;
 use recto_agent::{Actor, Level, SessionAccess};
 use recto_core::{DocFacts, OpenError, Password, Toc};
@@ -86,4 +86,47 @@ fn only_the_persons_access_holds_the_windows_print_watch() {
         host.persons_access().print_watch(Actor::Agent(Level::Full)).is_none(),
         "and gives it to an agent"
     );
+}
+
+/// **Failure (design point 1): the server's route carries the person's keys** (the brief's `the_servers_route_carries_no_keys`): the access `Host::run`
+/// and `Host::check` build holds them, so a command the server runs as the person (the actor is only a word) reads a document they opened with its
+/// password: Find with its key, page by page. With keys that would open anything and count each ask, and a real document open: the person's Find and
+/// print and a check, through the trait the server holds, ask for no key; the person's own route asks for one, so the count can see it.
+#[test]
+fn the_servers_route_carries_no_keys() {
+    use recto_agent::find::Finding;
+    use std::time::Duration;
+    let file = recto_testpdf::TempPdf::new(
+        "keys.pdf",
+        &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["alpha words"]))]),
+    );
+    let host = SessionHost::new(recto_agent::DrawableLoader);
+    let asked = Arc::new(AtomicUsize::new(0));
+    host.set_persons_keys(any_key(&asked));
+    host.set_print_watch(Arc::new(Unwatched));
+    let run = |actor_line: &str| recto_agent::parse(actor_line).expect("a command");
+    let open = format!(r#"{{"cmd":"open","path":{}}}"#, serde_json::Value::from(file.0.display().to_string()));
+    host.run(Actor::Agent(Level::Full), &run(&open), &mut Vec::new()).expect("opened");
+    // The server's route, as the person: Find, run to its end, a print to a file, a print to the window (which it has none of), and a check.
+    let found = Host::run(&host, Actor::Person, &run(r#"{"cmd":"find","query":"alpha"}"#), &mut Vec::new());
+    assert!(found.is_ok(), "{found:?}");
+    let mut generation = 0;
+    host.finder().with_results(&mut |results| generation = results.generation);
+    assert!(host.finder().wait(generation, Duration::from_secs(30)), "Find ended");
+    let out = file.0.with_file_name(format!("keys-printed-{}.pdf", std::process::id()));
+    let printed = format!(r#"{{"cmd":"print","to_pdf":{}}}"#, serde_json::Value::from(out.display().to_string()));
+    assert!(Host::run(&host, Actor::Person, &run(&printed), &mut Vec::new()).is_ok(), "printed to its file");
+    let _ = std::fs::remove_file(&out);
+    let unnamed = Host::run(&host, Actor::Person, &run(r#"{"cmd":"print"}"#), &mut Vec::new());
+    assert_eq!(
+        unnamed.map(drop).map_err(|error| error.code),
+        Err(recto_agent::Code::USAGE),
+        "no window's printing here"
+    );
+    let _ = Host::check(&host, recto_agent::Condition::PageDrawn, &recto_agent::TabRef::default(), Some(1));
+    assert_eq!(asked.load(Ordering::SeqCst), 0, "the server's route asked for the person's keys");
+    // The person's own route asks, so the count above could have seen it.
+    host.run_for_person(&run(r#"{"cmd":"print"}"#), &mut Vec::new())
+        .expect("the person's print to the window");
+    assert!(asked.load(Ordering::SeqCst) > 0, "the person's own print asked for no key");
 }

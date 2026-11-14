@@ -370,6 +370,21 @@ pub fn copy_restricted(path: &Path) -> Result<bool, OpenError> {
     Ok(restricted_by(&reader))
 }
 
+/// **[`copy_restricted`] through a file already open, with the password the person typed for it** (PLAN, "the person can't print a document they opened
+/// with its password"): a file that opens only with a password can't be read without it, so [`copy_restricted`] fails on it, and a caller that took the
+/// failure as "not restricted" would let a print to a file of such a document past its "anyway". Read through the very file the renderer has open, so
+/// the flag is that file's, whatever is at its path now. A wrong password is [`OpenError::PasswordNeeded`]. The file's closed again when this returns,
+/// and the password isn't kept here.
+pub fn copy_restricted_with_password(file: std::fs::File, password: &Password) -> Result<bool, OpenError> {
+    let source = FileSource::from_file(file).map_err(|_| OpenError::NotAllowed)?;
+    // As in `inspect_with_password`: lopdf takes this copy and drops it once it's derived the file's key.
+    let options = lopdf::IndexedReaderOptions {
+        password: Some(password.bytes().to_vec()),
+        ..lopdf::IndexedReaderOptions::default()
+    };
+    Ok(restricted_by(&checked_reader(IndexedReader::open_with_options(source, options))?))
+}
+
 /// [`copy_restricted`] on bytes in memory: the same read, for the fuzzer.
 pub fn copy_restricted_bytes(bytes: Arc<[u8]>) -> Result<bool, OpenError> {
     Ok(restricted_by(&open_bytes(bytes)?))

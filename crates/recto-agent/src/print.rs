@@ -12,6 +12,7 @@
 
 use crate::Code;
 use crate::TabRef;
+use crate::keys::PersonsKeys;
 use crate::render::{FileOut, Output, OwnTemp, output_exists, publish_picture};
 use crate::{AgentError, Direct, DocLoader, Session, SessionAccess, exit, no_such_page, parse_pages, select, source_changed};
 use flate2::{Compression, write::ZlibEncoder};
@@ -21,8 +22,10 @@ use recto_render_service::{
 };
 use serde_json::{Value, json};
 use std::cell::RefCell;
+use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 /// The resolution a page prints at when nothing says: what a laser printer and the system's own PDF printing use.
@@ -37,15 +40,26 @@ pub const MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_OPEN_FILES: usize = 2;
 
 /// **The renderer a page is printed with:** a worker per file, the most recent kept, as pages of one file usually come together; told which of the
-/// file's own highlights the tab has taken out (moved out of `print_with_caps` unchanged but for that, R4.3).
-fn renderer_for<'a>(open: &'a mut Vec<(PathBuf, DocRenderer)>, page: &PrintPage, config: &ServiceConfig) -> Result<&'a mut DocRenderer, AgentError> {
+/// file's own highlights the tab has taken out (moved out of `print_with_caps` unchanged but for that, R4.3). Opened with the person's password for a page
+/// of the tab's own file, if they typed one for the very file opened ([`key_for`]).
+fn renderer_for<'a>(
+    open: &'a mut Vec<(PathBuf, DocRenderer)>,
+    page: &PrintPage,
+    config: &ServiceConfig,
+    keys: Option<&PersonsKeys>,
+) -> Result<&'a mut DocRenderer, AgentError> {
     let at = match open.iter().position(|(path, _)| *path == page.path) {
         Some(at) => at,
         None => {
             if open.len() >= MAX_OPEN_FILES {
                 open.remove(0);
             }
-            open.push((page.path.clone(), DocRenderer::new(&page.path, None, config.clone(), Policy::default())?));
+            let file = DocRenderer::open_file(&page.path)?;
+            let key = key_for(&file, page, keys);
+            open.push((
+                page.path.clone(),
+                DocRenderer::with_file(file, &page.path, key, config.clone(), Policy::default())?,
+            ));
             open.len() - 1
         }
     };
@@ -54,7 +68,16 @@ fn renderer_for<'a>(open: &'a mut Vec<(PathBuf, DocRenderer)>, page: &PrintPage,
     Ok(doc)
 }
 
-/// One page to print: where it really is, its unsaved quarter turns, and the file's own highlights its tab has taken out, unsaved.
+/// **The person's password for a page, if it gets one** (PLAN, "the person can't print a document they opened with its password"): only for a page of
+/// the tab's own file, as the page view draws (a page added from another file that needs a password stays unreadable, as on screen), and only the one
+/// typed for the very file opened here, by its own identity, so a file put at the path since the person typed it is never given it. The only place a
+/// print asks for a key.
+fn key_for(file: &File, page: &PrintPage, keys: Option<&PersonsKeys>) -> Option<Arc<recto_core::Password>> {
+    keys.filter(|_| page.own)?.for_file(file)
+}
+
+/// One page to print: where it really is, its unsaved quarter turns, the file's own highlights its tab has taken out, unsaved, and whether it's from the
+/// tab's own file.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PrintPage {
     pub path: PathBuf,
@@ -62,6 +85,9 @@ pub struct PrintPage {
     pub page: u32,
     pub quarter_turns: u8,
     pub hidden: crate::render::Hidden,
+    /// From the tab's own file, a page added from that same file included, rather than another PDF added to it: the page view's rule for which pages
+    /// a password typed for the tab reads. Only these are printed with the person's password.
+    pub own: bool,
 }
 
 /// How a print went.
@@ -106,8 +132,9 @@ pub fn print_pages_in<L: DocLoader + Clone>(session: &mut Session<L>, tab: &TabR
 /// The pages a print takes, as the tab has them, edits and all: each one's file and page there, and its unsaved turn. `pages` is `4`, `4-6` or `4-`, and all of them if left out.
 pub fn print_pages<A: SessionAccess>(access: &A, tab: &TabRef, pages: Option<&str>) -> Result<Vec<PrintPage>, AgentError> {
     let range = pages.map(|pages| parse_pages(pages, true)).transpose()?;
-    let sources = access.with(|s| {
+    let (own, sources) = access.with(|s| {
         let id = select(s, tab)?;
+        let own = s.tabs().path_of(id);
         let total = s.pages().count(id);
         let (start, len) = range.unwrap_or((0, total));
         if start >= total {
@@ -122,13 +149,14 @@ pub fn print_pages<A: SessionAccess>(access: &A, tab: &TabRef, pages: Option<&st
         }
         // Made once and shared by the file's pages (second review of R4.3, SF3).
         let set = crate::highlighting::tab_set(s, id);
-        (start..end)
+        let sources = (start..end)
             .map(|position| {
                 let source = s.page_source(id, position).ok_or_else(no_such_page)?;
                 let hidden = crate::highlighting::for_page(set.as_ref(), &source);
                 Ok((source, hidden))
             })
-            .collect::<Result<Vec<_>, _>>()
+            .collect::<Result<Vec<_>, AgentError>>()?;
+        Ok::<_, AgentError>((own, sources))
     })?;
     sources
         .into_iter()
@@ -137,6 +165,7 @@ pub fn print_pages<A: SessionAccess>(access: &A, tab: &TabRef, pages: Option<&st
                 return Err(source_changed(&source.path));
             }
             Ok(PrintPage {
+                own: own.as_deref() == Some(source.path.as_path()),
                 path: source.path,
                 page: source.page,
                 quarter_turns: source.quarter_turns,
@@ -147,15 +176,27 @@ pub fn print_pages<A: SessionAccess>(access: &A, tab: &TabRef, pages: Option<&st
 }
 
 /// Whether any file the pages come from asks not to be copied, each file looked at once, by its own flag and with no page read: a print to a PDF file is an export, and asks "anyway" for one.
-pub fn any_copy_restricted(pages: &[PrintPage]) -> bool {
+pub fn any_copy_restricted(pages: &[PrintPage], keys: Option<&PersonsKeys>) -> bool {
     let mut seen: Vec<&Path> = Vec::new();
     pages.iter().any(|page| {
         if seen.contains(&page.path.as_path()) {
             return false;
         }
         seen.push(&page.path);
-        crate::extract::is_copy_restricted(&page.path)
+        copy_restricted(page, keys)
     })
+}
+
+/// **A page's file's flag, read with the person's password where the page is printed with it** ([`key_for`]): a file that opens only with its password
+/// can't be read without it, and the read without one fails open ("not restricted"), so its flag is read through the file opened, with its key. A read
+/// with the key that fails all the same is taken as asking: the person is offered "Print anyway", where failing open would skip it.
+fn copy_restricted(page: &PrintPage, keys: Option<&PersonsKeys>) -> bool {
+    if let Ok(file) = DocRenderer::open_file(&page.path)
+        && let Some(key) = key_for(&file, page, keys)
+    {
+        return recto_core::copy_restricted_with_password(file, &key).unwrap_or(true);
+    }
+    crate::extract::is_copy_restricted(&page.path)
 }
 
 /// Counts what's written, so offsets for the cross-reference table are known without seeking.
@@ -253,20 +294,21 @@ pub fn scale_for(dpi: u32) -> f32 {
     dpi as f32 / 72.0
 }
 
-/// Prints `pages` into `out` as a PDF, whole or failing. `config` finds the worker; `progress` hears each page as it's done, and returning false stops the print. Can sleep waiting for the larger limit, so never on a UI thread.
+/// Prints `pages` into `out` as a PDF, whole or failing. `config` finds the worker, and `keys` are the person's passwords for their own print ([`key_for`]);
+/// `progress` hears each page as it's done, and returning false stops the print. Can sleep waiting for the larger limit, so never on a UI thread.
 pub(crate) fn print_into<O: Output>(
-    config: &ServiceConfig,
+    (config, keys): (&ServiceConfig, Option<&PersonsKeys>),
     pages: &[PrintPage],
     dpi: u32,
     out: &mut O,
     progress: impl FnMut(u32, u32) -> bool,
 ) -> Result<Printed, AgentError> {
-    print_with_caps(config, pages, dpi, &OutputCaps::default(), out, progress)
+    print_with_caps((config, keys), pages, dpi, &OutputCaps::default(), out, progress)
 }
 
 /// [`print_into`] under these caps, which a test makes small to reach a page too large without drawing 100 Mpx.
 fn print_with_caps<O: Output>(
-    config: &ServiceConfig,
+    (config, keys): (&ServiceConfig, Option<&PersonsKeys>),
     pages: &[PrintPage],
     dpi: u32,
     caps: &OutputCaps,
@@ -298,7 +340,7 @@ fn print_with_caps<O: Output>(
         if !progress(index as u32, pages.len() as u32) {
             return Err(AgentError::new(Code::CANCELLED, "The print was stopped.", exit::FAILED));
         }
-        let doc = renderer_for(&mut open, page, config)?;
+        let doc = renderer_for(&mut open, page, config, keys)?;
         // Asked once: the page written says this size, and the drawing goes by the same answer.
         let (width_points, height_points) = doc.page_size(page.page)?;
         let page_scale = if fits_at(width_points, height_points, scale, caps) {
@@ -438,8 +480,9 @@ pub(crate) enum PrintTo<'a> {
     File(&'a Path),
     /// **The person's print at the window:** a file with no name, theirs alone ([`OwnTemp::create_unnamed`]), handed to the window's printing once it's
     /// whole ([`PrintWatch::ready`]). It never has a name on disk, so nothing can open it but through the window, and it's gone when the window lets it go
-    /// or the app ends, however it ends.
-    Window(&'a dyn PrintWatch),
+    /// or the app ends, however it ends. With the person's passwords for their own pages: only a print with no name gets them, so a document opened with
+    /// its password is never printed to a file with a name, however the app ends.
+    Window(&'a dyn PrintWatch, Option<&'a PersonsKeys>),
 }
 
 /// The refusal for a print that names no file and has no window to go to: an agent's, which always names one (`--to-pdf`).
@@ -450,11 +493,15 @@ pub(crate) fn needs_a_file() -> AgentError {
 /// `recto print --to-pdf`, and the person's print at the window: pages to a new PDF, through the same drawing the app prints with, whole or not at all.
 /// `progress` hears each page, and returning false stops it.
 pub(crate) fn print_to_file(pages: &[PrintPage], dpi: u32, to: PrintTo<'_>, anyway: bool, progress: impl FnMut(u32, u32) -> bool) -> Result<Value, AgentError> {
-    if let PrintTo::File(out) = to {
-        crate::saving::check_export_path(out, &["pdf"], "PDF")?;
-    }
+    let keys = match to {
+        PrintTo::File(out) => {
+            crate::saving::check_export_path(out, &["pdf"], "PDF")?;
+            None
+        }
+        PrintTo::Window(_, keys) => keys,
+    };
     // An export, so a file that asks not to be copied asks "anyway", as Copy does (owner, 2026-11-08).
-    if !anyway && any_copy_restricted(pages) {
+    if !anyway && any_copy_restricted(pages, keys) {
         return Err(
             AgentError::new(Code::COPY_RESTRICTED, "This file's permissions ask that it isn't copied.", exit::PROTECTED)
                 .then("Tell the user. `--anyway` prints it to a PDF, once they've said to. Each use goes in the activity log. Print to paper never asks."),
@@ -472,15 +519,15 @@ pub(crate) fn print_to_file(pages: &[PrintPage], dpi: u32, to: PrintTo<'_>, anyw
         PrintTo::File(out) => {
             let (temp, file) = OwnTemp::create(out)?;
             let mut written = FileOut(file);
-            let printed = print_into(&config, pages, dpi, &mut written, progress)?;
+            let printed = print_into((&config, None), pages, dpi, &mut written, progress)?;
             drop(written);
             publish_picture(&temp.path, out)?;
             drop(temp);
             (Some(out), printed)
         }
-        PrintTo::Window(watch) => {
+        PrintTo::Window(watch, keys) => {
             let mut written = FileOut(OwnTemp::create_unnamed()?);
-            let printed = print_into(&config, pages, dpi, &mut written, progress)?;
+            let printed = print_into((&config, keys), pages, dpi, &mut written, progress)?;
             watch.ready(written.0);
             (None, printed)
         }
@@ -520,17 +567,19 @@ mod tests {
                 page: 1,
                 quarter_turns: 0,
                 hidden: None,
+                own: false,
             },
             PrintPage {
                 path: file.0.clone(),
                 page: 0,
                 quarter_turns: 1,
                 hidden: None,
+                own: false,
             },
         ];
         let mut out = MemoryOut::new(64 * 1024 * 1024);
         let mut heard = Vec::new();
-        let printed = print_into(&ServiceConfig::discover().unwrap(), &pages, 72, &mut out, |done, of| {
+        let printed = print_into((&ServiceConfig::discover().unwrap(), None), &pages, 72, &mut out, |done, of| {
             heard.push((done, of));
             true
         })
@@ -588,12 +637,14 @@ mod tests {
                 page: 0,
                 quarter_turns: 0,
                 hidden: None,
+                own: false,
             },
             PrintPage {
                 path: file.0.clone(),
                 page: 1,
                 quarter_turns: 0,
                 hidden: None,
+                own: false,
             },
         ];
         // Letter at 72 dpi is 484 kpx, so a cap of 200 kpx makes every page too large.
@@ -602,7 +653,7 @@ mod tests {
             ..OutputCaps::default()
         };
         let mut out = MemoryOut::new(64 * 1024 * 1024);
-        let printed = print_with_caps(&ServiceConfig::discover().unwrap(), &pages, 72, &caps, &mut out, |_, _| true).unwrap();
+        let printed = print_with_caps((&ServiceConfig::discover().unwrap(), None), &pages, 72, &caps, &mut out, |_, _| true).unwrap();
         assert_eq!(printed.pages, 2);
         assert_eq!(printed.scaled_down.iter().map(|(page, _)| *page).collect::<Vec<_>>(), [1, 2]);
         assert!(printed.scaled_down.iter().all(|(_, dpi)| (40..72).contains(dpi)), "{:?}", printed.scaled_down);
@@ -613,6 +664,136 @@ mod tests {
             "each page keeps its own size in points, only its picture is smaller"
         );
         assert_xref_is_exact(&out.bytes);
+    }
+
+    /// A one-page file that opens only with `password`, saying `words`: lopdf's eager writer, which alone encrypts.
+    #[allow(clippy::disallowed_methods)] // A test fixture, written to a new temp file; never over a user's file.
+    fn locked(password: &str, words: &str) -> Vec<u8> {
+        use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
+        let mut document = lopdf::Document::load_mem(&recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&[words]))])).unwrap();
+        document.trailer.set(
+            "ID",
+            lopdf::Object::Array(vec![
+                lopdf::Object::string_literal("0123456789abcdef"),
+                lopdf::Object::string_literal("0123456789abcdef"),
+            ]),
+        );
+        let state = EncryptionState::try_from(EncryptionVersion::V2 {
+            document: &document,
+            owner_password: "owner",
+            user_password: password,
+            key_length: 128,
+            permissions: Permissions::all(),
+        })
+        .unwrap();
+        document.encrypt(&state).unwrap();
+        let mut bytes = Vec::new();
+        document.save_to(&mut bytes).unwrap();
+        bytes
+    }
+
+    /// The person's keys as the app's keyring gives them: the password for the files `typed_for` names by device and inode, and none for any other;
+    /// counting the files asked about.
+    fn keys_for(typed_for: Vec<(u64, u64)>, asked: &std::sync::Arc<std::sync::Mutex<Vec<(u64, u64)>>>) -> PersonsKeys {
+        let asked = std::sync::Arc::clone(asked);
+        PersonsKeys::new(move |identity| {
+            asked.lock().unwrap().push(identity);
+            typed_for
+                .contains(&identity)
+                .then(|| Arc::new(recto_core::Password::new("open sesame").unwrap()))
+        })
+    }
+
+    fn page_of(file: &std::path::Path, own: bool) -> PrintPage {
+        PrintPage {
+            path: file.to_path_buf(),
+            page: 0,
+            quarter_turns: 0,
+            hidden: None,
+            own,
+        }
+    }
+
+    /// Failure (design point 2): the person's password reaches a page that isn't of the tab's own file, a page added from another file that needs one,
+    /// which the page view leaves unreadable: a print would show what the password protects in a document it wasn't typed for, as a picture. With keys
+    /// that would open both files: the tab's own page prints, and the added page's file isn't even asked about, and fails as it needs a password.
+    #[test]
+    fn a_key_serves_only_the_tabs_own_file() {
+        let own = recto_testpdf::TempPdf::new("own.pdf", &locked("open sesame", "Own page"));
+        let added = recto_testpdf::TempPdf::new("added.pdf", &locked("open sesame", "Added page"));
+        let identity = |path: &std::path::Path| recto_platform::secret::file_identity(path).unwrap();
+        let asked = std::sync::Arc::default();
+        let keys = keys_for(vec![identity(&own.0), identity(&added.0)], &asked);
+        let config = ServiceConfig::discover().unwrap();
+        let mut out = MemoryOut::new(64 * 1024 * 1024);
+        let printed = print_into((&config, Some(&keys)), &[page_of(&own.0, true)], 72, &mut out, |_, _| true);
+        assert_eq!(
+            printed.map(|printed| printed.pages).map_err(|error| error.code),
+            Ok(1),
+            "the tab's own page prints with its password"
+        );
+        let mut out = MemoryOut::new(64 * 1024 * 1024);
+        let refused = print_into(
+            (&config, Some(&keys)),
+            &[page_of(&own.0, true), page_of(&added.0, false)],
+            72,
+            &mut out,
+            |_, _| true,
+        );
+        assert_eq!(
+            refused.map(drop).map_err(|error| error.code),
+            Err(Code::NEEDS_PASSWORD),
+            "the added page needs one"
+        );
+        assert!(!asked.lock().unwrap().contains(&identity(&added.0)), "the added page's file was asked about");
+        assert!(!any_copy_restricted(&[page_of(&added.0, false)], Some(&keys)));
+        assert!(!asked.lock().unwrap().contains(&identity(&added.0)), "its flag was read with a key");
+    }
+
+    /// Failure (design point 1): the person's password goes to whatever file is at the path when the print opens it, as a lookup by path gives it, so a
+    /// file put there after they typed it (between the print's check that the file is current and its open, or for a tab with no edits, which checks
+    /// nothing) is opened with their password. The key is looked up by the file opened: the file put there gets none, and its print needs a password.
+    #[test]
+    fn a_file_put_at_the_path_gets_no_key() {
+        let folder = recto_testpdf::TempDir::new("put-at-path-");
+        let path = folder.join("protected.pdf");
+        std::fs::write(&path, locked("open sesame", "Typed for")).unwrap();
+        let typed_for = recto_platform::secret::file_identity(&path).unwrap();
+        let asked = std::sync::Arc::default();
+        let keys = keys_for(vec![typed_for], &asked);
+        let config = ServiceConfig::discover().unwrap();
+        let mut out = MemoryOut::new(64 * 1024 * 1024);
+        assert!(
+            print_into((&config, Some(&keys)), &[page_of(&path, true)], 72, &mut out, |_, _| true).is_ok(),
+            "printed with its key"
+        );
+        let other = folder.join("other.pdf");
+        std::fs::write(&other, locked("open sesame", "Put there after")).unwrap();
+        std::fs::rename(&other, &path).unwrap();
+        let mut out = MemoryOut::new(64 * 1024 * 1024);
+        let refused = print_into((&config, Some(&keys)), &[page_of(&path, true)], 72, &mut out, |_, _| true);
+        assert_eq!(
+            refused.map(drop).map_err(|error| error.code),
+            Err(Code::NEEDS_PASSWORD),
+            "the file put there gets no key"
+        );
+        let now = recto_platform::secret::file_identity(&path).unwrap();
+        assert_ne!(now, typed_for);
+        assert_eq!(asked.lock().unwrap().last(), Some(&now), "asked by the file opened, which got none");
+        // The race itself, made to happen: the print opens the file put at the path, and the file the password was typed for is back at the path by the
+        // time the key is looked up. A look-up by path would give the opened file the password; by the file opened, it gets none.
+        let opened = DocRenderer::open_file(&path).unwrap();
+        let put_there = folder.join("put-there.pdf");
+        std::fs::rename(&path, &put_there).unwrap();
+        std::fs::write(&other, locked("open sesame", "Typed for, again")).unwrap();
+        let typed_again = recto_platform::secret::file_identity(&other).unwrap();
+        let keys = keys_for(vec![typed_again], &asked);
+        std::fs::rename(&other, &path).unwrap();
+        assert!(keys.for_find()(&path).is_some(), "by path, the key would be given");
+        assert!(
+            key_for(&opened, &page_of(&path, true), Some(&keys)).is_none(),
+            "the file opened was given the key typed for another"
+        );
     }
 
     /// Failure: a print can be asked for at a resolution that costs gigabytes a page, or of nothing, or stopped and still look finished.
@@ -627,21 +808,28 @@ mod tests {
             page: 0,
             quarter_turns: 0,
             hidden: None,
+            own: false,
         };
         let config = ServiceConfig::discover().unwrap();
         let mut out = MemoryOut::new(1024 * 1024);
         assert_eq!(
-            print_into(&config, std::slice::from_ref(&page), 2400, &mut out, |_, _| true).unwrap_err().code,
+            print_into((&config, None), std::slice::from_ref(&page), 2400, &mut out, |_, _| true)
+                .unwrap_err()
+                .code,
             "bad_dpi"
         );
-        assert_eq!(print_into(&config, &[], 300, &mut out, |_, _| true).unwrap_err().code, "no_pages");
+        assert_eq!(print_into((&config, None), &[], 300, &mut out, |_, _| true).unwrap_err().code, "no_pages");
         assert_eq!(
-            print_into(&config, std::slice::from_ref(&page), 300, &mut out, |_, _| false).unwrap_err().code,
+            print_into((&config, None), std::slice::from_ref(&page), 300, &mut out, |_, _| false)
+                .unwrap_err()
+                .code,
             "cancelled"
         );
         let mut tiny = MemoryOut::new(100);
         assert_eq!(
-            print_into(&config, std::slice::from_ref(&page), 72, &mut tiny, |_, _| true).unwrap_err().code,
+            print_into((&config, None), std::slice::from_ref(&page), 72, &mut tiny, |_, _| true)
+                .unwrap_err()
+                .code,
             "output_too_large"
         );
     }

@@ -438,10 +438,12 @@ impl Cmd for Print {
         } = self;
         let access = cx.access;
         // A print that names no file goes to the window's printing, which only the person at the window has: anyone else's names a file, or is refused.
+        // With it, the person's passwords for the pages of their own document they opened with one: never to a file with a name.
         let watch = access.print_watch(cx.actor);
+        let keys = access.persons_keys(cx.actor);
         let to = match (to_pdf.as_deref(), watch) {
             (Some(to_pdf), _) => print::PrintTo::File(to_pdf),
-            (None, Some(watch)) => print::PrintTo::Window(watch),
+            (None, Some(watch)) => print::PrintTo::Window(watch, keys.as_ref()),
             (None, None) => return Err(print::needs_a_file()),
         };
         if let print::PrintTo::File(to_pdf) = to {
