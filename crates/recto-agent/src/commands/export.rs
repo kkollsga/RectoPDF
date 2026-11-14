@@ -389,7 +389,10 @@ pub struct Print {
     pub pages: Option<String>,
     #[serde(default = "crate::print::default_dpi")]
     pub dpi: u32,
-    pub to_pdf: PathBuf,
+    /// The new file it goes to. None is the person's print at the window, to the window's printing, in a file with no name: an agent's names a file, or
+    /// is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_pdf: Option<PathBuf>,
     /// Prints a file that asks not to be copied to a PDF. Only once the user has said to; logged. Print to paper never asks.
     #[serde(default)]
     pub anyway: bool,
@@ -423,7 +426,7 @@ impl Cmd for Print {
             to_pdf,
             anyway,
         } = self;
-        json!({ "tab": super::log_tab(tab), "pages": pages.as_deref().map(clean_range), "dpi": dpi, "anyway": anyway, "untrusted": super::log_file(to_pdf) })
+        json!({ "tab": super::log_tab(tab), "pages": pages.as_deref().map(clean_range), "dpi": dpi, "anyway": anyway, "untrusted": to_pdf.as_deref().map(super::log_file) })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self {
@@ -434,17 +437,25 @@ impl Cmd for Print {
             anyway,
         } = self;
         let access = cx.access;
-        crate::quiet_files::check_new_file(access, to_pdf)?;
+        // A print that names no file goes to the window's printing, which only the person at the window has: anyone else's names a file, or is refused.
+        let watch = access.print_watch(cx.actor);
+        let to = match (to_pdf.as_deref(), watch) {
+            (Some(to_pdf), _) => print::PrintTo::File(to_pdf),
+            (None, Some(watch)) => print::PrintTo::Window(watch),
+            (None, None) => return Err(print::needs_a_file()),
+        };
+        if let print::PrintTo::File(to_pdf) = to {
+            crate::quiet_files::check_new_file(access, to_pdf)?;
+        }
         let list = print::print_pages(access, tab, pages.as_deref())?;
         // The person's print at the window says how far it's got, with Stop; anyone else's goes to its end.
-        let Some(watch) = access.print_watch(cx.actor) else {
-            return print::print_to_file(&list, *dpi, to_pdf, *anyway, print::Readable::AsAnyExport, |_, _| true);
+        let Some(watch) = watch else {
+            return print::print_to_file(&list, *dpi, to, *anyway, |_, _| true);
         };
         let id = access.with(|s| select(s, tab))?;
         watch.begin(id, u32::try_from(list.len()).unwrap_or(u32::MAX));
         let _watched = print::Watched(watch);
-        // The window's print is the person's: its file is theirs alone, for the system's printing.
-        print::print_to_file(&list, *dpi, to_pdf, *anyway, print::Readable::ByTheUserAlone, |done, of| watch.page(done, of))
+        print::print_to_file(&list, *dpi, to, *anyway, |done, of| watch.page(done, of))
     }
     fn human(data: &Value) -> String {
         format!(

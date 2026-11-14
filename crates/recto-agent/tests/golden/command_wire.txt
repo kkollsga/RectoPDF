@@ -587,9 +587,9 @@
 {"cmd":"snapshot","page":3,"rect":[0,0,10,10],"format":"png"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"print","to_pdf":"/d/x.pdf"}
-    ok print Print { tab: "active", pages: None, dpi: 300, to_pdf: "/d/x.pdf", anyway: false }
+    ok print Print { tab: "active", pages: None, dpi: 300, to_pdf: Some("/d/x.pdf"), anyway: false }
 {"cmd":"print","tab":"#2","pages":"2-3","dpi":3,"to_pdf":"/d/x.pdf","anyway":true}
-    ok print Print { tab: "#2", pages: Some("2-3"), dpi: 3, to_pdf: "/d/x.pdf", anyway: true }
+    ok print Print { tab: "#2", pages: Some("2-3"), dpi: 3, to_pdf: Some("/d/x.pdf"), anyway: true }
 {"cmd":"print","to_pdf":"/d/x.pdf","extra":1}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"print","to_pdf":"/d/x.pdf","tab":{}}
@@ -599,7 +599,7 @@
 {"cmd":"print","to_pdf":"/d/x.pdf","pages":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"print","to_pdf":"/d/x.pdf","pages":null}
-    ok print Print { tab: "active", pages: None, dpi: 300, to_pdf: "/d/x.pdf", anyway: false }
+    ok print Print { tab: "active", pages: None, dpi: 300, to_pdf: Some("/d/x.pdf"), anyway: false }
 {"cmd":"print","to_pdf":"/d/x.pdf","dpi":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"print","to_pdf":"/d/x.pdf","dpi":null}
@@ -607,17 +607,17 @@
 {"cmd":"print","to_pdf":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"print","to_pdf":null}
-    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+    ok print Print { tab: "active", pages: None, dpi: 300, to_pdf: None, anyway: false }
 {"cmd":"print"}
-    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+    ok print Print { tab: "active", pages: None, dpi: 300, to_pdf: None, anyway: false }
 {"cmd":"print","to_pdf":"/d/x.pdf","anyway":{}}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"print","to_pdf":"/d/x.pdf","anyway":null}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 ["print"]
-    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
+    ok print Print { tab: "active", pages: None, dpi: 300, to_pdf: None, anyway: false }
 ["print","#2","2-3",3,"/d/x.pdf",true]
-    ok print Print { tab: "#2", pages: Some("2-3"), dpi: 3, to_pdf: "/d/x.pdf", anyway: true }
+    ok print Print { tab: "#2", pages: Some("2-3"), dpi: 3, to_pdf: Some("/d/x.pdf"), anyway: true }
 {"cmd":"Print"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"text","page":3}

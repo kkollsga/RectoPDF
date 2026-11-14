@@ -6,7 +6,9 @@
 //! - **Only a new file.** It never writes over anything, least of all the PDF being printed: only the lopdf writers change a document's bytes, and other writers, this one among them, only create new files (AGENTS rule 5).
 //! - **A page too large to draw whole at the resolution asked** (A0 at 300 dpi is about 139 Mpx, past the 100 Mpx any export may be) prints at the most it can be, and says so, rather than failing the print.
 //! - **A PDF's flag against printing is ignored** (owner, 2026-11-08: "Ignore the flag"): nothing here reads it. A print to a PDF *file* is an export, so a file that asks not to be copied asks "anyway" (owner, the same day), and print to paper never does.
-//! - **SSD cost.** The app's print is written once to a temp file and removed when the system's printing is done with it: about 0.3 MB a page of text at 300 dpi and up to about 50 MB a page of a dense map, held to [`MAX_BYTES`] in all. That's one write of what's printed, which the system's own print spooling would make anyway.
+//! - **The person's print never has a name on disk** ([`PrintTo::Window`]): it's written to a file unlinked before its first byte, whose descriptor the
+//!   window hands to the system's printing, so the kernel frees it when the window lets it go or the app ends, a crash and a kill included.
+//! - **SSD cost.** The app's print is written once to a file with no name and freed when the system's printing is done with it: about 0.3 MB a page of text at 300 dpi and up to about 50 MB a page of a dense map, held to [`MAX_BYTES`] in all. That's one write of what's printed, which the system's own print spooling would make anyway.
 
 use crate::Code;
 use crate::TabRef;
@@ -413,6 +415,9 @@ pub trait PrintWatch: Send + Sync {
     fn begin(&self, tab: recto_session::TabId, pages: u32);
     /// `done` pages of `of` are printed. False stops the print, as Stop does.
     fn page(&self, done: u32, of: u32) -> bool;
+    /// The print's file, whole, with no name ([`PrintTo::Window`]): the window's, to hand to the system's printing, and to let go when that's done with it.
+    /// Called once, as the print's last step before it answers.
+    fn ready(&self, file: std::fs::File);
     /// The print is over, however it went: what came of it is the person's answer, which the window says.
     fn end(&self);
 }
@@ -426,24 +431,28 @@ impl Drop for Watched<'_> {
     }
 }
 
-/// Who a print's file is for: anyone the folder lets read it, as any export, or the user alone, as the person's print at the window is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Readable {
-    AsAnyExport,
-    ByTheUserAlone,
+/// **Where a print goes.**
+#[derive(Clone, Copy)]
+pub(crate) enum PrintTo<'a> {
+    /// `recto print --to-pdf`: a new file there, whole or not at all, as any export.
+    File(&'a Path),
+    /// **The person's print at the window:** a file with no name, theirs alone ([`OwnTemp::create_unnamed`]), handed to the window's printing once it's
+    /// whole ([`PrintWatch::ready`]). It never has a name on disk, so nothing can open it but through the window, and it's gone when the window lets it go
+    /// or the app ends, however it ends.
+    Window(&'a dyn PrintWatch),
 }
 
-/// `recto print --to-pdf`: pages to a new PDF, through the same drawing the app prints with, whole or not at all. `progress` hears each page, and returning
-/// false stops it.
-pub(crate) fn print_to_file(
-    pages: &[PrintPage],
-    dpi: u32,
-    out: &Path,
-    anyway: bool,
-    readable: Readable,
-    progress: impl FnMut(u32, u32) -> bool,
-) -> Result<Value, AgentError> {
-    crate::saving::check_export_path(out, &["pdf"], "PDF")?;
+/// The refusal for a print that names no file and has no window to go to: an agent's, which always names one (`--to-pdf`).
+pub(crate) fn needs_a_file() -> AgentError {
+    AgentError::new(Code::USAGE, "A print goes to a new PDF file, named with `--to-pdf`.", exit::USAGE).then("`recto print --to-pdf /tmp/printed.pdf`.")
+}
+
+/// `recto print --to-pdf`, and the person's print at the window: pages to a new PDF, through the same drawing the app prints with, whole or not at all.
+/// `progress` hears each page, and returning false stops it.
+pub(crate) fn print_to_file(pages: &[PrintPage], dpi: u32, to: PrintTo<'_>, anyway: bool, progress: impl FnMut(u32, u32) -> bool) -> Result<Value, AgentError> {
+    if let PrintTo::File(out) = to {
+        crate::saving::check_export_path(out, &["pdf"], "PDF")?;
+    }
     // An export, so a file that asks not to be copied asks "anyway", as Copy does (owner, 2026-11-08).
     if !anyway && any_copy_restricted(pages) {
         return Err(
@@ -452,29 +461,30 @@ pub(crate) fn print_to_file(
         );
     }
     // Never over anything, least of all the PDF being printed: only the lopdf writers change a PDF's bytes.
-    if std::fs::symlink_metadata(out).is_ok() {
+    if let PrintTo::File(out) = to
+        && std::fs::symlink_metadata(out).is_ok()
+    {
         return Err(output_exists());
     }
     let started = Instant::now();
     let config = ServiceConfig::discover()?;
-    let (temp, file) = match readable {
-        Readable::AsAnyExport => OwnTemp::create(out)?,
-        Readable::ByTheUserAlone => OwnTemp::create_private(out)?,
-    };
-    let mut written = FileOut(file);
-    let printed = print_into(&config, pages, dpi, &mut written, progress)?;
-    drop(written);
-    publish_picture(&temp.path, out)?;
-    // A link keeps the mode; a copy, where a link can't be made, is made with the folder's, so it's set again.
-    #[cfg(unix)]
-    if readable == Readable::ByTheUserAlone {
-        use std::os::unix::fs::PermissionsExt;
-        if std::fs::set_permissions(out, std::fs::Permissions::from_mode(0o600)).is_err() {
-            let _ = std::fs::remove_file(out);
-            return Err(write_failed());
+    let (out, printed) = match to {
+        PrintTo::File(out) => {
+            let (temp, file) = OwnTemp::create(out)?;
+            let mut written = FileOut(file);
+            let printed = print_into(&config, pages, dpi, &mut written, progress)?;
+            drop(written);
+            publish_picture(&temp.path, out)?;
+            drop(temp);
+            (Some(out), printed)
         }
-    }
-    drop(temp);
+        PrintTo::Window(watch) => {
+            let mut written = FileOut(OwnTemp::create_unnamed()?);
+            let printed = print_into(&config, pages, dpi, &mut written, progress)?;
+            watch.ready(written.0);
+            (None, printed)
+        }
+    };
     Ok(json!({
         "out": out,
         "pages": printed.pages,

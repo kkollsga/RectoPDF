@@ -86,7 +86,7 @@ pub(crate) fn every_command() -> Vec<Command> {
             tab: tab(),
             pages: None,
             dpi: 300,
-            to_pdf: "/d/x.pdf".into(),
+            to_pdf: Some("/d/x.pdf".into()),
             anyway: false,
         }),
         Command::from(crate::commands::text::Text { tab: tab(), page: 1 }),

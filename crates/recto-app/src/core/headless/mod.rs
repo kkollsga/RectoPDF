@@ -36,7 +36,7 @@ mod passwords;
 #[cfg(debug_assertions)]
 mod per_tab_work;
 mod persons_lane;
-mod printing;
+pub(crate) mod printing;
 mod protected_save;
 mod quiet_files;
 mod quit;
