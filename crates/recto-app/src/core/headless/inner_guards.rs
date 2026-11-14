@@ -127,14 +127,12 @@ Inner::pub fn carry_out(&self, out: Option<crate::lifecycle::Out>)
 Inner::pub fn close_answered(self: &Arc<Self>, tab: u32, choice: CloseChoice) -> HostAction
 Inner::pub fn close_prompt(&self) -> ClosePrompt
 Inner::pub fn dismiss_selection_notice(&self)
-Inner::pub fn forget_a_quiet_copy(&self)
 Inner::pub fn gather_record(&self) -> (SessionRecord, PlaceDelta)
 Inner::pub fn go_dormant(&self, tabs: &[TabId], why: Why) -> usize
 Inner::pub fn hand_off(&self, limit: Duration) -> Result<HandOffReport, HandOffError>
 Inner::pub fn hand_off_cancelled(&self)
 Inner::pub fn hand_off_check(&self) -> HandOffCheck
 Inner::pub fn hand_off_quit_now(&self) -> bool
-Inner::pub fn has_setting(&self, id: &str) -> bool
 Inner::pub fn memory_pressure(&self, critical: bool)
 Inner::pub fn menu_item_enabled(&self, id: String) -> bool
 Inner::pub fn note_input(&self)
@@ -152,8 +150,6 @@ Inner::pub fn save_as(self: &Arc<Self>, tab: u32, path: String)
 Inner::pub fn save_panel(&self) -> SavePanelModel
 Inner::pub fn save_problem_answered(&self, save_as: bool) -> super::HostAction
 Inner::pub fn set_frozen(&self, frozen: bool)
-Inner::pub fn setting_chosen(self: &Arc<Self>, id: &str, on: bool)
-Inner::pub fn settings_model(&self) -> SettingsModel
 Inner::pub fn shown_with_state(&self)
 Inner::pub fn shutdown(&self)
 Inner::pub fn sidebar_tabs(&self) -> Vec<SidebarRow>
@@ -162,11 +158,6 @@ Inner::pub fn start_with(start: Start, update_seams: updates::UpdateSeams) -> Re
 Inner::pub fn state_json(&self) -> Value
 Inner::pub fn system_pressure(&self, critical: bool)
 Inner::pub fn take_places(&self)
-Inner::pub fn take_update_alert(&self) -> Option<UpdateAlert>
-Inner::pub fn update_command(&self, command: &Command) -> Result<Value, AgentError>
-Inner::pub fn update_report(&self) -> Value
-Inner::pub fn update_test_clock(&self, ahead_ms: i64) -> bool
-Inner::pub fn update_timer_fired(&self)
 Inner::pub fn window_closed(&self)
 Inner::pub fn window_opened(&self)
 Inner::pub fn window_replaced(&self)
@@ -307,6 +298,7 @@ Window::pub fn set_sidebar_width(&self, width: f64, core: &CoreQueue)
 Window::pub fn settings_window(&self) -> Option<SettingsWindow>
 Window::pub fn settings_window_changed(&self, place: Option<SettingsWindow>, saver: &Saver)
 Window::pub fn should_open(&self, reopened: bool) -> bool
+Window::pub fn showing(&self) -> bool
 Window::pub(super) fn closed(&self)
 Window::pub(super) fn opened(&self)
 Window::pub(super) fn replaced(&self, held: Vec<(usize, recto_index::select::Range)>)

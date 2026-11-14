@@ -5,7 +5,7 @@ file crates/recto-index/src/corpus.rs 1686
 file crates/recto-render-service/src/host.rs 2175
 file crates/recto-render/src/pdfium/contents.rs 2885
 file crates/recto-session/src/record.rs 1561
-file crates/recto-update/src/updater.rs 2525
+file crates/recto-update/src/updater.rs 2495
 fn crates/recto-agent/src/print.rs::print_with_caps 152
 fn crates/recto-agent/src/render/svg.rs::write_record 154
 fn crates/recto-agent/src/saving.rs::save 151
@@ -27,7 +27,7 @@ impl crates/recto-reader/src/selection.rs::Selecting 41
 impl crates/recto-render-service/src/host.rs::DocRenderer 59
 impl crates/recto-render/src/pdfium/contents.rs::Walk 64
 impl crates/recto-session/src/edit.rs::PageEdits 68
-impl crates/recto-update/src/updater.rs::Updater 44
+impl crates/recto-update/src/updater.rs::Updater 42
 sleep app/qa/links-shots.sh 1
 sleep app/qa/opening-shots.sh 1
 sleep app/qa/save-shots.sh 1
@@ -104,7 +104,7 @@ struct crates/recto-session/src/edit.rs::PageEdits 17
 struct crates/recto-session/src/lib.rs::TabRecord 17
 struct crates/recto-session/src/record.rs::TabEntry 19
 struct crates/recto-update/src/plan.rs::Plan 20
-type crates/recto-app/src::Inner 63
+type crates/recto-app/src::Inner 48
 type crates/recto-ffi/src::AppCore 135
 type crates/recto-reader/src::Engine 46
 type crates/recto-reader/src::Reader 82

@@ -1292,17 +1292,17 @@ impl AppCore {
 
     /// The timer's gone off. Quick: what it starts is on a thread of its own.
     pub fn update_timer_fired(&self) {
-        self.inner.update_timer_fired();
+        self.inner.updates.timer_fired();
     }
 
     /// The Settings window, as it stands.
     pub fn settings_model(&self) -> updates::SettingsModel {
-        self.inner.settings_model()
+        updates::settings_model(&self.inner.updates)
     }
 
     /// What an update chosen from the menu came to, as an alert, when there's no window to say it in. Taken once: the host shows it, app-modal.
     pub fn take_update_alert(&self) -> Option<updates::UpdateAlert> {
-        self.inner.take_update_alert()
+        updates::take_alert(&self.inner.updates, &self.inner.window)
     }
 
     /// The alert's been answered: what it said has been read.

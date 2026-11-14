@@ -455,7 +455,11 @@ fn settings_offers_update_now_for_a_waiting_build() {
     let (app, bed) = running_with_a_document(4);
     at_full(&app);
     full(&app, r#"{"cmd":"update_dev_builds","set":"on"}"#);
-    assert_eq!(app.core().settings_model().action, None, "nothing waits, so no button");
+    assert_eq!(
+        crate::core::updates::settings_model(&app.core().updates).action,
+        None,
+        "nothing waits, so no button"
+    );
     let zip = app.disk().hand_over_build(DEV);
     let answer = full(&app, &format!(r#"{{"cmd":"update_install","zip":{}}}"#, serde_json::json!(zip)));
     assert!(answer["waits_ms"].as_u64().is_some_and(|waits| waits > 4 * 60_000), "{answer}");
@@ -470,7 +474,9 @@ fn settings_offers_update_now_for_a_waiting_build() {
     assert_eq!(plain["started"], false, "{plain}");
     assert!(plain["words"].as_str().unwrap_or_default().contains("Nothing was started"), "{plain}");
     assert_eq!(app.update_status()["status"], "build_ready");
-    let action = app.core().settings_model().action.expect("Settings shows the waiting build");
+    let action = crate::core::updates::settings_model(&app.core().updates)
+        .action
+        .expect("Settings shows the waiting build");
     assert_eq!(action.title, format!("Development build {DEV} is ready"));
     assert_eq!((action.button.as_str(), action.enabled), ("Update now", true), "{action:?}");
     assert_eq!(
@@ -478,7 +484,10 @@ fn settings_offers_update_now_for_a_waiting_build() {
         serde_json::json!({ "title": format!("Update to {DEV}…"), "enabled": true })
     );
     // The button is the menu's call and `--now`'s: it goes at once.
-    app.core().setting_chosen(crate::core::updates::UPDATE_NOW_ROW, true);
+    app.act(crate::core::controls::UiAction::SettingChosen {
+        id: crate::core::updates::UPDATE_NOW_ROW.to_owned(),
+        on: true,
+    });
     let (plan, disk) = app.handed_off(&bed);
     assert_eq!(plan.to, DEV);
     disk.install(&plan, Installed::Swapped);

@@ -22,7 +22,7 @@ pub enum InstallRefused {
         why: String,
     },
     /// The app hasn't told the updater what it is yet ([`super::Updater::launched`]): a launch that didn't get the record's lock holds that back until whether it
-    /// keeps the record has settled, and nothing about an update can begin meanwhile, a check included (`recto-app`'s `update_command` refuses so).
+    /// keeps the record has settled, and nothing about an update can begin meanwhile, a check included (`recto-app`'s `updates::command` refuses so).
     Starting,
 }
 

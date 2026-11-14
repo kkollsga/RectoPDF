@@ -125,10 +125,7 @@ impl Inner {
                 self.save_as(tab, path);
                 return Acted::DONE;
             }
-            UiAction::SettingChosen { id, on } => {
-                self.setting_chosen(&id, on);
-                return Acted::DONE;
-            }
+            UiAction::SettingChosen { id, on } => super::updates::setting_command(&id, on),
         };
         if let Some(command) = command {
             super::person::submit(self, command);
