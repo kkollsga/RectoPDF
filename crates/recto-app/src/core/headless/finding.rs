@@ -295,3 +295,26 @@ fn closing_find_that_is_closed_announces_nothing() {
     let said = agent_said(&app, r#"{"cmd":"find","close":true}"#);
     assert!(said.is_empty(), "an agent's close with Find closed: {said:?}");
 }
+
+/// Failure (asked by the review of R3.7's S2, when Find stopped telling the host with nothing of it changed): a window made again from a state read late
+/// shows Find as it was, or none of it, because what it showed of Find came only with Find's own `model_changed` after each of its calls. The new window
+/// pulls everything once it's made, Find's view with the rest (`openWindow`'s `modelChanged`, `App.swift`), so what it needs is Find as it is on the Rust
+/// side once the remake's done: Find open with its hits, the line under the field and the hit gone to, unchanged by the remake (as the kit's host makes it
+/// again, `HostPlay`), and the hit's selection back on the new window's page view.
+#[test]
+fn a_window_made_again_finds_find_as_it_is() {
+    let app = findable();
+    app.act(UiAction::FindTyped { text: "pdf page 1".into() });
+    app.settle();
+    app.act(UiAction::FindReturn { forward: true });
+    app.settle();
+    let before = find_view(&app);
+    assert!(before.open && before.row_count > 0 && before.current_row.is_some(), "{before:?}");
+    let inner = app.core();
+    inner.window_replaced();
+    inner.window_opened();
+    app.settle();
+    assert_eq!(find_view(&app), before, "Find as the new window pulls it");
+    let selected = inner.panes.reading_engine(&inner.engine).selection().hot().and_then(|(_, range)| range);
+    assert!(selected.is_some(), "the hit's selection on the new window");
+}
