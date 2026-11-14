@@ -372,7 +372,7 @@ pub fn synced_would_withhold<L: DocLoader>(session: &Session<L>, panes: &[TabId]
 /// **Lets a withheld place go, with all that came of it,** as a jump sets an absolute place (the second review, D-1 and S-2): the flag; the tab's draw
 /// notes and a jump on its way, drawn or sent from where it was; the exact place the page view last said, which on the page the jump goes to too would
 /// say how far down it following had left the tab, and its zoom only then; and every draw of the tab from before the jump's send, which the mail drops
-/// as it's told ([`crate::mail::PageViewMail::released`]). Nothing for a tab whose place isn't withheld on its own account, nor one that follows: what
+/// as it's told (the mail's `release`). Nothing for a tab whose place isn't withheld on its own account, nor one that follows: what
 /// the jump does to it is as it always was. Find's hit gone to last stays marked if it was stepped to from the place: a step goes on from it, not from
 /// the place.
 pub(crate) fn let_go_of_place<L: DocLoader>(session: &mut Session<L>, id: TabId) {
