@@ -22,9 +22,11 @@
 //! waits for the page view at rest. The updater's check and install, each on a thread of its own: in the real app a check is a network fetch, and
 //! installing or waiting lasts until a hand-off, so counting them would have `qa wait` wait those out; the kit's update tests wait for the updater by its
 //! status, by name (`wait_for_status`), and its end says only that the window should look again. **What of the updater is counted:** its being told of a
-//! launch held back for the record's lock, on a thread of its own once keeping settles (a file read and a path made whole, local and short): until it's
-//! back, `update status` still says the version unknown and no second copy, which is what a read right after a settle met on a starved machine
-//! (`life_script`, 2026-11-14). Counted by a guard dropped however the thread ends, so a panic there can't leave a wait waiting out its limit. The search index, which the kit has off and which says
+//! launch held back for the record's lock, on a thread of its own once keeping settles: local work, a read of `updates.json` and a path made whole, and for
+//! the copy that keeps the record and finds no plan and no installer at work, the clearing of what an update left (`clear_leftovers`: a part-downloaded
+//! zip, a part-unpacked app and a staged app no longer on offer, each a few names looked at, and at most one app bundle's size deleted, which a normal
+//! launch finds none of; and a copy of the record over a week old). No network, and nothing that waits on another thread. Until it's back, `update status`
+//! still says the version unknown and no second copy, which is what a read right after a settle met on a starved machine (`life_script`, 2026-11-14). Counted by a guard dropped however the thread ends, so a panic there can't leave a wait waiting out its limit. The search index, which the kit has off and which says
 //! when it's done in its own words. In the window, its animations and a print's file being handed to the system, which `qa wait` adds itself, as only the
 //! host knows them.
 //!
