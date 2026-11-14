@@ -500,7 +500,7 @@ fn every_interleaving(sequences: &[&[Event]]) -> Vec<Vec<Event>> {
 /// hand-off that was undone, or before it's written; or told the session ended twice; or a quit's answer is lost or doubled among them. Every interleaving of a
 /// quit (kept or not, then Stay), the socket's server returning twice, and hand-offs that are written and asked to quit twice, undone before or after being
 /// written or told, and done again after an undo: each hand-off that's written tells the host at most once and only after it's written, the session's end is
-/// told once, and the quit's answer once and after its begin.
+/// told once, and the quit's answer once, after its begin, and its begin did happen (an `Option` compare would pass with none).
 #[test]
 fn the_host_is_told_to_quit_for_a_hand_off_and_that_the_session_ended_at_most_once_in_every_order() {
     use Event::{HandOffQuit as Ask, HandOffUndone as Undone, HandOffWriting as Writing, HandOffWritten as Written};
@@ -549,6 +549,9 @@ fn the_host_is_told_to_quit_for_a_hand_off_and_that_the_session_ended_at_most_on
                 assert_eq!(count(|out| matches!(out, Out::QuitAnswer { .. })), 1, "{order:?}: {heard:?}");
                 let begun = heard.iter().position(|out| *out == Out::QuitBegins);
                 let answered = heard.iter().position(|out| matches!(out, Out::QuitAnswer { .. }));
+                let (Some(begun), Some(answered)) = (begun, answered) else {
+                    panic!("{order:?}: the quit began and was answered, both: {heard:?}");
+                };
                 assert!(begun < answered, "{order:?}: the quit's answer before its begin: {heard:?}");
             }
         }
