@@ -265,13 +265,19 @@ impl SaveUi {
             .spawn(move || {
                 let facts = look(&path).unwrap_or_default();
                 remember(&ends.known, ends.key, facts);
-                drop(ends);
+                // Told before its place is given back, so the look counts as under way until its word is queued ([`crate::settled`]).
                 done();
+                drop(ends);
             });
         if spawned.is_err() {
             crate::lock(&self.looking).retain(|looked| *looked != key);
         }
         None
+    }
+
+    /// Looks at signatures under way now, each on a thread of its own, until what it found is told ([`Self::signature_facts`]).
+    pub fn signature_looks(&self) -> usize {
+        crate::lock(&self.looking).len()
     }
 
     /// What the Save icon says: Save, or the step a long save is at.
@@ -414,6 +420,39 @@ pub fn appeared_after_answer() -> SaveProblem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure (review of `build/settled-gaps`, 2026-11-14): the look at a file's signatures, started on a first edit, reads the whole file on a thread of
+    /// its own and then asks the session to look again, but the app's settled didn't count it, and its place was given back before it asked: so a test's
+    /// settle, `qa wait` and a shot could answer before a signed file's Save state was known. Held in its word to the session: it's under way.
+    #[test]
+    fn a_signature_look_is_under_way_until_its_word_is_queued() {
+        use crate::testkit::headless::{HeadlessApp, WAIT_LIMIT};
+        let app = HeadlessApp::start();
+        let (in_word, telling) = std::sync::mpsc::channel::<()>();
+        let (go, held) = std::sync::mpsc::channel::<()>();
+        let stamp = FileStamp {
+            size: 1,
+            mtime_ns: 1,
+            device: 1,
+            inode: 1,
+        };
+        let started = app.core().tools.save_ui().signature_facts_by(
+            TabId(1),
+            std::path::Path::new("/nowhere.pdf"),
+            stamp,
+            |_| Ok(recto_core::save::SignatureFacts::default()),
+            move || {
+                let _ = in_word.send(());
+                let _ = held.recv_timeout(WAIT_LIMIT);
+            },
+        );
+        assert_eq!(started, None, "a look started");
+        telling.recv_timeout(WAIT_LIMIT).expect("the look at its word");
+        let busy = crate::settled::under_way(&crate::settled::watched!(app.core()), crate::settled::PageViews::AtRest);
+        drop(go);
+        app.settle();
+        assert!(busy.iter().any(|what| what.contains("signature")), "settled with a signature look's word not queued: {busy:?}");
+    }
 
     /// Failure (review round 1 of stage 2): the Close prompt offers Save where Save is off, so the answer is a refusal. With Save off it offers Save As, and says why; otherwise Save, as before.
     #[test]

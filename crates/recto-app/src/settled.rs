@@ -185,6 +185,11 @@ fn off_the_session_thread(inner: &Watched<'_>, busy: &mut Vec<String>) {
     if saves > 0 {
         busy.push(format!("{saves} of the window's save(s)"));
     }
+    // A first edit's look at the file's signatures reads the whole file, then has the session look again for Save's state.
+    let signatures = inner.tools.save_ui().signature_looks();
+    if signatures > 0 {
+        busy.push(format!("{signatures} look(s) at a file's signatures"));
+    }
     if inner.life.others_looking() {
         busy.push("the other tabs' files being looked at".to_string());
     }
