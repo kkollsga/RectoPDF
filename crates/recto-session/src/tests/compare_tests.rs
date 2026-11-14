@@ -566,10 +566,12 @@ fn the_record_keeps_a_withheld_place_and_its_trails_marks() {
     );
 }
 
-/// Failure (the third review, D-C; the coordinator's conditions): the record's list of tabs whose place is withheld, read from a file that's hostile, panics,
-/// grows by what it claims, marks a tab it doesn't name, or is lost: an id that names no tab, one named twice, a list one past [`crate::MAX_TABS`], and a
-/// list of the wrong type. What names a tab withholds that tab and no other after a restore, as the ids are the tabs' own; one past the cap and a wrong
-/// type fail the record as damaged; and a record with nothing withheld has no such key.
+/// Failure (the third review, D-C; the fourth's item 4): the record's list of tabs whose place is withheld, read from a file that's hostile, panics, grows
+/// by what it claims, marks a tab it doesn't name, gives back a place it named, or costs the person their session: an id that names no tab, one named
+/// twice, a list one past [`crate::MAX_TABS`], and a list of the wrong type. What names a tab withholds that tab and no other after a restore, as the ids
+/// are the tabs' own; a list that can't be read (past the cap, or the wrong type) withholds every tab's place, as "something was withheld and which can't
+/// be told" (fail closed), and the rest of the record is read as usual, so the tabs and the active one come back; a record with nothing withheld has no
+/// such key.
 #[test]
 fn the_records_list_of_withheld_places_is_read_as_hostile() {
     let (mut s, plain) = followed_after_jumps(0);
@@ -588,16 +590,37 @@ fn the_records_list_of_withheld_places_is_read_as_hostile() {
     written["withheld_places"] = serde_json::json!([plain.0, 999_999, plain.0]);
     assert_eq!(read(&written), Ok([true, false]), "an id of no tab is nothing, and one twice is one");
     written["withheld_places"] = serde_json::json!(vec![plain.0; crate::MAX_TABS + 1]);
-    assert!(read(&written).is_err(), "one past the cap is damage");
+    assert_eq!(read(&written), Ok([true, true]), "one past the cap withholds every tab's place");
     for wrong in [
         serde_json::json!("1"),
         serde_json::json!([-1]),
-        serde_json::json!([{}]),
+        serde_json::json!([plain.0, {}]),
+        serde_json::json!([plain.0, [1, 2]]),
+        serde_json::json!([4_294_967_296_u64]),
         serde_json::json!({"1": true}),
+        serde_json::json!(null),
+        serde_json::json!(true),
     ] {
         written["withheld_places"] = wrong.clone();
-        assert!(read(&written).is_err(), "{wrong} is damage");
+        assert_eq!(read(&written), Ok([true, true]), "{wrong} withholds every tab's place");
     }
+    // The rest of the record is read as usual: the tabs and the one being read.
+    let bytes = record::seal(record::MAIN_KIND, 3, &serde_json::to_vec(&written).unwrap());
+    let back = record::decode_record(&bytes, record::CURRENT_VERSION).expect("the record reads");
+    assert_eq!(back.record.tabs.len(), s.tabs().all().len());
+    assert_eq!(back.record.active, s.tabs().active().map(|id| id.0));
+    // Written again, it says each tab by its id, so a restart after it still withholds them all; and a record read with the list unreadable, written as it
+    // was read (as a compaction does), reads back the same.
+    let mut every = session(200);
+    every.restore(&back.record, HashMap::new()).unwrap();
+    let sorted = |mut ids: Vec<u32>| {
+        ids.sort_unstable();
+        ids
+    };
+    let written_ids: Vec<u32> = serde_json::from_value(body(&every)["withheld_places"].clone()).expect("a list of ids");
+    assert_eq!(sorted(written_ids), sorted(every.tabs().all().iter().map(|tab| tab.id.0).collect()));
+    let again = record::decode_record(&record::encode_record(&back.record, 4), record::CURRENT_VERSION).expect("written as read");
+    assert_eq!(again.record.withheld_places, back.record.withheld_places);
     let plain_only = session(10);
     assert!(body(&plain_only).get("withheld_places").is_none(), "nothing withheld, no key");
 }

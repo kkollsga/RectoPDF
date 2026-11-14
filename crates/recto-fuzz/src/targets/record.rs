@@ -24,6 +24,15 @@ fn use_a_record(bytes: &[u8]) {
     assert!(read.record.tabs.len() <= recto_session::MAX_TABS);
     let mut session = Session::new(NamedLoader);
     session.restore(&read.record, HashMap::new()).expect("what validates can be restored");
+    // Nothing the record named comes back with its place given, and a list that couldn't be read withholds every tab's (the fourth review's item 4).
+    let named = &read.record.withheld_places;
+    let names = |id: u32| named.is_every() || named.ids().contains(&id);
+    assert!(
+        session
+            .tabs()
+            .iter()
+            .all(|tab| !names(tab.id.0) || recto_session::compare::place_withheld(&session, tab.id))
+    );
     session.wake_active();
     // What a person does next, on each tab: nothing a record says can make that panic or allocate past a cap (review B9).
     for id in session.tabs().iter().map(|tab| tab.id).collect::<Vec<_>>().into_iter().take(4) {
@@ -31,9 +40,10 @@ fn use_a_record(bytes: &[u8]) {
         let _ = session.go_to(id, u32::MAX);
         let _ = session.undo_edit(id);
     }
-    // Writing it back gives what reads the same, and withholds no tab's place it didn't name (the third review, D-C: a list read as hostile).
+    // Writing it back gives what reads the same, and withholds no tab's place it didn't name (the third review, D-C: a list read as hostile), each by its
+    // id: the session never writes a list as unreadable.
     let written = session.to_record();
-    assert!(written.withheld_places.iter().all(|id| read.record.withheld_places.contains(id)));
+    assert!(!written.withheld_places.is_every() && written.withheld_places.ids().iter().all(|id| names(*id)));
     let again = record::encode_record(&written, read.seq);
     record::decode_record(&again, CURRENT_VERSION).expect("what the session writes reads");
     let _ = session.sidebar();
@@ -137,7 +147,7 @@ fn use_a_log(bytes: &[u8]) {
         }],
         comparison: None,
         recent: Vec::new(),
-        withheld_places: Vec::new(),
+        withheld_places: record::WithheldPlaces::default(),
     };
     record::apply_places_log(&mut main, 1, bytes);
     record::validate_record(&main).expect("a log can't break a record");
