@@ -49,7 +49,7 @@ pub struct Sleeper {
     /// Sleep files written off the session's time, waiting for their one writer, and what waits on them: [`crate::sleep_queue::Leaving`].
     leaving: crate::sleep_queue::Leaving,
     /// Looks at files under way, each on a thread of its own: one per tab at most, and [`MAX_LOOKS`] in all.
-    pub(super) looks: std::sync::Arc<LookSlots>,
+    looks: std::sync::Arc<LookSlots>,
     /// **The app's gone to the background and what waits in the cool-down is to be written now:** set on the UI thread, which takes no lock and says no word
     /// ([`Self::hurry_leaving_soon`]), and taken by the saver's pass that going to the background asks for, off the UI thread, which hurries the queue under its
     /// lock and starts a writer if there's none ([`Self::hurry_leaving_if_asked`]).
@@ -339,6 +339,16 @@ impl Sleeper {
     /// Looks at woken tabs' files under way now.
     pub fn looks_running(&self) -> usize {
         self.looks.running()
+    }
+
+    /// A look at a tab's file on a thread of its own, if it hasn't one under way and one's free: [`LookSlots::check_woken_file`].
+    pub(super) fn check_woken_file(&self, session: &SessionHost<DrawableLoader>, core: &Arc<CoreQueue>, id: TabId) {
+        self.looks.check_woken_file(session, core, id);
+    }
+
+    /// A look at a tab's file before it's shown, for as long as a frame can wait for it: [`LookSlots::look_before_showing`].
+    pub(super) fn look_before_showing(&self, session: &SessionHost<DrawableLoader>, core: &Arc<CoreQueue>, id: TabId) {
+        self.looks.look_before_showing(session, core, id);
     }
 
     pub fn set_budget(&self, bytes: u64) {

@@ -179,7 +179,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let panes_now = inner.host.session.with_session(|session| session.panes());
     for (pane, id) in panes_now.iter().enumerate() {
         if synced.panes.get(pane).and_then(|shown| shown.tab) != Some(*id) && nothing_held {
-            inner.sleeper.looks.look_before_showing(&inner.host.session, &inner.core, *id);
+            inner.sleeper.look_before_showing(&inner.host.session, &inner.core, *id);
         }
     }
     // What the page views say of where they are goes in the session first, the tabs they're about to let go of among it, as a cold tab holds nothing there.

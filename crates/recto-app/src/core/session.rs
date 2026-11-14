@@ -362,7 +362,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             CoreCall::WokenFileIsOther(id, status, against) => woken_file_is_other(inner, &mut reads, id, status, against),
             CoreCall::LookAgain(id) => {
                 if let Some(inner) = inner.saver.inner() {
-                    inner.sleeper.looks.check_woken_file(&inner.host.session, &inner.core, id);
+                    inner.sleeper.check_woken_file(&inner.host.session, &inner.core, id);
                 }
             }
             CoreCall::FileLength(id, pages, version) => file_length(inner, &mut reads, id, pages, version),
