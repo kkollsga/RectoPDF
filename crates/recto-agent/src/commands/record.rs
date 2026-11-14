@@ -75,8 +75,12 @@ impl Cmd for SessionSleep {
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let records = cx.access.records()?;
         let id = cx.access.with(|session| select(session, &self.tab))?;
-        let slept = records.put_to_sleep(id)?;
-        Ok(json!({ "tab": id.0, "dormant": slept.dormant, "list_asleep": slept.list_asleep }))
+        let slept = records.put_to_sleep(id, cx.actor)?;
+        let mut answer = json!({ "tab": id.0, "dormant": slept.dormant, "list_asleep": slept.list_asleep });
+        if let Some(note) = slept.note {
+            answer["note"] = json!(note);
+        }
+        Ok(answer)
     }
     fn human(data: &Value) -> String {
         serde_json::to_string_pretty(data).unwrap_or_default()
@@ -108,13 +112,16 @@ impl Cmd for SessionSave {
         Value::Null
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        let saved = cx.access.records()?.save()?;
+        let saved = cx.access.records()?.save(cx.actor)?;
         let mut answer = json!({ "saved": true, "tabs": saved.tabs, "edited_tabs": saved.edited_tabs, "record_bytes": saved.record_bytes, "journal_bytes": saved.journal_bytes, "wrote_bytes": saved.wrote_bytes, "total_ms": saved.total_us / 1000 });
         if let Some(timings) = saved.timings {
             answer["total_us"] = json!(saved.total_us);
             answer["write_us"] = json!(timings.write_us);
             answer["force_us"] = json!(timings.force_us);
             answer["verify_us"] = json!(timings.verify_us);
+        }
+        if let Some(note) = saved.note {
+            answer["note"] = json!(note);
         }
         Ok(answer)
     }
@@ -277,10 +284,10 @@ impl OnlyAsks for SessionCheck {
 pub trait Records {
     /// What's known of the record, for `session show`: numbers, and Rust's own words.
     fn kept(&self) -> Value;
-    /// Puts a tab to sleep now, as five minutes left alone would.
-    fn put_to_sleep(&self, tab: TabId) -> Result<Slept, AgentError>;
-    /// Writes the record now and reads it back.
-    fn save(&self) -> Result<Saved, AgentError>;
+    /// Puts a tab to sleep now, as five minutes left alone would, for whoever asked (an agent's sleep files are held to its share of the hour).
+    fn put_to_sleep(&self, tab: TabId, actor: Actor) -> Result<Slept, AgentError>;
+    /// Writes the record now and reads it back, for whoever asked (an agent's leaves the sleep files waiting their cool-down to wait).
+    fn save(&self, actor: Actor) -> Result<Saved, AgentError>;
     /// Puts the session back as the record has it. The owner's edits were asked about first.
     fn restore(&self) -> Result<Restored, AgentError>;
     /// Whether this is a safe moment to hand off to a new version.
@@ -291,6 +298,8 @@ pub trait Records {
 pub struct Slept {
     pub dormant: bool,
     pub list_asleep: bool,
+    /// What the asker is told of the tab's sleep file, in the host's words, when it wasn't written for a reason the asker can act on.
+    pub note: Option<String>,
 }
 
 /// A record written and read back.
@@ -303,6 +312,8 @@ pub struct Saved {
     pub total_us: u64,
     /// Where the time went, for a host that measures it.
     pub timings: Option<SaveTimings>,
+    /// What the asker is told of the sleep file of the tab on screen, in the host's words, when it wasn't written for a reason the asker can act on.
+    pub note: Option<String>,
 }
 
 /// Where a save's time went.

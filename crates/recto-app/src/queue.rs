@@ -419,7 +419,7 @@ mod tests {
                 Arc::new(recto_core::Password::new("pw").unwrap()),
             ),
             CoreCall::LookAtShown,
-            CoreCall::SleepTabs(vec![tab], crate::sleeper::Why::Asked),
+            CoreCall::SleepTabs(vec![tab], crate::sleeper::Why::Asked(crate::sleeper::Asked::by(recto_agent::Actor::Person))),
             CoreCall::MemoryPressure(false),
             CoreCall::WokenFileIsOther(tab, FileStatus::Same(stamp), Some(stamp)),
             CoreCall::FileLength(tab, 1, 1),
