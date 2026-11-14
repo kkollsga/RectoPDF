@@ -190,7 +190,10 @@ fn pages() {
             let (own, own_background) = dark_shares(&picture, w as usize * 4, w, h, &kept, &[128]);
             // The dark test as `decide` reads it, from the grid, the kept pictures' boxes rounded outward: how much of the background is dark, of the page, and of its ring, and what the share of the page rule (0.35, before review round 2) and the ring rule say.
             let up = |part: u16, whole: u32| (u64::from(part) * u64::from(whole)).div_ceil(65_535) as usize;
-            let mut holes: Vec<[usize; 4]> = kept.iter().map(|sides| [place(sides[0], w), place(sides[1], h), up(sides[2], w), up(sides[3], h)]).collect();
+            let mut holes: Vec<[usize; 4]> = kept
+                .iter()
+                .map(|sides| [place(sides[0], w), place(sides[1], h), up(sides[2], w), up(sides[3], h)])
+                .collect();
             holes.sort_unstable_by_key(|hole| hole[0]);
             let found = sample_lightness(&picture, w as usize * 4, w, h, &holes);
             let base = found.points >= 64 && found.of_page >= 0.05 && found.dark >= 0.5;

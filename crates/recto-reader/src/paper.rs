@@ -458,7 +458,11 @@ pub fn sample_lightness(pixels: &[u8], stride: usize, width: u32, height: u32, h
             let parts = if ring_row {
                 [(from, to, true), (0, 0, false), (0, 0, false)]
             } else {
-                [(from, to.min(ring_across), true), (from.max(ring_across), to.min(right), false), (from.max(right), to, true)]
+                [
+                    (from, to.min(ring_across), true),
+                    (from.max(ring_across), to.min(right), false),
+                    (from.max(right), to, true),
+                ]
             };
             for (from, to, ring) in parts {
                 if from < to {
@@ -1178,7 +1182,11 @@ mod tests {
                     };
                 }
             }
-            if y % 6 == 0 && (20..180).contains(&x) && (14..246).contains(&y) { text } else { background }
+            if y % 6 == 0 && (20..180).contains(&x) && (14..246).contains(&y) {
+                text
+            } else {
+                background
+            }
         })
     }
 
@@ -1551,9 +1559,16 @@ mod tests {
             let photo = [side + 0.02, 0.1, 1.0, 0.76];
             let pixels = made_page(&[([0.0, 0.0, side, 1.0], Part::Dark), (photo, Part::Photo)], WHITE, INK);
             let look = PageLook::decide(Some(&[sides(photo)]), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1);
-            assert!(!look.dim && look.keep == [sides(photo)] && look.whiten.is_empty(), "a sidebar {side} wide beside a photo: {look:?}");
+            assert!(
+                !look.dim && look.keep == [sides(photo)] && look.whiten.is_empty(),
+                "a sidebar {side} wide beside a photo: {look:?}"
+            );
             let pixels = made_page(&[([0.0, 0.0, side, 1.0], Part::Dark)], WHITE, INK);
-            assert_eq!(PageLook::decide(Some(&[]), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1), PageLook::text(), "a sidebar {side} wide");
+            assert_eq!(
+                PageLook::decide(Some(&[]), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1),
+                PageLook::text(),
+                "a sidebar {side} wide"
+            );
         }
     }
 
@@ -1564,7 +1579,11 @@ mod tests {
             let pixels = made_page(&[(place, Part::Dark)], WHITE, INK);
             let found = sample_lightness(&pixels, PAGE_STRIDE, PAGE.0, PAGE.1, &[]);
             assert!(found.dark >= DARK_LEAST, "the made page isn't mostly dark: {found:?}");
-            assert_eq!(PageLook::decide(Some(&[]), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1), PageLook::text(), "a dark figure {place:?}: {found:?}");
+            assert_eq!(
+                PageLook::decide(Some(&[]), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1),
+                PageLook::text(),
+                "a dark figure {place:?}: {found:?}"
+            );
         }
     }
 
@@ -1573,13 +1592,24 @@ mod tests {
     fn a_navy_page_with_a_photo_under_half_of_it_stays_dark() {
         let cases: [(&str, &[([f64; 4], Part)]); 3] = [
             ("a photo over 45%", &[(centred_photo(0.45), Part::Photo)]),
-            ("a photo and a white text box", &[([0.55, 0.2, 0.95, 0.75], Part::Photo), ([0.05, 0.2, 0.5, 0.75], Part::Light)]),
+            (
+                "a photo and a white text box",
+                &[([0.55, 0.2, 0.95, 0.75], Part::Photo), ([0.05, 0.2, 0.5, 0.75], Part::Light)],
+            ),
             ("a photo off its right side over 45%", &[([0.45, 0.1, 1.0, 0.92], Part::Photo)]),
         ];
         for (name, parts) in cases {
             let pixels = made_page(parts, NAVY, LIGHT_TEXT);
-            let boxes: Vec<[u16; 4]> = parts.iter().filter(|(_, part)| matches!(part, Part::Photo)).map(|(place, _)| sides(*place)).collect();
-            assert_eq!(PageLook::decide(Some(&boxes), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1), PageLook::dark_page(), "a navy page with {name}");
+            let boxes: Vec<[u16; 4]> = parts
+                .iter()
+                .filter(|(_, part)| matches!(part, Part::Photo))
+                .map(|(place, _)| sides(*place))
+                .collect();
+            assert_eq!(
+                PageLook::decide(Some(&boxes), &pixels, PAGE_STRIDE, PAGE.0, PAGE.1),
+                PageLook::dark_page(),
+                "a navy page with {name}"
+            );
         }
     }
 

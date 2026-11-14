@@ -113,7 +113,11 @@ fn a_small_picture_that_fails_for_a_few_seconds_is_tried_again_spaced_and_decide
         assert!(looks.decided.is_empty(), "nothing kept at {tenth} tenths: {looks:?}");
     }
     assert_eq!(tried_at, [0, 30], "tried once at each 3 s");
-    assert_eq!(*asked_at(&mut doc, &mut looks, start, seconds(60)).unwrap(), PageLook::dark_page(), "decided at 6 s");
+    assert_eq!(
+        *asked_at(&mut doc, &mut looks, start, seconds(60)).unwrap(),
+        PageLook::dark_page(),
+        "decided at 6 s"
+    );
     assert_eq!(*asked_at(&mut doc, &mut looks, start, seconds(61)).unwrap(), PageLook::dark_page());
     assert_eq!(doc.drawn, 3, "a draw a try, and none once decided");
     assert!(looks.tries.is_empty(), "its tries go once it's decided: {looks:?}");
@@ -130,7 +134,11 @@ fn a_page_whose_small_picture_keeps_failing_still_draws_after_three_spaced_tries
         };
         let mut looks = Looks::default();
         for tenth in 0..60 {
-            assert_eq!(asked_at(&mut doc, &mut looks, start, seconds(tenth)), Err(NoLook::Again), "{boxes:?} at {tenth} tenths");
+            assert_eq!(
+                asked_at(&mut doc, &mut looks, start, seconds(tenth)),
+                Err(NoLook::Again),
+                "{boxes:?} at {tenth} tenths"
+            );
         }
         assert_eq!(doc.drawn, 2, "{boxes:?}: two tries in the first 6 s");
         assert_eq!(*asked_at(&mut doc, &mut looks, start, seconds(60)).unwrap(), expected, "{boxes:?}");
@@ -195,20 +203,42 @@ fn only_a_tile_that_is_the_whole_page_decides_it() {
     let tile = PixelSurface::create(64, 64).unwrap();
     tile.with_pixels(|pixels| pixels.as_chunks_mut::<4>().0.iter_mut().for_each(|pixel| *pixel = [0, 0, 0, 0xFF]))
         .unwrap();
-    let part = TileRect { x: 0, y: 0, width: 64, height: 64 };
+    let part = TileRect {
+        x: 0,
+        y: 0,
+        width: 64,
+        height: 64,
+    };
     let mut doc = StandIn {
         colour: [0xFF, 0xFF, 0xFF, 0xFF],
         ..StandIn::new(Some(Vec::new()), [])
     };
     let mut looks = Looks::default();
     // At a scale of 1 a letter page is 612 by 792: the tile is its top left corner.
-    assert_eq!(*page_look(&mut doc, &mut looks, 0, 1, None, Some((&tile, part, 1.0)), Instant::now()).unwrap(), PageLook::text(), "a corner of a white page");
+    assert_eq!(
+        *page_look(&mut doc, &mut looks, 0, 1, None, Some((&tile, part, 1.0)), Instant::now()).unwrap(),
+        PageLook::text(),
+        "a corner of a white page"
+    );
     assert_eq!(doc.drawn, 1, "decided from its small picture");
     // At 64 / 792 the whole page is 49 by 64.
     let (mut doc, mut looks) = (StandIn::new(Some(Vec::new()), []), Looks::default());
-    let whole = TileRect { x: 0, y: 0, width: 49, height: 64 };
+    let whole = TileRect {
+        x: 0,
+        y: 0,
+        width: 49,
+        height: 64,
+    };
     let scale = 64.0 / 792.0;
-    assert_eq!(recto_proto::device_size(612.0, 792.0, scale).ok(), Some((49, 64)), "the made page's size at that scale");
-    assert_eq!(*page_look(&mut doc, &mut looks, 0, 1, None, Some((&tile, whole, scale)), Instant::now()).unwrap(), PageLook::dark_page(), "a dark tile that's the whole page");
+    assert_eq!(
+        recto_proto::device_size(612.0, 792.0, scale).ok(),
+        Some((49, 64)),
+        "the made page's size at that scale"
+    );
+    assert_eq!(
+        *page_look(&mut doc, &mut looks, 0, 1, None, Some((&tile, whole, scale)), Instant::now()).unwrap(),
+        PageLook::dark_page(),
+        "a dark tile that's the whole page"
+    );
     assert_eq!(doc.drawn, 0, "nothing drawn for it");
 }

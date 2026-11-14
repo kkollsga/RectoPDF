@@ -56,7 +56,10 @@ fn a_tile_whose_look_is_tried_again_is_held_quietly_till_its_time() {
     assert_eq!((report["settled"].as_bool(), report["looks_held"].as_u64()), (Some(false), Some(1)), "{report}");
     let issue = reader.docs.views.get_mut(&1).unwrap().drawing.issues.get_mut(&page).expect("held");
     let at = issue.try_again_at.expect("a time to try again");
-    assert!(at >= Instant::now() + TRY_AGAIN_AFTER - Duration::from_millis(500), "held for the page view's wait");
+    assert!(
+        at >= Instant::now() + TRY_AGAIN_AFTER - Duration::from_millis(500),
+        "held for the page view's wait"
+    );
     issue.try_again_at = Some(Instant::now() - Duration::from_millis(1));
     reader.refresh(MAX_ATTACH_PER_TURN);
     let again = jobs_for(&mut reader, page);
