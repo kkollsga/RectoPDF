@@ -137,7 +137,7 @@ impl By {
     /// Whether an agent caused this write, so it counts against agents' share of the hour ([`crate::sleeper::AGENT_SLEEP_BYTES_PER_HOUR`]).
     #[must_use]
     pub fn agent(self) -> bool {
-        matches!(self, Self::Asked(recto_agent::Actor::Agent(_)) | Self::Queue(recto_session::Author::Agent))
+        matches!(self, Self::Asked(actor) if actor.is_agent()) || matches!(self, Self::Queue(recto_session::Author::Agent))
     }
 }
 

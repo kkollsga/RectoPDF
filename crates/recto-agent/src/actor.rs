@@ -53,6 +53,13 @@ impl Actor {
         }
     }
 
+    /// **Whether this is an agent**, at any level: identity, not permission. For what is counted or held for agents as a kind (their share of the hour's
+    /// sleep files, the commands refused while the record settles), where the rule is about agents and not about what a level allows.
+    #[must_use]
+    pub fn is_agent(self) -> bool {
+        matches!(self, Self::Agent(_))
+    }
+
     /// **A document the person opened with its password** gives an agent nothing read from it (agent report §5.5). The person typed the password, and it's
     /// theirs to read.
     #[must_use]
@@ -70,7 +77,7 @@ impl Actor {
 
     /// **At Full,** the one line every rule below goes by: the person, and an agent the user gave Full.
     fn at_full(self) -> bool {
-        self.level() >= Level::Full
+        self.level().at_least(Level::Full)
     }
 
     /// **Held to the owner's-edits rule** (SPEC decision 20): an agent below Full throws away only agents' edits, never the owner's. At Full what's
@@ -129,7 +136,7 @@ impl Actor {
     /// agent reads what it's given, not what the user looked for or where their files are.
     #[must_use]
     pub fn sees_users_words_and_paths(self) -> bool {
-        self.level() >= Level::Control
+        self.level().at_least(Level::Control)
     }
 
     /// **Sees where a save's backup is,** which says something about the user's disk: at Full.
@@ -143,7 +150,46 @@ impl Actor {
 /// comparison of levels it's decided by. What's the user's alone or no one's isn't an agent's at any level.
 #[must_use]
 pub fn allowed(have: Level, needed: Access) -> bool {
-    matches!(needed, Access::At(level) if have >= level)
+    matches!(needed, Access::At(level) if have.at_least(level))
+}
+
+impl Level {
+    /// The level's place in the order Off < Read-only < Control < Full. Private to this module: **the order is never compared outside `actor.rs`**, so a
+    /// rule about who may do what can't be said again by comparing levels (the compiler holds it: `Level` has no `<` and no `as` cast to a number).
+    fn rank(self) -> u8 {
+        match self {
+            Self::Off => 0,
+            Self::ReadOnly => 1,
+            Self::Control => 2,
+            Self::Full => 3,
+        }
+    }
+
+    /// Whether this level gives at least what `other` gives. The one comparison of levels; [`allowed`] and the actor's rules are made of it.
+    fn at_least(self, other: Self) -> bool {
+        self.rank() >= other.rank()
+    }
+
+    /// **Whether this is a higher level than `was`**: the user gave an agent more. Raising access needs the user's confirmation (SPEC), so the server and
+    /// the terminal drop what was waiting on a lower level when it does.
+    #[must_use]
+    pub fn raises(self, was: Self) -> bool {
+        self.rank() > was.rank()
+    }
+
+    /// The higher of two levels: what the server keeps of what agents have asked for (the highest), so granting it clears the request. The server's bookkeeping of the highest level asked for; it decides nothing about who may do what.
+    #[must_use]
+    pub fn higher(self, other: Self) -> Self {
+        if other.raises(self) { other } else { self }
+    }
+
+    /// **Whether a build an agent handed over goes in:** only while agent access is Full (SPEC: installing an update is Full's). It's a rule about a level,
+    /// so it's said here and not by a comparison where the build is installed. A method of `Level`, not of `Actor`: the question is asked of the level
+    /// file as it is now, not of whoever asked for a command.
+    #[must_use]
+    pub fn takes_a_build(self) -> bool {
+        self.at_least(Self::Full)
+    }
 }
 
 #[cfg(test)]

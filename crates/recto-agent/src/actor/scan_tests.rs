@@ -9,19 +9,9 @@ use std::path::{Path, PathBuf};
 /// The comparisons that stay where they are, each with why: by the file's path from `crates/`, the words of its line, and the reason.
 const ALLOWED: &[(&str, &str, &str)] = &[
     (
-        "recto-app/src/core/updates.rs",
-        "recto_control::levels::current(paths) == recto_agent::Level::Full",
-        "the level file as it is now, read for a build an agent handed over; not who asked for a command",
-    ),
-    (
         "recto-control/src/server.rs",
         "if level == self.last_level {",
         "the server noticing the user changed the level, which is the level itself, not a rule about who may do what",
-    ),
-    (
-        "recto-control/src/server.rs",
-        "if level > was && self.pending.is_some_and(",
-        "a pending request is dropped when the user raises the level: whether it went up, the level's own bookkeeping",
     ),
     (
         "recto-control/src/log.rs",
@@ -93,11 +83,41 @@ fn operands(code: &str) -> Vec<String> {
     found
 }
 
-/// Whether a production line compares levels, or an actor with the person: a level or an actor beside a comparison, or a `matches!` on a level.
+/// Whether the line is a `match` arm whose pattern names an `Actor` variant (it starts with one, or goes on with `|`), not a closure or call that builds one.
+fn arm_of_actor(code: &str) -> bool {
+    let pattern = code.split("=>").next().unwrap_or("");
+    code.contains("=>")
+        && (pattern.trim_start().starts_with("Actor::")
+            || pattern.contains("| Actor::")
+            || pattern.contains("recto_agent::Actor::") && pattern.trim_start().starts_with("recto_agent"))
+}
+
+/// Whether a line takes an `Actor` apart: `matches!`, `if let`, `let ... else` or a `match` arm naming one of its variants. Building one
+/// (`Actor::Person` as an argument) isn't.
+fn takes_actor_apart(code: &str) -> bool {
+    code.contains("Actor::")
+        && (code.contains("matches!(") || code.contains("if let ") || code.contains("while let ") || code.contains("let Actor::") || arm_of_actor(code))
+}
+
+/// Whether a line turns a level into a number: `Level::X as u8`, `level as usize`. `Level` has no `<` or `.cmp`, so the compiler holds those; an
+/// `as` cast of a fieldless enum is the way left to order levels.
+fn casts_level(code: &str) -> bool {
+    code.contains(" as ")
+        && code.to_lowercase().contains("level")
+        && ["u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize"]
+            .iter()
+            .any(|ty| code.contains(&format!(" as {ty}")))
+}
+
+/// Whether a production line compares levels, or an actor with the person, or takes an actor apart, or casts a level to a number: a level or an
+/// actor beside a comparison, a `matches!` on a level.
 fn compares_who(line: &str) -> bool {
     let code = code_of(line);
     let about_who = |operand: &str| operand.to_lowercase().contains("level") || operand.contains("Actor::");
-    operands(&code).iter().any(|operand| about_who(operand)) || (code.contains("matches!(") && code.contains("Level::"))
+    operands(&code).iter().any(|operand| about_who(operand))
+        || (code.contains("matches!(") && code.contains("Level::"))
+        || takes_actor_apart(&code)
+        || casts_level(&code)
 }
 
 /// The files under `src` that are tests: a module declared under `#[cfg(test)]` or `#[cfg(any(test, ...))]`, with everything under it, wherever
@@ -202,6 +222,13 @@ fn the_scan_sees_each_comparison_and_nothing_else() {
         "if actor == Actor::Person || !asleep {",
         "matches!(actor, Actor::Agent(Level::Full))",
         "if have >= level {",
+        "if matches!(actor, Actor::Agent(_)) {",
+        "if let Actor::Agent(level) = actor {",
+        "let Actor::Agent(level) = actor else { return };",
+        "Actor::Person => true,",
+        "asked.filter(|asked| matches!(asked.by, recto_agent::Actor::Agent(_)))",
+        "let rank = level as u8;",
+        "let rank = Level::Full as usize;",
     ] {
         assert!(compares_who(seen), "{seen}");
     }
@@ -210,8 +237,11 @@ fn the_scan_sees_each_comparison_and_nothing_else() {
         "fn f(levels: Vec<Level>) -> Option<Level> {",
         "let message = \"a level >= Full\";",
         "let x = a >= b; // the level >= Full",
-        "if matches!(actor, Actor::Agent(_)) {",
         "Self::Agent(level) => allowed(level, needed),",
+        "let actor = Actor::Person;",
+        "host.run(Actor::Agent(level), &command, &mut events)",
+        "let size = bytes as u64; // a level of detail",
+        "if actor.is_agent() {",
     ] {
         assert!(!compares_who(unseen), "{unseen}");
     }

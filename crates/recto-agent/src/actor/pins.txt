@@ -70,3 +70,47 @@ a print to a PDF | Person | copy_restricted exit 8 | This file's permissions ask
 a print to a PDF | Agent(ReadOnly) | permission_denied exit 5 | `print` needs Full access, and agent access is Read-only now. | next: Run `recto permission request full`, which tells the user what to allow. Nothing else raises this. | ask: Some("recto permission request full")
 a print to a PDF | Agent(Control) | permission_denied exit 5 | `print` needs Full access, and agent access is Control now. | next: Run `recto permission request full`, which tells the user what to allow. Nothing else raises this. | ask: Some("recto permission request full")
 a print to a PDF | Agent(Full) | copy_restricted exit 8 | This file's permissions ask that it isn't copied. | next: Tell the user. `--anyway` prints it to a PDF, once they've said to. Each use goes in the activity log. Print to paper never asks. | ask: None
+an edit over its own undone step | Person | ok, backup said: false, note: "These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks."
+an edit over its own undone step | Agent(ReadOnly) | permission_denied exit 5 | `page rotate` needs Control access, and agent access is Read-only now. | next: Run `recto permission request control`, which tells the user what to allow. Nothing else raises this. | ask: Some("recto permission request control")
+an edit over its own undone step | Agent(Control) | ok, backup said: false, note: "These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks."
+an edit over its own undone step | Agent(Full) | ok, backup said: false, note: "These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks."
+a close over its own undone step | Person | ok, backup said: false, note: null
+a close over its own undone step | Agent(ReadOnly) | permission_denied exit 5 | `close` needs Control access, and agent access is Read-only now. | next: Run `recto permission request control`, which tells the user what to allow. Nothing else raises this. | ask: Some("recto permission request control")
+a close over its own undone step | Agent(Control) | ok, backup said: false, note: null
+a close over its own undone step | Agent(Full) | ok, backup said: false, note: null
+a redo of the owner's undone step | Person | ok, backup said: false, note: "These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks."
+a redo of the owner's undone step | Agent(ReadOnly) | permission_denied exit 5 | `redo` needs Control access, and agent access is Read-only now. | next: Run `recto permission request control`, which tells the user what to allow. Nothing else raises this. | ask: Some("recto permission request control")
+a redo of the owner's undone step | Agent(Control) | ok, backup said: false, note: "These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks."
+a redo of the owner's undone step | Agent(Full) | ok, backup said: false, note: "These edits aren't saved: the file on disk is unchanged until `recto save`. Save only when the user asks."
+a copy with --anyway | Person | ok, backup said: false, note: null
+a copy with --anyway | Agent(ReadOnly) | ok, backup said: false, note: null
+a copy with --anyway | Agent(Control) | ok, backup said: false, note: null
+a copy with --anyway | Agent(Full) | ok, backup said: false, note: null
+a copy of a file that isn't restricted | Person | ok, backup said: false, note: null
+a copy of a file that isn't restricted | Agent(ReadOnly) | ok, backup said: false, note: null
+a copy of a file that isn't restricted | Agent(Control) | ok, backup said: false, note: null
+a copy of a file that isn't restricted | Agent(Full) | ok, backup said: false, note: null
+a snapshot with --anyway | Person | ok, backup said: false, note: null
+a snapshot with --anyway | Agent(ReadOnly) | permission_denied exit 5 | `snapshot` needs Full access, and agent access is Read-only now. | next: Run `recto permission request full`, which tells the user what to allow. Nothing else raises this. | ask: Some("recto permission request full")
+a snapshot with --anyway | Agent(Control) | permission_denied exit 5 | `snapshot` needs Full access, and agent access is Control now. | next: Run `recto permission request full`, which tells the user what to allow. Nothing else raises this. | ask: Some("recto permission request full")
+a snapshot with --anyway | Agent(Full) | ok, backup said: false, note: null
+a snapshot of a file that isn't restricted | Person | ok, backup said: false, note: null
+a snapshot of a file that isn't restricted | Agent(ReadOnly) | permission_denied exit 5 | `snapshot` needs Full access, and agent access is Read-only now. | next: Run `recto permission request full`, which tells the user what to allow. Nothing else raises this. | ask: Some("recto permission request full")
+a snapshot of a file that isn't restricted | Agent(Control) | permission_denied exit 5 | `snapshot` needs Full access, and agent access is Control now. | next: Run `recto permission request full`, which tells the user what to allow. Nothing else raises this. | ask: Some("recto permission request full")
+a snapshot of a file that isn't restricted | Agent(Full) | ok, backup said: false, note: null
+a print to a PDF with --anyway | Person | ok, backup said: false, note: null
+a print to a PDF with --anyway | Agent(ReadOnly) | permission_denied exit 5 | `print` needs Full access, and agent access is Read-only now. | next: Run `recto permission request full`, which tells the user what to allow. Nothing else raises this. | ask: Some("recto permission request full")
+a print to a PDF with --anyway | Agent(Control) | permission_denied exit 5 | `print` needs Full access, and agent access is Control now. | next: Run `recto permission request full`, which tells the user what to allow. Nothing else raises this. | ask: Some("recto permission request full")
+a print to a PDF with --anyway | Agent(Full) | ok, backup said: false, note: null
+a print to a PDF of a file that isn't restricted | Person | ok, backup said: false, note: null
+a print to a PDF of a file that isn't restricted | Agent(ReadOnly) | permission_denied exit 5 | `print` needs Full access, and agent access is Read-only now. | next: Run `recto permission request full`, which tells the user what to allow. Nothing else raises this. | ask: Some("recto permission request full")
+a print to a PDF of a file that isn't restricted | Agent(Control) | permission_denied exit 5 | `print` needs Full access, and agent access is Control now. | next: Run `recto permission request full`, which tells the user what to allow. Nothing else raises this. | ask: Some("recto permission request full")
+a print to a PDF of a file that isn't restricted | Agent(Full) | ok, backup said: false, note: null
+a save that takes a highlight out of the file | Person | ok, backup said: true, note: null
+a save that takes a highlight out of the file | Agent(ReadOnly) | permission_denied exit 5 | `save` needs Control access, and agent access is Read-only now. | next: Run `recto permission request control`, which tells the user what to allow. Nothing else raises this. | ask: Some("recto permission request control")
+a save that takes a highlight out of the file | Agent(Control) | permission_denied exit 5 | A save that takes a highlight out of the file for good needs Full access. | next: Run `recto permission request full`, which tells the user what to allow. Nothing else raises this. | ask: Some("recto permission request full")
+a save that takes a highlight out of the file | Agent(Full) | ok, backup said: true, note: null
+a save-as copy of a certified file | Person | ok, backup said: true, note: null
+a save-as copy of a certified file | Agent(ReadOnly) | permission_denied exit 5 | `save` needs Control access, and agent access is Read-only now. | next: Run `recto permission request control`, which tells the user what to allow. Nothing else raises this. | ask: Some("recto permission request control")
+a save-as copy of a certified file | Agent(Control) | permission_denied exit 5 | A save that writes the file anew needs Full access. | next: Run `recto permission request full`, which tells the user what to allow. Nothing else raises this. | ask: Some("recto permission request full")
+a save-as copy of a certified file | Agent(Full) | ok, backup said: true, note: null

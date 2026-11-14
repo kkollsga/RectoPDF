@@ -35,9 +35,7 @@ impl AppHost {
         let asks_only = command.only_asks();
         // While keeping the record is settling, an agent's command that isn't a look is refused before it's counted, so none is ever under way then
         // (`keeping::answers_agents`).
-        if matches!(actor, Actor::Agent(_))
-            && !super::keeping::answers_agents(command)
-            && self.saver.inner().is_some_and(|inner| inner.life.keeping().refuses_agents_changes())
+        if actor.is_agent() && !super::keeping::answers_agents(command) && self.saver.inner().is_some_and(|inner| inner.life.keeping().refuses_agents_changes())
         {
             return Err(
                 AgentError::new(Code::BUSY, "RectoPDF is still starting, so this wasn't done.", recto_agent::exit::BUSY).then("Try again in a moment."),

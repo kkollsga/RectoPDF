@@ -89,7 +89,7 @@ pub mod exit {
 }
 
 /// What an agent is allowed to do, set by the user. Ordered from least to most.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Level {
     Off,
@@ -3545,7 +3545,7 @@ mod protected_tests {
                     }
                 }
             }
-            if level >= Level::ReadOnly {
+            if actor::allowed(level, table::Access::At(Level::ReadOnly)) {
                 for command in [
                     Command::from(crate::commands::reading::Facts { tab: tab.clone() }),
                     Command::from(crate::commands::reading::Contents {
