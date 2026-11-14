@@ -94,41 +94,69 @@ impl Mark {
     }
 }
 
-/// What's asked of a document's highlights: one added on a page, or one taken away by its number.
+/// One page's part of a highlight being made: which page, by what it is, and its lines there.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkPage {
+    pub source: u16,
+    pub page: u32,
+    #[serde(deserialize_with = "crate::record::capped::<_, _, MAX_MARK_RECTS>")]
+    pub rects: Vec<MarkRect>,
+}
+
+/// What's asked of a document's highlights: one made, on one page or across several as a selection runs over them, which is one step, as one ⌘Z
+/// takes it back whole; or some made as edits taken away by their numbers, as one step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MarkChange {
-    Add { source: u16, page: u32, rects: Vec<MarkRect> },
-    Remove { id: u32 },
+    Add { pages: Vec<MarkPage> },
+    Remove { ids: Vec<u32> },
 }
+
+/// Most pages one highlight runs over: more than `recto select` gives rectangles for (32).
+pub const MAX_MARK_PAGES: usize = 64;
 
 /// A step of the history about highlights, and how to reverse it. Boxed, so a step of the history stays small.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum MarkStep {
-    Add(Box<Mark>),
-    Remove(u32),
+    Add(Box<[Mark]>),
+    Remove(Box<[u32]>),
 }
 
 impl MarkStep {
     /// What it holds beyond its own size.
     pub(super) fn held_bytes(&self) -> usize {
         match self {
-            Self::Add(mark) => mark.held_bytes(),
-            Self::Remove(_) => 0,
+            Self::Add(marks) => marks.iter().map(Mark::held_bytes).sum(),
+            Self::Remove(ids) => size_of_val::<[u32]>(ids),
         }
     }
 
     pub(super) fn to_record(&self) -> MarkStepRecord {
         match self {
-            Self::Add(mark) => MarkStepRecord::Add(mark.to_record()),
-            Self::Remove(id) => MarkStepRecord::Remove(*id),
+            Self::Add(marks) => MarkStepRecord::Add(marks.iter().map(Mark::to_record).collect()),
+            Self::Remove(ids) => MarkStepRecord::Remove(ids.to_vec()),
         }
     }
 
-    /// From a record already checked by [`MarkStepRecord::is_sound`].
+    /// From a record already checked by [`MarkStepRecord::fits`]; a highlight in it that can't be one is left out.
     pub(super) fn from_record(record: &MarkStepRecord) -> Self {
         match record {
-            MarkStepRecord::Add(mark) => Mark::from_record(mark).map_or(Self::Remove(mark.id), |mark| Self::Add(Box::new(mark))),
-            MarkStepRecord::Remove(id) => Self::Remove(*id),
+            MarkStepRecord::Add(marks) => Self::Add(marks.iter().filter_map(Mark::from_record).collect()),
+            MarkStepRecord::Remove(ids) => Self::Remove(ids.clone().into_boxed_slice()),
+        }
+    }
+
+    /// The highlights it brings back, for what's kept of their sources and numbers.
+    pub(super) fn adds(&self) -> &[Mark] {
+        match self {
+            Self::Add(marks) => marks,
+            Self::Remove(_) => &[],
+        }
+    }
+
+    pub(super) fn adds_mut(&mut self) -> &mut [Mark] {
+        match self {
+            Self::Add(marks) => marks,
+            Self::Remove(_) => &mut [],
         }
     }
 }
@@ -158,7 +186,7 @@ impl Marks {
         self.list.iter().find(|mark| mark.id == id)
     }
 
-    /// The step a change makes, checked, with the number a new one takes. Nothing changes until it's applied.
+    /// The step a change makes, checked, with the numbers new ones take. Nothing changes until it's applied.
     pub(super) fn step_for(&mut self, change: MarkChange, by: Author) -> Result<MarkStep, MarkRefusal> {
         self.step_within(change, by, MAX_MARKS)
     }
@@ -166,44 +194,69 @@ impl Marks {
     /// [`Self::step_for`] under a cap the tests set small.
     fn step_within(&mut self, change: MarkChange, by: Author, cap: usize) -> Result<MarkStep, MarkRefusal> {
         match change {
-            MarkChange::Add { source, page, rects } => {
-                if self.list.len() >= cap {
-                    return Err(MarkRefusal::TooMany);
-                }
-                let mark = Mark {
-                    id: self.next_id,
-                    source,
-                    page,
-                    rects: rects.into_boxed_slice(),
-                    by,
-                };
-                if !mark.is_sound() {
+            MarkChange::Add { pages } => {
+                if pages.is_empty() || pages.len() > MAX_MARK_PAGES {
                     return Err(MarkRefusal::Unsound);
                 }
-                self.next_id = self.next_id.checked_add(1).ok_or(MarkRefusal::TooMany)?;
-                Ok(MarkStep::Add(Box::new(mark)))
+                if self.list.len() + pages.len() > cap {
+                    return Err(MarkRefusal::TooMany);
+                }
+                let first = self.next_id;
+                let last = u32::try_from(pages.len())
+                    .ok()
+                    .and_then(|count| first.checked_add(count))
+                    .ok_or(MarkRefusal::TooMany)?;
+                let marks: Box<[Mark]> = pages
+                    .into_iter()
+                    .zip(first..last)
+                    .map(|(page, id)| Mark {
+                        id,
+                        source: page.source,
+                        page: page.page,
+                        rects: page.rects.into_boxed_slice(),
+                        by,
+                    })
+                    .collect();
+                if !marks.iter().all(Mark::is_sound) {
+                    return Err(MarkRefusal::Unsound);
+                }
+                self.next_id = last;
+                Ok(MarkStep::Add(marks))
             }
-            MarkChange::Remove { id } => self.get(id).map(|_| MarkStep::Remove(id)).ok_or(MarkRefusal::NoSuch),
+            MarkChange::Remove { ids } => {
+                if ids.is_empty() || ids.len() > MAX_MARKS || !ids.iter().all(|id| self.get(*id).is_some()) {
+                    return Err(MarkRefusal::NoSuch);
+                }
+                Ok(MarkStep::Remove(ids.into_boxed_slice()))
+            }
         }
     }
 
-    /// Applies a step and gives back its inverse. A step naming a highlight that isn't here, or one already here, does nothing either way, so a hostile
-    /// record can't make it panic or two highlights share a number.
+    /// Applies a step and gives back its inverse. A highlight already here, or a number naming none, is passed over either way, so a hostile record
+    /// can't make it panic or two highlights share a number.
     pub(super) fn apply(&mut self, step: MarkStep) -> MarkStep {
         match step {
-            MarkStep::Add(mark) => {
-                if self.get(mark.id).is_some() || self.list.len() >= MAX_MARKS {
-                    return MarkStep::Remove(u32::MAX);
+            MarkStep::Add(marks) => {
+                let mut added = Vec::with_capacity(marks.len());
+                for mark in marks {
+                    if self.get(mark.id).is_some() || self.list.len() >= MAX_MARKS {
+                        continue;
+                    }
+                    self.next_id = self.next_id.max(mark.id.saturating_add(1));
+                    added.push(mark.id);
+                    self.list.push(mark);
                 }
-                self.next_id = self.next_id.max(mark.id.saturating_add(1));
-                let id = mark.id;
-                self.list.push(*mark);
-                MarkStep::Remove(id)
+                MarkStep::Remove(added.into_boxed_slice())
             }
-            MarkStep::Remove(id) => match self.list.iter().position(|mark| mark.id == id) {
-                Some(at) => MarkStep::Add(Box::new(self.list.remove(at))),
-                None => MarkStep::Remove(u32::MAX),
-            },
+            MarkStep::Remove(ids) => {
+                let mut removed = Vec::with_capacity(ids.len());
+                for id in ids {
+                    if let Some(at) = self.list.iter().position(|mark| mark.id == id) {
+                        removed.push(self.list.remove(at));
+                    }
+                }
+                MarkStep::Add(removed.into_boxed_slice())
+            }
         }
     }
 
@@ -256,15 +309,18 @@ impl Marks {
     }
 
     /// Numbers past any a step names, so one brought back by an undo never meets a new one.
-    pub(super) fn count_past(&mut self, id: u32) {
-        self.next_id = self.next_id.max(id.saturating_add(1));
+    pub(super) fn count_past(&mut self, step: &MarkStep) {
+        for mark in step.adds() {
+            self.next_id = self.next_id.max(mark.id.saturating_add(1));
+        }
     }
 }
 
 /// **What a confirmed save does to a list's highlights** (coordinator, 2026-11-14, E1): every highlight is in the file now, so none is an edit, and the
 /// steps that would take one out of the file leave undo and redo, as taking a file's highlight out isn't built yet. Every other step stays: an undone
-/// highlight's way back moves onto the page's number in the new file, `slots` being the order that was saved, and goes only if its page isn't in it.
-/// The bytes the history holds are counted again. Says how many steps had to go for want of their page. Called before the list's pages start again.
+/// highlight's way back moves onto the page's number in the new file, `slots` being the order that was saved, and a part whose page isn't in it goes.
+/// A step left with nothing goes. The bytes the history holds are counted again. Says how many steps had to go for want of their page. Called
+/// before the list's pages start again.
 pub(super) fn saved(edits: &mut super::PageEdits) -> usize {
     let saved: std::collections::HashSet<u32> = edits.marks.saved().into_iter().collect();
     let mut position: std::collections::HashMap<(u16, u32), u32> = std::collections::HashMap::new();
@@ -274,15 +330,27 @@ pub(super) fn saved(edits: &mut super::PageEdits) -> usize {
     let mut gone = 0;
     for list in [&mut edits.history.undo, &mut edits.history.redo] {
         list.retain_mut(|entry| match &mut entry.step {
-            super::Step::Mark(MarkStep::Remove(id)) => !saved.contains(id),
-            super::Step::Mark(MarkStep::Add(mark)) => match position.get(&(mark.source, mark.page)) {
-                Some(at) => {
-                    (mark.source, mark.page) = (0, *at);
-                    true
+            super::Step::Mark(step) => match &mut **step {
+                MarkStep::Remove(ids) => {
+                    // In the file now: taking those out can't be done yet, so that's not a step for them.
+                    *ids = ids.iter().copied().filter(|id| !saved.contains(id)).collect();
+                    !ids.is_empty()
                 }
-                None => {
-                    gone += 1;
-                    false
+                MarkStep::Add(marks) => {
+                    let kept: Vec<Mark> = marks
+                        .iter()
+                        .filter_map(|mark| {
+                            position.get(&(mark.source, mark.page)).map(|at| Mark {
+                                source: 0,
+                                page: *at,
+                                ..mark.clone()
+                            })
+                        })
+                        .collect();
+                    let whole = kept.len() == marks.len();
+                    *marks = kept.into_boxed_slice();
+                    gone += usize::from(!whole && marks.is_empty());
+                    !marks.is_empty()
                 }
             },
             _ => true,
@@ -311,14 +379,19 @@ pub struct MarkRecord {
     pub by: AuthorName,
 }
 
+/// Whether a page is one the document has: of the file's own, or of a PDF added to it.
+fn page_fits(source: u16, page: u32, file_pages: u32, added: &[AddedRecord]) -> bool {
+    let pages = match source {
+        0 => file_pages,
+        source => added.get(usize::from(source) - 1).map_or(0, |added| added.page_count),
+    };
+    page < pages
+}
+
 impl MarkRecord {
-    /// Sound, and on a page the document has: one of the file's own, or of a PDF added to it.
+    /// Sound, and on a page the document has.
     pub fn fits(&self, file_pages: u32, added: &[AddedRecord]) -> bool {
-        let pages = match self.source {
-            0 => file_pages,
-            source => added.get(usize::from(source) - 1).map_or(0, |added| added.page_count),
-        };
-        self.page < pages && self.id != u32::MAX && Mark::from_record(self).is_some()
+        page_fits(self.source, self.page, file_pages, added) && self.id != u32::MAX && Mark::from_record(self).is_some()
     }
 
     /// A record's whole list: each fits, at most [`MAX_MARKS`], and no number twice.
@@ -350,15 +423,15 @@ impl std::fmt::Debug for crate::record::EditsRecord {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MarkStepRecord {
     #[serde(rename = "a")]
-    Add(MarkRecord),
+    Add(#[serde(deserialize_with = "crate::record::capped::<_, _, MAX_MARK_PAGES>")] Vec<MarkRecord>),
     #[serde(rename = "x")]
-    Remove(u32),
+    Remove(#[serde(deserialize_with = "crate::record::capped::<_, _, MAX_MARKS>")] Vec<u32>),
 }
 
 impl MarkStepRecord {
     pub fn fits(&self, file_pages: u32, added: &[AddedRecord]) -> bool {
         match self {
-            Self::Add(mark) => mark.fits(file_pages, added),
+            Self::Add(marks) => marks.iter().all(|mark| mark.fits(file_pages, added)),
             Self::Remove(_) => true,
         }
     }
@@ -369,28 +442,41 @@ impl MarkStepRecord {
 pub enum MarkOp {
     #[serde(rename = "a")]
     Add {
-        source: u16,
-        page: u32,
-        #[serde(deserialize_with = "crate::record::capped::<_, _, MAX_MARK_RECTS>")]
-        rects: Vec<MarkRect>,
+        #[serde(deserialize_with = "crate::record::capped::<_, _, MAX_MARK_PAGES>")]
+        pages: Vec<MarkPage>,
         by: AuthorName,
     },
     #[serde(rename = "x")]
-    Remove { id: u32, by: AuthorName },
+    Remove {
+        #[serde(deserialize_with = "crate::record::capped::<_, _, MAX_MARKS>")]
+        ids: Vec<u32>,
+        by: AuthorName,
+    },
 }
 
 impl MarkOp {
+    /// What a step that was just made asks, to be noted.
+    pub(super) fn of(step: &MarkStep, by: AuthorName) -> Self {
+        match step {
+            MarkStep::Add(marks) => Self::Add {
+                pages: marks
+                    .iter()
+                    .map(|mark| MarkPage {
+                        source: mark.source,
+                        page: mark.page,
+                        rects: mark.rects.to_vec(),
+                    })
+                    .collect(),
+                by,
+            },
+            MarkStep::Remove(ids) => Self::Remove { ids: ids.to_vec(), by },
+        }
+    }
+
     pub(super) fn change(&self) -> (MarkChange, AuthorName) {
         match self {
-            Self::Add { source, page, rects, by } => (
-                MarkChange::Add {
-                    source: *source,
-                    page: *page,
-                    rects: rects.clone(),
-                },
-                *by,
-            ),
-            Self::Remove { id, by } => (MarkChange::Remove { id: *id }, *by),
+            Self::Add { pages, by } => (MarkChange::Add { pages: pages.clone() }, *by),
+            Self::Remove { ids, by } => (MarkChange::Remove { ids: ids.clone() }, *by),
         }
     }
 }
@@ -398,6 +484,12 @@ impl MarkOp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn one(source: u16, page: u32, rects: Vec<MarkRect>) -> MarkChange {
+        MarkChange::Add {
+            pages: vec![MarkPage { source, page, rects }],
+        }
+    }
 
     fn rect() -> MarkRect {
         MarkRect {
@@ -413,7 +505,8 @@ mod tests {
     fn a_mark_stays_small() {
         assert!(size_of::<Mark>() <= 32, "{}", size_of::<Mark>());
         assert_eq!(size_of::<MarkRect>(), 16);
-        assert!(size_of::<MarkStep>() <= 16, "{}", size_of::<MarkStep>());
+        assert!(size_of::<MarkStep>() <= 24, "{}", size_of::<MarkStep>());
+        // A step of the history holds it boxed, so the history's own step stays small (`an_edit_step_stays_small`).
     }
 
     /// Failure: a rectangle with a NaN, an infinite or enormous edge, or no area, from a hostile journal or a bad pick, reaches the drawing or the save.
@@ -430,24 +523,12 @@ mod tests {
             MarkRect { width: 0.0, ..rect() },
             MarkRect { height: -1.0, ..rect() },
         ] {
-            let change = MarkChange::Add {
-                source: 0,
-                page: 0,
-                rects: vec![bad],
-            };
+            let change = one(0, 0, vec![bad]);
             assert_eq!(marks.step_for(change, Author::Owner), Err(MarkRefusal::Unsound), "{bad:?}");
         }
-        let none = MarkChange::Add {
-            source: 0,
-            page: 0,
-            rects: vec![],
-        };
+        let none = one(0, 0, vec![]);
         assert_eq!(marks.step_for(none, Author::Owner), Err(MarkRefusal::Unsound));
-        let many = MarkChange::Add {
-            source: 0,
-            page: 0,
-            rects: vec![rect(); MAX_MARK_RECTS + 1],
-        };
+        let many = one(0, 0, vec![rect(); MAX_MARK_RECTS + 1]);
         assert_eq!(marks.step_for(many, Author::Owner), Err(MarkRefusal::Unsound));
     }
 
@@ -476,24 +557,15 @@ mod tests {
     #[test]
     fn a_step_naming_nothing_does_nothing() {
         let mut marks = Marks::default();
-        let step = marks
-            .step_for(
-                MarkChange::Add {
-                    source: 0,
-                    page: 0,
-                    rects: vec![rect()],
-                },
-                Author::Agent,
-            )
-            .unwrap();
+        let step = marks.step_for(one(0, 0, vec![rect()]), Author::Agent).unwrap();
         let undo = marks.apply(step.clone());
         assert_eq!(marks.len(), 1);
-        assert_eq!(marks.apply(step), MarkStep::Remove(u32::MAX), "the same number twice is nothing");
+        assert_eq!(marks.apply(step), MarkStep::Remove(Box::new([])), "the same number twice is nothing");
         assert_eq!(marks.len(), 1);
-        assert_eq!(marks.apply(MarkStep::Remove(77)), MarkStep::Remove(u32::MAX));
+        assert_eq!(marks.apply(MarkStep::Remove(Box::new([77]))), MarkStep::Add(Box::new([])));
         let redo = marks.apply(undo);
         assert!(marks.is_empty());
-        assert_eq!(marks.apply(redo), MarkStep::Remove(0));
+        assert_eq!(marks.apply(redo), MarkStep::Remove(Box::new([0])));
         assert_eq!(
             marks.iter().next().map(|mark| mark.by),
             Some(Author::Agent),
@@ -507,34 +579,15 @@ mod tests {
         const CAP: usize = 3;
         let mut marks = Marks::default();
         for _ in 0..CAP {
-            let step = marks
-                .step_within(
-                    MarkChange::Add {
-                        source: 0,
-                        page: 0,
-                        rects: vec![rect()],
-                    },
-                    Author::Owner,
-                    CAP,
-                )
-                .unwrap();
+            let step = marks.step_within(one(0, 0, vec![rect()]), Author::Owner, CAP).unwrap();
             marks.apply(step);
         }
-        let one_more = MarkChange::Add {
-            source: 0,
-            page: 0,
-            rects: vec![rect()],
-        };
+        let one_more = one(0, 0, vec![rect()]);
         assert_eq!(marks.step_within(one_more, Author::Owner, CAP), Err(MarkRefusal::TooMany));
     }
 
     fn add(edits: &mut super::super::PageEdits, page: u32) {
-        let change = MarkChange::Add {
-            source: 0,
-            page,
-            rects: vec![rect()],
-        };
-        edits.mark(change).unwrap();
+        edits.mark(one(0, page, vec![rect()])).unwrap();
     }
 
     /// Failure: a highlight isn't a step of the one history, so ⌘Z undoes a turn made before it, or a highlight survives the undo of everything, or
@@ -557,17 +610,42 @@ mod tests {
             vec![(2, 0)],
             "it comes back with its number"
         );
-        assert_eq!(
-            edits.mark(MarkChange::Add {
-                source: 0,
-                page: 3,
-                rects: vec![rect()]
-            }),
-            Err(super::super::EditError::OutOfRange)
-        );
-        assert_eq!(edits.mark(MarkChange::Remove { id: 9 }), Err(super::super::EditError::NoSuchHighlight));
-        edits.mark(MarkChange::Remove { id: 0 }).unwrap();
+        assert_eq!(edits.mark(one(0, 3, vec![rect()])), Err(super::super::EditError::OutOfRange));
+        assert_eq!(edits.mark(MarkChange::Remove { ids: vec![9] }), Err(super::super::EditError::NoSuchHighlight));
+        edits.mark(MarkChange::Remove { ids: vec![0] }).unwrap();
         assert!(edits.marks().is_empty());
+    }
+
+    /// Failure: a highlight across two pages is two steps, so one ⌘Z leaves half of it; or taking one page's part away takes the other's too.
+    #[test]
+    fn a_highlight_across_pages_is_one_step() {
+        let mut edits = super::super::PageEdits::new(3);
+        let across = MarkChange::Add {
+            pages: vec![
+                MarkPage {
+                    source: 0,
+                    page: 0,
+                    rects: vec![rect()],
+                },
+                MarkPage {
+                    source: 0,
+                    page: 1,
+                    rects: vec![rect()],
+                },
+            ],
+        };
+        edits.mark(across).unwrap();
+        assert_eq!(edits.marks().len(), 2);
+        assert!(edits.undo());
+        assert!(edits.marks().is_empty(), "one undo takes the whole highlight");
+        assert!(edits.redo());
+        edits.mark(MarkChange::Remove { ids: vec![1] }).unwrap();
+        assert_eq!(edits.marks().iter().map(|mark| mark.page).collect::<Vec<_>>(), vec![0]);
+        assert_eq!(
+            edits.mark(MarkChange::Remove { ids: vec![0, 1] }),
+            Err(super::super::EditError::NoSuchHighlight),
+            "all named, or none taken"
+        );
     }
 
     /// Failure: what a journal or a record says of highlights doesn't bring the list back as it was, so a crash, a sleep or a restart loses a highlight,
@@ -580,7 +658,7 @@ mod tests {
         edits.acting = Author::Agent;
         add(&mut edits, 3);
         edits.acting = Author::Owner;
-        edits.mark(MarkChange::Remove { id: 0 }).unwrap();
+        edits.mark(MarkChange::Remove { ids: vec![0] }).unwrap();
         add(&mut edits, 0);
         assert!(edits.undo() && edits.undo());
         let ops = edits.journal_waiting().map(|(_, ops)| ops.to_vec()).unwrap();
@@ -669,7 +747,7 @@ mod tests {
         let read = parse_journal(&marked, MARKED_JOURNAL_VERSION).unwrap();
         let (back, _) = super::super::PageEdits::replay(3, read.base.as_ref(), &read.ops).unwrap();
         assert_eq!(back.marks().len(), 1, "and this one reads its highlight back");
-        edits.mark(MarkChange::Remove { id: 0 }).unwrap();
+        edits.mark(MarkChange::Remove { ids: vec![0] }).unwrap();
         let again = journal_start(&header, Some(&edits.to_record()));
         assert_eq!(
             parse_journal(&again, CURRENT_VERSION).unwrap().header.version,

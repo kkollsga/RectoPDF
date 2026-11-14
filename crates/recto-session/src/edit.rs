@@ -113,7 +113,7 @@ enum Step {
         slots: Box<[PageSlot]>,
     },
     /// A highlight added or taken away, which no page step depends on (see [`marks`]).
-    Mark(MarkStep),
+    Mark(Box<MarkStep>),
 }
 
 impl Step {
@@ -156,7 +156,7 @@ impl Step {
                 start: *start,
                 slots: slots_of(runs).into_boxed_slice(),
             },
-            StepRecord::Mark(step) => Self::Mark(MarkStep::from_record(step)),
+            StepRecord::Mark(step) => Self::Mark(Box::new(MarkStep::from_record(step))),
         }
     }
 
@@ -165,7 +165,7 @@ impl Step {
         match self {
             Self::Restore { slots, .. } => slots.iter().any(|slot| slot.source == source),
             // A highlight on a page of the tab's own file needs nothing kept: a save moves it onto the page's new number (`marks::saved`).
-            Self::Mark(MarkStep::Add(mark)) => source != 0 && mark.source == source,
+            Self::Mark(step) => source != 0 && step.adds().iter().any(|mark| mark.source == source),
             _ => false,
         }
     }
@@ -470,8 +470,8 @@ impl PageEdits {
         let mut marks = Marks::from_record(&record.marks).ok_or(RecordError::Damaged("a highlight that can't be"))?;
         // A highlight the history can bring back keeps its number: a new one starts past every number named.
         for entry in undo.iter().chain(&redo) {
-            if let Step::Mark(MarkStep::Add(mark)) = &entry.step {
-                marks.count_past(mark.id);
+            if let Step::Mark(step) = &entry.step {
+                marks.count_past(step);
             }
         }
         let mut edits = Self {
@@ -953,7 +953,7 @@ impl PageEdits {
         for entry in self.history.undo.iter().chain(&self.history.redo) {
             match &entry.step {
                 Step::Restore { slots, .. } => slots.iter().for_each(|slot| note(slot.source)),
-                Step::Mark(MarkStep::Add(mark)) => note(mark.source),
+                Step::Mark(step) => step.adds().iter().for_each(|mark| note(mark.source)),
                 _ => {}
             }
         }
@@ -978,7 +978,7 @@ impl PageEdits {
         for entry in self.history.undo.iter_mut().chain(&mut self.history.redo) {
             match &mut entry.step {
                 Step::Restore { slots, .. } => slots.iter_mut().for_each(|slot| renumber(&mut slot.source)),
-                Step::Mark(MarkStep::Add(mark)) => renumber(&mut mark.source),
+                Step::Mark(step) => step.adds_mut().iter_mut().for_each(|mark| renumber(&mut mark.source)),
                 _ => {}
             }
         }
@@ -1046,12 +1046,12 @@ impl PageEdits {
 
     /// Adds a highlight to a page, or takes one made as an edit away: a step like any other, the acting author's.
     pub fn mark(&mut self, change: MarkChange) -> Result<(), EditError> {
-        if let MarkChange::Add { source, page, .. } = &change {
-            let pages = match source {
+        if let MarkChange::Add { pages } = &change {
+            let count = |source: u16| match source {
                 0 => u32::try_from(self.file_pages).unwrap_or(u32::MAX),
-                source => self.added.get(usize::from(*source) - 1).map_or(0, |added| added.page_count),
+                source => self.added.get(usize::from(source) - 1).map_or(0, |added| added.page_count),
             };
-            if *page >= pages {
+            if pages.iter().any(|on| on.page >= count(on.source)) {
                 return Err(EditError::OutOfRange);
             }
         }
@@ -1060,7 +1060,7 @@ impl PageEdits {
             MarkRefusal::TooMany => EditError::TooManyHighlights,
             MarkRefusal::Unsound => EditError::OutOfRange,
         })?;
-        self.commit(Step::Mark(step))
+        self.commit(Step::Mark(Box::new(step)))
     }
 
     /// The highlights made as edits, unsaved.
@@ -1182,15 +1182,7 @@ impl PageEdits {
                 let (source, count) = (slots.first().map_or(0, |slot| slot.source), u32::try_from(slots.len()).unwrap_or(0));
                 self.note(|| JournalOp::Insert(*start, source, count, by));
             }
-            Step::Mark(MarkStep::Add(mark)) => self.note(|| {
-                JournalOp::Mark(MarkOp::Add {
-                    source: mark.source,
-                    page: mark.page,
-                    rects: mark.rects.to_vec(),
-                    by,
-                })
-            }),
-            Step::Mark(MarkStep::Remove(id)) => self.note(|| JournalOp::Mark(MarkOp::Remove { id: *id, by })),
+            Step::Mark(step) => self.note(|| JournalOp::Mark(MarkOp::of(step, by))),
         }
         let inverse = self.apply(step);
         self.history.bytes += inverse.held_bytes();
@@ -1280,7 +1272,7 @@ impl PageEdits {
                 self.slots.splice(s..s, slots.iter().copied());
                 Step::Remove { start, len }
             }
-            Step::Mark(step) => Step::Mark(self.marks.apply(step)),
+            Step::Mark(step) => Step::Mark(Box::new(self.marks.apply(*step))),
         }
     }
 

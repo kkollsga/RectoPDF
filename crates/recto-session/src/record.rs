@@ -1840,7 +1840,7 @@ mod tests {
             EditsRecord {
                 undo: vec![EntryRecord {
                     by,
-                    step: StepRecord::Mark(crate::edit::marks::MarkStepRecord::Add(mark(9))),
+                    step: StepRecord::Mark(crate::edit::marks::MarkStepRecord::Add(vec![mark(9)])),
                 }],
                 ..good.clone()
             },
