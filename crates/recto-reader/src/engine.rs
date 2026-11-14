@@ -41,7 +41,8 @@ pub trait EngineEvents: Send + Sync {
     /// The reader scrolled to another page, for the session to take as its place.
     fn page_moved(&self);
     /// A page was drawn, or couldn't be.
-    fn page_drawn(&self, tab: u32, page: u32, failure: Option<&'static str>);
+    /// A page of `tab` drawn, or not, by a job planned when the place clock was at `asked` ([`crate::tiles::Job::asked`]).
+    fn page_drawn(&self, tab: u32, page: u32, failure: Option<&'static str>, asked: u64);
     /// A copy is ready for the host to take.
     fn copy_ready(&self) {}
     /// A file's been seen to be another than the one opened, so the session should look at it.
@@ -773,7 +774,7 @@ mod tests {
         fn ops_ready(&self) {}
         fn note_changed(&self) {}
         fn page_moved(&self) {}
-        fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
+        fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>, _asked: u64) {}
     }
 
     /// Failure: synced scroll makes the UI thread wait for another pane's page view while that pane's own thread holds it, which is how a scroll step reached 4 to 9 ms. With the page view busy, the place is left for its own thread, the latest only, and it gets there as soon as that thread lets go. It waits for the activation's thread to let go first, as a call made while it held the view failed under load (2026-11-11).
@@ -1067,7 +1068,7 @@ mod tests {
         fn page_moved(&self) {
             self.page_moved.fetch_add(1, Ordering::SeqCst);
         }
-        fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
+        fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>, _asked: u64) {}
     }
 
     /// Each route by which a follow the UI thread asked for reaches the view.
@@ -1343,6 +1344,7 @@ mod tests {
             file: PathBuf::from("/nowhere/a.pdf"),
             source_page: page,
             generation: u64::MAX,
+            asked: 0,
             kind: crate::tiles::JobKind::Text { check: false },
         };
         let mut reader = lock(&engine.shared.reader);

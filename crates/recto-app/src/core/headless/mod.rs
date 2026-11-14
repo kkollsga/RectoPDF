@@ -56,6 +56,7 @@ mod update_saved;
 mod view;
 mod window_reaches;
 mod window_script;
+mod withheld_compare;
 mod withheld_events;
 
 // The scaffold's template (`tools/new-feature.sh`), compiled with the tests so a change that would break what it makes fails here.

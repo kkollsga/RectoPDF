@@ -200,6 +200,7 @@ fn bare_tab(id: u32, page_count: u32) -> TabRecord {
             news: None,
             encrypted: false,
             password: false,
+            placed_by_withheld: false,
         },
         reading: TabPlace {
             place: None,

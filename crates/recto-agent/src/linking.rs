@@ -4,9 +4,9 @@
 
 use crate::Code;
 use crate::TabRef;
-use crate::{AgentError, Event, SessionAccess, exit, locate, page_now, select, where_json};
+use crate::{Actor, AgentError, Event, SessionAccess, exit, locate, page_now, select, where_json};
 use recto_core::nav::{LinkTarget, PageLinks};
-use recto_session::{Author, DocLoader, Session, TabId};
+use recto_session::{DocLoader, Session, TabId};
 use serde_json::{Value, json};
 
 /// What a link does, in an agent's terms: where it goes now, with edits counted, or why it doesn't.
@@ -98,7 +98,7 @@ pub fn links<A: SessionAccess>(access: &A, tab: &TabRef, page: u32) -> Result<Va
 }
 
 /// `recto follow`: what a click on a link does, within the document. A web address is the person's to open, and never an agent's.
-pub fn follow<A: SessionAccess>(access: &A, by: Author, tab: &TabRef, page: u32, link: u32, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+pub fn follow<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, page: u32, link: u32, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     let (id, position, found) = read(access, tab, page)?;
     // After the read, which can take a while on a slow disk, so the place taken in is the one showing as it goes.
     access.take_places();
@@ -111,11 +111,16 @@ pub fn follow<A: SessionAccess>(access: &A, by: Author, tab: &TabRef, page: u32,
         let went = match &chosen.target {
             LinkTarget::Page { page: file_page, within } => {
                 let to = s.pages().position_in_same_file(id, position, *file_page).ok_or_else(|| AgentError::new(Code::LINK_GOES_NOWHERE, "The page this link goes to isn't in the document as it's been edited.", exit::FAILED))?;
-                s.jump_as(id, to, within.map_or(0.0, f64::from), by)?;
+                s.jump_as(id, to, within.map_or(0.0, f64::from), actor.author())?;
                 "page"
             }
             LinkTarget::History { back } => {
-                let moved = s.step_as(id, *back, by)?;
+                // Back or Forward, as `back` and `forward` are, so refused an agent the same way while it starts from a withheld place: what the link
+                // goes to is only known once it's read, so this is asked here and not by the command's `starts_from`.
+                if crate::place::refuses(s, actor, crate::commands::FromPlace::Trail { back: *back }, id) {
+                    return Err(crate::place::place_withheld_refusal());
+                }
+                let moved = s.step_as(id, *back, actor.author())?;
                 if !moved {
                     return Err(nothing_that_way(*back));
                 }
@@ -130,7 +135,7 @@ pub fn follow<A: SessionAccess>(access: &A, by: Author, tab: &TabRef, page: u32,
             LinkTarget::Nowhere => return Err(AgentError::new(Code::LINK_GOES_NOWHERE, "This link names a place that isn't in this document.", exit::FAILED)),
         };
         events.push(page_now(s, id));
-        let mut answer = where_json(s, id);
+        let mut answer = where_json(s, actor, id);
         answer["went"] = json!(went);
         Ok(answer)
     })
@@ -147,29 +152,29 @@ fn nothing_that_way(back: bool) -> AgentError {
 }
 
 /// `recto back` and `recto forward`, as ⌘[ and ⌘] do.
-pub fn step<A: SessionAccess>(access: &A, by: Author, tab: &TabRef, back: bool, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+pub fn step<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, back: bool, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
-        let moved = s.step_as(id, back, by)?;
+        let moved = s.step_as(id, back, actor.author())?;
         if !moved {
             return Err(nothing_that_way(back));
         }
         events.push(page_now(s, id));
-        Ok(where_json(s, id))
+        Ok(where_json(s, actor, id))
     })
 }
 
 /// `recto goto label iv`: the page the file calls that, or a plain number no page is called, as the go-to field reads it.
-pub fn goto_label<A: SessionAccess>(access: &A, by: Author, tab: &TabRef, label: &str, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+pub fn goto_label<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, label: &str, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
         let page = s.pages().for_typed(id, label).ok_or_else(|| {
             AgentError::new(Code::NO_SUCH_LABEL, "No page in this document is called that.", exit::NOT_FOUND)
                 .then("`recto where` gives the page's `label`. Labels are as the file writes them, such as `iv` or `A-3`, and a plain number is a page.")
         })?;
-        s.jump_as(id, page, 0.0, by)?;
+        s.jump_as(id, page, 0.0, actor.author())?;
         events.push(page_now(s, id));
-        Ok(where_json(s, id))
+        Ok(where_json(s, actor, id))
     })
 }
 

@@ -15,7 +15,7 @@
 
 use crate::Code;
 use crate::TabRef;
-use crate::{AgentError, Event, Level, SessionAccess, exit, file_label, select};
+use crate::{Actor, AgentError, Event, Level, SessionAccess, exit, file_label, select};
 use recto_core::save::{AddedFile, PageRef, SaveError, SaveHooks, SaveOutcome, SaveRequest, SaveStep, Target, Writer};
 use recto_platform::FileStamp;
 use recto_session::TabId;
@@ -269,8 +269,8 @@ fn request_parts(snapshot: &recto_session::SaveSnapshot) -> (Vec<PageRef>, Vec<A
 }
 
 /// **Saves a tab.** The one way an agent, the CLI or the app saves.
-pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &TabRef, to: &SaveTo, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-    let mut to = to.clone();
+pub fn save<A: SessionAccess>(access: &A, actor: Actor, tab: &TabRef, to: &SaveTo, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    let (level, mut to) = (actor.level(), to.clone());
     // Save As onto the tab's own file, which is a Save: a signed one's refusal then says to choose another name, not to use Save As.
     let mut onto_itself = false;
     if let SaveTo::As { out, replace } = &to {
@@ -318,7 +318,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &TabRef, to: &SaveT
         Ok::<_, AgentError>((id, snapshot))
     })?;
     let Some(snapshot) = snapshot else {
-        return Ok(access.with(|s| nothing_to_save(s, id)));
+        return Ok(access.with(|s| nothing_to_save(s, actor, id)));
     };
     let ending = Ending::new(access, id);
     if let Some(support) = access.saving() {
@@ -412,7 +412,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &TabRef, to: &SaveT
         s.end_save(id);
         ending.ended.set(true);
         events.extend(crate::event::saved(s, id, outcome.writer.name()));
-        answer(s, id, &outcome, rolled_off, saved_as.as_deref(), level)
+        answer(s, actor, id, &outcome, rolled_off, saved_as.as_deref())
     });
     if let Some(support) = support {
         support.after_save(id);
@@ -473,8 +473,8 @@ fn list_words(words: &[String]) -> String {
     }
 }
 
-fn nothing_to_save<L: recto_session::DocLoader>(s: &recto_session::Session<L>, id: TabId) -> Value {
-    let mut data = crate::edit_state_json(s, id);
+fn nothing_to_save<L: recto_session::DocLoader>(s: &recto_session::Session<L>, actor: Actor, id: TabId) -> Value {
+    let mut data = crate::edit_state_json(s, actor, id);
     data["did"] = json!("There's nothing unsaved, so nothing was written.");
     data["written"] = json!(false);
     data
@@ -483,13 +483,14 @@ fn nothing_to_save<L: recto_session::DocLoader>(s: &recto_session::Session<L>, i
 /// What a save answers: what it did in plain words, and the facts behind them.
 fn answer<L: recto_session::DocLoader>(
     s: &recto_session::Session<L>,
+    actor: Actor,
     id: TabId,
     outcome: &SaveOutcome,
     rolled_off: usize,
     saved_as: Option<&Path>,
-    level: Level,
 ) -> Value {
-    let mut data = crate::edit_state_json(s, id);
+    let level = actor.level();
+    let mut data = crate::edit_state_json(s, actor, id);
     let name = s.tabs().path_of(id).map(|path| file_label(&path)).unwrap_or_default();
     let how = match outcome.writer {
         Writer::Append => "The changes were added to the end of the file, so everything that was in it is still there.",

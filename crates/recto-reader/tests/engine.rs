@@ -26,7 +26,7 @@ impl EngineEvents for Events {
     }
     fn note_changed(&self) {}
     fn page_moved(&self) {}
-    fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {
+    fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>, _asked: u64) {
         self.drawn.fetch_add(1, Ordering::SeqCst);
         // On the thread that draws: stands in for anything going wrong on it.
         let left = self.panics.load(Ordering::SeqCst);
@@ -641,7 +641,7 @@ impl EngineEvents for PullsInCopyReady {
     fn ops_ready(&self) {}
     fn note_changed(&self) {}
     fn page_moved(&self) {}
-    fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
+    fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>, _asked: u64) {}
     fn copy_ready(&self) {
         if !self.pulled.swap(true, Ordering::SeqCst)
             && let Some(engine) = self.engine.get()

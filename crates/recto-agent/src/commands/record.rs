@@ -24,6 +24,9 @@ impl Cmd for SessionShow {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }
@@ -39,7 +42,7 @@ impl Cmd for SessionShow {
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         // What the record says is the host's to look up, and isn't asked with the session held.
         let kept = cx.access.records()?.kept();
-        Ok(cx.access.with(|session| session_show_json(session, cx.level, kept)))
+        Ok(cx.access.with(|session| session_show_json(session, cx.actor, kept)))
     }
     fn human(data: &Value) -> String {
         show_words(data)
@@ -62,6 +65,9 @@ impl Cmd for SessionSleep {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         Some(&self.tab)
     }
@@ -102,6 +108,9 @@ impl Cmd for SessionSave {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }
@@ -126,6 +135,8 @@ impl Cmd for SessionSave {
         if let Some(note) = saved.note {
             answer["note"] = json!(note);
         }
+        // The record's sizes move with what it holds of a withheld tab, as `session show`'s do (S2's round).
+        cx.access.with(|session| crate::place::withhold_record_numbers(session, cx.actor, &mut answer));
         Ok(answer)
     }
     fn human(data: &Value) -> String {
@@ -153,6 +164,9 @@ impl Cmd for SessionRestore {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }
@@ -169,6 +183,11 @@ impl Cmd for SessionRestore {
         let records = cx.access.records()?;
         if cx.level < Level::Full && cx.access.with(|session| session.lists().holds_owner_edits()) {
             return Err(restore_would_lose_owners_edits());
+        }
+        // A restore forgets that a tab's place was left by following a protected one, and the stops made from it, while the record keeps that place: an
+        // agent's would then read it (S2's round, D).
+        if !cx.actor.sees_protected() && cx.access.with(|session| recto_session::compare::withheld_in_memory(session)) {
+            return Err(crate::place::place_withheld_refusal());
         }
         let restored = records.restore()?;
         let (count, active) = cx.access.with(|session| (session.tabs().len(), session.tabs().active().map(|id| id.0)));
@@ -208,6 +227,9 @@ impl Cmd for SessionCheck {
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Nothing;
     const WAITS: bool = true;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }

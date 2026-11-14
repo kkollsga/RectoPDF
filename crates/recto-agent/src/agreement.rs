@@ -598,7 +598,7 @@ mod tests {
         let before = LOOKS_RUN.load(std::sync::atomic::Ordering::SeqCst);
         let refused = crate::saving::save(
             &access,
-            crate::Level::Full,
+            crate::Actor::Agent(crate::Level::Full),
             &crate::TabRef::Id(tab),
             &crate::saving::SaveTo::As {
                 out: out.clone(),

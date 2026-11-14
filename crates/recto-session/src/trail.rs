@@ -15,12 +15,46 @@ pub struct Stop {
     /// An agent's jump left it, so it gives way to the person's at the cap.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub by_agent: bool,
+    /// **It was made from a place withheld from agents** (S2's round): where following a protected document left a tab, so landing on it tells that
+    /// document's place. An agent's `back` or `forward` to it is refused, and the person's Back onto it withholds the place again
+    /// ([`crate::compare::trail_step_withheld`]). In the stop's padding, so it costs no byte. Kept in the record as `withheld`, left out when false, so a
+    /// restart keeps it (the second review, S-4) and a record without any is byte for byte as it was.
+    #[serde(default, rename = "withheld", skip_serializing_if = "std::ops::Not::not")]
+    pub from_withheld: bool,
+    /// **A mark, not a place to go** (the second review, D-2): left by a jump from a withheld place to the place it's on, so the trail says the same
+    /// whether or not the jump went where following left the tab, while the person's Back goes past it, as though it weren't there, and withholds where it
+    /// lands. Always made from a withheld place; at most one on top; not counted against [`MAX_TRAIL`]. In the stop's padding; kept in the record as
+    /// `mark_only`, left out when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mark_only: bool,
 }
 
 impl Stop {
     pub fn new(page: u32, within: f64) -> Self {
         let within = if within.is_finite() { within.clamp(0.0, 1.0) as f32 } else { 0.0 };
-        Self { page, within, by_agent: false }
+        Self {
+            page,
+            within,
+            by_agent: false,
+            from_withheld: false,
+            mark_only: false,
+        }
+    }
+
+    /// The same place, as a mark only ([`Self::mark_only`]): made from a withheld place.
+    #[must_use]
+    pub fn as_mark(self) -> Self {
+        Self {
+            from_withheld: true,
+            mark_only: true,
+            ..self
+        }
+    }
+
+    /// The same place, marked as made from a place withheld from agents, or not.
+    #[must_use]
+    pub fn withheld(self, from_withheld: bool) -> Self {
+        Self { from_withheld, ..self }
     }
 
     /// The same place, marked as left by an agent's jump or the person's.
@@ -35,8 +69,15 @@ impl Stop {
     }
 }
 
+/// A stop and a trail are paid for by every tab someone has jumped in, up to [`MAX_TRAIL`] stops each way (rule 1). Failure caught: a field added to a
+/// stop that doesn't fit its padding (a `u32`, an `f32`, a `bool` and 3 bytes spare) grows every stop of every trail unnoticed.
+const _: () = {
+    assert!(std::mem::size_of::<Stop>() == 12);
+    assert!(std::mem::size_of::<Trail>() == 48);
+};
+
 /// One tab's trail.
-// size: one Vec each way, held only for a tab someone has jumped in. At most `MAX_TRAIL` stops each way, 8 B a stop.
+// size: one Vec each way, held only for a tab someone has jumped in. At most `MAX_TRAIL` stops each way, 12 B a stop (asserted above).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Trail {
     back: Vec<Stop>,
@@ -50,7 +91,12 @@ impl Trail {
             let start = stops.len().saturating_sub(MAX_TRAIL);
             stops[start..]
                 .iter()
-                .map(|stop| Stop::new(stop.page.min(pages.saturating_sub(1)), f64::from(stop.within)).by(stop.by_agent))
+                .map(|stop| Stop {
+                    mark_only: stop.mark_only && stop.from_withheld,
+                    ..Stop::new(stop.page.min(pages.saturating_sub(1)), f64::from(stop.within))
+                        .by(stop.by_agent)
+                        .withheld(stop.from_withheld)
+                })
                 .collect()
         };
         Self {
@@ -72,11 +118,23 @@ impl Trail {
     }
 
     /// A jump from `here`: it's marked to come back to, and the way forward goes, all of it for the person's jump and only an agent's own stops for an agent's. A jump to where the reader already is marks nothing.
+    ///
+    /// A jump from a place withheld from agents is always marked, beside a stop at the same place too, as whether a stop was left would say whether the
+    /// jump went where following had left the tab (S2's round); and one to the place it's on leaves a mark only ([`Stop::mark_only`]), which the person's
+    /// Back goes past, so their Back goes where it would have with nothing left (the second review, D-2), and an agent's own way forward goes as for a jump
+    /// elsewhere.
     pub fn jumped(&mut self, here: Stop, to: Stop, by_agent: bool) {
         if here.same_place(to) {
+            if here.from_withheld && !self.back.last().is_some_and(|last| last.mark_only) {
+                push_capped(&mut self.back, here.by(by_agent).as_mark());
+                if by_agent {
+                    self.forward.retain(|stop| !stop.by_agent);
+                }
+            }
             return;
         }
-        if !self.back.last().is_some_and(|last| last.same_place(here)) {
+        let last_real = self.back.iter().rev().find(|stop| !stop.mark_only);
+        if here.from_withheld || !last_real.is_some_and(|last| last.same_place(here)) {
             push_capped(&mut self.back, here.by(by_agent));
         }
         if by_agent {
@@ -86,8 +144,10 @@ impl Trail {
         }
     }
 
-    /// Back from `here`, if there's somewhere to go: where to, with `here` kept for going forward again, marked by who went.
+    /// Back from `here`, if there's somewhere to go: where to, with `here` kept for going forward again, marked by who went. Marks only on the way are
+    /// gone past ([`Self::take_marks`] first, to know).
     pub fn go_back(&mut self, here: Stop, by_agent: bool) -> Option<Stop> {
+        self.take_marks();
         let to = self.back.pop()?;
         push_capped(&mut self.forward, here.by(by_agent));
         Some(to)
@@ -98,6 +158,30 @@ impl Trail {
         let to = self.forward.pop()?;
         push_capped(&mut self.back, here.by(by_agent));
         Some(to)
+    }
+
+    /// **Takes the marks only on top of the way back** ([`Stop::mark_only`]), as Back goes past them: says whether there were any.
+    pub fn take_marks(&mut self) -> bool {
+        let before = self.back.len();
+        while self.back.last().is_some_and(|stop| stop.mark_only) {
+            self.back.pop();
+        }
+        self.back.len() != before
+    }
+
+    /// Whether there's a place to go back (`back`) or forward to, as the person's Back and Forward are offered: marks only aren't.
+    pub fn can_go(&self, back: bool) -> bool {
+        if back { &self.back } else { &self.forward }.iter().any(|stop| !stop.mark_only)
+    }
+
+    /// The stop Back (`back`) or Forward would go to, without going: a mark only on top is what an agent's would meet.
+    pub fn next(&self, back: bool) -> Option<Stop> {
+        if back { self.back.last() } else { self.forward.last() }.copied()
+    }
+
+    /// Whether any stop either way was made from a place withheld from agents.
+    pub fn holds_withheld(&self) -> bool {
+        self.back.iter().chain(&self.forward).any(|stop| stop.from_withheld)
     }
 
     /// **The trail after its tab's pages were edited:** each stop goes where its page went, and a stop whose page went with the edit goes too.
@@ -126,13 +210,33 @@ impl Trail {
 }
 
 /// Adds a stop, and past the cap lets the oldest go: the oldest of an agent's for an agent's stop, and if there's none, the agent's own new one, so an agent can never push out the person's.
+/// Marks only aren't counted against the cap, so they never take a place a stop would have had; at most [`MAX_TRAIL`] of them are kept, the oldest going.
 fn push_capped(list: &mut Vec<Stop>, stop: Stop) {
     list.push(stop);
     if list.len() <= MAX_TRAIL {
         return;
     }
-    let oldest = if stop.by_agent { list.iter().position(|kept| kept.by_agent) } else { Some(0) };
-    list.remove(oldest.unwrap_or(list.len() - 1));
+    if list.iter().filter(|kept| !kept.mark_only).count() > MAX_TRAIL {
+        let older = &list[..list.len() - 1];
+        match older.iter().position(|kept| !kept.mark_only && (kept.by_agent || !stop.by_agent)) {
+            Some(oldest) => {
+                list.remove(oldest);
+            }
+            // An agent's own new stop gives way, as it can't push out the person's; made from a withheld place, it stays as a mark only, as one made to the
+            // place it's on would (D-2): whether the trail kept it would say whether the jump went where following left the tab.
+            None => {
+                let new = list.pop().unwrap_or(stop);
+                if new.from_withheld && !list.last().is_some_and(|last| last.mark_only) {
+                    list.push(new.as_mark());
+                }
+            }
+        }
+    }
+    if list.len() > 2 * MAX_TRAIL
+        && let Some(oldest) = list.iter().position(|kept| kept.mark_only)
+    {
+        list.remove(oldest);
+    }
 }
 
 use super::*;
@@ -141,8 +245,14 @@ impl<L: DocLoader> Session<L> {
     /// Moves a tab to a zero-based page, clamped to the document. A jump its page view was sent is about the page it's left.
     pub fn go_to(&mut self, id: TabId, page: u32) -> Result<(), SessionError> {
         let pages = self.pages().count(id);
+        let following = compare::follows_withheld(self, id);
         let tab = self.tabs.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
         let page = page.min(pages.saturating_sub(1));
+        // Set while it follows a withheld tab, and kept by a move that isn't absolute: the reader's own scroll, the page keys, Back and Forward, a step of
+        // Find land where they do from where it was. Let go only by a jump (the second review, D-1): [`compare::place_withheld`].
+        if following {
+            compare::set_placed_by_withheld(tab, &mut self.mail, true);
+        }
         if tab.page != page {
             tab.page = page;
             tab.place_dirty = true;
@@ -167,9 +277,18 @@ impl<L: DocLoader> Session<L> {
     }
 
     /// A jump, by the person or an agent. An agent's marks give way to the person's: see [`trail`].
+    ///
+    /// **Who lets a withheld place go, stated once** (the third review; the coordinator's D-A of 2026-11-14): only the person's own jump, an absolute
+    /// place they chose, lets it go, with what came of it, to the page it's on too, so a jump there says nothing a jump elsewhere wouldn't (D-1, S-2). An
+    /// agent's jump moves the tab as ever and leaves its place withheld: every route an agent has to a jump (`goto` by page, label or entry, `open
+    /// --page`, a link it follows, a Find hit by its index, a palette or menu row) comes here as [`Author::Agent`], so no guess of an agent's can be
+    /// checked against where following left the tab, by what it's told or what's drawn after, for as long as the place is withheld.
     pub fn jump_as(&mut self, id: TabId, page: u32, within: f64, by: Author) -> Result<(), SessionError> {
-        let here = self.here(id).ok_or(SessionError::NoSuchTab)?;
+        let here = marked_here(self, id).ok_or(SessionError::NoSuchTab)?;
         let to = trail::Stop::new(page.min(self.pages().count(id).saturating_sub(1)), within);
+        if by == Author::Owner {
+            compare::let_go_of_place(self, id);
+        }
         let tab = self.tabs.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
         tab.reading.trail.get_or_insert_default().jumped(here, to, by == Author::Agent);
         self.land(id, to)
@@ -177,12 +296,19 @@ impl<L: DocLoader> Session<L> {
 
     /// Back (`back`) or forward in a tab's trail, by the person or an agent. Says whether there was anywhere to go.
     pub fn step_as(&mut self, id: TabId, back: bool, by: Author) -> Result<bool, SessionError> {
-        let here = self.here(id).ok_or(SessionError::NoSuchTab)?;
+        let here = marked_here(self, id).ok_or(SessionError::NoSuchTab)?;
         let agent = by == Author::Agent;
         let Some(trail) = self.tabs.tab_mut(id).and_then(|tab| tab.reading.trail.as_deref_mut()) else {
             return Ok(false);
         };
-        let Some(to) = (if back { trail.go_back(here, agent) } else { trail.go_forward(here, agent) }) else {
+        // Back past a mark only (D-2) goes where it would have with none, and wherever it lands, or if it has nowhere to go, the place is withheld again,
+        // as onto a stop made from one: the mark stands for a stop at the withheld place.
+        let past_a_mark = back && trail.take_marks();
+        let went = if back { trail.go_back(here, agent) } else { trail.go_forward(here, agent) };
+        if past_a_mark {
+            compare::withhold_place(self, id);
+        }
+        let Some(to) = went else {
             return Ok(false);
         };
         // Pages may have gone since it was marked.
@@ -191,6 +317,12 @@ impl<L: DocLoader> Session<L> {
             ..to
         };
         self.land(id, to)?;
+        // Onto a stop made from a withheld place, the person's Back lands where it always did, and the place is withheld again.
+        if to.from_withheld
+            && let Some(tab) = self.tabs.tab_mut(id)
+        {
+            compare::set_placed_by_withheld(tab, &mut self.mail, true);
+        }
         Ok(true)
     }
 
@@ -210,6 +342,12 @@ pub(crate) fn jump_here<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> 
         .waiting_jump(tab.id)
         .filter(on_page)
         .or_else(|| session.mail.jump_on_its_way(tab.id).filter(on_page))
+}
+
+/// [`Session::here`], marked if the place is withheld from agents: what a stop made from it is. A function, not a method more on the session.
+fn marked_here<L: DocLoader>(session: &Session<L>, id: TabId) -> Option<trail::Stop> {
+    let tab = session.tabs.tab(id)?;
+    Some(here_of(session, tab).withheld(compare::place_withheld_of(session, tab)))
 }
 
 /// [`Session::here`] for a tab in hand, so a walk over every tab needn't look each up again.
@@ -262,6 +400,8 @@ mod tests {
                 page,
                 within: f32::NAN,
                 by_agent: false,
+                from_withheld: false,
+                mark_only: false,
             })
             .collect();
         let kept = Trail::from_record(&many, &many, 10);

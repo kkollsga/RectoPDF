@@ -322,6 +322,113 @@ impl<L: DocLoader> Session<L> {
     }
 }
 
+/// **Whether where a tab is is kept from agents** (SPEC: nothing of a document opened with a password goes to an agent, not its length or place;
+/// security review of phase R, S2): it's such a document ([`crate::registry::Tabs::withheld_from_agents`]); or it follows one, in a synced comparison
+/// with it, so its place moves with that one's and stops where it ends; or it was left by following one and hasn't been moved otherwise since. The one
+/// statement of it: the boundary events leave by, and every answer that says a tab's place, ask this. At most three panes looked at. A function of the
+/// comparison's, not a method more on the session.
+pub fn place_withheld<L: DocLoader>(session: &Session<L>, id: TabId) -> bool {
+    session.tabs.tab(id).is_some_and(|tab| place_withheld_of(session, tab))
+}
+
+/// [`place_withheld`], for a tab in hand.
+pub fn place_withheld_of<L: DocLoader>(session: &Session<L>, tab: &crate::TabRecord) -> bool {
+    withheld_by_itself(tab) || follows_withheld(session, tab.id)
+}
+
+/// **A tab whose place is withheld on its own account,** not by following: its document is ([`crate::withheld_tab`]), or it was left by following one
+/// and hasn't been moved by a jump since. What follows it in a synced comparison has its place withheld too, so withholding carries from tab to tab
+/// through syncing (the second review, S-1): a plain tab synced beside one left by following moves with it, from where following left it. The one root
+/// the comparison's rules for an agent ask: [`follows_withheld`], [`comparison_withheld`], [`synced_would_withhold`].
+fn withheld_by_itself(tab: &crate::TabRecord) -> bool {
+    crate::withheld_tab(tab) || tab.file.placed_by_withheld
+}
+
+/// Whether `id` is in a synced comparison with a tab whose place is withheld on its own account, and isn't that tab. At most three panes looked at.
+pub(crate) fn follows_withheld<L: DocLoader>(session: &Session<L>, id: TabId) -> bool {
+    session.comparison.as_ref().is_some_and(|comparison| {
+        comparison.synced
+            && comparison.contains(id)
+            && comparison
+                .tabs
+                .iter()
+                .any(|other| *other != id && session.tabs.tab(*other).is_some_and(withheld_by_itself))
+    })
+}
+
+/// Whether the comparison there is has a pane whose place is withheld: its lengths and where synced scroll started each pane aren't said to an agent.
+pub fn comparison_withheld<L: DocLoader>(session: &Session<L>) -> bool {
+    session
+        .comparison
+        .as_ref()
+        .is_some_and(|comparison| synced_would_withhold(session, &comparison.tabs))
+}
+
+/// Whether these tabs, synced, would have a pane follow one whose place is withheld: an agent may not make such a comparison.
+pub fn synced_would_withhold<L: DocLoader>(session: &Session<L>, panes: &[TabId]) -> bool {
+    panes.iter().any(|id| session.tabs.tab(*id).is_some_and(withheld_by_itself))
+}
+
+/// **Lets a withheld place go, with all that came of it,** as the person's own jump sets an absolute place (the second review, D-1 and S-2; only the
+/// person's, by [`Session::jump_as`]'s rule, D-A of the third review): the flag; the tab's draw
+/// notes and a jump on its way, drawn or sent from where it was; the exact place the page view last said, which on the page the jump goes to too would
+/// say how far down it following had left the tab, and its zoom only then; and every draw of the tab from before the jump's send, which the mail drops
+/// as it's told (the mail's `release`). Nothing for a tab whose place isn't withheld on its own account, nor one that follows: what
+/// the jump does to it is as it always was. Find's hit gone to last stays marked if it was stepped to from the place: a step goes on from it, not from
+/// the place.
+pub(crate) fn let_go_of_place<L: DocLoader>(session: &mut Session<L>, id: TabId) {
+    if follows_withheld(session, id) {
+        return;
+    }
+    let Some(tab) = session.tabs.tab_mut(id).filter(|tab| tab.file.placed_by_withheld) else {
+        return;
+    };
+    set_placed_by_withheld(tab, &mut session.mail, false);
+    if tab.reading.place.take().is_some() {
+        tab.place_dirty = true;
+    }
+    let live = session.warm.contains(id);
+    session.mail.release(id, live);
+}
+
+/// **Whether `back` (or forward) in a tab would land on a stop made from a place withheld from agents** (S2's round): such a stop is where following left
+/// the tab, and landing there tells it.
+pub fn trail_step_withheld<L: DocLoader>(session: &Session<L>, id: TabId, back: bool) -> bool {
+    session
+        .tabs
+        .tab(id)
+        .and_then(|tab| tab.reading.trail.as_deref())
+        .and_then(|trail| trail.next(back))
+        .is_some_and(|stop| stop.from_withheld)
+}
+
+/// **Whether anything of a plain tab's place is withheld from agents only in this session's memory** (S2's round): one placed by following a withheld
+/// tab, or a stop made from such a place in a tab's trail. A restore from the record forgets both, while the record keeps the place following left, so an
+/// agent's `session restore` is refused while it holds. Walks every tab and its trail: for a rare command, never a hot path.
+pub fn withheld_in_memory<L: DocLoader>(session: &Session<L>) -> bool {
+    session
+        .tabs
+        .iter()
+        .any(|tab| tab.file.placed_by_withheld || tab.reading.trail.as_deref().is_some_and(trail::Trail::holds_withheld))
+}
+
+/// **A tab's place stays withheld from agents after a move made from it:** the person's step of Find from a withheld place lands on the next hit, which
+/// says where it started from, as Back onto a stop made from one does ([`Session::step_as`]).
+pub fn withhold_place<L: DocLoader>(session: &mut Session<L>, id: TabId) {
+    if let Some(tab) = session.tabs.tab_mut(id) {
+        set_placed_by_withheld(tab, &mut session.mail, true);
+    }
+}
+
+/// Sets whether a tab's place was set while it followed a withheld tab. When that changes, the pages noted as drawn in it go: drawn where it was before,
+/// they'd say where it went (`wait page-drawn`).
+pub(crate) fn set_placed_by_withheld(tab: &mut crate::TabRecord, mail: &mut crate::mail::PageViewMail, withheld: bool) {
+    if tab.file.placed_by_withheld != withheld {
+        tab.file.placed_by_withheld = withheld;
+        mail.forget_draws(tab.id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -204,6 +204,9 @@ impl Cmd for Compare {
     const ABOUT: super::About = super::About::Nothing;
     // A pane's cold file is read in place here, or, on the window's session thread, off it and the command run again once it's in (`later`).
     const WAITS: bool = false;
+    fn starts_from(&self) -> super::FromPlace {
+        super::FromPlace::No
+    }
     fn tab(&self) -> Option<&TabRef> {
         None
     }
@@ -232,7 +235,7 @@ impl Cmd for Compare {
         details
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        compare(cx.access, self, cx.events)
+        compare(cx.access, cx.actor, self, cx.events)
     }
     fn human(data: &Value) -> String {
         match data["panes"].as_array() {
@@ -246,6 +249,8 @@ impl Cmd for Compare {
                             text(&pane["untrusted"]["name"]),
                             if pane["protected"] == true {
                                 "protected".to_string()
+                            } else if pane["page"].is_null() {
+                                format!("{} pages, where it is not given: it follows a protected document", pane["pages"])
                             } else {
                                 format!("page {} of {}", pane["page"], pane["pages"])
                             },
@@ -271,7 +276,17 @@ impl Cmd for Compare {
 ///
 /// **Run again from the start once a pane's file is in** (`later`), on the window's session thread: so nothing changes before every read it needs is done,
 /// and each form is one change however many times it runs before then.
-fn compare<A: SessionAccess>(access: &A, asked: &Compare, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+fn compare<A: SessionAccess>(access: &A, actor: Actor, asked: &Compare, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    // An agent's synced comparison with a protected pane is refused in the same hold of the session as the change, after any pane's file is read, so a
+    // person's ⌘-click can't come between the two (S2's round).
+    let refuse = |s: &Session<A::Loader>| match would_sync_a_withheld_pane(s, asked) {
+        Some(protected) if !actor.sees_protected() => Err(if protected {
+            protected_refusal()
+        } else {
+            crate::place::place_withheld_refusal()
+        }),
+        _ => Ok(()),
+    };
     let mut changed = false;
     match asked {
         Compare::Look => {}
@@ -289,17 +304,29 @@ fn compare<A: SessionAccess>(access: &A, asked: &Compare, events: &mut Vec<Event
             for (id, path) in access.with(|s| s.wake_for_compare(&ids)) {
                 read_ahead(access, |_| Some((id, path)))?;
             }
-            changed |= access.with(|s| s.compare(&ids, Some(reading))).map_err(refused)?;
-            if let Some(sync) = sync {
-                changed |= set_synced(access, *sync)?;
-            }
+            changed |= access.with(|s| {
+                refuse(s)?;
+                let mut changed = s.compare(&ids, Some(reading)).map_err(refused)?;
+                if let Some(sync) = sync {
+                    changed |= set_synced(s, *sync)?;
+                }
+                Ok::<_, AgentError>(changed)
+            })?;
         }
-        Compare::Sync(sync) => changed |= set_synced(access, *sync)?,
+        Compare::Sync(sync) => {
+            changed |= access.with(|s| {
+                refuse(s)?;
+                set_synced(s, *sync)
+            })?;
+        }
         Compare::Toggle(selector) => {
             let id = access.with(|s| select(s, selector))?;
             // The tab joining, or the pane read next if the one being read leaves.
             read_ahead(access, |s| s.wake_for_compare_click(id))?;
-            let change = access.with(|s| s.toggle_compare(id)).map_err(refused)?;
+            let change = access.with(|s| {
+                refuse(s)?;
+                s.toggle_compare(id).map_err(refused)
+            })?;
             changed |= change != recto_session::compare::CompareChange::Nothing;
         }
         Compare::Reading(selector) => {
@@ -319,15 +346,40 @@ fn compare<A: SessionAccess>(access: &A, asked: &Compare, events: &mut Vec<Event
     }
     // The window's own, for the person, draws what the session publishes: SessionAccess::answer_read.
     Ok(if access.answer_read() {
-        access.with(|s| compare_json(s))
+        access.with(|s| compare_json(s, actor))
     } else {
         Value::Null
     })
 }
 
+/// **Whether `asked` would leave a synced comparison with a pane withheld from agents** (security review of phase R, S2): synced, a pane follows the
+/// protected one's place and stops where it ends, so an agent that made one would read that document's place and length in the other. Decided on the
+/// comparison as it would be after the change: put side by side and synced at once, synced afterwards, or a tab added to a synced one (synced scroll
+/// stays on through a change of tabs). Taking a tab out, separate scroll, and side by side with separate scroll make no pane follow, and are allowed.
+/// Only an agent is asked: the person's own comparison is theirs. A pane whose place is withheld, left by following a protected one, is such a pane
+/// too (the second review, S-1): what follows it says where following left it. Says, for such a comparison, whether a pane's document is protected,
+/// for the refusal's code (`protected`, else `place_withheld`).
+fn would_sync_a_withheld_pane<L: DocLoader>(s: &Session<L>, asked: &Compare) -> Option<bool> {
+    let synced_now = s.comparison().is_some_and(|comparison| comparison.synced);
+    let panes_now = || s.comparison().map(|comparison| comparison.tabs.clone()).unwrap_or_default();
+    let (synced, panes) = match asked {
+        Compare::Look | Compare::Off | Compare::Reading(_) | Compare::Sync(OnOff::Off) => return None,
+        Compare::Sync(OnOff::On) => (true, panes_now()),
+        Compare::Set { tabs, sync } => (
+            sync.map_or(synced_now, OnOff::is_on),
+            tabs.as_slice().iter().filter_map(|selector| select(s, selector).ok()).collect(),
+        ),
+        Compare::Toggle(selector) => match select(s, selector) {
+            Ok(id) if s.comparison().is_some_and(|comparison| !comparison.contains(id)) => (synced_now, [panes_now(), vec![id]].concat()),
+            _ => return None,
+        },
+    };
+    (synced && recto_session::compare::synced_would_withhold(s, &panes)).then(|| panes.iter().any(|id| s.tabs().withheld_from_agents(*id)))
+}
+
 /// Synced scroll or separate, for the comparison there is. Says whether that's a change.
-fn set_synced<A: SessionAccess>(access: &A, sync: OnOff) -> Result<bool, AgentError> {
-    access.with(|s| s.set_compare_synced(sync.is_on())).ok_or_else(|| {
+fn set_synced<L: DocLoader>(s: &mut Session<L>, sync: OnOff) -> Result<bool, AgentError> {
+    s.set_compare_synced(sync.is_on()).ok_or_else(|| {
         AgentError::new(Code::NOT_COMPARING, "There's no comparison to sync.", exit::NOT_FOUND)
             .then("`recto compare --tabs \"#1,#2\"` puts two side by side first.")
     })
@@ -386,7 +438,7 @@ pub(crate) const ROWS_COMPARE: &[Spec] = &[Spec {
             help: "Which of the tabs side by side is read, as moving the pointer into its pane does. Nothing on screen moves. Goes alone.",
         },
     ],
-    data: "`{ comparing, panes: [{ tab, page, pages, reading, untrusted: { name } }], sync, sync_from, note, max_panes }`. `note` says when synced documents differ in length.",
+    data: "`{ comparing, panes: [{ tab, page, pages, reading, untrusted: { name } }], sync, sync_from, note, max_panes }`. `note` says when synced documents differ in length. While a pane is a document the user opened with its password, `note` and `sync_from` are null, and a pane synced to it has no `page`; an agent can't turn synced scroll on with such a pane (exit 8, `protected`).",
     emits: &["view_changed", "tab_activated"],
     examples: &[
         "recto compare",

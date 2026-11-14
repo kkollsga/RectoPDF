@@ -66,7 +66,9 @@ pub fn needs_the_session(events: &[Event]) -> bool {
 /// The session's own [`recto_session::Tabs::withheld_from_agents`] keeps its meaning, as every other caller asks it of a tab that's open (a command's
 /// gate on the tab it selected, what a sleep file may hold, the window's model).
 pub fn for_agents<L: DocLoader>(session: &Session<L>, finding: Option<TabId>, events: &mut Vec<Event>) {
-    let withheld = |id: TabId| session.tabs().tab(id).is_none() || session.tabs().withheld_from_agents(id);
+    // Its document's, or where it is, as a tab's place can be withheld while its document isn't: it follows a protected one's (S2), which
+    // `compare::place_withheld_of` states once. Find's news says where its hit is, and so where a step from the place went (S2's round).
+    let withheld = |id: TabId| session.tabs().tab(id).is_none_or(|tab| recto_session::compare::place_withheld_of(session, tab));
     // Asked once a batch, and only if Find's in it.
     let mut reading_withheld = None;
     events.retain(|event| match about(event) {
@@ -187,6 +189,21 @@ mod tests {
         ];
         for_agents(&session, None, &mut events);
         assert_eq!(events, [Event::TabClosed { tab: a }]);
+    }
+
+    /// Failure (security review of S2's round, S3): the person's ⌘G in a plain pane that follows a protected one tells watchers Find's hit and its page
+    /// (`find_changed`), which is where the protected document is, as Find's news was judged only by whether the document it names, or the one being read,
+    /// is protected. Find's news is held back while the place of either is withheld.
+    #[test]
+    fn finds_news_is_held_back_while_the_place_it_starts_from_is_withheld() {
+        let (mut session, a, b) = two_tabs();
+        session.compare(&[a, b], Some(b)).expect("side by side");
+        session.set_compare_synced(true);
+        session.go_to(b, 6).expect("followed");
+        let find = || vec![Event::FindOpened { tab: Some(b), page: Some(7) }, Event::FindRunning { tab: Some(b) }];
+        let mut events = find();
+        for_agents(&session, Some(b), &mut events);
+        assert!(events.is_empty(), "b follows a: {events:?}");
     }
 
     /// Failure: a batch with nothing about a document takes the session's lock to be let through, on the session thread for every page drawn.

@@ -128,6 +128,23 @@ impl Command {
         }
     }
 
+    /// What it starts from: see [`crate::commands::Cmd::starts_from`].
+    pub(crate) fn starts_from(&self) -> crate::commands::FromPlace {
+        match self {
+            Self::Measure(command) => command.starts_from(),
+            Self::Edit(command) => command.starts_from(),
+            Self::Move(command) => command.starts_from(),
+            Self::Read(command) => command.starts_from(),
+            Self::Start(command) => command.starts_from(),
+            Self::Waits(command) => command.starts_from(),
+            Self::Rights(command) => command.starts_from(),
+            Self::Session(command) => command.starts_from(),
+            Self::Qa(command) => command.starts_from(),
+            Self::Record(command) => command.starts_from(),
+            Self::Updates(command) => command.starts_from(),
+        }
+    }
+
     /// The selector of the tab this acts on, which `execute` holds awake while it runs.
     pub(crate) fn tab_selector(&self) -> Option<&crate::TabRef> {
         match self {

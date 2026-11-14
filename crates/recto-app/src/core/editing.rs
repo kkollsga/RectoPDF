@@ -20,7 +20,8 @@ fn rotate(turns: i32) -> Command {
 }
 
 /// [`rotate`]'s tab and pages, as the session has them when it runs: the tab being read, named, so a tap between this and the run doesn't move the rotate
-/// to another tab; and in edit mode the page it's on. A tab withheld from `actor` is refused here, before its page is read.
+/// to another tab; and in edit mode the page it's on. A tab withheld from `actor` is refused here, before its page is read, and in edit mode a tab whose
+/// place is.
 fn rotate_pages_now(session: &recto_session::Session<DrawableLoader>, actor: Actor, command: Command) -> Result<Command, AgentError> {
     let Command::Edit(Edit::PageRotate(mut asked)) = command else {
         return Ok(command);
@@ -33,6 +34,10 @@ fn rotate_pages_now(session: &recto_session::Session<DrawableLoader>, actor: Act
     if session.viewing().edit_mode()
         && let Some(tab) = session.tabs().tab(id)
     {
+        // The page being read is where the tab is: an agent's Rotate starts from it, and is refused by the gate's own rule (S2's round, D-6).
+        if recto_agent::place::refuses(session, actor, recto_agent::commands::FromPlace::Place, id) {
+            return Err(recto_agent::place_withheld_refusal());
+        }
         asked.pages = (tab.page + 1).to_string();
     }
     Ok(asked.into())

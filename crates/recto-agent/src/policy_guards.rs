@@ -380,7 +380,16 @@ fn unmeasured(value: &mut Value) {
 fn no_command_tells_an_agent_anything_of_a_protected_document() {
     deadlines_met();
     let mut differs = Vec::new();
-    for command in every_command() {
+    // A synced comparison with the protected tab, which `compare`'s note and its panes' starts would tell the length of (S2): made at once, and made
+    // synced afterwards.
+    let synced = [
+        Command::from(commands::compare::Compare::Set {
+            tabs: commands::compare::Panes::new(vec![crate::TabRef::from("#1"), crate::TabRef::from("#2")]).expect("two tabs"),
+            sync: Some(commands::words::OnOff::On),
+        }),
+        Command::from(commands::compare::Compare::Sync(commands::words::OnOff::On)),
+    ];
+    for command in every_command().into_iter().chain(synced) {
         for level in LEVELS {
             for arranged in ARRANGEMENTS {
                 let (one, two) = (told(1, level, &command, arranged), told(2, level, &command, arranged));
@@ -434,6 +443,358 @@ fn heard(secret: u32, command: &Command, arranged: Arrangement) -> String {
     format!("{events:?}")
         .replace(locked.folder().to_str().unwrap(), "<locked>")
         .replace(plain.folder().to_str().unwrap(), "<plain>")
+}
+
+/// Where the plain tab `#2` is, beside the protected `#1` in a comparison: [`following_session`] makes each.
+#[derive(Clone, Copy, Debug)]
+enum Followed {
+    /// Synced with `#1`, which its place follows: moved to that one's last page, as following its end would take it.
+    Following,
+    /// The same, then synced scroll off: left where following put it.
+    Left,
+    /// Left, then an agent's `goto 1` on it, which moves it and keeps its place withheld (D-A), and leaves the followed place on its trail for Back.
+    LeftThenJumped,
+    /// Left, then the person's own `goto 1` on it, which lets its place go (the one release there is) and leaves the followed place on its trail.
+    PersonJumped,
+    /// That, then the person's Back onto the followed place.
+    PersonWentBack,
+    /// Left, with a stop the person made before it followed, and then the person's Back to that stop, leaving the followed place on the way forward.
+    PersonWentBackFromIt,
+    /// Left, then put side by side with a third plain tab `#3` by the person and synced, the third scrolled three pages and the plain tab following it
+    /// (the second review, S-1): where synced scroll started it, and where it is, say where following left it.
+    SyncedWithAThird,
+    /// Left, with the page view's exact place on the page following left it on (how far down it the protected document was) and the tab in the
+    /// background behind the protected one, then an agent's `goto 9`: the page following left it on in the first twin, another in the second (the second
+    /// review, S-2 and D-2: what's kept of the old place, and what the trail says; the third's D-A: the place stays withheld).
+    InTheBackgroundThenJumpedToPageNine,
+    /// Left, with the page view's place, then the session written to its record and restored from it, as a restart or an update's hand-off has it (the
+    /// second review, S-4).
+    Restarted,
+}
+
+const FOLLOWED: [Followed; 9] = [
+    Followed::Following,
+    Followed::Left,
+    Followed::LeftThenJumped,
+    Followed::PersonJumped,
+    Followed::PersonWentBack,
+    Followed::PersonWentBackFromIt,
+    Followed::SyncedWithAThird,
+    Followed::InTheBackgroundThenJumpedToPageNine,
+    Followed::Restarted,
+];
+
+/// `locked.pdf` (`#1`, `secret`'s) opened with its password, and a plain 30-page `plain.pdf` (`#2`) being read beside it in a comparison, placed as
+/// `followed` says: where following took it is the protected document's last page, so the twins differ in where the plain tab is, and in nothing else
+/// about it. With the two files, which go when they're dropped.
+fn following_session(secret: u32, followed: Followed) -> (Mutex<Session<crate::DrawableLoader>>, TempPdf, TempPdf) {
+    let locked = TempPdf::new("locked.pdf", &secret_pdf(secret));
+    let plain = TempPdf::new("plain.pdf", &pdf(30));
+    let mut session = Session::new(crate::DrawableLoader);
+    let id = session.open(&locked.0).unwrap();
+    let other = session.open(&plain.0).unwrap();
+    session.tabs_mut().note_password_used(id);
+    if matches!(followed, Followed::PersonWentBackFromIt) {
+        session.jump_as(other, 2, 0.0, recto_session::Author::Owner).unwrap();
+    }
+    session.compare(&[id, other], Some(other)).unwrap();
+    session.set_compare_synced(true);
+    let followed_to = 6 + 2 * secret;
+    session.go_to(other, followed_to).unwrap();
+    // How far down its page the protected one went, as the page view says it of the plain pane that follows.
+    let place = recto_session::record::PlaceRecord {
+        page: followed_to,
+        anchor_page: followed_to,
+        within: 0.3 * f64::from(secret),
+        x: 0.0,
+        y: 900.0 * f64::from(followed_to),
+        document_height: 27_000.0,
+        zoom: 1.25,
+        page_width: 612.0,
+        page_height: 792.0,
+    };
+    assert!(session.view_told_of(other, place, 1));
+    if !matches!(followed, Followed::Following) {
+        session.set_compare_synced(false);
+    }
+    match followed {
+        Followed::SyncedWithAThird => {
+            std::fs::write(plain.0.with_file_name("third.pdf"), pdf(30)).unwrap();
+            let third = session.open(&plain.0.with_file_name("third.pdf")).unwrap();
+            session.compare(&[other, third], Some(third)).unwrap();
+            session.set_compare_synced(true);
+            session.go_to(third, 3).unwrap();
+            session.go_to(other, followed_to + 3).unwrap();
+        }
+        Followed::InTheBackgroundThenJumpedToPageNine => {
+            session.end_compare();
+            session.tap(id).unwrap();
+            session.jump_as(other, 8, 0.0, recto_session::Author::Agent).unwrap();
+        }
+        Followed::Restarted => {
+            let bytes = recto_session::record::encode_record(&session.to_record(), 3);
+            let read = recto_session::record::decode_record(&bytes, recto_session::record::CURRENT_VERSION).unwrap();
+            session = Session::new(crate::DrawableLoader);
+            session.restore(&read.record, std::collections::HashMap::new()).unwrap();
+        }
+        _ => {}
+    }
+    if matches!(followed, Followed::LeftThenJumped | Followed::PersonWentBack) {
+        session.jump_as(other, 0, 0.0, recto_session::Author::Agent).unwrap();
+    }
+    if matches!(followed, Followed::PersonJumped) {
+        session.jump_as(other, 0, 0.0, recto_session::Author::Owner).unwrap();
+    }
+    if matches!(followed, Followed::PersonWentBack | Followed::PersonWentBackFromIt) {
+        assert!(session.step_as(other, true, recto_session::Author::Owner).unwrap());
+    }
+    (Mutex::new(session), locked, plain)
+}
+
+/// Failure (security review of S2's round): an agent learns where a plain tab is that follows a protected one, or was left by following one, and so that
+/// document's place and length: by any command's answer or refusal, or what it hears (past the rule events leave by), at any level: `edits` and an edit's
+/// or a save's answer, `back` and `forward` after a jump, a step of Find from the place, a `goto` to the page it's on (the same-page oracle), a delete
+/// of that page ("now on page N"), `contents fold`'s open or shut. Every command, naming the plain tab, at every level, in each of [`FOLLOWED`], on twins
+/// that differ only in where following put it, is told and heard alike.
+#[test]
+fn no_command_tells_an_agent_where_a_tab_that_followed_a_protected_one_is() {
+    deadlines_met();
+    // Page 9 is where following leaves the plain tab in the first twin, and not in the second.
+    let on_the_followed_page = [
+        Command::from(commands::linking::Goto {
+            tab: "#1".into(),
+            page: Some(9),
+            label: None,
+            within: None,
+            entry: None,
+        }),
+        Command::from(commands::editing::PageDelete {
+            tab: "#1".into(),
+            pages: "9".into(),
+        }),
+    ];
+    let steps = [(true, false), (false, false), (true, true)]
+        .map(|(forward, jump)| Command::from(commands::finding::Find::from(commands::finding::FindAsk::Step { forward, jump })));
+    // Each command whose page can be left out, with it left out, so nothing that would default to where the tab is goes unseen; and Find's hit by its
+    // index.
+    let tab = || crate::TabRef::from("#1");
+    let unpaged = [
+        Command::from(commands::highlight::Highlights { tab: tab(), page: None }),
+        Command::from(commands::text::Select {
+            tab: tab(),
+            page: None,
+            to_page: None,
+            chars: None,
+            at: None,
+            to: None,
+            unit: None,
+            all: false,
+            anyway: false,
+        }),
+        Command::from(commands::text::Copy {
+            tab: tab(),
+            page: None,
+            to_page: None,
+            chars: None,
+            at: None,
+            to: None,
+            unit: None,
+            all: false,
+            anyway: false,
+        }),
+        Command::from(commands::highlight::Highlight {
+            tab: tab(),
+            page: None,
+            to_page: None,
+            chars: Some("0-5".into()),
+            at: None,
+            to: None,
+            unit: None,
+        }),
+        Command::from(commands::highlight::HighlightRemove {
+            tab: tab(),
+            what: commands::highlight::RemoveWhat::Pick {
+                page: None,
+                to_page: None,
+                chars: None,
+                at: None,
+                to: None,
+            },
+        }),
+        Command::from(commands::finding::Find::from(commands::finding::FindAsk::Hit(0))),
+    ];
+    let commands: Vec<Command> = every_command()
+        .into_iter()
+        .chain(on_the_followed_page)
+        .chain(steps)
+        .chain(unpaged)
+        .map(|command| naming_the_plain_tab(&command))
+        .collect();
+    // Each arrangement on a thread of its own, as each run is a fresh session on files of its own: the walk is about 16 s of work.
+    let differs: Vec<String> = std::thread::scope(|scope| {
+        let walks: Vec<_> = FOLLOWED
+            .map(|followed| {
+                let commands = &commands;
+                scope.spawn(move || {
+                    let mut differs = Vec::new();
+                    for command in commands {
+                        for level in LEVELS {
+                            let told = |secret: u32| {
+                                let (access, locked, plain) = following_session(secret, followed);
+                                let mut events = Vec::new();
+                                let result = execute(&access, Actor::Agent(level), command, &mut events);
+                                crate::withheld::for_agents(&access.lock().unwrap(), None, &mut events);
+                                format!("{} {events:?}", said(result))
+                                    .replace(locked.folder().to_str().unwrap(), "<locked>")
+                                    .replace(plain.folder().to_str().unwrap(), "<plain>")
+                            };
+                            let (one, two) = (told(1), told(2));
+                            if one != two {
+                                differs.push(format!("{} at {level:?}, {followed:?}:\n  {one}\n  {two}", command.tag()));
+                            }
+                        }
+                    }
+                    differs
+                })
+            })
+            .into_iter()
+            .collect();
+        walks.into_iter().flat_map(|walk| walk.join().expect("a walk")).collect()
+    });
+    assert!(differs.is_empty(), "told where the plain tab is:\n{}", differs.join("\n"));
+}
+
+/// Every command of the walks, naming `#1`: [`every_command`] and the ones [`no_command_tells_an_agent_where_a_tab_that_followed_a_protected_one_is`]
+/// adds (a goto to the followed page, each command whose page can be left out, Find's steps and its hit by index).
+fn the_walks_commands() -> Vec<Command> {
+    let tab = || crate::TabRef::from("#1");
+    let pick = |all: bool| commands::text::Select {
+        tab: tab(),
+        page: None,
+        to_page: None,
+        chars: None,
+        at: None,
+        to: None,
+        unit: None,
+        all,
+        anyway: false,
+    };
+    let mut walk = every_command();
+    walk.extend([
+        Command::from(commands::linking::Goto {
+            tab: "#1".into(),
+            page: Some(9),
+            label: None,
+            within: None,
+            entry: None,
+        }),
+        Command::from(commands::highlight::Highlights { tab: tab(), page: None }),
+        Command::from(pick(false)),
+        Command::from(commands::finding::Find::from(commands::finding::FindAsk::Hit(0))),
+    ]);
+    walk.extend(
+        [(true, false), (false, false), (true, true)]
+            .map(|(forward, jump)| Command::from(commands::finding::Find::from(commands::finding::FindAsk::Step { forward, jump }))),
+    );
+    walk
+}
+
+/// Failure (the third security review; the coordinator's D-A): some command an agent sends lets the place of a tab left by following a protected one
+/// go (its `goto`, `open --page`, a link, a Find hit by its index, a contents entry), and with it what follows a release (the page view's old place told
+/// again, the draws before it arrives, how many of a page's tiles are drawn again) can be set against the agent's own guess, again and again. Every
+/// command of the walks, run one after another by an agent at Full on one session, naming the plain tab, on twins that differ only in where following
+/// left it: each answer and what's heard is the same, and after each the plain tab's place is still withheld, as long as it's open. Destructive ones
+/// (a close, a stop, a restore) go last, so the rest run on the tab.
+#[test]
+fn no_agent_command_lets_a_withheld_place_go() {
+    deadlines_met();
+    let (last, first): (Vec<Command>, Vec<Command>) = the_walks_commands()
+        .into_iter()
+        .map(|command| naming_the_plain_tab(&command))
+        .partition(|command| matches!(command.tag(), "close" | "stop" | "session_restore"));
+    let twins = [1, 2].map(|secret| following_session(secret, Followed::Left));
+    let plain = recto_session::TabId(2);
+    let mut differs = Vec::new();
+    let mut let_go = None;
+    for command in first.iter().chain(&last) {
+        let [one, two] = [&twins[0], &twins[1]].map(|(access, locked, plain_file)| {
+            let mut events = Vec::new();
+            let result = execute(access, Actor::Agent(Level::Full), command, &mut events);
+            let session = access.lock().unwrap();
+            crate::withheld::for_agents(&session, None, &mut events);
+            let kept = session
+                .tabs()
+                .tab(plain)
+                .is_none_or(|_| recto_session::compare::place_withheld(&session, plain));
+            let told = format!("{} {events:?}", said(result))
+                .replace(locked.folder().to_str().unwrap(), "<locked>")
+                .replace(plain_file.folder().to_str().unwrap(), "<plain>");
+            (told, kept)
+        });
+        if one.0 != two.0 {
+            differs.push(format!("{}:\n  {}\n  {}", command.tag(), one.0, two.0));
+        }
+        if !(one.1 && two.1) && let_go.is_none() {
+            let_go = Some(command.tag());
+        }
+    }
+    assert_eq!(let_go, None, "the first agent's command that let the withheld place go");
+    assert!(differs.is_empty(), "told where the plain tab is:\n{}", differs.join("\n"));
+}
+
+/// Failure (security review of S2's round): a command that starts from where a tab is says it doesn't ([`commands::Cmd::starts_from`]), so an agent's
+/// runs while that place follows a protected document's and tells it; or one that doesn't is refused for it. Each of [`every_command`], and each way of
+/// asking Find, against the reviewed list: Back and Forward start from the place to a stop on the trail; Find's steps, and folding a contents section
+/// (against what following the place opens), from the place; every other command names its pages, or none, and a Find hit chosen by its index is an
+/// absolute move, as `goto` is (the second review, D-1), which the person's lets a withheld place go by and an agent's doesn't (D-A).
+#[test]
+fn what_starts_from_the_place_is_as_listed() {
+    use commands::FromPlace;
+    use commands::finding::{Find, FindAsk};
+    let listed = |command: &Command| match (command.tag(), command) {
+        ("back", _) => FromPlace::Trail { back: true },
+        ("forward", _) => FromPlace::Trail { back: false },
+        ("contents_fold", _) => FromPlace::Place,
+        _ => FromPlace::No,
+    };
+    for command in every_command() {
+        assert_eq!(command.starts_from(), listed(&command), "{}", command.tag());
+    }
+    for (ask, from) in [
+        (FindAsk::Query("x".into()), FromPlace::No),
+        (FindAsk::Open, FromPlace::No),
+        (FindAsk::Close, FromPlace::No),
+        (FindAsk::Look, FromPlace::No),
+        (FindAsk::Step { forward: true, jump: false }, FromPlace::PlaceOrHit),
+        (FindAsk::Step { forward: false, jump: true }, FromPlace::PlaceOrHit),
+        (FindAsk::Hit(0), FromPlace::No),
+    ] {
+        assert_eq!(Command::from(Find::from(ask.clone())).starts_from(), from, "find {ask:?}");
+    }
+}
+
+/// Failure (the second security review, D-3): a command that starts from where a tab is runs on a thread of its own for the person (`WAITS`), so the
+/// gate's look at the place ([`crate::place::refuses`]) and the command's own run are two holds of the session, and the place can be let go or withheld
+/// between them. Every such command runs on the session thread, the gate and the command under one hold of it; a later command that waits and starts
+/// from the place fails here.
+#[test]
+fn what_starts_from_the_place_runs_on_the_session_thread() {
+    use commands::finding::{Find, FindAsk};
+    let finds = [
+        FindAsk::Step { forward: true, jump: false },
+        FindAsk::Step { forward: false, jump: true },
+        FindAsk::Hit(0),
+    ]
+    .map(|ask| Command::from(Find::from(ask)));
+    let starting: Vec<Command> = every_command()
+        .into_iter()
+        .chain(finds)
+        .filter(|command| command.starts_from() != commands::FromPlace::No)
+        .collect();
+    assert!(starting.len() >= 4, "Back, Forward, a step of Find and a fold were looked at");
+    for command in starting {
+        assert!(!command.waits(), "{} starts from the place and waits", command.tag());
+    }
 }
 
 /// **The twins' answers don't turn on the machine's speed:** every renderer in this test's process gets a page deadline it always meets, so the
@@ -753,7 +1114,7 @@ const REPLACES_ON_PURPOSE: &[(&str, &str, &str)] = &[
 
 /// A source's lines outside test items: an item under `#[cfg(test)]` is left out to its end, braces counted as written (as `tests/codes.rs` reads them).
 /// An item with no body (a `mod x;`, a field, a variant) ends at its `;` or `,`.
-fn production_lines(source: &str) -> Vec<(usize, &str)> {
+pub(crate) fn production_lines(source: &str) -> Vec<(usize, &str)> {
     let mut lines = Vec::new();
     let mut skipping: Option<(bool, i64)> = None;
     for (at, line) in source.lines().enumerate() {

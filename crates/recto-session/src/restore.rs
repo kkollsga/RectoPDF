@@ -49,6 +49,8 @@ impl<L: DocLoader> Session<L> {
                             news: _,
                             encrypted: _,
                             password,
+                            // Kept as the session's list, below.
+                            placed_by_withheld: _,
                         },
                     reading: TabPlace { place, selection, trail },
                 } = tab;
@@ -96,6 +98,7 @@ impl<L: DocLoader> Session<L> {
             tabs,
             comparison,
             recent,
+            withheld_places: open.all().iter().filter(|tab| tab.file.placed_by_withheld).map(|tab| tab.id.0).collect(),
         }
     }
 
@@ -118,6 +121,8 @@ impl<L: DocLoader> Session<L> {
         self.comparison = None;
         self.recent.restore(&record.recent);
         self.viewing.restore(&record.view, &record.find, record.edit_mode);
+        // Looked up for each tab: a set of at most `MAX_TABS`, so a restore of many withheld tabs doesn't search a list for each.
+        let withheld_places: std::collections::BTreeSet<u32> = record.withheld_places.iter().copied().collect();
         for entry in &record.tabs {
             let Some(path) = entry.path.to_path() else { continue };
             // A quiet run's record naming a file outside its folders doesn't bring that tab back: see [`confined`].
@@ -182,6 +187,7 @@ impl<L: DocLoader> Session<L> {
                     news: fit::FileNews::restored(notice, elsewhere),
                     encrypted: false,
                     password: entry.password,
+                    placed_by_withheld: withheld_places.contains(&entry.id),
                 },
                 reading: TabPlace {
                     place: entry.place,

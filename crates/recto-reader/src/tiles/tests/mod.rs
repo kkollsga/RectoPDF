@@ -83,6 +83,7 @@ fn settle_all_sized(reader: &mut Reader, size: PageBox) -> Vec<Job> {
             file: job.file.clone(),
             source_page: job.source_page,
             generation: job.generation,
+            asked: job.asked,
             kind: match &job.kind {
                 JobKind::Size => JobKind::Size,
                 JobKind::Traits => JobKind::Traits,

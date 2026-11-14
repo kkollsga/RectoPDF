@@ -134,6 +134,9 @@ pub struct ForWhom {
     pub hidden_tabs: Vec<u32>,
     /// Whether files opened lately are listed.
     pub recent: bool,
+    /// Commands left out by their menu id: Back and Forward for an agent while the gate would refuse its own (`recto_agent::place::refuses`), so
+    /// whether they're there says nothing of a place withheld from it (the second review, D-2).
+    pub hidden_commands: Vec<&'static str>,
 }
 
 impl ForWhom {
@@ -141,6 +144,7 @@ impl ForWhom {
         Self {
             hidden_tabs: Vec::new(),
             recent: true,
+            hidden_commands: Vec::new(),
         }
     }
 }
@@ -223,7 +227,8 @@ pub fn found_for(
         lock(&state.state).tabs_ranked = Some((query.to_string(), version, ranked.clone()));
         ranked
     });
-    let commands = commands();
+    let mut commands = commands();
+    commands.retain(|row| !whom.hidden_commands.contains(&row.id.as_str()));
     let mut both: Vec<(PaletteRow, i32)> = tabs
         .into_iter()
         .filter(|(row, _)| !whom.hidden_tabs.iter().any(|tab| row.id == format!("tab:{tab}")))
@@ -436,6 +441,7 @@ mod tests {
         let agent = ForWhom {
             hidden_tabs: vec![1],
             recent: false,
+            hidden_commands: Vec::new(),
         };
         let ids = |rows: Vec<PaletteRow>| rows.into_iter().map(|row| row.id).collect::<Vec<_>>();
         assert_eq!(ids(found_for(&palette, "", 1, tabs, Vec::new, recent, &agent)), ["tab:2"]);

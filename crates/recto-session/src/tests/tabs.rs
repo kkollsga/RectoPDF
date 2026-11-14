@@ -32,7 +32,7 @@ impl DocLoader for NameLoader {
     }
 }
 
-/// Failure: a field added carelessly, or a component that brings padding with it (R3.2 groups the fields), raises the cost of every idle tab. Held at its size today, 224 bytes, of which 2 are padding.
+/// Failure: a field added carelessly, or a component that brings padding with it (R3.2 groups the fields), raises the cost of every idle tab. Held at its size today, 224 bytes, of which 1 is padding (`TabFile`'s; `placed_by_withheld` took the other).
 #[test]
 fn tab_record_stays_small() {
     assert!(std::mem::size_of::<TabRecord>() <= 224, "{} bytes", std::mem::size_of::<TabRecord>());
