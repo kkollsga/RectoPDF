@@ -365,12 +365,15 @@ fn session_held(app: &HeadlessApp) -> (std::sync::mpsc::Sender<()>, std::thread:
     let core = std::sync::Arc::clone(app.core());
     let (held_tx, held_rx) = std::sync::mpsc::channel();
     let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-    let holder = std::thread::spawn(move || {
-        core.host.session.with_session(|_| {
-            held_tx.send(()).expect("the test is waiting");
-            let _ = done_rx.recv_timeout(WAIT_LIMIT);
-        });
-    });
+    let holder = std::thread::Builder::new()
+        .name("test-session-holder".into())
+        .spawn(move || {
+            core.host.session.with_session(|_| {
+                held_tx.send(()).expect("the test is waiting");
+                let _ = done_rx.recv_timeout(WAIT_LIMIT);
+            });
+        })
+        .expect("a thread");
     held_rx.recv_timeout(WAIT_LIMIT).expect("the session held");
     (done_tx, holder)
 }
