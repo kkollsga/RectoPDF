@@ -288,3 +288,90 @@ fn a_page_added_from_a_file_only_one_reader_needs_a_password_for_is_never_drawn_
     assert!(!pictured[0].contains(&0), "with no picture of the page from the crafted file: {pictured:?}");
     drop(app.quit());
 }
+
+/// The crafted file opened by the person with its password typed (tab A), and a plain document (tab B) with a page added from it, in view: the setup of
+/// the two tests below. Says A's id, and the pids of the workers the page view had for A's file while A was showing.
+fn typed_for_a_and_added_to_b(app: &HeadlessApp, crafted: &std::path::Path, plain: &std::path::Path) -> (u64, Vec<u32>) {
+    app.core().engine.waking().window_up();
+    let before: Vec<u32> = app.core().engine.workers().pids();
+    opened_for_one_reader(app, crafted, "right");
+    let crafted_workers: Vec<u32> = app.core().engine.workers().pids().into_iter().filter(|pid| !before.contains(pid)).collect();
+    assert!(!crafted_workers.is_empty(), "A's file has a worker, given the password");
+    let a = tab_named(app, "crafted.pdf");
+    added_and_in_view(app, plain, crafted);
+    assert!(
+        app.core().engine.note().is_some_and(|note| note.contains(ADDED_PAGES_NOTE)),
+        "B's page from it says why it isn't shown: {:?}",
+        app.core().engine.note()
+    );
+    (a, crafted_workers)
+}
+
+/// Failure (the second review of the measured faults): a renderer given the password typed for tab A was dropped only when no hot or warm tab wanted its
+/// path, and a document with a page added from that file wants it. So with A closed the keyring let the key go, but the renderer kept it, its worker
+/// kept its own copy, and a worker it started again was given it. Closing A while B is showing: the key goes from everywhere in the process (nothing
+/// holds it, so its bytes were overwritten as the last holder let go), and the worker that had it is gone.
+#[test]
+fn closing_the_tab_a_password_was_typed_for_ends_every_copy_of_it_though_a_document_adds_its_file() {
+    let disk = Disk::new();
+    let crafted = disk.file("crafted.pdf", &locked_for_one_reader("right"));
+    let plain = disk.pdf("plain.pdf", 2);
+    let app = disk.start();
+    let (a, crafted_workers) = typed_for_a_and_added_to_b(&app, &crafted, &plain);
+    let key = std::sync::Arc::downgrade(&app.core().keys.for_path(&crafted).expect("the key typed for A is held"));
+    full(&app, &["close", "--tab", &format!("#{a}")]);
+    app.settle();
+    drawn(&app);
+    app.wait_until("no holder of the key typed for A", || key.upgrade().is_none());
+    assert!(app.core().keys.is_empty(), "the keyring holds no key: no tab owns one");
+    for pid in crafted_workers {
+        app.wait_until("the worker given the key gone", || recto_platform::isolate::process_memory(pid).is_none());
+        assert!(!app.core().engine.workers().pids().contains(&pid), "nor listed as the page view's");
+    }
+    drop(app.quit());
+}
+
+/// Failure (the second review of the measured faults): with A closed and its key let go, the renderer given it stayed for B, which adds A's file. The
+/// person opens that file again: no key is held, so the loader reads it as plain and the new tab isn't marked as protected, and its jobs, being its own
+/// file's, drew on the stale renderer with the old password: nobody was asked for it, and an agent could screenshot the tab and read its text. Opened
+/// again, it asks for its password, it's withheld from agents till it's typed, nothing of it draws meanwhile, and B's page from it still says why it
+/// isn't shown.
+#[test]
+fn a_file_opened_again_after_the_tab_its_password_was_typed_for_closed_asks_for_it_again() {
+    let disk = Disk::new();
+    let crafted = disk.file("crafted.pdf", &locked_for_one_reader("right"));
+    let plain = disk.pdf("plain.pdf", 2);
+    let app = disk.start();
+    let (a, _) = typed_for_a_and_added_to_b(&app, &crafted, &plain);
+    full(&app, &["close", "--tab", &format!("#{a}")]);
+    app.settle();
+    drawn(&app);
+    let b = tab_named(&app, "plain.pdf");
+    app.act(crate::core::controls::UiAction::Open {
+        path: crafted.display().to_string(),
+    });
+    app.settle();
+    drawn(&app);
+    app.settle();
+    let again = tab_named(&app, "crafted.pdf");
+    assert!(app.reader().password_prompt.is_some(), "its password is asked for again");
+    let refused = app
+        .recto(recto_agent::Level::Full, &["text", "--tab", &format!("#{again}"), "--page", "1"])
+        .expect_err("an agent reads nothing of it");
+    assert_eq!(refused.exit, recto_agent::exit::PROTECTED, "withheld as protected: {refused:?}");
+    let report = app.core().engine.report().0;
+    assert_eq!(report["tab"], again, "{report}");
+    assert_eq!(
+        report["tiles"]["attached"], 0,
+        "nothing of it is drawn while it waits for its password: {report}"
+    );
+    full(&app, &["tap", &format!("#{b}")]);
+    full(&app, &["goto", "1"]);
+    drawn(&app);
+    assert!(
+        app.core().engine.note().is_some_and(|note| note.contains(ADDED_PAGES_NOTE)),
+        "B's page from it still says why it isn't shown: {:?}",
+        app.core().engine.note()
+    );
+    drop(app.quit());
+}

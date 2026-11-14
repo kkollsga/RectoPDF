@@ -599,6 +599,7 @@ Docs::pub(crate) fn expected_stamp(&self, tab: u32, file: &std::path::Path) -> O
 Docs::pub(crate) fn files_of(&self, tab: u32) -> Vec<PathBuf>
 Docs::pub(crate) fn holds(&self, tab: u32) -> bool
 Docs::pub(crate) fn hot_tab(&self) -> Option<u32>
+Docs::pub(crate) fn is_a_held_tabs_own_file(&self, file: &std::path::Path) -> bool
 Docs::pub(crate) fn is_own_file(&self, tab: u32, file: &std::path::Path) -> bool
 Docs::pub(crate) fn shown(&self) -> Option<&DocView>
 DrawKind (pub enum, derives Clone, Copy, Debug, PartialEq, Eq)

@@ -124,8 +124,7 @@ fn run(shared: &Shared) {
         // Its surface is made with the lock let go, which the UI thread needs on every scroll.
         let planned = plan.is_some();
         let job = plan.and_then(JobPlan::ready);
-        // Only hot and warm tabs' files keep a renderer. Dropping one kills its worker and closes its file.
-        renderers.retain(|path, _| wanted.contains(path));
+        let_go_of_unwanted(shared, &mut renderers, &wanted);
         openings.retain(|path, _| wanted.contains(path));
         publish_workers(shared, &mut renderers);
         let Some(job) = job else {
@@ -193,6 +192,8 @@ fn run(shared: &Shared) {
             }
         };
         let outcome = if own { outcome } else { as_an_added_files(outcome, &job) };
+        // A renderer this job opened with a password for another tab's file goes now, not when the thread next comes round, which may be a long rest.
+        let_go_of_unwanted(shared, &mut renderers, &wanted);
         publish_workers(shared, &mut renderers);
         let drawn = match (&job.kind, &outcome) {
             (
@@ -349,6 +350,14 @@ fn publish_workers(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>) {
     *lock(&shared.workers_by_file) = by_file;
 }
 
+/// **Only hot and warm tabs' files keep a renderer, and one given a password the person typed only while its path is the own file of one of them**
+/// ([`OpenDoc::keyed`]). Dropping one kills its worker and closes its file. A keyed one is a password the person typed, and no job of a tab that only
+/// adds its file may use it, so it isn't held for one: otherwise it outlived the tab it was typed for, and a tab opened on the file again, not marked
+/// protected as no key was held to read it with, drew on it with nobody asked (the second review of the measured faults).
+fn let_go_of_unwanted(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, wanted: &[PathBuf]) {
+    renderers.retain(|path, open| wanted.contains(path) && (!open.keyed || lock(&shared.reader).docs.is_a_held_tabs_own_file(path)));
+}
+
 /// A file's renderer, and what's been decided about its pages on dark paper. Each page gets one decision, however many tiles it comes to, at whatever scale.
 struct OpenDoc {
     /// Whoever's asked has been told how long this file is.
@@ -358,7 +367,11 @@ struct OpenDoc {
     looks: HashMap<u32, Arc<PageLook>>,
     /// The file's been seen to be another one in the middle of a job, and whoever's asked hasn't been told yet.
     replaced: bool,
-    /// Its worker was given a password the person typed: for the tab whose own file this is, and no other ([`added_needs_password`]).
+    /// Its worker was given a password the person typed: for the tab whose own file this is, and no other ([`added_needs_password`]). **The key ends with
+    /// that tab:** a renderer with it is kept only while its path is the own file of a tab the page view holds, hot or warm ([`let_go_of_unwanted`]), not
+    /// as long as any tab wants the path, as a document with a page added from the file does. Dropping it kills its worker, whose copy of the password
+    /// goes with the process, and lets go of its share of the key, which is overwritten when the keyring lets go too: the keyring keeps a key only while
+    /// a tab has its file open, cold ones included, so the password ends when the last tab that owns it closes.
     keyed: bool,
 }
 
