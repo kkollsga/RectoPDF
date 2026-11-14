@@ -1,0 +1,432 @@
+Fine | none | chosen=false | own=0
+  None
+Fine | none | chosen=false | own=7
+  None
+Fine | none | chosen=true | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+Fine | none | chosen=true | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+Fine | making | chosen=false | own=0
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+Fine | making | chosen=false | own=7
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+Fine | making | chosen=true | own=0
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+Fine | making | chosen=true | own=7
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+Fine | failed | chosen=false | own=0
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+Fine | failed | chosen=false | own=7
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+Fine | failed | chosen=true | own=0
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+Fine | failed | chosen=true | own=7
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+Fine | none-found | chosen=false | own=0
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+Fine | none-found | chosen=false | own=7
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+Fine | none-found | chosen=true | own=0
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+Fine | none-found | chosen=true | own=7
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+Fine | not-kept | chosen=false | own=0
+  None
+Fine | not-kept | chosen=false | own=7
+  None
+Fine | not-kept | chosen=true | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+Fine | not-kept | chosen=true | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+Fine | ready | chosen=false | own=0
+  Some(("Show generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", Some("contents.show_generated")))
+Fine | ready | chosen=false | own=7
+  Some(("Show generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", Some("contents.show_generated")))
+Fine | ready | chosen=true | own=0
+  Some(("Generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", None))
+Fine | ready | chosen=true | own=7
+  Some(("Generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong. Click to show the file's own.", Some("contents.show_own")))
+Missing | none | chosen=false | own=0
+  Some(("Generate contents", "This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.", Some("contents.generate")))
+Missing | none | chosen=false | own=7
+  Some(("Generate contents", "This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.", Some("contents.generate")))
+Missing | none | chosen=true | own=0
+  Some(("Generate contents", "This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.", Some("contents.generate")))
+Missing | none | chosen=true | own=7
+  Some(("Generate contents", "This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.", Some("contents.generate")))
+Missing | making | chosen=false | own=0
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+Missing | making | chosen=false | own=7
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+Missing | making | chosen=true | own=0
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+Missing | making | chosen=true | own=7
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+Missing | failed | chosen=false | own=0
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+Missing | failed | chosen=false | own=7
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+Missing | failed | chosen=true | own=0
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+Missing | failed | chosen=true | own=7
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+Missing | none-found | chosen=false | own=0
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+Missing | none-found | chosen=false | own=7
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+Missing | none-found | chosen=true | own=0
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+Missing | none-found | chosen=true | own=7
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+Missing | not-kept | chosen=false | own=0
+  Some(("Generate contents", "This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.", Some("contents.generate")))
+Missing | not-kept | chosen=false | own=7
+  Some(("Generate contents", "This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.", Some("contents.generate")))
+Missing | not-kept | chosen=true | own=0
+  Some(("Generate contents", "This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.", Some("contents.generate")))
+Missing | not-kept | chosen=true | own=7
+  Some(("Generate contents", "This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.", Some("contents.generate")))
+Missing | ready | chosen=false | own=0
+  Some(("Show generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", Some("contents.show_generated")))
+Missing | ready | chosen=false | own=7
+  Some(("Show generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", Some("contents.show_generated")))
+Missing | ready | chosen=true | own=0
+  Some(("Generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", None))
+Missing | ready | chosen=true | own=7
+  Some(("Generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong. Click to show the file's own.", Some("contents.show_own")))
+LooksBad(GoNowhere) | none | chosen=false | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(GoNowhere) | none | chosen=false | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(GoNowhere) | none | chosen=true | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(GoNowhere) | none | chosen=true | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(GoNowhere) | making | chosen=false | own=0
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(GoNowhere) | making | chosen=false | own=7
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(GoNowhere) | making | chosen=true | own=0
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(GoNowhere) | making | chosen=true | own=7
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(GoNowhere) | failed | chosen=false | own=0
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(GoNowhere) | failed | chosen=false | own=7
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(GoNowhere) | failed | chosen=true | own=0
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(GoNowhere) | failed | chosen=true | own=7
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(GoNowhere) | none-found | chosen=false | own=0
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(GoNowhere) | none-found | chosen=false | own=7
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(GoNowhere) | none-found | chosen=true | own=0
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(GoNowhere) | none-found | chosen=true | own=7
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(GoNowhere) | not-kept | chosen=false | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(GoNowhere) | not-kept | chosen=false | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(GoNowhere) | not-kept | chosen=true | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(GoNowhere) | not-kept | chosen=true | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(GoNowhere) | ready | chosen=false | own=0
+  Some(("Show generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", Some("contents.show_generated")))
+LooksBad(GoNowhere) | ready | chosen=false | own=7
+  Some(("Show generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", Some("contents.show_generated")))
+LooksBad(GoNowhere) | ready | chosen=true | own=0
+  Some(("Generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", None))
+LooksBad(GoNowhere) | ready | chosen=true | own=7
+  Some(("Generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong. Click to show the file's own.", Some("contents.show_own")))
+LooksBad(OnePage) | none | chosen=false | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(OnePage) | none | chosen=false | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(OnePage) | none | chosen=true | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(OnePage) | none | chosen=true | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(OnePage) | making | chosen=false | own=0
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(OnePage) | making | chosen=false | own=7
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(OnePage) | making | chosen=true | own=0
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(OnePage) | making | chosen=true | own=7
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(OnePage) | failed | chosen=false | own=0
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(OnePage) | failed | chosen=false | own=7
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(OnePage) | failed | chosen=true | own=0
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(OnePage) | failed | chosen=true | own=7
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(OnePage) | none-found | chosen=false | own=0
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(OnePage) | none-found | chosen=false | own=7
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(OnePage) | none-found | chosen=true | own=0
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(OnePage) | none-found | chosen=true | own=7
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(OnePage) | not-kept | chosen=false | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(OnePage) | not-kept | chosen=false | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(OnePage) | not-kept | chosen=true | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(OnePage) | not-kept | chosen=true | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(OnePage) | ready | chosen=false | own=0
+  Some(("Show generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", Some("contents.show_generated")))
+LooksBad(OnePage) | ready | chosen=false | own=7
+  Some(("Show generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", Some("contents.show_generated")))
+LooksBad(OnePage) | ready | chosen=true | own=0
+  Some(("Generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", None))
+LooksBad(OnePage) | ready | chosen=true | own=7
+  Some(("Generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong. Click to show the file's own.", Some("contents.show_own")))
+LooksBad(TooFew) | none | chosen=false | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(TooFew) | none | chosen=false | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(TooFew) | none | chosen=true | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(TooFew) | none | chosen=true | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(TooFew) | making | chosen=false | own=0
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(TooFew) | making | chosen=false | own=7
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(TooFew) | making | chosen=true | own=0
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(TooFew) | making | chosen=true | own=7
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(TooFew) | failed | chosen=false | own=0
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(TooFew) | failed | chosen=false | own=7
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(TooFew) | failed | chosen=true | own=0
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(TooFew) | failed | chosen=true | own=7
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(TooFew) | none-found | chosen=false | own=0
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(TooFew) | none-found | chosen=false | own=7
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(TooFew) | none-found | chosen=true | own=0
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(TooFew) | none-found | chosen=true | own=7
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(TooFew) | not-kept | chosen=false | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(TooFew) | not-kept | chosen=false | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(TooFew) | not-kept | chosen=true | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(TooFew) | not-kept | chosen=true | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(TooFew) | ready | chosen=false | own=0
+  Some(("Show generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", Some("contents.show_generated")))
+LooksBad(TooFew) | ready | chosen=false | own=7
+  Some(("Show generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", Some("contents.show_generated")))
+LooksBad(TooFew) | ready | chosen=true | own=0
+  Some(("Generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", None))
+LooksBad(TooFew) | ready | chosen=true | own=7
+  Some(("Generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong. Click to show the file's own.", Some("contents.show_own")))
+LooksBad(StopsEarly) | none | chosen=false | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(StopsEarly) | none | chosen=false | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(StopsEarly) | none | chosen=true | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(StopsEarly) | none | chosen=true | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(StopsEarly) | making | chosen=false | own=0
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(StopsEarly) | making | chosen=false | own=7
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(StopsEarly) | making | chosen=true | own=0
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(StopsEarly) | making | chosen=true | own=7
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(StopsEarly) | failed | chosen=false | own=0
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(StopsEarly) | failed | chosen=false | own=7
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(StopsEarly) | failed | chosen=true | own=0
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(StopsEarly) | failed | chosen=true | own=7
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(StopsEarly) | none-found | chosen=false | own=0
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(StopsEarly) | none-found | chosen=false | own=7
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(StopsEarly) | none-found | chosen=true | own=0
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(StopsEarly) | none-found | chosen=true | own=7
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(StopsEarly) | not-kept | chosen=false | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(StopsEarly) | not-kept | chosen=false | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(StopsEarly) | not-kept | chosen=true | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(StopsEarly) | not-kept | chosen=true | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(StopsEarly) | ready | chosen=false | own=0
+  Some(("Show generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", Some("contents.show_generated")))
+LooksBad(StopsEarly) | ready | chosen=false | own=7
+  Some(("Show generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", Some("contents.show_generated")))
+LooksBad(StopsEarly) | ready | chosen=true | own=0
+  Some(("Generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", None))
+LooksBad(StopsEarly) | ready | chosen=true | own=7
+  Some(("Generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong. Click to show the file's own.", Some("contents.show_own")))
+LooksBad(SkipsMost) | none | chosen=false | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(SkipsMost) | none | chosen=false | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(SkipsMost) | none | chosen=true | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(SkipsMost) | none | chosen=true | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(SkipsMost) | making | chosen=false | own=0
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(SkipsMost) | making | chosen=false | own=7
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(SkipsMost) | making | chosen=true | own=0
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(SkipsMost) | making | chosen=true | own=7
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(SkipsMost) | failed | chosen=false | own=0
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(SkipsMost) | failed | chosen=false | own=7
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(SkipsMost) | failed | chosen=true | own=0
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(SkipsMost) | failed | chosen=true | own=7
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(SkipsMost) | none-found | chosen=false | own=0
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(SkipsMost) | none-found | chosen=false | own=7
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(SkipsMost) | none-found | chosen=true | own=0
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(SkipsMost) | none-found | chosen=true | own=7
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(SkipsMost) | not-kept | chosen=false | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(SkipsMost) | not-kept | chosen=false | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(SkipsMost) | not-kept | chosen=true | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(SkipsMost) | not-kept | chosen=true | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(SkipsMost) | ready | chosen=false | own=0
+  Some(("Show generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", Some("contents.show_generated")))
+LooksBad(SkipsMost) | ready | chosen=false | own=7
+  Some(("Show generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", Some("contents.show_generated")))
+LooksBad(SkipsMost) | ready | chosen=true | own=0
+  Some(("Generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", None))
+LooksBad(SkipsMost) | ready | chosen=true | own=7
+  Some(("Generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong. Click to show the file's own.", Some("contents.show_own")))
+LooksBad(PiledOnOnePage) | none | chosen=false | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(PiledOnOnePage) | none | chosen=false | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(PiledOnOnePage) | none | chosen=true | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(PiledOnOnePage) | none | chosen=true | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(PiledOnOnePage) | making | chosen=false | own=0
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(PiledOnOnePage) | making | chosen=false | own=7
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(PiledOnOnePage) | making | chosen=true | own=0
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(PiledOnOnePage) | making | chosen=true | own=7
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(PiledOnOnePage) | failed | chosen=false | own=0
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(PiledOnOnePage) | failed | chosen=false | own=7
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(PiledOnOnePage) | failed | chosen=true | own=0
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(PiledOnOnePage) | failed | chosen=true | own=7
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(PiledOnOnePage) | none-found | chosen=false | own=0
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(PiledOnOnePage) | none-found | chosen=false | own=7
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(PiledOnOnePage) | none-found | chosen=true | own=0
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(PiledOnOnePage) | none-found | chosen=true | own=7
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(PiledOnOnePage) | not-kept | chosen=false | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(PiledOnOnePage) | not-kept | chosen=false | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(PiledOnOnePage) | not-kept | chosen=true | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(PiledOnOnePage) | not-kept | chosen=true | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(PiledOnOnePage) | ready | chosen=false | own=0
+  Some(("Show generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", Some("contents.show_generated")))
+LooksBad(PiledOnOnePage) | ready | chosen=false | own=7
+  Some(("Show generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", Some("contents.show_generated")))
+LooksBad(PiledOnOnePage) | ready | chosen=true | own=0
+  Some(("Generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", None))
+LooksBad(PiledOnOnePage) | ready | chosen=true | own=7
+  Some(("Generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong. Click to show the file's own.", Some("contents.show_own")))
+LooksBad(Misnested) | none | chosen=false | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(Misnested) | none | chosen=false | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(Misnested) | none | chosen=true | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(Misnested) | none | chosen=true | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(Misnested) | making | chosen=false | own=0
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(Misnested) | making | chosen=false | own=7
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(Misnested) | making | chosen=true | own=0
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(Misnested) | making | chosen=true | own=7
+  Some(("Generating contents…", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some("contents.stop")))
+LooksBad(Misnested) | failed | chosen=false | own=0
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(Misnested) | failed | chosen=false | own=7
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(Misnested) | failed | chosen=true | own=0
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(Misnested) | failed | chosen=true | own=7
+  Some(("Couldn't generate contents", "It ran out of room.", Some("contents.generate")))
+LooksBad(Misnested) | none-found | chosen=false | own=0
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(Misnested) | none-found | chosen=false | own=7
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(Misnested) | none-found | chosen=true | own=0
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(Misnested) | none-found | chosen=true | own=7
+  Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None))
+LooksBad(Misnested) | not-kept | chosen=false | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(Misnested) | not-kept | chosen=false | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(Misnested) | not-kept | chosen=true | own=0
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(Misnested) | not-kept | chosen=true | own=7
+  Some(("Generate contents", "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.", Some("contents.generate")))
+LooksBad(Misnested) | ready | chosen=false | own=0
+  Some(("Show generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", Some("contents.show_generated")))
+LooksBad(Misnested) | ready | chosen=false | own=7
+  Some(("Show generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", Some("contents.show_generated")))
+LooksBad(Misnested) | ready | chosen=true | own=0
+  Some(("Generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.", None))
+LooksBad(Misnested) | ready | chosen=true | own=7
+  Some(("Generated contents", "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong. Click to show the file's own.", Some("contents.show_own")))

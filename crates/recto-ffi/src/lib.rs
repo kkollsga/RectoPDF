@@ -646,29 +646,7 @@ impl AppCore {
         let published = lock(&self.inner.published);
         let (contents, rail_filled, current) = (Arc::clone(&published.contents), published.rail_filled, published.sidebar.contents_current);
         drop(published);
-        let total = u32::try_from(contents.len()).unwrap_or(u32::MAX);
-        let end = first.saturating_add(count.min(MAX_CONTENTS_FETCH)).min(total);
-        (first..end)
-            .filter_map(|index| {
-                let entry = contents.get(index as usize)?;
-                Some(SidebarRow {
-                    kind: RowKind::Contents,
-                    tab: entry.tab,
-                    text: entry.text.to_string(),
-                    page: entry.page,
-                    depth: entry.depth,
-                    current: current == Some(index),
-                    rail_filled: index < rail_filled,
-                    rail_first: index == 0,
-                    rail_last: index + 1 == total,
-                    notice: None,
-                    action: None,
-                    expandable: entry.expandable,
-                    expanded: entry.expanded,
-                    in_comparison: false,
-                })
-            })
-            .collect()
+        rail_rows(&contents, rail_filled, current, first, count)
     }
 
     /// The scroll thumb's look, the same for the sidebar's lists and the page area.

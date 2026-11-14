@@ -46,6 +46,7 @@ pub mod window;
 mod window_rows;
 pub mod zoom;
 
+pub use contents::rail_rows;
 pub use host::*;
 pub use life::Lifecycle;
 use opening::*;
