@@ -504,3 +504,6 @@ impl Reader {
         }
     }
 }
+// size: one for each job planned and not yet ended, in flight only (a page view's queue and its workers), never per idle tab. 80 and 72 bytes until
+// 2026-11-14; 88 and 80 with `asked`, the place clock a draw's news is judged by (the second review's S-3). Held so a field added is a deliberate change.
+const _: () = assert!(size_of::<Job>() == 88 && size_of::<JobPlan>() == 80, "a job grew");
