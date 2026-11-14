@@ -30,10 +30,10 @@ impl Records for AppRecords {
     fn put_to_sleep(&self, tab: TabId, actor: recto_agent::Actor) -> Result<Slept, AgentError> {
         let host = self.host()?;
         let inner = host.saver.inner();
-        let asked = inner.as_ref().map_or(sleeper::Asked::by(actor), |inner| inner.sleeper.asking(actor));
+        let asked = inner.as_ref().map_or(sleeper::Asked::by(actor), |inner| inner.on_disk.sleeper().asking(actor));
         host.core.push(CoreCall::SleepTabs(vec![tab], sleeper::Why::Asked(asked)));
         host.core.flush(Duration::from_secs(5));
-        let note = inner.and_then(|inner| inner.sleeper.take_asked_words(asked.ticket, false));
+        let note = inner.and_then(|inner| inner.on_disk.sleeper().take_asked_words(asked.ticket, false));
         Ok(host.session.with_session(|session| Slept {
             dormant: !session.warm().ids().any(|other| other == tab),
             list_asleep: session.lists().is_asleep(tab),
@@ -46,9 +46,9 @@ impl Records for AppRecords {
     fn save(&self, actor: recto_agent::Actor) -> Result<Saved, AgentError> {
         let host = self.host()?;
         let inner = host.saver.inner();
-        let asked = inner.as_ref().map_or(sleeper::Asked::by(actor), |inner| inner.sleeper.asking(actor));
+        let asked = inner.as_ref().map_or(sleeper::Asked::by(actor), |inner| inner.on_disk.sleeper().asking(actor));
         let report = host.saver.flush_by(false, Duration::from_secs(5), Some(asked)).map_err(store_error)?;
-        let note = inner.and_then(|inner| inner.sleeper.take_asked_words(asked.ticket, true));
+        let note = inner.and_then(|inner| inner.on_disk.sleeper().take_asked_words(asked.ticket, true));
         Ok(Saved {
             note,
             tabs: report.tabs,

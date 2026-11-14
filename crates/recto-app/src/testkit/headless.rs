@@ -237,7 +237,7 @@ impl Builder {
             update_seams,
         )
         .expect("the core starts");
-        inner.sleeper.set_leaving_wait(self.leaving_wait_ms);
+        inner.on_disk.sleeper().set_leaving_wait(self.leaving_wait_ms);
         // As the app does unless another copy has it: a test whose app isn't keeping the record would test another path, without saying so.
         assert!(
             self.another_keeps || inner.saver.store.holds_the_record(),
@@ -587,7 +587,7 @@ impl HeadlessApp {
         if inner.life.others_looking() {
             busy.push("the other tabs' files being looked at".to_string());
         }
-        let looks = inner.sleeper.looks_running();
+        let looks = inner.on_disk.sleeper().looks_running();
         if looks > 0 {
             busy.push(format!("{looks} look(s) at a woken tab's file"));
         }
@@ -620,7 +620,7 @@ impl HeadlessApp {
     pub fn advance(&self, ms: u64) {
         self.clock.advance(ms);
         self.core().core.nudge();
-        self.core().sleeper.poke_leaving();
+        self.core().on_disk.sleeper().poke_leaving();
     }
 
     /// The person touched the app now, by the clock, as the host's event monitor says.

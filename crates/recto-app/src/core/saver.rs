@@ -2,9 +2,13 @@
 //!
 //! **No thread at rest, and none waiting.** Saying something's changed is an atomic store, and the first time a nudge to the session thread, which is parked anyway. It keeps the one deadline there is, by parking with a timeout rather than for good, so there's nothing per tab and no timer. When it comes due, a one-shot thread does the writing and ends. So a scroll on the UI thread waits for nothing, and a window left reading has no extra thread for its minute.
 
+use super::keeper::Keeper;
+use super::sleeper::Sleeper;
 use super::{CoreCall, CoreQueue, Inner, lock};
 use crate::clock::Clock;
 use crate::saver as app;
+use recto_agent::DrawableLoader;
+use recto_control::host::SessionHost;
 use recto_control::record_store::{FlushReport, RecordStore, StoreError};
 use recto_session::JournalWork;
 use recto_session::record::{EditsRecord, EditsSummary, PlaceDelta, SessionRecord};
@@ -33,7 +37,7 @@ pub struct Saver {
     first_edit: AtomicU64,
     last_edit: AtomicU64,
     /// One pass at the disk at a time: held by every writer of the record from gathering what it writes to writing it, and taken only by one that may write
-    /// (`keeping::may_write`, looked at before and again under it), so a writer either writes nothing or gathers the session this copy keeps.
+    /// (`Keeper::may_write`, looked at before and again under it), so a writer either writes nothing or gathers the session this copy keeps.
     pub(super) gate: Mutex<()>,
     last_error: Mutex<Option<StoreError>>,
 }
@@ -107,7 +111,7 @@ impl Saver {
     /// taken up, no lock.
     pub fn went_to_background(&self) {
         if let Some(inner) = self.inner() {
-            inner.sleeper.hurry_leaving_soon();
+            inner.on_disk.sleeper().hurry_leaving_soon();
         }
         self.write_soon();
     }
@@ -199,14 +203,16 @@ impl Saver {
             return;
         };
         // Going to the background's hurry of the sleep files' cool-down, carried out here, off the UI thread, with `urgent` taken first.
-        let urgent = take_urgent_then_hurry(&self.urgent, || inner.sleeper.hurry_leaving_if_asked(inner.starts_sleep_writer()));
+        let urgent = take_urgent_then_hurry(&self.urgent, || {
+            inner.on_disk.sleeper().hurry_leaving_if_asked(inner.on_disk.starts_writer());
+        });
         let due = app::pass(self.pending(urgent), now);
         // A copy that doesn't keep the record writes nothing, and that's what it's for, not a failure: the window says it won't be remembered, and not that its
         // state couldn't be saved. Nor does one still trying for the lock, or whose saved session is being read back after a late try: what it would gather is
-        // the window before the restore (`keeping::may_write`). Looked at before the gate, so it never waits for it, and again under it, where it holds from
+        // the window before the restore (`Keeper::may_write`). Looked at before the gate, so it never waits for it, and again under it, where it holds from
         // gathering to writing. What's waiting goes, so nothing comes due again for it.
-        let gate = super::keeping::may_write(&inner).then(|| lock(&self.gate));
-        if gate.is_none() || !super::keeping::may_write(&inner) {
+        let gate = inner.on_disk.keeper().may_write().then(|| lock(&self.gate));
+        if gate.is_none() || !inner.on_disk.keeper().may_write() {
             self.first_edit.store(0, Ordering::SeqCst);
             self.view_changed.store(false, Ordering::Relaxed);
             self.last_record_write.store(now, Ordering::SeqCst);
@@ -215,7 +221,7 @@ impl Saver {
         let mut failed = None;
         if due.journals {
             self.first_edit.store(0, Ordering::SeqCst);
-            failed = self.write_journals(&inner, false);
+            failed = self.write_journals(&inner.host.session, inner.on_disk.sleeper(), false);
         }
         if due.record {
             self.view_changed.store(false, Ordering::Relaxed);
@@ -227,11 +233,11 @@ impl Saver {
                 failed = Some(error);
             }
         }
-        self.note_outcome(&inner, failed);
+        self.note_outcome(failed);
     }
 
     /// What's still to do after a failed write waits for its next due time, and the reader's told.
-    fn note_outcome(&self, inner: &Inner, failed: Option<StoreError>) {
+    fn note_outcome(&self, failed: Option<StoreError>) {
         let was = lock(&self.last_error).is_some();
         let now = failed.is_some();
         if let Some(error) = failed {
@@ -244,7 +250,7 @@ impl Saver {
             *lock(&self.last_error) = None;
         }
         if was != now {
-            inner.core.push(CoreCall::Reconcile);
+            self.core.push(CoreCall::Reconcile);
         }
     }
 
@@ -264,35 +270,35 @@ impl Saver {
     }
 
     /// Takes what's waiting and writes it, and tells the session what got there. What didn't stays waiting, and only that goes next time. Says the first thing that went wrong.
-    fn write_journals(&self, inner: &Inner, force: bool) -> Option<StoreError> {
-        let work = inner.host.session.with_session(|session| session.journal_desk().work());
-        self.write_work(inner, &work, force)
+    fn write_journals(&self, session: &SessionHost<DrawableLoader>, sleeper: &Sleeper, force: bool) -> Option<StoreError> {
+        let work = session.with_session(|session| session.journal_desk().work());
+        self.write_work(session, sleeper, &work, force)
     }
 
     /// Whatever's waiting goes in its journal now, as a tab's about to go dormant, whose list can't till it's all there. With the gate, so it's one visit to the disk at a time;
-    /// and by the rule every writer goes by ([`super::keeping::may_write`]), before the gate and under it.
-    pub fn write_journals_now(&self, inner: &Inner) {
-        if !super::keeping::may_write(inner) {
+    /// and by the rule every writer goes by ([`Keeper::may_write`]), before the gate and under it.
+    pub(crate) fn write_journals_now(&self, keeper: &Arc<Keeper>, session: &SessionHost<DrawableLoader>, sleeper: &Sleeper) {
+        if !keeper.may_write() {
             return;
         }
         let _gate = lock(&self.gate);
-        if super::keeping::may_write(inner) {
-            let _ = self.write_journals(inner, false);
+        if keeper.may_write() {
+            let _ = self.write_journals(session, sleeper, false);
         }
     }
 
-    fn write_work(&self, inner: &Inner, work: &JournalWork, force: bool) -> Option<StoreError> {
+    fn write_work(&self, session: &SessionHost<DrawableLoader>, sleeper: &Sleeper, work: &JournalWork, force: bool) -> Option<StoreError> {
         if work.retired.is_empty() && work.appends.is_empty() {
             return None;
         }
         // Sleep files about to be removed: nothing queued for them is written after.
-        inner.sleeper.retire(&work.retired);
+        sleeper.retire(&work.retired);
         let (outcome, failed) = self.store.write_journals(work, force);
         let written: Vec<(recto_session::TabId, String)> = outcome.written.iter().map(|(id, _, name)| (*id, name.clone())).collect();
-        inner.host.session.with_session(|session| session.journal_desk().outcome(outcome));
+        session.with_session(|session| session.journal_desk().outcome(outcome));
         for (id, name) in written {
             if self.store.should_compact(&name) {
-                let checkpoint = inner.host.session.with_session(|session| session.journal_look().checkpoint_if_caught_up(id));
+                let checkpoint = session.with_session(|session| session.journal_look().checkpoint_if_caught_up(id));
                 if let Some((header, base)) = checkpoint {
                     let _ = self.store.compact(&name, &header, &base);
                 }
@@ -330,12 +336,12 @@ impl Saver {
                 message: "Something the app was asked to do hasn't finished, so its state can't be said to be whole.".to_string(),
             });
         }
-        // Before the gate and under it, as `pass` decides (`keeping::may_write`): a copy that doesn't keep the record, or doesn't yet, writes nothing.
-        if let Some(refused) = refused(&inner) {
+        // Before the gate and under it, as `pass` decides (`Keeper::may_write`): a copy that doesn't keep the record, or doesn't yet, writes nothing.
+        if let Some(refused) = inner.on_disk.keeper().refused() {
             return Err(refused);
         }
         let _gate = lock(&self.gate);
-        if let Some(refused) = refused(&inner) {
+        if let Some(refused) = inner.on_disk.keeper().refused() {
             return Err(refused);
         }
         self.first_edit.store(0, Ordering::SeqCst);
@@ -347,11 +353,11 @@ impl Saver {
         let gather_us = micros(gathered);
         recto_platform::slow::pause(recto_platform::slow::Seam::RecordWrite);
         let written = Instant::now();
-        if let Some(error) = self.write_work(&inner, &work, false) {
+        if let Some(error) = self.write_work(&inner.host.session, inner.on_disk.sleeper(), &work, false) {
             return Err(error);
         }
         // The journals' names can have changed in that, if something was in the way.
-        let named = inner.with_journal_names(record.clone());
+        let named = with_journal_names(&inner.host.session, record.clone());
         let renamed = named != record;
         let record = named;
         self.store.write_record(&record, &delta, false)?;
@@ -382,14 +388,14 @@ impl Saver {
         let verify_us = micros(verified);
         // The tab on screen's sleep file, for the next launch's first frame. Nothing depends on it, so it's no part of what's read back or forced to the drive, and it comes after the state: with sleep files queued for a slow disk, a quit's 5 s ran out waiting here, and it went without the state (slow mode, 2026-11-11). It waits for others being written for what's left of this flush's time, and past that is skipped and counted. If nothing's changed, nothing's written.
         // Then what's waiting in the cool-down, hurried and waited for within what's left of the time ([`super::sleeper::Sleeper::sleep_at_flush`]).
-        inner.sleeper.hurry_leaving_if_asked(inner.starts_sleep_writer());
-        inner.sleeper.sleep_at_flush(
+        inner.on_disk.sleeper().hurry_leaving_if_asked(inner.on_disk.starts_writer());
+        inner.on_disk.sleeper().sleep_at_flush(
             &super::sleeper::OnHand::new(&inner.host.session, &inner.panes, &inner.engine),
             &self.store,
-            &super::keeping::asks(&inner),
+            &inner.on_disk.keeper().asks(),
             asked_by,
             began + limit,
-            inner.starts_sleep_writer(),
+            inner.on_disk.starts_writer(),
         );
         let (record_bytes, journal_bytes) = self.store.sizes();
         self.last_record_write.store(self.now(), Ordering::SeqCst);
@@ -419,27 +425,6 @@ fn take_urgent_then_hurry(urgent: &AtomicBool, hurry_if_asked: impl FnOnce()) ->
     urgent
 }
 
-/// Why a flush can't write now, if it can't: see [`super::keeping::may_write`]. The saved session being read back after a late try at the lock isn't written over
-/// by the window before it; a copy that doesn't keep the record says so as the store does.
-fn refused(inner: &Inner) -> Option<StoreError> {
-    if super::keeping::may_write(inner) {
-        return None;
-    }
-    Some(if inner.life.keeping().refuses_agents_changes() {
-        StoreError {
-            code: "not_ready",
-            message: "The saved session is being read back in, so nothing's written over it until it's in.".to_string(),
-        }
-    } else {
-        StoreError {
-            code: "other_instance",
-            message: recto_session::record::notices::words(recto_session::record::notices::OTHER_INSTANCE)
-                .unwrap_or_default()
-                .to_string(),
-        }
-    })
-}
-
 fn micros(since: Instant) -> u64 {
     u64::try_from(since.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
@@ -467,17 +452,17 @@ impl Inner {
         record.app = self.window.app_record(|| lock(&self.host.notice).clone());
         (work, record, delta, lists)
     }
+}
 
-    /// The record with its journals' names as they now are.
-    fn with_journal_names(&self, mut record: SessionRecord) -> SessionRecord {
-        let now = self.host.session.with_session(|session| session.to_record());
-        for tab in &mut record.tabs {
-            if let Some(same) = now.tabs.iter().find(|other| other.id == tab.id) {
-                tab.journal.clone_from(&same.journal);
-            }
+/// The record with its journals' names as they now are in the session.
+fn with_journal_names(session: &SessionHost<DrawableLoader>, mut record: SessionRecord) -> SessionRecord {
+    let now = session.with_session(|session| session.to_record());
+    for tab in &mut record.tabs {
+        if let Some(same) = now.tabs.iter().find(|other| other.id == tab.id) {
+            tab.journal.clone_from(&same.journal);
         }
-        record
     }
+    record
 }
 
 #[cfg(test)]

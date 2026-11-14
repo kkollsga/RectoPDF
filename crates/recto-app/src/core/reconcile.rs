@@ -75,10 +75,10 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
         return None;
     }
     if synced.tab != Some(id) || synced.pages != shown.pages || synced.map != shown.map {
-        let back = inner.sleeper.queue_those_leaving(
+        let back = inner.on_disk.sleeper().queue_those_leaving(
             &sleeper::OnHand::new(&inner.host.session, &inner.panes, &inner.engine),
             id,
-            inner.starts_sleep_writer(),
+            inner.on_disk.starts_writer(),
         );
         // Whichever way it's been asked for, the first frame's what its sleep file has, or what was waiting to be one, if nothing's held of this tab.
         if !engine.waking().holds(id.0) {
@@ -179,7 +179,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let panes_now = inner.host.session.with_session(|session| session.panes());
     for (pane, id) in panes_now.iter().enumerate() {
         if synced.panes.get(pane).and_then(|shown| shown.tab) != Some(*id) && nothing_held {
-            inner.sleeper.look_before_showing(&inner.host.session, &inner.core, *id);
+            inner.on_disk.sleeper().look_before_showing(&inner.host.session, &inner.core, *id);
         }
     }
     // What the page views say of where they are goes in the session first, the tabs they're about to let go of among it, as a cold tab holds nothing there.
@@ -380,7 +380,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     }
     // What's left alone comes due from here, and what's off screen may be over its budget.
     let on_hand = sleeper::OnHand::new(&inner.host.session, &inner.panes, &inner.engine);
-    inner.sleeper.after_a_call(&on_hand, &inner.core);
+    inner.on_disk.sleeper().after_a_call(&on_hand, &inner.core);
     // Whatever just happened may be something to keep. Nothing's written unless it really differs when its time comes.
     let (retired, journal_work) = inner
         .host

@@ -644,7 +644,7 @@ fn every_writer(app: &HeadlessApp) -> Result<(), String> {
     let flushed = std::thread::Builder::new()
         .name("test-writer".into())
         .spawn(move || {
-            core.saver.write_journals_now(&core);
+            core.saver.write_journals_now(core.on_disk.keeper(), &core.host.session, core.on_disk.sleeper());
             core.saver.flush(false, WAIT_LIMIT).map(|_| ()).map_err(|error| error.code.to_owned())
         })
         .expect("a thread")
@@ -899,7 +899,7 @@ fn a_late_keeps_read_that_never_comes_back_or_panics_ends_the_restore() {
         let app = disk.builder().another_keeps().start();
         match goes {
             ReadGoes::NeverBack => recto_platform::slow::gate::hold(&[Seam::State]),
-            ReadGoes::Panics => crate::core::keeping::panic_in_the_late_read(),
+            ReadGoes::Panics => crate::core::keeper::panic_in_the_late_read(),
         }
         drop(before);
         app.advance(TRY_EVERY_MS);

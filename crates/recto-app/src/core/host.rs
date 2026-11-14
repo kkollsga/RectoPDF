@@ -90,13 +90,13 @@ impl Host for AppHost {
         self.qa.is_none().then(recto_agent::only_the_user_quits)
     }
 
-    /// Nothing's lost by this session ending: its edits are in the state record, if it's the one keeping it and writing it (`keeping::may_write`: not while a
+    /// Nothing's lost by this session ending: its edits are in the state record, if it's the one keeping it and writing it (`Keeper::may_write`: not while a
     /// late try is back with the lock and not yet decided on, when the person may have started working in a window that won't be remembered).
     fn unsaved_tabs(&self) -> Vec<(TabId, String)> {
         let writes = self
             .saver
             .inner()
-            .map_or_else(|| self.saver.store.holds_the_record(), |inner| super::keeping::may_write(&inner));
+            .map_or_else(|| self.saver.store.holds_the_record(), |inner| inner.on_disk.keeper().may_write());
         if writes { Vec::new() } else { self.session.unsaved_tabs() }
     }
 

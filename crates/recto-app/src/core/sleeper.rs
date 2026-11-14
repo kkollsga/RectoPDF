@@ -4,7 +4,8 @@
 //!
 //! **Going dormant, once:** the tab's sleep file's written if there's anything new to say, its journal's compacted and read back, and its contents, list, worker and tiles go. A byte budget across the documents off screen and memory pressure make that happen sooner, oldest first. A tab being worked on by an agent or saved doesn't go, whatever's asking: `Session::hold` and `saving` see to that.
 
-use super::keeping::KeepsRecord;
+use super::keeper::{Keeper, KeepsRecord};
+use super::saver::Saver;
 use super::{CoreCall, Inner, lock};
 use crate::clock::Clock;
 use crate::panes::Panes;
@@ -21,7 +22,7 @@ use recto_session::record::{FileStatus, look_at_file};
 use recto_session::sleep::{SleepFile, SleepPicture};
 use recto_session::{SleepFacts, TabId};
 use serde_json::{Value, json};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -591,38 +592,60 @@ impl<'a> OnHand<'a> {
     }
 }
 
-impl Inner {
+/// **What a tab's going dormant reaches beyond the sleeper,** borrowed for the session thread's run, as [`OnHand`] is for one call: the session and the page
+/// views (`on_hand`), what's kept on disk (the record's keeper: its store, its rule of who may write; and the writer's start), the saver (whose gate the
+/// journals are written under, and which writes them) and the core's freeze (nothing goes dormant during a hand-off or a quit). **Nothing else goes in it,**
+/// and it holds no state of its own: the assertion below holds it at its six borrows. Made only by [`GoingDormant::new`].
+pub(super) struct GoingDormant<'a> {
+    on_hand: OnHand<'a>,
+    on_disk: &'a OnDisk,
+    saver: &'a Saver,
+    frozen: &'a AtomicBool,
+}
+
+/// Failure caught: a field added, of the app's or its own.
+const _: () = assert!(std::mem::size_of::<GoingDormant<'static>>() == 6 * std::mem::size_of::<usize>());
+
+impl<'a> GoingDormant<'a> {
+    /// From the session and the page views, what's kept on disk, the saver and the core's freeze.
+    pub(super) fn new(on_hand: OnHand<'a>, on_disk: &'a OnDisk, saver: &'a Saver, frozen: &'a AtomicBool) -> Self {
+        Self {
+            on_hand,
+            on_disk,
+            saver,
+            frozen,
+        }
+    }
+}
+
+impl Sleeper {
     /// **Those tabs go dormant,** on the session thread, those that may: whatever's asking, not the one on screen or one being worked on or saved. Whatever hasn't gone to its journal goes first, or a list couldn't.
     ///
-    /// **Stays on the app** (R3.7 S6): it coordinates the session, the saver's journals (written by `Saver::write_journals_now`, which takes the app for the
-    /// record's keeping) and the sleeper; it goes to the [`Sleeper`] when R3.7 S5 gives the record (its journals and its keeping) a part of its own.
-    pub fn go_dormant(&self, tabs: &[TabId], why: Why) -> usize {
-        let tabs: Vec<(TabId, bool)> = self
-            .host
+    /// The sleeper's since R3.7 S5, which gave the record's keeping a part of its own ([`Keeper`]): what it reaches beyond the sleeper is in `at`.
+    pub(super) fn go_dormant(&self, at: &GoingDormant<'_>, tabs: &[TabId], why: Why) -> usize {
+        let on_hand = &at.on_hand;
+        let tabs: Vec<(TabId, bool)> = on_hand
             .session
             .with_session(|session| tabs.iter().map(|id| (*id, session.dormant().may_go(*id))).collect());
-        let frozen = self.core.frozen.load(Ordering::SeqCst);
-        let Some(Out::GoDormant { tabs, in_place }) = self.sleeper.step(Event::GoDormant { why, tabs, frozen }) else {
+        let frozen = at.frozen.load(Ordering::SeqCst);
+        let Some(Out::GoDormant { tabs, in_place }) = self.step(Event::GoDormant { why, tabs, frozen }) else {
             return 0;
         };
-        self.saver.write_journals_now(self);
-        let on_hand = OnHand::new(&self.host.session, &self.panes, &self.engine);
+        at.saver.write_journals_now(at.on_disk.keeper(), on_hand.session, self);
         let mut gone = 0;
         for &id in &tabs {
             // Being asked is an agent's or `recto session sleep`'s, which looks at the file straight after, and waits behind the one being written at most. The rest are the session's own, which never waits on a disk: queued, as those leaving the warm ones are (review 1 of `build/one-sleep-writer`). Being asked counts against the hour too: only a flush doesn't wait (review).
             if let (true, Why::Asked(asked)) = (in_place, why) {
-                let outcome = self
-                    .sleeper
-                    .write_sleep_for(&on_hand, &self.saver.store, &super::keeping::asks(self), id, By::Asked(asked.by), None);
-                self.sleeper.answer(asked, outcome);
+                let outcome = self.write_sleep_for(on_hand, at.on_disk.keeper().store(), &at.on_disk.keeper().asks(), id, By::Asked(asked.by), None);
+                self.answer(asked, outcome);
             } else {
-                self.sleeper.queue_sleep_for(&on_hand, id, self.starts_sleep_writer());
+                self.queue_sleep_for(on_hand, id, at.on_disk.starts_writer());
             }
-            let list = self.host.session.with_session(|session| session.dormant().list_to_sleep(id));
+            let list = on_hand.session.with_session(|session| session.dormant().list_to_sleep(id));
             // Compacted, and read back. If that doesn't say it's all there, the list stays in memory, and it's looked at again next time it's left alone.
-            let settled = list.is_none_or(|(name, header, base)| self.saver.store.settle_list(&name, &header, &base));
+            let settled = list.is_none_or(|(name, header, base)| at.on_disk.keeper().store().settle_list(&name, &header, &base));
             // If it's not gone, it's looked at again next time it's been left alone, and not till then.
-            let went = self.host.session.with_session(|session| {
+            let went = on_hand.session.with_session(|session| {
                 let went = settled && session.sleeper().go_dormant(id);
                 if !went {
                     session.sleeper().touch(id);
@@ -631,40 +654,81 @@ impl Inner {
             });
             gone += usize::from(went);
         }
-        let _ = self.sleeper.step(Event::WentDormant { why, gone });
+        let _ = self.step(Event::WentDormant { why, gone });
         gone
     }
 
-    /// What starts the queue's writer when the queue says there's none: the one [`StartsWriter`] there is, for the sleeper's calls that may need one.
-    ///
-    /// **Stays on the app** (R3.7 S6): the thread it starts holds the app, as the writer asks the record's keeping before each write
-    /// ([`super::keeping::asks`]), which is the app's; it goes to the [`Sleeper`] when R3.7 S5 gives the record's keeping a part of its own.
-    pub(super) fn starts_sleep_writer(&self) -> StartsWriter<'_> {
-        StartsWriter(self)
+    /// The system's asked for memory back: the same as a tab's being left alone, for all that can go, and now. Counted first, so a test can see it came.
+    /// Every page view is told too.
+    pub(super) fn memory_pressure(&self, at: &GoingDormant<'_>, critical: bool) {
+        let Some(Out::AllGo(critical)) = self.step(Event::Pressure { critical }) else {
+            return;
+        };
+        self.hurry_leaving(at.on_disk.starts_writer());
+        let tabs = at.on_hand.session.with_session(|session| session.dormant().oldest_first());
+        self.go_dormant(at, &tabs, Why::Pressure);
+        for engine in at.on_hand.panes.engines(at.on_hand.engine) {
+            engine.memory_pressure(critical);
+        }
+    }
+}
+
+/// **What's kept on disk, as the app holds it:** the record's keeper ([`Keeper`]: the saved state, its lock and who may write it) and the sleeper (the sleep
+/// files and the tabs going dormant), each behind an `Arc` the threads that write them hold in the app's place (the launch's read and a late try hold the
+/// keeper; the sleep files' writer holds both). A plain holder (R3.7 S5): private fields, an accessor for each, and the one constructor of the
+/// writer's start, which needs both; no logic, lock or state of its own.
+pub struct OnDisk {
+    keeper: Arc<Keeper>,
+    sleeper: Arc<Sleeper>,
+}
+
+impl OnDisk {
+    /// The two, as the app starts.
+    pub(super) fn new(keeper: Arc<Keeper>, sleeper: Arc<Sleeper>) -> Self {
+        Self { keeper, sleeper }
+    }
+
+    /// The record's keeper.
+    pub(crate) fn keeper(&self) -> &Arc<Keeper> {
+        &self.keeper
+    }
+
+    /// The sleeper.
+    pub(crate) fn sleeper(&self) -> &Arc<Sleeper> {
+        &self.sleeper
+    }
+
+    /// What starts the queue's writer when the queue says there's none: the one [`StartsWriter`] there is, for the sleeper's calls that may need one. The
+    /// writer's thread holds the sleeper and the record's keeper, whose rule it asks before each write ([`Keeper::asks`]), and not the app.
+    pub(super) fn starts_writer(&self) -> StartsWriter<'_> {
+        StartsWriter {
+            sleeper: &self.sleeper,
+            keeper: &self.keeper,
+        }
     }
 }
 
 /// **The one way the sleep queue's writer is started,** taken by every call of the [`Sleeper`]'s that may find the queue wanting one. Not a closure: the queue
 /// sets its `writer` flag as it says "start one", and a caller that passed something that started nothing left the flag set with no thread, so a hurry
-/// never started one and a quit's drain waited out its whole limit. Its field is private and it's built only by [`Inner::starts_sleep_writer`], so what
-/// it runs is always the writer's start. A borrow of the app, nothing more: no allocation, lock or indirection per call.
+/// never started one and a quit's drain waited out its whole limit. Its fields are private and it's built only by [`OnDisk::starts_writer`], so what
+/// it runs is always the writer's start. Two borrows, nothing more: no allocation, lock or indirection per call.
 #[derive(Clone, Copy)]
-pub(super) struct StartsWriter<'a>(&'a Inner);
+pub(super) struct StartsWriter<'a> {
+    sleeper: &'a Arc<Sleeper>,
+    keeper: &'a Arc<Keeper>,
+}
 
 impl StartsWriter<'_> {
-    /// The queue's said there's no writer: one's started, on a thread holding the app. With no app to hold (it's going) or no thread to be had, the queue's
-    /// told there's none after all, so the next that wants one starts it.
+    /// The queue's said there's no writer: one's started, on a thread holding the sleeper and the record's keeper (not the app). With no thread to be had,
+    /// the queue's told there's none after all, so the next that wants one starts it.
     fn start(self) {
-        let Some(inner) = self.0.saver.inner() else {
-            self.0.sleeper.leaving.writer_gone();
-            return;
-        };
+        let (sleeper, keeper) = (Arc::clone(self.sleeper), Arc::clone(self.keeper));
         let spawned = std::thread::Builder::new()
             .name("recto-sleep".into())
             .stack_size(512 * 1024)
-            .spawn(move || inner.sleeper.write_leaving(&inner.saver.store, &super::keeping::asks(&inner)));
+            .spawn(move || sleeper.write_leaving(keeper.store(), &keeper.asks()));
         if spawned.is_err() {
-            self.0.sleeper.leaving.writer_gone();
+            self.sleeper.leaving.writer_gone();
         }
     }
 }
@@ -688,7 +752,7 @@ impl Sleeper {
     /// The same, with the one-at-a-time lock held: what it carries is the machine's to say ([`Write`]), and an agent's is measured against its share before
     /// it's written. Says what came of it.
     ///
-    /// **Only a copy that keeps the record writes one** ([`super::keeping::may_write`], the rule every writer of the record goes by): the queue's writer and an
+    /// **Only a copy that keeps the record writes one** ([`Keeper::may_write`], the rule every writer of the record goes by): the queue's writer and an
     /// asked sleep aren't behind the saver's gate, and the store's own refusal goes by its lock, which a copy can hold while it doesn't keep the record (a late
     /// keep's read, or its read past its patience). So nothing's written then, and nothing's said to have been.
     fn write_holding_lock(&self, store: &RecordStore, keeps: &KeepsRecord<'_>, mut facts: SleepFacts, material: SleepMaterial, by: By) -> Option<Outcome> {
@@ -800,24 +864,8 @@ impl Inner {
     /// it goes when the bridge's entry points are next touched.
     pub fn system_pressure(&self, critical: bool) {
         let quiet = self.qa.is_some();
-        if let Some(Out::Pressure(critical)) = self.sleeper.step(Event::SystemPressure { critical, quiet }) {
+        if let Some(Out::Pressure(critical)) = self.on_disk.sleeper().step(Event::SystemPressure { critical, quiet }) {
             self.core.push(CoreCall::MemoryPressure(critical));
-        }
-    }
-
-    /// The system's asked for memory back: the same as a tab's being left alone, for all that can go, and now. Counted first, so a test can see it came.
-    ///
-    /// **Stays on the app** (R3.7 S6): it sends every tab that can go through [`Self::go_dormant`], which stays, and tells every page view; it goes with
-    /// `go_dormant`, when R3.7 S5 gives the record a part of its own.
-    pub fn memory_pressure(&self, critical: bool) {
-        let Some(Out::AllGo(critical)) = self.sleeper.step(Event::Pressure { critical }) else {
-            return;
-        };
-        self.sleeper.hurry_leaving(self.starts_sleep_writer());
-        let tabs = self.host.session.with_session(|session| session.dormant().oldest_first());
-        self.go_dormant(&tabs, Why::Pressure);
-        for engine in self.panes.engines(&self.engine) {
-            engine.memory_pressure(critical);
         }
     }
 }
