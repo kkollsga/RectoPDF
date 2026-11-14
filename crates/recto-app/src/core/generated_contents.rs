@@ -60,7 +60,7 @@ mod tests {
         drop(for_the_call);
         let busy = crate::settled::under_way(&crate::settled::watched!(app.core()), crate::settled::PageViews::AtRest);
         drop(for_the_look);
-        assert!(busy.iter().any(|what| what.contains("generated contents")), "{busy:?}");
+        assert!(busy.iter().any(|what| what.contains("way back")), "{busy:?}");
         assert_eq!(app.core().core.ways_back_held(), 0, "none left counted");
     }
 }

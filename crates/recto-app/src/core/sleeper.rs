@@ -128,16 +128,26 @@ impl LookSlots {
         let (send, receive) = std::sync::mpsc::sync_channel(1);
         let core_for_look = std::sync::Arc::clone(core);
         let slots = std::sync::Arc::clone(self);
+        // Its way back to the session thread is counted from here till it has said what it found, the usual way if the frame has stopped waiting: what
+        // the app's settled goes by ([`crate::settled`]). Its slot goes before it answers the frame, as the next look at this tab may be asked for at once.
+        core.way_back_taken();
         let looking = std::thread::Builder::new().name("recto-look".into()).stack_size(256 * 1024).spawn(move || {
             let status = look_at_file(&path, stamp);
+            // A look asked for meanwhile may be about a change made after this one looked: the files showing are looked at again.
+            if slots.finish(id) {
+                core_for_look.push(CoreCall::LookAtShown);
+            }
             let other = look_is_news(&status, stamp, says_something);
             // Too late for the frame: it's said the usual way.
             if send.try_send((other, status.clone())).is_err() && other {
                 core_for_look.push(CoreCall::WokenFileIsOther(id, status, stamp));
             }
-            slots.finish_and_look_again(id, &core_for_look);
+            #[cfg(test)]
+            after_answering();
+            core_for_look.way_back_let_go();
         });
         if looking.is_err() {
+            core.way_back_let_go();
             self.finish(id);
             return;
         }
@@ -1046,6 +1056,19 @@ pub(crate) fn take_shown_look(
 /// How long a tab being shown waits for a look at its file.
 const LOOK_PATIENCE: Duration = Duration::from_millis(30);
 
+/// A test's: the next look at a shown tab's file says it has answered, then waits to be let go, so what it still holds then can be looked at.
+#[cfg(test)]
+static AFTER_ANSWER: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>> = Mutex::new(None);
+
+/// Where a look at a shown tab's file waits, once it has answered, while a test holds it there ([`AFTER_ANSWER`]).
+#[cfg(test)]
+fn after_answering() {
+    if let Some((answered, go)) = lock(&AFTER_ANSWER).take() {
+        let _ = answered.send(());
+        let _ = go.recv_timeout(crate::testkit::headless::WAIT_LIMIT);
+    }
+}
+
 /// **What the session says a tab's pages are now,** as its page view would be given them: what a sleep file's pictures are checked against, so that none is of a page that's been deleted, moved or turned since it was drawn.
 fn pages_now<L: recto_session::DocLoader>(session: &recto_session::Session<L>, id: TabId) -> Option<recto_reader::tiles::PageMap> {
     crate::model::pane_snapshot(session, id, false, &[]).map(|shown| shown.map)
@@ -1054,6 +1077,31 @@ fn pages_now<L: recto_session::DocLoader>(session: &recto_session::Session<L>, i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure (the settled branch, 2026-11-14: e0fa6288, found by timing the long-session app test): the look at a shown tab's file answered the frame and
+    /// then gave its slot back, so a tab shown again at once found a look still running, got none of its own, and was marked to be looked at again, a round
+    /// of looks more each time. Held just after it has answered: its slot is already free, so the next show of that tab starts its own look.
+    #[test]
+    fn a_tab_shown_again_at_once_gets_a_look_of_its_own() {
+        use crate::testkit::headless::{HeadlessApp, WAIT_LIMIT};
+        let app = HeadlessApp::start();
+        let doc = app.disk().pdf("a.pdf", 2);
+        app.open(&doc);
+        let id = app.core().host.session.with_session(|session| session.tabs().active()).expect("a tab");
+        let (answered, held) = std::sync::mpsc::channel();
+        let (go, waiting) = std::sync::mpsc::channel();
+        *lock(&AFTER_ANSWER) = Some((answered, waiting));
+        let sleeper = app.core().on_disk.sleeper();
+        sleeper.look_before_showing(&app.core().host.session, &app.core().core, id);
+        held.recv_timeout(WAIT_LIMIT).expect("the look answered");
+        let holding = sleeper.looks_running();
+        drop(go);
+        app.settle();
+        assert_eq!(
+            holding, 0,
+            "the look held its slot after answering: the tab shown again would get no look of its own"
+        );
+    }
 
     /// Failure (the sleep branch's second review, 2026-11-13): what an agent was told of its `session sleep` came from a counter all agents share, compared
     /// across a flush, so another agent's put-off gave this agent a note about a sleep that was written. Each asker takes back only what its own ticket's

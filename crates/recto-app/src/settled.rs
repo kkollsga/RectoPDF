@@ -260,9 +260,10 @@ fn off_the_session_thread(inner: &Watched<'_>, busy: &mut Vec<String>) {
     if inner.tools.printing().preparing() {
         busy.push("a print's pages being prepared".to_string());
     }
-    // A look at where a tab's generated contents stand, holding its way back to the session thread till it's queued what it found.
-    if inner.core.ways_back_held() > 0 {
-        busy.push("a look at generated contents".to_string());
+    // A look at where a tab's generated contents stand, or at a shown tab's file, holding its way back to the session thread till it's queued what it found.
+    let ways_back = inner.core.ways_back_held();
+    if ways_back > 0 {
+        busy.push(format!("{ways_back} look(s) holding a way back to the session thread"));
     }
     // An agent's command in flight on another connection (`qa` commands only ask, so `qa wait` never counts itself).
     let commands = inner.host.running.load(Ordering::SeqCst);
