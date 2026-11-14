@@ -46,7 +46,7 @@ pub fn title_now(inner: &Arc<Inner>, id: &str) -> Option<String> {
 pub fn found_for(inner: &Arc<Inner>, query: &str, whom: &ForWhom) -> Vec<app::PaletteRow> {
     let version = lock(&inner.published).sidebar.tabs_version;
     app::found_for(
-        &inner.tools.palette,
+        inner.tools.palette(),
         query,
         version,
         || tab_rows(inner),
@@ -74,7 +74,7 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
             if lock(&inner.published).reader.sidebar_hidden {
                 super::person::submit(inner, super::viewing::show_sidebar());
             }
-            inner.tools.palette.open();
+            inner.tools.palette().open();
             inner.listener.model_changed();
             HostAction::FocusPalette
         },
@@ -83,18 +83,18 @@ pub fn row<'a>(inner: &'a Arc<Inner>, asked: &super::menu_rows::Asked<'_>) -> Op
 
 /// What the host draws now.
 pub fn view(inner: &Arc<Inner>) -> PaletteView {
-    inner.tools.palette.view(|text| found_for(inner, text, &ForWhom::person()))
+    inner.tools.palette().view(|text| found_for(inner, text, &ForWhom::person()))
 }
 
 /// ↑ and ↓: the selection moves, stopping at either end.
 pub fn step(inner: &Arc<Inner>, by: i32) {
-    let count = inner.tools.palette.view(|text| found_for(inner, text, &ForWhom::person())).rows.len();
-    inner.tools.palette.step(count, by);
+    let count = inner.tools.palette().view(|text| found_for(inner, text, &ForWhom::person())).rows.len();
+    inner.tools.palette().step(count, by);
 }
 
 /// Runs a row, closing the palette first, and says what's left for the host.
 pub fn run(inner: &Arc<Inner>, id: &str) -> HostAction {
-    inner.tools.palette.close();
+    inner.tools.palette().close();
     let frozen = inner.core.frozen.load(std::sync::atomic::Ordering::SeqCst);
     match app::route(id, super::find::is_open(inner), frozen) {
         app::Run::Tap(tab) => {
@@ -120,11 +120,11 @@ pub fn host_word(action: HostAction) -> &'static str {
 
 /// What's in the palette's field now, as it's typed.
 pub fn typed(inner: &Inner, text: &str) {
-    inner.tools.palette.typed(text);
+    inner.tools.palette().typed(text);
 }
 
 /// Escape, or the keyboard going elsewhere.
 pub fn close(inner: &Inner) {
-    inner.tools.palette.close();
+    inner.tools.palette().close();
     inner.listener.model_changed();
 }

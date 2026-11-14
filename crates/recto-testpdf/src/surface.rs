@@ -1,5 +1,5 @@
-//! **What a set of types lets other code reach, listed** (R3.6's listing, R3.7's one copy of it): every method visible past its module (`pub` or
-//! `pub(crate)`) with its signature, every trait implemented with its methods, a type's own declaration with what it derives, and the fields named to be
+//! **What a set of types lets other code reach, listed** (R3.6's listing, R3.7's one copy of it): every method visible past its module (`pub`,
+//! `pub(crate)`, `pub(super)` or `pub(in path)`, each marked as written) with its signature, every trait implemented with its methods, a type's own declaration with what it derives, and the fields named to be
 //! listed. A test holds the listing against a list kept in its own file, so a part that can be built, replaced or reached around from outside where it
 //! belongs shows up as a changed line in a diff a reviewer sees, not as a side effect of a move.
 //!
@@ -75,15 +75,18 @@ pub fn same_as(kept: &str, now: &str, what: &str) -> Result<(), String> {
     ))
 }
 
-/// Whether a line, trimmed, says its item is reached past its module.
-fn visibility(line: &str) -> Option<&'static str> {
-    if line.starts_with("pub(crate) ") {
-        Some("pub(crate)")
-    } else if line.starts_with("pub ") {
-        Some("pub")
-    } else {
-        None
+/// Whether a line, trimmed, says its item is reached past its module, and how, as it's written: `pub`, `pub(crate)`, `pub(super)` or `pub(in path)`.
+/// `pub(self)` is private.
+fn visibility(line: &str) -> Option<&str> {
+    if line.starts_with("pub ") {
+        return Some("pub");
     }
+    let rest = line.strip_prefix("pub(")?;
+    let end = rest.find(')')?;
+    let shown = &line[..end + 5];
+    let within = &rest[..end];
+    let reached = within == "crate" || within == "super" || within.starts_with("in ");
+    (reached && line[shown.len()..].starts_with(' ')).then_some(shown)
 }
 
 /// The type an `impl` header is for, and the trait if it's a trait's: `impl<'a> Selection<'a> {` is `Selection`, `impl Default for Reader {` is
@@ -233,17 +236,15 @@ fn signature(lines: &[&str], at: &mut usize) -> String {
     one_line(&signature)
 }
 
-/// A struct or an enum, of any visibility: how visible, which, and the rest of its line.
-fn type_item(line: &str) -> Option<(&'static str, &'static str, &str)> {
-    const SHOWN: [(&str, &str); 4] = [("pub(crate) ", "pub(crate)"), ("pub(super) ", "pub(super)"), ("pub ", "pub"), ("", "private")];
-    for (prefix, shown) in SHOWN {
-        for (keyword, kind) in [("struct ", "struct"), ("enum ", "enum")] {
-            if let Some(rest) = line.strip_prefix(prefix).and_then(|rest| rest.strip_prefix(keyword)) {
-                return Some((shown, kind, rest));
-            }
-        }
-    }
-    None
+/// A struct or an enum, of any visibility: how visible (as [`visibility`] reads it, or `private`), which, and the rest of its line.
+fn type_item(line: &str) -> Option<(&str, &'static str, &str)> {
+    let (shown, rest) = match visibility(line) {
+        Some(shown) => (shown, line[shown.len()..].trim_start()),
+        None => ("private", line.strip_prefix("pub(self) ").unwrap_or(line)),
+    };
+    [("struct ", "struct"), ("enum ", "enum")]
+        .into_iter()
+        .find_map(|(keyword, kind)| rest.strip_prefix(keyword).map(|rest| (shown, kind, rest)))
 }
 
 /// A signature as one line: its body's brace gone, its whitespace one space.
@@ -261,7 +262,7 @@ fn one_line(signature: &str) -> String {
 mod tests {
     use super::*;
 
-    const SOURCE: &str = "pub struct Reader {\n    a: u32,\n    pub(crate) part: Part,\n    #[cfg(test)]\n    pub seam: u8,\n}\n\n#[derive(Default)]\npub struct Other {\n    pub field: u8,\n}\n\nimpl Default for Part {\n    fn default() -> Self {\n        todo!()\n    }\n}\n\nimpl<'a> Facade<'a> {\n    pub fn press(\n        &self,\n        x: f64,\n    ) -> Vec<Op> {\n        todo!()\n    }\n\n    fn helper(&self) {}\n\n    #[cfg(test)]\n    pub fn only_in_tests(&self) {}\n}\n\nimpl super::Reader {\n    pub(crate) fn step(self: &Arc<Self>) {}\n}\n\n#[cfg(test)]\nimpl Part {\n    pub fn hidden(&self) {}\n}\n\npub fn free(x: u8) -> u8 {\n    x\n}\n";
+    const SOURCE: &str = "pub struct Reader {\n    a: u32,\n    pub(crate) part: Part,\n    pub(super) near: u8,\n    pub(self) own: u8,\n    #[cfg(test)]\n    pub seam: u8,\n}\n\npub(in crate::core) struct Near;\n\n#[derive(Default)]\npub struct Other {\n    pub field: u8,\n}\n\nimpl Default for Part {\n    fn default() -> Self {\n        todo!()\n    }\n}\n\nimpl<'a> Facade<'a> {\n    pub fn press(\n        &self,\n        x: f64,\n    ) -> Vec<Op> {\n        todo!()\n    }\n\n    fn helper(&self) {}\n\n    #[cfg(test)]\n    pub fn only_in_tests(&self) {}\n}\n\nimpl super::Reader {\n    pub(crate) fn step(self: &Arc<Self>) {}\n\n    pub(super) fn nearby(&self) {}\n\n    pub(in crate::core) fn in_core(&self) {}\n}\n\n#[cfg(test)]\nimpl Part {\n    pub fn hidden(&self) {}\n}\n\npub fn free(x: u8) -> u8 {\n    x\n}\n\npub(super) fn free_near() {}\n";
 
     fn listed(scope: Scope<'_>) -> Vec<String> {
         let mut lines = BTreeSet::new();
@@ -270,8 +271,9 @@ mod tests {
     }
 
     /// Failure: the scan lists what Rust keeps from other code, or misses what it lets through: an item under `#[cfg(test)]` listed, a signature across
-    /// lines cut short, one with an empty body run on into the next item, a private method listed, a `super::` path taken for another type, a field of a type
-    /// not asked for listed.
+    /// lines cut short, one with an empty body run on into the next item, a private method listed (`pub(self)` is private), a `super::` path taken for another
+    /// type, a field of a type not asked for listed, or what's reached from the module above or a named one (`pub(super)`, `pub(in …)`) left out, as the
+    /// window's fields the rest of the app's core sets were (the review of R3.7's S2).
     #[test]
     fn the_listing_reads_what_rust_says() {
         assert_eq!(
@@ -281,12 +283,17 @@ mod tests {
             }),
             [
                 "Facade::pub fn press(&self, x: f64) -> Vec<Op>",
+                "Near (pub(in crate::core) struct)",
                 "Other (pub struct, derives Default)",
                 "Part: Default (trait impl)",
                 "Part: Default::fn default() -> Self",
                 "Reader (pub struct)",
                 "Reader.pub(crate) part: Part",
+                "Reader.pub(super) near: u8",
                 "Reader::pub(crate) fn step(self: &Arc<Self>)",
+                "Reader::pub(in crate::core) fn in_core(&self)",
+                "Reader::pub(super) fn nearby(&self)",
+                "fn (pub(super)) pub(super) fn free_near()",
                 "fn (pub) pub fn free(x: u8) -> u8",
             ]
         );
@@ -305,7 +312,10 @@ mod tests {
                 "Part: Default::fn default() -> Self",
                 "Reader (pub struct)",
                 "Reader.pub(crate) part: Part",
+                "Reader.pub(super) near: u8",
                 "Reader::pub(crate) fn step(self: &Arc<Self>)",
+                "Reader::pub(in crate::core) fn in_core(&self)",
+                "Reader::pub(super) fn nearby(&self)",
             ]
         );
     }

@@ -150,6 +150,8 @@ pub enum Outcome {
         message: String,
         may_pass: bool,
     },
+    /// Not drawn: on dark paper the page's look is to be tried again (`engine/look.rs`), so nothing's asked of the page till the page view's wait for a failure that may pass is over, and nothing's said, as nothing's failed.
+    LookLater,
     /// The file can't be drawn, in these words. `needs_key`: because it needs a password the renderer wasn't given.
     DocumentFailed {
         message: String,

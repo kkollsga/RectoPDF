@@ -102,6 +102,16 @@ impl Saver {
         self.nudge();
     }
 
+    /// The app's gone to the background: what's changed is written now ([`Self::write_soon`]), and the sleep files' cool-down hurried with it
+    /// (`Sleeper::hurry_leaving_soon`), stored before `urgent` as [`take_urgent_then_hurry`] needs. The UI thread's: atomic stores and a weak reference
+    /// taken up, no lock.
+    pub fn went_to_background(&self) {
+        if let Some(inner) = self.inner() {
+            inner.sleeper.hurry_leaving_soon();
+        }
+        self.write_soon();
+    }
+
     fn nudge(&self) {
         self.core.nudge();
     }
@@ -118,6 +128,26 @@ impl Saver {
             return self.next_due();
         }
         due
+    }
+
+    /// What's been asked of the writer since [`Self::forget_asked`]: a write at once ([`Self::write_soon`]), one in its own time ([`Self::view_changed`]), or
+    /// nothing. For a test that holds the session thread, so that nothing else asks or writes meanwhile.
+    #[cfg(test)]
+    pub(super) fn asked(&self) -> &'static str {
+        if self.urgent.load(Ordering::SeqCst) {
+            "at once"
+        } else if self.view_changed.load(Ordering::Relaxed) {
+            "in its time"
+        } else {
+            "nothing"
+        }
+    }
+
+    /// Forgets what's been asked of the writer, for [`Self::asked`]; what was owed goes unwritten. A test's, with the session thread held.
+    #[cfg(test)]
+    pub(super) fn forget_asked(&self) {
+        self.urgent.store(false, Ordering::SeqCst);
+        self.view_changed.store(false, Ordering::Relaxed);
     }
 
     /// It's come due. A one-shot thread does the writing, so that nothing else waits on the disk. On the session thread.
@@ -379,10 +409,8 @@ impl Saver {
     }
 }
 
-/// Why a flush can't write now, if it can't: see [`super::keeping::may_write`]. The saved session being read back after a late try at the lock isn't written over
-/// by the window before it; a copy that doesn't keep the record says so as the store does.
 /// **Takes `urgent` for a pass, and then carries out the hurry of the sleep files' cool-down if it's asked** ([`super::sleeper`]'s
-/// `hurry_leaving_if_asked`). Going to the background stores the hurry and then `urgent` (`App::frontmost_changed`), so taking them the other way round,
+/// `hurry_leaving_if_asked`). Going to the background stores the hurry and then `urgent` (`Saver::went_to_background`), so taking them the other way round,
 /// a pass that sees `urgent` sees the hurry too; the hurry first could miss one stored just after it's looked at, and take `urgent`, and the hurry would
 /// wait for a pass that may not come till the next edit or a quit, or at all with no writer left.
 fn take_urgent_then_hurry(urgent: &AtomicBool, hurry_if_asked: impl FnOnce()) -> bool {
@@ -391,6 +419,8 @@ fn take_urgent_then_hurry(urgent: &AtomicBool, hurry_if_asked: impl FnOnce()) ->
     urgent
 }
 
+/// Why a flush can't write now, if it can't: see [`super::keeping::may_write`]. The saved session being read back after a late try at the lock isn't written over
+/// by the window before it; a copy that doesn't keep the record says so as the store does.
 fn refused(inner: &Inner) -> Option<StoreError> {
     if super::keeping::may_write(inner) {
         return None;
@@ -422,7 +452,7 @@ impl Inner {
             let delta = session.take_place_delta(0);
             (session.to_record(), delta)
         });
-        record.app = self.app_record();
+        record.app = self.window.app_record(|| lock(&self.host.notice).clone());
         (record, delta)
     }
 
@@ -434,7 +464,7 @@ impl Inner {
             let delta = session.take_place_delta(0);
             (work, session.to_record(), delta, session.journal_look().lists_by_journal())
         });
-        record.app = self.app_record();
+        record.app = self.window.app_record(|| lock(&self.host.notice).clone());
         (work, record, delta, lists)
     }
 

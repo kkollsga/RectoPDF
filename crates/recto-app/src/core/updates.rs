@@ -632,15 +632,6 @@ impl Inner {
         super::person::submit(self, command);
     }
 
-    pub fn settings_window_changed(&self, place: Option<SettingsWindow>) {
-        lock(&self.window.app).settings_window = place;
-        self.saver.view_changed();
-    }
-
-    pub fn settings_window(&self) -> Option<SettingsWindow> {
-        lock(&self.window.app).settings_window
-    }
-
     /// The hand-off isn't going ahead.
     pub fn hand_off_cancelled(&self) {
         self.carry_out(self.life.step(crate::lifecycle::Event::HandOffUndone));

@@ -195,7 +195,7 @@ impl Finding for Finder {
         let deadline = Instant::now() + limit;
         let mut inner = self.0.lock();
         loop {
-            if inner.results.version != version {
+            if inner.results.version() != version {
                 return true;
             }
             let now = Instant::now();

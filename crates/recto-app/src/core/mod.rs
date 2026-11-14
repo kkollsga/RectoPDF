@@ -15,6 +15,7 @@ pub mod session;
 pub mod sleeper;
 pub mod snapshot_tool;
 pub mod start;
+pub mod tools;
 pub mod updates;
 
 mod closing;
@@ -36,6 +37,7 @@ mod record_commands;
 pub mod showing;
 mod unlocking;
 mod viewing;
+pub mod window;
 mod window_rows;
 pub mod zoom;
 
@@ -45,7 +47,9 @@ pub use reconcile::*;
 use recto_agent::Code;
 pub use session::*;
 pub use start::*;
+pub use tools::Tools;
 use unlocking::*;
+pub use window::{AppState, Window, WindowPlacement};
 
 use crate::RecentFile;
 use crate::SelectionNotice;
@@ -71,8 +75,8 @@ use recto_reader::engine::EngineEvents;
 use recto_reader::tiles::PageMap;
 use recto_reader::{Engine, PaperKind};
 use recto_session::HistorySource;
-use recto_session::record::{self, AppRecord, Appearance, ContentsScroll, FileStatus, FocusRecord, SettingsWindow, WindowRecord, look_at_file};
-use recto_session::{ContentsFollow, DocLoader, DrawNote, Paper, TabId, ViewSettings};
+use recto_session::record::{self, FileStatus, look_at_file};
+use recto_session::{DocLoader, DrawNote, Paper, TabId, ViewSettings};
 use saver::Saver;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -184,7 +188,7 @@ pub struct Inner {
     /// Shared with the control socket's thread, which holds nothing else of the core while it serves, so the session's end goes by the machine too.
     pub life: Arc<Lifecycle>,
     pub serving: Serving,
-    pub window: WindowParts,
+    pub window: Window,
     pub tools: Tools,
 }
 
@@ -245,40 +249,6 @@ pub struct Serving {
     /// Where a test comes between the reads of the views' places and their take-in, and the looks counted: [`crate::testkit::place_seams::PlaceSeams`].
     #[cfg(any(test, feature = "testkit"))]
     pub(crate) place_seams: crate::testkit::place_seams::PlaceSeams,
-}
-
-/// **What the window is and says:** what the host tells of it for the record, its appearance and panel, the contents' follow, the UI thread's hang watchdog, and the
-/// notices that go by themselves.
-pub struct WindowParts {
-    pub contents_follow: Mutex<ContentsFollow>,
-    pub app: Mutex<AppState>,
-    pub watchdog: Watchdog,
-    pub dark: AtomicBool,
-    pub panel_open: AtomicBool,
-    pub(crate) open_failure: Mutex<Option<String>>,
-    /// Why something the reader chose couldn't be done, or what a save has to say, as a notice that goes by itself.
-    pub(crate) action_notice: Mutex<Option<String>>,
-    /// The tab showing when the window was last brought up to date: a notice is about what was on screen, so it goes with a change of tab.
-    pub(crate) notice_tab: AtomicU32,
-}
-
-/// **The window's features with state of their own:** the sheets that ask, saving's, the snapshot tool, the sidebar's folds, the chrome's marks, printing, ⌘K and
-/// Find's field.
-pub struct Tools {
-    /// The sheets that ask: a password, or whether to open a link.
-    pub(crate) prompts: crate::prompts::Prompts,
-    /// Saves from the window: how many run, and what one that failed says.
-    pub(crate) save_ui: saving::SaveUi,
-    /// The snapshot tool: on or off, the box being drawn, and what's on its way to the clipboard.
-    pub tool: snapshot_tool::Tool,
-    pub folds: crate::sidebar_access::Folds,
-    pub chrome: crate::chrome::Chrome,
-    /// A print being prepared, or waiting for the host to hand to the system.
-    pub printing: printing::Printing,
-    /// ⌘K's palette, on the UI thread.
-    pub(crate) palette: crate::palette::Palette,
-    /// The Find field as the session thread last set it, for the UI thread.
-    pub(crate) find_field: Mutex<crate::find::Field>,
 }
 
 // `new` is public for the bridge, which builds the app; launch is no default state.
@@ -385,83 +355,6 @@ impl Lifecycle {
     }
 }
 
-impl WindowParts {
-    /// At launch: no window yet, the system's appearance, nothing said.
-    pub fn new(watchdog: Watchdog) -> Self {
-        Self {
-            app: Mutex::new(AppState {
-                window: None,
-                appearance: Appearance::System,
-                sidebar_width: record::SIDEBAR_WIDTH,
-                contents_y: None,
-                contents_resume: None,
-                selection_resume: None,
-                focus: FocusRecord::default(),
-                settings_window: None,
-                window_closed: false,
-                app_hidden: false,
-                hidden_decided: false,
-                minimised_decided: false,
-                window_decided: false,
-                from_state: None,
-                selections_held: Vec::new(),
-            }),
-            dark: AtomicBool::new(false),
-            panel_open: AtomicBool::new(false),
-            contents_follow: Mutex::new(ContentsFollow::default()),
-            watchdog,
-            open_failure: Mutex::new(None),
-            action_notice: Mutex::new(None),
-            notice_tab: AtomicU32::new(0),
-        }
-    }
-}
-
-impl Tools {
-    /// At launch: every tool at rest.
-    pub fn new(save_step: &Arc<AtomicU8>) -> Self {
-        Self {
-            prompts: crate::prompts::Prompts::default(),
-            save_ui: saving::SaveUi::new(Arc::clone(save_step)),
-            tool: snapshot_tool::Tool::default(),
-            folds: crate::sidebar_access::Folds::default(),
-            chrome: crate::chrome::Chrome::default(),
-            printing: printing::Printing::default(),
-            palette: crate::palette::Palette::default(),
-            find_field: Mutex::new(crate::find::Field::default()),
-        }
-    }
-}
-
-/// What the host tells Rust about the window, kept for the record. A short lock: the UI thread sets these and a writer copies them.
-#[derive(Clone, Debug)]
-pub struct AppState {
-    pub window: Option<WindowRecord>,
-    pub appearance: Appearance,
-    pub sidebar_width: f64,
-    /// The active tab's contents. A copy, as they're the host's to scroll.
-    pub contents_y: Option<f64>,
-    /// Where they go on the tab's first showing, and whose they are then.
-    pub contents_resume: Option<(TabId, ContentsScroll)>,
-    /// What was selected, to put back on the tab's first showing.
-    pub selection_resume: Option<(TabId, record::Selection)>,
-    pub focus: FocusRecord,
-    pub settings_window: Option<SettingsWindow>,
-    pub window_closed: bool,
-    /// Hidden with ⌘H, as the record has it.
-    pub app_hidden: bool,
-    /// The host has asked whether the app comes back hidden, and done it: a restore after that keeps what it did.
-    pub hidden_decided: bool,
-    /// The same for the window in the Dock.
-    pub minimised_decided: bool,
-    /// And for whether there's a window at all.
-    pub window_decided: bool,
-    /// What the state said, as it was taken in after a window went up without it. That window can report its own size, focus and the rest before it's made again, which a full check on a slow machine saw, so the one made again goes by this: see [`AppCore::window_replaced`].
-    pub from_state: Option<Box<AppState>>,
-    /// What each pane had selected as its window went for another made from the state, to be selected again on the new one.
-    pub selections_held: Vec<(usize, recto_index::select::Range)>,
-}
-
 /// What's in flight, for an update to wait for. A save from the window counts here, and an agent's save or an export is a command.
 pub fn hand_off_check_parts(inner_reads: u32, sheets: u32, commands: u32, saves: u32, printing: bool) -> Vec<BusyItem> {
     let item = |code: &str, message: &str| BusyItem {
@@ -506,8 +399,8 @@ impl Inner {
             self.life.reads_running.load(Ordering::SeqCst),
             self.life.sheets.load(Ordering::SeqCst),
             self.host.running.load(Ordering::SeqCst),
-            self.tools.save_ui.running.load(Ordering::SeqCst),
-            self.tools.printing.busy(),
+            self.tools.save_ui().running.load(Ordering::SeqCst),
+            self.tools.printing().busy(),
         );
         let last = self.life.last_input_ms.load(Ordering::Relaxed);
         let now = self.life.now_ms();
@@ -574,28 +467,6 @@ impl Inner {
         }
     }
 
-    /// The host's own part of the record.
-    pub fn app_record(&self) -> AppRecord {
-        let app = lock(&self.window.app).clone();
-        let following = lock(&self.window.contents_follow).is_following();
-        let notice = lock(&self.host.notice).clone();
-        AppRecord {
-            window: app.window,
-            appearance: app.appearance,
-            sidebar_width: Some(app.sidebar_width),
-            panel_open: self.window.panel_open.load(Ordering::SeqCst),
-            contents_scroll: Some(ContentsScroll {
-                y: app.contents_y.unwrap_or(0.0),
-                following,
-            }),
-            focus: app.focus,
-            notice,
-            settings_window: app.settings_window,
-            window_closed: app.window_closed,
-            app_hidden: app.app_hidden,
-        }
-    }
-
     /// Everything the record holds and QA compares: the record as it would be written, and each tab's edits in full.
     pub fn state_json(&self) -> Value {
         let (record, _) = self.gather_record();
@@ -615,26 +486,6 @@ impl Inner {
     pub fn record_report(&self) -> Value {
         let (writes, appends) = self.saver.store.writes();
         json!({ "first_shown": *lock(&self.life.first_shown), "remade": self.life.remade(), "sleep": self.sleeper.report(), "writes": writes, "appends": appends, "wrote_bytes": self.saver.store.wrote_bytes(), "failed": self.saver.has_failed() })
-    }
-
-    /// The app became the active one or stopped, and the window key or not. Going to the background writes what's changed: from there, nobody's watching.
-    pub fn frontmost_changed(&self, app: bool, window_key: bool) {
-        let mut state = lock(&self.window.app);
-        let went_back = state.focus.app_frontmost && !app;
-        let came_back = !state.focus.app_frontmost && app;
-        state.focus.app_frontmost = app;
-        state.focus.window_key = window_key;
-        drop(state);
-        if went_back {
-            self.sleeper.hurry_leaving_soon();
-            self.saver.write_soon()
-        } else {
-            self.saver.view_changed()
-        }
-        // Back from another app, which may have moved, replaced or deleted a file that's showing: each is looked at, a stat on a thread of its own, and said if it's something else now.
-        if came_back {
-            self.core.push(CoreCall::LookAtShown);
-        }
     }
 
     /// A sheet or panel opened over the window, or closed. An update waits for it.

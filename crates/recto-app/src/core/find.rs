@@ -18,7 +18,7 @@ use std::sync::Arc;
 pub(super) fn handle<R>(inner: &Inner, step: impl FnOnce(&FindHandle<'_, dyn crate::Listener>) -> R) -> R {
     step(&FindHandle {
         session: &inner.host.session,
-        field: &inner.tools.find_field,
+        field: inner.tools.find_field(),
         frozen: &inner.core.frozen,
         panes: &inner.panes,
         engine: &inner.engine,
@@ -43,7 +43,7 @@ fn carry_out(inner: &Inner, effect: Effect) {
 }
 
 /// **What the window does with how the person's Find went:** why what they typed can't be found, on the line under the field, as a query too long; and a
-/// step kept for its hit forgotten when Find closes. Then the host's told, as Find's view isn't in what `reconcile` compares.
+/// step kept for its hit forgotten when Find closes ([`FindHandle::answered`]).
 pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
     let Command::Move(Move::Find(asked)) = ran.command else {
         return;
@@ -59,15 +59,7 @@ pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
                 recto_agent::find::too_long_query(if find.query.is_empty() { &find.draft } else { &find.query })
             }),
         };
-    {
-        let mut field = lock(&inner.tools.find_field);
-        if asked.ask == FindAsk::Close {
-            field.clear_pending();
-        } else if matches!(asked.ask, FindAsk::Query(_) | FindAsk::Open | FindAsk::Step { .. }) {
-            field.set_note(too_long.then(|| recto_agent::find::too_long().message));
-        }
-    }
-    inner.listener.model_changed();
+    handle(inner, |find| find.answered(&asked.ask, too_long));
 }
 
 /// **Find's menu ids** ([`super::menu_rows`]): ⌘F is `find --open`, and then the field takes the keyboard; ⌘G and ⇧⌘G are `find --next|--previous`, a step.
@@ -111,7 +103,7 @@ pub fn chosen(find: &FindHandle<'_, dyn crate::Listener>, row: u32) -> Option<Co
 }
 
 pub fn is_open(inner: &Inner) -> bool {
-    app::is_open(&inner.tools.find_field)
+    app::is_open(inner.tools.find_field())
 }
 
 /// Find's heights in the sidebar, for this much room: its line wrapped at the sidebar's width as the session has it.

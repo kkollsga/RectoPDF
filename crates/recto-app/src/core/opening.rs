@@ -35,7 +35,7 @@ pub fn before(inner: &Inner, reads: &mut FileReads, command: &Command) {
                 let tab = session.tabs().for_path(path);
                 (tab, tab.and_then(|id| session.tabs().path_of(id)))
             });
-            lock(&inner.tools.prompts.passwords).opened_again(&[Some(path.clone()), own].into_iter().flatten().collect::<Vec<_>>(), tab);
+            lock(&inner.tools.prompts().passwords).opened_again(&[Some(path.clone()), own].into_iter().flatten().collect::<Vec<_>>(), tab);
         }
         _ => {}
     }
@@ -50,7 +50,7 @@ pub fn answered(inner: &std::sync::Arc<Inner>, ran: &person::Ran<'_>) {
     match (ran.command, ran.refused()) {
         (Command::Move(Move::RecentClear(_)), None) if ran.result.is_ok() => inner.saver.write_soon(),
         (Command::Move(Move::Open(Open { path, .. })), Some(error)) if error.code == Code::lower(OpenError::PasswordNeeded.code()) => {
-            lock(&inner.tools.prompts.passwords).ask(passwords::Target::File, path);
+            lock(&inner.tools.prompts().passwords).ask(passwords::Target::File, path);
         }
         (Command::Move(Move::Open(_)), Some(error)) => {
             if let Some(words) = person::session_words(error) {
