@@ -144,13 +144,7 @@ fn run(shared: &Shared) {
             continue;
         }
         let mut file_changed = false;
-        // **An added PDF that's changed isn't drawn from** (the saved point's review): a stat, before each job, since drawing goes by path.
-        let (expected, own) = {
-            let reader = lock(&shared.reader);
-            (reader.docs.expected_stamp(job.tab, &job.file), reader.docs.is_own_file(job.tab, &job.file))
-        };
-        let added_changed =
-            expected.is_some_and(|expected| !recto_platform::file_stamp(&job.file).is_ok_and(|now| now.same_contents(expected) && now.inode == expected.inode));
+        let (added_changed, own) = added_file_now(shared, &job);
         let outcome = if added_changed {
             match job.kind {
                 JobKind::Text { .. } => Outcome::TextFailed,
@@ -193,10 +187,7 @@ fn run(shared: &Shared) {
                 },
             }
         };
-        let outcome = match outcome {
-            Outcome::DocumentFailed { needs_key: true, .. } if !own => added_needs_password(&job),
-            outcome => outcome,
-        };
+        let outcome = if own { outcome } else { as_an_added_files(outcome, &job) };
         publish_workers(shared, &mut renderers);
         let drawn = match (&job.kind, &outcome) {
             (
@@ -528,6 +519,26 @@ fn added_needs_password(job: &Job) -> Outcome {
             message: ADDED_FILE_NEEDS_PASSWORD.to_string(),
             may_pass: false,
         },
+    }
+}
+
+/// Whether the job's file is an added PDF that's changed since its pages were added, and whether it's the tab's own file. **An added PDF that's changed
+/// isn't drawn from** (the saved point's review): a stat, before each job, since drawing goes by path.
+fn added_file_now(shared: &Shared, job: &Job) -> (bool, bool) {
+    let (expected, own) = {
+        let reader = lock(&shared.reader);
+        (reader.docs.expected_stamp(job.tab, &job.file), reader.docs.is_own_file(job.tab, &job.file))
+    };
+    let changed =
+        expected.is_some_and(|expected| !recto_platform::file_stamp(&job.file).is_ok_and(|now| now.same_contents(expected) && now.inode == expected.inode));
+    (changed, own)
+}
+
+/// What a job for a PDF added to the tab came to: a want of a password is the page's, never its document's ([`added_needs_password`]).
+fn as_an_added_files(outcome: Outcome, job: &Job) -> Outcome {
+    match outcome {
+        Outcome::DocumentFailed { needs_key: true, .. } => added_needs_password(job),
+        outcome => outcome,
     }
 }
 
