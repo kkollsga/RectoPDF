@@ -17,9 +17,10 @@ pub struct Selection<'a> {
 const _: () = assert!(size_of::<Selection<'static>>() <= size_of::<usize>(), "a facade of the engine grew");
 
 // size: the engine's shared state, one for each page view (a pane), with the hidden highlights' map (64 bytes, empty and unallocated for a view
-// with none): 2760 bytes before it on 2026-11-14 and 2824 after, measured with the QA holds it has in tests.
+// with none): 2760 bytes before it on 2026-11-14 and 2824 after, measured with the QA holds it has in tests; 2792 once those holds went behind a box
+// the same day (`build/settled-gaps`, whose waits for a view at rest grew them), which a release build has no field for at all.
 #[cfg(all(target_os = "macos", any(test, feature = "qa")))]
-const _: () = assert!(size_of::<super::Shared>() <= 2824, "the engine's shared state grew");
+const _: () = assert!(size_of::<super::Shared>() <= 2792, "the engine's shared state grew");
 
 impl Engine {
     /// What the selection is and what's done to it, on this page view.

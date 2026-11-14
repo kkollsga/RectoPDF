@@ -84,7 +84,7 @@ struct Shared {
     /// For QA ([`Qa`]): a busy view made to last, and asks held between their tick and the lock. Only with the `qa` feature (or in this crate's tests): a
     /// release app has no such field.
     #[cfg(any(test, feature = "qa"))]
-    qa: qa_holds::QaHolds,
+    qa: Box<qa_holds::QaHolds>,
     hidden: Mutex<crate::tiles::HiddenSets>, // The file's highlights each tab shown has taken out, unsaved: `Selection::show_hidden`.
 }
 
@@ -189,7 +189,7 @@ impl Engine {
             pending: Mutex::new(Pending::default()),
             applied: Applied::default(),
             #[cfg(any(test, feature = "qa"))]
-            qa: qa_holds::QaHolds::default(),
+            qa: Box::default(),
             hidden: Mutex::default(),
         });
         Self {
