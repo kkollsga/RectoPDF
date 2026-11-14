@@ -314,7 +314,21 @@ fn an_agents_edit_landing_after_the_quit_is_asked_comes_back() {
     drop(app.quit());
 }
 
-/// Whether the quit has decided: answered, or waiting for what's running (a wait on the session thread's next park begun since `waits`).
+/// Which of its two steps the quit came to first, each held there: waiting for what's running to land, or writing.
+fn the_quits_next_step(app: &HeadlessApp, waiting: &std::sync::mpsc::Receiver<()>, writing: &std::sync::mpsc::Receiver<()>) -> &'static str {
+    let step = std::cell::Cell::new("");
+    app.wait_until("the quit to wait or write", || {
+        if waiting.try_recv().is_ok() {
+            step.set("waiting");
+        } else if writing.try_recv().is_ok() {
+            step.set("writing");
+        }
+        !step.get().is_empty()
+    });
+    step.get()
+}
+
+/// Whether the quit has decided: answered, or waiting (a wait on the session thread's next park begun since `waits`).
 fn quit_decided(app: &HeadlessApp, waits: usize) -> bool {
     quit_answers(app) > 0 || app.core().core.park_waits() > waits
 }
@@ -334,10 +348,10 @@ fn a_quit_asked_as_a_save_starts_waits_for_it() {
     app.act(crate::core::controls::UiAction::Menu { id: "file.save".into() });
     held.recv_timeout(crate::testkit::headless::WAIT_LIMIT)
         .expect("the save held as its thread starts");
-    let waits = app.core().core.park_waits();
+    let ((waiting, wait_on), (writing, write_on)) = (app.hold_next("quit_waiting"), app.hold_next("quit_flush"));
     app.core().quit_requested();
-    app.wait_until("the quit to answer or wait", || quit_decided(&app, waits));
-    assert_eq!(quit_answers(&app), 0, "the quit waits for the save");
+    assert_eq!(the_quits_next_step(&app, &waiting, &writing), "waiting", "the quit waits for the save");
+    drop((wait_on, write_on));
     drop(go);
     app.wait_until("the quit's answer", || quit_answers(&app) > 0);
     let disk = app.quit_anyway();
@@ -363,12 +377,64 @@ fn an_agents_read_in_flight_doesnt_hold_a_quit() {
             .spawn_scoped(scope, || app.agent(recto_agent::Level::ReadOnly, r#"{"cmd":"text","tab":"active","page":1}"#))
             .expect("the agent's thread");
         held.recv_timeout(crate::testkit::headless::WAIT_LIMIT).expect("the agent's read held");
-        let waits = app.core().core.park_waits();
+        let ((waiting, wait_on), (writing, write_on)) = (app.hold_next("quit_waiting"), app.hold_next("quit_flush"));
         app.core().quit_requested();
-        app.wait_until("the quit to answer or wait", || quit_decided(&app, waits));
-        assert_eq!(quit_answers(&app), 1, "answered with the agent's read still held");
+        assert_eq!(
+            the_quits_next_step(&app, &waiting, &writing),
+            "writing",
+            "written with the agent's read still held"
+        );
+        drop((wait_on, write_on));
+        app.wait_until("the quit's answer", || quit_answers(&app) == 1);
         drop(go);
         let _ = agent.join().expect("the agent's thread");
     });
     drop(app.quit_anyway());
+}
+
+/// The quit's answer, once it has come.
+fn the_quit_answer(app: &HeadlessApp) -> crate::listener::QuitAnswer {
+    app.heard()
+        .into_iter()
+        .find_map(|heard| match heard {
+            crate::testkit::Heard::QuitAnswer(answer) => Some(answer),
+            _ => None,
+        })
+        .expect("an answer")
+}
+
+/// **Failure (second review of the lane, 1, Serious): the quit's write lost its time.** It was waited on for a hard 2 s, where `main` gave it the whole
+/// patience (5 s): on a disk where draining, writing and syncing take 2 to 5 s, the person was asked whether to quit anyway where `main` quit, or the app
+/// went with the record still being written. A write held past 2 s on the app's clock and let go inside 5 s is written, and the quit goes without a
+/// question; held past 5 s, it isn't, and the quit asks, as on `main`.
+#[test]
+fn a_quits_write_has_the_whole_patience() {
+    for (held_for, written) in [(2_500, true), (crate::listener::QUIT_PATIENCE_MS, false)] {
+        let disk = Disk::new();
+        let doc = disk.pdf("a.pdf", 2);
+        let app = disk.start();
+        app.open(&doc);
+        app.act(crate::core::controls::UiAction::Menu { id: "rotate.right".into() });
+        app.settle();
+        let (held, go) = app.hold_next("quit_flush");
+        let waits = app.core().core.park_waits();
+        app.core().quit_requested();
+        held.recv_timeout(crate::testkit::headless::WAIT_LIMIT).expect("the quit's write held");
+        app.wait_until("the quit to answer or wait for its write", || quit_decided(&app, waits));
+        assert_eq!(quit_answers(&app), 0, "the write is waited for");
+        app.advance(held_for);
+        if written {
+            let waits = app.core().core.park_waits();
+            app.wait_until("the quit to answer or look again", || quit_decided(&app, waits));
+            assert_eq!(quit_answers(&app), 0, "{held_for} ms in: still waited for");
+            drop(go);
+            app.wait_until("the quit's answer", || quit_answers(&app) > 0);
+            assert!(the_quit_answer(&app).go, "written: the quit goes, nothing asked");
+        } else {
+            app.wait_until("the quit's answer, past the patience", || quit_answers(&app) > 0);
+            assert!(!the_quit_answer(&app).go, "not written: asked, as on main");
+            drop(go);
+        }
+        drop(app.quit_anyway());
+    }
 }

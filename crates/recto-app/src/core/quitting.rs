@@ -60,8 +60,8 @@ impl Inner {
         }
     }
 
-    /// Everything written, on the quit's own thread, once what can change it has landed, with a flush on another so a disk that doesn't answer can't hold
-    /// the answer: the wait and the write within [`QUIT_PATIENCE`] together. Then what that came to, stepped.
+    /// Everything written, on the quit's own thread, once what can change it has landed (at most [`WAIT_MS`]), with a flush on another so a disk that
+    /// doesn't answer can't hold the answer past [`QUIT_PATIENCE`]. Then what that came to, stepped.
     fn write_for_quit(self: &Arc<Self>) {
         let inner = Arc::clone(self);
         let refused = cfg!(any(test, feature = "testkit")) && QUIT_THREAD_REFUSED.load(std::sync::atomic::Ordering::SeqCst);
@@ -73,12 +73,11 @@ impl Inner {
         }
         .and_then(|builder| {
             builder.spawn(move || {
-                // One deadline for the wait and the write together (review of the lane, D7), on the app's clock: what can change what the quit writes
-                // lands first, the person's commands (their edits parked in the lane among them), their saves, a file being read for a command, and
-                // commands that change something, so what it does is in the record; woken as each ends (the session thread parks again once nudged).
-                // An agent's read isn't waited for. Past the wait's part, what's still parked is dropped together, and the record's written without
-                // what's still running, as it always was, and that is lost.
-                let wait_until = inner.life.now_ms().saturating_add(crate::listener::QUIT_PATIENCE_MS.saturating_sub(FLUSH_MS));
+                // What can change what the quit writes lands first, at most [`WAIT_MS`] on the app's clock, so what it does is in the record: the
+                // person's commands (their edits parked in the lane among them), their saves, and commands that change something; woken as each ends
+                // (the session thread parks again once nudged). An agent's read isn't waited for, nor a file being read. Past the wait, what's still
+                // parked is dropped together, and the record's written without what's still running, as it always was, and that is lost.
+                let wait_until = inner.life.now_ms().saturating_add(WAIT_MS);
                 loop {
                     let parks = inner.core.parks();
                     if !super::running::Running::now(&inner.life, &inner.host, &inner.tools).changes_what_a_quit_writes() {
@@ -94,17 +93,22 @@ impl Inner {
                     if inner.core.has_ended() {
                         break;
                     }
+                    #[cfg(test)]
+                    inner.core.holds.at("quit_waiting");
                     inner.core.wait_next_park(parks, Duration::from_millis(left));
                 }
-                // The write has the rest: the patience's last part, so the two together are the patience.
-                let rest = Duration::from_millis(FLUSH_MS);
+                // The write has the whole patience, as it had before the quit waited for anything (second review of the lane, 1): the session
+                // thread's drain bounded at 2 s, and the write and its sync after it within [`QUIT_PATIENCE`], on the app's clock, woken as it's done.
                 let (sender, receiver) = std::sync::mpsc::channel();
                 let flushing = Arc::clone(&inner);
                 let _ = std::thread::Builder::new().name("recto-flush".into()).stack_size(512 * 1024).spawn(move || {
-                    let _ = sender.send(flushing.saver.flush(false, rest));
+                    #[cfg(test)]
+                    flushing.core.holds.at("quit_flush");
+                    let _ = sender.send(flushing.saver.flush(false, Duration::from_secs(2)));
+                    super::running::ended(&flushing.core);
                 });
-                let outcome = receiver.recv_timeout(rest);
-                let written = matches!(outcome, Ok(Ok(_))) || !inner.saver.store.holds_the_record();
+                let outcome = within_patience(&inner.life, &inner.core, &receiver);
+                let written = matches!(outcome, Some(Ok(_))) || !inner.saver.store.holds_the_record();
                 let unsaved_tabs = inner.host.session.unsaved_tabs().len();
                 let out = inner.life.step(Event::QuitWritten { written, unsaved_tabs });
                 inner.carry_out(out);
@@ -123,9 +127,32 @@ impl Inner {
     }
 }
 
-/// The part of the quit's patience kept for writing what it writes, after its wait for what's running, which has the rest: the flush's own limit, as it
-/// was before the quit waited (review of the lane, D7: the wait and the write were 5 s and then 5 s more).
-const FLUSH_MS: u64 = 2_000;
+/// The most a quit waits, on the app's clock, for what can change what it writes to land, before it writes: bounded on its own, apart from the write's
+/// patience (second review of the lane, 1).
+const WAIT_MS: u64 = 3_000;
+
+/// **What the quit's write came to, within [`QUIT_PATIENCE`] on the app's clock:** looked at again as the session thread parks (the write's thread
+/// nudges it as it's done, and the clock's moves do), or `None` past the patience or with no thread to write.
+fn within_patience<T>(life: &super::Lifecycle, core: &super::CoreQueue, receiver: &std::sync::mpsc::Receiver<T>) -> Option<T> {
+    let until = life.now_ms().saturating_add(crate::listener::QUIT_PATIENCE_MS);
+    loop {
+        let parks = core.parks();
+        match receiver.try_recv() {
+            Ok(outcome) => return Some(outcome),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => return None,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+        let left = Duration::from_millis(until.saturating_sub(life.now_ms()));
+        if left.is_zero() {
+            return None;
+        }
+        // A session thread that has ended parks no more: the write is waited for on its own.
+        if core.has_ended() {
+            return receiver.recv_timeout(left).ok();
+        }
+        core.wait_next_park(parks, left);
+    }
+}
 
 /// A test's way to have the quit's thread not start, as a system out of threads would refuse it. Read only in a test's build.
 pub(crate) static QUIT_THREAD_REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
