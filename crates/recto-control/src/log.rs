@@ -584,14 +584,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Failure: a command that takes `--anyway` is missing from the ones whose use of it gets a line of its own, or one that doesn't is in: the list
-    /// the table gives is the one these lines were kept for by hand (select, copy, image, snapshot, render, export_svg, print).
+    /// Failure: a command that takes `--anyway` is missing from the ones whose use of it gets a line of its own, or one that doesn't take it is in. The
+    /// commands the table gives `--anyway` to are listed from its rows; the ones the log gives an override line to are found by asking it, command by
+    /// command, so a command added with `--anyway` needs no edit here, and one the log forgot (or invented) shows as the difference. The seven known when
+    /// this was written (select, copy, image, snapshot, render, export_svg, print) are among them, so the table isn't read as empty.
     #[test]
     fn the_commands_whose_anyway_is_logged_are_those_that_take_it() {
-        let mut taking: Vec<&str> = recto_agent::table::TABLE.iter().map(|spec| spec.tag).filter(|tag| takes_anyway(tag)).collect();
+        let dir = recto_testpdf::TempDir::new("recto-log-anyway-set-");
+        let paths = StatePaths::overridden(&dir).unwrap();
+        let mut log = ActivityLog::new(&paths);
+        let lines = |path: &PathBuf| std::fs::read_to_string(path).unwrap_or_default().lines().count();
+        let mut tags: Vec<&str> = recto_agent::table::TABLE.iter().map(|spec| spec.tag).collect();
+        tags.sort_unstable();
+        tags.dedup();
+        let mut taking: Vec<&str> = recto_agent::table::TABLE
+            .iter()
+            .filter(|spec| spec.args.iter().any(|arg| arg.key == "anyway"))
+            .map(|spec| spec.tag)
+            .collect();
         taking.sort_unstable();
         taking.dedup();
-        assert_eq!(taking.len(), 7, "{taking:?}");
+        let mut logged = Vec::new();
+        for tag in tags {
+            let before = lines(&paths.overrides_log);
+            log.record(tag, Level::Full, "ok", &json!({ "tab": "#1", "page": 1, "anyway": true }));
+            if lines(&paths.overrides_log) > before {
+                logged.push(tag);
+            }
+        }
+        assert_eq!(
+            logged, taking,
+            "the log's override lines are for the commands that take --anyway, no more and no fewer"
+        );
         for tag in ["select", "copy", "image", "snapshot", "render", "export_svg", "print"] {
             assert!(taking.contains(&tag), "{tag}: {taking:?}");
         }
