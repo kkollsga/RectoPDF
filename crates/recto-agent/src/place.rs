@@ -66,7 +66,8 @@ pub fn place_withheld_refusal() -> AgentError {
 
 /// **The gate:** whether `actor`'s command that starts `from` the place of tab `id` is refused: an agent's, while the tab's place is withheld, or Back or
 /// Forward would land on a stop made from such a place ([`compare::trail_step_withheld`]), or Find's step would go on from a hit stepped to from one.
-pub(crate) fn refuses<L: DocLoader>(session: &Session<L>, actor: Actor, from: FromPlace, id: TabId) -> bool {
+/// The one rule: `execute`'s gate, a link that goes Back or Forward, the palette's Rotate of this page and an agent's palette listing Back and Forward ask it.
+pub fn refuses<L: DocLoader>(session: &Session<L>, actor: Actor, from: FromPlace, id: TabId) -> bool {
     if actor.sees_protected() || from == FromPlace::No {
         return false;
     }
@@ -155,6 +156,25 @@ mod tests {
             .cloned();
         assert!(row.is_some_and(|row| row["page"].is_null()));
         assert!(contents(&sidebar(Actor::Person)) > 0, "the person's sidebar is theirs");
+    }
+
+    /// Failure (the second review, D-4): `wait page-drawn` on a plain tab whose place is withheld is refused as `protected`, though its document isn't:
+    /// the refusal names the place rule, `place_withheld`, as every other refusal that comes of it does.
+    #[test]
+    fn wait_page_drawn_on_a_withheld_place_is_refused_by_the_place_rule() {
+        let mut session = Session::new(Chapters);
+        let locked = session.open(Path::new("/d/locked.pdf")).unwrap();
+        let plain = session.open(Path::new("/d/plain.pdf")).unwrap();
+        session.tabs_mut().note_password_used(locked);
+        session.compare(&[locked, plain], Some(plain)).unwrap();
+        session.set_compare_synced(true);
+        session.go_to(plain, 6).unwrap();
+        let access = Mutex::new(session);
+        let state = crate::check_condition(&access, crate::Condition::PageDrawn, &crate::TabRef::Id(plain), Some(7));
+        assert!(
+            matches!(&state, crate::ConditionState::Failed(error) if error.code == crate::Code::PLACE_WITHHELD),
+            "{state:?}"
+        );
     }
 
     /// What reads a tab's place, as the scan below looks for it: its page, counted from 0 or 1, and what the page view or the file says of it there.
