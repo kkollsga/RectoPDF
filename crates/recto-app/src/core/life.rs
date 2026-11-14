@@ -7,7 +7,7 @@ use recto_agent::DrawableLoader;
 use recto_control::host::SessionHost;
 use recto_session::TabId;
 use serde_json::{Value, json};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -18,6 +18,60 @@ fn carry(out: Option<crate::lifecycle::Out>, to: &mut super::keeping::Carrier<'_
         _ => None,
     };
     crate::lifecycle::keeping::carry(out, to);
+}
+
+/// **The window's putting up and its first showing,** as the host says them: opened, shown, and gone (closed, or for another made in its place). The host
+/// shows a window when its page checks pass or its patience runs out, and gives the keyboard back to what had it only then (Find's field after an update):
+/// so a window owed its showing isn't at rest, and `qa wait-settled` waits for it (CI run 43539671770: a hand-off's report was read with the window still
+/// waiting to be shown, and Find's field, whose focus comes with the showing, without the keyboard). A view of two of [`Lifecycle`]'s fields, so the app's
+/// state is no bigger for it: when the window was put up, under its short lock, and what's owed of it in one atomic.
+pub(crate) struct WindowShowing<'a> {
+    opened_at: &'a Mutex<Option<Instant>>,
+    flags: &'a AtomicU8,
+}
+
+/// Put up and not yet shown, nor gone.
+const OWED: u8 = 1;
+/// The last yes the page checks gave was the cap's, for the record to say so.
+const BY_CAP: u8 = 2;
+
+impl WindowShowing<'_> {
+    /// The window was put up now: what its showing's patience is counted from. It's owed its showing from here.
+    pub(crate) fn opened(&self) {
+        *lock(self.opened_at) = Some(Instant::now());
+        self.flags.store(OWED, Ordering::SeqCst);
+    }
+
+    /// The window went, closed or for another made in its place: it's owed no showing, as the host's timer for it goes with it. When it was opened stays,
+    /// for the backstop's count.
+    pub(crate) fn gone(&self) {
+        self.flags.fetch_and(!OWED, Ordering::SeqCst);
+    }
+
+    /// How long since the window was last put up, or nothing before one has been.
+    fn since_opened(&self) -> Option<Duration> {
+        lock(self.opened_at).map(|at| at.elapsed())
+    }
+
+    /// What the page checks last said: the cap's yes, or not.
+    fn decided(&self, by_cap: bool) {
+        if by_cap {
+            self.flags.fetch_or(BY_CAP, Ordering::SeqCst);
+        } else {
+            self.flags.fetch_and(!BY_CAP, Ordering::SeqCst);
+        }
+    }
+
+    /// The window's been shown: it's owed nothing. How long since it was put up, and whether the last yes it was given was the cap's.
+    fn shown(&self) -> (Option<Duration>, bool) {
+        let flags = self.flags.fetch_and(!OWED, Ordering::SeqCst);
+        (self.since_opened(), flags & BY_CAP != 0)
+    }
+
+    /// **How long the window has been up and not yet shown,** or nothing when it has been, or there's none.
+    pub(crate) fn not_yet_shown(&self) -> Option<Duration> {
+        (self.flags.load(Ordering::SeqCst) & OWED != 0).then(|| self.since_opened().unwrap_or_default())
+    }
 }
 
 /// **Where the app is in its life:** launch, the state's coming in, the window going up, the person's last touch, and a hand-off with what it waits for. What step
@@ -56,10 +110,10 @@ pub struct Lifecycle {
     touched: AtomicBool,
     /// What the window's first showing had on it.
     first_shown: Mutex<Option<Value>>,
-    /// When the window was last put up, for how long the patience had run when it was shown.
+    /// When the window was last put up, for how long the patience had run when it was shown ([`WindowShowing`]).
     window_opened_at: Mutex<Option<Instant>>,
-    /// Whether the last yes `ready_to_show` gave was the cap's, for the record to say so.
-    shown_by_cap: AtomicBool,
+    /// Whether the window's owed its showing, and whether the last yes `ready_to_show` gave was the cap's ([`WindowShowing`]).
+    window_flags: AtomicU8,
 }
 
 // `new` is public for the bridge, which builds the app; launch is no default state.
@@ -74,7 +128,7 @@ impl Lifecycle {
             holding_tab: Mutex::new(None),
             first_shown: Mutex::new(None),
             window_opened_at: Mutex::new(None),
-            shown_by_cap: AtomicBool::new(false),
+            window_flags: AtomicU8::new(0),
             last_input_ms: AtomicU64::new(0),
             touched: AtomicBool::new(false),
             update_facts: updates::LaunchFacts::new(),
@@ -231,9 +285,9 @@ impl Lifecycle {
     /// Whether the window may be shown now, by [`showing::decide`] on the page checks as they are, from the session and the page view; what it said is kept
     /// for the record. The UI thread's.
     pub fn ready_to_show(&self, session: &SessionHost<DrawableLoader>, engine: &recto_reader::Engine) -> bool {
-        let opened = lock(&self.window_opened_at).map(|at| at.elapsed());
+        let opened = self.window_showing().since_opened();
         let decision = showing::decide(opened, self.started.elapsed(), self.page_checks(session, engine));
-        self.shown_by_cap.store(decision == showing::Show::Cap, Ordering::Relaxed);
+        self.window_showing().decided(decision == showing::Show::Cap);
         decision != showing::Show::Wait
     }
 
@@ -243,12 +297,8 @@ impl Lifecycle {
     pub fn record_window_shown(&self, home: bool, tile_layers: u32, why: &str, session: &SessionHost<DrawableLoader>, engine: &recto_reader::Engine) {
         let report = engine.report().0;
         let checks = self.page_checks(session, engine);
-        let why = if why == "ready" && self.shown_by_cap.load(Ordering::Relaxed) {
-            "cap"
-        } else {
-            why
-        };
-        let opened = lock(&self.window_opened_at).map(|at| at.elapsed());
+        let (opened, by_cap) = self.window_showing().shown();
+        let why = if why == "ready" && by_cap { "cap" } else { why };
         *lock(&self.first_shown) = Some(json!({
             "home": home, "page": report["page"], "scroll_y": report["scroll_y"], "scroll_x": report["scroll_x"], "magnification": report["magnification"], "settled": report["settled"], "tab": report["tab"],
             "tile_layers": tile_layers, "ms_from_start": self.started.elapsed().as_secs_f64() * 1000.0,
@@ -274,9 +324,12 @@ impl Lifecycle {
         self.sheets.load(Ordering::SeqCst)
     }
 
-    /// The window was put up now: what its showing's patience is counted from.
-    pub(crate) fn window_opened(&self) {
-        *lock(&self.window_opened_at) = Some(Instant::now());
+    /// The window's putting up and first showing ([`WindowShowing`]): what the host says of it, and what `qa wait-settled` asks.
+    pub(crate) fn window_showing(&self) -> WindowShowing<'_> {
+        WindowShowing {
+            opened_at: &self.window_opened_at,
+            flags: &self.window_flags,
+        }
     }
 
     /// What the window's first showing had on it, a copy taken under its short lock: the lock the UI thread takes as the window's shown, so nothing else is
