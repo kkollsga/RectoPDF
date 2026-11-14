@@ -326,8 +326,7 @@ impl Lifecycle {
         self.others_looking.fetch_sub(1, Ordering::SeqCst);
     }
 
-    /// Whether that pass is under way: what a test's settle waits for, as nothing else does.
-    #[cfg(any(test, feature = "testkit"))]
+    /// Whether that pass is under way: what the app's settled waits for (the kit's settle and `qa wait`, [`crate::settled`]), as nothing else does.
     pub(crate) fn others_looking(&self) -> bool {
         self.others_looking.load(Ordering::SeqCst) > 0
     }
