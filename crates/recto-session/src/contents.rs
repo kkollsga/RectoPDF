@@ -148,7 +148,8 @@ fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, order: Order<'_>, rows: &mut
     // Whether each entry's own children show: it's shown, and open. Entries come in document order, so a parent is always decided first.
     let mut children_show = vec![false; toc.entries().len()];
     let first_row = rows.len();
-    let mut filled = 0;
+    // Where each entry's row is, for those shown.
+    let mut row_of: Vec<Option<usize>> = vec![None; toc.entries().len()];
     for (index, entry) in toc.entries().iter().enumerate() {
         if entry.parent != NONE && !children_show.get(entry.parent as usize).copied().unwrap_or(false) {
             continue;
@@ -157,7 +158,7 @@ fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, order: Order<'_>, rows: &mut
         let expandable = toc.entries().get(index + 1).is_some_and(|next| next.parent == at);
         let expanded = expandable && section_open(folds, &chain, at);
         children_show[index] = expanded;
-        let current = here == Some(index);
+        row_of[index] = Some(rows.len());
         rows.push(SidebarRow {
             kind: RowKind::Contents,
             tab: tab.id,
@@ -171,18 +172,24 @@ fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, order: Order<'_>, rows: &mut
                 .flatten()
                 .map(|page| page + 1),
             depth: entry.depth,
-            current,
+            current: false,
             notice: None,
             action: None,
             entry: at,
             expandable,
             expanded,
         });
-        if current {
-            filled = rows.len() - first_row;
-        }
     }
-    filled
+    // The entry being read, or when a fold hides it the nearest section above it that shows: the usual outline convention.
+    let mut cursor = here.map_or(NONE, |i| u32::try_from(i).unwrap_or(NONE));
+    while cursor != NONE {
+        if let Some(at) = row_of.get(cursor as usize).copied().flatten() {
+            rows[at].current = true;
+            return at + 1 - first_row;
+        }
+        cursor = toc.entries().get(cursor as usize).map_or(NONE, |e| e.parent);
+    }
+    0
 }
 
 /// The entry for the section being read, in the file's own page numbers.

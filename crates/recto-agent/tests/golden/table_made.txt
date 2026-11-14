@@ -418,8 +418,8 @@ row 104 qa compare-click: 68b1069fde9dd061 578 bytes
 help qa compare-click: d0e0161ba81f038e 337 bytes
 usage qa compare-click: 1d51cd9956be6685 30 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 105 qa click-row: b7dfae8d397fe30e 704 bytes
-help qa click-row: 0ce8a566f3eadd76 465 bytes
+row 105 qa click-row: 8f4ac487d8b4d034 931 bytes
+help qa click-row: 847ffa10d9f96b10 692 bytes
 usage qa click-row: 4f2737dd0d4949a6 26 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
 row 106 qa contents-scroll: 6fdfc36009b07969 533 bytes
@@ -751,6 +751,6 @@ family settings: cbf29ce484222325 0 bytes
 family skill: 263c8540bc3d3bc9 284 bytes
 family budget: aec822ae884cf326 558 bytes
 family qa: b77b6ff269bfbc6a 12682 bytes
-help --json: 6908ecb736e7022a 132460 bytes
+help --json: 927a52ffd4894d0a 132687 bytes
 SKILL.md: 25a8c0509fb7a818 24994 bytes
 REFERENCE.md: cffd3c6908e22b2f 81519 bytes

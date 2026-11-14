@@ -30,3 +30,24 @@ pub fn chevron(contents: &[crate::ContentsEntry], first: u32) -> Option<Command>
         .into(),
     )
 }
+
+/// Why `qa click-row fold:N` has nothing to click, in words, or `None` when row `row` (counted down the sidebar, tabs and then the active tab's contents, as
+/// `qa click-row` counts) is a contents row with sections under it. A person's click on a row that isn't one does nothing, which is right for a person; a QA
+/// verb that did nothing and said it was done hid a wrong number (the entry number of `contents fold` taken for a row).
+pub fn fold_row_refusal(contents: &[crate::ContentsEntry], active: Option<u32>, toc_open: bool, row: u32) -> Option<String> {
+    let first = active.filter(|_| toc_open).map(|active| active + 1);
+    let Some(first) = first.filter(|first| row >= *first) else {
+        return Some(format!(
+            "Row {row} isn't a contents row. Contents rows come after the active tab's row, and only while its contents are open."
+        ));
+    };
+    match contents.get((row - first) as usize) {
+        None => Some(format!(
+            "Row {row} is past the last contents row ({}). `fold:N` counts rows down the sidebar; `recto contents fold ENTRY` takes the entry's number.",
+            first + u32::try_from(contents.len()).unwrap_or(u32::MAX).saturating_sub(1)
+        )),
+        // The chevron's own rule, so the verb and the window agree on what folds.
+        Some(_) if chevron(contents, row - first).is_none() => Some(format!("Row {row} has no sections under it, so it has nothing to fold or open.")),
+        Some(_) => None,
+    }
+}
