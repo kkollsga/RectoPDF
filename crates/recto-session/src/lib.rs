@@ -118,7 +118,7 @@ pub enum Tier {
 }
 
 /// One tab. Everything else about it can be rebuilt from disk.
-// size: asserted <= 224 at compile time, below, and by `tab_record_stays_small`: its parts' 2 bytes of padding and none of its own. Held per tab, including cold ones.
+// size: asserted <= 224 at compile time, below, and by `tab_record_stays_small`: its parts' 1 byte of padding (`TabFile`'s: `placed_by_withheld` took the other) and none of its own. Held per tab, including cold ones.
 #[derive(Debug)]
 pub struct TabRecord {
     /// What's known of its file came from a sleep file, and the PDF hasn't said so yet: which version that file said it was of, or zero for none said.

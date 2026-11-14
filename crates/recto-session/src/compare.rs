@@ -353,8 +353,32 @@ pub fn comparison_withheld<L: DocLoader>(session: &Session<L>) -> bool {
 
 /// **Whether `back` (or forward) in a tab would land on a stop made from a place withheld from agents** (S2's round): such a stop is where following left
 /// the tab, and landing there tells it.
-pub fn trail_step_withheld<L: DocLoader>(_session: &Session<L>, _id: TabId, _back: bool) -> bool {
-    false
+pub fn trail_step_withheld<L: DocLoader>(session: &Session<L>, id: TabId, back: bool) -> bool {
+    session
+        .tabs
+        .tab(id)
+        .and_then(|tab| tab.reading.trail.as_deref())
+        .and_then(|trail| trail.next(back))
+        .is_some_and(|stop| stop.from_withheld)
+}
+
+/// **Whether anything of a plain tab's place is withheld from agents only in this session's memory** (S2's round): one placed by following a withheld
+/// tab, or a stop made from such a place in a tab's trail. A restore from the record forgets both, while the record keeps the place following left, so an
+/// agent's `session restore` is refused while it holds. Walks every tab and its trail: for a rare command, never a hot path.
+pub fn withheld_in_memory<L: DocLoader>(session: &Session<L>) -> bool {
+    session
+        .tabs
+        .iter()
+        .any(|tab| tab.file.placed_by_withheld || tab.reading.trail.as_deref().is_some_and(trail::Trail::holds_withheld))
+}
+
+/// Sets whether a tab's place was set while it followed a withheld tab. When that changes, the pages noted as drawn in it go: drawn where it was before,
+/// they'd say where it went (`wait page-drawn`).
+pub(crate) fn set_placed_by_withheld(tab: &mut crate::TabRecord, mail: &mut crate::mail::PageViewMail, withheld: bool) {
+    if tab.file.placed_by_withheld != withheld {
+        tab.file.placed_by_withheld = withheld;
+        mail.forget_draws(tab.id);
+    }
 }
 
 #[cfg(test)]

@@ -15,12 +15,29 @@ pub struct Stop {
     /// An agent's jump left it, so it gives way to the person's at the cap.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub by_agent: bool,
+    /// **It was made from a place withheld from agents** (S2's round): where following a protected document left a tab, so landing on it tells that
+    /// document's place. An agent's `back` or `forward` to it is refused, and the person's Back onto it withholds the place again
+    /// ([`crate::compare::trail_step_withheld`]). In the stop's padding, so it costs no byte; never written, so the record's format doesn't change, and a
+    /// restart forgets it (said in `docs/engineering/opening.md`).
+    #[serde(skip)]
+    pub from_withheld: bool,
 }
 
 impl Stop {
     pub fn new(page: u32, within: f64) -> Self {
         let within = if within.is_finite() { within.clamp(0.0, 1.0) as f32 } else { 0.0 };
-        Self { page, within, by_agent: false }
+        Self {
+            page,
+            within,
+            by_agent: false,
+            from_withheld: false,
+        }
+    }
+
+    /// The same place, marked as made from a place withheld from agents, or not.
+    #[must_use]
+    pub fn withheld(self, from_withheld: bool) -> Self {
+        Self { from_withheld, ..self }
     }
 
     /// The same place, marked as left by an agent's jump or the person's.
@@ -107,6 +124,16 @@ impl Trail {
         Some(to)
     }
 
+    /// The stop Back (`back`) or Forward would go to, without going.
+    pub fn next(&self, back: bool) -> Option<Stop> {
+        if back { self.back.last() } else { self.forward.last() }.copied()
+    }
+
+    /// Whether any stop either way was made from a place withheld from agents.
+    pub fn holds_withheld(&self) -> bool {
+        self.back.iter().chain(&self.forward).any(|stop| stop.from_withheld)
+    }
+
     /// **The trail after its tab's pages were edited:** each stop goes where its page went, and a stop whose page went with the edit goes too.
     pub fn follow_pages(&mut self, moved: impl Fn(u32) -> Option<u32>) {
         for list in [&mut self.back, &mut self.forward] {
@@ -151,10 +178,11 @@ impl<L: DocLoader> Session<L> {
         let following = compare::follows_withheld(self, id);
         let tab = self.tabs.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
         let page = page.min(pages.saturating_sub(1));
+        // Set while it follows a withheld tab, and let go by the next move made otherwise, to the page it's on too, so a move to the page it's on says
+        // nothing that a move elsewhere wouldn't: [`compare::place_withheld`].
+        compare::set_placed_by_withheld(tab, &mut self.mail, following);
         if tab.page != page {
             tab.page = page;
-            // Set while it follows a withheld tab, and let go by the next move made otherwise: [`compare::place_withheld`].
-            tab.file.placed_by_withheld = following;
             tab.place_dirty = true;
             self.mail.forget_jump_on_its_way(id);
         }
@@ -178,7 +206,7 @@ impl<L: DocLoader> Session<L> {
 
     /// A jump, by the person or an agent. An agent's marks give way to the person's: see [`trail`].
     pub fn jump_as(&mut self, id: TabId, page: u32, within: f64, by: Author) -> Result<(), SessionError> {
-        let here = self.here(id).ok_or(SessionError::NoSuchTab)?;
+        let here = self.marked_here(id).ok_or(SessionError::NoSuchTab)?;
         let to = trail::Stop::new(page.min(self.pages().count(id).saturating_sub(1)), within);
         let tab = self.tabs.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
         tab.reading.trail.get_or_insert_default().jumped(here, to, by == Author::Agent);
@@ -187,7 +215,7 @@ impl<L: DocLoader> Session<L> {
 
     /// Back (`back`) or forward in a tab's trail, by the person or an agent. Says whether there was anywhere to go.
     pub fn step_as(&mut self, id: TabId, back: bool, by: Author) -> Result<bool, SessionError> {
-        let here = self.here(id).ok_or(SessionError::NoSuchTab)?;
+        let here = self.marked_here(id).ok_or(SessionError::NoSuchTab)?;
         let agent = by == Author::Agent;
         let Some(trail) = self.tabs.tab_mut(id).and_then(|tab| tab.reading.trail.as_deref_mut()) else {
             return Ok(false);
@@ -201,7 +229,19 @@ impl<L: DocLoader> Session<L> {
             ..to
         };
         self.land(id, to)?;
+        // Onto a stop made from a withheld place, the person's Back lands where it always did, and the place is withheld again.
+        if to.from_withheld
+            && let Some(tab) = self.tabs.tab_mut(id)
+        {
+            compare::set_placed_by_withheld(tab, &mut self.mail, true);
+        }
         Ok(true)
+    }
+
+    /// [`Self::here`], marked if the place is withheld from agents: what a stop made from it is.
+    fn marked_here(&self, id: TabId) -> Option<trail::Stop> {
+        let tab = self.tabs.tab(id)?;
+        Some(here_of(self, tab).withheld(compare::place_withheld_of(self, tab)))
     }
 
     fn land(&mut self, id: TabId, to: trail::Stop) -> Result<(), SessionError> {
@@ -272,6 +312,7 @@ mod tests {
                 page,
                 within: f32::NAN,
                 by_agent: false,
+                from_withheld: false,
             })
             .collect();
         let kept = Trail::from_record(&many, &many, 10);

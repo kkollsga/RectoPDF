@@ -265,7 +265,13 @@ fn a_tabs_draw_notes_go_when_its_place_is_withheld_or_let_go() {
     let mut s = session(10);
     let [plain, locked] = ["plain", "locked"].map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap());
     s.tabs_mut().note_password_used(locked);
-    let drawn = |s: &mut Session<FakeLoader>, page: u32| s.mail_mut().note_drawn(DrawNote { tab: plain, page, failure: None });
+    let drawn = |s: &mut Session<FakeLoader>, page: u32| {
+        s.mail_mut().note_drawn(DrawNote {
+            tab: plain,
+            page,
+            failure: None,
+        })
+    };
     drawn(&mut s, 0);
     s.compare(&[locked, plain], Some(locked)).unwrap();
     s.set_compare_synced(true);
@@ -284,10 +290,16 @@ fn a_tabs_draw_notes_go_when_its_place_is_withheld_or_let_go() {
 fn a_stop_made_from_a_withheld_place_is_marked_and_withholds_it_again() {
     let (mut s, plain, _) = left_by_following();
     s.jump_as(plain, 2, 0.0, Author::Agent).unwrap();
-    assert!(compare::trail_step_withheld(&s, plain, true), "the stop Back would go to was made from the followed place");
+    assert!(
+        compare::trail_step_withheld(&s, plain, true),
+        "the stop Back would go to was made from the followed place"
+    );
     assert!(!compare::trail_step_withheld(&s, plain, false), "nothing forward");
     assert!(s.step_as(plain, true, Author::Owner).unwrap());
     assert_eq!(s.tabs().tab(plain).unwrap().page, 7, "the person's Back goes where it always went");
     assert!(compare::place_withheld(&s, plain), "and the place it lands on is withheld again");
-    assert!(!compare::trail_step_withheld(&s, plain, false), "Forward goes to page 3, made from a place of its own");
+    assert!(
+        !compare::trail_step_withheld(&s, plain, false),
+        "Forward goes to page 3, made from a place of its own"
+    );
 }
