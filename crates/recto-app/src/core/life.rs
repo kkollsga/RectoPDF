@@ -31,8 +31,9 @@ pub struct Lifecycle {
     /// **The state's coming in, the window's patience for it, what's shown and a hand-off's freeze, as one state machine** ([`crate::lifecycle::Life`]). The lock is
     /// held only inside [`Self::step`], [`Self::step_keeping`], [`Self::tried`] and the queries beside it, for a copy or a transition of a few bytes: never
     /// across carrying out an `Out`, a listener call, a queue push, another lock or any I/O. So it's taken on the UI thread too, bounded. The time since input
-    /// isn't in it: what the UI thread sets on every event is an atomic store ([`Self::last_input_ms`]), passed to what asks as a value.
-    pub(super) life: Mutex<crate::lifecycle::Life>,
+    /// isn't in it: what the UI thread sets on every event is an atomic store ([`Self::last_input_ms`]), passed to what asks as a value. Private: only
+    /// these methods step it.
+    life: Mutex<crate::lifecycle::Life>,
     /// Reading the file a restored active tab is on. Nothing's drawn until it's looked at, so the wrong thing can't show.
     holding_tab: Mutex<Option<TabId>>,
     /// In a QA run, files being read wait here, as they would for a slow disk.

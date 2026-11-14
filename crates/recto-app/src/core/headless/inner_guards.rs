@@ -185,7 +185,6 @@ LaunchFacts::pub(super) fn tell(&self, updates: &recto_update::updater::Updater)
 LaunchFacts::pub(super) fn untold(&self) -> bool
 Lifecycle (pub struct)
 Lifecycle.pub update_facts: updates::LaunchFacts
-Lifecycle.pub(super) life: Mutex<crate::lifecycle::Life>
 Lifecycle::pub fn may_remake_window(&self) -> bool
 Lifecycle::pub fn new(clock: Arc<dyn crate::clock::Clock>) -> Self
 Lifecycle::pub fn note_input(&self)
