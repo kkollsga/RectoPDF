@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 /// call to the kernel; the counts are atomics, so nothing waits for them.
 #[derive(Default)]
 pub(super) struct Seen {
-    lists: Mutex<Lists>,
+    lists: Mutex<SeenLists>,
     /// Of the workers running, those that said their walls were up.
     walled: AtomicU32,
     /// The system's asked for memory back: workers with nothing to do go the next time the thread comes round.
@@ -24,7 +24,7 @@ pub(super) struct Seen {
 
 /// The workers running, and each by the file it has open.
 #[derive(Default)]
-struct Lists {
+struct SeenLists {
     pids: Vec<u32>,
     by_file: Vec<(PathBuf, u32)>,
 }
