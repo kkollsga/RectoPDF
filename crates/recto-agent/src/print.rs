@@ -405,10 +405,17 @@ fn print_with_caps<O: Output>(
     Ok(printed)
 }
 
-/// The app's print: pages to a file of the app's own, which the system's printing then takes, with `progress` hearing each page and able to stop it. The file is made new, and is the caller's to remove. Can wait for the larger limit, so it's for a job thread.
+/// The app's print: pages to a file of the app's own, which the system's printing then takes, with `progress` hearing each page and able to stop it. The file is made new, readable and writable by the user alone from the moment it's made, and is the caller's to remove. Can wait for the larger limit, so it's for a job thread.
 pub fn print_to_path(pages: &[PrintPage], dpi: u32, out: &Path, progress: impl FnMut(u32, u32) -> bool) -> Result<Printed, AgentError> {
     let config = ServiceConfig::discover()?;
-    let file = std::fs::OpenOptions::new().write(true).create_new(true).open(out).map_err(|_| write_failed())?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(out).map_err(|_| write_failed())?;
     let mut written = FileOut(file);
     let printed = print_into(&config, pages, dpi, &mut written, progress);
     if printed.is_err() {

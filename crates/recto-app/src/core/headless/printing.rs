@@ -79,9 +79,26 @@ fn printed(app: &HeadlessApp) -> String {
         .match_indices("/MediaBox [0 0 ")
         .filter_map(|(at, found)| text[at + found.len()..].split(' ').next())
         .collect();
+    // The user's own: readable and writable by them alone, in their own temp folder, which only they can open.
+    let (file_mode, folder_mode, owner) = {
+        use std::os::unix::fs::MetadataExt;
+        let (file, folder) = (
+            std::fs::metadata(&path).expect("the file"),
+            std::fs::metadata(path.parent().expect("its folder")).expect("its folder"),
+        );
+        (file.mode() & 0o777, folder.mode() & 0o077, file.uid())
+    };
+    assert_eq!((file_mode, folder_mode, owner), (0o600, 0, own_uid()), "{} is the user's alone", path.display());
     app.core().tools.printing().finished(path.to_str().expect("a path"));
     assert!(!path.exists(), "the print's file goes once the system's printing is done with it");
     format!("[{}]", widths.join(","))
+}
+
+/// This process's user.
+fn own_uid() -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    let probe = recto_testpdf::TempDir::new("uid-");
+    std::fs::metadata(probe.path()).expect("a folder of ours").uid()
 }
 
 /// The print files of this process's in the system's temp folder, made or half made: what a stopped print must not leave.
@@ -231,4 +248,38 @@ fn a_persons_print_does_what_it_did() {
     lines.push(format!("its Print anyway | printed {printed_anyway} | after {}", notice(&app)));
 
     assert_eq!(lines, GOLDEN, "\nnow:\n{}", lines.join("\n"));
+}
+
+/// Failure (S2, found on the way): the person's print of a file that asks not to be copied, which on paper goes ahead and is its pages with no such ask
+/// while it's there, can be found by an agent: its file named as v0.1.0 named it (`recto-print-PID-N.pdf` in the temp folder, the process's number being
+/// in `status`), so an agent at Control could `open` it while the system's printing had it and draw its pages with no `--anyway` and nothing logged; or
+/// its path reaches an agent in an answer. With the file ready for the host: the name v0.1.0 would have given it isn't there to open, and no answer an
+/// agent gets while it's there carries the print's file.
+#[test]
+fn an_agent_cant_find_the_persons_print_file() {
+    use recto_agent::Level;
+    let disk = Disk::new();
+    let restricted = disk.file("restricted.pdf", &locked_allowing("", 2, lopdf::encryption::Permissions::PRINTABLE));
+    let app = disk.start();
+    app.open(&restricted);
+    app.settle();
+    // Prepared, and not yet let go by the system's printing: the file is there, as long as the printer takes.
+    answer(&app, ALL);
+    app.settle();
+    let folder = recto_platform::local::system_temp_dir().unwrap_or_else(std::env::temp_dir);
+    assert!(
+        app.core().tools.printing().has_ready() && !print_files_left().is_empty(),
+        "the print's file is there"
+    );
+    let guessed = folder.join(format!("recto-print-{}-1.pdf", std::process::id()));
+    let opened = app.recto(Level::Full, &["open", guessed.to_str().expect("a path")]);
+    let mut told = Vec::new();
+    for words in [&["status"][..], &["tabs"], &["where"], &["facts"], &["session", "show"], &["sidebar"]] {
+        told.push(format!("{words:?}: {:?}", app.recto(Level::Full, words)));
+    }
+    assert!(opened.is_err(), "the name v0.1.0 would have given the print opened: {opened:?}");
+    for line in &told {
+        assert!(!line.contains("recto-print-"), "an agent's answer carries the print's file: {line}");
+    }
+    assert_ne!(printed(&app), "none", "the print went ahead");
 }

@@ -187,16 +187,25 @@ fn print_folder() -> PathBuf {
     recto_platform::local::system_temp_dir().unwrap_or_else(std::env::temp_dir)
 }
 
-/// Where a print's file goes: the system's temp folder, a name of this process's own, made new.
+/// **Where a print's file goes:** the user's own temp folder, made new, with a name nobody can work out: 64 bits from the system's random source
+/// ([`recto_platform::local::random_u64`]) after this process's number and the print's. v0.1.0 named it `recto-print-PID-N.pdf`, and as the process's
+/// number is in `status`, an agent at Control could `open` the print of a file that asks not to be copied while the system's printing had it, and draw
+/// its pages with no `--anyway` and nothing logged (found 2026-11-14).
 fn temp_path(generation: u64) -> PathBuf {
-    print_folder().join(format!("{FILE_PREFIX}{}-{generation}.pdf", std::process::id()))
+    print_folder().join(format!(
+        "{FILE_PREFIX}{}-{generation}-{:016x}.pdf",
+        std::process::id(),
+        recto_platform::local::random_u64()
+    ))
 }
 
-/// The process a print file's name says made it, if it's one of ours.
+/// The process a print file's name says made it, if it's one of ours: `recto-print-PID-N-HEX.pdf`, or `recto-print-PID-N.pdf` as v0.1.0 named them.
 fn maker_of(name: &str) -> Option<u32> {
     let rest = name.strip_prefix(FILE_PREFIX)?.strip_suffix(".pdf")?;
-    let (pid, generation) = rest.split_once('-')?;
+    let (pid, rest) = rest.split_once('-')?;
+    let (generation, unguessable) = rest.split_once('-').unwrap_or((rest, "0"));
     generation.parse::<u64>().ok()?;
+    u64::from_str_radix(unguessable, 16).ok()?;
     pid.parse().ok()
 }
 
@@ -517,6 +526,18 @@ mod tests {
         assert!(ours.exists(), "another run's");
         remove_if_ours(&ours, &folder, std::process::id());
         assert!(!ours.exists());
+    }
+
+    /// Failure: a print's file has a name anyone can work out from the app's process number and a count; or a name of the new form isn't known as one of
+    /// ours, so a run that died leaves it.
+    #[test]
+    fn a_print_files_name_cant_be_worked_out_and_is_known_as_ours() {
+        let (one, again) = (temp_path(1), temp_path(1));
+        assert_ne!(one, again, "the same print's number gives another name each time");
+        for path in [&one, &again] {
+            let name = path.file_name().and_then(|name| name.to_str()).expect("a name");
+            assert_eq!(maker_of(name), Some(std::process::id()), "{name} is known as this run's");
+        }
     }
 
     /// Failure: a run that died mid-print leaves its print file in the temp folder for ever, or the sweep at launch removes a live run's, this run's, or a file that only looks like one.
