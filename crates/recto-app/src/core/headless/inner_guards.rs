@@ -200,6 +200,9 @@ Lifecycle.pub(crate) others_looking: AtomicU32
 Lifecycle.pub(crate) persons_running: AtomicU32
 Lifecycle.pub(crate) qa_hold_reads: AtomicBool
 Lifecycle.pub(crate) reads_running: AtomicU32
+Lifecycle.pub(super) life: Mutex<crate::lifecycle::Life>
+Lifecycle.pub(super) touched: AtomicBool
+Lifecycle.pub(super) update_facts: Mutex<updates::LaunchFacts>
 Lifecycle::pub fn may_remake_window(&self) -> bool
 Lifecycle::pub fn new(clock: Arc<dyn crate::clock::Clock>) -> Self
 Lifecycle::pub fn state_read(&self) -> bool
@@ -210,6 +213,10 @@ Lifecycle::pub(crate) fn remade(&self) -> bool
 Lifecycle::pub(crate) fn shown_with_state(&self) -> bool
 Lifecycle::pub(crate) fn takes_input(&self) -> bool
 Lifecycle::pub(crate) fn told_to_quit(&self) -> bool
+Lifecycle::pub(super) fn keeping(&self) -> crate::lifecycle::keeping::Keeping
+Lifecycle::pub(super) fn keeping_due(&self) -> Option<Duration>
+Lifecycle::pub(super) fn life(&self) -> crate::lifecycle::Life
+Lifecycle::pub(super) fn tried(&self, got: bool, busy: impl FnOnce() -> bool) -> Option<crate::lifecycle::Out>
 Printing (pub struct, derives Default)
 Printing::pub fn busy(&self) -> bool
 Printing::pub fn cancel(&self)
