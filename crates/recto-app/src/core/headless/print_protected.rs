@@ -10,6 +10,13 @@ use crate::testkit::headless::{Disk, WAIT_LIMIT};
 use recto_agent::{Actor, Level};
 use recto_control::host::Host;
 
+/// **These tests are about the keys, not about how fast a starved worker opens:** every renderer of the test's process gets a page deadline it always
+/// meets, as the comparison walks do. Under `--like-ci` a print's fresh worker was once killed at the 5 s deadline during its Open of a protected file
+/// ("This file took too long to open.", 1 of 20, 2026-11-14): a product fault of its own, in PLAN.
+fn deadlines_met() {
+    recto_render_service::page_deadline_for_this_process(std::time::Duration::from_secs(20));
+}
+
 /// What the person's print says when the document needs a password it wasn't given: the words `main` and 0.1.0 said for every print of such a document.
 const NEEDS_PASSWORD: &str = "This PDF needs a password.";
 
@@ -18,6 +25,7 @@ const NEEDS_PASSWORD: &str = "This PDF needs a password.";
 /// pages each print, with nothing said.
 #[test]
 fn the_persons_print_of_a_password_opened_document_prints() {
+    deadlines_met();
     let disk = Disk::new();
     let file = protected(&disk, 3, "Locked");
     let app = disk.start();
@@ -67,6 +75,7 @@ fn the_persons_print_of_a_password_opened_document_prints() {
 /// itself failed and is live once it has the key. To a file it asks, its "Print anyway" prints; on paper it never asks.
 #[test]
 fn a_protected_document_that_asks_not_to_be_copied_asks_print_anyway() {
+    deadlines_met();
     let disk = Disk::new();
     let file = disk.file("protected.pdf", &locked_allowing("open sesame", 2, lopdf::encryption::Permissions::PRINTABLE));
     let app = disk.start();
@@ -95,6 +104,7 @@ fn a_protected_document_that_asks_not_to_be_copied_asks_print_anyway() {
 /// worker's copy) for as long as the print would have taken, or longer. Closed mid-way: the print stops at the next page, and nothing holds the key.
 #[test]
 fn closing_the_tab_mid_print_lets_the_key_go() {
+    deadlines_met();
     let disk = Disk::new();
     let file = protected(&disk, 3, "Locked");
     let app = disk.start();
@@ -118,6 +128,7 @@ fn closing_the_tab_mid_print_lets_the_key_go() {
 /// replaced by another protected file (a new inode at the same path) is refused with the person's words, and nothing is printed.
 #[test]
 fn a_replaced_file_gets_no_key() {
+    deadlines_met();
     let disk = Disk::new();
     let file = protected(&disk, 2, "Locked");
     let other = disk.file(
@@ -140,6 +151,7 @@ fn a_replaced_file_gets_no_key() {
 /// level, at Full as protected, nothing written; an agent's print with no file is refused with usage words.
 #[test]
 fn the_servers_route_and_an_agents_print_get_no_keys() {
+    deadlines_met();
     let disk = Disk::new();
     let file = protected(&disk, 2, "Locked");
     let app = disk.start();

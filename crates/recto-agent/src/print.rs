@@ -714,6 +714,8 @@ mod tests {
     /// that would open both files: the tab's own page prints, and the added page's file isn't even asked about, and fails as it needs a password.
     #[test]
     fn a_key_serves_only_the_tabs_own_file() {
+        // About the keys, not how fast a starved worker opens an encrypted file (PLAN, the print's starved Open).
+        recto_render_service::page_deadline_for_this_process(std::time::Duration::from_secs(20));
         let own = recto_testpdf::TempPdf::new("own.pdf", &locked("open sesame", "Own page"));
         let added = recto_testpdf::TempPdf::new("added.pdf", &locked("open sesame", "Added page"));
         let identity = |path: &std::path::Path| recto_platform::secret::file_identity(path).unwrap();
@@ -750,6 +752,8 @@ mod tests {
     /// nothing) is opened with their password. The key is looked up by the file opened: the file put there gets none, and its print needs a password.
     #[test]
     fn a_file_put_at_the_path_gets_no_key() {
+        // About the keys, not how fast a starved worker opens an encrypted file (PLAN, the print's starved Open).
+        recto_render_service::page_deadline_for_this_process(std::time::Duration::from_secs(20));
         let folder = recto_testpdf::TempDir::new("put-at-path-");
         let path = folder.join("protected.pdf");
         std::fs::write(&path, locked("open sesame", "Typed for")).unwrap();

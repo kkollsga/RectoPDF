@@ -116,6 +116,9 @@ fn a_watcher_hears_nothing_of_a_protected_documents_place_or_find() {
 /// Control, then Full, each round the person reading and closing Find; at each level what `tabs`, `session show` and `sidebar` say; the person deleting
 /// page 4, which takes only in a document that has one, and what's heard and said then; and the person closing the tab at the end.
 fn agent_told(pages: usize, word: &str) -> Vec<String> {
+    // The person's print opens the protected file in a fresh worker: its answers mustn't turn on how fast a starved worker opens (PLAN, the print's
+    // starved Open), so every renderer gets a deadline it always meets, as the comparison walks do.
+    recto_render_service::page_deadline_for_this_process(std::time::Duration::from_secs(20));
     let disk = Disk::new();
     let file = protected(&disk, pages, word);
     let app = disk.start();
