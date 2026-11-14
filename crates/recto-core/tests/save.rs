@@ -1611,3 +1611,61 @@ fn field_names_are_compared_as_text() {
     assert_eq!(names, ["Name", "Name_2"], "renamed, so the two values stay apart");
     assert!(form_field_names(&path)[1].starts_with(&[0xFE, 0xFF]), "in its own encoding");
 }
+
+/// Two pages of text, encrypted with this user password: empty is a file anyone may open (permissions only).
+#[allow(clippy::disallowed_methods)] // A test fixture built with lopdf's eager writer, which alone encrypts; never over a user's file.
+fn encrypted_with_password(user_password: &str) -> Vec<u8> {
+    use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
+    let mut document = lopdf::Document::load_mem(&pages(&[Page::new(text_lines(&["one"])), Page::new(text_lines(&["two"]))])).unwrap();
+    document.trailer.set(
+        "ID",
+        Object::Array(vec![Object::string_literal("0123456789abcdef"), Object::string_literal("0123456789abcdef")]),
+    );
+    let state = EncryptionState::try_from(EncryptionVersion::V2 {
+        document: &document,
+        owner_password: "owner",
+        user_password,
+        key_length: 128,
+        permissions: Permissions::PRINTABLE,
+    })
+    .unwrap();
+    document.encrypt(&state).unwrap();
+    let mut out = Vec::new();
+    document.save_to(&mut out).unwrap();
+    out
+}
+
+/// Failure (2026-11-13, with the sleep files' rule for encrypted files): a file anyone may open with no password, encrypted for its permissions only, was
+/// refused with "This PDF is password-protected", which nobody asked it for, and a page added from one the same; and a file that does need a password was
+/// refused as damaged. Both are still refused, nothing written, and the words are true of each: only the one that needs a password says a password
+/// protects it, and the code an agent reads is `protected` for both.
+#[test]
+fn an_encrypted_file_is_refused_in_words_true_of_it() {
+    let dir = Dir::new();
+    let open_to_anyone = dir.write("open-to-anyone.pdf", &encrypted_with_password(""));
+    let locked = dir.write("locked.pdf", &encrypted_with_password("right"));
+    let refused = |path: &Path| save::open_for_save(path).err().expect("an encrypted file isn't saved");
+    let (anyone, needs) = (refused(&open_to_anyone), refused(&locked));
+    assert_eq!((anyone.code(), needs.code()), ("protected", "protected"));
+    assert!(!anyone.message().to_lowercase().contains("password"), "{}", anyone.message());
+    assert!(
+        anyone.message().contains("encrypted") && anyone.message().contains("Nothing was written"),
+        "{}",
+        anyone.message()
+    );
+    assert!(needs.message().to_lowercase().contains("password"), "{}", needs.message());
+    // A page added from one says the same of it, by name.
+    let added = |password: bool| {
+        SaveError::AddedFileProtected {
+            name: "added.pdf".into(),
+            password,
+        }
+        .message()
+    };
+    assert!(
+        !added(false).to_lowercase().contains("password") && added(false).contains("added.pdf"),
+        "{}",
+        added(false)
+    );
+    assert!(added(true).to_lowercase().contains("password"), "{}", added(true));
+}

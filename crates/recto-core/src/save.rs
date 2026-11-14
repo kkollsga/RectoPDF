@@ -26,7 +26,7 @@
 
 use crate::OpenError;
 pub use crate::save_error::SaveError;
-use crate::save_error::{from_append, from_rewrite};
+use crate::save_error::{from_append, from_rewrite, refused_on_open};
 use lopdf::{
     AppendDestination, AppendError, AppendOptions, AppendWriter, Dictionary, EncodedStreamReader, FileSource, IndexedReader, IndexedReaderOptions,
     IndexedSignatureKind, Object, ObjectId, PageMapEntry, RewriteChanges, RewriteError, RewriteOptions, RewritePolicy,
@@ -137,9 +137,9 @@ pub fn open_for_save(path: &Path) -> Result<IndexedReader, SaveError> {
         object_bytes: SAVE_OBJECT_BYTES,
         ..IndexedReaderOptions::default()
     };
-    let reader = IndexedReader::open_with_options(source, options).map_err(|_| SaveError::Damaged)?;
+    let reader = IndexedReader::open_with_options(source, options).map_err(refused_on_open)?;
     if reader.is_encrypted() {
-        return Err(SaveError::Protected);
+        return Err(SaveError::Protected { password: false });
     }
     Ok(reader)
 }
@@ -699,9 +699,9 @@ fn open_bytes_for_save(bytes: &[u8]) -> Result<(IndexedReader, lopdf::PageMap), 
         object_bytes: SAVE_OBJECT_BYTES,
         ..IndexedReaderOptions::default()
     };
-    let reader = IndexedReader::open_with_options(lopdf::BytesSource::new(std::sync::Arc::from(bytes)), options).map_err(|_| SaveError::Damaged)?;
+    let reader = IndexedReader::open_with_options(lopdf::BytesSource::new(std::sync::Arc::from(bytes)), options).map_err(refused_on_open)?;
     if reader.is_encrypted() {
-        return Err(SaveError::Protected);
+        return Err(SaveError::Protected { password: false });
     }
     let map = reader.page_map().map_err(|_| SaveError::Damaged)?;
     Ok((reader, map))
@@ -894,7 +894,7 @@ fn open_added(request: &SaveRequest<'_>) -> Result<Vec<Opened>, SaveError> {
         }
         let reader = match open_for_save(added.path) {
             Ok(reader) => reader,
-            Err(SaveError::Protected) => return Err(SaveError::AddedFileProtected { name }),
+            Err(SaveError::Protected { password }) => return Err(SaveError::AddedFileProtected { name, password }),
             Err(_) => return Err(SaveError::AddedFileUnreadable { name }),
         };
         let map = reader.page_map().map_err(|_| SaveError::AddedFileUnreadable { name: name.clone() })?;
