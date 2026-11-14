@@ -44,20 +44,27 @@ impl Cleared {
     }
 }
 
-/// What a server and every [`Announcer`] of it share: the host to ask, once the server runs, and whether any agent is listening.
-#[derive(Default)]
-pub(super) struct Gate {
+/// **The one way into the loop for what happened outside a job:** what a server and every [`Announcer`] of it share, one of each a server: the channel
+/// and the wake the loop reads, the host to ask once the server runs, and whether any agent is listening. An announcer is a reference to it, so one
+/// costs no descriptor of its own.
+#[derive(Debug)]
+pub(super) struct Outlet {
+    pub(super) done: Sender<Done>,
+    pub(super) wake: Stream,
     host: OnceLock<Weak<dyn Host>>,
     listening: AtomicBool,
 }
 
-impl std::fmt::Debug for Gate {
-    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        out.debug_struct("Gate").field("listening", &self.listening).finish_non_exhaustive()
+impl Outlet {
+    pub(super) fn new(done: Sender<Done>, wake: Stream) -> Self {
+        Self {
+            done,
+            wake,
+            host: OnceLock::new(),
+            listening: AtomicBool::new(false),
+        }
     }
-}
 
-impl Gate {
     /// The host the server runs on: asked about every announcement from now on.
     pub(super) fn open<H: Host>(&self, host: &Arc<H>) {
         let weak: Weak<dyn Host> = Arc::downgrade(host) as Weak<dyn Host>;
@@ -71,25 +78,22 @@ impl Gate {
 }
 
 /// Tells a running server's watchers what happened outside any command. See [`super::Server::announcer`].
-#[derive(Debug)]
-pub struct Announcer {
-    pub(super) done: Sender<Done>,
-    pub(super) wake: Stream,
-    pub(super) gate: Arc<Gate>,
-}
+#[derive(Clone, Debug)]
+pub struct Announcer(pub(super) Arc<Outlet>);
 
 impl Announcer {
     /// **Tells watchers and waits what of `events` agents may be told.** Never blocks on the server: the channel has no limit and only holds what's
     /// published between two turns of the loop, and a full wake pipe already means the loop will look. Before the server runs, or with nobody listening,
     /// there's nobody to tell, and nothing is done.
     pub fn announce(&self, events: Vec<Event>) {
-        if events.is_empty() || !self.gate.listening.load(Ordering::SeqCst) {
+        let outlet = &*self.0;
+        if events.is_empty() || !outlet.listening.load(Ordering::SeqCst) {
             return;
         }
-        let Some(host) = self.gate.host.get().and_then(Weak::upgrade) else { return };
+        let Some(host) = outlet.host.get().and_then(Weak::upgrade) else { return };
         let cleared = Cleared::by(&*host, events);
-        if !cleared.0.is_empty() && self.done.send(Done::Published(cleared)).is_ok() {
-            let _ = (&self.wake).write(&[WAKE_BYTE]);
+        if !cleared.0.is_empty() && outlet.done.send(Done::Published(cleared)).is_ok() {
+            let _ = (&outlet.wake).write(&[WAKE_BYTE]);
         }
     }
 }

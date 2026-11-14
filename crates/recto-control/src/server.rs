@@ -23,13 +23,13 @@ use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
 mod outlet;
 mod own_answers;
 pub use outlet::Announcer;
-use outlet::{Cleared, Gate};
+use outlet::{Cleared, Outlet};
 
 /// Every limit on what clients can make the server do.
 #[derive(Clone, Copy, Debug)]
@@ -117,10 +117,9 @@ pub struct Server {
     listener: Listener,
     wake_tx: Stream,
     wake_rx: Stream,
-    done_tx: Sender<Done>,
     done_rx: Receiver<Done>,
-    /// Whom its announcers ask what agents may be told, and whether any agent listens ([`outlet`]).
-    gate: Arc<Gate>,
+    /// What every way into the loop from outside a job shares: its channel and wake, whom it asks what agents may be told, and whether any listens.
+    outlet: Arc<Outlet>,
     /// Held until this ends, however it ends: the kernel lets go of it even after a kill. That's what makes a leftover socket safe to remove.
     _lock: File,
 }
@@ -161,14 +160,17 @@ impl Server {
         wake_tx.set_nonblocking(true).map_err(|_| failed("The session couldn't be started."))?;
         wake_rx.set_nonblocking(true).map_err(|_| failed("The session couldn't be started."))?;
         let (done_tx, done_rx) = channel();
+        let outlet = Arc::new(Outlet::new(
+            done_tx,
+            wake_tx.try_clone().map_err(|_| failed("The session couldn't be started."))?,
+        ));
         Ok(Self {
             paths: paths.clone(),
             listener,
             wake_tx,
             wake_rx,
-            done_tx,
+            outlet,
             done_rx,
-            gate: Arc::default(),
             _lock: lock,
         })
     }
@@ -180,19 +182,15 @@ impl Server {
 
     /// Tells watchers and waiters what the host's own user did, from another thread. Commands' events go by themselves: this is for a tap in the app's sidebar, which no command caused.
     pub fn announcer(&self) -> std::io::Result<Announcer> {
-        Ok(Announcer {
-            done: self.done_tx.clone(),
-            wake: self.wake_tx.try_clone()?,
-            gate: Arc::clone(&self.gate),
-        })
+        Ok(Announcer(Arc::clone(&self.outlet)))
     }
 
     /// Runs until `stop` or a [`Stopper`]. Blocks in `poll` the whole time.
     pub fn run<H: Host>(self, host: Arc<H>, limits: Limits) -> std::io::Result<()> {
         let last_level = levels::current(&self.paths);
-        self.gate.open(&host);
+        self.outlet.open(&host);
         // Something happening outside any command, such as an index being finished, reaches the loop the way a finished job does, through the one outlet.
-        let (notifier, outlet) = (self.announcer()?, self.announcer()?);
+        let (notifier, outlet) = (Announcer(Arc::clone(&self.outlet)), Announcer(Arc::clone(&self.outlet)));
         host.attach(Arc::new(move |events: Vec<Event>| notifier.announce(events)));
         let mut state = Loop {
             log: ActivityLog::new(&self.paths),
@@ -723,7 +721,7 @@ impl<H: Host> Loop<H> {
             return;
         }
         self.log.record("watch", level, "started", &Value::Null);
-        self.outlet.gate.set_listening(true);
+        self.outlet.0.set_listening(true);
         let deadline = Instant::now() + Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_WATCH_MS).min(MAX_WAIT_MS));
         let shown = events.clone().map_or_else(|| json!(EVENT_GROUPS), |groups| json!(groups));
         self.conns[index].state = State::Watching {
@@ -979,8 +977,8 @@ impl<H: Host> Loop<H> {
         }
         let host = Arc::clone(&self.host);
         let paths = self.paths.clone();
-        let done = self.outlet.done.clone();
-        let wake = self.outlet.wake.try_clone();
+        let done = self.outlet.0.done.clone();
+        let wake = self.outlet.0.wake.try_clone();
         let max_reply = self.limits.max_reply_bytes;
         // A hostile file can use a lot of stack, in a parser that recurses. It only costs what it touches.
         let spawned = wake.and_then(|wake| {
@@ -1078,7 +1076,7 @@ impl<H: Host> Loop<H> {
             self.queue.retain(|job| !matches!(job, Job::Look { conn, .. } if *conn == id));
         }
         self.conns.retain(|conn| !conn.finished());
-        self.outlet.gate.set_listening(self.listens());
+        self.outlet.0.set_listening(self.listens());
     }
 
     fn begin_stop(&mut self) {
