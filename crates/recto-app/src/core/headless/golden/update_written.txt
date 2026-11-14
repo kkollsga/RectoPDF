@@ -1,0 +1,4 @@
+plan from 0.1.0 to 0.1.99 tabs Some(1) background false development false keep_record false
+launch-ok Some(("0.1.99", Some(1)))
+updates.json {"auto_update":null,"back_to_release":false,"dev_builds":null,"failed":[],"failures":0,"install_failures":0,"last_attempt_ms":"<there>","last_check_ms":"<there>","last_install_ms":null,"last_update":"<there>","offered":null,"probation":{"early_ends":0,"running_since_ms":"<there>","since_ms":"<there>","version":"0.1.99"},"proven":"0.1.99","quits_for_nothing":0,"unstarted":0}
+plan left false
