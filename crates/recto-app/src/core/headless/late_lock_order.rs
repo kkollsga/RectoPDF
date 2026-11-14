@@ -291,11 +291,14 @@ fn the_app_isnt_settled_till_the_updater_has_the_launch() {
 
     // A telling's thread that panics lets its count go.
     let life = std::sync::Arc::clone(&app.core().life);
-    let ended = std::thread::spawn(move || {
-        let _counted = crate::core::updates::TellingTheLaunch::begin(&life);
-        panic!("the updater panicked in launched");
-    })
-    .join();
+    let ended = std::thread::Builder::new()
+        .name("recto-test-telling".into())
+        .spawn(move || {
+            let _counted = crate::core::updates::TellingTheLaunch::begin(&life);
+            panic!("the updater panicked in launched");
+        })
+        .expect("a thread")
+        .join();
     assert!(ended.is_err(), "the thread panicked");
     assert_eq!(app.core().life.update_facts.telling(), 0, "a panicked telling left counted");
     app.settle();
