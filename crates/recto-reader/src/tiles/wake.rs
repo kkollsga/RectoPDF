@@ -545,7 +545,7 @@ impl Reader {
                 });
                 any |= copied.is_ok();
                 if was_discardable {
-                    surface.set_discardable();
+                    super::cache::let_system_take(surface);
                     entry.discardable = true;
                 }
             }
@@ -591,7 +591,7 @@ impl Reader {
             })
             .flatten();
         if was_discardable {
-            surface.set_discardable();
+            super::cache::let_system_take(surface);
             entry.discardable = true;
         }
         Some(RawPicture {

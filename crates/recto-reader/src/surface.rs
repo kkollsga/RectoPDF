@@ -746,6 +746,8 @@ Qa::pub fn hold_asks(&self, ask: Ask, on: bool) [qa feature only]
 Qa::pub fn hold_busy(&self, on: bool) [qa feature only]
 Qa::pub fn hold_tells(&self, on: bool) [qa feature only]
 Qa::pub fn let_a_tell_go(&self) [qa feature only]
+Qa::pub fn marked_for_the_system(&self) -> usize [qa feature only]
+Qa::pub fn system_takes_only_when_told(&self) [qa feature only]
 Qa::pub fn wait_for_held_asks(&self, count: u32) -> bool [qa feature only]
 Qa::pub fn wait_for_held_tell(&self, limit: Duration) -> bool [qa feature only]
 Qa::pub fn wait_resting(&self, limit: Duration) -> bool [qa feature only]
@@ -892,6 +894,7 @@ TabNow (pub(super) struct, derives Clone, Copy, Debug, Default, PartialEq, Eq)
 Tells (private struct, derives Default) [qa feature only]
 TileCache (pub(crate) struct, derives Debug)
 TileCache::pub(crate) fn empty_discardable(&mut self) -> usize
+TileCache::pub(crate) fn marked_for_the_system(&self) -> usize [qa feature only]
 TileCache::pub(crate) fn set_share(&mut self, views: usize, host: &mut HostQueue)
 TileKey (pub(super) struct, derives Clone, Copy, Debug, PartialEq, Eq, Hash)
 Tries (private struct, derives Clone, Copy, Debug)
@@ -955,6 +958,7 @@ Zoom (pub enum, derives Clone, Copy, Debug, PartialEq)
 fn (pub(crate)) pub(crate) fn put_hidden(sets: &mut HiddenSets, tab: u32, file: PathBuf, set: Option<Arc<HiddenAnnots>>) -> Vec<u32>
 fn (pub(crate)) pub(crate) fn redraw_own_pages(reader: &mut Reader, tab: u32, file_pages: &[u32])
 fn (pub(crate)) pub(crate) fn set_band(reader: &mut Reader, band: Option<(u32, u16, u16)>)
+fn (pub(crate)) pub(crate) fn system_takes_only_when_told() [qa feature only]
 fn (pub(crate)) pub(crate) fn tell(host: &mut HostQueue, docs: &Docs, marks: &TabMarks, paper: PaperKind)
 fn (pub) pub fn look(paper: PaperKind) -> (u32, bool)
 fn (pub) pub fn place_stamp() -> u64

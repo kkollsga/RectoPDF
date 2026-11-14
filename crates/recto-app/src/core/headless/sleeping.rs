@@ -61,6 +61,31 @@ fn tabs_leaving_with_their_sleep_files_held_have_one_writer_and_a_capped_queue()
     drop(app.quit());
 }
 
+/// Failure (2026-11-14, five tests at load 15 to 77): the kit's page views told the kernel it may empty what they keep off the layers, which it does under
+/// memory pressure at moments no test chooses, so a test coming back to a page, or writing a sleep file, found its picture gone one run in twenty. In the
+/// kit the system takes only when a test says (`qa memory-pressure discard`, [`recto_reader::Engine::empty_discardable`]): a tab left keeps what it drew
+/// flagged discardable and the kernel not told, and a test's own take still empties it.
+#[test]
+fn in_the_kit_the_system_takes_only_when_a_test_says() {
+    let disk = Disk::new();
+    let (a, b) = (disk.pdf("a.pdf", 3), disk.pdf("b.pdf", 3));
+    let app = disk.start();
+    let engine = app.core().engine.clone();
+    for doc in [&a, &b] {
+        app.open(doc);
+        let mut view = window_view();
+        crate::testkit::headless::applied_as_the_host(&engine.set_viewport(view));
+        host_turns(&app, &mut view, true);
+    }
+    assert_eq!(
+        engine.qa().marked_for_the_system(),
+        0,
+        "the kernel may empty what a's left with whenever it likes"
+    );
+    assert!(engine.empty_discardable() > 0, "a's tiles, kept and discardable, emptied when the test says");
+    drop(app.quit());
+}
+
 /// Whether the tab on screen has a sleep file in the state folder.
 fn active_has_a_sleep_file(app: &crate::testkit::headless::HeadlessApp) -> bool {
     let core = app.core();
