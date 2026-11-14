@@ -39,6 +39,9 @@ WINDOW_CRATES='recto-ffi recto-reader recto-session recto-agent recto-control'
 # doc linking a private item, fails it (`cargo doc -p <crate> --no-deps`, `-D` on rustdoc's two link lints; about 1 s warm, R3.5b). A broken link in the
 # session's docs reached main unseen in R3.5a.
 DOC_LINK_CRATES='recto-session'
+# The how-to pages whose every backticked path and name must exist (tools/doc-paths.sh, R4.2): checked before anything is queued, in --quick and --full,
+# whatever changed, as a rename anywhere can break them. Reads the tree, builds nothing, well under a second.
+DOC_PATH_FILES='docs/FEATURES.md docs/agent-instructions/feature-brief.md'
 # The changes that run the lifecycle tier: a crate it is about (recto-update, recto-platform), the app, the record code, the bridge's modules for updates and
 # sleeping, and the tests themselves. Not recto-core, recto-session in general or recto-agent: those reach the window tier.
 LIFECYCLE_PATHS='^app/|^crates/(recto-update|recto-platform)/|^crates/recto-session/src/record\.rs$|^crates/recto-control/src/record_store\.rs$|^crates/recto-app/src/core/(updates|sleeper|saver)\.rs$|^crates/recto-app/src/(sleep_queue|saver|sleeper)\.rs$|^crates/recto-cli/tests/(restore|long_session|registrations|compare|common)|^crates/recto-cli/tests/app/quiet\.rs$'

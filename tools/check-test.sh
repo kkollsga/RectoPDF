@@ -170,6 +170,9 @@ for tool in ratchet ratchet-test check-test; do
 done
 printf '#!/usr/bin/env bash\necho app-build >> "$CALLS"\n[ "${STUB_FAIL:-}" != app-build ]\n' > app/build.sh
 chmod +x tools/pdfium.sh tools/ratchet.sh app/build.sh
+# The how-to pages' check (tools/doc-paths.sh) passes quietly, so it changes no count here; with STUB_FAIL=doc-paths it logs and fails.
+printf '#!/usr/bin/env bash\n[ "${STUB_FAIL:-}" != doc-paths ] || { echo doc-paths >> "$CALLS"; exit 1; }\n' > tools/doc-paths.sh
+chmod +x tools/doc-paths.sh
 printf 'mod stale;\nfn guard_one() {}\n' > crates/alpha/src/lib.rs
 echo one > crates/beta/src/lib.rs
 echo "fn life_test() {}" > crates/gamma/src/lib.rs
@@ -737,6 +740,12 @@ out=$(STUB_FAIL=ratchet STUB_EXIT=1 tools/check.sh --quick 2>&1); rc=$?
 check "a grown structure stops the quick check before anything" "1 1" "$rc $(ran)"
 out=$(STUB_FAIL=ratchet full); rc=$?
 check "and the full one, with nothing queued" "1 1" "$rc $(ran)"
+# Failure (R4.2): docs/FEATURES.md names a path or a test that a rename took away, and nobody finds out until a worker follows it.
+out=$(STUB_FAIL=doc-paths tools/check.sh --quick 2>&1); rc=$?
+check "a how-to page naming what isn't there stops the quick check after the ratchet, before anything is queued" "1 ratchet doc-paths" "$rc $(tr '\n' ' ' < "$CALLS" | sed 's/ $//')"
+: > "$CALLS"
+out=$(STUB_FAIL=doc-paths full); rc=$?
+check "and the full one" "1 2" "$rc $(ran)"
 sel > /dev/null
 check "a change outside tools/ runs neither of the tools' tests" "0" "$(sel_has 'ratchet-test\|check-test')"
 echo t > tools/note.txt && git add . && git commit -qm tools-change-2

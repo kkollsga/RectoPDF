@@ -595,6 +595,10 @@ trap 'rm -rf "$check_mark" "$check_mark.tree" "$check_mark.stages" "$check_mark.
 ratchet_started=$(date +%s)
 tools/ratchet.sh
 echo "check: ratchet took $(($(date +%s) - ratchet_started)) s"
+# The how-to pages name only paths and names that exist (DOC_PATH_FILES, tools/doc-paths.sh): builds nothing, so it goes before anything is queued.
+if [ -x tools/doc-paths.sh ] && { [ "$mode" = --quick ] || [ "$mode" = --full ]; } && [ "$part" != window ] && [ "$part" != lifecycle ]; then
+  tools/doc-paths.sh
+fi
 # The tools' own tests, when a change touched what they test since the base (TOOLS_PATHS, tools/check-scope.sh; a full run only, and on CI the same rule
 # against CI's base, `ci_base`): the tool is held by the tool and not by someone running its test by hand. Each builds nothing and runs on a throwaway
 # repository and lock, so nothing is queued for them. On CI they took 173 s of every run's core part whatever changed (run 43195226598).
