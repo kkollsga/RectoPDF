@@ -35,8 +35,15 @@ impl Stop {
     }
 }
 
+/// A stop and a trail are paid for by every tab someone has jumped in, up to [`MAX_TRAIL`] stops each way (rule 1). Failure caught: a field added to a
+/// stop that doesn't fit its padding (a `u32`, an `f32`, a `bool` and 3 bytes spare) grows every stop of every trail unnoticed.
+const _: () = {
+    assert!(std::mem::size_of::<Stop>() == 12);
+    assert!(std::mem::size_of::<Trail>() == 48);
+};
+
 /// One tab's trail.
-// size: one Vec each way, held only for a tab someone has jumped in. At most `MAX_TRAIL` stops each way, 8 B a stop.
+// size: one Vec each way, held only for a tab someone has jumped in. At most `MAX_TRAIL` stops each way, 12 B a stop (asserted above).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Trail {
     back: Vec<Stop>,
