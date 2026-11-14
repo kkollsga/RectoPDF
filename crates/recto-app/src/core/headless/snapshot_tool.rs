@@ -510,3 +510,52 @@ fn a_snapshot_still_drawing_doesnt_hold_an_undo_behind_it() {
     app.wait_until("the snapshot's answered", || !app.core().tools.tool().busy());
     app.settle();
 }
+
+/// **Failure (the branch's review, F3): a snapshot whose thread panics leaves the tool dead,** as its answer never came: the tool busy for good, a hand-off
+/// and every settle waiting on it, and no snapshot taken again. A panic seeded as it draws: the person is told it wasn't taken, the tool's at rest, and
+/// the next box copies as the golden has it.
+#[test]
+fn a_snapshot_that_panics_leaves_the_tool_working() {
+    let disk = Disk::new();
+    let doc = disk.file("snapshot.pdf", &text_and_image());
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    tool_on(&app);
+    app.panic_next("snapshot_drawing");
+    take_box(&app);
+    assert_eq!(notice(&app), "\"The snapshot couldn't be taken.\" []", "the person is told");
+    assert_eq!(offered_or_nothing(&app), "nothing offered");
+    take_box(&app);
+    assert_eq!(
+        a_box(&app, &doc, 0, false),
+        "\"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image*, public.jpeg] | same",
+        "the next box copies"
+    );
+}
+
+/// **Failure (the branch's review, F3): a paste whose thread panics leaves every later paste of an SVG giving nothing,** as the paste was counted under
+/// way for good. A panic seeded as its SVG is drawn: that paste gets nothing, and the next gets its SVG.
+#[test]
+fn a_paste_that_panics_leaves_the_next_paste_working() {
+    let disk = Disk::new();
+    let doc = disk.file("snapshot.pdf", &text_and_image());
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    tool_on(&app);
+    take_box(&app);
+    let inner = app.core();
+    let tool = inner.tools.tool();
+    let offer = tool.take_offer(&inner.panes.engines(&inner.engine)).expect("offered");
+    app.panic_next("paste_drawing");
+    let pasted = app.act(UiAction::Pasted {
+        serial: offer.serial,
+        uti: extract::UTI_SVG.into(),
+    });
+    assert!(pasted.understood, "the paste's command sent");
+    app.wait_until("the paste that panicked ended", || !tool.paste_running());
+    assert_eq!(tool.wait_for_paste(), None, "it gives nothing");
+    let svg = clipboard_data(&app, offer.serial, extract::UTI_SVG).expect("the next paste gets its SVG");
+    assert!(String::from_utf8_lossy(&svg).contains("<svg"), "an SVG");
+}

@@ -559,6 +559,8 @@ fn words_for(result: &Result<Value, AgentError>) -> Option<(String, bool)> {
         Code::CANCELLED => return None,
         Code::SOURCE_CHANGED => ("That page can't be read now: its file has changed or gone.".into(), false),
         Code::NOT_STARTED => ("The snapshot couldn't be started.".into(), false),
+        // Its thread ended in a panic ([`super::person::PANICKED`]).
+        Code::INTERNAL => ("The snapshot couldn't be taken.".into(), false),
         _ => (error.message.clone(), false),
     })
 }
@@ -695,6 +697,8 @@ impl recto_agent::clipboard::ClipboardSink for Sink {
 
     fn begin_paste(&self) -> ClipStop {
         let Some(app) = self.app.upgrade() else { return stopped() };
+        #[cfg(test)]
+        app.core.holds.at("paste_drawing");
         lock(&app.tools.tool().paste.state).stop.clone()
     }
 

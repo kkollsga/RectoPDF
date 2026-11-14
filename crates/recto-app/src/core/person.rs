@@ -112,8 +112,12 @@ pub(super) fn on_its_own_thread(command: Command, counted: Running, turn: Option
         let here = crate::queue::lane::hold_here(turn);
         let mut events = Vec::new();
         sent(&inner.serving, &command);
-        let result = inner.host.run_for_person(&command, &mut events, origin);
-        answered(&AnswerParts::of(&inner), &command, Origin::Input, &result);
+        let answer = Answer {
+            inner: &inner,
+            command: &command,
+            result: None,
+        };
+        answer.give(inner.host.run_for_person(&command, &mut events, origin));
         inner.core.push(CoreCall::Events(events));
         // Its turn passes once what it did is told, so watchers hear of it before the person's next edit; and before its count goes, so the app's
         // never seen at rest between the two.
@@ -126,6 +130,35 @@ pub(super) fn on_its_own_thread(command: Command, counted: Running, turn: Option
         say(inner.window.notices(), &inner.core, NOT_STARTED.to_string());
         let refused = Err(AgentError::new(Code::NOT_STARTED, NOT_STARTED, recto_agent::exit::BUSY));
         answered(&AnswerParts::of(&inner), &kept, Origin::Input, &refused);
+    }
+}
+
+/// What the person is told is a command of theirs that ended in a panic, as a refusal: a feature with words of its own for it says those.
+pub const PANICKED: &str = "That couldn't be done.";
+
+/// **A person's command on its own thread, answered however the thread ends** (the branch's review, F3): with what it came to, or, as the thread unwinds
+/// from a panic, refused as [`Code::INTERNAL`], so the feature waiting on its answer isn't left waiting for good (the snapshot tool busy, every later
+/// paste given nothing).
+struct Answer<'a> {
+    inner: &'a Arc<Inner>,
+    command: &'a Command,
+    result: Option<Result<Value, AgentError>>,
+}
+
+impl Answer<'_> {
+    /// What it came to, answered now.
+    fn give(mut self, result: Result<Value, AgentError>) {
+        self.result = Some(result);
+    }
+}
+
+impl Drop for Answer<'_> {
+    fn drop(&mut self) {
+        let result = self
+            .result
+            .take()
+            .unwrap_or_else(|| Err(AgentError::new(Code::INTERNAL, PANICKED, recto_agent::exit::FAILED)));
+        answered(&AnswerParts::of(self.inner), self.command, Origin::Input, &result);
     }
 }
 
