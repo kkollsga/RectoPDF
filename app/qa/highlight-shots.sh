@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Highlights in the real app (R4.3): made from a selection by Mark Up > Highlight, unsaved on white, warm and dark paper, then saved, the file closed
-# and opened again, on white and dark paper as it really looks (a saved highlight is part of the page PDFium draws, so dark paper turns it over with
+# and opened again, on white and dark paper as it really looks; then the file's own taken out (gone before a Save, back on Undo, gone once saved and
+# opened again), and one on a page an edit turned, saved and opened again (a saved highlight is part of the page PDFium draws, so dark paper turns it over with
 # the page: the coordinator's Q8, a follow-up). Light and dark windows. Quiet runs only: nothing reaches a screen, nothing is posted (the `qa` verbs
 # call what the window's own controls call), state is temp, and the run ends with the script.
 #
@@ -70,6 +71,25 @@ for look in light dark; do
     r qa menu file.close; settle
     r open "$doc"; r goto 3; settle; shot saved-reopened-white
     r view --paper dark; settle; shot saved-reopened-dark
+    r view --paper white; settle
+
+    # The file's own highlight taken out (review of R4.3, S2): the same lines selected and Mark Up > Remove Highlight, gone before a Save (the
+    # worker leaves it out), back on Undo, and gone from the file once saved, closed and opened again.
+    r qa mouse-down "$(place 3 2 0.2)"; r qa mouse-drag "$(place 3 6 0.7)"; r qa mouse-up
+    r qa menu markup.remove_highlight; until_state "a['document_edited']"
+    r qa mouse-down "$(place 3 2 0.2)"; r qa mouse-up; settle; shot removed-unsaved
+    r qa menu edit.undo; until_state "not a['document_edited']"; settle; shot removal-undone
+    r qa menu edit.redo; until_state "a['document_edited']"
+    r qa menu file.save; until_state "not a['document_edited']"
+    r qa menu file.close; settle
+    r open "$doc"; r goto 3; settle; shot removed-saved-reopened
+
+    # A highlight on a page an edit turned, saved, closed and opened again: on its text, where the turned page now has it (S3).
+    r page rotate --pages 3 --degrees 90; settle
+    r highlight --page 3 --chars 0-160; until_state "a['document_edited']"; settle; shot turned-unsaved
+    r qa menu file.save; until_state "not a['document_edited']"
+    r qa menu file.close; settle
+    r open "$doc"; r goto 3; settle; shot turned-saved-reopened
     r view --paper auto
 done
 r stop
