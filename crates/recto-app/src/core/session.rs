@@ -360,11 +360,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             }
             CoreCall::MemoryPressure(critical) => inner.memory_pressure(critical),
             CoreCall::WokenFileIsOther(id, status, against) => woken_file_is_other(inner, &mut reads, id, status, against),
-            CoreCall::LookAgain(id) => {
-                if let Some(inner) = inner.saver.inner() {
-                    inner.sleeper.check_woken_file(&inner.host.session, &inner.core, id);
-                }
-            }
+            CoreCall::LookAgain(id) => inner.sleeper.check_woken_file(&inner.host.session, &inner.core, id),
             CoreCall::FileLength(id, pages, version) => file_length(inner, &mut reads, id, pages, version),
             CoreCall::Events(list) => events.extend(list),
             CoreCall::GeneratedFinished => generated_contents::look_again(inner),
