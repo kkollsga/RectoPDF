@@ -9,8 +9,11 @@
 //! **What's on disk.** With a journal, each thing asked for is noted as a [`JournalOp`] for the writer to append, and replaying those through these same checked calls brings the whole list back, history and authors included, ending exactly where the live list is, as the same caps apply on the way.
 
 use crate::record::{AddedRecord, AuthorName, EditsRecord, EditsSummary, EntryRecord, FileRecord, JournalOp, PathField, RecordError, SlotRun, StepRecord};
+use marks::{MarkChange, MarkOp, MarkRefusal, MarkStep, Marks};
 use recto_platform::FileStamp;
 use std::path::{Path, PathBuf};
+
+pub mod marks;
 
 /// Most pages one edited document may have.
 pub const MAX_PAGES: usize = 200_000;
@@ -52,6 +55,10 @@ pub enum EditError {
     SourceChanged,
     /// An agent's next step would push the owner's steps out of the history, so they couldn't be undone.
     HistoryFull,
+    /// No highlight made as an edit has that number.
+    NoSuchHighlight,
+    /// The document holds as many unsaved highlights as it may.
+    TooManyHighlights,
 }
 
 impl EditError {
@@ -63,6 +70,8 @@ impl EditError {
             Self::TooManySources => "too_many_sources",
             Self::SourceChanged => "source_changed",
             Self::HistoryFull => "history_full",
+            Self::NoSuchHighlight => "no_such_highlight",
+            Self::TooManyHighlights => "too_many_highlights",
         }
     }
 
@@ -73,6 +82,8 @@ impl EditError {
             Self::TooManyPages => "That would make this document too long.",
             Self::TooManySources => "Too many PDFs have been added to this document.",
             Self::SourceChanged => "That PDF has changed since it was added, so it can't be added again.",
+            Self::NoSuchHighlight => "No highlight made in this tab, and not yet saved, has that number.",
+            Self::TooManyHighlights => "This document has as many unsaved highlights as it can hold. Save, and then go on.",
             Self::HistoryFull => {
                 "The undo history is full, and this edit would push the user's own steps out of it, so it wasn't made. Ask them to save or to undo, which makes room."
             }
@@ -83,10 +94,26 @@ impl EditError {
 /// A step and how to reverse it. Each direction of undo and redo produces the other.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Step {
-    Rotate { start: u32, len: u32, quarter_turns: u8 },
-    Move { start: u32, len: u32, to: u32 },
-    Remove { start: u32, len: u32 },
-    Restore { start: u32, slots: Box<[PageSlot]> },
+    Rotate {
+        start: u32,
+        len: u32,
+        quarter_turns: u8,
+    },
+    Move {
+        start: u32,
+        len: u32,
+        to: u32,
+    },
+    Remove {
+        start: u32,
+        len: u32,
+    },
+    Restore {
+        start: u32,
+        slots: Box<[PageSlot]>,
+    },
+    /// A highlight added or taken away, which no page step depends on (see [`marks`]).
+    Mark(MarkStep),
 }
 
 impl Step {
@@ -107,6 +134,7 @@ impl Step {
                 start: *start,
                 runs: runs_of(slots),
             },
+            Self::Mark(step) => StepRecord::Mark(step.to_record()),
         }
     }
 
@@ -128,12 +156,18 @@ impl Step {
                 start: *start,
                 slots: slots_of(runs).into_boxed_slice(),
             },
+            StepRecord::Mark(step) => Self::Mark(MarkStep::from_record(step)),
         }
     }
 
     /// What its inverse would hold beyond its own size.
     fn uses_source(&self, source: u16) -> bool {
-        matches!(self, Self::Restore { slots, .. } if slots.iter().any(|slot| slot.source == source))
+        match self {
+            Self::Restore { slots, .. } => slots.iter().any(|slot| slot.source == source),
+            // A highlight on a page of the tab's own file needs nothing kept: a save moves it onto the page's new number (`marks::saved`).
+            Self::Mark(MarkStep::Add(mark)) => source != 0 && mark.source == source,
+            _ => false,
+        }
     }
 
     fn inverse_held_bytes(&self) -> usize {
@@ -147,6 +181,7 @@ impl Step {
     fn held_bytes(&self) -> usize {
         match self {
             Self::Restore { slots, .. } => size_of_val::<[PageSlot]>(slots),
+            Self::Mark(step) => step.held_bytes(),
             _ => 0,
         }
     }
@@ -218,6 +253,8 @@ pub struct PageEdits {
     added: Vec<AddedSource>,
     /// The undo and redo steps, and what they hold.
     history: History,
+    /// Highlights made as edits.
+    marks: Marks,
     /// Whether the document differs from the file, whatever steps took it there. Worked out after each step, so asking is free. See [`Self::is_edited`].
     differs: bool,
     /// Whose steps are being made now. Only the session sets this, and the owner is the default: a path that forgets to say gets the more protected answer.
@@ -332,6 +369,7 @@ impl PageEdits {
             slots,
             added: Vec::new(),
             history: History::default(),
+            marks: Marks::default(),
             differs: false,
             acting: Author::Owner,
             journal: None,
@@ -408,6 +446,7 @@ impl PageEdits {
             redo: self.history.redo.iter().map(entry).collect(),
             history_dropped: self.history.dropped,
             owner_step_dropped: self.history.owner_dropped,
+            marks: self.marks.to_record(),
         }
     }
 
@@ -428,6 +467,13 @@ impl PageEdits {
         };
         let undo = entries(&record.undo, &mut history_bytes);
         let redo = entries(&record.redo, &mut history_bytes);
+        let mut marks = Marks::from_record(&record.marks).ok_or(RecordError::Damaged("a highlight that can't be"))?;
+        // A highlight the history can bring back keeps its number: a new one starts past every number named.
+        for entry in undo.iter().chain(&redo) {
+            if let Step::Mark(MarkStep::Add(mark)) = &entry.step {
+                marks.count_past(mark.id);
+            }
+        }
         let mut edits = Self {
             file_pages: record.file_pages as usize,
             slots: slots_of(&record.pages),
@@ -439,6 +485,7 @@ impl PageEdits {
                 dropped: record.history_dropped,
                 owner_dropped: record.owner_step_dropped,
             },
+            marks,
             differs: false,
             acting: Author::Owner,
             journal: None,
@@ -578,6 +625,11 @@ impl PageEdits {
                 self.added.push(AddedSource::from_record(added).ok_or(EditError::OutOfRange)?);
                 Ok(())
             }
+            JournalOp::Mark(op) => {
+                let (change, by) = op.change();
+                self.acting = by.into();
+                self.mark(change)
+            }
             JournalOp::Undo => self.undo().then_some(()).ok_or(EditError::OutOfRange),
             JournalOp::Redo => self.redo().then_some(()).ok_or(EditError::OutOfRange),
             JournalOp::Saving(target) => {
@@ -684,6 +736,7 @@ impl PageEdits {
             .enumerate()
             .any(|(position, slot)| slot.source != 0 || slot.quarter_turns != 0 || slot.page as usize != position)
             || self.slots.len() != self.file_pages
+            || !self.marks.is_empty()
     }
 
     /// Whether there's a step to undo.
@@ -808,6 +861,7 @@ impl PageEdits {
             }
             None => out.rolled_off += self.roll_off_source(0),
         }
+        out.rolled_off += marks::saved(self);
         self.file_pages = pages as usize;
         self.changes += 1;
         self.slots = (0..pages)
@@ -887,17 +941,20 @@ impl PageEdits {
     /// Forgets added files nothing uses now, in the document or its history, and says which of them were kept files, for those to go. Only when the journal's about to get the whole list, as its later lines go by these numbers.
     fn drop_unused_sources(&mut self) -> Vec<Box<Path>> {
         let mut used = vec![false; self.added.len()];
-        let mut note = |slot: &PageSlot| {
-            if slot.source != 0
-                && let Some(entry) = used.get_mut(usize::from(slot.source) - 1)
+        let mut note = |source: u16| {
+            if source != 0
+                && let Some(entry) = used.get_mut(usize::from(source) - 1)
             {
                 *entry = true;
             }
         };
-        self.slots.iter().for_each(&mut note);
+        self.slots.iter().for_each(|slot| note(slot.source));
+        self.marks.iter().for_each(|mark| note(mark.source));
         for entry in self.history.undo.iter().chain(&self.history.redo) {
-            if let Step::Restore { slots, .. } = &entry.step {
-                slots.iter().for_each(&mut note);
+            match &entry.step {
+                Step::Restore { slots, .. } => slots.iter().for_each(|slot| note(slot.source)),
+                Step::Mark(MarkStep::Add(mark)) => note(mark.source),
+                _ => {}
             }
         }
         if used.iter().all(|used| *used) {
@@ -909,17 +966,20 @@ impl PageEdits {
             next += u16::from(*used);
             new_number.push(next);
         }
-        let renumber = |slot: &mut PageSlot| {
-            if slot.source != 0
-                && let Some(number) = new_number.get(usize::from(slot.source) - 1)
+        let renumber = |source: &mut u16| {
+            if *source != 0
+                && let Some(number) = new_number.get(usize::from(*source) - 1)
             {
-                slot.source = *number;
+                *source = *number;
             }
         };
-        self.slots.iter_mut().for_each(renumber);
+        self.slots.iter_mut().for_each(|slot| renumber(&mut slot.source));
+        self.marks.sources_mut().for_each(renumber);
         for entry in self.history.undo.iter_mut().chain(&mut self.history.redo) {
-            if let Step::Restore { slots, .. } = &mut entry.step {
-                slots.iter_mut().for_each(renumber);
+            match &mut entry.step {
+                Step::Restore { slots, .. } => slots.iter_mut().for_each(|slot| renumber(&mut slot.source)),
+                Step::Mark(MarkStep::Add(mark)) => renumber(&mut mark.source),
+                _ => {}
             }
         }
         let mut let_go = Vec::new();
@@ -982,6 +1042,30 @@ impl PageEdits {
             return Err(EditError::LastPage);
         }
         self.commit(Step::Remove { start, len })
+    }
+
+    /// Adds a highlight to a page, or takes one made as an edit away: a step like any other, the acting author's.
+    pub fn mark(&mut self, change: MarkChange) -> Result<(), EditError> {
+        if let MarkChange::Add { source, page, .. } = &change {
+            let pages = match source {
+                0 => u32::try_from(self.file_pages).unwrap_or(u32::MAX),
+                source => self.added.get(usize::from(*source) - 1).map_or(0, |added| added.page_count),
+            };
+            if *page >= pages {
+                return Err(EditError::OutOfRange);
+            }
+        }
+        let step = self.marks.step_for(change, self.acting).map_err(|refusal| match refusal {
+            MarkRefusal::NoSuch => EditError::NoSuchHighlight,
+            MarkRefusal::TooMany => EditError::TooManyHighlights,
+            MarkRefusal::Unsound => EditError::OutOfRange,
+        })?;
+        self.commit(Step::Mark(step))
+    }
+
+    /// The highlights made as edits, unsaved.
+    pub fn marks(&self) -> &Marks {
+        &self.marks
     }
 
     /// Adds every page of another PDF at a position, as dropping it into the page view does, noting which version of the file this is (`None` if it
@@ -1098,6 +1182,15 @@ impl PageEdits {
                 let (source, count) = (slots.first().map_or(0, |slot| slot.source), u32::try_from(slots.len()).unwrap_or(0));
                 self.note(|| JournalOp::Insert(*start, source, count, by));
             }
+            Step::Mark(MarkStep::Add(mark)) => self.note(|| {
+                JournalOp::Mark(MarkOp::Add {
+                    source: mark.source,
+                    page: mark.page,
+                    rects: mark.rects.to_vec(),
+                    by,
+                })
+            }),
+            Step::Mark(MarkStep::Remove(id)) => self.note(|| JournalOp::Mark(MarkOp::Remove { id: *id, by })),
         }
         let inverse = self.apply(step);
         self.history.bytes += inverse.held_bytes();
@@ -1187,6 +1280,7 @@ impl PageEdits {
                 self.slots.splice(s..s, slots.iter().copied());
                 Step::Remove { start, len }
             }
+            Step::Mark(step) => Step::Mark(self.marks.apply(step)),
         }
     }
 

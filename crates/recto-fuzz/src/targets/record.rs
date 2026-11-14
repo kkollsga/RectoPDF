@@ -38,7 +38,7 @@ fn use_a_record(bytes: &[u8]) {
 }
 
 fn use_a_journal(bytes: &[u8]) {
-    let parsed = match record::parse_journal(bytes, CURRENT_VERSION) {
+    let parsed = match record::parse_journal(bytes, record::MARKED_JOURNAL_VERSION) {
         Ok(parsed) => parsed,
         Err(RecordError::Newer(_) | RecordError::Damaged(_)) => return,
     };

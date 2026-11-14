@@ -47,6 +47,9 @@ pub const MAX_EXPANDED_SLOTS: u64 = (MAX_HISTORY_BYTES / size_of::<crate::edit::
 pub const MAIN_KIND: &str = "recto-session";
 /// A kind of file: one tab's journal.
 pub const JOURNAL_KIND: &str = "recto-journal";
+/// A journal whose base holds highlights says this version, so an app from before them leaves it as it is rather than reading it without them; one with
+/// none is [`CURRENT_VERSION`], which that app reads. [`parse_journal`] is asked with this to read both.
+pub const MARKED_JOURNAL_VERSION: u32 = 2;
 
 /// A window's or screen's place on the desktop, in the system's own points.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -851,6 +854,7 @@ pub enum StepRecord {
         #[serde(deserialize_with = "capped::<_, _, MAX_RUNS>")]
         runs: Vec<SlotRun>,
     },
+    Mark(crate::edit::marks::MarkStepRecord),
 }
 
 /// Runs one list may have: one per slot.
@@ -889,7 +893,7 @@ pub struct EntryRecord {
 }
 
 /// A whole list of edits at one moment: the page order, the PDFs added, and the history with who made each step. A journal's base after it's been compacted, and what QA reads.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditsRecord {
     pub file_pages: u32,
     #[serde(deserialize_with = "capped::<_, _, MAX_RUNS>")]
@@ -904,6 +908,13 @@ pub struct EditsRecord {
     pub history_dropped: bool,
     #[serde(default)]
     pub owner_step_dropped: bool,
+    /// Highlights made as edits. A journal whose base has any is [`MARKED_JOURNAL_VERSION`], which an app from before them leaves alone.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "capped::<_, _, { crate::edit::marks::MAX_MARKS }>"
+    )]
+    pub marks: Vec<crate::edit::marks::MarkRecord>,
 }
 
 /// One thing that happened to a tab's edits, as a line of its journal. Only what was asked for, forwards: replaying these through the same checked calls brings back the page order and the whole of the history, with whose each step is, so what a hostile journal can do is limited to what those calls allow. A rotation is about 25 bytes, and an added PDF is a reference to it.
@@ -929,6 +940,8 @@ pub enum JournalOp {
     /// A copy of the file as it is now has been kept, for undoing past that save. Goes ahead of the `Saving` it's for.
     #[serde(rename = "k")]
     Keeping(AddedRecord),
+    #[serde(rename = "h")]
+    Mark(crate::edit::marks::MarkOp),
 }
 
 /// A journal's first line.
@@ -993,7 +1006,11 @@ pub fn journal_lines(ops: &[JournalOp]) -> Vec<u8> {
 
 /// A new journal's beginning: its header, and a base if it's been compacted.
 pub fn journal_start(header: &JournalHeader, base: Option<&EditsRecord>) -> Vec<u8> {
-    let mut out = journal_line(&serde_json::to_vec(header).unwrap_or_default());
+    let marked = base.is_some_and(|base| !base.marks.is_empty()).then(|| JournalHeader {
+        version: MARKED_JOURNAL_VERSION,
+        ..header.clone()
+    });
+    let mut out = journal_line(&serde_json::to_vec(marked.as_ref().unwrap_or(header)).unwrap_or_default());
     if let Some(base) = base {
         let base = BaseLine { base: base.clone() };
         out.extend_from_slice(&journal_line(&serde_json::to_vec(&base).unwrap_or_default()));
@@ -1794,10 +1811,39 @@ mod tests {
             redo: Vec::new(),
             history_dropped: false,
             owner_step_dropped: false,
+            marks: Vec::new(),
         };
         assert!(validate_edits(&good).is_ok());
         let by = AuthorName::Owner;
+        let mark = |page: u32| crate::edit::marks::MarkRecord {
+            id: 0,
+            source: 0,
+            page,
+            rects: vec![crate::edit::marks::MarkRect {
+                x: 1.0,
+                y: 1.0,
+                width: 5.0,
+                height: 5.0,
+            }],
+            by,
+        };
         let cases: Vec<EditsRecord> = vec![
+            // A highlight on a page the file hasn't, or on a PDF that was never added, in the list or in a step.
+            EditsRecord {
+                marks: vec![mark(3)],
+                ..good.clone()
+            },
+            EditsRecord {
+                marks: vec![crate::edit::marks::MarkRecord { source: 1, ..mark(0) }],
+                ..good.clone()
+            },
+            EditsRecord {
+                undo: vec![EntryRecord {
+                    by,
+                    step: StepRecord::Mark(crate::edit::marks::MarkStepRecord::Add(mark(9))),
+                }],
+                ..good.clone()
+            },
             EditsRecord {
                 pages: vec![SlotRun(0, 0, u32::MAX, 0)],
                 ..good.clone()

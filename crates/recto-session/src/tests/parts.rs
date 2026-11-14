@@ -406,6 +406,7 @@ const LISTED: &[&str] = &[
     "PartMut<PageEdits>: impl in editing.rs",
     "PartMut<PageEdits>: pub fn delete",
     "PartMut<PageEdits>: pub fn len",
+    "PartMut<PageEdits>: pub fn mark",
     "PartMut<PageEdits>: pub fn move_pages",
     "PartMut<PageEdits>: pub fn rotate",
     "PartMut<PageViewMail>: impl in mail.rs",

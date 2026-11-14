@@ -1,4 +1,4 @@
-//! What a record's edits must be before a list is made of them, moved out of `record.rs` unchanged (R4.3), so the record had room for highlights.
+//! What a record's edits must be before a list is made of them, moved out of `record.rs` (R4.3), so the record had room for highlights.
 
 use super::*;
 
@@ -39,6 +39,8 @@ fn steps_fit(steps: &[EntryRecord], mut length: u64, file_pages: u32, added: &[A
                 }
                 length -= u64::from(*len);
             }
+            StepRecord::Mark(step) if !step.fits(file_pages, added) => return Err(bad("a highlight out of range")),
+            StepRecord::Mark(_) => {}
             StepRecord::Restore { start, runs } => {
                 if !runs_fit(runs, file_pages, added) || u64::from(*start) > length {
                     return Err(bad("a step out of range"));
@@ -76,6 +78,9 @@ pub fn validate_edits(edits: &EditsRecord) -> Result<(), RecordError> {
     });
     if held > MAX_EXPANDED_SLOTS {
         return Err(bad("too much history"));
+    }
+    if !crate::edit::marks::MarkRecord::all_fit(&edits.marks, edits.file_pages, &edits.added) {
+        return Err(bad("a highlight out of range"));
     }
     steps_fit(&edits.undo, length, edits.file_pages, &edits.added)?;
     steps_fit(&edits.redo, length, edits.file_pages, &edits.added)?;

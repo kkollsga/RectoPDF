@@ -208,7 +208,7 @@ fn read_journal(path: &Path) -> Result<Option<(ParsedJournal, u64)>, RecordError
     };
     let Some(bytes) = bytes else { return Ok(None) };
     let length = bytes.len() as u64;
-    record::parse_journal(&bytes, CURRENT_VERSION).map(|parsed| Some((parsed, length)))
+    record::parse_journal(&bytes, record::MARKED_JOURNAL_VERSION).map(|parsed| Some((parsed, length)))
 }
 
 /// Whether a journal was saved away: it says a save was about to put a file of this identity in place, and that's what's there. So its edits are in the PDF, and it's stale, whether or not the crash let it be removed.
