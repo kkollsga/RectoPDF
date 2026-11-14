@@ -56,6 +56,13 @@ impl Points<'_> {
         lock(&self.engine.shared.reader).docs.shown()?.document_point(page, x, y)
     }
 
+    /// **The contents' band for the page at the top of the tab showing's view:** the page, and the thousandths of it between which the same contents entry is
+    /// current, or none. Leaving it wakes the core once, by the wake a page change has, and then not until this is set again, which the core does with each
+    /// pass; and set with the top of the view already outside it, it wakes the core at once ([`crate::tiles::set_band`]). A short lock.
+    pub fn set_band(&self, band: Option<(u32, u16, u16)>) {
+        crate::tiles::set_band(&mut lock(&self.engine.shared.reader), band);
+    }
+
     pub fn has_document(&self) -> bool {
         lock(&self.engine.shared.reader).docs.shown().is_some_and(|doc| doc.has_document())
     }

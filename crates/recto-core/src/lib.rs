@@ -86,6 +86,31 @@ pub struct TocEntry {
     /// Index of the parent entry, or [`NONE`].
     pub parent: u32,
     pub depth: u8,
+    /// How far down its page the entry is, in thousandths of the page as shown (0 to [`TOP_SCALE`]), or 0 when the file or the helper doesn't say, which
+    /// reads as the page's top. The entry being read is found by (page, top), not by the page alone.
+    pub top: u16,
+}
+
+/// A place down a page, as thousandths of its height from the top: [`TocEntry::top`]'s scale, and the one generated contents keep.
+pub const TOP_SCALE: u16 = 1000;
+
+/// **How far down a page a fraction of it is, in thousandths of the page** (0 its top, 1 its foot, to [`TOP_SCALE`]): the one rounding of a place for an
+/// outline's destination, generated contents, the page view's band and the session's line. In `f64` for every one of them, so no two round one place a
+/// half apart at a band's edge, as `f32` and `f64` do (0.5005 of a page is 501 in `f32` and 500 in `f64`). Not a number is the top, and past either end
+/// is that end.
+#[must_use]
+pub fn thousandths(within: f64) -> u16 {
+    if !within.is_finite() {
+        return 0;
+    }
+    // In 0 to 1000 after the clamp, so the cast neither wraps nor saturates.
+    (within.clamp(0.0, 1.0) * f64::from(TOP_SCALE)).round() as u16
+}
+
+/// A place in thousandths down a page as the fraction of it [`thousandths`] took it from, to go to: past [`TOP_SCALE`] is the page's foot.
+#[must_use]
+pub fn fraction_down(top: u16) -> f64 {
+    f64::from(top.min(TOP_SCALE)) / f64::from(TOP_SCALE)
 }
 
 /// A document's contents, compact and in document order.
@@ -123,6 +148,7 @@ impl Toc {
                 page: line.page,
                 parent: line.parent,
                 depth: line.depth,
+                top: 0,
             });
         }
         Self {
@@ -137,6 +163,16 @@ impl Toc {
         &self.entries
     }
 
+    /// These contents with each entry's place down its page, in thousandths from the top, as `tops` says in the entries' order. What a file or a helper
+    /// says is not believed: a value past [`TOP_SCALE`] is the bottom of the page, and entries `tops` doesn't reach stay unplaced (0).
+    #[must_use]
+    pub fn with_tops(mut self, tops: &[u16]) -> Self {
+        for (entry, top) in self.entries.iter_mut().zip(tops) {
+            entry.top = (*top).min(TOP_SCALE);
+        }
+        self
+    }
+
     pub fn title(&self, entry: &TocEntry) -> &str {
         let start = entry.title_start as usize;
         self.titles.get(start..start + entry.title_len as usize).unwrap_or("")
@@ -148,8 +184,64 @@ impl Toc {
 
     /// The last entry at or before a zero-based page, which is the section being read.
     pub fn section_at(&self, page: u32) -> Option<usize> {
-        self.entries.iter().rposition(|e| e.page != NONE && e.page <= page)
+        self.section_at_place(page, TOP_SCALE)
     }
+
+    /// The entry being read at a place: the one with the greatest (page, top) at or above `top` thousandths down `page`, and of those the later in
+    /// document order. An entry with no place (0) sorts as its page's top, so a file that says none has the last entry of the page current wherever the
+    /// reader is on it, as [`Self::section_at`] always did. Entries need not be in order on a page.
+    pub fn section_at_place(&self, page: u32, top: u16) -> Option<usize> {
+        self.nearest(page, top, |_| true).map(|(at, _)| at)
+    }
+
+    /// [`Self::section_at_place`] for the top of the reader's view, `top` thousandths down `page`, which an entry's top may be [`TOP_SLACK`] below: the place a
+    /// view reports is rounded to a pixel, and an entry jumped to (whose top the jump puts on the view's top) may lie a hair below it. `placed` says whether a page's entries' tops mean anything: not on a
+    /// page with an unsaved turn, whose frame isn't the file's, where every entry is at the page's top.
+    pub fn current_at(&self, page: u32, top: u16, placed: impl Fn(u32) -> bool) -> Option<usize> {
+        self.nearest(page, top.saturating_add(TOP_SLACK), placed).map(|(at, _)| at)
+    }
+
+    /// Which entry is current while the top of the view stays in `[lo, hi)` thousandths of `page`, so the page view can tell the core when it leaves, and no
+    /// oftener. Always the whole page when no entry on it is below the current one, which is the page's whole way for a file with no places.
+    pub fn band_at(&self, page: u32, top: u16, placed: impl Fn(u32) -> bool) -> Band {
+        let key = |entry: &TocEntry| (entry.page, if placed(entry.page) { entry.top } else { 0 });
+        let current = self.nearest(page, top.saturating_add(TOP_SLACK), &placed).map(|(_, key)| key);
+        let lo = current
+            .filter(|(at_page, _)| *at_page == page)
+            .map_or(0, |(_, top)| top.saturating_sub(TOP_SLACK));
+        let hi = self
+            .entries
+            .iter()
+            .filter(|entry| entry.page == page && current.is_none_or(|current| key(entry) > current))
+            .map(|entry| key(entry).1.saturating_sub(TOP_SLACK))
+            .min()
+            .unwrap_or(TOP_SCALE + 1);
+        Band { page, lo, hi }
+    }
+
+    fn nearest(&self, page: u32, top: u16, placed: impl Fn(u32) -> bool) -> Option<(usize, (u32, u16))> {
+        let mut best: Option<(usize, (u32, u16))> = None;
+        for (at, entry) in self.entries.iter().enumerate() {
+            let key = (entry.page, if placed(entry.page) { entry.top } else { 0 });
+            if entry.page != NONE && key <= (page, top) && best.is_none_or(|(_, held)| key >= held) {
+                best = Some((at, key));
+            }
+        }
+        best
+    }
+}
+
+/// How far past the top of the reader's view an entry may be and still be the one being read, in thousandths of the page: the place a view reports is rounded
+/// to a pixel (about 4 points of a letter page), and a click lands an entry's top on the view's top, so this covers only the rounding.
+pub const TOP_SLACK: u16 = 5;
+
+/// A stretch of one page in which the same entry is current while the top of the view is in it: thousandths from `lo` up to but not including `hi`. Past the page's end, `hi` is one past
+/// [`TOP_SCALE`], so no place on it leaves it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Band {
+    pub page: u32,
+    pub lo: u16,
+    pub hi: u16,
 }
 
 /// What a document is, read without loading it.
@@ -339,13 +431,16 @@ fn read_toc_within(reader: &IndexedReader, limit: Duration) -> Option<Toc> {
     let outlines = deref(reader, root.get(b"Outlines").ok()?)?;
     let first = outlines.as_dict().ok()?.get(b"First").ok()?.as_reference().ok()?;
 
-    let pages: HashMap<ObjectId, u32> = reader
-        .page_map()
-        .ok()?
-        .iter()
-        .enumerate()
-        .filter_map(|(index, page)| Some((page.id(), u32::try_from(index).ok()?)))
-        .collect();
+    let map = reader.page_map().ok()?;
+    let pages = Pages {
+        index: map
+            .iter()
+            .enumerate()
+            .filter_map(|(index, page)| Some((page.id(), u32::try_from(index).ok()?)))
+            .collect(),
+        map: &map,
+        frames: std::cell::RefCell::default(),
+    };
 
     let mut titles = String::new();
     let mut entries = Vec::new();
@@ -375,12 +470,14 @@ fn read_toc_within(reader: &IndexedReader, limit: Duration) -> Option<Toc> {
         };
         titles.push_str(&title);
         let index = u32::try_from(entries.len()).ok()?;
+        let (page, top) = target_page(reader, root, &node, &pages, &walk).unwrap_or((NONE, 0));
         entries.push(TocEntry {
             title_start,
             title_len,
-            page: target_page(reader, root, &node, &pages, &walk).unwrap_or(NONE),
+            page,
             parent,
             depth,
+            top,
         });
         if let Ok(next) = node.get(b"Next").and_then(Object::as_reference) {
             stack.push((next, parent, depth));
@@ -397,6 +494,26 @@ fn read_toc_within(reader: &IndexedReader, limit: Duration) -> Option<Toc> {
         truncated: truncated || walk.visits_left.get() == 0 || walk.cut_short.get(),
         labels: nav::PageLabels::default(),
     })
+}
+
+/// The document's pages, for finding which a destination is on and how that page is framed.
+struct Pages<'a> {
+    index: HashMap<ObjectId, u32>,
+    map: &'a lopdf::PageMap,
+    /// Each page's frame, read once however many entries go to it: an outline of 100,000 entries on a few pages would otherwise read its page dictionaries
+    /// 100,000 times.
+    frames: std::cell::RefCell<HashMap<u32, nav::Frame>>,
+}
+
+impl Pages<'_> {
+    fn frame(&self, reader: &IndexedReader, page: u32) -> Option<nav::Frame> {
+        if let Some(frame) = self.frames.borrow().get(&page) {
+            return Some(*frame);
+        }
+        let frame = nav::frame_of(reader, self.map.get(page as usize)?);
+        self.frames.borrow_mut().insert(page, frame);
+        Some(frame)
+    }
 }
 
 /// What's left for following named destinations, shared across the whole outline.
@@ -418,7 +535,8 @@ impl NameWalk {
     }
 }
 
-fn target_page(reader: &IndexedReader, root: &Dictionary, node: &Dictionary, pages: &HashMap<ObjectId, u32>, walk: &NameWalk) -> Option<u32> {
+/// The page an outline entry goes to, and how far down it, if the file says and it can be known: the entry's own `Dest` or `GoTo` action.
+fn target_page(reader: &IndexedReader, root: &Dictionary, node: &Dictionary, pages: &Pages<'_>, walk: &NameWalk) -> Option<(u32, u16)> {
     let dest = match node.get(b"Dest") {
         Ok(dest) => deref(reader, dest)?,
         Err(_) => {
@@ -433,13 +551,21 @@ fn target_page(reader: &IndexedReader, root: &Dictionary, node: &Dictionary, pag
     page_of_dest(reader, root, &dest, pages, walk, 0)
 }
 
-fn page_of_dest(reader: &IndexedReader, root: &Dictionary, dest: &Object, pages: &HashMap<ObjectId, u32>, walk: &NameWalk, hops: u8) -> Option<u32> {
+fn page_of_dest(reader: &IndexedReader, root: &Dictionary, dest: &Object, pages: &Pages<'_>, walk: &NameWalk, hops: u8) -> Option<(u32, u16)> {
     // A named destination can name another, and a file can make that a loop.
     if hops > 4 {
         return None;
     }
     match dest {
-        Object::Array(items) => pages.get(&items.first()?.as_reference().ok()?).copied(),
+        Object::Array(items) => {
+            let page = pages.index.get(&items.first()?.as_reference().ok()?).copied()?;
+            // How far down, in the frame the reader's place is in. The file's number is not believed: not a number, or off the page, is no place; and a
+            // quarter-turned page's top is a shown left, which says nothing (`Frame::within`).
+            let top = nav::dest_top(items)
+                .and_then(|top| pages.frame(reader, page)?.within(top))
+                .map_or(0, |within| thousandths(f64::from(within)));
+            Some((page, top))
+        }
         Object::Name(name) => {
             let dests = deref(reader, root.get(b"Dests").ok()?)?;
             let found = deref(reader, dests.as_dict().ok()?.get(name).ok()?)?;
@@ -573,10 +699,96 @@ mod test_support;
 mod tests {
     use super::*;
 
-    /// Failure: a field added carelessly makes every contents entry of every warm tab bigger.
+    fn placed_toc(tops: &[(u32, u16)]) -> Toc {
+        let lines: Vec<TocLine<'_>> = tops
+            .iter()
+            .map(|(page, _)| TocLine {
+                title: "t",
+                page: *page,
+                parent: NONE,
+                depth: 0,
+            })
+            .collect();
+        let tops: Vec<u16> = tops.iter().map(|(_, top)| *top).collect();
+        Toc::from_lines(&lines, false).with_tops(&tops)
+    }
+
+    /// Failure: the entry being read is the last of the outline's order at or above the place, so entries out of order on a page (a file's outline needn't
+    /// be sorted) mark one below the reader, an unplaced entry after a placed one hides the placed one it is below, or entries at one place pick the first.
     #[test]
-    fn toc_entry_stays_small() {
-        assert!(std::mem::size_of::<TocEntry>() <= 32);
+    fn the_entry_being_read_is_the_greatest_place_at_or_above_the_top_and_ties_go_to_the_later() {
+        let toc = placed_toc(&[(0, 600), (0, 100), (0, 400)]);
+        let at = |top| toc.current_at(0, top, |_| true);
+        assert_eq!((at(50), at(150), at(450), at(700)), (None, Some(1), Some(2), Some(0)), "out of order");
+        let toc = placed_toc(&[(0, 300), (0, 0)]);
+        assert_eq!(
+            (toc.current_at(0, 0, |_| true), toc.current_at(0, 400, |_| true)),
+            (Some(1), Some(0)),
+            "an unplaced entry is the page's top"
+        );
+        let toc = placed_toc(&[(1, 200), (1, 200), (1, 200)]);
+        assert_eq!(toc.current_at(1, 200, |_| true), Some(2), "several at one place: the later");
+        assert_eq!(toc.current_at(1, 1000, |_| true), Some(2), "the foot of the last page, where the view clamps");
+        assert_eq!(toc.current_at(0, 1000, |_| true), None, "an earlier page has none");
+    }
+
+    /// Failure: the place a view reports is rounded to a pixel, and an entry jumped to lies a hair below it, so the entry the reader jumped to isn't the
+    /// current one (or, with more slack than the rounding, one the reader hasn't reached is). Fails with [`TOP_SLACK`] at 0.
+    #[test]
+    fn an_entry_a_pixel_below_the_top_is_the_one_being_read_and_one_further_is_not() {
+        let toc = placed_toc(&[(0, 100), (0, 300)]);
+        assert_eq!(toc.current_at(0, 297, |_| true), Some(1), "a pixel or two above it");
+        assert_eq!(toc.current_at(0, 300 - TOP_SLACK - 1, |_| true), Some(0), "a little more is the one before");
+    }
+
+    /// Failure: a page with an unsaved turn (its frame isn't the file's) is read by tops that mean something else, so the wrong entry is current there.
+    #[test]
+    fn a_page_whose_places_mean_nothing_has_every_entry_at_its_top() {
+        let toc = placed_toc(&[(0, 300), (0, 600), (1, 500)]);
+        let placed = |page| page != 0;
+        assert_eq!(toc.current_at(0, 0, placed), Some(1), "the last of the page");
+        assert_eq!(toc.current_at(1, 400, placed), Some(1), "the page before's, until this page's entry");
+        assert_eq!(
+            toc.band_at(0, 0, placed),
+            Band {
+                page: 0,
+                lo: 0,
+                hi: TOP_SCALE + 1
+            }
+        );
+    }
+
+    /// Failure: the band tells the core to look at moments the current entry doesn't change (a wake for every scroll step) or fails to tell it when it does
+    /// (the mark stays on an entry the reader has left).
+    #[test]
+    fn the_band_is_where_the_same_entry_stays_current() {
+        let toc = placed_toc(&[(0, 0), (0, 300), (0, 600), (1, 100)]);
+        let band = toc.band_at(0, 400, |_| true);
+        assert_eq!(
+            band,
+            Band {
+                page: 0,
+                lo: 300 - TOP_SLACK,
+                hi: 600 - TOP_SLACK
+            }
+        );
+        for top in band.lo..band.hi {
+            assert_eq!(toc.current_at(0, top, |_| true), Some(1), "{top}");
+        }
+        assert_ne!(toc.current_at(0, band.hi, |_| true), Some(1));
+        assert_ne!(toc.current_at(0, band.lo - 1, |_| true), Some(1));
+        let last = toc.band_at(0, 800, |_| true);
+        assert_eq!(
+            (last.lo, last.hi),
+            (600 - TOP_SLACK, TOP_SCALE + 1),
+            "the foot of a page has no next entry on it"
+        );
+        let above = toc.band_at(1, 20, |_| true);
+        assert_eq!(
+            (above.lo, above.hi),
+            (0, 100 - TOP_SLACK),
+            "before the page's first entry, the last one of the page before carries on"
+        );
     }
 
     /// Failure: reading contents has no bound on time, so a slow file holds `open` for as long as it likes. It must stop, keep what it has, and say so.

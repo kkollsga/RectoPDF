@@ -337,7 +337,11 @@ fn golden_lines(controls: &[(String, Did)], recent: &str) -> Vec<String> {
         .map(|(name, did)| {
             let name = name.replace(recent, "<recent>");
             let sent = did.sent.iter().map(|wire| wire.replace(recent, "<recent>")).collect::<Vec<_>>().join(" ; ");
-            let saves = did.sent.iter().any(|wire| wire.starts_with(r#"{"cmd":"save","#));
+            // A save's steps, and a Find query's hits, arrive in changes the session thread's look finds together or apart: see [`heard_line`].
+            let saves = did
+                .sent
+                .iter()
+                .any(|wire| wire.starts_with(r#"{"cmd":"save","#) || wire.starts_with(r#"{"cmd":"find","query":""#));
             format!(
                 "{name} | sent [{sent}] | host {:?} understood {} | heard {}",
                 did.acted.host,
@@ -352,7 +356,10 @@ fn golden_lines(controls: &[(String, Did)], recent: &str) -> Vec<String> {
 /// count that differs, and the host told in another order is a line that differs. A control that saves has each run of a kind as `kind+` instead: a save's
 /// steps (checking every page, writing, putting the file in place) are each a change the host is told of, as Save's tooltip says each, and two steps the
 /// session thread's look finds together are one call; so how many go by the save's thread (2026-11-13: a save told 4 times in 19 runs of 20 under
-/// `--like-ci`, and 3 in one, each call a step's change), while the order of the kinds held in every run. Every other control's calls were the same in all 20.
+/// `--like-ci`, and 3 in one, each call a step's change), while the order of the kinds held in every run. **A Find query is the same** (2026-11-14: typed
+/// as "page", told 4 times in the runs seen and 3 once, under the whole suite): each call is Find's own, at the hits' version 1, 1, 2 and 6, so three
+/// batches of hits are already one call; the worker lands a batch when it does, and the session thread tells of what has changed when it looks, so a batch
+/// that lands before the look before is one call with it. Every other control's calls were the same in all 20.
 fn heard_line(heard: &[&str], saves: bool) -> String {
     if heard.is_empty() {
         return "nothing".to_string();
@@ -481,4 +488,18 @@ fn the_bridge_queues_none_of_a_persons_calls() {
         }
     }
     assert!(named.is_empty(), "{named:#?}");
+}
+
+/// Failure (the golden held a count that depends on load): a control whose changes arrive from a worker (a Find query's hits, a save's steps) is told of
+/// three times on one run and four on another, as each batch lands before or after the session thread's look; the golden's line for it differs between runs
+/// of the same code. Held as a run of the kind, with its order; any other control's count is still exact, so a call made with nothing changed shows.
+#[test]
+fn a_stream_of_changes_is_held_as_a_run_and_any_other_count_as_it_is() {
+    let told = |times: usize| vec!["model_changed"; times];
+    assert_eq!(heard_line(&told(3), true), heard_line(&told(4), true));
+    assert_ne!(heard_line(&told(3), false), heard_line(&told(4), false));
+    assert_eq!(
+        heard_line(&["model_changed", "ops_ready", "model_changed"], true),
+        "model_changed+ ops_ready+ model_changed+"
+    );
 }

@@ -320,6 +320,7 @@ mod tests {
             page: None,
             depth,
             entry: at,
+            top: 0,
             expandable,
             expanded,
         }

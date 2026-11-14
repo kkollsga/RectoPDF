@@ -74,7 +74,7 @@ impl Frame {
     }
 
     /// How far down the page, from 0 to 1 as shown, a destination's `top` is. Only for a page shown upright or upside down, where the file's top is the shown top; a quarter-turned page's `top` is a shown left, which says nothing about how far down.
-    fn within(self, top: f32) -> Option<f32> {
+    pub(crate) fn within(self, top: f32) -> Option<f32> {
         let height = self.top - self.bottom;
         if !top.is_finite() || !(height.is_finite() && height > 0.0) {
             return None;
@@ -431,24 +431,31 @@ impl Context<'_> {
             _ => None,
         };
         let Some(page) = page else { return LinkTarget::Nowhere };
-        let number = |at: usize| match items.get(at) {
-            Some(Object::Integer(value)) => Some(*value as f32),
-            Some(Object::Real(value)) => Some(*value),
-            _ => None,
-        };
-        let top = match items.get(1) {
-            Some(Object::Name(fit)) => match fit.as_slice() {
-                b"XYZ" => number(3),
-                b"FitH" | b"FitBH" => number(2),
-                b"FitR" => number(5),
-                _ => None,
-            },
-            _ => None,
-        };
+        let top = dest_top(items);
         // The frame of the page it goes to, which may be turned differently from the page the link is on.
         let within = top.and_then(|top| frame_of(self.reader, self.map.get(page as usize)?).within(top));
         LinkTarget::Page { page, within }
     }
+}
+
+/// The `top` a destination array says, in the page's own coordinates: `[page /XYZ left top zoom]`, `/FitH` and `/FitBH`'s, `/FitR`'s. Nothing for a fit that
+/// has none, or a value that isn't a finite number (`null` in `/XYZ` leaves the place as it is).
+pub(crate) fn dest_top(items: &[Object]) -> Option<f32> {
+    let number = |at: usize| match items.get(at) {
+        Some(Object::Integer(value)) => Some(*value as f32),
+        Some(Object::Real(value)) => Some(*value),
+        _ => None,
+    };
+    let top = match items.get(1) {
+        Some(Object::Name(fit)) => match fit.as_slice() {
+            b"XYZ" => number(3),
+            b"FitH" | b"FitBH" => number(2),
+            b"FitR" => number(5),
+            _ => None,
+        },
+        _ => None,
+    };
+    top.filter(|top| top.is_finite())
 }
 
 /// Whether an address may be offered, and how it's refused if not. Only `http`, `https` and `mailto`, printable ASCII with no spaces, so what's shown is exactly what would open.

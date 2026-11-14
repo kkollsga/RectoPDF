@@ -1215,7 +1215,7 @@ fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
             if row.kind == RowKind::Note {
                 return json!({ "kind": "note", "tab": row.tab.0, "text": row.text, "hover": row.notice, "action": row.action.map(recto_session::ContentsAction::id) });
             }
-            json!({
+            let mut said = json!({
                 "kind": match row.kind { RowKind::Tab => "tab", _ => "contents" },
                 "tab": row.tab.0,
                 "page": row.page,
@@ -1224,7 +1224,12 @@ fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
                 "expandable": row.expandable,
                 "expanded": row.expanded,
                 "untrusted": { "text": row.text },
-            })
+            });
+            // Where a click on a contents row goes down its page, as `contents` lists it.
+            if row.kind == RowKind::Contents {
+                said["place"] = json!(row.top);
+            }
+            said
         })
         .collect();
     if active_withheld {
@@ -1271,7 +1276,15 @@ mod tests {
                 encrypted: false,
                 version: "1.7".into(),
                 title: None,
-                toc: Toc::default(),
+                toc: Toc::from_lines(
+                    &[recto_core::TocLine {
+                        title: "Chapter",
+                        page: 0,
+                        parent: recto_core::NONE,
+                        depth: 0,
+                    }],
+                    false,
+                ),
                 renderer_only: false,
             })
         }
@@ -3048,6 +3061,104 @@ mod tests {
         assert_eq!(positive_limit(None, 20, 200).unwrap(), 20);
     }
 
+    /// Failure (S3 of the second review): `goto --entry` names an entry that isn't one of the contents shown, or isn't on the page it goes to, and the
+    /// jump is made and the entry marked anyway, so the mark says the reader is somewhere they aren't. Refused with its own code and nothing moved; an entry
+    /// that is there is gone to; with a label it's a usage error, as `--within` is.
+    #[test]
+    fn goto_an_entry_is_refused_unless_its_on_that_page() {
+        let mut s = edit_session();
+        let goto = |page: u32, entry: u32| {
+            Command::from(crate::commands::linking::Goto {
+                tab: "#1".into(),
+                page: Some(page),
+                label: None,
+                within: Some(0.25),
+                entry: Some(entry),
+            })
+        };
+        let page = |s: &Session<Fake>| s.tabs().tab(TabId(1)).unwrap().page;
+        for (asked, why) in [(goto(5, 0), "on page 1, not 5"), (goto(1, 7), "no entry 7")] {
+            let error = run(&mut s, Level::Control, &asked).unwrap_err();
+            assert_eq!((error.code.as_str(), error.exit), ("no_such_entry", exit::NOT_FOUND), "{why}");
+            assert_eq!(page(&s), 0, "{why}: nothing moved");
+        }
+        assert_eq!(
+            run(&mut s, Level::Control, &goto(11, 0)).unwrap_err().code,
+            "no_such_page",
+            "a page that isn't there is that first"
+        );
+        assert_eq!(run(&mut s, Level::Control, &goto(1, 0)).unwrap()["page"], 1);
+        let with_label = Command::from(crate::commands::linking::Goto {
+            tab: "#1".into(),
+            page: None,
+            label: Some("1".into()),
+            within: None,
+            entry: Some(0),
+        });
+        assert_eq!(run(&mut s, Level::Control, &with_label).unwrap_err().code, "usage");
+    }
+
+    /// Failure (S4 of the second review): `contents` gave an entry's place only for generated contents and the sidebar gave none, so an agent couldn't go
+    /// where a click on a file's own entry goes: it landed at the page's top, with another entry marked. Each entry's `place` is listed, own contents and
+    /// the sidebar's rows alike (0 for one the file gives no place), and `goto` with it and the entry goes where the row's click goes.
+    #[test]
+    fn an_agent_has_each_entrys_place_and_goes_where_its_row_goes() {
+        #[derive(Clone)]
+        struct Placed;
+        impl DocLoader for Placed {
+            fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
+                let line = |title, page| recto_core::TocLine {
+                    title,
+                    page,
+                    parent: recto_core::NONE,
+                    depth: 0,
+                };
+                Ok(DocFacts {
+                    page_count: 10,
+                    byte_len: 1,
+                    encrypted: false,
+                    version: "1.7".into(),
+                    title: None,
+                    toc: Toc::from_lines(&[line("Top", 1), line("Lower", 1)], false).with_tops(&[0, 450]),
+                    renderer_only: false,
+                })
+            }
+        }
+        let mut s = Session::new(Placed);
+        s.open(Path::new("/d/a.pdf")).unwrap();
+        let listed = run(&mut s, Level::ReadOnly, &crate::parse(r#"{"cmd":"contents"}"#).unwrap()).unwrap();
+        let places: Vec<Value> = listed["entries"].as_array().unwrap().iter().map(|entry| entry["place"].clone()).collect();
+        assert_eq!(places, [json!(0), json!(450)], "{listed}");
+        let sidebar = run(&mut s, Level::ReadOnly, &crate::parse(r#"{"cmd":"sidebar"}"#).unwrap()).unwrap();
+        let rows: Vec<Value> = sidebar["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["kind"] == "contents")
+            .map(|row| row["place"].clone())
+            .collect();
+        assert_eq!(rows, [json!(0), json!(450)], "{sidebar}");
+        run(
+            &mut s,
+            Level::Control,
+            &crate::parse(r#"{"cmd":"goto","page":2,"within":0.45,"entry":1}"#).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            s.mail().waiting_jump(TabId(1)),
+            Some(recto_session::trail::Stop::new(1, 0.45)),
+            "where a click on its row goes"
+        );
+        let current: Vec<Value> = sidebar_json(&s)["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["current"] == true && row["kind"] == "contents")
+            .map(|row| row["untrusted"]["text"].clone())
+            .collect();
+        assert_eq!(current, [json!("Lower")]);
+    }
+
     /// Failure: an agent goes to a page that isn't there, the session clamps it, and it believes it's on that page.
     #[test]
     fn going_past_the_end_is_refused() {
@@ -3060,6 +3171,7 @@ mod tests {
                 page: Some(11),
                 label: None,
                 within: None,
+                entry: None,
             }),
         )
         .unwrap_err();
@@ -3073,6 +3185,7 @@ mod tests {
                     page: Some(0),
                     label: None,
                     within: None,
+                    entry: None,
                 })
             )
             .unwrap_err()
@@ -3088,6 +3201,7 @@ mod tests {
                     page: Some(10),
                     label: None,
                     within: None,
+                    entry: None,
                 })
             )
             .unwrap()["page"],
@@ -3313,12 +3427,14 @@ mod protected_tests {
                     page: Some(2),
                     label: None,
                     within: None,
+                    entry: None,
                 }),
                 Command::from(crate::commands::linking::Goto {
                     tab: tab.clone(),
                     page: None,
                     label: Some("ii".into()),
                     within: None,
+                    entry: None,
                 }),
                 Command::from(crate::commands::linking::Links { tab: tab.clone(), page: 1 }),
                 Command::from(crate::commands::linking::Follow {

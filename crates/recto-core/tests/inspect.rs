@@ -1,3 +1,5 @@
+#[path = "inspect/outline_tops.rs"]
+mod outline_tops;
 mod support;
 
 use recto_core::{NONE, OpenError, inspect};

@@ -43,6 +43,7 @@ mod viewing;
 mod warm;
 
 pub use change::Closed;
+pub use contents::{entry_is_on, reading_band};
 // The session's components, as the accessors in `parts.rs` hand them out: named here so a caller outside the crate can take one alone, and so their
 // docs are read. Naming one gives no way to build or replace it (R3.5a: no public constructor, and changes go through a `PartMut`).
 pub use dormancy::Dormancy;
@@ -76,6 +77,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+pub use view::ViewSaid;
 pub use viewing::Viewing;
 pub use warm::Warm;
 
@@ -253,6 +255,8 @@ pub struct SidebarRow<'a> {
     pub action: Option<ContentsAction>,
     /// A contents row's entry in its list.
     pub entry: u32,
+    /// How far down its page the entry is, in thousandths: where tapping it goes. 0 for a row that isn't one, or an entry with no place.
+    pub top: u16,
     /// It has sections under it, so it has a chevron to fold them.
     pub expandable: bool,
     /// Those sections show.
