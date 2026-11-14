@@ -24,6 +24,7 @@
 //! forms, aren't a person's signature: a save drops them from the new revision and says so quietly (owner, 2026-11-08). Nothing
 //! here ever says a signature is valid.
 
+use crate::nav::frame_of;
 pub use crate::save_error::SaveError;
 use crate::save_error::{from_append, from_rewrite, refused_on_open};
 use crate::signatures::value_is_signature;
@@ -75,6 +76,8 @@ pub struct SaveRequest<'a> {
     pub file_pages: u32,
     pub pages: &'a [PageRef],
     pub added: &'a [AddedFile<'a>],
+    /// Highlights made as edits, by their page's position in `pages`.
+    pub highlights: &'a [NewHighlight<'a>],
 }
 
 /// Where a save goes.
@@ -124,8 +127,10 @@ pub fn open_for_save(path: &Path) -> Result<IndexedReader, SaveError> {
     Ok(reader)
 }
 
+mod annotate;
 mod catalog;
 mod in_memory;
+pub use annotate::{HIGHLIGHT_RGB, NewHighlight};
 pub use in_memory::{plan_in_memory, plan_in_memory_within, rewrite_in_memory, signatures_and_keep_in_memory};
 mod copying;
 pub use crate::signatures::{SignatureFacts, persons_signature, signature_facts, signature_facts_of};
@@ -167,6 +172,17 @@ fn removed_signatures(summary: &lopdf::RewriteSummary) -> (usize, bool) {
         .iter()
         .any(|signature| signature.kind == IndexedSignatureKind::UsageRights);
     (persons, rights)
+}
+
+/// Whether a save changes what's on the file's pages, besides removing some: a page moved, turned or added, or a highlight put on one. A certification
+/// allows none of it.
+fn changes_pages(request: &SaveRequest<'_>) -> bool {
+    !request.highlights.is_empty()
+        || request
+            .pages
+            .iter()
+            .enumerate()
+            .any(|(at, page)| page.source != 0 || page.page as usize != at || page.quarter_turns != 0)
 }
 
 /// Which writer these edits need. Every page of the file has to be there exactly once for an append: a page that's gone was deleted, and a deleted page's objects would stay readable in an appended file.
@@ -279,12 +295,7 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
     }
     let removed: Vec<usize> = removed_pages(real_pages, request.pages);
     let facts = signature_facts(&reader);
-    let changes_pages = !removed.is_empty()
-        || request
-            .pages
-            .iter()
-            .enumerate()
-            .any(|(at, page)| page.source != 0 || page.page as usize != at || page.quarter_turns != 0);
+    let changes_pages = !removed.is_empty() || changes_pages(request);
     let copy = target != Target::Same;
     if !copy && facts.field_locked && changes_pages {
         return Err(SaveError::LockedBySignature);
@@ -660,6 +671,8 @@ struct Plan {
     append_cap: u64,
     /// Added pages' fields couldn't join the document's form, which can't be read: they draw, and can't be filled.
     fields_left_out: bool,
+    /// Highlights to put on pages.
+    highlights: annotate::Highlights,
 }
 
 /// What's copied from one added PDF.
@@ -1033,6 +1046,7 @@ impl Plan {
             missing,
             append_cap: sizes.saturating_mul(2).saturating_add(64 * 1024 * 1024),
             fields_left_out,
+            highlights: annotate::Highlights::of(request.highlights, request.pages.len())?,
         })
     }
 
@@ -1066,9 +1080,10 @@ impl Plan {
                 let id = entry.id();
                 let turned = *degrees != own_rotation(reader, entry);
                 let Some(tree) = self.new_tree else {
-                    if turned {
+                    if turned || self.highlights.on(ids.len()) {
                         let mut dict = page_dict(reader, id)?;
                         dict.set("Rotate", Object::Integer(*degrees));
+                        self.highlights.dress(ids.len(), frame_of(reader, entry), reader, &mut dict, writer)?;
                         writer.put(id, Object::Dictionary(dict))?;
                     }
                     ids.push(id);
@@ -1092,6 +1107,7 @@ impl Plan {
                 dict.set("Parent", Object::Reference(tree));
                 dict.set("Rotate", Object::Integer(*degrees));
                 // A page the tree lists twice is one object in the file, and can't take one new version for each place: the second is a copy of it.
+                self.highlights.dress(ids.len(), frame_of(reader, entry), reader, &mut dict, writer)?;
                 if used_own.insert(id) {
                     writer.put(id, Object::Dictionary(dict))?;
                     ids.push(id);
@@ -1107,6 +1123,9 @@ impl Plan {
                 let numbers = &renumbered[at];
                 let new_id = *numbers.get(&entry.id().0).ok_or(SaveError::Damaged)?;
                 let mut dict = copied_page(source, entry)?;
+                if self.highlights.on(ids.len()) {
+                    annotate::inline_annots(source, &mut dict);
+                }
                 dict = match remap(&Object::Dictionary(dict), copy, numbers) {
                     Some(Object::Dictionary(dict)) => dict,
                     _ => return Err(SaveError::Damaged),
@@ -1132,6 +1151,7 @@ impl Plan {
                     dict.set("Parent", Object::Reference(tree));
                 }
                 dict.set("Rotate", Object::Integer(*degrees));
+                self.highlights.dress(ids.len(), frame_of(source, entry), source, &mut dict, writer)?;
                 if used_copy[at].insert(entry.id().0) {
                     writer.put(new_id, Object::Dictionary(dict))?;
                     ids.push(new_id);

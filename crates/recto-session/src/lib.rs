@@ -638,6 +638,8 @@ pub struct SaveSnapshot {
     pub holds_owner_edits: bool,
     /// The history needs pages of the file as it is now, which a save may take out of it.
     pub needs_own_pages: bool,
+    /// Highlights made as edits, each on a page's position in `slots`: `[x, y, width, height]` in the page's frame.
+    pub highlights: Vec<(u32, Box<[[f32; 4]]>)>,
 }
 
 /// Files read ahead of waking their tabs, held at once. More than wakes can be under way together.

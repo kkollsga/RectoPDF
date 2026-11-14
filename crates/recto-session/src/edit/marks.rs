@@ -217,6 +217,22 @@ impl Marks {
         self.list.iter().map(Mark::to_record).collect()
     }
 
+    /// Each highlight on the positions its page has in `slots` (a page that's there twice has it twice, and one that isn't there has none), its
+    /// rectangles as a save writes them. For a save's snapshot: what it holds is the highlights' own rectangles, and nothing more.
+    pub fn on_positions(&self, slots: &[super::PageSlot]) -> Vec<(u32, Box<[[f32; 4]]>)> {
+        if self.list.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for (position, slot) in slots.iter().enumerate() {
+            for mark in self.list.iter().filter(|mark| (mark.source, mark.page) == (slot.source, slot.page)) {
+                let rects = mark.rects.iter().map(|rect| [rect.x, rect.y, rect.width, rect.height]).collect();
+                out.push((u32::try_from(position).unwrap_or(u32::MAX), rects));
+            }
+        }
+        out
+    }
+
     /// Which PDF each is on, for a list that renumbers its added PDFs.
     pub(super) fn sources_mut(&mut self) -> impl Iterator<Item = &mut u16> {
         self.list.iter_mut().map(|mark| &mut mark.source)

@@ -107,6 +107,7 @@ impl<L: DocLoader> Session<L> {
                 added: list.added_sources().to_vec(),
                 holds_owner_edits: list.holds_owner_edits(),
                 needs_own_pages: list.needs_own_pages(),
+                highlights: list.marks().on_positions(list.slots()),
             },
             // A Save As of the document as it is: every page in its place.
             None if even_unedited => {
@@ -125,6 +126,7 @@ impl<L: DocLoader> Session<L> {
                     added: Vec::new(),
                     holds_owner_edits: false,
                     needs_own_pages: false,
+                    highlights: Vec::new(),
                 }
             }
             None => return Ok(None),

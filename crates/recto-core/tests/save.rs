@@ -62,6 +62,7 @@ fn request<'a>(path: &'a Path, file_pages: u32, pages: &'a [PageRef], added: &'a
         file_pages,
         pages,
         added,
+        highlights: &[],
     }
 }
 
@@ -363,6 +364,7 @@ fn a_file_changed_meanwhile_isnt_saved_over() {
         file_pages: 1,
         pages: &order,
         added: &[],
+        highlights: &[],
     };
     assert_eq!(
         save::save(&stale, Target::Same, None, &mut save::NoHooks),
@@ -415,6 +417,7 @@ fn a_rewrite_that_keeps_size_and_time_isnt_saved_onto() {
         file_pages: 10,
         pages: &order,
         added: &[],
+        highlights: &[],
     };
     let copy = dir.0.join("copy.pdf");
     // In place: the same number, size and time, five pages.
@@ -930,6 +933,7 @@ fn no_stamp_is_no_save() {
         file_pages: 1,
         pages: &order,
         added: &[],
+        highlights: &[],
     };
     assert_eq!(save::save(&unstamped, Target::Same, None, &mut save::NoHooks), Err(SaveError::FileChanged));
 }
@@ -1668,4 +1672,117 @@ fn an_encrypted_file_is_refused_in_words_true_of_it() {
         added(false)
     );
     assert!(added(true).to_lowercase().contains("password"), "{}", added(true));
+}
+
+/// Two pages sharing one named `/Annots` list with a link in it; the second turned a quarter and cropped.
+fn annotated() -> Vec<u8> {
+    build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 5 0 R /Annots 6 0 R >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /CropBox [100 50 500 750] /Rotate 90 /Contents 5 0 R /Annots 6 0 R >>".into()),
+        Raw::Stream {
+            dict: String::new(),
+            data: b"BT ET".to_vec(),
+        },
+        Raw::Dict("[7 0 R]".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /Contents (from the file) >>".into()),
+    ])
+}
+
+fn numbers(object: &Object) -> Vec<f32> {
+    object.as_array().unwrap().iter().map(|n| n.as_float().unwrap()).collect()
+}
+
+/// A page's annotations as the fork's reader reads the saved file: each `(subtype, quad points)`.
+fn annotations_of(path: &Path, page: usize) -> Vec<(Vec<u8>, Vec<f32>, Object)> {
+    let reader = IndexedReader::open(FileSource::open(path).unwrap()).unwrap();
+    let map = reader.page_map().unwrap();
+    let Object::Dictionary(dict) = reader.resolve_object(map.get(page).unwrap().id()).unwrap() else {
+        panic!()
+    };
+    let annots = match dict.get(b"Annots").unwrap() {
+        Object::Reference(id) => reader.resolve_object(*id).unwrap(),
+        other => other.clone(),
+    };
+    annots
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            let Object::Dictionary(annot) = reader.resolve_object(item.as_reference().unwrap()).unwrap() else {
+                panic!()
+            };
+            let quads = annot.get(b"QuadPoints").map(numbers).unwrap_or_default();
+            let appearance = annot
+                .get(b"AP")
+                .and_then(|ap| ap.as_dict().and_then(|ap| ap.get(b"N")))
+                .map(|n| reader.resolve_object(n.as_reference().unwrap()).unwrap())
+                .unwrap_or(Object::Null);
+            (annot.get(b"Subtype").unwrap().as_name().unwrap().to_vec(), quads, appearance)
+        })
+        .collect()
+}
+
+/// **Failure: a highlight isn't in the saved file as a standard annotation where it was shown** (R4.3): it's written over the file's bytes, lost
+/// from a page whose list the file names, put on the other page that shares that list, placed wrong on a turned or cropped page, or saved without the
+/// appearance other readers draw it by. Read back by the fork's reader, independently of the plan that wrote it.
+#[test]
+fn a_highlight_is_appended_where_it_was_shown_and_reads_back() {
+    let dir = Dir::new();
+    let path = dir.write("annotated.pdf", &annotated());
+    let before = std::fs::read(&path).unwrap();
+    let order = own(&[(0, 0), (1, 0)]);
+    let line = [[40.0, 100.0, 100.0, 12.0]];
+    let highlights = [save::NewHighlight { position: 1, rects: &line }];
+    let asked = SaveRequest {
+        highlights: &highlights,
+        ..request(&path, 2, &order, &[])
+    };
+    let outcome = save::save(&asked, Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!(outcome.writer, Writer::Append);
+    assert!(std::fs::read(&path).unwrap().starts_with(&before), "every byte that was there is still there");
+    let first = annotations_of(&path, 0);
+    assert_eq!(first.len(), 1, "the page that shares the list and has no highlight keeps it as it was");
+    let second = annotations_of(&path, 1);
+    assert_eq!(
+        second.iter().map(|(kind, ..)| kind.as_slice()).collect::<Vec<_>>(),
+        vec![&b"Link"[..], b"Highlight"]
+    );
+    // Shown turned a quarter: the frame's x runs up the page from the crop's bottom (50), its y in from the crop's left (100).
+    assert_eq!(second[1].1, vec![200.0, 90.0, 200.0, 190.0, 212.0, 90.0, 212.0, 190.0]);
+    let Object::Stream(appearance) = &second[1].2 else {
+        panic!("an appearance: {:?}", second[1].2)
+    };
+    assert_eq!(appearance.dict.get(b"Subtype").unwrap().as_name().unwrap(), b"Form");
+    assert!(String::from_utf8_lossy(&appearance.content).contains("rg"), "it fills with its colour");
+}
+
+/// Failure: a highlight saved on a signed PDF changes the bytes its signature covers, or one on a certified PDF is written, which its certification
+/// forbids (the stricter rule kept, coordinator 2026-11-14).
+#[test]
+fn a_highlight_on_a_signed_file_is_appended_and_a_certified_one_refused() {
+    let dir = Dir::new();
+    let line = [[10.0, 10.0, 50.0, 10.0]];
+    let highlights = [save::NewHighlight { position: 0, rects: &line }];
+    let order = own(&[(0, 0)]);
+    let path = dir.write("signed.pdf", &signed(false, false));
+    let before = std::fs::read(&path).unwrap();
+    let on_signed = SaveRequest {
+        highlights: &highlights,
+        ..request(&path, 1, &order, &[])
+    };
+    assert_eq!(save::save(&on_signed, Target::Same, None, &mut save::NoHooks).unwrap().writer, Writer::Append);
+    assert!(std::fs::read(&path).unwrap().starts_with(&before));
+    let certified = dir.write("certified.pdf", &signed(true, false));
+    let before = std::fs::read(&certified).unwrap();
+    let on_certified = SaveRequest {
+        highlights: &highlights,
+        ..request(&certified, 1, &order, &[])
+    };
+    assert_eq!(
+        save::save(&on_certified, Target::Same, None, &mut save::NoHooks),
+        Err(SaveError::BreaksCertification)
+    );
+    assert_eq!(std::fs::read(&certified).unwrap(), before);
 }

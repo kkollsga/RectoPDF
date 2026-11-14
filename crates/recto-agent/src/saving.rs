@@ -229,6 +229,34 @@ fn as_said(error: SaveError, request: &SaveRequest<'_>, to: &SaveTo) -> SaveErro
     }
 }
 
+/// What a save is asked to write, from the tab's snapshot: its pages in order, the PDFs they come from, and its highlights on their pages' positions.
+fn request_parts(snapshot: &recto_session::SaveSnapshot) -> (Vec<PageRef>, Vec<AddedFile<'_>>, Vec<recto_core::save::NewHighlight<'_>>) {
+    let pages = snapshot
+        .slots
+        .iter()
+        .map(|slot| PageRef {
+            source: slot.source,
+            page: slot.page,
+            quarter_turns: slot.quarter_turns,
+        })
+        .collect();
+    let added = snapshot
+        .added
+        .iter()
+        .map(|added| AddedFile {
+            path: &added.path,
+            page_count: added.page_count,
+            stamp: added.stamp,
+        })
+        .collect();
+    let highlights = snapshot
+        .highlights
+        .iter()
+        .map(|(position, rects)| recto_core::save::NewHighlight { position: *position, rects })
+        .collect();
+    (pages, added, highlights)
+}
+
 /// **Saves a tab.** The one way an agent, the CLI or the app saves.
 pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &TabRef, to: &SaveTo, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     let mut to = to.clone();
@@ -290,35 +318,19 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &TabRef, to: &SaveT
         drop(ending);
         return Err(refusal);
     }
-    let pages: Vec<PageRef> = snapshot
-        .slots
-        .iter()
-        .map(|slot| PageRef {
-            source: slot.source,
-            page: slot.page,
-            quarter_turns: slot.quarter_turns,
-        })
-        .collect();
+    let (pages, added, highlights) = request_parts(&snapshot);
     let writer = recto_core::save::writer_for(snapshot.file_pages, &pages);
     if writer == Writer::Rewrite && level < Level::Full && level >= Level::Control {
         drop(ending);
         return Err(needs_full("A save that removes pages for good"));
     }
-    let added: Vec<AddedFile<'_>> = snapshot
-        .added
-        .iter()
-        .map(|added| AddedFile {
-            path: &added.path,
-            page_count: added.page_count,
-            stamp: added.stamp,
-        })
-        .collect();
     let request = SaveRequest {
         path: &snapshot.path,
         stamp: snapshot.stamp,
         file_pages: snapshot.file_pages,
         pages: &pages,
         added: &added,
+        highlights: &highlights,
     };
     let target = match to {
         SaveTo::Same => Target::Same,
@@ -604,6 +616,7 @@ mod tests {
                 file_pages: 2,
                 pages,
                 added: &[],
+                highlights: &[],
             }
         }
         let (whole, turned) = (&whole[..], &turned[..]);

@@ -18,7 +18,8 @@ fn open_bytes_for_save(bytes: &[u8]) -> Result<(IndexedReader, lopdf::PageMap), 
 }
 
 /// **The planner, the copier and the remapper on bytes in memory, for the fuzzer:** `target` with its last page moved to the front, page 1 turned, and every page
-/// of `added` copied in at the end, written as an update into memory and read back. Gives back the pages the result has. The same code a save runs, with no file.
+/// of `added` copied in at the end, with a highlight on the first page of each file and on the second (whatever their `/Annots` say, R4.3), written as an
+/// update into memory and read back. Gives back the pages the result has. The same code a save runs, with no file.
 pub fn plan_in_memory(target: &[u8], added: &[u8]) -> Result<usize, SaveError> {
     plan_in_memory_within(target, added, MAX_COPY_WORK)
 }
@@ -51,12 +52,22 @@ pub fn plan_in_memory_within(target: &[u8], added: &[u8], work_limit: u64) -> Re
         page_count: added_pages,
         stamp: None,
     }];
+    let line = [[10.0, 10.0, 100.0, 12.0]];
+    let highlights: Vec<NewHighlight<'_>> = [0, 1, order.len().saturating_sub(added_pages as usize)]
+        .into_iter()
+        .filter(|position| *position < order.len())
+        .map(|position| NewHighlight {
+            position: u32::try_from(position).unwrap_or(0),
+            rects: &line,
+        })
+        .collect();
     let request = SaveRequest {
         path: Path::new("target.pdf"),
         stamp: None,
         file_pages: pages,
         pages: &order,
         added: &added_file,
+        highlights: &highlights,
     };
     let sources = vec![Some((source, source_map))];
     let plan = Plan::make(
@@ -120,6 +131,7 @@ pub fn rewrite_in_memory(target: &[u8], added: &[u8], with_added: bool) -> Resul
         file_pages: pages,
         pages: &order,
         added: &added_file,
+        highlights: &[],
     };
     let sources = vec![Some((source, source_map))];
     let plan = Plan::make(&reader, &map, &request, &sources, signature_facts(&reader), Writer::Rewrite, MAX_COPY_WORK)?;
