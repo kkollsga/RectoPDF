@@ -162,6 +162,28 @@ pub(super) fn in_view_of(doc: &DocView, pages: &[u32], from: f64, height: f64) -
 
 /// Copies a tile's pixels into a picture of its page, a step-sized box of them to each pixel. A pixel past the edge of either is left.
 #[allow(clippy::too_many_arguments)]
+/// A colour as the host has it (`0xRRGGBB`, as a page's paper and a tile of one colour are said), as a picture's pixel.
+fn bgra_of(rgb: u32) -> [u8; 4] {
+    [(rgb & 0xFF) as u8, ((rgb >> 8) & 0xFF) as u8, ((rgb >> 16) & 0xFF) as u8, 0xFF]
+}
+
+/// Paints a tile of one colour at `rect`, in the pixels of its scale, into a picture `step` times smaller, as [`shrink_into`] puts a tile's pixels. What
+/// falls past the picture's edge is left out.
+fn paint_into(rect: TileRect, step: u32, rgb: u32, picture: &mut [u8], width: u32, height: u32) {
+    let step = step.max(1);
+    // To the pixel its edge falls in, so a page's last part of a pixel isn't left paper.
+    let (left, top) = (rect.x / step, rect.y / step);
+    let right = rect.x.saturating_add(rect.width).div_ceil(step).min(width) as usize;
+    let bottom = rect.y.saturating_add(rect.height).div_ceil(step).min(height) as usize;
+    let pixel = bgra_of(rgb);
+    let row = width as usize;
+    for y in top as usize..bottom {
+        if let Some(line) = picture.as_chunks_mut::<4>().0.get_mut(y * row + left as usize..y * row + right) {
+            line.fill(pixel);
+        }
+    }
+}
+
 pub(super) fn shrink_into(
     source: &[u8],
     stride: usize,
@@ -468,7 +490,7 @@ impl Reader {
         {
             return Some(picture);
         }
-        // Otherwise the sharpest tiles there are of this page, at whole steps down.
+        // Otherwise the sharpest tiles there are of this page, at whole steps down: those of one colour too, which have no surface, painted in their colour.
         let ids: Vec<u64> = self
             .cache
             .entries
@@ -478,7 +500,7 @@ impl Reader {
                     && entry.page == page
                     && !entry.preview
                     && entry.paper == paper
-                    && entry.surface.is_some()
+                    && (entry.surface.is_some() || entry.rgb.is_some())
                     && entry.low_res.is_none()
                     && entry.version.is_some()
                     && self.docs.is_current(entry)
@@ -501,18 +523,16 @@ impl Reader {
         }
         let bytes = u64::from(width) * u64::from(height) * u64::from(BYTES_PER_PIXEL);
         let mut bgra = vec![0u8; bytes as usize];
-        for pixel in bgra.as_chunks_mut::<4>().0 {
-            *pixel = [
-                (paper_rgb & 0xFF) as u8,
-                ((paper_rgb >> 8) & 0xFF) as u8,
-                ((paper_rgb >> 16) & 0xFF) as u8,
-                0xFF,
-            ];
-        }
+        bgra.as_chunks_mut::<4>().0.fill(bgra_of(paper_rgb));
         let mut any = false;
         for id in ids {
             let Some(entry) = self.cache.entries.get(&id) else { continue };
             if entry.scale != finest {
+                continue;
+            }
+            if let (None, Some(rgb)) = (&entry.surface, entry.rgb) {
+                paint_into(entry.rect, step, rgb, &mut bgra, width, height);
+                any = true;
                 continue;
             }
             let was_discardable = entry.discardable;

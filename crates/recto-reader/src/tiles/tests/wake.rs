@@ -471,3 +471,57 @@ fn a_tab_left_at_a_place_not_drawn_names_the_pages_that_owe_a_picture() {
         left.pictures.iter().map(|p| p.page).collect::<Vec<_>>()
     );
 }
+
+/// Runs the job queue as [`settle`] does, each draw coming back as `kind` says for its job.
+fn settle_drawn_as(reader: &mut Reader, kind: impl Fn(&JobKind) -> TileKind) {
+    for _ in 0..10_000 {
+        reader.host.take_ops();
+        reader.applied();
+        let Some(job) = reader.next_job() else { break };
+        let outcome = match &job.kind {
+            JobKind::Size => Outcome::Size(letter()),
+            JobKind::Text { .. } => panic!("no text was asked for"),
+            JobKind::Links => Outcome::Links(None),
+            JobKind::Traits => Outcome::Heavy(false),
+            JobKind::Draw { .. } => Outcome::Drawn {
+                kind: kind(&job.kind),
+                low_res: None,
+            },
+        };
+        reader.finish(job, outcome);
+        drop(reader.drain(MAX_ATTACH_PER_TURN));
+    }
+    reader.host.take_ops();
+    reader.applied();
+}
+
+/// Failure (2026-11-14, `a_launch_doesnt_show_a_picture_of_a_file_thats_been_replaced` at load 77, and 0.1.0 has it): with the system having taken a page's
+/// preview, as it does under memory pressure once the page's tiles cover it, the page's picture for a sleep file is made from its tiles, and a tile of one
+/// colour, which has no surface, was left out. A page of one colour had no picture at all, so the next launch went up on bare paper, and a page with a band
+/// of colour was pictured with paper where the band is. Each tile of one colour is painted in its colour.
+#[test]
+fn a_picture_made_from_the_tiles_has_their_one_colour_tiles_in_it() {
+    const RED: u32 = 0xFF_00_00;
+    const RED_BGRA: [u8; 4] = [0, 0, 0xFF, 0xFF];
+    for band_only in [false, true] {
+        let mut reader = reader_on(5);
+        reader.note_version(Path::new("/d/a.pdf"), 1);
+        settle_drawn_as(&mut reader, |kind| match kind {
+            JobKind::Draw {
+                rect, what: DrawKind::Tile, ..
+            } if !band_only || rect.y == 0 => TileKind::Blank { rgb: RED },
+            _ => TileKind::Colour,
+        });
+        let label = if band_only { "a band across the top" } else { "a page of one colour" };
+        assert!(reader.cache.empty_discardable() > 0, "{label}: the preview, off its layer, taken by the system");
+        let pictures = reader.pictures_in_view(1);
+        let picture = pictures.first().unwrap_or_else(|| panic!("{label}: no picture of the page in view"));
+        assert_eq!(picture.page, 0);
+        let pixels = picture.bgra.as_chunks::<4>().0;
+        assert_eq!(pixels[0], RED_BGRA, "{label}: the top left is red");
+        if !band_only {
+            let other = pixels.iter().filter(|pixel| **pixel != RED_BGRA).count();
+            assert_eq!(other, 0, "{label}: all of its {} by {} red", picture.width, picture.height);
+        }
+    }
+}
