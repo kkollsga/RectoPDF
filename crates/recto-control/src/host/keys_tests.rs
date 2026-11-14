@@ -56,3 +56,34 @@ fn only_the_persons_access_holds_their_keys_and_only_for_them() {
     }
     assert_eq!(asked.load(Ordering::SeqCst), 0, "nothing looked up a key");
 }
+
+/// A watch that does nothing: only whether an access holds one is asked.
+struct Unwatched;
+
+impl recto_agent::print::PrintWatch for Unwatched {
+    fn begin(&self, _tab: recto_session::TabId, _pages: u32) {}
+    fn page(&self, _done: u32, _of: u32) -> bool {
+        true
+    }
+    fn ready(&self, _file: std::fs::File) {}
+    fn end(&self) {}
+}
+
+/// Failure (found building the door, 2026-11-14): a print the server runs with [`Actor::Person`] (the actor it names is only a word) gets the window's
+/// watch, so it starts the window's "Preparing pages for printing… [Stop]", which nothing then ends (only the person's own route says what came of a
+/// print), leaving File > Print off and the app never at rest; and with no file named it would hand the window a file to print on the person's printer.
+/// Only the person's access holds the watch, as only it holds their keys.
+#[test]
+fn only_the_persons_access_holds_the_windows_print_watch() {
+    let host = SessionHost::new(Fake);
+    host.set_print_watch(Arc::new(Unwatched));
+    assert!(
+        host.access().print_watch(Actor::Person).is_none(),
+        "the server's access holds the window's watch"
+    );
+    assert!(host.persons_access().print_watch(Actor::Person).is_some(), "the person's door holds it");
+    assert!(
+        host.persons_access().print_watch(Actor::Agent(Level::Full)).is_none(),
+        "and gives it to an agent"
+    );
+}

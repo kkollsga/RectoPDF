@@ -112,7 +112,7 @@ struct Hosted<'a, L> {
     records: Option<&'a (dyn Records + Send + Sync)>,
     effects: Option<&'a Effects>,
     places: Option<&'a Places>,
-    /// The window's watch over the person's print.
+    /// The window's watch over the person's print: only in an access made by [`SessionHost::persons_access`], as the keys are.
     print_watch: Option<&'a dyn recto_agent::print::PrintWatch>,
     /// How what a command needs is read, on a host that mustn't wait on a disk: the window's session thread. None everywhere else.
     reads_later: Option<&'a dyn recto_agent::later::ReadLater>,
@@ -327,7 +327,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             records: self.records.get().map(|records| &**records),
             effects: self.effects.get(),
             places: self.places.get(),
-            print_watch: self.print_watch.get().map(|watch| &**watch),
+            print_watch: None,
             reads_later: None,
             answer_read: true,
             persons_keys: None,
@@ -338,9 +338,12 @@ impl<L: DocLoader + Clone> SessionHost<L> {
     /// **The person's own access: the only one holding their passwords** ([`recto_agent::keys`]). Every way to a command the server has
     /// ([`Host::run`], [`Host::check`]) is by [`Self::access`], which holds none whatever actor it's given; this is reached only by the person's routes,
     /// [`Self::run_for_person`] and [`Self::run_for_person_reading_later`], which take no actor.
+    /// The window's watch over the person's print goes only here too: a print the server runs, whatever actor it names, never starts the window's
+    /// "Preparing pages for printing" nor hands it a file.
     fn persons_access(&self) -> Hosted<'_, L> {
         Hosted {
             persons_keys: self.persons_keys.get(),
+            print_watch: self.print_watch.get().map(|watch| &**watch),
             ..self.access()
         }
     }
