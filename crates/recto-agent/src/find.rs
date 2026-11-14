@@ -801,6 +801,41 @@ mod tests {
         assert!(began.elapsed() < Duration::from_secs(5), "nothing to go to is said when the query ends");
     }
 
+    /// Failure (security review of S2's round, S3): the person's ⌘G in a plain tab left by following a protected one goes to the first hit past where
+    /// following left it, and the tab's place is then its own, so `where` says which hit follows the protected document's place. The person's step goes
+    /// where it always went; the place it lands on stays withheld.
+    #[test]
+    fn the_persons_step_from_a_withheld_place_goes_as_ever_and_keeps_it_withheld() {
+        let mut s = Session::new(TenPages);
+        let locked = s.open(std::path::Path::new("/d/locked.pdf")).unwrap();
+        let plain = s.open(std::path::Path::new("/d/plain.pdf")).unwrap();
+        s.tabs_mut().note_password_used(locked);
+        s.compare(&[locked, plain], Some(plain)).unwrap();
+        s.set_compare_synced(true);
+        s.go_to(plain, 4).unwrap();
+        s.set_compare_synced(false);
+        let session = std::sync::Mutex::new(s);
+        let finding = Driven::default();
+        {
+            let mut results = finding.results.lock().unwrap();
+            let generation = results.begin(plain.0, "word", 10);
+            let progress = Progress {
+                pages_done: 10,
+                pages: 10,
+                pages_with_hits: 3,
+                total: 3,
+                ..Progress::default()
+            };
+            results.add(generation, vec![found_on(2), found_on(6), found_on(8)], &progress);
+            results.finish(generation, End::Finished, progress);
+        }
+        let went = step(&session, &finding, true, Going::Step);
+        assert_eq!(went.map(|(_, hit)| hit.page), Some(6), "the first hit past where the person is");
+        let s = session.lock().unwrap();
+        assert_eq!(s.tabs().tab(plain).unwrap().page, 6, "and the tab went there, as it always did");
+        assert!(recto_session::compare::place_withheld(&s, plain), "where it went says where it started");
+    }
+
     fn hits(text: &str, query: &str) -> Vec<Hit> {
         page_hits(text, &needle(query).unwrap(), 3, MAX_HITS, &|_| false).1
     }

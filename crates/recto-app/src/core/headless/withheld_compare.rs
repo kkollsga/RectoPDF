@@ -223,3 +223,122 @@ fn an_agent_is_told_the_same_of_two_compared_protected_documents() {
     );
     assert_eq!(one.len(), two.len());
 }
+
+/// What an agent at Control is told, and hears, of the plain tab `plain` (`#P` below), which follows or followed the protected one, at `step`: what reads
+/// its place (`where`, `edits`, `tabs`, `session show`, `sidebar`, `compare`), what starts from it (a step of Find and its jump, `back`, `forward`, the
+/// palette's Rotate of this page in edit mode), an edit's, undo's, redo's and save's answers, the record written and restored, and `wait page-drawn` on
+/// page 5, where following leaves the plain tab beside a five-page protected one. The person's ⌘G in the plain pane is heard too. The plain pane is
+/// made the one being read first, as Find and the palette's Rotate go by it.
+fn probe(app: &HeadlessApp, watching: &mut crate::testkit::watching::Watching, plain: u32, step: &str) -> Vec<String> {
+    use recto_control::host::Host;
+    app.act(UiAction::PaneRead { tab: plain });
+    app.settle();
+    let mut told = vec![format!("{step} heard before: {:?}", watching.heard())];
+    let tab = format!("#{plain}");
+    for line in [
+        format!(r#"{{"cmd":"where","tab":"{tab}"}}"#),
+        format!(r#"{{"cmd":"edits","tab":"{tab}"}}"#),
+        r#"{"cmd":"tabs"}"#.to_string(),
+        r#"{"cmd":"session_show"}"#.to_string(),
+        r#"{"cmd":"sidebar"}"#.to_string(),
+        r#"{"cmd":"compare"}"#.to_string(),
+        r#"{"cmd":"find","query":"page"}"#.to_string(),
+        r#"{"cmd":"find","next":true}"#.to_string(),
+        r#"{"cmd":"find","next":true,"jump":true}"#.to_string(),
+        r#"{"cmd":"find"}"#.to_string(),
+        format!(r#"{{"cmd":"back","tab":"{tab}"}}"#),
+        format!(r#"{{"cmd":"forward","tab":"{tab}"}}"#),
+        format!(r#"{{"cmd":"page_rotate","tab":"{tab}","pages":"2","degrees":90}}"#),
+        format!(r#"{{"cmd":"undo","tab":"{tab}"}}"#),
+        format!(r#"{{"cmd":"redo","tab":"{tab}"}}"#),
+        format!(r#"{{"cmd":"save","tab":"{tab}"}}"#),
+        r#"{"cmd":"edit_mode","set":"on"}"#.to_string(),
+        r#"{"cmd":"palette","query":"rotate this page right","run":true}"#.to_string(),
+        r#"{"cmd":"edit_mode","set":"off"}"#.to_string(),
+        r#"{"cmd":"session_save"}"#.to_string(),
+        r#"{"cmd":"session_restore"}"#.to_string(),
+    ] {
+        let mut said = app.agent(Level::Control, &line);
+        // What's measured as it runs differs from run to run whatever the documents.
+        if let Ok(answer) = said.as_mut() {
+            for key in ["total_ms", "total_us", "write_us", "force_us", "verify_us", "took_ms", "first_hit_ms"] {
+                if answer.get(key).is_some() {
+                    answer[key] = Value::Null;
+                }
+            }
+        }
+        app.settle();
+        told.push(format!("{step} {line}: {said:?}"));
+    }
+    let drawn = app
+        .core()
+        .host
+        .check(recto_agent::Condition::PageDrawn, &recto_agent::TabRef::from(tab.as_str()), Some(5));
+    told.push(format!("{step} wait page-drawn 5: {drawn:?}"));
+    // The person's ⌘G in the plain pane, from where it is.
+    app.act(UiAction::FindTyped { text: "page".into() });
+    app.settle();
+    app.act(UiAction::Menu { id: "find.next".into() });
+    app.settle();
+    told.push(format!("{step} heard after: {:?}", watching.heard()));
+    told
+}
+
+/// **What an agent is told while the person compares a plain document with a protected one of `pages` pages that says `word`** (security review of
+/// S2's round): synced, the protected one leading to its end (and, `plain_leads`, the plain one then leading back up); then separate; then an agent's
+/// `goto 5` on the plain tab, which is where following left it beside a five-page document; then the person's Back. At each step, [`probe`].
+fn agent_told_beside_a_followed_tab(pages: usize, word: &str, plain_leads: bool) -> Vec<String> {
+    let disk = Disk::new();
+    let plain = disk.pdf("plain.pdf", 30);
+    let locked = protected(&disk, pages, word);
+    let app = disk.start();
+    let mut watching = app.agent_watches(Level::Control);
+    app.open(&plain);
+    person_unlocks(&app, &locked);
+    let (plain_tab, locked_tab) = (app.tabs()[0].tab, app.tabs()[1].tab);
+    command_click(&app, plain_tab);
+    app.act(UiAction::Menu { id: "compare.synced".into() });
+    app.act(UiAction::PaneRead { tab: locked_tab });
+    app.settle();
+    person_scrolls(&app, locked_tab, 1.0);
+    if plain_leads {
+        app.act(UiAction::PaneRead { tab: plain_tab });
+        person_scrolls(&app, plain_tab, -0.05);
+    }
+    let mut told = probe(&app, &mut watching, plain_tab, "following");
+    app.act(UiAction::Menu { id: "compare.separate".into() });
+    app.settle();
+    told.extend(probe(&app, &mut watching, plain_tab, "left by following"));
+    told.push(format!(
+        "goto 5: {:?}",
+        control(&app, &format!(r##"{{"cmd":"goto","tab":"#{plain_tab}","page":5}}"##))
+    ));
+    app.settle();
+    told.extend(probe(&app, &mut watching, plain_tab, "after a goto"));
+    app.act(UiAction::Menu { id: "go.back".into() });
+    app.settle();
+    told.extend(probe(&app, &mut watching, plain_tab, "the person went back"));
+    told
+}
+
+/// Failure (security review of S2's round): a plain tab that follows a protected one, or was left by following one, tells an agent that document's
+/// place and length by a way the first round didn't close: an edit's, undo's, redo's or save's answer, `edits`, a step of Find from it or the person's
+/// ⌘G there, `back` and `forward` after a jump, `session save`'s sizes, `session restore` (which forgets the place was withheld), `wait page-drawn`
+/// after its place is let go, a `goto` to the page it's on, the palette's Rotate of this page. Twins whose protected documents differ in length and words
+/// are told and heard alike, the protected one leading and the plain one leading.
+#[test]
+fn an_agent_is_told_nothing_of_where_a_followed_tab_is() {
+    for plain_leads in [false, true] {
+        let (one, two) = (
+            agent_told_beside_a_followed_tab(5, "Locked", plain_leads),
+            agent_told_beside_a_followed_tab(9, "Sealed", plain_leads),
+        );
+        let differs: Vec<String> = one.iter().zip(&two).filter(|(a, b)| a != b).map(|(a, b)| format!("  {a}\n  {b}")).collect();
+        assert!(
+            differs.is_empty(),
+            "the agent was told something of the protected document (the plain one leading: {plain_leads}):\n{}",
+            differs.join("\n")
+        );
+        assert_eq!(one.len(), two.len());
+    }
+}
