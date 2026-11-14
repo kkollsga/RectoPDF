@@ -83,7 +83,7 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
         // Whichever way it's been asked for, the first frame's what its sleep file has, or what was waiting to be one, if nothing's held of this tab.
         if !engine.waking().holds(id.0) {
             engine.waking().note_wake(id.0, Instant::now());
-            inner.give_sleep_view(engine, id, back);
+            sleeper::give_sleep_view(&inner.host.session, &inner.saver.store, engine, id, back);
         }
         engine.activate(
             id.0,

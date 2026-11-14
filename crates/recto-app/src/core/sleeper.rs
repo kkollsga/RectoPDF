@@ -746,63 +746,6 @@ impl Sleeper {
 }
 
 impl Inner {
-    /// What a tab's first frame shows, for the page view: from the file just read, or its sleep file if nobody's read it, whichever way this tab's been asked for. Only what's about the document as it is now. Each picture says what paper it's for, and only goes on that. On the session thread, with no lock on the page view while the surfaces are made.
-    /// `back` is what was taken back from the queue for it, a tab shown again inside its wait: the page view let go of its pictures as it left, and these are
-    /// them, held to the same checks as a sleep file's (this version of its file, these pages).
-    pub(super) fn give_sleep_view(&self, engine: &recto_reader::Engine, id: TabId, back: Option<(SleepFacts, SleepMaterial)>) {
-        let read = self.host.session.with_session(|session| session.dormancy_mut().take_sleep_read(id));
-        // What was waiting first: it's what the tab left with last, newer than any file on disk for it, which may be of where it was the time before. Held to
-        // the check a sleep file's pictures are.
-        let back = back.map(|(mut facts, material)| {
-            let material = crate::sleep_writer::allowed_material(&mut facts, material);
-            with_material(facts.sleep, material)
-        });
-        let handed_back = back.is_some();
-        let sleep = back.or(read).or_else(|| {
-            let (stamp, path) = self.host.session.with_session(|session| session.dormant().sleep_to_read_awake(id))?;
-            self.saver.store.read_sleep(stamp, &path)
-        });
-        let Some(sleep) = sleep else { return };
-        // Read for a file that's since been found to be another: nothing in it's about this one.
-        if self
-            .host
-            .session
-            .with_session(|session| session.tabs().own_stamp(id))
-            .is_none_or(|now| !(now.same_contents(sleep.file) && now.inode == sleep.file.inode))
-        {
-            return;
-        }
-        let (pages, mark) = self
-            .host
-            .session
-            .with_session(|session| (session.pages().count(id), session.lists().list_mark(id)));
-        if sleep.pages != pages || sleep.list_seq != mark {
-            return;
-        }
-        let page_box = |(width, height): (f32, f32)| PageBox { width, height };
-        let mut pictures = Vec::with_capacity(sleep.pictures.len());
-        for picture in &sleep.pictures {
-            if let Some(surface) = surface_of(picture) {
-                pictures.push(SleepShot {
-                    page: picture.page,
-                    scale: picture.scale,
-                    paper: if picture.dark { PaperKind::Dark } else { PaperKind::White },
-                    surface,
-                });
-            }
-        }
-        engine.waking().give_sleep(
-            id.0,
-            SleepView {
-                version: sleep.version,
-                usual: sleep.usual.map(page_box),
-                sizes: sleep.sizes.iter().map(|(page, width, height)| (*page, page_box((*width, *height)))).collect(),
-                pictures,
-                handed_back,
-            },
-        );
-    }
-
     /// The system's memory pressure, from the host's dispatch source (and `qa memory-pressure system-warning`): acted on, or in a quiet run only counted ([`crate::pressure::heard`]). A quiet run is the one with a QA bridge.
     pub fn system_pressure(&self, critical: bool) {
         let quiet = self.qa.is_some();
@@ -823,6 +766,64 @@ impl Inner {
             engine.memory_pressure(critical);
         }
     }
+}
+
+/// What a tab's first frame shows, for the page view: from the file just read, or its sleep file if nobody's read it, whichever way this tab's been asked for. Only what's about the document as it is now. Each picture says what paper it's for, and only goes on that. On the session thread, with no lock on the page view while the surfaces are made.
+/// `back` is what was taken back from the queue for it, a tab shown again inside its wait: the page view let go of its pictures as it left, and these are
+/// them, held to the same checks as a sleep file's (this version of its file, these pages).
+pub(super) fn give_sleep_view(
+    session: &SessionHost<DrawableLoader>,
+    store: &RecordStore,
+    engine: &recto_reader::Engine,
+    id: TabId,
+    back: Option<(SleepFacts, SleepMaterial)>,
+) {
+    let read = session.with_session(|session| session.dormancy_mut().take_sleep_read(id));
+    // What was waiting first: it's what the tab left with last, newer than any file on disk for it, which may be of where it was the time before. Held to
+    // the check a sleep file's pictures are.
+    let back = back.map(|(mut facts, material)| {
+        let material = crate::sleep_writer::allowed_material(&mut facts, material);
+        with_material(facts.sleep, material)
+    });
+    let handed_back = back.is_some();
+    let sleep = back.or(read).or_else(|| {
+        let (stamp, path) = session.with_session(|session| session.dormant().sleep_to_read_awake(id))?;
+        store.read_sleep(stamp, &path)
+    });
+    let Some(sleep) = sleep else { return };
+    // Read for a file that's since been found to be another: nothing in it's about this one.
+    if session
+        .with_session(|session| session.tabs().own_stamp(id))
+        .is_none_or(|now| !(now.same_contents(sleep.file) && now.inode == sleep.file.inode))
+    {
+        return;
+    }
+    let (pages, mark) = session.with_session(|session| (session.pages().count(id), session.lists().list_mark(id)));
+    if sleep.pages != pages || sleep.list_seq != mark {
+        return;
+    }
+    let page_box = |(width, height): (f32, f32)| PageBox { width, height };
+    let mut pictures = Vec::with_capacity(sleep.pictures.len());
+    for picture in &sleep.pictures {
+        if let Some(surface) = surface_of(picture) {
+            pictures.push(SleepShot {
+                page: picture.page,
+                scale: picture.scale,
+                paper: if picture.dark { PaperKind::Dark } else { PaperKind::White },
+                surface,
+            });
+        }
+    }
+    engine.waking().give_sleep(
+        id.0,
+        SleepView {
+            version: sleep.version,
+            usual: sleep.usual.map(page_box),
+            sizes: sleep.sizes.iter().map(|(page, width, height)| (*page, page_box((*width, *height)))).collect(),
+            pictures,
+            handed_back,
+        },
+    );
 }
 
 fn with_material(mut sleep: SleepFile, material: SleepMaterial) -> SleepFile {
