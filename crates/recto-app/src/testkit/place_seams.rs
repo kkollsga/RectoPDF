@@ -25,7 +25,20 @@ fn searched_now() -> u64 {
 }
 
 type Then = Mutex<Option<(std::thread::ThreadId, Box<dyn FnOnce() + Send>)>>;
-type AtPane = Mutex<Option<(usize, Box<dyn FnOnce() + Send>)>>;
+
+/// **Where in the session thread's next look a test's step runs** ([`PlaceSeams::look_at`]): one at a time, as the step at one may ask for the next.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InTheLook {
+    /// It has read the views and taken nothing in.
+    Read,
+    /// It has shown the panes up to this one, and not the rest.
+    PaneShown(u8),
+    /// It has said the jumps it sent to the session.
+    Sent,
+}
+
+// Boxed whole, so the slot is a word and its lock: `Serving` is held to its size in the test build too.
+type AtTheLook = Mutex<Option<Box<(InTheLook, Box<dyn FnOnce() + Send>)>>>;
 
 /// **What a test asked of the reads of the views' places and their take-in,** and the looks counted: in [`crate::core::Serving`], test builds only.
 #[derive(Default)]
@@ -34,12 +47,8 @@ pub struct PlaceSeams {
     command_read: Then,
     /// A command's read is taken in, and the command hasn't gone on.
     command_taken: Then,
-    /// The session thread's look has read the views and taken nothing in.
-    look_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
-    /// The session thread's look has shown the panes up to this one, and not the rest ([`Self::after_the_look_shows_pane`]).
-    pane_shown: AtPane,
-    /// The session thread's next look has said the jumps it sent to the session ([`Self::after_the_look_sends`]).
-    look_sent: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// A test's step at a point of the session thread's next look: one slot for the three, as `Serving` is held to its size (`inner_guards`).
+    look_at: AtTheLook,
     /// Looks begun, and looks done (the jumps they sent said to the session).
     looks_begun: AtomicU64,
     looks_done: AtomicU64,
@@ -79,25 +88,31 @@ impl PlaceSeams {
 
     /// The look has read the views.
     pub(crate) fn look_read(&self) {
-        let then = crate::lock(&self.look_read).take();
-        if let Some(then) = then {
-            then();
-        }
+        self.at(InTheLook::Read);
     }
 
-    /// The look has shown this pane, and the panes after it are still as they were.
-    pub(crate) fn pane_shown(&self, pane: usize) {
+    /// Runs the step asked for this point of the look, if it's this one.
+    fn at(&self, here: InTheLook) {
         let then = {
-            let mut asked = crate::lock(&self.pane_shown);
-            if asked.as_ref().is_some_and(|(at, _)| *at == pane) {
+            let mut asked = crate::lock(&self.look_at);
+            if asked.as_ref().is_some_and(|asked| asked.0 == here) {
                 asked.take()
             } else {
                 None
             }
         };
-        if let Some((_, then)) = then {
-            then();
+        if let Some(asked) = then {
+            (asked.1)();
         }
+    }
+
+    fn ask_at(&self, at: InTheLook, then: Box<dyn FnOnce() + Send>) {
+        *crate::lock(&self.look_at) = Some(Box::new((at, then)));
+    }
+
+    /// The look has shown this pane, and the panes after it are still as they were.
+    pub(crate) fn pane_shown(&self, pane: usize) {
+        self.at(InTheLook::PaneShown(u8::try_from(pane).unwrap_or(u8::MAX)));
     }
 
     /// **`then` runs on the session thread once its next look has shown `pane`, and before it shows the panes after it** (the fourth review's item 5):
@@ -105,22 +120,19 @@ impl PlaceSeams {
     /// what a command reads there and takes in once the look has said its jumps sent.
     #[cfg(test)]
     pub(crate) fn after_the_look_shows_pane(&self, pane: usize, then: impl FnOnce() + Send + 'static) {
-        *crate::lock(&self.pane_shown) = Some((pane, Box::new(then)));
+        self.ask_at(InTheLook::PaneShown(u8::try_from(pane).unwrap_or(u8::MAX)), Box::new(then));
     }
 
     /// **`then` runs on the session thread once its next look has said the jumps it sent,** before anything after the look: as a command whose read was
     /// made during the look takes it in then.
     #[cfg(test)]
     pub(crate) fn after_the_look_sends(&self, then: impl FnOnce() + Send + 'static) {
-        *crate::lock(&self.look_sent) = Some(Box::new(then));
+        self.ask_at(InTheLook::Sent, Box::new(then));
     }
 
     /// The look is done, the jumps it sent said to the session.
     pub(crate) fn look_done(&self) {
-        let then = crate::lock(&self.look_sent).take();
-        if let Some(then) = then {
-            then();
-        }
+        self.at(InTheLook::Sent);
         self.looks_done.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -330,7 +342,7 @@ impl HeadlessApp {
     /// **`then` comes between the session thread's next look's read of the views and its take-in,** on the session thread: what lands meanwhile, the
     /// person's scroll or a command run here, is newer than what the look read.
     pub fn when_the_next_look_has_read(&self, then: impl FnOnce() + Send + 'static) {
-        *crate::lock(&self.core().serving.place_seams.look_read) = Some(Box::new(then));
+        self.core().serving.place_seams.ask_at(InTheLook::Read, Box::new(then));
     }
 
     /// How many of the session thread's looks are done: so a test can say none came, as nothing in the window queues one for a scroll within a page.
