@@ -201,6 +201,27 @@ impl<L: DocLoader> Session<L> {
     }
 }
 
+/// [`Session::here`] for a tab in hand, so a walk over every tab needn't look each up again.
+pub(crate) fn here_of<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> trail::Stop {
+    let id = tab.id;
+    // Only while it's still where the tab is: a move since that sent the page view no jump of its own, as Find's step, is the newer.
+    let on_page = |stop: &trail::Stop| stop.page == tab.page;
+    if let Some(jump) = session
+        .mail
+        .waiting_jump(id)
+        .filter(on_page)
+        .or_else(|| session.mail.jump_on_its_way(id).filter(on_page))
+    {
+        return trail::Stop::new(jump.page, f64::from(jump.within));
+    }
+    let within = tab
+        .reading
+        .place
+        .filter(|place| place.page == tab.page && place.anchor_page == tab.page)
+        .map_or(0.0, |place| place.within);
+    trail::Stop::new(tab.page, within)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,25 +307,4 @@ mod tests {
         });
         assert_eq!(trail.back(), [Stop::new(0, 0.5)]);
     }
-}
-
-/// [`Session::here`] for a tab in hand, so a walk over every tab needn't look each up again.
-pub(crate) fn here_of<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> trail::Stop {
-    let id = tab.id;
-    // Only while it's still where the tab is: a move since that sent the page view no jump of its own, as Find's step, is the newer.
-    let on_page = |stop: &trail::Stop| stop.page == tab.page;
-    if let Some(jump) = session
-        .mail
-        .waiting_jump(id)
-        .filter(on_page)
-        .or_else(|| session.mail.jump_on_its_way(id).filter(on_page))
-    {
-        return trail::Stop::new(jump.page, f64::from(jump.within));
-    }
-    let within = tab
-        .reading
-        .place
-        .filter(|place| place.page == tab.page && place.anchor_page == tab.page)
-        .map_or(0.0, |place| place.within);
-    trail::Stop::new(tab.page, within)
 }
