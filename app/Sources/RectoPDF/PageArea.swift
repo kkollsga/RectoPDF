@@ -138,6 +138,8 @@ final class CenteringClipView: NSClipView {
     /// What's selected, one layer on a page that has any: a page's sublayer, so it scrolls and zooms with the page, and it's no tile's business. Under the tint, so warm paper warms it too.
     private var highlightLayers: [UInt32: CAShapeLayer] = [:]
     private var highlightRects: [UInt32: [HighlightRect]] = [:]
+    /// The tab's unsaved highlights, as Rust last gave them.
+    private let marks = PageMarks()
     /// The snapshot tool's box, on the one page it's being drawn on: a page's sublayer, as a highlight is, so it scrolls and zooms with it.
     private var snapshotBox: (page: UInt32, layer: CAShapeLayer)?
     private var highlightDark = false
@@ -381,6 +383,25 @@ final class CenteringClipView: NSClipView {
             }
         }
         return (rgb, highlightLighten, rects)
+    }
+
+    /// The unsaved highlights, for a shot, as [`highlightsForShot`] does the selection's.
+    func marksForShot(in view: NSView) -> (rgb: UInt32, lighten: Bool, rects: [NSRect])? {
+        guard let drawn = marks.forShot else { return nil }
+        let visible = scrollView.convert(scrollView.bounds, to: view)
+        let rects = drawn.byPage.flatMap { number, pieces in
+            pieces.compactMap { piece -> NSRect? in
+                guard let page = pageLayers[number] else { return nil }
+                let inDocument = page.convert(CGRect(x: piece.x, y: piece.y, width: piece.width, height: piece.height), to: documentView.layer)
+                let clipped = documentView.convert(inDocument, to: view).intersection(visible)
+                return clipped.isNull ? nil : clipped
+            }
+        }
+        return (drawn.rgb, drawn.lighten, rects)
+    }
+
+    func hideMarksForShot(_ hidden: Bool) {
+        marks.hideForShot(hidden)
     }
 
     func hideHighlightsForShot(_ hidden: Bool) {
@@ -684,6 +705,7 @@ final class CenteringClipView: NSClipView {
             tintLayers.removeAll()
             highlightLayers.removeAll()
             highlightRects.removeAll()
+            marks.cleared()
             snapshotBox = nil
             for tile in tiles.values { tile.layer.contents = nil }
             pageLayers.removeAll()
@@ -728,11 +750,13 @@ final class CenteringClipView: NSClipView {
             layer.setAffineTransform(CGAffineTransform(rotationAngle: CGFloat(turn) * .pi / 2).scaledBy(x: fit, y: fit))
             layer.backgroundColor = Theme.rgb(paperRgb).cgColor
             applyTint(to: layer, page: page)
+            marks.shown(page: page, on: layer)
         case let .hidePage(page):
             pageLayers.removeValue(forKey: page)?.removeFromSuperlayer()
             tintLayers.removeValue(forKey: page)
             highlightLayers.removeValue(forKey: page)
             highlightRects.removeValue(forKey: page)
+            marks.hidden(page: page)
             if snapshotBox?.page == page { snapshotBox = nil }
             for id in tilesOnPage.removeValue(forKey: page) ?? [] {
                 if let tile = tiles.removeValue(forKey: id) { recycle(tile.layer) }
@@ -764,6 +788,8 @@ final class CenteringClipView: NSClipView {
             applyHighlight(page: page, rects: rects)
         case let .snapshotBox(page, rect):
             applySnapshotBox(page: page, rect: rect)
+        case let .marks(pages, rgb, lighten):
+            marks.set(pages, rgb: rgb, lighten: lighten, on: pageLayers)
         }
     }
 

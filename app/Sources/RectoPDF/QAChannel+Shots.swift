@@ -117,9 +117,11 @@ extension QAChannel {
         let tints = controller.paneAreas.compactMap { $0.tintRectsForShot(in: view) }
         let tint = tints.first.map { (rgb: $0.rgb, rects: tints.flatMap(\.rects)) }
         let highlights = controller.paneAreas.compactMap { $0.highlightsForShot(in: view) }.first
+        let marks = controller.paneAreas.compactMap { $0.marksForShot(in: view) }
         for area in controller.paneAreas {
             area.hideTintForShot(true)
             area.hideHighlightsForShot(true)
+            area.hideMarksForShot(true)
         }
         CATransaction.flush()
         view.cacheDisplay(in: bounds, to: rep)
@@ -127,12 +129,14 @@ extension QAChannel {
         for area in controller.paneAreas {
             area.hideTintForShot(false)
             area.hideHighlightsForShot(false)
+            area.hideMarksForShot(false)
         }
         let flipped = view.isFlipped
         let core = delegate.core
         // The encoding and the write are slow, so they stay off this thread.
         nonisolated(unsafe) let encoded = rep
         DispatchQueue.global(qos: .userInitiated).async {
+            for mark in marks { QAChannel.multiply(encoded, by: mark.rgb, in: mark.rects, viewHeight: bounds.height, flipped: flipped, lighten: mark.lighten) }
             if let highlights { QAChannel.multiply(encoded, by: highlights.rgb, in: highlights.rects, viewHeight: bounds.height, flipped: flipped, lighten: highlights.lighten) }
             if let tint { QAChannel.multiply(encoded, by: tint.rgb, in: tint.rects, viewHeight: bounds.height, flipped: flipped) }
             guard let data = encoded.representation(using: .png, properties: [:]) else {
