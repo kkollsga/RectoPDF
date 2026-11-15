@@ -56,6 +56,8 @@ struct Inner {
     stopped: bool,
     /// Nobody's looked at what's past its time in this session yet.
     sweep_due: bool,
+    /// Corpora this session's key can't read have been looked for, once the key was taken for a build.
+    unreadable_swept: bool,
     /// The agents' folders this session asked for, which live as long as it does. At most [`MAX_AGENT_FOLDERS`]: past that the oldest is set aside at once.
     agent_folders: VecDeque<(CorpusKey, Option<corpus::AgentClaim>)>,
 }
@@ -180,7 +182,7 @@ impl Shared {
         if recto_platform::thread::is_main_thread() {
             return self.key.get().and_then(|loaded| loaded.key.as_ref());
         }
-        self.key.get_or_init(|| find_keys::load(&self.key_plan)).key.as_ref()
+        self.key.get_or_init(|| take_the_key(&self.key_plan)).key.as_ref()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -199,10 +201,8 @@ impl Shared {
             // First, before anything's built, and on this thread because it walks a folder of any size.
             if std::mem::take(&mut self.lock().sweep_due) {
                 corpus::remove_old_folder(&self.root);
+                // Nothing here takes the key: a start that only has old folders to tidy never reaches the Keychain (the security review of slices 2 and 3, F7). What the key can't read goes when a build first needs it, below.
                 corpus::remove_plain_corpora(&self.root);
-                if let Some(find_key) = self.find_key() {
-                    corpus::remove_unreadable(find_key, &self.root);
-                }
                 let keep: Vec<CorpusKey> = self.lock().agent_folders.iter().map(|(key, _)| *key).collect();
                 corpus::sweep_agent_folders(&self.root, &keep);
                 let _ = corpus::evict(&self.root, &self.limits, None);
@@ -225,6 +225,9 @@ impl Shared {
                 let Some(find_key) = self.find_key() else {
                     return json!({ "state": "failed", "code": "no_find_key" });
                 };
+                if !std::mem::replace(&mut self.lock().unreadable_swept, true) {
+                    corpus::remove_unreadable(find_key, &self.root);
+                }
                 self.runner.run(&job, &self.root, find_key, &mut |stop| {
                     let mut inner = self.lock();
                     // Stopped while this was starting: not keeping it stops it now.
@@ -339,6 +342,24 @@ impl Indexing for Indexer {
             self.start_working(&mut inner);
         }
     }
+}
+
+/// The stack the key is taken on: Rust's own default for a thread, four times macOS's for one it starts, whatever thread asked (the indexer's has 256 KiB, a search's may have less). Security.framework's check of this copy's signature and its Keychain calls run there, not on a small stack of ours (the security review of slices 2 and 3, F7).
+const KEY_THREAD_STACK: usize = 2 * 1024 * 1024;
+
+/// Takes the key the plan says, on a thread of its own with [`KEY_THREAD_STACK`], once a run, and waits for it: the asker is a thread that may wait, never the UI's. A thread that can't be started leaves a key in memory for now, so nothing lasting is touched.
+fn take_the_key(plan: &Plan) -> Loaded {
+    let plan = plan.clone();
+    std::thread::Builder::new()
+        .name("recto-find-key".into())
+        .stack_size(KEY_THREAD_STACK)
+        .spawn(move || find_keys::load(&plan))
+        .ok()
+        .and_then(|taking| taking.join().ok())
+        .unwrap_or_else(|| Loaded {
+            key: FindKey::in_memory_for_now().ok(),
+            why: Some("no_thread"),
+        })
 }
 
 /// Finds `recto-indexer` beside this program, through any link to it: [`crate::program_beside`].
@@ -746,6 +767,35 @@ mod tests {
             std::thread::yield_now();
         }
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// Failure (F7): the key is taken on whichever thread asks first, the indexer's of 256 KiB or a search's, so Security.framework runs on a small stack; or a start whose sweep has only old folders to tidy takes the key, reaching the Keychain at launch. It's taken on a thread of its own with Rust's default stack, and the sweep at the first ask takes nothing.
+    #[test]
+    fn the_key_is_taken_on_its_own_thread_and_never_by_the_sweep() {
+        static TAKEN_ON: Mutex<Option<String>> = Mutex::new(None);
+        fn loader(_team: &'static str) -> Option<(FindKey, Option<&'static str>)> {
+            *TAKEN_ON.lock().unwrap() = std::thread::current().name().map(str::to_string);
+            FindKey::in_memory().ok().map(|key| (key, None))
+        }
+        let temp = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-key-thread-");
+        recto_platform::local::ensure_private_dir(&temp).unwrap();
+        let root = temp.join("corpus.noindex");
+        recto_platform::local::ensure_private_dir(&root).unwrap();
+        // A mark of old folders to tidy, so a start sweeps.
+        std::fs::create_dir_all(root.join(format!("{}", "ab".repeat(32))).join("v3")).unwrap();
+        let indexer = Indexer::new(&root, Plan::AppKeychain(crate::find_keys::AppKey::standing_in(loader)));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while indexer.0.lock().working && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(!root.join("ab".repeat(32)).join("v3").exists(), "the start's sweep didn't run");
+        assert_eq!(*TAKEN_ON.lock().unwrap(), None, "the start's sweep took the key");
+        assert!(indexer.find_key().is_some());
+        assert_eq!(
+            TAKEN_ON.lock().unwrap().as_deref(),
+            Some("recto-find-key"),
+            "the key was taken on the asker's own stack"
+        );
     }
 
     /// Failure: saying where the Find key stands, as `qa state` and `index status` do on every read, takes the key, so a look at state reaches the Keychain, or does it on whatever thread asked, the UI's included. It's said from the plan alone until something that may wait has taken it.
