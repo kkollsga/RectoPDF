@@ -28,6 +28,8 @@ pub(crate) struct TabFile {
     changed: bool,
     /// What the file was when those page numbers were made, to look at it against, as [`recto_session::recorded_version_is_current`] reads it.
     check_against: Option<Option<recto_platform::FileStamp>>,
+    /// Its own pages are withheld ([`recto_session::Notices::pages_withheld`]): what decides the person's contents pane too.
+    withheld: bool,
 }
 
 impl TabFile {
@@ -73,6 +75,7 @@ fn tab_file<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<TabFile, Agent
                 placed: recto_session::placed_of(s, id).ok_or_else(|| AgentError::new(Code::NO_SUCH_TAB, "That tab isn't open.", exit::NOT_FOUND))?,
                 changed: false,
                 check_against: s.notices().own_file_expected(id),
+                withheld: s.notices().pages_withheld(id),
             })
         })
         // Whether the file has changed is asked with the session free: a stat on a dead volume holds up this command and no other.
@@ -132,6 +135,10 @@ pub(crate) fn contents<A: SessionAccess>(
         return generated_contents(access, tab, from, limit, depth);
     }
     let file = tab_file(access, tab)?;
+    // What the person's contents pane shows none of, by the same rule (review S2): the file's outline isn't about the list's pages.
+    if file.withheld {
+        return Err(crate::source_changed(&file.path));
+    }
     file.require_current()?;
     let unavailable = || json!({ "tab": file.id, "available": false, "note": "Only the renderer can read this file, so its contents can't be read. That doesn't mean it has none.", "entries": [], "total": null, "next_from": null });
     if file.renderer_only {

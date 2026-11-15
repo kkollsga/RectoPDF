@@ -782,3 +782,75 @@ fn a_held_list_over_a_shorter_file_shows_nothing_of_either_version_till_discard_
         assert_eq!(std::fs::read(&file).expect("the file"), theirs, "{how}: nothing written to the file");
     }
 }
+
+/// The kinds of the sidebar's rows under the tab, as an agent's `sidebar` gives them: contents entries and the note over them.
+fn rows_under_the_tab(app: &HeadlessApp) -> Vec<String> {
+    let sidebar = app.recto(Level::ReadOnly, &["sidebar"]).expect("sidebar");
+    sidebar["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .filter_map(|row| row["kind"].as_str())
+        .filter(|kind| *kind != "tab")
+        .map(String::from)
+        .collect()
+}
+
+/// Failure (review S2 of `build/shorter-file-pages`): a held tab's contents pane listed the new file's outline, mapped through the held list's
+/// positions so a row went to the wrong place, while an agent's `contents` on the same tab was refused; and its page field named pages by the new
+/// file's labels, through the same positions. While the pages are withheld the pane has no rows of the file's contents and offers none generated,
+/// `contents` is refused, the page field says only the number; after Discard, all of it is the file's again.
+#[test]
+fn a_held_tabs_contents_and_page_labels_arent_the_new_files() {
+    // Contents: six pages with an outline, page 5 turned, made four pages with an outline by another program.
+    let app = HeadlessApp::start();
+    let file = app.disk().file("outlined.pdf", &super::files::with_sections(6));
+    app.open(&file);
+    app.recto(Level::Control, &["page", "rotate", "5", "--by", "90"]).expect("turned");
+    app.settle();
+    assert!(
+        rows_under_the_tab(&app).contains(&"contents".to_string()),
+        "its contents first: {:?}",
+        rows_under_the_tab(&app)
+    );
+    let theirs = super::files::with_sections(4);
+    replace(&file, &theirs);
+    look(&app);
+    assert!(app.recto(Level::ReadOnly, &["where"]).expect("where")["pages_withheld"] == true, "held");
+    assert_eq!(
+        rows_under_the_tab(&app),
+        Vec::<String>::new(),
+        "no rows of the new file's contents, and none offered"
+    );
+    assert_eq!(app.sidebar().contents_count, 0);
+    let refused = app.recto(Level::Full, &["contents"]).expect_err("an agent's contents is refused");
+    assert_eq!(refused.code, "source_changed", "{refused:?}");
+    app.recto(Level::Full, &["discard"]).expect("discarded");
+    app.settle();
+    assert!(
+        rows_under_the_tab(&app).contains(&"contents".to_string()),
+        "the file's contents again: {:?}",
+        rows_under_the_tab(&app)
+    );
+    // Labels: twelve plain pages, page 12 turned, made the twelve labelled pages of a book (`i` to `iv`, `1` to `6`, `A-1`, `A-2`) by another program.
+    let app = HeadlessApp::start();
+    let file = app.disk().file("plain.pdf", &pdf_bytes("Mine", 12));
+    app.open(&file);
+    app.recto(Level::Control, &["page", "rotate", "12", "--by", "90"]).expect("turned");
+    app.recto(Level::Full, &["goto", "2"]).expect("to page 2");
+    app.settle();
+    replace(&file, &recto_testpdf::linked_document());
+    look(&app);
+    assert!(app.recto(Level::ReadOnly, &["where"]).expect("where")["pages_withheld"] == true, "held");
+    assert_eq!(app.reader().place, "2 of 12", "the number, not the new file's label for its page 2");
+    // The person types a label of the new file in the page field: not a page of the held list, so nothing moves.
+    app.act(crate::core::controls::UiAction::PageTyped { text: "iv".into() });
+    app.settle();
+    assert_eq!(app.reader().place, "2 of 12", "a label of the new file isn't a page of the held list");
+    app.recto(Level::Full, &["discard"]).expect("discarded");
+    app.settle();
+    assert_eq!(app.reader().place, "ii (2 of 12)", "the file's label again");
+    app.act(crate::core::controls::UiAction::PageTyped { text: "iv".into() });
+    app.settle();
+    assert_eq!(app.reader().place, "iv (4 of 12)");
+}
