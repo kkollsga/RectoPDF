@@ -1,6 +1,6 @@
 //! **The Find text, sealed** (owner, 2026-11-15: "Find text is a indexed copy of the pdf text? Lets store it encrypted"). Every part of a corpus that came from the document is kept as independent chunks of AES-256-GCM, so a search still reads one page at a time into one buffer, a build can still be killed at any point, and a chunk that's been changed, cut short, moved to another page or copied from another corpus fails to open, which throws the corpus away as any damage does.
 //!
-//! **One key per corpus.** Each corpus has a header, `seal.bin`: 8 bytes of magic, 32 random bytes of salt, and a check chunk. Its key is HKDF-SHA256 of the Find key ([`recto_platform::find_key`]) with that salt, and the corpus's own key in the info, so a folder renamed or copied under another file's key can't be opened. A new header is made whenever a corpus is started from nothing, so a rebuilt corpus never shares a key with what it replaces.
+//! **One key per corpus.** Each corpus has a header, `seal.bin`: 8 bytes of magic, a byte saying whether the key it was sealed with lasts past its run, 32 random bytes of salt, and a check chunk over nothing whose associated data holds that byte. Its key is HKDF-SHA256 of the Find key ([`recto_platform::find_key`]) with that salt, and the corpus's own key in the info, so a folder renamed or copied under another file's key can't be opened. A new header is made whenever a corpus is started from nothing, so a rebuilt corpus never shares a key with what it replaces.
 //!
 //! **Nonces are random,** 96 bits from the OS for every chunk, and written in front of it. A corpus holds at most 200,000 pages, each sealed at most 1 + 3 retries times plus restarts, so well under 2^21 chunks per key: the chance of two alike is under 2^-55, far inside NIST's 2^-32 for random nonces (SP 800-38D §8.3). A restarted build draws new ones, so a page sealed twice, killed and sealed again with other text, never reuses a nonce. Nothing to count, so nothing to get wrong after a kill.
 //!
@@ -21,7 +21,8 @@ pub const OVERHEAD: usize = NONCE_BYTES + TAG_BYTES;
 const MAGIC: &[u8; 8] = b"RECTOSL1";
 const SALT_BYTES: usize = 32;
 /// The header: magic, salt and a check chunk of nothing.
-pub const HEADER_BYTES: usize = MAGIC.len() + SALT_BYTES + OVERHEAD;
+pub const HEADER_BYTES: usize = MAGIC.len() + 1 + SALT_BYTES + OVERHEAD;
+const SALT_AT: usize = MAGIC.len() + 1;
 const INFO: &[u8] = b"recto find text v4\0";
 
 /// What a chunk is, said in its associated data, so one can't stand for another.
@@ -30,7 +31,8 @@ pub enum Purpose {
     Page(u32),
     Summary,
     Meta,
-    Check,
+    /// The header's check, with whether its key lasts.
+    Check(bool),
 }
 
 impl Purpose {
@@ -39,7 +41,7 @@ impl Purpose {
             Self::Page(page) => (1, page),
             Self::Summary => (2, 0),
             Self::Meta => (3, 0),
-            Self::Check => (4, 0),
+            Self::Check(lasting) => (4, u32::from(lasting)),
         };
         let mut out = [kind, 0, 0, 0, 0];
         out[1..].copy_from_slice(&number.to_le_bytes());
@@ -83,11 +85,13 @@ impl CorpusSeal {
         let mut salt = [0u8; SALT_BYTES];
         getrandom::fill(&mut salt).map_err(|_| std::io::Error::other("no randomness"))?;
         let seal = Self::derive(find_key, &salt, corpus);
+        let lasting = find_key.source().lasts();
         let mut header = Vec::with_capacity(HEADER_BYTES);
         header.extend_from_slice(MAGIC);
+        header.push(u8::from(lasting));
         header.extend_from_slice(&salt);
         let mut check = Vec::with_capacity(OVERHEAD);
-        seal.seal(Purpose::Check, &mut check, |_| {})?;
+        seal.seal(Purpose::Check(lasting), &mut check, |_| {})?;
         header.extend_from_slice(&check);
         Ok((seal, header))
     }
@@ -98,14 +102,24 @@ impl CorpusSeal {
     ///
     /// [`Unopened`] for anything else: the wrong key, another corpus's header, or bytes that aren't one.
     pub fn open(find_key: &FindKey, corpus: CorpusKey, header: &[u8]) -> Result<Self, Unopened> {
-        if header.len() != HEADER_BYTES || !header.starts_with(MAGIC) {
-            return Err(Unopened);
-        }
-        let seal = Self::derive(find_key, &header[MAGIC.len()..MAGIC.len() + SALT_BYTES], corpus);
+        let lasting = Self::lasting(header).ok_or(Unopened)?;
+        let seal = Self::derive(find_key, &header[SALT_AT..SALT_AT + SALT_BYTES], corpus);
         let mut check = [0u8; OVERHEAD];
-        check.copy_from_slice(&header[MAGIC.len() + SALT_BYTES..]);
-        seal.open_in_place(Purpose::Check, &mut check)?;
+        check.copy_from_slice(&header[SALT_AT + SALT_BYTES..]);
+        seal.open_in_place(Purpose::Check(lasting), &mut check)?;
         Ok(seal)
+    }
+
+    /// Whether a header says its corpus was sealed with a key that lasts past its run. Read without the key, so it's only a hint, for which corpora a run with a key in memory may sweep away: changing it can only get a corpus thrown away, which anyone who can write here could do anyway.
+    pub fn lasting(header: &[u8]) -> Option<bool> {
+        if header.len() != HEADER_BYTES || !header.starts_with(MAGIC) {
+            return None;
+        }
+        match header[MAGIC.len()] {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
     }
 
     /// Seals what `write` puts in `out`, in place: `out` is cleared, room is left for the nonce, `write` appends the plain bytes, and they're encrypted where they lie, so the only copy of them is this buffer.
@@ -225,6 +239,12 @@ mod tests {
         let mut magic = header.clone();
         magic[0] ^= 1;
         assert!(CorpusSeal::open(&key, corpus(1), &magic).is_err());
+        let mut lasting = header.clone();
+        lasting[8] ^= 1;
+        assert!(
+            CorpusSeal::open(&key, corpus(1), &lasting).is_err(),
+            "a header's word on its key was changed and it still opened"
+        );
     }
 
     /// Failure: two corpora, or the same one started again from nothing, get the same key, so a chunk of one opens in the other; or two sealings of the same text match, which says the text is the same and, under GCM, a nonce used twice.

@@ -178,6 +178,9 @@ impl Shared {
             if std::mem::take(&mut self.lock().sweep_due) {
                 corpus::remove_old_folder(&self.root);
                 corpus::remove_plain_corpora(&self.root);
+                if let Some(find_key) = self.find_key() {
+                    corpus::remove_unreadable(find_key, &self.root);
+                }
                 let _ = corpus::evict(&self.root, &self.limits, None);
             }
             let job = {

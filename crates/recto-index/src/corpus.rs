@@ -37,7 +37,7 @@ use crate::seal::{self, CorpusSeal, Purpose};
 mod plain;
 mod sealed;
 use crate::{hidden_report, read_page};
-pub use plain::{plain_corpora_may_be_there, remove_plain_corpora};
+pub use plain::{plain_corpora_may_be_there, remove_plain_corpora, remove_unreadable};
 use recto_platform::find_key::FindKey;
 use recto_platform::local;
 use recto_proto::{CharBox, CharRecord};

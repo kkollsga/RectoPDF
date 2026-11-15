@@ -1739,3 +1739,36 @@ fn text_from_before_it_was_sealed_goes_and_nothing_else_does() {
     assert!(elsewhere.is_dir() && root.join("not-a-key").join("v3").is_dir(), "something not ours went");
     assert!(!plain_corpora_may_be_there(&root), "a start would look again for nothing");
 }
+
+/// Failure: text sealed by a key that's gone stays on disk to its 90 days; or a run whose Keychain is locked, on a key in memory, throws away every corpus the Keychain's key made; or the sweep takes one this run can read.
+#[test]
+fn a_run_sweeps_what_it_can_never_read_and_nothing_it_might() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let lasting = FindKey::from_state_file(&temp.0.join("lasting.key")).unwrap();
+    let (other_lasting, old_memory, this_memory) = (
+        FindKey::from_state_file(&temp.0.join("other.key")).unwrap(),
+        FindKey::in_memory().unwrap(),
+        FindKey::in_memory().unwrap(),
+    );
+    let keys: Vec<CorpusKey> = (0..4).map(|n| key_of(&temp, format!("file {n}").as_bytes())).collect();
+    for (key, find_key) in keys.iter().zip([&lasting, &other_lasting, &old_memory, &this_memory]) {
+        build(
+            find_key,
+            &root,
+            *key,
+            &mut FakeFeed::new(&[PLAIN]),
+            &DocMeta::default(),
+            &BuildLimits::default(),
+        )
+        .unwrap();
+    }
+    let there = |key: CorpusKey| root.join(key.hex()).exists();
+    // A run on a key in memory: another run's memory corpus goes; lasting ones stay, its own stays.
+    assert_eq!(remove_unreadable(&this_memory, &root), 1);
+    assert!(there(keys[0]) && there(keys[1]) && !there(keys[2]) && there(keys[3]));
+    // A run on a lasting key: everything it can't open goes, its own stays.
+    assert_eq!(remove_unreadable(&lasting, &root), 2);
+    assert!(there(keys[0]) && !there(keys[1]) && !there(keys[3]));
+    assert!(ReadyCorpus::open(&lasting, &root, keys[0]).unwrap().is_some());
+}
