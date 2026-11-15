@@ -67,3 +67,23 @@ fn no_word_of_a_document_is_on_disk_as_it_is() {
         "a run on a key in memory swept a corpus the lasting key sealed"
     );
 }
+
+/// Failure (the security review of slices 2 and 3, F8): `index status` tells an agent why the key isn't the Keychain's, `keychain_locked` and the like, so an agent at any level learns the state of the person's Keychain. Agents get where the key came from, and nothing else, at every level that may ask; `qa state`, which only a test build has, keeps the rest.
+#[test]
+fn an_agent_is_told_where_the_key_came_from_and_nothing_else() {
+    let disk = Disk::new();
+    let file = disk.file(
+        "status.pdf",
+        &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["a page"]))]),
+    );
+    let app = disk.builder().indexing(true).start();
+    app.open(&file);
+    app.recto(Level::Full, &["search", "page"]).expect("a search, which takes the key");
+    assert!(app.recto(Level::Off, &["index", "status"]).is_err(), "an agent at Off read the index's status");
+    for level in [Level::ReadOnly, Level::Control, Level::Full] {
+        let status = app.recto(level, &["index", "status"]).expect("the index's status");
+        assert_eq!(status["find_key"], serde_json::json!({ "source": "state_file" }), "at {level:?}: {status}");
+    }
+    let report = app.core().host.session.find_key_report();
+    assert!(report.get("plan").is_some() && report.get("why").is_some(), "qa state lost the rest: {report}");
+}

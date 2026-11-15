@@ -782,7 +782,7 @@ mod tests {
         let root = temp.join("corpus.noindex");
         recto_platform::local::ensure_private_dir(&root).unwrap();
         // A mark of old folders to tidy, so a start sweeps.
-        std::fs::create_dir_all(root.join(format!("{}", "ab".repeat(32))).join("v3")).unwrap();
+        std::fs::create_dir_all(root.join("ab".repeat(32)).join("v3")).unwrap();
         let indexer = Indexer::new(&root, Plan::AppKeychain(crate::find_keys::AppKey::standing_in(loader)));
         let deadline = Instant::now() + Duration::from_secs(10);
         while indexer.0.lock().working && Instant::now() < deadline {

@@ -370,7 +370,8 @@ fn report(indexing: &dyn Indexing, id: u32, files: &[TabFile], want: bool) -> (V
         "agent_bytes": agent_bytes,
         "indexers_running": running,
         "indexers_waiting": waiting,
-        "find_key": indexing.find_key_report(),
+        // Where the key came from, and nothing of why: that's the person's Keychain's state, which an agent isn't told (the security review of slices 2 and 3, F8). `qa state` has the rest.
+        "find_key": json!({ "source": indexing.find_key_report()["source"] }),
         "note": note,
     });
     (value, first_unready)
