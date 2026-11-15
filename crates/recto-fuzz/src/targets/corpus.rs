@@ -267,7 +267,7 @@ fn damage(root: &Path, made: &Made, take: &mut Take<'_>) {
                 if records > 0 {
                     let record = usize::from(take.u8()) % records * RECORD_LEN;
                     let value = take.u32();
-                    if take.u8() % 2 == 0 {
+                    if take.u8().is_multiple_of(2) {
                         table_bytes[record..record + 8].copy_from_slice(&u64::from(value).to_le_bytes());
                     } else {
                         table_bytes[record + 8..record + 12].copy_from_slice(&value.to_le_bytes());
