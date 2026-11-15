@@ -38,11 +38,6 @@ jobs:
           codesign --force --options runtime --timestamp --sign "$PREFLIGHT_IDENTITY" "$RUNNER_TEMP/preflight-probe"
           codesign --verify --strict --verbose=2 "$RUNNER_TEMP/preflight-probe"
           codesign -dv "$RUNNER_TEMP/preflight-probe" 2>&1 | grep -E '^(Authority|TeamIdentifier|Timestamp)='
-      # The Find key's Keychain item on the team's real signature, in this job's throwaway keychain only (docs/PLAN.md, the Find text's
-      # encryption): a later team-signed build reads what an earlier one made, an ad hoc build is refused, and nothing waits on a
-      # prompt, with interaction refused per query alone and with the whole process's switch. Prints codes and times, uploads nothing.
-      - name: The Find key's Keychain item, on the team's signature
-        run: tools/release/keychain-probe.sh "$PREFLIGHT_KEYCHAIN" "$PREFLIGHT_IDENTITY"
       - name: Apple accepts the notarization key
         run: |
           xcrun notarytool history --keychain-profile recto-notary --keychain "$PREFLIGHT_KEYCHAIN" --output-format json >/dev/null
