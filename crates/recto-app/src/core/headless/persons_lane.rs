@@ -690,7 +690,12 @@ fn a_hand_offs_busy_list_names_an_agents_command_beside_the_persons_parked_edits
     assert_eq!(app.core().core.lane().parked(), 1, "the undo parked behind it");
     let (agents_held, agents_go) = app.hold_next("page_rotate");
     let busy = std::thread::scope(|scope| {
-        let agent = scope.spawn(|| app.agent(Level::Full, r#"{"cmd":"page_rotate","tab":"active","pages":"all","degrees":90}"#));
+        let agent = std::thread::Builder::new()
+            .name("recto-test-agent".into())
+            .spawn_scoped(scope, || {
+                app.agent(Level::Full, r#"{"cmd":"page_rotate","tab":"active","pages":"all","degrees":90}"#)
+            })
+            .expect("the agent's thread");
         agents_held.recv_timeout(WAIT_LIMIT).expect("the agent's command held as it runs");
         let busy: Vec<String> = app.core().hand_off_check().busy.into_iter().map(|item| item.code).collect();
         drop(agents_go);

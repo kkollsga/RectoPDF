@@ -489,23 +489,17 @@ mod tests {
     #[test]
     fn stop_is_refused_by_a_normal_app() {
         let state = recto_testpdf::TempDir::new("rf-");
-        let host = AppHost {
-            engine: Engine::new(EngineConfig::default(), Arc::new(TestEngineEvents)),
-            session: SessionHost::new(DrawableLoader),
-            core: Arc::new(CoreQueue::default()),
-            qa: None,
-            saver: Arc::new(Saver::new(
+        let host = AppHost::new(
+            Engine::new(EngineConfig::default(), Arc::new(TestEngineEvents)),
+            SessionHost::new(DrawableLoader),
+            Arc::new(CoreQueue::default()),
+            None,
+            Arc::new(Saver::new(
                 RecordStore::open(&StatePaths::overridden(&state).unwrap(), Flavor::App),
                 Arc::new(CoreQueue::default()),
                 Arc::new(crate::clock::SystemClock::new()),
             )),
-            running: AtomicU32::new(0),
-            changing: AtomicU32::new(0),
-            agents: AtomicU32::new(0),
-            handing_off: AtomicBool::new(false),
-            notice: Mutex::new(None),
-            watchers: Mutex::new(None),
-        };
+        );
         assert_eq!(host.stop_refusal().expect("refused").code, "only_the_user_quits");
     }
 }

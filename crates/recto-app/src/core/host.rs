@@ -64,6 +64,23 @@ impl Drop for Counted<'_> {
 }
 
 impl AppHost {
+    /// The host, with nothing running, nothing said and no watchers yet.
+    pub(super) fn new(engine: Engine, session: SessionHost<DrawableLoader>, core: Arc<CoreQueue>, qa: Option<Arc<QaBridge>>, saver: Arc<Saver>) -> Self {
+        Self {
+            engine,
+            session,
+            core,
+            qa,
+            saver,
+            running: AtomicU32::new(0),
+            changing: AtomicU32::new(0),
+            agents: AtomicU32::new(0),
+            handing_off: AtomicBool::new(false),
+            notice: Mutex::new(None),
+            watchers: Mutex::new(None),
+        }
+    }
+
     /// **A command run as `origin` says it was asked:** one asked before a freeze whose turn in the person's lane has come goes through it
     /// ([`crate::queue::Origin::held_back_by_a_freeze`]), as on the session thread's queue; anything else asked now is refused past it.
     pub fn run_as(&self, actor: Actor, command: &Command, events: &mut Vec<Event>, origin: crate::queue::Origin) -> Result<Value, AgentError> {

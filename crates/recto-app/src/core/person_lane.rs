@@ -11,6 +11,7 @@
 //! session thread once it has run; a highlight or its removal as it lands; a print once its pages are read (`printing::Watch::begin`); a save once it has
 //! begun, its tab held for it (`saving::AppSaving::before_writing`).
 
+use super::answer_parts::AnswerParts;
 use super::person;
 use super::{CoreCall, Inner};
 use crate::queue::lane::{Asked, Start, Turn};
@@ -85,7 +86,7 @@ impl PersonsLane<'_> {
     /// as the person's running meanwhile. Never waits.
     pub fn submit_waiting(self, command: Command, turn: Turn) {
         // Answered as refused if it's dropped before its turn, then no longer counted: in that order, as the fields of a tuple go.
-        let held = (Unrun::new(self.app, command, &turn), person::Counted::new(&self.app.life, &self.app.core));
+        let held = (self.unrun(command, &turn), person::Counted::new(&self.app.life, &self.app.core));
         let app = Arc::downgrade(self.app);
         let start: Start = Box::new(move |turn| {
             let (unrun, counted) = held;
@@ -120,6 +121,15 @@ impl PersonsLane<'_> {
         self.asked(self.app.core.lane().ask(turn, start));
     }
 
+    /// `command`, answered as refused if it's dropped from the lane before `turn` comes ([`Unrun`]).
+    fn unrun(self, command: Command, turn: &Turn) -> Unrun {
+        Unrun {
+            app: Arc::downgrade(self.app),
+            command: Some(command),
+            ticket: turn.ticket(),
+        }
+    }
+
     /// What came of asking: started now, parked, or refused at the cap, which the person is told.
     fn asked(self, asked: Asked) {
         match asked {
@@ -145,7 +155,7 @@ impl PersonsLane<'_> {
             drop(counted);
             // Not taken past a freeze that came since it was asked: answered as refused, so its feature isn't left waiting (a paste's SVG).
             if let Err(run) = self.app.core.push_persons(turn_come(PersonCommand::input(command), turn)) {
-                person::not_run(self.app, &run.command, super::host::HELD_BACK);
+                person::not_run(&AnswerParts::of(self.app), &run.command, super::host::HELD_BACK);
             }
             return;
         }
@@ -159,7 +169,7 @@ impl PersonsLane<'_> {
             // Not taken past a freeze that came while it was held: answered as refused, so its feature isn't left waiting (a paste's SVG).
             None => {
                 if !person::submit(self.app, run.command.clone()) {
-                    person::not_run(self.app, &run.command, super::host::HELD_BACK);
+                    person::not_run(&AnswerParts::of(self.app), &run.command, super::host::HELD_BACK);
                 }
             }
         }
@@ -220,7 +230,7 @@ impl PersonsLane<'_> {
             }
         };
         // Answered as refused if it's dropped before its turn, then no longer counted, as in `submit_waiting`.
-        let held = (Unrun::new(self.app, command, &turn), person::Counted::new(&self.app.life, &self.app.core));
+        let held = (self.unrun(command, &turn), person::Counted::new(&self.app.life, &self.app.core));
         let core = Arc::downgrade(&self.app.core);
         let start: Start = Box::new(move |turn| {
             let (unrun, counted) = held;
@@ -253,14 +263,6 @@ struct Unrun {
 }
 
 impl Unrun {
-    fn new(app: &Arc<Inner>, command: Command, turn: &Turn) -> Self {
-        Self {
-            app: Arc::downgrade(app),
-            command: Some(command),
-            ticket: turn.ticket(),
-        }
-    }
-
     /// Its turn has come: the command, to run, and nothing answered here.
     fn run(mut self) -> Command {
         self.command.take().unwrap_or_else(|| unreachable!("taken only here, once"))
@@ -277,7 +279,7 @@ impl Drop for Unrun {
         } else {
             FULL
         };
-        person::not_run(&app, &command, words);
+        person::not_run(&AnswerParts::of(&app), &command, words);
     }
 }
 

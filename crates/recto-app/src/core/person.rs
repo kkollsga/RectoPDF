@@ -138,9 +138,9 @@ pub(super) fn on_its_own_thread(command: Command, counted: Running, turn: Option
 /// it was asked (a print being prepared, the snapshot tool copying, a paste's SVG being made, the update menu's mark) and is free again only once the
 /// command's answered, so it's answered here as [`Code::CANCELLED`], which no feature says words for: each feature's own steps after run, and nothing is
 /// said twice, as what the drop is (`words`) has been said by the page already, or isn't said (a freeze, which takes nothing a person does).
-pub(super) fn not_run(inner: &Arc<Inner>, command: &Command, words: &str) {
+pub(super) fn not_run(parts: &AnswerParts<'_>, command: &Command, words: &str) {
     let refused = Err(AgentError::new(Code::CANCELLED, words, recto_agent::exit::BUSY));
-    answered(&AnswerParts::of(inner), command, Origin::Input, &refused);
+    answered(parts, command, Origin::Input, &refused);
 }
 
 /// What the person is told is a command of theirs that ended in a panic, as a refusal: a feature with words of its own for it says those.

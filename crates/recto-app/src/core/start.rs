@@ -87,19 +87,7 @@ impl Inner {
         } else {
             SessionHost::on_state(&paths, DrawableLoader)
         };
-        let host = Arc::new(AppHost {
-            engine: engine.clone(),
-            session,
-            core: Arc::clone(&core),
-            qa: qa.clone(),
-            saver: Arc::clone(&saver),
-            running: AtomicU32::new(0),
-            changing: AtomicU32::new(0),
-            agents: AtomicU32::new(0),
-            handing_off: AtomicBool::new(false),
-            notice: Mutex::new(None),
-            watchers: Mutex::new(None),
-        });
+        let host = Arc::new(AppHost::new(engine.clone(), session, Arc::clone(&core), qa.clone(), Arc::clone(&saver)));
         host.listen();
         // The person's own Find and Print read a document they opened with a password through its key, as the page views draw it, by the file's identity.
         let persons_keys = Arc::clone(&keys);
