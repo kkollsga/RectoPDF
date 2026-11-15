@@ -1773,49 +1773,115 @@ fn a_run_sweeps_what_it_can_never_read_and_nothing_it_might() {
     assert!(ReadyCorpus::open(&lasting, &root, keys[0]).unwrap().is_some());
 }
 
-/// Failure: an agent's folder, the document's text in plain Markdown, stays on disk after the session that asked for it, for as long as the corpus does; or the next session's sweep takes a folder this session is using, or anything but an agent's folder (the coordinator's decision, 2026-11-15: it lives only for the session that asked).
+/// A finished corpus with an agent's folder, for the tests of the folder's life.
+fn with_agent_folder(temp: &Temp, root: &Path, name: &str) -> CorpusKey {
+    let key = key_of(temp, name.as_bytes());
+    build(tk(), root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    note_agent_folder(root);
+    ensure_agent_folder(tk(), root, key, &BuildLimits::default()).unwrap();
+    key
+}
+
+/// Failure: an agent's folder, the document's text in plain Markdown, stays on disk after the session that asked for it (the coordinator's decision, 2026-11-15: it lives only for that session); or a second session on the same state sweeps a folder the first still uses (F6); or the end of a session removes a folder set aside before under its lock (F3) instead of setting it aside by name; or a page file a kill left half-made stays (F2).
 #[test]
-fn an_agent_folder_lives_only_for_the_session_that_asked() {
+fn an_agent_folder_lives_only_for_the_session_that_holds_it() {
     let temp = Temp::new();
     let root = temp.0.join("corpus");
-    let keys: Vec<CorpusKey> = (0..3).map(|n| key_of(&temp, format!("file {n}").as_bytes())).collect();
-    for key in &keys {
-        build(tk(), &root, *key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
-        note_agent_folder(&root);
-        ensure_agent_folder(tk(), &root, *key, &BuildLimits::default()).unwrap();
-    }
+    let (mine, theirs, dead) = (
+        with_agent_folder(&temp, &root, "mine"),
+        with_agent_folder(&temp, &root, "theirs"),
+        with_agent_folder(&temp, &root, "dead"),
+    );
     let agent = |key: CorpusKey| CorpusPaths::new(&root, key).agent;
-    // The session that made them ends: each set aside, in one step.
-    retire_agent_folder(&root, keys[0]);
-    assert!(!agent(keys[0]).exists() && agent(keys[0]).with_file_name("agent.gone").is_dir());
-    // The next session: what's aside goes, and so does one from before it began; one it asked for itself stays, and so does one made since it began.
-    let began = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 60);
-    let an_hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60);
-    fs::File::options()
-        .write(true)
-        .open(CorpusPaths::new(&root, keys[1]).manifest)
-        .unwrap()
-        .set_modified(an_hour_ago)
-        .unwrap();
-    assert!(agent_folders_may_be_there(&root));
-    assert_eq!(sweep_agent_folders(&root, began, &[]), 2, "the one aside and the one from before");
-    assert!(!agent(keys[0]).with_file_name("agent.gone").exists() && !agent(keys[1]).exists());
-    assert!(agent(keys[2]).is_dir(), "one made in this session went");
+    let aside = |key: CorpusKey| set_aside_of(&CorpusPaths::new(&root, key).dir);
+    // Two sessions on one state: this one holds `mine`, another holds `theirs`; `dead`'s session ended without saying so, as a crash does.
+    let my_claim = claim_agent_folder(&root, mine).expect("a claim");
+    let their_claim = claim_agent_folder(&root, theirs).expect("another session's claim");
+    drop(claim_agent_folder(&root, dead).expect("a claim let go by a crash"));
+    assert!(claim_agent_folder(&root, theirs).is_none(), "a folder another live session holds was claimed");
+    // A kill between a page's write and its rename leaves a half-made page inside the agent's folder, where its end takes it.
     assert!(
-        ReadyCorpus::open(tk(), &root, keys[1]).unwrap().is_some(),
+        CorpusPaths::new(&root, mine).temp_page.starts_with(agent(mine)),
+        "a page is put together outside the agent's folder"
+    );
+    fs::write(CorpusPaths::new(&root, mine).temp_page, b"half a page").unwrap();
+    assert_eq!(sweep_agent_folders(&root, &[mine]), 1, "only the dead session's folder goes");
+    assert!(agent(mine).is_dir() && agent(theirs).is_dir() && !agent(dead).exists());
+    assert!(!CorpusPaths::new(&root, mine).temp_page.exists(), "a half-made page stayed");
+    // The end of a session: set aside in one rename each, to a name of its own, twice over, with nothing removed then.
+    retire_agent_folder(&root, mine, Some(my_claim));
+    drop(claim_agent_folder(&root, mine));
+    retire_agent_folder(&root, mine, None);
+    assert_eq!(
+        aside(mine).len(),
+        2,
+        "a folder set aside before was removed at a session's end, or written over"
+    );
+    // The next sweep takes what's aside, and leaves the live session's.
+    assert_eq!(sweep_agent_folders(&root, &[]), 2);
+    assert!(aside(mine).is_empty() && agent(theirs).is_dir());
+    assert!(
+        agent_folders_may_be_there(&root),
+        "a live session's folder is still there, so the next start must look"
+    );
+    drop(their_claim);
+    assert_eq!(sweep_agent_folders(&root, &[]), 1, "a session that's gone leaves its folder to the sweep");
+    assert!(!agent_folders_may_be_there(&root), "nothing's left, so a start needn't look");
+    assert!(
+        ReadyCorpus::open(tk(), &root, theirs).unwrap().is_some(),
         "the corpus went with its agent's folder"
     );
-    assert!(agent_folders_may_be_there(&root), "one is still there, so the next start must look");
-    // A folder this session asked for and found whole from before is kept too.
-    assert_eq!(
-        sweep_agent_folders(&root, std::time::SystemTime::now() + std::time::Duration::from_secs(60), &[keys[2]]),
-        0
-    );
-    assert_eq!(
-        sweep_agent_folders(&root, std::time::SystemTime::now() + std::time::Duration::from_secs(60), &[]),
-        1
-    );
-    assert!(!agent_folders_may_be_there(&root), "nothing's left, so a start needn't look");
+}
+
+/// Failure (F1): a link at any folder on the way to an agent's folder, the corpus's own, its format's, or the agent folder itself or one set aside, makes the sweep or a session's end remove or rename something outside the corpora.
+#[test]
+fn a_link_on_the_way_to_an_agent_folder_is_never_followed() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let outside = temp.0.join("outside");
+    fs::create_dir_all(outside.join("agent")).unwrap();
+    fs::write(outside.join("agent").join("keep.md"), b"not ours").unwrap();
+    fs::create_dir_all(outside.join("agent.gone.1.2")).unwrap();
+    let untouched = || outside.join("agent").join("keep.md").is_file() && outside.join("agent.gone.1.2").is_dir();
+    // A link in the format's folder's place, and in the corpus folder's: what they lead to holds an `agent` and an `agent.gone`.
+    for level in ["format", "corpus"] {
+        let key = key_of(&temp, level.as_bytes());
+        let dir = root.join(key.hex());
+        local::ensure_private_dir(&root).unwrap();
+        if level == "format" {
+            local::ensure_private_dir(&dir).unwrap();
+            std::os::unix::fs::symlink(&outside, dir.join(FORMAT)).unwrap();
+        } else {
+            std::os::unix::fs::symlink(&outside, &dir).unwrap();
+        }
+        note_agent_folder(&root);
+        sweep_agent_folders(&root, &[]);
+        retire_agent_folder(&root, key, None);
+        assert!(
+            claim_agent_folder(&root, key).is_none(),
+            "a claim was made through a link at the {level} folder"
+        );
+        assert!(untouched(), "the sweep or a session's end went through a link at the {level} folder");
+    }
+    // A link in the agent folder's own place, and in a set-aside one's.
+    let key = with_agent_folder(&temp, &root, "real");
+    let paths = CorpusPaths::new(&root, key);
+    fs::remove_dir_all(&paths.agent).unwrap();
+    std::os::unix::fs::symlink(outside.join("agent"), &paths.agent).unwrap();
+    std::os::unix::fs::symlink(outside.join("agent.gone.1.2"), paths.dir.join("agent.gone.9.9")).unwrap();
+    sweep_agent_folders(&root, &[]);
+    retire_agent_folder(&root, key, None);
+    assert!(untouched(), "the sweep or a session's end went through a link at the agent folder");
+}
+
+/// The folders set aside in a corpus's folder, for the tests.
+fn set_aside_of(dir: &Path) -> Vec<PathBuf> {
+    fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("agent.gone"))
+        .map(|entry| entry.path())
+        .collect()
 }
 
 /// Failure (the coordinator's decision F4, 2026-11-15): a run whose lasting key is only out of reach for now (the Keychain locked, a read refused) throws away and builds again over what that key sealed, so the person's index is lost to a moment; or a run that can never have the lasting key (not the team's release) can't build at all over a corpus it can't read. The first leaves it whole, through `seal_for_building` as through a build; the second replaces it.

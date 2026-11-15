@@ -36,7 +36,9 @@
 use crate::seal::{self, CorpusSeal, Purpose};
 mod agent_life;
 mod plain;
-pub use agent_life::{agent_folders_may_be_there, note_agent_folder, retire_agent_folder, sweep_agent_folders};
+pub use agent_life::{
+    AgentClaim, MAX_REMOVED_PER_SWEEP, agent_folders_may_be_there, claim_agent_folder, note_agent_folder, retire_agent_folder, sweep_agent_folders,
+};
 mod sealed;
 use crate::{hidden_report, read_page};
 pub use plain::{plain_corpora_may_be_there, remove_plain_corpora, remove_unreadable};
@@ -205,7 +207,7 @@ pub struct CorpusPaths {
     refused: PathBuf,
     lock: PathBuf,
     used: PathBuf,
-    /// Where a page's file is put together, out of an agent's sight, before it goes in place in one step.
+    /// Where a page's file is put together before it goes in place in one step: inside the agent's folder, so a kill between the two leaves it where that folder's end takes it (the security review of slices 2 and 3, F2).
     temp_page: PathBuf,
     meta: PathBuf,
 }
@@ -225,7 +227,7 @@ impl CorpusPaths {
             refused: app.join("refused.json"),
             lock: app.join("build.lock"),
             used: app.join("used"),
-            temp_page: app.join("page.tmp"),
+            temp_page: agent.join(".page.tmp"),
             meta: app.join("meta.sealed"),
             agent,
             app,
@@ -247,7 +249,7 @@ impl CorpusPaths {
     }
 
     /// Whether every folder on the way here is really this user's alone, so nothing read through them can have been put there by a link. It's four looks at a folder, per search of a file, which is nothing beside the search.
-    fn folders_are_private(&self, root: &Path) -> bool {
+    pub(crate) fn folders_are_private(&self, root: &Path) -> bool {
         let Some(by_key) = self.dir.parent() else { return false };
         [root, by_key, &self.dir, &self.app]
             .iter()
@@ -255,7 +257,7 @@ impl CorpusPaths {
     }
 
     /// The corpus's seal: its salt and a check, written before its first page.
-    fn seal(&self) -> PathBuf {
+    pub(crate) fn seal(&self) -> PathBuf {
         self.app.join("seal.bin")
     }
 
@@ -1565,19 +1567,28 @@ pub struct Evicted {
     pub kept_bytes: u64,
 }
 
+/// **The corpus folders under a root:** each folder named as a key, never a link, whatever it's called (a link is someone's trap), and nothing else. The one walk every sweep, eviction and clear goes by. An error is the root's: one that isn't there has none.
+pub(crate) fn key_folders(root: &Path) -> Vec<(CorpusKey, PathBuf)> {
+    try_key_folders(root).unwrap_or_default()
+}
+
+fn try_key_folders(root: &Path) -> io::Result<Vec<(CorpusKey, PathBuf)>> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(root)?.flatten() {
+        if let Some(key) = entry.file_name().to_str().and_then(CorpusKey::from_hex)
+            && entry.file_type().is_ok_and(|kind| kind.is_dir())
+        {
+            found.push((key, entry.path()));
+        }
+    }
+    Ok(found)
+}
+
 /// Removes corpora past their age, then the least recently used until all of them fit. Never `keep`, and never one being built. Only folders named as a key are looked at: anything else under the root isn't ours to touch.
 pub fn evict(root: &Path, limits: &BuildLimits, keep: Option<CorpusKey>) -> io::Result<Evicted> {
     let mut found = Vec::new();
     let now = SystemTime::now();
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let Some(key) = name.to_str().and_then(CorpusKey::from_hex) else { continue };
-        // A link is someone's trap, whatever it's called.
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        let dir = entry.path();
+    for (key, dir) in try_key_folders(root)? {
         let used = fs::metadata(CorpusPaths::new(root, key).used)
             .or_else(|_| fs::metadata(&dir))
             .and_then(|meta| meta.modified())
@@ -1604,10 +1615,8 @@ pub fn evict(root: &Path, limits: &BuildLimits, keep: Option<CorpusKey>) -> io::
 /// The disk is full, so caps don't come into it: this takes the least recently used, past however much is there now, until there's a good deal more room, or nothing else left to take. A corpus can always be built again, and a user's disk filling up is worse.
 pub fn make_room(root: &Path, limits: &BuildLimits, keep: CorpusKey) -> io::Result<Evicted> {
     let mut total = 0;
-    for entry in fs::read_dir(root)?.flatten() {
-        if entry.file_name().to_str().and_then(CorpusKey::from_hex).is_some() && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            total += folder_bytes(&entry.path());
-        }
+    for (_, dir) in try_key_folders(root)? {
+        total += folder_bytes(&dir);
     }
     let tighter = BuildLimits {
         max_total_bytes: total.saturating_sub(ROOM_ON_A_FULL_DISK.max(total / 4)),
@@ -1644,19 +1653,12 @@ impl Cleared {
 /// Throws away everything that's not being built, and says what went and what didn't.
 pub fn clear_all(root: &Path) -> io::Result<Cleared> {
     let mut report = Cleared::default();
-    let entries = match fs::read_dir(root) {
-        Ok(entries) => entries,
+    let folders = match try_key_folders(root) {
+        Ok(folders) => folders,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(report),
         Err(error) => return Err(error),
     };
-    for entry in entries {
-        let entry = entry?;
-        let Some(key) = entry.file_name().to_str().and_then(CorpusKey::from_hex) else {
-            continue;
-        };
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
+    for (key, _) in folders {
         report.note(remove_unless_building(root, key));
     }
     let _ = fs::remove_dir_all(root.join(VERSIONS_FOLDER));

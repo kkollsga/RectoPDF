@@ -1,6 +1,5 @@
 //! **Text from before it was sealed goes** (owner, 2026-11-15: "Lets store it encrypted"): the one pass that removes the plain formats' folders, at the first launch that can see them.
 
-use super::CorpusKey;
 use recto_platform::local;
 use std::fs;
 use std::path::Path;
@@ -18,14 +17,10 @@ pub fn plain_corpora_may_be_there(root: &Path) -> bool {
 
 /// **Text from before it was sealed goes.** Every corpus folder's plain formats are removed, and nothing else: only folders named as keys are looked at, and in them only the old formats' folders, never following a link. One pass, a look at each corpus folder and a removal of what it finds, on the indexer's thread at the session's first sweep. Returns how many went.
 pub fn remove_plain_corpora(root: &Path) -> u32 {
-    let Ok(entries) = fs::read_dir(root) else { return 0 };
     let (mut removed, mut left) = (0, 0);
-    for entry in entries.flatten() {
-        if entry.file_name().to_str().and_then(CorpusKey::from_hex).is_none() || !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
-        }
+    for (_, dir) in super::key_folders(root) {
         for old in PLAIN_FORMATS {
-            let folder = entry.path().join(old);
+            let folder = dir.join(old);
             // `remove_dir_all` doesn't follow links, and a link here is left as it is.
             if fs::symlink_metadata(&folder).is_ok_and(|meta| meta.is_dir()) {
                 match fs::remove_dir_all(&folder) {
@@ -44,17 +39,9 @@ pub fn remove_plain_corpora(root: &Path) -> u32 {
 
 /// **Corpora this run can't open go,** at its first sweep, so text sealed by a key that's gone doesn't wait out its 90 days. A run on a lasting key removes every corpus it can't open; a run on a key in memory removes only those sealed by another run's key in memory, and leaves those of a lasting key it hasn't got just now, such as the Keychain's while it's locked. Never one being built. One small read and a key derivation per corpus. Returns how many went.
 pub fn remove_unreadable(find_key: &recto_platform::find_key::FindKey, root: &Path) -> u32 {
-    let Ok(entries) = fs::read_dir(root) else { return 0 };
     let mut removed = 0;
-    for entry in entries.flatten() {
-        let Some(key) = entry.file_name().to_str().and_then(CorpusKey::from_hex) else {
-            continue;
-        };
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
-        }
-        let header_path = super::CorpusPaths::new(root, key).app.join("seal.bin");
-        let Ok(Some(header)) = local::read_private_file(&header_path, crate::seal::HEADER_BYTES as u64) else {
+    for (key, _) in super::key_folders(root) {
+        let Ok(Some(header)) = local::read_private_file(&super::CorpusPaths::new(root, key).seal(), crate::seal::HEADER_BYTES as u64) else {
             continue;
         };
         if crate::seal::CorpusSeal::open(find_key, key, &header).is_ok() {
