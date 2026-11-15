@@ -59,6 +59,7 @@ mod update_guards;
 mod update_menu;
 mod update_saved;
 mod view;
+mod wake_costs;
 mod window_reaches;
 mod window_script;
 mod withheld_compare;
