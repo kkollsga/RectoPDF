@@ -39,6 +39,10 @@ pub fn remove_plain_corpora(root: &Path) -> u32 {
 
 /// **Corpora this run can't open go,** at its first sweep, so text sealed by a key that's gone doesn't wait out its 90 days. A run on a lasting key removes every corpus it can't open; a run on a key in memory removes only those sealed by another run's key in memory, and leaves those of a lasting key it hasn't got just now, such as the Keychain's while it's locked. Never one being built. One small read and a key derivation per corpus. Returns how many went.
 pub fn remove_unreadable(find_key: &recto_platform::find_key::FindKey, root: &Path) -> u32 {
+    // A key bound to one corpus opens no other, so every other would look unreadable: only a session's key sweeps.
+    if find_key.binding().is_some() {
+        return 0;
+    }
     let mut removed = 0;
     for (key, _) in super::key_folders(root) {
         let Ok(Some(header)) = local::read_private_file(&super::CorpusPaths::new(root, key).seal(), crate::seal::HEADER_BYTES as u64) else {

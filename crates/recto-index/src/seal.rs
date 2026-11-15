@@ -110,6 +110,12 @@ fn corpus_root(find_key: &FindKey, corpus: CorpusKey) -> Option<[u8; 32]> {
     }
 }
 
+/// Whether a key may seal or open `corpus`: a session's key, or one bound to that corpus. Callers that would clear or write a corpus ask first, so a key bound to another corpus touches nothing of this one (the second security read's item 3).
+#[must_use]
+pub fn may_key(find_key: &FindKey, corpus: CorpusKey) -> bool {
+    find_key.binding().is_none_or(|bound| bound == corpus.as_bytes())
+}
+
 /// **What the indexer is handed for one corpus:** a key bound to it, from the session's key, which seals and opens that corpus and no other ([`recto_platform::find_key::FindKey::bound`]). `None` when the key given is itself bound to another corpus.
 #[must_use]
 pub fn grant_for(find_key: &FindKey, corpus: CorpusKey) -> Option<FindKey> {

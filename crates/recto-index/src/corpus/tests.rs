@@ -2102,3 +2102,48 @@ fn an_entry_that_cant_be_read_is_never_skipped() {
         "a clear stopped at an entry it couldn't read"
     );
 }
+
+/// Failure (the second security read's item 3): a key bound to one corpus, as a helper holds, is used where it opens nothing, and nothing reads as something to throw away: the sweep of unreadable corpora removes every other, or a build or a seal for another corpus clears its text before it fails. Each refuses before it touches anything.
+#[test]
+fn a_bound_key_touches_no_other_corpus() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let (x, y) = (key_of(&temp, b"x"), key_of(&temp, b"y"));
+    for key in [x, y] {
+        build(tk(), &root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    }
+    let for_x = crate::seal::grant_for(tk(), x).unwrap();
+    assert_eq!(remove_unreadable(&for_x, &root), 0, "a key bound to X swept other corpora");
+    assert!(ReadyCorpus::open(tk(), &root, y).unwrap().is_some(), "Y went in a sweep on X's key");
+    assert!(seal_for_building(&for_x, &CorpusPaths::new(&root, y)).is_err(), "X's key made a seal for Y");
+    assert!(
+        build(&for_x, &root, y, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).is_err(),
+        "X's key built Y"
+    );
+    assert!(ReadyCorpus::open(tk(), &root, y).unwrap().is_some(), "Y's text was cleared by X's key");
+    // A file that's refused before any page clears what's there, and with X's key that would be Y's.
+    struct RefusedAtOnce;
+    impl PageFeed for RefusedAtOnce {
+        fn page_count(&mut self) -> Result<u32, FeedError> {
+            Err(FeedError::Refused("not_pdf"))
+        }
+        fn read(&mut self, _page: u32) -> Result<FedPage, FeedError> {
+            Err(FeedError::Refused("not_pdf"))
+        }
+        fn still_the_same_file(&mut self) -> bool {
+            true
+        }
+    }
+    assert!(
+        build(&for_x, &root, y, &mut RefusedAtOnce, &DocMeta::default(), &BuildLimits::default()).is_err(),
+        "X's key refused Y"
+    );
+    assert!(
+        ReadyCorpus::open(tk(), &root, y).unwrap().is_some(),
+        "Y's text was cleared by a refusal on X's key"
+    );
+    assert!(
+        build(&for_x, &root, x, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).is_ok(),
+        "X's own key couldn't go on with X"
+    );
+}

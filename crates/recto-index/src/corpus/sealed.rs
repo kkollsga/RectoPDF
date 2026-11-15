@@ -173,6 +173,10 @@ pub(super) fn sealed_elsewhere(paths: &CorpusPaths) -> Option<bool> {
 
 /// The seal to build with: the one there, or a new one, after throwing away anything this key can't open. That's how a corpus sealed by a key that's gone, a run's own or a lost one, is built again. Never over what a lasting key sealed when this run's lack of it is only for now: that's refused before anything is thrown away.
 pub(super) fn seal_for_building(find_key: &FindKey, paths: &CorpusPaths) -> io::Result<CorpusSeal> {
+    // A key bound to another corpus can open nothing here, which would read as a corpus to throw away: it's refused before anything goes.
+    if !crate::seal::may_key(find_key, paths.key) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "a key bound to another corpus"));
+    }
     if let Some(seal) = read_seal(find_key, paths) {
         return Ok(seal);
     }

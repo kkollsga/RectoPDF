@@ -719,6 +719,10 @@ pub enum BuildOutcome {
 
 /// Builds one document's corpus, going on from wherever an earlier build stopped. Blocks for as long as that takes. The caller is a helper process, never the UI, and may be killed at any point.
 pub fn build(find_key: &FindKey, root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: &DocMeta, limits: &BuildLimits) -> io::Result<BuildOutcome> {
+    // A key bound to another corpus: nothing of this one, or any other, is read, cleared or evicted for it.
+    if !crate::seal::may_key(find_key, key) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "a key bound to another corpus"));
+    }
     let outcome = build_with_lock(find_key, root, key, feed, meta, limits);
     // However it came out. A build that's refused or failed mustn't be why old text stays. Nothing's asked of the one being built, unless the disk is full.
     match &outcome {
