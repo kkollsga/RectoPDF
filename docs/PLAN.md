@@ -163,6 +163,10 @@ Open items only, by where they are in this plan; features not yet built are coun
 - Phase R, R4.3: the read-back after a rewrite isn't measured on a large file.
 - Phase R: the search index's key leaves out PDFium's version (before the next PDFium change).
 
+- Phase R's close (2026-11-15): a settle that runs out says "the session thread didn't get through what was queued, with the files being read" without naming the call being run or the reads outstanding (seen once in 200 rounds of the comparison walk like CI, at load 12 to 16; not explained): `settled::wait` should name them, so the next one explains itself.
+- Phase R's close: the update menu's row leaves its mark set when its command isn't taken at a freeze, so the next update news is also put up as an alert.
+- For the owner (2026-11-15): how long the window may wait for a pasted snapshot's SVG: 10 s today against the 2 s stall rule; measured 17 to 511 ms for eleven of twelve cases and 2.15 s for a full-page box of the USGS map; the coordinator recommends 3 s now and making the SVG ahead of the paste after the release.
+
 **Waiting on the owner**
 - Phase 3, sleep: whether a photograph's soft first frame (25 to 30 ms) bothers you.
 - Phase 3: whether a document should open showing the half page of margin above page 1.
