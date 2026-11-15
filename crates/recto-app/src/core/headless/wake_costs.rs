@@ -65,9 +65,21 @@ fn one_wake(app: &HeadlessApp, name: &str, keep_file: bool) -> [f64; 4] {
         engine.applied();
         std::thread::sleep(Duration::from_millis(1)); // ratchet: poll
     }
+    // Asleep in the page view too, not only in the session: the page view lets go of a tab gone cold when it's next told the warm tabs, and a tap
+    // before that shows it from what it still holds, with no wake to record (found 2026-11-15: the "wake that never ended", 1 in about 40, was this:
+    // the tab drawn 2 ms after the tap from its held tiles, and `last_wake` still the other tab's).
+    let held_since = Instant::now();
+    while engine.waking().holds(u32::try_from(tab).expect("a tab id")) {
+        assert!(
+            held_since.elapsed() < Duration::from_secs(10),
+            "the page view still holds tab {tab} after it went to sleep"
+        );
+        host_turns(app, &mut view, false);
+        std::thread::sleep(Duration::from_millis(1)); // ratchet: poll
+    }
     let began = Instant::now();
     person_taps(app, tab);
-    let (mut showing, mut paper, mut first, mut sharp) = (None, None, None, None);
+    let (mut showing, mut paper, mut first, mut sharp, mut tiled) = (None, None, None, None, None);
     while sharp.is_none() && began.elapsed() < Duration::from_secs(20) {
         let mut ops = engine.drain();
         applied_as_the_host(&ops);
@@ -96,6 +108,11 @@ fn one_wake(app: &HeadlessApp, name: &str, keep_file: bool) -> [f64; 4] {
         if paper.is_none() && showing.is_some() && report["tiles"]["page_layers"].as_u64().unwrap_or(0) > 0 {
             paper = Some(ms(began));
         }
+        // Something drawn on a layer, by the page view's own count rather than the wake's record, which ends after `WAKE_FOLLOWED_FOR`: late is told from
+        // never.
+        if tiled.is_none() && showing.is_some() && report["tiles"]["attached"].as_u64().unwrap_or(0) > 0 {
+            tiled = Some(ms(began));
+        }
         let wake = &report["last_wake"];
         if wake["tab"] == tab {
             if first.is_none() && wake["first_frame_us"].is_u64() {
@@ -106,6 +123,17 @@ fn one_wake(app: &HeadlessApp, name: &str, keep_file: bool) -> [f64; 4] {
             }
         }
         std::thread::sleep(Duration::from_micros(200)); // ratchet: poll
+    }
+    if sharp.is_none() {
+        // What didn't happen, said as the record has it: the wake, the page view's jobs and workers, what the session thread was doing.
+        let report = engine.report().0;
+        let state = app.record_json();
+        println!(
+            "a wake that didn't end: showing {showing:?} paper {paper:?} first {first:?} something on a layer {tiled:?}\n  workers {:?} (killed before the tap)\n  the page view: {}\n  the record: {}",
+            engine.workers().pids(),
+            report,
+            state
+        );
     }
     [showing, paper, first, sharp].map(|at| at.unwrap_or(f64::NAN))
 }
@@ -141,10 +169,17 @@ fn waking_an_idle_tab() {
             .unwrap_or_default()
     };
     println!("load before: {}", load());
+    // `RECTO_WAKE_ONLY=slow-facts` (a kind and `facts` or `pdf`) runs one route, and `RECTO_WAKE_RUNS` how many times: to look into one route.
+    let only = std::env::var("RECTO_WAKE_ONLY").ok();
+    let runs_each: usize = std::env::var("RECTO_WAKE_RUNS").ok().and_then(|runs| runs.parse().ok()).unwrap_or(5);
     for (kind, page) in [("text", recto_testpdf::busy_page()), ("slow", recto_testpdf::slow_page(40_000))] {
         for keep_file in [true, false] {
+            let route = format!("{kind}-{}", if keep_file { "facts" } else { "pdf" });
+            if only.as_ref().is_some_and(|only| *only != route) {
+                continue;
+            }
             let mut runs = Vec::new();
-            for _ in 0..5 {
+            for _ in 0..runs_each {
                 let disk = Disk::new();
                 let name = format!("{kind}.pdf");
                 let doc = disk.file(
