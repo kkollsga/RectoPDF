@@ -2,7 +2,7 @@
 //! 2026-11-15). The format, as bytes; the record store (`recto-control`'s `record_store/page_ids.rs`) keeps the file.
 //!
 //! **Its bytes:** a header, then entries, appended as pages are read; never rewritten for a step.
-//! - Header: [`MAGIC`] (`recto-pages`, then a version byte, 1); the journal's file name, a length byte (at most [`MAX_NAME`]) and its bytes; the file
+//! - Header: [`MAGIC`] (`recto-pages`, then a version byte, 2); the journal's file name, a length byte (at most [`MAX_NAME`]) and its bytes; the file
 //!   version the entries are of, as `u64le` size, `i64le` modification time in nanoseconds and `u64le` file number (the journal's own header says
 //!   these; the device isn't, as a volume can come back under another); `u32le` the file's page count; a byte of flags (1: the list followed its file
 //!   onto this version and the person hasn't been told yet, slice 2's; other bits are kept 0 and read as nothing); and a check of all of it.
@@ -20,8 +20,10 @@
 use super::{Known, MAX_IDENTIFIED};
 use recto_core::page_id::DocumentIds;
 
-/// The bytes a sidecar starts with: its name, and the version of this format.
-pub const MAGIC: &[u8; 12] = b"recto-pages\x01";
+/// The bytes a sidecar starts with: its name, and the version of this format. Version 2 (2026-11-15, before any release wrote one): a page's frame tag
+/// holds the page's own quarter turns in its low two bits (`recto_core::page_id::frame_turns`). A sidecar of version 1, whose tags' low bits are
+/// hash, is no sidecar: its pages come back unread, and are read again while the file is the edits' version.
+pub const MAGIC: &[u8; 12] = b"recto-pages\x02";
 /// Longest journal name a header holds: `journal-` and 16 hex digits, a tab's number, `.log`, with room.
 pub const MAX_NAME: usize = 64;
 /// A page's entry's length.
@@ -339,7 +341,13 @@ mod tests {
         let mut long = good.clone();
         long[12] = 200;
         assert_eq!(decode(&long), None, "a name past its limit");
-        assert_eq!(decode(b"recto-pages\x02"), None, "another version");
+        let mut version_1 = good.clone();
+        version_1[11] = 1;
+        let sum = check(&version_1[..good.len() - 2 * PAGE_ENTRY - 4]);
+        let at = good.len() - 2 * PAGE_ENTRY - 4;
+        version_1[at..at + 4].copy_from_slice(&sum);
+        assert_eq!(decode(&version_1), None, "version 1, whose frame tags are of the old definition");
+        assert_eq!(decode(b"recto-pages\x03"), None, "another version");
         let mut told = header();
         told.followed_untold = true;
         assert!(decode(&told.encode().unwrap()).unwrap().header.followed_untold, "the flag reads back");

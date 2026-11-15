@@ -95,8 +95,12 @@ pub struct PageIdentity {
     /// `recto-page/1`, whole. What's kept is a prefix.
     pub digest: [u8; 32],
     pub object: (u32, u16),
-    /// The first four bytes of SHA-256 over `recto-frame/1`, a NUL, the file's own quarter turns and the shown box (left, bottom, right, top as `f32`
-    /// little-endian), as [`crate::nav`] reads them: equal frames, equal tags. Not part of the digest.
+    /// **The frame's tag:** the first four bytes of SHA-256 over `recto-frame/1`, a NUL, the file's own quarter turns and the shown box (left, bottom,
+    /// right, top as `f32` little-endian), as [`crate::nav`] reads them, as a `u32le`, with its low two bits then replaced by the page's own quarter
+    /// turns (`/Rotate`, 0 to 3): `(hash & !3) | turns`. Equal frames, equal tags; [`frame_turns`] gives the turns back, so a change of the crop
+    /// (same turns, another tag) is told from a change of the page's own `/Rotate` (slice 2). Not part of the digest. Kept only in a journal's
+    /// sidecar, whose format's version (2) is the one that holds tags of this definition: a sidecar of version 1, whose tags' low bits are hash, is
+    /// no sidecar, so a tag of the old definition is never compared with one of this.
     pub frame: u32,
 }
 
@@ -202,7 +206,12 @@ fn frame_tag(frame: crate::nav::Frame) -> u32 {
         hasher.update(edge.to_le_bytes());
     }
     let tag = hasher.finalize();
-    u32::from_le_bytes([tag[0], tag[1], tag[2], tag[3]])
+    (u32::from_le_bytes([tag[0], tag[1], tag[2], tag[3]]) & !3) | u32::from(frame.turns & 3)
+}
+
+/// The page's own quarter turns (its `/Rotate`, 0 to 3) a frame's tag holds in its low two bits ([`PageIdentity::frame`]).
+pub fn frame_turns(tag: u32) -> u8 {
+    (tag & 3) as u8
 }
 
 /// **For the fuzzer:** `input` as a stream's `/Filter`, `/DecodeParms` and bytes, decoded as the digest decodes ([`decode`]) up to `limit` bytes, the
