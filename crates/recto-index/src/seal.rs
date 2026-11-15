@@ -245,4 +245,40 @@ mod tests {
             assert!(nonces.insert(chunk[..NONCE_BYTES].to_vec()), "a nonce came twice");
         }
     }
+
+    /// What sealing and opening cost on this Mac, by hand (`--ignored`, release): 37 MB of text in 3.7 KB pages, as the made 10,000-page PDF's pack, each page sealed and opened in one reused buffer.
+    #[test]
+    #[ignore = "a measurement, by hand"]
+    fn what_sealing_costs() {
+        let key = FindKey::for_tests(1);
+        let (seal, _) = CorpusSeal::create(&key, corpus(1)).unwrap();
+        let page = vec![b'a'; 3_700];
+        let pages = 10_000u32;
+        let mut chunks = Vec::with_capacity(pages as usize);
+        let started = std::time::Instant::now();
+        for number in 0..pages {
+            chunks.push(sealed(&seal, Purpose::Page(number), &page));
+        }
+        let sealing = started.elapsed();
+        let mut buffer = Vec::new();
+        let started = std::time::Instant::now();
+        for (number, chunk) in chunks.iter().enumerate() {
+            buffer.clear();
+            buffer.extend_from_slice(chunk);
+            seal.open_in_place(Purpose::Page(number as u32), &mut buffer).unwrap();
+        }
+        let opening = started.elapsed();
+        let started = std::time::Instant::now();
+        for _ in 0..1_000 {
+            let (_, header) = CorpusSeal::create(&key, corpus(1)).unwrap();
+            CorpusSeal::open(&key, corpus(1), &header).unwrap();
+        }
+        let per_open = started.elapsed() / 1_000;
+        let megabytes = f64::from(pages) * 3_700.0 / 1e6;
+        println!(
+            "sealed {megabytes:.1} MB in {sealing:?} ({:.0} MB/s), opened in {opening:?} ({:.0} MB/s); a corpus's seal made and opened in {per_open:?}",
+            megabytes / sealing.as_secs_f64(),
+            megabytes / opening.as_secs_f64()
+        );
+    }
 }

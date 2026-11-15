@@ -34,10 +34,16 @@
 //! **How it's searched** is a pass over `text.pack`, with no index in front of it. See `docs/engineering/search-index.md` for the numbers that say that's enough.
 
 use crate::seal::{self, CorpusSeal, Purpose};
+mod plain;
+mod sealed;
 use crate::{hidden_report, read_page};
+pub use plain::{plain_corpora_may_be_there, remove_plain_corpora};
 use recto_platform::find_key::FindKey;
 use recto_platform::local;
 use recto_proto::{CharBox, CharRecord};
+#[cfg(test)]
+use sealed::INNER_LEN;
+use sealed::{Entry, PageRecord, RECORD_LEN, open_page, read_seal, read_sealed_json, seal_for_building, seal_page, write_sealed};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
@@ -49,8 +55,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 /// The folder's format. A new one starts new folders, and the old ones age out.
 pub const FORMAT: &str = "v4";
-/// Formats before the text was sealed, removed by [`remove_plain_corpora`].
-const PLAIN_FORMATS: &[&str] = &["v1", "v2", "v3"];
+
 /// What made the text. **Change this when [`read_page`]'s output changes:** it's part of the key, so old text can't answer for new rules. `a_change_to_the_text_changes_the_version` is there to remind you.
 pub const NORMALISER: &str = "recto-normalize/1";
 /// Most pages of a document it will index, the same as a document may have once edited.
@@ -78,10 +83,6 @@ const MAX_UNTRUSTED_CHARS: usize = 200;
 
 /// One page's largest blob, so a damaged record can't ask for more: 2,000,000 characters of 4 bytes, and what goes beside them.
 const MAX_BLOB_BYTES: usize = 16 * 1024 * 1024;
-/// A table entry: where a page's sealed chunk is in the pack, and how long. All that's on disk outside a chunk.
-const RECORD_LEN: usize = 12;
-/// What a page's chunk holds before its text: its kind, flags, reason, characters and lengths.
-const INNER_LEN: usize = 16;
 const SAMPLE_BYTES: u64 = 64 * 1024;
 /// Pages between looks at whether the file is still the same one.
 const IDENTITY_CHECK_EVERY: u32 = 64;
@@ -196,8 +197,6 @@ pub struct CorpusPaths {
     table: PathBuf,
     pack: PathBuf,
     ready: PathBuf,
-    /// The corpus's seal: its salt and a check, written before its first page.
-    seal: PathBuf,
     refused: PathBuf,
     lock: PathBuf,
     used: PathBuf,
@@ -218,7 +217,6 @@ impl CorpusPaths {
             table: app.join("pages.bin"),
             pack: app.join("text.pack"),
             ready: app.join("ready.sealed"),
-            seal: app.join("seal.bin"),
             refused: app.join("refused.json"),
             lock: app.join("build.lock"),
             used: app.join("used"),
@@ -249,6 +247,11 @@ impl CorpusPaths {
         [root, by_key, &self.dir, &self.app]
             .iter()
             .all(|folder| local::check_private_dir(folder).is_ok())
+    }
+
+    /// The corpus's seal: its salt and a check, written before its first page.
+    fn seal(&self) -> PathBuf {
+        self.app.join("seal.bin")
     }
 
     pub fn page_file(&self, page: u32, width: usize) -> PathBuf {
@@ -314,138 +317,6 @@ const FLAG_HIDDEN_CHECKED: u8 = 1;
 const FLAG_HIDDEN_FLAGGED: u8 = 2;
 const FLAG_TAG_CHARS: u8 = 4;
 const FLAG_SPANS_DROPPED: u8 = 8;
-
-/// What's known about one page, kept at the start of its sealed chunk, so nothing of it is on disk in the clear. In memory only while its page is in hand.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct PageRecord {
-    text_len: u32,
-    aux_len: u32,
-    chars: u32,
-    kind: PageKind,
-    flags: u8,
-    reason: u8,
-}
-
-impl PageRecord {
-    fn write_inner(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&[self.kind as u8, self.flags, self.reason, 0]);
-        out.extend_from_slice(&self.chars.to_le_bytes());
-        out.extend_from_slice(&self.text_len.to_le_bytes());
-        out.extend_from_slice(&self.aux_len.to_le_bytes());
-    }
-
-    /// What a chunk's first bytes say, if they say it of exactly `rest` bytes after them. They're inside a chunk that opened, so they're ours, but they're checked as if they weren't.
-    fn read_inner(bytes: &[u8], rest: usize) -> Option<Self> {
-        let word = |at: usize| Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
-        let kind = match bytes.first()? {
-            1 => PageKind::Text,
-            2 => PageKind::NoText,
-            3 => PageKind::Failed,
-            _ => return None,
-        };
-        let record = Self {
-            kind,
-            flags: *bytes.get(1)?,
-            reason: *bytes.get(2)?,
-            chars: word(4)?,
-            text_len: word(8)?,
-            aux_len: word(12)?,
-        };
-        (record.blob_len() == rest).then_some(record)
-    }
-
-    fn blob_len(&self) -> usize {
-        self.text_len as usize + self.aux_len as usize
-    }
-}
-
-/// Where a page's chunk is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Entry {
-    offset: u64,
-    len: u32,
-}
-
-impl Entry {
-    fn encode(self) -> [u8; RECORD_LEN] {
-        let mut out = [0; RECORD_LEN];
-        out[..8].copy_from_slice(&self.offset.to_le_bytes());
-        out[8..].copy_from_slice(&self.len.to_le_bytes());
-        out
-    }
-
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        Some(Self {
-            offset: u64::from_le_bytes(bytes.get(..8)?.try_into().ok()?),
-            len: u32::from_le_bytes(bytes.get(8..12)?.try_into().ok()?),
-        })
-    }
-
-    fn end(self) -> u64 {
-        // What's on disk can say anything, and saturating lands past the end of any file.
-        self.offset.saturating_add(u64::from(self.len))
-    }
-
-    /// Whether a chunk this long could be a page's.
-    fn is_bounded(self) -> bool {
-        (self.len as usize) <= MAX_BLOB_BYTES + INNER_LEN + seal::OVERHEAD
-    }
-}
-
-/// Reads one page's chunk into `buffer` and opens it there. The page's text is then in `buffer`, at the range given, and nowhere else.
-fn open_page(pack: &File, pack_len: u64, seal: &CorpusSeal, page: u32, entry: Entry, buffer: &mut Vec<u8>) -> Option<(PageRecord, std::ops::Range<usize>)> {
-    if !entry.is_bounded() || entry.end() > pack_len {
-        return None;
-    }
-    buffer.resize(entry.len as usize, 0);
-    recto_platform::read_exact_at(pack, buffer, entry.offset).ok()?;
-    let plain = seal.open_in_place(Purpose::Page(page), buffer).ok()?;
-    let inner = buffer.get(plain.start..plain.start + INNER_LEN)?;
-    let record = PageRecord::read_inner(inner, plain.len().checked_sub(INNER_LEN)?)?;
-    Some((record, plain.start + INNER_LEN..plain.end))
-}
-
-/// Seals a page: its record, then its text and what's beside it.
-fn seal_page(seal: &CorpusSeal, page: u32, record: &PageRecord, blob: &[u8], chunk: &mut Vec<u8>) -> io::Result<()> {
-    seal.seal(Purpose::Page(page), chunk, |out| {
-        record.write_inner(out);
-        out.extend_from_slice(blob);
-    })
-}
-
-/// A small file sealed whole: the summary, or the title and outline.
-fn write_sealed(seal: &CorpusSeal, path: &Path, purpose: Purpose, bytes: &[u8], synced: bool) -> io::Result<()> {
-    let mut chunk = Vec::with_capacity(bytes.len() + seal::OVERHEAD);
-    seal.seal(purpose, &mut chunk, |out| out.extend_from_slice(bytes))?;
-    if synced {
-        local::write_private_file(path, &chunk)
-    } else {
-        local::write_private_file_unsynced(path, &chunk)
-    }
-}
-
-fn read_sealed_json(seal: &CorpusSeal, path: &Path, purpose: Purpose) -> Option<Value> {
-    let mut chunk = local::read_private_file(path, 4 * 1024 * 1024 + seal::OVERHEAD as u64).ok()??;
-    let plain = seal.open_in_place(purpose, &mut chunk).ok()?;
-    serde_json::from_slice(&chunk[plain]).ok()
-}
-
-/// The corpus's seal, if its header is there and this key opens it.
-fn read_seal(find_key: &FindKey, paths: &CorpusPaths) -> Option<CorpusSeal> {
-    let header = local::read_private_file(&paths.seal, seal::HEADER_BYTES as u64).ok()??;
-    CorpusSeal::open(find_key, paths.key, &header).ok()
-}
-
-/// The seal to build with: the one there, or a new one, after throwing away anything this key can't open. That's how a corpus sealed by a key that's gone, a run's own or a lost one, is built again.
-fn seal_for_building(find_key: &FindKey, paths: &CorpusPaths) -> io::Result<CorpusSeal> {
-    if let Some(seal) = read_seal(find_key, paths) {
-        return Ok(seal);
-    }
-    clear_text(paths);
-    let (seal, header) = CorpusSeal::create(find_key, paths.key)?;
-    local::write_private_file(&paths.seal, &header)?;
-    Ok(seal)
-}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Reading
@@ -1180,40 +1051,6 @@ pub fn remove_old_folder(root: &Path) {
     }
 }
 
-/// Marks a corpus folder whose plain formats have been looked for, so a start needs one look at a file to know there's nothing to do. Not named as a key, so nothing takes it for a corpus.
-const SEALED_MARK: &str = "sealed";
-
-/// Whether a start should look for text from before it was sealed: the folder's there and hasn't been looked through since.
-pub fn plain_corpora_may_be_there(root: &Path) -> bool {
-    root.is_dir() && !root.join(SEALED_MARK).exists()
-}
-
-/// **Text from before it was sealed goes.** Every corpus folder's plain formats are removed, and nothing else: only folders named as keys are looked at, and in them only the old formats' folders, never following a link. One pass, a look at each corpus folder and a removal of what it finds, on the indexer's thread at the session's first sweep. Returns how many went.
-pub fn remove_plain_corpora(root: &Path) -> u32 {
-    let Ok(entries) = fs::read_dir(root) else { return 0 };
-    let (mut removed, mut left) = (0, 0);
-    for entry in entries.flatten() {
-        if entry.file_name().to_str().and_then(CorpusKey::from_hex).is_none() || !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
-        }
-        for old in PLAIN_FORMATS {
-            let folder = entry.path().join(old);
-            // `remove_dir_all` doesn't follow links, and a link here is left as it is.
-            if fs::symlink_metadata(&folder).is_ok_and(|meta| meta.is_dir()) {
-                match fs::remove_dir_all(&folder) {
-                    Ok(()) => removed += 1,
-                    Err(_) => left += 1,
-                }
-            }
-        }
-    }
-    // Only once everything's gone. A folder that couldn't be removed is looked for again next time.
-    if left == 0 {
-        let _ = local::write_private_file_unsynced(&root.join(SEALED_MARK), b"");
-    }
-    removed
-}
-
 /// Clears out notes about corpora that are gone, so these can't pile up.
 fn tidy_versions(root: &Path) {
     let Ok(entries) = fs::read_dir(root.join(VERSIONS_FOLDER)) else { return };
@@ -1311,7 +1148,7 @@ fn clear_text(paths: &CorpusPaths) {
     let _ = fs::remove_file(&paths.temp_page);
     let _ = fs::remove_file(&paths.meta);
     let _ = fs::remove_file(&paths.ready);
-    let _ = fs::remove_file(&paths.seal);
+    let _ = fs::remove_file(paths.seal());
 }
 
 /// How far an earlier build got.

@@ -215,6 +215,7 @@ mod tests {
 
     /// Failure: a test state folder's key changes from one run to the next, so every quiet run's corpus is unreadable to the next; or a file that isn't a key, or anyone else's, is used.
     #[test]
+    #[cfg(unix)]
     fn a_state_folders_key_lasts_and_a_wrong_file_is_refused() {
         use std::os::unix::fs::PermissionsExt;
         let temp = std::env::temp_dir()

@@ -92,6 +92,11 @@ struct Security {
     delete: unsafe extern "C" fn(CfRef) -> OsStatus,
     copy_self: unsafe extern "C" fn(u32, *mut CfRef) -> OsStatus,
     copy_signing_information: unsafe extern "C" fn(CfRef, u32, *mut CfRef) -> OsStatus,
+    keys: Keys,
+}
+
+/// The dictionary keys and values a query names.
+struct Keys {
     class: CfRef,
     generic_password: CfRef,
     service: CfRef,
@@ -145,17 +150,19 @@ fn security() -> Option<&'static Security> {
                     copy_signing_information: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(CfRef, u32, *mut CfRef) -> OsStatus>(find(
                         c"SecCodeCopySigningInformation",
                     )?),
-                    class: key(c"kSecClass")?,
-                    generic_password: key(c"kSecClassGenericPassword")?,
-                    service: key(c"kSecAttrService")?,
-                    account: key(c"kSecAttrAccount")?,
-                    return_data: key(c"kSecReturnData")?,
-                    value_data: key(c"kSecValueData")?,
-                    match_limit: key(c"kSecMatchLimit")?,
-                    match_limit_one: key(c"kSecMatchLimitOne")?,
-                    authentication_ui: key(c"kSecUseAuthenticationUI")?,
-                    authentication_ui_fail: key(c"kSecUseAuthenticationUIFail")?,
-                    team_identifier: key(c"kSecCodeInfoTeamIdentifier")?,
+                    keys: Keys {
+                        class: key(c"kSecClass")?,
+                        generic_password: key(c"kSecClassGenericPassword")?,
+                        service: key(c"kSecAttrService")?,
+                        account: key(c"kSecAttrAccount")?,
+                        return_data: key(c"kSecReturnData")?,
+                        value_data: key(c"kSecValueData")?,
+                        match_limit: key(c"kSecMatchLimit")?,
+                        match_limit_one: key(c"kSecMatchLimitOne")?,
+                        authentication_ui: key(c"kSecUseAuthenticationUI")?,
+                        authentication_ui_fail: key(c"kSecUseAuthenticationUIFail")?,
+                        team_identifier: key(c"kSecCodeInfoTeamIdentifier")?,
+                    },
                 })
             }
         })
@@ -211,7 +218,7 @@ pub fn signed_by_team(team: &str) -> bool {
     }
     let info = Owned(info);
     // SAFETY: a dictionary the call made; the value is borrowed from it.
-    let found = unsafe { CFDictionaryGetValue(info.0, sec.team_identifier) };
+    let found = unsafe { CFDictionaryGetValue(info.0, sec.keys.team_identifier) };
     // SAFETY: a CF object, checked for its type before it's read as a string.
     if found.is_null() || unsafe { CFGetTypeID(found) != CFStringGetTypeID() } {
         return false;
@@ -231,13 +238,13 @@ pub fn load_or_create(service: &str, account: &str) -> Result<FindKey, Refused> 
     let sec = security().ok_or(Refused::Unavailable)?;
     let (service, account) = (cf_string(service), cf_string(account));
     let query = dictionary(&[
-        (sec.class, sec.generic_password),
-        (sec.service, service.0),
-        (sec.account, account.0),
+        (sec.keys.class, sec.keys.generic_password),
+        (sec.keys.service, service.0),
+        (sec.keys.account, account.0),
         // SAFETY: a framework constant, never released.
-        (sec.return_data, unsafe { kCFBooleanTrue }),
-        (sec.match_limit, sec.match_limit_one),
-        (sec.authentication_ui, sec.authentication_ui_fail),
+        (sec.keys.return_data, unsafe { kCFBooleanTrue }),
+        (sec.keys.match_limit, sec.keys.match_limit_one),
+        (sec.keys.authentication_ui, sec.keys.authentication_ui_fail),
     ]);
     let mut found: CfRef = std::ptr::null();
     // SAFETY: a query dictionary and an out-pointer.
@@ -253,11 +260,11 @@ pub fn load_or_create(service: &str, account: &str) -> Result<FindKey, Refused> 
     // SAFETY: the key's bytes live for the call, and CF copies them. The copy is CF's to free, and isn't overwritten: CFData can't be told to.
     let data = Owned(unsafe { CFDataCreate(std::ptr::null(), key.bytes().as_ptr(), KEY_BYTES as isize) });
     let item = dictionary(&[
-        (sec.class, sec.generic_password),
-        (sec.service, service.0),
-        (sec.account, account.0),
-        (sec.value_data, data.0),
-        (sec.authentication_ui, sec.authentication_ui_fail),
+        (sec.keys.class, sec.keys.generic_password),
+        (sec.keys.service, service.0),
+        (sec.keys.account, account.0),
+        (sec.keys.value_data, data.0),
+        (sec.keys.authentication_ui, sec.keys.authentication_ui_fail),
     ]);
     // SAFETY: an item dictionary, and no result wanted.
     match unsafe { (sec.add)(item.0, std::ptr::null_mut()) } {
@@ -292,7 +299,11 @@ fn key_from_data(data: Owned) -> Result<FindKey, Refused> {
 pub fn delete(service: &str, account: &str) -> Result<(), Refused> {
     let sec = security().ok_or(Refused::Unavailable)?;
     let (service, account) = (cf_string(service), cf_string(account));
-    let query = dictionary(&[(sec.class, sec.generic_password), (sec.service, service.0), (sec.account, account.0)]);
+    let query = dictionary(&[
+        (sec.keys.class, sec.keys.generic_password),
+        (sec.keys.service, service.0),
+        (sec.keys.account, account.0),
+    ]);
     // SAFETY: a query dictionary.
     match unsafe { (sec.delete)(query.0) } {
         ERR_SEC_SUCCESS | ERR_SEC_ITEM_NOT_FOUND => Ok(()),
