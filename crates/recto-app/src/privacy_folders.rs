@@ -257,7 +257,11 @@ fn the_page_text_the_notice_says_is_stored_encrypted_is_not_in_the_folder_in_the
                 Ok(bytes) => bytes,
                 Err(gone) if gone.kind() == std::io::ErrorKind::NotFound => {
                     passes += 1;
-                    assert!(passes < 1000, "{} was listed and gone, 1,000 times over: the folder never settles", path.display());
+                    assert!(
+                        passes < 1000,
+                        "{} was listed and gone, 1,000 times over: the folder never settles",
+                        path.display()
+                    );
                     std::thread::yield_now();
                     continue 'pass;
                 }
