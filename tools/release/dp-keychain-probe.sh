@@ -39,40 +39,9 @@
 set -euo pipefail
 umask 077
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-# What tells apart why a signing would wait (run 43751288571 hung at its first team signing for the job's whole 20 minutes): the keychains
-# searched and the default, the signing keychain's settings (asked under a limit, as a locked keychain may wait to be unlocked), and how many
-# signing identities are found. Paths and counts only.
-now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time * 1000'; }
-keychains() {
-  echo "  keychains searched: $(security list-keychains -d user | tr -d '"' | tr -s ' \n' ' ')"
-  echo "  default keychain: $(security default-keychain -d user | tr -d '" ')"
-  if [ -n "${PREFLIGHT_KEYCHAIN:-}" ]; then
-    case " $(security list-keychains -d user | tr -d '"' | tr -s ' \n' ' ') " in
-      *" $PREFLIGHT_KEYCHAIN "*) echo "  the signing keychain is searched" ;;
-      *) echo "  the signing keychain isn't searched" ;;
-    esac
-    echo "  the signing keychain's settings: $(perl -e 'alarm shift; exec @ARGV' 10 security show-keychain-info "$PREFLIGHT_KEYCHAIN" 2>&1 | tr '\n' ' ' || true)"
-  fi
-  echo "  signing identities: $(perl -e 'alarm shift; exec @ARGV' 10 security find-identity -v -p codesigning 2>/dev/null | tail -1 || true)"
-}
-# limited <seconds> <what> <command...>: the command under a limit, with its milliseconds; one that passes its limit hung, which is said with
-# the keychains as they are then, and ends the run.
-limited() {
-  local limit="$1" what="$2" started code=0 ms
-  shift 2
-  started=$(now_ms)
-  perl -e 'alarm shift; exec @ARGV' "$limit" "$@" || code=$?
-  ms=$(($(now_ms) - started))
-  if [ "$code" -eq 142 ]; then
-    echo "::error::$what didn't finish in $limit s: it hung"
-    keychains
-    exit 1
-  elif [ "$code" -ne 0 ]; then
-    echo "::error::$what failed (exit $code, after $ms ms)"
-    exit 1
-  fi
-  echo "  ok  $what ($ms ms)"
-}
+# limited, now_ms and keychains: a command under a limit that names itself when it waits, shared with tools/release/preflight-app.sh.
+# shellcheck source=tools/release/limited.sh
+. "$root/tools/release/limited.sh"
 
 # --build: the Swift probe four times, and the app's own key path from crates/recto-platform, into a folder; no secret is needed or read.
 if [ "${1:-}" = --build ]; then
