@@ -220,7 +220,7 @@ impl<L: DocLoader> Session<L> {
         if let Some(tab) = self.tabs.tab_mut(id)
             && matches!(
                 tab.file.notice(),
-                Some(FileNotice::Changed | FileNotice::EditsUnreadable | FileNotice::HistoryRolledOff)
+                Some(FileNotice::Changed | FileNotice::EditsUnreadable | FileNotice::HistoryRolledOff | FileNotice::EditsFollowed { .. })
             )
         {
             tab.file.set_notice(None);

@@ -326,3 +326,18 @@ fn a_file_swapped_in_for_the_open_of_the_match_alone_is_never_matched() {
     assert_eq!(file_stamp(&bed.path).unwrap(), jobs[0].to, "the path looks as it did, before and after");
     assert_eq!(matched, None, "another file's pages were matched for the version found");
 }
+
+/// Failure caught (review S2): a Discard after the edits followed leaves the tab saying "Your unsaved edits were moved onto the same pages of the new
+/// version", with none left, and `edits` (which says `followed` while the notice stands) still telling an agent they followed. Discarded: no notice,
+/// no list, the file as it is.
+#[test]
+fn a_discard_after_the_edits_followed_lets_the_notice_go() {
+    let mut bed = Bed::turned_page_9();
+    bed.changed_and_read(&document("Mine", &(1..=10).collect::<Vec<_>>(), true));
+    assert!(bed.follow()[0].is_some());
+    assert_eq!(bed.notice(), Some("edits_followed"));
+    bed.s.discard_edits(bed.a);
+    assert_eq!(bed.notice(), None, "nothing was moved that's still here");
+    assert_eq!(bed.s.tabs().tab_notice(bed.a), None);
+    assert!(bed.s.lists().get(bed.a).is_none_or(|list| !list.is_edited()));
+}
