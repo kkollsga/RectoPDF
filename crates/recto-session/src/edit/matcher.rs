@@ -6,8 +6,10 @@
 //! **The rules** (the coordinator's design, accepted 2026-11-15):
 //! 1. The new page with the old page's object number, if it still has the old digest, is that page ([`Matcher::by_object`]). Our own appends keep the
 //!    number; other programs mostly renumber (research §3), so this is a fast first try, never the only one.
-//! 2. Otherwise the new version is scanned in order ([`Matcher::scanned`]): a digest found once is that page; found more than once, it's the copy
-//!    whose neighbour either side has the old page's neighbour's digest, if exactly one copy has; else not matched. Found nowhere: not matched.
+//! 2. Otherwise the new version is scanned in order ([`Matcher::scanned`]): a digest found once is that page only with other evidence (review S3,
+//!    decided 2026-11-15): a page next to it, either side, with the digest of a page next to it before, or the new version's `/ID[0]` the same as the edits'
+//!    version's (a re-save keeps it); else not matched, as a blank or stock page another document shares is no evidence it's ours. Found more than
+//!    once, it's the copy whose neighbour either side agrees, if exactly one copy's does; else not matched. Found nowhere: not matched.
 //! 3. Two old pages that come to one new page are neither matched.
 //! 4. A scan stopped at its caps ([`ScanCaps`]) can't say a digest was found only once, so it matches nothing by digest: only rule 1 holds then.
 //!
@@ -73,6 +75,8 @@ pub enum Found {
     NotFound,
     /// Several have it, and its neighbours don't tell which.
     Ambiguous,
+    /// One has it, but nothing else says it's ours: no neighbour agrees, and the new version hasn't the edits' version's `/ID[0]`.
+    Unconfirmed,
     /// Another old page came to the same new page.
     Claimed,
 }
@@ -115,11 +119,14 @@ pub struct Matcher {
     scanned: bool,
     /// The scan read every page.
     complete: bool,
+    /// The new version has the edits' version's `/ID[0]`, which makes a digest found once enough.
+    same_document: bool,
 }
 
 impl Matcher {
     /// From the named pages and what each was, ascending, as [`super::identity::Identities::pages`] keeps them; pages not read are left out.
-    pub fn new(named: &[(u32, Option<Known>)]) -> Self {
+    /// `same_document`: the new version's `/ID[0]` is the one the edits' version had (both known).
+    pub fn new(named: &[(u32, Option<Known>)], same_document: bool) -> Self {
         let old: Vec<(u32, Known)> = named.iter().filter_map(|(page, known)| Some((*page, (*known)?))).collect();
         let digest_of = |page: Option<u32>| {
             page.and_then(|page| old.binary_search_by_key(&page, |(at, _)| *at).ok())
@@ -147,6 +154,7 @@ impl Matcher {
             window: None,
             scanned: false,
             complete: false,
+            same_document,
         }
     }
 
@@ -213,7 +221,8 @@ impl Matcher {
                 seen.first = Some((page, now));
             }
             let (old_before, old_after) = self.neighbours[at];
-            if (old_before.is_some() && old_before == before) || (old_after.is_some() && old_after == after) {
+            // Next to a page that was next to it, on either side: a run another program reversed keeps its pages' neighbours, the other way round.
+            if [old_before, old_after].into_iter().flatten().any(|old| Some(old) == before || Some(old) == after) {
                 seen.by_neighbour = seen.by_neighbour.saturating_add(1);
                 seen.neighbour_at = Some((page, now));
             }
@@ -239,6 +248,7 @@ impl Matcher {
                     let seen = self.seen[at];
                     match (seen.copies, seen.by_neighbour) {
                         (0, _) => Found::NotFound,
+                        (1, 0) if !self.same_document => Found::Unconfirmed,
                         (1, _) => seen.first.map_or(Found::NotFound, |(page, now)| Found::At { page, now }),
                         (_, 1) => seen.neighbour_at.map_or(Found::Ambiguous, |(page, now)| Found::At { page, now }),
                         _ => Found::Ambiguous,
@@ -268,8 +278,14 @@ impl Matcher {
 /// **The whole match over a new version in hand,** as the driver runs it: by object number, then a scan if any of `wanted` isn't found, cut at `caps`
 /// (counting each page's `cost`, its bytes hashed or read). For the table tests, where the new version is a list; a page of it with no identity is
 /// `None`.
-pub fn match_pages(named: &[(u32, Option<Known>)], wanted: &[u32], new: &[(Option<Known>, u64)], caps: ScanCaps) -> Vec<(u32, Found)> {
-    let mut matcher = Matcher::new(named);
+pub fn match_pages(
+    named: &[(u32, Option<Known>)],
+    wanted: &[u32],
+    new: &[(Option<Known>, u64)],
+    caps: ScanCaps,
+    same_document: bool,
+) -> Vec<(u32, Found)> {
+    let mut matcher = Matcher::new(named, same_document);
     for (page, (now, _)) in new.iter().enumerate() {
         if let Some(now) = now
             && matcher.wants_object(now.object)

@@ -137,10 +137,21 @@ fn identify(edits: &mut PageEdits, file: &[Page], unread: &[u32]) {
 /// The match and the rebase, as the session runs them, of a list onto `new`; the file's own highlight is on the same place of its page there unless
 /// `annots` says what that page has.
 fn follow(edits: &PageEdits, new: &[Page], caps: ScanCaps, annots: Option<Vec<(u32, Option<[f32; 4]>)>>) -> (Vec<(u32, Found)>, Outcome) {
+    follow_as(edits, new, caps, annots, false)
+}
+
+/// [`follow`], saying whether the new version has the `/ID[0]` the edits' version had (a re-save keeps it; another document hasn't it).
+fn follow_as(
+    edits: &PageEdits,
+    new: &[Page],
+    caps: ScanCaps,
+    annots: Option<Vec<(u32, Option<[f32; 4]>)>>,
+    same_document: bool,
+) -> (Vec<(u32, Found)>, Outcome) {
     let named = identity::identities(edits).map(|ids| ids.pages().to_vec()).unwrap_or_default();
     let wanted: Vec<u32> = named.iter().map(|(page, _)| *page).collect();
     let new_ids: Vec<(Option<Known>, u64)> = new.iter().map(|page| (page.identified.then(|| known(*page)), 1)).collect();
-    let found = match_pages(&named, &wanted, &new_ids, caps);
+    let found = match_pages(&named, &wanted, &new_ids, caps, same_document);
     let on_page = annots.unwrap_or_else(|| vec![(file_key().index, Some(file_key().rect))]);
     let refound: Vec<(FileKey, Option<FileKey>)> = edits
         .marks()
@@ -233,6 +244,8 @@ struct Row {
     unread: &'static [u32],
     /// What page 4 of the new version has for the file's highlights, if not the one taken out, unchanged.
     annots: Option<Vec<(u32, Option<[f32; 4]>)>>,
+    /// The new version has the edits' version's `/ID[0]` (a re-save that keeps it); by default it hasn't, so a page found once needs a neighbour.
+    same_document: bool,
 }
 
 const ALL: [bool; 6] = [true; 6];
@@ -246,6 +259,15 @@ fn row(name: &'static str, new: Vec<Page>, follows: [bool; 6]) -> Row {
         follows,
         unread: &[],
         annots: None,
+        same_document: false,
+    }
+}
+
+/// A row whose new version keeps the edits' version's `/ID[0]`.
+fn resaved(name: &'static str, new: Vec<Page>, follows: [bool; 6]) -> Row {
+    Row {
+        same_document: true,
+        ..row(name, new, follows)
     }
 }
 
@@ -339,13 +361,38 @@ fn rows() -> Vec<Row> {
         ),
         row("truncated before page 4", renumbered(&[0, 1, 2, 3]), NONE),
         row(
-            "both reordered: the other program put page 7 first; page 4 still goes right after page 7",
+            "both reordered: the other program put page 7 first, away from both its neighbours, in another document: only the move can't follow",
+            renumbered(&[7, 0, 1, 2, 3, 4, 5, 6, 8, 9]),
+            [true, true, false, true, true, true],
+        ),
+        resaved(
+            "both reordered in a re-save keeping /ID[0]: the other program put page 7 first; page 4 still goes right after page 7",
             renumbered(&[7, 0, 1, 2, 3, 4, 5, 6, 8, 9]),
             ALL,
         ),
         row(
-            "the other program moved page 4 itself to the end",
+            "page 4 moved to the end, away from both its neighbours, in another document: found once and nothing agrees, so held",
             renumbered(&[0, 1, 2, 3, 5, 6, 7, 8, 9, 4]),
+            NONE,
+        ),
+        resaved(
+            "the other program moved page 4 itself to the end, in a re-save keeping /ID[0]",
+            renumbered(&[0, 1, 2, 3, 5, 6, 7, 8, 9, 4]),
+            ALL,
+        ),
+        row(
+            "another document, of which only page 4 (a stock page) is like ours: found once, nothing beside it agrees, so held",
+            renumbered(&[30, 31, 32, 33, 4, 35, 36, 37, 38, 39]),
+            NONE,
+        ),
+        row(
+            "pages 3 to 5 reversed, in another document: page 4 is still between pages 3 and 5, the other way round, so it's found",
+            renumbered(&[0, 1, 2, 5, 4, 3, 6, 7, 8, 9]),
+            ALL,
+        ),
+        resaved(
+            "a re-save keeping /ID[0], page 4 unique, both its neighbours gone: follows",
+            renumbered(&[0, 1, 2, 4, 6, 7, 8, 9]),
             ALL,
         ),
         row(
@@ -379,7 +426,7 @@ fn every_edit_follows_its_page_or_the_list_is_held() {
         for (kind, follows) in KINDS.iter().zip(row.follows) {
             let mut edits = edited(*kind);
             identify(&mut edits, &base(), row.unread);
-            let (found, outcome) = follow(&edits, &row.new, row.caps, row.annots.clone());
+            let (found, outcome) = follow_as(&edits, &row.new, row.caps, row.annots.clone(), row.same_document);
             let label = format!("{}, {kind:?}", row.name);
             assert_eq!(
                 outcome.onto.is_some(),
@@ -399,13 +446,14 @@ fn every_edit_follows_its_page_or_the_list_is_held() {
 /// Failure caught: two old pages that come to one new page both taken there (two edits on one page, one of them not its own).
 #[test]
 fn two_pages_claiming_one_are_neither_found() {
-    // Pages 3 and 4 were alike; the new version has one of them, with neither's neighbours.
+    // Pages 3 and 4 were alike; the new version, a re-save keeping /ID[0] (so a page found once would do), has one of them, with neither's
+    // neighbours.
     let mut file = base();
     file[3].content = 4;
     let mut edits = PageEdits::new(10);
     edits.rotate(3, 2, 1).unwrap();
     identify(&mut edits, &file, &[]);
-    let (found, outcome) = follow(&edits, &renumbered(&[4]), ScanCaps::STANDARD, None);
+    let (found, outcome) = follow_as(&edits, &renumbered(&[4]), ScanCaps::STANDARD, None, true);
     assert!(outcome.onto.is_none());
     assert!(
         matches!(found.iter().find(|(old, _)| *old == 3), Some((_, Found::Claimed | Found::Ambiguous))),
@@ -519,7 +567,7 @@ fn more_alike_pages_than_the_cap_are_none_of_them_looked_for() {
             )
         })
         .collect();
-    let found = match_pages(&named, &[0], &new, ScanCaps::STANDARD);
+    let found = match_pages(&named, &[0], &new, ScanCaps::STANDARD, false);
     assert!(found.iter().all(|(_, found)| *found == Found::NotFound), "{found:?}");
 }
 

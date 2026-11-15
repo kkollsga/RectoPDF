@@ -45,6 +45,8 @@ pub struct FollowJob {
     hidden: Vec<FileKey>,
     /// The list's changes when the job was made: one made since names pages the job doesn't know of.
     changes: u64,
+    /// The edits' version's `/ID` pair, as read with its pages.
+    document: Option<recto_core::page_id::DocumentIds>,
 }
 
 /// What a job found.
@@ -109,6 +111,7 @@ pub fn work<L: DocLoader>(session: &mut Session<L>) -> Vec<FollowJob> {
                 named: identity::identities(edits).map(|ids| ids.pages().to_vec()).unwrap_or_default(),
                 hidden: edits.marks().hidden().to_vec(),
                 changes: edits.changes(),
+                document: identity::identities(edits).and_then(identity::Identities::document),
             }),
             _ => identity::follow_tried(edits, Some(to)),
         }
@@ -133,7 +136,10 @@ pub fn read(job: &FollowJob) -> Option<Matched> {
         // A page that reached a cap has no identity: nothing is matched to it (slice 1's rule).
         (read.identity.as_ref().map(Known::of), read.bytes)
     };
-    let mut matcher = Matcher::new(&job.named);
+    // A re-save keeps `/ID[0]`; another document hasn't it, and a page found once in it needs a neighbour to agree (review S3).
+    let document = recto_core::page_id::document_ids(reader);
+    let same_document = matches!((job.document, document), (Some(was), Some(now)) if was.first == now.first);
+    let mut matcher = Matcher::new(&job.named, same_document);
     // Rule 1: the pages with an object number a named page had, at most as many as are named, under the scan's bytes as a whole (not its pages: a
     // re-save that keeps the numbers is matched without a scan however long it is).
     let mut budget = Budget::new(ScanCaps {
@@ -192,7 +198,6 @@ pub fn read(job: &FollowJob) -> Option<Matched> {
         })
         .collect();
     let pages = u32::try_from(map.len()).ok()?;
-    let document = recto_core::page_id::document_ids(reader);
     drop(opened);
     if !current() {
         return None;

@@ -61,6 +61,8 @@ pub enum Held {
     NotFound,
     /// Several pages of the new version could be it.
     Ambiguous,
+    /// One page of the new version is like it, and nothing else says it's that page.
+    Unconfirmed,
     /// Another page came to the same page of the new version.
     Claimed,
     /// The page it's placed after (or before) can't be found, or there's none.
@@ -119,6 +121,7 @@ fn found_at(found: &[(u32, Found)], page: u32) -> Result<(u32, Known), Held> {
         Ok(Found::At { page, now }) => Ok((page, now)),
         Ok(Found::NotFound) => Err(Held::NotFound),
         Ok(Found::Ambiguous) => Err(Held::Ambiguous),
+        Ok(Found::Unconfirmed) => Err(Held::Unconfirmed),
         Ok(Found::Claimed) => Err(Held::Claimed),
         Ok(Found::NotIdentified) | Err(_) => Err(Held::NotIdentified),
     }
