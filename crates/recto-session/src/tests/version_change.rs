@@ -392,3 +392,21 @@ fn a_follow_being_read_is_dropped_when_the_list_is_edited_between_its_steps() {
     bed.s.edit_pages(bed.a, |e| e.rotate(2, 1, 1)).unwrap();
     assert!(!version_change::current(&bed.s, &job), "an edit since: not this job's any more");
 }
+
+/// Failure caught (review: "with no unsaved edits behaviour is exactly `main`'s"): a tab with only history (its edit undone, nothing unsaved) and its
+/// file put back by a rename with the same bytes, size and time, another inode: `main` takes it for the same version and keeps the history (redo
+/// still brings the edit back) and says nothing; slice 2's inode rule, meant for unsaved edits only, took it for another version, let the history go
+/// and said the file changed.
+#[test]
+fn with_only_history_a_file_renamed_in_with_the_same_size_and_time_is_main_s_same_file() {
+    let mut bed = Bed::turned_page_9();
+    let mine = std::fs::read(&bed.path).unwrap();
+    assert!(bed.s.undo_edit(bed.a));
+    let list = bed.s.lists().get(bed.a).unwrap();
+    assert!(!list.is_edited() && list.can_redo());
+    renamed_in_with_time_kept(&bed.path, &mine);
+    // Read again before any look has taken the new file's number in, as going back to the tab does.
+    bed.read_again();
+    assert!(bed.s.lists().get(bed.a).is_some_and(PageEdits::can_redo), "the history kept, as on main");
+    assert_eq!(bed.notice(), None);
+}
