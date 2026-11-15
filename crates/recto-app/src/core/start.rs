@@ -83,7 +83,9 @@ impl Inner {
         // Takes the record's lock, and reads nothing: that's `begin_restore`'s, on a thread that can wait for it.
         let saver = Arc::new(Saver::new(RecordStore::open(&paths, Flavor::App), Arc::clone(&core), Arc::clone(&clock)));
         let session = if indexing {
-            SessionHost::on_state(&paths, DrawableLoader).with_indexing(&paths).with_generating(&paths)
+            SessionHost::on_state(&paths, DrawableLoader)
+                .with_indexing(&paths, recto_control::find_keys::Host::App(app_find_key))
+                .with_generating(&paths)
         } else {
             SessionHost::on_state(&paths, DrawableLoader)
         };
@@ -178,4 +180,9 @@ impl Inner {
         }
         Ok(inner)
     }
+}
+
+/// **The app's Find key:** from the Keychain if this copy is signed by the team, else in memory. Handed to the session's indexer, which takes it once, the first time an index is used, off the UI thread. The only place outside its own module that names the Keychain's code, so only the app links it.
+fn app_find_key() -> Option<(recto_platform::find_key::FindKey, Option<&'static str>)> {
+    recto_platform::find_key::load_for_the_app(recto_update::TEAM_ID)
 }

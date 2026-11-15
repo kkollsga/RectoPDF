@@ -158,3 +158,48 @@ fn nothing_in_the_built_app_has_extended_attributes() {
     let text = String::from_utf8_lossy(&listed.stdout);
     assert!(text.trim().is_empty(), "files in the bundle with extended attributes:\n{text}");
 }
+
+/// Whether a program carries the Keychain's code: the framework it opens by name, and a call it looks up there.
+fn carries_keychain_code(program: &Path) -> bool {
+    let bytes = std::fs::read(program).unwrap_or_else(|error| panic!("{}: {error}", program.display()));
+    [&b"Security.framework/Security"[..], b"SecItemCopyMatching"]
+        .iter()
+        .any(|needle| bytes.windows(needle.len()).any(|window| window == *needle))
+}
+
+/// Failure: `recto`, the indexer, the renderer's worker or the updater carries the code that reads the Find key from the Keychain, so a program an agent runs, or a helper, could reach the person's Keychain however the plan reads (the coordinator's decision, 2026-11-15: only the app's own process). The app's own executable carries it, when it's built, which shows the scan sees it.
+#[test]
+fn only_the_app_carries_the_keychains_code() {
+    let recto = PathBuf::from(env!("CARGO_BIN_EXE_recto"));
+    let mut looked = Vec::new();
+    for name in ["recto", "recto-indexer", "recto-render-service", "recto-updater"] {
+        let program = recto.with_file_name(name);
+        if name == "recto" || program.is_file() {
+            assert!(!carries_keychain_code(&program), "{name} carries the Keychain's code");
+            looked.push(name);
+        }
+    }
+    assert!(looked.contains(&"recto"), "{looked:?}");
+    let Some(bundle) = built_bundle() else { return };
+    assert!(
+        carries_keychain_code(&bundle.join("MacOS/RectoPDF")),
+        "the app's own executable doesn't, so the scan can't see it"
+    );
+    for name in ["recto", "recto-indexer", "recto-headings", "recto-updater"] {
+        assert!(
+            !carries_keychain_code(&bundle.join("MacOS").join(name)),
+            "the app's {name} carries the Keychain's code"
+        );
+    }
+    let helper = bundle.join("Helpers/RectoRender.app/Contents/MacOS");
+    for entry in std::fs::read_dir(&helper)
+        .unwrap_or_else(|error| panic!("{}: {error}", helper.display()))
+        .flatten()
+    {
+        assert!(
+            !carries_keychain_code(&entry.path()),
+            "the renderer's {} carries the Keychain's code",
+            entry.path().display()
+        );
+    }
+}

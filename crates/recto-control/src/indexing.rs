@@ -2,9 +2,11 @@
 //!
 //! The work is in a helper process, `recto-indexer`, at [`crate::helpers::HELPER_PRIORITY`], utility. The one thread here exists only while there's something to build. It starts the helper, sleeps until it's done, and takes the next. With nothing to build, there's no thread, no process and nothing to wake up for.
 
+use crate::find_keys::{self, Loaded, Plan};
 use recto_agent::Event;
 use recto_agent::index::{Indexing, JobState};
 use recto_index::corpus::{self, BuildLimits, CorpusKey};
+use recto_platform::find_key::FindKey;
 use recto_platform::helper::{Priority, Spawned};
 use serde_json::{Value, json};
 use std::any::Any;
@@ -56,6 +58,9 @@ struct Inner {
 
 struct Shared {
     root: PathBuf,
+    /// Where the Find key comes from, and the key once it's been asked for: the first time an index is used, on whichever thread asks, never the UI's.
+    key_plan: Plan,
+    key: OnceLock<Loaded>,
     limits: BuildLimits,
     runner: Box<dyn Runner>,
     inner: Mutex<Inner>,
@@ -73,12 +78,14 @@ impl std::fmt::Debug for Indexer {
 }
 
 impl Indexer {
-    pub fn new(root: &Path) -> Self {
-        let indexer = Self::with_runner(
+    pub fn new(root: &Path, key_plan: Plan) -> Self {
+        let indexer = Self::with_limits(
             root,
             Box::new(HelperProcess {
                 priority: crate::helpers::HELPER_PRIORITY,
             }),
+            BuildLimits::default(),
+            key_plan,
         );
         // Only if there's something to do: an ordinary start stays one thread, with one look at a folder.
         if corpus::old_folder_is_there(root) {
@@ -88,12 +95,14 @@ impl Indexer {
     }
 
     pub fn with_runner(root: &Path, runner: Box<dyn Runner>) -> Self {
-        Self::with_limits(root, runner, BuildLimits::default())
+        Self::with_limits(root, runner, BuildLimits::default(), Plan::Memory)
     }
 
-    fn with_limits(root: &Path, runner: Box<dyn Runner>, limits: BuildLimits) -> Self {
+    fn with_limits(root: &Path, runner: Box<dyn Runner>, limits: BuildLimits, key_plan: Plan) -> Self {
         Self(Arc::new(Shared {
             root: root.to_path_buf(),
+            key_plan,
+            key: OnceLock::new(),
             limits,
             runner,
             inner: Mutex::new(Inner {
@@ -102,6 +111,16 @@ impl Indexer {
             }),
             notify: OnceLock::new(),
         }))
+    }
+
+    /// The Find key, taken the first time it's asked for. Blocks for one Keychain call at most, so only ever from a thread that may wait: never the UI's.
+    pub fn find_key(&self) -> Option<&FindKey> {
+        self.0.key.get_or_init(|| find_keys::load(&self.0.key_plan)).key.as_ref()
+    }
+
+    /// What's known of the key without taking it: the plan, and where it came from once something has.
+    pub fn find_key_report(&self) -> Value {
+        find_keys::report(&self.0.key_plan, self.0.key.get())
     }
 
     pub fn attach(&self, notify: Notifier) {
@@ -229,6 +248,10 @@ impl Shared {
 impl Indexing for Indexer {
     fn root(&self) -> &Path {
         &self.0.root
+    }
+
+    fn find_key_report(&self) -> Value {
+        Indexer::find_key_report(self)
     }
 
     fn want(&self, path: &Path, key: CorpusKey) {
@@ -595,14 +618,14 @@ mod tests {
         // Past 90 days, under the size.
         age(old, 91);
         age(recent, 1);
-        let by_age = Indexer::with_limits(&root, Box::new(Fails), generous);
+        let by_age = Indexer::with_limits(&root, Box::new(Fails), generous, Plan::Memory);
         by_age.note_asked();
         wait_until_gone(old);
         assert!(root.join(recent.hex()).exists(), "what's within its time stays");
         // 89 days is within it.
         build(old);
         age(old, 89);
-        let within = Indexer::with_limits(&root, Box::new(Fails), generous);
+        let within = Indexer::with_limits(&root, Box::new(Fails), generous, Plan::Memory);
         within.note_asked();
         let deadline = Instant::now() + Duration::from_secs(10);
         while within.0.lock().working && Instant::now() < deadline {
@@ -615,7 +638,7 @@ mod tests {
             max_total_bytes: corpus::folder_bytes(&root.join(recent.hex())) + 1,
             ..BuildLimits::default()
         };
-        let by_size = Indexer::with_limits(&root, Box::new(Fails), tight);
+        let by_size = Indexer::with_limits(&root, Box::new(Fails), tight, Plan::Memory);
         by_size.note_asked();
         wait_until_gone(old);
         assert!(root.join(recent.hex()).exists(), "the most recently used goes last");
@@ -635,7 +658,7 @@ mod tests {
         recto_platform::local::ensure_private_dir(&temp).unwrap();
         let root = temp.join("corpus.noindex");
         corpus::build(&root, key(1), &mut OnePage, &corpus::DocMeta::default(), &BuildLimits::default()).unwrap();
-        let indexer = Indexer::with_limits(&root, Box::new(Changed), BuildLimits::default());
+        let indexer = Indexer::with_limits(&root, Box::new(Changed), BuildLimits::default(), Plan::Memory);
         // Past the first sweep, with room to spare, so it's the run's own look that matters.
         indexer.ask(job(2));
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -650,6 +673,7 @@ mod tests {
                 max_total_bytes: 1,
                 ..BuildLimits::default()
             },
+            Plan::Memory,
         );
         tight.0.lock().sweep_due = false;
         tight.ask(job(2));
@@ -659,6 +683,24 @@ mod tests {
             std::thread::yield_now();
         }
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// Failure: saying where the Find key stands, as `qa state` and `index status` do on every read, takes the key, so a look at state reaches the Keychain, or does it on whatever thread asked, the UI's included. It's said from the plan alone until something that may wait has taken it.
+    #[test]
+    fn the_key_is_said_without_being_taken() {
+        fn never() -> Option<(FindKey, Option<&'static str>)> {
+            panic!("saying where the key stands took it")
+        }
+        let indexer = Indexer::with_limits(Path::new("/nowhere"), Box::new(Fails), BuildLimits::default(), Plan::AppKeychain(never));
+        assert_eq!(indexer.find_key_report(), json!({ "plan": "keychain", "source": null, "why": null }));
+        assert_eq!(Indexing::find_key_report(&indexer), indexer.find_key_report(), "index status says the same");
+        let memory = Indexer::with_runner(Path::new("/nowhere"), Box::new(Fails));
+        assert!(memory.find_key().is_some());
+        assert_eq!(
+            memory.find_key_report(),
+            json!({ "plan": "memory", "source": "memory", "why": null }),
+            "once taken, where it came from"
+        );
     }
 
     /// Failure: `stop` finds a build still queued and starts it after the session has gone, or asking afterwards starts one.
