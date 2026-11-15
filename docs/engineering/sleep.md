@@ -60,6 +60,8 @@ on any commit; what only the real app shows (its windows, AppKit) isn't in these
 | A slow page, from its facts | 0.9 to 1.6 ms | 76.9 to 85.5 ms (one run of five didn't end in the 20 s it was given) | about 115 ms |
 | A slow page, no sleep file | 3.3 to 28.8 ms, median 10.5 | 46.3 to 84.0 ms, median 79.7 | median 114.3 ms |
 
+**The pass after a launch, over the folder at its cap** (a quiet run of the real app, debug build, `qa state`'s `record.sleep.older_files`; 4,000 files of 65 KB as 0.1.0 wrote them, 256 MiB, just written so likely in the system's cache; three runs, load 30 to 47): all 4,000 removed in 0.22 to 0.44 s, reading 16.4 MB (4 KiB each), on its own thread after the state was taken in.
+
 Before, a wake from a picture had its first frame at once (1.1 ms here, and 0.27 to 0.48 ms as measured on 2026-11-13); now the first frame with
 something drawn is the first tile, about 25 ms for a page of text here and 90 to 100 ms in the real app as measured before (a new worker's first tile:
 55 to 130 ms, `docs/PLAN.md`), by design: the pages are on their paper, at their place, from the first frame either way. A second run of the same under a
