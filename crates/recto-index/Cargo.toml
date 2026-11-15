@@ -9,6 +9,10 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# For tests only, and never in the app: `corpus::opened_text`, a reader of what a corpus keeps of a document.
+test-seams = []
+
 [dependencies]
 recto-proto.workspace = true
 # For the one rule on invisible characters, shared with titles and names.

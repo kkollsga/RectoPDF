@@ -51,6 +51,29 @@ impl Purpose {
     }
 }
 
+/// **A buffer that holds a page's plain text,** overwritten, all its room, when it goes: a build's page as it's digested, a page opened to be checked or counted. What isn't: a buffer's old room when it grows, and the copies the text's own reading makes (the normaliser's strings), which are ordinary memory, as a page read live always was. The process holding them is the helper or the session, and one that can read their memory has the key anyway.
+#[derive(Default)]
+pub(crate) struct Plain(pub(crate) Vec<u8>);
+
+impl std::ops::Deref for Plain {
+    type Target = Vec<u8>;
+    fn deref(&self) -> &Vec<u8> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Plain {
+    fn deref_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.0
+    }
+}
+
+impl Drop for Plain {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
 /// It didn't open: the wrong key, a changed byte, a chunk cut short or put where another belongs. All the same to a reader, which throws the corpus away.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Unopened;
@@ -124,7 +147,7 @@ impl CorpusSeal {
         }
     }
 
-    /// Seals what `write` puts in `out`, in place: `out` is cleared, room is left for the nonce, `write` appends the plain bytes, and they're encrypted where they lie, so the only copy of them is this buffer.
+    /// Seals what `write` puts in `out`, in place: `out` is cleared, room is left for the nonce, `write` appends the plain bytes, and they're encrypted where they lie. If sealing fails, `out`'s whole room is overwritten before the error comes back, so no plain bytes are left in it. What `write` copied them from is the caller's to wipe ([`Plain`]).
     ///
     /// # Errors
     ///
@@ -133,6 +156,14 @@ impl CorpusSeal {
         out.clear();
         out.resize(NONCE_BYTES, 0);
         write(out);
+        let sealed = self.seal_in_place(purpose, out);
+        if sealed.is_err() {
+            zeroize::Zeroize::zeroize(out);
+        }
+        sealed
+    }
+
+    fn seal_in_place(&self, purpose: Purpose, out: &mut Vec<u8>) -> std::io::Result<()> {
         let (nonce, plain) = out.split_at_mut(NONCE_BYTES);
         getrandom::fill(nonce).map_err(|_| std::io::Error::other("no randomness"))?;
         let nonce = Nonce::try_from(&*nonce).map_err(|_| std::io::Error::other("nonce"))?;

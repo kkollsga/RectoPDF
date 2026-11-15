@@ -47,6 +47,7 @@ use recto_platform::local;
 use recto_proto::{CharBox, CharRecord};
 #[cfg(test)]
 use sealed::INNER_LEN;
+#[cfg(any(test, feature = "test-seams"))]
 pub use sealed::opened_text;
 use sealed::{Entry, PageRecord, RECORD_LEN, open_page, read_seal, read_sealed_json, seal_for_building, seal_page, sealed_elsewhere, write_sealed};
 use serde_json::{Value, json};
@@ -768,7 +769,7 @@ fn build_with_lock(
     let mut table = local::append_private_file(&paths.table)?;
     let mut pack = local::append_private_file(&paths.pack)?;
     let (mut offset, mut bytes) = (resumed.pack_end, resumed.bytes);
-    let (mut blob, mut chunk) = (Vec::new(), Vec::new());
+    let (mut blob, mut chunk) = (crate::seal::Plain::default(), Vec::new());
     for page in resumed.pages..pages {
         if started.elapsed() >= limits.max_time {
             return Ok(BuildOutcome::Paused("out_of_time"));
@@ -854,7 +855,7 @@ fn retry_failed_pages(
     let mut bytes = summary.corpus_bytes;
     feed.forget_failures();
     let mut tried = 0;
-    let (mut blob, mut chunk, mut buffer) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut blob, mut chunk, mut buffer) = (crate::seal::Plain::default(), Vec::new(), crate::seal::Plain::default());
     for page in 0..summary.pages {
         let at = page as usize * RECORD_LEN;
         let old = table
@@ -1186,7 +1187,7 @@ fn resume_point(paths: &CorpusPaths, seal: &CorpusSeal, pages: u32) -> io::Resul
     let table = local::read_private_file(&paths.table, (u64::from(pages) + 1) * RECORD_LEN as u64)?.unwrap_or_default();
     let pack = local::open_private_file(&paths.pack).ok();
     let pack_len = pack.as_ref().and_then(|pack| pack.metadata().ok()).map_or(0, |meta| meta.len());
-    let mut buffer = Vec::new();
+    let mut buffer = crate::seal::Plain::default();
     for (page, bytes) in table.as_chunks::<RECORD_LEN>().0.iter().take(pages as usize).enumerate() {
         let Some(entry) = Entry::decode(bytes) else { break };
         // A page holds up if its chunk is where the last one ended and opens as this page's.
@@ -1356,7 +1357,7 @@ fn finish(paths: &CorpusPaths, seal: &CorpusSeal, pages: u32, width: usize, pack
     // Each page's record is inside its chunk, so adding them up opens every page once: a pass of the search's own kind.
     let pack = local::open_private_file(&paths.pack)?;
     let pack_len = pack.metadata()?.len();
-    let mut buffer = Vec::new();
+    let mut buffer = crate::seal::Plain::default();
     for (page, bytes) in table.as_chunks::<RECORD_LEN>().0.iter().enumerate() {
         let entry = Entry::decode(bytes).ok_or(io::ErrorKind::InvalidData)?;
         let (record, _) = open_page(&pack, pack_len, seal, page as u32, entry, &mut buffer).ok_or(io::ErrorKind::InvalidData)?;
@@ -1375,7 +1376,7 @@ fn finish(paths: &CorpusPaths, seal: &CorpusSeal, pages: u32, width: usize, pack
         }
         summary.tag_char_pages += u32::from(record.flags & FLAG_TAG_CHARS != 0);
     }
-    buffer.fill(0);
+    drop(buffer);
     let meta_json = json!({
         "title": meta.title.as_deref().map(clean_short),
         "outline": meta.outline.iter().take(MAX_OUTLINE).map(|(depth, page, title)| json!({ "d": depth, "p": page.map(|page| page + 1), "t": clean_short(title) })).collect::<Vec<_>>(),
@@ -1477,7 +1478,7 @@ fn make_agent_folder(find_key: &FindKey, paths: &CorpusPaths, limits: &BuildLimi
 fn write_manifest(paths: &CorpusPaths, corpus: &ReadyCorpus, width: usize) -> io::Result<()> {
     let pages = corpus.pages();
     let meta = read_sealed_json(&corpus.seal, &paths.meta, Purpose::Meta).unwrap_or(Value::Null);
-    let mut buffer = Vec::new();
+    let mut buffer = crate::seal::Plain::default();
     let mut index = String::with_capacity(corpus.table.len() * 3);
     let (mut no_text, mut failed, mut flagged, mut unchecked, mut tag_chars, mut partial) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
