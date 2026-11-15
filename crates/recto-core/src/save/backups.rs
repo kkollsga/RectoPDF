@@ -28,7 +28,8 @@ fn keep_backup_by(original: &Path, folder: &Path, clone: bool) -> std::io::Resul
     // before this app wrote to it. Set before the rename, so no backup is ever seen under its name with the old time. If it can't be set the backup is kept
     // as it is (its age then counts from the original's, as it did): losing the save or the backup for a time stamp would be worse. The original's own time
     // isn't kept anywhere: nothing reads it from a backup.
-    // Private first: a clone of a read-only original is read-only too, and opening it to write needs this.
+    // Private first: a clone of a read-only original is read-only too, and opening it to write needs this. If it still won't open for writing, the backup is
+    // kept with the time it has: it is only flushed.
     let _ = recto_platform::local::make_private_file(&partial);
     match std::fs::File::options().write(true).open(&partial) {
         Ok(backup) => {

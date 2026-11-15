@@ -1,6 +1,8 @@
-//! **A password the person types is kept nowhere** (PRIVACY.md: "Passwords are never kept"; the activity log "never document text"). It reaches the session by
-//! one call, `Prompts::password_answered`, which is no command, so no command's `log_details` can carry one; this holds it at that seam, against every file
-//! the state folder comes to.
+//! **A password the person types isn't in the state record** (PRIVACY.md: "Passwords are never kept"). It reaches the session by one call,
+//! `Prompts::password_answered`, which is no command, so no command's log details can carry one: the activity log's side is held in `recto-control`'s
+//! `no_words_an_agent_sends_reach_the_log`, which walks the command table. This holds the record: after a password is typed, no file the headless app has
+//! written holds its bytes. The headless app writes the record and its lock and **no activity log**, and `session save` there answers `needs_server`, so
+//! nothing here says anything about journals, sleep files or the log.
 
 use super::withheld_events::{PASSWORD, person_unlocks, protected};
 use crate::testkit::headless::Disk;
