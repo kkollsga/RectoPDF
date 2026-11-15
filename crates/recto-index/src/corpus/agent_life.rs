@@ -82,8 +82,11 @@ pub(super) fn empty_agent_folder(paths: &CorpusPaths) {
 
 /// Makes the pages' folder inside an agent's folder that's there, never the agent's folder itself: so a build that's still running when its session sets the folder aside can't make one again in its place.
 pub(super) fn make_pages_in_held_folder(paths: &CorpusPaths) -> std::io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
-    match fs::DirBuilder::new().mode(0o700).create(&paths.pages) {
+    #[cfg(unix)]
+    let made = std::os::unix::fs::DirBuilderExt::mode(&mut fs::DirBuilder::new(), 0o700).create(&paths.pages);
+    #[cfg(not(unix))]
+    let made = fs::create_dir(&paths.pages);
+    match made {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => local::check_private_dir(&paths.pages),
         Err(error) => Err(error),
