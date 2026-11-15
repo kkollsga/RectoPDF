@@ -66,6 +66,27 @@ impl<L: DocLoader> Session<L> {
         }
     }
 
+    /// **The tab showing is left for `id`:** what it said on the way past has been said, and goes (a moved or changed file with nothing riding on it,
+    /// a history that rolled off, edits that followed their file, which are then told). The one statement of leaving a tab: going to another
+    /// ([`Self::activate`], by a tap, an agent's `goto` or `tap`, a file open already, the next tab or pane after a close) and opening another file
+    /// ([`Self::open_with_facts`]). Not a leaving: closing the tab showing (it's gone, and its news with it), and a restore (a session replaced, with
+    /// nothing in it shown yet).
+    pub(crate) fn leave_for(&mut self, id: TabId) {
+        let Some(left) = self.tabs.active().filter(|left| *left != id) else { return };
+        let clean = !self.lists.has_list(left);
+        self.sleeper().touch(left);
+        if let Some(tab) = self.tabs.tab_mut(left)
+            && ((clean && matches!(tab.file.notice(), Some(FileNotice::Moved { .. } | FileNotice::Changed)))
+                || matches!(tab.file.notice(), Some(FileNotice::HistoryRolledOff | FileNotice::EditsFollowed { .. })))
+        {
+            let followed = matches!(tab.file.notice(), Some(FileNotice::EditsFollowed { .. }));
+            tab.file.set_notice(None);
+            if followed {
+                crate::version_change::told(self, left);
+            }
+        }
+    }
+
     pub(crate) fn activate(&mut self, id: TabId) {
         // Going to a tab that isn't side by side, by opening it, an agent's `goto`, or closing what was showing, shows it alone.
         if self.comparison.as_ref().is_some_and(|comparison| !comparison.contains(id)) {
@@ -74,21 +95,7 @@ impl<L: DocLoader> Session<L> {
         // Only the tab on screen holds a generated list in memory. The rest are on disk, and a cold tab stays a cold tab's size.
         self.generated.keep_ready_only_for(id);
         self.sleeper().wake_list(id);
-        // A moved or changed file with nothing riding on it has been said on the way past.
-        if let Some(left) = self.tabs.active().filter(|left| *left != id) {
-            let clean = !self.lists.has_list(left);
-            self.sleeper().touch(left);
-            if let Some(tab) = self.tabs.tab_mut(left)
-                && ((clean && matches!(tab.file.notice(), Some(FileNotice::Moved { .. } | FileNotice::Changed)))
-                    || matches!(tab.file.notice(), Some(FileNotice::HistoryRolledOff | FileNotice::EditsFollowed { .. })))
-            {
-                let followed = matches!(tab.file.notice(), Some(FileNotice::EditsFollowed { .. }));
-                tab.file.set_notice(None);
-                if followed {
-                    crate::version_change::told(self, left);
-                }
-            }
-        }
+        self.leave_for(id);
         self.tabs.set_active(Some(id));
         if self.warm.bring_to_front(id) {
             return;

@@ -240,11 +240,8 @@ fn a_step_whose_pages_cant_be_kept_rolls_off_and_says_so() {
     assert_eq!(s.page_source(a, 1).unwrap().quarter_turns, 3);
     assert!(s.redo_edit(a));
     assert!(!s.lists().is_edited(a));
-    // Going to another tab has said it.
-    let b = s.open(Path::new("/d/b.pdf")).unwrap();
-    s.tap(a).unwrap();
-    assert!(s.tabs().tab(a).unwrap().file.notice().is_some(), "not yet");
-    s.tap(b).unwrap();
+    // Leaving the tab, here by opening another file, has said it.
+    s.open(Path::new("/d/b.pdf")).unwrap();
     assert_eq!(s.tabs().tab(a).unwrap().file.notice(), None);
     // Only a turn and a move in the history: no pages named, so no copy's needed, and nothing rolls off.
     let mut s = journaled(6);

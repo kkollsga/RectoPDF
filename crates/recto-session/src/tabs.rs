@@ -167,6 +167,7 @@ impl<L: DocLoader> Session<L> {
             tab.file.encrypted = facts.encrypted;
         }
         self.remember_warm(id, Arc::new(facts.toc));
+        self.leave_for(id);
         self.tabs.set_active(Some(id));
         self.recent.note(path);
         self.generated.keep_ready_only_for(id);

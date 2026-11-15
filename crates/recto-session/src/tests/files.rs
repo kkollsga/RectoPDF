@@ -96,3 +96,28 @@ fn a_tab_says_what_became_of_its_file_and_keeps_its_edits() {
     assert_eq!(clean.tabs().tab_notice(b).unwrap().code(), "file_missing");
     assert_eq!(clean.tabs().path_of(b).unwrap(), Path::new("/d/b.pdf"));
 }
+
+/// **Failure caught (a fault on `main`):** opening another PDF didn't count as leaving the tab that was showing, as going to another tab does, so a
+/// notice said on the way past (a clean tab's changed file, a history that rolled off) stayed on the tab left, said again when the person came back.
+/// Shown, then left by opening another file: gone, as when left by a tap.
+#[test]
+fn opening_another_file_leaves_the_tab_that_was_showing() {
+    let now = FileStamp {
+        size: 9,
+        mtime_ns: 9,
+        device: 9,
+        inode: 9,
+    };
+    let mut s = session(5);
+    let b = s.open(Path::new("/d/b.pdf")).unwrap();
+    let c = s.open(Path::new("/d/c.pdf")).unwrap();
+    s.apply_file_status(b, FileStatus::Changed(now));
+    s.tabs.tab_mut(c).unwrap().file.set_notice(Some(FileNotice::HistoryRolledOff));
+    s.tap(b).unwrap();
+    assert!(s.tabs().tab_notice(b).is_some(), "shown");
+    s.open(Path::new("/d/d.pdf")).unwrap();
+    assert_eq!(s.tabs().tab_notice(b), None, "left by opening another file, so it's been said");
+    s.tap(c).unwrap();
+    s.open(Path::new("/d/b.pdf")).unwrap();
+    assert_eq!(s.tabs().tab_notice(c), None, "left by going to a tab open already, as before");
+}

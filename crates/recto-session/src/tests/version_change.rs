@@ -183,6 +183,24 @@ fn a_turn_follows_its_page_when_a_page_is_inserted_before_it() {
     assert_eq!(bed.notice(), None);
 }
 
+/// Failure caught: the person left a tab whose edits followed by opening another PDF, and the notice stayed, with the sidecar still saying "not yet
+/// told", so every restart said it again. Left by an open: told, as by a tap.
+#[test]
+fn opening_another_file_tells_a_follow_as_a_tap_does() {
+    let mut bed = Bed::turned_page_9();
+    bed.changed_and_read(&document("Mine", &(1..=10).collect::<Vec<_>>(), true));
+    assert!(bed.follow()[0].is_some());
+    assert_eq!(bed.notice(), Some("edits_followed"));
+    let third = bed.path.with_file_name("third.pdf");
+    std::fs::write(&third, ten("Third")).unwrap();
+    bed.s.open(&third).unwrap();
+    assert_eq!(bed.notice(), None, "left: said");
+    assert!(
+        !crate::edit::identity::followed_untold(bed.s.lists().get(bed.a).unwrap()),
+        "and told, so the sidecar says so"
+    );
+}
+
 /// Failure caught: the edited page's content changed under the edits, and the turn put on whatever's at its number, or followed onto a page that
 /// isn't it; or the match tried again at every look. Held exactly as before: the list as it was, the tab saying the file changed in today's words
 /// (which say nothing was moved), nothing asked again for this version.
