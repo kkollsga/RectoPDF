@@ -912,9 +912,7 @@ fn retry_failed_pages(
     // An agent's folder made before this says these pages failed, so what it says goes: it mustn't say what's no longer so. It's made anew only inside a folder a live session holds, keeping that session's hold, and never made where there's none: once its session has set it aside, nothing appears in its place (the second review's item 3).
     if fs::symlink_metadata(&paths.manifest).is_ok() {
         agent_life::empty_agent_folder(paths);
-        if agent_life::held_by_a_session(&paths.agent)
-            && make_agent_folder(find_key, paths, &BuildLimits::default(), Making::IntoAHeldFolder).is_err()
-        {
+        if agent_life::held_by_a_session(&paths.agent) && make_agent_folder(find_key, paths, &BuildLimits::default(), Making::IntoAHeldFolder).is_err() {
             agent_life::empty_agent_folder(paths);
         }
     }

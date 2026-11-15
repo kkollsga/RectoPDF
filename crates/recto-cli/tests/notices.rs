@@ -173,9 +173,16 @@ fn the_headings_helper_carries_no_find_text_cipher() {
     let seal_marks: [&[u8]; 2] = [b"RECTOSL1", b"recto find text v4"];
     let carries = |name: &str| {
         let bytes = std::fs::read(bundle.join("MacOS").join(name)).unwrap_or_else(|error| panic!("{name}: {error}"));
-        seal_marks.iter().filter(|mark| bytes.windows(mark.len()).any(|window| window == **mark)).count()
+        seal_marks
+            .iter()
+            .filter(|mark| bytes.windows(mark.len()).any(|window| window == **mark))
+            .count()
     };
-    assert_eq!(carries("recto-indexer"), seal_marks.len(), "the indexer doesn't carry the seal's marks, so the look sees nothing");
+    assert_eq!(
+        carries("recto-indexer"),
+        seal_marks.len(),
+        "the indexer doesn't carry the seal's marks, so the look sees nothing"
+    );
     assert_eq!(carries("recto-headings"), 0, "the headings helper carries the Find text's seal");
 }
 

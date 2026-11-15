@@ -29,7 +29,9 @@ fn walk(root: &Path) -> io::Result<Vec<Found>> {
                 continue;
             }
         };
-        let Some(key) = entry.file_name().to_str().and_then(CorpusKey::from_hex) else { continue };
+        let Some(key) = entry.file_name().to_str().and_then(CorpusKey::from_hex) else {
+            continue;
+        };
         match entry.file_type() {
             Ok(kind) if kind.is_dir() => found.push(Ok((key, entry.path()))),
             Ok(_) => {}

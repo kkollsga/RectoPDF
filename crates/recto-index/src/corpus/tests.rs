@@ -1899,7 +1899,10 @@ fn a_header_that_cant_be_read_is_left_by_a_run_without_its_key() {
     fs::set_permissions(paths.seal(), fs::Permissions::from_mode(0o666)).unwrap();
     let for_now = FindKey::in_memory_for_now().unwrap();
     assert_eq!(disk_state(&for_now, &root, key), DiskState::SealedElsewhere { lasting: true });
-    assert!(seal_for_building(&for_now, &paths).is_err(), "a seal was made over a header that couldn't be read");
+    assert!(
+        seal_for_building(&for_now, &paths).is_err(),
+        "a seal was made over a header that couldn't be read"
+    );
     assert_eq!(
         build(&for_now, &root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap(),
         BuildOutcome::Paused(LASTING_KEY_OUT_OF_REACH)
@@ -1982,9 +1985,18 @@ fn a_retry_keeps_the_agent_folder_its_sessions_and_makes_none_after_its_end() {
     due();
     let better = [PLAIN, Fake::Text("read at last"), Fake::LostWorker];
     build(tk(), &root, key, &mut FakeFeed::new(&better), &DocMeta::default(), &BuildLimits::default()).unwrap();
-    assert!(fs::read_to_string(paths.page_file(1, 4)).unwrap().contains("read at last"), "the retry didn't change the folder");
-    assert!(paths.agent.join(".session").is_file(), "the retry made the folder again without its session's file");
-    assert!(claim_agent_folder(&root, key).is_none(), "the folder is no longer held by its session after a retry");
+    assert!(
+        fs::read_to_string(paths.page_file(1, 4)).unwrap().contains("read at last"),
+        "the retry didn't change the folder"
+    );
+    assert!(
+        paths.agent.join(".session").is_file(),
+        "the retry made the folder again without its session's file"
+    );
+    assert!(
+        claim_agent_folder(&root, key).is_none(),
+        "the folder is no longer held by its session after a retry"
+    );
     assert_eq!(sweep_agent_folders(&root, &[]), 0, "a sweep took a folder its session still holds");
     // The session ends while the helper's retry is still to run: nothing is made again in the folder's place, by the retry or by a making that was already past its look.
     retire_agent_folder(&root, key, claim);
@@ -1994,7 +2006,15 @@ fn a_retry_keeps_the_agent_folder_its_sessions_and_makes_none_after_its_end() {
     );
     assert!(!paths.agent.exists(), "a making for a held folder made the folder");
     due();
-    build(tk(), &root, key, &mut FakeFeed::new(&[PLAIN, PLAIN, PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    build(
+        tk(),
+        &root,
+        key,
+        &mut FakeFeed::new(&[PLAIN, PLAIN, PLAIN]),
+        &DocMeta::default(),
+        &BuildLimits::default(),
+    )
+    .unwrap();
     assert!(!paths.agent.exists(), "a retry after the session's end made its folder again");
 }
 
@@ -2017,8 +2037,14 @@ fn an_entry_that_cant_be_read_is_never_skipped() {
         evict::evict_found(&root, vec![at(first), unread(), at(second)], &nothing_fits, None).is_err(),
         "eviction went on without a folder it couldn't look at"
     );
-    assert!(root.join(first.hex()).is_dir() && root.join(second.hex()).is_dir(), "eviction removed on a total that left one out");
+    assert!(
+        root.join(first.hex()).is_dir() && root.join(second.hex()).is_dir(),
+        "eviction removed on a total that left one out"
+    );
     let report = evict::clear_found(&root, vec![at(first), unread(), at(second)]);
     assert_eq!((report.cleared, report.failed), (2, 1), "{report:?}");
-    assert!(!root.join(first.hex()).exists() && !root.join(second.hex()).exists(), "a clear stopped at an entry it couldn't read");
+    assert!(
+        !root.join(first.hex()).exists() && !root.join(second.hex()).exists(),
+        "a clear stopped at an entry it couldn't read"
+    );
 }

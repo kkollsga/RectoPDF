@@ -537,7 +537,11 @@ mod tests {
         for source in ["keychain", "state_file", "memory"] {
             assert_eq!(source_told_to_agents(&json!(source)), json!(source), "{source}");
         }
-        assert_eq!(source_told_to_agents(&json!("memory_for_now")), json!("memory"), "a key only for now was told as such");
+        assert_eq!(
+            source_told_to_agents(&json!("memory_for_now")),
+            json!("memory"),
+            "a key only for now was told as such"
+        );
         assert_eq!(source_told_to_agents(&Value::Null), Value::Null);
     }
 }

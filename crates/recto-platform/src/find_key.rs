@@ -320,11 +320,7 @@ mod tests {
         ];
         for (refused, source) in table {
             assert_eq!(fallback_source(refused), source, "{refused:?}");
-            assert_eq!(
-                fallback_source(refused).may_replace_lasting(),
-                refused == Refused::NotTheTeam,
-                "{refused:?}"
-            );
+            assert_eq!(fallback_source(refused).may_replace_lasting(), refused == Refused::NotTheTeam, "{refused:?}");
         }
     }
 

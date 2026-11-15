@@ -289,7 +289,9 @@ impl Shared {
                 corpus: job.key.short(),
                 state,
                 // A cause of the moment is `not_now` to anyone hearing this, whichever it was: see `told_to_agents`.
-                code: report["code"].as_str().map_or_else(|| report["code"].clone(), |code| json!(recto_agent::index::told_to_agents(code))),
+                code: report["code"]
+                    .as_str()
+                    .map_or_else(|| report["code"].clone(), |code| json!(recto_agent::index::told_to_agents(code))),
                 pages: report["pages"].clone(),
             });
         }
@@ -872,7 +874,11 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn a_process_with_an_index_leaves_no_core() {
         let _indexer = Indexer::new(Path::new("/nowhere"), Plan::Memory);
-        assert_eq!(recto_platform::find_key::core_limit(), Some((0, 0)), "a process with an index may still write a core");
+        assert_eq!(
+            recto_platform::find_key::core_limit(),
+            Some((0, 0)),
+            "a process with an index may still write a core"
+        );
     }
 
     /// Failure: `stop` finds a build still queued and starts it after the session has gone, or asking afterwards starts one.

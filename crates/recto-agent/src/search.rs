@@ -1653,7 +1653,10 @@ mod tests {
         std::fs::write(&other, b"another file").unwrap();
         let failing = FailsNow(root.clone(), recto_platform::find_key::FindKey::in_memory_for_now().unwrap());
         let (_, unread) = crate::index::file_index(&failing, &other, true);
-        assert_eq!(unread, state, "a file that couldn't be read just now and the lasting key out of reach read differently");
+        assert_eq!(
+            unread, state,
+            "a file that couldn't be read just now and the lasting key out of reach read differently"
+        );
         assert_eq!((unread.word(), unread.scan_note(true)), (state.word(), state.scan_note(true)));
     }
 
