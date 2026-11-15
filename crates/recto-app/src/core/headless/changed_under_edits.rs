@@ -931,3 +931,20 @@ fn a_held_tabs_pages_added_from_another_pdf_keep_their_highlights() {
     let (attached, _, withheld) = tiles(&app);
     assert!(withheld && attached >= 1, "the added page is drawn: {}", app.core().engine.report().0);
 }
+
+/// Failure (second review of `build/shorter-file-pages`): a follow whose file changed again before it was read (so it's not read, and the list isn't
+/// tried against that version again) left the tab saying it was being looked at, as nothing else made its words again. Held as the follow starts, the
+/// file replaced again, then let go: the tab says the held words, with no other look.
+#[test]
+fn a_follow_whose_file_changed_again_says_the_held_words() {
+    let (app, file, _original, _modified) = edited();
+    let (held, go) = app.hold_next("follow_starting");
+    replace(&file, &pdf_bytes("Theirs", 5));
+    app.send(CoreCall::LookAtShown);
+    held.recv_timeout(crate::testkit::headless::WAIT_LIMIT).expect("the follow held as it starts");
+    replace(&file, &pdf_bytes("Others", 6));
+    drop(go);
+    app.settle();
+    let said = notice(&app).expect("the tab says what happened");
+    assert!(said.contains("Discard the edits"), "the held words, not still being looked at: {said}");
+}
