@@ -18,6 +18,8 @@ pub mod panes;
 pub mod passwords;
 pub mod pressure;
 pub mod privacy;
+#[cfg(test)]
+mod privacy_folders;
 pub mod prompts;
 pub mod queue;
 pub mod reader_view;
