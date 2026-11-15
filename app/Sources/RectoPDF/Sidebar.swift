@@ -582,7 +582,9 @@ final class TabTable: NSTableView {
     func contentsReport() -> [String: Any] {
         let visible = contentsTable.rows(in: contentsTable.visibleRect)
         let shown = contentsScroll.superview != nil
-        if shown, contentsHeight > 0, contentsScroll.frame.height == 0 { sayContentsWithoutHeight() }
+        // Not in their row at all, as well as in it with no height: CI run 43751284816 had the contents out of the view tree (`row_views` 18 then 0, the table's
+        // 28 rows unchanged), and the line this says was asked only for the second, so the apps said nothing.
+        if contentsHeight > 0, activeIndex != nil, !shown || contentsScroll.frame.height == 0 { sayContentsWithoutHeight() }
         return [
             "count": Int(model.contentsCount),
             "current": model.contentsCurrent.map { Int($0) as Any } ?? NSNull(),
@@ -613,14 +615,23 @@ final class TabTable: NSTableView {
 
     private var saidContentsWithoutHeight = false
 
-    /// The contents in their row with no height, where the room says they have some, once in the run's messages with what the row and the view holding them were: seen on CI only (`contents.accessibility.len: 12 then 0` after a restart, run 43079093694), and not here with the state read late, the window made again, jitter or load, so the next time says which it was.
+    /// The last time the active row was asked to hold the contents: for which row, with what room, and whether it took them or let them go.
+    private var lastHold: (row: Int, room: CGFloat, held: Bool)?
+
+    /// The contents with no height in their row, or not in it at all, where the room says they have some, once in the run's messages with what the row and the
+    /// view holding them were: seen on CI only (`contents.accessibility.len: 12 then 0` after a restart, runs 43079093694 and 43751284816), and not here with
+    /// the state read late, the window made again, jitter or load, so the next time says which it was: let go of by a hold with no room (`last held`), or
+    /// lost with a row view the table no longer has (`the active row's view`).
     private func sayContentsWithoutHeight() {
         guard !saidContentsWithoutHeight else { return }
         saidContentsWithoutHeight = true
         let holder = contentsScroll.superview
         let row = activeIndex.map { table.rect(ofRow: $0).height } ?? -1
-        let isTheRows = activeIndex.map { table.view(atColumn: 0, row: $0, makeIfNecessary: false) === holder } ?? false
-        FileHandle.standardError.write(Data("recto: the contents had no height in a report: room \(layout.contentsHeight), active row \(activeIndex ?? -1) of height \(row), the view holding them \(holder.map { "\($0.bounds.height) high, needing layout \($0.needsLayout), in the window \($0.window != nil), the row's own view \(isTheRows)" } ?? "none").\n".utf8))
+        let rowView = activeIndex.flatMap { table.view(atColumn: 0, row: $0, makeIfNecessary: false) }
+        let isTheRows = rowView != nil && rowView === holder
+        let held = lastHold.map { "for row \($0.row) with room \($0.room), \($0.held ? "taken" : "let go")" } ?? "never"
+        let ownView = rowView.map { "\(type(of: $0)), in the window \($0.window != nil)" } ?? "none"
+        FileHandle.standardError.write(Data("recto: the contents had no height in a report: room \(layout.contentsHeight), active row \(activeIndex ?? -1) of height \(row), the view holding them \(holder.map { "\($0.bounds.height) high, needing layout \($0.needsLayout), in the window \($0.window != nil), the row's own view \(isTheRows)" } ?? "none"), the active row's view \(ownView), last held \(held), the tabs' table \(table.visibleRect.height) high in view, in the window \(table.window != nil).\n".utf8))
     }
 
     /// Row views the table holds that show something other than the model says. There should never be any.
@@ -1116,7 +1127,9 @@ final class TabTable: NSTableView {
                 made.identifier = id
                 return made
             }()
-            holder.hold(contentsHeight > 0 ? contentsScroll : nil, tabHeight: layout.tabRow)
+            let held: NSView? = contentsHeight > 0 ? contentsScroll : nil
+            holder.hold(held, tabHeight: layout.tabRow)
+            lastHold = (row, contentsHeight, held != nil)
             holder.showNote(model.tocOpen ? model.contentsNote : nil, height: layout.noteHeight, hovered: hoveredRow != nil)
             holder.note.clicked = { [weak self] in self?.clickNote() }
             holder.tab.show(row: tab, foldedActive: !model.tocOpen, hovered: hoveredRow != nil)

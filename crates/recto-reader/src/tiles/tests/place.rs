@@ -1,5 +1,90 @@
 use super::*;
 
+/// Failure (the on-screen pass, 2026-11-15, PLAN: pages 6, 21 and 26 of a 30-page file with a chapter every five pages, `goto N --within 0`): the contents
+/// marked the chapter before the one starting at the top of the page showing. The jump goes to the page's top, the host puts the view on its own pixel a
+/// fraction above it, in the gap below the page before, and the line the entry is found by was taken from there: the foot of the page before. A view on
+/// the host's pixel of a page's top is at that top, for the line as for the place (`on_host_pixel`), whichever way the host rounds; a view a point or more
+/// above it is in the gap.
+#[test]
+fn a_jump_to_a_pages_top_the_host_rounded_into_the_gap_above_is_on_that_page() {
+    let mut reader = reader_on(30);
+    reader.place.scrolled_to = 0;
+    settle(&mut reader);
+    for chapter in [5, 10, 15, 20, 25] {
+        let top = reader.docs.shown().unwrap().layout.top(chapter);
+        for rounded in [(top * 2.0).floor() / 2.0, top - 0.3, top - 0.99, top + 0.3] {
+            reader.jump_to(chapter, 0.0);
+            let Some(Op::ScrollTo { y, seq }) = reader.host.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else {
+                panic!("no scroll")
+            };
+            assert_eq!(y, top);
+            let mut there = Viewport {
+                scrolled_to: seq,
+                ..view(rounded)
+            };
+            reader.set_viewport(there);
+            there.height += 1.0;
+            reader.set_viewport(there);
+            let (_, place) = reader.places()[0];
+            assert_eq!(
+                (place.line.0, recto_core::thousandths(place.line.1)),
+                (chapter, 0),
+                "the line, with the view at {rounded} for the top at {top}"
+            );
+            assert_eq!((place.page, place.anchor), (chapter, (chapter, 0.0)), "and the place");
+        }
+        // A point and more above it is the gap, and the foot of the page before.
+        let mut gap = Viewport {
+            scrolled_to: reader.place.scrolled_to,
+            ..view(top - 1.5)
+        };
+        gap.height = 901.0;
+        reader.set_viewport(gap);
+        assert_eq!(reader.places()[0].1.line.0, chapter - 1, "in the gap");
+    }
+}
+
+/// Failure: keeping the place through a word from the host on its pixel (`on_host_pixel`) loses the reader's own short scroll. The page view can't tell a
+/// scroll of under a point from such a word (only the host knows whose hand moved it), so under a point the anchor stays and the place the session keeps,
+/// and a restart brings back to the pixel, is where the view is; at a point or more the anchor moves with it, so the window closed and opened again goes
+/// there.
+#[test]
+fn the_readers_own_short_scroll_is_kept_and_a_point_moves_the_anchor() {
+    let mut reader = reader_on(100);
+    reader.place.scrolled_to = 0;
+    settle(&mut reader);
+    reader.set_viewport(Viewport { scrolled_to: 0, ..view(0.0) });
+    reader.jump_to(40, 0.3);
+    let Some(Op::ScrollTo { y, seq }) = reader.host.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else {
+        panic!("no scroll")
+    };
+    let mut there = Viewport { scrolled_to: seq, ..view(y) };
+    reader.set_viewport(there);
+    // A word from the host that isn't the reader: the place is kept.
+    there.height += 1.0;
+    reader.set_viewport(there);
+    assert_eq!(reader.places()[0].1.anchor, (40, 0.3));
+    // The reader's own, four tenths of a point down: what the session keeps.
+    there.y = y + 0.4;
+    reader.set_viewport(there);
+    let (_, place) = reader.places()[0];
+    assert_eq!((place.page, place.y), (40, y + 0.4), "kept where the view is: {place:?}");
+    assert_eq!(place.anchor, (40, 0.3), "under a point, the anchor stays where the jump put it: {place:?}");
+    // A point and a half: the anchor too.
+    there.y = y + 1.5;
+    reader.set_viewport(there);
+    reader.place.scrolled_to = 0;
+    reader.window_closed();
+    reader.set_viewport(Viewport { scrolled_to: 0, ..view(0.0) });
+    reader.window_opened();
+    let back = last_scroll_to(&mut reader);
+    assert!(
+        (back - (y + 1.5)).abs() < 1e-6,
+        "sent back to {back}, where the reader had scrolled to {}",
+        y + 1.5
+    );
+}
+
 /// Failure: an agent's `goto` to a page reads as the reader having scrolled there and then scrolled back, so the session's place fights the jump. Arriving isn't a move, and a real scroll afterwards is.
 #[test]
 fn a_jump_isnt_reported_back_as_a_move() {

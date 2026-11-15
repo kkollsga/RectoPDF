@@ -11,6 +11,7 @@ use std::path::Path;
 mod cache;
 mod host;
 mod jobs;
+mod late_window;
 mod look_again;
 mod marks;
 mod place;
