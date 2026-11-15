@@ -114,6 +114,17 @@ fn may_follow<L: DocLoader>(session: &Session<L>, id: TabId, to: FileStamp) -> O
     session.tabs.path_of(id)
 }
 
+/// **Whether a follow of a tab's edits into the version of its file there now may still land:** the file changed under them from a known version, the
+/// tab can follow (not protected, not only the renderer's), and its list hasn't been tried against that version. What the tab says meanwhile
+/// (`fit.rs`); a look at the tab's own record and list, with nothing looked up.
+pub(crate) fn under_way(notices: &crate::fit::Notices<'_>, tab: &crate::TabRecord) -> bool {
+    if crate::registry::withheld_tab(tab) || tab.renderer_only || notices.fit_of(tab) != EditsFit::FileChanged {
+        return false;
+    }
+    let seen = tab.file.elsewhere().and_then(|elsewhere| elsewhere.seen);
+    seen.is_some() && notices.lists.get(tab.id).and_then(identity::follow_wanted) == seen
+}
+
 /// **The tabs whose edits may follow their pages now,** and what's known of those pages. A list that can't (protected, past its cap, or no longer
 /// changed to that version) is marked tried, and held as it is: nothing is read for it.
 pub fn work<L: DocLoader>(session: &mut Session<L>) -> Vec<FollowJob> {

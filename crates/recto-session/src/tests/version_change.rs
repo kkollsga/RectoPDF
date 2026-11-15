@@ -539,3 +539,28 @@ fn a_list_past_its_cap_of_named_pages_is_held() {
     assert_eq!(bed.notice(), Some("file_changed"));
     assert_eq!(bed.turned(), vec![2, 8], "held as it was");
 }
+
+/// Failure (review of `build/shorter-file-pages`, decided 2026-11-15): while the follow of a tab's edits into a new version was being read, the tab
+/// already said the held words and told the person to discard edits that might be about to follow. Meanwhile it says only what's true then (the file
+/// changed; whether the edits fit is being looked at), its pages withheld; then the followed words if they follow, the held words if they can't.
+#[test]
+fn while_a_follow_is_read_the_tab_says_its_being_looked_at_then_what_came_of_it() {
+    let looking = "This file changed on disk. Looking at whether your unsaved edits fit the new version.";
+    for (new_version, follows) in [
+        (document("Mine", &(1..=10).collect::<Vec<_>>(), true), true),
+        (document("Mine", &[1, 2, 3, 4, 5], false), false),
+    ] {
+        let mut bed = Bed::turned_page_9();
+        bed.changed_and_read(&new_version);
+        let said = bed.s.notices().said(bed.a).unwrap();
+        assert_eq!((said.code, said.message), ("file_changed", looking), "follows {follows}: being looked at");
+        assert!(bed.s.notices().pages_withheld(bed.a), "follows {follows}: withheld meanwhile");
+        assert_eq!(bed.follow()[0].is_some(), follows);
+        let said = bed.s.notices().said(bed.a).unwrap();
+        if follows {
+            assert_eq!(said.code, "edits_followed");
+        } else {
+            assert_eq!((said.code, said.message), ("file_changed", FileNotice::Changed.message(true)), "held");
+        }
+    }
+}

@@ -51,6 +51,9 @@ impl PageIds {
         let (ids, host) = (Arc::clone(self), Arc::clone(host));
         let spawned = std::thread::Builder::new().name("recto-page-ids".into()).stack_size(512 * 1024).spawn(move || {
             ids.run(&host);
+            // A list it marked tried without reading (protected meanwhile, past its cap) no longer says it's being looked at: the tab's words are
+            // made again once, as the thread goes.
+            host.core.push(crate::queue::CoreCall::Reconcile);
             host.core.nudge();
         });
         if spawned.is_err() {
@@ -116,6 +119,7 @@ impl PageIds {
                 Some(follow) => *following = Some(follow),
                 None => {
                     host.session.with_session(|session| version_change::not_read(session, &job));
+                    host.core.push(crate::queue::CoreCall::Reconcile);
                     return true;
                 }
             }
@@ -127,14 +131,17 @@ impl PageIds {
                 let job = follow.job().clone();
                 *following = None;
                 host.session.with_session(|session| version_change::not_read(session, &job));
+                // Held now: what the tab says changes from "being looked at" to what's so.
+                host.core.push(crate::queue::CoreCall::Reconcile);
             }
             Read::Matched(matched) => {
                 *following = None;
                 if let Some(followed) = host.session.with_session(|session| version_change::followed(session, &matched)) {
                     host.saver.edit_made();
-                    host.core.push(crate::queue::CoreCall::Reconcile);
                     host.tell(vec![recto_agent::event::edits_followed(&followed)]);
                 }
+                // Followed or held, what the tab says changes from "being looked at" to what's so.
+                host.core.push(crate::queue::CoreCall::Reconcile);
             }
         }
         true

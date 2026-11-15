@@ -80,6 +80,10 @@ pub(crate) fn another_version(own: FileStamp, now: FileStamp) -> bool {
     !own.same_contents(now) || (own.inode != 0 && now.inode != 0 && own.inode != now.inode)
 }
 
+/// What a tab says while a follow of its edits into the new version is being read (the coordinator's words, 2026-11-15, provisional): the pages are
+/// withheld meanwhile, and whether the edits follow or are held isn't known yet.
+const LOOKING: &str = "This file changed on disk. Looking at whether your unsaved edits fit the new version.";
+
 /// What a tab says of its file: a stable code for agents and tests, and plain words with nothing from outside in them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NoticeSaid {
@@ -225,6 +229,11 @@ impl Notices<'_> {
         };
         match tab.file.notice() {
             Some(missing @ FileNotice::Missing) => Some(said(missing)),
+            // While a follow of its edits into the new version may still land, what's true is only that it's being looked at.
+            _ if crate::version_change::under_way(self, tab) => Some(NoticeSaid {
+                code: FileNotice::Changed.code(),
+                message: LOOKING,
+            }),
             notice => fit.said().or_else(|| notice.map(said)),
         }
     }
