@@ -8,6 +8,7 @@ pub mod edits;
 pub mod generated;
 pub mod index;
 pub mod kept;
+pub mod page_id;
 pub mod pdf;
 pub mod proto;
 pub mod record;

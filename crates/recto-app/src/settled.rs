@@ -285,6 +285,10 @@ fn off_the_session_thread(inner: &Watched<'_>, busy: &mut Vec<String>) {
     if inner.life.others_looking() {
         busy.push("the other tabs' files being looked at".to_string());
     }
+    // What edited pages are, read for the page matcher: it hands what it read to the session and asks for the journal, then stops counting.
+    if inner.tools.page_ids().busy() {
+        busy.push("edited pages being read for what they are".to_string());
+    }
     let looks = inner.sleeper.looks_running();
     if looks > 0 {
         busy.push(format!("{looks} look(s) at a woken tab's file"));

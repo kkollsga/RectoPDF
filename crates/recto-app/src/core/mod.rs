@@ -35,6 +35,7 @@ mod life;
 pub mod menu_rows;
 mod navigation;
 mod opening;
+pub(crate) mod page_ids;
 pub mod person;
 mod person_lane;
 pub mod places;
@@ -368,7 +369,8 @@ impl Inner {
         // The first showing is copied under its short lock and the answer built after it's let go, so nothing the answer reads (the life, the sleeper, the
         // store, whose writer holds its own lock across a flush to the disk) is waited on holding the lock the window takes as it's shown.
         let first_shown = self.life.first_shown();
-        json!({ "first_shown": first_shown, "remade": self.life.remade(), "sleep": self.on_disk.sleeper().report(), "writes": writes, "appends": appends, "wrote_bytes": wrote_bytes(), "failed": self.saver.has_failed() })
+        let pages = page_ids::report(&self.host, self.tools.page_ids());
+        json!({ "first_shown": first_shown, "remade": self.life.remade(), "sleep": self.on_disk.sleeper().report(), "writes": writes, "appends": appends, "wrote_bytes": wrote_bytes(), "failed": self.saver.has_failed(), "pages": pages })
     }
 
     /// The person touched the app: the life notes it ([`Lifecycle::note_input`]), and a notice they've moved on from goes.

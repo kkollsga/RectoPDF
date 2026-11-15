@@ -3,6 +3,7 @@
 //! - `session/record.a.json`, `record.b.json`: the main record, in two slots. A write goes over the older, and the newer of the two that read whole is what's taken. So a crash, a torn write or a power cut mid-write leaves the other slot, with nothing depending on what order a drive puts things down in.
 //! - `session/places.log`: one line per move of a place, for the main record of its sequence. A long list of tabs isn't rewritten to say the reader went on a page.
 //! - `session/journals/journal-*.log`: each open PDF's unsaved edits and rolling history. Appended, never rewritten to add a step, and every line has its own checksum, so a torn tail costs that line.
+//! - `session/journals/pages-*.ids`: beside a journal, what its edits' pages are, for the page matcher (`page_ids`). A journal is byte for byte what it is without one.
 //! - `session/journals/closed-*.log`: the same, for a PDF that's been closed with history and nothing unsaved. No launch reads these. They wait for the PDF to be opened, for 30 days and within 1 GiB, oldest out first, and they're kept out of backups (owner, 2026-11-07).
 //!
 //! **A journal has one owner.** Its header says whose it is, and at a launch each is matched against the tabs by what it's about: a tab that names it, or failing that a tab on the same file with none. A tab never applies a journal about another file. One with real unsaved edits and no tab is what a crash leaves, and comes back as a tab. One with nothing unsaved goes to `closed-`. A file that's there and can't be read as ours is never truncated or overwritten: writes go under another name beside it.
@@ -15,6 +16,7 @@
 
 /// The record's lock: who keeps it, waiting for it, and letting go of it.
 mod lock;
+mod page_ids;
 mod sleep_files;
 use crate::state::StatePaths;
 use recto_platform::{FileStamp, file_stamp, local};
@@ -126,6 +128,8 @@ struct Progress {
     beside_newer: bool,
     /// What's here couldn't be read, so nothing's to be written over it.
     read_only: bool,
+    /// Journals' sidecars read or written, by name (`page_ids`).
+    sidecars: page_ids::Known,
 }
 
 /// Why no record came of two slots.
@@ -548,6 +552,8 @@ impl RecordStore {
         // A PDF is open once, whatever a record says. The journals of tabs that lost out are left as they are, and said.
         let not_merged = record::one_tab_per_file(&mut record);
         let journals = load_journals(dir, &mut record, &mut progress, &not_merged);
+        // A sidecar whose journal went, whichever way it went, goes with it.
+        page_ids::sweep(&dir.join(JOURNALS));
         // Nothing's changed by coming back, unless the journals said otherwise: writing what was read would be a write for nothing.
         progress.whole_crc = as_read;
         drop(progress);
@@ -590,6 +596,7 @@ impl RecordStore {
             if !is_journal_name(name) && !record::is_kept_name(name) && !record::is_sleep_name(name) {
                 continue;
             }
+            page_ids::remove(&folder, name, &mut progress);
             match std::fs::remove_file(folder.join(name)) {
                 Ok(()) => {
                     progress.journal_bytes.remove(name);
@@ -640,9 +647,11 @@ impl RecordStore {
                         outcome.not_retired.push(old.clone());
                     }
                     progress.journal_bytes.remove(old);
+                    page_ids::remove(&folder, old, &mut progress);
                 }
                 if append.closing {
                     progress.journal_bytes.remove(&name);
+                    page_ids::remove(&folder, &name, &mut progress);
                     if let Some(closed) = closed_journal_name(&name) {
                         let _ = std::fs::rename(&path, folder.join(closed));
                     }
@@ -694,6 +703,7 @@ impl RecordStore {
             if append.closing {
                 // Closed: no launch reads it now. If this doesn't go, the next launch sees to it.
                 progress.journal_bytes.remove(&name);
+                page_ids::remove(&folder, &name, &mut progress);
                 if let Some(closed) = closed_journal_name(&name) {
                     let _ = std::fs::rename(&path, folder.join(closed));
                 }
@@ -703,6 +713,7 @@ impl RecordStore {
             }
             outcome.written.push((append.tab, append.through, name));
         }
+        page_ids::write_all(&folder, &mut progress, &work.pages, &outcome.written, force, &mut outcome.pages);
         drop(progress);
         // Something's being done here anyway, and a closed history is what the limits are about. No timer.
         if closed_one {
@@ -844,6 +855,9 @@ impl RecordStore {
         }
         force(&dir.join(PLACES))?;
         for name in progress.journal_bytes.keys() {
+            force(&dir.join(JOURNALS).join(name))?;
+        }
+        for name in progress.sidecars.keys() {
             force(&dir.join(JOURNALS).join(name))?;
         }
         force(&dir.join(JOURNALS))?;
@@ -997,8 +1011,11 @@ impl RecordStore {
     /// Removes a journal found to be stale.
     pub fn remove_journal(&self, name: &str) {
         if is_journal_name(name) || record::is_kept_name(name) || record::is_sleep_name(name) {
-            let _ = std::fs::remove_file(self.dir().join(JOURNALS).join(name));
-            self.progress().journal_bytes.remove(name);
+            let folder = self.dir().join(JOURNALS);
+            let _ = std::fs::remove_file(folder.join(name));
+            let mut progress = self.progress();
+            progress.journal_bytes.remove(name);
+            page_ids::remove(&folder, name, &mut progress);
         }
     }
 }
@@ -1012,12 +1029,14 @@ impl HistorySource for RecordStore {
         if !is_journal_name(name) {
             return None;
         }
-        let (parsed, _) = read_journal(&self.dir().join(JOURNALS).join(name)).ok().flatten()?;
+        let folder = self.dir().join(JOURNALS);
+        let (parsed, _) = read_journal(&folder.join(name)).ok().flatten()?;
         let mut restored = restored_from(&parsed)?;
         if restored.lost_lines {
             return None;
         }
         restored.rolled_off = roll_off_what_isnt_kept(&mut restored.edits);
+        page_ids::take_in(&folder, name, &parsed.header, &mut restored.edits, &mut self.progress());
         Some(restored)
     }
 
@@ -1419,7 +1438,7 @@ fn claim(folder: &Path, read: JournalRead, record: &mut SessionRecord, at: usize
     }
     tab.journal = Some(name.clone());
     tab.edits = Some(restored.edits.summary());
-    let _ = folder;
+    page_ids::take_in(folder, &name, &parsed.header, &mut restored.edits, progress);
     progress.journal_bytes.insert(name.clone(), good_bytes);
     journals.insert(name, restored);
 }
@@ -1821,6 +1840,7 @@ mod tests {
     fn journal_work_for(name: &str, ops: Vec<JournalOp>, through: u64) -> JournalWork {
         let header = JournalHeader::new(1, Path::new("/d/1.pdf"), None, 5, 0);
         JournalWork {
+            pages: Vec::new(),
             retired: Vec::new(),
             appends: vec![recto_session::JournalAppend {
                 tab: TabId(1),
@@ -1896,6 +1916,7 @@ mod tests {
         let write = |store: &RecordStore| {
             let header = JournalHeader::new(1, &file, Some(before), 5, 0);
             let work = JournalWork {
+                pages: Vec::new(),
                 retired: Vec::new(),
                 appends: vec![recto_session::JournalAppend {
                     tab: TabId(1),
@@ -1957,6 +1978,7 @@ mod tests {
             let store = RecordStore::open(&paths, Flavor::App);
             let header = JournalHeader::new(1, &file, Some(before), 5, 0);
             let work = JournalWork {
+                pages: Vec::new(),
                 retired: Vec::new(),
                 appends: vec![recto_session::JournalAppend {
                     tab: TabId(1),
@@ -1982,6 +2004,7 @@ mod tests {
             let name = record::journal_file_name(Some(target), &file, None);
             let header = JournalHeader::new(1, &file, Some(target), 5, 0);
             let work = JournalWork {
+                pages: Vec::new(),
                 retired: Vec::new(),
                 appends: vec![recto_session::JournalAppend {
                     tab: TabId(1),
@@ -2100,6 +2123,7 @@ mod tests {
         let write = |store: &RecordStore, name: &str, record_it: bool| {
             let header = JournalHeader::new(1, &file, Some(now), 4, 0);
             let work = JournalWork {
+                pages: Vec::new(),
                 retired: Vec::new(),
                 appends: vec![recto_session::JournalAppend {
                     tab: TabId(1),
@@ -2175,6 +2199,7 @@ mod tests {
         let store = RecordStore::open(&paths, Flavor::App);
         let header = JournalHeader::new(1, &file, Some(before), 5, 0);
         let work = JournalWork {
+            pages: Vec::new(),
             retired: Vec::new(),
             appends: vec![recto_session::JournalAppend {
                 tab: TabId(1),
@@ -2194,6 +2219,7 @@ mod tests {
         let name = record::journal_file_name(Some(target), &file, None);
         let header = JournalHeader::new(1, &file, Some(target), 5, 3);
         let work = JournalWork {
+            pages: Vec::new(),
             retired: Vec::new(),
             appends: vec![recto_session::JournalAppend {
                 tab: TabId(1),
@@ -2466,6 +2492,7 @@ mod tests {
         let name = record::journal_file_name(None, Path::new("/d/new.pdf"), None);
         let header = JournalHeader::new(9, Path::new("/d/new.pdf"), None, 5, 0);
         let work = JournalWork {
+            pages: Vec::new(),
             retired: Vec::new(),
             appends: vec![recto_session::JournalAppend {
                 tab: TabId(9),
@@ -2482,6 +2509,7 @@ mod tests {
         let closed = record::journal_file_name(None, Path::new("/d/closed.pdf"), None);
         let header = JournalHeader::new(8, Path::new("/d/closed.pdf"), None, 5, 0);
         let work = JournalWork {
+            pages: Vec::new(),
             retired: Vec::new(),
             appends: vec![recto_session::JournalAppend {
                 tab: TabId(8),
@@ -2562,6 +2590,7 @@ mod tests {
         std::fs::remove_file(folder.join(&bad)).unwrap();
         std::fs::create_dir(folder.join(&bad)).unwrap();
         let work = JournalWork {
+            pages: Vec::new(),
             retired: Vec::new(),
             appends: vec![append(9, &bad, "/d/bad.pdf"), append(1, &good, "/d/good.pdf")],
         };

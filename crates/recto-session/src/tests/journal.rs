@@ -146,7 +146,7 @@ fn a_journal_failing_doesnt_send_the_others_again() {
     let done = work.appends.iter().find(|append| append.tab == a).unwrap();
     s.journal_desk().outcome(JournalOutcome {
         written: vec![(a, done.through, done.name.clone())],
-        not_retired: Vec::new(),
+        ..JournalOutcome::default()
     });
     let next = s.journal_desk().work();
     assert_eq!(next.appends.len(), 1);

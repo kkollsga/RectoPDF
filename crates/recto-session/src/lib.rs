@@ -9,6 +9,7 @@ pub mod compare;
 pub mod confined;
 pub mod edit;
 pub mod held;
+pub mod identify;
 pub mod palette;
 pub mod record;
 pub mod sleep;
@@ -441,6 +442,18 @@ pub struct TakenHistory {
 pub struct JournalWork {
     pub retired: Vec<String>,
     pub appends: Vec<JournalAppend>,
+    /// What's been read of edited pages, for journals' sidecars (`edit::identity::sidecar`), after the appends.
+    pub pages: Vec<PagesAppend>,
+}
+
+/// What's been read of one list's pages, for its journal's sidecar.
+#[derive(Clone, Debug)]
+pub struct PagesAppend {
+    pub tab: TabId,
+    /// The journal's name, as the session knows it; the record store uses the name the journal went under, if this work's appends moved it.
+    pub journal: String,
+    pub header: edit::identity::sidecar::Header,
+    pub waiting: edit::identity::sidecar::Waiting,
 }
 
 /// How that went. A journal's failing doesn't stop the others, and says nothing about them.
@@ -450,6 +463,8 @@ pub struct JournalOutcome {
     pub written: Vec<(TabId, u64, String)>,
     /// Retired journals that couldn't go, to try again.
     pub not_retired: Vec<String>,
+    /// What became of each sidecar's write, by its tab and what it held.
+    pub pages: Vec<(TabId, edit::identity::sidecar::Waiting, edit::identity::sidecar::Done)>,
 }
 
 /// Operations for one journal, up to this many in all.

@@ -56,7 +56,36 @@ impl JournalDesk<'_> {
         JournalWork {
             retired: self.journals.take_retired().into_iter().map(String::from).collect(),
             appends,
+            pages: self.pages_work(),
         }
+    }
+
+    /// What's been read of edited pages and waits for their journals' sidecars: only for a list that keeps a journal, on a file of a known version.
+    fn pages_work(&mut self) -> Vec<PagesAppend> {
+        let ids: Vec<TabId> = self.lists.ids().collect();
+        let mut out = Vec::new();
+        for id in ids {
+            let Some(waiting) = self
+                .lists
+                .get(id)
+                .filter(|edits| edits.journal_waiting().is_some())
+                .and_then(edit::identity::sidecar_waiting)
+            else {
+                continue;
+            };
+            let Some(tab) = self.tabs.tab(id) else { continue };
+            let Some(stamp) = tab.file.stamp else { continue };
+            let journal = self.name_for(id);
+            let mut header = edit::identity::sidecar::Header::new(&journal, stamp, tab.page_count);
+            header.followed_untold = self.lists.get(id).is_some_and(edit::identity::followed_untold);
+            out.push(PagesAppend {
+                tab: id,
+                header,
+                journal,
+                waiting,
+            });
+        }
+        out
     }
 
     pub(crate) fn append_for(&mut self, id: TabId) -> Option<JournalAppend> {
@@ -102,6 +131,11 @@ impl JournalDesk<'_> {
         }
         for name in outcome.not_retired {
             self.journals.retire_name(name.into_boxed_str());
+        }
+        for (id, waiting, done) in outcome.pages {
+            if let Some(edits) = self.lists.get_mut(id) {
+                edit::identity::sidecar_written(edits, &waiting, done);
+            }
         }
     }
 
@@ -150,7 +184,8 @@ impl JournalLook<'_> {
     pub fn checkpoint_if_caught_up(&self, id: TabId) -> Option<(JournalHeader, record::EditsRecord)> {
         let edits = self.lists.get(id)?;
         let (seq, waiting) = edits.journal_waiting()?;
-        if !waiting.is_empty() || self.journals.is_fresh(id) {
+        // Nor while what's been read of its pages waits for the sidecar, which a list gone to disk would lose.
+        if !waiting.is_empty() || self.journals.is_fresh(id) || self.sidecar_waits(id, edits) {
             return None;
         }
         let tab = self.tabs.tab(id)?;
@@ -172,9 +207,17 @@ impl JournalLook<'_> {
     /// Whether there's anything for [`JournalDesk::work`], which is asked often and costs a look per edited tab.
     pub fn has_work(&self) -> bool {
         self.journals.has_pending()
-            || self
-                .lists
-                .iter()
-                .any(|(_, edits)| edits.journal_waiting().is_some_and(|(_, ops)| !ops.is_empty()))
+            || self.lists.iter().any(|(id, edits)| {
+                edits
+                    .journal_waiting()
+                    .is_some_and(|(_, ops)| !ops.is_empty() || self.sidecar_waits(*id, edits))
+            })
+    }
+
+    /// Whether what's been read of a list's pages waits for a sidecar that can be written: one is written only for a version of the file that's known
+    /// ([`JournalDesk::work`]'s `pages_work`), and a tab's version can go unknown while entries wait (a file replaced mid-read, `tiers.rs`), which
+    /// mustn't keep the journals busy and the tab from going to disk for good. A tab is looked up only for a list whose sidecar isn't caught up.
+    fn sidecar_waits(&self, id: TabId, edits: &edit::PageEdits) -> bool {
+        !edit::identity::sidecar_caught_up(edits) && self.tabs.tab(id).is_some_and(|tab| tab.file.stamp.is_some())
     }
 }

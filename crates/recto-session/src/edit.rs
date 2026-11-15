@@ -13,6 +13,7 @@ use marks::{MarkChange, MarkOp, MarkRefusal, MarkStep, Marks};
 use recto_platform::FileStamp;
 use std::path::{Path, PathBuf};
 
+pub mod identity;
 pub mod marks;
 
 /// Most pages one edited document may have.
@@ -285,6 +286,8 @@ pub struct PageEdits {
     rewrites: bool,
     /// A journal is being replayed, so `differs` and `rewrites` are worked out once at its end rather than after each step.
     replaying: bool,
+    /// The file's pages the edits name, and what each is, for the page matcher ([`identity`]). `None` until a step names one.
+    identities: Option<Box<identity::Identities>>,
 }
 
 /// **A list's undo and redo,** and what they hold against the caps. One part of [`PageEdits`], so the list's fields say what it is (R4.3: the
@@ -391,6 +394,7 @@ impl PageEdits {
             rewrites: false,
             changes: 0,
             replaying: false,
+            identities: None,
         }
     }
 
@@ -508,6 +512,7 @@ impl PageEdits {
             rewrites: false,
             changes: 0,
             replaying: false,
+            identities: None,
         };
         edits.differs = edits.differs_from_the_file();
         edits.rewrites = edits.rewrites_the_file();
@@ -885,6 +890,8 @@ impl PageEdits {
         out.rolled_off += marks::saved(self, own_pages_at.map(|source| (source, holds.as_deref())), marks);
         self.file_pages = pages as usize;
         self.changes += 1;
+        // The saved file is what the edits are about now: each page named goes to its place in it, to be read again there.
+        identity::saved(self);
         self.slots = (0..pages)
             .map(|page| PageSlot {
                 source: 0,
@@ -1271,7 +1278,8 @@ impl PageEdits {
     /// Applies a step that has already been checked, and returns its inverse.
     fn apply(&mut self, step: Step) -> Step {
         self.changes += 1;
-        match step {
+        identity::note(self, &step);
+        let inverse = match step {
             Step::Rotate { start, len, quarter_turns } => {
                 for slot in &mut self.slots[start as usize..(start + len) as usize] {
                     slot.quarter_turns = (slot.quarter_turns + quarter_turns) % 4;
@@ -1303,7 +1311,9 @@ impl PageEdits {
                 Step::Remove { start, len }
             }
             Step::Mark(step) => Step::Mark(Box::new(self.marks.apply(*step))),
-        }
+        };
+        identity::note(self, &inverse);
+        inverse
     }
 
     fn check_range(&self, start: u32, len: u32) -> Result<(), EditError> {

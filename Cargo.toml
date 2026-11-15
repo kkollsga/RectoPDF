@@ -35,6 +35,8 @@ serde_json = { version = "1", default-features = false, features = ["std", "floa
 libc = { version = "0.2", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 sha2 = { version = "0.11", default-features = false }
+# LZW, for the page digest's streaming decode (`recto-core/src/page_id/decode.rs`); already built for lopdf.
+weezl = { version = "0.2", default-features = false, features = ["alloc"] }
 crc32fast = { version = "1", default-features = false }
 grep-regex = { version = "0.1", default-features = false }
 grep-matcher = { version = "0.1", default-features = false }

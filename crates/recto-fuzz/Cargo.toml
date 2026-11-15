@@ -12,6 +12,8 @@ workspace = true
 # Test-only, as recto-testpdf is: nothing that ships depends on this crate. No crates of its own, and libFuzzer stays in `fuzz/`, outside the workspace.
 [dependencies]
 crc32fast.workspace = true
+# To make the page digest's seeds: streams as encoders write them.
+flate2.workspace = true
 recto-agent = { workspace = true, features = ["test-words"] }
 recto-control.workspace = true
 recto-core.workspace = true
@@ -25,3 +27,4 @@ recto-svg.workspace = true
 recto-testpdf.workspace = true
 recto-update.workspace = true
 serde_json.workspace = true
+weezl.workspace = true

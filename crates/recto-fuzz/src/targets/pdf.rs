@@ -122,6 +122,20 @@ fn read(bytes: &[u8]) {
             let _ = recto_core::page_effects_bytes(Arc::clone(&shared), page);
         }
         let _ = recto_core::copy_restricted_bytes(Arc::clone(&shared));
+        // The page digest the matcher follows edits by (`recto_core::page_id`): bounded by its caps, on any page a file can name, and the same each
+        // time it's read, or a page would never be found again.
+        if let Ok(reader) = recto_core::page_id::open_bytes_for_identity(Arc::clone(&shared))
+            && let Ok(map) = reader.page_map()
+        {
+            let pages = [0, 1, 7, u32::MAX];
+            let first = recto_core::page_id::identify_pages(&reader, &map, &pages);
+            assert_eq!(
+                first,
+                recto_core::page_id::identify_pages(&reader, &map, &pages),
+                "a page's identity changed between two reads"
+            );
+            let _ = recto_core::page_id::document_ids(&reader);
+        }
         if let Ok(inventory) = signatures_in_bytes(shared) {
             assert_inventory_holds(&inventory, bytes.len() as u64);
         }

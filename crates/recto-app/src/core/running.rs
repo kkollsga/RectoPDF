@@ -25,6 +25,8 @@ pub struct Running {
     pub saves: u32,
     /// A print being prepared, or with the system's printing.
     pub printing: bool,
+    /// The page-identity thread is reading what edited pages are (`super::page_ids`).
+    pub identifying: bool,
 }
 
 impl Running {
@@ -39,13 +41,21 @@ impl Running {
             reads: life.reads_running(),
             saves: tools.save_ui().running.load(Ordering::SeqCst),
             printing: tools.printing().busy(),
+            identifying: tools.page_ids().busy(),
         }
     }
 
     /// **The hand-off's: everything under way,** each named in the person's words.
     #[must_use]
     pub fn busy(&self) -> Vec<BusyItem> {
-        super::hand_off_check_parts(self.reads, self.sheets, self.commands, self.agents, self.persons, self.saves, self.printing)
+        let mut busy = super::hand_off_check_parts(self.reads, self.sheets, self.commands, self.agents, self.persons, self.saves, self.printing);
+        if self.identifying {
+            busy.push(item(
+                "reading_edited_pages",
+                "Pages you edited are being read, so your edits can follow them if the file changes.",
+            ));
+        }
+        busy
     }
 
     /// **The quit's: what can change what it writes** (the record, a journal, a document's file): the person's commands, their parked edits among
@@ -57,6 +67,14 @@ impl Running {
     #[must_use]
     pub fn changes_what_a_quit_writes(&self) -> bool {
         self.persons > 0 || self.saves > 0 || self.changing > 0
+    }
+}
+
+/// A busy item, in the shape the hand-off's other parts are made ([`super::hand_off_check_parts`]).
+fn item(code: &str, message: &str) -> BusyItem {
+    BusyItem {
+        code: code.to_string(),
+        message: message.to_string(),
     }
 }
 

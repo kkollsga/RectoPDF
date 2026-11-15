@@ -11,6 +11,7 @@ mod editing;
 mod files;
 mod follow;
 mod forgetting;
+pub(crate) mod identify;
 mod journal;
 mod journal_desk;
 mod pages;

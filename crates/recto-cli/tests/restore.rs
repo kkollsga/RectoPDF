@@ -2229,7 +2229,7 @@ fn what_became_of_a_file_is_said_and_its_edits_stay() {
     assert!(quiet["rows"].is_array());
 }
 
-/// Failure: reading writes to the disk all the time, wearing it for nothing: SPEC's budget. At rest, 0 bytes. Scrolling for a while, at most a line, as a minute hasn't passed. A burst of edits, about what the steps come to and not a rewrite per step. Going to the background writes what changed, and nothing after that when nothing has.
+/// Failure: reading writes to the disk all the time, wearing it for nothing: SPEC's budget. At rest, 0 bytes. Scrolling for a while, at most a line, as a minute hasn't passed. A burst of edits, about what the steps come to and not a rewrite per step; and what each page they name is (the page matcher), 35 bytes a page in the journal's sidecar, written once. Going to the background writes what changed, and nothing after that when nothing has.
 #[test]
 fn it_writes_only_what_happened() {
     let state = State::new();
@@ -2253,22 +2253,40 @@ fn it_writes_only_what_happened() {
     let scrolling = written() - before;
     eprintln!("3 s of scrolling wrote {scrolling} bytes, including the activity log's line");
     assert!(scrolling < 32 * 1024, "{scrolling}");
-    // A scripted burst: each is a line of about 25 bytes, and they go out together in one append.
+    // A scripted burst: each is a line of about 25 bytes, and they go out together in one append. And what each page the edits name is (the page
+    // matcher), read once and appended once to the journal's sidecar, 35 bytes a page: the 50 turns of pages 1 to 50 name pages 1 to 52.
     let before = run.ok(&["session", "show"])["record"]["wrote_bytes"].as_u64().unwrap();
     for at in 0..50 {
         run.ok(&["qa", "as-person", &format!("page rotate {} --by 90", at % 60 + 1)]);
     }
+    // Waits for the journal's steps, every page named read and the reading thread gone, and the journals and sidecars caught up: what QA says.
     let began = Instant::now();
-    let wrote = loop {
+    let (wrote, named) = loop {
         let now = run.ok(&["session", "show"])["record"]["wrote_bytes"].as_u64().unwrap() - before;
-        if now > 1000 {
-            break now;
+        let pages = run.report()["record"]["pages"].clone();
+        let named = pages["named"].as_u64().unwrap_or(0);
+        if now > 1000 && named > 0 && pages["read"] == pages["named"] && pages["reading"] == false && pages["caught_up"] == true {
+            break (now, named);
         }
-        assert!(began.elapsed() < Duration::from_secs(20));
-        std::thread::sleep(Duration::from_millis(100));
+        assert!(began.elapsed() < Duration::from_secs(20), "wrote {now}, {pages}");
+        std::thread::sleep(Duration::from_millis(100)); // ratchet: poll
     };
-    eprintln!("50 edits wrote {wrote} bytes to the journal");
-    assert!(wrote < 50 * 40 + 1000, "{wrote}");
+    let journals = state.root.join("session").join("journals");
+    let size_of = |prefix: &str| -> u64 {
+        std::fs::read_dir(&journals)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
+            .map(|entry| entry.metadata().unwrap().len())
+            .sum()
+    };
+    let (journal, sidecar) = (size_of("journal-"), size_of("pages-"));
+    eprintln!("50 edits naming {named} pages wrote {wrote} bytes: the journal {journal}, its sidecar {sidecar}");
+    assert_eq!(named, 52, "pages 1 to 50 and the pages either side");
+    assert!(journal < 50 * 40 + 1000, "the journal: {journal}");
+    // The sidecar: its header, a page's 35 bytes for each page named, and the file's /ID pair, once.
+    assert!(sidecar <= 109 + 35 * named + 37, "the sidecar: {sidecar}");
+    assert!(wrote <= journal + sidecar + 1000, "each written once, and the record's line: {wrote}");
     run.quit();
 }
 

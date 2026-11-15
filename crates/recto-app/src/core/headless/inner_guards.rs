@@ -361,6 +361,7 @@ Tools::pub fn printing(&self) -> &printing::Printing
 Tools::pub fn prompts(&self) -> &crate::prompts::Prompts
 Tools::pub fn tool(&self) -> &snapshot_tool::Tool
 Tools::pub(crate) fn find_field(&self) -> &Mutex<crate::find::Field>
+Tools::pub(crate) fn page_ids(&self) -> &Arc<super::page_ids::PageIds>
 Tools::pub(crate) fn palette(&self) -> &crate::palette::Palette
 Tools::pub(crate) fn printing_held(&self) -> Arc<printing::Printing>
 Tools::pub(crate) fn save_ui(&self) -> &saving::SaveUi
