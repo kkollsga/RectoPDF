@@ -40,7 +40,12 @@ pub(crate) fn set(reader: &mut Reader, tab: u32, on: bool) -> bool {
     parts.cache.drop_tab(tab, &mut parts.host);
     if reader.docs.hot == Some(tab) {
         reader.clear_screen();
-        reader.pointer.selecting.reset();
+        // What was selected goes; a copy on its way is told as stopped, in the words a file changing has, never dropped unsaid.
+        if on {
+            reader.pointer.selecting.file_changed();
+        } else {
+            reader.pointer.selecting.reset();
+        }
         reader.pointer.linking.clear();
     }
     reader.refresh(MAX_ATTACH_PER_TURN);

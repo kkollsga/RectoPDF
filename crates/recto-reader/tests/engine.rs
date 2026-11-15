@@ -988,6 +988,28 @@ fn a_withheld_tab_offers_no_links() {
     assert!(asked(&engine, HANG).is_some(), "shown again, the link is there");
 }
 
+/// Failure (review of `build/shorter-file-pages`): a copy on its way when a tab's own pages became withheld was dropped with the selection and said
+/// nothing, so the person waited for a copy that never came. It's told as stopped, in the words a file changing has, and nothing of it is given.
+#[test]
+fn a_copy_on_its_way_when_pages_are_withheld_says_it_stopped() {
+    let file = TempPdf::new("copying.pdf", &pages(&[Page::new(text_lines(&["First"])), Page::new(text_lines(&["Second"]))]));
+    let (engine, _events) = started(&file, 2);
+    settled_on_page(&engine, 0);
+    engine.selection().select_all();
+    pump(&engine, HANG);
+    assert!(engine.selection().has_any());
+    engine.selection().copy(false);
+    engine.points().withhold_own_pages(1, true);
+    pump(&engine, HANG);
+    assert!(!engine.selection().has_any(), "nothing selected on withheld pages");
+    assert!(engine.selection().take_copied().is_none(), "nothing of it given");
+    assert!(
+        engine.selection().notice().is_some_and(|notice| notice.text.contains("copy stopped")),
+        "{:?}",
+        engine.selection().notice()
+    );
+}
+
 /// Failure: a snapshot box dragged from one page across the break onto the next reads the pointer in the next page's coordinates, so the box jumps to near the top of the pressed page, or comes out with the wrong size. The point must be taken onto the pressed page and held to its edge.
 #[test]
 fn a_snapshot_box_dragged_across_a_page_break_stays_on_its_page() {
