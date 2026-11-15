@@ -697,7 +697,7 @@ fn text_document(folder: &Path, name: &str, count: usize) -> PathBuf {
     path
 }
 
-/// Failure (decision 25, in the real app): a tab left alone stays in memory, or goes with its edits lost, or wakes bare, at the wrong place, or by reading its PDF. It goes dormant on the one deadline: no worker, no view, no list in memory, and a sleep file. Tapped, it's up from that file at its place, with a picture on every page before anything's drawn, then sharp, edits and history there.
+/// Failure (decision 25, in the real app): a tab left alone stays in memory, or goes with its edits lost, or wakes at the wrong place, or by reading its PDF. It goes dormant on the one deadline: no worker, no view, no list in memory, and a sleep file. Tapped, it's up from that file's facts at its place, then sharp, edits and history there.
 #[test]
 fn a_tab_left_alone_goes_dormant_and_wakes_from_its_file() {
     let state = State::at(Level::Full);
@@ -749,7 +749,8 @@ fn a_tab_left_alone_goes_dormant_and_wakes_from_its_file() {
     let woken = run.report();
     let wake = &woken["reader"]["last_wake"];
     assert_eq!(wake["from_sleep"], true, "{woken}");
-    assert_eq!(wake["blank_frames"], 0, "{wake}");
+    // From its facts: its pages on their paper at once, plain until each is drawn (owner, 2026-11-15: no picture of a page is kept).
+    assert_eq!(wake["had"], "facts", "{wake}");
     assert!(wake["first_frame_us"].as_u64().is_some(), "{wake}");
     assert_eq!(run.ok(&["session", "show"])["tabs"][0]["can_undo"], true);
     assert!(wake["sharp_us"].as_u64().unwrap() >= wake["first_frame_us"].as_u64().unwrap(), "{wake}");
