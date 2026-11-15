@@ -173,7 +173,7 @@ mod tests {
         );
     }
 
-    /// Failure: the way to the Keychain is reached, named, aliased or wrapped anywhere but its two places: `recto_platform::find_key::load_for_the_app`, named only in `AppKey::for_the_app`, and that, named only by the app's start. So a helper, `recto` or a test could ask the Keychain however the plan reads. Every mention of either name counts, outside comments and this test, and each file's count is held.
+    /// Failure: the way to the Keychain is reached, named, aliased or wrapped anywhere but its places (and, from the security read's N5, its inner calls, the release check and the look-or-make, are named nowhere new either): `recto_platform::find_key::load_for_the_app`, named only in `AppKey::for_the_app`, and that, named only by the app's start. So a helper, `recto` or a test could ask the Keychain however the plan reads. Every mention of either name counts, outside comments and this test, and each file's count is held.
     #[test]
     fn the_keychain_has_one_way_in() {
         let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
@@ -201,7 +201,12 @@ mod tests {
                 let mentions: usize = text
                     .lines()
                     .filter(|line| !line.trim_start().starts_with("//"))
-                    .map(|line| line.matches("load_for_the_app").count() + line.matches("for_the_app(").count())
+                    .map(|line| {
+                        line.matches("load_for_the_app").count()
+                            + line.matches("for_the_app(").count()
+                            + line.matches("load_or_create(").count()
+                            + line.matches("signed_as_a_release(").count()
+                    })
                     .sum();
                 if mentions > 0 {
                     found.insert(path.strip_prefix(crates).unwrap().display().to_string(), mentions);
@@ -213,8 +218,13 @@ mod tests {
             ("recto-app/src/core/start.rs", 1),
             // `pub fn for_the_app(` and the one `load_for_the_app` in it.
             ("recto-control/src/find_keys.rs", 2),
-            // `pub fn load_for_the_app(`, which names both.
-            ("recto-platform/src/find_key.rs", 2),
+            // `pub fn load_for_the_app(`, which names both, and in `load_under`, which it and the probe's feature-gated way call, the
+            // one `signed_as_a_release(` and the one `load_or_create(`.
+            ("recto-platform/src/find_key.rs", 4),
+            // The two defined, and the test that a test build isn't a release.
+            ("recto-platform/src/find_key_mac.rs", 3),
+            // The two defined, where there's no Keychain.
+            ("recto-platform/src/find_key_stub.rs", 2),
         ]
         .into_iter()
         .map(|(file, count)| (file.to_string(), count))
