@@ -70,9 +70,9 @@ fn edits_on_a_replaced_file_save_nowhere_say_so_and_fit_again_when_its_put_back(
     replace(&file, &theirs);
     look(&app);
     let said = notice(&app).expect("the tab says what happened");
-    // The edits are still the tab's (Discard is what lets them go) and nothing's written; the words of 2026-11-15 say it without "kept".
+    // The edits are still the tab's (Discard is what lets them go) and nothing's written; the owner's words of 2026-11-15 say it without "kept".
     assert!(
-        said.contains("changed on disk") && said.contains("Discard the edits") && said.contains("Nothing has been written"),
+        said.contains("changed on disk") && said.contains("pages aren't shown") && said.contains("Discard them"),
         "{said}"
     );
     assert!(!said.to_lowercase().contains("save as"), "{said}");
@@ -946,5 +946,5 @@ fn a_follow_whose_file_changed_again_says_the_held_words() {
     drop(go);
     app.settle();
     let said = notice(&app).expect("the tab says what happened");
-    assert!(said.contains("Discard the edits"), "the held words, not still being looked at: {said}");
+    assert!(said.contains("Discard them"), "the held words, not still being looked at: {said}");
 }

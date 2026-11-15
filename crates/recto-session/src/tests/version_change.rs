@@ -590,7 +590,7 @@ fn clearing_history_between_a_follows_steps_leaves_the_turn_on_its_page() {
 }
 
 /// Failure (second review of `build/shorter-file-pages`): between a look hearing the file changed and the read of the new version, a tab whose edits
-/// may still follow said the held words ("…Discard the edits…"): the tab showing for as long as the read takes, and a tab behind until it's tapped,
+/// may still follow said the held words ("…Discard them…"): the tab showing for as long as the read takes, and a tab behind until it's tapped,
 /// in its sidebar row and an agent's `tabs`. Heard and not read, it's being looked at, shown or behind; one that can never follow (protected, past its
 /// cap of named pages) says the held words at once.
 #[test]

@@ -59,8 +59,8 @@ impl FileNotice {
             }
             (Self::Moved { .. }, false) => "This file was moved, and the tab followed it.",
             (Self::Changed, true) => {
-                // The coordinator's words, 2026-11-15, put to the owner (they replace words the owner approved that day): the pages aren't shown while held.
-                "This file changed on disk. Your unsaved edits were made on the earlier version, so its pages aren't shown and the edits can't be saved onto this one, here or as a copy. Discard the edits to see the file as it is now. Nothing has been written to the file."
+                // The owner's words, 2026-11-15 ("Shorter"): the pages aren't shown while held.
+                "This file changed on disk, so its pages aren't shown: your unsaved edits were made on the earlier version and can't be saved onto this one. Discard them to see the file as it is now."
             }
             (Self::Changed, false) => "This file changed on disk since it was last read here, so this is the new version.",
             (Self::Missing, true) => {
