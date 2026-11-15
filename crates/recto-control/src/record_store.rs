@@ -29,7 +29,7 @@ use recto_session::record::{
 };
 use recto_session::sleep::SleepFile;
 use recto_session::{HistorySource, JournalOutcome, JournalWork, RestoredEdits, TakenHistory};
-pub use sleep_files::{MAX_SLEEP_FILES_LOOKED_AT, OlderSleepFiles};
+pub use sleep_files::{MAX_SLEEP_FILES_LOOKED_AT, OlderSleepFiles, UPDATE_COPY};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
@@ -2504,6 +2504,49 @@ mod tests {
             done.bytes_read <= 5 * recto_session::sleep::FORMAT_PREFIX_BYTES as u64,
             "only the start of each is read: {done:?}"
         );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Failure (review of the removal, S1): 0.1.0's installer cloned every sleep file into the copy of the record an update keeps, for a week, so its pictures
+    /// of pages outlived the update there; or the pass, going over that copy, touches what a going back needs (journals, kept pages, the record), or follows
+    /// a link out of it. After the pass the copy's older sleep files are gone and everything else in it is byte for byte as it was; a link where the copy's
+    /// folder would be is passed by.
+    #[test]
+    fn the_pass_after_a_launch_also_clears_the_older_sleep_files_an_update_kept() {
+        let (root, paths) = state();
+        let store = RecordStore::open(&paths, Flavor::App);
+        store.write_record(&sample(1), &PlaceDelta::default(), false).unwrap();
+        let copy = root.join(UPDATE_COPY[0]).join(UPDATE_COPY[1]);
+        let journals = copy.join(JOURNALS);
+        std::fs::create_dir_all(&journals).unwrap();
+        let put = |path: PathBuf, bytes: &[u8]| {
+            local::write_private_file(&path, bytes).unwrap();
+            path
+        };
+        let older = put(journals.join("sleep-00000000000000d1.bin"), &sleep_file_of_format(None, 70_000));
+        let kept: Vec<(PathBuf, Vec<u8>)> = [
+            (journals.join("journal-00000000000000d2.log"), b"a journal".to_vec()),
+            (journals.join("pages-00000000000000d3.ids"), b"kept pages".to_vec()),
+            (journals.join("kept-00000000000000d4.pdf"), b"a kept pdf".to_vec()),
+            (copy.join(SLOTS[0]), b"the record".to_vec()),
+            (copy.join(".whole"), Vec::new()),
+        ]
+        .into_iter()
+        .map(|(path, bytes)| (put(path, &bytes), bytes))
+        .collect();
+        let done = store.remove_older_sleep_files(MAX_SLEEP_FILES_LOOKED_AT);
+        assert!(!older.exists(), "0.1.0's picture kept in the update's copy: {done:?}");
+        for (path, bytes) in &kept {
+            assert_eq!(&std::fs::read(path).unwrap(), bytes, "{} changed", path.display());
+        }
+        // A link where the copy's journals would be leads somewhere else: nothing there is touched.
+        std::fs::remove_dir_all(&journals).unwrap();
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let outside = put(elsewhere.join("sleep-00000000000000d5.bin"), &sleep_file_of_format(None, 10));
+        std::os::unix::fs::symlink(&elsewhere, &journals).unwrap();
+        store.remove_older_sleep_files(MAX_SLEEP_FILES_LOOKED_AT);
+        assert!(outside.exists(), "a link to another folder was followed");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

@@ -106,44 +106,63 @@ impl RecordStore {
     }
 }
 
+/// **Where the copy of the record an update keeps goes, under the state folder:** `update/before/`, as `recto_update::plan::Files::before` has it (a test in
+/// `recto-app`, which sees both, holds the two together). 0.1.0's installer clones everything of the record into it but closed journals, its sleep files
+/// with their pictures among them, and keeps it a week.
+pub const UPDATE_COPY: [&str; 2] = ["update", "before"];
+
 impl RecordStore {
     /// **Removes every sleep file of an older format** (owner, 2026-11-15: no picture of a page is kept; every format before
-    /// [`SLEEP_FORMAT`], 0.1.0's included, could hold some), once after a launch, off the UI thread and the first frame's path. Only files named as sleep
-    /// files in the state's `journals/` folder, plain files of this user's (a link is never followed or touched), and at most `cap` of them; of each, only
-    /// its first [`FORMAT_PREFIX_BYTES`], which say its format ([`sleep_format_of`]). A file that can't say it's this format or newer goes: nothing of it is
-    /// what a wake can use, and its tab wakes from its PDF once. Nothing's removed by a copy that doesn't keep the record. Nothing's said if it fails.
+    /// [`SLEEP_FORMAT`], 0.1.0's included, could hold some), once after a launch, off the UI thread and the first frame's path: in the state's `journals/`
+    /// folder, and in the copy of the record an update keeps ([`UPDATE_COPY`]`/journals/`, where 0.1.0's installer put a clone of every sleep file for a
+    /// week). Only files named as sleep files, plain files of this user's (a link is never followed or touched, nor a folder on the way that's a link), and
+    /// at most `cap` of them in all; of each, only its first [`FORMAT_PREFIX_BYTES`], which say its format ([`sleep_format_of`]). A file that can't say it's
+    /// this format or newer goes: nothing of it is what a wake can use, and its tab wakes from its PDF once (in the update's copy, if a going back puts it
+    /// back). Nothing else in either folder is touched. Nothing's removed by a copy that doesn't keep the record. Nothing's said if it fails.
     pub fn remove_older_sleep_files(&self, cap: usize) -> OlderSleepFiles {
         let mut done = OlderSleepFiles::default();
         if self.refuses_writes().is_some() {
             return done;
         }
-        let Ok(entries) = std::fs::read_dir(self.dir().join(JOURNALS)) else {
-            return done;
-        };
-        let mut prefix = Vec::with_capacity(FORMAT_PREFIX_BYTES);
-        for entry in entries.flatten() {
-            let is_sleep = entry.file_name().to_str().is_some_and(record::is_sleep_name);
-            // The entry's own type, not what a link points at.
-            if !is_sleep || !entry.file_type().is_ok_and(|kind| kind.is_file()) {
-                continue;
-            }
-            if done.looked_at as usize >= cap {
-                done.stopped_at_cap = true;
-                break;
-            }
-            done.looked_at += 1;
-            let path = entry.path();
-            let Ok(file) = local::open_private_file(&path) else { continue };
-            prefix.clear();
-            if file.take(FORMAT_PREFIX_BYTES as u64).read_to_end(&mut prefix).is_err() {
-                continue;
-            }
-            done.bytes_read += prefix.len() as u64;
-            if sleep_format_of(&prefix).is_none_or(|format| format < SLEEP_FORMAT) && std::fs::remove_file(&path).is_ok() {
-                done.removed += 1;
+        sweep_older(&self.dir().join(JOURNALS), cap, &mut done);
+        // The update's copy, only by real folders all the way down from the state folder: a link there could lead anywhere.
+        let mut copy = self.root.clone();
+        for part in UPDATE_COPY.iter().chain([&JOURNALS]) {
+            copy.push(part);
+            if !std::fs::symlink_metadata(&copy).is_ok_and(|meta| meta.file_type().is_dir()) {
+                return done;
             }
         }
+        sweep_older(&copy, cap, &mut done);
         done
+    }
+}
+
+/// [`RecordStore::remove_older_sleep_files`] in one folder, counting into `done` and stopping at `cap` in all.
+fn sweep_older(folder: &Path, cap: usize, done: &mut OlderSleepFiles) {
+    let Ok(entries) = std::fs::read_dir(folder) else { return };
+    let mut prefix = Vec::with_capacity(FORMAT_PREFIX_BYTES);
+    for entry in entries.flatten() {
+        let is_sleep = entry.file_name().to_str().is_some_and(record::is_sleep_name);
+        // The entry's own type, not what a link points at.
+        if !is_sleep || !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        if done.looked_at as usize >= cap {
+            done.stopped_at_cap = true;
+            return;
+        }
+        done.looked_at += 1;
+        let path = entry.path();
+        let Ok(file) = local::open_private_file(&path) else { continue };
+        prefix.clear();
+        if file.take(FORMAT_PREFIX_BYTES as u64).read_to_end(&mut prefix).is_err() {
+            continue;
+        }
+        done.bytes_read += prefix.len() as u64;
+        if sleep_format_of(&prefix).is_none_or(|format| format < SLEEP_FORMAT) && std::fs::remove_file(&path).is_ok() {
+            done.removed += 1;
+        }
     }
 }
 

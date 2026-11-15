@@ -1126,6 +1126,15 @@ mod tests {
         assert_eq!(lock(&sleeper.answers).len(), MAX_ASKED_ANSWERS, "unclaimed answers are capped");
     }
 
+    /// Failure (review of the removal, S1): the store's name for the copy of the record an update keeps drifts from where the updater puts it, so the pass
+    /// after a launch clears a folder nothing writes and 0.1.0's pictures in the real copy stay for a week.
+    #[test]
+    fn the_pass_goes_over_the_copy_the_updater_keeps() {
+        let root = std::path::Path::new("/state");
+        let [update, before] = recto_control::record_store::UPDATE_COPY;
+        assert_eq!(recto_update::plan::Files::in_state(root).before(), root.join(update).join(before));
+    }
+
     /// Failure: what the pass that removes older sleep files came to reads back as something else in `qa state` (a count in another's bits), or as done
     /// before it is.
     #[test]
