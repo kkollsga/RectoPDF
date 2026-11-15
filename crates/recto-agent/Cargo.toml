@@ -19,6 +19,8 @@ workspace = true
 [dependencies]
 recto-core.workspace = true
 recto-platform.workspace = true
+# Overwrites the page a sealed corpus opened into when a search ends.
+zeroize.workspace = true
 recto-session.workspace = true
 recto-sign.workspace = true
 recto-proto.workspace = true
@@ -33,6 +35,8 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# Test-only: `FindKey::for_tests`.
+recto-platform = { workspace = true, features = ["test-seams"] }
 # Its own integration tests read codes as the wire does.
 recto-agent = { path = ".", features = ["test-words"] }
 # To make an encrypted file with permissions, as nothing else here writes one.

@@ -17,6 +17,9 @@ libc.workspace = true
 [features]
 # For tests only: a hold on the file wall's look at one path (`document_file::seams`), as a volume that doesn't answer.
 test-seams = []
+# Only for the release preflight's probe (tools/release/dp-keychain-probe.sh), and never in the app: the app's own way to its Find key, under a
+# probe's service name, so the preflight measures the code that ships (`recto-keychain-probe`).
+keychain-probe = []
 
 [dev-dependencies]
 # Test-only: fresh temp folders.
@@ -27,3 +30,11 @@ recto-testpdf.workspace = true
 name = "recto-sandbox-probe"
 path = "src/bin/recto-sandbox-probe.rs"
 test = false
+
+# Only for the release preflight, built by tools/release/dp-keychain-probe.sh with the feature, and never put in the app: the app's own way to its
+# Find key, run under a probe's service name in a bundle signed as the release is.
+[[bin]]
+name = "recto-keychain-probe"
+path = "src/bin/recto-keychain-probe.rs"
+test = false
+required-features = ["keychain-probe"]

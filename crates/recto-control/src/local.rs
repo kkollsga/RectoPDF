@@ -14,7 +14,10 @@ pub fn run_here<L: DocLoader + Clone>(session: &mut Session<L>, paths: &StatePat
     let level = levels::current(paths);
     let acted = acted_tab(session, command);
     // What's been built gets read. Nothing lives long enough here to build one.
-    let corpus = ReadOnlyCorpus(paths.corpus.clone());
+    let corpus = ReadOnlyCorpus(
+        paths.corpus.clone(),
+        crate::find_keys::load(&crate::find_keys::plan(paths, crate::find_keys::Host::Cli)).key,
+    );
     let result = if allowed(level, command.access()) {
         run_indexed(session, level, command, Some(&corpus))
     } else {

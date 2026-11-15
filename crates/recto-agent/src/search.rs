@@ -210,14 +210,25 @@ enum FileRoute {
     Scan,
 }
 
+/// Why a corpus can't be used for this search.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Unusable {
+    /// It doesn't add up: thrown away, and made again.
+    Damaged,
+    /// There's no key here to open it with, as on a thread that may not take one: read live, and nothing's thrown away (the security review of slices 2 and 3, F5).
+    NoKey,
+}
+
 /// The corpus for this page, opened if it isn't the one that's open. One at a time, as with workers: a document of a thousand added files mustn't hold a thousand descriptors.
-fn corpus_for<'a>(open: &'a mut Option<(u16, ReadyCorpus)>, file: u16, key: CorpusKey, indexing: Option<&dyn Indexing>) -> Result<&'a ReadyCorpus, Damaged> {
+fn corpus_for<'a>(open: &'a mut Option<(u16, ReadyCorpus)>, file: u16, key: CorpusKey, indexing: Option<&dyn Indexing>) -> Result<&'a ReadyCorpus, Unusable> {
     if open.as_ref().is_none_or(|(open_file, _)| *open_file != file) {
         *open = None;
-        let indexing = indexing.ok_or(Damaged)?;
-        *open = Some((file, ReadyCorpus::open(indexing.root(), key)?.ok_or(Damaged)?));
+        let indexing = indexing.ok_or(Unusable::NoKey)?;
+        let find_key = indexing.find_key().ok_or(Unusable::NoKey)?;
+        let corpus = ReadyCorpus::open(find_key, indexing.root(), key).map_err(|Damaged| Unusable::Damaged)?;
+        *open = Some((file, corpus.ok_or(Unusable::Damaged)?));
     }
-    open.as_ref().map(|(_, corpus)| corpus).ok_or(Damaged)
+    open.as_ref().map(|(_, corpus)| corpus).ok_or(Unusable::Damaged)
 }
 
 /// A corpus that doesn't add up is thrown away, and made again. Page by page is always right.
@@ -544,6 +555,13 @@ pub(crate) struct Slot {
     live: Option<recto_index::Normalized>,
 }
 
+/// **The page a corpus's chunk opened into is overwritten when the search ends**, the whole of the buffer's room (`zeroize`), so the last page read from the sealed text doesn't stay in freed memory. A buffer that has to grow for a longer page is overwritten before it does (`recto_index::corpus`). What isn't: what a search makes from a page's text (its folding, its hits, its snippets) is ordinary memory, as a page read live always was.
+impl Drop for Slot {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.buffer);
+    }
+}
+
 /// Reads pages by whichever way each file's can be read, the one way for every kind of search.
 pub(crate) struct Reader<'a> {
     plan: &'a Plan,
@@ -660,8 +678,8 @@ impl<'a> Reader<'a> {
                     self.used_index = true;
                     return Ok(Got::Failed);
                 }
-                Ok(corpus) => corpus.page(page, buffer),
-                Err(Damaged) => Err(Damaged),
+                Ok(corpus) => corpus.page(page, buffer).map_err(|Damaged| Unusable::Damaged),
+                Err(unusable) => Err(unusable),
             };
             match read {
                 Ok(stored) if stored.kind == PageKind::Text => {
@@ -686,10 +704,16 @@ impl<'a> Reader<'a> {
                 // That's only what happened when it was built, which may have been the moment rather than the page, so it's read now. It can't then end the search: past this, the rest of the corpus is still good.
                 Ok(_) => read_again_live = true,
                 // This page and the rest of the file are read one by one.
-                Err(Damaged) => {
+                Err(Unusable::Damaged) => {
                     self.corpus_open = None;
                     throw_away_corpus(self.indexing, source, key);
                     self.not_ready.push(FileIndex::Failed("damaged".to_string()));
+                    self.routes[usize::from(file)] = FileRoute::Scan;
+                }
+                // The same, with nothing thrown away: the corpus is good, and this search has no key to open it with.
+                Err(Unusable::NoKey) => {
+                    self.corpus_open = None;
+                    self.not_ready.push(FileIndex::Refused("no_find_key".to_string()));
                     self.routes[usize::from(file)] = FileRoute::Scan;
                 }
             }
@@ -789,8 +813,8 @@ impl<'a> Reader<'a> {
                 found.uncounted += 1;
                 return Some(());
             }
-            Ok(corpus) => corpus.page(page, &mut slot.buffer),
-            Err(Damaged) => Err(Damaged),
+            Ok(corpus) => corpus.page(page, &mut slot.buffer).map_err(|Damaged| Unusable::Damaged),
+            Err(unusable) => Err(unusable),
         };
         match read {
             Ok(stored) if stored.kind == PageKind::Text && query.too_long_for(stored.text) => found.uncounted += 1,
@@ -804,10 +828,11 @@ impl<'a> Reader<'a> {
             }
             Ok(stored) if stored.kind == PageKind::Failed => found.uncounted += 1,
             Ok(_) => {}
-            Err(Damaged) => {
+            Err(Unusable::Damaged) => {
                 throw_away_corpus(self.indexing, source, key);
                 return None;
             }
+            Err(Unusable::NoKey) => return None,
         }
         Some(())
     }
@@ -1519,6 +1544,7 @@ mod tests {
         let key = CorpusKey::of_file(&path).unwrap();
         let count = pages.len() as u32;
         recto_index::corpus::build(
+            &recto_platform::find_key::FindKey::for_tests(1),
             &root,
             key,
             &mut Pages(pages),
@@ -1538,7 +1564,7 @@ mod tests {
                 tab: 1,
                 keys: None,
             },
-            indexing: crate::index::ReadOnlyCorpus(root),
+            indexing: crate::index::ReadOnlyCorpus(root, Some(recto_platform::find_key::FindKey::for_tests(1))),
         }
     }
 
@@ -1594,6 +1620,115 @@ mod tests {
         assert_eq!(coverage["hits_total"], Value::Null, "{answer}");
         assert_eq!(coverage["next_page"], 2, "{answer}");
         assert_eq!(coverage["pages_searched"], 0, "{answer}");
+    }
+
+    /// Failure (F4): a search on a run whose lasting key is out of reach for now asks for the file's corpus to be built again over the lasting key's, or reads it as nothing, and `index.note` doesn't say why. It's refused for this run, so the pages are read live, and the corpus is left.
+    #[test]
+    fn a_lasting_corpus_out_of_reach_is_left_and_said() {
+        let folder = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-search-lasting-");
+        recto_platform::local::ensure_private_dir(&folder).unwrap();
+        let path = folder.join("doc.pdf");
+        std::fs::write(&path, b"a file").unwrap();
+        let root = folder.join("corpus.noindex");
+        let key = CorpusKey::of_file(&path).unwrap();
+        let lasting = recto_platform::find_key::FindKey::from_state_file(&folder.join("find.key")).unwrap();
+        recto_index::corpus::build(
+            &lasting,
+            &root,
+            key,
+            &mut Pages(vec![Some(("a page".to_string(), true))]),
+            &recto_index::corpus::DocMeta::default(),
+            &recto_index::corpus::BuildLimits::default(),
+        )
+        .unwrap();
+        let for_now = crate::index::ReadOnlyCorpus(root.clone(), Some(recto_platform::find_key::FindKey::in_memory_for_now().unwrap()));
+        let (_, state) = crate::index::file_index(&for_now, &path, true);
+        assert_eq!(state, crate::index::FileIndex::NotNow);
+        assert!(
+            recto_index::corpus::ReadyCorpus::open(&lasting, &root, key).is_ok_and(|corpus| corpus.is_some()),
+            "the lasting corpus was touched"
+        );
+        // Told as a file that couldn't be read just now is: nothing an agent gets tells the two apart (the second review's item 7).
+        let other = folder.join("other.pdf");
+        std::fs::write(&other, b"another file").unwrap();
+        let failing = FailsNow(root.clone(), recto_platform::find_key::FindKey::in_memory_for_now().unwrap());
+        let (_, unread) = crate::index::file_index(&failing, &other, true);
+        assert_eq!(
+            unread, state,
+            "a file that couldn't be read just now and the lasting key out of reach read differently"
+        );
+        assert_eq!((unread.word(), unread.scan_note(true)), (state.word(), state.scan_note(true)));
+    }
+
+    /// An indexer whose build of every file just failed for a cause of the moment.
+    struct FailsNow(std::path::PathBuf, recto_platform::find_key::FindKey);
+
+    impl Indexing for FailsNow {
+        fn root(&self) -> &std::path::Path {
+            &self.0
+        }
+        fn find_key(&self) -> Option<&recto_platform::find_key::FindKey> {
+            Some(&self.1)
+        }
+        fn want(&self, _path: &std::path::Path, _key: CorpusKey) {}
+        fn job(&self, _key: CorpusKey) -> crate::index::JobState {
+            crate::index::JobState::Failed("couldnt_read".to_string())
+        }
+        fn load(&self) -> (u32, u32) {
+            (0, 0)
+        }
+    }
+
+    /// Gives the key to its first ask and none after, as a search whose look at the index had a key and whose read of it then had none.
+    struct KeyOnce {
+        root: std::path::PathBuf,
+        key: recto_platform::find_key::FindKey,
+        asked: std::sync::atomic::AtomicU32,
+    }
+
+    impl Indexing for KeyOnce {
+        fn root(&self) -> &std::path::Path {
+            &self.root
+        }
+        fn find_key(&self) -> Option<&recto_platform::find_key::FindKey> {
+            (self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0).then_some(&self.key)
+        }
+        fn want(&self, _path: &std::path::Path, _key: CorpusKey) {}
+        fn job(&self, _key: CorpusKey) -> crate::index::JobState {
+            crate::index::JobState::Idle
+        }
+        fn load(&self) -> (u32, u32) {
+            (0, 0)
+        }
+        fn starts_builds(&self) -> bool {
+            false
+        }
+    }
+
+    /// Failure (the security review of slices 2 and 3, F5): a search that finds the index ready and then has no key to open it with takes the good corpus for damaged and throws it away. It reads the pages live, and the corpus stays.
+    #[test]
+    fn no_key_to_open_a_corpus_with_throws_nothing_away() {
+        let fixture = fixture("no-key", b"not a pdf at all", vec![Some(("a page that says needleword".to_string(), true))]);
+        let once = KeyOnce {
+            root: fixture.indexing.0.clone(),
+            key: recto_platform::find_key::FindKey::for_tests(1),
+            asked: std::sync::atomic::AtomicU32::new(0),
+        };
+        let key = CorpusKey::of_file(&fixture.plan.files[0].path).unwrap();
+        let settings = Settings {
+            indexing: Some(&once),
+            ..settings(&fixture)
+        };
+        // Read live, this file isn't a PDF, so the search ends in an error: what matters is what it left.
+        let _ = run(&fixture.plan, &Query::Phrase("needleword".to_string()), "phrase", &settings);
+        assert!(
+            once.asked.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+            "the search never went to open the corpus"
+        );
+        assert!(
+            recto_index::corpus::ReadyCorpus::open(&recto_platform::find_key::FindKey::for_tests(1), &once.root, key).is_ok_and(|corpus| corpus.is_some()),
+            "a good corpus was thrown away for want of a key"
+        );
     }
 
     /// Failure: every failed page in a corpus is read again by a worker, each costing up to a page's whole time, so a file of many bad pages uses up every search on the first few, with clean pages behind them never reached. Past a budget they're said to have failed, as they did, with no worker, and the clean ones are read.

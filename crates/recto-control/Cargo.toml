@@ -22,7 +22,15 @@ recto-session.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# Test-only: `FindKey::for_tests`.
+recto-platform = { workspace = true, features = ["test-seams"] }
 # Tests read a refusal's code as the wire does.
 recto-agent = { workspace = true, features = ["test-words"] }
 recto-testpdf.workspace = true
 recto-proto.workspace = true
+
+# For a test only, never in the app: the indexer asked for the Find key on a real main thread (`tests/main_thread.rs`).
+[[bin]]
+name = "recto-main-thread-probe"
+path = "src/bin/recto-main-thread-probe.rs"
+test = false

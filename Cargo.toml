@@ -42,6 +42,9 @@ crc32fast = { version = "1", default-features = false }
 getrandom = { version = "0.4", default-features = false }
 # Overwrites the Find key when it goes, in a way the compiler can't drop. Comes with the cipher too (aes-gcm's `zeroize`).
 zeroize = { version = "1", default-features = false, features = ["alloc"] }
+# The Find text sealed: AES-256-GCM over AES already built for lopdf, in hardware on Apple silicon and Intel; HKDF for a key per corpus.
+aes-gcm = { version = "0.11.1", default-features = false, features = ["aes", "zeroize"] }
+hkdf = { version = "0.13", default-features = false }
 grep-regex = { version = "0.1", default-features = false }
 grep-matcher = { version = "0.1", default-features = false }
 

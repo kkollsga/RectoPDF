@@ -530,10 +530,14 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
         .map_err(|_| AgentError::new(Code::WRITE_FAILED, "Couldn't make a temporary folder.", exit::FAILED))?;
     let root = fresh.path().to_path_buf();
     let result = (|| {
+        // A key of this run's own: the folder goes when it ends.
+        let find_key =
+            recto_platform::find_key::FindKey::in_memory().map_err(|_| AgentError::new(Code::INDEX_FAILED, "No key could be made.", exit::FAILED))?;
         let build = recto_control::indexing::build_now(
             &file,
             key,
             &root,
+            &find_key,
             if foreground {
                 Priority::Inherited
             } else {
@@ -548,7 +552,7 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
                 exit::FAILED,
             ));
         }
-        let corpus = recto_agent::index::ReadOnlyCorpus(root.clone());
+        let corpus = recto_agent::index::ReadOnlyCorpus(root.clone(), Some(find_key));
         let mut session = recto_control::quiet::session_on(&paths, DrawableLoader);
         recto_agent::run(
             &mut session,

@@ -48,6 +48,7 @@ pub mod corpus;
 pub mod generated;
 pub mod order;
 pub mod rank;
+pub mod seal;
 pub mod select;
 
 use recto_core::is_invisible_format;

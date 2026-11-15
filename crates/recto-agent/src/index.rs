@@ -5,6 +5,7 @@ use crate::TabRef;
 use crate::{AgentError, ConditionState, SessionAccess, exit, select};
 use recto_index::corpus::{self, CorpusKey, DiskState, Summary};
 use recto_platform::FileStamp;
+use recto_platform::find_key::FindKey;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -23,6 +24,14 @@ pub enum JobState {
 pub trait Indexing: Send + Sync {
     /// Where corpora live.
     fn root(&self) -> &Path;
+    /// The key the text there is sealed with. `None` where this host keeps no index, and then nothing is read or built.
+    fn find_key(&self) -> Option<&FindKey>;
+    /// An agent's folder is being made for this file's corpus, which lives only for this session: it's kept from the sweep, and set aside when the session ends.
+    fn made_agent_folder(&self, _key: CorpusKey) {}
+    /// What's known of the Find key the text is sealed with, without taking it: its plan, and where it came from once it has been. Never anything of the key.
+    fn find_key_report(&self) -> Value {
+        Value::Null
+    }
     /// Someone wants this file indexed. Nothing happens if it's already on its way, and the oldest ask gives way if there are too many.
     fn want(&self, path: &Path, key: CorpusKey);
     fn job(&self, key: CorpusKey) -> JobState;
@@ -32,23 +41,22 @@ pub trait Indexing: Send + Sync {
     fn note_asked(&self) {}
     /// Stops what's on its way for this file, or for all of them: takes it out of the queue, and if it's being built, stops that. What's written stays until something clears it.
     fn cancel(&self, _key: Option<CorpusKey>) {}
-    /// What's known of the Find key the text is sealed with, without taking it: its plan, and where it came from once it has been. Never anything of the key.
-    fn find_key_report(&self) -> Value {
-        Value::Null
-    }
     /// Whether asking here gets anything built.
     fn starts_builds(&self) -> bool {
         true
     }
 }
 
-/// For a route that lives no longer than one command, such as `recto local`: it reads what's been built and starts nothing.
-#[derive(Clone, Debug)]
-pub struct ReadOnlyCorpus(pub PathBuf);
+/// For a route that lives no longer than one command, such as `recto local`: it reads what's been built and starts nothing. With no key, it reads nothing either.
+#[derive(Debug)]
+pub struct ReadOnlyCorpus(pub PathBuf, pub Option<FindKey>);
 
 impl Indexing for ReadOnlyCorpus {
     fn root(&self) -> &Path {
         &self.0
+    }
+    fn find_key(&self) -> Option<&FindKey> {
+        self.1.as_ref()
     }
     fn want(&self, _path: &Path, _key: CorpusKey) {}
     fn job(&self, _key: CorpusKey) -> JobState {
@@ -81,6 +89,32 @@ pub(crate) enum FileIndex {
     Failed(String),
     /// The file can't be looked at, or isn't what its page numbers were recorded from.
     Unavailable,
+    /// There's no index for it just now, for a cause of the moment ([`told_to_agents`]): which one isn't said.
+    NotNow,
+}
+
+/// **The one word an agent is told for a cause of the moment** (the coordinator's decision on the Find text's second review, item 7, 2026-11-15): the lasting key out of reach just now, a file that couldn't be opened or read just now, a renderer or helper not to be had just now, another session building it. All of them are `not_now`, so none can be told from another, and so the state of the person's Keychain can't be learned from an index. Causes about the file, or the install, that an agent can know or act on keep their own codes: a password, a size, a volume, not a PDF, a renderer missing. The cause itself stays in the session, and in `qa state` for the key.
+pub const NOT_NOW: &str = "not_now";
+
+const OF_THE_MOMENT: &[&str] = &[
+    corpus::LASTING_KEY_OUT_OF_REACH,
+    "couldnt_read",
+    "couldnt_open",
+    "not_found",
+    "no_renderer",
+    "render_unavailable",
+    "too_busy",
+    "out_of_time",
+    "building_elsewhere",
+    "indexer_wouldnt_start",
+    "indexer_stopped",
+    "indexer_panicked",
+];
+
+/// What an agent is told of a build's or a file's code: [`NOT_NOW`] for a cause of the moment, and the code itself for anything else.
+#[must_use]
+pub fn told_to_agents(code: &str) -> &str {
+    if OF_THE_MOMENT.contains(&code) { NOT_NOW } else { code }
 }
 
 impl FileIndex {
@@ -93,6 +127,7 @@ impl FileIndex {
             Self::Refused(_) => "refused",
             Self::Failed(_) => "failed",
             Self::Unavailable => "unavailable",
+            Self::NotNow => NOT_NOW,
         }
     }
 
@@ -108,6 +143,7 @@ impl FileIndex {
             Self::Refused(code) => format!("This file isn't indexed: {}. Searches read the pages one by one.", refused_words(code)),
             Self::Failed(code) => format!("The index couldn't be built ({code}). Searches read the pages one by one, and it'll be tried again later."),
             Self::Unavailable => "A file behind this tab has changed or gone, so it can't be indexed as recorded.".to_string(),
+            Self::NotNow => "There's no index for this file just now. Searches read the pages one by one, and a later run may have one.".to_string(),
         }
     }
 
@@ -131,6 +167,7 @@ impl FileIndex {
             Self::Refused(code) => format!("This file isn't indexed ({}), so this read the pages one by one.", refused_words(code)),
             Self::Failed(code) => format!("The index couldn't be built ({code}), so this read the pages one by one. It'll be tried again later."),
             Self::Unavailable => "This file can't be indexed as it is, so this read the pages one by one.".to_string(),
+            Self::NotNow => "There's no index for this file just now, so this read the pages one by one. A later run may have one.".to_string(),
         }
     }
 }
@@ -141,6 +178,7 @@ fn refused_words(code: &str) -> &'static str {
         "too_large" => "its text is more than an index may hold",
         "not_pdf" => "it couldn't be read as a PDF",
         "security" => "it uses a kind of security that can't be read",
+        "no_find_key" => "only the app keeps an index, sealed with its own key, and this program isn't the app",
         "coarse_file_times" => "it's on a volume whose file times can't show it's been replaced, so an index could answer from old text",
         _ => "it can't be read",
     }
@@ -155,7 +193,10 @@ pub(crate) fn file_index(indexing: &dyn Indexing, path: &Path, want: bool) -> (O
     if !corpus::can_be_indexed(path) {
         return (Some(key), FileIndex::Refused("coarse_file_times".to_string()));
     }
-    let disk = corpus::disk_state(indexing.root(), key);
+    let Some(find_key) = indexing.find_key() else {
+        return (Some(key), FileIndex::Refused("no_find_key".to_string()));
+    };
+    let disk = corpus::disk_state(find_key, indexing.root(), key);
     let pages_done = match &disk {
         DiskState::Ready(summary) => {
             // What it holds is good to use meanwhile: this only reads again pages that failed for a temporary reason.
@@ -165,6 +206,9 @@ pub(crate) fn file_index(indexing: &dyn Indexing, path: &Path, want: bool) -> (O
             return (Some(key), FileIndex::Ready(summary.clone()));
         }
         DiskState::Refused(code) => return (Some(key), FileIndex::Refused(code.clone())),
+        // Sealed by the lasting key, which this run can't have just now: left as it is, and this file's search reads its pages.
+        DiskState::SealedElsewhere { lasting: true } if !find_key.source().may_replace_lasting() => return (Some(key), FileIndex::NotNow),
+        DiskState::SealedElsewhere { .. } => 0,
         DiskState::Partial { pages_done } => *pages_done,
         DiskState::Nothing => 0,
     };
@@ -175,6 +219,7 @@ pub(crate) fn file_index(indexing: &dyn Indexing, path: &Path, want: bool) -> (O
         JobState::Idle => FileIndex::NotStarted { pages_done },
         JobState::Queued => FileIndex::Queued { pages_done },
         JobState::Building => FileIndex::Building { pages_done },
+        JobState::Failed(code) if told_to_agents(&code) == NOT_NOW => FileIndex::NotNow,
         JobState::Failed(code) => FileIndex::Failed(code),
     };
     (Some(key), state)
@@ -246,7 +291,16 @@ fn make_agent_folder(indexing: &dyn Indexing, file: &TabFile) -> Result<(), Agen
     let (Some(key), FileIndex::Ready(_), true) = (CorpusKey::of_file(&file.path).ok(), file_index(indexing, &file.path, true).1, current) else {
         return Ok(());
     };
-    match corpus::ensure_agent_folder(indexing.root(), key, &corpus::BuildLimits::default()) {
+    let Some(find_key) = indexing.find_key() else {
+        return Err(AgentError::new(
+            Code::INDEX_FAILED,
+            "This program keeps no index, so there's no folder to write from.",
+            exit::FAILED,
+        ));
+    };
+    // Before it's made: a sweep running meanwhile leaves it, and the session's end sets it aside.
+    indexing.made_agent_folder(key);
+    match corpus::ensure_agent_folder(find_key, indexing.root(), key, &corpus::BuildLimits::default()) {
         Ok(_) | Err(corpus::AgentFolderError::NotReady) => Ok(()),
         Err(corpus::AgentFolderError::Busy) => Err(AgentError::new(Code::BUSY, "This document's index is being written right now.", exit::BUSY)),
         Err(corpus::AgentFolderError::TooLarge) => {
@@ -308,7 +362,7 @@ fn report(indexing: &dyn Indexing, id: u32, files: &[TabFile], want: bool) -> (V
                 row["pages_done"] = json!(done);
             }
             FileIndex::Refused(code) | FileIndex::Failed(code) => row["why"] = json!(code),
-            FileIndex::Unavailable => {}
+            FileIndex::Unavailable | FileIndex::NotNow => {}
         }
         if first_unready.is_none() && !matches!(state, FileIndex::Ready(_)) {
             first_unready = Some(state.clone());
@@ -343,10 +397,19 @@ fn report(indexing: &dyn Indexing, id: u32, files: &[TabFile], want: bool) -> (V
         "agent_bytes": agent_bytes,
         "indexers_running": running,
         "indexers_waiting": waiting,
-        "find_key": indexing.find_key_report(),
+        // Where the key came from, and nothing of why: that's the person's Keychain's state, which an agent isn't told (the security review of slices 2 and 3, F8). `qa state` has the rest.
+        "find_key": json!({ "source": source_told_to_agents(&indexing.find_key_report()["source"]) }),
         "note": note,
     });
     (value, first_unready)
+}
+
+/// Where the key came from, as an agent is told it: a key in memory only for now, because the Keychain refused this release just now, is a key in memory, as any other is (the second review's item 7 (b)): which it is would say the state of the person's Keychain.
+fn source_told_to_agents(source: &Value) -> Value {
+    match source.as_str() {
+        Some("memory_for_now") => json!("memory"),
+        _ => source.clone(),
+    }
 }
 
 /// `recto wait indexing-done`: asking counts as wanting it, or a wait could run out its time on something nobody started.
@@ -439,4 +502,46 @@ fn said_cleared(mut report: corpus::Cleared, contents: Option<corpus::Cleared>) 
         .then("Tell the user. `recto index status` gives the folder, and they may need to remove it themselves."));
     }
     Ok(json!({ "cleared": report.cleared, "contents_cleared": contents.cleared, "being_built": report.being_built }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure (the second review's item 7, 2026-11-15): an agent learns the state of the person's Keychain from an index: the lasting key out of reach is told by a code of its own in a build's news or a file's row, or by where the key came from (`memory_for_now`, only ever a release the Keychain refused just now). Or a cause about the file, which an agent can know or act on, is hidden behind the same word. Each cause, and what an agent is told: the words take no level, so every level that may ask is told the same.
+    #[test]
+    fn a_cause_of_the_moment_is_one_word_to_an_agent() {
+        let table = [
+            ("lasting_key_out_of_reach", NOT_NOW),
+            ("couldnt_read", NOT_NOW),
+            ("couldnt_open", NOT_NOW),
+            ("not_found", NOT_NOW),
+            ("render_unavailable", NOT_NOW),
+            ("too_busy", NOT_NOW),
+            ("out_of_time", NOT_NOW),
+            ("building_elsewhere", NOT_NOW),
+            ("indexer_stopped", NOT_NOW),
+            ("needs_password", "needs_password"),
+            ("too_large", "too_large"),
+            ("not_pdf", "not_pdf"),
+            ("security", "security"),
+            ("coarse_file_times", "coarse_file_times"),
+            ("render_worker_missing", "render_worker_missing"),
+            ("render_library_missing", "render_library_missing"),
+            ("indexer_missing", "indexer_missing"),
+            ("no_find_key", "no_find_key"),
+        ];
+        for (cause, told) in table {
+            assert_eq!(told_to_agents(cause), told, "{cause}");
+        }
+        for source in ["keychain", "state_file", "memory"] {
+            assert_eq!(source_told_to_agents(&json!(source)), json!(source), "{source}");
+        }
+        assert_eq!(
+            source_told_to_agents(&json!("memory_for_now")),
+            json!("memory"),
+            "a key only for now was told as such"
+        );
+        assert_eq!(source_told_to_agents(&Value::Null), Value::Null);
+    }
 }

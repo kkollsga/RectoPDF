@@ -4,7 +4,12 @@
 # keychain, in the team's access group). Run by the release preflight, on its runner only: the data-protection keychain has no file of its
 # own to point a probe at, so nothing of this runs on a person's Mac.
 #
-#   tools/release/dp-keychain-probe.sh <signing identity> <provisioning profile>
+#   tools/release/dp-keychain-probe.sh --build <folder>                                 Builds the probes into <folder>, with no secret anywhere.
+#   tools/release/dp-keychain-probe.sh --sign <identity> <provisioning profile> <folder>  Checks the profile, bundles and signs what --build made
+#                                                                                       there, and says what each claims. Runs none of it.
+#   tools/release/dp-keychain-probe.sh --run <folder>                                   Every launch, once the keys and the profile file are gone.
+# The release's rule, here too: nothing of the product is compiled or run while a signing or notarization key is loaded (the second security
+# read, 2026-11-15), so building comes before the keys and every launch after them.
 #
 # First the profile is checked, and the run stops with a plain sentence if it isn't the one the app needs: a macOS Developer ID profile
 # (all devices) for the app's App ID and team, allowing the app's keychain group, expiring more than 60 days from now, and made for the
@@ -12,7 +17,7 @@
 #   A and B   app-like bundles of the app's bundle identifier with the profile embedded, signed by the team with the hardened runtime and
 #             the entitlements on the main executable (the App ID, the team, the keychain group); B is a later build, as an update is.
 #   C         B's bundle signed again ad hoc, without the entitlements: a development build, or any program of this user's.
-#   C+        B's bundle signed ad hoc, claiming the entitlements: a planter pretending to be the app.
+#   C+        B's bundle, the release's real profile still in it, signed ad hoc claiming the entitlements: a planter pretending to be the app.
 #   D         a plain program, ad hoc.
 #   E         a program the team signed with another identifier and no profile: what a team-signed `recto` would be.
 # What must hold, and fails the run, each a line with the OSStatus and the milliseconds:
@@ -23,29 +28,92 @@
 #   4. C+ is stopped by the system at launch, or, if it runs, is refused as C is.
 #   5. B still reads A's bytes after all of that.
 #   6. A deletes it, and B then finds nothing.
+#   7. The app's own code, as it ships (the security read's F3): `recto-keychain-probe`, built by --build from crates/recto-platform
+#      with the `keychain-probe` feature, runs the app's own way to its key (the same dictionaries, switch and release check) under a probe's
+#      service name, in a bundle signed as A is: its key comes from the keychain, and a second launch reads the same one; signed by the
+#      team without the entitlements it gets a key in memory for now (keychain_not_entitled); signed ad hoc, a key in memory
+#      (not_signed_by_the_team), never asking.
 # No step may wait: there's no switch to turn prompts off here, and one that waits past its limit is taken as a prompt and fails the run.
 # Prints status codes, times and an 8-hex prefix of the probe's own random bytes' hash; never the profile, the certificate or the item.
 # Removes the item and everything it made on any exit.
 set -euo pipefail
 umask 077
-identity="${1:?usage: tools/release/dp-keychain-probe.sh <signing identity> <provisioning profile>}"
-profile="${2:?usage: tools/release/dp-keychain-probe.sh <signing identity> <provisioning profile>}"
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-dir="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dp-keychain-probe.XXXXXX")"
+# What tells apart why a signing would wait (run 43751288571 hung at its first team signing for the job's whole 20 minutes): the keychains
+# searched and the default, the signing keychain's settings (asked under a limit, as a locked keychain may wait to be unlocked), and how many
+# signing identities are found. Paths and counts only.
+now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time * 1000'; }
+keychains() {
+  echo "  keychains searched: $(security list-keychains -d user | tr -d '"' | tr -s ' \n' ' ')"
+  echo "  default keychain: $(security default-keychain -d user | tr -d '" ')"
+  if [ -n "${PREFLIGHT_KEYCHAIN:-}" ]; then
+    case " $(security list-keychains -d user | tr -d '"' | tr -s ' \n' ' ') " in
+      *" $PREFLIGHT_KEYCHAIN "*) echo "  the signing keychain is searched" ;;
+      *) echo "  the signing keychain isn't searched" ;;
+    esac
+    echo "  the signing keychain's settings: $(perl -e 'alarm shift; exec @ARGV' 10 security show-keychain-info "$PREFLIGHT_KEYCHAIN" 2>&1 | tr '\n' ' ' || true)"
+  fi
+  echo "  signing identities: $(perl -e 'alarm shift; exec @ARGV' 10 security find-identity -v -p codesigning 2>/dev/null | tail -1 || true)"
+}
+# limited <seconds> <what> <command...>: the command under a limit, with its milliseconds; one that passes its limit hung, which is said with
+# the keychains as they are then, and ends the run.
+limited() {
+  local limit="$1" what="$2" started code=0 ms
+  shift 2
+  started=$(now_ms)
+  perl -e 'alarm shift; exec @ARGV' "$limit" "$@" || code=$?
+  ms=$(($(now_ms) - started))
+  if [ "$code" -eq 142 ]; then
+    echo "::error::$what didn't finish in $limit s: it hung"
+    keychains
+    exit 1
+  elif [ "$code" -ne 0 ]; then
+    echo "::error::$what failed (exit $code, after $ms ms)"
+    exit 1
+  fi
+  echo "  ok  $what ($ms ms)"
+}
+
+# --build: the Swift probe four times, and the app's own key path from crates/recto-platform, into a folder; no secret is needed or read.
+if [ "${1:-}" = --build ]; then
+  out="${2:?usage: tools/release/dp-keychain-probe.sh --build <folder>}"
+  mkdir -p "$out"
+  echo "The builds"
+  for build in a b d e; do
+    sed "s/PROBE_BUILD/$build/" "$root/tools/release/dp-keychain-probe.swift" > "$out/$build.swift"
+    limited 120 "building $build" swiftc -O "$out/$build.swift" -o "$out/$build"
+  done
+  limited 1200 "building the app's own key path" \
+    cargo build --release --locked --manifest-path "$root/Cargo.toml" -p recto-platform --features keychain-probe --bin recto-keychain-probe
+  cp "${CARGO_TARGET_DIR:-$root/target}/release/recto-keychain-probe" "$out/own"
+  exit 0
+fi
+mode="${1:-}"
+case "$mode" in
+  --sign)
+    identity="${2:?usage: tools/release/dp-keychain-probe.sh --sign <signing identity> <provisioning profile> <folder from --build>}"
+    profile="${3:?usage: tools/release/dp-keychain-probe.sh --sign <signing identity> <provisioning profile> <folder from --build>}"
+    dir="${4:?usage: tools/release/dp-keychain-probe.sh --sign <signing identity> <provisioning profile> <folder from --build>}"
+    ;;
+  --run) dir="${2:?usage: tools/release/dp-keychain-probe.sh --run <folder --sign signed in>}" ;;
+  *)
+    sed -n '7,12p' "$0" >&2
+    exit 2
+    ;;
+esac
+for program in a b d e own; do
+  [ -x "$dir/$program" ] || { echo "::error::$dir/$program isn't there: run tools/release/dp-keychain-probe.sh --build first, before any key is loaded" >&2; exit 1; }
+done
 team=$(sed -n 's/^pub const TEAM_ID: &str = "\([A-Z0-9]*\)";$/\1/p' "$root/crates/recto-update/src/lib.rs")
 [ -n "$team" ] || { echo "::error::the team's ID couldn't be read from crates/recto-update/src/lib.rs" >&2; exit 1; }
 bundle_id=io.github.kkollsga.RectoPDF
 app_id="$team.$bundle_id"
 group="$app_id"
-# shellcheck disable=SC2329 # run by the trap below
-cleanup() {
-  for build in A B; do
-    [ -x "$dir/$build.app/Contents/MacOS/probe" ] && perl -e 'alarm shift; exec @ARGV' 20 "$dir/$build.app/Contents/MacOS/probe" delete "$group" >/dev/null 2>&1 && break
-  done
-  rm -rf "$dir"
-}
-trap cleanup EXIT
 
+# --sign: the profile checked, the probes bundled and signed, and what each claims said. The only mode that needs the identity or the profile,
+# and it runs nothing it signs: every launch is --run's, once the keys are gone (the rule: nothing of the product compiled or run while a key
+# is loaded). Not indented, for its here-documents.
+if [ "$mode" = --sign ]; then
 echo "The provisioning profile"
 sign_key="$("$root/app/render-helper.sh" --key "$identity")"
 security cms -D -i "$profile" > "$dir/profile.plist" 2>/dev/null \
@@ -85,48 +153,8 @@ print(f"  ok  macOS Developer ID, {app_id}, keychain group allowed, expires {exp
 EOF
 rm -f "$dir/profile.plist"
 
-# What tells apart why a signing would wait (run 43751288571 hung at its first team signing for the job's whole 20 minutes): the keychains
-# searched and the default, the signing keychain's settings (asked under a limit, as a locked keychain may wait to be unlocked), and how many
-# signing identities are found. Paths and counts only.
-now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time * 1000'; }
-keychains() {
-  echo "  keychains searched: $(security list-keychains -d user | tr -d '"' | tr -s ' \n' ' ')"
-  echo "  default keychain: $(security default-keychain -d user | tr -d '" ')"
-  if [ -n "${PREFLIGHT_KEYCHAIN:-}" ]; then
-    case " $(security list-keychains -d user | tr -d '"' | tr -s ' \n' ' ') " in
-      *" $PREFLIGHT_KEYCHAIN "*) echo "  the signing keychain is searched" ;;
-      *) echo "  the signing keychain isn't searched" ;;
-    esac
-    echo "  the signing keychain's settings: $(perl -e 'alarm shift; exec @ARGV' 10 security show-keychain-info "$PREFLIGHT_KEYCHAIN" 2>&1 | tr '\n' ' ' || true)"
-  fi
-  echo "  signing identities: $(perl -e 'alarm shift; exec @ARGV' 10 security find-identity -v -p codesigning 2>/dev/null | tail -1 || true)"
-}
-# limited <seconds> <what> <command...>: the command under a limit, with its milliseconds; one that passes its limit hung, which is said with
-# the keychains as they are then, and ends the run.
-limited() {
-  local limit="$1" what="$2" started code=0 ms
-  shift 2
-  started=$(now_ms)
-  perl -e 'alarm shift; exec @ARGV' "$limit" "$@" || code=$?
-  ms=$(($(now_ms) - started))
-  if [ "$code" -eq 142 ]; then
-    echo "::error::$what didn't finish in $limit s: it hung"
-    keychains
-    exit 1
-  elif [ "$code" -ne 0 ]; then
-    echo "::error::$what failed (exit $code, after $ms ms)"
-    exit 1
-  fi
-  echo "  ok  $what ($ms ms)"
-}
-
 echo "The keychains, before any signing"
 keychains
-echo "The builds"
-for build in a b d e; do
-  sed "s/PROBE_BUILD/$build/" "$root/tools/release/dp-keychain-probe.swift" > "$dir/$build.swift"
-  limited 120 "building $build" swiftc -O "$dir/$build.swift" -o "$dir/$build"
-done
 cat > "$dir/probe.entitlements" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -177,6 +205,26 @@ for name in A B C Cplus; do
   echo "  $name: $(codesign -dv "$dir/$name.app" 2>&1 | sed -n 's/^TeamIdentifier=/team /p'), claims the App ID: $([ "$claims" -gt 0 ] && echo yes || echo no)"
 done
 
+bundle R "$dir/own"
+limited 60 "the team signing R, the app's own code, with the entitlements and its profile" \
+  codesign --force --options runtime --timestamp=none --entitlements "$dir/probe.entitlements" --sign "$sign_key" "$dir/R.app"
+cp -R "$dir/R.app" "$dir/Rbare.app"
+limited 60 "the team signing R again without the entitlements" codesign --force --options runtime --timestamp=none --sign "$sign_key" "$dir/Rbare.app"
+cp -R "$dir/R.app" "$dir/Radhoc.app"
+limited 60 "signing R ad hoc" codesign --force --sign - "$dir/Radhoc.app"
+# own <name> <what it must say, as a pattern>: one launch of the app's own code, its answer held to the pattern, its milliseconds said.
+exit 0
+fi
+
+# --run: every launch, with no identity, no profile file and no key on the machine.
+# shellcheck disable=SC2329 # run by the trap below
+cleanup() {
+  [ -x "$dir/R.app/Contents/MacOS/probe" ] && perl -e 'alarm shift; exec @ARGV' 20 "$dir/R.app/Contents/MacOS/probe" remove "$team" "$bundle_id" >/dev/null 2>&1
+  for build in A B; do
+    [ -x "$dir/$build.app/Contents/MacOS/probe" ] && perl -e 'alarm shift; exec @ARGV' 20 "$dir/$build.app/Contents/MacOS/probe" delete "$group" >/dev/null 2>&1 && break
+  done
+}
+trap cleanup EXIT
 failed=0
 sha_of_a=""
 last_sha=""
@@ -227,11 +275,39 @@ for name in C D E; do
   for mode in read add update delete; do step refused "$name" "$mode"; done
 done
 echo "4. A program claiming the app's entitlements without its profile is stopped"
-for mode in read update delete; do step stopped Cplus "$mode"; done
+for mode in read add update delete; do step stopped Cplus "$mode"; done
 echo "5. B still reads what A made"
 step ok B read
 same_bytes B
 echo "6. A deletes it, and B then finds nothing"
 step ok A delete
 step gone B read
+
+echo "7. The app's own code, as it ships, takes its key from the keychain"
+own_key=""
+own() {
+  local name="$1" want="$2" out code=0 started ms
+  started=$(now_ms)
+  out="$(perl -e 'alarm shift; exec @ARGV' 60 "$dir/$name.app/Contents/MacOS/probe" load "$team" "$bundle_id" 2>/dev/null)" || code=$?
+  ms=$(($(now_ms) - started))
+  # shellcheck disable=SC2053 # the wanted answer is a pattern on purpose: the key's hash isn't known ahead
+  if [ "$code" -eq 142 ]; then
+    echo "::error::waited, as on a prompt: $name"
+    failed=1
+  elif [[ "$out" == $want ]]; then
+    echo "  ok  $name: $out ($ms ms)"
+  else
+    echo "::error::wanted $want: $name: ${out:-no answer (exit $code)} ($ms ms)"
+    failed=1
+  fi
+  own_key="$(printf '%s' "$out" | sed -n 's/.* key=\([0-9a-f]*\)$/\1/p')"
+}
+own R "source=keychain why=- key=*"
+first_key="$own_key"
+own R "source=keychain why=- key=*"
+if [ -n "$first_key" ] && [ "$own_key" = "$first_key" ]; then echo "  ok  a second launch read the same key"; else echo "::error::a second launch of the app's own code didn't read the key the first made"; failed=1; fi
+own Rbare "source=memory why=keychain_not_entitled key=*"
+own Radhoc "source=memory why=not_signed_by_the_team key=*"
+out="$(perl -e 'alarm shift; exec @ARGV' 20 "$dir/R.app/Contents/MacOS/probe" remove "$team" "$bundle_id" 2>/dev/null || true)"
+if [ "$out" = "status=0" ]; then echo "  ok  R removed its item"; else echo "::error::R couldn't remove its item: ${out:-no answer}"; failed=1; fi
 exit "$failed"

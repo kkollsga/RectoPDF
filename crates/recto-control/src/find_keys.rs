@@ -4,27 +4,27 @@
 //! - `recto` hosting a session of its own on the person's own state: no key, so it keeps no index and reads pages, as on a volume that can't be indexed. Talking to the app's session, it uses the app's.
 
 use crate::state::StatePaths;
-use recto_platform::find_key::FindKey;
+use recto_platform::find_key::{App, FindKey};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-/// A way to the key for a team: the key, and why it's in memory if it is.
-pub type Loader = fn(&'static str) -> Option<(FindKey, Option<&'static str>)>;
+/// A way to the key for an app: the key, and why it's in memory if it is.
+pub type Loader = fn(App) -> Option<(FindKey, Option<&'static str>)>;
 
-/// **How the app takes its key:** `recto_platform::find_key::load_for_the_app` with the team. Made only by [`AppKey::for_the_app`], which the app's start alone calls; its field is private, so nothing else can make one, and a test holds the source to those two places.
+/// **How the app takes its key:** `recto_platform::find_key::load_for_the_app` with the app's team and bundle identifier. Made only by [`AppKey::for_the_app`], which the app's start alone calls; its field is private, so nothing else can make one, and a test holds the source to those two places.
 #[derive(Clone, Copy)]
 pub struct AppKey {
     load: Loader,
-    team: &'static str,
+    app: App,
 }
 
 impl AppKey {
-    /// The app's key, from the Keychain if this copy is `team`'s release, checked whole. Called by `recto-app`'s start and nowhere else.
+    /// The app's key, from the Keychain if this copy is the `app`'s release, checked whole. Called by `recto-app`'s start and nowhere else.
     #[must_use]
-    pub fn for_the_app(team: &'static str) -> Self {
+    pub fn for_the_app(app: App) -> Self {
         Self {
             load: recto_platform::find_key::load_for_the_app,
-            team,
+            app,
         }
     }
 
@@ -32,11 +32,14 @@ impl AppKey {
     #[cfg(any(test, feature = "test-seams"))]
     #[must_use]
     pub fn standing_in(load: Loader) -> Self {
-        Self { load, team: "test" }
+        Self {
+            load,
+            app: App { team: "test", bundle: "test" },
+        }
     }
 
     fn load(self) -> Option<(FindKey, Option<&'static str>)> {
-        (self.load)(self.team)
+        (self.load)(self.app)
     }
 }
 
@@ -114,7 +117,8 @@ pub fn load(plan: &Plan) -> Loaded {
         Plan::StateFile(path) => match FindKey::from_state_file(path) {
             Ok(key) => Loaded { key: Some(key), why: None },
             Err(_) => Loaded {
-                key: FindKey::in_memory().ok(),
+                // The folder's key is there and won't read: what it sealed is left as it is.
+                key: FindKey::in_memory_for_now().ok(),
                 why: Some("state_file_unreadable"),
             },
         },
@@ -142,7 +146,7 @@ mod tests {
     fn only_the_apps_real_run_asks_the_keychain() {
         let temp = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-find-keys-");
         let quiet = StatePaths::overridden(&temp).unwrap();
-        fn never(_team: &'static str) -> Option<(FindKey, Option<&'static str>)> {
+        fn never(_app: recto_platform::find_key::App) -> Option<(FindKey, Option<&'static str>)> {
             panic!("a test reached the app's Keychain loader")
         }
         let app = Host::App(AppKey::standing_in(never));
@@ -169,7 +173,7 @@ mod tests {
         );
     }
 
-    /// Failure: the way to the Keychain is reached, named, aliased or wrapped anywhere but its two places: `recto_platform::find_key::load_for_the_app`, named only in `AppKey::for_the_app`, and that, named only by the app's start. So a helper, `recto` or a test could ask the Keychain however the plan reads. Every mention of either name counts, outside comments and this test, and each file's count is held.
+    /// Failure: the way to the Keychain is reached, named, aliased or wrapped anywhere but its places (and, from the security read's N5, its inner calls, the release check and the look-or-make, are named nowhere new either): `recto_platform::find_key::load_for_the_app`, named only in `AppKey::for_the_app`, and that, named only by the app's start. So a helper, `recto` or a test could ask the Keychain however the plan reads. Every mention of either name counts, outside comments and this test, and each file's count is held.
     #[test]
     fn the_keychain_has_one_way_in() {
         let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
@@ -197,7 +201,12 @@ mod tests {
                 let mentions: usize = text
                     .lines()
                     .filter(|line| !line.trim_start().starts_with("//"))
-                    .map(|line| line.matches("load_for_the_app").count() + line.matches("for_the_app(").count())
+                    .map(|line| {
+                        line.matches("load_for_the_app").count()
+                            + line.matches("for_the_app(").count()
+                            + line.matches("load_or_create(").count()
+                            + line.matches("signed_as_a_release(").count()
+                    })
                     .sum();
                 if mentions > 0 {
                     found.insert(path.strip_prefix(crates).unwrap().display().to_string(), mentions);
@@ -209,8 +218,13 @@ mod tests {
             ("recto-app/src/core/start.rs", 1),
             // `pub fn for_the_app(` and the one `load_for_the_app` in it.
             ("recto-control/src/find_keys.rs", 2),
-            // `pub fn load_for_the_app(`, which names both.
-            ("recto-platform/src/find_key.rs", 2),
+            // `pub fn load_for_the_app(`, which names both, and in `load_under`, which it and the probe's feature-gated way call, the
+            // one `signed_as_a_release(` and the one `load_or_create(`.
+            ("recto-platform/src/find_key.rs", 4),
+            // The two defined, and the test that a test build isn't a release.
+            ("recto-platform/src/find_key_mac.rs", 3),
+            // The two defined, where there's no Keychain.
+            ("recto-platform/src/find_key_stub.rs", 2),
         ]
         .into_iter()
         .map(|(file, count)| (file.to_string(), count))

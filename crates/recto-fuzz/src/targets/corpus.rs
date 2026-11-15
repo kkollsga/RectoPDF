@@ -1,10 +1,11 @@
-//! The page-text corpus as it's read back from disk: a folder something may have damaged or changed between a build and a search, which `search`, `recto index`, an agent's folder and the next build all read. Each input damages a corpus made here, a few pages of text with a line-end hyphen, hidden text and a page with none, as bytes of its files: overwritten, cut, grown, replaced, removed, a bit turned, a page's record pointed elsewhere, a link or a file others can write in its place. Half the inputs then go in with every page's checksum put right, or nearly nothing would get past them.
+//! The page-text corpus as it's read back from disk: a folder something may have damaged or changed between a build and a search, which `search`, `recto index`, an agent's folder and the next build all read. Each input damages a corpus made here, a few pages of text with a line-end hyphen, hidden text and a page with none. Half the inputs damage it as bytes of its files: overwritten, cut, grown, replaced, removed, a bit turned, a page's entry pointed elsewhere, a link or a file others can write in its place, which the seal must refuse. The other half damage what's *inside* the seal: each page's chunk is opened with the corpus's own key, its record and text changed, and sealed again, and so are the summary and the title and outline, so what reads a page past the seal (its record, what's beside its text, its UTF-8, the summary's numbers) meets hostile bytes too, or nearly nothing would get past the seal.
 //!
 //! What must hold: no panic, bounded time and memory; what's read back is UTF-8 and no more than its record said; the agent's folder made from it keeps to its cap; a build over it, going on from what's there, doesn't panic; and once it's cleared, a build reads back every page as it was written.
 
 use crate::guard::{Budget, within};
 use crate::input::Take;
 use recto_index::corpus::{self, BuildLimits, BuildOutcome, CorpusKey, DocMeta, FailReason, FedPage, FeedError, PageFeed, ReadyCorpus};
+use recto_index::seal::{self, CorpusSeal, Purpose};
 use recto_platform::local;
 use recto_proto::CharRecord;
 use std::path::{Path, PathBuf};
@@ -28,7 +29,8 @@ const PAGES: &[&str] = &[
 const MAX_PAGES_READ: u32 = 64;
 /// Most damage done to one corpus.
 const MAX_OPS: usize = 12;
-const RECORD_LEN: usize = 28;
+/// A table entry on disk: where a page's chunk is, and how long.
+const RECORD_LEN: usize = 12;
 
 /// A file's mode, where there are modes.
 fn set_mode(path: &Path, mode: u32) {
@@ -47,6 +49,12 @@ fn link(target: &Path, path: &Path) {
     let _ = std::os::unix::fs::symlink(target, path);
     #[cfg(not(unix))]
     let _ = (target, path);
+}
+
+/// The Find key the fuzzed corpora are sealed with.
+fn fk() -> &'static recto_platform::find_key::FindKey {
+    static KEY: std::sync::OnceLock<recto_platform::find_key::FindKey> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| recto_platform::find_key::FindKey::in_memory().expect("a key"))
 }
 
 fn key() -> CorpusKey {
@@ -170,9 +178,9 @@ fn made(base: &Path) -> Made {
     std::fs::write(&file, b"%PDF-1.7 made for the corpus target").expect("the file a corpus is of");
     let root = base.join("made");
     local::ensure_private_dir(&root).expect("a private folder");
-    let built = corpus::build_for_file(&file, &root, key(), &mut Feed, &meta(), &limits()).expect("a corpus builds");
+    let built = corpus::build_for_file(fk(), &file, &root, key(), &mut Feed, &meta(), &limits()).expect("a corpus builds");
     assert!(matches!(built, BuildOutcome::Ready { .. }), "{built:?}");
-    corpus::ensure_agent_folder(&root, key(), &limits()).expect("its agent folder");
+    corpus::ensure_agent_folder(fk(), &root, key(), &limits()).expect("its agent folder");
     let texts = read_all(&root).expect("what was built reads back");
     let mut entries = Vec::new();
     walk(&root, &root, &mut entries);
@@ -182,7 +190,7 @@ fn made(base: &Path) -> Made {
 
 /// Every page of a corpus that's there and adds up.
 fn read_all(root: &Path) -> Option<Vec<String>> {
-    let corpus = ReadyCorpus::open(root, key()).ok()??;
+    let corpus = ReadyCorpus::open(fk(), root, key()).ok()??;
     let mut buffer = Vec::new();
     (0..corpus.pages())
         .map(|page| corpus.page(page, &mut buffer).ok().map(|stored| stored.text.to_string()))
@@ -205,9 +213,8 @@ fn lay_out(root: &Path, made: &Made) {
     }
 }
 
-/// Damages the files as the bytes say. Says whether to put the checksums right after.
-fn damage(root: &Path, made: &Made, take: &mut Take<'_>) -> bool {
-    let first = take.u8();
+/// Damages the files as the bytes say.
+fn damage(root: &Path, made: &Made, take: &mut Take<'_>) {
     let files: Vec<PathBuf> = made
         .entries
         .iter()
@@ -254,19 +261,16 @@ fn damage(root: &Path, made: &Made, take: &mut Take<'_>) -> bool {
                 }
             }
             6 => {
-                // A page's record pointed elsewhere, one field at a time: where its text is, how long, what kind and what flags.
+                // A page's entry pointed elsewhere: where its chunk is, or how long.
                 let mut table_bytes = std::fs::read(&table).unwrap_or_default();
                 let records = table_bytes.len() / RECORD_LEN;
                 if records > 0 {
                     let record = usize::from(take.u8()) % records * RECORD_LEN;
                     let value = take.u32();
-                    match take.u8() % 7 {
-                        0 => table_bytes[record..record + 8].copy_from_slice(&u64::from(value).to_le_bytes()),
-                        field @ 1..=3 => {
-                            let start = record + 4 + 4 * usize::from(field);
-                            table_bytes[start..start + 4].copy_from_slice(&value.to_le_bytes());
-                        }
-                        field => table_bytes[record + 20 + usize::from(field - 4)] = value as u8,
+                    if take.u8().is_multiple_of(2) {
+                        table_bytes[record..record + 8].copy_from_slice(&u64::from(value).to_le_bytes());
+                    } else {
+                        table_bytes[record + 8..record + 12].copy_from_slice(&value.to_le_bytes());
                     }
                     let _ = std::fs::write(&table, &table_bytes);
                 }
@@ -294,38 +298,97 @@ fn damage(root: &Path, made: &Made, take: &mut Take<'_>) -> bool {
         }
         let _ = std::fs::write(&path, &bytes);
     }
-    first & 1 == 1
 }
 
-/// Puts every whole record's checksum right for what its text and what's beside it are now, as the reader checks it: the page's number, the record as decoded with its offset, its unread byte and its checksum as zeros, then the bytes. The pack is read as it stands.
-fn reseal(root: &Path) {
+/// Changes plain bytes as the input says: overwritten, cut, grown, a bit turned, or a word of a page's record (its kind, flags and reason, its characters and lengths) set.
+fn mutate(plain: &mut Vec<u8>, take: &mut Take<'_>) {
+    for _ in 0..take.u8() % 4 {
+        if take.is_empty() {
+            return;
+        }
+        let at = usize::from(take.u16()) % (plain.len() + 1);
+        match take.u8() % 5 {
+            0 => {
+                for index in 0..usize::from(take.u8() % 16) {
+                    let byte = take.u8();
+                    match plain.get_mut(at + index) {
+                        Some(slot) => *slot = byte,
+                        None => plain.push(byte),
+                    }
+                }
+            }
+            1 => plain.truncate(at),
+            2 => {
+                for _ in 0..take.u8() % 32 {
+                    plain.push(take.u8());
+                }
+            }
+            3 => {
+                if let Some(byte) = plain.get_mut(at) {
+                    *byte ^= 1 << (take.u8() % 8);
+                }
+            }
+            _ => {
+                let word = 4 * usize::from(take.u8() % 4);
+                let value = take.u32().to_le_bytes();
+                if let Some(slot) = plain.get_mut(word..word + 4) {
+                    slot.copy_from_slice(&value);
+                }
+            }
+        }
+    }
+}
+
+/// **Damage inside the seal.** Each page's chunk that opens is opened with the corpus's key, changed as the input says, and sealed again for the same page, the pack and table written anew to hold the new lengths; a chunk that doesn't open is carried as it is. The summary and the title and outline are changed the same way. So the reader's checks after the seal see hostile plaintext, as they would if a key were ever had by someone else.
+fn reseal(root: &Path, take: &mut Take<'_>) {
     let app = root.join(key().hex()).join(corpus::FORMAT).join("app");
-    let (Ok(mut table), Ok(pack)) = (std::fs::read(app.join("pages.bin")), std::fs::read(app.join("text.pack"))) else {
+    let Some(seal) = std::fs::read(app.join("seal.bin"))
+        .ok()
+        .and_then(|header| CorpusSeal::open(fk(), key(), &header).ok())
+    else {
         return;
     };
-    for (page, record) in table.as_chunks_mut::<RECORD_LEN>().0.iter_mut().enumerate() {
-        let word = |at: usize| u32::from_le_bytes([record[at], record[at + 1], record[at + 2], record[at + 3]]) as usize;
-        let offset = u64::from_le_bytes(record[..8].try_into().unwrap_or([0; 8]));
-        let length = word(8).saturating_add(word(12));
-        let Some(blob) = usize::try_from(offset).ok().and_then(|start| pack.get(start..start.checked_add(length)?)) else {
+    let (Ok(table), Ok(pack)) = (std::fs::read(app.join("pages.bin")), std::fs::read(app.join("text.pack"))) else {
+        return;
+    };
+    let (mut new_table, mut new_pack, mut sealed) = (Vec::new(), Vec::new(), Vec::new());
+    for (page, entry) in table.as_chunks::<RECORD_LEN>().0.iter().enumerate() {
+        let offset = u64::from_le_bytes(entry[..8].try_into().unwrap_or([0; 8]));
+        let len = u32::from_le_bytes(entry[8..12].try_into().unwrap_or([0; 4]));
+        let Some(chunk) = usize::try_from(offset).ok().and_then(|start| pack.get(start..start.checked_add(len as usize)?)) else {
+            new_table.extend_from_slice(entry);
             continue;
         };
-        // As the reader hashes it: the fields it decodes, so the byte between them, which it never reads, as zero.
-        let mut fields = [0u8; RECORD_LEN];
-        fields[8..23].copy_from_slice(&record[8..23]);
-        let mut hash = crc32fast::Hasher::new();
-        hash.update(&(page as u32).to_le_bytes());
-        hash.update(&fields);
-        hash.update(blob);
-        record[24..28].copy_from_slice(&hash.finalize().to_le_bytes());
+        let mut chunk = chunk.to_vec();
+        let purpose = Purpose::Page(page as u32);
+        if let Ok(plain) = seal.open_in_place(purpose, &mut chunk) {
+            let mut plain = chunk[plain].to_vec();
+            mutate(&mut plain, take);
+            if seal.seal(purpose, &mut sealed, |out| out.extend_from_slice(&plain)).is_ok() {
+                chunk = std::mem::take(&mut sealed);
+            }
+        }
+        new_table.extend_from_slice(&(new_pack.len() as u64).to_le_bytes());
+        new_table.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+        new_pack.extend_from_slice(&chunk);
     }
-    let _ = std::fs::write(app.join("pages.bin"), &table);
+    let _ = std::fs::write(app.join("text.pack"), &new_pack);
+    let _ = std::fs::write(app.join("pages.bin"), &new_table);
+    for (name, purpose) in [("ready.sealed", Purpose::Summary), ("meta.sealed", Purpose::Meta)] {
+        let Ok(mut chunk) = std::fs::read(app.join(name)) else { continue };
+        let Ok(plain) = seal.open_in_place(purpose, &mut chunk) else { continue };
+        let mut plain = chunk[plain].to_vec();
+        mutate(&mut plain, take);
+        if seal.seal(purpose, &mut sealed, |out| out.extend_from_slice(&plain)).is_ok() {
+            let _ = std::fs::write(app.join(name), &sealed);
+        }
+    }
 }
 
 /// Everything that reads a corpus, on what's there now.
 fn read_back(root: &Path, made: &Made) {
-    let _ = corpus::disk_state(root, key());
-    if let Ok(Some(found)) = ReadyCorpus::open(root, key()) {
+    let _ = corpus::disk_state(fk(), root, key());
+    if let Ok(Some(found)) = ReadyCorpus::open(fk(), root, key()) {
         // The table as it is on disk, to hold what's read to what its record said.
         let table = std::fs::read(root.join(key().hex()).join(corpus::FORMAT).join("app").join("pages.bin")).unwrap_or_default();
         let mut buffer = Vec::new();
@@ -337,15 +400,15 @@ fn read_back(root: &Path, made: &Made) {
                 if let Some(said) = table.get(at + 8..at + 12) {
                     let said = u32::from_le_bytes([said[0], said[1], said[2], said[3]]);
                     assert!(
-                        stored.text.len() as u64 <= u64::from(said),
-                        "page {page}: {} bytes of text read, where its record said {said}",
+                        stored.text.len() as u64 + seal::OVERHEAD as u64 <= u64::from(said),
+                        "page {page}: {} bytes of text read from a chunk of {said}",
                         stored.text.len()
                     );
                 }
             }
         }
     }
-    if let Ok(folder) = corpus::ensure_agent_folder(root, key(), &limits()) {
+    if let Ok(folder) = corpus::ensure_agent_folder(fk(), root, key(), &limits()) {
         assert!(folder.path.join("manifest.json").is_file(), "a finished agent folder has its manifest");
         let size: u64 = std::fs::read_dir(folder.path.join("pages"))
             .map(|entries| entries.flatten().filter_map(|entry| entry.metadata().ok()).map(|meta| meta.len()).sum())
@@ -366,17 +429,19 @@ fn check_in(base: &Path, data: &[u8]) {
         let root = folder.0.join("work");
         lay_out(&root, made);
         let mut take = Take(data);
-        if damage(&root, made, &mut take) {
-            reseal(&root);
+        if take.u8() & 1 == 1 {
+            reseal(&root, &mut take);
+        } else {
+            damage(&root, made, &mut take);
         }
         read_back(&root, made);
         // A build goes on from what's there, believing only records that hold up.
-        let _ = corpus::build(&root, key(), &mut Feed, &meta(), &limits());
+        let _ = corpus::build(fk(), &root, key(), &mut Feed, &meta(), &limits());
         read_back(&root, made);
         // Cleared, it's built again from the file, and every page reads back as it was written.
         corpus::forget_file(&root, &made.file);
         if corpus::clear(&root, key()).is_ok() || !root.join(key().hex()).exists() {
-            let built = corpus::build(&root, key(), &mut Feed, &meta(), &limits());
+            let built = corpus::build(fk(), &root, key(), &mut Feed, &meta(), &limits());
             assert!(matches!(built, Ok(BuildOutcome::Ready { .. })), "{built:?}");
             assert_eq!(read_all(&root).as_ref(), Some(&made.texts), "built again, it reads back as written");
         }
@@ -387,25 +452,20 @@ fn check_in(base: &Path, data: &[u8]) {
 mod tests {
     use super::*;
 
-    /// Failure: putting checksums right no longer matches the reader's, so half of what the fuzzer sends stops at a checksum and the reader's later checks go untested. An untouched corpus, resealed, must read back the same, and so must one with only the byte the reader never reads damaged.
+    /// Failure: resealing no longer matches the reader's seal (another page's purpose, another key, the pack and table out of step), so half of what the fuzzer sends stops at the seal and the reader's checks after it go untested. An untouched corpus, resealed with nothing changed, reads back the same; one whose text is changed inside the seal opens, and reads back changed.
     #[test]
-    fn resealing_an_untouched_corpus_changes_nothing() {
+    fn resealing_gets_past_the_seal() {
         let folder = Folder::fresh(&state_base());
         let made = &made(&folder.0);
         let root = folder.0.join("reseal-test");
         lay_out(&root, made);
-        let before = std::fs::read(root.join(key().hex()).join(corpus::FORMAT).join("app").join("pages.bin")).unwrap();
-        reseal(&root);
-        let after = std::fs::read(root.join(key().hex()).join(corpus::FORMAT).join("app").join("pages.bin")).unwrap();
-        assert_eq!(before, after);
-        assert_eq!(read_all(&root).as_ref(), Some(&made.texts));
-        // The byte the reader never reads, damaged, still passes once resealed, as the reader hashes it as zero.
-        let table = root.join(key().hex()).join(corpus::FORMAT).join("app").join("pages.bin");
-        let mut bytes = std::fs::read(&table).unwrap();
-        bytes[23] = 0xAB;
-        std::fs::write(&table, &bytes).unwrap();
-        reseal(&root);
-        assert_eq!(read_all(&root).as_ref(), Some(&made.texts), "a damaged unread byte, resealed");
+        reseal(&root, &mut Take(&[]));
+        assert_eq!(read_all(&root).as_ref(), Some(&made.texts), "nothing changed, resealed");
+        // One mutation of page 0: a bit of its text's first byte, past the 16-byte record, turned. Its UTF-8 still holds ('I' to 'H').
+        reseal(&root, &mut Take(&[1, 16, 0, 3, 0]));
+        let read = read_all(&root).expect("a changed page still opens");
+        assert_ne!(read, made.texts, "the change didn't get past the seal");
+        assert_eq!(read[1..], made.texts[1..], "only page 0 changed");
     }
 
     /// Failure: every process that runs the target leaves a `corpus-<pid>` folder in the shared temp folder, one more for each run of the smoke tests or a fuzz campaign, and a run that panics leaves its folder too. A run's folder is its own, fresh, and gone at its end, whether it ends well or by a panic.

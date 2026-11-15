@@ -190,5 +190,71 @@ check "bump: a file that no longer names the version fails --check" 1 "$rc"
 out=$("$BUMP" --check 2>&1); rc=$?
 check "bump: this repository is at one version ($out)" 0 "$rc"
 
+# ---- app-entitlements.sh: the release's entitlements, and a signed bundle checked against them ----
+ENT="$SOURCE/tools/release/app-entitlements.sh"
+E="$X/entitlements"; mkdir -p "$E"
+"$ENT" --write "$E/claims.plist"
+# Failure: the entitlements a release signs with aren't a plist codesign reads, or name another App ID than the profile's.
+check "entitlements: --write makes a plist" 0 "$(plutil -lint "$E/claims.plist" >/dev/null 2>&1; echo $?)"
+has "entitlements: with the App ID and the group" "<string>6GND8Z2C7Z.io.github.kkollsga.RectoPDF</string>" "$(cat "$E/claims.plist")"
+bundle() { # path: a bundle of two made programs, signed ad hoc, which is all `--check` reads
+  mkdir -p "$1/Contents/MacOS"
+  cp /usr/bin/true "$1/Contents/MacOS/RectoPDF"
+  cp /usr/bin/true "$1/Contents/MacOS/recto"
+  printf '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>io.github.kkollsga.RectoPDF</string><key>CFBundleExecutable</key><string>RectoPDF</string></dict></plist>' > "$1/Contents/Info.plist"
+}
+# Failure: a release whose bundle has no provisioning profile passes, though its main executable can't then launch with the entitlements.
+bundle "$E/no-profile.app"
+codesign --force --sign - "$E/no-profile.app/Contents/MacOS/recto" 2>/dev/null
+codesign --force --sign - --entitlements "$E/claims.plist" "$E/no-profile.app" 2>/dev/null
+out=$("$ENT" --check "$E/no-profile.app" 2>&1); rc=$?
+check "entitlements: a bundle with no profile is refused" 1 "$rc"
+has "entitlements: and named" "the bundle has no Contents/embedded.provisionprofile" "$out"
+hasnt "entitlements: while its main executable's claims are right" "the app's main executable claims" "$out"
+# Failure: a release whose profile isn't one, whose main executable claims nothing, or whose other programs claim the app's group passes.
+bundle "$E/wrong.app"
+echo "not a profile" > "$E/wrong.app/Contents/embedded.provisionprofile"
+codesign --force --sign - --entitlements "$E/claims.plist" "$E/wrong.app/Contents/MacOS/recto" 2>/dev/null
+codesign --force --sign - "$E/wrong.app" 2>/dev/null
+out=$("$ENT" --check "$E/wrong.app" 2>&1); rc=$?
+check "entitlements: a wrong bundle is refused" 1 "$rc"
+has "entitlements: a profile that isn't one" "isn't a signed provisioning profile" "$out"
+has "entitlements: a main executable that claims nothing" "the app's main executable claims com.apple.application-identifier = None" "$out"
+has "entitlements: another program that claims the group" "Contents/MacOS/recto claims the app's identity or keychain group" "$out"
+# A profile as the file keychain's tools read one: a plist in signed CMS, made here with LibreSSL and a throwaway certificate (security cms -D
+# decodes it without asking who signed it, which is all --check reads it for).
+/usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -keyout "$E/k.pem" -out "$E/c.pem" -days 1 -subj "/CN=release-test" >/dev/null 2>&1
+printf '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Entitlements</key><dict><key>com.apple.application-identifier</key><string>6GND8Z2C7Z.io.github.kkollsga.RectoPDF</string><key>keychain-access-groups</key><array><string>6GND8Z2C7Z.*</string></array></dict></dict></plist>' > "$E/profile.plist"
+/usr/bin/openssl cms -sign -nodetach -binary -outform DER -in "$E/profile.plist" -signer "$E/c.pem" -inkey "$E/k.pem" -out "$E/made.provisionprofile" 2>/dev/null
+# Failure: the made profile isn't one `security cms -D` decodes, so the cases below pass or fail on that rather than on what they name.
+has "entitlements: the made profile decodes, with its App ID" "6GND8Z2C7Z.io.github.kkollsga.RectoPDF" "$(security cms -D -i "$E/made.provisionprofile" 2>&1)"
+# Failure: the checker refuses a bundle as a release makes it, so its refusals of the others mean nothing.
+bundle "$E/right.app"
+cp "$E/made.provisionprofile" "$E/right.app/Contents/embedded.provisionprofile"
+codesign --force --sign - "$E/right.app/Contents/MacOS/recto" 2>/dev/null
+codesign --force --sign - --entitlements "$E/claims.plist" "$E/right.app" 2>/dev/null
+out=$("$ENT" --check "$E/right.app" 2>&1); rc=$?
+check "entitlements: a bundle as a release makes it passes ($out)" 0 "$rc"
+# Failure: a main executable claiming one entitlement more than the three passes, so a release could ship a power nobody decided on.
+bundle "$E/more.app"
+cp "$E/made.provisionprofile" "$E/more.app/Contents/embedded.provisionprofile"
+sed 's#</dict></plist>#  <key>com.apple.security.get-task-allow</key><true/>\n</dict></plist>#' "$E/claims.plist" > "$E/more.plist"
+# Failure: the plist with one more is malformed (a sed that writes `\n` as it is), so codesign signs nothing and the case fails for another reason.
+check "entitlements: the plist with one more is valid" 0 "$(plutil -lint "$E/more.plist" >/dev/null 2>&1; echo $?)"
+codesign --force --sign - --entitlements "$E/more.plist" "$E/more.app" 2>/dev/null
+out=$("$ENT" --check "$E/more.app" 2>&1); rc=$?
+check "entitlements: one entitlement more is refused" 1 "$rc"
+has "entitlements: and named" "claims com.apple.security.get-task-allow as well" "$out"
+# Failure: code in Frameworks (or PlugIns, XPCServices, Library) claiming the app's group passes, as only MacOS and Helpers were looked at.
+bundle "$E/framework.app"
+cp "$E/made.provisionprofile" "$E/framework.app/Contents/embedded.provisionprofile"
+mkdir -p "$E/framework.app/Contents/Frameworks"
+cp /usr/bin/true "$E/framework.app/Contents/Frameworks/claims"
+codesign --force --sign - --entitlements "$E/claims.plist" "$E/framework.app/Contents/Frameworks/claims" 2>/dev/null
+codesign --force --sign - --entitlements "$E/claims.plist" "$E/framework.app" 2>/dev/null
+out=$("$ENT" --check "$E/framework.app" 2>&1); rc=$?
+check "entitlements: code in Frameworks claiming the group is refused" 1 "$rc"
+has "entitlements: and named" "Contents/Frameworks/claims claims the app's identity" "$out"
+
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."

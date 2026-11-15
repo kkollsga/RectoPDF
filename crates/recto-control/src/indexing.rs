@@ -25,6 +25,8 @@ pub const MAX_WAITING: usize = 16;
 const MAX_FAILURES: usize = 16;
 /// How long a failure stops it being tried again. Long enough that a search loop doesn't start a process each time, and short enough that fixing it is soon noticed.
 const FAILURE_PAUSE: Duration = Duration::from_secs(60);
+/// Agents' folders one session keeps. An agent asking for more has the oldest set aside.
+const MAX_AGENT_FOLDERS: usize = 16;
 /// The most a helper may say.
 const MAX_REPORT_BYTES: u64 = 64 * 1024;
 
@@ -37,7 +39,7 @@ pub struct IndexJob {
 
 /// What building comes down to, so a test can stand in for a process. `started` is given something whose dropping stops the build.
 pub trait Runner: Send + Sync {
-    fn run(&self, job: &IndexJob, root: &Path, started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value;
+    fn run(&self, job: &IndexJob, root: &Path, find_key: &FindKey, started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value;
 }
 
 #[derive(Default)]
@@ -54,6 +56,10 @@ struct Inner {
     stopped: bool,
     /// Nobody's looked at what's past its time in this session yet.
     sweep_due: bool,
+    /// Corpora this session's key can't read have been looked for, once the key was taken for a build.
+    unreadable_swept: bool,
+    /// The agents' folders this session holds, which live as long as it does. At most [`MAX_AGENT_FOLDERS`]: past that the oldest is set aside at once. One another live session holds isn't here: it's that session's to end.
+    agent_folders: VecDeque<(CorpusKey, corpus::AgentClaim)>,
 }
 
 struct Shared {
@@ -61,6 +67,8 @@ struct Shared {
     /// Where the Find key comes from, and the key once it's been asked for: the first time an index is used, on whichever thread asks, never the UI's.
     key_plan: Plan,
     key: OnceLock<Loaded>,
+    /// Find has started the key's taking without waiting for it ([`Indexer::find_key_in_hand`]).
+    key_asked: std::sync::atomic::AtomicBool,
     limits: BuildLimits,
     runner: Box<dyn Runner>,
     inner: Mutex<Inner>,
@@ -79,6 +87,8 @@ impl std::fmt::Debug for Indexer {
 
 impl Indexer {
     pub fn new(root: &Path, key_plan: Plan) -> Self {
+        // This process holds the Find key once an index is used, and pages' text: a crash leaves no image of its memory.
+        recto_platform::find_key::forbid_core_dumps();
         let indexer = Self::with_limits(
             root,
             Box::new(HelperProcess {
@@ -87,8 +97,8 @@ impl Indexer {
             BuildLimits::default(),
             key_plan,
         );
-        // Only if there's something to do: an ordinary start stays one thread, with one look at a folder.
-        if corpus::old_folder_is_there(root) {
+        // Only if there's something to do: an ordinary start stays one thread, with two looks at a folder. Text from before it was sealed goes at the first launch that can see it.
+        if corpus::old_folder_is_there(root) || corpus::plain_corpora_may_be_there(root) || corpus::agent_folders_may_be_there(root) {
             indexer.start_working(&mut indexer.0.lock());
         }
         indexer
@@ -98,11 +108,12 @@ impl Indexer {
         Self::with_limits(root, runner, BuildLimits::default(), Plan::Memory)
     }
 
-    fn with_limits(root: &Path, runner: Box<dyn Runner>, limits: BuildLimits, key_plan: Plan) -> Self {
+    pub(crate) fn with_limits(root: &Path, runner: Box<dyn Runner>, limits: BuildLimits, key_plan: Plan) -> Self {
         Self(Arc::new(Shared {
             root: root.to_path_buf(),
             key_plan,
             key: OnceLock::new(),
+            key_asked: std::sync::atomic::AtomicBool::new(false),
             limits,
             runner,
             inner: Mutex::new(Inner {
@@ -113,9 +124,31 @@ impl Indexer {
         }))
     }
 
-    /// The Find key, taken the first time it's asked for. Blocks for one Keychain call at most, so only ever from a thread that may wait: never the UI's.
+    /// The Find key, taken the first time a thread that may wait asks for it: never the UI thread ([`Shared::find_key`]).
     pub fn find_key(&self) -> Option<&FindKey> {
-        self.0.key.get_or_init(|| find_keys::load(&self.0.key_plan)).key.as_ref()
+        self.0.find_key()
+    }
+
+    /// **The key if it's in hand, never waiting for it:** for Find, which a person's search must never wait on the key for (the second review's item 5, 2026-11-15). Taking it checks this copy's whole bundle against its signature before the Keychain is asked: by `what_the_release_check_costs`, 578–652 ms in five runs on a 143 MB build of the app (2026-11-15, warm cache, the machine under load), as the review measured 0.62–0.71 s on the 141 MB release. The first ask while it isn't in hand starts its taking on its own thread and goes on without it, so that search reads its pages live and touches no corpus, and a later one has the key. Starts nothing on the UI thread.
+    pub fn find_key_in_hand(&self) -> Option<&FindKey> {
+        use std::sync::atomic::Ordering;
+        if let Some(loaded) = self.0.key.get() {
+            return loaded.key.as_ref();
+        }
+        if !recto_platform::thread::is_main_thread() && !self.0.key_asked.swap(true, Ordering::SeqCst) {
+            let shared = Arc::clone(&self.0);
+            // The same thread, by name and stack, that `take_the_key` takes it on. Anyone else who asks meanwhile waits for this one's taking, so it's taken once.
+            let taking = std::thread::Builder::new()
+                .name("recto-find-key".into())
+                .stack_size(KEY_THREAD_STACK)
+                .spawn(move || {
+                    shared.key.get_or_init(|| find_keys::load(&shared.key_plan));
+                });
+            if taking.is_err() {
+                self.0.key_asked.store(false, Ordering::SeqCst);
+            }
+        }
+        None
     }
 
     /// What's known of the key without taking it: the plan, and where it came from once something has.
@@ -133,6 +166,10 @@ impl Indexer {
         inner.stopped = true;
         inner.waiting.clear();
         inner.stop_running = None;
+        // An agent's folder lives as long as the session that asked: set aside now, one rename each, and removed by the next session's sweep.
+        for (key, claim) in inner.agent_folders.drain(..) {
+            corpus::retire_agent_folder(&self.0.root, key, claim);
+        }
     }
 
     /// Asks for a build. Never blocks: the newest ask goes first, since that's whatever someone's looking at now, and past the cap the oldest gives way.
@@ -167,6 +204,14 @@ impl Indexer {
 }
 
 impl Shared {
+    /// **Never on the UI thread:** there, nothing is taken, and the answer is no key, as if this host kept no index, so a search the UI thread made would read pages; nothing is remembered, so the next ask from a thread that may wait takes it. The Keychain is one call away, which may block.
+    fn find_key(&self) -> Option<&FindKey> {
+        if recto_platform::thread::is_main_thread() {
+            return self.key.get().and_then(|loaded| loaded.key.as_ref());
+        }
+        self.key.get_or_init(|| take_the_key(&self.key_plan)).key.as_ref()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -183,6 +228,10 @@ impl Shared {
             // First, before anything's built, and on this thread because it walks a folder of any size.
             if std::mem::take(&mut self.lock().sweep_due) {
                 corpus::remove_old_folder(&self.root);
+                // Nothing here takes the key: a start that only has old folders to tidy never reaches the Keychain (the security review of slices 2 and 3, F7). What the key can't read goes when a build first needs it, below.
+                corpus::remove_plain_corpora(&self.root);
+                let keep: Vec<CorpusKey> = self.lock().agent_folders.iter().map(|(key, _)| *key).collect();
+                corpus::sweep_agent_folders(&self.root, &keep);
                 let _ = corpus::evict(&self.root, &self.limits, None);
             }
             let job = {
@@ -200,7 +249,13 @@ impl Shared {
                 corpus: job.key.short(),
             });
             let report = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.runner.run(&job, &self.root, &mut |stop| {
+                let Some(find_key) = self.find_key() else {
+                    return json!({ "state": "failed", "code": "no_find_key" });
+                };
+                if !std::mem::replace(&mut self.lock().unreadable_swept, true) {
+                    corpus::remove_unreadable(find_key, &self.root);
+                }
+                self.runner.run(&job, &self.root, find_key, &mut |stop| {
                     let mut inner = self.lock();
                     // Stopped while this was starting: not keeping it stops it now.
                     if !inner.stopped && !inner.cancelled {
@@ -233,7 +288,10 @@ impl Shared {
                 path: job.path.clone(),
                 corpus: job.key.short(),
                 state,
-                code: report["code"].clone(),
+                // A cause of the moment is `not_now` to anyone hearing this, whichever it was: see `told_to_agents`.
+                code: report["code"]
+                    .as_str()
+                    .map_or_else(|| report["code"].clone(), |code| json!(recto_agent::index::told_to_agents(code))),
                 pages: report["pages"].clone(),
             });
         }
@@ -250,8 +308,29 @@ impl Indexing for Indexer {
         &self.0.root
     }
 
+    fn find_key(&self) -> Option<&FindKey> {
+        self.0.find_key()
+    }
+
     fn find_key_report(&self) -> Value {
         Indexer::find_key_report(self)
+    }
+
+    fn made_agent_folder(&self, key: CorpusKey) {
+        corpus::note_agent_folder(&self.0.root);
+        let mut inner = self.0.lock();
+        if inner.agent_folders.iter().any(|(held, _)| *held == key) {
+            return;
+        }
+        if inner.agent_folders.len() >= MAX_AGENT_FOLDERS
+            && let Some((oldest, claim)) = inner.agent_folders.pop_front()
+        {
+            corpus::retire_agent_folder(&self.0.root, oldest, claim);
+        }
+        // One file held open, and locked, for each folder this session holds: at most `MAX_AGENT_FOLDERS`, and none until an agent asks. No claim, and the folder isn't this session's to set aside: another live session holds it, or the folders on the way aren't private ones. The next ask tries again.
+        if let Some(claim) = corpus::claim_agent_folder(&self.0.root, key) {
+            inner.agent_folders.push_back((key, claim));
+        }
     }
 
     fn want(&self, path: &Path, key: CorpusKey) {
@@ -296,6 +375,24 @@ impl Indexing for Indexer {
     }
 }
 
+/// The stack the key is taken on: Rust's own default for a thread, four times macOS's for one it starts, whatever thread asked (the indexer's has 256 KiB, a search's may have less). Security.framework's check of this copy's signature and its Keychain calls run there, not on a small stack of ours (the security review of slices 2 and 3, F7).
+const KEY_THREAD_STACK: usize = 2 * 1024 * 1024;
+
+/// Takes the key the plan says, on a thread of its own with [`KEY_THREAD_STACK`], once a run, and waits for it: the asker is a thread that may wait, never the UI's. A thread that can't be started leaves a key in memory for now, so nothing lasting is touched.
+fn take_the_key(plan: &Plan) -> Loaded {
+    let plan = plan.clone();
+    std::thread::Builder::new()
+        .name("recto-find-key".into())
+        .stack_size(KEY_THREAD_STACK)
+        .spawn(move || find_keys::load(&plan))
+        .ok()
+        .and_then(|taking| taking.join().ok())
+        .unwrap_or_else(|| Loaded {
+            key: FindKey::in_memory_for_now().ok(),
+            why: Some("no_thread"),
+        })
+}
+
 /// Finds `recto-indexer` beside this program, through any link to it: [`crate::program_beside`].
 fn helper_exe() -> Option<PathBuf> {
     crate::program_beside(&std::env::current_exe().ok()?, "recto-indexer")
@@ -309,19 +406,21 @@ pub struct HelperProcess {
 }
 
 impl Runner for HelperProcess {
-    fn run(&self, job: &IndexJob, root: &Path, started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
+    fn run(&self, job: &IndexJob, root: &Path, find_key: &FindKey, started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
         let failed = |code: &str| json!({ "state": "failed", "code": code });
         let Some(exe) = helper_exe() else { return failed("indexer_missing") };
         let (Some(file), Some(root)) = (job.path.to_str(), root.to_str()) else {
             return failed("path_not_text");
         };
+        // Made before the helper starts, so nothing's started for a job it couldn't be given.
+        let Some(grant) = recto_index::seal::grant_for(find_key, job.key) else {
+            return failed("no_find_key");
+        };
         // It inherits nothing it doesn't need.
         let Ok(Spawned { mut child, mut stdin, stdout }) = crate::helpers::spawn_helper(&exe, &[], self.priority) else {
             return failed("indexer_wouldnt_start");
         };
-        // On stdin, so a file's name stays out of `ps`.
-        let line = json!({ "file": file, "root": root, "key": job.key.hex() }).to_string() + "\n";
-        if stdin.write_all(line.as_bytes()).is_err() {
+        if handover(&grant, file, root, job.key, &mut stdin).is_err() {
             let _ = child.kill();
             let _ = child.wait();
             return failed("indexer_wouldnt_start");
@@ -333,6 +432,13 @@ impl Runner for HelperProcess {
         let _ = child.wait();
         read_report(&said)
     }
+}
+
+/// **What the helper is given, on its stdin**, so a file's name stays out of `ps`: a key bound to the one corpus it's to build ([`recto_index::seal::grant_for`]), as its frame, from its own memory, then the job as one line. Never the session's key (the security read of 2026-11-15, S1), and never in the arguments, the environment or a file.
+fn handover(grant: &FindKey, file: &str, root: &str, key: CorpusKey, pipe: &mut impl Write) -> std::io::Result<()> {
+    let line = json!({ "file": file, "root": root, "key": key.hex() }).to_string() + "\n";
+    grant.write_to(pipe)?;
+    pipe.write_all(line.as_bytes())
 }
 
 /// The numbers a helper's report may carry, each a count, a size or a time: what `recto-indexer` says of its build and of its own and its workers' memory.
@@ -388,9 +494,9 @@ pub fn read_report(said: &str) -> Value {
 }
 
 /// Runs one build here and now, blocking until it's over, for `budget index`.
-pub fn build_now(path: &Path, key: CorpusKey, root: &Path, priority: Priority) -> Value {
+pub fn build_now(path: &Path, key: CorpusKey, root: &Path, find_key: &FindKey, priority: Priority) -> Value {
     let mut keep = None;
-    HelperProcess { priority }.run(&IndexJob { path: path.to_path_buf(), key }, root, &mut |stop| keep = Some(stop))
+    HelperProcess { priority }.run(&IndexJob { path: path.to_path_buf(), key }, root, find_key, &mut |stop| keep = Some(stop))
 }
 
 #[cfg(test)]
@@ -412,7 +518,7 @@ mod tests {
     struct Runs(Arc<Stand>);
 
     impl Runner for Runs {
-        fn run(&self, _job: &IndexJob, _root: &Path, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
+        fn run(&self, _job: &IndexJob, _root: &Path, _find_key: &FindKey, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
             let stand = &self.0;
             let now = stand.running.fetch_add(1, Ordering::SeqCst) + 1;
             stand.most_at_once.fetch_max(now, Ordering::SeqCst);
@@ -476,7 +582,7 @@ mod tests {
     struct Fails;
 
     impl Runner for Fails {
-        fn run(&self, _job: &IndexJob, _root: &Path, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
+        fn run(&self, _job: &IndexJob, _root: &Path, _find_key: &FindKey, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
             json!({ "state": "failed", "code": "render_worker_missing" })
         }
     }
@@ -496,7 +602,7 @@ mod tests {
 
         struct Panics;
         impl Runner for Panics {
-            fn run(&self, _job: &IndexJob, _root: &Path, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
+            fn run(&self, _job: &IndexJob, _root: &Path, _find_key: &FindKey, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
                 panic!("a bug");
             }
         }
@@ -514,7 +620,7 @@ mod tests {
     fn a_paused_build_isnt_a_failure_and_goes_on_when_asked() {
         struct Paused(Arc<AtomicU32>);
         impl Runner for Paused {
-            fn run(&self, _job: &IndexJob, _root: &Path, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
+            fn run(&self, _job: &IndexJob, _root: &Path, _find_key: &FindKey, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 json!({ "state": "paused", "code": "too_busy" })
             }
@@ -594,7 +700,17 @@ mod tests {
         let temp = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-limits-");
         recto_platform::local::ensure_private_dir(&temp).unwrap();
         let (root, generous) = (temp.join("corpus.noindex"), BuildLimits::default());
-        let build = |key: CorpusKey| corpus::build(&root, key, &mut OnePage, &corpus::DocMeta::default(), &generous).unwrap();
+        let build = |key: CorpusKey| {
+            corpus::build(
+                &FindKey::from_state_file(&temp.join("find.key")).unwrap(),
+                &root,
+                key,
+                &mut OnePage,
+                &corpus::DocMeta::default(),
+                &generous,
+            )
+            .unwrap()
+        };
         let (old, recent) = (key(1), key(2));
         build(old);
         build(recent);
@@ -618,14 +734,14 @@ mod tests {
         // Past 90 days, under the size.
         age(old, 91);
         age(recent, 1);
-        let by_age = Indexer::with_limits(&root, Box::new(Fails), generous, Plan::Memory);
+        let by_age = Indexer::with_limits(&root, Box::new(Fails), generous, Plan::StateFile(temp.join("find.key")));
         by_age.note_asked();
         wait_until_gone(old);
         assert!(root.join(recent.hex()).exists(), "what's within its time stays");
         // 89 days is within it.
         build(old);
         age(old, 89);
-        let within = Indexer::with_limits(&root, Box::new(Fails), generous, Plan::Memory);
+        let within = Indexer::with_limits(&root, Box::new(Fails), generous, Plan::StateFile(temp.join("find.key")));
         within.note_asked();
         let deadline = Instant::now() + Duration::from_secs(10);
         while within.0.lock().working && Instant::now() < deadline {
@@ -638,7 +754,7 @@ mod tests {
             max_total_bytes: corpus::folder_bytes(&root.join(recent.hex())) + 1,
             ..BuildLimits::default()
         };
-        let by_size = Indexer::with_limits(&root, Box::new(Fails), tight, Plan::Memory);
+        let by_size = Indexer::with_limits(&root, Box::new(Fails), tight, Plan::StateFile(temp.join("find.key")));
         by_size.note_asked();
         wait_until_gone(old);
         assert!(root.join(recent.hex()).exists(), "the most recently used goes last");
@@ -650,15 +766,23 @@ mod tests {
     fn a_run_that_ends_any_way_makes_room() {
         struct Changed;
         impl Runner for Changed {
-            fn run(&self, _job: &IndexJob, _root: &Path, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
+            fn run(&self, _job: &IndexJob, _root: &Path, _find_key: &FindKey, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
                 json!({ "state": "changed" })
             }
         }
         let temp = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-any-way-");
         recto_platform::local::ensure_private_dir(&temp).unwrap();
         let root = temp.join("corpus.noindex");
-        corpus::build(&root, key(1), &mut OnePage, &corpus::DocMeta::default(), &BuildLimits::default()).unwrap();
-        let indexer = Indexer::with_limits(&root, Box::new(Changed), BuildLimits::default(), Plan::Memory);
+        corpus::build(
+            &FindKey::from_state_file(&temp.join("find.key")).unwrap(),
+            &root,
+            key(1),
+            &mut OnePage,
+            &corpus::DocMeta::default(),
+            &BuildLimits::default(),
+        )
+        .unwrap();
+        let indexer = Indexer::with_limits(&root, Box::new(Changed), BuildLimits::default(), Plan::StateFile(temp.join("find.key")));
         // Past the first sweep, with room to spare, so it's the run's own look that matters.
         indexer.ask(job(2));
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -673,7 +797,7 @@ mod tests {
                 max_total_bytes: 1,
                 ..BuildLimits::default()
             },
-            Plan::Memory,
+            Plan::StateFile(temp.join("find.key")),
         );
         tight.0.lock().sweep_due = false;
         tight.ask(job(2));
@@ -685,10 +809,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp);
     }
 
+    /// Failure (F7): the key is taken on whichever thread asks first, the indexer's of 256 KiB or a search's, so Security.framework runs on a small stack; or a start whose sweep has only old folders to tidy takes the key, reaching the Keychain at launch. It's taken on a thread of its own with Rust's default stack, and the sweep at the first ask takes nothing.
+    #[test]
+    fn the_key_is_taken_on_its_own_thread_and_never_by_the_sweep() {
+        static TAKEN_ON: Mutex<Option<String>> = Mutex::new(None);
+        fn loader(_app: recto_platform::find_key::App) -> Option<(FindKey, Option<&'static str>)> {
+            *TAKEN_ON.lock().unwrap() = std::thread::current().name().map(str::to_string);
+            FindKey::in_memory().ok().map(|key| (key, None))
+        }
+        let temp = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-key-thread-");
+        recto_platform::local::ensure_private_dir(&temp).unwrap();
+        let root = temp.join("corpus.noindex");
+        recto_platform::local::ensure_private_dir(&root).unwrap();
+        // A mark of old folders to tidy, so a start sweeps.
+        std::fs::create_dir_all(root.join("ab".repeat(32)).join("v3")).unwrap();
+        let indexer = Indexer::new(&root, Plan::AppKeychain(crate::find_keys::AppKey::standing_in(loader)));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while indexer.0.lock().working && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(!root.join("ab".repeat(32)).join("v3").exists(), "the start's sweep didn't run");
+        assert_eq!(*TAKEN_ON.lock().unwrap(), None, "the start's sweep took the key");
+        assert!(indexer.find_key().is_some());
+        assert_eq!(
+            TAKEN_ON.lock().unwrap().as_deref(),
+            Some("recto-find-key"),
+            "the key was taken on the asker's own stack"
+        );
+    }
+
     /// Failure: saying where the Find key stands, as `qa state` and `index status` do on every read, takes the key, so a look at state reaches the Keychain, or does it on whatever thread asked, the UI's included. It's said from the plan alone until something that may wait has taken it.
     #[test]
     fn the_key_is_said_without_being_taken() {
-        fn never(_team: &'static str) -> Option<(FindKey, Option<&'static str>)> {
+        fn never(_app: recto_platform::find_key::App) -> Option<(FindKey, Option<&'static str>)> {
             panic!("saying where the key stands took it")
         }
         let indexer = Indexer::with_limits(
@@ -705,6 +858,68 @@ mod tests {
             memory.find_key_report(),
             json!({ "plan": "memory", "source": "memory", "why": null }),
             "once taken, where it came from"
+        );
+    }
+
+    /// Failure (the security read of 2026-11-15, S1): the session's key is written to the helper, so a helper put in the app's place after its check is handed every corpus at its next build; or what it's handed for one corpus opens another. What crosses the pipe for corpus X holds no run of the session key's bytes, reads back as a key bound to X, and opens X's corpus as the session sealed it, and nothing of Y's.
+    #[test]
+    fn the_helper_is_handed_one_corpus_and_never_the_session_key() {
+        let session = FindKey::in_memory().unwrap();
+        let (x, y) = (key(1), key(2));
+        let grant = recto_index::seal::grant_for(&session, x).unwrap();
+        let mut pipe = Vec::new();
+        handover(&grant, "/nowhere/1.pdf", "/nowhere", x, &mut pipe).unwrap();
+        assert!(
+            !pipe.windows(8).any(|window| session.bytes().windows(8).any(|part| part == window)),
+            "the session key's bytes are in what the helper is handed"
+        );
+        assert!(
+            handover(&session, "/nowhere/1.pdf", "/nowhere", x, &mut Vec::new()).is_err(),
+            "the session key was handed over"
+        );
+        let mut reader = pipe.as_slice();
+        let handed = FindKey::read_from(&mut reader).unwrap();
+        assert_eq!(handed.binding(), Some(x.as_bytes()));
+        let (_, x_header) = recto_index::seal::CorpusSeal::create(&session, x).unwrap();
+        let (_, y_header) = recto_index::seal::CorpusSeal::create(&session, y).unwrap();
+        assert!(
+            recto_index::seal::CorpusSeal::open(&handed, x, &x_header).is_ok(),
+            "what X's helper was handed doesn't open X"
+        );
+        assert!(
+            recto_index::seal::CorpusSeal::open(&handed, y, &y_header).is_err(),
+            "what X's helper was handed opens Y"
+        );
+        let job: Value = serde_json::from_slice(reader).unwrap();
+        assert_eq!(job["key"], x.hex(), "the job after the key isn't the corpus it's bound to");
+    }
+
+    /// Failure (the second review's item 1, 2026-11-15): a session that asked for an agent's folder another live session holds, and so got no claim on it, sets that folder aside at its own end, out from under the session still using it. Only a folder this session holds is set aside; the other's stays while its holder lives.
+    #[test]
+    fn a_session_without_a_claim_leaves_another_sessions_folder() {
+        let temp = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-agent-claim-");
+        let root = temp.join("corpus.noindex");
+        let paths = corpus::CorpusPaths::new(&root, key(1));
+        for dir in [root.as_path(), paths.dir.parent().unwrap(), &paths.dir, &paths.app] {
+            recto_platform::local::ensure_private_dir(dir).unwrap();
+        }
+        let theirs = corpus::claim_agent_folder(&root, key(1)).expect("the other session's claim");
+        let indexer = Indexer::with_runner(&root, Box::new(Fails));
+        Indexing::made_agent_folder(&indexer, key(1));
+        indexer.shut_down();
+        assert!(paths.agent.is_dir(), "another live session's folder was set aside at this one's end");
+        drop(theirs);
+    }
+
+    /// Failure (the second review's item 8, 2026-11-15): a process that holds the Find key outside the helper, the app or `recto` with an index, can still leave an image of its memory, the key and pages' text in it, if a crash comes after someone raised the core limit. Making the session's indexer lowers it to nothing, for good.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_process_with_an_index_leaves_no_core() {
+        let _indexer = Indexer::new(Path::new("/nowhere"), Plan::Memory);
+        assert_eq!(
+            recto_platform::find_key::core_limit(),
+            Some((0, 0)),
+            "a process with an index may still write a core"
         );
     }
 
