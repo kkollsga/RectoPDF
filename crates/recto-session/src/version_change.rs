@@ -3,11 +3,11 @@
 //! held and said, never put on another page).
 //!
 //! When a read of a tab finds its file is another version than its edits were made on, and that version is known (`compare_read_with_edits`), the
-//! list may follow ([`crate::edit::identity::may_follow`]). The app's page-identity thread then runs the three steps here, as it runs
+//! list may follow (`edit::identity::may_follow`). The app's page-identity thread then runs the three steps here, as it runs
 //! [`crate::identify`]'s: [`work`] says which tabs and what's known of their pages, under the session's lock and briefly; [`read`] opens the new version
 //! through the file wall and matches the pages ([`crate::edit::matcher`]), off the lock; [`followed`] takes the match in under the lock, if nothing
 //! changed meanwhile, and either puts the list onto the new version ([`crate::edit::rebase`]) and says so, or holds it exactly as before (the tab says
-//! its file changed under its edits, as it did before the matcher: [`crate::fit`]), all or nothing for 0.1.1.
+//! its file changed under its edits, as it did before the matcher: `fit.rs`), all or nothing for 0.1.1.
 //!
 //! **Never for a protected document**: a tab opened with a password, or needing one, has no named pages read ([`crate::identify`]), and is left out
 //! here before anything is computed, so its edits are held as before and an agent learns nothing new of it. Nor for a file only the renderer reads.
