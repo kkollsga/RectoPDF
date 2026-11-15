@@ -26,8 +26,13 @@
 #     A alone opens with no prompt for A and B and reads, through public API, exactly as the app's own does (three entries, Decrypt
 #     naming A, no partition entry visible); a partition entry for the team forged at the add is taken and shows; set after the add,
 #     it's refused. So no check of an item's access can tell the app's own from a planted one, and the app makes none.
-#   - Once A's item is there, what another signature can do to it: C and D add an item of the same service and account in the same
-#     keychain, replace its data (SecItemUpdate) and set its access (SecKeychainItemSetAccess). Reported, with B reading A's item after.
+#   - Last, after everything that must hold, in a fresh keychain: once A's item is there, what another signature can do to it. C and
+#     D add an item of the same service and account, replace its data (SecItemUpdate) and set its access (SecKeychainItemSetAccess);
+#     what B then reads is reported. Measured on the team's signature (run 43708234469): C, ad hoc, is refused a second item (-25299)
+#     but replaces the app's item's data (0, in 8 ms: its access lets any application encrypt), and its change of access waited; D,
+#     the team's with another identifier, is refused all three (-25293); and after C's update B can't read the item (-25293). So a
+#     program of this user's can overwrite the app's item at any time, before or after the app makes its key: this keychain can't
+#     hold the claim against a program that sets out to.
 # What must hold, and fails the run: B, a later build, reads A's item with no prompt; C's and D's reads of it, a locked keychain, and
 # C's delete are refused without waiting; and an item in a keychain of a planter's own, ahead in the search list or the default, is
 # never found by the app's lookup of the one keychain. Everything else is reported.
@@ -187,13 +192,6 @@ fresh
 step ok a add global "$pk"
 step report a inspect global "$pk" "$team"
 step report b inspect global "$pk" "$team"
-echo "A's item is there: what C and D can do to it"
-for other in c d; do
-  step report "$other" add global "$pk"
-  step report "$other" update global "$pk"
-  step report "$other" set-access global "$pk" "$team" self
-done
-step ok b read global "$pk"
 for planter in c d; do
   echo "Planted by $planter, trusting A alone"
   fresh
@@ -220,4 +218,13 @@ echo "Open to any application, by C's SecItemAdd with an open access list"
 fresh
 step ok c add-open global "$pk"
 inspects
+echo "Last: A's item is there; what C and D can do to it, and what B reads after (reported)"
+fresh
+step ok a add global "$pk"
+for other in c d; do
+  step report "$other" add global "$pk"
+  step report "$other" update global "$pk"
+  step report "$other" set-access global "$pk" "$team" self
+done
+step report b read global "$pk"
 exit "$failed"
