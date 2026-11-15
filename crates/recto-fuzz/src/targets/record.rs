@@ -263,13 +263,24 @@ fn use_a_linked_pair(data: &[u8]) {
     let journal = |(tab, path, stamp, base_seq, base_turns, turns): &Shape| -> Vec<u8> {
         let header = JournalHeader::new(*tab, path, *stamp, 12, *base_seq);
         let base = (*base_turns > 0)
-            .then(|| PageEdits::replay(12, None, &vec![turn.clone(); *base_turns]).ok().map(|(list, _)| list.to_record()))
+            .then(|| {
+                PageEdits::replay(12, None, &vec![turn.clone(); *base_turns])
+                    .ok()
+                    .map(|(list, _)| list.to_record())
+            })
             .flatten();
         let mut bytes = record::journal_start(&header, base.as_ref());
         bytes.extend_from_slice(&record::journal_lines(&vec![turn.clone(); *turns]));
         bytes
     };
-    let own: Shape = (1, file.clone(), Some(first), u64::from(byte(1) % 4), usize::from(byte(2) % 3), usize::from(byte(3) % 3));
+    let own: Shape = (
+        1,
+        file.clone(),
+        Some(first),
+        u64::from(byte(1) % 4),
+        usize::from(byte(2) % 3),
+        usize::from(byte(3) % 3),
+    );
     let other: Shape = (
         if byte(4) & 1 == 0 { 1 } else { 2 },
         if byte(4) & 2 == 0 { file.clone() } else { root.join("other.pdf") },
@@ -375,10 +386,10 @@ fn use_a_linked_pair(data: &[u8]) {
         assert!(!written.contains("edits_set_aside_after_quit"), "never in the record");
         if said.iter().any(|said| *said) {
             assert!(
-                session
+                session.tabs().iter().any(|tab| session
                     .tabs()
-                    .iter()
-                    .any(|tab| session.tabs().tab_notice(tab.id).is_some_and(|notice| notice.code() == "edits_set_aside_after_quit")),
+                    .tab_notice(tab.id)
+                    .is_some_and(|notice| notice.code() == "edits_set_aside_after_quit")),
                 "the notice is on its tab"
             );
         }

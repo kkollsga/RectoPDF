@@ -314,7 +314,10 @@ fn a_follows_job_reading_and_match_print_no_digest_and_no_id() {
     let hex = |bytes: &[u8; 16]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
     secrets.extend([hex(&document.first), hex(&document.second)]);
     let clean = |printed: String| {
-        assert!(!secrets.is_empty() && secrets.iter().all(|secret| !printed.contains(secret.as_str())), "{printed}");
+        assert!(
+            !secrets.is_empty() && secrets.iter().all(|secret| !printed.contains(secret.as_str())),
+            "{printed}"
+        );
     };
     let jobs = version_change::work(&mut bed.s);
     let job = jobs.first().expect("a job");

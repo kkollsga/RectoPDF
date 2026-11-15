@@ -222,11 +222,12 @@ impl Matcher {
     /// Whether every one of `pages` (old page numbers) is found by its object number, so no scan is needed. Never for another document (review M1):
     /// its pages need a neighbour to agree, which only the scan can see.
     pub fn all_found_by_object(&self, pages: &[u32]) -> bool {
-        self.same_document && pages.iter().all(|page| {
-            self.old
-                .binary_search_by_key(page, |(at, _)| *at)
-                .is_ok_and(|at| matches!(self.by_id[at], Some(Some(_))))
-        })
+        self.same_document
+            && pages.iter().all(|page| {
+                self.old
+                    .binary_search_by_key(page, |(at, _)| *at)
+                    .is_ok_and(|at| matches!(self.by_id[at], Some(Some(_))))
+            })
     }
 
     /// **Rule 2:** the next page of the new version, in order from the first, is `now`. Each page is decided once the page after it is seen.

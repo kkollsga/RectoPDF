@@ -98,7 +98,12 @@ fn journal_from(store: &RecordStore, name: &str, file: &Path, stamp: FileStamp, 
     };
     assert!(store.write_journals(&append(base_seq, Vec::new(), Some(base.to_record())), false).1.is_none());
     if more > 0 {
-        assert!(store.write_journals(&append(base_seq + more as u64, vec![rotation(); more], None), false).1.is_none());
+        assert!(
+            store
+                .write_journals(&append(base_seq + more as u64, vec![rotation(); more], None), false)
+                .1
+                .is_none()
+        );
     }
 }
 
@@ -329,7 +334,11 @@ fn a_linked_journal_about_another_version_than_now_is_set_aside() {
         assert!(!restored.journals.contains_key(&new), "{why}");
         assert!(bed.journals().join(&new).with_extension("not-merged").exists(), "{why}: set aside");
         // Review M2: a list with unsaved edits set aside, not one a follow superseded, is said on its tab, and never written into the record.
-        assert_eq!(shown(restored), (Some("edits_set_aside_after_quit"), false), "{why}: said, and not in the record");
+        assert_eq!(
+            shown(restored),
+            (Some("edits_set_aside_after_quit"), false),
+            "{why}: said, and not in the record"
+        );
     }
 }
 
@@ -386,7 +395,11 @@ fn a_leftover_with_the_tabs_id_never_displaces_a_journal_about_the_file_now() {
         "the tab keeps the journal it claimed"
     );
     assert!(bed.journals().join(&leftover).with_extension("not-merged").exists(), "the leftover set aside");
-    assert_eq!(shown(restored), (None, false), "all of the leftover's steps are in the tab's list: nothing to say");
+    assert_eq!(
+        shown(restored),
+        (None, false),
+        "all of the leftover's steps are in the tab's list: nothing to say"
+    );
 }
 
 /// **Failure caught (review M2):** two lists of one tab about the same version, left by a crash between a journal started again under another name and

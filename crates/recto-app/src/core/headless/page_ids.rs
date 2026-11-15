@@ -325,7 +325,8 @@ fn a_follow_the_person_was_told_of_isnt_said_again_after_a_restart() {
     let app = app.kill().start();
     assert!(said(&app), "a crash before the person saw it: said again");
     let doc = tab_named(&app, "doc");
-    app.recto(Level::Full, &["tap", &format!("#{}", tab_named(&app, "other").0)]).expect("to the other tab");
+    app.recto(Level::Full, &["tap", &format!("#{}", tab_named(&app, "other").0)])
+        .expect("to the other tab");
     app.settle();
     assert!(!said(&app), "left with its notice: told");
     app.advance(6_000);

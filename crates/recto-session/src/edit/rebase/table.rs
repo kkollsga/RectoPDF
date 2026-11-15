@@ -766,7 +766,11 @@ fn the_shortcut_by_object_number_is_taken_only_for_the_same_document() {
     assert_eq!(spent.pages() as usize, named.len(), "the same document: only the pages named are read");
     let (found, spent) = super::super::matcher::match_pages_spending(&named, &wanted, &new, WorkCaps::STANDARD, false);
     assert!(found.iter().all(|(_, found)| found.page().is_some()), "by neighbours: {found:?}");
-    assert_eq!(spent.pages() as usize, new.len(), "another document: scanned, and nothing spent by object number");
+    assert_eq!(
+        spent.pages() as usize,
+        new.len(),
+        "another document: scanned, and nothing spent by object number"
+    );
 }
 
 /// **Failure caught:** a list whose new version would be longer than a document may be ([`super::super::MAX_PAGES`]) built anyway, past the cap every

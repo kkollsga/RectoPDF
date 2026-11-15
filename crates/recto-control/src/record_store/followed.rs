@@ -17,9 +17,9 @@
 
 use super::{JournalRead, Progress, claim, page_ids, read_journal, restored_from};
 use recto_platform::{FileStamp, file_stamp};
+use recto_session::RestoredEdits;
 use recto_session::edit::{PageEdits, identity};
 use recto_session::record::{FileNotice, FileRecord, JournalHeader, SessionRecord, TabEntry};
-use recto_session::RestoredEdits;
 use std::collections::HashMap;
 use std::path::Path;
 

@@ -340,9 +340,7 @@ mod tests {
         );
         // The app's own counts, with a time limit no machine meets: this test is of the counts, and the time limit has its own (below). With the app's
         // 500 ms counted from the test's start, a starved machine ran out of it before the last reads and found nothing (a full check at load 32).
-        let keep = Limits {
-            ..Limits::counted()
-        };
+        let keep = Limits { ..Limits::counted() };
         let quad = "50 720 150 720 50 708 150 708 ";
         // Highlights: `max` of them are all kept, one more is cut and said.
         let many = |count: usize| vec![ONE; count];
