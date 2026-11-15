@@ -1189,21 +1189,13 @@ fn resume_point(paths: &CorpusPaths, pages: u32) -> io::Result<ResumePoint> {
         point.bytes += record.blob_len() as u64 + RECORD_LEN as u64;
     }
     drop(pack);
-    if let Some(file) = existing_plain_file(&paths.table) {
-        file.set_len(u64::from(point.pages) * RECORD_LEN as u64)?;
-    }
-    if let Some(file) = existing_plain_file(&paths.pack) {
-        file.set_len(point.pack_end)?;
+    // Opened as a build opens them, so a link or a named pipe put in a file's place is never followed or waited on, and the build after this stops on it.
+    for (path, len) in [(&paths.table, u64::from(point.pages) * RECORD_LEN as u64), (&paths.pack, point.pack_end)] {
+        if let Ok(file) = local::append_private_file(path) {
+            file.set_len(len)?;
+        }
     }
     Ok(point)
-}
-
-/// A corpus file that's there as a plain file, opened to be cut back: as a build opens its files, following no link and not waiting. A link or a named pipe put in its place is left as it is, never followed or waited on (found beside the Find text's second security review, 2026-11-15): the build after this opens the same way and stops on it.
-fn existing_plain_file(path: &Path) -> Option<File> {
-    fs::symlink_metadata(path)
-        .is_ok_and(|meta| meta.is_file())
-        .then(|| local::append_private_file(path).ok())
-        .flatten()
 }
 
 /// Whether a record's text and what's beside it are really there, as they were written.
@@ -1655,21 +1647,19 @@ pub fn clear_all(root: &Path) -> io::Result<Cleared> {
     Ok(report)
 }
 
-/// Removes a corpus's folder unless a build holds its lock. A build only ever locks a plain file ([`local::append_private_file`]), so anything else at the lock's name, a link or a named pipe someone put there, holds nothing, and is never opened: opening a pipe to write would wait for a reader for ever (the Find text's second security review, item 2, 2026-11-15). The open itself follows no link and doesn't wait, as a build's does, in case the name is changed between the look and the open.
 fn remove_unless_building(root: &Path, key: CorpusKey) -> io::Result<()> {
     let paths = CorpusPaths::new(root, key);
     let lock = match fs::symlink_metadata(&paths.lock) {
         Ok(meta) if meta.is_file() => Some(local::append_private_file(&paths.lock)?),
-        Ok(_) => None,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error),
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+        _ => None,
     };
     if let Some(lock) = &lock
         && lock.try_lock().is_err()
     {
         return Err(io::ErrorKind::WouldBlock.into());
     }
-    // `remove_dir_all` doesn't follow links.
+    // A build only locks a plain file, opened as above, with no link followed and no wait: a link or a named pipe at the lock's name is held by no build, and is never opened, as a pipe would wait for a reader for ever (the Find text's second security review, item 2, 2026-11-15). `remove_dir_all` doesn't follow links.
     fs::remove_dir_all(root.join(key.hex()))
 }
 
