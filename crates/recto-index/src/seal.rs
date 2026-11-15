@@ -1,6 +1,8 @@
 //! **The Find text, sealed** (owner, 2026-11-15: "Find text is a indexed copy of the pdf text? Lets store it encrypted"). Every part of a corpus that came from the document is kept as independent chunks of AES-256-GCM, so a search still reads one page at a time into one buffer, a build can still be killed at any point, and a chunk that's been changed, cut short, moved to another page or copied from another corpus fails to open, which throws the corpus away as any damage does.
 //!
-//! **One key per corpus.** Each corpus has a header, `seal.bin`: 8 bytes of magic, a byte saying whether the key it was sealed with lasts past its run, 32 random bytes of salt, and a check chunk over nothing whose associated data holds that byte. Its key is HKDF-SHA256 of the Find key ([`recto_platform::find_key`]) with that salt, and the corpus's own key in the info, so a folder renamed or copied under another file's key can't be opened. A new header is made whenever a corpus is started from nothing, so a rebuilt corpus never shares a key with what it replaces.
+//! **One key per corpus.** Each corpus has a header, `seal.bin`: 8 bytes of magic, a byte saying whether the key it was sealed with lasts past its run, 32 random bytes of salt, and a check chunk over nothing whose associated data holds that byte. Its key is HKDF-SHA256 of the corpus's own root key with that salt, and the corpus's key in the info, so a folder renamed or copied under another file's key can't be opened. A new header is made whenever a corpus is started from nothing, so a rebuilt corpus never shares a key with what it replaces.
+//!
+//! **One root per corpus, and the helper gets only that** (the security read of 2026-11-15, S1). A corpus's root key is HKDF-SHA256 of the session's Find key ([`recto_platform::find_key`]), with no salt and the corpus's key in the info. The session hands the indexer, for the one file it builds, a key bound to that corpus ([`grant_for`]): its root, its source and its corpus. A bound key derives that corpus's seals and no other's, so a helper, the real one or one put in its place in the app's bundle after the app's check, can read and seal the one corpus of the file it was asked to build, which it could read anyway as it reads the file, and nothing of any other corpus, past or to come.
 //!
 //! **Nonces are random,** 96 bits from the OS for every chunk, and written in front of it. A corpus holds at most 200,000 pages, each sealed at most 1 + 3 retries times plus restarts, so well under 2^21 chunks per key: the chance of two alike is under 2^-55, far inside NIST's 2^-32 for random nonces (SP 800-38D §8.3). A restarted build draws new ones, so a page sealed twice, killed and sealed again with other text, never reuses a nonce. Nothing to count, so nothing to get wrong after a kill.
 //!
@@ -28,6 +30,8 @@ const SALT_BYTES: usize = 32;
 pub const HEADER_BYTES: usize = MAGIC.len() + 1 + SALT_BYTES + OVERHEAD;
 const SALT_AT: usize = MAGIC.len() + 1;
 const INFO: &[u8] = b"recto find text v4\0";
+/// The info a corpus's root key is derived with, before its corpus key.
+const ROOT_INFO: &[u8] = b"recto find text v4 corpus root\0";
 
 /// What a chunk is, said in its associated data, so one can't stand for another.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,16 +95,42 @@ impl std::fmt::Debug for CorpusSeal {
     }
 }
 
+/// A corpus's root key: derived from a session's key, or a bound key's own bytes when it's bound to this corpus. `None` for a key bound to another corpus. The caller overwrites it when done.
+fn corpus_root(find_key: &FindKey, corpus: CorpusKey) -> Option<[u8; 32]> {
+    match find_key.binding() {
+        Some(bound) if bound == corpus.as_bytes() => Some(*find_key.bytes()),
+        Some(_) => None,
+        None => {
+            let mut root = [0u8; 32];
+            let hkdf = hkdf::Hkdf::<Sha256>::new(None, find_key.bytes());
+            // 32 bytes is far inside HKDF-SHA256's limit of 8,160.
+            let _ = hkdf.expand_multi_info(&[ROOT_INFO, corpus.as_bytes()], &mut root);
+            Some(root)
+        }
+    }
+}
+
+/// **What the indexer is handed for one corpus:** a key bound to it, from the session's key, which seals and opens that corpus and no other ([`recto_platform::find_key::FindKey::bound`]). `None` when the key given is itself bound to another corpus.
+#[must_use]
+pub fn grant_for(find_key: &FindKey, corpus: CorpusKey) -> Option<FindKey> {
+    let mut root = corpus_root(find_key, corpus)?;
+    let grant = FindKey::bound(&root, find_key.source(), *corpus.as_bytes());
+    zeroize::Zeroize::zeroize(&mut root);
+    Some(grant)
+}
+
 impl CorpusSeal {
-    fn derive(find_key: &FindKey, salt: &[u8], corpus: CorpusKey) -> Self {
+    /// A corpus's seal for a salt, through the corpus's root key ([`corpus_root`]). `None` when the key is bound to another corpus.
+    fn derive(find_key: &FindKey, salt: &[u8], corpus: CorpusKey) -> Option<Self> {
+        let mut root = corpus_root(find_key, corpus)?;
         let mut okm = [0u8; 32];
-        let hkdf = hkdf::Hkdf::<Sha256>::new(Some(salt), find_key.bytes());
+        let hkdf = hkdf::Hkdf::<Sha256>::new(Some(salt), &root);
         // 32 bytes is far inside HKDF-SHA256's limit of 8,160.
         let _ = hkdf.expand_multi_info(&[INFO, corpus.as_bytes()], &mut okm);
         let cipher = Aes256Gcm::new(&okm.into());
-        okm.fill(0);
-        std::hint::black_box(&okm);
-        Self { cipher }
+        zeroize::Zeroize::zeroize(&mut okm);
+        zeroize::Zeroize::zeroize(&mut root);
+        Some(Self { cipher })
     }
 
     /// A new corpus's seal, and its header to be written before its first chunk.
@@ -111,7 +141,7 @@ impl CorpusSeal {
     pub fn create(find_key: &FindKey, corpus: CorpusKey) -> std::io::Result<(Self, Vec<u8>)> {
         let mut salt = [0u8; SALT_BYTES];
         getrandom::fill(&mut salt).map_err(|_| std::io::Error::other("no randomness"))?;
-        let seal = Self::derive(find_key, &salt, corpus);
+        let seal = Self::derive(find_key, &salt, corpus).ok_or_else(|| std::io::Error::other("a key bound to another corpus"))?;
         let lasting = find_key.source().lasts();
         let mut header = Vec::with_capacity(HEADER_BYTES);
         header.extend_from_slice(MAGIC);
@@ -130,7 +160,7 @@ impl CorpusSeal {
     /// [`Unopened`] for anything else: the wrong key, another corpus's header, or bytes that aren't one.
     pub fn open(find_key: &FindKey, corpus: CorpusKey, header: &[u8]) -> Result<Self, Unopened> {
         let lasting = Self::lasting(header).ok_or(Unopened)?;
-        let seal = Self::derive(find_key, &header[SALT_AT..SALT_AT + SALT_BYTES], corpus);
+        let seal = Self::derive(find_key, &header[SALT_AT..SALT_AT + SALT_BYTES], corpus).ok_or(Unopened)?;
         let mut check = [0u8; OVERHEAD];
         check.copy_from_slice(&header[SALT_AT + SALT_BYTES..]);
         seal.open_in_place(Purpose::Check(lasting), &mut check)?;
@@ -210,6 +240,37 @@ mod tests {
         let mut out = Vec::new();
         seal.seal(purpose, &mut out, |out| out.extend_from_slice(text)).unwrap();
         out
+    }
+
+    /// Failure (the security read of 2026-11-15, S1): what the indexer is handed for one corpus opens another, so a helper put in the app's place gets every corpus's text from one build; or it opens nothing of its own corpus, made by the session or by itself, so a build's corpus is never read; or it carries the session's key. A grant for X opens X's header both ways round and seals what the session reads, and opens nothing of Y, made by the session or by a grant for Y.
+    #[test]
+    fn a_grant_opens_its_own_corpus_and_no_other() {
+        let session = FindKey::for_tests(1);
+        let (x, y) = (corpus(1), corpus(2));
+        let grant = grant_for(&session, x).unwrap();
+        assert_eq!(grant.binding(), Some(x.as_bytes()));
+        assert_ne!(grant.bytes(), session.bytes(), "the grant is the session's key");
+        let (session_seal, session_header) = CorpusSeal::create(&session, x).unwrap();
+        let (grant_seal, grant_header) = CorpusSeal::create(&grant, x).unwrap();
+        assert!(
+            CorpusSeal::open(&grant, x, &session_header).is_ok(),
+            "the grant doesn't open its corpus as the session made it"
+        );
+        let reopened = CorpusSeal::open(&session, x, &grant_header).expect("the session doesn't open what the grant made");
+        let mut chunk = sealed(&grant_seal, Purpose::Page(0), b"the page");
+        let opened = reopened.open_in_place(Purpose::Page(0), &mut chunk).unwrap();
+        assert_eq!(&chunk[opened], b"the page");
+        drop(session_seal);
+        let (_, other_header) = CorpusSeal::create(&session, y).unwrap();
+        assert!(CorpusSeal::open(&grant, y, &other_header).is_err(), "a grant for X opened Y");
+        assert!(CorpusSeal::create(&grant, y).is_err(), "a grant for X sealed Y");
+        assert!(grant_for(&grant, y).is_none(), "a grant for X gave one for Y");
+        let (_, y_by_its_grant) = CorpusSeal::create(&grant_for(&session, y).unwrap(), y).unwrap();
+        assert!(
+            CorpusSeal::open(&grant, y, &y_by_its_grant).is_err(),
+            "a grant for X opened what Y's grant made"
+        );
+        assert!(CorpusSeal::open(&grant, x, &other_header).is_err(), "Y's header opened as X's");
     }
 
     /// Failure: a page's text is on disk as it is, or comes back other than it went in, or a sealed chunk is longer than its text and the 28 bytes said.

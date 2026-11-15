@@ -5,7 +5,7 @@
 //! - **A file in a test state folder**, for quiet runs and tests, which must never touch the person's Keychain: [`FindKey::from_state_file`]. Only a state folder named by `RECTO_STATE_DIR` can get one, by the caller's choice, and the file is the state folder's own.
 //! - **Memory**, for everything else and whenever the Keychain can't be had: a development build, a locked or refusing Keychain, an item this copy can't read. What's sealed with it can't be read by the next run, which removes it and builds again when asked.
 //!
-//! The indexer gets the key from the session on its stdin, as 32 raw bytes before its job: never in its arguments, its environment or a file. [`FindKey::write_to`] and [`FindKey::read_from`] are the two ends.
+//! **The indexer never gets this key** (the security read of 2026-11-15, S1: a helper swapped in the app's bundle after its check would have been handed the key to every corpus). It gets a key *bound* to the one corpus it's building, derived from this one by `recto_index::seal::grant_for`, which opens and seals that corpus and no other, on its stdin before its job: never in its arguments, its environment or a file. [`FindKey::write_to`] refuses any key that isn't bound, and [`FindKey::read_from`] takes nothing else.
 //!
 //! **What's overwritten, and what isn't** (as true as Rust lets this be said): the key's own 32 bytes, in one box they're written into in place (from the OS's randomness, the pipe, the Keychain's data or a key file's bytes, never through a copy on the stack) and never moved, and a key file's bytes once read, are overwritten when they go (`zeroize`). Not: the copy CoreFoundation makes to add the key to the Keychain or to hand it back, which is its memory to free ([`keychain`]); the bytes in the pipe's kernel buffer until the helper reads them; and, from slice 2, what HKDF and AES derive from it on their own stacks beyond what `aes-gcm`'s `zeroize` covers. A process that can read this one's memory has the key anyway.
 
@@ -70,7 +70,12 @@ impl Source {
 pub struct FindKey {
     bytes: Box<[u8; KEY_BYTES]>,
     source: Source,
+    /// For a key bound to one corpus, that corpus's key (not secret: it names the corpus, as its folder does), and then `bytes` are that corpus's own root key. `None` for the session's key, from which every corpus's is derived.
+    binding: Option<[u8; KEY_BYTES]>,
 }
+
+/// The version of what crosses a helper's stdin: a bound key, then its source, then its corpus. Anything else is refused.
+const FRAME_VERSION: u8 = 2;
 
 impl FindKey {
     /// A new key for this run alone.
@@ -94,7 +99,7 @@ impl FindKey {
     fn fresh(source: Source) -> io::Result<Self> {
         let mut bytes = Box::new([0u8; KEY_BYTES]);
         getrandom::fill(bytes.as_mut_slice()).map_err(|_| io::Error::other("no randomness"))?;
-        Ok(Self { bytes, source })
+        Ok(Self { bytes, source, binding: None })
     }
 
     /// The key kept in a test state folder's own file, made the first time. A file that's there and isn't exactly 32 bytes, or that anyone but this user may read or write (any bit of group or other in its mode), or isn't a plain file of theirs, is refused, never fixed: the caller runs on a key in memory.
@@ -152,9 +157,27 @@ impl FindKey {
         let mut key = Self {
             bytes: Box::new([0u8; KEY_BYTES]),
             source,
+            binding: None,
         };
         key.bytes.copy_from_slice(bytes);
         Some(key)
+    }
+
+    /// A key bound to one corpus: `root` is that corpus's own root key, derived from the session's key by `recto_index::seal::grant_for`, the only caller, and `corpus` its corpus key. It keeps the session's source, as what it seals is the session's. Copied straight into the key's own box.
+    #[must_use]
+    pub fn bound(root: &[u8; KEY_BYTES], source: Source, corpus: [u8; KEY_BYTES]) -> Self {
+        let mut key = Self {
+            bytes: Box::new([0u8; KEY_BYTES]),
+            source,
+            binding: Some(corpus),
+        };
+        key.bytes.copy_from_slice(root);
+        key
+    }
+
+    /// The corpus this key is bound to, if it's bound to one; `None` for a session's key.
+    pub fn binding(&self) -> Option<&[u8; KEY_BYTES]> {
+        self.binding.as_ref()
     }
 
     /// What's sealed with this. Only the sealing code asks.
@@ -166,30 +189,47 @@ impl FindKey {
         self.source
     }
 
-    /// Hands the key to a helper: 32 raw bytes on its stdin, then one for its source, before anything else is written there. The source goes too, as what the helper seals says whether it lasts.
+    /// Hands a key bound to one corpus to a helper, on its stdin before anything else is written there: the frame's version, the 32 bytes, its source's byte (what the helper seals says whether it lasts), and the 32 bytes of the corpus it's bound to. Never a session's key.
     ///
     /// # Errors
     ///
-    /// When the pipe is closed.
+    /// When the key isn't bound to a corpus, or the pipe is closed.
     pub fn write_to(&self, pipe: &mut impl Write) -> io::Result<()> {
+        let Some(corpus) = &self.binding else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "only a key bound to one corpus is handed to a helper",
+            ));
+        };
+        pipe.write_all(&[FRAME_VERSION])?;
         pipe.write_all(self.bytes.as_slice())?;
-        pipe.write_all(&[self.source.byte()])
+        pipe.write_all(&[self.source.byte()])?;
+        pipe.write_all(corpus)
     }
 
-    /// The helper's end: exactly 32 bytes, read straight into the key's own memory, so no buffer holds a copy, then its source's byte. `stdin` must be read unbuffered for that: [`read_from_stdin`].
+    /// The helper's end: the frame's version, then 32 bytes read straight into the key's own memory, so no buffer holds a copy, then its source's byte and its corpus. `stdin` must be read unbuffered for that: [`read_from_stdin`]. What it gives is always bound to that corpus.
     ///
     /// # Errors
     ///
-    /// When fewer than 33 bytes come, or the last isn't a source.
+    /// When the version isn't this one's, fewer bytes come than the frame has, or the source isn't one.
     pub fn read_from(pipe: &mut impl Read) -> io::Result<Self> {
+        let mut version = [0u8; 1];
+        pipe.read_exact(&mut version)?;
+        if version[0] != FRAME_VERSION {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "not a key frame this helper reads"));
+        }
         let mut key = Self {
             bytes: Box::new([0u8; KEY_BYTES]),
             source: Source::Memory,
+            binding: None,
         };
         pipe.read_exact(key.bytes.as_mut_slice())?;
         let mut source = [0u8; 1];
         pipe.read_exact(&mut source)?;
         key.source = Source::from_byte(source[0]).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not a source"))?;
+        let mut corpus = [0u8; KEY_BYTES];
+        pipe.read_exact(&mut corpus)?;
+        key.binding = Some(corpus);
         Ok(key)
     }
 
@@ -199,6 +239,7 @@ impl FindKey {
         Self {
             bytes: Box::new([byte; KEY_BYTES]),
             source: Source::Memory,
+            binding: None,
         }
     }
 }
@@ -285,7 +326,11 @@ impl Drop for FindKey {
 
 impl std::fmt::Debug for FindKey {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(out, "FindKey({})", self.source.code())
+        if self.binding.is_some() {
+            write!(out, "FindKey({}, one corpus)", self.source.code())
+        } else {
+            write!(out, "FindKey({})", self.source.code())
+        }
     }
 }
 
@@ -345,26 +390,38 @@ mod tests {
         let key = FindKey::in_memory().unwrap();
         assert_eq!(format!("{key:?}"), "FindKey(memory)");
         assert_ne!(key.bytes(), FindKey::in_memory().unwrap().bytes(), "two fresh keys are the same");
+        // The session's key never crosses a pipe (S1): only one bound to a corpus does.
+        assert!(key.write_to(&mut Vec::new()).is_err(), "a session's key was written to a helper");
+        let bound = FindKey::bound(&[5u8; KEY_BYTES], Source::Keychain, [6u8; KEY_BYTES]);
+        assert_eq!(format!("{bound:?}"), "FindKey(keychain, one corpus)");
         let mut pipe = Vec::new();
-        key.write_to(&mut pipe).unwrap();
+        bound.write_to(&mut pipe).unwrap();
         pipe.extend_from_slice(b"{\"job\":1}\n");
         let mut reader = pipe.as_slice();
         let handed = FindKey::read_from(&mut reader).unwrap();
-        assert_eq!(handed.bytes(), key.bytes());
+        assert_eq!((handed.bytes(), handed.binding()), (bound.bytes(), Some(&[6u8; KEY_BYTES])));
         assert_eq!(
             handed.source(),
-            key.source(),
+            bound.source(),
             "a handed key loses its session's source, so what the helper seals says it doesn't last"
         );
+        assert_eq!(reader, b"{\"job\":1}\n", "the job after the key is left for the job's reader");
         for source in [Source::Memory, Source::MemoryForNow, Source::Keychain, Source::StateFile] {
             assert_eq!(Source::from_byte(source.byte()), Some(source));
         }
-        assert!(FindKey::read_from(&mut &[1u8; 32][..]).is_err(), "a key with no source was taken");
-        let mut bad = vec![1u8; 32];
-        bad.push(9);
-        assert!(FindKey::read_from(&mut bad.as_slice()).is_err(), "a source that isn't one was taken");
-        assert_eq!(reader, b"{\"job\":1}\n", "the job after the key is left for the job's reader");
-        assert!(FindKey::read_from(&mut &[1u8; 31][..]).is_err(), "a short key was taken");
+        let mut frame = Vec::new();
+        bound.write_to(&mut frame).unwrap();
+        let mut old = frame.clone();
+        old[0] = 1;
+        assert!(FindKey::read_from(&mut old.as_slice()).is_err(), "a frame of another version was taken");
+        let mut no_source = frame.clone();
+        no_source[1 + KEY_BYTES] = 9;
+        assert!(FindKey::read_from(&mut no_source.as_slice()).is_err(), "a source that isn't one was taken");
+        assert!(FindKey::read_from(&mut &frame[..frame.len() - 1]).is_err(), "a frame cut short was taken");
+        assert!(
+            FindKey::read_from(&mut &[1u8; 33][..]).is_err(),
+            "the old frame, a key and its source, was taken"
+        );
     }
 
     /// Failure: a test state folder's key changes from one run to the next, so every quiet run's corpus is unreadable to the next; or a file that isn't exactly a key, or that anyone else may read or write, is used; or making the key leaves a half-written file a racer could read, or a temp file behind.

@@ -292,7 +292,11 @@ fn start_helper(file: &Path, root: &Path, key: CorpusKey) -> std::process::Child
         .spawn()
         .unwrap();
     let line = serde_json::json!({ "file": file, "root": root, "key": key.hex() }).to_string() + "\n";
-    find_key_of(root).write_to(child.stdin.as_mut().unwrap()).unwrap();
+    // As the session hands it: a key bound to this corpus alone, never the session's own.
+    recto_index::seal::grant_for(&find_key_of(root), key)
+        .unwrap()
+        .write_to(child.stdin.as_mut().unwrap())
+        .unwrap();
     child.stdin.as_mut().unwrap().write_all(line.as_bytes()).unwrap();
     child
 }

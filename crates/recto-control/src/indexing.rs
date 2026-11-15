@@ -412,13 +412,15 @@ impl Runner for HelperProcess {
         let (Some(file), Some(root)) = (job.path.to_str(), root.to_str()) else {
             return failed("path_not_text");
         };
+        // Made before the helper starts, so nothing's started for a job it couldn't be given.
+        let Some(grant) = recto_index::seal::grant_for(find_key, job.key) else {
+            return failed("no_find_key");
+        };
         // It inherits nothing it doesn't need.
         let Ok(Spawned { mut child, mut stdin, stdout }) = crate::helpers::spawn_helper(&exe, &[], self.priority) else {
             return failed("indexer_wouldnt_start");
         };
-        // On stdin, so a file's name stays out of `ps`: the Find key first, as 32 raw bytes from its own memory, then the job. Never in the arguments, the environment or a file.
-        let line = json!({ "file": file, "root": root, "key": job.key.hex() }).to_string() + "\n";
-        if find_key.write_to(&mut stdin).and_then(|()| stdin.write_all(line.as_bytes())).is_err() {
+        if handover(&grant, file, root, job.key, &mut stdin).is_err() {
             let _ = child.kill();
             let _ = child.wait();
             return failed("indexer_wouldnt_start");
@@ -430,6 +432,13 @@ impl Runner for HelperProcess {
         let _ = child.wait();
         read_report(&said)
     }
+}
+
+/// **What the helper is given, on its stdin**, so a file's name stays out of `ps`: a key bound to the one corpus it's to build ([`recto_index::seal::grant_for`]), as its frame, from its own memory, then the job as one line. Never the session's key (the security read of 2026-11-15, S1), and never in the arguments, the environment or a file.
+fn handover(grant: &FindKey, file: &str, root: &str, key: CorpusKey, pipe: &mut impl Write) -> std::io::Result<()> {
+    let line = json!({ "file": file, "root": root, "key": key.hex() }).to_string() + "\n";
+    grant.write_to(pipe)?;
+    pipe.write_all(line.as_bytes())
 }
 
 /// The numbers a helper's report may carry, each a count, a size or a time: what `recto-indexer` says of its build and of its own and its workers' memory.
@@ -850,6 +859,39 @@ mod tests {
             json!({ "plan": "memory", "source": "memory", "why": null }),
             "once taken, where it came from"
         );
+    }
+
+    /// Failure (the security read of 2026-11-15, S1): the session's key is written to the helper, so a helper put in the app's place after its check is handed every corpus at its next build; or what it's handed for one corpus opens another. What crosses the pipe for corpus X holds no run of the session key's bytes, reads back as a key bound to X, and opens X's corpus as the session sealed it, and nothing of Y's.
+    #[test]
+    fn the_helper_is_handed_one_corpus_and_never_the_session_key() {
+        let session = FindKey::in_memory().unwrap();
+        let (x, y) = (key(1), key(2));
+        let grant = recto_index::seal::grant_for(&session, x).unwrap();
+        let mut pipe = Vec::new();
+        handover(&grant, "/nowhere/1.pdf", "/nowhere", x, &mut pipe).unwrap();
+        assert!(
+            !pipe.windows(8).any(|window| session.bytes().windows(8).any(|part| part == window)),
+            "the session key's bytes are in what the helper is handed"
+        );
+        assert!(
+            handover(&session, "/nowhere/1.pdf", "/nowhere", x, &mut Vec::new()).is_err(),
+            "the session key was handed over"
+        );
+        let mut reader = pipe.as_slice();
+        let handed = FindKey::read_from(&mut reader).unwrap();
+        assert_eq!(handed.binding(), Some(x.as_bytes()));
+        let (_, x_header) = recto_index::seal::CorpusSeal::create(&session, x).unwrap();
+        let (_, y_header) = recto_index::seal::CorpusSeal::create(&session, y).unwrap();
+        assert!(
+            recto_index::seal::CorpusSeal::open(&handed, x, &x_header).is_ok(),
+            "what X's helper was handed doesn't open X"
+        );
+        assert!(
+            recto_index::seal::CorpusSeal::open(&handed, y, &y_header).is_err(),
+            "what X's helper was handed opens Y"
+        );
+        let job: Value = serde_json::from_slice(reader).unwrap();
+        assert_eq!(job["key"], x.hex(), "the job after the key isn't the corpus it's bound to");
     }
 
     /// Failure (the second review's item 1, 2026-11-15): a session that asked for an agent's folder another live session holds, and so got no claim on it, sets that folder aside at its own end, out from under the session still using it. Only a folder this session holds is set aside; the other's stays while its holder lives.
