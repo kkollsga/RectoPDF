@@ -10,6 +10,8 @@ pub(crate) type AroundOpen = Box<dyn Fn(bool)>;
 std::thread_local! {
     /// How many bytes a job may read on this thread, when a test says ([`crate::identify::MAX_JOB_BYTES`]).
     pub(crate) static JOB_BYTES: Cell<Option<u64>> = const { Cell::new(None) };
+    /// A version's budget for a list on this thread, when a test says (`crate::edit::identity::VERSION_BYTES`).
+    pub(crate) static VERSION_BYTES: Cell<Option<u64>> = const { Cell::new(None) };
     /// What a test does to the file just before its open (`true`) and just after (`false`), on this thread.
     pub(crate) static AROUND_OPEN: std::cell::RefCell<Option<AroundOpen>> = const { std::cell::RefCell::new(None) };
 }
@@ -66,7 +68,7 @@ fn an_edited_pages_identity_is_read_and_taken_in() {
     assert_eq!((work[0].tab, &work[0].path, work[0].pages.clone()), (id, &path, vec![6, 7, 8, 9]));
     let found = identify::read(&work[0]).expect("the file is the edits' version");
     assert!(identify::identified(&mut s, &found));
-    let reader = recto_core::page_id::open_for_identity(&path).unwrap();
+    let reader = recto_core::page_id::open_version_for_identity(&path, recto_platform::file_stamp(&path).unwrap()).unwrap();
     let map = reader.page_map().unwrap();
     let core = recto_core::page_id::identify_pages(&reader, &map, &[8])[0].unwrap();
     assert_eq!(known(&s, id, 8).map(|known| known.digest), Some(core.digest[..16].try_into().unwrap()));
@@ -143,7 +145,7 @@ fn a_job_reads_to_its_byte_budget_and_the_next_goes_on() {
     for round in 1..=10 {
         let job = identify::work(&s).remove(0);
         let found = identify::read_in(&job, &mut opened).unwrap();
-        assert_eq!((found.pages.len(), found.gave_up), (1, false), "round {round}");
+        assert_eq!((found.pages.len(), found.tried.len()), (1, 0), "round {round}");
         assert!(identify::identified(&mut s, &found));
     }
     JOB_BYTES.with(|bytes| bytes.set(None));
@@ -183,28 +185,80 @@ fn ten_with_a_capped_page() -> Vec<u8> {
     recto_testpdf::build(&objects)
 }
 
-/// Failure caught (rules 1 and 6): a page with no identity (past a cap, up to a second of reading) is read again after every edit, so an agent's edits
-/// keep the thread busy on a hostile file; or reading goes on past it. The job stops at it and gives up: the three pages before it are taken in, the
-/// pages not read are named no more, the list says some pages can't be followed, and nothing of this version is asked again, whatever is edited next.
-#[test]
-fn a_page_with_no_identity_gives_up_on_this_version() {
+/// `capped.pdf`, ten pages, the fourth past a cap, open in a session of its own, every page turned.
+fn open_capped() -> (recto_testpdf::TempDir, PathBuf, Session<Real>, TabId) {
     let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-identify-capped-");
     let path = dir.join("capped.pdf");
     std::fs::write(&path, ten_with_a_capped_page()).unwrap();
     let mut s = Session::new(Real);
     let id = s.open(&path).unwrap();
     s.edit_pages(id, |e| e.rotate(0, 10, 1)).unwrap();
+    (dir, path, s, id)
+}
+
+/// Failure caught (second review, F2): a page past a cap (a real large map, or an image over 8 MiB in a file anyone may open) turns following off for
+/// its whole file version, though it was named only as a neighbour; or it's read again after every edit, so an agent's edits keep the thread busy on
+/// it. A job reads past it: the nine other pages are taken in, the capped page alone is named no more and not named again by another edit, and the
+/// list isn't closed or said to be past its cap.
+#[test]
+fn a_capped_page_marks_only_itself() {
+    let (_dir, _path, mut s, id) = open_capped();
     let job = identify::work(&s).remove(0);
     let found = identify::read(&job).unwrap();
-    assert!(found.gave_up);
-    assert_eq!(found.pages.iter().map(|(page, _)| *page).collect::<Vec<_>>(), vec![0, 1, 2]);
+    assert_eq!(found.tried, vec![3]);
+    assert_eq!(found.pages.iter().map(|(page, _)| *page).collect::<Vec<_>>(), vec![0, 1, 2, 4, 5, 6, 7, 8, 9]);
     assert!(identify::identified(&mut s, &found));
     let ids = crate::edit::identity::identities(s.lists().get(id).unwrap()).unwrap();
-    assert!(ids.over_cap());
-    assert_eq!(ids.pages().len(), 3, "only what was read stays named");
+    assert!(!ids.over_cap(), "the other pages are followed");
+    assert_eq!(ids.pages().len(), 9, "the capped page isn't named");
+    assert!(ids.pages().iter().all(|(_, known)| known.is_some()));
     assert!(!identify::has_work(&s), "nothing asked again");
-    s.edit_pages(id, |e| e.rotate(7, 1, 1)).unwrap();
-    assert!(!identify::has_work(&s), "nor after another edit, on this version");
+    s.edit_pages(id, |e| e.rotate(3, 1, 1)).unwrap();
+    assert!(!identify::has_work(&s), "nor after an edit of the capped page, on this version");
+    s.edit_pages(id, |e| e.rotate(2, 1, 1)).unwrap();
+    assert!(!identify::has_work(&s), "nor of its neighbour");
+}
+
+/// What reading each of the ten pages of `path` costs, as the job counts it.
+fn costs(path: &Path) -> Vec<u64> {
+    let stamp = recto_platform::file_stamp(path).unwrap();
+    let reader = recto_core::page_id::open_version_for_identity(path, stamp).unwrap();
+    let map = reader.page_map().unwrap();
+    map.iter()
+        .map(|entry| recto_core::page_id::read_page(&reader, entry, &recto_core::page_id::Caps::STANDARD).bytes)
+        .collect()
+}
+
+/// Failure caught (second review, F2, rules 1 and 6): a file version's reading has no bound but its pages' caps, so a crafted file whose every page
+/// costs just under them (one large stream that decodes to nothing, referenced from each page's `/Contents`) keeps one core reading for half an hour
+/// or more with every hand-off refused as busy, and an agent at Control can name its 8,192 pages with one turn. With the version's budget set to what
+/// the first three pages cost: three are read and the list is closed (the pages not read named no more, the list past its cap, nothing asked again);
+/// at one byte more, a fourth is read before it closes.
+#[test]
+fn a_versions_reading_stops_at_its_budget() {
+    for (more, read) in [(0, 3), (1, 4)] {
+        let (_dir, path, mut s, id) = open_ten();
+        let budget = costs(&path)[..3].iter().sum::<u64>() + more;
+        s.edit_pages(id, |e| e.rotate(0, 10, 1)).unwrap();
+        VERSION_BYTES.with(|bytes| bytes.set(Some(budget)));
+        let mut opened = None;
+        while let Some(job) = identify::work(&s).pop() {
+            let found = identify::read_in(&job, &mut opened).unwrap();
+            assert!(identify::identified(&mut s, &found));
+        }
+        VERSION_BYTES.with(|bytes| bytes.set(None));
+        let ids = crate::edit::identity::identities(s.lists().get(id).unwrap()).unwrap();
+        assert_eq!(
+            ids.pages().iter().map(|(page, _)| *page).collect::<Vec<_>>(),
+            (0..read).collect::<Vec<u32>>(),
+            "budget + {more}"
+        );
+        assert!(ids.pages().iter().all(|(_, known)| known.is_some()));
+        assert!(ids.over_cap(), "some pages can't be followed");
+        assert!(!identify::has_work(&s));
+        s.edit_pages(id, |e| e.rotate(8, 1, 1)).unwrap();
+        assert!(!identify::has_work(&s), "nor after another edit, on this version");
+    }
 }
 
 /// Failure caught (slice 2's review, 2026-11-15): the file's version is checked by its path before and after the read, and never on what was opened,
@@ -238,4 +292,57 @@ fn a_file_swapped_in_for_the_open_alone_is_never_read() {
         "the path looks as it did, before and after"
     );
     assert_eq!(found, None, "the other file's pages were read for this one's");
+}
+
+/// Failure caught (second review): what was read of a tab's pages waits for its sidecar, and the tab's version then goes unknown (a file replaced
+/// mid-read, whose stamp the session drops, `tiers.rs`): the sidecar can't be written without a version, so the journals say they have work for good,
+/// and the tab can never checkpoint or go dormant. A sidecar that can't be written holds nothing: no work, and the tab checkpoints.
+#[test]
+fn a_tab_whose_version_goes_unknown_isnt_held_by_its_sidecar() {
+    let (_dir, _path, mut s, id) = open_ten();
+    s.journals_mut().set_journaling(true);
+    s.edit_pages(id, |e| e.rotate(8, 1, 1)).unwrap();
+    let found = identify::read(&identify::work(&s).remove(0)).unwrap();
+    assert!(identify::identified(&mut s, &found));
+    // The journal's operation is written, and the sidecar isn't yet.
+    let work = s.journal_desk().work();
+    assert_eq!(work.pages.len(), 1, "the sidecar's entries wait");
+    let written = work.appends.iter().map(|append| (append.tab, append.through, append.name.clone())).collect();
+    s.journal_desk().outcome(JournalOutcome {
+        written,
+        ..JournalOutcome::default()
+    });
+    assert!(s.journal_look().has_work(), "the sidecar waits, with a version to write it for");
+    s.tabs.tab_mut(id).unwrap().file.stamp = None;
+    assert!(s.journal_desk().work().pages.is_empty(), "nothing to write it for");
+    assert!(!s.journal_look().has_work(), "and nothing waits for it");
+    assert!(s.journal_look().checkpoint_if_caught_up(id).is_some(), "the tab may go to disk");
+}
+
+/// A loader that says a file has two pages more than its page tree has, as a file whose renderer and structure reader count differently can.
+struct TwoMore;
+
+impl DocLoader for TwoMore {
+    fn load(&self, path: &Path) -> Result<DocFacts, OpenError> {
+        let mut facts = recto_core::inspect(path)?;
+        facts.page_count += 2;
+        Ok(facts)
+    }
+}
+
+/// Failure caught (second review): a named page the file's page tree doesn't have stays wanted for good, so every call with journal work wakes the
+/// page-identity thread, which opens the file again and builds its page map again for nothing. It's tried, as a page past a cap is: one job, and
+/// nothing asked again.
+#[test]
+fn a_page_the_page_tree_doesnt_have_is_tried() {
+    let (_dir, path, _, _) = open_ten();
+    let mut s = Session::new(TwoMore);
+    let id = s.open(&path).unwrap();
+    s.edit_pages(id, |e| e.rotate(11, 1, 1)).unwrap();
+    let job = identify::work(&s).remove(0);
+    assert_eq!(job.pages, vec![9, 10, 11]);
+    let found = identify::read(&job).unwrap();
+    assert_eq!((found.pages.len(), found.tried.clone()), (1, vec![10, 11]));
+    assert!(identify::identified(&mut s, &found));
+    assert!(!identify::has_work(&s), "nothing asked again");
 }

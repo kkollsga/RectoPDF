@@ -96,6 +96,9 @@ pub struct Waiting {
     pub unwritten: usize,
     /// Whether the `/ID` pair waiting is among them.
     pub document: bool,
+    /// Not whole, and some of what the list knows went to a sidecar before: these are only the rest, to go only onto a sidecar that has the others. A
+    /// sidecar that isn't there (the journal starting again under another name) is then written whole instead.
+    pub rest: bool,
 }
 
 /// `Debug` says how much, never a digest.

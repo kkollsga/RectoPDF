@@ -149,6 +149,11 @@ fn write_one(
         },
     };
     let Some(good) = good else { return Some(sidecar::Done::WantsWhole) };
+    // Nothing there, and the list's other entries went to a sidecar that's gone (a journal starting again under another name, its old sidecar with
+    // the old journal): these alone would lose them, so the next write is whole.
+    if good == 0 && waiting.rest {
+        return Some(sidecar::Done::WantsWhole);
+    }
     let mut bytes = if good == 0 { header.encode()? } else { Vec::new() };
     bytes.extend_from_slice(&waiting.bytes);
     let end = good + bytes.len() as u64;

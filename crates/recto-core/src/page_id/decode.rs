@@ -25,6 +25,12 @@
 //!   2^32 or any other byte; the input's end ends it as `~` would.
 //! - **RunLength:** a length byte, then that many plus one bytes as they are (0 to 127), or the next byte 257 minus it times (129 to 255); 128 or the
 //!   input's end ends it; a run cut short is an error.
+//! - **How far each reads, which the caps depend on** (review F3): a decoder gives its bytes a unit at a time, and reads nothing for a unit past the
+//!   one holding the last byte asked. The units: an ASCII85 group (up to 4 bytes; a `z` is one), an ASCIIHex pair, a predictor's **whole row** (read
+//!   whole before any of it is given, so a row with a bad PNG filter byte, or a short last row, is met before any of its bytes count), a RunLength
+//!   **whole run** (a literal run cut short is an error before any of its bytes count), and for Flate and LZW what their libraries give for the bytes
+//!   asked. So a stream past a cap reaches it ([`super`] asks for one byte past the cap) unless the unit holding the cap's byte is an error, in which
+//!   case the stream didn't decode; what lies after that unit is never read for it.
 
 use lopdf::{Dictionary, Object};
 use std::io::{self, BufRead, BufReader, Read};
@@ -378,95 +384,123 @@ impl Read for AsciiHex<'_> {
     }
 }
 
-/// Base-85 groups of five, `z` for four zeros, to `~>`.
+/// Base-85 groups of five, `z` for four zeros, to `~>`. Gives no more than it's asked for: it decodes a group at a time into the caller's buffer and
+/// stops once that's full, so what it meets past the bytes asked (a bad byte after a cap's byte) is never read for them (review F3: a read-ahead of
+/// 64 KiB made the digest depend on it).
 struct Ascii85<'a> {
     input: BufReader<Box<dyn Read + 'a>>,
-    pending: Vec<u8>,
-    at: usize,
+    /// The bytes of the last group that didn't fit in what was asked, given first at the next read: at most 3.
+    carry: [u8; 4],
+    carry_at: usize,
+    carry_len: usize,
     group: [u8; 5],
     count: usize,
     done: bool,
+    /// An error met after some bytes of a read were given: said at the next read, so the bytes before it are given as a lazy decode gives them.
+    failed: Option<&'static str>,
 }
 
 impl<'a> Ascii85<'a> {
     fn new(input: Box<dyn Read + 'a>) -> Self {
         Self {
             input: BufReader::with_capacity(CHUNK, input),
-            pending: Vec::with_capacity(CHUNK),
-            at: 0,
+            carry: [0; 4],
+            carry_at: 0,
+            carry_len: 0,
             group: [0; 5],
             count: 0,
             done: false,
+            failed: None,
         }
     }
+}
 
-    fn flush_group(&mut self, last: bool) -> io::Result<()> {
-        if self.count == 0 {
-            return Ok(());
-        }
-        if last && self.count == 1 {
-            return Err(bad("a base-85 group of one"));
-        }
-        let mut digits = self.group;
-        for digit in &mut digits[self.count..] {
-            *digit = 84;
-        }
-        let mut value: u64 = 0;
-        for digit in digits {
-            value = value * 85 + u64::from(digit);
-        }
-        let value = u32::try_from(value).map_err(|_| bad("a base-85 group past 2^32"))?;
-        let bytes = value.to_be_bytes();
-        self.pending.extend_from_slice(&bytes[..self.count - 1]);
-        self.count = 0;
-        Ok(())
+/// A group's value: its digits, a short group padded with `u` (84).
+fn base85(group: &[u8; 5], count: usize) -> Result<[u8; 4], &'static str> {
+    let value = group
+        .iter()
+        .enumerate()
+        .fold(0u64, |value, (at, digit)| value * 85 + u64::from(if at < count { *digit } else { 84 }));
+    u32::try_from(value).map(u32::to_be_bytes).map_err(|_| "a base-85 group past 2^32")
+}
+
+/// The last group, at the input's end or `~`: none, or its digits less one of bytes; a group of one is an error.
+fn last_group(group: &[u8; 5], count: usize) -> Result<Option<([u8; 4], usize)>, &'static str> {
+    match count {
+        0 => Ok(None),
+        1 => Err("a base-85 group of one"),
+        count => Ok(Some((base85(group, count)?, count - 1))),
     }
 }
 
 impl Read for Ascii85<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        while self.pending.is_empty() && !self.done {
-            let input = self.input.fill_buf()?;
-            if input.is_empty() {
-                self.done = true;
-                self.flush_group(true)?;
-                break;
-            }
-            let input = input.to_vec();
+        let mut out = 0;
+        while self.carry_at < self.carry_len && out < buf.len() {
+            buf[out] = self.carry[self.carry_at];
+            self.carry_at += 1;
+            out += 1;
+        }
+        if out == 0
+            && let Some(what) = self.failed.take()
+        {
+            return Err(bad(what));
+        }
+        while out < buf.len() && !self.done && self.failed.is_none() {
+            let input = match self.input.fill_buf() {
+                Ok(input) => input,
+                Err(error) if out == 0 => return Err(error),
+                Err(_) => {
+                    self.failed = Some("the stream couldn't be read");
+                    break;
+                }
+            };
+            let at_end = input.is_empty();
             let mut used = 0;
-            for byte in input {
+            for &byte in input.iter().chain(at_end.then_some(&b'~')) {
                 used += 1;
-                match byte {
+                let made = match byte {
                     b'~' => {
                         self.done = true;
-                        self.flush_group(true)?;
-                        break;
+                        last_group(&self.group, self.count)
                     }
-                    b'z' if self.count == 0 => self.pending.extend_from_slice(&[0; 4]),
+                    b'z' if self.count == 0 => Ok(Some(([0; 4], 4))),
                     b'!'..=b'u' => {
                         self.group[self.count] = byte - b'!';
                         self.count += 1;
                         if self.count == 5 {
-                            let group = self.group;
-                            let mut value: u64 = 0;
-                            for digit in group {
-                                value = value * 85 + u64::from(digit);
-                            }
-                            let value = u32::try_from(value).map_err(|_| bad("a base-85 group past 2^32"))?;
-                            self.pending.extend_from_slice(&value.to_be_bytes());
                             self.count = 0;
+                            base85(&self.group, 5).map(|bytes| Some((bytes, 4)))
+                        } else {
+                            Ok(None)
                         }
                     }
-                    byte if byte.is_ascii_whitespace() || byte == 0 => {}
-                    _ => return Err(bad("not a base-85 digit")),
+                    byte if byte.is_ascii_whitespace() || byte == 0 => Ok(None),
+                    _ => Err("not a base-85 digit"),
+                };
+                match made {
+                    Ok(Some((bytes, n))) => {
+                        let fits = n.min(buf.len() - out);
+                        buf[out..out + fits].copy_from_slice(&bytes[..fits]);
+                        out += fits;
+                        self.carry[..n - fits].copy_from_slice(&bytes[fits..n]);
+                        (self.carry_at, self.carry_len) = (0, n - fits);
+                    }
+                    Ok(None) => {}
+                    Err(what) => self.failed = Some(what),
                 }
-                if self.pending.len() >= CHUNK {
+                if self.done || self.failed.is_some() || out == buf.len() {
                     break;
                 }
             }
-            self.input.consume(used);
+            self.input.consume(used.min(self.input.buffer().len()));
         }
-        Ok(give(&mut self.pending, &mut self.at, buf))
+        if out == 0
+            && let Some(what) = self.failed.take()
+        {
+            return Err(bad(what));
+        }
+        Ok(out)
     }
 }
 
@@ -696,6 +730,32 @@ mod tests {
         assert_eq!(run(&[Filter::Ascii85], b"87cUR~>").unwrap(), b"Hell");
         assert_eq!(run(&[Filter::Ascii85], b"87cU~>").unwrap(), b"Hel");
         assert_eq!(run(&[Filter::RunLength], &[1, b'a', b'b']).unwrap(), b"ab");
+    }
+
+    /// Failure caught (review F3): ASCII85 reads ahead of what it's asked, so a bad byte after the bytes asked is met in the same read and fails them;
+    /// or a group split across two reads loses or repeats a byte. Asked a byte at a time, it gives each group's bytes before the bad byte after them
+    /// and the error only then, and the bytes of a stream read a byte at a time are the bytes read whole.
+    #[test]
+    fn ascii85_gives_no_more_than_it_is_asked_for() {
+        let mut decoder = Ascii85::new(Box::new(&b"87cURx"[..]));
+        let mut got = Vec::new();
+        let mut one = [0u8];
+        let error = loop {
+            match decoder.read(&mut one) {
+                Ok(0) => panic!("the bad byte is an error"),
+                Ok(_) => got.push(one[0]),
+                Err(error) => break error,
+            }
+        };
+        assert_eq!((got.as_slice(), error.kind()), (&b"Hell"[..], io::ErrorKind::InvalidData));
+        let text = b"87cURD]i,\"Ebo80 z 87cU~>";
+        let mut decoder = Ascii85::new(Box::new(&text[..]));
+        let mut by_byte = Vec::new();
+        while decoder.read(&mut one).unwrap() == 1 {
+            by_byte.push(one[0]);
+        }
+        assert_eq!(by_byte, run(&[Filter::Ascii85], text).unwrap());
+        assert_eq!(by_byte, b"Hello World!\0\0\0\0Hel");
     }
 
     /// Failure caught: a hostile stream that panics a decoder (and with it the identity thread) or runs without end. Bad digits, a bad PNG row filter,

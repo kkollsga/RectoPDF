@@ -140,6 +140,40 @@ fn the_digest_is_what_its_definition_says() {
     assert_eq!(hex(&digest_of(&page)), hex(&sha(&expected)));
 }
 
+/// A form whose flate content draws `/A Do` and then fails: its Adler-32 cut off, so the decoder gives the bytes first and the error after.
+fn page_with_a_failing_form() -> (Vec<u8>, Vec<u8>) {
+    let mut stored = flate(b"/A Do ");
+    stored.truncate(stored.len() - 4);
+    let page = one_page(
+        "",
+        "/XObject << /F 5 0 R /A 6 0 R >>",
+        "4 0 R",
+        vec![
+            stream("", b"/F Do"),
+            stream("/Subtype /Form /BBox [0 0 1 1] /Filter /FlateDecode", &stored),
+            stream(JPEG_DICT, IMAGE),
+        ],
+    );
+    (page, stored)
+}
+
+/// Failure caught (second review, F1): a form whose content fails to decode keeps the names its first part gave `Do` as its children, so its digest
+/// depends on how far a decoder got before its error, against the definition ("a form whose content wasn't decoded has no children"). A form drawing
+/// `/A Do` and then failing is kind 3, as stored, with no children.
+#[test]
+fn a_form_that_fails_to_decode_has_no_children() {
+    let (page, stored) = page_with_a_failing_form();
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, b"/F Do"));
+    expected.extend_from_slice(b"X");
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(xobject_bytes(b"F", 3, &stored));
+    expected.extend_from_slice(&0u32.to_le_bytes());
+    expected.extend_from_slice(b"E");
+    assert_eq!(hex(&digest_of(&page)), hex(&sha(&expected)));
+}
+
 /// Failure caught (review): a form drawing an image and a form drawing nothing beside the same image hash alike, as nothing said where a form's
 /// records end. With every section and form framed by its count, they don't.
 #[test]
@@ -459,6 +493,47 @@ fn a_page_past_the_content_cap_has_no_identity() {
     assert_eq!(big((16 << 20) + 1), None);
 }
 
+/// Failure caught (second review, F3): a decoder that decodes ahead of what's asked meets a bad byte past the cap's byte and fails the stream (hashed
+/// as stored, an identity) where a decoder that gives no more than asked reaches the cap (no identity), so the digest depends on how far a decoder
+/// reads ahead, not on the file. With the content's cap at 8 bytes: ASCII85 of 12 bytes, then a byte that isn't a digit, reaches the cap (as a lazy
+/// decode does); with a cap the stream fits in, the same stream fails and is hashed as stored.
+#[test]
+fn a_bad_byte_past_the_cap_reaches_the_cap_as_a_lazy_decode_does() {
+    let page = one_page("", "", "4 0 R", vec![stream("/Filter /ASCII85Decode", b"zz!!!!!x")]);
+    let small = Caps {
+        content_bytes: 8,
+        ..Caps::STANDARD
+    };
+    assert_eq!(digest_under(&page, &small), None, "the cap's byte is reached before the bad byte");
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(1, b"zz!!!!!x"));
+    expected.extend_from_slice(b"X");
+    expected.extend_from_slice(&0u32.to_le_bytes());
+    expected.extend_from_slice(b"E");
+    assert_eq!(digest_under(&page, &Caps::STANDARD).map(|digest| hex(&digest)), Some(hex(&sha(&expected))));
+    // A predictor's unit is its row, and RunLength's its run (the definition, [`decode`]): a bad row or a run cut short that holds the cap's byte
+    // fails the stream, which is then hashed as stored, within the cap.
+    let as_stored = |dict: &str, data: &[u8], cap: u64| {
+        let page = one_page("", "", "4 0 R", vec![stream(dict, data)]);
+        let mut expected = b"recto-page/1\0C".to_vec();
+        expected.extend_from_slice(&1u32.to_le_bytes());
+        expected.extend(content_bytes(1, data));
+        expected.extend_from_slice(b"X");
+        expected.extend_from_slice(&0u32.to_le_bytes());
+        expected.extend_from_slice(b"E");
+        let caps = Caps {
+            content_bytes: cap,
+            ..Caps::STANDARD
+        };
+        assert_eq!(digest_under(&page, &caps).map(|digest| hex(&digest)), Some(hex(&sha(&expected))), "{dict}");
+    };
+    let mut rows = vec![0u8; 42];
+    rows.extend_from_slice(&[9; 21]);
+    as_stored("/Filter /FlateDecode /DecodeParms << /Predictor 12 /Columns 20 >>", &flate(&rows), 50);
+    as_stored("/Filter /RunLengthDecode", &[129, b'a', 9, b'x', b'x'], 129);
+}
+
 /// Failure caught: the stream and image counts aren't capped where the definition says, so a page of 100,000 streams costs what it likes, or a page
 /// past them is hashed by part of itself. At 1,024 streams and 256 images drawn the page has an identity (and the last of each counts); one more of
 /// either and it has none.
@@ -772,6 +847,31 @@ fn golden_pages() -> Vec<(&'static str, Vec<u8>)> {
     margin.truncate(16 << 20);
     margin.extend(std::iter::repeat_n(7u8, 4096));
     pages.push(("an image past its cap, another tail", page_with_image(&margin, 4096, true)));
+    // Added after the second review: a form whose content fails after drawing (kind 3, no children), names with `#` (a `#xx` is its byte, a lone `#`
+    // finds nothing), and an inline image whose data holds what looks like a `Do`.
+    pages.push(("a form that fails to decode", page_with_a_failing_form().0));
+    pages.push((
+        "names with #",
+        one_page(
+            "",
+            "/XObject << /Im1 5 0 R >>",
+            "4 0 R",
+            vec![stream("", b"/Im#31 Do /B#2 Do"), stream(JPEG_DICT, IMAGE)],
+        ),
+    ));
+    pages.push((
+        "an inline image",
+        one_page(
+            "",
+            "/XObject << /Im1 5 0 R /Im2 6 0 R >>",
+            "4 0 R",
+            vec![
+                stream("", b"q BI /W 2 /H 1 /CS /G /BPC 8 ID \x00/Im1 Do EI\xff EI Q /Im2 Do"),
+                stream(JPEG_DICT, IMAGE),
+                stream(JPEG_DICT, b"\xff\xd8 the second \xff\xd9"),
+            ],
+        ),
+    ));
     pages
 }
 
@@ -802,6 +902,12 @@ fn golden_vectors_of_recto_page_1() {
             "an image past its cap, another tail",
             "b5f1f59a255c1c1edadc116be2506dcc9c0d2116c7a70bdde5df81639ebc5695",
         ),
+        (
+            "a form that fails to decode",
+            "fb7c753b33290acdcb3e39badac94cbee61542a3b407d511f472f68d942013bc",
+        ),
+        ("names with #", "e41dc5de3b9a58e4a9db446a05e0143f7356482e301ac7dfdec37262eb5e98b5"),
+        ("an inline image", "919925aaeace7faf744205570b8319de9733839a2ac098934e560fc7b12860f1"),
     ];
     let pages = golden_pages();
     let got: Vec<(&str, String)> = pages.iter().map(|(what, bytes)| (*what, hex(&digest_of(bytes)))).collect();

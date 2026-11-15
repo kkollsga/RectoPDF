@@ -241,3 +241,29 @@ fn whether_a_follow_was_told_goes_in_the_sidecars_header() {
     assert!(followed_untold(&back));
     assert!(sidecar_caught_up(&back));
 }
+
+/// Failure caught (second review, F2): a page tried and found to have no identity is named again by the next edit and read again, or counts as the
+/// list being past its cap (so slice 2 follows none of its pages); or a list closed by its budget with every page read says it's past its cap, or one
+/// closed says nothing when an edit then names a page it can't read. Tried: named no more and not again, the list not past its cap; closed with all
+/// read: not past it either, until an edit names a page it won't read.
+#[test]
+fn a_page_tried_is_itself_alone_and_a_closed_list_says_what_it_loses() {
+    let mut edits = PageEdits::new(20);
+    edits.rotate(9, 1, 1).unwrap();
+    assert_eq!(named(&edits), vec![7, 8, 9, 10, 11]);
+    assert!(tried(&mut edits, &[10]));
+    assert_eq!(named(&edits), vec![7, 8, 9, 11]);
+    assert!(!identities(&edits).unwrap().over_cap());
+    edits.rotate(10, 1, 1).unwrap();
+    assert!(!named(&edits).contains(&10), "10 isn't named again: {:?}", named(&edits));
+    let all: Vec<(u32, Known)> = named(&edits).into_iter().map(|page| (page, known(page as u8))).collect();
+    found(&mut edits, &all, None);
+    give_up(&mut edits);
+    assert!(!identities(&edits).unwrap().over_cap(), "every page named was read");
+    assert_eq!(budget_left(&edits), 0);
+    edits.rotate(10, 1, 1).unwrap();
+    assert!(!identities(&edits).unwrap().over_cap(), "pages it has, or tried");
+    edits.rotate(16, 1, 1).unwrap();
+    assert!(identities(&edits).unwrap().over_cap(), "a page it won't read");
+    assert!(wanted(&edits).is_empty());
+}

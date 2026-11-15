@@ -17,9 +17,15 @@
 //! before the matcher: losing a sidecar costs only following.
 //!
 //! **Bounded** (rule 1): a tab with no edits has nothing here; a list holds at most [`MAX_IDENTIFIED`] pages, 36 bytes each in memory (288 KiB at the
-//! cap) and 35 in the sidecar (280 KiB at the cap), and while a read's entries wait for the sidecar, 4 bytes more each. Pages past the cap aren't named,
-//! which [`Identities::over_cap`] says, and an edit on one of them can't be followed when the file changes. Nothing is held per idle tab: a list asleep
-//! is in its journal and sidecar.
+//! cap) and 35 in the sidecar (280 KiB at the cap), and while a read's entries wait for the sidecar, 4 bytes more each; a page tried and found to have
+//! no identity is 4 bytes, and counts toward the cap. Pages past the cap aren't named, which [`Identities::over_cap`] says, and an edit on one of them
+//! can't be followed when the file changes. Nothing is held per idle tab: a list asleep is in its journal and sidecar.
+//!
+//! **What reading one version may cost** (rules 1 and 6; second review, F2): a page that reaches a cap costs at most its caps (about 336 MiB) and has
+//! no identity; it alone is marked tried, so a real large page named only as a neighbour leaves its file's other pages followed. What closes a list for
+//! a version is its budget: [`VERSION_BYTES`] of what its pages' reads cost (`recto_core::page_id::PageRead::bytes`), after which nothing more of that
+//! version is read ([`give_up`]). So a crafted file whose every page costs just under its caps takes about eight pages' reading, not an hour of one
+//! core with every hand-off refused as busy, whatever an agent's edits name.
 
 pub mod sidecar;
 
@@ -28,6 +34,21 @@ use recto_core::page_id::DocumentIds;
 
 /// Most of the file's pages one list names.
 pub const MAX_IDENTIFIED: usize = 8_192;
+
+/// **Most bytes one version of a file costs to read for one list** (`PageRead::bytes`: stored lengths charged and bytes hashed), after which the list is
+/// closed for that version. 2 GiB: about six pages at every cap, and far past real documents (every page of the corpus's most costly file, a NASA
+/// report, costs 264.5 MiB in all, and its 5,872 pages 2,747 MiB together, in 4.1 s of CPU, measured 2026-11-15 on a release build at a load of 3);
+/// a few seconds of one core, where 8,192 pages at their caps were an estimated half hour or more.
+pub const VERSION_BYTES: u64 = 2 << 30;
+
+/// [`VERSION_BYTES`], which a test sets small on its own thread to hold it at its limit plus one.
+fn version_bytes() -> u64 {
+    #[cfg(test)]
+    if let Some(bytes) = crate::tests::identify::VERSION_BYTES.with(std::cell::Cell::get) {
+        return bytes;
+    }
+    VERSION_BYTES
+}
 
 /// What a named page costs, which [`MAX_IDENTIFIED`] multiplies: failure caught, a field added to [`Known`] that grows every edited tab's cap.
 const _: () = assert!(std::mem::size_of::<(u32, Option<Known>)>() <= 36);
@@ -74,7 +95,8 @@ impl Known {
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Identities {
     pages: Vec<(u32, Option<Known>)>,
-    /// More pages were named than [`MAX_IDENTIFIED`] holds, or a page had no identity ([`give_up`]): an edit on a page not named can't follow it.
+    /// More pages were named than [`MAX_IDENTIFIED`] holds, or than this version's budget let be read ([`give_up`]): an edit on a page not named can't
+    /// follow it.
     over_cap: bool,
     /// The file's `/ID` pair, as read with the pages, if it has one.
     document: Option<DocumentIds>,
@@ -84,8 +106,14 @@ pub struct Identities {
     document_unwritten: bool,
     /// The sidecar is to be written whole: what it holds is of another version of the file, or another header.
     whole: bool,
-    /// A page of this version had no identity: no more pages are named until the version changes, so a hostile file can't keep the reader busy.
+    /// This version's budget is spent ([`VERSION_BYTES`]): no more pages are named until the version changes, so a hostile file can't keep the reader
+    /// busy.
     closed: bool,
+    /// Pages of this version tried and found to have no identity (they reached a cap, or the file's page tree doesn't have them), ascending: not named,
+    /// and not named again until the version changes. Not kept: a restart tries them once more.
+    tried: Vec<u32>,
+    /// What reading this version's pages has cost so far, against [`VERSION_BYTES`]. Not kept: a restart starts it again.
+    spent: u64,
     /// The list followed its file onto this version and the person hasn't been told yet (slice 2's; kept in the sidecar's header).
     followed_untold: bool,
     /// The file was found to be another version, this one, and the edits may follow their pages into it ([`crate::version_change`]); `tried` once
@@ -118,7 +146,8 @@ impl Identities {
         &self.pages
     }
 
-    /// Whether more pages were named than the cap holds, or could be read in time.
+    /// Whether more pages were named than the cap holds, or than this version's budget let be read: the list is incomplete in a way no page records, so
+    /// it isn't followed. A page tried and found to have no identity isn't counted here: it's simply not among [`Self::pages`].
     pub fn over_cap(&self) -> bool {
         self.over_cap
     }
@@ -137,13 +166,19 @@ impl Identities {
         self.pages.binary_search_by_key(&page, |(at, _)| *at).ok().and_then(|at| self.pages[at].1)
     }
 
-    /// Adds pages, ascending and without repeats, as named and not read, up to the cap; none once a page of this version had no identity.
+    /// Adds pages, ascending and without repeats, as named and not read, up to the cap (with the pages tried); none once this version's budget is spent,
+    /// and never a page tried.
     fn name(&mut self, mut pages: Vec<u32>) {
         if self.closed {
+            // A page this list doesn't know can't be followed now.
+            self.over_cap |= pages
+                .iter()
+                .any(|page| self.pages.binary_search_by_key(page, |(at, _)| *at).is_err() && self.tried.binary_search(page).is_err());
             return;
         }
         pages.sort_unstable();
         pages.dedup();
+        pages.retain(|page| self.tried.binary_search(page).is_err());
         let mut merged = Vec::with_capacity(self.pages.len() + pages.len());
         let mut new = pages.into_iter().peekable();
         for entry in std::mem::take(&mut self.pages) {
@@ -154,7 +189,7 @@ impl Identities {
             merged.push(entry);
         }
         merged.extend(new.map(|page| (page, None)));
-        let cap = cap();
+        let cap = cap().saturating_sub(self.tried.len());
         if merged.len() > cap {
             // The pages named first stay; the newest, which go past the cap, aren't named. Which those are doesn't matter: an edit on any page not
             // named is set aside, never guessed.
@@ -282,13 +317,57 @@ pub fn found(edits: &mut PageEdits, pages: &[(u32, Known)], document: Option<Doc
     taken
 }
 
-/// **A page of this version of the file had no identity** (it reached a cap, `recto_core::page_id`): the pages named and not read are named no more,
-/// none is named again until the version changes (a save, or the file followed to a new one), and the list says some of its pages can't be followed.
-/// So a hostile file costs one capped page's read, and an agent's edits can't keep the reader busy on it.
+/// **These pages of this version were tried and have no identity** (each reached a cap, `recto_core::page_id`, or the file's page tree doesn't have
+/// it): each alone is named no more, and isn't named again until the version changes, so its edits are held if the file changes and the list's other
+/// pages are followed. Says whether any was named.
+pub fn tried(edits: &mut PageEdits, pages: &[u32]) -> bool {
+    let Some(ids) = edits.identities.as_deref_mut() else { return false };
+    let mut any = false;
+    for page in pages {
+        if let Ok(at) = ids.pages.binary_search_by_key(page, |(at, _)| *at)
+            && ids.pages[at].1.is_none()
+        {
+            ids.pages.remove(at);
+            if let Err(slot) = ids.tried.binary_search(page) {
+                ids.tried.insert(slot, *page);
+            }
+            any = true;
+        }
+    }
+    any
+}
+
+/// What's left of this version's budget ([`VERSION_BYTES`]): what a read for the list may cost, 0 once it's closed.
+pub fn budget_left(edits: &PageEdits) -> u64 {
+    edits
+        .identities
+        .as_deref()
+        .map_or(0, |ids| if ids.closed { 0 } else { version_bytes().saturating_sub(ids.spent) })
+}
+
+/// **A read for the list cost `bytes`:** counted against this version's budget, and once that's spent the list is closed for it ([`give_up`]). Says
+/// whether it was closed now.
+pub fn spend(edits: &mut PageEdits, bytes: u64) -> bool {
+    let Some(ids) = edits.identities.as_deref_mut() else { return false };
+    ids.spent = ids.spent.saturating_add(bytes);
+    if ids.closed || ids.spent < version_bytes() {
+        return false;
+    }
+    give_up(edits);
+    true
+}
+
+/// **This version's budget is spent** ([`spend`]): the pages named and not read are named no more, none is named again until the version changes (a
+/// save, or the file followed to a new one), and the list says some of its pages can't be followed ([`Identities::over_cap`]). So a hostile file costs
+/// at most [`VERSION_BYTES`] of reading, and an agent's edits can't keep the reader busy on it. A page that reached a cap alone doesn't close the list
+/// ([`tried`]).
 pub fn give_up(edits: &mut PageEdits) {
     if let Some(ids) = edits.identities.as_deref_mut() {
+        let named = ids.pages.len();
         ids.pages.retain(|(_, known)| known.is_some());
-        ids.over_cap = true;
+        // Only a page named and now not is one that can't be followed; a list whose every page was read when its budget ran out has lost none, and
+        // says so once an edit names a page it can't read ([`Identities::name`]).
+        ids.over_cap |= ids.pages.len() < named;
         ids.closed = true;
     }
 }
@@ -338,9 +417,7 @@ pub fn followed(edits: &mut PageEdits, pages: &[(u32, Known)], document: Option<
         document,
         document_unwritten: document.is_some(),
         whole: true,
-        closed: false,
-        followed_untold: false,
-        follow: None,
+        ..Identities::default()
     };
     edits.identities = Some(Box::new(ids));
 }
@@ -410,11 +487,14 @@ pub fn sidecar_waiting(edits: &PageEdits) -> Option<sidecar::Waiting> {
     if entries.is_empty() && document.is_none() && !ids.whole {
         return None;
     }
+    let known = ids.pages.iter().filter(|(_, known)| known.is_some()).count();
+    let rest = !ids.whole && (known > ids.unwritten.len() || (ids.document.is_some() && !ids.document_unwritten));
     Some(sidecar::Waiting {
         whole: ids.whole,
         bytes: sidecar::entries(&entries, document),
         unwritten: ids.unwritten.len(),
         document: ids.document_unwritten,
+        rest,
     })
 }
 

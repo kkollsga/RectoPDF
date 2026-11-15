@@ -15,13 +15,21 @@
 //!    of the kind-0 entries, in order of first use), looked up in the page's effective `/Resources` `/XObject` (its own, or the nearest ancestor's). A
 //!    record is `u32le(length of the name)`, the name, a kind byte, and for kinds 0, 1 and 3 `u64le(n)` and the SHA-256 of the `n` bytes; then
 //!    `u32le(children)` and a record (of the same shape, without children) for each name a form's own content gives `Do`, looked up in the form's
-//!    `/Resources` `/XObject` (the page's if it has none). Kinds: 0, every filter general, decoded (for a form, its content, whose names are its
-//!    children); 1, a filter not general (an image codec), as stored; 2, nothing by that name, or it isn't a stream or can't be read (no length or
-//!    hash, and no children); 3, general but it didn't decode, as stored; 4, **an image past its cap** (`/Subtype /Image`, whose bytes as kind 0, 1
-//!    or 3 would hash more than [`Caps::xobject_bytes`], 16 MiB): the byte 4, the kind it would have been, `u64le(n)` and the SHA-256 of exactly its
-//!    first `n` = 16 MiB (decoded or as stored, as that kind is), then `u64le` of its stream's stored length, then its `/Width`, `/Height` and
-//!    `/BitsPerComponent`, its `/ColorSpace`'s name and its `/Filter` names as written, each framed (`image_says`). Only a form drawn by the page's
-//!    content has children; one drawn by a form is a record with none.
+//!    `/Resources` `/XObject` (the page's if the form has no `/Resources`; a `/Resources` without `/XObject` is a lookup in nothing, never the
+//!    page's). Kinds: 0, every filter general, decoded (for a form, its content, whose names are its children); 1, a filter not general (an image
+//!    codec), as stored; 2, nothing by that name, or it isn't a stream or can't be read (no length or hash, and no children); 3, general but it didn't
+//!    decode, as stored, and for a form no children (what its content's first part drew before the error is taken back); 4, **an image past its
+//!    cap** (`/Subtype /Image`, whose bytes as kind 0, 1 or 3 would hash more than [`Caps::xobject_bytes`], 16 MiB): the byte 4, the kind it would
+//!    have been, `u64le(n)` and the SHA-256 of exactly its first `n` = 16 MiB (decoded or as stored, as that kind is), then `u64le` of its stream's
+//!    stored length, then its `/Width`, `/Height` and `/BitsPerComponent`, its `/ColorSpace`'s name and its `/Filter` names as written, each framed
+//!    (`image_says`). Only a form drawn by the page's content has children; one drawn by a form is a record with none.
+//!
+//!    **Said exactly, where code alone said it before** (second review): a stream's *stored length* is the checked length of its bytes as lopdf's
+//!    reader frames the stream in the file (`encoded_len`; a stream it can't frame safely has none and is kind 2), never `/Length` as written; an
+//!    image's `/Width`, `/Height`, `/BitsPerComponent`, `/ColorSpace` and `/Filter` are taken with references resolved (an indirect `/Width 7 0 R`
+//!    is its integer); a name is looked up by the bytes the scan took ([`scan`]: a `#xx` is its byte; a lone `#` is kept as it is, where lopdf ended
+//!    the resource's key, so it finds nothing: kind 2); and an image that needs its 16 MiB when the page has less than that left of its 64 MiB is
+//!    the page's cap reached, not a kind 4.
 //!
 //!    **The honest limit of kind 4** (coordinator, 2026-11-15): two images equal in their first 16 MiB, their stored length and what they say of
 //!    themselves, and different after, hash alike. Big scans often share their first megabytes (a white margin, a header), which is why the stored
@@ -55,7 +63,7 @@ mod decode;
 mod scan;
 
 use lopdf::{Dictionary, Object, ObjectId, PageMapEntry};
-/// The lazy reader and page map the digest reads through, for a caller that keeps a file open across reads ([`open_for_identity`]).
+/// The lazy reader and page map the digest reads through, for a caller that keeps a file open across reads ([`open_version_for_identity`]).
 pub use lopdf::{IndexedReader, PageMap};
 use scan::DoScan;
 use sha2::{Digest, Sha256};
@@ -126,19 +134,15 @@ pub struct DocumentIds {
     pub second: [u8; 16],
 }
 
-/// Opens a file for its pages' identities, through the file wall, as every read of a document by its path is. A file that needs a password is refused:
-/// its pages are never identified.
-pub fn open_for_identity(path: &Path) -> Result<IndexedReader, crate::OpenError> {
-    crate::open_reader_cached(path)
-}
-
-/// [`open_for_identity`] of exactly this version of the file: `None` unless the file opened (by its own descriptor, not its path) has the device, number,
-/// size and modification time of `stamp`, so a file renamed into place for the moment of the open is never identified for another (slice 2's review).
+/// **Opens exactly this version of a file for its pages' identities,** through the file wall, as every read of a document by its path is: `None`
+/// unless the file opened (by its own descriptor, not its path) has the device, number, size and modification time of `stamp`, so a file renamed into
+/// place for the moment of the open is never identified for another (slice 2's review). A file that needs a password is refused: its pages are never
+/// identified. The only open by a path: there's none that skips the opened file's check (second review).
 pub fn open_version_for_identity(path: &Path, stamp: recto_platform::FileStamp) -> Option<IndexedReader> {
     crate::open_reader_cached_at(path, stamp).ok().flatten()
 }
 
-/// [`open_for_identity`] on bytes in memory, for tests and the fuzzer.
+/// [`open_version_for_identity`] on bytes in memory, for tests and the fuzzer.
 pub fn open_bytes_for_identity(bytes: std::sync::Arc<[u8]>) -> Result<IndexedReader, crate::OpenError> {
     crate::open_bytes(bytes)
 }
@@ -423,11 +427,18 @@ fn xobject_record(
     let general = decode::filter_names(dict, &resolve).is_some_and(|names| names.iter().all(|name| decode::is_general(name)));
     let as_stored = |budget: &mut Budget<'_>| take_stream(reader, id, &descriptor, None, limit, budget, None, prefix);
     let (kind, taken, scanned) = if general {
-        let scan = children.filter(|_| is_form);
+        let mut scan = children.filter(|_| is_form);
         let scanned = scan.is_some();
+        // What a form drew is what its content decoded to: if it didn't, the names its first part gave are taken back (as `content_record` does).
+        let mark = scan.as_deref().map(DoScan::mark);
         match decode::chain_of(dict, &resolve) {
-            Some(chain) => match take_stream(reader, id, &descriptor, Some(&chain), limit, budget, scan, prefix)? {
-                Taken::Failed => (3, as_stored(budget)?, false),
+            Some(chain) => match take_stream(reader, id, &descriptor, Some(&chain), limit, budget, scan.as_deref_mut(), prefix)? {
+                Taken::Failed => {
+                    if let (Some(scan), Some(mark)) = (scan, mark) {
+                        scan.back_to(mark);
+                    }
+                    (3, as_stored(budget)?, false)
+                }
                 taken => (0, taken, scanned),
             },
             None => (3, as_stored(budget)?, false),
@@ -563,7 +574,9 @@ fn take_stream(
         Some(chain) => decode::decoded(stored, chain),
         None => stored,
     };
-    // One byte past what may be hashed says a cap is reached, whatever a decoder holds back or reads ahead. A prefix is of the stream's own cap only.
+    // One byte past what may be hashed says a cap is reached. Each read asks for no more than that byte, and a decoder reads nothing past the unit
+    // holding it (its group, row or run, as [`decode`] defines them), so what's in the stream after it never decides anything. A prefix is of the
+    // stream's own cap only.
     let prefix = prefix && limit <= budget.page_left;
     let limit = limit.min(budget.page_left);
     let mut sub = Sha256::new();
