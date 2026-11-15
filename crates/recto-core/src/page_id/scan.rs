@@ -17,7 +17,7 @@
 //! which images a digest holds, never what the scan costs.
 
 /// Most different names kept: the digest's cap on images and forms ([`super::Caps::xobjects`]).
-pub(super) const MAX_NAMES: usize = 64;
+pub(super) const MAX_NAMES: usize = 256;
 /// Longest name taken, as PDF's own limit on names is.
 const MAX_NAME: usize = 127;
 
@@ -386,13 +386,16 @@ mod tests {
     }
 
     /// Failure caught: a page drawing more different names than the cap is hashed by some of them, so its digest depends on where the cap fell, or the
-    /// scan keeps names without bound. At 64 names all kept; at 65 it says it overflowed, and keeps no more.
+    /// scan keeps names without bound. At 256 names all kept; at 257 it says it overflowed, and keeps no more.
     #[test]
     fn the_names_are_capped_at_their_limit_plus_one() {
         let many = |count: usize| (0..count).map(|at| format!("/N{at} Do ")).collect::<String>();
-        assert_eq!(names_of(&[many(64).as_bytes()]), ((0..64).map(|at| format!("N{at}")).collect(), false));
-        let (names, overflowed) = names_of(&[many(65).as_bytes(), b"/N0 Do"]);
-        assert_eq!((names.len(), overflowed), (64, true));
+        assert_eq!(
+            names_of(&[many(MAX_NAMES).as_bytes()]),
+            ((0..MAX_NAMES).map(|at| format!("N{at}")).collect(), false)
+        );
+        let (names, overflowed) = names_of(&[many(MAX_NAMES + 1).as_bytes(), b"/N0 Do"]);
+        assert_eq!((names.len(), overflowed), (MAX_NAMES, true));
     }
 
     /// Failure caught: a stream that didn't decode (hashed as stored instead) leaves the names of its first part, so the digest depends on how far a

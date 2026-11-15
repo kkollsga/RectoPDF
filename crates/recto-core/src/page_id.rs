@@ -16,17 +16,26 @@
 //!    record is `u32le(length of the name)`, the name, a kind byte, and for kinds 0, 1 and 3 `u64le(n)` and the SHA-256 of the `n` bytes; then
 //!    `u32le(children)` and a record (of the same shape, without children) for each name a form's own content gives `Do`, looked up in the form's
 //!    `/Resources` `/XObject` (the page's if it has none). Kinds: 0, every filter general, decoded (for a form, its content, whose names are its
-//!    children); 1, a filter not general (an image codec), as stored; 2, nothing by that name, or it isn't a stream or can't be read (no length or hash, and no children); 3, general
-//!    but it didn't decode, as stored. Only a form drawn by the page's content has children; one drawn by a form is a record with none.
+//!    children); 1, a filter not general (an image codec), as stored; 2, nothing by that name, or it isn't a stream or can't be read (no length or
+//!    hash, and no children); 3, general but it didn't decode, as stored; 4, **an image past its cap** (`/Subtype /Image`, whose bytes as kind 0, 1
+//!    or 3 would hash more than [`Caps::xobject_bytes`], 16 MiB): the byte 4, the kind it would have been, `u64le(n)` and the SHA-256 of exactly its
+//!    first `n` = 16 MiB (decoded or as stored, as that kind is), then `u64le` of its stream's stored length, then its `/Width`, `/Height` and
+//!    `/BitsPerComponent`, its `/ColorSpace`'s name and its `/Filter` names as written, each framed (`image_says`). Only a form drawn by the page's
+//!    content has children; one drawn by a form is a record with none.
+//!
+//!    **The honest limit of kind 4** (coordinator, 2026-11-15): two images equal in their first 16 MiB, their stored length and what they say of
+//!    themselves, and different after, hash alike. Big scans often share their first megabytes (a white margin, a header), which is why the stored
+//!    length and the geometry are in it: they make look-alikes as unlikely as for whole content, not impossible.
 //! 4. `E`.
 //!
-//! **A page that reaches a cap has no identity** ([`read_page`] gives `None`): so a digest never depends on where a cap fell, on how much a decoder read
-//! ahead or on how a library buffers, only on the file. The caps, [`Caps::STANDARD`], each counted exactly: more than 1,024 entries of `/Contents`;
-//! more than 16 MiB hashed of the content together; more than 64 records of images and forms (at the page and in its forms together, or more names
-//! than [`scan::MAX_NAMES`]); more than 16 MiB hashed of one image or form; more than 64 MiB hashed in all; more than 256 MiB of stored length of the
-//! streams opened (each charged its length when it's opened, before a byte is read, and again if it's read again as stored); and in a file anyone may
-//! open (encrypted with an empty password), a stream over 8 MiB stored, as the reader gives such a stream only whole, decrypted. So a hostile page costs
-//! at most the caps, holding a few buffers of [`decode::CHUNK`] and a predictor's row.
+//! **A page that reaches a cap has no identity** ([`read_page`] gives `None`), but for an image past its own cap (kind 4, a definition of its own): so a
+//! digest never depends on where a cap fell, on how much a decoder read ahead or on how a library buffers, only on the file. The caps,
+//! [`Caps::STANDARD`], each counted exactly (one byte past is past): more than 1,024 entries of `/Contents`; more than 16 MiB hashed of the content
+//! together; more than 256 records of images and forms (drawn by the page and by its forms, together; the scan keeps at most 256 names); more than
+//! 16 MiB hashed of one form; more than 64 MiB hashed in all; more than 256 MiB of stored length of the streams opened (each charged its length when
+//! it's opened, before a byte is read, and again if it's read again as stored); and in a file anyone may open (encrypted with an empty password), a
+//! stream over 8 MiB stored, as the reader gives such a stream only whole, decrypted. So a hostile page costs at most the caps, holding a few buffers
+//! of [`decode::CHUNK`], a predictor's row and the scan's names (256 of at most 127 bytes).
 //!
 //! **What's left out, deliberately:** `/Rotate`, `/MediaBox`, `/CropBox` (a turn or a crop is a view of the same page: our own turn keeps the identity),
 //! `/Annots` (a highlight added or taken out keeps it), fonts (an optimiser's re-subsetting keeps it), XObjects in the resources the content doesn't
@@ -306,16 +315,16 @@ fn content_record(reader: &IndexedReader, item: &Object, budget: &mut Budget<'_>
     let chain = decode::chain_of(descriptor.dictionary(), &|object| deref(reader, object));
     let mark = scan.mark();
     let decoded = match &chain {
-        Some(chain) => take_stream(reader, id, &descriptor, Some(chain), limit, budget, Some(scan))?,
+        Some(chain) => take_stream(reader, id, &descriptor, Some(chain), limit, budget, Some(scan), false)?,
         None => Taken::Failed,
     };
     let (kind, taken) = match decoded {
-        Taken::Hashed(n, sub) => (0, Taken::Hashed(n, sub)),
         Taken::Failed => {
             // What it drew is what it decoded to, which it didn't.
             scan.back_to(mark);
-            (1, take_stream(reader, id, &descriptor, None, limit, budget, None)?)
+            (1, take_stream(reader, id, &descriptor, None, limit, budget, None, false)?)
         }
+        taken => (0, taken),
     };
     scan.end_of_stream();
     match taken {
@@ -323,7 +332,7 @@ fn content_record(reader: &IndexedReader, item: &Object, budget: &mut Budget<'_>
             budget.content_left -= n;
             record(hasher, kind, n, sub);
         }
-        Taken::Failed => record(hasher, 2, 0, Sha256::new()),
+        Taken::Prefix(..) | Taken::Failed => record(hasher, 2, 0, Sha256::new()),
     }
     Ok(())
 }
@@ -355,27 +364,38 @@ fn xobject_record(
     };
     let dict = descriptor.dictionary();
     let resolve = |object: &Object| deref(reader, object);
-    let is_form = matches!(dict.get(b"Subtype").ok().and_then(resolve), Some(Object::Name(subtype)) if subtype == b"Form");
+    let subtype = dict.get(b"Subtype").ok().and_then(resolve);
+    let is_form = matches!(&subtype, Some(Object::Name(subtype)) if subtype == b"Form");
+    // An image past its cap is hashed by its first cap's worth and what it says of itself; anything else past it is a cap reached.
+    let prefix = matches!(&subtype, Some(Object::Name(subtype)) if subtype == b"Image");
     let limit = budget.caps.xobject_bytes;
     let general = decode::filter_names(dict, &resolve).is_some_and(|names| names.iter().all(|name| decode::is_general(name)));
+    let as_stored = |budget: &mut Budget<'_>| take_stream(reader, id, &descriptor, None, limit, budget, None, prefix);
     let (kind, taken, scanned) = if general {
         let scan = children.filter(|_| is_form);
         let scanned = scan.is_some();
         match decode::chain_of(dict, &resolve) {
-            Some(chain) => match take_stream(reader, id, &descriptor, Some(&chain), limit, budget, scan)? {
-                Taken::Hashed(n, sub) => (0, Taken::Hashed(n, sub), scanned),
-                Taken::Failed => (3, take_stream(reader, id, &descriptor, None, limit, budget, None)?, false),
+            Some(chain) => match take_stream(reader, id, &descriptor, Some(&chain), limit, budget, scan, prefix)? {
+                Taken::Failed => (3, as_stored(budget)?, false),
+                taken => (0, taken, scanned),
             },
-            None => (3, take_stream(reader, id, &descriptor, None, limit, budget, None)?, false),
+            None => (3, as_stored(budget)?, false),
         }
     } else {
-        (1, take_stream(reader, id, &descriptor, None, limit, budget, None)?, false)
+        (1, as_stored(budget)?, false)
     };
     match taken {
         Taken::Hashed(n, sub) => {
             hasher.update([kind]);
             hasher.update(n.to_le_bytes());
             hasher.update(sub.finalize());
+        }
+        Taken::Prefix(n, sub) => {
+            hasher.update([4, kind]);
+            hasher.update(n.to_le_bytes());
+            hasher.update(sub.finalize());
+            hasher.update(descriptor.encoded_len().unwrap_or(0).to_le_bytes());
+            image_says(dict, &resolve, hasher);
         }
         Taken::Failed => {
             hasher.update([2]);
@@ -384,6 +404,48 @@ fn xobject_record(
     }
     // A form whose content wasn't decoded draws nothing that can be known, so it has no children; but it's still a form, with its count.
     Ok(is_form.then(|| if scanned { dict.clone() } else { Dictionary::new() }))
+}
+
+/// What an image past its cap says of itself, after its first cap's worth: `/Width`, `/Height`, `/BitsPerComponent`, the name of its `/ColorSpace`
+/// (an array's first name, as `/ICCBased` or `/Indexed`) and its `/Filter` names, as written. Each framed: 0 missing; 1 and an `i64le` integer; 2, a
+/// `u32le` length and a name; 3 anything else; and for the filters 4, a `u32le` count and each name with its length.
+fn image_says(dict: &Dictionary, resolve: &dyn Fn(&Object) -> Option<Object>, hasher: &mut Sha256) {
+    let name = |hasher: &mut Sha256, name: &[u8]| {
+        hasher.update([2]);
+        hasher.update(count(name.len()));
+        hasher.update(name);
+    };
+    for key in [&b"Width"[..], b"Height", b"BitsPerComponent"] {
+        match dict.get(key).ok().map(resolve) {
+            None => hasher.update([0]),
+            Some(Some(Object::Integer(value))) => {
+                hasher.update([1]);
+                hasher.update(value.to_le_bytes());
+            }
+            Some(_) => hasher.update([3]),
+        }
+    }
+    match dict.get(b"ColorSpace").ok().map(resolve) {
+        None => hasher.update([0]),
+        Some(Some(Object::Name(space))) => name(hasher, &space),
+        Some(Some(Object::Array(items))) => match items.first().and_then(resolve) {
+            Some(Object::Name(space)) => name(hasher, &space),
+            _ => hasher.update([3]),
+        },
+        Some(_) => hasher.update([3]),
+    }
+    match (dict.has(b"Filter"), decode::filter_names(dict, resolve)) {
+        (false, _) => hasher.update([0]),
+        (true, Some(names)) => {
+            hasher.update([4]);
+            hasher.update(count(names.len()));
+            for each in names {
+                hasher.update(count(each.len()));
+                hasher.update(&each);
+            }
+        }
+        (true, None) => hasher.update([3]),
+    }
 }
 
 fn record(hasher: &mut Sha256, kind: u8, n: u64, sub: Sha256) {
@@ -396,13 +458,17 @@ fn record(hasher: &mut Sha256, kind: u8, n: u64, sub: Sha256) {
 enum Taken {
     /// Its `n` bytes (decoded, or as stored), hashed.
     Hashed(u64, Sha256),
+    /// An image past its cap: its first `n` bytes (the cap's worth exactly), hashed.
+    Prefix(u64, Sha256),
     /// It couldn't be decoded or read: a decoding error, a read error, or no length to read it by.
     Failed,
 }
 
 /// Hashes a stream, decoded through `chain` or as stored without one, feeding what it decodes to `scan`. Its stored length is charged to the page's read
 /// cap **before** anything is read or decrypted (review S1: a stream that decodes to little pulls little through a decoder, so a cap counted as bytes
-/// were pulled let a page decrypt its streams whole a thousand times over). More than `limit` bytes, or than the page has left, is a cap reached.
+/// were pulled let a page decrypt its streams whole a thousand times over). More than `limit` bytes is a cap reached, unless `prefix` says the first
+/// `limit` are to be hashed of it (an image's); more than the page has left always is.
+#[allow(clippy::too_many_arguments)] // Each says one thing of this one read; a struct would be built for each call and read once.
 fn take_stream(
     reader: &IndexedReader,
     id: ObjectId,
@@ -411,6 +477,7 @@ fn take_stream(
     limit: u64,
     budget: &mut Budget<'_>,
     mut scan: Option<&mut DoScan>,
+    prefix: bool,
 ) -> Result<Taken, Capped> {
     let Some(length) = descriptor.encoded_len() else {
         return Ok(Taken::Failed);
@@ -445,7 +512,8 @@ fn take_stream(
         Some(chain) => decode::decoded(stored, chain),
         None => stored,
     };
-    // One byte past what may be hashed says a cap is reached, whatever a decoder holds back or reads ahead.
+    // One byte past what may be hashed says a cap is reached, whatever a decoder holds back or reads ahead. A prefix is of the stream's own cap only.
+    let prefix = prefix && limit <= budget.page_left;
     let limit = limit.min(budget.page_left);
     let mut sub = Sha256::new();
     let mut buf = vec![0u8; decode::CHUNK];
@@ -460,10 +528,17 @@ fn take_stream(
         if read == 0 {
             break;
         }
-        n += read as u64;
-        if n > limit {
-            return Err(Capped);
+        if n + read as u64 > limit {
+            if !prefix {
+                return Err(Capped);
+            }
+            let rest = usize::try_from(limit - n).unwrap_or(0);
+            sub.update(&buf[..rest]);
+            budget.page_left -= limit;
+            budget.cost = budget.cost.saturating_add(limit);
+            return Ok(Taken::Prefix(limit, sub));
         }
+        n += read as u64;
         sub.update(&buf[..read]);
         if let Some(scan) = scan.as_deref_mut() {
             scan.feed(&buf[..read]);

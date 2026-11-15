@@ -446,7 +446,7 @@ fn a_page_past_the_content_cap_has_no_identity() {
 }
 
 /// Failure caught: the stream and image counts aren't capped where the definition says, so a page of 100,000 streams costs what it likes, or a page
-/// past them is hashed by part of itself. At 1,024 streams and 64 images drawn the page has an identity (and the last of each counts); one more of
+/// past them is hashed by part of itself. At 1,024 streams and 256 images drawn the page has an identity (and the last of each counts); one more of
 /// either and it has none.
 #[test]
 fn the_stream_and_image_counts_are_capped() {
@@ -464,12 +464,12 @@ fn the_stream_and_image_counts_are_capped() {
         let names: String = (0..count).map(|at| format!("/I{at:03} {} 0 R ", 5 + at)).collect();
         let drawn: String = (0..count).map(|at| format!("/I{at:03} Do ")).collect();
         let mut objects = vec![stream("", drawn.as_bytes())];
-        objects.extend((0..count).map(|at| stream(JPEG_DICT, &if at + 1 == count { last.to_vec() } else { vec![at as u8] })));
+        objects.extend((0..count).map(|at| stream(JPEG_DICT, &if at + 1 == count { last.to_vec() } else { (at as u32).to_le_bytes().to_vec() })));
         digest_under(&one_page("", &format!("/XObject << {names} >>"), "4 0 R", objects), &Caps::STANDARD)
     };
-    assert_ne!(images(64, b"one").unwrap(), images(64, b"two").unwrap(), "the 64th drawn counts");
-    assert_eq!(images(65, b"one"), None, "65 drawn");
-    // A form's children count toward the same 64: a form drawing 63 images is 64 records, and 64 is one too many.
+    assert_ne!(images(256, b"one").unwrap(), images(256, b"two").unwrap(), "the 256th drawn counts");
+    assert_eq!(images(257, b"one"), None, "257 drawn");
+    // A form's children count toward the same 256: a form drawing 255 images is 256 records, and 256 is one too many.
     let form = |children: usize| {
         let names: String = (0..children).map(|at| format!("/I{at:03} {} 0 R ", 6 + at)).collect();
         let drawn: String = (0..children).map(|at| format!("/I{at:03} Do ")).collect();
@@ -480,11 +480,11 @@ fn the_stream_and_image_counts_are_capped() {
                 data: drawn.into_bytes(),
             },
         ];
-        objects.extend((0..children).map(|at| stream(JPEG_DICT, &[at as u8])));
+        objects.extend((0..children).map(|at| stream(JPEG_DICT, &(at as u32).to_le_bytes())));
         digest_under(&one_page("", "/XObject << /F 5 0 R >>", "4 0 R", objects), &Caps::STANDARD)
     };
-    assert!(form(63).is_some());
-    assert_eq!(form(64), None);
+    assert!(form(255).is_some());
+    assert_eq!(form(256), None);
 }
 
 /// Failure caught: the page's own caps aren't held, so a page of many large images hashes a gigabyte, or a stream that decodes to little from very
@@ -507,12 +507,26 @@ fn the_page_caps_hold() {
             caps,
         )
     };
+    // An image past its own cap has an identity (kind 4); a form past it has none.
     let image_cap = Caps {
         xobject_bytes: 8,
         ..Caps::STANDARD
     };
     assert!(page(b"12345678", b"x", &image_cap).is_some());
-    assert_eq!(page(b"123456789", b"x", &image_cap), None);
+    assert!(page(b"123456789", b"x", &image_cap).is_some());
+    let form = |content: &[u8]| {
+        digest_under(
+            &one_page(
+                "",
+                "/XObject << /F 5 0 R >>",
+                "4 0 R",
+                vec![stream("", b"/F Do"), stream("/Subtype /Form /BBox [0 0 1 1]", content)],
+            ),
+            &image_cap,
+        )
+    };
+    assert!(form(b"12345678").is_some());
+    assert_eq!(form(b"123456789"), None);
     // 11 bytes of content, 8 of the first image and 1 of the second make 20.
     let page_cap = Caps {
         page_bytes: 20,
@@ -535,6 +549,40 @@ fn the_page_caps_hold() {
         },
     );
     assert_eq!(reads[0].identity, None, "a stream past the read cap is never opened");
+}
+
+/// An image of `data` flated, drawn, with `/Width` `width`.
+fn page_with_image(data: &[u8], width: u32, filter: bool) -> Vec<u8> {
+    let (dict, data) = if filter {
+        (
+            format!("/Subtype /Image /Width {width} /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray /Filter /FlateDecode"),
+            flate(data),
+        )
+    } else {
+        (
+            format!("/Subtype /Image /Width {width} /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray"),
+            data.to_vec(),
+        )
+    };
+    one_page("", "/XObject << /Im 5 0 R >>", "4 0 R", vec![stream("", b"/Im Do"), Obj::Stream { dict, data }])
+}
+
+/// Failure caught (the coordinator's ruling, 2026-11-15): a page with an image past its cap (a scan, a map) has no identity, or has one by its first
+/// 16 MiB alone, so two scans sharing a white top margin are taken for one page. Held with the cap set small: past it, an image is its prefix, its
+/// stored length and what it says of itself; and the honest limit: the same prefix, length and geometry, different after, hash alike.
+#[test]
+fn an_image_past_its_cap_is_its_prefix_its_length_and_its_geometry() {
+    let caps = Caps {
+        xobject_bytes: 8,
+        ..Caps::STANDARD
+    };
+    let with = |data: &[u8], width: u32, filter: bool| digest_under(&page_with_image(data, width, filter), &caps).expect("an identity");
+    let base = with(b"12345678AAAA", 12, false);
+    assert_ne!(base, with(b"12345678AAAAA", 12, false), "another stored length");
+    assert_ne!(base, with(b"12345678AAAA", 13, false), "another width");
+    assert_ne!(base, with(b"12345678AAAA", 12, true), "another filter");
+    assert_ne!(base, with(b"12345679AAAA", 12, false), "another prefix");
+    assert_eq!(base, with(b"12345678BBBB", 12, false), "the honest limit: only the tail differs");
 }
 
 /// Failure caught: [`PageRead::bytes`] isn't what the page cost, so a job reading pages to a byte budget reads far past it. A page of 11 stored bytes of
@@ -703,6 +751,13 @@ fn golden_pages() -> Vec<(&'static str, Vec<u8>)> {
         ),
     ));
     pages.push(("encrypted with an empty password", encrypted(&sample(""))));
+    // Images past the cap (kind 4): equal in their first 16 MiB and different after, with different stored lengths.
+    let mut margin = vec![0xffu8; 16 << 20];
+    margin.extend_from_slice(&[0u8; 4096]);
+    pages.push(("an image past its cap", page_with_image(&margin, 4096, true)));
+    margin.truncate(16 << 20);
+    margin.extend(std::iter::repeat_n(7u8, 4096));
+    pages.push(("an image past its cap, another tail", page_with_image(&margin, 4096, true)));
     pages
 }
 
@@ -728,17 +783,18 @@ fn golden_vectors_of_recto_page_1() {
             "encrypted with an empty password",
             "1545f27d009ce1d54dc9c3341a366aad0373c2e69a0e8bf2919013ae80105017",
         ),
+        ("an image past its cap", "1561009a1c2a34a243ebe93f4005ff79d84c8f7675590a0c50831c581867d919"),
+        (
+            "an image past its cap, another tail",
+            "b5f1f59a255c1c1edadc116be2506dcc9c0d2116c7a70bdde5df81639ebc5695",
+        ),
     ];
     let pages = golden_pages();
     let got: Vec<(&str, String)> = pages.iter().map(|(what, bytes)| (*what, hex(&digest_of(bytes)))).collect();
     let want: Vec<(&str, String)> = golden.iter().map(|(what, digest)| (*what, (*digest).to_string())).collect();
     assert_eq!(got, want);
-    // At a cap: the image record's cap reached by one, so no identity.
-    let capped = one_page(
-        "",
-        "/XObject << /A 5 0 R >>",
-        "4 0 R",
-        vec![stream("", b"/A Do"), stream(JPEG_DICT, &vec![0u8; (16 << 20) + 1])],
-    );
+    assert_ne!(got[6].1, got[7].1, "images past the cap differing after it, by their stored length");
+    // At a cap: the content's 16 MiB passed by one byte, so no identity.
+    let capped = one_page("", "", "4 0 R", vec![stream("/Filter /FlateDecode", &flate(&vec![b' '; (16 << 20) + 1]))]);
     assert_eq!(reads_of(&capped, &Caps::STANDARD)[0].identity, None);
 }
