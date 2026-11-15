@@ -20,7 +20,10 @@ fn main() {
     let main_got = indexer.find_key().is_some();
     let main_reached = REACHED.load(Ordering::SeqCst);
     let elsewhere = indexer.clone();
-    let other_got = std::thread::spawn(move || elsewhere.find_key().is_some()).join().unwrap_or(false);
+    let other_got = std::thread::Builder::new()
+        .name("recto-main-thread-probe".into())
+        .spawn(move || elsewhere.find_key().is_some())
+        .is_ok_and(|other| other.join().unwrap_or(false));
     let other_reached = REACHED.load(Ordering::SeqCst);
     println!("main={on_main} main_got={main_got} main_reached={main_reached} other_got={other_got} other_reached={other_reached}");
 }
