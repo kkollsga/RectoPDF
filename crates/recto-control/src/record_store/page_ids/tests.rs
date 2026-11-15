@@ -133,6 +133,7 @@ fn an_append_goes_only_onto_this_lists_own_sidecar() {
         bytes: sidecar::entries(&[(page, known(page as u8))], None),
         unwritten: 1,
         document: false,
+        rest: true,
     };
     // Another process (a launch) appends where this one's file ends.
     drop(store);
@@ -348,4 +349,45 @@ fn carry_prefixes() -> Vec<String> {
         "it still picks journals by their prefix: {prefixes:?}"
     );
     prefixes
+}
+
+/// Failure caught (second review): a journal starts again under a new name for the same version of its file, and its new sidecar gets only the entries
+/// not written yet, while the old sidecar goes with the old journal, so the pages written before come back unread after a restart. The first write to
+/// a sidecar that isn't there, of a list whose other entries went to another, asks for it whole; written whole, it reads back with every page.
+#[test]
+fn a_journal_under_a_new_name_gets_its_sidecar_whole() {
+    let (_root, paths) = state();
+    let (store, folder) = written(&paths);
+    let (mut edits, first) = read_list();
+    identity::sidecar_written(&mut edits, &first, sidecar::Done::Written);
+    assert!(identity::found(&mut edits, &[(4, known(4))], None));
+    let rest = identity::sidecar_waiting(&edits).expect("page 4 waits");
+    assert!(!rest.whole);
+    // The same version, another name: as a name already taken by another tab or a file not ours gives.
+    let other = record::journal_file_name(Some(STAMP), Path::new("/d/a.pdf"), Some(7));
+    let mut start = append(&other, Vec::new(), 1);
+    start.base = Some(edits.to_record());
+    start.replaces = Some(journal_name());
+    let work = JournalWork {
+        appends: vec![start],
+        pages: vec![pages_for(&other, &rest)],
+        ..JournalWork::default()
+    };
+    let (outcome, failed) = store.write_journals(&work, false);
+    assert_eq!(failed, None);
+    assert!(!sidecar_path(&folder).exists(), "the old sidecar went with its journal");
+    assert_eq!(outcome.pages, vec![(TabId(1), rest.clone(), sidecar::Done::WantsWhole)]);
+    identity::sidecar_written(&mut edits, &rest, sidecar::Done::WantsWhole);
+    let whole = identity::sidecar_waiting(&edits).expect("written again");
+    assert!(whole.whole);
+    let work = JournalWork {
+        pages: vec![pages_for(&other, &whole)],
+        ..JournalWork::default()
+    };
+    let (outcome, _) = store.write_journals(&work, false);
+    assert_eq!(outcome.pages, vec![(TabId(1), whole, sidecar::Done::Written)]);
+    let back = store.read_list(&other).expect("the list");
+    for page in 1..=4 {
+        assert_eq!(known_of(&back.edits, page), Some(known(page as u8)), "page {page}");
+    }
 }

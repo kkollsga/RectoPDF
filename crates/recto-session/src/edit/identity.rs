@@ -432,11 +432,14 @@ pub fn sidecar_waiting(edits: &PageEdits) -> Option<sidecar::Waiting> {
     if entries.is_empty() && document.is_none() && !ids.whole {
         return None;
     }
+    let known = ids.pages.iter().filter(|(_, known)| known.is_some()).count();
+    let rest = !ids.whole && (known > ids.unwritten.len() || (ids.document.is_some() && !ids.document_unwritten));
     Some(sidecar::Waiting {
         whole: ids.whole,
         bytes: sidecar::entries(&entries, document),
         unwritten: ids.unwritten.len(),
         document: ids.document_unwritten,
+        rest,
     })
 }
 
