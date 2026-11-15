@@ -232,7 +232,7 @@ fn only_what_the_content_draws_is_hashed() {
 
 /// Failure caught: a view of the same page (a turn, a crop, another media box), a highlight added (`/Annots`), another font, or the page under another
 /// object number changes its digest, so edits on it would be set aside after a mere re-save or our own turn (research §3: these are what other
-/// programs change). The frame tag is what says a turn or crop did change.
+/// programs change). The frame tag is what says a turn or crop did change, and its low two bits which turn the page's own `/Rotate` is.
 #[test]
 fn what_a_view_changes_leaves_the_digest_alone_and_the_frame_says_it() {
     let plain = id_of(&sample(""));
@@ -245,6 +245,20 @@ fn what_a_view_changes_leaves_the_digest_alone_and_the_frame_says_it() {
         assert_eq!(hex(&other.digest), hex(&plain.digest), "{extra}");
         assert_eq!(other.frame == plain.frame, extra.starts_with("/Annots"), "the frame tag, for {extra}");
     }
+    // The tag says the page's own turns, so a turn is told from a crop (second review: slice 2 needs which of the two another program changed).
+    assert_eq!(frame_turns(plain.frame), 0);
+    for (rotate, turns) in [
+        ("/Rotate 90", 1),
+        ("/Rotate 180", 2),
+        ("/Rotate 270", 3),
+        ("/Rotate -90", 3),
+        ("/Rotate 450", 1),
+    ] {
+        assert_eq!(frame_turns(id_of(&sample(rotate)).frame), turns, "{rotate}");
+    }
+    let cropped = id_of(&sample("/CropBox [10 10 500 700]")).frame;
+    assert_eq!(frame_turns(cropped), 0, "a crop keeps the turns");
+    assert_ne!(cropped >> 2, plain.frame >> 2, "and changes the rest of the tag");
     // Another media box, written in as many bytes, so the file's offsets hold.
     let wider = id_of(&sample("").replace_all(b"612 792", b"700 792"));
     assert_eq!(hex(&wider.digest), hex(&plain.digest));
