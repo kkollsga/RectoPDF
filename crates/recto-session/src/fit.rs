@@ -48,8 +48,10 @@ impl EditsFit {
     /// words, which the session's error and the agent's refusal both say.
     pub fn edit_refused_words(self) -> Option<&'static str> {
         match self {
-            Self::FileChanged | Self::FileChangedVersionUnknown => {
-                Some("No more edits can be made here: the file changed on disk after its unsaved edits were made.")
+            Self::FileChanged => Some("No more edits can be made here: the file changed on disk after its unsaved edits were made."),
+            // An edit can have come after the change was heard and before the read (the dropped-stamp route): only that the file changed is known.
+            Self::FileChangedVersionUnknown => {
+                Some("No more edits can be made here: the file changed on disk, and which version its unsaved edits were made on isn't known.")
             }
             Self::NotThisFile => Some("No more edits can be made here: this tab's unsaved edits don't fit its file."),
             Self::Fit | Self::VersionUnknown => None,
@@ -234,12 +236,10 @@ impl Notices<'_> {
         let fit = self.fit_of(tab);
         let said = |notice: &FileNotice| NoticeSaid {
             code: notice.code(),
-            // "Changed" speaks of the edits only where the file is known to be another than they're about, never because a list exists: edits made on
-            // the version shown (the file changed, then the person edited) get the words a clean tab gets (review S1, 2026-11-15).
-            message: notice.message(match notice {
-                FileNotice::Changed => fit.file_known_other(),
-                _ => self.lists.has_list(tab.id),
-            }),
+            // "Changed" is said by this only where the fit's own words don't come first, so none are held there: it never speaks of edits, not even
+            // where a list exists (edits made on the version shown after the change was read: review S1, 2026-11-15). Other notices (a file gone,
+            // which comes first) speak of a list's edits where there is one.
+            message: notice.message(!matches!(notice, FileNotice::Changed) && self.lists.has_list(tab.id)),
         };
         match tab.file.notice() {
             Some(missing @ FileNotice::Missing) => Some(said(missing)),

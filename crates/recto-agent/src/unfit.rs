@@ -74,7 +74,7 @@ pub fn edit_refusal(fit: EditsFit) -> Option<AgentError> {
             "Tell the user: no more edits can be made here, as the file changed on disk after these edits were made. The edits are kept. The user can put the earlier version back, or discard them to see the file as it is now."
         }
         EditsFit::FileChangedVersionUnknown => {
-            "Tell the user: no more edits can be made here, as the file changed on disk after these edits were made. Which version they were made on isn't known, so putting a version back won't make them fit. The edits are kept until the user discards them."
+            "Tell the user: no more edits can be made here, as the file changed on disk and which version these edits were made on isn't known, so putting a version back won't make them fit. The edits are kept until the user discards them."
         }
         _ => {
             "Tell the user: no more edits can be made here, as these unsaved edits don't fit the file on disk. The edits are kept until the user discards them."
@@ -143,6 +143,13 @@ mod tests {
                 fit == EditsFit::FileChanged,
                 "{fit:?}: {refused:?}"
             );
+            // Where the version they were made on isn't known, an edit may have come after the change was heard: "after" isn't known.
+            assert_eq!(
+                refused.message.contains("after its unsaved edits"),
+                fit == EditsFit::FileChanged,
+                "{fit:?}: {refused:?}"
+            );
+            assert_eq!(refused.next.contains("after these edits"), fit == EditsFit::FileChanged, "{fit:?}: {refused:?}");
         }
     }
 
