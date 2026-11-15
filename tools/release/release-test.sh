@@ -221,6 +221,36 @@ check "entitlements: a wrong bundle is refused" 1 "$rc"
 has "entitlements: a profile that isn't one" "isn't a signed provisioning profile" "$out"
 has "entitlements: a main executable that claims nothing" "the app's main executable claims com.apple.application-identifier = None" "$out"
 has "entitlements: another program that claims the group" "Contents/MacOS/recto claims the app's identity or keychain group" "$out"
+# A profile as the file keychain's tools read one: a plist in signed CMS, made here with LibreSSL and a throwaway certificate (security cms -D
+# decodes it without asking who signed it, which is all --check reads it for).
+/usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -keyout "$E/k.pem" -out "$E/c.pem" -days 1 -subj "/CN=release-test" >/dev/null 2>&1
+printf '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Entitlements</key><dict><key>com.apple.application-identifier</key><string>6GND8Z2C7Z.io.github.kkollsga.RectoPDF</string><key>keychain-access-groups</key><array><string>6GND8Z2C7Z.*</string></array></dict></dict></plist>' > "$E/profile.plist"
+/usr/bin/openssl cms -sign -nodetach -binary -outform DER -in "$E/profile.plist" -signer "$E/c.pem" -inkey "$E/k.pem" -out "$E/made.provisionprofile" 2>/dev/null
+# Failure: the checker refuses a bundle as a release makes it, so its refusals of the others mean nothing.
+bundle "$E/right.app"
+cp "$E/made.provisionprofile" "$E/right.app/Contents/embedded.provisionprofile"
+codesign --force --sign - "$E/right.app/Contents/MacOS/recto" 2>/dev/null
+codesign --force --sign - --entitlements "$E/claims.plist" "$E/right.app" 2>/dev/null
+out=$("$ENT" --check "$E/right.app" 2>&1); rc=$?
+check "entitlements: a bundle as a release makes it passes ($out)" 0 "$rc"
+# Failure: a main executable claiming one entitlement more than the three passes, so a release could ship a power nobody decided on.
+bundle "$E/more.app"
+cp "$E/made.provisionprofile" "$E/more.app/Contents/embedded.provisionprofile"
+sed 's#</dict></plist>#  <key>com.apple.security.get-task-allow</key><true/>\n</dict></plist>#' "$E/claims.plist" > "$E/more.plist"
+codesign --force --sign - --entitlements "$E/more.plist" "$E/more.app" 2>/dev/null
+out=$("$ENT" --check "$E/more.app" 2>&1); rc=$?
+check "entitlements: one entitlement more is refused" 1 "$rc"
+has "entitlements: and named" "claims com.apple.security.get-task-allow as well" "$out"
+# Failure: code in Frameworks (or PlugIns, XPCServices, Library) claiming the app's group passes, as only MacOS and Helpers were looked at.
+bundle "$E/framework.app"
+cp "$E/made.provisionprofile" "$E/framework.app/Contents/embedded.provisionprofile"
+mkdir -p "$E/framework.app/Contents/Frameworks"
+cp /usr/bin/true "$E/framework.app/Contents/Frameworks/claims"
+codesign --force --sign - --entitlements "$E/claims.plist" "$E/framework.app/Contents/Frameworks/claims" 2>/dev/null
+codesign --force --sign - --entitlements "$E/claims.plist" "$E/framework.app" 2>/dev/null
+out=$("$ENT" --check "$E/framework.app" 2>&1); rc=$?
+check "entitlements: code in Frameworks claiming the group is refused" 1 "$rc"
+has "entitlements: and named" "Contents/Frameworks/claims claims the app's identity" "$out"
 
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."

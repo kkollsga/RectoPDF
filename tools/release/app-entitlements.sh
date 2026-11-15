@@ -7,8 +7,9 @@
 #                                                                group, which is the App ID.
 #   tools/release/app-entitlements.sh --check <RectoPDF.app>     Says each problem and exits 1 unless: the bundle embeds a provisioning
 #                                                                profile for the App ID that allows the group; the main executable claims
-#                                                                exactly these three; and no other program in the bundle claims any of
-#                                                                them. Prints no part of the profile but the App ID.
+#                                                                these three and nothing else; and no other code in the bundle (MacOS,
+#                                                                Helpers, Frameworks, PlugIns, XPCServices, Library) claims any of them.
+#                                                                Prints no part of the profile but the App ID.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 team=$(sed -n 's/^pub const TEAM_ID: &str = "\([A-Z0-9]*\)";$/\1/p' "$root/crates/recto-update/src/lib.rs")
@@ -65,17 +66,24 @@ path, app_id, team = sys.argv[1:4]
 raw = open(path, "rb").read()
 claims = plistlib.loads(raw) if raw.strip() else {}
 want = {"com.apple.application-identifier": app_id, "com.apple.developer.team-identifier": team, "keychain-access-groups": [app_id]}
+wrong = False
 for key, value in want.items():
     if claims.get(key) != value:
         print(f"entitlements: the app's main executable claims {key} = {claims.get(key)!r}, not {value!r}", file=sys.stderr)
-        sys.exit(1)
+        wrong = True
+# Exactly these three: anything more is a power the release would have that nobody decided it should.
+for key in sorted(set(claims) - set(want)):
+    print(f"entitlements: the app's main executable claims {key} as well, which a release doesn't", file=sys.stderr)
+    wrong = True
+sys.exit(1 if wrong else 0)
 PY
     while IFS= read -r program; do
       [ "$program" = "$app/Contents/MacOS/RectoPDF" ] && continue
       if claimed "$program" | grep -q -e com.apple.application-identifier -e keychain-access-groups -e com.apple.developer.team-identifier; then
         say "${program#"$app/"} claims the app's identity or keychain group; only the main executable may"
       fi
-    done < <(find "$app/Contents/MacOS" "$app/Contents/Helpers" -type f -perm -u+x 2>/dev/null)
+    done < <(find "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Frameworks" "$app/Contents/PlugIns" "$app/Contents/XPCServices" \
+      "$app/Contents/Library" -type f 2>/dev/null)
     [ "$problems" = 0 ] || exit 1
     echo "entitlements: $app_id claimed by the main executable alone, with its profile embedded"
     ;;
