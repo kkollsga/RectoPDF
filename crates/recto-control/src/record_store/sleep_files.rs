@@ -11,7 +11,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Sleep files in all: what the folder could hold of files with pictures in them, and far past what facts come to.
-pub(super) const MAX_SLEEP_BYTES: u64 = 256 * 1024 * 1024;
+pub const MAX_SLEEP_BYTES: u64 = 256 * 1024 * 1024;
 
 /// **Sleep files the pass after a launch looks at, at most** ([`RecordStore::remove_older_sleep_files`]): more than the folder held of 0.1.0's files at its
 /// 256 MiB (65 KB on average, measured 2026-11-13, so about 4,000). Past it the pass stops; the next launch's goes on, and a file left meanwhile is still

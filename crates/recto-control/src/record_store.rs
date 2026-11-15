@@ -29,7 +29,7 @@ use recto_session::record::{
 };
 use recto_session::sleep::SleepFile;
 use recto_session::{HistorySource, JournalOutcome, JournalWork, RestoredEdits, TakenHistory};
-pub use sleep_files::{MAX_SLEEP_FILES_LOOKED_AT, OlderSleepFiles, UPDATE_COPY};
+pub use sleep_files::{MAX_SLEEP_BYTES, MAX_SLEEP_FILES_LOOKED_AT, OlderSleepFiles, UPDATE_COPY};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
@@ -42,9 +42,9 @@ const SLOTS: [&str; 2] = ["record.a.json", "record.b.json"];
 const PLACES: &str = "places.log";
 const JOURNALS: &str = "journals";
 /// All closed PDFs' histories together, past which the oldest go first. Owner, 2026-11-07.
-const MAX_CLOSED_JOURNAL_BYTES: u64 = 1024 * 1024 * 1024;
+pub const MAX_CLOSED_JOURNAL_BYTES: u64 = 1024 * 1024 * 1024;
 /// How long a closed PDF's history waits to be picked up. Owner, 2026-11-07.
-const CLOSED_JOURNAL_DAYS: u64 = 30;
+pub const CLOSED_JOURNAL_DAYS: u64 = 30;
 /// Most bytes of journals a launch reads, whatever's there. Real ones are a few kilobytes each. What's past it stays where it is, and those tabs say they couldn't be read.
 const MAX_JOURNAL_BYTES_AT_LAUNCH: u64 = 1024 * 1024 * 1024;
 /// How many damaged states are kept.
