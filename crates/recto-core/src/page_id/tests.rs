@@ -140,6 +140,40 @@ fn the_digest_is_what_its_definition_says() {
     assert_eq!(hex(&digest_of(&page)), hex(&sha(&expected)));
 }
 
+/// A form whose flate content draws `/A Do` and then fails: its Adler-32 cut off, so the decoder gives the bytes first and the error after.
+fn page_with_a_failing_form() -> (Vec<u8>, Vec<u8>) {
+    let mut stored = flate(b"/A Do ");
+    stored.truncate(stored.len() - 4);
+    let page = one_page(
+        "",
+        "/XObject << /F 5 0 R /A 6 0 R >>",
+        "4 0 R",
+        vec![
+            stream("", b"/F Do"),
+            stream("/Subtype /Form /BBox [0 0 1 1] /Filter /FlateDecode", &stored),
+            stream(JPEG_DICT, IMAGE),
+        ],
+    );
+    (page, stored)
+}
+
+/// Failure caught (second review, F1): a form whose content fails to decode keeps the names its first part gave `Do` as its children, so its digest
+/// depends on how far a decoder got before its error, against the definition ("a form whose content wasn't decoded has no children"). A form drawing
+/// `/A Do` and then failing is kind 3, as stored, with no children.
+#[test]
+fn a_form_that_fails_to_decode_has_no_children() {
+    let (page, stored) = page_with_a_failing_form();
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, b"/F Do"));
+    expected.extend_from_slice(b"X");
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(xobject_bytes(b"F", 3, &stored));
+    expected.extend_from_slice(&0u32.to_le_bytes());
+    expected.extend_from_slice(b"E");
+    assert_eq!(hex(&digest_of(&page)), hex(&sha(&expected)));
+}
+
 /// Failure caught (review): a form drawing an image and a form drawing nothing beside the same image hash alike, as nothing said where a form's
 /// records end. With every section and form framed by its count, they don't.
 #[test]

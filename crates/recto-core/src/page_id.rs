@@ -414,11 +414,18 @@ fn xobject_record(
     let general = decode::filter_names(dict, &resolve).is_some_and(|names| names.iter().all(|name| decode::is_general(name)));
     let as_stored = |budget: &mut Budget<'_>| take_stream(reader, id, &descriptor, None, limit, budget, None, prefix);
     let (kind, taken, scanned) = if general {
-        let scan = children.filter(|_| is_form);
+        let mut scan = children.filter(|_| is_form);
         let scanned = scan.is_some();
+        // What a form drew is what its content decoded to: if it didn't, the names its first part gave are taken back (as `content_record` does).
+        let mark = scan.as_deref().map(DoScan::mark);
         match decode::chain_of(dict, &resolve) {
-            Some(chain) => match take_stream(reader, id, &descriptor, Some(&chain), limit, budget, scan, prefix)? {
-                Taken::Failed => (3, as_stored(budget)?, false),
+            Some(chain) => match take_stream(reader, id, &descriptor, Some(&chain), limit, budget, scan.as_deref_mut(), prefix)? {
+                Taken::Failed => {
+                    if let (Some(scan), Some(mark)) = (scan, mark) {
+                        scan.back_to(mark);
+                    }
+                    (3, as_stored(budget)?, false)
+                }
                 taken => (0, taken, scanned),
             },
             None => (3, as_stored(budget)?, false),
