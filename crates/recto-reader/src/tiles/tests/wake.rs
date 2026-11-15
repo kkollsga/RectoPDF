@@ -1,5 +1,5 @@
 use super::*;
-use crate::tiles::wake::{WAKE_FOLLOWED_FOR, WakeStock};
+use crate::tiles::wake::{WAKE_FOLLOWED_FOR, WakeEnd, WakeStock};
 
 /// The place a tab was left at, as the record keeps it: page 0, letter pages.
 fn saved_at_the_top() -> SavedPlace {
@@ -293,4 +293,88 @@ fn a_stale_note_for_the_same_tab_doesnt_time_its_next_wake() {
         wake.first_frame_us.is_some_and(|us| us < WAKE_FOLLOWED_FOR.as_micros() as u64) && wake.sharp_us.is_some(),
         "timed from the stale note: {wake:?}"
     );
+}
+
+/// Tab 2 noted and activated, and sent to its place: its pages on their paper, nothing drawn, and two bare frames applied.
+fn wake_begun_bare(reader: &mut Reader) {
+    reader.note_wake(2, Instant::now());
+    reader.activate(
+        2,
+        5,
+        0,
+        PageMap {
+            files: vec![PathBuf::from("/d/2.pdf")],
+            ..map()
+        },
+        &[1],
+        None,
+        Spread::Single,
+    );
+    reader.wake.window_up();
+    reader.host.take_ops();
+    let scrolled = reader.place.jump.map_or(0, std::num::NonZeroU64::get);
+    reader.set_viewport(Viewport {
+        scrolled_to: scrolled,
+        ..view(0.0)
+    });
+    for _ in 0..2 {
+        reader.host.take_ops();
+        reader.host.unapplied = true;
+        reader.applied();
+    }
+}
+
+/// Failure (2026-11-15, the long session under CI's limits at a load of 30): a wake whose first page came after the time a wake's followed for ended at
+/// the first frame past it without looking at that frame, so its report said no first frame, as one that never got one says, though the frame it ended
+/// at had every page drawn; and nothing in the report told a late first page from a lost one. The frame past the time is looked at: drawn, it's the first
+/// frame, at its time; still bare, the report says the wake stopped being followed while bare. And a wake ended by a jump says so, and one still going
+/// says it's under way.
+#[test]
+fn a_wakes_report_says_how_it_ended_and_a_late_first_page_is_late_not_lost() {
+    // Drawn only after the time: the frame past it has every page in view.
+    let mut reader = reader_on(5);
+    settle(&mut reader);
+    wake_begun_bare(&mut reader);
+    let under_way = reader.wake.last_wake().expect("a wake under way");
+    assert_eq!(
+        (under_way.tab, under_way.ended, under_way.blank_frames),
+        (2, WakeEnd::UnderWay, 2),
+        "{under_way:?}"
+    );
+    let waking = reader.wake.waking.take();
+    settle(&mut reader);
+    reader.wake.waking = waking.map(|(began, report)| (began - WAKE_FOLLOWED_FOR * 2, report));
+    reader.host.unapplied = true;
+    reader.applied();
+    let late = reader.wake.last_wake().expect("the wake");
+    assert!(
+        late.first_frame_us.is_some_and(|us| us > WAKE_FOLLOWED_FOR.as_micros() as u64),
+        "a first page past the time said as none: {late:?}"
+    );
+    assert_eq!((late.ended, late.blank_frames), (WakeEnd::Sharp, 2), "{late:?}");
+    // Still bare at the frame past the time.
+    let mut reader = reader_on(5);
+    settle(&mut reader);
+    wake_begun_bare(&mut reader);
+    if let Some((began, _)) = &mut reader.wake.waking {
+        *began -= WAKE_FOLLOWED_FOR * 2;
+    }
+    reader.host.unapplied = true;
+    reader.applied();
+    let bare = reader.wake.last_wake().expect("the wake");
+    assert!(bare.first_frame_us.is_none() && reader.wake.waking.is_none(), "{bare:?}");
+    assert_eq!(bare.ended, WakeEnd::NoLongerFollowed, "{bare:?}");
+    // Sent elsewhere before its first page.
+    let mut reader = reader_on(5);
+    settle(&mut reader);
+    wake_begun_bare(&mut reader);
+    reader.jump_to(3, 0.0);
+    let moved = reader.wake.last_wake().expect("the wake");
+    assert_eq!((moved.tab, moved.ended), (2, WakeEnd::Moved), "{moved:?}");
+    // And as it goes: drawn and sharp.
+    let mut reader = reader_on(5);
+    settle(&mut reader);
+    wake_shown(&mut reader, 2, Instant::now());
+    let sharp = reader.wake.last_wake().expect("the wake");
+    assert_eq!(sharp.ended, WakeEnd::Sharp, "{sharp:?}");
 }

@@ -899,8 +899,11 @@ Wake::pub fn not_showable(&self) -> Option<crate::tiles::NotShowable>
 Wake::pub fn note_wake(&self, tab: u32, began: Instant)
 Wake::pub fn sleep_material(&self, tab: u32, now: &PageMap) -> Option<crate::tiles::SleepMaterial>
 Wake::pub fn window_up(&self)
+WakeEnd (pub enum, derives Clone, Copy, Debug, Default, PartialEq, Eq)
+WakeEnd::pub fn word(self) -> &'static str
 WakeReport (pub struct, derives Clone, Copy, Debug, Default)
 WakeReport.pub blank_frames: u32
+WakeReport.pub ended: WakeEnd
 WakeReport.pub first_frame_us: Option<u64>
 WakeReport.pub from_facts: bool
 WakeReport.pub had: WakeStock
