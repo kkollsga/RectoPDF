@@ -15,7 +15,6 @@ mod look_again;
 mod marks;
 mod place;
 mod pointer;
-mod sleep_draw;
 mod wake;
 mod zoom;
 
@@ -546,13 +545,11 @@ fn another_version_of_the_file_takes_every_picture_of_the_old_one() {
     reader.note_version(Path::new("/d/a.pdf"), 1);
     settle(&mut reader);
     assert!(reader.cache.entries.values().any(|entry| entry.preview), "there's a preview");
-    let material = reader.sleep_material(1, &on(version(1))).unwrap();
-    assert!(!material.pictures.is_empty());
+    assert_eq!(reader.sleep_material(1, &on(version(1))).unwrap().version, Some(1));
     // Told it's another file: nothing of the old one's left, and the old one's not offered to the sleep file under the new name.
     assert!(reader.sleep_material(1, &on(version(2))).is_none());
     reader.activate(1, 5, 0, on(version(2)), &[], None, Spread::Single);
     assert!(reader.cache.entries.is_empty(), "every picture and tile of it goes");
-    assert!(reader.sleep_material(1, &on(version(2))).unwrap().pictures.is_empty());
     assert!(reader.host.take_ops().contains(&Op::Clear), "and off the screen");
     assert!(
         reader.work.take_renewals().contains(&(PathBuf::from("/d/a.pdf"), crate::tiles::Renew::Reopen)),
@@ -560,7 +557,7 @@ fn another_version_of_the_file_takes_every_picture_of_the_old_one() {
     );
 }
 
-/// Failure (review, the red frames): a tab's file is replaced while its tiles and previews are held, and they go on being shown, or written in its sleep file, as nothing that drew them says which version they're of. Each says, and as soon as a worker says the file's another version, whatever's of the old one goes, from the screen too, and nothing of it can be put back on a layer or into a sleep file.
+/// Failure (review, the red frames): a tab's file is replaced while its tiles and previews are held, and they go on being shown, or written in its sleep file, as nothing that drew them says which version they're of. Each says, and as soon as a worker says the file's another version, whatever's of the old one goes, from the screen too, and nothing of it can be put back on a layer.
 #[test]
 fn nothing_drawn_of_an_old_version_is_shown_or_kept() {
     let file = Path::new("/d/a.pdf");
@@ -580,13 +577,8 @@ fn nothing_drawn_of_an_old_version_is_shown_or_kept() {
         !ops.iter().any(|op| matches!(op, Op::Attach { id, .. } if drawn.contains(id))),
         "nothing of it goes back on a layer"
     );
-    assert!(
-        reader.sleep_material(1, &map()).unwrap().pictures.is_empty(),
-        "and nothing's offered for a sleep file till it's drawn again"
-    );
     settle(&mut reader);
     assert!(reader.cache.entries.values().all(|entry| entry.version == Some(2)));
-    assert!(!reader.sleep_material(1, &map()).unwrap().pictures.is_empty());
     // Something kept whose version is stale is refused at the moment it would go on a layer, however it got there.
     let stale = *reader.cache.entries.keys().next().unwrap();
     if let Some(entry) = reader.cache.entries.get_mut(&stale) {
@@ -595,29 +587,6 @@ fn nothing_drawn_of_an_old_version_is_shown_or_kept() {
     }
     assert!(!reader.attach(stale, false));
     assert!(!reader.cache.entries.contains_key(&stale));
-    // A picture from a sleep file, of a version a worker then says isn't this one, goes too.
-    let mut woken = Reader::new();
-    woken.set_viewport(view(0.0));
-    let shot = SleepShot {
-        page: 0,
-        scale: 0.25,
-        paper: PaperKind::White,
-        surface: PixelSurface::create(153, 198).unwrap(),
-    };
-    woken.wake.give_sleep(
-        1,
-        SleepView {
-            version: Some(7),
-            handed_back: false,
-            usual: Some(letter()),
-            sizes: Vec::new(),
-            pictures: vec![shot],
-        },
-    );
-    woken.activate(1, 5, 0, map(), &[], None, Spread::Single);
-    assert_eq!(woken.cache.entries.len(), 1);
-    woken.note_version(file, 8);
-    assert!(woken.cache.entries.is_empty());
 }
 
 /// What the page view allocates while the reader scrolls, counted on the thread that scrolls.

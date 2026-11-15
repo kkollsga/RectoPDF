@@ -580,7 +580,7 @@ Changed (private struct)
 DocDrawing (pub(super) struct, derives Debug)
 DocPlace (pub(super) struct, derives Debug)
 DocRenderer: LookSource (trait impl)
-DocRenderer: LookSource::fn image_boxes(&mut self, page: u32, generation: u64) -> Result<Option<Vec<[u16; 4]>>, RenderFailure>
+DocRenderer: LookSource::fn image_boxes(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>>
 DocRenderer: LookSource::fn is_stale(&self, generation: u64) -> bool
 DocRenderer: LookSource::fn page_size(&mut self, page: u32) -> Result<(f32, f32), RenderFailure>
 DocRenderer: LookSource::fn render_tile(&mut self, request: &TileRequest, surface: &PixelSurface) -> Result<TileResult, RenderFailure>
@@ -610,7 +610,6 @@ Docs::pub(crate) fn is_own_file(&self, tab: u32, file: &std::path::Path) -> bool
 Docs::pub(crate) fn set_band(&mut self, band: Option<(u32, u16, u16)>)
 Docs::pub(crate) fn shown(&self) -> Option<&DocView>
 DrawKind (pub enum, derives Clone, Copy, Debug, PartialEq, Eq)
-Ended (pub(super) enum, derives Clone, Copy, Debug, PartialEq, Eq)
 Engine (pub struct, derives Clone)
 Engine::pub fn activate(&self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>, spread: crate::layout::Spread)
 Engine::pub fn applied(&self)
@@ -698,7 +697,6 @@ Links::pub fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<
 Links::pub fn take_clicked(&self) -> Option<crate::links::LinkHit>
 Looks (pub(super) struct, derives Debug, Default)
 LowResNote (pub(super) struct, derives Debug)
-Next (pub(super) enum, derives Clone, Copy, Debug, PartialEq, Eq)
 NoLook (pub(super) enum, derives Debug, PartialEq, Eq)
 NotShowable (pub enum, derives Clone, Copy, Debug, PartialEq, Eq)
 NotShowable::pub const fn code(reason: Option<Self>) -> u8
@@ -707,7 +705,6 @@ NotShowable::pub fn from_code(code: u8) -> Option<Self>
 Op (pub enum, derives Debug, PartialEq)
 OpenDoc (private struct)
 Outcome (pub enum, derives Debug)
-Owed (pub(super) struct, derives Debug)
 PageMap (pub struct, derives Clone, Debug, Default, PartialEq, Eq)
 PageMap.pub expected: Vec<Option<FileStamp>>
 PageMap.pub files: Vec<PathBuf>
@@ -715,7 +712,6 @@ PageMap.pub follows: Option<FileStamp>
 PageMap.pub own: Option<FileStamp>
 PageMap.pub slots: Option<Vec<(u16, u32)>>
 PageMap.pub turns: Option<Arc<[u8]>>
-PageNow (pub(super) struct, derives Clone, Copy, Debug, Default, PartialEq, Eq)
 Pending (private struct, derives Default)
 Picture (private enum)
 Place (pub(crate) struct, derives Debug)
@@ -762,13 +758,6 @@ Qa::pub fn wait_for_held_asks(&self, count: u32) -> bool [qa feature only]
 Qa::pub fn wait_for_held_tell(&self, limit: Duration) -> bool [qa feature only]
 Qa::pub fn wait_resting(&self, limit: Duration) -> bool [qa feature only]
 QaHolds (pub(super) struct, derives Default) [qa feature only]
-RawPicture (pub struct, derives Clone, Debug, PartialEq)
-RawPicture.pub bgra: Vec<u8>
-RawPicture.pub height: u32
-RawPicture.pub page: u32
-RawPicture.pub paper: PaperKind
-RawPicture.pub scale: f32
-RawPicture.pub width: u32
 Reader (pub(crate) struct)
 Reader.pub(crate) cache: TileCache
 Reader.pub(crate) docs: Docs
@@ -864,36 +853,13 @@ Selection::pub fn show_marks(&self, marks: &crate::tiles::TabMarks, paper: crate
 Selection::pub fn take_copied(&self) -> Option<recto_index::select::CopiedText>
 Selection::pub fn text_now(&self) -> Option<String>
 Shared (private struct)
-SleepDrawCounts (pub struct, derives Clone, Copy, Debug, Default, PartialEq, Eq)
-SleepDrawCounts.pub heavy_passed: u64
-SleepDrawCounts.pub jobs: u64
-SleepDrawCounts.pub leaves_owing: u64
-SleepDrawCounts.pub leaves_pictured: u64
-SleepDrawCounts.pub pages_owed: u64
-SleepDrawCounts.pub picture_bytes: u64
-SleepDrawCounts.pub pictures: u64
-SleepDraws (pub struct, derives Debug, Default)
-SleepDraws::pub(crate) fn is_for(reader: &Reader, tab: u32) -> bool
-SleepDraws::pub(crate) fn plan(reader: &mut Reader) -> Option<JobPlan>
-SleepDraws::pub(crate) fn under_way(reader: &Reader) -> bool
 SleepMaterial (pub struct, derives Clone, Debug, Default, PartialEq)
-SleepMaterial.pub in_view: Vec<u32>
-SleepMaterial.pub pictures: Vec<RawPicture>
 SleepMaterial.pub sizes: Vec<(u32, PageBox)>
 SleepMaterial.pub usual: Option<PageBox>
 SleepMaterial.pub version: Option<u64>
-SleepShot (pub struct, derives Debug)
-SleepShot.pub page: u32
-SleepShot.pub paper: PaperKind
-SleepShot.pub scale: f32
-SleepShot.pub surface: PixelSurface
-SleepSource (pub enum, derives Clone, Copy, Debug, PartialEq, Eq)
 SleepView (pub struct, derives Debug, Default)
-SleepView.pub handed_back: bool
-SleepView.pub pictures: Vec<SleepShot>
 SleepView.pub sizes: Vec<(u32, PageBox)>
 SleepView.pub usual: Option<PageBox>
-SleepView.pub version: Option<u64>
 SurfaceRetry (pub(crate) struct, derives Debug, Default)
 SurfaceRetry::pub(crate) fn clear(&mut self)
 SurfaceRetry::pub(crate) fn refused(&mut self) -> std::time::Duration
@@ -902,7 +868,6 @@ TabMarks (pub struct, derives Clone, Debug, Default, PartialEq)
 TabMarks.pub hidden: Option<(PathBuf, Arc<HiddenAnnots>)>
 TabMarks.pub pages: Vec<(u32, Vec<Rect>)>
 TabMarks.pub tab: u32
-TabNow (pub(super) struct, derives Clone, Copy, Debug, Default, PartialEq, Eq)
 Tells (private struct, derives Default) [qa feature only]
 TileCache (pub(crate) struct, derives Debug)
 TileCache::pub(crate) fn empty_discardable(&mut self) -> usize
@@ -935,17 +900,13 @@ Wake::pub fn note_wake(&self, tab: u32, began: Instant)
 Wake::pub fn sleep_material(&self, tab: u32, now: &PageMap) -> Option<crate::tiles::SleepMaterial>
 Wake::pub fn window_up(&self)
 WakeReport (pub struct, derives Clone, Copy, Debug, Default)
-WakeReport.pub bare_with_picture: u16
 WakeReport.pub blank_frames: u32
 WakeReport.pub first_frame_us: Option<u64>
-WakeReport.pub from_sleep: Option<SleepSource>
+WakeReport.pub from_facts: bool
 WakeReport.pub had: WakeStock
 WakeReport.pub sharp_us: Option<u64>
-WakeReport.pub sleep_in_view: u16
-WakeReport.pub sleep_pictures: u16
 WakeReport.pub tab: u32
 WakeStock (pub enum, derives Clone, Copy, Debug, Default, PartialEq, Eq)
-WakeStock::pub fn covered_the_view(self) -> bool
 WakeStock::pub fn word(self) -> &'static str
 Waking (pub(crate) struct, derives Debug)
 Waking::pub(crate) fn give_sleep(&mut self, tab: u32, view: SleepView)

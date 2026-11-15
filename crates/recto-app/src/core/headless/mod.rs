@@ -35,6 +35,7 @@ mod palette;
 mod password_not_kept;
 mod passwords;
 // The count it reads is a debug build's only.
+mod flick_cost;
 #[cfg(debug_assertions)]
 mod per_tab_work;
 mod persons_lane;
@@ -60,6 +61,7 @@ mod update_guards;
 mod update_menu;
 mod update_saved;
 mod view;
+mod wake_costs;
 mod window_reaches;
 mod window_script;
 mod withheld_compare;

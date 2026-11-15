@@ -24,8 +24,8 @@ fn tab_named(app: &HeadlessApp, name: &str) -> u64 {
         .expect("the tab")
 }
 
-/// Every sleep file in the state folder, read back: how many pictures each has.
-fn sleep_files(app: &HeadlessApp) -> Vec<usize> {
+/// Every sleep file in the state folder, read back: each one's page count.
+fn sleep_files(app: &HeadlessApp) -> Vec<u32> {
     let mut folders = vec![app.disk().paths().root.clone()];
     let mut found = Vec::new();
     while let Some(folder) = folders.pop() {
@@ -36,7 +36,7 @@ fn sleep_files(app: &HeadlessApp) -> Vec<usize> {
             } else if entry.file_name().to_string_lossy().starts_with("sleep-") {
                 let bytes = std::fs::read(&path).expect("a sleep file");
                 let sleep = recto_session::sleep::decode_sleep(&bytes, recto_session::record::CURRENT_VERSION).expect("a sleep file that reads");
-                found.push(sleep.pictures.len());
+                found.push(sleep.pages);
             }
         }
     }
@@ -91,9 +91,9 @@ fn opened_by_the_person(app: &HeadlessApp, file: &std::path::Path, password: Opt
 /// Failure (the sleep-costs measurement of 2026-11-13: `un_report_un_sdg2023.pdf` slept three times in two runs, every sleep counter 0, no error): a PDF
 /// encrypted with an empty user password, which opens with no password asked, never had a sleep file, not even its facts, so it always woke bare, and the
 /// refusal was counted nowhere. The sleep rule took `encrypted` for "protected", where opening.md and the agents' gate already told the two apart. Opened with
-/// no password, drawn, left and put to sleep, it has a sleep file with a picture, and wakes from it.
+/// no password, drawn, left and put to sleep, it has a sleep file, and wakes from its facts.
 #[test]
-fn an_encrypted_pdf_anyone_may_open_gets_a_sleep_file_with_pictures() {
+fn an_encrypted_pdf_anyone_may_open_gets_a_sleep_file() {
     let disk = Disk::new();
     let open_to_anyone = disk.file("open-to-anyone.pdf", &locked_allowing("", 3, Permissions::PRINTABLE));
     let other = disk.pdf("other.pdf", 2);
@@ -105,22 +105,18 @@ fn an_encrypted_pdf_anyone_may_open_gets_a_sleep_file_with_pictures() {
     full(&app, &["session", "sleep", "--tab", &format!("#{}", tab_named(&app, "open-to-anyone.pdf"))]);
     app.settle();
     let files = sleep_files(&app);
-    assert!(
-        files.len() == 1 && files[0] >= 1,
-        "put to sleep, it has a sleep file with a picture: {files:?}; {}",
-        app.record_json()["sleep"]
-    );
+    assert_eq!(files, [3], "put to sleep, it has a sleep file: {}", app.record_json()["sleep"]);
     full(&app, &["tap", &format!("#{}", tab_named(&app, "open-to-anyone.pdf"))]);
     drawn(&app);
     let woke = app.core().engine.report().0["last_wake"].clone();
-    assert_eq!(woke["had"], "sleep_file", "it wakes from it: {woke}");
+    assert_eq!(woke["had"], "facts", "it wakes from it: {woke}");
     drop(app.quit());
 }
 
 /// Failure, the other side of the same rule: a file that needed the person's password has its pages written to disk in the clear, in a sleep file, once it's
 /// been opened with the password and put to sleep, or while it waits for a password nobody's typed. Both are drawn (the one with its password) and left, and
 /// every tab off screen is put to sleep by memory pressure, as an agent may not ask for a protected tab's sleep: the plain one beside them has its sleep
-/// file, so files are being written, and there's none with more than the plain one's pictures. A page from such a file can't be added to another document
+/// file, so files are being written, and there's none but the plain one's. A page from such a file can't be added to another document
 /// at all: it needs the password, and the loader that adds pages is given none.
 #[test]
 fn a_pdf_that_needed_a_password_never_gets_a_sleep_file() {
@@ -153,33 +149,6 @@ fn a_pdf_that_needed_a_password_never_gets_a_sleep_file() {
         files.len(),
         1,
         "the plain tab's alone, none for either file that needed a password: {files:?}; {sleep}"
-    );
-    drop(app.quit());
-}
-
-/// Failure (found with the one above, 2026-11-13): a page added to a plain document from a file anyone may open, encrypted or not, was counted as a protected
-/// file's page, so the whole document's sleep file had no pictures and it woke bare. Added at the front and drawn, then left and put to sleep: its sleep file
-/// has a picture. (A file that needs a password can't be added at all, which `a_pdf_that_needed_a_password_never_gets_a_sleep_file` holds.)
-#[test]
-fn a_page_added_from_an_encrypted_pdf_anyone_may_open_keeps_the_documents_pictures() {
-    let disk = Disk::new();
-    let open_to_anyone = disk.file("open-to-anyone.pdf", &locked_allowing("", 1, Permissions::PRINTABLE));
-    let plain = disk.pdf("plain.pdf", 2);
-    let other = disk.pdf("other.pdf", 2);
-    let app = disk.start();
-    app.core().engine.waking().window_up();
-    opened_by_the_person(&app, &plain, None);
-    full(&app, &["page", "insert", open_to_anyone.to_str().unwrap(), "--at", "1"]);
-    drawn(&app);
-    assert_eq!(full(&app, &["edits"])["pages"], 3);
-    opened_by_the_person(&app, &other, None);
-    full(&app, &["session", "sleep", "--tab", &format!("#{}", tab_named(&app, "plain.pdf"))]);
-    app.settle();
-    let files = sleep_files(&app);
-    assert!(
-        files.len() == 1 && files[0] >= 1,
-        "the document with the added page has a sleep file with a picture: {files:?}; {}",
-        app.record_json()["sleep"]
     );
     drop(app.quit());
 }
@@ -242,30 +211,11 @@ fn added_and_in_view(app: &HeadlessApp, plain: &std::path::Path, added: &std::pa
     drawn(app);
 }
 
-/// Every sleep file in the state folder, read back: the pages each has a picture of.
-fn pictured_pages(app: &HeadlessApp) -> Vec<Vec<u32>> {
-    let mut folders = vec![app.disk().paths().root.clone()];
-    let mut found = Vec::new();
-    while let Some(folder) = folders.pop() {
-        for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                folders.push(path);
-            } else if entry.file_name().to_string_lossy().starts_with("sleep-") {
-                let sleep = recto_session::sleep::decode_sleep(&std::fs::read(&path).expect("a sleep file"), recto_session::record::CURRENT_VERSION)
-                    .expect("a sleep file that reads");
-                found.push(sleep.pictures.iter().map(|picture| picture.page).collect());
-            }
-        }
-    }
-    found
-}
-
 /// Failure (review round 1 of the measured faults, S1): a password was used for every file a page view's worker opened, an added PDF's too. A crafted
 /// file lopdf reads with no password while PDFium asks for one is opened by the person, who types its password; the same file is added to a plain
-/// document, as the loader finds no password needed; that document's page from it was drawn with the person's password, pictured in its sleep file,
-/// and on screen for an agent to look at. A password is for the tab it was typed for: the page in the plain document says why it isn't shown and draws
-/// nothing, its sleep file has no picture of it, and its own pages draw as ever.
+/// document, as the loader finds no password needed; that document's page from it was drawn with the person's password, and on screen for an agent to
+/// look at. A password is for the tab it was typed for: the page in the plain document says why it isn't shown and draws nothing, and its own pages draw
+/// as ever.
 #[test]
 fn a_page_added_from_a_file_only_one_reader_needs_a_password_for_is_never_drawn_with_it() {
     let disk = Disk::new();
@@ -287,14 +237,8 @@ fn a_page_added_from_a_file_only_one_reader_needs_a_password_for_is_never_drawn_
     opened_by_the_person(&app, &other, None);
     full(&app, &["session", "sleep", "--tab", &format!("#{}", tab_named(&app, "plain.pdf"))]);
     app.settle();
-    let pictured = pictured_pages(&app);
-    assert_eq!(
-        pictured.len(),
-        1,
-        "the plain document's sleep file alone: {pictured:?}; {}",
-        app.record_json()["sleep"]
-    );
-    assert!(!pictured[0].contains(&0), "with no picture of the page from the crafted file: {pictured:?}");
+    let files = sleep_files(&app);
+    assert_eq!(files, [3], "the plain document's sleep file alone: {}", app.record_json()["sleep"]);
     drop(app.quit());
 }
 

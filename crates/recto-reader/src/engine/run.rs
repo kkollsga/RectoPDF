@@ -4,10 +4,9 @@
 
 use crate::layout::PageBox;
 use crate::paper::{DarkTile, PaperKind, dark_rgb, dim_page, dim_rgb, is_grey, turn_over};
-use crate::tiles::sleep_draw::SleepDraws;
 use crate::tiles::{DrawKind, Job, JobKind, JobPlan, Outcome, Renew};
 use recto_index::select::PageText;
-use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig, TileKind, TileRequest, TileResult, Workers};
+use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig, TileKind, TileRequest, TileResult};
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -156,16 +155,7 @@ fn run(shared: &Shared) {
             rest_or_wait_for_a_surface(planned, seen, shared, &mut renderers, &policy, &mut resting_since);
             continue;
         };
-        // **A job for a tab off screen's place ([`SleepDraws`]) starts no worker:** it's done by the one its file has, or not at all. Nor does it put off a big worker's rest, which goes on between its jobs as it does with none.
-        let workers = if SleepDraws::is_for(&lock(&shared.reader), job.tab) {
-            if big_workers_rest(&mut renderers, &policy, &mut resting_since).is_some_and(|left| left.is_zero()) {
-                publish_workers(shared, &mut renderers);
-            }
-            Workers::OnlyTheOneThere
-        } else {
-            resting_since = None;
-            Workers::MayStart
-        };
+        resting_since = None;
         {
             let mut reader = lock(&shared.reader);
             all_told(shared, &mut reader);
@@ -191,7 +181,7 @@ fn run(shared: &Shared) {
                 Ok(open) if !open.serves(job.tab, own) => document_failed(RenderFailure::NeedsPassword),
                 Ok(open) => {
                     lock(&shared.reader).work.set_cancel(open.doc.cancel_handle());
-                    let outcome = DocRenderer::with_workers(open, |open| &mut open.doc, workers, |open| do_job(open, &job));
+                    let outcome = do_job(open, &job);
                     file_changed = seen_replaced(open) | std::mem::take(&mut open.replaced);
                     if file_changed {
                         open.looks.clear();
@@ -587,7 +577,6 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
         JobKind::Links => Outcome::Links(None),
         JobKind::Size => match doc.page_size(job.source_page) {
             Ok((width, height)) => Outcome::Size(PageBox { width, height }),
-            Err(RenderFailure::WouldStart { heavy }) => Outcome::Unstarted { heavy },
             Err(failure) if whole_file(failure) => document_failed(failure),
             Err(failure) => Outcome::PageFailed {
                 message: failure.message(),
@@ -598,7 +587,6 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
             // A stale question answers zero, which isn't an answer about the page. Remembering it would draw a heavy page a tile at a time.
             Ok(_) if doc.is_stale(job.generation) => Outcome::Cancelled,
             Ok(pixels) => Outcome::Heavy(pixels >= recto_render_service::REGION_MIN_IMAGE_PIXELS),
-            Err(RenderFailure::WouldStart { heavy }) => Outcome::Unstarted { heavy },
             Err(failure) if whole_file(failure) => document_failed(failure),
             Err(_) => Outcome::Heavy(false),
         },
@@ -633,8 +621,7 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                         let tile = (whole.is_none() && low_res.is_none()).then_some((surface, *rect, *scale));
                         // Replaced as this was drawn, so it's of the new file, and no look of the old one's may go for it.
                         seen_replaced(open);
-                        // What's drawn for a tab off screen with its look or size refused for want of a worker goes nowhere: a picture put on dark paper by a look decided without them isn't the page's.
-                        // A look gone stale or to be tried again goes nowhere either: the tile isn't handed on, and what's shown of the page stays.
+                        // A look gone stale or to be tried again goes nowhere: the tile isn't handed on, and what's shown of the page stays.
                         let look = tile_look(
                             &mut open.doc,
                             &mut open.looks,
@@ -644,13 +631,7 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                             tile,
                             Instant::now(),
                         );
-                        if let Err(Outcome::Unstarted { heavy }) = look {
-                            return Outcome::Unstarted { heavy };
-                        }
-                        let size = match look.as_ref().ok().map(|_| open.doc.page_size(job.source_page)) {
-                            Some(Err(RenderFailure::WouldStart { heavy })) => return Outcome::Unstarted { heavy },
-                            size => size.and_then(Result::ok),
-                        };
+                        let size = look.as_ref().ok().and_then(|_| open.doc.page_size(job.source_page).ok());
                         let page = size.and_then(|(width, height)| recto_proto::device_size(width, height, drawn_scale).ok());
                         // Replaced after it was drawn, while its look or size was being asked: the tile's of the old file, and the look may be of either, or of a draw that failed for it. Neither is kept, and the tile's drawn again.
                         if seen_replaced(open) {
@@ -668,7 +649,6 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                     Outcome::Drawn { kind, low_res }
                 }
                 Ok(TileResult::Cancelled { .. }) => Outcome::Cancelled,
-                Err(RenderFailure::WouldStart { heavy }) => Outcome::Unstarted { heavy },
                 Err(failure) if whole_file(failure) => document_failed(failure),
                 Err(failure @ RenderFailure::NotDrawableNow { .. }) => Outcome::PageFailed {
                     message: failure.message(),

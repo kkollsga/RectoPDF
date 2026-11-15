@@ -72,7 +72,7 @@ fn a_quit_with_nothing_changed_writes_nothing() {
     let app = started_and_drawn(disk);
     let written = sleep_files_of(&app);
     assert_eq!(written.len(), 1, "the quit wrote the tab on screen's");
-    assert_eq!(app.core().engine.report().0["last_wake"]["had"], "sleep_file", "woken from it");
+    assert_eq!(app.core().engine.report().0["last_wake"]["had"], "facts", "woken from it");
     let (_, disk) = app.quit();
     let app = disk.start();
     assert_eq!(sleep_files_of(&app), written, "nothing changed, and a quit wrote its file again");

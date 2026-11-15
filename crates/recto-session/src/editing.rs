@@ -251,8 +251,7 @@ impl<L: DocLoader> Session<L> {
             return Err(SessionError::Open(OpenError::NotPdf));
         }
         // Not protected, encrypted or not: a file that needs a password can't be added at all (the loader that read `facts` is given none, and refuses
-        // it), so what's added opens for anyone, and its pages are no more private than the file (2026-11-13; before, an encrypted one cost the document
-        // its sleep file's pictures). A journal written before keeps its flag, and its document has no pictures till those pages are gone.
+        // it), so what's added opens for anyone, and its pages are no more private than the file (2026-11-13). A journal written before keeps its flag.
         self.edit_pages_as(id, by, |edits| edits.0.insert_pdf_noting(at, path, facts.page_count, stamp, false))
     }
 

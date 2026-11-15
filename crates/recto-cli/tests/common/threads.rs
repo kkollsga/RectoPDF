@@ -37,11 +37,19 @@ pub fn without(names: &[String], passing: &[&str]) -> Vec<String> {
     names.iter().filter(|name| !passing.contains(&name.as_str())).cloned().collect()
 }
 
-/// The app's threads that come and go at a moment's asking, whatever the number of tabs: a command's on its way out once it's answered (`recto-job`), the one look at the tabs' files, the one read or open of the tab on screen's, and the one sleep-file writer. Each is checked on its own; the rest are what's kept.
-pub const PASSING: [&str; 5] = ["recto-job", "recto-look", "recto-read", "recto-open", "recto-sleep"];
+/// The app's threads that come and go at a moment's asking, whatever the number of tabs: a command's on its way out once it's answered (`recto-job`), the one look at the tabs' files, the one read or open of the tab on screen's, the one sleep-file writer, the launch's one pass over older sleep files, and the one collector of helper processes, which is there only while a helper is (`recto_platform::isolate`'s reaper: a launch whose page never got a worker has none, the next one has it; seen under CI's limits, 2026-11-15, "grew from 6 to 7" with only `recto-reaper` new). Each is checked on its own; the rest are what's kept.
+pub const PASSING: [&str; 7] = [
+    "recto-job",
+    "recto-look",
+    "recto-read",
+    "recto-open",
+    "recto-sleep",
+    "recto-sleep-sweep",
+    "recto-reaper",
+];
 
-/// The passing ones there's at most one of at a time, by the app's design: one look, one read, one writer. Not a command's, of which there's one per request on its way out.
-pub const ONE_AT_A_TIME: [&str; 4] = ["recto-look", "recto-read", "recto-open", "recto-sleep"];
+/// The passing ones there's at most one of at a time, by the app's design: one look, one read, one writer, one pass, one collector. Not a command's, of which there's one per request on its way out.
+pub const ONE_AT_A_TIME: [&str; 6] = ["recto-look", "recto-read", "recto-open", "recto-sleep", "recto-sleep-sweep", "recto-reaper"];
 
 /// What's wrong with these threads against those at the moment compared with: more of the kept ones, or more than one of a kind there's one at a time of. `None` if nothing.
 pub fn grew(before: &[String], now: &[String]) -> Option<String> {

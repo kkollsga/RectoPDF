@@ -240,7 +240,6 @@ fn the_workers_word_on_a_files_length_goes_over_a_sleep_files() {
         toc: Toc::default(),
         usual: None,
         sizes: Vec::new(),
-        pictures: Vec::new(),
     };
     s.sleeper().wake_from_sleep(a, &forged(100));
     s.tap(a).unwrap();
@@ -370,7 +369,7 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
     assert!(s.dormant().sleep_facts(locked).is_none(), "its contents don't go on disk");
     assert!(s.dormant().sleep_to_read(locked).is_none());
     assert!(
-        s.dormant().sleep_facts(open_to_anyone).is_some_and(|facts| facts.pictures_allowed),
+        s.dormant().sleep_facts(open_to_anyone).is_some(),
         "encrypted, but opened with no password: nothing a sleep file could give away"
     );
     for at in 0..MAX_WARM {
@@ -385,57 +384,18 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
     assert_eq!(left[0].0.sleep.file_pages, 3);
     assert!(s.sleeper().take_left_warm().is_empty());
     // An encrypted file's pages in a plain document: a file that needs a password can't be added at all, so what's added opens for anyone, and the
-    // document keeps its pictures (2026-11-13; before, it lost them).
+    // document keeps its sleep file.
     let plain = s.open(&file("plain.pdf")).unwrap();
-    assert!(s.dormant().sleep_facts(plain).unwrap().pictures_allowed);
     let open_file = file("open-to-anyone.pdf");
     let facts = s.loader().load(&open_file).unwrap();
     assert!(facts.encrypted);
     s.insert_pdf_with_facts(plain, Author::Owner, 0, &open_file, &facts, file_stamp(&open_file).ok())
         .unwrap();
     assert!(
-        s.dormant().sleep_facts(plain).unwrap().pictures_allowed,
-        "a page from a file anyone may open keeps the document's pictures"
+        s.dormant().sleep_facts(plain).is_some(),
+        "a page from a file anyone may open keeps the document's sleep file"
     );
     assert!(!s.lists().get(plain).unwrap().added_sources()[0].protected);
-    // A journal written before, with a page it called protected: carried through, so the document has no pictures till those pages are gone.
-    let mut edits = PageEdits::new(3);
-    edits.insert_pdf_noting(0, &file("old.pdf"), 1, None, true).unwrap();
-    let record = edits.to_record();
-    assert!(record.added[0].protected);
-    let mut read = PageEdits::from_record(&record).unwrap();
-    assert!(read.has_protected_pages(), "an old record's flag still holds");
-    read.delete(0, 1).unwrap();
-    assert!(!read.has_protected_pages(), "with those pages gone from the document, it's fine again");
-    std::fs::remove_dir_all(&dir).unwrap();
-}
-
-/// Failure (review round 1 of the measured faults, S3): a page added before 2026-11-13 from an encrypted file was recorded as protected, and such a
-/// journal is still read. Since then an added page is never marked so, and nothing held what an old flag still means: the document it's taken into has
-/// no pictures in its sleep file until those pages are gone. The same list unflagged has them, so it's the flag that decides.
-#[test]
-fn a_tab_taking_up_an_old_journals_protected_page_has_no_sleep_pictures() {
-    let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-old-protected-");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut s = journaled(3);
-    s.dormancy_mut().set_sleep_files(true);
-    for (name, protected) in [("flagged.pdf", true), ("unflagged.pdf", false)] {
-        let path = dir.join(name);
-        std::fs::write(&path, b"a file").unwrap();
-        let id = s.open(&path).unwrap();
-        // As a journal written before reads back: a page added at the front, its source flagged as the old rule had it.
-        let mut written = PageEdits::new(3);
-        written.insert_pdf_noting(0, &dir.join("added.pdf"), 1, None, protected).unwrap();
-        let read = PageEdits::from_record(&written.to_record()).unwrap();
-        s.journal_desk()
-            .take_up_history(id, &format!("journal-00000000000000{}.log", if protected { "a1" } else { "a2" }), read, 1);
-        assert_eq!(s.lists().get(id).map(PageEdits::len), Some(4), "{name}: the list was taken up");
-        let facts = s.dormant().sleep_facts(id).unwrap_or_else(|| panic!("{name} has sleep facts"));
-        assert_eq!(
-            facts.pictures_allowed, !protected,
-            "{name}: pictures only without a page the old journal called protected"
-        );
-    }
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -567,4 +527,47 @@ fn edited_tabs_counts_tabs_with_unsaved_changes_wherever_their_lists_are() {
     assert!(s.lists().is_asleep(a) && s.lists().is_edited(a));
     assert!(s.lists().get(c).is_some() && !s.lists().is_edited(c), "c's every step is undone");
     assert_eq!(s.lists().edited_tabs(), 2, "a, asleep, and b; not c");
+}
+
+/// Failure (review of the removal, should-fix 1): a document whose contents are past what a sleep file carries had its facts made at each leave, about a
+/// megabyte encoded and thrown away as the store wouldn't write it, and held whole in the queue meanwhile. It has no sleep facts, as a protected one
+/// hasn't; one just within the cap has.
+#[test]
+fn a_document_whose_contents_pass_the_sleep_files_cap_has_no_sleep_facts() {
+    struct Contents(usize);
+    impl DocLoader for Contents {
+        fn load(&self, _: &Path) -> Result<DocFacts, OpenError> {
+            let title = "t".repeat(recto_core::MAX_TITLE_BYTES);
+            let lines: Vec<TocLine<'_>> = (0..self.0)
+                .map(|at| TocLine {
+                    title: &title,
+                    page: u32::try_from(at % 3).unwrap(),
+                    parent: recto_core::NONE,
+                    depth: 0,
+                })
+                .collect();
+            Ok(DocFacts {
+                page_count: 3,
+                byte_len: 1,
+                encrypted: false,
+                version: "1.7".into(),
+                title: None,
+                toc: Toc::from_lines(&lines, false),
+                renderer_only: false,
+            })
+        }
+    }
+    let per_entry = recto_core::MAX_TITLE_BYTES + size_of::<recto_core::TocEntry>();
+    let within = sleep::MAX_SLEEP_CONTENTS_BYTES / per_entry;
+    let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-contents-cap-");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("doc.pdf");
+    std::fs::write(&path, b"a file").unwrap();
+    for (entries, fits) in [(within, true), (within + 1, false)] {
+        let mut s = Session::new(Contents(entries));
+        s.dormancy_mut().set_sleep_files(true);
+        let id = s.open(&path).unwrap();
+        assert_eq!(s.dormant().sleep_facts(id).is_some(), fits, "{entries} entries of {per_entry} bytes");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
 }

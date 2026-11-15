@@ -244,7 +244,8 @@ pub struct AddedSource {
     pub stamp: Option<FileStamp>,
     /// A file of the history's own, an earlier version of this PDF, which goes when nothing needs it.
     pub kept: bool,
-    /// It's protected, so nothing of its pages is written anywhere in the clear: a document with one has no pictures in its sleep file.
+    /// It's protected, so nothing of its pages is written anywhere in the clear. Since 2026-11-15 no sleep file holds a picture of any page, so nothing
+    /// of a sleep file goes by it; it's kept as a journal says it.
     pub protected: bool,
     /// A copy kept for a save holds only these pages of the file as it was, in this order (owner, 2026-11-07: undoing a delete past a Save keeps only the removed pages). The save's rebase moves the history's page numbers onto it and drops this. `None` for a whole file.
     pub holds: Option<Box<[u32]>>,
@@ -525,13 +526,6 @@ impl PageEdits {
     /// What a save said it was about to put in place, if one has.
     pub fn saving(&self) -> Option<FileStamp> {
         self.saving
-    }
-
-    /// Whether the document has a page from a protected file.
-    pub fn has_protected_pages(&self) -> bool {
-        self.slots
-            .iter()
-            .any(|slot| slot.source != 0 && self.added.get(usize::from(slot.source) - 1).is_some_and(|added| added.protected))
     }
 
     /// What's on each page of the document, as a number: pictures of it are about this order of these files, and no other. Zero when it's the file as it is, however it got back there, so a discard and a new edit can't come to match by counting.

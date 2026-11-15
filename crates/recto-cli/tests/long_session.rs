@@ -73,7 +73,7 @@ fn a_long_session_stays_flat() {
     assert_eq!(ids.len(), TABS);
     // Going dormant in the time this has, not five minutes.
     ok(&["qa", "dormant-after", "2"]);
-    // And with no limit on how often pictures are written, as what's being looked at here is what a wake and a dormancy cost, and whether they build up.
+    // And with no limit on how often sleep files are written, as what's being looked at here is what a wake and a dormancy cost, and whether they build up.
     ok(&["qa", "sleep-write-gap", "0"]);
     let mut footprints = Vec::new();
     let (mut peak_workers, mut peak_worker_bytes) = (0u64, 0u64);
@@ -101,8 +101,9 @@ fn a_long_session_stays_flat() {
                 ));
                 let blank = woken["blank_frames"].as_u64().unwrap_or(0);
                 blank_frames += blank;
-                // What a wake had to show when it began, as its report says: a bare page is only a bug where a picture of the view was here.
-                let owed = !matches!(woken["had"].as_str(), Some("nothing" | "not_looked") | None);
+                // What a wake had to show when it began, as its report says: a bare page is only a bug where what the view showed was still held (a warm
+                // tab's tiles). A wake from its facts has its pages on their paper, bare until the renderer answers, as one with nothing has.
+                let owed = woken["had"] == "cache";
                 if blank > 0 && !owed {
                     unowed_bare += 1;
                 }
@@ -142,7 +143,7 @@ fn a_long_session_stays_flat() {
         let footprint = memory["footprint_bytes"].as_u64().unwrap();
         footprints.push(footprint);
         println!(
-            "round {round}: app {:.1} MiB, workers now {:.1} MiB ({} alive), held {}, threads {}, wrote {} bytes, dormant {}, sleep files {} ({} bytes), lists in memory {}, drawn before sleep {}",
+            "round {round}: app {:.1} MiB, workers now {:.1} MiB ({} alive), held {}, threads {}, wrote {} bytes, dormant {}, sleep files {} ({} bytes), lists in memory {}",
             footprint as f64 / 1048576.0,
             memory["worker_bytes"].as_u64().unwrap_or(0) as f64 / 1048576.0,
             memory["workers"],
@@ -153,7 +154,6 @@ fn a_long_session_stays_flat() {
             report["record"]["sleep"]["sleep_files_written"],
             report["record"]["sleep"]["sleep_bytes_written"],
             ids.len(),
-            report["reader"]["sleep_draws"]
         );
         assert!(report["reader"]["documents_held"].as_u64().unwrap() <= 3, "{}", report["reader"]);
     }
@@ -182,7 +182,7 @@ fn a_long_session_stays_flat() {
         sleeping.len(),
         wakes.len()
     );
-    println!("wakes with a bare page and nothing to show them with, which is allowed until the renderer answers: {unowed_bare}");
+    println!("wakes with a bare page from their facts or nothing, which is allowed until the renderer answers: {unowed_bare}");
     if !bare.is_empty() {
         let said: Vec<String> = bare
             .iter()
@@ -194,7 +194,7 @@ fn a_long_session_stays_flat() {
             })
             .collect();
         panic!(
-            "a wake that began with a picture of its view, from the sleep file or the cache, showed a bare page ({} wakes; {blank_frames} bare frames in all, {unowed_bare} wakes bare with nothing to show). `had` and `bare_with_picture` say which.\n{}\nall wakes (from a file, first frame us, sharp us): {wakes:?}\nload now {}",
+            "a wake that began with its view held in the cache showed a bare page ({} wakes; {blank_frames} bare frames in all, {unowed_bare} wakes bare from their facts or nothing). `had` says which.\n{}\nall wakes (from a file, first frame us, sharp us): {wakes:?}\nload now {}",
             bare.len(),
             said.join("\n"),
             load()
@@ -212,7 +212,7 @@ fn a_long_session_stays_flat() {
     // Edits came through it all, wherever they've been.
     let lists = report["session"]["edits_full"].as_object().unwrap();
     assert!(lists.len() >= TABS / 3, "{}", lists.len());
-    // Disk: what edits and a picture a dormancy account for. Generous, as what's at stake is its growing without end.
+    // Disk: what edits and a dormancy account for. Generous, as what's at stake is its growing without end.
     let wrote = report["record"]["wrote_bytes"].as_u64().unwrap();
     let dormancies: u64 = ["left_alone", "budget", "asked", "pressure"]
         .iter()

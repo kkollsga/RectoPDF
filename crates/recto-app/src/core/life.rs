@@ -337,7 +337,7 @@ impl Lifecycle {
         let why = if why == "ready" && by_cap { "cap" } else { why };
         lock(&self.window_showing).record = Some(json!({
             "home": home, "page": report["page"], "scroll_y": report["scroll_y"], "scroll_x": report["scroll_x"], "magnification": report["magnification"], "settled": report["settled"], "tab": report["tab"],
-            "tile_layers": tile_layers, "ms_from_start": self.started.elapsed().as_secs_f64() * 1000.0,
+            "tile_layers": tile_layers, "page_layers": report["tiles"]["page_layers"], "ms_from_start": self.started.elapsed().as_secs_f64() * 1000.0,
             "why": why,
             "ms_since_window_opened": opened.map(|opened| opened.as_secs_f64() * 1000.0),
             "patience_ms": SHOW_PATIENCE.as_millis() as u64,

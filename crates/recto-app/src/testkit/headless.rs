@@ -889,8 +889,7 @@ pub fn host_turns(app: &HeadlessApp, view: &mut recto_reader::Viewport, settled:
                 quiet = false;
             }
         }
-        // Drawing for a tab off screen's place isn't what settling waits for, so it's waited for here too.
-        if quiet && (!settled || (engine.wait_settled(std::time::Duration::from_millis(20)) && engine.report().0["sleep_draws"]["under_way"] == false)) {
+        if quiet && (!settled || engine.wait_settled(std::time::Duration::from_millis(20))) {
             // And settled as the app's one definition has it, the rest of the app included: this only adds the host's turns and the drawing.
             if settled {
                 app.settle();
