@@ -14,9 +14,9 @@ append journal-fccfeb8706d87b0f.log 54 bytes
 6252ca10 {"r":[0,2,3,"a"]}
 ed114f0f {"r":[1,1,1,"o"]}
 == a saved
-base journal-170ef1d00b92ebaf.log 425 bytes
+base journal-170ef1d00b92ebaf.log 507 bytes
 a135cc30 {"format":"recto-journal","version":1,"tab":1,"path":"/d/a.pdf","file":{"size":9,"mtime_ns":1,"device":1,"inode":2},"file_pages":5,"base_seq":6,"saving":null}
-36c4b36a {"base":{"file_pages":5,"pages":[[0,0,5,0]],"added":[],"undo":[{"by":"o","step":{"rotate":{"start":0,"len":1,"quarter_turns":3}}},{"by":"a","step":{"move":{"start":2,"len":1,"to":0}}}],"redo":[],"history_dropped":false,"owner_step_dropped":false}}
+1a0b3cab {"base":{"file_pages":5,"pages":[[0,0,5,0]],"added":[],"undo":[{"by":"o","step":{"rotate":{"start":0,"len":1,"quarter_turns":3}}},{"by":"a","step":{"move":{"start":2,"len":1,"to":0}}}],"redo":[],"history_dropped":false,"owner_step_dropped":false,"identities":{"pages":[{"p":0},{"p":1},{"p":2},{"p":3},{"p":4}],"over_cap":false}}}
 replaced journal-9ccfbc814d8f7846.log 0 bytes
 == an edit after the save
 append journal-170ef1d00b92ebaf.log 27 bytes
@@ -27,9 +27,9 @@ append journal-fccfeb8706d87b0f.log 27 bytes
 2c9f90cf {"r":[0,1,1,"o"]}
 == a closed with its history
 replaced journal-170ef1d00b92ebaf.log 0 bytes
-base journal-8a1b4df5e29f3f2c.log 493 bytes
+base journal-8a1b4df5e29f3f2c.log 575 bytes
 df68d584 {"format":"recto-journal","version":1,"tab":1,"path":"/d/a.pdf","file":{"size":10,"mtime_ns":1,"device":1,"inode":2},"file_pages":5,"base_seq":9,"saving":null}
-cced6f96 {"base":{"file_pages":5,"pages":[[0,0,5,0]],"added":[],"undo":[{"by":"o","step":{"rotate":{"start":0,"len":1,"quarter_turns":3}}},{"by":"a","step":{"move":{"start":2,"len":1,"to":0}}},{"by":"o","step":{"rotate":{"start":2,"len":1,"quarter_turns":2}}}],"redo":[],"history_dropped":false,"owner_step_dropped":false}}
+1e74fcb2 {"base":{"file_pages":5,"pages":[[0,0,5,0]],"added":[],"undo":[{"by":"o","step":{"rotate":{"start":0,"len":1,"quarter_turns":3}}},{"by":"a","step":{"move":{"start":2,"len":1,"to":0}}},{"by":"o","step":{"rotate":{"start":2,"len":1,"quarter_turns":2}}}],"redo":[],"history_dropped":false,"owner_step_dropped":false,"identities":{"pages":[{"p":0},{"p":1},{"p":2},{"p":3},{"p":4}],"over_cap":false}}}
 retire sleep-170ef1d00b92ebaf.bin 0 bytes
 retire sleep-8a1b4df5e29f3f2c.bin 0 bytes
 taken up: journal-8a1b4df5e29f3f2c.log
@@ -38,10 +38,10 @@ append journal-8a1b4df5e29f3f2c.log 27 bytes
 b57df6ce {"r":[3,1,1,"o"]}
 == b discarded
 retire journal-fccfeb8706d87b0f.log 0 bytes
-lists by journal: [("journal-8a1b4df5e29f3f2c.log", EditsRecord { file_pages: 5, pages: [SlotRun(0, 0, 3, 0), SlotRun(0, 3, 1, 1), SlotRun(0, 4, 1, 0)], added: [], undo: [EntryRecord { by: Owner, step: Rotate { start: 0, len: 1, quarter_turns: 3 } }, EntryRecord { by: Agent, step: Move { start: 2, len: 1, to: 0 } }, EntryRecord { by: Owner, step: Rotate { start: 2, len: 1, quarter_turns: 2 } }, EntryRecord { by: Owner, step: Rotate { start: 3, len: 1, quarter_turns: 3 } }], redo: [], history_dropped: false, owner_step_dropped: false })]
+lists by journal: [("journal-8a1b4df5e29f3f2c.log", EditsRecord { file_pages: 5, pages: [SlotRun(0, 0, 3, 0), SlotRun(0, 3, 1, 1), SlotRun(0, 4, 1, 0)], added: [], undo: [EntryRecord { by: Owner, step: Rotate { start: 0, len: 1, quarter_turns: 3 } }, EntryRecord { by: Agent, step: Move { start: 2, len: 1, to: 0 } }, EntryRecord { by: Owner, step: Rotate { start: 2, len: 1, quarter_turns: 2 } }, EntryRecord { by: Owner, step: Rotate { start: 3, len: 1, quarter_turns: 3 } }], redo: [], history_dropped: false, owner_step_dropped: false, identities: IdentitiesRecord { pages: 5, read: 0, over_cap: false, .. } })]
 has work: false
 checkpoint journal-9ef274e474b2f5a5.log
 4617b6c1 {"format":"recto-journal","version":1,"tab":1,"path":"/d/p.pdf","file":null,"file_pages":5,"base_seq":0,"saving":null}
-1c43d5d9 {"base":{"file_pages":5,"pages":[[0,0,1,1],[0,1,4,0]],"added":[],"undo":[{"by":"o","step":{"rotate":{"start":0,"len":1,"quarter_turns":3}}}],"redo":[],"history_dropped":false,"owner_step_dropped":false}}
-writes: 8, bytes: 1414
+fc7529a2 {"base":{"file_pages":5,"pages":[[0,0,1,1],[0,1,4,0]],"added":[],"undo":[{"by":"o","step":{"rotate":{"start":0,"len":1,"quarter_turns":3}}}],"redo":[],"history_dropped":false,"owner_step_dropped":false,"identities":{"pages":[{"p":0},{"p":1},{"p":2}],"over_cap":false}}}
+writes: 8, bytes: 1578
 files left: ["journal-8a1b4df5e29f3f2c.log"]

@@ -50,7 +50,7 @@ fn use_a_record(bytes: &[u8]) {
 }
 
 fn use_a_journal(bytes: &[u8]) {
-    let parsed = match record::parse_journal(bytes, record::MARKED_JOURNAL_VERSION) {
+    let parsed = match record::parse_journal(bytes, record::JOURNAL_VERSION) {
         Ok(parsed) => parsed,
         Err(RecordError::Newer(_) | RecordError::Damaged(_)) => return,
     };
@@ -60,6 +60,11 @@ fn use_a_journal(bytes: &[u8]) {
     };
     assert!(applied <= parsed.ops.len());
     assert!(edits.slots().len() <= MAX_PAGES);
+    // What a journal says the edits' pages are (the page matcher): within its cap, and only pages the file has.
+    if let Some(ids) = recto_session::edit::identity::identities(&edits) {
+        assert!(ids.pages().len() <= recto_session::edit::identity::MAX_IDENTIFIED);
+        assert!(ids.pages().iter().all(|(page, _)| *page < edits.file_pages()));
+    }
     // As good as a list made here: through a session, undone and redone all the way, and back to the same.
     let start = edits.slots().to_vec();
     let whole = edits.to_record();

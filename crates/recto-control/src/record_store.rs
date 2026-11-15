@@ -203,9 +203,9 @@ fn replace(path: &Path, bytes: &[u8], force: bool) -> std::io::Result<()> {
 
 /// What a journal's file reads as, if it's there.
 /// A journal's good bytes with its header saying the newer version, if it doesn't yet (`recto_session::edit::marks::journal_marked`).
-fn journal_marked_at(path: &Path, good: u64) -> Option<Vec<u8>> {
+fn journal_marked_at(path: &Path, good: u64, version: u32) -> Option<Vec<u8>> {
     let bytes = read_ours(path, MAX_JOURNAL_BYTES).ok()??;
-    recto_session::edit::marks::journal_marked(bytes.get(..usize::try_from(good).ok()?)?)
+    recto_session::edit::marks::journal_marked(bytes.get(..usize::try_from(good).ok()?)?, version)
 }
 
 fn read_journal(path: &Path) -> Result<Option<(ParsedJournal, u64)>, RecordError> {
@@ -214,7 +214,7 @@ fn read_journal(path: &Path) -> Result<Option<(ParsedJournal, u64)>, RecordError
     };
     let Some(bytes) = bytes else { return Ok(None) };
     let length = bytes.len() as u64;
-    record::parse_journal(&bytes, record::MARKED_JOURNAL_VERSION).map(|parsed| Some((parsed, length)))
+    record::parse_journal(&bytes, record::JOURNAL_VERSION).map(|parsed| Some((parsed, length)))
 }
 
 /// Whether a journal was saved away: it says a save was about to put a file of this identity in place, and that's what's there. So its edits are in the PDF, and it's stale, whether or not the crash let it be removed.
@@ -655,12 +655,17 @@ impl RecordStore {
                 continue;
             }
             let mut lines = Vec::new();
-            let marks = recto_session::edit::marks::ops_have_marks(&append.ops);
+            // What these operations hold that an app from before can't read, which the journal's header says as its version.
+            let newer = if recto_session::edit::identity::ops_have_identities(&append.ops) {
+                Some(record::JOURNAL_VERSION)
+            } else {
+                recto_session::edit::marks::ops_have_marks(&append.ops).then_some(record::MARKED_JOURNAL_VERSION)
+            };
             if known.is_none() {
-                // New: its header goes first, for as many operations as came before these, saying the newer version if they hold a highlight's.
+                // New: its header goes first, for as many operations as came before these, saying the newer version if they hold what an older app can't read.
                 let header = JournalHeader {
                     base_seq: append.through.saturating_sub(append.ops.len() as u64),
-                    version: if marks { record::MARKED_JOURNAL_VERSION } else { append.header.version },
+                    version: newer.unwrap_or(append.header.version),
                     ..append.header.clone()
                 };
                 lines.extend_from_slice(&record::journal_start(&header, None));
@@ -668,8 +673,8 @@ impl RecordStore {
             lines.extend_from_slice(&record::journal_lines(&append.ops));
             let path = folder.join(&name);
             let mut start = known.unwrap_or(0);
-            // A journal an app from before highlights reads is about to get one: its header says the newer version first, once, in one replace.
-            if let Some(marked) = known.filter(|_| marks).and_then(|good| journal_marked_at(&path, good)) {
+            // A journal an app from before reads is about to get what it can't: its header says the newer version first, once, in one replace.
+            if let Some(marked) = known.zip(newer).and_then(|(good, version)| journal_marked_at(&path, good, version)) {
                 if replace(&path, &marked, force).is_err() {
                     failed = Some(io_failed("written to"));
                     continue;
@@ -2620,6 +2625,44 @@ mod tests {
             read("journal-0000000000000002.log", CURRENT_VERSION).err(),
             Some(RecordError::Newer(record::MARKED_JOURNAL_VERSION))
         );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Failure caught (the page matcher): a journal an app from before reads gets a line of what was read of its pages, which that app (0.1.0 reads
+    /// [`CURRENT_VERSION`]) stops at, starting the journal again without the person's edits after it. Its header says [`record::JOURNAL_VERSION`] first,
+    /// once, which that app leaves alone, and over a highlight's version too; this app reads every line, whole, and appends go on after them.
+    #[test]
+    fn a_journal_that_gets_identities_says_the_newer_version() {
+        let (root, paths) = state();
+        let store = RecordStore::open(&paths, Flavor::App);
+        let folder = root.join("session").join(JOURNALS);
+        let identified = || {
+            JournalOp::Identified(recto_session::edit::identity::IdentifiedRecord {
+                pages: vec![recto_session::edit::identity::PageIdRecord {
+                    page: 0,
+                    digest: Some("00112233445566778899aabbccddeeff".into()),
+                    object: Some((4, 0)),
+                    frame: Some(7),
+                }],
+                document: None,
+            })
+        };
+        let read = |name: &str, newest: u32| record::parse_journal(&std::fs::read(folder.join(name)).unwrap(), newest);
+        write_ok(&store, &journal_work_for("journal-0000000000000001.log", vec![rotation()], 1));
+        assert!(read("journal-0000000000000001.log", CURRENT_VERSION).is_ok());
+        write_ok(&store, &journal_work_for("journal-0000000000000001.log", vec![identified()], 2));
+        assert_eq!(
+            read("journal-0000000000000001.log", CURRENT_VERSION).err(),
+            Some(RecordError::Newer(record::JOURNAL_VERSION))
+        );
+        assert_eq!(
+            read("journal-0000000000000001.log", record::MARKED_JOURNAL_VERSION).err(),
+            Some(RecordError::Newer(record::JOURNAL_VERSION)),
+            "an app with highlights and no identities leaves it alone too"
+        );
+        write_ok(&store, &journal_work_for("journal-0000000000000001.log", vec![rotation()], 3));
+        let parsed = read("journal-0000000000000001.log", record::JOURNAL_VERSION).unwrap();
+        assert_eq!((parsed.ops.len(), parsed.lost_lines), (3, false), "every line, whole");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

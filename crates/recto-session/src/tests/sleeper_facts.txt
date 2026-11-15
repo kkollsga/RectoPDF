@@ -20,7 +20,7 @@ tab 4: Hot page_count 5 from_sleep None read_held false dormancy [] asleep false
   to read None  awake Some((<d.pdf>, "<dir>/d.pdf"))
 asleep by journal []
 retired []
-list to sleep Some(("<journal of a.pdf>", JournalHeader { format: "recto-journal", version: 1, tab: 1, path: Text("<dir>/a.pdf"), file: Some(<a.pdf>), file_pages: 5, base_seq: 1, saving: None, keeping: None }, EditsRecord { file_pages: 5, pages: [SlotRun(0, 0, 1, 1), SlotRun(0, 1, 4, 0)], added: [], undo: [EntryRecord { by: Owner, step: Rotate { start: 0, len: 1, quarter_turns: 3 } }], redo: [], history_dropped: false, owner_step_dropped: false }))
+list to sleep Some(("<journal of a.pdf>", JournalHeader { format: "recto-journal", version: 1, tab: 1, path: Text("<dir>/a.pdf"), file: Some(<a.pdf>), file_pages: 5, base_seq: 1, saving: None, keeping: None }, EditsRecord { file_pages: 5, pages: [SlotRun(0, 0, 1, 1), SlotRun(0, 1, 4, 0)], added: [], undo: [EntryRecord { by: Owner, step: Rotate { start: 0, len: 1, quarter_turns: 3 } }], redo: [], history_dropped: false, owner_step_dropped: false, identities: IdentitiesRecord { pages: 3, read: 0, over_cap: false, .. } }))
 a goes dormant: true
 == a dormant
 tab 1: Cold page_count 5 from_sleep None read_held false dormancy [] asleep true in_memory false notice None

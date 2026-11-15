@@ -382,10 +382,7 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let on_hand = sleeper::OnHand::new(&inner.host.session, &inner.panes, &inner.engine);
     inner.on_disk.sleeper().after_a_call(&on_hand, &inner.core);
     // Whatever just happened may be something to keep. Nothing's written unless it really differs when its time comes.
-    let (retired, journal_work) = inner
-        .host
-        .session
-        .with_session(|session| (session.journals().has_pending(), session.journal_look().has_work()));
+    let (retired, journal_work) = super::page_ids::journal_work_after_a_call(&inner.host, inner.tools.page_ids());
     if retired {
         inner.saver.write_soon();
     } else {

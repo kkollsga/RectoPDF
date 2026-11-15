@@ -359,7 +359,27 @@ fn record_seeds() -> Vec<Vec<u8>> {
     let withheld_unreadable = String::from_utf8_lossy(&body)
         .replacen("\"next_id\"", "\"withheld_places\":[1,{\"a\":[2]},-3],\"next_id\"", 1)
         .into_bytes();
+    // A journal with what was read of its edits' pages (the page matcher), and one naming pages the file hasn't.
+    let identified = |page: u32| {
+        let header = recto_session::record::JournalHeader::new(1, std::path::Path::new("/fuzz/p12.pdf"), None, 12, 0);
+        let mut bytes = recto_session::record::journal_start(&header, None);
+        bytes.extend_from_slice(&recto_session::record::journal_lines(&[
+            recto_session::record::JournalOp::Rotate(8, 1, 1, recto_session::record::AuthorName::Owner),
+            recto_session::record::JournalOp::Identified(recto_session::edit::identity::IdentifiedRecord {
+                pages: vec![recto_session::edit::identity::PageIdRecord {
+                    page,
+                    digest: Some("00112233445566778899aabbccddeeff".into()),
+                    object: Some((20, 0)),
+                    frame: Some(7),
+                }],
+                document: None,
+            }),
+        ]));
+        bytes
+    };
     vec![
+        identified(8),
+        identified(400),
         record,
         journal,
         body,

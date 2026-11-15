@@ -24,6 +24,8 @@ pub struct Tools {
     palette: crate::palette::Palette,
     /// The Find field as the session thread last set it, for the UI thread.
     find_field: Mutex<crate::find::Field>,
+    /// The page-identity thread's state, for the page matcher: no thread at rest.
+    page_ids: Arc<super::page_ids::PageIds>,
 }
 
 impl Tools {
@@ -38,6 +40,7 @@ impl Tools {
             printing: Arc::default(),
             palette: crate::palette::Palette::default(),
             find_field: Mutex::new(crate::find::Field::default()),
+            page_ids: Arc::default(),
         }
     }
 
@@ -84,5 +87,10 @@ impl Tools {
     /// The Find field as the session thread last set it, for the UI thread.
     pub(crate) fn find_field(&self) -> &Mutex<crate::find::Field> {
         &self.find_field
+    }
+
+    /// The page-identity thread's state.
+    pub(crate) fn page_ids(&self) -> &Arc<super::page_ids::PageIds> {
+        &self.page_ids
     }
 }

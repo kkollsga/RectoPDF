@@ -30,6 +30,7 @@ mod menu_agents;
 mod menu_twins;
 mod navigation;
 mod newer_read;
+mod page_ids;
 mod palette;
 mod passwords;
 // The count it reads is a debug build's only.

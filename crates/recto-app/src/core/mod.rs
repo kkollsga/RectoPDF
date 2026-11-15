@@ -35,6 +35,7 @@ mod life;
 pub mod menu_rows;
 mod navigation;
 mod opening;
+pub(crate) mod page_ids;
 pub mod person;
 mod person_lane;
 pub mod places;
