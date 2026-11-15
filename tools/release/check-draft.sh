@@ -39,7 +39,9 @@ TEAM_ID="$(sed -n 's/^pub const TEAM_ID: &str = "\([A-Z0-9]*\)";$/\1/p' "$REPO/c
 REPO_URL="$(sed -n 's/^pub const REPO: &str = "\(.*\)";$/\1/p' "$REPO/crates/recto-update/src/lib.rs")"
 BUNDLE_ID="$(sed -n 's/^pub const BUNDLE_ID: &str = "\(.*\)";$/\1/p' "$REPO/crates/recto-update/src/lib.rs")"
 W=$(mktemp -d "${TMPDIR:-/tmp}/check-draft.XXXXXX")
-trap 'rm -rf "$W"' EXIT
+# The copies it unpacked are forgotten by Launch Services before they go, as asking Gatekeeper and running their programs registers them.
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+trap '"$LSREGISTER" -u "$W/unpacked/RectoPDF.app" 2>/dev/null; "$LSREGISTER" -u "$W/previous/RectoPDF.app" 2>/dev/null; rm -rf "$W"' EXIT
 failed=()
 pass() { echo "ok    $1"; }
 fail() { echo "FAIL  $1: $2"; failed+=("$1: $2"); }
