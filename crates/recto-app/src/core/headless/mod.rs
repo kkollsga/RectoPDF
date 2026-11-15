@@ -34,6 +34,7 @@ mod page_ids;
 mod palette;
 mod passwords;
 // The count it reads is a debug build's only.
+mod flick_cost;
 #[cfg(debug_assertions)]
 mod per_tab_work;
 mod persons_lane;
