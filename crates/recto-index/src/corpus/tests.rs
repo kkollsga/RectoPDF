@@ -1772,3 +1772,48 @@ fn a_run_sweeps_what_it_can_never_read_and_nothing_it_might() {
     assert!(there(keys[0]) && !there(keys[1]) && !there(keys[3]));
     assert!(ReadyCorpus::open(&lasting, &root, keys[0]).unwrap().is_some());
 }
+
+/// Failure: an agent's folder, the document's text in plain Markdown, stays on disk after the session that asked for it, for as long as the corpus does; or the next session's sweep takes a folder this session is using, or anything but an agent's folder (the coordinator's decision, 2026-11-15: it lives only for the session that asked).
+#[test]
+fn an_agent_folder_lives_only_for_the_session_that_asked() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let keys: Vec<CorpusKey> = (0..3).map(|n| key_of(&temp, format!("file {n}").as_bytes())).collect();
+    for key in &keys {
+        build(tk(), &root, *key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+        note_agent_folder(&root);
+        ensure_agent_folder(tk(), &root, *key, &BuildLimits::default()).unwrap();
+    }
+    let agent = |key: CorpusKey| CorpusPaths::new(&root, key).agent;
+    // The session that made them ends: each set aside, in one step.
+    retire_agent_folder(&root, keys[0]);
+    assert!(!agent(keys[0]).exists() && agent(keys[0]).with_file_name("agent.gone").is_dir());
+    // The next session: what's aside goes, and so does one from before it began; one it asked for itself stays, and so does one made since it began.
+    let began = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 60);
+    let an_hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60);
+    fs::File::options()
+        .write(true)
+        .open(CorpusPaths::new(&root, keys[1]).manifest)
+        .unwrap()
+        .set_modified(an_hour_ago)
+        .unwrap();
+    assert!(agent_folders_may_be_there(&root));
+    assert_eq!(sweep_agent_folders(&root, began, &[]), 2, "the one aside and the one from before");
+    assert!(!agent(keys[0]).with_file_name("agent.gone").exists() && !agent(keys[1]).exists());
+    assert!(agent(keys[2]).is_dir(), "one made in this session went");
+    assert!(
+        ReadyCorpus::open(tk(), &root, keys[1]).unwrap().is_some(),
+        "the corpus went with its agent's folder"
+    );
+    assert!(agent_folders_may_be_there(&root), "one is still there, so the next start must look");
+    // A folder this session asked for and found whole from before is kept too.
+    assert_eq!(
+        sweep_agent_folders(&root, std::time::SystemTime::now() + std::time::Duration::from_secs(60), &[keys[2]]),
+        0
+    );
+    assert_eq!(
+        sweep_agent_folders(&root, std::time::SystemTime::now() + std::time::Duration::from_secs(60), &[]),
+        1
+    );
+    assert!(!agent_folders_may_be_there(&root), "nothing's left, so a start needn't look");
+}

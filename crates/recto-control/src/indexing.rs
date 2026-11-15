@@ -25,6 +25,8 @@ pub const MAX_WAITING: usize = 16;
 const MAX_FAILURES: usize = 16;
 /// How long a failure stops it being tried again. Long enough that a search loop doesn't start a process each time, and short enough that fixing it is soon noticed.
 const FAILURE_PAUSE: Duration = Duration::from_secs(60);
+/// Agents' folders one session keeps. An agent asking for more has the oldest set aside.
+const MAX_AGENT_FOLDERS: usize = 16;
 /// The most a helper may say.
 const MAX_REPORT_BYTES: u64 = 64 * 1024;
 
@@ -54,6 +56,8 @@ struct Inner {
     stopped: bool,
     /// Nobody's looked at what's past its time in this session yet.
     sweep_due: bool,
+    /// The agents' folders this session asked for, which live as long as it does. At most [`MAX_AGENT_FOLDERS`]: past that the oldest is set aside at once.
+    agent_folders: VecDeque<CorpusKey>,
 }
 
 struct Shared {
@@ -61,6 +65,8 @@ struct Shared {
     /// Where the Find key comes from, and the key once it's been asked for: the first time an index is used, on whichever thread asks, never the UI's.
     key_plan: Plan,
     key: OnceLock<Loaded>,
+    /// When this session began: an agent's folder from before it is from a session that's over.
+    began: std::time::SystemTime,
     limits: BuildLimits,
     runner: Box<dyn Runner>,
     inner: Mutex<Inner>,
@@ -88,7 +94,7 @@ impl Indexer {
             key_plan,
         );
         // Only if there's something to do: an ordinary start stays one thread, with two looks at a folder. Text from before it was sealed goes at the first launch that can see it.
-        if corpus::old_folder_is_there(root) || corpus::plain_corpora_may_be_there(root) {
+        if corpus::old_folder_is_there(root) || corpus::plain_corpora_may_be_there(root) || corpus::agent_folders_may_be_there(root) {
             indexer.start_working(&mut indexer.0.lock());
         }
         indexer
@@ -103,6 +109,7 @@ impl Indexer {
             root: root.to_path_buf(),
             key_plan,
             key: OnceLock::new(),
+            began: std::time::SystemTime::now(),
             limits,
             runner,
             inner: Mutex::new(Inner {
@@ -133,6 +140,10 @@ impl Indexer {
         inner.stopped = true;
         inner.waiting.clear();
         inner.stop_running = None;
+        // An agent's folder lives as long as the session that asked: set aside now, one rename each, and removed by the next session's sweep.
+        for key in inner.agent_folders.drain(..) {
+            corpus::retire_agent_folder(&self.0.root, key);
+        }
     }
 
     /// Asks for a build. Never blocks: the newest ask goes first, since that's whatever someone's looking at now, and past the cap the oldest gives way.
@@ -195,6 +206,8 @@ impl Shared {
                 if let Some(find_key) = self.find_key() {
                     corpus::remove_unreadable(find_key, &self.root);
                 }
+                let keep: Vec<CorpusKey> = self.lock().agent_folders.iter().copied().collect();
+                corpus::sweep_agent_folders(&self.root, self.began, &keep);
                 let _ = corpus::evict(&self.root, &self.limits, None);
             }
             let job = {
@@ -271,6 +284,20 @@ impl Indexing for Indexer {
 
     fn find_key_report(&self) -> Value {
         Indexer::find_key_report(self)
+    }
+
+    fn made_agent_folder(&self, key: CorpusKey) {
+        corpus::note_agent_folder(&self.0.root);
+        let mut inner = self.0.lock();
+        if inner.agent_folders.contains(&key) {
+            return;
+        }
+        if inner.agent_folders.len() >= MAX_AGENT_FOLDERS
+            && let Some(oldest) = inner.agent_folders.pop_front()
+        {
+            corpus::retire_agent_folder(&self.0.root, oldest);
+        }
+        inner.agent_folders.push_back(key);
     }
 
     fn want(&self, path: &Path, key: CorpusKey) {

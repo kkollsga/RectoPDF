@@ -26,6 +26,8 @@ pub trait Indexing: Send + Sync {
     fn root(&self) -> &Path;
     /// The key the text there is sealed with. `None` where this host keeps no index, and then nothing is read or built.
     fn find_key(&self) -> Option<&FindKey>;
+    /// An agent's folder is being made for this file's corpus, which lives only for this session: it's kept from the sweep, and set aside when the session ends.
+    fn made_agent_folder(&self, _key: CorpusKey) {}
     /// What's known of the Find key the text is sealed with, without taking it: its plan, and where it came from once it has been. Never anything of the key.
     fn find_key_report(&self) -> Value {
         Value::Null
@@ -263,6 +265,8 @@ fn make_agent_folder(indexing: &dyn Indexing, file: &TabFile) -> Result<(), Agen
             exit::FAILED,
         ));
     };
+    // Before it's made: a sweep running meanwhile leaves it, and the session's end sets it aside.
+    indexing.made_agent_folder(key);
     match corpus::ensure_agent_folder(find_key, indexing.root(), key, &corpus::BuildLimits::default()) {
         Ok(_) | Err(corpus::AgentFolderError::NotReady) => Ok(()),
         Err(corpus::AgentFolderError::Busy) => Err(AgentError::new(Code::BUSY, "This document's index is being written right now.", exit::BUSY)),
