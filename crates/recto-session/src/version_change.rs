@@ -33,7 +33,7 @@ fn work_caps() -> WorkCaps {
 }
 
 /// One tab whose edits may follow their pages into the version of its file there now.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct FollowJob {
     pub tab: TabId,
     pub path: PathBuf,
@@ -50,7 +50,7 @@ pub struct FollowJob {
 }
 
 /// What a job found.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Matched {
     pub tab: TabId,
     pub to: FileStamp,
@@ -60,6 +60,30 @@ pub struct Matched {
     refound: Vec<(FileKey, Option<FileKey>)>,
     /// The new version's `/ID` pair, if it has one.
     document: Option<recto_core::page_id::DocumentIds>,
+}
+
+// Their `Debug` says the tab, the version and how many: never what a page is, nor the document's `/ID` (what's printed can reach a log).
+impl std::fmt::Debug for FollowJob {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FollowJob")
+            .field("tab", &self.tab)
+            .field("to", &self.to)
+            .field("named", &self.named.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for Matched {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Matched")
+            .field("tab", &self.tab)
+            .field("to", &self.to)
+            .field("found", &self.found)
+            .field("pages", &self.pages)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What became of a tab whose edits followed their pages: its length now and how many edits followed, for the event and `edits`. Counts only, and no
