@@ -970,7 +970,7 @@ impl RecordStore {
         // Its age is its own, which is what the 30 days go by, and it's this user's alone. Synced again, as both are changes since the copy was synced.
         let made = (|| -> std::io::Result<FileStamp> {
             local::make_private_file(&kept)?;
-            age_starts_now(&kept)?;
+            age_starts_now(&kept)?.sync_all()?;
             local::sync_folder_of(&kept)?;
             file_stamp(&kept)
         })();
@@ -1116,16 +1116,19 @@ fn remove_temp_files(dir: &Path) {
     }
 }
 
-/// **This file's age starts now,** which is what its 30 days go by: a copy or a rename keeps the original's time, and the prune ages by it. Synced.
-/// A failure leaves the file as it is; the caller goes on (an old time costs the file its days, not its place).
-fn age_starts_now(path: &Path) -> std::io::Result<()> {
+/// **This file's age starts now,** which is what its 30 days go by: a copy or a rename keeps the original's time, and the prune ages by it. Not flushed:
+/// the time only decides pruning, so one the drive didn't get before a crash costs a file its fresh days, which the next close or launch sets again, and a
+/// flush at every close is the wear this file's `sync` keeps to its writes of bytes (owner: "reduce SSD wear as much as we can"). The file is given back
+/// for a caller that flushes its own bytes anyway. A failure leaves the file as it is; the caller goes on (an old time costs it its days, not its place).
+fn age_starts_now(path: &Path) -> std::io::Result<File> {
     let file = OpenOptions::new().write(true).open(path)?;
     file.set_modified(std::time::SystemTime::now())?;
-    file.sync_all()
+    Ok(file)
 }
 
 /// A journal given its closed name, and its 30 days counted from now ([`age_starts_now`]): its history is kept 30 days from the close, not from its last
-/// edit. A failure to set the time keeps the file, and the close goes on.
+/// edit. A failure to set the time keeps the file, and the close goes on. Runs where the journal's write does: the writer thread, the session thread
+/// for a tab going dormant, or the thread a launch loads on, never the window's.
 fn close_journal(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::rename(from, to)?;
     let _ = age_starts_now(to);
@@ -2586,9 +2589,56 @@ mod tests {
         let store = RecordStore::open(&paths, Flavor::App);
         let Loaded::Restored(_) = store.load() else { panic!() };
         let closed = folder.join(record::closed_journal_name(&name).unwrap());
-        assert!(closed.exists(), "closed by the launch");
+        assert!(
+            closed.exists(),
+            "the launch closed the journal and then pruned it in the same load, by the 50 days since its last write: its 30 days must count from the close"
+        );
         prune_history(&folder, None);
-        assert!(closed.exists(), "30 days from the close, not from the last write");
+        assert!(
+            closed.exists(),
+            "a prune after the close removed it, aged by its last write and not from the close"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A person closes a tab whose close has nothing left to append, the journal's last write long ago: the closed journal is there after the prune that
+    /// follows the close, and its age is from the close. **Seen passing with `age_starts_now` taken out:** this route's empty append still writes to the file
+    /// (`set_len` and a write of nothing), which sets its time, so it never had the bug the launch route had. The test holds that: a change that skipped the
+    /// write for an empty append would bring the bug back on this route, and fail here.
+    #[test]
+    fn a_tab_closed_with_nothing_to_append_keeps_its_history_30_days_from_the_close() {
+        let (root, paths) = state();
+        let store = RecordStore::open(&paths, Flavor::App);
+        store.write_record(&sample(1), &PlaceDelta::default(), false).unwrap();
+        let name = record::journal_file_name(None, Path::new("/d/closing.pdf"), None);
+        let append = |closing: bool, ops: Vec<JournalOp>, through: u64| JournalWork {
+            pages: Vec::new(),
+            retired: Vec::new(),
+            appends: vec![recto_session::JournalAppend {
+                tab: TabId(8),
+                name: name.clone(),
+                header: JournalHeader::new(8, Path::new("/d/closing.pdf"), None, 5, 0),
+                through,
+                ops,
+                closing,
+                base: None,
+                replaces: None,
+            }],
+        };
+        let history = vec![JournalOp::Rotate(0, 1, 1, record::AuthorName::Agent), JournalOp::Undo];
+        assert!(store.write_journals(&append(false, history, 2), false).1.is_none());
+        let folder = root.join("session").join(JOURNALS);
+        let long_ago = std::time::SystemTime::now() - Duration::from_secs((CLOSED_JOURNAL_DAYS + 20) * 86_400);
+        OpenOptions::new().write(true).open(folder.join(&name)).unwrap().set_modified(long_ago).unwrap();
+        let (outcome, failed) = store.write_journals(&append(true, Vec::new(), 2), false);
+        assert!(failed.is_none() && outcome.written.len() == 1, "the closing append was written");
+        let closed = folder.join(record::closed_journal_name(&name).unwrap());
+        assert!(
+            closed.exists(),
+            "the closed journal was removed by the prune that follows the close, aged from the journal's last write"
+        );
+        let age = std::fs::metadata(&closed).unwrap().modified().unwrap().elapsed().unwrap();
+        assert!(age < Duration::from_secs(3600), "its age counts from the close, not from {age:?} ago");
         std::fs::remove_dir_all(&root).unwrap();
     }
 
