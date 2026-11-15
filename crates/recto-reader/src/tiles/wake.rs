@@ -67,6 +67,35 @@ pub struct WakeReport {
     pub blank_frames: u32,
     /// What there was to show when the wake began.
     pub had: WakeStock,
+    /// How it ended, or that it hasn't.
+    pub ended: WakeEnd,
+}
+
+/// **How a wake's report came to an end,** so a report with no first frame says why: not yet, someone went elsewhere first, or it was still bare when
+/// it stopped being followed, which is a slow first page and not one that never came (found 2026-11-15: under CI's limits at a load of 30, three wakes
+/// of the long session read as "never got its first frame", and their tabs were drawn).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WakeEnd {
+    /// It's still being followed.
+    #[default]
+    UnderWay,
+    /// Every page in view drawn sharp.
+    Sharp,
+    /// The view was sent somewhere else (a jump, a follow), and what's bare from there is pages being reached.
+    Moved,
+    /// Past [`WAKE_FOLLOWED_FOR`]: what it had by the first frame the host applied after that is what it says.
+    NoLongerFollowed,
+}
+
+impl WakeEnd {
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::UnderWay => "under_way",
+            Self::Sharp => "sharp",
+            Self::Moved => "moved",
+            Self::NoLongerFollowed => "no_longer_followed",
+        }
+    }
 }
 
 /// The size of a [`WakeReport`], held: one for each page view, kept as of the last wake.
@@ -129,11 +158,17 @@ impl Waking {
             .or(self.last_wake)
     }
 
-    /// The wake under way is over: someone's gone somewhere else, or it's sharp. One whose tab was never shown was no wake, and leaves the last one as it was.
+    /// The wake under way is over, as someone's gone somewhere else. One whose tab was never shown was no wake, and leaves the last one as it was.
     pub(super) fn finish_wake(&mut self) {
-        if let Some((_, report)) = self.waking.take()
+        self.end_wake(WakeEnd::Moved);
+    }
+
+    /// The wake under way is over, for this reason, unless its tab was never shown.
+    fn end_wake(&mut self, ended: WakeEnd) {
+        if let Some((_, mut report)) = self.waking.take()
             && report.had != WakeStock::NotLooked
         {
+            report.ended = ended;
             self.last_wake = Some(report);
         }
     }
@@ -305,20 +340,23 @@ impl Reader {
     /// Goes through how a wake's going, each time the host has applied something.
     pub(super) fn track_wake(&mut self) {
         let Some((began, mut report)) = self.wake.waking else { return };
-        // Past this, it's not the wake that's being looked at any more.
-        if began.elapsed() > WAKE_FOLLOWED_FOR {
-            self.wake.finish_wake();
-            return;
-        }
+        // Past this, it's not the wake that's being looked at any more: this frame is the last it's looked at for, so a first page that comes late is
+        // said as late, and not as never.
+        let past = began.elapsed() > WAKE_FOLLOWED_FOR;
         if self.docs.hot != Some(report.tab) {
             // Noted and not yet shown: the note and the showing are two steps, and a frame the host applies between them is the tab before's. Kept, and
             // looked at once its tab is shown; one never shown goes by the time above, its tab's closing, or the next note, and is never recorded.
-            if report.had != WakeStock::NotLooked {
+            if report.had != WakeStock::NotLooked || past {
                 self.wake.waking = None;
             }
             return;
         }
-        let Some(doc) = self.docs.shown() else { return };
+        let Some(doc) = self.docs.shown() else {
+            if past {
+                self.wake.end_wake(WakeEnd::NoLongerFollowed);
+            }
+            return;
+        };
         if self.place.jump.is_none() && self.viewport.height > 0.0 {
             let covered = self.pages_all_covered(doc);
             if covered && report.first_frame_us.is_none() {
@@ -329,11 +367,15 @@ impl Reader {
         }
         if report.first_frame_us.is_some() && self.is_settled() {
             report.sharp_us = Some(u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX));
+            report.ended = WakeEnd::Sharp;
             self.wake.last_wake = Some(report);
             self.wake.waking = None;
             return;
         }
         self.wake.waking = Some((began, report));
+        if past {
+            self.wake.end_wake(WakeEnd::NoLongerFollowed);
+        }
     }
 
     /// **What a tab's sleep file gets from what's here:** its pages' sizes and the version they're of. A short lock.
