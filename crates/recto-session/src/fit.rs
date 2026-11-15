@@ -44,6 +44,18 @@ impl EditsFit {
         }
     }
 
+    /// **What a new edit refused is told,** by the one rule ([`Self::file_known_other`]), or nothing where an edit is taken: the one place for these
+    /// words, which the session's error and the agent's refusal both say.
+    pub fn edit_refused_words(self) -> Option<&'static str> {
+        match self {
+            Self::FileChanged | Self::FileChangedVersionUnknown => {
+                Some("No more edits can be made here: the file changed on disk after its unsaved edits were made.")
+            }
+            Self::NotThisFile => Some("No more edits can be made here: this tab's unsaved edits don't fit its file."),
+            Self::Fit | Self::VersionUnknown => None,
+        }
+    }
+
     /// **Whether the tab shows its own file's pages** ("nothing of the old file is shown as the new"): not while the file is known to be another
     /// ([`Self::file_known_other`]), as the list's numbers are about a version or a length the file on disk isn't, so none of its pages is drawn, sized,
     /// read for the selection or given links, and neither are the edits' highlights; the tab keeps the list's count and place, and its notice says why.

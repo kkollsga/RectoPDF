@@ -125,7 +125,7 @@ impl<L: DocLoader> Session<L> {
         // Edits that didn't fit their file, undone or discarded back to nothing unsaved: what's left is history about another version, which redo mustn't bring
         // back, so it goes, and the tab is the file as last read, said once, as only history is when its file's found changed (`compare_read_with_edits`).
         // Not for edits whose version is only unknown: their history is about the file they read, whichever version that was.
-        if !fit.fits() && fit != EditsFit::VersionUnknown && !self.lists.is_edited(id) {
+        if fit.file_known_other() && !self.lists.is_edited(id) {
             self.let_go_of_list(id);
             let own = self.tabs.tab(id).and_then(|tab| tab.file.stamp);
             let now = self.tabs.path_of(id).and_then(|path| file_stamp(&path).ok());

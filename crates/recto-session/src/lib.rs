@@ -674,8 +674,7 @@ impl SessionError {
             Self::RendererOnly => "RectoPDF can draw this file but can't read its structure, so its pages can't be changed.",
             Self::Saving => "This PDF is being saved. Nothing changes until that's done, which is a moment.",
             Self::OutsideQuietRun => confined::OUTSIDE_WORDS,
-            // What a person and an agent read is `recto-agent`'s `unfit::refusal`, which the executor gives for this; these are for any other caller.
-            Self::EditsDontFit(_) => "This tab's unsaved edits don't fit its file as it is on disk, so no more edits can be made. Discard them to go on.",
+            Self::EditsDontFit(fit) => fit.edit_refused_words().unwrap_or("No more edits can be made here."),
         }
     }
 }

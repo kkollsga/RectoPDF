@@ -275,7 +275,7 @@ impl From<SessionError> for AgentError {
     fn from(error: SessionError) -> Self {
         // One rule and one set of words for a person's edit and an agent's, wherever it was refused.
         if let SessionError::EditsDontFit(fit) = error
-            && let Some(refused) = unfit::refusal(fit, unfit::Asked::Edit)
+            && let Some(refused) = unfit::edit_refusal(fit)
         {
             return refused;
         }
