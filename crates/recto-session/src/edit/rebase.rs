@@ -172,12 +172,45 @@ struct Run {
     verdicts: Vec<usize>,
 }
 
+/// Where the person's pages go in the new version: each fixed page's turn and old position by its new page, and the runs placed before and after one.
+#[derive(Default)]
+struct Placement {
+    turn_of: HashMap<u32, u8>,
+    fixed_at: HashMap<u32, usize>,
+    before: HashMap<u32, Vec<(PageSlot, usize)>>,
+    after: HashMap<u32, Vec<(PageSlot, usize)>>,
+}
+
+impl Placement {
+    /// Ends the run waiting: placed after a fixed page (`true`) or before the first (`false`), or, where that page isn't found, its verdicts held.
+    fn close(&mut self, run: &mut Run, verdicts: &mut [EditMatch], to: Result<(u32, bool), Held>) {
+        let run = std::mem::take(run);
+        if run.slots.is_empty() {
+            return;
+        }
+        match to {
+            Ok((page, true)) => self.after.entry(page).or_default().extend(run.slots),
+            Ok((page, false)) => self.before.entry(page).or_default().extend(run.slots),
+            Err(_) => {
+                for at in run.verdicts {
+                    verdicts[at].held = verdicts[at].held.or(Some(Held::NoAnchor));
+                }
+            }
+        }
+    }
+}
+
+/// Notes an edit's verdict, and says where it is.
+fn verdict(verdicts: &mut Vec<EditMatch>, edit: Edit, held: Option<Held>) -> usize {
+    verdicts.push(EditMatch { edit, held });
+    verdicts.len() - 1
+}
+
 /// **Every edit's verdict, and the list on the new version if every one follows** (see the module's notes). `found` is the matcher's verdicts, by old
 /// page ascending; `new_pages` the new version's length; `refound` each of the file's highlights taken out, on a page the document has, with where it is
 /// found again ([`refind`]), or `None`.
 pub fn rebase(edits: &PageEdits, found: &[(u32, Found)], new_pages: u32, refound: &[(FileKey, Option<FileKey>)]) -> Outcome {
-    let file_pages = edits.file_pages as usize;
-    let mut present = vec![false; file_pages];
+    let mut present = vec![false; edits.file_pages];
     let mut own: Vec<u32> = Vec::new();
     for slot in edits.slots.iter().filter(|slot| slot.source == 0) {
         match present.get_mut(slot.page as usize) {
@@ -186,16 +219,12 @@ pub fn rebase(edits: &PageEdits, found: &[(u32, Found)], new_pages: u32, refound
         }
         own.push(slot.page);
     }
-    let placed_count = edits.slots.len() - own.iter().zip(in_order(&own)).filter(|(_, fixed)| *fixed).count();
+    let fixed = in_order(&own);
+    let placed_count = edits.slots.len() - fixed.iter().filter(|fixed| **fixed).count();
     if new_pages as usize + placed_count > MAX_PAGES {
         return Outcome::held(Edit::Move { page: 0 }, Held::TooLong);
     }
-    let fixed = in_order(&own);
     let mut verdicts: Vec<EditMatch> = Vec::new();
-    let verdict = |verdicts: &mut Vec<EditMatch>, edit: Edit, held: Option<Held>| {
-        verdicts.push(EditMatch { edit, held });
-        verdicts.len() - 1
-    };
     // Pages taken out of the new version's own order: those the person deleted, and those they moved.
     let mut gone: HashSet<u32> = HashSet::new();
     for (page, there) in present.iter().enumerate() {
@@ -208,146 +237,14 @@ pub fn rebase(edits: &PageEdits, found: &[(u32, Found)], new_pages: u32, refound
             verdict(&mut verdicts, Edit::Delete { page }, at.err());
         }
     }
-    let mut turn_of: HashMap<u32, u8> = HashMap::new();
-    // The new page each found fixed page is at, with its old position; and the runs that go before and after a fixed page.
-    let mut fixed_at: HashMap<u32, usize> = HashMap::new();
-    let mut before: HashMap<u32, Vec<(PageSlot, usize)>> = HashMap::new();
-    let mut after: HashMap<u32, Vec<(PageSlot, usize)>> = HashMap::new();
-    let mut anchor: Option<Result<u32, Held>> = None;
-    let mut run = Run::default();
-    let mut own_at = 0usize;
-    let mut last_insert: Option<(usize, u16)> = None;
-    // Ends the run waiting, placing it after `anchor` (or before `next`, for the run at the start), or marking it held.
-    let mut close = |run: &mut Run, verdicts: &mut Vec<EditMatch>, to: Result<(u32, bool), Held>| {
-        let run = std::mem::take(run);
-        if run.slots.is_empty() {
-            return;
-        }
-        match to {
-            Ok((page, is_after)) => (if is_after { &mut after } else { &mut before }).entry(page).or_default().extend(run.slots),
-            Err(_) => {
-                for at in run.verdicts {
-                    verdicts[at].held = verdicts[at].held.or(Some(Held::NoAnchor));
-                }
-            }
-        }
-    };
-    for (position, slot) in edits.slots.iter().enumerate() {
-        if slot.source == 0 {
-            let is_fixed = fixed[own_at];
-            own_at += 1;
-            if is_fixed {
-                let at = found_at(found, slot.page).map(|(new, _)| new);
-                if slot.quarter_turns != 0 {
-                    if let Ok(new) = at {
-                        turn_of.insert(new, slot.quarter_turns);
-                    }
-                    verdict(&mut verdicts, Edit::Turn { page: slot.page }, at.err());
-                }
-                if let Ok(new) = at {
-                    fixed_at.insert(new, position);
-                }
-                // A run before the first fixed page goes before it; one after a fixed page, after that one.
-                match anchor {
-                    None => close(&mut run, &mut verdicts, at.map(|new| (new, false))),
-                    Some(previous) => close(&mut run, &mut verdicts, previous.map(|new| (new, true))),
-                }
-                anchor = Some(at);
-                last_insert = None;
-                continue;
-            }
-            let at = found_at(found, slot.page);
-            if let Ok((new, _)) = at {
-                gone.insert(new);
-                run.slots.push((PageSlot { page: new, ..*slot }, position));
-            }
-            run.verdicts.push(verdict(&mut verdicts, Edit::Move { page: slot.page }, at.err()));
-            last_insert = None;
-        } else {
-            run.slots.push((*slot, position));
-            match last_insert {
-                Some((at, source)) if source == slot.source => {
-                    if let Edit::Insert { pages, .. } = &mut verdicts[at].edit {
-                        *pages = pages.saturating_add(1);
-                    }
-                }
-                _ => {
-                    let at = verdict(&mut verdicts, Edit::Insert { source: slot.source, pages: 1 }, None);
-                    run.verdicts.push(at);
-                    last_insert = Some((at, slot.source));
-                }
-            }
-        }
-    }
-    match anchor {
-        Some(previous) => close(&mut run, &mut verdicts, previous.map(|new| (new, true))),
-        None => close(&mut run, &mut verdicts, Err(Held::NoAnchor)),
-    }
-    // Highlights, and the file's taken out, on pages the document has.
-    let mut marks: HashMap<u32, u32> = HashMap::new();
-    for mark in edits.marks.iter().filter(|mark| mark.source == 0) {
-        if !present.get(mark.page as usize).copied().unwrap_or(false) {
-            continue;
-        }
-        let was = edits.identities.as_deref().and_then(|ids| ids.known(mark.page));
-        let at = found_at(found, mark.page).and_then(|(new, now)| match was {
-            Some(was) if was.frame == now.frame => Ok(new),
-            Some(_) => Err(Held::FrameChanged),
-            None => Err(Held::NotIdentified),
-        });
-        if let Ok(new) = at {
-            marks.insert(mark.id, new);
-        }
-        verdict(&mut verdicts, Edit::Highlight { mark: mark.id }, at.err());
-    }
-    let mut hidden: Vec<FileKey> = Vec::new();
-    for key in edits.marks.hidden() {
-        if !present.get(key.page as usize).copied().unwrap_or(false) {
-            continue;
-        }
-        let at = found_at(found, key.page).and_then(|_| {
-            refound
-                .iter()
-                .find(|(was, _)| was == key)
-                .and_then(|(_, now)| *now)
-                .ok_or(Held::HighlightNotFound)
-        });
-        if let Ok(now) = at {
-            hidden.push(now);
-        }
-        verdict(&mut verdicts, Edit::FileHighlightOut { page: key.page }, at.err());
-    }
+    let placement = place(edits, found, &fixed, &mut gone, &mut verdicts);
+    let (marks, hidden) = highlights(edits, found, &present, refound, &mut verdicts);
     if verdicts.iter().any(|edit| edit.held.is_some()) {
         return Outcome { edits: verdicts, onto: None };
     }
-    let mut slots: Vec<PageSlot> = Vec::with_capacity(new_pages as usize + placed_count);
-    let mut positions: Vec<Option<u32>> = vec![None; edits.slots.len()];
-    let mut put = |slots: &mut Vec<PageSlot>, slot: PageSlot, from: Option<usize>| {
-        if let Some(from) = from {
-            positions[from] = u32::try_from(slots.len()).ok();
-        }
-        slots.push(slot);
-    };
-    for page in 0..new_pages {
-        for (slot, from) in before.remove(&page).unwrap_or_default() {
-            put(&mut slots, slot, Some(from));
-        }
-        if !gone.contains(&page) {
-            let slot = PageSlot {
-                source: 0,
-                page,
-                quarter_turns: turn_of.get(&page).copied().unwrap_or(0),
-            };
-            put(&mut slots, slot, fixed_at.get(&page).copied());
-        }
-        for (slot, from) in after.remove(&page).unwrap_or_default() {
-            put(&mut slots, slot, Some(from));
-        }
-    }
-    // Something placed by a page past the new version's end can't be: the matcher gives none, so this is a list that isn't sound.
-    if !before.is_empty() || !after.is_empty() || slots.is_empty() {
+    let Some((slots, positions)) = build(placement, &gone, new_pages, edits.slots.len()) else {
         return Outcome::held(Edit::Move { page: 0 }, Held::Unsound);
-    }
+    };
     let named = found.iter().filter_map(|(_, verdict)| verdict.page()).collect();
     Outcome {
         edits: verdicts,
@@ -360,6 +257,137 @@ pub fn rebase(edits: &PageEdits, found: &[(u32, Found)], new_pages: u32, refound
             positions,
         }),
     }
+}
+
+/// **The person's pages, in their order, placed by the new version's:** a fixed page where the new version has it, with its turn; a run of moved and
+/// added pages by the fixed page before it (or after it, for the run at the start).
+fn place(edits: &PageEdits, found: &[(u32, Found)], fixed: &[bool], gone: &mut HashSet<u32>, verdicts: &mut Vec<EditMatch>) -> Placement {
+    let mut placement = Placement::default();
+    let mut anchor: Option<Result<u32, Held>> = None;
+    let mut run = Run::default();
+    let mut own_at = 0usize;
+    let mut last_insert: Option<(usize, u16)> = None;
+    for (position, slot) in edits.slots.iter().enumerate() {
+        if slot.source != 0 {
+            run.slots.push((*slot, position));
+            match last_insert {
+                Some((at, source)) if source == slot.source => {
+                    if let Edit::Insert { pages, .. } = &mut verdicts[at].edit {
+                        *pages = pages.saturating_add(1);
+                    }
+                }
+                _ => {
+                    let at = verdict(verdicts, Edit::Insert { source: slot.source, pages: 1 }, None);
+                    run.verdicts.push(at);
+                    last_insert = Some((at, slot.source));
+                }
+            }
+            continue;
+        }
+        last_insert = None;
+        let is_fixed = fixed[own_at];
+        own_at += 1;
+        if !is_fixed {
+            let at = found_at(found, slot.page);
+            if let Ok((new, _)) = at {
+                gone.insert(new);
+                run.slots.push((PageSlot { page: new, ..*slot }, position));
+            }
+            run.verdicts.push(verdict(verdicts, Edit::Move { page: slot.page }, at.err()));
+            continue;
+        }
+        let at = found_at(found, slot.page).map(|(new, _)| new);
+        if slot.quarter_turns != 0 {
+            if let Ok(new) = at {
+                placement.turn_of.insert(new, slot.quarter_turns);
+            }
+            verdict(verdicts, Edit::Turn { page: slot.page }, at.err());
+        }
+        if let Ok(new) = at {
+            placement.fixed_at.insert(new, position);
+        }
+        // A run before the first fixed page goes before it; one after a fixed page, after that one.
+        match anchor {
+            None => placement.close(&mut run, verdicts, at.map(|new| (new, false))),
+            Some(previous) => placement.close(&mut run, verdicts, previous.map(|new| (new, true))),
+        }
+        anchor = Some(at);
+    }
+    match anchor {
+        Some(previous) => placement.close(&mut run, verdicts, previous.map(|new| (new, true))),
+        None => placement.close(&mut run, verdicts, Err(Held::NoAnchor)),
+    }
+    placement
+}
+
+/// Highlights made as edits, and the file's taken out, on pages the document has: each onto its page in the new version, by number and key.
+fn highlights(
+    edits: &PageEdits,
+    found: &[(u32, Found)],
+    present: &[bool],
+    refound: &[(FileKey, Option<FileKey>)],
+    verdicts: &mut Vec<EditMatch>,
+) -> (HashMap<u32, u32>, Vec<FileKey>) {
+    let shown = |page: u32| present.get(page as usize).copied().unwrap_or(false);
+    let mut marks: HashMap<u32, u32> = HashMap::new();
+    for mark in edits.marks.iter().filter(|mark| mark.source == 0 && shown(mark.page)) {
+        let was = edits.identities.as_deref().and_then(|ids| ids.known(mark.page));
+        let at = found_at(found, mark.page).and_then(|(new, now)| match was {
+            Some(was) if was.frame == now.frame => Ok(new),
+            Some(_) => Err(Held::FrameChanged),
+            None => Err(Held::NotIdentified),
+        });
+        if let Ok(new) = at {
+            marks.insert(mark.id, new);
+        }
+        verdict(verdicts, Edit::Highlight { mark: mark.id }, at.err());
+    }
+    let mut hidden: Vec<FileKey> = Vec::new();
+    for key in edits.marks.hidden().iter().filter(|key| shown(key.page)) {
+        let at = found_at(found, key.page).and_then(|_| {
+            refound
+                .iter()
+                .find(|(was, _)| was == key)
+                .and_then(|(_, now)| *now)
+                .ok_or(Held::HighlightNotFound)
+        });
+        if let Ok(now) = at {
+            hidden.push(now);
+        }
+        verdict(verdicts, Edit::FileHighlightOut { page: key.page }, at.err());
+    }
+    (marks, hidden)
+}
+
+/// The new list from the placement: the new version's pages in its order but those `gone`, each run before or after its page. `None` if something is
+/// placed by a page the new version hasn't (the matcher gives none, so the list wasn't sound) or nothing is left. With where each old position went.
+fn build(mut placement: Placement, gone: &HashSet<u32>, new_pages: u32, old_len: usize) -> Option<(Vec<PageSlot>, Vec<Option<u32>>)> {
+    let placed: usize = placement.before.values().chain(placement.after.values()).map(Vec::len).sum();
+    let mut slots: Vec<PageSlot> = Vec::with_capacity(new_pages as usize + placed);
+    let mut positions: Vec<Option<u32>> = vec![None; old_len];
+    let mut put = |slots: &mut Vec<PageSlot>, slot: PageSlot, from: Option<usize>| {
+        if let Some(from) = from {
+            positions[from] = u32::try_from(slots.len()).ok();
+        }
+        slots.push(slot);
+    };
+    for page in 0..new_pages {
+        for (slot, from) in placement.before.remove(&page).unwrap_or_default() {
+            put(&mut slots, slot, Some(from));
+        }
+        if !gone.contains(&page) {
+            let slot = PageSlot {
+                source: 0,
+                page,
+                quarter_turns: placement.turn_of.get(&page).copied().unwrap_or(0),
+            };
+            put(&mut slots, slot, placement.fixed_at.get(&page).copied());
+        }
+        for (slot, from) in placement.after.remove(&page).unwrap_or_default() {
+            put(&mut slots, slot, Some(from));
+        }
+    }
+    (placement.before.is_empty() && placement.after.is_empty() && !slots.is_empty()).then_some((slots, positions))
 }
 
 /// **Puts a list onto the new version** [`rebase`] made it for: its pages, highlights and named pages are the new version's from here, and the undo
