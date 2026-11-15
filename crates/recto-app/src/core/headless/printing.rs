@@ -106,14 +106,15 @@ pub(super) fn print_files_left() -> Vec<String> {
             entries
                 .flatten()
                 .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .filter(|name| {
-                    name.starts_with(&format!("recto-print-{pid}-"))
-                        || name.starts_with(&format!(".recto-{pid}-"))
-                        || name.starts_with(&format!(".recto-unnamed-{pid}-"))
-                })
+                .filter(|name| is_print_file_of(name, pid))
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Whether a name in the temp folder is one of process `pid`'s print files.
+fn is_print_file_of(name: &str, pid: u32) -> bool {
+    name.starts_with(&format!("recto-print-{pid}-")) || name.starts_with(&format!(".recto-{pid}-")) || name.starts_with(&format!(".recto-unnamed-{pid}-"))
 }
 
 /// **The files with no name this process holds a descriptor of,** by inode, with each one's permissions, sorted: where the person's print's file is while
@@ -675,16 +676,12 @@ fn a_print_dropped_from_the_lane_leaves_printing_free() {
 /// this process's own count.
 #[test]
 fn another_processs_print_file_isnt_counted_as_this_ones() {
-    let folder = recto_platform::local::system_temp_dir().unwrap_or_else(std::env::temp_dir);
+    // By name alone, with no file made: a file in the shared temp folder would be seen by the tests beside this one under plain `cargo test`, which runs them as threads of one process.
     let pid = std::process::id();
     let other = format!(".recto-unnamed-{}-{:016x}", pid.wrapping_add(1), recto_platform::local::random_u64());
-    std::fs::write(folder.join(&other), b"").unwrap();
-    let left = print_files_left();
-    std::fs::remove_file(folder.join(&other)).unwrap();
-    assert!(!left.contains(&other), "another process's print file counted as this one's: {left:?}");
-    let own = format!(".recto-unnamed-{pid}-{:016x}", recto_platform::local::random_u64());
-    std::fs::write(folder.join(&own), b"").unwrap();
-    let left = print_files_left();
-    std::fs::remove_file(folder.join(&own)).unwrap();
-    assert!(left.contains(&own), "this process's own print file wasn't seen: {left:?}");
+    assert!(!is_print_file_of(&other, pid), "another process's print file counted as this one's");
+    assert!(
+        is_print_file_of(&format!(".recto-unnamed-{pid}-{:016x}", recto_platform::local::random_u64()), pid),
+        "this process's own print file wasn't seen"
+    );
 }
