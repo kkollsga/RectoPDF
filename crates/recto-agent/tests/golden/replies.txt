@@ -1161,7 +1161,7 @@
 {"cmd":"Signatures"}
   refused cmd=unknown code=bad_command
 {"cmd":"edits"}
-  reply {"cmd":"edits","data":{"can_redo":false,"can_undo":false,"edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"runs":[],"runs_truncated":false,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
+  reply {"cmd":"edits","data":{"can_redo":false,"can_undo":false,"edited":false,"file_pages":10,"followed":null,"note":null,"page":3,"pages":10,"runs":[],"runs_truncated":false,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
   events 
   words "10 pages now, 10 in the file. No unsaved edits."
 {"cmd":"edits","tab":"#2"}
@@ -1175,7 +1175,7 @@
 {"cmd":"edits","tab":null}
   refused cmd=unknown code=bad_command
 ["edits"]
-  reply {"cmd":"edits","data":{"can_redo":false,"can_undo":false,"edited":false,"file_pages":10,"note":null,"page":3,"pages":10,"runs":[],"runs_truncated":false,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
+  reply {"cmd":"edits","data":{"can_redo":false,"can_undo":false,"edited":false,"file_pages":10,"followed":null,"note":null,"page":3,"pages":10,"runs":[],"runs_truncated":false,"saved":true,"tab":4,"user_edits_undone":false},"ok":true,"v":1}
   events 
   words "10 pages now, 10 in the file. No unsaved edits."
 ["edits","#2"]
