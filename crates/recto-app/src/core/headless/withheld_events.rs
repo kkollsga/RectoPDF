@@ -155,6 +155,11 @@ fn agent_told(pages: usize, word: &str) -> Vec<String> {
     assert_ne!(super::printing::printed(&app), "none", "the person's print printed");
     app.settle();
     told.push(format!("printed and let go heard: {:?}", watching.heard()));
+    // The person's snapshot of a box on page 1 (S2's follow-up (1): their own `snapshot` to the clipboard, read with their password), then a paste of
+    // its SVG: what an agent hears and sees once each is done.
+    snapshot_and_paste(&app);
+    told.push(format!("snapshot and paste heard: {:?}", watching.heard()));
+    agent_looks(&app, "snapshot taken", &mut told);
     // An edit whose taking depends on the document's length.
     app.person(r##"{"cmd":"page_delete","tab":"#1","pages":"4"}"##);
     app.settle();
@@ -174,8 +179,14 @@ fn agent_told(pages: usize, word: &str) -> Vec<String> {
     view.width *= 2.0;
     view.frame_width *= 2.0;
     applied_as_the_host(&engine.set_viewport(view));
+    // Applied, as the host says it has: otherwise the view's ops count as unapplied and the record of a wait that runs out reads a view with nothing
+    // planned as one still at work.
+    engine.applied();
     assert!(
-        engine.qa().wait_for_held_tell(crate::testkit::headless::WAIT_LIMIT),
+        // Longer than one job is allowed: a worker that left at its idle limit during the print and the snapshot is started again for this draw
+        // (up to its 10 s start limit) and then has this walk's 20 s page deadline, so the kit's own 20 s could run out on a starved machine with
+        // the draw still rightly under way (2 of 280 rounds like CI, 2026-11-14, both in one stretch of load).
+        engine.qa().wait_for_held_tell(std::time::Duration::from_secs(45)),
         "a draw's word held: {}",
         watch.why(&app)
     );
@@ -217,6 +228,7 @@ impl DrawWatch {
         let count = |report: &Value, key: &str| report["counts"][key].as_u64().unwrap_or(0);
         let drawn = count(&now, "drawn").saturating_sub(count(&self.before, "drawn"));
         let jobs = count(&now, "jobs").saturating_sub(count(&self.before, "jobs"));
+        let jobs_now = count(&now, "jobs");
         let verdict = if drawn > 0 {
             "a draw was done and told before the hold took it"
         } else if now["settled"] == true {
@@ -233,7 +245,7 @@ impl DrawWatch {
         format!(
             "{verdict} (drawn since {drawn}, jobs since {jobs}); settled {}, page {}, visible {}, jobs now {}, note {}, the renderer's counts {}; the \
              session's mail: {mail}",
-            now["settled"], now["page"], now["visible_pages"], now["jobs"], now["note"], now["counts"]
+            now["settled"], now["page"], now["visible_pages"], jobs_now, now["note"], now["counts"]
         )
     }
 }
@@ -322,7 +334,7 @@ fn agent_looks(app: &HeadlessApp, when: &str, told: &mut Vec<String>) {
 /// it runs) or a look at the session as a whole: an agent watching every group at every level, and looking with `tabs`, `session show` and `sidebar`,
 /// is told the same while the person opens, draws, turns to page 2 and 4, scrolls, Finds, prints all of it (while it's prepared, once it's ready, once
 /// it's let go), deletes page 4 and closes a three-page protected document saying
-/// "Locked" as a five-page one saying "Hidden", where page 4 is past the end of one, so the delete takes in only the other (its `edited`, its undo, its
+/// "Locked" as a five-page one saying "Hidden" (and takes a snapshot of page 1 and pastes its SVG, S2's follow-up (1)), where page 4 is past the end of one, so the delete takes in only the other (its `edited`, its undo, its
 /// `edits_changed` would tell), Find finds three hits in one and none in the other, and the close comes while the draw of the last page (3 in one, 4 in
 /// the other) is done and its word not yet told, so a `page_drawn` about a tab that's gone would tell.
 #[test]
