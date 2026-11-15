@@ -106,8 +106,12 @@ impl Waking {
 
     /// A tab's being woken, as of now, with `hot` the tab showing ([`Reader::note_wake`] says it, so a caller can't give another). For how long it takes.
     pub(super) fn note_wake(&mut self, hot: Option<u32>, tab: u32, began: Instant) {
-        // Said when it was asked for, and said again on its way to the screen: the first is when it began.
-        if hot != Some(tab) && !self.waking.is_some_and(|(_, report)| report.tab == tab) {
+        // Said when it was asked for, and said again on its way to the screen: the first is when it began, unless it's older than a wake's followed for,
+        // when it's a note of a wake that never came to anything.
+        let said_already = self
+            .waking
+            .is_some_and(|(at, report)| report.tab == tab && began.saturating_duration_since(at) <= WAKE_FOLLOWED_FOR);
+        if hot != Some(tab) && !said_already {
             self.waking = Some((began, WakeReport { tab, ..WakeReport::default() }));
         }
     }
@@ -117,15 +121,30 @@ impl Waking {
         self.window_up = true;
     }
 
-    /// How the last wake went.
+    /// How the last wake went: the one under way once its tab's been shown, or the one before. One noted and not yet shown isn't a wake yet.
     pub(crate) fn last_wake(&self) -> Option<WakeReport> {
-        self.waking.map(|(_, report)| report).or(self.last_wake)
+        self.waking
+            .map(|(_, report)| report)
+            .filter(|report| report.had != WakeStock::NotLooked)
+            .or(self.last_wake)
     }
 
-    /// The wake under way is over: someone's gone somewhere else, or it's sharp.
+    /// The wake under way is over: someone's gone somewhere else, or it's sharp. One whose tab was never shown was no wake, and leaves the last one as it was.
     pub(super) fn finish_wake(&mut self) {
-        if let Some((_, report)) = self.waking.take() {
+        if let Some((_, report)) = self.waking.take()
+            && report.had != WakeStock::NotLooked
+        {
             self.last_wake = Some(report);
+        }
+    }
+
+    /// The tabs held now are the one showing and `warm`: a wake noted for a tab that's neither and not yet shown goes, its tab closed or gone cold.
+    pub(super) fn keep_for(&mut self, hot: u32, warm: &[u32]) {
+        if self
+            .waking
+            .is_some_and(|(_, report)| report.had == WakeStock::NotLooked && report.tab != hot && !warm.contains(&report.tab))
+        {
+            self.waking = None;
         }
     }
 
@@ -293,7 +312,7 @@ impl Reader {
         }
         if self.docs.hot != Some(report.tab) {
             // Noted and not yet shown: the note and the showing are two steps, and a frame the host applies between them is the tab before's. Kept, and
-            // looked at once its tab is shown; one never shown is ended by the time above, or replaced by the next note.
+            // looked at once its tab is shown; one never shown goes by the time above, its tab's closing, or the next note, and is never recorded.
             if report.had != WakeStock::NotLooked {
                 self.wake.waking = None;
             }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::tiles::wake::WakeStock;
+use crate::tiles::wake::{WAKE_FOLLOWED_FOR, WakeStock};
 
 /// The place a tab was left at, as the record keeps it: page 0, letter pages.
 fn saved_at_the_top() -> SavedPlace {
@@ -218,4 +218,79 @@ fn a_frame_applied_between_a_wakes_note_and_its_tab_shown_keeps_the_wake() {
     let wake = reader.wake.last_wake().expect("a wake");
     assert_eq!(wake.tab, 2, "the wake of the tab shown, not the one before: {wake:?}");
     assert!(wake.first_frame_us.is_some() && wake.sharp_us.is_some(), "{wake:?}");
+}
+
+/// Tab `tab` shown and drawn after a wake noted at `began`, as the app has it: noted, activated, sent to its place, settled and applied.
+fn wake_shown(reader: &mut Reader, tab: u32, began: Instant) {
+    reader.note_wake(tab, began);
+    reader.activate(
+        tab,
+        5,
+        0,
+        PageMap {
+            files: vec![PathBuf::from(format!("/d/{tab}.pdf"))],
+            ..map()
+        },
+        &[1],
+        None,
+        Spread::Single,
+    );
+    reader.host.take_ops();
+    let scrolled = reader.place.jump.map_or(0, std::num::NonZeroU64::get);
+    reader.set_viewport(Viewport {
+        scrolled_to: scrolled,
+        ..view(0.0)
+    });
+    settle(reader);
+    reader.host.take_ops();
+    reader.host.unapplied = true;
+    reader.applied();
+}
+
+/// Failure (review of `build/no-page-pictures`, 2026-11-15): a wake noted for a tab that is never shown (tapped and closed, or overtaken) was kept, and at
+/// the next jump, follow or an apply past the time a wake's followed for it went into `last_wake` as a wake of that tab with nothing looked at and no frame,
+/// over the real last one; and while it was kept `last_wake` said it. A wake never shown is no wake: `last_wake` stays the last one shown, by every route,
+/// and a noted wake goes when its tab does.
+#[test]
+fn a_wake_noted_and_never_shown_leaves_the_last_wake_as_it_was() {
+    let mut reader = reader_on(5);
+    settle(&mut reader);
+    wake_shown(&mut reader, 2, Instant::now());
+    let real = reader.wake.last_wake().expect("the wake of tab 2");
+    assert!(real.tab == 2 && real.sharp_us.is_some(), "{real:?}");
+    // The record as it's said: the report has no equality of its own, being a record and not a value anyone compares.
+    let real = format!("{real:?}");
+    let last = |reader: &Reader| format!("{:?}", reader.wake.last_wake().expect("a wake"));
+    // Noted, and the tab's never shown: then a jump in the tab showing.
+    reader.note_wake(3, Instant::now());
+    assert_eq!(last(&reader), real, "said while it waits");
+    reader.host.unapplied = true;
+    reader.applied();
+    reader.jump_to(1, 0.0);
+    assert_eq!(last(&reader), real, "at a jump");
+    // Noted long enough ago that it's no longer followed, and a frame applied.
+    reader.note_wake(4, Instant::now() - WAKE_FOLLOWED_FOR * 2);
+    reader.host.unapplied = true;
+    reader.applied();
+    assert_eq!(last(&reader), real, "at an apply past the time it's followed for");
+    // Noted, and its tab closes: shown later without a note of its own, it's not timed from the one before.
+    reader.note_wake(3, Instant::now());
+    reader.set_warm(&[1]);
+    assert!(reader.wake.waking.is_none(), "kept past its tab's closing: {:?}", reader.wake.waking);
+}
+
+/// Failure (the same review): a note for a tab kept a later note for the same tab from replacing it however old it was, so a real wake was timed from a
+/// stale note, and past the time a wake's followed for it ended at its first apply with no first frame. A note older than that is replaced.
+#[test]
+fn a_stale_note_for_the_same_tab_doesnt_time_its_next_wake() {
+    let mut reader = reader_on(5);
+    settle(&mut reader);
+    reader.note_wake(2, Instant::now() - WAKE_FOLLOWED_FOR * 2);
+    wake_shown(&mut reader, 2, Instant::now());
+    let wake = reader.wake.last_wake().expect("the wake of tab 2");
+    assert_eq!(wake.tab, 2, "{wake:?}");
+    assert!(
+        wake.first_frame_us.is_some_and(|us| us < WAKE_FOLLOWED_FOR.as_micros() as u64) && wake.sharp_us.is_some(),
+        "timed from the stale note: {wake:?}"
+    );
 }

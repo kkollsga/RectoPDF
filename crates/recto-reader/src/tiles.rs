@@ -524,6 +524,7 @@ impl Reader {
     pub fn set_warm(&mut self, warm: &[u32]) {
         let Some(hot) = self.docs.hot else { return };
         self.keep_only(warm, hot);
+        self.wake.keep_for(hot, warm);
         self.recount_wanted_files(warm);
         self.cancel_if_unwanted();
     }
