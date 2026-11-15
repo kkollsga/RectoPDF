@@ -32,6 +32,7 @@ mod navigation;
 mod newer_read;
 mod page_ids;
 mod palette;
+mod password_not_kept;
 mod passwords;
 // The count it reads is a debug build's only.
 #[cfg(debug_assertions)]

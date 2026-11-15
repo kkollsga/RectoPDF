@@ -68,11 +68,11 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "`/dev/tty`, by that name only: the terminal `recto` asks the person at, in `recto`'s own process",
     ),
     (
-        "recto-core/src/save.rs",
-        3,
-        "a save's own temp file flushed before it's renamed into place; and `keep_backup`'s clone or copy of the tab's own file, by the path the wall \
-         opened it by, resolved, after that open: never a path a command names, but by path where the descriptor the wall admitted would be surer \
-         (PLAN, F-A)",
+        "recto-core/src/save/backups.rs",
+        4,
+        "`keep_backup`'s clone or copy of the tab's own file, by the path the wall opened it by, resolved, after that open: never a path a command names, \
+         but by path where the descriptor the wall admitted would be surer (PLAN, F-A); and its own partial file in the state folder, opened to set its \
+         time and flushed before it's renamed into place",
     ),
     (
         "recto-index/src/corpus.rs",
