@@ -139,9 +139,9 @@ fn read(bytes: &[u8]) {
             // matcher reads them on the reader it has open.
             for entry in map.iter().take(16) {
                 let caps = recto_core::page_id::Caps::STANDARD;
-                let (identity, cost, capped) = recto_core::page_id::identify_page_costed(&reader, entry, &caps);
-                assert!(cost <= caps.page_read.max(caps.page_bytes), "a page cost {cost}");
-                assert_eq!((identity, cost, capped), recto_core::page_id::identify_page_costed(&reader, entry, &caps));
+                let read = recto_core::page_id::read_page(&reader, entry, &caps);
+                assert!(read.bytes <= caps.page_read.saturating_add(caps.page_bytes), "a page cost {}", read.bytes);
+                assert_eq!(read, recto_core::page_id::read_page(&reader, entry, &caps));
             }
             assert_highlights_hold(&recto_core::highlights::page_highlights_in(&reader, 0));
         }

@@ -289,7 +289,7 @@ impl Saver {
     }
 
     fn write_work(&self, session: &SessionHost<DrawableLoader>, sleeper: &Sleeper, work: &JournalWork, force: bool) -> Option<StoreError> {
-        if work.retired.is_empty() && work.appends.is_empty() {
+        if work.retired.is_empty() && work.appends.is_empty() && work.pages.is_empty() {
             return None;
         }
         // Sleep files about to be removed: nothing queued for them is written after.

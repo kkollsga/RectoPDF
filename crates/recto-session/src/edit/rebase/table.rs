@@ -424,7 +424,7 @@ fn a_highlight_on_a_page_the_person_deleted_goes_with_the_history_and_loses_noth
     let (_, outcome) = follow(&edits, &renumbered(&[0, 1, 20, 2, 3, 4, 5, 6, 7, 8, 9]), ScanCaps::STANDARD, None);
     let onto = outcome.onto.expect("follows");
     assert!(onto.marks.is_empty(), "nothing carried onto the new version");
-    apply(&mut edits, onto);
+    apply(&mut edits, onto, None);
     assert_eq!(edits.marks().len(), 0);
     assert!(
         !edits.can_undo() && !edits.can_redo(),
@@ -446,7 +446,7 @@ fn a_list_put_onto_the_new_version_ends_its_history_there_and_names_the_new_page
     let (_, outcome) = follow(&edits, &new, ScanCaps::STANDARD, None);
     let onto = outcome.onto.expect("follows");
     assert_eq!(onto.positions[4], Some(5), "the page being read at position 4 is at 5 now");
-    apply(&mut edits, onto);
+    apply(&mut edits, onto, None);
     assert_eq!(edits.file_pages(), 11);
     assert_eq!(edits.len(), 11);
     assert_eq!(edits.slots()[5].quarter_turns, 1);

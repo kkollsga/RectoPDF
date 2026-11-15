@@ -56,6 +56,8 @@ pub struct Matched {
     found: Vec<(u32, Found)>,
     pages: u32,
     refound: Vec<(FileKey, Option<FileKey>)>,
+    /// The new version's `/ID` pair, if it has one.
+    document: Option<recto_core::page_id::DocumentIds>,
 }
 
 /// What became of a tab whose edits followed their pages: its length now and how many edits followed, for the event and `edits`. Counts only, and no
@@ -125,9 +127,9 @@ pub fn read(job: &FollowJob) -> Option<Matched> {
     let map = reader.page_map().ok()?;
     let caps = recto_core::page_id::Caps::STANDARD;
     let identify = |entry| {
-        let (identity, cost, capped) = recto_core::page_id::identify_page_costed(&reader, entry, &caps);
+        let read = recto_core::page_id::read_page(&reader, entry, &caps);
         // A page that reached a cap has no identity: nothing is matched to it (slice 1's rule).
-        ((!capped).then(|| Known::of(&identity)), cost)
+        (read.identity.as_ref().map(Known::of), read.bytes)
     };
     let mut matcher = Matcher::new(&job.named);
     // Rule 1: the pages with an object number a named page had, at most as many as are named, under the scan's bytes as a whole (not its pages: a
@@ -188,6 +190,7 @@ pub fn read(job: &FollowJob) -> Option<Matched> {
         })
         .collect();
     let pages = u32::try_from(map.len()).ok()?;
+    let document = recto_core::page_id::document_ids(&reader);
     drop(map);
     drop(reader);
     if !current() {
@@ -200,6 +203,7 @@ pub fn read(job: &FollowJob) -> Option<Matched> {
         found,
         pages,
         refound,
+        document,
     })
 }
 
@@ -228,7 +232,7 @@ pub fn followed<L: DocLoader>(session: &mut Session<L>, matched: &Matched) -> Op
         return None;
     };
     let positions = onto.positions.clone();
-    let let_go = rebase::apply(edits, onto);
+    let let_go = rebase::apply(edits, onto, matched.document);
     let (pages, seq) = (edits.len(), edits.journal_seq());
     let count = u32::try_from(outcome.edits.len()).unwrap_or(u32::MAX);
     session.journals.retire_kept(let_go);

@@ -4,9 +4,23 @@
 use super::*;
 use crate::identify::{self, IdentifyJob};
 
+/// What a test does around `Opened::open`'s open: called with `true` just before it and `false` just after.
+type AroundOpen = Box<dyn Fn(bool)>;
+
 std::thread_local! {
-    /// How long a job may read on this thread, when a test says ([`crate::identify::MAX_JOB_TIME`]).
-    pub(crate) static JOB_TIME: Cell<Option<std::time::Duration>> = const { Cell::new(None) };
+    /// How many bytes a job may read on this thread, when a test says ([`crate::identify::MAX_JOB_BYTES`]).
+    pub(crate) static JOB_BYTES: Cell<Option<u64>> = const { Cell::new(None) };
+    /// What a test does to the file just before its open (`true`) and just after (`false`), on this thread.
+    static AROUND_OPEN: std::cell::RefCell<Option<AroundOpen>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The seam at `Opened::open`'s open, for a test that changes what's at the path for that moment.
+pub(crate) fn around_open(before: bool) {
+    AROUND_OPEN.with(|seam| {
+        if let Some(seam) = seam.borrow().as_ref() {
+            seam(before);
+        }
+    });
 }
 
 /// A loader that reads the real file's facts, as the app's does.
@@ -117,22 +131,111 @@ fn a_job_reads_a_bounded_number_of_pages() {
     assert_eq!((next[0].tab, next[0].pages.len()), (id, 10));
 }
 
-/// Failure caught (rules 1 and 6): a file whose pages each cost their caps (seconds apiece) holds the thread for hours over a tab's thousands of named
-/// pages, and is read again after every edit. A job that passes its time gives up: what it read is taken in, the rest is named no more, the list says
-/// some pages couldn't be identified, and nothing is asked again. Held with the time set to nothing: the first page is read, and no more.
+/// Failure caught (review: "a job is bounded by bytes, not by 2 seconds"): a job that reads for a while gives up the pages it didn't get to, so a big
+/// scanned book on a slow disk or a loaded Mac has pages silently dropped; or a job reads without bound. With the budget set to one byte, a job reads
+/// one page and hands it in; the rest stay named and unread, the next job reads the next, and nothing is given up.
 #[test]
-fn a_job_past_its_time_gives_up_on_the_rest() {
+fn a_job_reads_to_its_byte_budget_and_the_next_goes_on() {
     let (_dir, _path, mut s, id) = open_ten();
     s.edit_pages(id, |e| e.rotate(0, 10, 1)).unwrap();
-    JOB_TIME.with(|time| time.set(Some(std::time::Duration::ZERO)));
+    JOB_BYTES.with(|bytes| bytes.set(Some(1)));
+    let mut opened = None;
+    for round in 1..=10 {
+        let job = identify::work(&s).remove(0);
+        let found = identify::read_in(&job, &mut opened).unwrap();
+        assert_eq!((found.pages.len(), found.gave_up), (1, false), "round {round}");
+        assert!(identify::identified(&mut s, &found));
+    }
+    JOB_BYTES.with(|bytes| bytes.set(None));
+    let ids = crate::edit::identity::identities(s.lists().get(id).unwrap()).unwrap();
+    assert!(!ids.over_cap());
+    assert!(ids.pages().iter().all(|(_, known)| known.is_some()));
+    assert!(!identify::has_work(&s), "every page read");
+}
+
+/// Ten pages saying their numbers, the fourth past a cap: its content more than 16 MiB, flated so the file stays small.
+fn ten_with_a_capped_page() -> Vec<u8> {
+    use recto_testpdf::Object;
+    use std::io::Write;
+    let mut flated = Vec::new();
+    let mut encoder = flate2::write::ZlibEncoder::new(&mut flated, flate2::Compression::best());
+    encoder.write_all(&vec![b' '; (16 << 20) + 1]).unwrap();
+    encoder.finish().unwrap();
+    let kids: String = (0..10).map(|at| format!("{} 0 R ", 3 + at)).collect();
+    let mut objects = vec![
+        Object::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+        Object::Dict(format!("<< /Type /Pages /Kids [{kids}] /Count 10 >>")),
+    ];
+    objects.extend((0..10).map(|at| Object::Dict(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {} 0 R >>", 13 + at))));
+    objects.extend((0..10).map(|at| {
+        if at == 3 {
+            Object::Stream {
+                dict: "/Filter /FlateDecode".into(),
+                data: flated.clone(),
+            }
+        } else {
+            Object::Stream {
+                dict: String::new(),
+                data: format!("BT /F1 12 Tf 72 712 Td (Page {}) Tj ET", at + 1).into_bytes(),
+            }
+        }
+    }));
+    recto_testpdf::build(&objects)
+}
+
+/// Failure caught (rules 1 and 6): a page with no identity (past a cap, up to a second of reading) is read again after every edit, so an agent's edits
+/// keep the thread busy on a hostile file; or reading goes on past it. The job stops at it and gives up: the three pages before it are taken in, the
+/// pages not read are named no more, the list says some pages can't be followed, and nothing of this version is asked again, whatever is edited next.
+#[test]
+fn a_page_with_no_identity_gives_up_on_this_version() {
+    let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-identify-capped-");
+    let path = dir.join("capped.pdf");
+    std::fs::write(&path, ten_with_a_capped_page()).unwrap();
+    let mut s = Session::new(Real);
+    let id = s.open(&path).unwrap();
+    s.edit_pages(id, |e| e.rotate(0, 10, 1)).unwrap();
     let job = identify::work(&s).remove(0);
     let found = identify::read(&job).unwrap();
-    JOB_TIME.with(|time| time.set(None));
     assert!(found.gave_up);
-    assert!(found.pages.len() <= 1, "{:?}", found.pages.len());
-    identify::identified(&mut s, &found);
+    assert_eq!(found.pages.iter().map(|(page, _)| *page).collect::<Vec<_>>(), vec![0, 1, 2]);
+    assert!(identify::identified(&mut s, &found));
     let ids = crate::edit::identity::identities(s.lists().get(id).unwrap()).unwrap();
     assert!(ids.over_cap());
-    assert!(ids.pages().iter().all(|(_, known)| known.is_some()));
+    assert_eq!(ids.pages().len(), 3, "only what was read stays named");
     assert!(!identify::has_work(&s), "nothing asked again");
+    s.edit_pages(id, |e| e.rotate(7, 1, 1)).unwrap();
+    assert!(!identify::has_work(&s), "nor after another edit, on this version");
+}
+
+/// Failure caught (slice 2's review, 2026-11-15): the file's version is checked by its path before and after the read, and never on what was opened,
+/// so someone who can write the folder renames another file into place for the moment of the open and the original back (the same file number, size
+/// and time on both looks): the identities recorded are the other file's, which a later crafted version uses to pull an edit onto another page. With
+/// another file put at the path for the open alone, nothing is read.
+#[test]
+fn a_file_swapped_in_for_the_open_alone_is_never_read() {
+    let (dir, path, mut s, id) = open_ten();
+    let other = dir.join("other.pdf");
+    std::fs::write(&other, ten_pages("Theirs")).unwrap();
+    s.edit_pages(id, |e| e.rotate(8, 1, 1)).unwrap();
+    let job = identify::work(&s).remove(0);
+    let (kept, at, theirs) = (dir.join("doc.keep"), path.clone(), other.clone());
+    AROUND_OPEN.with(|seam| {
+        *seam.borrow_mut() = Some(Box::new(move |before| {
+            if before {
+                std::fs::rename(&at, &kept).unwrap();
+                std::fs::rename(&theirs, &at).unwrap();
+            } else {
+                std::fs::rename(&at, &theirs).unwrap();
+                std::fs::rename(&kept, &at).unwrap();
+            }
+        }));
+    });
+    let found = identify::read(&job);
+    AROUND_OPEN.with(|seam| *seam.borrow_mut() = None);
+    assert_eq!(
+        recto_platform::file_stamp(&path).unwrap(),
+        job.stamp,
+        "the path looks as it did, before and after"
+    );
+    assert_eq!(found, None, "the other file's pages were read for this one's");
 }

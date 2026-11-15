@@ -9,7 +9,7 @@ impl HistorySource for MemorySource {
     }
     fn read_list(&self, name: &str) -> Option<RestoredEdits> {
         let files = self.0.lock().unwrap();
-        let parsed = record::parse_journal(files.get(name)?, record::JOURNAL_VERSION).ok()?;
+        let parsed = record::parse_journal(files.get(name)?, record::CURRENT_VERSION).ok()?;
         let (edits, applied) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).ok()?;
         Some(RestoredEdits {
             edits,
@@ -111,7 +111,7 @@ fn a_dormant_tabs_list_goes_to_disk_and_comes_back_by_every_route() {
     s.edit_pages(a, |e| e.rotate(1, 1, 1)).unwrap();
     let mut plain = files.lock().unwrap().clone();
     write_journal(&mut s, &mut plain);
-    let parsed = record::parse_journal(plain.values().next().unwrap(), record::JOURNAL_VERSION).unwrap();
+    let parsed = record::parse_journal(plain.values().next().unwrap(), record::CURRENT_VERSION).unwrap();
     let (replayed, _) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).unwrap();
     assert_eq!(replayed.to_record(), s.lists().edits_record(a).unwrap());
 }

@@ -63,6 +63,19 @@ fn a_drag_under_a_copy_does_no_harm() {
     recto_fuzz::targets::select::check(&input);
 }
 
+/// Failure: a hostile stream's filters, parameters or bytes panic the page digest's decoders or its `Do` scan (and with them the page-identity thread),
+/// read past their limit, or keep names past the scan's cap: every general filter, both predictors, chains and refused parameters.
+#[test]
+fn hostile_streams_through_the_page_digests_decoders_do_no_harm() {
+    smoke("page_decode", seed(), rounds(1500), 16 * 1024);
+}
+
+/// Failure: a sidecar found on disk (torn, flipped, forged) panics its reader, or gives a list a page past its file's end or more than a list names.
+#[test]
+fn hostile_sidecars_give_a_list_nothing_it_cant_hold() {
+    smoke("sidecar", seed(), rounds(1500), 4 * 1024);
+}
+
 /// Failure: a JSON line, command line or level file panics, a cap doesn't hold, or a document's name reaches Off.
 #[test]
 fn commands_from_outside_do_no_harm() {

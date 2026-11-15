@@ -43,6 +43,7 @@ pub fn apply_restored(
             if application.is_err() {
                 notice = Some(record::notices::DAMAGED);
             }
+            super::page_ids::after_restore(host, inner.tools.page_ids());
             if application.is_ok() {
                 let saved = &restored.record.app;
                 let restoring = window::Restoring::new(&restored.record, real_window.as_ref(), appearance_then);

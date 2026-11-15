@@ -54,14 +54,6 @@ pub const JOURNAL_KIND: &str = "recto-journal";
 /// A journal whose base holds highlights says this version, so an app from before them leaves it as it is rather than reading it without them; one with
 /// none is [`CURRENT_VERSION`], which that app reads. [`parse_journal`] is asked with this to read both.
 pub const MARKED_JOURNAL_VERSION: u32 = 2;
-/// **A journal with a line of what was read of its edits' pages says this version** (the page matcher, coordinator 2026-11-15), by the rule
-/// [`MARKED_JOURNAL_VERSION`] set: what an app from before can't read makes the journal newer, for as long as it holds it. (A base's identities don't:
-/// that app reads past a field it doesn't know, and loses only them, which costs an edit nothing but its following a changed file.) An app from before
-/// reads a line of [`JournalOp::Identified`] as one nothing it knows: it stops there, keeps the file aside and starts the journal again without what came
-/// after (0.1.0's `claim` in `recto-control`'s record store, on `lost_lines`), losing the person's later edits there; a newer version it leaves as it is
-/// (0.1.0's `load_journals`: "A newer app's: not ours to touch"), so the edits wait, whole, for this app. [`parse_journal`] is asked with this to read
-/// every version.
-pub const JOURNAL_VERSION: u32 = 3;
 
 /// A window's or screen's place on the desktop, in the system's own points.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -880,9 +872,6 @@ pub struct EditsRecord {
         deserialize_with = "capped::<_, _, { crate::edit::marks::MAX_HIDDEN }>"
     )]
     pub hidden: Vec<crate::edit::marks::FileKey>,
-    /// The file's pages the edits name, and what each is, for the page matcher (`crate::edit::identity`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub identities: Option<crate::edit::identity::IdentitiesRecord>,
 }
 
 /// One thing that happened to a tab's edits, as a line of its journal. Only what was asked for, forwards: replaying these through the same checked calls brings back the page order and the whole of the history, with whose each step is, so what a hostile journal can do is limited to what those calls allow. A rotation is about 25 bytes, and an added PDF is a reference to it.
@@ -910,9 +899,6 @@ pub enum JournalOp {
     Keeping(AddedRecord),
     #[serde(rename = "h")]
     Mark(crate::edit::marks::MarkOp),
-    /// What was read of pages the edits name, for the page matcher: a journal holding any says [`JOURNAL_VERSION`] (`crate::edit::identity`).
-    #[serde(rename = "p")]
-    Identified(crate::edit::identity::IdentifiedRecord),
 }
 
 /// A journal's first line.
@@ -977,7 +963,6 @@ pub fn journal_lines(ops: &[JournalOp]) -> Vec<u8> {
 
 /// A new journal's beginning: its header, and a base if it's been compacted.
 pub fn journal_start(header: &JournalHeader, base: Option<&EditsRecord>) -> Vec<u8> {
-    // A base's identities need no newer version: an app from before reads past a field it doesn't know, and loses only them (`crate::edit::identity`).
     let marked = base.is_some_and(crate::edit::marks::record_has_marks).then(|| JournalHeader {
         version: MARKED_JOURNAL_VERSION,
         ..header.clone()
@@ -1786,7 +1771,6 @@ mod tests {
             owner_step_dropped: false,
             marks: Vec::new(),
             hidden: Vec::new(),
-            identities: None,
         };
         assert!(validate_edits(&good).is_ok());
         let by = AuthorName::Owner;

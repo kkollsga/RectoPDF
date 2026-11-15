@@ -95,7 +95,7 @@ fn back_from(files: &HashMap<String, Vec<u8>>) -> HashMap<String, RestoredEdits>
     files
         .iter()
         .map(|(name, bytes)| {
-            let parsed = record::parse_journal(bytes, record::JOURNAL_VERSION).unwrap();
+            let parsed = record::parse_journal(bytes, record::CURRENT_VERSION).unwrap();
             let (edits, applied) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).unwrap();
             assert_eq!(applied, parsed.ops.len());
             (

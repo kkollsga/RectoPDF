@@ -466,7 +466,6 @@ impl PageEdits {
             owner_step_dropped: self.history.owner_dropped,
             marks: self.marks.to_record(),
             hidden: self.marks.hidden_to_record(),
-            identities: identity::to_record(self),
         }
     }
 
@@ -515,7 +514,7 @@ impl PageEdits {
             rewrites: false,
             changes: 0,
             replaying: false,
-            identities: identity::from_record(record.identities.as_ref(), record.file_pages),
+            identities: None,
         };
         edits.differs = edits.differs_from_the_file();
         edits.rewrites = edits.rewrites_the_file();
@@ -652,10 +651,6 @@ impl PageEdits {
                 let (change, by) = op.change();
                 self.acting = by.into();
                 self.mark(change)
-            }
-            JournalOp::Identified(record) => {
-                identity::replayed(self, record);
-                Ok(())
             }
             JournalOp::Undo => self.undo().then_some(()).ok_or(EditError::OutOfRange),
             JournalOp::Redo => self.redo().then_some(()).ok_or(EditError::OutOfRange),

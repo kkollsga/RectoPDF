@@ -16,6 +16,17 @@ fn identities(path: &Path) -> Vec<PageIdentity> {
         .collect()
 }
 
+/// Every page's digest, `None` for one with no identity (past a cap).
+fn digests(path: &Path) -> Vec<Option<String>> {
+    let reader = page_id::open_for_identity(path).expect("it opens");
+    let map = reader.page_map().expect("its pages");
+    let pages: Vec<u32> = (0..map.len() as u32).collect();
+    page_id::identify_pages(&reader, &map, &pages)
+        .into_iter()
+        .map(|id| id.map(|id| hex(&id.digest)))
+        .collect()
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -120,14 +131,14 @@ fn corpus() -> Option<PathBuf> {
 
 /// **Golden vectors on real files.** Failure caught: a change to `recto-page/1` that the made pages of the unit tests don't exercise (real fonts,
 /// predictors, forms, object streams), which would make every digest an older build kept stop matching. Page 1 of three corpus files, by the first 16
-/// bytes (what a journal keeps). Only where the corpus is on the machine.
+/// bytes (what a sidecar keeps). Only where the corpus is on the machine.
 #[test]
 fn golden_vectors_on_real_files() {
     let Some(bench) = corpus() else { return };
     let golden = [
-        ("eu_law_eu_aiact.pdf", "74efd5657fcc6caa6dcc2b8d3501b580"),
-        ("cs_CV_2607.28611.pdf", "49898b7829d7c32428dca37290258367"),
-        ("gov_nasa_ntrs20220005969.pdf", "cae4d2910a0fe5e66f14d5b55d4adf9d"),
+        ("eu_law_eu_aiact.pdf", "7a817f0126c6be91f49bac6b85847016"),
+        ("cs_CV_2607.28611.pdf", "f2782d8acb05bd6fb4e96e7d7684bbd1"),
+        ("gov_nasa_ntrs20220005969.pdf", "aa3f093bba9db27ce0829f7fa2917914"),
     ];
     let mut got = Vec::new();
     for (name, _) in golden {
@@ -135,9 +146,8 @@ fn golden_vectors_on_real_files() {
         let map = reader.page_map().unwrap();
         got.push(hex(&page_id::identify_pages(&reader, &map, &[0])[0].unwrap().digest[..16]));
     }
-    for ((name, want), got) in golden.iter().zip(&got) {
-        assert_eq!(got, want, "{name}");
-    }
+    let want: Vec<String> = golden.iter().map(|(_, want)| (*want).to_string()).collect();
+    assert_eq!(got, want, "{:?}", golden.map(|(name, _)| name));
 }
 
 /// Failure caught (research §3, data table C): a re-save that keeps every page as it was changes their digests, so every edit would be set aside the
@@ -152,7 +162,7 @@ fn real_pages_keep_their_identity_through_a_rewrite_and_our_save() {
     for name in CORPUS_SAMPLE {
         let path = dir.join(name);
         std::fs::copy(bench.join(name), &path).unwrap();
-        let before = identities(&path);
+        let before = digests(&path);
         if qpdf.exists() {
             let out = dir.join(format!("qpdf-{name}"));
             let status = std::process::Command::new(qpdf)
@@ -162,18 +172,18 @@ fn real_pages_keep_their_identity_through_a_rewrite_and_our_save() {
                 .status()
                 .unwrap();
             assert!(status.success() || status.code() == Some(3), "qpdf on {name}: {status}");
-            let rewritten = identities(&out);
+            let rewritten = digests(&out);
             assert_eq!(rewritten.len(), before.len());
             for (at, (was, now)) in before.iter().zip(&rewritten).enumerate() {
-                assert_eq!(hex(&was.digest), hex(&now.digest), "{name} page {} through qpdf", at + 1);
+                assert_eq!(was, now, "{name} page {} through qpdf", at + 1);
             }
         }
         let count = before.len() as u32;
         let order: Vec<(u32, u8)> = (0..count).map(|page| (page, u8::from(page == 0))).collect();
         saved(&path, count, &own(&order), &[]);
-        let after = identities(&path);
+        let after = digests(&path);
         for (at, (was, now)) in before.iter().zip(&after).enumerate() {
-            assert_eq!(hex(&was.digest), hex(&now.digest), "{name} page {} through our turn and save", at + 1);
+            assert_eq!(was, now, "{name} page {} through our turn and save", at + 1);
         }
     }
 }

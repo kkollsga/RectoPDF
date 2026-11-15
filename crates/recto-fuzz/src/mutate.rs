@@ -103,6 +103,23 @@ pub const TOKENS: &[&str] = &[
     "%PDF-1.7",
     "<FEFF",
     "\u{feff}",
+    "/LZWDecode",
+    "/ASCIIHexDecode",
+    "/ASCII85Decode",
+    "/RunLengthDecode",
+    "/Colors",
+    "/BitsPerComponent",
+    "/EarlyChange",
+    "/XObject",
+    "/Resources",
+    "/Contents",
+    "/Subtype",
+    "/Form",
+    "/Image",
+    "Do",
+    "BI",
+    "ID",
+    "EI",
 ];
 
 /// Where a piece of ASCII digits starts and ends, at or after a place.

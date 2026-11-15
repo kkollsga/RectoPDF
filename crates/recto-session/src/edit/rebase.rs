@@ -393,7 +393,7 @@ fn build(mut placement: Placement, gone: &HashSet<u32>, new_pages: u32, old_len:
 /// **Puts a list onto the new version** [`rebase`] made it for: its pages, highlights and named pages are the new version's from here, and the undo
 /// history ends here (owner, 2026-11-15: the edits stay, and ⌘Z doesn't go back past the change). The journal gets the whole list next. Says which
 /// files kept for the history nothing needs now.
-pub fn apply(edits: &mut PageEdits, onto: Onto) -> Vec<Box<Path>> {
+pub fn apply(edits: &mut PageEdits, onto: Onto, document: Option<recto_core::page_id::DocumentIds>) -> Vec<Box<Path>> {
     let Onto {
         file_pages,
         slots,
@@ -406,8 +406,10 @@ pub fn apply(edits: &mut PageEdits, onto: Onto) -> Vec<Box<Path>> {
     edits.slots = slots;
     edits.marks.onto(|mark| marks.get(&mark.id).copied(), hidden);
     edits.changes += 1;
-    // SLICE 1 SIDECAR: once identities live in a sidecar beside the journal, this goes through slice 1's own writer for it, never a journal.
-    super::identity::onto(edits, named);
+    // What the named pages are in the new version, for its journal's sidecar (written whole, under the new journal's name, after it: slice 1's), and
+    // their neighbours there named, to be read.
+    super::identity::followed(edits, &named, document);
+    super::identity::name_neighbours(edits);
     let let_go = edits.drop_history();
     edits.differs = edits.differs_from_the_file();
     edits.rewrites = edits.rewrites_the_file();

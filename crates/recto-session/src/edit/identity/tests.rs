@@ -2,7 +2,6 @@
 
 use super::super::PageEdits;
 use super::*;
-use crate::record::{CURRENT_VERSION, JOURNAL_VERSION, JournalHeader, journal_start, parse_journal};
 
 std::thread_local! {
     /// The cap for this thread's test, when it sets it small ([`super::cap`]).
@@ -102,52 +101,105 @@ fn the_pages_named_are_capped_and_the_first_kept() {
     CAP.with(|cap| cap.set(None));
 }
 
-/// Failure caught: what was read of the pages doesn't reach the journal, or doesn't come back from it, so after a restart the edits can't follow their
-/// pages; or a read of pages not named (an older wanting) is taken in. Found pages go in once, are noted for the journal, and come back by a replay of
-/// its lines and from its base.
+/// Failure caught (B1): what was read of the pages goes in the journal (which an app from before then can't read), or never reaches the sidecar, or
+/// reaches it twice; or a read of pages not named (an older wanting) is taken in. Found pages wait for the sidecar once, in the order read; the journal
+/// gets nothing of them; once written they're no longer waiting, and only pages read after that wait next time.
 #[test]
-fn what_was_read_comes_back_from_the_journal_and_its_base() {
+fn what_was_read_waits_for_the_sidecar_once_and_never_for_the_journal() {
     let mut edits = PageEdits::new(20);
     edits.journal_from_now();
     edits.rotate(9, 1, 1).unwrap();
+    let ops_before = edits.journal_waiting().map(|(_, ops)| ops.to_vec()).unwrap();
     assert!(found(&mut edits, &[(9, known(9)), (10, known(10)), (2, known(2))], None));
-    assert_eq!(identities(&edits).unwrap().known(9), Some(known(9)));
+    assert_eq!(
+        edits.journal_waiting().map(|(_, ops)| ops.to_vec()).unwrap(),
+        ops_before,
+        "nothing for the journal"
+    );
     assert_eq!(identities(&edits).unwrap().known(2), None, "page 2 was never named");
-    assert_eq!(wanted(&edits), vec![7, 8, 11]);
     assert!(!found(&mut edits, &[(9, known(1))], None), "a page read already stays as it was");
-    let ops = edits.journal_waiting().map(|(_, ops)| ops.to_vec()).unwrap();
-    assert!(ops_have_identities(&ops));
-    let (replayed, applied) = PageEdits::replay(20, None, &ops).unwrap();
-    assert_eq!(applied, ops.len());
-    assert_eq!(identities(&replayed), identities(&edits));
-    let back = PageEdits::from_record(&edits.to_record()).unwrap();
-    assert_eq!(identities(&back), identities(&edits));
+    let waiting = sidecar_waiting(&edits).unwrap();
+    assert!(!waiting.whole);
+    assert_eq!(waiting.unwritten, 2);
+    assert_eq!(waiting.bytes, sidecar::entries(&[(9, known(9)), (10, known(10))], None));
+    assert!(!sidecar_caught_up(&edits));
+    // A page read while that write was on its way waits on after it.
+    assert!(found(&mut edits, &[(8, known(8))], None));
+    sidecar_written(&mut edits, &waiting, sidecar::Done::Written);
+    let next = sidecar_waiting(&edits).unwrap();
+    assert_eq!(next.bytes, sidecar::entries(&[(8, known(8))], None));
+    sidecar_written(&mut edits, &next, sidecar::Done::Written);
+    assert!(sidecar_waiting(&edits).is_none());
+    assert!(sidecar_caught_up(&edits));
 }
 
-/// Failure caught (rule 6): a hostile journal's identities are believed: pages past the file's end, out of order or repeated, or a digest that isn't
-/// one. A base with any of that has none of it taken; a line's bad page is left unread; the edits themselves come back either way.
+/// Failure caught: a sidecar on disk that isn't this list's (another version's, or a launch's that went) is appended to, or the list never writes
+/// again; or the file's `/ID` pair is written more than once. Asked for whole, the next write holds every page known and the pair, and after it only
+/// what's new.
 #[test]
-fn a_hostile_journals_identities_are_left_out_and_the_edits_kept() {
+fn a_sidecar_asked_for_whole_is_written_whole_once() {
+    let document = DocumentIds {
+        first: [1; 16],
+        second: [2; 16],
+    };
+    let mut edits = PageEdits::new(20);
+    edits.rotate(9, 1, 1).unwrap();
+    found(&mut edits, &[(9, known(9))], Some(document));
+    let first = sidecar_waiting(&edits).unwrap();
+    assert!(first.document);
+    sidecar_written(&mut edits, &first, sidecar::Done::WantsWhole);
+    let whole = sidecar_waiting(&edits).unwrap();
+    assert!(whole.whole);
+    assert_eq!(whole.bytes, sidecar::entries(&[(9, known(9))], Some(document)));
+    sidecar_written(&mut edits, &whole, sidecar::Done::Written);
+    assert!(sidecar_waiting(&edits).is_none(), "the pair and the page, once");
+}
+
+/// Failure caught: slice 2's follow to a new version keeps what was read of the old one, or writes the new version's pages onto the old version's
+/// sidecar. [`followed`] makes the list's pages the new version's, read, and asks for the sidecar whole; a page past the new file isn't kept.
+#[test]
+fn a_followed_list_rewrites_its_sidecar_whole_for_the_new_version() {
     let mut edits = PageEdits::new(20);
     edits.rotate(9, 1, 1).unwrap();
     found(&mut edits, &[(9, known(9))], None);
-    let mut record = edits.to_record();
-    for bad in [
-        |ids: &mut IdentitiesRecord| ids.pages[0].0 = 99,
-        |ids: &mut IdentitiesRecord| ids.pages.swap(0, 1),
-        |ids: &mut IdentitiesRecord| ids.pages[1].0 = ids.pages[0].0,
-    ] {
-        let mut forged = record.clone();
-        bad(forged.identities.as_mut().unwrap());
-        let back = PageEdits::from_record(&forged).unwrap();
-        assert!(identities(&back).is_none());
-        assert_eq!(back.slots(), edits.slots(), "the edits are kept");
-    }
-    let ids = record.identities.as_mut().unwrap();
-    let at = ids.pages.iter().position(|page| page.0 == 9).unwrap();
-    ids.pages[at].1 = Some("not a packed identity at all".into());
-    let back = PageEdits::from_record(&record).unwrap();
-    assert_eq!(identities(&back).unwrap().known(9), None, "a digest that isn't one is unread");
+    followed(&mut edits, &[(4, known(4)), (30, known(30))], None);
+    let ids = identities(&edits).unwrap();
+    assert_eq!(ids.pages(), &[(4, Some(known(4)))]);
+    let waiting = sidecar_waiting(&edits).unwrap();
+    assert!(waiting.whole);
+    assert_eq!(waiting.bytes, sidecar::entries(&[(4, known(4))], None));
+}
+
+/// Failure caught (B1): a list restored from its journal doesn't get what its sidecar holds, so a restart loses what its pages are; or it writes it all
+/// again; or a hostile sidecar's page past the file's end is named. Pages are named and known, past the end left out, and nothing waits to be written.
+#[test]
+fn a_restored_list_takes_in_its_sidecar_and_writes_nothing_again() {
+    let mut edits = PageEdits::new(20);
+    edits.rotate(9, 1, 1).unwrap();
+    restored(&mut edits, &[(9, known(9)), (15, known(15)), (25, known(25))], None, false);
+    let ids = identities(&edits).unwrap();
+    assert_eq!(ids.known(9), Some(known(9)));
+    assert_eq!(ids.known(15), Some(known(15)), "named by the sidecar alone: a page of the journal's base");
+    assert!(ids.pages().iter().all(|(page, _)| *page < 20));
+    assert_eq!(wanted(&edits), vec![7, 8, 10, 11]);
+    assert!(sidecar_caught_up(&edits));
+}
+
+/// Failure caught (rules 1 and 6): after a page had no identity, an edit names new pages of the same version and they're read (each up to its caps),
+/// so an agent's edits keep the reader busy; or a save, a new version, stays closed. A give-up names nothing more until the save, after which edits
+/// name pages again.
+#[test]
+fn a_give_up_holds_until_the_version_changes() {
+    let mut edits = PageEdits::new(20);
+    edits.rotate(9, 1, 1).unwrap();
+    found(&mut edits, &[(9, known(9))], None);
+    give_up(&mut edits);
+    assert_eq!(identities(&edits).unwrap().pages(), &[(9, Some(known(9)))]);
+    edits.rotate(2, 1, 1).unwrap();
+    assert!(wanted(&edits).is_empty(), "nothing named of this version");
+    edits.rebase_on_saved(20, None, None).unwrap();
+    edits.rotate(4, 1, 1).unwrap();
+    assert!(wanted(&edits).contains(&4), "the saved file is another version");
 }
 
 /// Failure caught: after a Save the list keeps naming pages by the file as it was, whose numbers say nothing of the saved one, so a later change would
@@ -168,38 +220,24 @@ fn a_save_moves_the_named_pages_to_the_saved_file() {
     assert_eq!(identities(&edits).unwrap().known(9), None, "to be read again in the saved file");
 }
 
-/// Failure caught: a journal's base with what was read of pages locks an app from before out of the person's other edits, though that app reads past a
-/// field it doesn't know and loses only the identities: the base says the version it did, and this app reads the identities back from it. (A line of
-/// them, which that app can't read past, makes the journal say [`JOURNAL_VERSION`]: `recto-control`'s record store, which appends it, holds that.)
+/// Failure caught (for slice 2): that a list followed its file and the person wasn't told yet is lost at a restart, so they're never told; or telling
+/// them doesn't reach the sidecar. Set or cleared, the sidecar is written whole with the flag in its header; restored, it says it again.
 #[test]
-fn a_journals_base_with_identities_is_read_by_an_app_from_before() {
-    let header = JournalHeader::new(1, std::path::Path::new("/d/a.pdf"), None, 20, 0);
+fn whether_a_follow_was_told_goes_in_the_sidecars_header() {
     let mut edits = PageEdits::new(20);
     edits.rotate(9, 1, 1).unwrap();
     found(&mut edits, &[(9, known(9))], None);
-    let journal = journal_start(&header, Some(&edits.to_record()));
-    let old = parse_journal(&journal, CURRENT_VERSION).expect("an app from before reads it");
-    assert!(old.base.is_some());
-    let parsed = parse_journal(&journal, JOURNAL_VERSION).unwrap();
-    let (back, _) = PageEdits::replay(20, parsed.base.as_ref(), &parsed.ops).unwrap();
-    assert_eq!(identities(&back).unwrap().known(9), Some(known(9)));
-}
-
-/// Failure caught: a page's packed identity doesn't read back as it went in (a byte of the digest, the object number or the frame lost or moved), so
-/// after a restart no edit could follow its page; or a string of the wrong length or alphabet reads as one.
-#[test]
-fn a_packed_identity_reads_back_exactly() {
-    for seed in [0u8, 1, 0x7f, 0xff] {
-        let known = Known {
-            digest: std::array::from_fn(|at| seed.wrapping_add(at as u8).wrapping_mul(37)),
-            object: (u32::from(seed) * 1_000_003 + 7, u16::from(seed) * 3),
-            frame: u32::from(seed).wrapping_mul(0x9e37_79b9),
-        };
-        let record = PageIdRecord::of(4, &known);
-        assert_eq!(record.1.as_deref().map(str::len), Some(35));
-        assert_eq!(record.known(), Some(known));
-    }
-    for bad in ["", "AAAA", "not+base64/url/at/all/but/35/chars", &"A".repeat(36)] {
-        assert_eq!(PageIdRecord(0, Some(bad.to_string())).known(), None, "{bad:?}");
-    }
+    let first = sidecar_waiting(&edits).unwrap();
+    sidecar_written(&mut edits, &first, sidecar::Done::Written);
+    set_followed_untold(&mut edits, true);
+    assert!(followed_untold(&edits));
+    let waiting = sidecar_waiting(&edits).expect("written again");
+    assert!(waiting.whole);
+    sidecar_written(&mut edits, &waiting, sidecar::Done::Written);
+    set_followed_untold(&mut edits, true);
+    assert!(sidecar_waiting(&edits).is_none(), "no change, no write");
+    let mut back = PageEdits::new(20);
+    restored(&mut back, &[(9, known(9))], None, true);
+    assert!(followed_untold(&back));
+    assert!(sidecar_caught_up(&back));
 }

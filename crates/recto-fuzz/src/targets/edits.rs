@@ -238,7 +238,7 @@ fn onto_another_version(mut edits: recto_session::edit::PageEdits, data: &[u8]) 
         added_before,
         "an added page lost or made"
     );
-    recto_session::edit::rebase::apply(&mut edits, onto);
+    recto_session::edit::rebase::apply(&mut edits, onto, None);
     assert!(!edits.can_undo() && !edits.can_redo(), "the history ends at the change");
     assert_eq!(edits.file_pages(), new_pages);
 }

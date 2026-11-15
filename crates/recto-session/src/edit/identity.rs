@@ -1,7 +1,8 @@
 //! **Which of the file's pages a list's edits name, and what each of those pages is** (the page matcher; owner, 2026-11-13: "we need to run a page
 //! matcher of some kind. That's the way we can ensure edits on the correct page"). An edit names its page by its number in the file as it was. When the
 //! file changes on disk the old bytes may be gone, so what each named page *is* has to be read while they're there: its digest `recto-page/1`
-//! ([`recto_core::page_id`]), its object number and its frame, kept here and in the journal, so the matcher can find the page in the new version.
+//! ([`recto_core::page_id`]), its object number and its frame, kept here and in the journal's sidecar ([`sidecar`]), so the matcher can find the page in
+//! the new version.
 //!
 //! **Which pages:** every page of the tab's own file in a run a step changes, the pages either side of that run in the document, and each of those
 //! pages' neighbours in the file, which tell identical pages apart (the coordinator's decision, 2026-11-15). A step notes them before it's applied and
@@ -9,13 +10,21 @@
 //! file's own highlight names the page it's on. Nothing here reads a PDF: an edit stays instant. The pages named are read later, off the UI thread, by
 //! the app's page-identity thread, while the file is still the version the edits are about ([`crate::identify`]).
 //!
-//! **Bounded** (rule 1): a tab with no edits has nothing here; a list holds at most [`MAX_IDENTIFIED`] pages, about 36 bytes each (288 KiB at the cap);
-//! pages past it aren't named, which [`Identities::over_cap`] says, and an edit on one of them can't be followed when the file changes. Nothing is
-//! held per idle tab: a list asleep is in its journal.
+//! **Kept beside the journal, never in it** (the coordinator's decision B1, 2026-11-15): a journal is byte for byte what it is without the page
+//! matcher, so an app from before reads every journal it read before. What's read of a page goes to its journal's sidecar once, appended; which pages
+//! are named comes back with the journal's steps, as replaying a step names its pages again. A list restored from a journal's base (a checkpoint)
+//! has the pages its sidecar holds; one whose sidecar is lost, stale or another's has none of them, so its edits are held when the file changes, as
+//! before the matcher: losing a sidecar costs only following.
+//!
+//! **Bounded** (rule 1): a tab with no edits has nothing here; a list holds at most [`MAX_IDENTIFIED`] pages, 36 bytes each in memory (288 KiB at the
+//! cap) and 35 in the sidecar (280 KiB at the cap), and while a read's entries wait for the sidecar, 4 bytes more each. Pages past the cap aren't named,
+//! which [`Identities::over_cap`] says, and an edit on one of them can't be followed when the file changes. Nothing is held per idle tab: a list asleep
+//! is in its journal and sidecar.
+
+pub mod sidecar;
 
 use super::{PageEdits, Step};
-use crate::record::JournalOp;
-use serde::{Deserialize, Serialize};
+use recto_core::page_id::DocumentIds;
 
 /// Most of the file's pages one list names.
 pub const MAX_IDENTIFIED: usize = 8_192;
@@ -33,11 +42,18 @@ fn cap() -> usize {
 }
 
 /// What one page of the file is: the first 16 bytes of its `recto-page/1` digest, its object number, and its frame's tag ([`recto_core::page_id`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Its `Debug` says only the object number: a digest is of a document's content, and what's printed can reach a log.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Known {
     pub digest: [u8; 16],
     pub object: (u32, u16),
     pub frame: u32,
+}
+
+impl std::fmt::Debug for Known {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Known").field("object", &self.object).finish_non_exhaustive()
+    }
 }
 
 impl Known {
@@ -58,10 +74,20 @@ impl Known {
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Identities {
     pages: Vec<(u32, Option<Known>)>,
-    /// More pages were named than [`MAX_IDENTIFIED`] holds, or than could be read in time ([`give_up`]): an edit on a page not named can't follow it.
+    /// More pages were named than [`MAX_IDENTIFIED`] holds, or a page had no identity ([`give_up`]): an edit on a page not named can't follow it.
     over_cap: bool,
     /// The file's `/ID` pair, as read with the pages, if it has one.
-    document: Option<recto_core::page_id::DocumentIds>,
+    document: Option<DocumentIds>,
+    /// Pages read whose entries aren't in the sidecar yet, in the order read.
+    unwritten: Vec<u32>,
+    /// The `/ID` pair isn't in the sidecar yet.
+    document_unwritten: bool,
+    /// The sidecar is to be written whole: what it holds is of another version of the file, or another header.
+    whole: bool,
+    /// A page of this version had no identity: no more pages are named until the version changes, so a hostile file can't keep the reader busy.
+    closed: bool,
+    /// The list followed its file onto this version and the person hasn't been told yet (slice 2's; kept in the sidecar's header).
+    followed_untold: bool,
     /// The file was found to be another version, this one, and the edits may follow their pages into it ([`crate::version_change`]); `tried` once
     /// that's been tried and they were held, so it isn't tried again for this version. Not kept: a restart finds the version again when it reads it.
     follow: Option<Follow>,
@@ -81,6 +107,7 @@ impl std::fmt::Debug for Identities {
             .field("pages", &self.pages.len())
             .field("read", &self.pages.iter().filter(|(_, known)| known.is_some()).count())
             .field("over_cap", &self.over_cap)
+            .field("unwritten", &self.unwritten.len())
             .finish_non_exhaustive()
     }
 }
@@ -96,7 +123,7 @@ impl Identities {
         self.over_cap
     }
 
-    pub fn document(&self) -> Option<recto_core::page_id::DocumentIds> {
+    pub fn document(&self) -> Option<DocumentIds> {
         self.document
     }
 
@@ -110,8 +137,11 @@ impl Identities {
         self.pages.binary_search_by_key(&page, |(at, _)| *at).ok().and_then(|at| self.pages[at].1)
     }
 
-    /// Adds pages, ascending and without repeats, as named and not read, up to the cap.
+    /// Adds pages, ascending and without repeats, as named and not read, up to the cap; none once a page of this version had no identity.
     fn name(&mut self, mut pages: Vec<u32>) {
+        if self.closed {
+            return;
+        }
         pages.sort_unstable();
         pages.dedup();
         let mut merged = Vec::with_capacity(self.pages.len() + pages.len());
@@ -230,40 +260,36 @@ pub fn identities(edits: &PageEdits) -> Option<&Identities> {
     edits.identities.as_deref()
 }
 
-/// **What was read of the named pages,** taken in and noted for the journal. A page not named (a read of an older wanting) is left out, and one read
+/// **What was read of the named pages,** taken in and noted for the sidecar. A page not named (a read of an older wanting) is left out, and one read
 /// before stays as it was. Says whether anything was taken in.
-pub fn found(edits: &mut PageEdits, pages: &[(u32, Known)], document: Option<recto_core::page_id::DocumentIds>) -> bool {
+pub fn found(edits: &mut PageEdits, pages: &[(u32, Known)], document: Option<DocumentIds>) -> bool {
     let Some(ids) = edits.identities.as_deref_mut() else { return false };
-    let mut taken = Vec::new();
+    let mut taken = false;
     for (page, known) in pages {
         if let Ok(at) = ids.pages.binary_search_by_key(page, |(at, _)| *at)
             && ids.pages[at].1.is_none()
         {
             ids.pages[at].1 = Some(*known);
-            taken.push((*page, *known));
+            ids.unwritten.push(*page);
+            taken = true;
         }
     }
-    let new_document = document.is_some() && ids.document != document;
-    if new_document {
+    if document.is_some() && ids.document != document {
         ids.document = document;
+        ids.document_unwritten = true;
+        taken = true;
     }
-    if taken.is_empty() && !new_document {
-        return false;
-    }
-    let record = IdentifiedRecord {
-        pages: taken.iter().map(|(page, known)| PageIdRecord::of(*page, known)).collect(),
-        document: ids.document.map(DocumentRecord::of),
-    };
-    edits.note(|| JournalOp::Identified(record));
-    true
+    taken
 }
 
-/// **Reading this file's pages took too long:** the pages named and not read are named no more, and the list says some of its pages couldn't be
-/// identified, so nothing reads them again until an edit names them ([`crate::identify::MAX_JOB_TIME`]).
+/// **A page of this version of the file had no identity** (it reached a cap, `recto_core::page_id`): the pages named and not read are named no more,
+/// none is named again until the version changes (a save, or the file followed to a new one), and the list says some of its pages can't be followed.
+/// So a hostile file costs one capped page's read, and an agent's edits can't keep the reader busy on it.
 pub fn give_up(edits: &mut PageEdits) {
     if let Some(ids) = edits.identities.as_deref_mut() {
         ids.pages.retain(|(_, known)| known.is_some());
         ids.over_cap = true;
+        ids.closed = true;
     }
 }
 
@@ -295,258 +321,127 @@ pub(crate) fn follow_tried(edits: &mut PageEdits, to: Option<recto_platform::Fil
     }
 }
 
-/// **The list is on another version of the file now** ([`super::rebase`]): what's named is these pages of it, each with what it is there, and the
-/// pages beside them, to be read. What couldn't be named before still can't.
-pub(super) fn onto(edits: &mut PageEdits, pages: Vec<(u32, Known)>) {
-    let over_cap = edits.identities.as_deref().is_some_and(|ids| ids.over_cap);
+/// **The file was followed to a new version** (slice 2's rebase): `pages` (by their numbers in the new file) are what those pages are there, and the
+/// whole of what's known is of the new version, so the sidecar is written again whole, with the new version's stamp, at the next write; what it held of
+/// the old version is gone with it. A page past the new file's length or past the cap isn't kept. Pages stay as named only by these, read.
+pub fn followed(edits: &mut PageEdits, pages: &[(u32, Known)], document: Option<DocumentIds>) {
     let file_pages = edits.file_pages();
-    let mut ids = Identities {
+    let mut pages: Vec<(u32, Known)> = pages.iter().copied().filter(|(page, _)| *page < file_pages).collect();
+    pages.sort_unstable_by_key(|(page, _)| *page);
+    pages.dedup_by_key(|(page, _)| *page);
+    let over_cap = pages.len() > MAX_IDENTIFIED;
+    pages.truncate(MAX_IDENTIFIED);
+    let ids = Identities {
+        unwritten: pages.iter().map(|(page, _)| *page).collect(),
+        pages: pages.into_iter().map(|(page, known)| (page, Some(known))).collect(),
         over_cap,
-        ..Identities::default()
+        document,
+        document_unwritten: document.is_some(),
+        whole: true,
+        closed: false,
+        followed_untold: false,
+        follow: None,
     };
-    ids.name(
-        pages
-            .iter()
-            .flat_map(|(page, _)| [page.checked_sub(1), Some(*page), page.checked_add(1)])
-            .flatten()
-            .filter(|page| *page < file_pages)
-            .collect(),
-    );
+    edits.identities = Some(Box::new(ids));
+}
+
+/// **After [`followed`]:** each known page's neighbours in the new version are named too, to be read there, so the next change of the file can tell
+/// copies apart again (slice 2). Nothing is read here.
+pub(super) fn name_neighbours(edits: &mut PageEdits) {
+    let pages: Vec<u32> = edits
+        .identities
+        .as_deref()
+        .map(|ids| ids.pages.iter().map(|(page, _)| *page).collect())
+        .unwrap_or_default();
+    name_with_neighbours(edits, pages);
+}
+
+/// Whether the list followed its file onto this version and the person hasn't been told yet: what its sidecar's header says (slice 2 sets and clears it).
+pub fn followed_untold(edits: &PageEdits) -> bool {
+    edits.identities.as_deref().is_some_and(|ids| ids.followed_untold)
+}
+
+/// Says the list followed its file onto this version and the person hasn't been told (`true`), or has been (`false`). A change goes in the sidecar's
+/// header, which is written whole at the next write for it.
+pub fn set_followed_untold(edits: &mut PageEdits, untold: bool) {
+    let ids = edits.identities.get_or_insert_with(Box::default);
+    if ids.followed_untold != untold {
+        ids.followed_untold = untold;
+        ids.whole = true;
+    }
+}
+
+/// **What a journal's sidecar held, taken in for a list restored from it** (by the record store, after the journal's replay, and only for a sidecar
+/// whose header is this journal's and this version's): each page is named, if the cap has room, and known, unless it was read already. Nothing is to be
+/// written of them again. What a hostile sidecar can do is bounded here too: a page past the file's length is left out.
+pub fn restored(edits: &mut PageEdits, pages: &[(u32, Known)], document: Option<DocumentIds>, followed_untold: bool) {
+    let file_pages = edits.file_pages();
+    let valid: Vec<u32> = pages.iter().map(|(page, _)| *page).filter(|page| *page < file_pages).collect();
+    if valid.is_empty() && document.is_none() && !followed_untold {
+        return;
+    }
+    let ids = edits.identities.get_or_insert_with(Box::default);
+    ids.name(valid);
     for (page, known) in pages {
-        if let Ok(at) = ids.pages.binary_search_by_key(&page, |(at, _)| *at) {
-            ids.pages[at].1 = Some(known);
-        }
-    }
-    edits.identities = (!ids.pages.is_empty() || ids.over_cap).then(|| Box::new(ids));
-}
-
-/// A journal's line of what was read, replayed: what isn't named, or doesn't read as an identity, is left out, so a hostile journal can do no more than
-/// leave pages unread.
-pub(super) fn replayed(edits: &mut PageEdits, record: &IdentifiedRecord) {
-    let Some(ids) = edits.identities.as_deref_mut() else { return };
-    for page in &record.pages {
-        if let Some(known) = page.known()
-            && let Ok(at) = ids.pages.binary_search_by_key(&page.0, |(at, _)| *at)
+        if let Ok(at) = ids.pages.binary_search_by_key(page, |(at, _)| *at)
+            && ids.pages[at].1.is_none()
         {
-            ids.pages[at].1 = Some(known);
+            ids.pages[at].1 = Some(*known);
         }
     }
-    if let Some(document) = record.document.as_ref().and_then(DocumentRecord::ids) {
-        ids.document = Some(document);
+    if document.is_some() {
+        ids.document = document;
     }
+    ids.followed_untold = followed_untold;
 }
 
-/// Whether operations about to be appended to a journal include what was read of pages, which an app from before can't read
-/// ([`crate::record::JOURNAL_VERSION`]).
-pub fn ops_have_identities(ops: &[JournalOp]) -> bool {
-    ops.iter().any(|op| matches!(op, JournalOp::Identified(_)))
-}
-
-/// The list's identities as a record, for its journal's base.
-pub(super) fn to_record(edits: &PageEdits) -> Option<IdentitiesRecord> {
+/// **What's waiting to go in the sidecar:** the entries of the pages read since the last write (or all known, when it's to be written whole), encoded.
+pub fn sidecar_waiting(edits: &PageEdits) -> Option<sidecar::Waiting> {
     let ids = edits.identities.as_deref()?;
-    Some(IdentitiesRecord {
-        pages: ids
-            .pages
-            .iter()
-            .map(|(page, known)| match known {
-                Some(known) => PageIdRecord::of(*page, known),
-                None => PageIdRecord(*page, None),
-            })
-            .collect(),
-        over_cap: ids.over_cap,
-        document: ids.document.map(DocumentRecord::of),
+    if !ids.whole && ids.unwritten.is_empty() && !ids.document_unwritten {
+        return None;
+    }
+    let entries: Vec<(u32, Known)> = if ids.whole {
+        ids.pages.iter().filter_map(|(page, known)| Some((*page, (*known)?))).collect()
+    } else {
+        ids.unwritten.iter().filter_map(|page| Some((*page, ids.known(*page)?))).collect()
+    };
+    let document = (ids.whole || ids.document_unwritten).then_some(ids.document).flatten();
+    if entries.is_empty() && document.is_none() && !ids.whole {
+        return None;
+    }
+    Some(sidecar::Waiting {
+        whole: ids.whole,
+        bytes: sidecar::entries(&entries, document),
+        unwritten: ids.unwritten.len(),
+        document: ids.document_unwritten,
     })
 }
 
-/// A base's identities, brought back: pages past the file's length, out of order or repeated, or more than the cap, and the whole record goes, as
-/// none of it can be trusted to be the list's. Nothing else of the list depends on them.
-pub(super) fn from_record(record: Option<&IdentitiesRecord>, file_pages: u32) -> Option<Box<Identities>> {
-    let record = record?;
-    let ordered = record.pages.windows(2).all(|pair| pair[0].0 < pair[1].0);
-    if !ordered || record.pages.len() > MAX_IDENTIFIED || record.pages.iter().any(|page| page.0 >= file_pages) {
-        return None;
-    }
-    Some(Box::new(Identities {
-        pages: record.pages.iter().map(|page| (page.0, page.known())).collect(),
-        over_cap: record.over_cap,
-        document: record.document.as_ref().and_then(DocumentRecord::ids),
-        follow: None,
-    }))
-}
-
-/// A list's named pages as its journal's base keeps them. Its `Debug` says how many, never a digest: a digest is of a document's content, and what's
-/// printed of a record can reach a log.
-#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IdentitiesRecord {
-    #[serde(deserialize_with = "crate::record::capped::<_, _, MAX_IDENTIFIED>")]
-    pub pages: Vec<PageIdRecord>,
-    #[serde(default)]
-    pub over_cap: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub document: Option<DocumentRecord>,
-}
-
-/// A journal's line of what was read of named pages. Its `Debug`, like [`IdentitiesRecord`]'s, says how many.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IdentifiedRecord {
-    #[serde(deserialize_with = "crate::record::capped::<_, _, MAX_IDENTIFIED>")]
-    pub pages: Vec<PageIdRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub document: Option<DocumentRecord>,
-}
-
-impl std::fmt::Debug for IdentitiesRecord {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("IdentitiesRecord")
-            .field("pages", &self.pages.len())
-            .field("read", &self.pages.iter().filter(|page| page.1.is_some()).count())
-            .field("over_cap", &self.over_cap)
-            .finish_non_exhaustive()
-    }
-}
-
-impl std::fmt::Debug for IdentifiedRecord {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("IdentifiedRecord")
-            .field("pages", &self.pages.len())
-            .finish_non_exhaustive()
-    }
-}
-
-/// One named page: its number in the file (`12`), and, once read, what it is, as one string (`[12,"…"]`): the 16 bytes of its digest, its object
-/// number (4 bytes) and generation (2) and its frame tag (4), little-endian, in base64url with no padding, 35 characters. Compact because a journal
-/// gets it for every page an edit names (the SSD-wear budget, `recto-cli`'s `it_writes_only_what_happened`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "PageIdWire", into = "PageIdWire")]
-pub struct PageIdRecord(pub u32, pub Option<String>);
-
-/// [`PageIdRecord`] as it's written: the page alone, or the page and what it is.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-enum PageIdWire {
-    Named(u32),
-    Read(u32, String),
-}
-
-impl From<PageIdWire> for PageIdRecord {
-    fn from(wire: PageIdWire) -> Self {
-        match wire {
-            PageIdWire::Named(page) => Self(page, None),
-            PageIdWire::Read(page, packed) => Self(page, Some(packed)),
+/// **What came of a sidecar write:** what `waiting` held is there (the first `waiting.unwritten` entries of those then waiting, and the `/ID` pair if
+/// it was waiting), or the sidecar is to be written whole next time, as what's on disk isn't this list's.
+pub fn sidecar_written(edits: &mut PageEdits, waiting: &sidecar::Waiting, done: sidecar::Done) {
+    let Some(ids) = edits.identities.as_deref_mut() else { return };
+    match done {
+        sidecar::Done::Written => {
+            ids.unwritten.drain(..waiting.unwritten.min(ids.unwritten.len()));
+            if waiting.document {
+                ids.document_unwritten = false;
+            }
+            if waiting.whole {
+                ids.whole = false;
+            }
         }
+        sidecar::Done::WantsWhole => ids.whole = true,
     }
 }
 
-impl From<PageIdRecord> for PageIdWire {
-    fn from(record: PageIdRecord) -> Self {
-        match record.1 {
-            None => Self::Named(record.0),
-            Some(packed) => Self::Read(record.0, packed),
-        }
-    }
-}
-
-/// Bytes in a page's packed identity.
-const PACKED: usize = 26;
-
-impl PageIdRecord {
-    fn of(page: u32, known: &Known) -> Self {
-        let mut packed = [0u8; PACKED];
-        packed[..16].copy_from_slice(&known.digest);
-        packed[16..20].copy_from_slice(&known.object.0.to_le_bytes());
-        packed[20..22].copy_from_slice(&known.object.1.to_le_bytes());
-        packed[22..].copy_from_slice(&known.frame.to_le_bytes());
-        Self(page, Some(base64url(&packed)))
-    }
-
-    /// What's known of the page, if it's been read and its string is a packed identity.
-    fn known(&self) -> Option<Known> {
-        let packed = unbase64url::<PACKED>(self.1.as_deref()?)?;
-        let at = |range: std::ops::Range<usize>| packed.get(range);
-        Some(Known {
-            digest: at(0..16)?.try_into().ok()?,
-            object: (
-                u32::from_le_bytes(at(16..20)?.try_into().ok()?),
-                u16::from_le_bytes(at(20..22)?.try_into().ok()?),
-            ),
-            frame: u32::from_le_bytes(at(22..26)?.try_into().ok()?),
-        })
-    }
-}
-
-const BASE64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-
-fn base64url(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let n = chunk.iter().enumerate().fold(0u32, |n, (at, byte)| n | (u32::from(*byte) << (16 - 8 * at)));
-        for at in 0..=chunk.len() {
-            out.push(char::from(BASE64URL[((n >> (18 - 6 * at)) & 63) as usize]));
-        }
-    }
-    out
-}
-
-/// Exactly `N` bytes from base64url with no padding, or nothing: any other length or character isn't one.
-fn unbase64url<const N: usize>(text: &str) -> Option<[u8; N]> {
-    if text.len() != N.div_ceil(3) * 4 - (3 - N % 3) % 3 {
-        return None;
-    }
-    let value = |c: u8| BASE64URL.iter().position(|b| *b == c).map(|at| at as u32);
-    let mut out = [0u8; N];
-    let mut written = 0;
-    for chunk in text.as_bytes().chunks(4) {
-        let mut n = 0u32;
-        for (at, c) in chunk.iter().enumerate() {
-            n |= value(*c)? << (18 - 6 * at);
-        }
-        for at in 0..chunk.len() - 1 {
-            *out.get_mut(written)? = (n >> (16 - 8 * at)) as u8;
-            written += 1;
-        }
-    }
-    (written == N).then_some(out)
-}
-
-/// A document's `/ID` pair, as two tags of 32 hex digits.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DocumentRecord(pub String, pub String);
-
-impl DocumentRecord {
-    fn of(ids: recto_core::page_id::DocumentIds) -> Self {
-        Self(hex(&ids.first), hex(&ids.second))
-    }
-
-    fn ids(&self) -> Option<recto_core::page_id::DocumentIds> {
-        Some(recto_core::page_id::DocumentIds {
-            first: unhex(&self.0)?,
-            second: unhex(&self.1)?,
-        })
-    }
-}
-
-fn hex(bytes: &[u8; 16]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn unhex(text: &str) -> Option<[u8; 16]> {
-    let bytes = text.as_bytes();
-    if bytes.len() != 32 {
-        return None;
-    }
-    let digit = |byte: u8| match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        _ => None,
-    };
-    let mut out = [0u8; 16];
-    for (at, pair) in bytes.chunks(2).enumerate() {
-        out[at] = (digit(pair[0])? << 4) | digit(pair[1])?;
-    }
-    Some(out)
+/// Whether anything waits for the sidecar, which a list going to disk mustn't leave behind.
+pub fn sidecar_caught_up(edits: &PageEdits) -> bool {
+    edits
+        .identities
+        .as_deref()
+        .is_none_or(|ids| !ids.whole && ids.unwritten.is_empty() && !ids.document_unwritten)
 }
 
 #[cfg(test)]

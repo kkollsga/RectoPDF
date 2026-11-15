@@ -170,6 +170,7 @@ fn scripted_run() -> String {
     s.journal_desk().outcome(JournalOutcome {
         written: Vec::new(),
         not_retired: refused.retired.clone(),
+        ..JournalOutcome::default()
     });
     s.edit_pages(b, |e| e.rotate(1, 1, 1)).unwrap();
     write(&mut s, &mut disk);
@@ -321,6 +322,7 @@ fn a_lists_operations_reach_its_journal_once_and_in_order_and_a_retired_journal_
                 s.journal_desk().outcome(JournalOutcome {
                     written: Vec::new(),
                     not_retired: work.retired.clone(),
+                    ..JournalOutcome::default()
                 });
                 let again = s.journal_desk().work();
                 let mut retired = again.retired.clone();
@@ -338,6 +340,7 @@ fn a_lists_operations_reach_its_journal_once_and_in_order_and_a_retired_journal_
                 let mut outcome = disk.write(&JournalWork {
                     retired: work.retired.clone(),
                     appends: work.appends.iter().take(1).cloned().collect(),
+                    pages: Vec::new(),
                 });
                 outcome.not_retired.clear();
                 s.journal_desk().outcome(outcome);

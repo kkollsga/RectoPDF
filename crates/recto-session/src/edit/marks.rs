@@ -652,16 +652,16 @@ pub fn ops_have_marks(ops: &[crate::record::JournalOp]) -> bool {
     ops.iter().any(|op| matches!(op, crate::record::JournalOp::Mark(_)))
 }
 
-/// **A journal's bytes with its header saying a newer `version`,** for one an app from before highlights (or before identities: `version` is then
-/// [`crate::record::JOURNAL_VERSION`]) could read until now that is about to get an operation it can't: its first line written again, the rest as it
-/// is. `None` if it says that version already, or its header doesn't read (which isn't this call's to judge: the append goes on as it would have).
-pub fn journal_marked(bytes: &[u8], version: u32) -> Option<Vec<u8>> {
+/// **A journal's bytes with its header saying the newer version,** for one an app from before highlights could read until now that is about to get
+/// a highlight's operation: its first line written again, the rest as it is. `None` if it says that version already, or its header doesn't read
+/// (which isn't this call's to judge: the append goes on as it would have).
+pub fn journal_marked(bytes: &[u8]) -> Option<Vec<u8>> {
     let (json, used) = crate::record::read_line(bytes)?;
     let mut header: crate::record::JournalHeader = serde_json::from_slice(json).ok()?;
-    if header.version >= version {
+    if header.version >= crate::record::MARKED_JOURNAL_VERSION {
         return None;
     }
-    header.version = version;
+    header.version = crate::record::MARKED_JOURNAL_VERSION;
     let mut out = crate::record::journal_line(&serde_json::to_vec(&header).ok()?);
     out.extend_from_slice(&bytes[used..]);
     Some(out)
@@ -724,9 +724,6 @@ impl std::fmt::Debug for crate::record::EditsRecord {
         }
         if !self.hidden.is_empty() {
             out.field("hidden", &self.hidden);
-        }
-        if let Some(identities) = &self.identities {
-            out.field("identities", identities);
         }
         out.finish()
     }
