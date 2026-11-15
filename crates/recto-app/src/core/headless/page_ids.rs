@@ -167,9 +167,11 @@ fn a_restored_lists_unread_pages_are_read_without_waiting_for_an_edit() {
     let stamp = recto_platform::file_stamp(&file).unwrap();
     let folder = disk.paths().root.join("session").join("journals");
     // Private to this user, as the state folder's own are, or the store won't write there.
-    std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
-        .create(&folder)
-        .unwrap();
+    #[cfg(unix)]
+    let made = std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700).create(&folder);
+    #[cfg(not(unix))]
+    let made = std::fs::create_dir_all(&folder);
+    made.unwrap();
     let header = recto_session::record::JournalHeader::new(1, &file, Some(stamp), 10, 0);
     let mut journal = recto_session::record::journal_start(&header, None);
     journal.extend_from_slice(&recto_session::record::journal_lines(&[recto_session::record::JournalOp::Rotate(
