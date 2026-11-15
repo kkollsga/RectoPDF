@@ -1,6 +1,8 @@
 //! **A corpus's pages, sealed** ([`crate::seal`]): where each page's chunk is, what's inside it before its text, and the small files sealed whole. Everything that comes from the document is in a chunk; the table says only where each chunk is and how long.
 
-use super::{CorpusKey, CorpusPaths, FindKey, MAX_BLOB_BYTES, MAX_PAGES, PageKind, clear_text};
+#[cfg(any(test, feature = "test-seams"))]
+use super::{CorpusKey, MAX_PAGES};
+use super::{CorpusPaths, FindKey, MAX_BLOB_BYTES, PageKind, clear_text};
 use crate::seal::{self, CorpusSeal, Purpose};
 use recto_platform::local;
 use serde_json::Value;

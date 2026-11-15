@@ -1,19 +1,25 @@
-//! The page-text corpus: a document's pages as text on disk, one folder per version of a file, built once in the background and read by `search` and later by the agent's own `Read` and `Grep`.
+//! The page-text corpus: a document's pages as text on disk, one folder per version of a file, built once in the background and read by `search`, Find and, when asked, an agent's own tools. **Sealed:** everything that came from the document is AES-256-GCM chunks under a key of the corpus's own ([`crate::seal`]), so another program running as this user reads none of it (owner, 2026-11-15: "Lets store it encrypted").
 //!
 //! ```text
-//! <root>/<key>/v3/
+//! <root>/<key>/v4/
 //!   app/                  What a search reads, and never an agent's
-//!     pages.bin           A fixed record per page, in order, each written after that page's text. Its length is the progress
-//!     text.pack           Each page's exact normalised text, and what it needs beside that
-//!     meta.json           The file's title and outline, cleaned and capped, for the manifest
-//!     ready.json          Written last. Without it the corpus isn't used
+//!     seal.bin            The corpus's seal: whether its key lasts, its salt, a check. Written before the first page
+//!     pages.bin           Where each page's chunk is in the pack and how long, in order, each written after its chunk. Its length is the progress
+//!     text.pack           Each page's chunk: its record (kind, flags, lengths), then its exact normalised text and what it needs beside that
+//!     meta.sealed         The file's title and outline, cleaned and capped, for the manifest, sealed
+//!     ready.sealed        The summary, sealed, written last. Without it the corpus isn't used
 //!     refused.json        Why this version of the file won't be indexed. It holds no text
 //!     build.lock          Held by whoever is building
 //!     used                Its modification time says when this was last used, for eviction
-//!   agent/                The only folder an agent will be pointed at (agent report, §6.1), made only when asked for
+//!   agent/                Plain Markdown for an agent's own tools, made only when asked for, and only for the session that asked
+//!     .session            Locked by that session for its life: `corpus::agent_life`
+//!     .page.tmp           A page's file while it's put together
 //!     manifest.json       Written last. Without it the folder isn't finished
 //!     pages/0001.md ...   One file per page, each a whole file or not there at all
+//!   agent.gone.*          A session's folder set aside at its end, for the next sweep
 //! <root>/by-file/<hash>   Which corpus a file last had: see below
+//! <root>/sealed           Plain formats before `v4` have been looked for and removed: `corpus::plain`
+//! <root>/agent-folders    An agent's folder may be there to sweep
 //! ```
 //!
 //! **The key is the file's identity:** a hash of its device, inode, size, modification time, change time and first and last 64 KiB. A replaced file has a new key, so its old text can't answer for it, even if its
@@ -24,17 +30,18 @@
 //!
 //! **The text is kept once.** A build writes `app/`. `agent/` holds every page again in another form, and nothing reads that until the agent sidebar, so it's made on demand by [`ensure_agent_folder`], from the pack alone, with no PDF involved.
 //!
-//! **Killed at any moment, this is still sound.** A page's text goes in first, then its record, and only a record counts. Starting again checks every record against what's there,
-//! cuts off anything past the last good one, and goes on from there. Only `ready.json` makes a corpus usable, and it's written once the pack and the table have been synced, which is what a search reads. Page files aren't synced, and asking for the folder checks each one's size against what it should be, which finds what a power cut lost.
+//! **Killed at any moment, this is still sound.** A page's chunk goes in first, then its entry, and only an entry counts. Starting again opens every chunk the table points at, cuts off anything past the last that opens as its page, and goes on from there with nonces of its own, so what it builds opens to what a build never stopped would have (the bytes differ, as every nonce is new). Only `ready.sealed` makes a corpus usable, and it's written once the pack and the table have been synced, which is what a search reads. Page files aren't synced, and asking for the folder checks each one's size against what it should be, which finds what a power cut lost.
 //!
-//! **Everything here came from a hostile file, or sits in a folder something may have changed.** Reading it back checks that the folders are private with no links on the way, that the files are plain files of bounded size, that lengths agree and text is UTF-8. The mark names its key, and each page's checksum has its number in it, so one file's or one page's text can't answer for another by a folder being copied or a record pointed elsewhere. A corpus that doesn't add up is thrown away, which only costs a rebuild.
-//!
-//! All that's against accident, and against what a hostile PDF could do, which is nothing here but supply text. Someone who can write to this folder is this same user, and could recompute a checksum. A forged corpus with its sums right is believed, as a forged PDF would be.
+//! **Everything here came from a hostile file, or sits in a folder something may have changed.** Reading it back checks that the folders are private with no links on the way, that the files are plain files of bounded size, that every chunk opens as what it says it is, that lengths agree and text is UTF-8. A corpus's key names its file's key, and each chunk's associated data its page, so one file's or one page's text can't answer for another by a folder being copied or an entry pointed elsewhere. A corpus that doesn't open is thrown away, which only costs a rebuild; one sealed by a lasting key this run hasn't got just now is left as it is ([`DiskState::SealedElsewhere`]). Someone who can write here but hasn't the key can't forge a corpus that's believed, only damage one.
 //!
 //! **How it's searched** is a pass over `text.pack`, with no index in front of it. See `docs/engineering/search-index.md` for the numbers that say that's enough.
 
 use crate::seal::{self, CorpusSeal, Purpose};
 mod agent_life;
+mod evict;
+pub(crate) use evict::key_folders;
+use evict::remove_unless_building;
+pub use evict::{Cleared, Evicted, clear, clear_all, evict, folder_bytes, make_room};
 mod plain;
 pub use agent_life::{
     AgentClaim, MAX_REMOVED_PER_SWEEP, agent_folders_may_be_there, claim_agent_folder, note_agent_folder, retire_agent_folder, sweep_agent_folders,
@@ -1554,152 +1561,6 @@ pub fn agent_folder_bytes(root: &Path, key: CorpusKey) -> Option<u64> {
 
 fn clean_short(text: &str) -> String {
     recto_core::clean_line(text).chars().take(MAX_UNTRUSTED_CHARS).collect()
-}
-
-// ---------------------------------------------------------------------------------------------------------------------
-// Eviction and clearing
-// ---------------------------------------------------------------------------------------------------------------------
-
-/// What eviction did.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Evicted {
-    pub corpora: u32,
-    pub bytes: u64,
-    pub kept_bytes: u64,
-}
-
-/// **The corpus folders under a root:** each folder named as a key, never a link, whatever it's called (a link is someone's trap), and nothing else. The one walk every sweep, eviction and clear goes by. An error is the root's: one that isn't there has none.
-pub(crate) fn key_folders(root: &Path) -> Vec<(CorpusKey, PathBuf)> {
-    try_key_folders(root).unwrap_or_default()
-}
-
-fn try_key_folders(root: &Path) -> io::Result<Vec<(CorpusKey, PathBuf)>> {
-    let mut found = Vec::new();
-    for entry in fs::read_dir(root)?.flatten() {
-        if let Some(key) = entry.file_name().to_str().and_then(CorpusKey::from_hex)
-            && entry.file_type().is_ok_and(|kind| kind.is_dir())
-        {
-            found.push((key, entry.path()));
-        }
-    }
-    Ok(found)
-}
-
-/// Removes corpora past their age, then the least recently used until all of them fit. Never `keep`, and never one being built. Only folders named as a key are looked at: anything else under the root isn't ours to touch.
-pub fn evict(root: &Path, limits: &BuildLimits, keep: Option<CorpusKey>) -> io::Result<Evicted> {
-    let mut found = Vec::new();
-    let now = SystemTime::now();
-    for (key, dir) in try_key_folders(root)? {
-        let used = fs::metadata(CorpusPaths::new(root, key).used)
-            .or_else(|_| fs::metadata(&dir))
-            .and_then(|meta| meta.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        found.push((used, folder_bytes(&dir), key));
-    }
-    found.sort_by_key(|entry| entry.0);
-    let mut total: u64 = found.iter().map(|entry| entry.1).sum();
-    let mut report = Evicted::default();
-    for (used, bytes, key) in found {
-        let too_old = now.duration_since(used).is_ok_and(|age| age > limits.max_age);
-        if (total <= limits.max_total_bytes && !too_old) || keep == Some(key) || remove_unless_building(root, key).is_err() {
-            continue;
-        }
-        total -= bytes;
-        report.corpora += 1;
-        report.bytes += bytes;
-    }
-    report.kept_bytes = total;
-    tidy_versions(root);
-    Ok(report)
-}
-
-/// The disk is full, so caps don't come into it: this takes the least recently used, past however much is there now, until there's a good deal more room, or nothing else left to take. A corpus can always be built again, and a user's disk filling up is worse.
-pub fn make_room(root: &Path, limits: &BuildLimits, keep: CorpusKey) -> io::Result<Evicted> {
-    let mut total = 0;
-    for (_, dir) in try_key_folders(root)? {
-        total += folder_bytes(&dir);
-    }
-    let tighter = BuildLimits {
-        max_total_bytes: total.saturating_sub(ROOM_ON_A_FULL_DISK.max(total / 4)),
-        ..*limits
-    };
-    evict(root, &tighter, Some(keep))
-}
-
-/// Throws away one version of a file's corpus. Refused while it's being built.
-pub fn clear(root: &Path, key: CorpusKey) -> io::Result<()> {
-    remove_unless_building(root, key)
-}
-
-/// What a clear did.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Cleared {
-    pub cleared: u32,
-    pub being_built: u32,
-    /// These couldn't be removed, so their text is still there.
-    pub failed: u32,
-}
-
-impl Cleared {
-    pub fn note(&mut self, result: io::Result<()>) {
-        match result {
-            Ok(()) => self.cleared += 1,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => self.being_built += 1,
-            Err(_) => self.failed += 1,
-        }
-    }
-}
-
-/// Throws away everything that's not being built, and says what went and what didn't.
-pub fn clear_all(root: &Path) -> io::Result<Cleared> {
-    let mut report = Cleared::default();
-    let folders = match try_key_folders(root) {
-        Ok(folders) => folders,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(report),
-        Err(error) => return Err(error),
-    };
-    for (key, _) in folders {
-        report.note(remove_unless_building(root, key));
-    }
-    let _ = fs::remove_dir_all(root.join(VERSIONS_FOLDER));
-    Ok(report)
-}
-
-fn remove_unless_building(root: &Path, key: CorpusKey) -> io::Result<()> {
-    let paths = CorpusPaths::new(root, key);
-    let lock = match OpenOptions::new().write(true).open(&paths.lock) {
-        Ok(lock) => Some(lock),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error),
-    };
-    if let Some(lock) = &lock
-        && lock.try_lock().is_err()
-    {
-        return Err(io::ErrorKind::WouldBlock.into());
-    }
-    // `remove_dir_all` doesn't follow links.
-    fs::remove_dir_all(root.join(key.hex()))
-}
-
-/// What a folder takes up, near enough. Doesn't follow links, and stops at a depth no corpus reaches.
-pub fn folder_bytes(dir: &Path) -> u64 {
-    let mut total = 0;
-    let mut stack = vec![(dir.to_path_buf(), 0u8)];
-    while let Some((folder, depth)) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&folder) else { continue };
-        for entry in entries.flatten() {
-            let Ok(kind) = entry.file_type() else { continue };
-            if kind.is_dir() && depth < 8 {
-                stack.push((entry.path(), depth + 1));
-            } else if kind.is_file()
-                && let Ok(meta) = entry.metadata()
-            {
-                total += disk_size(meta.len());
-            }
-        }
-    }
-    total
 }
 
 #[cfg(test)]

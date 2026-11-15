@@ -76,7 +76,7 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
     ),
     (
         "recto-index/src/corpus.rs",
-        7,
+        6,
         "the index's own files under the app's index folder: its table and pack written and read, and its lock; the pack read again to add up a \
          build's sealed records and to find the pages a retry reads",
     ),
@@ -84,6 +84,11 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "recto-index/src/corpus/agent_life.rs",
         1,
         "the index's own `.session` file in an agent's folder under the app's index folder, read to see whether a live session holds it",
+    ),
+    (
+        "recto-index/src/corpus/evict.rs",
+        1,
+        "the index's own lock under the app's index folder, opened to see whether a corpus is being built before it's removed",
     ),
     (
         "recto-index/src/corpus/sealed.rs",

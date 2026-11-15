@@ -8,6 +8,8 @@
 //!
 //! **What's overwritten, and what isn't:** a corpus key's AES schedule when its [`CorpusSeal`] goes (`aes-gcm`'s `zeroize`), and the 32 bytes HKDF writes it into, at once. Not: HKDF's own pseudorandom key and HMAC states, which `hkdf` holds in its own values and drops as they are, on `derive`'s stack; GHASH's key inside the cipher beyond what `aes-gcm`'s `zeroize` covers. Each is a derivative of the Find key, in this process's memory for a moment, and a process that can read this one's memory has the Find key anyway.
 //!
+//! **A known property, accepted** (the security review of slices 2 and 3, 2026-11-15): a page's chunk is bound to its corpus and its page, not to its place in time, so within one corpus an older chunk of the same page, one a retry has since replaced, still opens if someone who can write here puts it back where the table points. It's that page's own text from before, of that same version of the file; nothing of another page or another file can be made to stand for it.
+//!
 //! A chunk is `nonce (12) | ciphertext | tag (16)`. Its associated data says what it is: a page and its number, the summary, the title and outline, or the header's check.
 
 use crate::corpus::CorpusKey;
