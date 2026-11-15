@@ -37,7 +37,7 @@ Open items only, by where they are in this plan; features not yet built are coun
 **Phase R's close: done 2026-11-15.** The second independent read found the work sound to release from; its three findings are merged or settled (`build/close-fixes`; the comparison walk's segment back with a longer wait and a truer record); the window's Save was found to run the person's `save` through the one door already, and the size guard's item was stale. The closing review is in `docs/PROCESS.md`.
 
 **Before 0.1.1**
-- Phase R, R4: the page matcher: unsaved edits stay on their own page when the file changes on disk, or are set aside and said, never put on another page (with what the changed-file work left for it).
+- (done 2026-11-15) The page matcher's first two slices are merged (`build/page-matcher` at 35b12826, `build/page-matcher-2` at 71c6865b; two independent review rounds each, the last fixes read by the coordinator): unsaved edits follow their pages when the file changes on disk if every page they use is found, or are all held as before. Slice 3 (single edits set aside, the undo history kept when nothing moved) is after the release.
 - Phase 7: a real signed update end to end, with everything compared before and after.
 - Phase 3 and R4, the on-screen pass in the real app with screenshots: reopening in the background after an update, installing with the screen locked, the quit prompt naming tabs, a password tab, a photographic scan, a file replaced by a shorter one, a tab's page drawn before it sleeps.
 - Phase R, where it stands (2026-11-14): the zoom level missing from some screenshots under load, not yet diagnosed.
