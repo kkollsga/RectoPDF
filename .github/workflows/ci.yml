@@ -31,6 +31,11 @@ on:
     branches: [main, 'build/**']
     paths-ignore: ['docs/**', '**.md']
   workflow_dispatch:
+    inputs:
+      lines:
+        description: "Build with line tables, so backtraces and samples name file and line (the check job's CARGO_PROFILE_DEV_DEBUG)"
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -53,6 +58,13 @@ jobs:
       # (it keys on the crate's own previous session in this folder, and it is written at every build and then saved and restored as bytes), so it
       # only costs compile time and cache size here. Dependencies are never incremental; only the workspace crates are.
       CARGO_INCREMENTAL: '0'
+      # No debug info in CI's dev and test builds (the coordinator's decision, 2026-11-15): no line tables to write and no `dsymutil` for each of the ~90 test
+      # binaries and the app's, an estimated 20 to 35 s of a run (8 s of a 33 to 38 s workspace test link on this project's Mac, the compile cached).
+      # A failure still says what it needs: a panic's message keeps its file and line, a backtrace and the evidence folder's `sample` keep every
+      # function's name (Rust's and Swift's; Swift isn't affected), and `hangs.worst` is unchanged; only the file and line beside a Rust frame go (seen on a
+      # made failure, an app test failing during a 10 s UI stall). Local builds keep the profile's line tables. For a run that needs lines: Actions,
+      # CI, "Run workflow" on the branch with "lines" ticked; or, in a commit of the branch only, this line set to 'line-tables-only'.
+      CARGO_PROFILE_DEV_DEBUG: ${{ inputs.lines && 'line-tables-only' || '0' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
