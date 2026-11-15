@@ -231,7 +231,7 @@ impl<L: DocLoader> Session<L> {
 }
 
 /// **The tab showing is left for `id`:** what it said on the way past has been said, and goes (a moved or changed file with nothing riding on it, a
-/// history that rolled off, edits that followed their file, which are then told). The one statement of leaving a tab: going to another
+/// changed file whose tab's edits fit the version it shows, a history that rolled off, edits that followed their file, which are then told). The one statement of leaving a tab: going to another
 /// ([`Session::activate`], by a tap, an agent's `goto` or `tap`, a file open already, the next tab or pane after a close) and opening another file
 /// ([`Session::open_with_facts`]). Not a leaving: closing the tab showing (it's gone, and its news with it), and a restore (a session replaced, with
 /// nothing in it shown yet). A function of the session's, not a method: `Session` is held to its method count.
@@ -240,9 +240,20 @@ pub(crate) fn leave_for<L: DocLoader>(session: &mut Session<L>, id: TabId) {
         return;
     };
     let clean = !session.lists.has_list(left);
+    // A change of the file is news like a clean tab's when what the tab has fits the version it shows (review S1): it goes on the way past. Only once
+    // that version has been read in (the tab is warm): heard and not read yet, "changed" is what the read goes by to know edits made meanwhile were made
+    // on the version before (`compare_read_with_edits`).
+    // Asked only of a tab with a list, which is the rare one: a tap at a thousand tabs searches them no more than it did (`per_tab_work`).
+    let fits = !clean
+        && session.warm.contains(left)
+        && session
+            .tabs
+            .tab(left)
+            .is_some_and(|tab| matches!(tab.file.notice(), Some(FileNotice::Changed)) && session.notices().fit_of(tab).fits());
     session.sleeper().touch(left);
     if let Some(tab) = session.tabs.tab_mut(left)
         && ((clean && matches!(tab.file.notice(), Some(FileNotice::Moved { .. } | FileNotice::Changed)))
+            || (fits && matches!(tab.file.notice(), Some(FileNotice::Changed)))
             || matches!(tab.file.notice(), Some(FileNotice::HistoryRolledOff | FileNotice::EditsFollowed { .. })))
     {
         let followed = matches!(tab.file.notice(), Some(FileNotice::EditsFollowed { .. }));

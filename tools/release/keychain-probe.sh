@@ -19,10 +19,23 @@
 #     SecItemAdd with an open access list, in the keychain the app reads; in a keychain of the planter's own, ahead in the search list,
 #     with and without its partition list set for the team, and as the default keychain. Each read by A and B with the app's guard,
 #     by the default search list and by the app's own lookup of one named keychain. Reported, for the release's claim.
-#   - What an item's access holds, for the check that an item is the app's own (Task A2): the app's own item (made by A, inspected by A
-#     and by B, which must accept it), and items planted by C and by D trusting A alone, trusting A and the planter, open to any
-#     application, and with a partition entry forged at the add or set after it. Each in a fresh keychain, read by the app's lookup of
-#     that keychain alone; each line says what the access lists and the partition list hold (names and counts) and what the rule says.
+#   - What an item's access holds (Task A2), reported: the app's own item, made by A and inspected by A and B, and items planted by C
+#     and by D trusting A alone, trusting A and the planter, open to any application, and with a partition entry forged at the add or
+#     set after it. Each in a fresh keychain, read by the app's lookup of that keychain alone; each line says what the access lists and
+#     the partition list hold (names and counts). Measured on the team's signature (run 43706807396): an item a planter makes trusting
+#     A alone opens with no prompt for A and B and reads, through public API, exactly as the app's own does (three entries, Decrypt
+#     naming A, no partition entry visible); a partition entry for the team forged at the add is taken and shows; set after the add,
+#     it's refused. So no check of an item's access can tell the app's own from a planted one, and the app makes none.
+#   - Last, after everything that must hold, in a fresh keychain: once A's item is there, what another signature can do to it. C and
+#     D add an item of the same service and account, replace its data (SecItemUpdate) and set its access (SecKeychainItemSetAccess);
+#     what B then reads is reported. Measured on the team's signature (run 43708234469): C, ad hoc, is refused a second item (-25299)
+#     but replaces the app's item's data (0, in 8 ms: its access lets any application encrypt), and its change of access waited; D,
+#     the team's with another identifier, is refused all three (-25293); and after C's update B can't read the item (-25293). So a
+#     program of this user's can overwrite the app's item at any time, before or after the app makes its key: this keychain can't
+#     hold the claim against a program that sets out to.
+# What must hold, and fails the run: B, a later build, reads A's item with no prompt; C's and D's reads of it, a locked keychain, and
+# C's delete are refused without waiting; and an item in a keychain of a planter's own, ahead in the search list or the default, is
+# never found by the app's lookup of the one keychain. Everything else is reported.
 # Each probe has a limit, by perl's alarm; one that doesn't answer in it waited, as on a prompt. Prints status codes and times, never
 # the item. Uploads nothing. The keychain, the probes and the search list are put back on any exit.
 set -euo pipefail
@@ -83,10 +96,8 @@ step() {
     status="$(printf '%s' "$out" | sed -n 's/^status=\(-*[0-9]*\) .*/\1/p')"
   fi
   local line="$build $mode ($interaction${named:+, $(basename "$named") alone}): ${status:-no answer} ${out#status=* }"
-  # `accept`: read, and the item-is-ours rule accepts it.
-  [ "$want:$status" != accept:0 ] || [[ "$out" == *rule=accept* ]] || status="0, refused by the rule"
   case "$want:$status" in
-    accept:0 | ok:0 | refused:-25293 | refused:-25308 | refused:-25244 | gone:-25300 | report:*) echo "  $want  $line" ;;
+    ok:0 | refused:-25293 | refused:-25308 | refused:-25244 | gone:-25300 | report:*) echo "  $want  $line" ;;
     *) echo "::error::wanted $want: $line (exit $code)"; failed=1 ;;
   esac
 }
@@ -129,6 +140,13 @@ reads() {
     step report "$reader" read global "$pk"
   done
 }
+# For an item in a keychain of the planter's own: never found by the app's lookup of the one keychain.
+reads_elsewhere() {
+  for reader in a b; do
+    step report "$reader" read global
+    step gone "$reader" read global "$pk"
+  done
+}
 echo "Planted for any application, in the keychain the app reads: by security -A"
 security add-generic-password -A -s "$svc" -a probe -w "$(openssl rand -hex 16)" "$pk"
 reads
@@ -144,19 +162,19 @@ security set-keychain-settings "$pk2"
 security unlock-keychain -p "$pk2_pass" "$pk2"
 security add-generic-password -A -s "$svc" -a probe -w "$(openssl rand -hex 16)" "$pk2"
 security list-keychains -d user -s "$pk2" "$pk"
-reads
+reads_elsewhere
 echo "The same, with its partition list set for the team"
 security set-generic-password-partition-list -S "teamid:$team,apple-tool:,apple:" -s "$svc" -k "$pk2_pass" "$pk2" >/dev/null
-reads
+reads_elsewhere
 echo "The planter's keychain as the default"
 security list-keychains -d user -s "$pk" "$pk2"
 security default-keychain -d user -s "$pk2"
-reads
+reads_elsewhere
 security default-keychain -d user -s "$pk"
 security list-keychains -d user -s "$pk"
 security delete-keychain "$pk2"
 
-# What an item's access holds, and what the item-is-ours rule says of it. Each case in a fresh keychain, so nothing of one is left for
+# What an item's access holds, and what a rule over it would say (reported: see the header). Each case in a fresh keychain, so nothing of one is left for
 # the next, read by the app's lookup of that keychain alone.
 fresh() {
   security delete-keychain "$pk" >/dev/null 2>&1 || true
@@ -169,11 +187,11 @@ fresh() {
 inspects() {
   for reader in a b; do step report "$reader" inspect global "$pk" "$team"; done
 }
-echo "The app's own item, made by A: A and B must read it and the rule must accept it"
+echo "The app's own item, made by A, as A and B read its access"
 fresh
 step ok a add global "$pk"
-step accept a inspect global "$pk" "$team"
-step accept b inspect global "$pk" "$team"
+step report a inspect global "$pk" "$team"
+step report b inspect global "$pk" "$team"
 for planter in c d; do
   echo "Planted by $planter, trusting A alone"
   fresh
@@ -200,4 +218,13 @@ echo "Open to any application, by C's SecItemAdd with an open access list"
 fresh
 step ok c add-open global "$pk"
 inspects
+echo "Last: A's item is there; what C and D can do to it, and what B reads after (reported)"
+fresh
+step ok a add global "$pk"
+for other in c d; do
+  step report "$other" add global "$pk"
+  step report "$other" update global "$pk"
+  step report "$other" set-access global "$pk" "$team" self
+done
+step report b read global "$pk"
 exit "$failed"

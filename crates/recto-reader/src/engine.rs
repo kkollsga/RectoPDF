@@ -519,7 +519,7 @@ impl Engine {
         lock(&self.shared.reader).report()
     }
 
-    /// Blocks until everything visible is settled and the thread that draws has told what came of its last turn, or the time runs out. Never for the UI thread. Drawing for a tab off screen's place isn't waited for: it's nothing visible, and how long it takes is a file's to say. `qa state`'s `reader.sleep_draws.under_way` says whether it's going.
+    /// Blocks until everything visible is settled and the thread that draws has told what came of its last turn, or the time runs out. Never for the UI thread.
     pub fn wait_settled(&self, limit: Duration) -> bool {
         let deadline = Instant::now() + limit;
         let mut reader = lock(&self.shared.reader);

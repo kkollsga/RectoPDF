@@ -335,12 +335,12 @@ fn a_lower_resolution_page_is_still_asked_where_its_images_are() {
     let (mut low, _file) = doc("fits_low_res");
     done(low.render_tile(&request(0), &surface()));
     assert_eq!(low.page_draw_state(0), PageDrawState::LowResOnly);
-    assert_eq!(low.image_boxes(0, 1).unwrap(), Some(vec![[0, 0, 32_768, 32_768]]));
+    assert_eq!(low.image_boxes(0, 1), Some(vec![[0, 0, 32_768, 32_768]]));
     // One that failed at a high zoom even at its lower resolution, and draws at fit: the same.
     let (mut zoomed, _zoomed_file) = doc("heavy_below_3x");
     assert!(zoomed.render_tile(&TileRequest { scale: 16.0, ..request(0) }, &surface()).is_err());
     assert!(matches!(zoomed.page_draw_state(0), PageDrawState::Failed(_)), "{:?}", zoomed.page_draw_state(0));
-    assert_eq!(zoomed.image_boxes(0, 1).unwrap(), Some(vec![[0, 0, 32_768, 32_768]]));
+    assert_eq!(zoomed.image_boxes(0, 1), Some(vec![[0, 0, 32_768, 32_768]]));
     assert_eq!(
         done(zoomed.render_tile(&TileRequest { scale: 1.0, ..request(0) }, &surface())).low_res,
         None,
@@ -355,12 +355,12 @@ fn a_walk_for_images_that_overruns_is_stopped_once_and_the_page_still_draws() {
     done(doc.render_tile(&request(0), &surface()));
     assert_eq!(doc.page_draw_state(0), PageDrawState::LowResOnly);
     let kills = doc.stats().memory_kills;
-    assert_eq!(doc.image_boxes(0, 1), Ok(None), "killed at the limit, so not known");
+    assert_eq!(doc.image_boxes(0, 1), None, "killed at the limit, so not known");
     // A kill in a worker that had done other work is tried once more in a fresh one, as for any job: at most two.
     let after = doc.stats().memory_kills;
     assert!((kills + 1..=kills + 2).contains(&after), "{kills} kills before, {after} after");
     let spawns = doc.stats().spawns;
-    assert_eq!(doc.image_boxes(0, 2), Ok(None), "and not asked again");
+    assert_eq!(doc.image_boxes(0, 2), None, "and not asked again");
     assert_eq!((doc.stats().memory_kills, doc.stats().spawns), (after, spawns));
     assert!(
         done(doc.render_tile(&request(0), &surface())).low_res.is_some(),
@@ -377,7 +377,7 @@ fn walk_kills_never_stop_a_document_and_draw_kills_still_do() {
     };
     let (mut doc, _file) = doc_with("low_res_walk_overruns", policy, &HeavySlot::new());
     for page in 0..3 {
-        assert_eq!(doc.image_boxes(page, 1), Ok(None), "page {page}'s walk killed, so not known");
+        assert_eq!(doc.image_boxes(page, 1), None, "page {page}'s walk killed, so not known");
     }
     assert_eq!(doc.stats().memory_kills, 3, "one each, in a fresh worker");
     assert!(doc.render_tile(&request(1), &surface()).is_ok(), "drawing goes on after three walks killed");
@@ -393,7 +393,7 @@ fn walk_kills_never_stop_a_document_and_draw_kills_still_do() {
         let _ = doc.image_boxes(page, 1);
     }
     let (kills, spawns) = (doc.stats().memory_kills, doc.stats().spawns);
-    assert_eq!(doc.image_boxes(20, 1), Ok(None), "past the walk's cap");
+    assert_eq!(doc.image_boxes(20, 1), None, "past the walk's cap");
     assert_eq!((doc.stats().memory_kills, doc.stats().spawns), (kills, spawns), "unasked, at no cost");
 }
 

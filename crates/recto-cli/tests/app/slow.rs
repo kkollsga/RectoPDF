@@ -41,12 +41,12 @@ fn a_slow_run_waits_at_every_seam_it_passes() {
     run.ok(&["tap", &format!("#{left_tab}")]);
     run.settled();
     let report = run.report();
-    // Woken from its sleep file with the reading and the workers late, a picture is on every page before anything's drawn (decision 25): what
-    // `a_tab_left_alone_goes_dormant_and_wakes_from_its_file` held in the slow stage.
+    // Woken from its sleep file with the reading and the workers late, its pages are on their paper from its facts before anything's drawn (decision 25,
+    // owner 2026-11-15): what `a_tab_left_alone_goes_dormant_and_wakes_from_its_file` held in the slow stage.
     let wake = &report["reader"]["last_wake"];
     assert_eq!(
-        (&wake["from_sleep"], &wake["blank_frames"]),
-        (&serde_json::json!(true), &serde_json::json!(0)),
+        (&wake["from_sleep"], &wake["had"]),
+        (&serde_json::json!(true), &serde_json::json!("facts")),
         "{wake}"
     );
     let slow = &report["slow"];

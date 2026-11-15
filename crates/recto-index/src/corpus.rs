@@ -60,7 +60,7 @@ use sealed::{Entry, PageRecord, RECORD_LEN, open_page, read_seal, read_sealed_js
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -1212,11 +1212,11 @@ fn resume_point(paths: &CorpusPaths, seal: &CorpusSeal, pages: u32) -> io::Resul
         point.bytes += u64::from(entry.len) + RECORD_LEN as u64;
     }
     drop(pack);
-    if let Ok(file) = OpenOptions::new().write(true).open(&paths.table) {
-        file.set_len(u64::from(point.pages) * RECORD_LEN as u64)?;
-    }
-    if let Ok(file) = OpenOptions::new().write(true).open(&paths.pack) {
-        file.set_len(point.pack_end)?;
+    // Opened as a build opens them, so a link or a named pipe put in a file's place is never followed or waited on, and the build after this stops on it.
+    for (path, len) in [(&paths.table, u64::from(point.pages) * RECORD_LEN as u64), (&paths.pack, point.pack_end)] {
+        if let Ok(file) = local::append_private_file(path) {
+            file.set_len(len)?;
+        }
     }
     Ok(point)
 }

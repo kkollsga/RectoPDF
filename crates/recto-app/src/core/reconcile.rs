@@ -78,6 +78,8 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
     if holding {
         return None;
     }
+    // Before what's shown is taken up, so no tile of a tab whose pages are withheld goes on a page on the way; and again after, for a view made by it.
+    engine.points().withhold_own_pages(id.0, shown.withheld);
     if synced.tab != Some(id) || synced.pages != shown.pages || synced.map != shown.map {
         let back = inner.on_disk.sleeper().queue_those_leaving(
             &sleeper::OnHand::new(&inner.host.session, &inner.panes, &inner.engine),
@@ -105,6 +107,7 @@ pub fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, sho
                 .selection()
                 .restore((selection.from_page, selection.from_char), (selection.to_page, selection.to_char));
         }
+        engine.points().withhold_own_pages(id.0, shown.withheld);
         synced.marks.shown_anew();
         synced.tab = Some(id);
         synced.pages = shown.pages;

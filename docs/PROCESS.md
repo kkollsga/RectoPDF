@@ -322,3 +322,31 @@ From `89955067` (2026-11-14 16:28) to `6aab5734` (2026-11-15 01:52). Numbers fro
 
 **Check next time.** CI's check time now the day's tests are in (the median, and by stage if over 18 min); whether the comparison walk fails again and what its record says; a settle that runs out without naming the call (seen once); conflicts in `docs/PLAN.md` now it is a third shorter.
 
+
+## 2026-11-15, afternoon: after the day's merges for 0.1.1
+
+**Merged since the close of phase R** (each on its full check, `main` checked on the merged result, the fix diffs read): `build/on-screen-fixes` (one review round, 5 should-fix), `build/find-key` (a security review, 7), `build/ci-light-job`, `build/keychain-planted`, three probe-only merges, `build/no-page-pictures` (two rounds: 2 serious and 5, then 3), `build/index-faults`, `build/slow-open-starved`. Held: `build/find-text-encrypted` (two security rounds: 1 serious and 10, then 2 serious and 8), for the owner's choice of where the key lives. In review's second half: `build/shorter-file-pages` (2 serious, 4).
+
+**CI,** from `tools/push-main.sh`'s kept times: the check job 963, 1,378 and 1,269 s before the split into two jobs, then 875, 955, 1,169 and 916 s for the longest job; the median of the last five 15 min 55 s against 21. One red run: `opening_a_slow_hostile_file_never_holds_the_window`, 1 in 5 at load 33 on 3 cores, a test holding the runner's speed (fixed the same hour, with the hang watch made able to tell a wait from a starved thread).
+
+**What review and measurement found that reports had not.**
+- **The Keychain design failed on measurement, not on reading.** Four probe runs on the team's signature each overturned something a worker or the coordinator had read: the per-call flag does nothing for the login keychain; an item open to any application opens silently whatever its partition; an item planted trusting the app alone can't be told from the app's own, and a partition entry is taken when forged at the add; an ad hoc program can overwrite the app's item after it exists. Two of those the coordinator had told the owner the other way round, as a worker's reading, hours before.
+- **Removing a feature found faults the feature had covered:** a wake's record lost between its note and its showing, 0.1.0's pictures kept for a week in the copy an update makes, a contents list with no cap once pictures no longer bounded the file.
+- **Faults of 0.1.0 found on the way, each fixed with a test that failed first:** the one backup pruned by the original's date; a crash-left history closed and pruned in one launch; an agent's palette words in the activity log; the update's copy in Time Machine; direction-changing characters in Find's rows; a clear and a resumed index build that hang on a pipe or follow a link out of the corpus.
+
+**What went wrong.**
+1. **The coordinator guessed the cause of slow CI runs and said it to the owner** ("compiling, from changes low in the crate graph"); the logs said otherwise (a check added the same morning, the tools' tests, the runner). It was called a guess, and was still wrong; the worker's read of three logs took 8 minutes.
+2. **A worker's reading of the Keychain was relayed twice as the likely answer** before the probe that contradicted it had run. The probe existed for that question; the relay should have waited the 4 minutes.
+3. **Two workers touched the owner's login keychain:** one announced test item during the design, and one by accident (an add to a keychain path that doesn't exist falls through to the default keychain). Both removed; the probe now refuses a path that isn't a file.
+4. **A worker stopped a check with `pkill -f` on a name pattern.** Nothing else matched, by its account and the other worker's.
+5. **A test left a shared folder open** (`/tmp/recto-501` at 0775 under a long TMPDIR), failing two log tests at random on every branch until found.
+6. **The first privacy statement for the update was false for a week of everyone's use** until the second reviewer read 0.1.0's installer: the claim was checked against the new code only, not against what the old version leaves behind.
+
+**Changing.**
+- **A claim about the OS that a probe can settle is not told to the owner until the probe has run.** Until then it is "unmeasured", with no likely answer attached.
+- **A cause is not named to the owner from stage totals.** It is named from the log's own lines, or it is called unknown.
+- **A statement about what an update removes is checked against the released version's own code,** by tag, in the brief and in the review's brief.
+- **No worker creates, reads or deletes anything in the person's Keychain, for any reason;** a probe that needs a keychain makes its own and refuses any path that isn't a file it made. In every brief that touches it.
+- **Processes are stopped by pid.** In `worker-testing.md` next time it is edited.
+
+**Check next time.** The longest CI job over the next five runs against the estimate (950 to 1,250 s); whether the starved-thread failure recurs and what the new record says; the print-to-PDF test, which holds the same one-second bar the same way (`crates/recto-cli/tests/app.rs:3644`) and has not been rewritten.

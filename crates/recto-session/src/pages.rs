@@ -15,7 +15,7 @@ pub struct Pages<'a> {
 impl Pages<'_> {
     /// **What the file calls a page,** zero-based, counting unsaved edits: `iv` for a page of front matter. Nothing for a file without labels, a page added from another file, a tab whose file isn't read, or one whose list is asleep, which shows its number. A moved page keeps its own label, as its file names it.
     pub fn label(&self, id: TabId, position: u32) -> Option<String> {
-        let toc = self.warm.toc(id)?;
+        let toc = self.file_labels(id)?;
         if toc.labels.is_empty() {
             return None;
         }
@@ -51,7 +51,7 @@ impl Pages<'_> {
     pub fn for_typed(&self, id: TabId, typed: &str) -> Option<u32> {
         let typed = typed.trim();
         let pages = self.count(id);
-        if let Some(toc) = self.warm.toc(id)
+        if let Some(toc) = self.file_labels(id)
             && !toc.labels.is_empty()
         {
             let file_pages = self.tabs.tab(id).map_or(0, |tab| tab.page_count);
@@ -85,6 +85,16 @@ impl Pages<'_> {
                     .and_then(|at| u32::try_from(at).ok())
             }
         }
+    }
+
+    /// What was read of the tab's own file, for its labels: none while its pages are withheld (the file is known to be another than the edits are
+    /// about, so its labels aren't the list's pages': review S2), when a page shows its number and a typed label is taken as a number.
+    fn file_labels(&self, id: TabId) -> Option<&std::sync::Arc<recto_core::Toc>> {
+        let notices = crate::fit::Notices {
+            tabs: self.tabs,
+            lists: self.lists,
+        };
+        self.warm.toc(id).filter(|_| !notices.pages_withheld(id))
     }
 
     /// How many pages a tab has now, counting unsaved edits.

@@ -108,14 +108,19 @@ impl PageIds {
             *following = None;
         }
         if following.is_none() {
+            // A list given no job here (protected meanwhile, past its cap, another version since) never said it was being looked at
+            // (`version_change::under_way` leaves those out), so nothing the person reads changes, and nothing is made again.
             let Some(job) = host.session.with_session(|session| version_change::work(session).into_iter().next()) else {
                 return false;
             };
+            #[cfg(test)]
+            host.core.holds.at("follow_starting");
             // Off the lock: the open, and the descriptor's own check.
             match version_change::start(job.clone()) {
                 Some(follow) => *following = Some(follow),
                 None => {
                     host.session.with_session(|session| version_change::not_read(session, &job));
+                    looked_at(host);
                     return true;
                 }
             }
@@ -127,18 +132,27 @@ impl PageIds {
                 let job = follow.job().clone();
                 *following = None;
                 host.session.with_session(|session| version_change::not_read(session, &job));
+                looked_at(host);
             }
             Read::Matched(matched) => {
                 *following = None;
                 if let Some(followed) = host.session.with_session(|session| version_change::followed(session, &matched)) {
                     host.saver.edit_made();
-                    host.core.push(crate::queue::CoreCall::Reconcile);
                     host.tell(vec![recto_agent::event::edits_followed(&followed)]);
                 }
+                looked_at(host);
             }
         }
         true
     }
+}
+
+/// **A follow has ended, followed, held or not read** (the file not the version found when it was opened or read): the tab said it was being looked at
+/// (`version_change::under_way`), and now says what came of it, which nothing else the app does after a follow makes it say: the words are made
+/// again (`changed_under_edits.rs`: `edits_on_a_replaced_file_save_nowhere_say_so_and_fit_again_when_its_put_back` for held,
+/// `a_follow_whose_file_changed_again_says_the_held_words` for not read). Followed, it's news for the publish too.
+fn looked_at(host: &AppHost) {
+    host.core.push(crate::queue::CoreCall::Reconcile);
 }
 
 /// **A restore brought back lists naming pages not yet read** (a quit while they were being read): they're read now, while their files are, it's

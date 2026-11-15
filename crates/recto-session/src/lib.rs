@@ -516,8 +516,6 @@ pub struct SleepFacts {
     pub id: TabId,
     pub path: PathBuf,
     pub sleep: sleep::SleepFile,
-    /// No page of the document's from a protected file.
-    pub pictures_allowed: bool,
 }
 
 /// What's kept of a tab's edits while it's left alone, for a look without opening it.
@@ -642,6 +640,9 @@ pub enum SessionError {
     Saving,
     /// A quiet run's file outside its own folders: see [`confined`].
     OutsideQuietRun,
+    /// Its unsaved edits are about another version or length than its file on disk ([`EditsFit::file_known_other`]), so no more are laid on them, and
+    /// the tab's pages are withheld. Undo, redo and Discard aren't edits, and stay.
+    EditsDontFit(EditsFit),
 }
 
 impl SessionError {
@@ -656,6 +657,7 @@ impl SessionError {
             Self::EditsUnreadable => "edits_unreadable",
             Self::Saving => "saving",
             Self::OutsideQuietRun => "outside_quiet_run",
+            Self::EditsDontFit(fit) => fit.said().map_or("file_changed", |said| said.code),
         }
     }
 
@@ -672,6 +674,7 @@ impl SessionError {
             Self::RendererOnly => "RectoPDF can draw this file but can't read its structure, so its pages can't be changed.",
             Self::Saving => "This PDF is being saved. Nothing changes until that's done, which is a moment.",
             Self::OutsideQuietRun => confined::OUTSIDE_WORDS,
+            Self::EditsDontFit(fit) => fit.edit_refused_words().unwrap_or("No more edits can be made here."),
         }
     }
 }

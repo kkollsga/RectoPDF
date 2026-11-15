@@ -237,24 +237,29 @@ fn a_protected_tabs_edits_never_follow() {
     assert!(version_change::work(&mut bed.s).is_empty());
 }
 
-/// Failure caught: an edit made after the match was read and before it was taken in is lost or put on the wrong page, as the match was of the list
-/// before it. The match is dropped, and the next job, about the list as it is, follows.
+/// Failure caught: the list changed after the match was read and before it was taken in (an Undo: no new edit reaches a held list since 2026-11-15),
+/// and the match, of the list before it, was taken in all the same. The match is dropped, and the next job, about the list as it is, follows.
 #[test]
-fn an_edit_made_while_the_match_is_read_waits_for_the_next_one() {
+fn an_undo_made_while_the_match_is_read_waits_for_the_next_one() {
     let mut bed = Bed::turned_page_9();
+    bed.s.edit_pages(bed.a, |e| e.rotate(2, 1, 1)).unwrap();
+    bed.identify();
     bed.changed_and_read(&document("Mine", &(1..=10).collect::<Vec<_>>(), true));
     let jobs = version_change::work(&mut bed.s);
     let matched = version_change::read(&jobs[0]).unwrap();
-    bed.s.edit_pages(bed.a, |e| e.rotate(2, 1, 1)).unwrap();
-    assert_eq!(version_change::followed(&mut bed.s, &matched), None);
-    // The new edit's pages are read while the edits don't fit no more than slice 1 allows: they aren't, so the new turn's page can't follow.
-    assert!(version_change::wanted(&bed.s), "asked again");
+    assert!(bed.s.undo_edit(bed.a), "the turn of page 3 taken back while the match is read");
     assert_eq!(
-        bed.follow(),
-        vec![None],
-        "page 3 wasn't read while the file was the edits' version, so the list is held"
+        version_change::followed(&mut bed.s, &matched),
+        None,
+        "the match of the list before the Undo isn't taken in"
     );
-    assert_eq!(bed.turned(), vec![2, 8]);
+    assert!(version_change::wanted(&bed.s), "asked again");
+    assert_eq!(bed.follow().len(), 1);
+    assert_eq!(
+        bed.turned(),
+        vec![9],
+        "the next one follows the list as it is: the turn on \"Mine page 9\", page 10 now"
+    );
 }
 
 /// Failure caught (rule 6, review F2): a scan of a long new version not cut at the follow's one budget, or one cut short that takes a digest seen
@@ -452,16 +457,20 @@ fn a_follow_is_read_a_step_at_a_time_and_comes_to_the_same_match() {
     assert_eq!(matched, whole);
 }
 
-/// Failure caught: a follow being read across steps goes on after the person edits the list, or the file changes again, and its match of the list as it
-/// was is taken in. Between steps it's asked whether it's still wanted: after an edit it isn't, and the next job is about the list as it is.
+/// Failure caught: a follow being read across steps goes on after the person changes the list (an Undo: no new edit reaches a held list since
+/// 2026-11-15), or the file changes again, and its match of the list as it was is taken in. Between steps it's asked whether it's still wanted: after
+/// an Undo it isn't, and the next job is about the list as it is.
 #[test]
-fn a_follow_being_read_is_dropped_when_the_list_is_edited_between_its_steps() {
+fn a_follow_being_read_is_dropped_when_the_list_is_undone_between_its_steps() {
     let mut bed = Bed::turned_page_9();
+    bed.s.edit_pages(bed.a, |e| e.rotate(2, 1, 1)).unwrap();
+    bed.identify();
     bed.changed_and_read(&document("Mine", &(1..=10).collect::<Vec<_>>(), true));
     let job = version_change::work(&mut bed.s).remove(0);
     assert!(version_change::current(&bed.s, &job));
-    bed.s.edit_pages(bed.a, |e| e.rotate(2, 1, 1)).unwrap();
-    assert!(!version_change::current(&bed.s, &job), "an edit since: not this job's any more");
+    assert!(bed.s.undo_edit(bed.a), "the turn of page 3 taken back");
+    assert!(bed.s.lists().is_edited(bed.a), "the turn of page 9 is still unsaved");
+    assert!(!version_change::current(&bed.s, &job), "an Undo since: not this job's any more");
 }
 
 /// Failure caught (review: "with no unsaved edits behaviour is exactly `main`'s"): a tab with only history (its edit undone, nothing unsaved) and its
@@ -529,4 +538,90 @@ fn a_list_past_its_cap_of_named_pages_is_held() {
     assert!(jobs.is_empty(), "nothing read for it");
     assert_eq!(bed.notice(), Some("file_changed"));
     assert_eq!(bed.turned(), vec![2, 8], "held as it was");
+}
+
+/// Failure (review of `build/shorter-file-pages`, decided 2026-11-15): while the follow of a tab's edits into a new version was being read, the tab
+/// already said the held words and told the person to discard edits that might be about to follow. Meanwhile it says only what's true then (the file
+/// changed; whether the edits fit is being looked at), its pages withheld; then the followed words if they follow, the held words if they can't.
+#[test]
+fn while_a_follow_is_read_the_tab_says_its_being_looked_at_then_what_came_of_it() {
+    let looking = "This file changed on disk. Looking at whether your unsaved edits fit the new version.";
+    for (new_version, follows) in [
+        (document("Mine", &(1..=10).collect::<Vec<_>>(), true), true),
+        (document("Mine", &[1, 2, 3, 4, 5], false), false),
+    ] {
+        let mut bed = Bed::turned_page_9();
+        bed.changed_and_read(&new_version);
+        let said = bed.s.notices().said(bed.a).unwrap();
+        assert_eq!((said.code, said.message), ("file_changed", looking), "follows {follows}: being looked at");
+        assert!(bed.s.notices().pages_withheld(bed.a), "follows {follows}: withheld meanwhile");
+        assert_eq!(bed.follow()[0].is_some(), follows);
+        let said = bed.s.notices().said(bed.a).unwrap();
+        if follows {
+            assert_eq!(said.code, "edits_followed");
+        } else {
+            assert_eq!((said.code, said.message), ("file_changed", FileNotice::Changed.message(true)), "held");
+        }
+    }
+}
+
+/// Clear History stays allowed while a list is held (it isn't an edit: Discard is what brings the file), so it can land between a follow's steps:
+/// failure caught, the follow then lost the edits' pages, put a turn on another page, or followed a list whose history it had read as it was. The
+/// history goes, the unsaved turn stays, and the follow, dropped or not, ends with the turn on its own page in the new version.
+#[test]
+fn clearing_history_between_a_follows_steps_leaves_the_turn_on_its_page() {
+    let mut bed = Bed::turned_page_9();
+    bed.changed_and_read(&document("Mine", &(1..=10).collect::<Vec<_>>(), true));
+    let job = version_change::work(&mut bed.s).remove(0);
+    assert!(bed.s.clear_history(bed.a, ClearReason::UserAsked), "allowed while held");
+    assert!(bed.s.lists().is_edited(bed.a), "the unsaved turn stays");
+    assert!(!bed.s.lists().get(bed.a).unwrap().can_undo(), "the history's gone");
+    let current = version_change::current(&bed.s, &job);
+    let landed = if current {
+        version_change::read(&job).and_then(|matched| version_change::followed(&mut bed.s, &matched))
+    } else {
+        None
+    };
+    if landed.is_none() {
+        assert_eq!(bed.follow().len(), 1, "current {current}: the next job, about the list as it is");
+    }
+    assert_eq!(bed.turned(), vec![9], "current {current}: the turn on \"Mine page 9\", page 10 now");
+    assert_eq!(bed.notice(), Some("edits_followed"));
+}
+
+/// Failure (second review of `build/shorter-file-pages`): between a look hearing the file changed and the read of the new version, a tab whose edits
+/// may still follow said the held words ("…Discard the edits…"): the tab showing for as long as the read takes, and a tab behind until it's tapped,
+/// in its sidebar row and an agent's `tabs`. Heard and not read, it's being looked at, shown or behind; one that can never follow (protected, past its
+/// cap of named pages) says the held words at once.
+#[test]
+fn heard_and_not_yet_read_a_tab_that_may_follow_is_being_looked_at() {
+    let looking = "This file changed on disk. Looking at whether your unsaved edits fit the new version.";
+    let heard = |bed: &mut Bed| {
+        replace_file(&bed.path, &document("Mine", &(1..=10).collect::<Vec<_>>(), true));
+        let look = record::look_at_file(&bed.path, bed.s.tabs().own_stamp(bed.a));
+        assert!(bed.s.apply_file_status(bed.a, look), "heard");
+    };
+    let said = |bed: &Bed| bed.s.notices().said(bed.a).unwrap().message;
+    // The tab showing, and a tab behind.
+    for behind in [false, true] {
+        let mut bed = Bed::turned_page_9();
+        if behind {
+            bed.s.tap(bed.b).unwrap();
+        }
+        heard(&mut bed);
+        assert_eq!(said(&bed), looking, "behind {behind}: heard, not read");
+    }
+    // Protected: never followed.
+    let mut bed = Bed::turned_page_9();
+    bed.s.tabs.note_password_used(bed.a);
+    heard(&mut bed);
+    assert_eq!(said(&bed), FileNotice::Changed.message(true), "protected: the held words at once");
+    // Past its cap of named pages: never followed.
+    crate::edit::identity::tests::CAP.with(|cap| cap.set(Some(4)));
+    let mut bed = Bed::turned_page_9();
+    bed.s.edit_pages(bed.a, |e| e.rotate(2, 1, 1)).unwrap();
+    bed.identify();
+    crate::edit::identity::tests::CAP.with(|cap| cap.set(None));
+    heard(&mut bed);
+    assert_eq!(said(&bed), FileNotice::Changed.message(true), "past its cap: the held words at once");
 }

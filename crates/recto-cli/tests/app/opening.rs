@@ -1,6 +1,7 @@
 //! Opening in the real app, held to rule 3: the UI thread never waits on a file.
 
 use super::Run;
+use crate::common::hang_rule::held_the_window;
 use recto_testpdf::TempPdf;
 use serde_json::Value;
 use std::time::{Duration, Instant};
@@ -59,7 +60,9 @@ fn opening_a_slow_hostile_file_never_holds_the_window() {
         "opened by `recto open` in {by_agent:?}, by Open Recent in {by_menu:?}; the window's worst wait {}",
         hangs["worst_ms"]
     );
-    assert_eq!(hangs["over_2s"], 0, "{hangs}");
-    assert_eq!(hangs["over_1s"], 0, "not even a 1 s note: {hangs}");
+    // Not `over_1s == 0`: a starved runner makes a stretch of a second with the thread ready to run (CI run 43711366303, load 33 on 3 cores).
+    if let Err(why) = held_the_window(hangs) {
+        panic!("{why}");
+    }
     assert_eq!(state["session"]["tabs"][0]["pages"].as_u64().or(Some(1)), Some(1));
 }

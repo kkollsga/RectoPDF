@@ -8,7 +8,7 @@ use crate::journals::Journals;
 use crate::lists::Lists;
 use crate::registry::Tabs;
 use crate::warm::Warm;
-use crate::{FileNotice, PageEdits, SleepFacts, TabId, fit, journal, record, sleep};
+use crate::{FileNotice, SleepFacts, TabId, fit, journal, record, sleep};
 use recto_core::Toc;
 use recto_platform::FileStamp;
 use std::collections::HashMap;
@@ -132,7 +132,9 @@ impl Dormant<'_> {
             tabs: self.tabs,
             lists: self.lists,
         };
+        // Contents past what a sleep file carries: none, as for a protected one, so they're never encoded to be thrown away or held in the queue.
         if self.password_was_needed(id)
+            || !sleep::contents_fit(toc, sleep::MAX_SLEEP_CONTENTS_BYTES)
             || tab.from_sleep.is_some()
             || self.lists.is_asleep(id)
             || matches!(tab.file.notice(), Some(FileNotice::Changed | FileNotice::Missing | FileNotice::NeedsPassword))
@@ -152,18 +154,15 @@ impl Dormant<'_> {
             toc: toc.clone(),
             usual: None,
             sizes: Vec::new(),
-            pictures: Vec::new(),
         };
-        // A page from a protected file on any page means pictures of none, and it's the same for each of them.
         Some(SleepFacts {
             id,
             path: self.tabs.named_path(id)?,
             sleep,
-            pictures_allowed: !list.is_some_and(PageEdits::has_protected_pages),
         })
     }
 
-    /// The same for a tab that's just been woken some other way, for a picture for its first frame.
+    /// The same for a tab that's just been woken some other way, for its pages' sizes in its first frame.
     pub fn sleep_to_read_awake(&self, id: TabId) -> Option<(FileStamp, PathBuf)> {
         let tab = self.tabs.tab(id)?;
         if !self.dormancy.sleep_files() || self.password_was_needed(id) {

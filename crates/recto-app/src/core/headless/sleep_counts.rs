@@ -101,17 +101,16 @@ fn line(app: &HeadlessApp, step: &str, agent_bytes: &mut u64) -> String {
     *agent_bytes = agents;
     let leaving = &sleep["leaving"];
     format!(
-        "{step} | dormant left_alone {} budget {} pressure {} asked {} | files {} put_off {} paper {} place {} skipped_busy {} | agents' bytes {by_agents}, \
+        "{step} | dormant left_alone {} budget {} pressure {} asked {} | files {} put_off {} list {} skipped_busy {} | agents' bytes {by_agents}, \
          share used {} | woken {} pressure_events {} system {}/{} | queue queued {} handed_back {} hurried {} retired {} dropped {} replaced {} \
-         pictures_dropped {} writer_panics {} | on disk {}",
+         writer_panics {} | on disk {}",
         n(&gone["left_alone"]),
         n(&gone["budget"]),
         n(&gone["pressure"]),
         n(&gone["asked"]),
         n(&sleep["sleep_files_written"]),
         n(&sleep["writes_put_off"]),
-        n(&sleep["writes_for_paper"]),
-        n(&sleep["writes_for_place"]),
+        n(&sleep["writes_for_list"]),
         n(&sleep["writes_skipped_busy"]),
         n(&sleep["agent_share_used"]),
         n(&sleep["woken_from_file"]),
@@ -124,27 +123,28 @@ fn line(app: &HeadlessApp, step: &str, agent_bytes: &mut u64) -> String {
         n(&leaving["retired"]),
         n(&leaving["dropped"]),
         n(&leaving["replaced"]),
-        n(&leaving["pictures_dropped"]),
         n(&leaving["writer_panics"]),
         on_disk(app),
     )
 }
 
 /// What the run below said on 2026-11-14, before the sleeper's methods left `Inner`: one line a step. The last two, the budget's, came after the move, and
-/// were seen to be the same on `main`'s code (a9265ae1) before they were kept.
+/// were seen to be the same on `main`'s code (a9265ae1) before they were kept. On 2026-11-15 sleep files lost their pictures: the paper and place counts
+/// became the list's, and the last step's tab, left at another place inside its gap, is put off where the place rule wrote it (files 12 to 11, put off 0 to 1);
+/// every other count the same.
 const GOLDEN: &str = "\
-the person opens six | dormant left_alone 0 budget 0 pressure 0 asked 0 | files 0 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes none, share used 0 | woken 0 pressure_events 0 system 0/0 | queue queued 3 handed_back 0 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 0
-the person shows t0 inside its wait | dormant left_alone 0 budget 0 pressure 0 asked 0 | files 0 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes none, share used 0 | woken 0 pressure_events 0 system 0/0 | queue queued 3 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 0
-the wait passes | dormant left_alone 0 budget 0 pressure 0 asked 0 | files 3 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes none, share used 0 | woken 0 pressure_events 0 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 3
-an agent opens two, and the wait passes | dormant left_alone 0 budget 0 pressure 0 asked 0 | files 5 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes rose, share used 0 | woken 0 pressure_events 0 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 5
-an agent's session sleep of t6 | dormant left_alone 0 budget 0 pressure 0 asked 1 | files 6 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes rose, share used 0 | woken 0 pressure_events 0 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 6
-memory pressure | dormant left_alone 0 budget 0 pressure 1 asked 1 | files 7 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 0 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 7
-the person shows t1 then t2 | dormant left_alone 0 budget 0 pressure 1 asked 1 | files 7 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 7
-left alone | dormant left_alone 2 budget 0 pressure 1 asked 1 | files 8 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 8
-the person opens four more | dormant left_alone 2 budget 0 pressure 1 asked 1 | files 8 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 1 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 8
-a quit's flush | dormant left_alone 2 budget 0 pressure 1 asked 1 | files 10 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 10
-the budget at nothing, a tab off screen edited | dormant left_alone 2 budget 1 pressure 1 asked 1 | files 11 put_off 0 paper 0 place 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 11
-the budget at nothing, a comparison read in its other pane | dormant left_alone 2 budget 2 pressure 1 asked 1 | files 12 put_off 0 paper 0 place 1 skipped_busy 0 | agents' bytes same, share used 0 | woken 3 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 pictures_dropped 0 writer_panics 0 | on disk 11
+the person opens six | dormant left_alone 0 budget 0 pressure 0 asked 0 | files 0 put_off 0 list 0 skipped_busy 0 | agents' bytes none, share used 0 | woken 0 pressure_events 0 system 0/0 | queue queued 3 handed_back 0 hurried 0 retired 0 dropped 0 replaced 0 writer_panics 0 | on disk 0
+the person shows t0 inside its wait | dormant left_alone 0 budget 0 pressure 0 asked 0 | files 0 put_off 0 list 0 skipped_busy 0 | agents' bytes none, share used 0 | woken 0 pressure_events 0 system 0/0 | queue queued 3 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 writer_panics 0 | on disk 0
+the wait passes | dormant left_alone 0 budget 0 pressure 0 asked 0 | files 3 put_off 0 list 0 skipped_busy 0 | agents' bytes none, share used 0 | woken 0 pressure_events 0 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 writer_panics 0 | on disk 3
+an agent opens two, and the wait passes | dormant left_alone 0 budget 0 pressure 0 asked 0 | files 5 put_off 0 list 0 skipped_busy 0 | agents' bytes rose, share used 0 | woken 0 pressure_events 0 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 writer_panics 0 | on disk 5
+an agent's session sleep of t6 | dormant left_alone 0 budget 0 pressure 0 asked 1 | files 6 put_off 0 list 0 skipped_busy 0 | agents' bytes rose, share used 0 | woken 0 pressure_events 0 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 writer_panics 0 | on disk 6
+memory pressure | dormant left_alone 0 budget 0 pressure 1 asked 1 | files 7 put_off 0 list 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 0 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 writer_panics 0 | on disk 7
+the person shows t1 then t2 | dormant left_alone 0 budget 0 pressure 1 asked 1 | files 7 put_off 0 list 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 writer_panics 0 | on disk 7
+left alone | dormant left_alone 2 budget 0 pressure 1 asked 1 | files 8 put_off 0 list 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 writer_panics 0 | on disk 8
+the person opens four more | dormant left_alone 2 budget 0 pressure 1 asked 1 | files 8 put_off 0 list 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 1 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 writer_panics 0 | on disk 8
+a quit's flush | dormant left_alone 2 budget 0 pressure 1 asked 1 | files 10 put_off 0 list 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 writer_panics 0 | on disk 10
+the budget at nothing, a tab off screen edited | dormant left_alone 2 budget 1 pressure 1 asked 1 | files 11 put_off 0 list 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 2 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 writer_panics 0 | on disk 11
+the budget at nothing, a comparison read in its other pane | dormant left_alone 2 budget 2 pressure 1 asked 1 | files 11 put_off 1 list 0 skipped_busy 0 | agents' bytes same, share used 0 | woken 3 pressure_events 1 system 0/0 | queue queued 0 handed_back 1 hurried 0 retired 0 dropped 0 replaced 0 writer_panics 0 | on disk 11
 ";
 
 /// Failure: a move of the sleeper's code changes what's written or when, or who it's counted against: a tab pushed out and not queued, one handed back and

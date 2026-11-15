@@ -1,14 +1,35 @@
-//! **Sleep files:** each a quick way back to a tab gone dormant, written in one step, read back only for its own version of its file, and held to
-//! [`MAX_SLEEP_BYTES`] in all. Losing one costs only the quick way, so nothing here is flushed or said when it fails.
+//! **Sleep files:** each a quick way back to a tab gone dormant, its facts only (no picture of any page since 2026-11-15), written in one step, read back
+//! only for its own version of its file, and held to [`MAX_SLEEP_BYTES`] in all. Losing one costs only the quick way, so nothing here is flushed or said
+//! when it fails. Every file of an older format, which could hold pictures of pages, is removed by one pass after a launch
+//! ([`RecordStore::remove_older_sleep_files`]) and at its first read.
 
 use super::{CLOSED_JOURNAL_DAYS, JOURNALS, RecordStore, local, read_ours, record};
 use recto_platform::FileStamp;
 use recto_session::record::{CURRENT_VERSION, RecordError};
-use recto_session::sleep::{MAX_SLEEP_FILE_BYTES, SleepFile, decode_sleep, encode_sleep};
+use recto_session::sleep::{FORMAT_PREFIX_BYTES, MAX_SLEEP_FILE_BYTES, SLEEP_FORMAT, SleepFile, decode_sleep, encode_sleep, sleep_format_of};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
-/// Sleep files in all. About 256 tabs' worth of a whole picture, and more with text, which packs well.
-pub(super) const MAX_SLEEP_BYTES: u64 = 256 * 1024 * 1024;
+/// Sleep files in all: what the folder could hold of files with pictures in them, and far past what facts come to.
+pub const MAX_SLEEP_BYTES: u64 = 256 * 1024 * 1024;
+
+/// **Sleep files the pass after a launch looks at, at most** ([`RecordStore::remove_older_sleep_files`]): more than the folder held of 0.1.0's files at its
+/// 256 MiB (65 KB on average, measured 2026-11-13, so about 4,000). Past it the pass stops; the next launch's goes on, and a file left meanwhile is still
+/// refused and removed at its first read.
+pub const MAX_SLEEP_FILES_LOOKED_AT: usize = 8192;
+
+/// What the pass after a launch came to, for `qa state`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OlderSleepFiles {
+    /// Sleep files looked at: never past the cap.
+    pub looked_at: u32,
+    /// Of those, removed: of an older format, or not a sleep file's start.
+    pub removed: u32,
+    /// What was read of them, at most [`FORMAT_PREFIX_BYTES`] each.
+    pub bytes_read: u64,
+    /// It stopped at its cap, with sleep files it didn't look at.
+    pub stopped_at_cap: bool,
+}
 
 impl RecordStore {
     /// **Writes a tab's sleep file,** in one step, as it goes dormant or the app goes away. It's only a way to be quick, so failing here costs nothing but that, and isn't said. Says how many bytes went.
@@ -65,7 +86,14 @@ impl RecordStore {
     pub fn read_sleep(&self, stamp: FileStamp, path: &Path) -> Option<SleepFile> {
         recto_platform::slow::pause(recto_platform::slow::Seam::SleepRead);
         let file = self.dir().join(JOURNALS).join(record::sleep_file_name(stamp, path));
-        let bytes = read_ours(&file, MAX_SLEEP_FILE_BYTES).ok().flatten()?;
+        let bytes = match read_ours(&file, MAX_SLEEP_FILE_BYTES) {
+            Ok(bytes) => bytes?,
+            // Past what a file of facts can be (an older format's, with pictures), or not a plain private file: it goes, as one that doesn't read does.
+            Err(()) => {
+                let _ = std::fs::remove_file(&file);
+                return None;
+            }
+        };
         match decode_sleep(&bytes, CURRENT_VERSION) {
             Ok(sleep) if sleep.file.same_contents(stamp) && sleep.file.inode == stamp.inode => Some(sleep),
             // A newer app's, which isn't this one's to touch.
@@ -74,6 +102,76 @@ impl RecordStore {
                 let _ = std::fs::remove_file(&file);
                 None
             }
+        }
+    }
+}
+
+/// **Where the copy of the record an update keeps goes, under the state folder:** `update/before/`, as `recto_update::plan::Files::before` has it (a test in
+/// `recto-app`, which sees both, holds the two together). 0.1.0's installer clones everything of the record into it but closed journals, its sleep files
+/// with their pictures among them, and keeps it a week.
+pub const UPDATE_COPY: [&str; 2] = ["update", "before"];
+
+impl RecordStore {
+    /// **Removes every sleep file of an older format** (owner, 2026-11-15: no picture of a page is kept; every format before
+    /// [`SLEEP_FORMAT`], 0.1.0's included, could hold some), once after a launch, off the UI thread and the first frame's path: in the state's `journals/`
+    /// folder, and in the copy of the record an update keeps ([`UPDATE_COPY`]`/journals/`, where 0.1.0's installer put a clone of every sleep file for a
+    /// week). Only files named as sleep files, plain files of this user's (a link is never followed or touched, nor a folder on the way that's a link), and
+    /// at most `cap` of them in all; of each, only its first [`FORMAT_PREFIX_BYTES`], which say its format ([`sleep_format_of`]). A file that can't say it's
+    /// this format or newer goes: nothing of it is what a wake can use, and its tab wakes from its PDF once (in the update's copy, if a going back puts it
+    /// back). Nothing else in either folder is touched, but for the copy's folder itself, which is marked to be kept out of backups if it isn't (0.1.0's
+    /// installer left it unmarked). Nothing's removed by a copy that doesn't keep the record. Nothing's said if it fails.
+    pub fn remove_older_sleep_files(&self, cap: usize) -> OlderSleepFiles {
+        let mut done = OlderSleepFiles::default();
+        if self.refuses_writes().is_some() {
+            return done;
+        }
+        sweep_older(&self.dir().join(JOURNALS), cap, &mut done);
+        // The update's copy, only by real folders all the way down from the state folder: a link there could lead anywhere.
+        let real_folder = |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_dir());
+        let mut copy = self.root.clone();
+        for part in UPDATE_COPY {
+            copy.push(part);
+            if !real_folder(&copy) {
+                return done;
+            }
+        }
+        // It holds the edit history, which stays out of Time Machine (PRIVACY.md); 0.1.0's installer made it without the mark the installer gives it now
+        // (`recto_update::install::copy_record`), so it's given here, by the same function. A failure costs only that.
+        if !local::is_excluded_from_backups(&copy) {
+            let _ = local::exclude_from_backups(&copy);
+        }
+        copy.push(JOURNALS);
+        if real_folder(&copy) {
+            sweep_older(&copy, cap, &mut done);
+        }
+        done
+    }
+}
+
+/// [`RecordStore::remove_older_sleep_files`] in one folder, counting into `done` and stopping at `cap` in all.
+fn sweep_older(folder: &Path, cap: usize, done: &mut OlderSleepFiles) {
+    let Ok(entries) = std::fs::read_dir(folder) else { return };
+    let mut prefix = Vec::with_capacity(FORMAT_PREFIX_BYTES);
+    for entry in entries.flatten() {
+        let is_sleep = entry.file_name().to_str().is_some_and(record::is_sleep_name);
+        // The entry's own type, not what a link points at.
+        if !is_sleep || !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        if done.looked_at as usize >= cap {
+            done.stopped_at_cap = true;
+            return;
+        }
+        done.looked_at += 1;
+        let path = entry.path();
+        let Ok(file) = local::open_private_file(&path) else { continue };
+        prefix.clear();
+        if file.take(FORMAT_PREFIX_BYTES as u64).read_to_end(&mut prefix).is_err() {
+            continue;
+        }
+        done.bytes_read += prefix.len() as u64;
+        if sleep_format_of(&prefix).is_none_or(|format| format < SLEEP_FORMAT) && std::fs::remove_file(&path).is_ok() {
+            done.removed += 1;
         }
     }
 }

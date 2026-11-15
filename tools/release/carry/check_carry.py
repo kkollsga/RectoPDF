@@ -293,7 +293,7 @@ def main():
             wakes[t] = b.cmd("qa", "state")["reader"]["last_wake"]
         save("B-wakes", wakes)
         check(f"B: by design, no tab woke from {old_v}'s sleep pictures (each from its PDF, once)",
-              all(w.get("from_sleep") is False and w.get("sleep_pictures", 0) == 0 for w in wakes.values()), json.dumps(wakes))
+              all(w.get("from_sleep") is False for w in wakes.values()), json.dumps(wakes))
         b_files = files_of(state)
         left = [p for p in old_sleeps if p in b_files and sleep_format(b_files[p]) == old_sleeps[p] and b_files[p] == a_files[p]]
         check(f"B: by design, {old_v}'s sleep files ({len(old_sleeps)}, format {sorted(set(old_sleeps.values()))}) are gone once read", not left, ", ".join(left))
@@ -334,7 +334,7 @@ def main():
                 check(f"C: tab #{t['tab']}'s edits as {new_v} left them", t["edited"] == twin["edited"] and went_back[f"edits #{t['tab']}"]["runs"] == b2[f"edits #{t['tab']}"]["runs"])
         c.cmd("tap", "#1"); c.settled()
         wake_c = c.cmd("qa", "state")["reader"]["last_wake"]
-        note(f"C: {old_v} woke tab #1 {'from' if wake_c.get('from_sleep') else 'without'} {new_v}'s sleep file (format 3): {json.dumps(wake_c)}")
+        note(f"C: {old_v} woke tab #1 {'from' if wake_c.get('from_sleep') else 'without'} {new_v}'s sleep file (format 4, which it refuses): {json.dumps(wake_c)}")
         check(f"C: {old_v} is still running after waking a tab from {new_v}'s files", c.alive())
         c.handoff()
         c_files = files_of(state)

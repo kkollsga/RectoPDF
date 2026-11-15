@@ -6,17 +6,20 @@
 //
 //   keychain-probe <add|read|delete|add-open> <none|per-call|global> [<keychain>]
 //   keychain-probe inspect <none|per-call|global> <keychain> <team>
-//   keychain-probe <add-trusting|add-forged|add-then-forge> <none|per-call|global> <keychain> <team> <program>...
+//   keychain-probe <add-trusting|add-forged|add-then-forge|set-access> <none|per-call|global> <keychain> <team> <program>...
+//   keychain-probe update <none|per-call|global> <keychain>
 //
 // With a keychain named, the lookup searches that keychain alone (kSecMatchSearchList) and an add puts the item there (kSecUseKeychain),
 // as the app does with the login keychain; with none, the default search list and the default keychain. `add-open` adds with an
 // access list that lets any application read the item, as a planter could.
 //
 // `inspect` reads the item as the app does, then prints what its access holds, names and counts only, never the item's bytes: each
-// entry's authorizations, its programs (any, or each one's file name), and the partition list, then what the item-is-ours rule
-// (crates/recto-platform/src/find_key_mac.rs) says of it, accept or refuse, with why. `add-trusting` adds with a list of trusted
+// entry's authorizations, its programs (any, or each one's file name), and the partition list, then what a rule over those would
+// say, accept or refuse, with why: the rule proposed for the app, which run 43706807396 showed a planter passes, so the app has none. `add-trusting` adds with a list of trusted
 // programs, given by path (`self` is this program); `add-forged` adds with that list and a partition entry of its own saying
 // `teamid:<team>`; `add-then-forge` adds plainly, then tries to set an access with that partition entry on the item after.
+// `update` tries to replace the item's data (SecItemUpdate); `set-access` tries to set an access trusting the programs on an item
+// that's there (SecKeychainItemSetAccess): what another signature can do to the app's own item.
 //
 // `global` refuses interaction for the whole process (SecKeychainSetUserInteractionAllowed), as the app does; `per-call` sets only
 // kSecUseAuthenticationUIFail on the query, which Apple's header says governs data-protection items only; `none` refuses nothing, to show
@@ -29,8 +32,9 @@ let build = "PROBE_BUILD"
 var notes = [String]()
 let args = CommandLine.arguments
 let plain = ["add", "read", "delete", "add-open"].contains(args.count > 1 ? args[1] : "") && (args.count == 3 || args.count == 4)
+    || args.count == 4 && args[1] == "update"
 let inspecting = args.count == 5 && args.count > 1 && args[1] == "inspect"
-let planting = args.count >= 6 && ["add-trusting", "add-forged", "add-then-forge"].contains(args[1])
+let planting = args.count >= 6 && ["add-trusting", "add-forged", "add-then-forge", "set-access"].contains(args[1])
 guard plain || inspecting || planting, ["none", "per-call", "global"].contains(args[2]) else {
     FileHandle.standardError.write("usage: see tools/release/keychain-probe.swift\n".data(using: .utf8)!)
     exit(2)
@@ -233,6 +237,22 @@ case "add-trusting", "add-forged", "add-then-forge":
         if status == errSecSuccess, let item, let forged = access(trusting: programs, forging: args[4]) {
             notes.append("forge-set=\(SecKeychainItemSetAccess(item as! SecKeychainItem, forged))")
         }
+    }
+case "update":
+    query[kSecMatchSearchList as String] = [named!]
+    var bytes = [UInt8](repeating: 0, count: 32)
+    _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+    status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: Data(bytes)] as CFDictionary)
+case "set-access":
+    query[kSecMatchSearchList as String] = [named!]
+    query[kSecReturnRef as String] = true
+    query[kSecMatchLimit as String] = kSecMatchLimitOne
+    var found: CFTypeRef?
+    status = SecItemCopyMatching(query as CFDictionary, &found)
+    if status == errSecSuccess, let found {
+        guard let made = access(trusting: Array(args[5...]), forging: nil) else { exit(3) }
+        notes.append("found-ref=0")
+        status = SecKeychainItemSetAccess(found as! SecKeychainItem, made)
     }
 default:
     if let named { query[kSecMatchSearchList as String] = [named] }

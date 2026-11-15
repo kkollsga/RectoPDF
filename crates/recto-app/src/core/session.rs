@@ -84,6 +84,7 @@ pub fn apply_restored(
     let ready = inner.life.step(crate::lifecycle::Event::StateRead).or(remake);
     if first_time {
         start_serving(inner);
+        sleeper::sweep_older(&inner.on_disk, &inner.core);
     }
     // What waited for the state: at the launch, and what the person did while a late keep's restore was read.
     release(&inner.core, deferred, |run| person::Person::of(inner).lane().submit_held(run));

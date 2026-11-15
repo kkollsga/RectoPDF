@@ -52,7 +52,8 @@ mod tests {
         assert!(text.starts_with("# Privacy"), "{}", file.display());
     }
 
-    /// Failure: the statement promises what the code no longer does: a level allowing other than what `recto permission show` says, or numbers kept that have since changed.
+    /// Failure: the statement promises what the code no longer does: a level allowing other than what `recto permission show` says, numbers kept that have
+    /// since changed, or no picture of any page kept (owner, 2026-11-15) while a sleep file's format can hold one.
     #[test]
     fn the_statement_says_what_the_code_does() {
         let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../PRIVACY.md")).unwrap();
@@ -76,13 +77,43 @@ mod tests {
         assert_eq!(recto_session::MAX_RECENT, 20, "the 20 files opened last");
         assert_eq!(recto_core::save::BACKUP_DAYS, 30, "one backup, 30 days");
         assert_eq!(recto_core::save::MAX_BACKUP_BYTES, gib, "within 1 GiB");
+        // The edit history, the pages a save took out and the idle tabs' contents are pruned together: 30 days, 1 GiB in all, and the idle tabs' own 256 MiB.
+        assert_eq!(
+            (
+                recto_control::record_store::CLOSED_JOURNAL_DAYS,
+                recto_control::record_store::MAX_CLOSED_JOURNAL_BYTES / gib,
+                recto_control::record_store::MAX_SLEEP_BYTES / (1024 * 1024)
+            ),
+            (30, 1, 256),
+            "the edit history and kept pages: 30 days, 1 GiB; idle tabs: 256 MiB"
+        );
+        assert_eq!(recto_session::record::MAX_FIND_BYTES, 4 * 1024, "what was typed in Find: up to 4 KiB each");
+        assert_eq!(recto_session::record::KEPT_EXTENSION, "keptpages", "the kept pages' files");
         assert_eq!(recto_update::updater::KEEP_RECORD_COPY_MS, 7 * 86_400_000, "a copy of the session for a week");
         assert_eq!(recto_control::log::MAX_LOG_BYTES * 6, 6 * 1024 * 1024, "the activity log, at most 6 MiB");
+        // No picture of a page in a sleep file. What this holds: the format is the one with no pictures in it, and a file is read only up to a size a
+        // picture-carrying file would pass; the phrase below is in the statement. What it doesn't hold: that no route writes a picture (that's
+        // `core::headless::sleeping::every_route_that_writes_a_sleep_file_writes_no_picture`, on the files read back), or that 0.1.0's are gone
+        // (`the_launch_removes_every_sleep_file_of_an_older_format` and the store's pass tests). A phrase found is the statement saying it, not it true.
+        const { assert!(recto_session::sleep::SLEEP_FORMAT >= 4, "the format before held pictures") };
+        const {
+            assert!(
+                recto_session::sleep::MAX_SLEEP_FILE_BYTES <= 1024 * 1024,
+                "a sleep file the size of pictures is read"
+            )
+        };
         for words in [
+            "No picture of any page is kept",
             "90 days after it was last used, within 2 GiB",
             "90 days, within 32 MiB",
             "the 20 files you opened last",
-            "kept for a week",
+            "| A week |",
+            "each up to 4 KiB",
+            "30 days after the save, within 1 GiB in all with the edit history",
+            "within 256 MiB in all",
+            "`update/before/`",
+            "`activity*.jsonl`",
+            "its path is in the file's header",
             "at most 6 MiB",
         ] {
             assert!(text.contains(words), "{words}");

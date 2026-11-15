@@ -10,6 +10,9 @@ use serde_json::{Value, json};
 
 const TABS: usize = 30;
 
+/// How long a wake's report follows it (`recto_reader::tiles::wake::WAKE_FOLLOWED_FOR`, which this test can't reach).
+const WAKE_FOLLOWED_FOR_MS: u64 = 5000;
+
 /// The machine's load averages as the system gives them ("{ 3.12 2.80 2.50 }"), for a failure to say how busy the machine was: a wake's time means little without it.
 fn load() -> String {
     std::process::Command::new("/usr/sbin/sysctl").args(["-n", "vm.loadavg"]).output().map_or_else(
@@ -18,7 +21,7 @@ fn load() -> String {
     )
 }
 
-/// A wake that showed a bare page, with everything that says why, kept as it was read: the wake's own report, what the page view said right after (settled, tiles, jobs, drawn), the app's worst stall, and the machine's load as the wake began and as it was read.
+/// A wake that showed a bare page, or had no first frame, with everything that says why, kept as it was read: the wake's own report, what the page view said right after (settled, tiles, jobs, drawn), the app's worst stall, and the machine's load as the wake began and as it was read.
 struct BareWake {
     round: usize,
     row: usize,
@@ -30,7 +33,17 @@ struct BareWake {
     wall_ms: u128,
 }
 
-/// Failure: the app's memory climbs as tabs come and go, as something's held per wake or per edit, or going dormant leaves what it should take. Or a tab's edits don't survive all that, or workers pile up, or disk bytes go past what edits and pictures account for.
+impl BareWake {
+    /// All of it, for a failure.
+    fn said(&self) -> String {
+        format!(
+            "round {}, row {}: last_wake {}\n  click to settled {} ms; load as it began {}, as it was read {}\n  hangs.worst {}\n  page view after it: {}",
+            self.round, self.row, self.wake, self.wall_ms, self.load_before, self.load_after, self.hangs_worst, self.reader
+        )
+    }
+}
+
+/// Failure: the app's memory climbs as tabs come and go, as something's held per wake or per edit, or going dormant leaves what it should take. Or a tab's edits don't survive all that, or workers pile up, or disk bytes go past what edits and pictures account for. Or a wake's report loses its first frame: a wake with none is held to a first page later than a wake's followed for, by this test's own clock, with its tab drawn since.
 #[test]
 fn a_long_session_stays_flat() {
     let rounds: usize = std::env::var("RECTO_LONG_SESSION_ROUNDS")
@@ -73,7 +86,7 @@ fn a_long_session_stays_flat() {
     assert_eq!(ids.len(), TABS);
     // Going dormant in the time this has, not five minutes.
     ok(&["qa", "dormant-after", "2"]);
-    // And with no limit on how often pictures are written, as what's being looked at here is what a wake and a dormancy cost, and whether they build up.
+    // And with no limit on how often sleep files are written, as what's being looked at here is what a wake and a dormancy cost, and whether they build up.
     ok(&["qa", "sleep-write-gap", "0"]);
     let mut footprints = Vec::new();
     let (mut peak_workers, mut peak_worker_bytes) = (0u64, 0u64);
@@ -81,7 +94,7 @@ fn a_long_session_stays_flat() {
     let mut wakes: Vec<(bool, u64, u64)> = Vec::new();
     let mut blank_frames = 0u64;
     let mut bare: Vec<BareWake> = Vec::new();
-    let (mut unowed_bare, mut no_first_frame) = (0u64, Vec::<String>::new());
+    let (mut unowed_bare, mut no_first_frame, mut late) = (0u64, Vec::<BareWake>::new(), Vec::<String>::new());
     for round in 0..rounds {
         for (at, id) in ids.iter().enumerate() {
             // As a click on its row does.
@@ -101,13 +114,33 @@ fn a_long_session_stays_flat() {
                 ));
                 let blank = woken["blank_frames"].as_u64().unwrap_or(0);
                 blank_frames += blank;
-                // What a wake had to show when it began, as its report says: a bare page is only a bug where a picture of the view was here.
-                let owed = !matches!(woken["had"].as_str(), Some("nothing" | "not_looked") | None);
+                // What a wake had to show when it began, as its report says: a bare page is only a bug where what the view showed was still held (a warm
+                // tab's tiles). A wake from its facts has its pages on their paper, bare until the renderer answers, as one with nothing has.
+                let owed = woken["had"] == "cache";
                 if blank > 0 && !owed {
                     unowed_bare += 1;
                 }
+                // No first frame: its tab is drawn by now (`wait-settled`), so either its first page came after the time a wake's followed for, and
+                // the report stopped while it was still bare, which is the machine's speed (seen at a load of 30 under CI's limits, 2026-11-15), or the
+                // report lost a frame that came, which is a fault: under way after the view settled, ended by a move nobody made, or said to be past
+                // the time when it wasn't by this test's own clock, or its view still bare.
                 if woken["first_frame_us"].is_null() {
-                    no_first_frame.push(format!("round {round}, row {at}: {woken}"));
+                    let drawn = seen["reader"]["tiles"]["attached"].as_u64().unwrap_or(0) > 0;
+                    let followed_ms = u128::from(WAKE_FOLLOWED_FOR_MS);
+                    if woken["ended"] == "no_longer_followed" && wall_ms > followed_ms && drawn {
+                        late.push(format!("round {round}, row {at}: {woken}, click to settled {wall_ms} ms"));
+                    } else {
+                        no_first_frame.push(BareWake {
+                            round,
+                            row: at,
+                            wake: woken.clone(),
+                            reader: seen["reader"].clone(),
+                            hangs_worst: seen["hangs"]["worst"].clone(),
+                            load_before: load_before.clone(),
+                            load_after: load(),
+                            wall_ms,
+                        });
+                    }
                 }
                 if blank > 0 {
                     println!("a wake with bare frames, round {round}, row {at}: {woken}");
@@ -142,7 +175,7 @@ fn a_long_session_stays_flat() {
         let footprint = memory["footprint_bytes"].as_u64().unwrap();
         footprints.push(footprint);
         println!(
-            "round {round}: app {:.1} MiB, workers now {:.1} MiB ({} alive), held {}, threads {}, wrote {} bytes, dormant {}, sleep files {} ({} bytes), lists in memory {}, drawn before sleep {}",
+            "round {round}: app {:.1} MiB, workers now {:.1} MiB ({} alive), held {}, threads {}, wrote {} bytes, dormant {}, sleep files {} ({} bytes), lists in memory {}",
             footprint as f64 / 1048576.0,
             memory["worker_bytes"].as_u64().unwrap_or(0) as f64 / 1048576.0,
             memory["workers"],
@@ -153,7 +186,6 @@ fn a_long_session_stays_flat() {
             report["record"]["sleep"]["sleep_files_written"],
             report["record"]["sleep"]["sleep_bytes_written"],
             ids.len(),
-            report["reader"]["sleep_draws"]
         );
         assert!(report["reader"]["documents_held"].as_u64().unwrap() <= 3, "{}", report["reader"]);
     }
@@ -182,25 +214,29 @@ fn a_long_session_stays_flat() {
         sleeping.len(),
         wakes.len()
     );
-    println!("wakes with a bare page and nothing to show them with, which is allowed until the renderer answers: {unowed_bare}");
+    println!("wakes with a bare page from their facts or nothing, which is allowed until the renderer answers: {unowed_bare}");
     if !bare.is_empty() {
-        let said: Vec<String> = bare
-            .iter()
-            .map(|wake| {
-                format!(
-                    "round {}, row {}: last_wake {}\n  click to settled {} ms; load as it began {}, as it was read {}\n  hangs.worst {}\n  page view after it: {}",
-                    wake.round, wake.row, wake.wake, wake.wall_ms, wake.load_before, wake.load_after, wake.hangs_worst, wake.reader
-                )
-            })
-            .collect();
+        let said: Vec<String> = bare.iter().map(BareWake::said).collect();
         panic!(
-            "a wake that began with a picture of its view, from the sleep file or the cache, showed a bare page ({} wakes; {blank_frames} bare frames in all, {unowed_bare} wakes bare with nothing to show). `had` and `bare_with_picture` say which.\n{}\nall wakes (from a file, first frame us, sharp us): {wakes:?}\nload now {}",
+            "a wake that began with its view held in the cache showed a bare page ({} wakes; {blank_frames} bare frames in all, {unowed_bare} wakes bare from their facts or nothing). `had` says which.\n{}\nall wakes (from a file, first frame us, sharp us): {wakes:?}\nload now {}",
             bare.len(),
             said.join("\n"),
             load()
         );
     }
-    assert!(no_first_frame.is_empty(), "a wake never got its first frame:\n{}", no_first_frame.join("\n"));
+    println!(
+        "wakes whose first page came after the {WAKE_FOLLOWED_FOR_MS} ms a wake's followed for, drawn since: {}",
+        late.len()
+    );
+    for wake in &late {
+        println!("  {wake}");
+    }
+    let lost: Vec<String> = no_first_frame.iter().map(BareWake::said).collect();
+    assert!(
+        lost.is_empty(),
+        "a wake's report has no first frame, and not for a first page later than it's followed for:\n{}",
+        lost.join("\n")
+    );
     let report = ok(&["qa", "state"]);
     let dormant = &report["record"]["sleep"]["gone_dormant"]["left_alone"];
     assert!(dormant.as_u64().unwrap() >= TABS as u64 / 2, "tabs did go dormant: {dormant}");
@@ -212,7 +248,7 @@ fn a_long_session_stays_flat() {
     // Edits came through it all, wherever they've been.
     let lists = report["session"]["edits_full"].as_object().unwrap();
     assert!(lists.len() >= TABS / 3, "{}", lists.len());
-    // Disk: what edits and a picture a dormancy account for. Generous, as what's at stake is its growing without end.
+    // Disk: what edits and a dormancy account for. Generous, as what's at stake is its growing without end.
     let wrote = report["record"]["wrote_bytes"].as_u64().unwrap();
     let dormancies: u64 = ["left_alone", "budget", "asked", "pressure"]
         .iter()

@@ -3641,7 +3641,10 @@ fn a_print_from_the_app_is_the_documents_pages_whatever_the_paper() {
     run.settled();
     let state = run.report();
     assert_eq!(state["printing"]["busy"], false, "{state}");
-    assert!(state["hangs"]["over_1s"].as_u64() == Some(0), "the UI thread never waited: {state}");
+    // Not `over_1s == 0`: a starved runner makes a stretch of a second with the thread ready to run.
+    if let Err(why) = common::hang_rule::held_the_window(&state["hangs"]) {
+        panic!("{why}: {state}");
+    }
     let local = State::at(Level::Full);
     let facts = local.json(&["local", out.to_str().unwrap(), "facts", "--json"]).0;
     assert_eq!(facts["data"]["pages"], 2, "{facts}");

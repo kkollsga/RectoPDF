@@ -190,6 +190,26 @@ pub fn forget_old_sets<L: DocLoader>(session: &Session<L>) {
     });
 }
 
+/// **The highlights a pane's page view is given for a tab,** while its own pages are `withheld` or not ([`recto_session::EditsFit::shows_own_pages`]):
+/// all of them, or, withheld, only those on pages added from another PDF, which keep their own rule and are drawn (review of `build/shorter-file-pages`),
+/// with none of the own file's taken out, as none of its pages is drawn. A set is made while withheld only for a tab with highlights.
+pub fn marks_shown<L: DocLoader>(session: &Session<L>, id: TabId, withheld: bool) -> Option<Arc<TabMarks>> {
+    let marks = marks_of(session, id)?;
+    if !withheld {
+        return Some(marks);
+    }
+    let slots = session.lists().get(id)?.slots();
+    let added = |position: u32| slots.get(position as usize).is_some_and(|slot| slot.source != 0);
+    let pages: Vec<(u32, Vec<Rect>)> = marks.pages.iter().filter(|(position, _)| added(*position)).cloned().collect();
+    (!pages.is_empty()).then(|| {
+        Arc::new(TabMarks {
+            tab: marks.tab,
+            pages,
+            hidden: None,
+        })
+    })
+}
+
 fn make_marks<L: DocLoader>(session: &Session<L>, id: TabId, list: &recto_session::edit::PageEdits) -> Arc<TabMarks> {
     #[cfg(test)]
     BUILT.set(BUILT.get() + 1);

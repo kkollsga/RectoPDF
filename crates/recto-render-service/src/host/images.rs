@@ -70,14 +70,14 @@ impl DocRenderer {
         Ok(pixels)
     }
 
-    /// Where a page's images are, as parts of the page in 65535ths, or `None` if it isn't known: this job went stale, the page isn't one that can be asked about, or the asking failed or was refused, as a page with more images than an answer holds is. Those aren't "there are no images", and a caller mustn't treat them so. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it. `Err` is only [`RenderFailure::WouldStart`]: not asked, as the job may use only the worker that's there ([`super::Workers::OnlyTheOneThere`]) and that one couldn't. That's no answer about the page either, and a caller mustn't decide anything from it and keep it, as it would from `None`.
-    pub fn image_boxes(&mut self, page: u32, generation: u64) -> Result<Option<Vec<[u16; 4]>>, RenderFailure> {
+    /// Where a page's images are, as parts of the page in 65535ths, or `None` if it isn't known: this job went stale, the page isn't one that can be asked about, or the asking failed or was refused, as a page with more images than an answer holds is. Those aren't "there are no images", and a caller mustn't treat them so. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it.
+    pub fn image_boxes(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>> {
         if let Some(known) = self.images.places.get(&page) {
-            return Ok(known.clone());
+            return known.clone();
         }
         // Stale says nothing about the page, so nothing's remembered.
         if self.control.is_stale(generation) {
-            return Ok(None);
+            return None;
         }
         // A page whose drawing failed for time or a crash goes unasked: that's remembered at every zoom. Asking walks its objects and decodes nothing, so one needing the larger limit, drawn lower, or failed for memory even at its lower resolution (remembered from that scale down, not at every zoom), is asked as any page, and its look doesn't hang on which draw went first.
         let state = self.page_draw_state(page);
@@ -107,12 +107,11 @@ impl DocRenderer {
             });
             // A worker killed walking the page is left out of what stops the document, as the hidden-text check's are, and counts towards the walk's own cap.
             self.left_out.walk = self.left_out.walk.saturating_add(self.left_out.since(self.kills() - kills, busy));
-            // Stale, or not asked for want of a worker: neither is about the page, so nothing's remembered.
-            match reply {
-                _ if self.control.is_stale(generation) => return Ok(None),
-                Err(JobFailure::Failed(failure @ RenderFailure::WouldStart { .. })) => return Err(failure),
-                reply => reply.ok(),
+            // Stale: not about the page, so nothing's remembered.
+            if self.control.is_stale(generation) {
+                return None;
             }
+            reply.ok()
         };
         // One decision a page: its tiles are drawn at different times, and none of them may disagree. What's cached past this cap is long off the screen.
         if self.images.places.len() >= MAX_IMAGE_PLACES {
@@ -120,7 +119,7 @@ impl DocRenderer {
             self.images.places_cleared = true;
         }
         self.images.places.insert(page, boxes.clone());
-        Ok(boxes)
+        boxes
     }
 
     /// Whether the places of a page's images have been forgotten since this was last asked, with a lot of pages looked up. It says nothing about the file: it's for whoever decided something from those places, which might not be decided the same way twice.

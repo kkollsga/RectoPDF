@@ -24,7 +24,7 @@ const LOOK_TRIES: u8 = 3;
 pub(super) trait LookSource {
     /// The places its images were decided from have been forgotten since this was last asked, so no look decided from them may stand.
     fn take_image_places_cleared(&mut self) -> bool;
-    fn image_boxes(&mut self, page: u32, generation: u64) -> Result<Option<Vec<[u16; 4]>>, RenderFailure>;
+    fn image_boxes(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>>;
     fn is_stale(&self, generation: u64) -> bool;
     fn page_size(&mut self, page: u32) -> Result<(f32, f32), RenderFailure>;
     fn render_tile(&mut self, request: &TileRequest, surface: &PixelSurface) -> Result<TileResult, RenderFailure>;
@@ -35,7 +35,7 @@ impl LookSource for DocRenderer {
         DocRenderer::take_image_places_cleared(self)
     }
 
-    fn image_boxes(&mut self, page: u32, generation: u64) -> Result<Option<Vec<[u16; 4]>>, RenderFailure> {
+    fn image_boxes(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>> {
         DocRenderer::image_boxes(self, page, generation)
     }
 
@@ -108,8 +108,6 @@ impl Looks {
 pub(super) enum NoLook {
     /// The job went stale on the way.
     Stale,
-    /// What it's decided from wasn't asked, as the job may use only the worker that's there ([`recto_render_service::Workers::OnlyTheOneThere`]) and that one couldn't, a heavy one if `heavy`.
-    Unstarted { heavy: bool },
     /// The picture it's decided from failed for a reason that may pass ([`RenderFailure::NotDrawableNow`], or a surface that couldn't be made or read), or the page is waiting to be tried again: it's tried again once its wait is over, at most [`LOOK_TRIES`] times.
     Again,
 }
@@ -123,7 +121,7 @@ enum Picture {
     Final,
 }
 
-/// **What a tile drawn for dark paper does with its page's look** ([`page_look`]): goes by it, or ends as the outcome given, its tile not handed on and nothing kept: [`Outcome::Cancelled`] for a job gone stale, [`Outcome::LookLater`] for a look to be tried again, which holds the page till then, and [`Outcome::Unstarted`] for want of a worker.
+/// **What a tile drawn for dark paper does with its page's look** ([`page_look`]): goes by it, or ends as the outcome given, its tile not handed on and nothing kept: [`Outcome::Cancelled`] for a job gone stale and [`Outcome::LookLater`] for a look to be tried again, which holds the page till then.
 pub(super) fn tile_look(
     doc: &mut impl LookSource,
     looks: &mut Looks,
@@ -136,11 +134,10 @@ pub(super) fn tile_look(
     page_look(doc, looks, page, generation, whole, tile, now).map_err(|no| match no {
         NoLook::Stale => Outcome::Cancelled,
         NoLook::Again => Outcome::LookLater,
-        NoLook::Unstarted { heavy } => Outcome::Unstarted { heavy },
     })
 }
 
-/// The look of a page: known, or decided now from what's on hand, a preview if this job's drawn one, otherwise a small picture drawn for it. A page with no images is decided too, as its background may be dark (owner, 2026-11-13: a page already dark is never turned over), from the preview or, if this job's tile covers the whole page, from that, and only with neither from a picture [`IMAGELESS_LOOK_EDGE`] long. Only a look decided from answers is kept: one whose image boxes, size or picture were refused for want of a worker isn't decided at all, as `None` for its images would judge the page whole, which a page with a photograph isn't; one whose picture failed for a reason that may pass is tried again once its wait is over, `now` being when this is asked ([`NoLook::Again`], [`LOOK_TRIES`]); a picture that can't be had at all gives [`PageLook::undecided`], kept.
+/// The look of a page: known, or decided now from what's on hand, a preview if this job's drawn one, otherwise a small picture drawn for it. A page with no images is decided too, as its background may be dark (owner, 2026-11-13: a page already dark is never turned over), from the preview or, if this job's tile covers the whole page, from that, and only with neither from a picture [`IMAGELESS_LOOK_EDGE`] long. Only a look decided from answers is kept: one whose picture failed for a reason that may pass is tried again once its wait is over, `now` being when this is asked ([`NoLook::Again`], [`LOOK_TRIES`]); a picture that can't be had at all gives [`PageLook::undecided`], kept.
 pub(super) fn page_look(
     doc: &mut impl LookSource,
     looks: &mut Looks,
@@ -157,7 +154,7 @@ pub(super) fn page_look(
     if let Some(known) = looks.decided.get(&page) {
         return Ok(Arc::clone(known));
     }
-    let boxes = doc.image_boxes(page, generation).map_err(unstarted)?;
+    let boxes = doc.image_boxes(page, generation);
     if doc.is_stale(generation) {
         return Err(NoLook::Stale);
     }
@@ -192,10 +189,8 @@ pub(super) fn page_look(
 
 /// A small picture of the whole page, drawn to decide its look, and the part of it that was drawn: [`LOOK_PICTURE_EDGE`] long, or [`IMAGELESS_LOOK_EDGE`] for a page with no images. Or why there's none, as what it gives the page.
 fn small_picture(doc: &mut impl LookSource, page: u32, generation: u64, image_less: bool) -> Result<Result<(PixelSurface, TileRect), Picture>, NoLook> {
-    let (width, height) = match doc.page_size(page) {
-        Ok(size) => size,
-        Err(failure @ RenderFailure::WouldStart { .. }) => return Err(unstarted(failure)),
-        Err(_) => return Ok(Err(Picture::Final)),
+    let Ok((width, height)) = doc.page_size(page) else {
+        return Ok(Err(Picture::Final));
     };
     let edge = if image_less { IMAGELESS_LOOK_EDGE } else { LOOK_PICTURE_EDGE };
     let scale = (edge / width.max(height).max(1.0)).clamp(recto_proto::MIN_SCALE, recto_proto::MAX_SCALE);
@@ -225,17 +220,9 @@ fn small_picture(doc: &mut impl LookSource, page: u32, generation: u64, image_le
             Ok(Ok((surface, drawn)))
         }
         Ok(TileResult::Cancelled { .. }) => Err(NoLook::Stale),
-        Err(failure @ RenderFailure::WouldStart { .. }) => Err(unstarted(failure)),
         // The one failure of a draw the tile path treats as one that may pass.
         Err(RenderFailure::NotDrawableNow { .. }) => Ok(Err(Picture::Passing)),
         Err(_) => Ok(Err(Picture::Final)),
-    }
-}
-
-/// A refusal for want of a worker, as [`page_look`] says it. Only [`RenderFailure::WouldStart`] comes here.
-fn unstarted(failure: RenderFailure) -> NoLook {
-    NoLook::Unstarted {
-        heavy: matches!(failure, RenderFailure::WouldStart { heavy: true }),
     }
 }
 

@@ -29,8 +29,8 @@ import json,sys
 d=json.load(sys.stdin)['data']; a=d['app']; rd=d['reader']
 t=[x for x in d['session']['tabs'] if x['id']==d['session']['active']]
 pl=t[0]['place'] if t else {}
-w=rd['last_wake'] or {}; s=rd['sleep_draws']
-print('  state $1: page',rd['page'],'scroll_y',round(rd['scroll_y']),'place',{k:round(v,2) if isinstance(v,float) else v for k,v in pl.items() if k in ('page','within','y')},'settled',rd['settled'],'| wake had=%s from_sleep=%s first_frame_us=%s bare_with_picture=%s sleep_pictures=%s sleep_in_view=%s'%(w.get('had'),w.get('from_sleep'),w.get('first_frame_us'),w.get('bare_with_picture'),w.get('sleep_pictures'),w.get('sleep_in_view')),'| sleep_draws jobs=%s pictures=%s leaves_pictured=%s'%(s['jobs'],s['pictures'],s['leaves_pictured']),'| note=%r sheet=%r find=%r'%(a.get('note'),a.get('sheet'),a['find'].get('status')),'gutters',a['pages'].get('page_gutters'))
+w=rd['last_wake'] or {}
+print('  state $1: page',rd['page'],'scroll_y',round(rd['scroll_y']),'place',{k:round(v,2) if isinstance(v,float) else v for k,v in pl.items() if k in ('page','within','y')},'settled',rd['settled'],'| wake had=%s from_sleep=%s first_frame_us=%s blank_frames=%s'%(w.get('had'),w.get('from_sleep'),w.get('first_frame_us'),w.get('blank_frames')),'| note=%r sheet=%r find=%r'%(a.get('note'),a.get('sheet'),a['find'].get('status')),'gutters',a['pages'].get('page_gutters'))
 " | tee -a "$out/notes.txt"
 }
 until_state() {

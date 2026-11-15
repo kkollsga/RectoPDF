@@ -27,8 +27,8 @@ mod pointer;
 mod refresh;
 mod report;
 mod scratch;
-pub(crate) mod sleep_draw;
 mod wake;
+mod withheld;
 mod zoom;
 
 #[cfg(any(test, feature = "qa"))]
@@ -49,7 +49,8 @@ pub(crate) use place::set_band;
 use pointer::Pointer;
 use scratch::Scratch;
 use wake::Waking;
-pub use wake::{NotShowable, RawPicture, SleepMaterial, SleepShot, SleepSource, SleepView, WakeReport, WakeStock};
+pub use wake::{NotShowable, SleepMaterial, SleepView, WakeEnd, WakeReport, WakeStock};
+pub(crate) use withheld::{WORDS as WITHHELD_WORDS, set as withhold_own_pages};
 
 pub use zoom::{MAX_ZOOM, MIN_ZOOM, ZOOM_STEP, Zoom, typed_zoom, zoom_after_scroll, zoom_percent};
 
@@ -342,18 +343,12 @@ impl Reader {
             if was == Some(version) {
                 continue;
             }
-            // Of the version it was left with.
-            doc.drawing.left_pictures = None;
             let stale: Vec<u64> = self
                 .cache
                 .entries
                 .values()
                 .filter(|entry| entry.tab == tab && !matches!((entry.version, was), (Some(drawn), _) if drawn == version))
-                .filter(|entry| {
-                    was.is_some()
-                        || entry.version.is_some_and(|drawn| drawn != version)
-                        || entry.version.is_none() && entry.preview && self.cache.from_sleep.contains(&entry.id)
-                })
+                .filter(|entry| was.is_some() || entry.version.is_some_and(|drawn| drawn != version))
                 .map(|entry| entry.id)
                 .collect();
             if stale.is_empty() {
@@ -479,10 +474,6 @@ impl Reader {
                 self.pointer.selecting.set_range(range);
             }
         }
-        // On the screen again: it's drawn again, and what it was left with is out of date as soon as it moves.
-        if let Some(doc) = self.docs.views.get_mut(&tab) {
-            doc.drawing.left_pictures = None;
-        }
         self.take_sleep_view(tab);
         // As the session has it for this tab: a tab held warm keeps its layout from when it was shown, which may have been changed since by an agent.
         if let Some(doc) = self.docs.views.get_mut(&tab)
@@ -506,23 +497,12 @@ impl Reader {
 
     /// Leaves the tab that was showing for `tab`: what it showed and where it was are kept with it, and the screen is cleared.
     fn leave_hot(&mut self, tab: u32) {
-        // While what it showed is still on the screen, and so all there.
-        if let Some(left) = self.docs.hot.filter(|hot| self.docs.views.contains_key(hot)) {
-            let pictures = self.pictures_in_view(left);
-            if let Some(doc) = self.docs.views.get_mut(&left) {
-                doc.drawing.left_pictures = Some(pictures);
-            }
-        }
         let last_page = self.place.last_view_page;
         let (left_x, left_y) = (self.viewport.x, self.viewport.y);
         if let Some(doc) = self.docs.hot.and_then(|hot| self.docs.views.get_mut(&hot)) {
             doc.place.left_at = last_page.map(|page| (page, doc.place.anchor));
             doc.place.scroll_x = left_x;
             doc.place.exact_y = Some((left_y, doc.layout.document_height()));
-        }
-        // With its place and its pictures noted: what of its place it has no picture of is drawn once the tab coming has what it needs.
-        if let Some(left) = self.docs.hot {
-            sleep_draw::SleepDraws::left(self, left);
         }
         self.clear_screen();
         self.docs.hot = Some(tab);
@@ -546,6 +526,7 @@ impl Reader {
     pub fn set_warm(&mut self, warm: &[u32]) {
         let Some(hot) = self.docs.hot else { return };
         self.keep_only(warm, hot);
+        self.wake.keep_for(hot, warm);
         self.recount_wanted_files(warm);
         self.cancel_if_unwanted();
     }
@@ -698,9 +679,6 @@ impl Reader {
     pub fn window_closed(&mut self) {
         self.window_open = false;
         self.clear_screen();
-        for doc in self.docs.views.values_mut() {
-            doc.drawing.left_pictures = None;
-        }
         let ids: Vec<u64> = self.cache.entries.keys().copied().collect();
         for id in ids {
             self.cache.forget(id, &mut self.host);
@@ -831,17 +809,12 @@ impl Reader {
             ) => {
                 self.counts.drawn += 1;
                 if self.docs.views.contains_key(&tab) && self.window_open {
-                    let id = self.keep_drawn(tab, position, scale, rect, surface, what, paper, kind, low_res);
-                    if what == DrawKind::Preview {
-                        sleep_draw::SleepDraws::drawn(self, tab, position, id);
-                    }
-                    kept = Some(id);
+                    kept = Some(self.keep_drawn(tab, position, scale, rect, surface, what, paper, kind, low_res));
                 }
             }
             (JobKind::Draw { .. }, Outcome::Cancelled) => {
                 self.counts.cancelled += 1;
             }
-            (_, Outcome::Unstarted { heavy }) => sleep_draw::SleepDraws::unstarted(self, tab, position, heavy),
             (_, Outcome::PageFailed { message, may_pass }) => {
                 self.note_issue(tab, position, message, may_pass);
             }

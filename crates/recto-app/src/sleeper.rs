@@ -171,8 +171,8 @@ impl Hour {
     }
 
     /// **Whether an agent's file of `bytes` fits what's left of the agents' share,** asked before it's written, so the share is never passed: the person's own
-    /// routes always have the rest of the hour. One that doesn't fit uses the share up for pictures till the hour turns ([`Self::has_room`] says no), while a
-    /// smaller file, a tab's facts alone, may still fit.
+    /// routes always have the rest of the hour. One that doesn't fit uses the share up till the hour turns ([`Self::has_room`] says no for an agent's
+    /// write to a tab with a file), and isn't written.
     pub fn agents_fit(&mut self, bytes: u64) -> bool {
         let fits = self.agents.saturating_add(bytes) <= self.agent_cap;
         self.agents_full |= !fits;

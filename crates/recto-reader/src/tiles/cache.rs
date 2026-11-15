@@ -6,7 +6,7 @@ use crate::paper::PaperKind;
 use recto_platform::surface::{PixelSurface, Purge};
 use recto_proto::{TILE_EDGE, TileRect};
 use recto_render_service::{LowResWhy, TileKind};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::Instant;
 
 /// Off-screen surfaces kept, by bytes and by count. Least recently used go first. Platform report §2.6.
@@ -126,8 +126,6 @@ pub(crate) struct TileCache {
     /// Attached entries by page, on the hot tab only.
     pub(super) attached: HashMap<u32, Vec<u64>>,
     pub(super) clock: u64,
-    /// Pictures that came from sleep files, which a worker's word on the version goes over.
-    pub(super) from_sleep: HashSet<u64>,
     /// How many page views share the caps on what's kept: one, or each pane of a comparison, so several panes keep no more between them than one view does.
     pub(super) share: usize,
     /// Lists of a page's tiles on its layer, emptied when the page went off the view and kept for the next page that comes on, so scrolling a page in or out makes no list. At most [`SPARE_LISTS`], each of at most [`SPARE_LIST_ROOM`].
@@ -151,7 +149,6 @@ impl TileCache {
             next_id: 1,
             attached: HashMap::new(),
             clock: 0,
-            from_sleep: HashSet::new(),
             share: 1,
             spare: Vec::new(),
         }
@@ -184,7 +181,6 @@ impl TileCache {
 
     /// Forgets an entry, and its surface with it.
     pub(super) fn forget(&mut self, id: u64, host: &mut HostQueue) {
-        self.from_sleep.remove(&id);
         let Some(entry) = self.entries.remove(&id) else { return };
         for key in Self::keys_of(&entry) {
             if self.cover.get(&key) == Some(&id) {
@@ -316,14 +312,6 @@ impl TileCache {
 impl Reader {
     /// Everything that can go without the page on screen going blank: what's off the layers, and at the worst, every picture too. Those that are discardable may have gone anyway, so this is what the system's asked of us, with nothing kept for later.
     pub fn memory_pressure(&mut self, critical: bool) {
-        // Short enough that previews go: so do the pictures tabs were left with. Those that could go to sleep have, with them, by now.
-        if critical {
-            for doc in self.docs.views.values_mut() {
-                doc.drawing.left_pictures = None;
-            }
-        }
-        // Nothing's drawn for a tab off screen for a while, and what's drawing for one now stops.
-        self.wake.draws.pressure();
         self.cancel_if_unwanted();
         let ids: Vec<u64> = self
             .cache
