@@ -20,9 +20,8 @@ fn files_under(folder: &std::path::Path, found: &mut Vec<(std::path::PathBuf, Ve
     }
 }
 
-/// Failure: the password typed into the sheet is written somewhere in the state folder: the activity log (which records an agent's commands, and here the
-/// ones the test sends while the document is open), the state record, a journal, a sleep file. The person types a password, an agent works on the
-/// session, the record is saved; no file of the state folder holds the password's bytes, and the log has lines.
+/// Failure: the password typed into the sheet is written into the state record, or a file beside it. The person types a password and an agent reads the
+/// tabs; no file under the state folder holds the password's bytes (the folder has the record and its lock).
 #[test]
 fn a_password_the_person_types_is_in_no_file_of_the_state_folder() {
     super::print_protected::deadlines_met();
