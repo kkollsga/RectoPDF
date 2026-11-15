@@ -125,7 +125,7 @@ fn a_save_marks_a_point_that_undo_goes_past_and_comes_back_to() {
     assert!(s.lists().get(a).unwrap().needs_own_pages(), "the delete's way back names a page of this file");
     s.save_prepared(a, target, Some(&keeping));
     write_journal(&mut s, &mut files);
-    let parsed = record::parse_journal(files.values().next().unwrap(), record::JOURNAL_VERSION).unwrap();
+    let parsed = record::parse_journal(files.values().next().unwrap(), record::CURRENT_VERSION).unwrap();
     assert_eq!(parsed.ops.last(), Some(&JournalOp::Saving(target.into())), "said ahead of it, in the journal");
     assert!(
         matches!(parsed.ops.iter().rev().nth(1), Some(JournalOp::Keeping(said)) if said.kept),
@@ -206,7 +206,7 @@ fn a_saved_history_is_a_new_journal_that_comes_back_the_same() {
     assert!(!s.journals().has_pending());
     s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
     write_journal(&mut s, &mut files);
-    let parsed = record::parse_journal(files.values().next().unwrap(), record::JOURNAL_VERSION).unwrap();
+    let parsed = record::parse_journal(files.values().next().unwrap(), record::CURRENT_VERSION).unwrap();
     assert_eq!(parsed.header.file, Some(target.into()), "it's about the new file");
     assert_eq!(parsed.header.file_pages, 3);
     let (replayed, applied) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).unwrap();
@@ -411,7 +411,7 @@ fn clearing_a_history_removes_its_files_and_keeps_unsaved_work() {
         !bytes.windows(10).any(|bytes| bytes == b"secret.pdf"),
         "it's gone from the file, not only from memory"
     );
-    let parsed = record::parse_journal(bytes, record::JOURNAL_VERSION).unwrap();
+    let parsed = record::parse_journal(bytes, record::CURRENT_VERSION).unwrap();
     let (replayed, _) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).unwrap();
     assert_eq!(replayed.to_record(), s.lists().edits_record(a).unwrap());
     let none = s.open(Path::new("/d/none.pdf")).unwrap();

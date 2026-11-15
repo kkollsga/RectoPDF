@@ -146,7 +146,7 @@ fn a_journal_failing_doesnt_send_the_others_again() {
     let done = work.appends.iter().find(|append| append.tab == a).unwrap();
     s.journal_desk().outcome(JournalOutcome {
         written: vec![(a, done.through, done.name.clone())],
-        not_retired: Vec::new(),
+        ..JournalOutcome::default()
     });
     let next = s.journal_desk().work();
     assert_eq!(next.appends.len(), 1);
@@ -172,7 +172,7 @@ fn a_checkpoint_keeps_a_save_in_progress() {
     let (header, base) = s.journal_look().checkpoint_if_caught_up(a).unwrap();
     assert_eq!(header.saving, Some(target.into()));
     assert_eq!(header.keeping, Some(keeping.to_record()), "nor what it kept");
-    let parsed = record::parse_journal(&record::journal_start(&header, Some(&base)), record::JOURNAL_VERSION).unwrap();
+    let parsed = record::parse_journal(&record::journal_start(&header, Some(&base)), record::CURRENT_VERSION).unwrap();
     assert_eq!(parsed.header.saving, Some(target.into()));
 }
 

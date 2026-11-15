@@ -170,6 +170,67 @@ pub(super) fn chain_of(dict: &Dictionary, resolve: &dyn Fn(&Object) -> Option<Ob
         .collect()
 }
 
+/// The filter names a fuzz input picks from: the general ones, their abbreviations, and one that isn't general.
+pub(super) const FUZZ_NAMES: [&[u8]; 11] = [
+    b"FlateDecode",
+    b"LZWDecode",
+    b"ASCIIHexDecode",
+    b"ASCII85Decode",
+    b"RunLengthDecode",
+    b"Fl",
+    b"LZW",
+    b"AHx",
+    b"A85",
+    b"RL",
+    b"DCTDecode",
+];
+
+/// A fuzz input's stream dictionary, and the stream's bytes: [`super::fuzz_stream`] says the layout.
+pub(super) fn fuzz_dictionary(input: &[u8]) -> (Dictionary, &[u8]) {
+    let mut at = 0;
+    let mut byte = || {
+        let value = input.get(at).copied().unwrap_or(0);
+        at = (at + 1).min(input.len());
+        value
+    };
+    let count = usize::from(byte() % 10);
+    let names: Vec<Object> = (0..count)
+        .map(|_| Object::Name(FUZZ_NAMES[usize::from(byte()) % FUZZ_NAMES.len()].to_vec()))
+        .collect();
+    let form = byte() % 5;
+    let parms = |byte: &mut dyn FnMut() -> u8| {
+        let mut dict = Dictionary::new();
+        let predictor = [1, 2, 10, 12, 15, 5, 99][usize::from(byte()) % 7];
+        dict.set("Predictor", Object::Integer(predictor));
+        dict.set("Colors", Object::Integer(i64::from(byte()) - 2));
+        dict.set("BitsPerComponent", Object::Integer([1, 2, 4, 8, 16, 3][usize::from(byte()) % 6]));
+        let columns = u16::from_le_bytes([byte(), byte()]);
+        dict.set("Columns", Object::Integer(if columns == u16::MAX { 1 << 30 } else { i64::from(columns) }));
+        dict.set("EarlyChange", Object::Integer(i64::from(byte() % 3)));
+        Object::Dictionary(dict)
+    };
+    let mut dict = Dictionary::new();
+    match names.len() {
+        0 => {}
+        1 if form != 4 => dict.set("Filter", names[0].clone()),
+        _ => dict.set("Filter", Object::Array(names.clone())),
+    }
+    match form {
+        1 => {
+            let one = parms(&mut byte);
+            dict.set("DecodeParms", one);
+        }
+        2 => {
+            let all: Vec<Object> = (0..names.len()).map(|_| parms(&mut byte)).collect();
+            dict.set("DecodeParms", Object::Array(all));
+        }
+        3 => dict.set("DecodeParms", Object::Null),
+        4 => dict.set("DecodeParms", Object::Integer(7)),
+        _ => {}
+    }
+    (dict, &input[at..])
+}
+
 /// The decoded bytes of `raw` through `chain`, in order, as a reader.
 pub(super) fn decoded<'a>(raw: Box<dyn Read + 'a>, chain: &[Filter]) -> Box<dyn Read + 'a> {
     let mut reader = raw;

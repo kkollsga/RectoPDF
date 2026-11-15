@@ -359,25 +359,7 @@ fn record_seeds() -> Vec<Vec<u8>> {
     let withheld_unreadable = String::from_utf8_lossy(&body)
         .replacen("\"next_id\"", "\"withheld_places\":[1,{\"a\":[2]},-3],\"next_id\"", 1)
         .into_bytes();
-    // A journal with what was read of its edits' pages (the page matcher), and one naming pages the file hasn't.
-    let identified = |page: u32| {
-        let header = recto_session::record::JournalHeader::new(1, std::path::Path::new("/fuzz/p12.pdf"), None, 12, 0);
-        let mut bytes = recto_session::record::journal_start(&header, None);
-        bytes.extend_from_slice(&recto_session::record::journal_lines(&[
-            recto_session::record::JournalOp::Rotate(8, 1, 1, recto_session::record::AuthorName::Owner),
-            recto_session::record::JournalOp::Identified(recto_session::edit::identity::IdentifiedRecord {
-                pages: vec![recto_session::edit::identity::PageIdRecord(
-                    page,
-                    Some("ABEiM0RVZneImaq7zN3u_wQAAAAAAAcAAAA".into()),
-                )],
-                document: None,
-            }),
-        ]));
-        bytes
-    };
     vec![
-        identified(8),
-        identified(400),
         record,
         journal,
         body,
@@ -485,8 +467,91 @@ pub fn for_target(name: &str) -> Vec<Vec<u8>> {
         "chrome" => chrome_seeds(),
         "svg" => svg_seeds(),
         "kept" => kept_seeds(),
+        "page_decode" => page_decode_seeds(),
+        "sidecar" => sidecar_seeds(),
         _ => Vec::new(),
     }
+}
+
+/// Streams for the page digest's decoders (`recto_core::page_id::fuzz_stream` says the layout): every general filter, both predictors with every PNG
+/// row filter, a chain with its parameters, refused parameters, and content with `Do`, strings, dictionaries and an inline image for the scan.
+pub fn page_decode_seeds() -> Vec<Vec<u8>> {
+    use std::io::Write;
+    let content: &[u8] = b"q /Im1 Do Q (a /Fake Do) <2F49> /P << /N /No Do >> BDC [/A Do] BI /W 1 ID \x00 EI /Fm#31 Do % /C Do\n/Last Do";
+    let flate = |data: &[u8]| {
+        let mut out = Vec::new();
+        let mut encoder = flate2::write::ZlibEncoder::new(&mut out, flate2::Compression::default());
+        encoder.write_all(data).unwrap_or_default();
+        encoder.finish().map(|_| ()).unwrap_or_default();
+        out
+    };
+    let rows = |data: &[u8], row: usize| -> Vec<u8> {
+        let mut out = Vec::new();
+        for (at, chunk) in data.chunks(row).enumerate() {
+            out.push((at % 5) as u8);
+            out.extend_from_slice(chunk);
+        }
+        out
+    };
+    let hex: Vec<u8> = content.iter().flat_map(|byte| format!("{byte:02x} ").into_bytes()).chain(*b">").collect();
+    let lzw = weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8)
+        .encode(content)
+        .unwrap_or_default();
+    let with = |head: &[u8], data: &[u8]| [head, data].concat();
+    vec![
+        with(&[0, 0], content),
+        with(&[1, 0, 0], &flate(content)),
+        with(&[1, 1, 0], &lzw),
+        with(
+            &[1, 1, 1, 0, 3, 3, 9, 0, 0],
+            &weezl::encode::Encoder::new(weezl::BitOrder::Msb, 8).encode(content).unwrap_or_default(),
+        ),
+        with(&[1, 2, 0], &hex),
+        with(&[1, 3, 0], b"87cURD]i,\"Ebo80~>"),
+        with(&[1, 4, 0], &[5, b'/', b'I', b'm', b' ', b'D', b'o', 254, b' ', 128]),
+        with(&[1, 0, 1, 4, 3, 3, 9, 0, 1], &flate(&rows(content, 9))),
+        with(&[1, 0, 1, 1, 4, 3, 9, 0, 1], &flate(content)),
+        with(
+            &[2, 2, 0, 2, 0, 3, 3, 9, 0, 1, 3, 3, 3, 9, 0, 1],
+            &flate(&rows(content, 9))
+                .iter()
+                .flat_map(|byte| format!("{byte:02x}").into_bytes())
+                .collect::<Vec<_>>(),
+        ),
+        with(&[2, 0, 0, 1, 2, 3, 3, 9, 0, 1], &flate(content)),
+        with(&[1, 10, 0], content),
+        with(&[1, 0, 4], &flate(content)),
+        with(&[1, 0, 1, 2, 255, 5, 255, 255, 1], &flate(content)),
+    ]
+}
+
+/// Journals' sidecars: a whole one, one torn, and one with the `/ID` pair.
+pub fn sidecar_seeds() -> Vec<Vec<u8>> {
+    use recto_session::edit::identity::{Known, sidecar};
+    let header = sidecar::Header {
+        journal: "journal-0123456789abcdef.log".into(),
+        size: 100,
+        mtime_ns: 1,
+        inode: 2,
+        file_pages: 12,
+    };
+    let known = |seed: u8| Known {
+        digest: [seed; 16],
+        object: (u32::from(seed), 0),
+        frame: 7,
+    };
+    let mut whole = header.encode().unwrap_or_default();
+    whole.extend(sidecar::entries(&[(0, known(0)), (5, known(5)), (11, known(11))], None));
+    let mut with_ids = whole.clone();
+    with_ids.extend(sidecar::entries(
+        &[(3, known(3))],
+        Some(recto_core::page_id::DocumentIds {
+            first: [1; 16],
+            second: [2; 16],
+        }),
+    ));
+    let torn = whole[..whole.len() - 7].to_vec();
+    vec![whole, with_ids, torn]
 }
 
 /// The pages `index` starts from, each after what says how it sits and where the pointer goes: a page as it comes, and one turned, with a pointer on it.
@@ -547,6 +612,8 @@ pub fn check_for(name: &str) -> Option<fn(&[u8])> {
         "chrome" => targets::chrome::check,
         "svg" => targets::svg::check,
         "kept" => targets::kept::check,
+        "page_decode" => targets::page_id::check_stream,
+        "sidecar" => targets::page_id::check_sidecar,
         _ => return None,
     })
 }

@@ -3,7 +3,8 @@
 //! yet read and gone when there are none: no thread at rest, none per tab (rule 1). It takes the session's lock only to ask what to read and to hand in
 //! what it read, never while it reads a file, so the UI and the session thread wait for it nowhere (rule 3). It counts in what's running
 //! ([`super::running::Running::identifying`]), so a settle, a hand-off and the QA waits see it; a quit doesn't wait for it, as what it reads is read
-//! again after a restart from the pages the journal names.
+//! again after a restart from the pages the journal names, which a restore looks for at once ([`after_restore`]). Its jobs are bounded by bytes
+//! (`recto_session::identify::MAX_JOB_BYTES`), not time, and it keeps the file it's reading open across them, so a file's page map is built once.
 
 use super::host::AppHost;
 use std::sync::Arc;
@@ -58,21 +59,25 @@ impl PageIds {
     }
 
     fn run(&self, host: &AppHost) {
+        // The file being read, kept across jobs while it's the same version, and gone with the thread.
+        let mut opened = None;
         loop {
             self.again.store(false, Ordering::SeqCst);
             let jobs = host.session.with_session(|session| recto_session::identify::work(session));
             let mut taken = false;
             for job in &jobs {
                 // Off the lock: a file on a slow disk holds only this thread.
-                let Some(found) = recto_session::identify::read(job) else { continue };
+                let Some(found) = recto_session::identify::read_in(job, &mut opened) else {
+                    continue;
+                };
                 taken |= host.session.with_session(|session| recto_session::identify::identified(session, &found));
             }
             if taken {
                 // What was read goes in the journals, as an edit's operations do.
                 host.saver.edit_made();
             }
-            // More to read (a job read only its first pages), or asked again meanwhile: look again. A file that keeps refusing gives no work back, so
-            // this ends once every job's had its turn and nothing new is asked.
+            // More to read (a job read only to its byte budget), or asked again meanwhile: look again. A file that keeps refusing gives no work back,
+            // and one with a page of no identity is given up on, so this ends once every job's had its turn and nothing new is asked.
             if taken || self.again.load(Ordering::SeqCst) {
                 continue;
             }
@@ -85,13 +90,20 @@ impl PageIds {
     }
 }
 
-/// **A list's record as QA reads it, with what its pages are said only as counts:** a digest is of a document's content, and `qa state` is read by an
-/// agent (at Full, in a development build), so the named pages are how many, how many read, and whether some couldn't be.
-pub(crate) fn without_digests(mut list: serde_json::Value) -> serde_json::Value {
-    if let Some(ids) = list.get_mut("identities") {
-        let pages = ids["pages"].as_array().map_or(0, Vec::len);
-        let read = ids["pages"].as_array().map_or(0, |pages| pages.iter().filter(|page| page.is_array()).count());
-        *ids = serde_json::json!({ "pages": pages, "read": read, "over_cap": ids["over_cap"] });
+/// **A restore brought back lists naming pages not yet read** (a quit while they were being read): they're read now, while their files are, it's
+/// hoped, still the versions their edits are about, without waiting for an edit to ask. A look at the edited tabs' lists, once per restore.
+pub(crate) fn after_restore(host: &Arc<AppHost>, ids: &Arc<PageIds>) {
+    if host.session.with_session(|session| recto_session::identify::has_work(session)) {
+        ids.wanted(host);
     }
-    list
+}
+
+/// **What QA reads of the page matcher's reading, as counts only** (a digest is of a document's content, and the report is read by an agent): pages the
+/// edited tabs name and how many are read, whether the thread is reading, and whether the journals and their sidecars have everything (`caught_up`),
+/// so a test waits for that rather than a time.
+pub(crate) fn report(host: &AppHost, ids: &PageIds) -> serde_json::Value {
+    let ((named, read), caught_up) = host
+        .session
+        .with_session(|session| (recto_session::identify::counts(session), !session.journal_look().has_work()));
+    serde_json::json!({ "named": named, "read": read, "reading": ids.busy(), "caught_up": caught_up })
 }

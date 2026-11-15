@@ -54,7 +54,9 @@
 mod decode;
 mod scan;
 
-use lopdf::{Dictionary, IndexedReader, Object, ObjectId, PageMapEntry};
+use lopdf::{Dictionary, Object, ObjectId, PageMapEntry};
+/// The lazy reader and page map the digest reads through, for a caller that keeps a file open across reads ([`open_for_identity`]).
+pub use lopdf::{IndexedReader, PageMap};
 use scan::DoScan;
 use sha2::{Digest, Sha256};
 use std::io::{self, Read};
@@ -133,7 +135,7 @@ pub fn open_bytes_for_identity(bytes: std::sync::Arc<[u8]>) -> Result<IndexedRea
 
 /// The identities of these pages (zero-based) of a document, in the order asked: `None` for a page it doesn't have, or one with no identity as it
 /// reached a cap.
-pub fn identify_pages(reader: &IndexedReader, map: &lopdf::PageMap, pages: &[u32]) -> Vec<Option<PageIdentity>> {
+pub fn identify_pages(reader: &IndexedReader, map: &PageMap, pages: &[u32]) -> Vec<Option<PageIdentity>> {
     pages
         .iter()
         .map(|page| map.get(*page as usize).and_then(|entry| identify_page(reader, entry, &Caps::STANDARD)))
@@ -195,6 +197,40 @@ fn frame_tag(frame: crate::nav::Frame) -> u32 {
     }
     let tag = hasher.finalize();
     u32::from_le_bytes([tag[0], tag[1], tag[2], tag[3]])
+}
+
+/// **For the fuzzer:** `input` as a stream's `/Filter`, `/DecodeParms` and bytes, decoded as the digest decodes ([`decode`]) up to `limit` bytes, the
+/// decoded bytes and the raw ones fed to the `Do` scan ([`scan`]). Says how many bytes it decoded (`None` where the chain isn't taken or didn't decode)
+/// and how many names the scans kept. Every decoder, predictor and parameter form is reachable from it: byte 0 is the count of filters (to 9, one more
+/// than taken), a byte each picks one ([`decode::FUZZ_NAMES`]), the next the form of the parameters, then each filter's `/Predictor`, `/Colors`,
+/// `/BitsPerComponent`, `/Columns` (`u16le`) and `/EarlyChange`; the rest is the stream.
+#[doc(hidden)]
+pub fn fuzz_stream(input: &[u8], limit: u64) -> (Option<u64>, usize) {
+    let (dict, data) = decode::fuzz_dictionary(input);
+    let mut names = DoScan::default();
+    names.feed(data);
+    let mut kept = names.names().len();
+    let Some(chain) = decode::chain_of(&dict, &|object| Some(object.clone())) else {
+        return (None, kept);
+    };
+    let mut source = decode::decoded(Box::new(data), &chain);
+    let mut scan = DoScan::default();
+    let mut buf = vec![0u8; decode::CHUNK];
+    let mut n = 0u64;
+    while n <= limit {
+        match source.read(&mut buf) {
+            Ok(0) => break,
+            Ok(read) => {
+                n += read as u64;
+                scan.feed(&buf[..read]);
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return (None, kept + scan.names().len()),
+        }
+    }
+    scan.end_of_stream();
+    kept += scan.names().len();
+    (Some(n), kept)
 }
 
 /// A cap was reached: the page has no identity.

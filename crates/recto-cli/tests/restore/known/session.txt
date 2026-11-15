@@ -34,9 +34,6 @@ session.edits_full.N.added[].page_count
 session.edits_full.N.added[].path
 session.edits_full.N.file_pages
 session.edits_full.N.history_dropped
-session.edits_full.N.identities.over_cap
-session.edits_full.N.identities.pages
-session.edits_full.N.identities.read
 session.edits_full.N.owner_step_dropped
 session.edits_full.N.pages.len
 session.edits_full.N.pages[].len

@@ -20,7 +20,7 @@ impl HistorySource for Store {
 
     fn read_list(&self, name: &str) -> Option<RestoredEdits> {
         let journals = self.journals.lock().unwrap();
-        let parsed = record::parse_journal(journals.get(name)?, record::JOURNAL_VERSION).ok()?;
+        let parsed = record::parse_journal(journals.get(name)?, record::CURRENT_VERSION).ok()?;
         let (edits, applied) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).ok()?;
         Some(RestoredEdits {
             edits,

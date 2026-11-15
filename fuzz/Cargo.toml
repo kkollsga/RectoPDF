@@ -128,3 +128,17 @@ path = "fuzz_targets/kept.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "page_decode"
+path = "fuzz_targets/page_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sidecar"
+path = "fuzz_targets/sidecar.rs"
+test = false
+doc = false
+bench = false

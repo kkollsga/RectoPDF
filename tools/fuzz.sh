@@ -19,7 +19,7 @@ while [ $# -gt 0 ]; do
     *) targets+=("$1"); shift ;;
   esac
 done
-[ ${#targets[@]} -gt 0 ] || targets=(pdf_bytes pdf_tree save_copy proto index select agent control edits record update generated corpus chrome svg kept)
+[ ${#targets[@]} -gt 0 ] || targets=(pdf_bytes pdf_tree save_copy proto index select agent control edits record update generated corpus chrome svg kept page_decode sidecar)
 toolchain="${FUZZ_TOOLCHAIN:-nightly}"
 sanitizer="${FUZZ_SANITIZER:-none}"
 mkdir -p "$work"
@@ -51,6 +51,8 @@ max_len() {
     chrome) echo 16384 ;;
     svg) echo 65536 ;;
     kept) echo 1024 ;;
+    page_decode) echo 65536 ;;
+    sidecar) echo 16384 ;;
   esac
 }
 
@@ -61,7 +63,7 @@ for target in "${targets[@]}"; do
   mkdir -p "$corpus" "$artifacts"
   "$seeder" "$target" "$corpus"
   extra=()
-  case "$target" in pdf_bytes|pdf_tree) extra+=("-dict=$PWD/fuzz/dict/pdf.dict") ;; esac
+  case "$target" in pdf_bytes|pdf_tree|page_decode) extra+=("-dict=$PWD/fuzz/dict/pdf.dict") ;; esac
   # A check's own limits come first, so what hangs says which it was. These are the backstop, for what never returns at all.
   # A crash in one target doesn't stop the others. Its whole log is in <work>/<target>.log.
   # No leak check between runs: the control target keeps a server and its threads across inputs on purpose, and under a sanitizer two runs with it on ended with the server not answering, which none has without it.
