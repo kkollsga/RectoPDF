@@ -86,6 +86,9 @@ impl Found {
     }
 }
 
+/// The digests of a named page's neighbours in the old file, before and after, where those were named and read.
+type Neighbours = (Option<[u8; 16]>, Option<[u8; 16]>);
+
 /// What a scan has seen of one named page's digest.
 #[derive(Clone, Copy, Debug, Default)]
 struct Seen {
@@ -101,7 +104,7 @@ pub struct Matcher {
     /// The named pages read, ascending: (old page, what it was).
     old: Vec<(u32, Known)>,
     /// The digests of each one's neighbours in the old file, where those were named and read.
-    neighbours: Vec<(Option<[u8; 16]>, Option<[u8; 16]>)>,
+    neighbours: Vec<Neighbours>,
     by_object: HashMap<(u32, u16), usize>,
     by_digest: HashMap<[u8; 16], Vec<usize>>,
     /// Found by object number: the new page, or `None` where two new pages had the number (a hostile page tree can list one page twice).
