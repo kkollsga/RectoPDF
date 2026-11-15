@@ -185,6 +185,10 @@ pub fn decode_sleep(bytes: &[u8], newest: u32) -> Result<SleepFile, RecordError>
         return Err(bad("too large"));
     }
     let (_, _, body) = open_sealed(SLEEP_KIND, bytes, newest)?;
+    // The format first, from the start alone, before anything else is parsed: an older file's facts and what follows them are never read.
+    if sleep_format_of(bytes).is_none_or(|format| format < SLEEP_FORMAT) {
+        return Err(bad("an older format"));
+    }
     let end = body.iter().position(|byte| *byte == b'\n').ok_or(bad("no first line"))?;
     let meta: Meta = serde_json::from_slice(&body[..end]).map_err(|_| bad("a first line that doesn't read"))?;
     if meta.sleep_format < SLEEP_FORMAT {
