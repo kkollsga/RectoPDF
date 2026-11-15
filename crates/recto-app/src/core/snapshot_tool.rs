@@ -30,9 +30,11 @@ use std::time::Duration;
 /// A notice's "Copy anyway", followed by the notice's number.
 const ANYWAY_PREFIX: &str = "tools.copy_anyway.";
 
-/// **How long the system's paste of a promised SVG is waited for,** on the app's clock (coordinator, 2026-11-14): past it the paste gets nothing and the
-/// SVG being made is stopped. The UI thread waits here only, as the system asks there and wants the bytes in its answer.
-pub const PASTE_PATIENCE_MS: u64 = 10_000;
+/// **How long the system's paste of a promised SVG is waited for,** on the app's clock: past it the paste gets nothing and the SVG being made is
+/// stopped. The UI thread waits here only, as the system asks there and wants the bytes in its answer. Three seconds (owner, 2026-11-15, on the
+/// coordinator's numbers: 17 to 511 ms for eleven of twelve cases, a full-page box of the heaviest map 2.15 s; `docs/OWNER-RULES.md`): it was 10 s for a
+/// day and had no bound before that. Making the SVG ahead of the paste, so nothing waits, is planned for after the release.
+pub const PASTE_PATIENCE_MS: u64 = 3_000;
 
 /// What a release asked for, kept so "Copy anyway" can ask again.
 #[derive(Clone, Copy, Debug, PartialEq)]
