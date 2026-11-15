@@ -85,10 +85,47 @@ print(f"  ok  macOS Developer ID, {app_id}, keychain group allowed, expires {exp
 EOF
 rm -f "$dir/profile.plist"
 
+# What tells apart why a signing would wait (run 43751288571 hung at its first team signing for the job's whole 20 minutes): the keychains
+# searched and the default, the signing keychain's settings (asked under a limit, as a locked keychain may wait to be unlocked), and how many
+# signing identities are found. Paths and counts only.
+now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time * 1000'; }
+keychains() {
+  echo "  keychains searched: $(security list-keychains -d user | tr -d '"' | tr -s ' \n' ' ')"
+  echo "  default keychain: $(security default-keychain -d user | tr -d '" ')"
+  if [ -n "${PREFLIGHT_KEYCHAIN:-}" ]; then
+    case " $(security list-keychains -d user | tr -d '"' | tr -s ' \n' ' ') " in
+      *" $PREFLIGHT_KEYCHAIN "*) echo "  the signing keychain is searched" ;;
+      *) echo "  the signing keychain isn't searched" ;;
+    esac
+    echo "  the signing keychain's settings: $(perl -e 'alarm shift; exec @ARGV' 10 security show-keychain-info "$PREFLIGHT_KEYCHAIN" 2>&1 | tr '\n' ' ' || true)"
+  fi
+  echo "  signing identities: $(perl -e 'alarm shift; exec @ARGV' 10 security find-identity -v -p codesigning 2>/dev/null | tail -1 || true)"
+}
+# limited <seconds> <what> <command...>: the command under a limit, with its milliseconds; one that passes its limit hung, which is said with
+# the keychains as they are then, and ends the run.
+limited() {
+  local limit="$1" what="$2" started code=0 ms
+  shift 2
+  started=$(now_ms)
+  perl -e 'alarm shift; exec @ARGV' "$limit" "$@" || code=$?
+  ms=$(($(now_ms) - started))
+  if [ "$code" -eq 142 ]; then
+    echo "::error::$what didn't finish in $limit s: it hung"
+    keychains
+    exit 1
+  elif [ "$code" -ne 0 ]; then
+    echo "::error::$what failed (exit $code, after $ms ms)"
+    exit 1
+  fi
+  echo "  ok  $what ($ms ms)"
+}
+
+echo "The keychains, before any signing"
+keychains
 echo "The builds"
 for build in a b d e; do
   sed "s/PROBE_BUILD/$build/" "$root/tools/release/dp-keychain-probe.swift" > "$dir/$build.swift"
-  swiftc -O "$dir/$build.swift" -o "$dir/$build"
+  limited 120 "building $build" swiftc -O "$dir/$build.swift" -o "$dir/$build"
 done
 cat > "$dir/probe.entitlements" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -115,17 +152,24 @@ bundle() {
 </dict></plist>
 EOF
 }
+echo "The signings, one thing more each time, so the first that waits says what it was"
+cp "$dir/a" "$dir/plain"
+limited 60 "the team signing a plain program" codesign --force --options runtime --timestamp=none --sign "$sign_key" "$dir/plain"
+cp "$dir/a" "$dir/plain-claims"
+limited 60 "the team signing a plain program with the entitlements" \
+  codesign --force --options runtime --timestamp=none --entitlements "$dir/probe.entitlements" --sign "$sign_key" "$dir/plain-claims"
 bundle A "$dir/a"
 bundle B "$dir/b"
 for build in A B; do
-  codesign --force --options runtime --timestamp=none --entitlements "$dir/probe.entitlements" --sign "$sign_key" "$dir/$build.app"
+  limited 60 "the team signing bundle $build, with the entitlements and its profile" \
+    codesign --force --options runtime --timestamp=none --entitlements "$dir/probe.entitlements" --sign "$sign_key" "$dir/$build.app"
 done
 cp -R "$dir/B.app" "$dir/C.app"
-codesign --force --sign - "$dir/C.app"
+limited 60 "signing C ad hoc" codesign --force --sign - "$dir/C.app"
 cp -R "$dir/B.app" "$dir/Cplus.app"
-codesign --force --sign - --entitlements "$dir/probe.entitlements" "$dir/Cplus.app"
-codesign --force --sign - -i "$bundle_id.dp-probe-d" "$dir/d"
-codesign --force --options runtime --timestamp=none --sign "$sign_key" -i "$bundle_id.other" "$dir/e"
+limited 60 "signing C+ ad hoc, claiming the entitlements" codesign --force --sign - --entitlements "$dir/probe.entitlements" "$dir/Cplus.app"
+limited 60 "signing D ad hoc" codesign --force --sign - -i "$bundle_id.dp-probe-d" "$dir/d"
+limited 60 "the team signing E, another identifier" codesign --force --options runtime --timestamp=none --sign "$sign_key" -i "$bundle_id.other" "$dir/e"
 cdhash() { codesign -dvvv "$1" 2>&1 | sed -n 's/^CDHash=//p'; }
 [ "$(cdhash "$dir/A.app")" != "$(cdhash "$dir/B.app")" ] || { echo "::error::A and B are the same build" >&2; exit 1; }
 for name in A B C Cplus; do
