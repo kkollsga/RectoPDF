@@ -34,6 +34,40 @@ fn wait_long(run: &Run<'_>, holds: impl Fn(&Value) -> bool) -> Value {
     }
 }
 
+/// The watchdog looks every 250 ms: a stretch seen waiting in this many looks held the window, whatever the machine did besides.
+const WAITING_LOOKS_THAT_HOLD: u64 = 3;
+
+/// What the run's hang record says about the window, for the rule "a slow file never holds the window": `Err` with why if a stall reached the fail
+/// bound, or the UI thread was seen waiting (blocked on something, not short of a core) for `WAITING_LOOKS_THAT_HOLD` looks. A stretch over the note
+/// bound in which it was ready to run in every look is a starved machine's, and passes (CI, 2026-11-15: 1.2 s, ready to run, 84 ms of CPU, load 33 on 3 cores).
+fn held_the_window(hangs: &Value) -> Result<(), String> {
+    if hangs["over_2s"] != 0 {
+        return Err(format!("a stall reached the fail bound: {hangs}"));
+    }
+    let worst = &hangs["worst"];
+    if worst["waiting_looks"].as_u64().unwrap_or(0) >= WAITING_LOOKS_THAT_HOLD {
+        return Err(format!("the UI thread was waiting, not short of a core: {hangs}"));
+    }
+    Ok(())
+}
+
+/// Failure: the rule's judge lets a waiting thread pass because the machine was slow, or fails a starved one.
+#[test]
+fn a_waiting_window_is_told_from_a_starved_one() {
+    let hangs = |over_2s: u64, waiting: u64, running: u64| serde_json::json!({ "over_2s": over_2s, "worst": { "waiting_looks": waiting, "running_looks": running, "cpu_ms": 84, "wall_ms": 1238 } });
+    assert!(held_the_window(&hangs(0, 0, 1)).is_ok(), "starved: ready to run, little CPU");
+    assert!(held_the_window(&hangs(0, 2, 1)).is_ok(), "a short wait");
+    assert!(
+        held_the_window(&hangs(0, 3, 1)).unwrap_err().contains("waiting"),
+        "slept, then waited for a core"
+    );
+    assert!(held_the_window(&hangs(1, 0, 9)).is_err(), "the fail bound is the fail bound");
+    assert!(
+        held_the_window(&serde_json::json!({ "over_2s": 0, "worst": null })).is_ok(),
+        "no stretch over a second"
+    );
+}
+
 /// Failure (PLAN, phase 4): opening reads a file's structure with lopdf on the UI thread, so a hostile file that's slow to read (here three
 /// sections relisting about a million numbers each, seconds of lopdf's time) holds the window past the 2 s rule. Opened by an agent's `recto open`
 /// and by File > Open Recent, the window's own path (`AppCore::open_recent`, as a Finder open's `open_file` goes, onto the core queue), the
@@ -59,7 +93,9 @@ fn opening_a_slow_hostile_file_never_holds_the_window() {
         "opened by `recto open` in {by_agent:?}, by Open Recent in {by_menu:?}; the window's worst wait {}",
         hangs["worst_ms"]
     );
-    assert_eq!(hangs["over_2s"], 0, "{hangs}");
-    assert_eq!(hangs["over_1s"], 0, "not even a 1 s note: {hangs}");
+    // Not `over_1s == 0`: a starved runner makes a stretch of a second with the thread ready to run (CI run 43711366303, load 33 on 3 cores).
+    if let Err(why) = held_the_window(hangs) {
+        panic!("{why}");
+    }
     assert_eq!(state["session"]["tabs"][0]["pages"].as_u64().or(Some(1)), Some(1));
 }
