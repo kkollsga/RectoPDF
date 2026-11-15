@@ -1050,8 +1050,8 @@ fn a_damaged_corpus_is_not_believed() {
     );
     assert_eq!(
         disk_state(&FindKey::for_tests(1), &root, key),
-        DiskState::Nothing,
-        "and to that key there's nothing to go on from"
+        DiskState::SealedElsewhere { lasting: false },
+        "and to that key it is sealed by another, which doesn't last"
     );
     fs::write(&paths.pack, b"short").unwrap();
     assert_eq!(ReadyCorpus::open(tk(), &root, key).unwrap_err(), Damaged, "a pack of the wrong length");
