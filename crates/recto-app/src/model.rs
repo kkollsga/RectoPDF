@@ -947,8 +947,8 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
         jump: None,
         // Its labels, for a link's hint: none of the file's while its pages are withheld.
         toc: session.warm().toc(id).filter(|_| !withheld).cloned(),
-        // Withheld, the edits' highlights go with the pages they're on.
-        marks: crate::core::highlight::marks_of(session, id).filter(|_| !withheld),
+        // Withheld, the own file's highlights go with the pages they're on; an added PDF's stay with its pages.
+        marks: crate::core::highlight::marks_shown(session, id, withheld),
         band: recto_session::reading_band(session, tab),
         withheld,
     })

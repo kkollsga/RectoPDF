@@ -888,3 +888,36 @@ fn a_tabs_pages_come_back_when_its_edits_version_is_written_back_in_place() {
     assert_eq!(notice(&app), None);
     assert_eq!(app.core().engine.note(), None, "no page says it can't be shown");
 }
+
+/// Failure (review of `build/shorter-file-pages`): only the tab's own file's pages are withheld while its edits are held, but every highlight went,
+/// those on pages added from another PDF too, which are still drawn. Held: the added page is drawn and keeps its highlight; the own file's go.
+#[test]
+fn a_held_tabs_pages_added_from_another_pdf_keep_their_highlights() {
+    let app = HeadlessApp::start();
+    app.core().engine.waking().window_up();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 10));
+    let added = app.disk().file("added.pdf", &pdf_bytes("Added", 2));
+    app.open(&file);
+    app.recto(Level::Full, &["page", "insert", added.to_str().unwrap(), "--at", "11"])
+        .expect("added at the end");
+    app.agent(Level::Control, r##"{"cmd":"highlight","tab":"active","page":11,"chars":"0-4"}"##)
+        .expect("a highlight on the added page");
+    app.agent(Level::Control, r##"{"cmd":"highlight","tab":"active","page":3,"chars":"0-4"}"##)
+        .expect("one on the own file's page 3");
+    app.recto(Level::Control, &["page", "rotate", "9", "--by", "90"]).expect("turned");
+    app.settle();
+    replace(&file, &pdf_bytes("Theirs", 5));
+    look(&app);
+    let id = recto_session::TabId(app.session_json()["tabs"][0]["id"].as_u64().expect("a tab") as u32);
+    let marks = app.core().host.session.with_session(|s| {
+        crate::model::pane_snapshot(s, id, true, &[id]).and_then(|pane| {
+            pane.withheld
+                .then_some(pane.marks.map(|marks| marks.pages.iter().map(|(page, _)| *page).collect::<Vec<_>>()))
+        })
+    });
+    assert_eq!(marks, Some(Some(vec![10])), "withheld, with only the added page's highlight (position 10)");
+    app.recto(Level::Full, &["goto", "11"]).expect("to the added page");
+    drawn(&app);
+    let (attached, _, withheld) = tiles(&app);
+    assert!(withheld && attached >= 1, "the added page is drawn: {}", app.core().engine.report().0);
+}
