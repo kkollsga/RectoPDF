@@ -1,5 +1,40 @@
 use super::*;
 
+/// Failure: the reader's own scroll of less than a point is taken for the host rounding its view, as a word from the host on its pixel of the place is
+/// (`a_view_the_host_rounded_to_its_pixels_is_still_on_the_place`), so the place stays where the jump left it and the window closed and opened again puts
+/// the view back there. The reader's scroll is the view moving with nothing else changed, an arrival or a change of size not among it: it moves the place,
+/// however short.
+#[test]
+fn the_readers_own_scroll_of_less_than_a_point_moves_the_place() {
+    let mut reader = reader_on(100);
+    reader.place.scrolled_to = 0;
+    settle(&mut reader);
+    reader.set_viewport(Viewport { scrolled_to: 0, ..view(0.0) });
+    reader.jump_to(40, 0.3);
+    let Some(Op::ScrollTo { y, seq }) = reader.host.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else {
+        panic!("no scroll")
+    };
+    let mut there = Viewport { scrolled_to: seq, ..view(y) };
+    reader.set_viewport(there);
+    // A word from the host that isn't the reader: the place is kept.
+    there.height += 1.0;
+    reader.set_viewport(there);
+    assert_eq!(reader.places()[0].1.anchor, (40, 0.3));
+    // The reader's own, four tenths of a point down.
+    there.y = y + 0.4;
+    reader.set_viewport(there);
+    reader.place.scrolled_to = 0;
+    reader.window_closed();
+    reader.set_viewport(Viewport { scrolled_to: 0, ..view(0.0) });
+    reader.window_opened();
+    let back = last_scroll_to(&mut reader);
+    assert!(
+        (back - (y + 0.4)).abs() < 1e-6,
+        "sent back to {back}, where the reader had scrolled to {}",
+        y + 0.4
+    );
+}
+
 /// Failure: an agent's `goto` to a page reads as the reader having scrolled there and then scrolled back, so the session's place fights the jump. Arriving isn't a move, and a real scroll afterwards is.
 #[test]
 fn a_jump_isnt_reported_back_as_a_move() {

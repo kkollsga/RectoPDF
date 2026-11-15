@@ -60,6 +60,12 @@ pub(super) fn reading_line(layout: &PageLayout, y: f64, height: f64, page: u32) 
     layout.anchor_for(y + along * (last.y + last.height - end).max(0.0), page)
 }
 
+/// **The host's pixel: a view within [`HOST_ROUNDING`] of a place is on it.** The host puts the view on its own pixels, a fraction of a point from where it
+/// was sent.
+pub(super) fn on_host_pixel(view_y: f64, place_y: f64) -> bool {
+    (view_y - place_y).abs() < HOST_ROUNDING
+}
+
 /// Moves the place clock on, saying where it's come to.
 pub(super) fn tick() -> u64 {
     PLACE_CLOCK.fetch_add(1, Ordering::SeqCst) + 1
@@ -197,11 +203,13 @@ impl Place {
         }
         // Arriving where a change of layout sent it, the place stays as it was kept, even where the view couldn't reach it, as at the foot of a document smaller than the view.
         let moved = !self.arrived && doc.place.exact_y.is_none_or(|(y, _)| y != viewport.y);
-        if moved {
-            // The host puts the view on its own pixels, so a view this near where the place is is on it, said the host's way. Taken again from the rounded height, the top of a page would be the foot of the one above, from the gap between them.
-            if (doc.layout.anchor_y(doc.place.anchor) - viewport.y).abs() >= HOST_ROUNDING {
-                doc.place.anchor = doc.layout.anchor_for(viewport.y, page);
-            }
+        // A word from the host on its own pixel of the place, pixel or anchor as `place_y` has it, isn't the reader moving, and both are kept ([`on_host_pixel`]):
+        // taken again from the rounded height, the top of a page would be the foot of the one above, from the gap between them; and the pixel dropped by a word
+        // from a window of another width, where the view was on the anchor, a launch whose state came in late came back to the anchor and not the pixel (CI run
+        // 43751284816). The reader's own scroll moves the place however short it is: it's the view moving down or up with nothing else changed
+        // (`note_viewport`), which a host's word on its pixel never is, as it comes with an arrival or a change of size.
+        if moved && (self.user_scrolled || !on_host_pixel(viewport.y, doc.place_y())) {
+            doc.place.anchor = doc.layout.anchor_for(viewport.y, page);
             doc.place.exact_y = None;
         }
         doc.place.scroll_x = viewport.x;
