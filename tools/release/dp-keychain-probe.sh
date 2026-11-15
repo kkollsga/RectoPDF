@@ -12,7 +12,7 @@
 #   A and B   app-like bundles of the app's bundle identifier with the profile embedded, signed by the team with the hardened runtime and
 #             the entitlements on the main executable (the App ID, the team, the keychain group); B is a later build, as an update is.
 #   C         B's bundle signed again ad hoc, without the entitlements: a development build, or any program of this user's.
-#   C+        B's bundle signed ad hoc, claiming the entitlements: a planter pretending to be the app.
+#   C+        B's bundle, the release's real profile still in it, signed ad hoc claiming the entitlements: a planter pretending to be the app.
 #   D         a plain program, ad hoc.
 #   E         a program the team signed with another identifier and no profile: what a team-signed `recto` would be.
 # What must hold, and fails the run, each a line with the OSStatus and the milliseconds:
@@ -227,7 +227,7 @@ for name in C D E; do
   for mode in read add update delete; do step refused "$name" "$mode"; done
 done
 echo "4. A program claiming the app's entitlements without its profile is stopped"
-for mode in read update delete; do step stopped Cplus "$mode"; done
+for mode in read add update delete; do step stopped Cplus "$mode"; done
 echo "5. B still reads what A made"
 step ok B read
 same_bytes B

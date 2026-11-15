@@ -123,6 +123,9 @@ struct Keys {
     access_group: CfRef,
     accessible: CfRef,
     after_first_unlock_this_device: CfRef,
+    /// What would carry an item to the person's other devices through iCloud: named only for the test that the key never asks for it.
+    #[cfg(test)]
+    synchronizable: CfRef,
 }
 
 // SAFETY: the constants are immutable CFStrings of a framework that's never unloaded, and the functions are thread-safe.
@@ -186,6 +189,8 @@ fn security() -> Option<&'static Security> {
                         access_group: key(c"kSecAttrAccessGroup")?,
                         accessible: key(c"kSecAttrAccessible")?,
                         after_first_unlock_this_device: key(c"kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly")?,
+                        #[cfg(test)]
+                        synchronizable: key(c"kSecAttrSynchronizable")?,
                     },
                 })
             }
@@ -540,6 +545,7 @@ mod tests {
                 names.group.0,
                 "{what} isn't in the app's access group"
             );
+            assert!(value(dictionary, sec.keys.synchronizable).is_null(), "{what} asks for the item to go to iCloud");
         }
         assert_eq!(
             value(&item, sec.keys.accessible),
