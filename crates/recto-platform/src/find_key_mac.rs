@@ -1,10 +1,8 @@
-//! **The Find key in the person's Keychain**, for the app signed by the team, and nobody else. The file-based login keychain, by `SecItem`, named alone: an item made by the app trusts the app's designated requirement and is in the team's partition, so the same team's next version reads it with no prompt (read: Apple's TN3137 and DTS's guidance; the release preflight's probe, `tools/release/keychain-probe.sh`, measures it on the team's signature). A copy with any other signature can see the item is there and can't read or delete it: measured here on 2026-11-15 with two ad hoc builds of one identifier, a read was refused with `errSecAuthFailed` in 9 ms and a delete with `errSecInvalidOwnerEdit` in 5 ms, with nothing shown.
-//!
-//! **The login keychain alone, found by its path.** The look names it as the whole search list (`kSecMatchSearchList`) and the add names it as the keychain to add to (`kSecUseKeychain`), so a keychain another program of this user's puts ahead in the search list, or makes the default, is never read or written: such a keychain is the planter's own, its password known to it, so it could hold an item in the team's partition that would open with no prompt (the preflight's probe measures the planted cases, each read both ways). The login keychain is opened by its path under the user's real home folder, from the user database and not `$HOME` ([`crate::local::real_home`]), as `~/Library/Keychains/login.keychain-db`, after a look that it's a plain file of this user's and not a link ([`fit_login_keychain`]). Not by `SecKeychainCopyDomainDefault`, which answers from the user's preferences, which any program of this user's can change; and not by `SecKeychainCopyLogin`, which Security.framework exports but no public header declares. **Outside what this protects:** a program of this user's that replaces the login keychain's file itself, with a keychain of its own whose password it knows and unlocks, between the look and the open or before the app starts. The look takes out a link put in its place, not that.
+//! **The Find key in the person's data-protection keychain, in the app's own access group** (the owner's decision, 2026-11-15, after the login keychain was shown not to hold the claim: runs 43706807396 and 43708234469, a program of this user's could plant an item the app read, or overwrite the app's own; every run's numbers are in `docs/engineering/search-index.md`). `SecItem` with `kSecUseDataProtectionKeychain`, a generic password in the group `<team>.<bundle id>` (the app ID, from `recto_update`'s `TEAM_ID` and `BUNDLE_ID`, passed in as [`super::App`]), readable after the first unlock and on this Mac only. An item in an access group can be made or read only by a program whose signature claims that group, and the claim is a restricted entitlement a provisioning profile must authorize (Apple's TN3137 and TN3125: "other developers can't impersonate your app in order to steal its keychain items"); the release's profile is the team's Developer ID profile for the app ID, embedded in the bundle, with the entitlements on the main executable only. **Narrower than "only this app":** the profile allows the groups `6GND8Z2C7Z.*`, so another app of the same team, with Keychain Sharing and a profile of its own, could claim this group too; the probe's E, the team's with another identifier, had no profile, so that case isn't measured (put to the owner, 2026-11-15). A program without the entitlement, a development build or any other program of this user's, is refused with `errSecMissingEntitlement` (-34018) or finds nothing; the release preflight's probe (`tools/release/dp-keychain-probe.sh`) measures each of those on the team's signature, the profile and the runner, and that a later build reads what an earlier one made with no prompt: run 43754866746, every one held (`docs/engineering/search-index.md`).
 //!
 //! **Asked only by a copy that is the team's release, checked whole:** [`signed_as_a_release`] holds this process's code on disk to the Developer ID requirement the updater uses ([`crate::signing`]), validating the executable and every sealed resource, nested code included, so a copy with a resource changed, or an ad hoc signature claiming the team, never asks.
 //!
-//! **Nothing prompts: the process-wide switch is what's relied on.** `SecKeychainSetUserInteractionAllowed(false)` is set before the first call and never set back, so a locked keychain, or an item this copy's signature isn't trusted for, is a refusal, never a sheet. The per-query `kSecUseAuthenticationUIFail` is set as well, but Apple's header says it governs the data-protection keychain only ("Legacy keychain items will still activate UI"), so it isn't counted on; the probe measures each alone. The switch is the whole process's: it silences every keychain prompt the app could raise, of which there are none besides this one (the app reads no other item; signing, notarizing and the updater's checks are other processes), and `recto-platform`'s source is held by a test to set it nowhere else. The caller then runs on a key in memory ([`super::FindKey::in_memory`]) and never adds a second item.
+//! **Nothing prompts.** The data-protection keychain asks nothing of the person for an item with no access control, which this is; the per-query `kSecUseAuthenticationUIFail` is set as well, and governs that keychain. The probe runs with neither of the app's guards, so what it measures isn't owed to them. The process-wide switch, `SecKeychainSetUserInteractionAllowed(false)`, is still set before the first call and never set back, as it was for the login keychain (measured then, run 43699949398): it silences the file-based keychain's prompts, of which the app should raise none now, so it's kept as a guard against one that would come of a mistake, at no cost; a test holds the crates to naming it nowhere else. **Not measured:** `errSecInteractionNotAllowed` (-25308) before the Mac's first unlock; whether `kSecUseAuthenticationUIFail` governs this keychain as its header says; a renewed certificate's build reading the item an older one made; any of it on a person's Mac rather than CI's runner. A refusal of any kind leaves the run on a key in memory for now ([`super::FindKey::in_memory_for_now`]), and it's said only where `qa state` shows the key's plan: never to the person as an error, never to an agent.
 //!
 //! **CoreFoundation's copies:** adding the key copies it into a `CFData`, and reading it hands back another; both are CoreFoundation's to free, and neither is overwritten, as `CFData` can't be told to. Each lives for the one call. The key itself is copied straight from that data into [`FindKey`]'s own memory.
 //!
@@ -22,7 +20,10 @@ type CfBoolean = u8;
 const ERR_SEC_SUCCESS: OsStatus = 0;
 const ERR_SEC_ITEM_NOT_FOUND: OsStatus = -25300;
 const ERR_SEC_DUPLICATE_ITEM: OsStatus = -25299;
+#[cfg(test)]
 const ERR_SEC_INTERACTION_NOT_ALLOWED: OsStatus = -25308;
+/// `errSecMissingEntitlement`: this program's signature doesn't claim the access group, so it may neither read nor make an item in it.
+const ERR_SEC_MISSING_ENTITLEMENT: OsStatus = -34018;
 const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
 /// `kSecCSCheckNestedCode | kSecCSStrictValidate`: on top of the default, which validates the executable and every sealed resource, the nested code (the renderer's helper, its library) and strict structure, as `codesign --verify --deep --strict` does.
 const K_SEC_CS_RELEASE_CHECK: u32 = (1 << 3) | (1 << 4);
@@ -38,15 +39,14 @@ pub(super) enum Refused {
     NotTheTeam,
     /// Security.framework, or something in it, couldn't be had.
     Unavailable,
-    /// The Keychain is locked, and unlocking it would need the person.
-    Locked,
-    /// There's an item this copy may not read: another signature made it. It isn't replaced, so items can't pile up.
-    NotOurs(OsStatus),
+    /// There may be an item, and this copy can't read it now (`errSecInteractionNotAllowed` before the Mac's first unlock, or any status but "no item" and "not entitled"). Nothing is added over it.
+    Unreadable(OsStatus),
+    /// This copy's signature doesn't claim the app's access group (`errSecMissingEntitlement`): a release built without its profile and entitlements. Nothing is made: it's a key in memory for now, and the lasting key's index is left for a copy that has them.
+    NotEntitled,
     /// The item holds something that isn't a key.
     NotAKey,
     /// The OS gave no randomness for a new key.
     NoRandomness,
-    Other(OsStatus),
 }
 
 impl Refused {
@@ -54,11 +54,10 @@ impl Refused {
         match self {
             Self::NotTheTeam => "not_signed_by_the_team",
             Self::Unavailable => "keychain_unavailable",
-            Self::Locked => "keychain_locked",
-            Self::NotOurs(_) => "keychain_item_not_ours",
+            Self::Unreadable(_) => "keychain_item_unreadable",
+            Self::NotEntitled => "keychain_not_entitled",
             Self::NotAKey => "keychain_item_not_a_key",
             Self::NoRandomness => "no_randomness",
-            Self::Other(_) => "keychain_refused",
         }
     }
 }
@@ -88,14 +87,8 @@ unsafe extern "C" {
     #[cfg(test)]
     fn CFURLCreateFromFileSystemRepresentation(allocator: CfRef, path: *const u8, length: isize, directory: CfBoolean) -> CfRef;
     fn CFRelease(value: CfRef);
-    fn CFArrayCreate(allocator: CfRef, values: *const CfRef, count: isize, callbacks: *const c_void) -> CfRef;
     #[cfg(test)]
     fn CFDictionaryGetValue(dictionary: CfRef, key: CfRef) -> CfRef;
-    #[cfg(test)]
-    fn CFArrayGetCount(array: CfRef) -> isize;
-    #[cfg(test)]
-    fn CFArrayGetValueAtIndex(array: CfRef, index: isize) -> CfRef;
-    static kCFTypeArrayCallBacks: [*const c_void; 5];
     static kCFTypeDictionaryKeyCallBacks: CfDictionaryKeyCallBacks;
     static kCFTypeDictionaryValueCallBacks: CfDictionaryValueCallBacks;
     static kCFBooleanTrue: CfRef;
@@ -104,14 +97,17 @@ unsafe extern "C" {
 /// What's used of Security.framework, found once.
 struct Security {
     copy_matching: unsafe extern "C" fn(CfRef, *mut CfRef) -> OsStatus,
-    open_keychain: unsafe extern "C" fn(*const libc::c_char, *mut CfRef) -> OsStatus,
     add: unsafe extern "C" fn(CfRef, *mut CfRef) -> OsStatus,
+    #[cfg(feature = "keychain-probe")]
+    delete: unsafe extern "C" fn(CfRef) -> OsStatus,
     copy_self: unsafe extern "C" fn(u32, *mut CfRef) -> OsStatus,
     copy_static: unsafe extern "C" fn(CfRef, u32, *mut CfRef) -> OsStatus,
     #[cfg(test)]
     static_with_path: unsafe extern "C" fn(CfRef, u32, *mut CfRef) -> OsStatus,
     requirement: unsafe extern "C" fn(CfRef, u32, *mut CfRef) -> OsStatus,
     check_static: unsafe extern "C" fn(CfRef, u32, CfRef) -> OsStatus,
+    /// Whether the process-wide switch is off, as it's set before anything else is asked. Not having it doesn't stop the key being taken (the security read's F1): the data-protection keychain doesn't prompt for an item like this one, and it's said in `qa state` if so.
+    switch_off: bool,
     keys: Keys,
 }
 
@@ -127,8 +123,13 @@ struct Keys {
     match_limit_one: CfRef,
     authentication_ui: CfRef,
     authentication_ui_fail: CfRef,
-    match_search_list: CfRef,
-    use_keychain: CfRef,
+    data_protection: CfRef,
+    access_group: CfRef,
+    accessible: CfRef,
+    after_first_unlock_this_device: CfRef,
+    /// What would carry an item to the person's other devices through iCloud: named only for the test that the key never asks for it.
+    #[cfg(test)]
+    synchronizable: CfRef,
 }
 
 // SAFETY: the constants are immutable CFStrings of a framework that's never unloaded, and the functions are thread-safe.
@@ -156,20 +157,19 @@ fn security() -> Option<&'static Security> {
             };
             // SAFETY: each constant's symbol is the address of a CFStringRef, read once.
             let key = |name: &CStr| find(name).map(|found| unsafe { *found.cast::<CfRef>() }).filter(|value| !value.is_null());
-            // SAFETY: the function's real signature, `OSStatus (Boolean)`.
-            let no_interaction: unsafe extern "C" fn(CfBoolean) -> OsStatus = unsafe { std::mem::transmute(find(SWITCH)?) };
-            // SAFETY: as declared above. Refused for the whole process, for good: see the module's notes.
-            if unsafe { no_interaction(0) } != ERR_SEC_SUCCESS {
-                return None;
-            }
+            let switch_off = find(SWITCH).is_some_and(|found| {
+                // SAFETY: the function's real signature, `OSStatus (Boolean)`.
+                let no_interaction: unsafe extern "C" fn(CfBoolean) -> OsStatus = unsafe { std::mem::transmute(found) };
+                // SAFETY: as declared above. Refused for the whole process, for good: see the module's notes.
+                unsafe { no_interaction(0) == ERR_SEC_SUCCESS }
+            });
             // SAFETY: each is the named function's real signature.
             unsafe {
                 Some(Security {
                     copy_matching: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(CfRef, *mut CfRef) -> OsStatus>(find(c"SecItemCopyMatching")?),
-                    open_keychain: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(*const libc::c_char, *mut CfRef) -> OsStatus>(find(
-                        c"SecKeychainOpen",
-                    )?),
                     add: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(CfRef, *mut CfRef) -> OsStatus>(find(c"SecItemAdd")?),
+                    #[cfg(feature = "keychain-probe")]
+                    delete: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(CfRef) -> OsStatus>(find(c"SecItemDelete")?),
                     copy_self: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(u32, *mut CfRef) -> OsStatus>(find(c"SecCodeCopySelf")?),
                     copy_static: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(CfRef, u32, *mut CfRef) -> OsStatus>(find(c"SecCodeCopyStaticCode")?),
                     #[cfg(test)]
@@ -180,6 +180,7 @@ fn security() -> Option<&'static Security> {
                         c"SecRequirementCreateWithString",
                     )?),
                     check_static: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(CfRef, u32, CfRef) -> OsStatus>(find(c"SecStaticCodeCheckValidity")?),
+                    switch_off,
                     keys: Keys {
                         class: key(c"kSecClass")?,
                         generic_password: key(c"kSecClassGenericPassword")?,
@@ -191,8 +192,12 @@ fn security() -> Option<&'static Security> {
                         match_limit_one: key(c"kSecMatchLimitOne")?,
                         authentication_ui: key(c"kSecUseAuthenticationUI")?,
                         authentication_ui_fail: key(c"kSecUseAuthenticationUIFail")?,
-                        match_search_list: key(c"kSecMatchSearchList")?,
-                        use_keychain: key(c"kSecUseKeychain")?,
+                        data_protection: key(c"kSecUseDataProtectionKeychain")?,
+                        access_group: key(c"kSecAttrAccessGroup")?,
+                        accessible: key(c"kSecAttrAccessible")?,
+                        after_first_unlock_this_device: key(c"kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly")?,
+                        #[cfg(test)]
+                        synchronizable: key(c"kSecAttrSynchronizable")?,
                     },
                 })
             }
@@ -244,35 +249,63 @@ fn dictionary(pairs: &[(CfRef, CfRef)]) -> Option<Owned> {
     .made()
 }
 
-/// Whether static code meets a requirement, with the executable, every sealed resource and the nested code validated ([`K_SEC_CS_RELEASE_CHECK`]).
-fn static_code_meets(sec: &Security, code: &Owned, requirement: &str) -> bool {
-    let Some(text) = cf_string(requirement) else { return false };
+/// What checking static code against a requirement said, with the executable, every sealed resource and the nested code validated ([`K_SEC_CS_RELEASE_CHECK`]): the check's status, or `None` when it couldn't be made (the requirement didn't compile).
+fn static_code_check(sec: &Security, code: &Owned, requirement: &str) -> Option<OsStatus> {
+    let text = cf_string(requirement)?;
     let mut compiled: CfRef = std::ptr::null();
     // SAFETY: a string and an out-pointer.
     if unsafe { (sec.requirement)(text.0, 0, &mut compiled) } != ERR_SEC_SUCCESS {
-        return false;
+        return None;
     }
-    let Some(compiled) = Owned(compiled).made() else { return false };
+    let compiled = Owned(compiled).made()?;
     // SAFETY: a static code object and a requirement, both held.
-    unsafe { (sec.check_static)(code.0, K_SEC_CS_RELEASE_CHECK, compiled.0) == ERR_SEC_SUCCESS }
+    Some(unsafe { (sec.check_static)(code.0, K_SEC_CS_RELEASE_CHECK, compiled.0) })
+}
+
+/// Whether this copy is the team's release, as one of three answers: only a check that was made and failed says it isn't (the security read's F1). One that couldn't be made says nothing either way, and the run takes a key in memory for now, which never builds over the lasting key's index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Release {
+    Yes,
+    No,
+    Unknown,
+}
+
+/// The statuses that are a check made and failed: the code isn't signed, or isn't as signed, or doesn't meet the requirement, or its resources aren't as sealed. From the macOS SDK's `Security.framework/Headers/CSCommon.h`: errSecCSUnsigned, errSecCSSignatureFailed, errSecCSResourcesNotSealed, errSecCSResourcesNotFound, errSecCSBadResource, errSecCSResourceRulesInvalid, errSecCSReqFailed, errSecCSSignatureInvalid, errSecCSInfoPlistFailed, errSecCSResourceDirectoryFailed, errSecCSBadNestedCode, errSecCSUnsealedAppRoot, errSecCSWeakResourceRules, errSecCSBadMainExecutable, errSecCSUnsealedFrameworkRoot, errSecCSSignatureUntrusted, errSecCSRevokedNotarization. Every other status, such as errSecCSSignatureNotVerifiable (-67060: the verifier couldn't read the code) or errSecCSStaticCodeChanged (-67034: the code on disk isn't what's running, as after an update in place), says the check couldn't be made (the second security read's item 4).
+const NOT_THE_RELEASE: &[OsStatus] = &[
+    -67062, -67061, -67057, -67056, -67054, -67053, -67050, -67045, -67030, -67023, -67021, -67014, -67013, -67010, -67008, -66996, -66992,
+];
+
+/// What a check's status, or its not being made, answers.
+fn release_answer(status: Option<OsStatus>) -> Release {
+    match status {
+        None => Release::Unknown,
+        Some(ERR_SEC_SUCCESS) => Release::Yes,
+        Some(status) if NOT_THE_RELEASE.contains(&status) => Release::No,
+        Some(_) => Release::Unknown,
+    }
+}
+
+/// Whether the process-wide switch is off: not, if Security.framework couldn't be had, or the switch wasn't there or refused.
+pub(super) fn prompts_switched_off() -> bool {
+    security().is_some_and(|sec| sec.switch_off)
 }
 
 /// **Whether this running copy is the team's release, checked whole:** its code on disk, the bundle it was launched from, validated against its signature (the executable, every sealed resource, nested code, strictly) and held to the Developer ID requirement the updater uses. A development build is ad hoc and fails; so does an ad hoc signature claiming the team, and a release with a resource changed. Costs a hash of the whole bundle, once per run, on the thread that takes the key.
-pub(super) fn signed_as_a_release(team: &str) -> bool {
-    let Some(sec) = security() else { return false };
+pub(super) fn signed_as_a_release(team: &str) -> Release {
+    let Some(sec) = security() else { return Release::Unknown };
     let mut running: CfRef = std::ptr::null();
     // SAFETY: an out-pointer for the call.
     if unsafe { (sec.copy_self)(0, &mut running) } != ERR_SEC_SUCCESS {
-        return false;
+        return Release::Unknown;
     }
-    let Some(running) = Owned(running).made() else { return false };
+    let Some(running) = Owned(running).made() else { return Release::Unknown };
     let mut on_disk: CfRef = std::ptr::null();
     // SAFETY: the running code above, and an out-pointer.
     if unsafe { (sec.copy_static)(running.0, 0, &mut on_disk) } != ERR_SEC_SUCCESS {
-        return false;
+        return Release::Unknown;
     }
-    let Some(on_disk) = Owned(on_disk).made() else { return false };
-    static_code_meets(sec, &on_disk, &crate::signing::developer_id_requirement(team))
+    let Some(on_disk) = Owned(on_disk).made() else { return Release::Unknown };
+    release_answer(static_code_check(sec, &on_disk, &crate::signing::developer_id_requirement(team)))
 }
 
 /// Whether the code at `path` meets `requirement`, checked as [`signed_as_a_release`] checks this copy: for its tests, on a bundle they make.
@@ -290,108 +323,109 @@ fn path_meets(path: &std::path::Path, requirement: &str) -> bool {
     if unsafe { (sec.static_with_path)(url.0, 0, &mut code) } != ERR_SEC_SUCCESS {
         return false;
     }
-    Owned(code).made().is_some_and(|code| static_code_meets(sec, &code, requirement))
+    Owned(code)
+        .made()
+        .is_some_and(|code| release_answer(static_code_check(sec, &code, requirement)) == Release::Yes)
 }
 
-/// The key under `service` and `account`, made and added the first time: at most three Keychain calls, a look, an add, and a look again if another run added one first. Only [`super::load_for_the_app`] calls this, and only once [`signed_as_a_release`] has said yes.
-pub(super) fn load_or_create(service: &str, account: &str) -> Result<FindKey, Refused> {
+/// The key under `service` and `account` in the access `group`, made and added the first time: at most three Keychain calls, a look, an add, and a look again if another run added one first. Only [`super::load_for_the_app`] calls this, and only once [`signed_as_a_release`] has said yes.
+pub(super) fn load_or_create(service: &str, account: &str, group: &str) -> Result<FindKey, Refused> {
     let sec = security().ok_or(Refused::Unavailable)?;
-    let login = login_keychain(sec).ok_or(Refused::Unavailable)?;
-    let (service, account) = (cf_string(service).ok_or(Refused::Unavailable)?, cf_string(account).ok_or(Refused::Unavailable)?);
-    let only_login = Owned(array_of_one(login.0)).made().ok_or(Refused::Unavailable)?;
-    let query = lookup(sec, &service, &account, &only_login).ok_or(Refused::Unavailable)?;
+    let names = Names {
+        service: cf_string(service).ok_or(Refused::Unavailable)?,
+        account: cf_string(account).ok_or(Refused::Unavailable)?,
+        group: cf_string(group).ok_or(Refused::Unavailable)?,
+    };
+    let query = lookup(sec, &names).ok_or(Refused::Unavailable)?;
     let mut found: CfRef = std::ptr::null();
     // SAFETY: a query dictionary and an out-pointer.
     let status = unsafe { (sec.copy_matching)(query.0, &mut found) };
     let found = Owned(found);
-    match status {
-        ERR_SEC_SUCCESS => return key_from_data(&found),
-        ERR_SEC_ITEM_NOT_FOUND => {}
-        ERR_SEC_INTERACTION_NOT_ALLOWED => return Err(Refused::Locked),
-        // `errSecAuthFailed` and the like: the item is there and isn't this copy's to read.
-        other => return Err(Refused::NotOurs(other)),
+    match after_lookup(status) {
+        Lookup::Found => return key_from_data(&found),
+        Lookup::Absent => {}
+        Lookup::Refused(status) => return Err(refusal(status)),
     }
     let key = FindKey::fresh(Source::Keychain).map_err(|_| Refused::NoRandomness)?;
     // SAFETY: the key's bytes live for the call, and CF copies them. The copy is CF's to free, and isn't overwritten: CFData can't be told to.
     let data = Owned(unsafe { CFDataCreate(std::ptr::null(), key.bytes().as_ptr(), KEY_BYTES as isize) })
         .made()
         .ok_or(Refused::Unavailable)?;
-    let item = new_item(sec, &service, &account, &login, &data).ok_or(Refused::Unavailable)?;
+    let item = new_item(sec, &names, &data).ok_or(Refused::Unavailable)?;
     // SAFETY: an item dictionary, and no result wanted.
     match unsafe { (sec.add)(item.0, std::ptr::null_mut()) } {
         ERR_SEC_SUCCESS => Ok(key),
         // Another run of the app added one first: that one is the key.
         ERR_SEC_DUPLICATE_ITEM => load_existing(sec, query.0),
-        ERR_SEC_INTERACTION_NOT_ALLOWED => Err(Refused::Locked),
-        other => Err(Refused::Other(other)),
+        status => Err(refusal(status)),
     }
 }
 
-/// The look for the item: in the login keychain alone (`only_login`, an array of that one keychain), its data wanted, one match, no prompt asked for.
-fn lookup(sec: &Security, service: &Owned, account: &Owned, only_login: &Owned) -> Option<Owned> {
-    dictionary(&[
+/// Removes the item under `service` and `account` in `group`, for the release preflight's probe alone: its status, or -1 when nothing could be asked.
+#[cfg(feature = "keychain-probe")]
+pub(super) fn remove(service: &str, account: &str, group: &str) -> OsStatus {
+    let Some(sec) = security() else { return -1 };
+    let (Some(service), Some(account), Some(group)) = (cf_string(service), cf_string(account), cf_string(group)) else {
+        return -1;
+    };
+    let Some(query) = dictionary(&[
         (sec.keys.class, sec.keys.generic_password),
         (sec.keys.service, service.0),
         (sec.keys.account, account.0),
         // SAFETY: a framework constant, never released.
+        (sec.keys.data_protection, unsafe { kCFBooleanTrue }),
+        (sec.keys.access_group, group.0),
+    ]) else {
+        return -1;
+    };
+    // SAFETY: a query dictionary.
+    unsafe { (sec.delete)(query.0) }
+}
+
+/// The item's names, as CoreFoundation strings.
+struct Names {
+    service: Owned,
+    account: Owned,
+    group: Owned,
+}
+
+/// The look for the item: in the data-protection keychain, in the app's access group, its data wanted, one match, no prompt asked for.
+fn lookup(sec: &Security, names: &Names) -> Option<Owned> {
+    dictionary(&[
+        (sec.keys.class, sec.keys.generic_password),
+        (sec.keys.service, names.service.0),
+        (sec.keys.account, names.account.0),
+        // SAFETY: a framework constant, never released.
+        (sec.keys.data_protection, unsafe { kCFBooleanTrue }),
+        (sec.keys.access_group, names.group.0),
+        // SAFETY: as above.
         (sec.keys.return_data, unsafe { kCFBooleanTrue }),
         (sec.keys.match_limit, sec.keys.match_limit_one),
         (sec.keys.authentication_ui, sec.keys.authentication_ui_fail),
-        (sec.keys.match_search_list, only_login.0),
     ])
 }
 
-/// The new item: into the login keychain, not the default one.
-fn new_item(sec: &Security, service: &Owned, account: &Owned, login: &Owned, data: &Owned) -> Option<Owned> {
+/// The new item: in the data-protection keychain, in the app's access group, readable after the Mac's first unlock and on this Mac only.
+fn new_item(sec: &Security, names: &Names, data: &Owned) -> Option<Owned> {
     dictionary(&[
         (sec.keys.class, sec.keys.generic_password),
-        (sec.keys.service, service.0),
-        (sec.keys.account, account.0),
+        (sec.keys.service, names.service.0),
+        (sec.keys.account, names.account.0),
+        // SAFETY: a framework constant, never released.
+        (sec.keys.data_protection, unsafe { kCFBooleanTrue }),
+        (sec.keys.access_group, names.group.0),
+        (sec.keys.accessible, sec.keys.after_first_unlock_this_device),
         (sec.keys.value_data, data.0),
         (sec.keys.authentication_ui, sec.keys.authentication_ui_fail),
-        (sec.keys.use_keychain, login.0),
     ])
 }
 
-/// A CF array holding `value` alone, retained by it.
-fn array_of_one(value: CfRef) -> CfRef {
-    if value.is_null() {
-        return std::ptr::null();
+/// What a status that isn't the answer wanted means: not entitled to the group, or not readable now.
+fn refusal(status: OsStatus) -> Refused {
+    match status {
+        ERR_SEC_MISSING_ENTITLEMENT => Refused::NotEntitled,
+        status => Refused::Unreadable(status),
     }
-    let values = [value];
-    // SAFETY: one CF object, retained by the array through the standard callbacks.
-    unsafe { CFArrayCreate(std::ptr::null(), values.as_ptr(), 1, (&raw const kCFTypeArrayCallBacks).cast()) }
-}
-
-/// Where the login keychain is: under the real home folder, never `$HOME`.
-fn login_keychain_path(home: &std::path::Path) -> std::path::PathBuf {
-    home.join("Library/Keychains/login.keychain-db")
-}
-
-/// Whether the file at `path` may be opened as the login keychain: a plain file, not a link, owned by `uid`. Anything else, a missing file included, means no Keychain this run.
-fn fit_login_keychain(path: &std::path::Path, uid: u32) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::symlink_metadata(path).is_ok_and(|found| found.file_type().is_file() && found.uid() == uid)
-}
-
-/// The login keychain, opened by its path ([`login_keychain_path`]) once [`fit_login_keychain`] says yes. Opening reads nothing: it's a reference to the file.
-fn login_keychain(sec: &Security) -> Option<Owned> {
-    use std::os::unix::ffi::OsStrExt;
-    let path = login_keychain_path(&crate::local::real_home()?);
-    if !fit_login_keychain(&path, crate::local::current_uid()) {
-        return None;
-    }
-    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
-    open_keychain_at(sec, &path)
-}
-
-fn open_keychain_at(sec: &Security, path: &CStr) -> Option<Owned> {
-    let mut keychain: CfRef = std::ptr::null();
-    // SAFETY: a NUL-terminated path and an out-pointer.
-    if unsafe { (sec.open_keychain)(path.as_ptr(), &mut keychain) } != ERR_SEC_SUCCESS {
-        return None;
-    }
-    Owned(keychain).made()
 }
 
 fn load_existing(sec: &Security, query: CfRef) -> Result<FindKey, Refused> {
@@ -399,9 +433,27 @@ fn load_existing(sec: &Security, query: CfRef) -> Result<FindKey, Refused> {
     // SAFETY: a query dictionary and an out-pointer.
     let status = unsafe { (sec.copy_matching)(query, &mut found) };
     let found = Owned(found);
+    match after_lookup(status) {
+        Lookup::Found => key_from_data(&found),
+        Lookup::Absent | Lookup::Refused(_) => Err(refusal(status)),
+    }
+}
+
+/// What a lookup's status means for what comes next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lookup {
+    Found,
+    /// No item: the only answer after which one is added.
+    Absent,
+    /// Anything else: nothing is added.
+    Refused(OsStatus),
+}
+
+fn after_lookup(status: OsStatus) -> Lookup {
     match status {
-        ERR_SEC_SUCCESS => key_from_data(&found),
-        status => Err(Refused::NotOurs(status)),
+        ERR_SEC_SUCCESS => Lookup::Found,
+        ERR_SEC_ITEM_NOT_FOUND => Lookup::Absent,
+        other => Lookup::Refused(other),
     }
 }
 
@@ -428,7 +480,11 @@ mod tests {
     /// Failure: a test build counts as the team's release, so a quiet run or a test would reach the person's Keychain.
     #[test]
     fn a_test_build_is_not_a_release() {
-        assert!(!signed_as_a_release("6GND8Z2C7Z"), "an ad hoc test binary passed as the team's release");
+        assert_eq!(
+            signed_as_a_release("6GND8Z2C7Z"),
+            Release::No,
+            "an ad hoc test binary passed as the team's release, or its check wasn't made"
+        );
     }
 
     /// Failure: an item whose data is empty or isn't 32 bytes is read as a key, or reading it makes a slice from CoreFoundation's null pointer (undefined behaviour: empty `CFData` has none). Fed straight to the read path, with no Keychain.
@@ -483,6 +539,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp);
     }
 
+    /// Failure (the security read's F1): a release check that couldn't be made (a requirement that didn't compile) reads as "not the team's release", so a run that may simply have failed to look builds over the person's lasting index; or one that was made and failed reads as unknown, so a development build waits for a Keychain it will never have. Only a made check's failure is "no".
+    #[test]
+    fn only_a_check_that_was_made_and_failed_says_not_the_release() {
+        assert_eq!(release_answer(Some(ERR_SEC_SUCCESS)), Release::Yes);
+        // A made check's failures, from CSCommon.h: not signed, signature changed, requirement not met, a resource changed, nested code changed.
+        for status in [-67062, -67061, -67050, -67054, -67021, -66996] {
+            assert_eq!(release_answer(Some(status)), Release::No, "{status}");
+        }
+        // Couldn't be made: the code unreadable to the verifier, the disk changed under the running copy, an unsupported requirement, anything else.
+        for status in [-67060, -67034, -67051, -67052, -1, 1] {
+            assert_eq!(release_answer(Some(status)), Release::Unknown, "{status}");
+        }
+        assert_eq!(release_answer(None), Release::Unknown);
+        let sec = security().expect("Security.framework");
+        let here = Owned(std::ptr::null());
+        assert_eq!(
+            static_code_check(sec, &here, "not a requirement ("),
+            None,
+            "a requirement that doesn't compile gave a status"
+        );
+    }
+
+    /// Failure: a lookup that was refused (a locked keychain, an item another signature made or planted, any answer but "no item") goes on to add one, so the app writes a second key beside a planted one, or over the person's own while their keychain is locked. Only "no item" leads to an add; every other status the probe has seen, and any other, is a refusal.
+    #[test]
+    fn only_no_item_leads_to_an_add() {
+        assert_eq!(after_lookup(ERR_SEC_ITEM_NOT_FOUND), Lookup::Absent);
+        assert_eq!(after_lookup(ERR_SEC_SUCCESS), Lookup::Found);
+        for status in [-25293, ERR_SEC_INTERACTION_NOT_ALLOWED, -25244, ERR_SEC_DUPLICATE_ITEM, -128, -34018, -1, 1] {
+            assert_eq!(after_lookup(status), Lookup::Refused(status), "{status} would go on to add an item");
+        }
+    }
+
     /// Failure: something else in the app turns the process-wide switch back on, or touches it at all, so a later Keychain call could prompt: it's set off once, here, and nowhere else names it (the Keychain's code is opened by name, so a call to it is a mention of it).
     #[test]
     fn the_switch_is_set_once_and_never_back() {
@@ -514,62 +602,55 @@ mod tests {
         );
     }
 
-    /// Failure: the look or the add goes to the default search list again, so a keychain another program of this user's puts ahead of the login keychain, or makes the default, is read or written. Each dictionary is built as the app builds it, around a keychain reference opened on a path in a temp folder (opening reads and makes nothing), and must name that keychain alone.
+    /// Failure: the look or the add leaves the data-protection keychain or the app's access group out, so the item goes to the login keychain, where another program of this user's could plant or overwrite it (runs 43706807396 and 43708234469), or into another group; or the item is made readable before the first unlock, or carried to another Mac. Each dictionary is built as the app builds it, and nothing is asked of a keychain.
     #[test]
-    fn the_look_and_the_add_name_the_login_keychain_alone() {
+    fn the_look_and_the_add_name_the_data_protection_keychain_and_the_apps_group() {
         let sec = security().expect("Security.framework");
-        let path = std::env::temp_dir().join(format!("recto-not-a-keychain-{}.keychain-db", std::process::id()));
-        let path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
-        let login = open_keychain_at(sec, &path).expect("a keychain reference");
-        let (service, account) = (cf_string("test-service").unwrap(), cf_string("test-account").unwrap());
-        let only_login = Owned(array_of_one(login.0)).made().unwrap();
-        let query = lookup(sec, &service, &account, &only_login).unwrap();
-        // SAFETY: a dictionary and a key, both held; the values got are the dictionary's, not released here.
-        let list = unsafe { CFDictionaryGetValue(query.0, sec.keys.match_search_list) };
-        assert!(!list.is_null(), "the look names no search list");
-        // SAFETY: the array named above, held by the dictionary.
-        unsafe {
-            assert_eq!(CFArrayGetCount(list), 1, "the look's search list isn't the login keychain alone");
-            assert_eq!(CFArrayGetValueAtIndex(list, 0), login.0, "the look's search list is another keychain");
-        }
+        let names = Names {
+            service: cf_string("test-service").unwrap(),
+            account: cf_string("test-account").unwrap(),
+            group: cf_string("6GND8Z2C7Z.io.github.kkollsga.RectoPDF").unwrap(),
+        };
         let bytes = [0u8; KEY_BYTES];
         // SAFETY: the bytes live for the call, and CF copies them.
         let data = Owned(unsafe { CFDataCreate(std::ptr::null(), bytes.as_ptr(), KEY_BYTES as isize) });
-        let item = new_item(sec, &service, &account, &login, &data).unwrap();
-        // SAFETY: a dictionary and a key, both held.
+        let (query, item) = (lookup(sec, &names).unwrap(), new_item(sec, &names, &data).unwrap());
+        // SAFETY: dictionaries and keys, all held; the values got are the dictionaries', not released here.
+        let value = |dictionary: &Owned, key: CfRef| unsafe { CFDictionaryGetValue(dictionary.0, key) };
+        for (what, dictionary) in [("the look", &query), ("the add", &item)] {
+            // SAFETY: a framework constant.
+            assert_eq!(
+                value(dictionary, sec.keys.data_protection),
+                unsafe { kCFBooleanTrue },
+                "{what} isn't in the data-protection keychain"
+            );
+            assert_eq!(
+                value(dictionary, sec.keys.access_group),
+                names.group.0,
+                "{what} isn't in the app's access group"
+            );
+            assert!(value(dictionary, sec.keys.synchronizable).is_null(), "{what} asks for the item to go to iCloud");
+        }
         assert_eq!(
-            unsafe { CFDictionaryGetValue(item.0, sec.keys.use_keychain) },
-            login.0,
-            "the add goes to the default keychain"
+            value(&item, sec.keys.accessible),
+            sec.keys.after_first_unlock_this_device,
+            "the item isn't readable after the first unlock, on this Mac only"
         );
     }
 
-    /// Failure: the app opens as its login keychain something put in the file's place that isn't a plain file of this user's: a link to a keychain elsewhere, a folder, or nothing at all (which Security would open as a reference anyway). And the path is the one under the home folder it's given.
+    /// Failure: a program without the app's entitlement, a release built without its profile, is taken as one whose item can't be read just now, or the other way round; or "no item" in the group is taken as a refusal, so the key is never made.
     #[test]
-    fn only_a_plain_file_of_this_users_is_the_login_keychain() {
-        let home = std::env::temp_dir().join(format!("recto-login-keychain-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        let path = login_keychain_path(&home);
-        assert!(
-            path.starts_with(&home) && path.ends_with("Library/Keychains/login.keychain-db"),
-            "{}",
-            path.display()
+    fn missing_the_entitlement_is_its_own_refusal() {
+        assert_eq!(refusal(ERR_SEC_MISSING_ENTITLEMENT), Refused::NotEntitled);
+        assert_eq!(Refused::NotEntitled.code(), "keychain_not_entitled");
+        for status in [ERR_SEC_INTERACTION_NOT_ALLOWED, -25293, -128, -1] {
+            assert_eq!(refusal(status), Refused::Unreadable(status), "{status}");
+        }
+        assert_eq!(
+            after_lookup(ERR_SEC_MISSING_ENTITLEMENT),
+            Lookup::Refused(ERR_SEC_MISSING_ENTITLEMENT),
+            "a missing entitlement led to an add"
         );
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let uid = crate::local::current_uid();
-        assert!(!fit_login_keychain(&path, uid), "a missing file passed");
-        std::fs::create_dir(&path).unwrap();
-        assert!(!fit_login_keychain(&path, uid), "a folder passed");
-        std::fs::remove_dir(&path).unwrap();
-        let elsewhere = home.join("planted.keychain-db");
-        std::fs::write(&elsewhere, b"not a keychain").unwrap();
-        std::os::unix::fs::symlink(&elsewhere, &path).unwrap();
-        assert!(!fit_login_keychain(&path, uid), "a link to another file passed");
-        std::fs::remove_file(&path).unwrap();
-        std::fs::write(&path, b"a plain file").unwrap();
-        assert!(fit_login_keychain(&path, uid), "the user's own plain file was refused");
-        assert!(!fit_login_keychain(&path, uid.wrapping_add(1)), "another user's file passed");
-        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// What the check costs, by hand (`--ignored`), on a built app: `RECTO_CHECK_BUNDLE=<…/RectoPDF.app>`.

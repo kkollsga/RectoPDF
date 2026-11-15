@@ -9,6 +9,10 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# For tests only, and never in the app: `corpus::opened_text`, a reader of what a corpus keeps of a document.
+test-seams = []
+
 [dependencies]
 recto-proto.workspace = true
 # For the one rule on invisible characters, shared with titles and names.
@@ -19,7 +23,15 @@ serde_json.workspace = true
 sha2.workspace = true
 # A checksum per page, in hardware on this Mac. Already in the tree through flate2, so it adds no crate.
 crc32fast.workspace = true
+# The Find text is sealed on disk: `seal.rs`.
+aes-gcm.workspace = true
+hkdf.workspace = true
+getrandom.workspace = true
+# A page's opened text overwritten before its buffer grows.
+zeroize.workspace = true
 
 [dev-dependencies]
+# Test-only: `FindKey::for_tests`.
+recto-platform = { workspace = true, features = ["test-seams"] }
 # Test-only: fresh temp folders.
 recto-testpdf.workspace = true

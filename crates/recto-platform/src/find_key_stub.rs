@@ -20,10 +20,28 @@ impl Refused {
     }
 }
 
-pub(super) fn signed_as_a_release(_team: &str) -> bool {
-    false
+/// Whether this copy is the team's release: never, where there's no Keychain. The three answers the Mac's check gives, as `find_key` names them all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(super) enum Release {
+    Yes,
+    No,
+    Unknown,
 }
 
-pub(super) fn load_or_create(_service: &str, _account: &str) -> Result<FindKey, Refused> {
+pub(super) fn signed_as_a_release(_team: &str) -> Release {
+    Release::No
+}
+
+pub(super) fn prompts_switched_off() -> bool {
+    true
+}
+
+pub(super) fn load_or_create(_service: &str, _account: &str, _group: &str) -> Result<FindKey, Refused> {
     Err(Refused::Unavailable)
+}
+
+#[cfg(feature = "keychain-probe")]
+pub(super) fn remove(_service: &str, _account: &str, _group: &str) -> i32 {
+    -1
 }

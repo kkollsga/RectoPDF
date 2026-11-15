@@ -14,6 +14,7 @@
 #   RECTO_SIGN_IDENTITY    "Developer ID Application: <name> (<team>)", of TEAM_ID in crates/recto-update/src/lib.rs
 #   RECTO_NOTARY_PROFILE   a notarytool keychain profile (xcrun notarytool store-credentials)
 #   RECTO_NOTARY_KEYCHAIN  the keychain holding that profile, when it isn't the default one (CI's temporary one)
+#   RECTO_PROVISION_PROFILE  the app's Developer ID provisioning profile, embedded in the bundle, whose entitlements the main executable claims
 # Without them it fails. There's no unsigned release.
 #
 # It never creates a release: that's only the release workflow, when everything has passed.
@@ -48,6 +49,7 @@ REPO_URL="$(sed -n 's/^pub const REPO: &str = "\(.*\)";$/\1/p' "$UPDATE_SOURCE")
 if [ "$SIGNED" = 1 ]; then
     : "${RECTO_SIGN_IDENTITY:?--signed needs RECTO_SIGN_IDENTITY (docs/RELEASING.md)}"
     : "${RECTO_NOTARY_PROFILE:?--signed needs RECTO_NOTARY_PROFILE (docs/RELEASING.md)}"
+    [ -f "${RECTO_PROVISION_PROFILE:-}" ] || { echo "--signed needs RECTO_PROVISION_PROFILE, the release's provisioning profile (docs/RELEASING.md)" >&2; exit 1; }
     case "$RECTO_SIGN_IDENTITY" in
         "Developer ID Application: "*"($TEAM_ID)") ;;
         *) echo "RECTO_SIGN_IDENTITY must be a Developer ID Application identity of team $TEAM_ID: $RECTO_SIGN_IDENTITY" >&2; exit 1 ;;
@@ -232,6 +234,7 @@ check_zip() {
     cmp -s "$REPO/THIRD-PARTY-NOTICES.txt" "$check/RectoPDF.app/Contents/Resources/Licenses.txt" || { echo "the zipped app's Licenses.txt isn't THIRD-PARTY-NOTICES.txt" >&2; exit 1; }
     if [ "$1" = signed ]; then
         [ "$(team_of "$check/RectoPDF.app")" = "$TEAM_ID" ] || { echo "the zipped app lost its signature" >&2; exit 1; }
+        "$REPO/tools/release/app-entitlements.sh" --check "$check/RectoPDF.app"
         xcrun stapler validate "$check/RectoPDF.app"
         spctl --assess --type execute "$check/RectoPDF.app"
     fi
@@ -242,6 +245,7 @@ if [ "$CHECK_SIGNED" = 1 ]; then
     [ "$(team_of "$APP")" = "$TEAM_ID" ] || { echo "the app isn't signed by team $TEAM_ID" >&2; exit 1; }
     xcrun stapler validate "$APP"
     "$APP_DIR/render-helper.sh" --check "$APP"
+    "$REPO/tools/release/app-entitlements.sh" --check "$APP"
     run_it
     check_zip signed
 elif [ "$ALREADY_BUILT" = 1 ]; then

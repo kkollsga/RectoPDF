@@ -30,7 +30,10 @@ fn main() {
         std::process::exit(2);
     };
     let key = CorpusKey::of_file(Path::new(pdf)).unwrap();
+    // The key `recto local` will read it with: its state folder's own, beside the corpus folder.
+    let find_key = recto_platform::find_key::FindKey::from_state_file(&Path::new(root).parent().unwrap().join("find.key")).unwrap();
     let outcome = corpus::build(
+        &find_key,
         Path::new(root),
         key,
         &mut EveryWord(pages.parse().unwrap()),

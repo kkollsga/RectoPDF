@@ -43,3 +43,9 @@ impl ThreadPort {
         None
     }
 }
+
+/// Whether the calling thread is the process's main thread. Not known here.
+#[must_use]
+pub fn is_main_thread() -> bool {
+    false
+}

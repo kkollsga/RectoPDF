@@ -217,6 +217,11 @@ pub mod secret;
 /// The key the Find text is sealed with, and where it comes from.
 pub mod find_key;
 
+/// What another process was started with, for a test that a secret was never put there.
+#[cfg_attr(target_os = "macos", path = "procargs_mac.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "procargs_stub.rs")]
+pub mod procargs;
+
 /// What a release's signature is, for everything that checks one.
 pub mod signing;
 pub use secret::{MAX_PASSWORD_BYTES, Password};

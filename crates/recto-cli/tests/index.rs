@@ -292,12 +292,22 @@ fn start_helper(file: &Path, root: &Path, key: CorpusKey) -> std::process::Child
         .spawn()
         .unwrap();
     let line = serde_json::json!({ "file": file, "root": root, "key": key.hex() }).to_string() + "\n";
+    // As the session hands it: a key bound to this corpus alone, never the session's own.
+    recto_index::seal::grant_for(&find_key_of(root), key)
+        .unwrap()
+        .write_to(child.stdin.as_mut().unwrap())
+        .unwrap();
     child.stdin.as_mut().unwrap().write_all(line.as_bytes()).unwrap();
     child
 }
 
+/// The key a test state folder's session seals with: the folder's own `find.key`, beside its corpus folder.
+fn find_key_of(root: &Path) -> recto_platform::find_key::FindKey {
+    recto_platform::find_key::FindKey::from_state_file(&root.parent().unwrap().join("find.key")).unwrap()
+}
+
 fn pages_done(root: &Path, key: CorpusKey) -> u32 {
-    match recto_index::corpus::disk_state(root, key) {
+    match recto_index::corpus::disk_state(&find_key_of(root), root, key) {
         recto_index::corpus::DiskState::Partial { pages_done } => pages_done,
         _ => 0,
     }
@@ -864,6 +874,7 @@ fn corpus_with_a_failed_page(state: &State, file: &TempPdf, page: u32) {
     };
     state.paths.prepare().unwrap();
     let built = recto_index::corpus::build(
+        &find_key_of(&state.paths.corpus),
         &state.paths.corpus,
         key,
         &mut feed,
@@ -912,8 +923,31 @@ fn index_or_mixed_matches_scan(state: &State, args: &[&str]) {
     assert_eq!(the_same_answer(indexed), the_same_answer(scanned), "{args:?}");
 }
 
-/// Every byte under a folder, read as text, for looking for a document's words.
-fn all_text_under(folder: &Path) -> String {
+/// What a corpus folder keeps of documents, as their key reads it: every corpus's text opened with the state folder's key (it's sealed, so a look at the bytes can't see it), and every file's bytes as they are, for what isn't sealed (an agent's folder, the notes beside the corpora). For a test that a document's words are kept, or gone.
+fn kept_text_under(folder: &Path) -> String {
+    let mut found = text_under(folder, true);
+    let find_key = find_key_of(folder);
+    for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
+        if let Some(key) = entry.file_name().to_str().and_then(CorpusKey::from_hex) {
+            for text in recto_index::corpus::opened_text(&find_key, folder, key) {
+                found.push_str(&text);
+            }
+        }
+    }
+    found
+}
+
+/// Every byte under a folder, read as text, for looking for a document's words as anyone could, with no key: what the Find text's being sealed must keep them out of (owner, 2026-11-15: "Lets store it encrypted").
+fn raw_text_under(folder: &Path) -> String {
+    text_under(folder, false)
+}
+
+/// Every file's bytes under a folder, read as text, leaving out the sealed ones if asked: their bytes are random, and only what they open to says anything.
+fn text_under(folder: &Path, leave_out_sealed: bool) -> String {
+    let sealed = |path: &Path| {
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        matches!(name, "text.pack" | "pages.bin" | "seal.bin") || name.ends_with(".sealed")
+    };
     let mut found = String::new();
     let mut stack = vec![folder.to_path_buf()];
     while let Some(next) = stack.pop() {
@@ -921,7 +955,9 @@ fn all_text_under(folder: &Path) -> String {
         for entry in entries.flatten() {
             if entry.file_type().unwrap().is_dir() {
                 stack.push(entry.path());
-            } else if let Ok(bytes) = std::fs::read(entry.path()) {
+            } else if !(leave_out_sealed && sealed(&entry.path()))
+                && let Ok(bytes) = std::fs::read(entry.path())
+            {
                 found.push_str(&String::from_utf8_lossy(&bytes));
             }
         }
@@ -951,7 +987,8 @@ fn a_deleted_pdfs_text_goes_when_its_time_is_up_with_nothing_being_built() {
         kept_key = CorpusKey::of_file(&kept.0).unwrap();
     }
     let root = state.paths.corpus.clone();
-    assert!(all_text_under(&root).contains("vanishingword"));
+    assert!(kept_text_under(&root).contains("vanishingword"));
+    assert!(!raw_text_under(&root).contains("vanishingword"), "a page's text is on disk as it is");
     std::fs::remove_file(&deleted.0).unwrap();
     // Its last use was 100 days ago, and the file's gone.
     let used = recto_index::corpus::CorpusPaths::new(&root, deleted_key).app.join("used");
@@ -964,7 +1001,7 @@ fn a_deleted_pdfs_text_goes_when_its_time_is_up_with_nothing_being_built() {
     assert_eq!(code, 0, "{found}");
     assert_eq!(found["data"]["route"], "index", "nothing here needs building: {found}");
     let deadline = Instant::now() + Duration::from_secs(30);
-    while all_text_under(&root).contains("vanishingword") {
+    while kept_text_under(&root).contains("vanishingword") {
         assert!(Instant::now() < deadline, "a deleted file's text is still there, 100 days after its last use");
         std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
     }
@@ -982,12 +1019,13 @@ fn an_old_versions_text_goes_when_a_new_version_is_indexed_or_the_index_is_clear
     state.json(&["open", path(&file)]);
     state.json(&["index"]);
     wait_done(&state, "active");
-    assert!(all_text_under(&root).contains("redactedword"));
+    assert!(kept_text_under(&root).contains("redactedword"));
+    assert!(!raw_text_under(&root).contains("redactedword"), "a page's text is on disk as it is");
 
     // A new version, saved in place: indexing it takes the old one's text away.
     std::fs::write(&file.0, one_page("secondword")).unwrap();
     wait_done(&state, "active");
-    let text = all_text_under(&root);
+    let text = kept_text_under(&root);
     assert!(text.contains("secondword"), "{text}");
     assert!(
         !text.contains("redactedword"),
@@ -1001,28 +1039,29 @@ fn an_old_versions_text_goes_when_a_new_version_is_indexed_or_the_index_is_clear
     let (cleared, code) = state.json(&["index", "clear"]);
     assert_eq!(code, 0, "{cleared}");
     assert!(
-        !all_text_under(&root).contains("secondword"),
+        !kept_text_under(&root).contains("secondword"),
         "clearing left the text of the version before this one"
     );
 
     // Renamed, which the path can't connect but the file itself can.
     wait_done(&state, "active");
-    assert!(all_text_under(&root).contains("thirdword"));
+    assert!(kept_text_under(&root).contains("thirdword"));
+    assert!(!raw_text_under(&root).contains("thirdword"), "a page's text is on disk as it is");
     let renamed = file.0.with_file_name("versions-renamed.pdf");
     std::fs::rename(&file.0, &renamed).unwrap();
     state.json(&["close"]);
     state.json(&["open", renamed.to_str().unwrap()]);
     std::fs::write(&renamed, one_page("fourthword")).unwrap();
     wait_done(&state, "active");
-    let text = all_text_under(&root);
+    let text = kept_text_under(&root);
     assert!(text.contains("fourthword") && !text.contains("thirdword"), "{text}");
 
     // Gone altogether: it can't be looked at, and clearing still finds its text through its path.
     std::fs::remove_file(&renamed).unwrap();
     let (cleared, code) = state.json(&["index", "clear"]);
     assert_eq!(code, 0, "{cleared}");
-    assert!(!all_text_under(&root).contains("fourthword"), "clearing left a deleted file's text");
-    let text = all_text_under(&root);
+    assert!(!kept_text_under(&root).contains("fourthword"), "clearing left a deleted file's text");
+    let text = kept_text_under(&root);
     assert!(!text.contains("versions"), "a sidecar holds a file's name: {text}");
     std::fs::write(&file.0, b"").unwrap();
 }
@@ -1046,6 +1085,7 @@ fn clearing_stops_what_is_on_its_way() {
         assert!(Instant::now() < deadline, "it never started");
         std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
     }
+    no_key_in_the_indexers_arguments_or_environment(&state, &root);
     state.json(&["open", path(&waiting)]);
     let (asked, _) = state.json(&["index"]);
     assert_eq!(asked["data"]["state"], "queued", "{asked}");
@@ -1072,9 +1112,38 @@ fn clearing_stops_what_is_on_its_way() {
         (Some("not_started"), Some(0), Some(0)),
         "{status}"
     );
-    let text = all_text_under(&root);
+    let text = kept_text_under(&root);
     assert!(!text.contains("alpha document"), "the build that was cleared carried on writing");
     assert!(!text.contains("queuedword"), "the file that was cleared got written anyway");
+}
+
+/// The Find key goes to the indexer on its stdin, and never where any program of this user's could read it with `ps -E`: neither its 32 bytes nor their hex are in the running helper's arguments or environment. Part of [`clearing_stops_what_is_on_its_way`], which has a build running long enough to look at.
+fn no_key_in_the_indexers_arguments_or_environment(state: &State, root: &Path) {
+    let (status, _) = state.json(&["status"]);
+    let session = status["data"]["pid"].as_u64().expect("the session's pid");
+    let found = std::process::Command::new("/usr/bin/pgrep")
+        .args(["-P", &session.to_string(), "recto-indexer"])
+        .output()
+        .unwrap();
+    let helpers: Vec<u32> = String::from_utf8_lossy(&found.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect();
+    assert!(!helpers.is_empty(), "no indexer running under the session {session}");
+    let key = find_key_of(root);
+    let hex: String = key.bytes().iter().map(|byte| format!("{byte:02x}")).collect();
+    for helper in helpers {
+        let started_with = recto_platform::procargs::arguments_and_environment(helper).expect("the helper's arguments and environment");
+        assert!(started_with.len() > 16, "nothing read of {helper}'s arguments");
+        assert!(
+            !started_with.windows(32).any(|window| window == key.bytes()),
+            "the key's bytes are in the indexer's arguments or environment"
+        );
+        assert!(
+            !String::from_utf8_lossy(&started_with).contains(&hex),
+            "the key's hex is in the indexer's arguments or environment"
+        );
+    }
 }
 
 /// Failure: lowering agent access to Off leaves up to 16 waiting files and the running one writing documents' text, after the user has said no. It stops, and what's waiting goes.
@@ -1112,10 +1181,10 @@ fn lowering_to_off_stops_indexing() {
         std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
     }
     assert!(
-        matches!(recto_index::corpus::disk_state(&root, running_key), recto_index::corpus::DiskState::Partial { pages_done } if pages_done < 1200),
+        matches!(recto_index::corpus::disk_state(&find_key_of(&root), &root, running_key), recto_index::corpus::DiskState::Partial { pages_done } if pages_done < 1200),
         "it kept writing at Off, to the end"
     );
-    assert!(!all_text_under(&root).contains("offqueuedword"), "a waiting file got written at Off");
+    assert!(!kept_text_under(&root).contains("offqueuedword"), "a waiting file got written at Off");
     let (status, code) = state.json(&["index", "status", "--tab", "off-waiting"]);
     assert_eq!(code, 0, "{status}");
     assert_eq!(
@@ -1229,7 +1298,11 @@ fn the_agent_folder_comes_only_when_asked_for_and_goes_with_a_clear() {
     wait_done(&state, "active");
     let (searched, _) = state.json(&["search", "common"]);
     assert_eq!(searched["data"]["route"], "index", "{searched}");
-    assert!(!all_text_under(&root).contains("|"), "nothing's written with marks yet");
+    assert!(!kept_text_under(&root).contains("|"), "nothing's written with marks yet");
+    assert!(
+        kept_text_under(&root).contains("alpha document") && !raw_text_under(&root).contains("alpha document"),
+        "the index's text is kept, and not as it is"
+    );
     let key = CorpusKey::of_file(&file.0).unwrap();
     let paths = recto_index::corpus::CorpusPaths::new(&root, key);
     assert!(!paths.agent.exists(), "a search wrote the second copy");
@@ -1251,7 +1324,7 @@ fn the_agent_folder_comes_only_when_asked_for_and_goes_with_a_clear() {
 
     let (cleared, code) = state.json(&["index", "clear"]);
     assert_eq!((code, cleared["data"]["cleared"].as_u64()), (0, Some(1)), "{cleared}");
-    assert!(!all_text_under(&root).contains("alpha document"), "a clear left a form of the text");
+    assert!(!kept_text_under(&root).contains("alpha document"), "a clear left a form of the text");
 }
 
 /// A document for telling searches apart: words on some pages and not others, one page about them far more than the rest, a hidden run, and a page with nothing on it.

@@ -109,21 +109,28 @@ jobs:
           NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          MACOS_PROVISION_PROFILE: ${{ secrets.MACOS_PROVISION_PROFILE }}
         run: |
           # The same script the preflight runs (release-preflight.yml), so a preflight that passed loads the keys as this does.
           kc="$RUNNER_TEMP/recto-signing.keychain-db"
           identity=$(tools/release/keychain.sh "$kc")
+          # The provisioning profile the main executable's entitlements need (the Find key's keychain group), to a file of this job's alone, never printed.
+          [ -n "$MACOS_PROVISION_PROFILE" ] || { echo "::error::set the secret MACOS_PROVISION_PROFILE: the app's Developer ID provisioning profile, base64 (docs/RELEASING.md)"; exit 1; }
+          (umask 077; printf '%s' "$MACOS_PROVISION_PROFILE" | base64 --decode > "$RUNNER_TEMP/recto.provisionprofile")
           {
             echo "RECTO_SIGN_IDENTITY=$identity"
             echo "RECTO_NOTARY_PROFILE=recto-notary"
             echo "RECTO_NOTARY_KEYCHAIN=$kc"
+            echo "RECTO_PROVISION_PROFILE=$RUNNER_TEMP/recto.provisionprofile"
           } >> "$GITHUB_ENV"
           echo "Signing as: $identity"
       - name: Sign, notarize, staple and zip, running nothing of the app
         run: app/release-zip.sh --signed --already-built
       - name: Remove the signing keychain and anything of a secret
         if: always()
-        run: tools/release/keychain.sh --remove "$RUNNER_TEMP/recto-signing.keychain-db"
+        run: |
+          tools/release/keychain.sh --remove "$RUNNER_TEMP/recto-signing.keychain-db"
+          rm -f "$RUNNER_TEMP/recto.provisionprofile"
       - name: Run the stapled app drawing a PDF, and check the zip as the updater will, with the keys gone
         env:
           RECTO_SIGN_IDENTITY: ''

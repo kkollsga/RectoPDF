@@ -86,7 +86,10 @@ impl Inner {
             SessionHost::on_state(&paths, DrawableLoader)
                 .with_indexing(
                     &paths,
-                    recto_control::find_keys::Host::App(recto_control::find_keys::AppKey::for_the_app(recto_update::TEAM_ID)),
+                    recto_control::find_keys::Host::App(recto_control::find_keys::AppKey::for_the_app(recto_platform::find_key::App {
+                        team: recto_update::TEAM_ID,
+                        bundle: recto_update::BUNDLE_ID,
+                    })),
                 )
                 .with_generating(&paths)
         } else {

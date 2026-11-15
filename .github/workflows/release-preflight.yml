@@ -14,11 +14,19 @@ jobs:
     name: Signing secrets
     runs-on: macos-26
     environment: release
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # THE RULE, as release.yml's: nothing of the product is compiled OR RUN while a signing key or the notarization key is loaded, as a
+      # build script or the code it builds could sign or notarize as the team (the security reads of the Find key's branch, 2026-11-15). So
+      # everything this job builds is built here, first, with no secret in any step's environment; the steps with the keys only sign; the
+      # keychain and the profile file are removed, and seen gone, before anything signed runs.
+      - name: Rust, as pinned in rust-toolchain.toml, with no secret here
+        run: rustup toolchain install
+      - name: Build the probes, the app's own key path among them, with no secret here
+        run: tools/release/dp-keychain-probe.sh --build "$RUNNER_TEMP/dp-probe-built"
       - name: Certificate and notarization key, from the Environment's secrets
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
@@ -42,28 +50,31 @@ jobs:
         run: |
           xcrun notarytool history --keychain-profile recto-notary --keychain "$PREFLIGHT_KEYCHAIN" --output-format json >/dev/null
           echo "notarytool: the key, its ID and the issuer are accepted"
-      # The Find key's Keychain item on the team's real signature (docs/PLAN.md, the Find text's encryption), last, so a probe that fails
-      # hides none of the checks above. In a keychain of the probe's own, made the default for its run and put back: a later team build
-      # reads what an earlier one made, an ad hoc build and a team build of another identifier are refused, a locked keychain is too, and
-      # nothing waits on a prompt with the app's guard; the other guards and planted items are reported. Prints codes and times, uploads
-      # nothing.
-      - name: The Find key's Keychain item, on the team's signature
-        run: tools/release/keychain-probe.sh "$PREFLIGHT_IDENTITY"
       # The provisioning profile and the Find key's item in the data-protection keychain (the owner's decision, 2026-11-15), last of all:
       # the profile is checked (Developer ID, macOS, the app's App ID, team and keychain group, 60 days or more to run, made for the
-      # certificate that signs), then bundles signed with it are launched and the probe measures what must hold. The profile goes to a
-      # file of this job's alone and is never printed; neither is the certificate.
-      - name: The provisioning profile, and the Find key in the data-protection keychain
+      # certificate that signs) and the probes are signed with it; then the keychain and the profile file go, and only then are the signed
+      # bundles launched and what must hold measured. The profile goes to a file of this job's alone and is never printed; neither is the
+      # certificate.
+      - name: The provisioning profile, checked, and the probes signed with it (nothing runs here)
         env:
           MACOS_PROVISION_PROFILE: ${{ secrets.MACOS_PROVISION_PROFILE }}
         run: |
           [ -n "$MACOS_PROVISION_PROFILE" ] || { echo "::error::set the secret MACOS_PROVISION_PROFILE: the app's Developer ID provisioning profile, base64 (docs/RELEASING.md)"; exit 1; }
           umask 077
           printf '%s' "$MACOS_PROVISION_PROFILE" | base64 --decode > "$RUNNER_TEMP/recto.provisionprofile"
-          tools/release/dp-keychain-probe.sh "$PREFLIGHT_IDENTITY" "$RUNNER_TEMP/recto.provisionprofile"
+          tools/release/dp-keychain-probe.sh --sign "$PREFLIGHT_IDENTITY" "$RUNNER_TEMP/recto.provisionprofile" "$RUNNER_TEMP/dp-probe-built"
+      - name: The keys gone before anything signed runs
+        run: |
+          tools/release/keychain.sh --remove "$RUNNER_TEMP/recto-preflight.keychain-db"
+          rm -f "$RUNNER_TEMP/recto.provisionprofile"
+          found="$(security find-identity -v -p codesigning | tail -1)"
+          echo "Signing identities now: $found"
+          case "$found" in *"0 valid identities found"*) ;; *) echo "::error::a signing identity is still here, so nothing may run"; exit 1 ;; esac
+      - name: The Find key in the data-protection keychain, the probes and the app's own key path run, with no key here
+        run: tools/release/dp-keychain-probe.sh --run "$RUNNER_TEMP/dp-probe-built"
       - name: Remove the keychain and anything of a secret
         if: always()
         run: |
           tools/release/keychain.sh --remove "$RUNNER_TEMP/recto-preflight.keychain-db"
           rm -f "$RUNNER_TEMP/preflight-probe" "$RUNNER_TEMP/recto.provisionprofile"
-          rm -rf "$RUNNER_TEMP"/keychain-probe.* "$RUNNER_TEMP"/dp-keychain-probe.*
+          rm -rf "$RUNNER_TEMP"/dp-keychain-probe.* "$RUNNER_TEMP/dp-probe-built"

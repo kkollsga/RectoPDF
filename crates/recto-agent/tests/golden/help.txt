@@ -13,7 +13,7 @@ Read a document:
   facts                A document's facts: pages, size, version, and whether it has contents.
   contents             A document's table of contents, a piece at a time.
   search               Finds words across a document.
-  index                Asks for the tab's search index to be built, in the background, if it isn't there, and says where it stands.
+  index                Asks the app to build the tab's search index, in the background, if it isn't there, and says where it stands.
   index status         Where the tab's search index stands.
   index clear          Throws away the tab's search index and generated contents, or with `--all` every document's.
   text                 One page's text, normalised for reading and search, with a flag for text that looks hidden.

@@ -1,5 +1,7 @@
 //! Find, off every thread that mustn't wait. **One query at a time:** a new one stops the last between two pages and takes its place, and the one thread here exists only while a query runs, so a session at rest has none. It reads pages as `search` does, from a corpus or through one worker, so at most one worker is held, and only while it runs.
 //!
+//! **Never waits for the Find key:** a query reads from corpora only with the key in hand ([`Indexer::find_key_in_hand`]). The first one of a run, before the key's been taken, reads its pages live while the key's thread goes on, and the next has the index. Find is the person's and `recto find`'s alike, so an agent's `find` doesn't wait either; an agent's `search` may, as it takes the key itself.
+//!
 //! **Bounded from outside:** [`recto_agent::find::MAX_HITS`] hits kept, [`recto_agent::find::MAX_TIME`] a query, and whoever's listening hears no more often than every [`SAY_EVERY`], with the last word always said.
 
 use crate::indexing::{Indexer, Notifier};
@@ -117,7 +119,8 @@ impl Shared {
                     }
                 }
             };
-            let indexing = self.indexer.as_ref().map(|indexer| indexer as &dyn Indexing);
+            let in_hand = self.indexer.as_ref().map(KeyInHand);
+            let indexing = in_hand.as_ref().map(|indexer| indexer as &dyn Indexing);
             let mut said = Instant::now();
             let generation = job.generation;
             // The document it searches: what decides whether its news may go to an agent (`recto_agent::withheld`).
@@ -151,6 +154,42 @@ impl Shared {
                 self.say(vec![Event::FindFinished { tab, hits: progress.total }]);
             }
         }
+    }
+}
+
+/// The indexer as Find reads it: everything as it is, but the key only if it's in hand.
+struct KeyInHand<'a>(&'a Indexer);
+
+impl Indexing for KeyInHand<'_> {
+    fn root(&self) -> &std::path::Path {
+        Indexing::root(self.0)
+    }
+    fn find_key(&self) -> Option<&recto_platform::find_key::FindKey> {
+        self.0.find_key_in_hand()
+    }
+    fn made_agent_folder(&self, key: recto_index::corpus::CorpusKey) {
+        self.0.made_agent_folder(key);
+    }
+    fn find_key_report(&self) -> serde_json::Value {
+        self.0.find_key_report()
+    }
+    fn want(&self, path: &std::path::Path, key: recto_index::corpus::CorpusKey) {
+        self.0.want(path, key);
+    }
+    fn job(&self, key: recto_index::corpus::CorpusKey) -> recto_agent::index::JobState {
+        self.0.job(key)
+    }
+    fn load(&self) -> (u32, u32) {
+        Indexing::load(self.0)
+    }
+    fn note_asked(&self) {
+        self.0.note_asked();
+    }
+    fn cancel(&self, key: Option<recto_index::corpus::CorpusKey>) {
+        self.0.cancel(key);
+    }
+    fn starts_builds(&self) -> bool {
+        self.0.starts_builds()
     }
 }
 
@@ -228,5 +267,86 @@ impl Finding for Finder {
             }
             inner = self.0.changed.wait_timeout(inner, deadline - now).unwrap_or_else(PoisonError::into_inner).0;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::find_keys::{AppKey, Plan};
+    use recto_platform::find_key::FindKey;
+    use std::sync::Condvar;
+
+    /// The Keychain's stand-in, held shut until the test opens it, as the release check and the Keychain hold a real run.
+    static GATE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+    static ENTERED: AtomicBool = AtomicBool::new(false);
+
+    fn held_shut(_app: recto_platform::find_key::App) -> Option<(FindKey, Option<&'static str>)> {
+        ENTERED.store(true, Ordering::SeqCst);
+        let (open, moved) = &GATE;
+        let mut open = open.lock().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !*open && Instant::now() < deadline {
+            open = moved.wait_timeout(open, Duration::from_millis(200)).unwrap().0;
+        }
+        FindKey::in_memory().ok().map(|key| (key, None))
+    }
+
+    fn open_the_gate() {
+        *GATE.0.lock().unwrap() = true;
+        GATE.1.notify_all();
+    }
+
+    /// Failure (the second review's item 5, 2026-11-15): the person's Find, the first of a run, waits while the key is taken, which checks the whole bundle's signature (about 0.6 s on a 143 MB build, [`Indexer::find_key_in_hand`]) and asks the Keychain, so typing in the field shows nothing for that long or, with the Keychain slow, longer. With the loader held shut, Find answers from the pages read live, the key's taking has started and goes on, and once it's in, a search has it.
+    #[test]
+    fn find_answers_while_the_key_is_still_being_taken() {
+        let file = recto_testpdf::TempPdf::new(
+            "key-in-hand.pdf",
+            &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["alpha words"]))]),
+        );
+        let mut session = recto_session::Session::new(recto_agent::DrawableLoader);
+        recto_agent::run(
+            &mut session,
+            recto_agent::Level::Full,
+            &recto_agent::Command::from(recto_agent::commands::tabs::Open {
+                path: file.0.clone(),
+                page: None,
+            }),
+        )
+        .unwrap();
+        let plan = find::plan(&session, session.tabs().active().unwrap()).unwrap();
+        let temp = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-key-in-hand-");
+        let root = temp.join("corpus.noindex");
+        recto_platform::local::ensure_private_dir(&root).unwrap();
+        let indexer = Indexer::with_limits(
+            &root,
+            Box::new(crate::indexing::HelperProcess {
+                priority: crate::helpers::HELPER_PRIORITY,
+            }),
+            recto_index::corpus::BuildLimits::default(),
+            Plan::AppKeychain(AppKey::standing_in(held_shut)),
+        );
+        let finder = Finder::new(Some(indexer.clone()));
+        let generation = finder.start(plan, "alpha", find::needle("alpha").unwrap());
+        let answered = finder.wait(generation, Duration::from_secs(20));
+        let still_taking = indexer.find_key_report()["source"].is_null();
+        if !answered {
+            open_the_gate();
+        }
+        assert!(answered, "Find waited for the key");
+        assert!(still_taking, "the key was in hand before Find ended, so this tested nothing");
+        let mut total = 0;
+        finder.with_results(&mut |results| total = results.progress.total);
+        assert_eq!(total, 1, "Find found nothing in the pages it read live");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !ENTERED.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(ENTERED.load(Ordering::SeqCst), "Find didn't start the key's taking");
+        open_the_gate();
+        while indexer.find_key_in_hand().is_none() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(indexer.find_key_in_hand().is_some(), "the key's taking didn't go on to the end");
     }
 }

@@ -36,19 +36,34 @@ if [ "$SIGN_IDENTITY" = - ]; then SIGN_ARGS=(--force --sign -); else
     SIGN_ARGS=(--force --sign "$SIGN_KEY" --options runtime --timestamp)
 fi
 
-# From the inside out, and never --deep, which would sign the renderer helper again without its sandbox.
+# From the inside out, and never --deep, which would sign the renderer helper again without its sandbox. A release (a team's identity) embeds its
+# provisioning profile, RECTO_PROVISION_PROFILE, and its main executable alone claims the App ID, the team and the keychain group, so the Find key
+# can live in the data-protection keychain in the app's own group (the owner's decision, 2026-11-15; tools/release/app-entitlements.sh). An ad hoc
+# build claims nothing: its Find key is a key in memory.
 sign_app() {
     "$APP_DIR/render-helper.sh" --sign "$APP/Contents"
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-indexer"
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-headings"
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-updater"
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto"
-    codesign "${SIGN_ARGS[@]}" "$APP"
+    if [ "$SIGN_IDENTITY" = - ]; then
+        rm -f "$APP/Contents/embedded.provisionprofile"
+        codesign "${SIGN_ARGS[@]}" "$APP"
+    else
+        [ -f "${RECTO_PROVISION_PROFILE:-}" ] || { echo "a release is signed with its provisioning profile: set RECTO_PROVISION_PROFILE to the .provisionprofile (docs/RELEASING.md)" >&2; exit 1; }
+        cp "$RECTO_PROVISION_PROFILE" "$APP/Contents/embedded.provisionprofile"
+        local entitlements
+        entitlements="$(mktemp "${TMPDIR:-/tmp}/recto-entitlements.XXXXXX")"
+        "$REPO/tools/release/app-entitlements.sh" --write "$entitlements"
+        codesign "${SIGN_ARGS[@]}" --entitlements "$entitlements" "$APP"
+        rm -f "$entitlements"
+    fi
 }
 
 if [ "$mode" = --sign-only ]; then
     sign_app
     "$APP_DIR/render-helper.sh" --check "$APP"
+    [ "$SIGN_IDENTITY" = - ] || "$REPO/tools/release/app-entitlements.sh" --check "$APP"
     echo "==> signed $APP"
     exit 0
 fi
