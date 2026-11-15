@@ -1189,13 +1189,21 @@ fn resume_point(paths: &CorpusPaths, pages: u32) -> io::Result<ResumePoint> {
         point.bytes += record.blob_len() as u64 + RECORD_LEN as u64;
     }
     drop(pack);
-    if let Ok(file) = OpenOptions::new().write(true).open(&paths.table) {
+    if let Some(file) = existing_plain_file(&paths.table) {
         file.set_len(u64::from(point.pages) * RECORD_LEN as u64)?;
     }
-    if let Ok(file) = OpenOptions::new().write(true).open(&paths.pack) {
+    if let Some(file) = existing_plain_file(&paths.pack) {
         file.set_len(point.pack_end)?;
     }
     Ok(point)
+}
+
+/// A corpus file that's there as a plain file, opened to be cut back: as a build opens its files, following no link and not waiting. A link or a named pipe put in its place is left as it is, never followed or waited on (found beside the Find text's second security review, 2026-11-15): the build after this opens the same way and stops on it.
+fn existing_plain_file(path: &Path) -> Option<File> {
+    fs::symlink_metadata(path)
+        .is_ok_and(|meta| meta.is_file())
+        .then(|| local::append_private_file(path).ok())
+        .flatten()
 }
 
 /// Whether a record's text and what's beside it are really there, as they were written.
