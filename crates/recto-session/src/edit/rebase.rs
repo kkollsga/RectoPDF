@@ -6,7 +6,8 @@
 //! **How the new list is made** (the coordinator's design and the owner's answers of 2026-11-15):
 //! - Pages the edits don't touch take the new version's order and content, so pages another program added are there.
 //! - The person's own pages still in the file's order (the longest such run, [`in_order`]) are *fixed*: each is where the new version has it, with its
-//!   turn. A turned fixed page has to be found.
+//!   turn. A turned page (fixed or moved) has to be found with its own `/Rotate` unchanged (the coordinator's decision, 2026-11-15: the person's turn
+//!   would add to the other program's); its crop may have changed.
 //! - A page the person moved (one of theirs out of that run) goes after the fixed page it follows in their order, wherever the new version has that
 //!   page; where both reordered, the person's placement wins, relative to the page theirs was next to. Pages added from another PDF go the same way. A
 //!   run at the very start goes before the fixed page after it. The moved page and that page both have to be found.
@@ -69,6 +70,8 @@ pub enum Held {
     NoAnchor,
     /// Its page is found, but shown in another frame (crop or turn) there.
     FrameChanged,
+    /// A turn of a page whose own `/Rotate` the other program changed: the person's turn would add to theirs.
+    RotateChanged,
     /// The file's highlight it takes out isn't found on its page in the new version.
     HighlightNotFound,
     /// The list isn't one an edit makes (a page of the file there twice).
@@ -291,7 +294,7 @@ fn place(edits: &PageEdits, found: &[(u32, Found)], fixed: &[bool], gone: &mut H
         let is_fixed = fixed[own_at];
         own_at += 1;
         if !is_fixed {
-            let at = found_at(found, slot.page);
+            let at = found_at(found, slot.page).and_then(|found| turn_kept(edits, slot, found));
             if let Ok((new, _)) = at {
                 gone.insert(new);
                 run.slots.push((PageSlot { page: new, ..*slot }, position));
@@ -299,12 +302,14 @@ fn place(edits: &PageEdits, found: &[(u32, Found)], fixed: &[bool], gone: &mut H
             run.verdicts.push(verdict(verdicts, Edit::Move { page: slot.page }, at.err()));
             continue;
         }
-        let at = found_at(found, slot.page).map(|(new, _)| new);
+        let found_here = found_at(found, slot.page);
+        let at = found_here.map(|(new, _)| new);
         if slot.quarter_turns != 0 {
-            if let Ok(new) = at {
+            let turned = found_here.and_then(|found| turn_kept(edits, slot, found)).map(|(new, _)| new);
+            if let Ok(new) = turned {
                 placement.turn_of.insert(new, slot.quarter_turns);
             }
-            verdict(verdicts, Edit::Turn { page: slot.page }, at.err());
+            verdict(verdicts, Edit::Turn { page: slot.page }, turned.err());
         }
         if let Ok(new) = at {
             placement.fixed_at.insert(new, position);
@@ -321,6 +326,19 @@ fn place(edits: &PageEdits, found: &[(u32, Found)], fixed: &[bool], gone: &mut H
         None => placement.close(&mut run, verdicts, Err(Held::NoAnchor)),
     }
     placement
+}
+
+/// A turned page's own `/Rotate` the same in the new version as when it was read (a frame tag's low bits, `recto_core::page_id::frame_turns`), or
+/// it's held; an unturned page passes.
+fn turn_kept(edits: &PageEdits, slot: &PageSlot, found: (u32, Known)) -> Result<(u32, Known), Held> {
+    if slot.quarter_turns == 0 {
+        return Ok(found);
+    }
+    match edits.identities.as_deref().and_then(|ids| ids.known(slot.page)) {
+        Some(was) if recto_core::page_id::frame_turns(was.frame) == recto_core::page_id::frame_turns(found.1.frame) => Ok(found),
+        Some(_) => Err(Held::RotateChanged),
+        None => Err(Held::NotIdentified),
+    }
 }
 
 /// Highlights made as edits, and the file's taken out, on pages the document has: each onto its page in the new version, by number and key.

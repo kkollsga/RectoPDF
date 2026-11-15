@@ -288,8 +288,12 @@ fn resaved(name: &'static str, new: Vec<Page>, follows: [bool; 6]) -> Row {
 
 fn rows() -> Vec<Row> {
     let ten: Vec<u8> = (0..10).collect();
+    // A frame's tag keeps the page's own quarter turns in its low two bits (`recto_core::page_id::frame_turns`): another crop is another tag with
+    // the same low bits; another /Rotate, other low bits.
     let mut cropped = renumbered(&ten);
-    cropped[4].frame = 1;
+    cropped[4].frame = 4;
+    let mut rotated = renumbered(&ten);
+    rotated[4].frame = 1;
     let mut unidentifiable_now = renumbered(&ten);
     unidentifiable_now[4].identified = false;
     let mut duplicated_far = ten.clone();
@@ -435,6 +439,11 @@ fn rows() -> Vec<Row> {
             "page 4's crop changed: only a highlight, which is in its frame, can't follow",
             cropped,
             [true, true, true, true, false, true],
+        ),
+        row(
+            "page 4's own /Rotate changed by the other program: the person's turn would add to theirs, and a highlight is in another frame: both held",
+            rotated,
+            [false, true, true, true, false, true],
         ),
         row(
             "page 4 of the new version reached a digest cap: no page has its identity",
