@@ -34,7 +34,7 @@ pub const MAX_SIZES: usize = 4096;
 /// 100,000 entries of 512 bytes, so about 2,000 long titles pass this) has no sleep file, as a protected one hasn't, and wakes from its PDF with all of them,
 /// rather than from a file that drops some for the rest of the session. It holds a file within [`MAX_SLEEP_FILE_BYTES`] however its titles are escaped,
 /// with every page size it keeps (`a_file_at_every_cap_is_within_what_a_file_may_be`), and each of the queue's slots to it: with [`MAX_SIZES`] sizes,
-/// about 300 KiB a slot, 5 MiB for its 17 at most.
+/// about 304 KiB a slot, 5.1 MiB for its 17, and with the one being written encoded (at most [`MAX_SLEEP_FILE_BYTES`]) about 6 MiB in all.
 pub const MAX_SLEEP_CONTENTS_BYTES: usize = 256 * 1024;
 
 /// **What a document's contents come to, as a sleep file's cap counts them:** each title's bytes and an entry's numbers, and each page-label range's prefix,
