@@ -2262,9 +2262,8 @@ fn it_writes_only_what_happened() {
     // Waits for the journal's steps, every page named read and the reading thread gone, and the journals and sidecars caught up: what QA says.
     let began = Instant::now();
     let (wrote, named) = loop {
-        let record = run.ok(&["session", "show"])["record"].clone();
-        let now = record["wrote_bytes"].as_u64().unwrap() - before;
-        let pages = &record["pages"];
+        let now = run.ok(&["session", "show"])["record"]["wrote_bytes"].as_u64().unwrap() - before;
+        let pages = run.report()["record"]["pages"].clone();
         let named = pages["named"].as_u64().unwrap_or(0);
         if now > 1000 && named > 0 && pages["read"] == pages["named"] && pages["reading"] == false && pages["caught_up"] == true {
             break (now, named);
