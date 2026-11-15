@@ -4,10 +4,12 @@
 # keychain, in the team's access group). Run by the release preflight, on its runner only: the data-protection keychain has no file of its
 # own to point a probe at, so nothing of this runs on a person's Mac.
 #
-#   tools/release/dp-keychain-probe.sh --build <folder>                                   Builds the probes into <folder>, with no secret
-#                                                                                         anywhere: the release's rule that nothing is compiled
-#                                                                                         while a signing key is loaded (the second security read).
-#   tools/release/dp-keychain-probe.sh <signing identity> <provisioning profile> <folder>  Bundles, signs and runs what --build made there.
+#   tools/release/dp-keychain-probe.sh --build <folder>                                 Builds the probes into <folder>, with no secret anywhere.
+#   tools/release/dp-keychain-probe.sh --sign <identity> <provisioning profile> <folder>  Checks the profile, bundles and signs what --build made
+#                                                                                       there, and says what each claims. Runs none of it.
+#   tools/release/dp-keychain-probe.sh --run <folder>                                   Every launch, once the keys and the profile file are gone.
+# The release's rule, here too: nothing of the product is compiled or run while a signing or notarization key is loaded (the second security
+# read, 2026-11-15), so building comes before the keys and every launch after them.
 #
 # First the profile is checked, and the run stops with a plain sentence if it isn't the one the app needs: a macOS Developer ID profile
 # (all devices) for the app's App ID and team, allowing the app's keychain group, expiring more than 60 days from now, and made for the
@@ -86,29 +88,32 @@ if [ "${1:-}" = --build ]; then
   cp "${CARGO_TARGET_DIR:-$root/target}/release/recto-keychain-probe" "$out/own"
   exit 0
 fi
-usage="usage: tools/release/dp-keychain-probe.sh <signing identity> <provisioning profile> <folder from --build>"
-identity="${1:?$usage}"
-profile="${2:?$usage}"
-built="${3:?$usage}"
+mode="${1:-}"
+case "$mode" in
+  --sign)
+    identity="${2:?usage: tools/release/dp-keychain-probe.sh --sign <signing identity> <provisioning profile> <folder from --build>}"
+    profile="${3:?usage: tools/release/dp-keychain-probe.sh --sign <signing identity> <provisioning profile> <folder from --build>}"
+    dir="${4:?usage: tools/release/dp-keychain-probe.sh --sign <signing identity> <provisioning profile> <folder from --build>}"
+    ;;
+  --run) dir="${2:?usage: tools/release/dp-keychain-probe.sh --run <folder --sign signed in>}" ;;
+  *)
+    sed -n '7,12p' "$0" >&2
+    exit 2
+    ;;
+esac
 for program in a b d e own; do
-  [ -x "$built/$program" ] || { echo "::error::$built/$program isn't there: run tools/release/dp-keychain-probe.sh --build first, before any key is loaded" >&2; exit 1; }
+  [ -x "$dir/$program" ] || { echo "::error::$dir/$program isn't there: run tools/release/dp-keychain-probe.sh --build first, before any key is loaded" >&2; exit 1; }
 done
-dir="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dp-keychain-probe.XXXXXX")"
 team=$(sed -n 's/^pub const TEAM_ID: &str = "\([A-Z0-9]*\)";$/\1/p' "$root/crates/recto-update/src/lib.rs")
 [ -n "$team" ] || { echo "::error::the team's ID couldn't be read from crates/recto-update/src/lib.rs" >&2; exit 1; }
 bundle_id=io.github.kkollsga.RectoPDF
 app_id="$team.$bundle_id"
 group="$app_id"
-# shellcheck disable=SC2329 # run by the trap below
-cleanup() {
-  [ -x "$dir/R.app/Contents/MacOS/probe" ] && perl -e 'alarm shift; exec @ARGV' 20 "$dir/R.app/Contents/MacOS/probe" remove "$team" "$bundle_id" >/dev/null 2>&1
-  for build in A B; do
-    [ -x "$dir/$build.app/Contents/MacOS/probe" ] && perl -e 'alarm shift; exec @ARGV' 20 "$dir/$build.app/Contents/MacOS/probe" delete "$group" >/dev/null 2>&1 && break
-  done
-  rm -rf "$dir"
-}
-trap cleanup EXIT
 
+# --sign: the profile checked, the probes bundled and signed, and what each claims said. The only mode that needs the identity or the profile,
+# and it runs nothing it signs: every launch is --run's, once the keys are gone (the rule: nothing of the product compiled or run while a key
+# is loaded). Not indented, for its here-documents.
+if [ "$mode" = --sign ]; then
 echo "The provisioning profile"
 sign_key="$("$root/app/render-helper.sh" --key "$identity")"
 security cms -D -i "$profile" > "$dir/profile.plist" 2>/dev/null \
@@ -150,7 +155,6 @@ rm -f "$dir/profile.plist"
 
 echo "The keychains, before any signing"
 keychains
-for build in a b d e; do cp "$built/$build" "$dir/$build"; done
 cat > "$dir/probe.entitlements" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -201,6 +205,26 @@ for name in A B C Cplus; do
   echo "  $name: $(codesign -dv "$dir/$name.app" 2>&1 | sed -n 's/^TeamIdentifier=/team /p'), claims the App ID: $([ "$claims" -gt 0 ] && echo yes || echo no)"
 done
 
+bundle R "$dir/own"
+limited 60 "the team signing R, the app's own code, with the entitlements and its profile" \
+  codesign --force --options runtime --timestamp=none --entitlements "$dir/probe.entitlements" --sign "$sign_key" "$dir/R.app"
+cp -R "$dir/R.app" "$dir/Rbare.app"
+limited 60 "the team signing R again without the entitlements" codesign --force --options runtime --timestamp=none --sign "$sign_key" "$dir/Rbare.app"
+cp -R "$dir/R.app" "$dir/Radhoc.app"
+limited 60 "signing R ad hoc" codesign --force --sign - "$dir/Radhoc.app"
+# own <name> <what it must say, as a pattern>: one launch of the app's own code, its answer held to the pattern, its milliseconds said.
+exit 0
+fi
+
+# --run: every launch, with no identity, no profile file and no key on the machine.
+# shellcheck disable=SC2329 # run by the trap below
+cleanup() {
+  [ -x "$dir/R.app/Contents/MacOS/probe" ] && perl -e 'alarm shift; exec @ARGV' 20 "$dir/R.app/Contents/MacOS/probe" remove "$team" "$bundle_id" >/dev/null 2>&1
+  for build in A B; do
+    [ -x "$dir/$build.app/Contents/MacOS/probe" ] && perl -e 'alarm shift; exec @ARGV' 20 "$dir/$build.app/Contents/MacOS/probe" delete "$group" >/dev/null 2>&1 && break
+  done
+}
+trap cleanup EXIT
 failed=0
 sha_of_a=""
 last_sha=""
@@ -260,14 +284,6 @@ step ok A delete
 step gone B read
 
 echo "7. The app's own code, as it ships, takes its key from the keychain"
-bundle R "$built/own"
-limited 60 "the team signing R, the app's own code, with the entitlements and its profile" \
-  codesign --force --options runtime --timestamp=none --entitlements "$dir/probe.entitlements" --sign "$sign_key" "$dir/R.app"
-cp -R "$dir/R.app" "$dir/Rbare.app"
-limited 60 "the team signing R again without the entitlements" codesign --force --options runtime --timestamp=none --sign "$sign_key" "$dir/Rbare.app"
-cp -R "$dir/R.app" "$dir/Radhoc.app"
-limited 60 "signing R ad hoc" codesign --force --sign - "$dir/Radhoc.app"
-# own <name> <what it must say, as a pattern>: one launch of the app's own code, its answer held to the pattern, its milliseconds said.
 own_key=""
 own() {
   local name="$1" want="$2" out code=0 started ms
