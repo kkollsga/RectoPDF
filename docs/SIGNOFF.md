@@ -92,7 +92,7 @@ what Save does (prior art D2) and what `recto --page N` means (prior art D7), so
 ## Proposed first milestone (after a go)
 
 1. Run the PDFium spike and the on-screen scroll spike.
-2. Create the workspace per guide §14, with `AGENTS.md`, `SPEC.md` and `check.sh`.
+2. Create the workspace per guide §0.2, with `AGENTS.md`, `SPEC.md` and `check.sh`.
 3. Build the QA channel and `recto` CLI with the first screen.
 4. Open a PDF in the sandboxed worker, scroll it on tiles, and show sidebar tabs with the collapsing contents, in light and dark.
 

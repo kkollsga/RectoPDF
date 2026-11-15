@@ -291,7 +291,7 @@ P3 still display wide when the window is sRGB: that needs S2 on a P3 screen. Hal
 
 Recommendation: composition visuals, same model as the Mac, decided by spike S8 on the PC. Sidebar there is `NavigationView` in left mode, with hierarchical items for
 the TOC. `TabView` is horizontal only and Microsoft points to `NavigationView` for many static items [D], so the design is not the
-default Windows tab pattern, but it is a supported one. Same layout, Fluent controls (guide §8.4).
+default Windows tab pattern, but it is a supported one. Same layout, Fluent controls (guide §9.4).
 
 ### 2.6 Caps
 

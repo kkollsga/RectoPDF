@@ -61,4 +61,6 @@ a file; a shared file needing more than a registration; a Swift change that deci
 - the seconds it added to the check, by tier (`tools/check.sh --slow`), and that it added no test that launches the app;
 - its tests run 20 times as CI runs them (`tools/check.sh --like-ci '<filter>' --times 20`);
 - its shots, light and dark, from `app/qa/contact-sheet.sh`, looked at, with the paths;
+- for a change a person can see: shots from the real app and `recto qa state` of what changed, looked at before hand-back,
+  with every new state the view model can now be in ("nothing is current") drawn by the host, not only checked in Rust;
 - what wasn't done or tested, and the follow-ups for the plan.
