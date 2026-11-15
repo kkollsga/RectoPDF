@@ -295,3 +295,34 @@ fn another_file_renamed_in_with_the_same_size_and_time_is_another_version() {
     assert_eq!(bed.s.notices().fit(bed.a), EditsFit::Fit);
     assert_eq!(bed.turned(), vec![8]);
 }
+
+/// Failure caught (review S1): the new version is checked by its path before and after the read, but opened by its path too, so another file renamed in
+/// for the moment of the open alone (with the version found back in place after it) is what's matched, and the edits follow onto pages of a file that
+/// was never there for them. With the edits' own first version swapped in for the open alone, nothing is matched: what's opened is checked by its own
+/// descriptor against the version found.
+#[test]
+fn a_file_swapped_in_for_the_open_of_the_match_alone_is_never_matched() {
+    let mut bed = Bed::turned_page_9();
+    let mine = std::fs::read(&bed.path).unwrap();
+    bed.changed_and_read(&document("Mine", &(1..=10).collect::<Vec<_>>(), true));
+    let jobs = version_change::work(&mut bed.s);
+    let dir = bed.path.parent().unwrap().to_path_buf();
+    let other = dir.join("swap.pdf");
+    std::fs::write(&other, &mine).unwrap();
+    let (kept, at, theirs) = (dir.join("doc.keep"), bed.path.clone(), other.clone());
+    super::identify::AROUND_OPEN.with(|seam| {
+        *seam.borrow_mut() = Some(Box::new(move |before| {
+            if before {
+                std::fs::rename(&at, &kept).unwrap();
+                std::fs::rename(&theirs, &at).unwrap();
+            } else {
+                std::fs::rename(&at, &theirs).unwrap();
+                std::fs::rename(&kept, &at).unwrap();
+            }
+        }));
+    });
+    let matched = version_change::read(&jobs[0]);
+    super::identify::AROUND_OPEN.with(|seam| *seam.borrow_mut() = None);
+    assert_eq!(file_stamp(&bed.path).unwrap(), jobs[0].to, "the path looks as it did, before and after");
+    assert_eq!(matched, None, "another file's pages were matched for the version found");
+}

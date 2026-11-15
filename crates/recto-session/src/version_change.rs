@@ -123,11 +123,13 @@ pub fn read(job: &FollowJob) -> Option<Matched> {
     if !current() {
         return None;
     }
-    let reader = recto_core::page_id::open_for_identity(&job.path).ok()?;
-    let map = reader.page_map().ok()?;
+    // Opened through the file wall and checked by its own descriptor against the version found (review S1): a file renamed in for the moment of the
+    // open is never matched for it.
+    let opened = crate::identify::Opened::open(&job.path, job.to)?;
+    let (reader, map) = (opened.reader(), opened.map());
     let caps = recto_core::page_id::Caps::STANDARD;
     let identify = |entry| {
-        let read = recto_core::page_id::read_page(&reader, entry, &caps);
+        let read = recto_core::page_id::read_page(reader, entry, &caps);
         // A page that reached a cap has no identity: nothing is matched to it (slice 1's rule).
         (read.identity.as_ref().map(Known::of), read.bytes)
     };
@@ -179,7 +181,7 @@ pub fn read(job: &FollowJob) -> Option<Matched> {
         .map(|key| {
             let at = found.binary_search_by_key(&key.page, |(page, _)| *page).ok().and_then(|at| found[at].1.page());
             let again = at.and_then(|(page, _)| {
-                let on_page: Vec<(u32, Option<[f32; 4]>)> = recto_core::highlights::page_highlights_in(&reader, page)
+                let on_page: Vec<(u32, Option<[f32; 4]>)> = recto_core::highlights::page_highlights_in(reader, page)
                     .found
                     .iter()
                     .map(|highlight| (highlight.index, highlight.rect))
@@ -190,9 +192,8 @@ pub fn read(job: &FollowJob) -> Option<Matched> {
         })
         .collect();
     let pages = u32::try_from(map.len()).ok()?;
-    let document = recto_core::page_id::document_ids(&reader);
-    drop(map);
-    drop(reader);
+    let document = recto_core::page_id::document_ids(reader);
+    drop(opened);
     if !current() {
         return None;
     }
