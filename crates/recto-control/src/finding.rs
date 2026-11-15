@@ -281,7 +281,7 @@ mod tests {
     static GATE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
     static ENTERED: AtomicBool = AtomicBool::new(false);
 
-    fn held_shut(_team: &'static str) -> Option<(FindKey, Option<&'static str>)> {
+    fn held_shut(_app: recto_platform::find_key::App) -> Option<(FindKey, Option<&'static str>)> {
         ENTERED.store(true, Ordering::SeqCst);
         let (open, moved) = &GATE;
         let mut open = open.lock().unwrap();

@@ -24,6 +24,6 @@ pub(super) fn signed_as_a_release(_team: &str) -> bool {
     false
 }
 
-pub(super) fn load_or_create(_service: &str, _account: &str) -> Result<FindKey, Refused> {
+pub(super) fn load_or_create(_service: &str, _account: &str, _group: &str) -> Result<FindKey, Refused> {
     Err(Refused::Unavailable)
 }

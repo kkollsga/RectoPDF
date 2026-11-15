@@ -804,7 +804,7 @@ mod tests {
     #[test]
     fn the_key_is_taken_on_its_own_thread_and_never_by_the_sweep() {
         static TAKEN_ON: Mutex<Option<String>> = Mutex::new(None);
-        fn loader(_team: &'static str) -> Option<(FindKey, Option<&'static str>)> {
+        fn loader(_app: recto_platform::find_key::App) -> Option<(FindKey, Option<&'static str>)> {
             *TAKEN_ON.lock().unwrap() = std::thread::current().name().map(str::to_string);
             FindKey::in_memory().ok().map(|key| (key, None))
         }
@@ -832,7 +832,7 @@ mod tests {
     /// Failure: saying where the Find key stands, as `qa state` and `index status` do on every read, takes the key, so a look at state reaches the Keychain, or does it on whatever thread asked, the UI's included. It's said from the plan alone until something that may wait has taken it.
     #[test]
     fn the_key_is_said_without_being_taken() {
-        fn never(_team: &'static str) -> Option<(FindKey, Option<&'static str>)> {
+        fn never(_app: recto_platform::find_key::App) -> Option<(FindKey, Option<&'static str>)> {
             panic!("saying where the key stands took it")
         }
         let indexer = Indexer::with_limits(

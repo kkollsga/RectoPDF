@@ -4,27 +4,27 @@
 //! - `recto` hosting a session of its own on the person's own state: no key, so it keeps no index and reads pages, as on a volume that can't be indexed. Talking to the app's session, it uses the app's.
 
 use crate::state::StatePaths;
-use recto_platform::find_key::FindKey;
+use recto_platform::find_key::{App, FindKey};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-/// A way to the key for a team: the key, and why it's in memory if it is.
-pub type Loader = fn(&'static str) -> Option<(FindKey, Option<&'static str>)>;
+/// A way to the key for an app: the key, and why it's in memory if it is.
+pub type Loader = fn(App) -> Option<(FindKey, Option<&'static str>)>;
 
-/// **How the app takes its key:** `recto_platform::find_key::load_for_the_app` with the team. Made only by [`AppKey::for_the_app`], which the app's start alone calls; its field is private, so nothing else can make one, and a test holds the source to those two places.
+/// **How the app takes its key:** `recto_platform::find_key::load_for_the_app` with the app's team and bundle identifier. Made only by [`AppKey::for_the_app`], which the app's start alone calls; its field is private, so nothing else can make one, and a test holds the source to those two places.
 #[derive(Clone, Copy)]
 pub struct AppKey {
     load: Loader,
-    team: &'static str,
+    app: App,
 }
 
 impl AppKey {
-    /// The app's key, from the Keychain if this copy is `team`'s release, checked whole. Called by `recto-app`'s start and nowhere else.
+    /// The app's key, from the Keychain if this copy is the `app`'s release, checked whole. Called by `recto-app`'s start and nowhere else.
     #[must_use]
-    pub fn for_the_app(team: &'static str) -> Self {
+    pub fn for_the_app(app: App) -> Self {
         Self {
             load: recto_platform::find_key::load_for_the_app,
-            team,
+            app,
         }
     }
 
@@ -32,11 +32,14 @@ impl AppKey {
     #[cfg(any(test, feature = "test-seams"))]
     #[must_use]
     pub fn standing_in(load: Loader) -> Self {
-        Self { load, team: "test" }
+        Self {
+            load,
+            app: App { team: "test", bundle: "test" },
+        }
     }
 
     fn load(self) -> Option<(FindKey, Option<&'static str>)> {
-        (self.load)(self.team)
+        (self.load)(self.app)
     }
 }
 
@@ -143,7 +146,7 @@ mod tests {
     fn only_the_apps_real_run_asks_the_keychain() {
         let temp = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-find-keys-");
         let quiet = StatePaths::overridden(&temp).unwrap();
-        fn never(_team: &'static str) -> Option<(FindKey, Option<&'static str>)> {
+        fn never(_app: recto_platform::find_key::App) -> Option<(FindKey, Option<&'static str>)> {
             panic!("a test reached the app's Keychain loader")
         }
         let app = Host::App(AppKey::standing_in(never));

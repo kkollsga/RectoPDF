@@ -203,10 +203,25 @@ impl FindKey {
     }
 }
 
-/// **The app's own key, and why it isn't the Keychain's when it isn't.** The Keychain is asked only by a copy that is `team`'s release, checked whole ([`keychain`]); any refusal, and every other copy, gets a key in memory, with the refusal's code. `None` only when the OS gives no randomness, and then nothing is indexed. The only way to the Keychain from outside this crate. Its one caller is `recto_control::find_keys::AppKey`, made only by the app's start; the indexer takes it on no main thread.
-pub fn load_for_the_app(team: &str) -> Option<(FindKey, Option<&'static str>)> {
-    let refused = if keychain::signed_as_a_release(team) {
-        match keychain::load_or_create(keychain::SERVICE, keychain::ACCOUNT) {
+/// The app the Find key is for: its team and bundle identifier, as its release is signed and its provisioning profile names them (`recto_update::TEAM_ID` and `BUNDLE_ID`, given by the app's start). Its access group in the keychain is its app ID, the two joined.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct App {
+    pub team: &'static str,
+    pub bundle: &'static str,
+}
+
+impl App {
+    /// The keychain access group the key is in: the app ID, `<team>.<bundle id>`, which the release's profile allows and its signature claims.
+    #[must_use]
+    pub fn access_group(self) -> String {
+        format!("{}.{}", self.team, self.bundle)
+    }
+}
+
+/// **The app's own key, and why it isn't the Keychain's when it isn't.** The Keychain is asked only by a copy that is the team's release, checked whole ([`keychain`]); any refusal, and every other copy, gets a key in memory, with the refusal's code. `None` only when the OS gives no randomness, and then nothing is indexed. The only way to the Keychain from outside this crate. Its one caller is `recto_control::find_keys::AppKey`, made only by the app's start; the indexer takes it on no main thread.
+pub fn load_for_the_app(app: App) -> Option<(FindKey, Option<&'static str>)> {
+    let refused = if keychain::signed_as_a_release(app.team) {
+        match keychain::load_or_create(keychain::SERVICE, keychain::ACCOUNT, &app.access_group()) {
             Ok(key) => return Some((key, None)),
             Err(refused) => refused,
         }
@@ -316,7 +331,7 @@ mod tests {
             (Refused::Unreadable(-25308), Source::MemoryForNow),
             (Refused::NotAKey, Source::MemoryForNow),
             (Refused::NoRandomness, Source::MemoryForNow),
-            (Refused::Other(-1), Source::MemoryForNow),
+            (Refused::NotEntitled, Source::MemoryForNow),
         ];
         for (refused, source) in table {
             assert_eq!(fallback_source(refused), source, "{refused:?}");
