@@ -68,8 +68,26 @@ pub fn retire_agent_folder(root: &Path, key: CorpusKey, claim: AgentClaim) {
 }
 
 /// Whether some live session holds this folder: its `.session` lock can't be taken.
-fn held_by_a_session(agent: &Path) -> bool {
+pub(super) fn held_by_a_session(agent: &Path) -> bool {
     local::open_private_file(&agent.join(SESSION_FILE)).is_ok_and(|file| file.try_lock().is_err())
+}
+
+/// Takes away what an agent's folder says, its pages and manifest and any half-made page, and keeps whose it is: its `.session`, on which its session's lock is, stays, so the folder is still that session's to end (the second review's item 3, 2026-11-15). A folder with no `.session` is no session's, and goes once it's empty.
+pub(super) fn empty_agent_folder(paths: &CorpusPaths) {
+    let _ = fs::remove_dir_all(&paths.pages);
+    let _ = fs::remove_file(&paths.manifest);
+    let _ = fs::remove_file(&paths.temp_page);
+    let _ = fs::remove_dir(&paths.agent);
+}
+
+/// Makes the pages' folder inside an agent's folder that's there, never the agent's folder itself: so a build that's still running when its session sets the folder aside can't make one again in its place.
+pub(super) fn make_pages_in_held_folder(paths: &CorpusPaths) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    match fs::DirBuilder::new().mode(0o700).create(&paths.pages) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => local::check_private_dir(&paths.pages),
+        Err(error) => Err(error),
+    }
 }
 
 /// The folders set aside in a corpus's folder.

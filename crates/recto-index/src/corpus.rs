@@ -909,10 +909,14 @@ fn retry_failed_pages(
     pack.sync_all()?;
     local::write_private_file(&paths.table, &table)?;
     let summary = finish(paths, seal, summary.pages, width, offset, bytes, meta, summary.retries + 1)?;
-    // An agent's folder made before this says these pages failed. It's made anew, and if that can't be done, it's gone: it mustn't say what's no longer so.
-    if paths.manifest.exists() {
-        let _ = fs::remove_dir_all(&paths.agent);
-        let _ = make_agent_folder(find_key, paths, &BuildLimits::default());
+    // An agent's folder made before this says these pages failed, so what it says goes: it mustn't say what's no longer so. It's made anew only inside a folder a live session holds, keeping that session's hold, and never made where there's none: once its session has set it aside, nothing appears in its place (the second review's item 3).
+    if fs::symlink_metadata(&paths.manifest).is_ok() {
+        agent_life::empty_agent_folder(paths);
+        if agent_life::held_by_a_session(&paths.agent)
+            && make_agent_folder(find_key, paths, &BuildLimits::default(), Making::IntoAHeldFolder).is_err()
+        {
+            agent_life::empty_agent_folder(paths);
+        }
     }
     Ok(BuildOutcome::AlreadyReady(summary))
 }
@@ -1430,7 +1434,7 @@ pub fn ensure_agent_folder(find_key: &FindKey, root: &Path, key: CorpusKey, limi
     if lock.try_lock().is_err() {
         return Err(AgentFolderError::Busy);
     }
-    let made = make_agent_folder(find_key, &paths, limits);
+    let made = make_agent_folder(find_key, &paths, limits, Making::ForTheAsker);
     drop(lock);
     // It can add as much again as the corpus, so the total may be over now.
     if made.is_ok() {
@@ -1439,14 +1443,27 @@ pub fn ensure_agent_folder(find_key: &FindKey, root: &Path, key: CorpusKey, limi
     made
 }
 
-fn make_agent_folder(find_key: &FindKey, paths: &CorpusPaths, limits: &BuildLimits) -> Result<AgentFolder, AgentFolderError> {
+/// Who an agent's folder is being made for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Making {
+    /// The session that asked, in its own process: the folder is made if it isn't there.
+    ForTheAsker,
+    /// A retry in the helper, for whichever session holds the folder: only inside the folder that's there, never the folder itself.
+    IntoAHeldFolder,
+}
+
+fn make_agent_folder(find_key: &FindKey, paths: &CorpusPaths, limits: &BuildLimits, making: Making) -> Result<AgentFolder, AgentFolderError> {
     let corpus = match ReadyCorpus::open(find_key, &paths.root, paths.key) {
         Ok(Some(corpus)) => corpus,
         Ok(None) => return Err(AgentFolderError::NotReady),
         Err(Damaged) => return Err(AgentFolderError::Damaged),
     };
-    for folder in [&paths.agent, &paths.pages] {
-        local::ensure_private_dir(folder).map_err(|_| AgentFolderError::Failed)?;
+    match making {
+        Making::ForTheAsker => [&paths.agent, &paths.pages]
+            .into_iter()
+            .try_for_each(|folder| local::ensure_private_dir(folder))
+            .map_err(|_| AgentFolderError::Failed)?,
+        Making::IntoAHeldFolder => agent_life::make_pages_in_held_folder(paths).map_err(|_| AgentFolderError::Failed)?,
     }
     let width = page_width(corpus.pages());
     let (mut buffer, mut text) = (Vec::new(), String::new());
@@ -1458,7 +1475,7 @@ fn make_agent_folder(find_key: &FindKey, paths: &CorpusPaths, limits: &BuildLimi
         bytes += disk_size(text.len() as u64);
         // A hostile file's many small pages take a whole block each, far past what the pack does.
         if bytes > limits.max_doc_bytes {
-            let _ = fs::remove_dir_all(&paths.agent);
+            agent_life::empty_agent_folder(paths);
             return Err(AgentFolderError::TooLarge);
         }
         let file = paths.page_file(page, width);

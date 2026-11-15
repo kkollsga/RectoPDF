@@ -998,11 +998,12 @@ fn the_agent_folder_is_held_to_the_same_rules() {
         "a clear takes both forms"
     );
 
-    // Failed when it was first built, and made since: a retry that reads the page must change the folder too.
+    // Failed when it was first built, and made since for a session that holds it: a retry that reads the page must change the folder too.
     let key = key_of(&temp, b"another file");
     let paths = CorpusPaths::new(&root, key);
     let flaky = [PLAIN, Fake::LostWorker];
     build(tk(), &root, key, &mut FakeFeed::new(&flaky), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    let _claim = claim_agent_folder(&root, key).expect("a session's claim");
     ensure_agent_folder(tk(), &root, key, &BuildLimits::default()).unwrap();
     assert!(fs::read_to_string(paths.page_file(1, 4)).unwrap().contains("text=failed"));
     edit_summary(&paths, |ready| ready["retried_at"] = json!(now_seconds() - RETRY_PAUSE.as_secs() - 1));
@@ -1963,4 +1964,36 @@ fn a_pipe_at_the_build_lock_never_holds_up_a_clear() {
     let _ = clearing.join();
     assert_eq!(outcome.expect("a clear waited on a pipe at the build lock"), Ok(()));
     assert!(!paths.dir.exists(), "the corpus with a pipe at its lock wasn't cleared");
+}
+
+/// Failure (the second review's item 3, 2026-11-15): a retry in the helper rebuilds an agent's folder without its `.session`, so the folder is no session's any more and a sweep or another session takes it while its own still uses it; or a retry that runs once the session has set the folder aside, the helper not yet gone, makes it again, and the document's plain text stays on disk after the session that asked for it.
+#[test]
+fn a_retry_keeps_the_agent_folder_its_sessions_and_makes_none_after_its_end() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let key = key_of(&temp, b"a file");
+    let paths = CorpusPaths::new(&root, key);
+    let due = || edit_summary(&paths, |ready| ready["retried_at"] = json!(now_seconds() - RETRY_PAUSE.as_secs() - 1));
+    let flaky = [PLAIN, Fake::LostWorker, Fake::LostWorker];
+    build(tk(), &root, key, &mut FakeFeed::new(&flaky), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    note_agent_folder(&root);
+    let claim = claim_agent_folder(&root, key).expect("the session's claim");
+    ensure_agent_folder(tk(), &root, key, &BuildLimits::default()).unwrap();
+    due();
+    let better = [PLAIN, Fake::Text("read at last"), Fake::LostWorker];
+    build(tk(), &root, key, &mut FakeFeed::new(&better), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    assert!(fs::read_to_string(paths.page_file(1, 4)).unwrap().contains("read at last"), "the retry didn't change the folder");
+    assert!(paths.agent.join(".session").is_file(), "the retry made the folder again without its session's file");
+    assert!(claim_agent_folder(&root, key).is_none(), "the folder is no longer held by its session after a retry");
+    assert_eq!(sweep_agent_folders(&root, &[]), 0, "a sweep took a folder its session still holds");
+    // The session ends while the helper's retry is still to run: nothing is made again in the folder's place, by the retry or by a making that was already past its look.
+    retire_agent_folder(&root, key, claim);
+    assert_eq!(
+        make_agent_folder(tk(), &paths, &BuildLimits::default(), Making::IntoAHeldFolder).map(|_| ()),
+        Err(AgentFolderError::Failed)
+    );
+    assert!(!paths.agent.exists(), "a making for a held folder made the folder");
+    due();
+    build(tk(), &root, key, &mut FakeFeed::new(&[PLAIN, PLAIN, PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    assert!(!paths.agent.exists(), "a retry after the session's end made its folder again");
 }
