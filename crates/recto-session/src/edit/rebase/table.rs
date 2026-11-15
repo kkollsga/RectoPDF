@@ -160,6 +160,19 @@ fn follow_costing(
     same_document: bool,
     cost: u64,
 ) -> (Vec<(u32, Found)>, Outcome) {
+    follow_reading(edits, new, caps, annots, same_document, cost, false)
+}
+
+/// [`follow_costing`], saying whether the read of the page's highlights was cut short (past its count of annotations).
+fn follow_reading(
+    edits: &PageEdits,
+    new: &[Page],
+    caps: WorkCaps,
+    annots: Option<Vec<(u32, Option<[f32; 4]>)>>,
+    same_document: bool,
+    cost: u64,
+    cut_short: bool,
+) -> (Vec<(u32, Found)>, Outcome) {
     let named = identity::identities(edits).map(|ids| ids.pages().to_vec()).unwrap_or_default();
     let wanted: Vec<u32> = named.iter().map(|(page, _)| *page).collect();
     let new_ids: Vec<(Option<Known>, u64)> = new.iter().map(|page| (page.identified.then(|| known(*page)), cost)).collect();
@@ -171,7 +184,7 @@ fn follow_costing(
         .iter()
         .map(|key| {
             let at = found.iter().find(|(old, _)| *old == key.page).and_then(|(_, found)| found.page());
-            (*key, at.and_then(|(new, _)| refind(*key, new, &on_page)))
+            (*key, at.and_then(|(new, _)| refind(*key, new, &on_page, !cut_short)))
         })
         .collect();
     let outcome = rebase(edits, &found, u32::try_from(new.len()).unwrap(), &refound);
@@ -260,6 +273,8 @@ struct Row {
     same_document: bool,
     /// What each page of the new version costs in bytes to read.
     cost: u64,
+    /// The read of page 4's highlights was cut short at its count, so `annots` is only part of them.
+    annots_cut_short: bool,
 }
 
 const ALL: [bool; 6] = [true; 6];
@@ -275,6 +290,7 @@ fn row(name: &'static str, new: Vec<Page>, follows: [bool; 6]) -> Row {
         annots: None,
         same_document: false,
         cost: 1,
+        annots_cut_short: false,
     }
 }
 
@@ -377,6 +393,21 @@ fn rows() -> Vec<Row> {
         [true, true, true, true, true, false],
     );
     annot_twice.annots = Some(vec![(1, Some(file_key().rect)), (2, Some(file_key().rect))]);
+    // Review N2: past the count of annotations a read looks at, the one other highlight with its /Rect may have a twin beyond the cut.
+    let mut annot_cut_moved = row(
+        "page 4's highlights read only in part (past the count looked at): its /Rect at another place, which a twin beyond the cut could share",
+        renumbered(&ten),
+        [true, true, true, true, true, false],
+    );
+    annot_cut_moved.annots = Some(vec![(0, Some([1.0, 1.0, 2.0, 2.0])), (3, Some(file_key().rect))]);
+    annot_cut_moved.annots_cut_short = true;
+    let mut annot_cut_same = row(
+        "page 4's highlights read only in part, the highlight at its own place with its /Rect: found",
+        renumbered(&ten),
+        ALL,
+    );
+    annot_cut_same.annots = Some(vec![(0, Some(file_key().rect))]);
+    annot_cut_same.annots_cut_short = true;
     vec![
         row("the same file saved again, objects kept", kept(&ten), ALL),
         row("the same file saved again, every object renumbered", renumbered(&ten), ALL),
@@ -488,6 +519,8 @@ fn rows() -> Vec<Row> {
         annot_moved,
         annot_gone,
         annot_twice,
+        annot_cut_moved,
+        annot_cut_same,
     ]
 }
 
@@ -500,7 +533,15 @@ fn every_edit_follows_its_page_or_the_list_is_held() {
         for (kind, follows) in KINDS.iter().zip(row.follows) {
             let mut edits = edited(*kind);
             identify(&mut edits, &base(), row.unread);
-            let (found, outcome) = follow_costing(&edits, &row.new, row.caps, row.annots.clone(), row.same_document, row.cost);
+            let (found, outcome) = follow_reading(
+                &edits,
+                &row.new,
+                row.caps,
+                row.annots.clone(),
+                row.same_document,
+                row.cost,
+                row.annots_cut_short,
+            );
             let label = format!("{}, {kind:?}", row.name);
             assert_eq!(
                 outcome.onto.is_some(),

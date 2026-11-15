@@ -330,7 +330,7 @@ pub fn read_part(following: &mut Following) -> Read {
                     pages += 1;
                     let on_page: Vec<(u32, Option<[f32; 4]>)> = highlights.found.iter().map(|highlight| (highlight.index, highlight.rect)).collect();
                     for (key, again) in &mut refound[*next..end] {
-                        *again = rebase::refind(*key, page, &on_page);
+                        *again = rebase::refind(*key, page, &on_page, !highlights.truncated);
                     }
                 }
                 // Not found, or past the budget: not found again, and that edit is held.

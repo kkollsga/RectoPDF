@@ -65,9 +65,11 @@ pub fn page_highlights_bytes(bytes: Arc<[u8]>, page: u32) -> Result<PageHighligh
 }
 
 /// [`page_highlights`] of a page of a file already open, by its entry in the page map in hand, as the page matcher reads the new version once for
-/// every page it needs (no page map built again per page). With how many annotations were looked at, which the matcher counts as work.
+/// every page it needs (no page map built again per page). With how many annotations were looked at, which the matcher counts as work. **Bounded by
+/// its counts alone, with no time limit** (review N2): the matcher's work is counted in its one budget and never in time, so whether an edit follows
+/// doesn't depend on the machine. An agent's `highlights` keeps [`MAX_READ_TIME`].
 pub fn page_highlights_at(reader: &IndexedReader, entry: &lopdf::PageMapEntry) -> (PageHighlights, usize) {
-    highlights_at(reader, entry, Limits::default())
+    highlights_at(reader, entry, Limits::counted())
 }
 
 /// The limits a read keeps to, set small by the tests so each is held at itself plus one.
@@ -76,16 +78,27 @@ struct Limits {
     annots: usize,
     highlights: usize,
     quads: usize,
-    deadline: Instant,
+    /// When the read stops, or none: then the counts alone bound it.
+    deadline: Option<Instant>,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         Self {
+            deadline: Some(Instant::now() + MAX_READ_TIME),
+            ..Self::counted()
+        }
+    }
+}
+
+impl Limits {
+    /// The counts, with no time limit: [`page_highlights_at`]'s.
+    fn counted() -> Self {
+        Self {
             annots: MAX_PAGE_ANNOTS,
             highlights: MAX_PAGE_HIGHLIGHTS,
             quads: MAX_QUADS,
-            deadline: Instant::now() + MAX_READ_TIME,
+            deadline: None,
         }
     }
 }
@@ -117,7 +130,7 @@ fn highlights_at(reader: &IndexedReader, entry: &lopdf::PageMapEntry, limits: Li
     let mut looked = 0;
     for (index, item) in annots.iter().take(limits.annots).enumerate() {
         looked += 1;
-        if Instant::now() >= limits.deadline {
+        if limits.deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             out.truncated = true;
             break;
         }
@@ -328,8 +341,7 @@ mod tests {
         // The app's own counts, with a time limit no machine meets: this test is of the counts, and the time limit has its own (below). With the app's
         // 500 ms counted from the test's start, a starved machine ran out of it before the last reads and found nothing (a full check at load 32).
         let keep = Limits {
-            deadline: Instant::now() + Duration::from_secs(24 * 60 * 60),
-            ..Limits::default()
+            ..Limits::counted()
         };
         let quad = "50 720 150 720 50 708 150 708 ";
         // Highlights: `max` of them are all kept, one more is cut and said.
@@ -364,12 +376,25 @@ mod tests {
         );
     }
 
+    /// Failure (review N2): the page matcher's read of a page's highlights stopped by the clock, so whether an edit follows depends on the machine
+    /// (its work is counted, never timed). The counted form has no time limit: with the time already up, it reads the page whole and says nothing cut.
+    #[test]
+    fn the_counted_read_has_no_time_limit() {
+        let late = Limits {
+            deadline: Some(Instant::now()),
+            ..Limits::counted()
+        };
+        assert!(highlights_of(&page_with(&[ONE], ""), 0, late).truncated, "timed, it stops");
+        let read = highlights_of(&page_with(&[ONE], ""), 0, Limits::counted());
+        assert_eq!((read.found.len(), read.truncated), (1, false));
+    }
+
     /// Failure (review of R4.3): a page's read has no time limit, as a read of links has, so a page of costly annotations holds an agent's
     /// `recto highlights` and a removal's look for as long as it takes. Held with the time already up: nothing's read, and it says it was cut short.
     #[test]
     fn a_read_stops_at_its_time_and_says_so() {
         let late = Limits {
-            deadline: Instant::now(),
+            deadline: Some(Instant::now()),
             ..Limits::default()
         };
         let read = highlights_of(&page_with(&[ONE], ""), 0, late);

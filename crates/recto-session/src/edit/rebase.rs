@@ -154,11 +154,13 @@ pub fn in_order(own: &[u32]) -> Vec<bool> {
 }
 
 /// **A file's highlight found again on its page in the new version:** the one at the same place in `/Annots` with the same `/Rect`, else the only one
-/// with that `/Rect`, else none. `on_page` is the page's highlights there, as (place in `/Annots`, `/Rect`).
-pub fn refind(key: FileKey, page: u32, on_page: &[(u32, Option<[f32; 4]>)]) -> Option<FileKey> {
+/// with that `/Rect`, else none. `on_page` is the page's highlights there, as (place in `/Annots`, `/Rect`); `whole`, that it's all of them: a read cut
+/// short at its count can't say a `/Rect` is the only one (a twin can be past the cut), so then only the same place and `/Rect` will do (review N2).
+pub fn refind(key: FileKey, page: u32, on_page: &[(u32, Option<[f32; 4]>)], whole: bool) -> Option<FileKey> {
     let same_rect = |rect: &Option<[f32; 4]>| rect.is_some_and(|rect| rect == key.rect);
     let index = match on_page.iter().find(|(index, rect)| *index == key.index && same_rect(rect)) {
         Some((index, _)) => *index,
+        None if !whole => return None,
         None => {
             let mut alike = on_page.iter().filter(|(_, rect)| same_rect(rect));
             match (alike.next(), alike.next()) {
