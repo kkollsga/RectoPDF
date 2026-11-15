@@ -248,12 +248,23 @@ pub(crate) fn page_hits(text: &str, needle: &str, page: u32, room: usize, is_hid
     (total, hits)
 }
 
-/// The last [`BEFORE`] characters of what's before a hit, on one line.
+/// Whether a character belongs with the one before it as one letter on screen: a combining mark, a joiner, a variation selector, or an emoji's skin tone. A cut never goes before one.
+fn is_extender(c: char) -> bool {
+    matches!(c,
+        '\u{300}'..='\u{36f}' | '\u{483}'..='\u{489}' | '\u{591}'..='\u{5bd}' | '\u{64b}'..='\u{65f}' | '\u{900}'..='\u{903}' | '\u{93a}'..='\u{94f}'
+        | '\u{1ab0}'..='\u{1aff}' | '\u{1dc0}'..='\u{1dff}' | '\u{200c}' | '\u{200d}' | '\u{20d0}'..='\u{20ff}' | '\u{3099}'..='\u{309a}'
+        | '\u{fe00}'..='\u{fe0f}' | '\u{fe20}'..='\u{fe2f}' | '\u{1f3fb}'..='\u{1f3ff}' | '\u{e0100}'..='\u{e01ef}')
+}
+
+/// The last [`BEFORE`] characters of what's before a hit, on one line, starting on a word.
 fn piece_before(text: &str) -> Box<str> {
     let taken: Vec<char> = text.chars().rev().take(BEFORE + 1).collect();
     let cut = taken.len() > BEFORE;
-    let kept: String = taken.into_iter().take(BEFORE).collect::<Vec<_>>().into_iter().rev().collect();
-    let joined = one_line(&kept, true);
+    let mut kept: Vec<char> = taken.iter().take(BEFORE).rev().copied().collect();
+    if cut {
+        start_on_a_word(&mut kept, taken[BEFORE]);
+    }
+    let joined = one_line(&kept.into_iter().collect::<String>(), true);
     if cut && !joined.is_empty() {
         format!("{CUT}{}", joined.trim_start()).into()
     } else {
@@ -261,16 +272,56 @@ fn piece_before(text: &str) -> Box<str> {
     }
 }
 
-/// The first `most` characters, on one line, with a mark if there was more.
+/// The first `most` characters, on one line, ending on a word, with a mark if there was more.
 fn piece(text: &str, most: usize) -> Box<str> {
-    let kept: String = text.chars().take(most + 1).collect();
-    let cut = kept.chars().count() > most;
-    let kept: String = kept.chars().take(most).collect();
-    let joined = one_line(&kept, false);
+    let mut kept: Vec<char> = text.chars().take(most + 1).collect();
+    let cut = kept.len() > most;
+    if cut {
+        let next = kept.remove(most);
+        end_on_a_word(&mut kept, next);
+    }
+    let joined = one_line(&kept.into_iter().collect::<String>(), false);
     if cut && !joined.is_empty() {
         format!("{}{CUT}", joined.trim_end()).into()
     } else {
         joined.into()
+    }
+}
+
+/// **A cut at the start of a piece goes to a word:** `kept` is the characters taken from the end of what's before the hit, and `before` the one just past
+/// its start. If that's a space, or `kept` starts with one, the cut is already between words. Otherwise the part word at the start goes, up to its space
+/// (unless nothing else would be left). With no space to cut at, as in Chinese or Japanese, or one long word, it stays cut at its length, only never
+/// starting inside a letter with its marks, or an emoji with its joiner ([`is_extender`]); a flag's two halves aren't held together.
+fn start_on_a_word(kept: &mut Vec<char>, before: char) {
+    if before.is_whitespace() || kept.first().is_none_or(|first| first.is_whitespace()) {
+        return;
+    }
+    if let Some(space) = kept.iter().position(|c| c.is_whitespace())
+        && kept[space..].iter().any(|c| !c.is_whitespace())
+    {
+        kept.drain(..space);
+        return;
+    }
+    let inside = kept.iter().take_while(|c| is_extender(**c)).count();
+    kept.drain(..inside);
+}
+
+/// The same at the end of a piece: `kept` is the first characters of what's after the hit, and `next` the one just past its end.
+fn end_on_a_word(kept: &mut Vec<char>, next: char) {
+    if next.is_whitespace() || kept.last().is_none_or(|last| last.is_whitespace()) {
+        return;
+    }
+    if let Some(space) = kept.iter().rposition(|c| c.is_whitespace())
+        && kept[..space].iter().any(|c| !c.is_whitespace())
+    {
+        kept.truncate(space);
+        return;
+    }
+    // Cut with no space: not before an extender, which would be left without its letter.
+    let mut next = next;
+    while is_extender(next) {
+        let Some(last) = kept.pop() else { break };
+        next = last;
     }
 }
 
@@ -888,6 +939,52 @@ mod tests {
         assert!(found[0].before.starts_with(CUT) && found[0].after.ends_with(CUT));
         let (total, kept) = page_hits(&"a".repeat(200_000), "a", 0, 5, &|_| false);
         assert_eq!((total, kept.len()), (200_000, 5));
+    }
+
+    /// Failure: a row's text starts or ends in the middle of a word ("…rown fox jumps…"). With a cut at either end the piece starts and ends on a word, the
+    /// ellipsis is only where text was cut, and the match is whole in the row. Where a window has no space to cut at (Chinese or Japanese text, a long
+    /// address), it is cut at its length cap but never inside a letter with its marks, or an emoji with its joiner (a flag's two halves aren't held together).
+    #[test]
+    fn a_rows_pieces_start_and_end_on_words_and_the_ellipsis_marks_only_a_cut() {
+        let long_before = "Pack my box with five dozen liquor jugs. The quick brown fox ";
+        let long_after = " over the lazy dog and keeps running far away from the farmhouses where hens lay eggs";
+        let found = &hits(&format!("{long_before}jumps{long_after}"), "jumps")[0];
+        assert_eq!(&*found.before, "\u{2026}The quick brown fox ", "starts on a word, cut marked");
+        assert_eq!(&*found.matched, "jumps");
+        assert_eq!(
+            &*found.after, " over the lazy dog and keeps running far away from the\u{2026}",
+            "ends on a word, cut marked"
+        );
+        // Nothing cut, nothing marked: a short line is whole.
+        let whole = &hits("a short line with needle in it", "needle")[0];
+        assert_eq!((&*whole.before, &*whole.after), ("a short line with ", " in it"));
+        // One long word, or no spaces at all: cut at the cap, ellipsis kept, nothing split.
+        let cjk = format!("{}needle{}", "\u{6f22}".repeat(40), "\u{5b57}".repeat(100));
+        let found = &hits(&cjk, "needle")[0];
+        assert_eq!(found.before.chars().count(), BEFORE + 1, "{found:?}");
+        assert_eq!(found.after.chars().count(), AFTER + 1, "{found:?}");
+        // An accent, a joiner: whole at the cut. Here the cap falls on the base letter, so the cut moves back before it.
+        for (unit, what) in [("e\u{301}", "an accent"), ("\u{1f468}\u{200d}\u{1f469}", "a joined emoji")] {
+            for shift in 0..4 {
+                let text = format!("{}needle{}", "z".repeat(shift) + &unit.repeat(40), unit.repeat(100) + &"z".repeat(shift));
+                let row = &hits(&text, "needle")[0];
+                for piece in [&row.before, &row.after] {
+                    let inner = piece.trim_matches('\u{2026}');
+                    let first = inner.chars().next();
+                    assert!(
+                        first.is_none_or(|c| !super::is_extender(c)),
+                        "{what}, shift {shift}: starts inside a cluster: {piece:?}"
+                    );
+                }
+                let ends = row.after.trim_end_matches('\u{2026}').chars().last();
+                let leftover = text.chars().nth(row.end as usize + row.after.trim_end_matches('\u{2026}').chars().count());
+                assert!(
+                    leftover.is_none_or(|c| !super::is_extender(c)) || ends.is_none(),
+                    "{what}, shift {shift}: ends inside a cluster: {:?}",
+                    row.after
+                );
+            }
+        }
     }
 
     /// Failure: a control character from the document reaches a row as it is.
