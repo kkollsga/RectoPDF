@@ -289,3 +289,36 @@ From `be9a8cc0` (2026-11-13 00:34) to `89955067` (2026-11-14 16:28). The numbers
 
 **Check next time.** Whether CI's check time comes back under 17 min or stays at 19 (then by stage, over five runs, before anything is changed); whether a red run went unrecorded; conflicts in `PLAN.md` and the baseline per merge; the worker table; the median of the last five CI check times against 20 min; failed full runs in the app-tests stage (12 of 22 this time: which tests, which the ledger doesn't say, so the ledger gets the first failing test's name).
 
+## 2026-11-15, the close of phase R (16 merges since the afternoon's review; the phase's second independent read)
+
+From `89955067` (2026-11-14 16:28) to `6aab5734` (2026-11-15 01:52). Numbers from git, `.git/recto-full-runs`, `.git/recto-ci-times` and the task notices of this session; estimates are called so.
+
+**What closed the phase.** The owner ended its numeric targets on 2026-11-14 ("let's remove elements of diminishing returns from the plan and the backlog"): the plan went from 263 open items to 186, 46 taken out. The second independent read of everything since the first (given the code and the rules, nothing run) found the work sound to release from, nothing that widens what an agent can see or do, and three things to fix, now merged or settled. Input to frame of R3.7 and everything since, alone on the machine: no case moved more than 5.8 µs.
+
+**Numbers.**
+- **Merges:** 16 in the period (the day's total 43). The large ones: the withheld place (four rounds and a follow-up), the person's lane (two rounds and last fixes), the rules on `Actor`, the print for a password-opened document (a review, a fix round, a re-read), the snapshot tool through the executor (a review and its fixes).
+- **Full runs:** 26 ledger lines in the period; none of main's failed. One failed earlier in the evening on main at load 32, on a test merged that afternoon whose time limit counted from its own start (fixed the same hour).
+- **CI:** 12 green runs, the check job 13 min 53 s to 19 min 57 s, median 16 min 45 s against the budget of 21; one red (`e67fdd39`: Find's field taking the keyboard a turn after Find opened, there since 2026-11-08, fixed the same evening). Tests that launch the app: 200, unchanged; no branch added one. The bridge 2,089 lines to 2,044; whole-`Inner` 76 to 75.
+- **Workers** (the table the last review asked for; tokens and minutes from the task notices, rounded): 23 worker tasks, 19 on Opus and 4 on Sonnet, about 8.1 million tokens; 7 review tasks on Opus, about 1.8 million. By task, tokens in thousands and minutes: weak tests (Sonnet) 177/16; process numbers (Sonnet) 122/4; print design 226/11; Find focus twice 327/64; first show 308/67; contents (Sonnet) 152/14; withheld rounds two to four and follow-ups 517/87, 419/79, 478/60, 573/99; lane 419/57 and 422/77; slow Find 287/43; Find announcing (Sonnet) 124/12; actor rules 334/37 and follow-ups (Sonnet) 162/17; print build 508/73 and its fix 379/60; snapshot 658/123 and its fix 340/47; the prune 287/13; closing fixes 422/50; the walk's diagnosis 264/57. Sent back for judgement: none of the Sonnet tasks. Out of room and handed over: the withheld worker three times, the lane's, the print's, the snapshot's (each past about 420 thousand tokens).
+
+**What review found that checks and reports had not.**
+- **Every security branch failed its first review, and two failed three.** The withheld place: four reads before "ready", each closing the last residue and exposing the next, until the rule was changed (nothing an agent sends lets a place go). The print: an agent could reopen the app's own descriptor on the plain copy by `open /dev/fd/N`, missed by the design and the build, found by the reviewer the coordinator had told to press on exactly that. The snapshot: a box parked behind a page delete would have copied another page.
+- **Two of the coordinator's design decisions were wrong and reversed on review:** one global lane for the person's edits (a highlight's read held every tab's), and "no change" to menu enablement (the fault as filed survived on a fresh document). A third (one deadline shared by a quit's wait and its write) cut the write's time from 5 s to 2 s and was withdrawn.
+- **The closing read found a fault none of the per-branch reviews could see,** as it sits where two of them meet: a print or snapshot parked in the lane and then dropped was never answered, and its feature stayed busy until a restart.
+
+**What went wrong.**
+1. **A worker was sent to fix a fault already fixed,** from a stale plan line (Find announcing when nothing changed): 124 thousand tokens for a table test.
+2. **An unexplained failure was first handled by taking the test's segment out** (2 in 80). The closing read wouldn't let it rest; 200 rounds with a record and a read of the code gave a likely cause (a wait shorter than one job is allowed) and found the record itself mislabelling. The segment is back.
+3. **Residue-by-residue fixing on the withheld place cost three rounds** before the rule was questioned. Two rounds in, the pattern (each fix exposing the next state derived from the same release) was visible.
+4. **A finished worker kept sending its hand-back** until stopped.
+5. **The plan's conflicts:** workers were told to add lines and not rewrite long ones; conflicts in `docs/PLAN.md` still met most merges of main into a branch, each small.
+
+**Changing.**
+- **A security change gets its attack question in the brief and in the review's brief:** what new thing does the app hold or do that it didn't before (a descriptor, a plain copy, a state derived from a secret), and by which commands could an agent reach it. The print's hole was found only because the review was asked it.
+- **When a second review round finds a new residue of the same cause, the rule is reconsidered before a third round is built.**
+- **A plan line is checked against the code before a worker is spent on it.**
+- **An unexplained failure gets a record and a bounded run before any test is cut**, never the other way round.
+- **Every brief ends "send your hand-back once and stop".**
+
+**Check next time.** CI's check time now the day's tests are in (the median, and by stage if over 18 min); whether the comparison walk fails again and what its record says; a settle that runs out without naming the call (seen once); conflicts in `docs/PLAN.md` now it is a third shorter.
+
