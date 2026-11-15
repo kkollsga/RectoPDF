@@ -1081,6 +1081,7 @@ fn clearing_stops_what_is_on_its_way() {
         assert!(Instant::now() < deadline, "it never started");
         std::thread::sleep(Duration::from_millis(2)); // ratchet: poll
     }
+    no_key_in_the_indexers_arguments_or_environment(&state, &root);
     state.json(&["open", path(&waiting)]);
     let (asked, _) = state.json(&["index"]);
     assert_eq!(asked["data"]["state"], "queued", "{asked}");
@@ -1110,6 +1111,35 @@ fn clearing_stops_what_is_on_its_way() {
     let text = kept_text_under(&root);
     assert!(!text.contains("alpha document"), "the build that was cleared carried on writing");
     assert!(!text.contains("queuedword"), "the file that was cleared got written anyway");
+}
+
+/// The Find key goes to the indexer on its stdin, and never where any program of this user's could read it with `ps -E`: neither its 32 bytes nor their hex are in the running helper's arguments or environment. Part of [`clearing_stops_what_is_on_its_way`], which has a build running long enough to look at.
+fn no_key_in_the_indexers_arguments_or_environment(state: &State, root: &Path) {
+    let (status, _) = state.json(&["status"]);
+    let session = status["data"]["pid"].as_u64().expect("the session's pid");
+    let found = std::process::Command::new("/usr/bin/pgrep")
+        .args(["-P", &session.to_string(), "recto-indexer"])
+        .output()
+        .unwrap();
+    let helpers: Vec<u32> = String::from_utf8_lossy(&found.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect();
+    assert!(!helpers.is_empty(), "no indexer running under the session {session}");
+    let key = find_key_of(root);
+    let hex: String = key.bytes().iter().map(|byte| format!("{byte:02x}")).collect();
+    for helper in helpers {
+        let started_with = recto_platform::procargs::arguments_and_environment(helper).expect("the helper's arguments and environment");
+        assert!(started_with.len() > 16, "nothing read of {helper}'s arguments");
+        assert!(
+            !started_with.windows(32).any(|window| window == key.bytes()),
+            "the key's bytes are in the indexer's arguments or environment"
+        );
+        assert!(
+            !String::from_utf8_lossy(&started_with).contains(&hex),
+            "the key's hex is in the indexer's arguments or environment"
+        );
+    }
 }
 
 /// Failure: lowering agent access to Off leaves up to 16 waiting files and the running one writing documents' text, after the user has said no. It stops, and what's waiting goes.

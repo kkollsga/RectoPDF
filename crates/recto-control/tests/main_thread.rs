@@ -3,7 +3,9 @@
 /// Failure: the indexer takes the Find key on the process's main thread, the app's UI thread, where the Keychain is one call that may block; or it never takes it at all, from any thread. On the main thread it answers no key and doesn't reach the loader; from another thread it reaches it and has the key.
 #[test]
 fn the_main_thread_never_reaches_the_keys_loader() {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_recto-main-thread-probe")).output().expect("the probe runs");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_recto-main-thread-probe"))
+        .output()
+        .expect("the probe runs");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),

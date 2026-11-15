@@ -216,6 +216,11 @@ pub mod secret;
 
 /// The key the Find text is sealed with, and where it comes from.
 pub mod find_key;
+
+/// What another process was started with, for a test that a secret was never put there.
+#[cfg_attr(target_os = "macos", path = "procargs_mac.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "procargs_stub.rs")]
+pub mod procargs;
 pub use secret::{MAX_PASSWORD_BYTES, Password};
 
 /// **Whether this was built as a release:** `RECTO_RELEASE` set when it's compiled, by `app/release-zip.sh`, and it can't be turned on later. The one place it's read: the updater, the renderer's host and the slow mode all go by this (review 1: three crates each read it, and nothing held them to agree).
