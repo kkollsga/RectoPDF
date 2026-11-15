@@ -54,16 +54,22 @@ struct Shared {
     thread: Mutex<Option<Thread>>,
     /// The UI thread's Mach port, taken on its first `busy`, or zero.
     port: AtomicU32,
-    /// The watcher's first look at the stretch that began then, and the thread's CPU time and the time at it: what `Stall::cpu_ms` counts from.
-    first_began: AtomicU64,
-    first_cpu_ms: AtomicU64,
-    first_at: AtomicU64,
-    /// The watcher's looks at the stretch `first_began` names, by what they saw: every look from the first, not only those past a second.
-    looks_waiting: AtomicU32,
-    looks_running: AtomicU32,
+    /// What the watcher saw of the stretch it is looking at.
+    seen: Seen,
     /// The QA verb being waited for, if any. Set by the QA channel; the UI thread never takes this lock.
     verb: Mutex<([u8; VERB_MAX], usize)>,
     worst: Mutex<Option<Stall>>,
+}
+
+/// The watcher's first look at the stretch that began at `began`, and the thread's CPU time and the time at it (what `Stall::cpu_ms` counts from), and its
+/// looks at the stretch by what they saw: every look from the first, not only those past a second.
+#[derive(Default)]
+struct Seen {
+    began: AtomicU64,
+    cpu_ms: AtomicU64,
+    at: AtomicU64,
+    waiting: AtomicU32,
+    running: AtomicU32,
 }
 
 #[derive(Clone)]
@@ -89,11 +95,7 @@ impl Watchdog {
             failed_stretch: AtomicU64::new(0),
             thread: Mutex::new(None),
             port: AtomicU32::new(0),
-            first_began: AtomicU64::new(0),
-            first_cpu_ms: AtomicU64::new(0),
-            first_at: AtomicU64::new(0),
-            looks_waiting: AtomicU32::new(0),
-            looks_running: AtomicU32::new(0),
+            seen: Seen::default(),
             verb: Mutex::new(([0; VERB_MAX], 0)),
             worst: Mutex::new(None),
         }))
@@ -209,18 +211,18 @@ fn look(shared: &Shared, now_ms: u64, sample: Option<Sample>) {
     let stalled = now_ms.saturating_sub(began);
     count(shared, began, stalled);
     if let Some(sample) = sample
-        && shared.first_began.swap(began, Ordering::AcqRel) != began
+        && shared.seen.began.swap(began, Ordering::AcqRel) != began
     {
         // The first look at this stretch: what CPU time is counted from.
-        shared.first_cpu_ms.store(sample.cpu_ms, Ordering::Relaxed);
-        shared.first_at.store(now_ms, Ordering::Relaxed);
-        shared.looks_waiting.store(0, Ordering::Relaxed);
-        shared.looks_running.store(0, Ordering::Relaxed);
+        shared.seen.cpu_ms.store(sample.cpu_ms, Ordering::Relaxed);
+        shared.seen.at.store(now_ms, Ordering::Relaxed);
+        shared.seen.waiting.store(0, Ordering::Relaxed);
+        shared.seen.running.store(0, Ordering::Relaxed);
     }
     if let Some(sample) = sample {
         match sample.state {
-            RunState::Waiting | RunState::Uninterruptible => shared.looks_waiting.fetch_add(1, Ordering::Relaxed),
-            RunState::Running => shared.looks_running.fetch_add(1, Ordering::Relaxed),
+            RunState::Waiting | RunState::Uninterruptible => shared.seen.waiting.fetch_add(1, Ordering::Relaxed),
+            RunState::Running => shared.seen.running.fetch_add(1, Ordering::Relaxed),
             RunState::Stopped | RunState::Other => 0,
         };
     }
@@ -235,8 +237,8 @@ fn record(shared: &Shared, began: u64, now_ms: u64, sample: Option<Sample>, ende
         let slot = shared.verb.lock().unwrap_or_else(PoisonError::into_inner);
         String::from_utf8_lossy(&slot.0[..slot.1]).into_owned()
     };
-    let (first_cpu, first_at) = if shared.first_began.load(Ordering::Acquire) == began {
-        (shared.first_cpu_ms.load(Ordering::Relaxed), shared.first_at.load(Ordering::Relaxed))
+    let (first_cpu, first_at) = if shared.seen.began.load(Ordering::Acquire) == began {
+        (shared.seen.cpu_ms.load(Ordering::Relaxed), shared.seen.at.load(Ordering::Relaxed))
     } else {
         // Never looked at before: no window to count from.
         (sample.map_or(0, |sample| sample.cpu_ms), now_ms)
@@ -244,8 +246,8 @@ fn record(shared: &Shared, began: u64, now_ms: u64, sample: Option<Sample>, ende
     let mut worst = shared.worst.lock().unwrap_or_else(PoisonError::into_inner);
     let before = worst.as_ref().filter(|stall| stall.began == began);
     // The looks counted since the stretch's first: a sleep of a second and a bit is seen waiting by the looks before the second, and the one after may find the thread ready to run.
-    let (waiting_looks, running_looks) = if shared.first_began.load(Ordering::Acquire) == began {
-        (shared.looks_waiting.load(Ordering::Relaxed), shared.looks_running.load(Ordering::Relaxed))
+    let (waiting_looks, running_looks) = if shared.seen.began.load(Ordering::Acquire) == began {
+        (shared.seen.waiting.load(Ordering::Relaxed), shared.seen.running.load(Ordering::Relaxed))
     } else {
         (0, 0)
     };
