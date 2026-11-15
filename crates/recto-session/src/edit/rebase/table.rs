@@ -340,6 +340,14 @@ fn rows() -> Vec<Row> {
         NONE,
     );
     base_unidentifiable.unread = &[4];
+    // Slice 1's final form: a page that reached a cap drops out of what's named, as a page not read; so its neighbour's doing so leaves page 4 found
+    // by its other neighbour.
+    let mut neighbour_unidentifiable = row(
+        "page 3, a neighbour of page 4, reached a cap of the digest's: page 4 is unique and page 5 agrees, so it follows",
+        renumbered(&ten),
+        ALL,
+    );
+    neighbour_unidentifiable.unread = &[3];
     let mut annot_moved = row(
         "the file's highlight on page 4 is at another place in /Annots, with its /Rect the only one like it",
         renumbered(&ten),
@@ -459,6 +467,7 @@ fn rows() -> Vec<Row> {
         lookups_past,
         unread,
         base_unidentifiable,
+        neighbour_unidentifiable,
         annot_moved,
         annot_gone,
         annot_twice,
