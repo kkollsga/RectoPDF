@@ -4,8 +4,10 @@
 //! file: [`crate::version_change`] feeds it, off the session's lock, on the page-identity thread.
 //!
 //! **The rules** (the coordinator's design, accepted 2026-11-15):
-//! 1. The new page with the old page's object number, if it still has the old digest, is that page ([`Matcher::by_object`]). Our own appends keep the
-//!    number; other programs mostly renumber (research §3), so this is a fast first try, never the only one.
+//! 1. The new page with the old page's object number, if it still has the old digest, is that page ([`Matcher::by_object`]), **only where the new
+//!    version has the edits' version's `/ID[0]`** (review M1): another document from the same generator can have a stock page at the same number.
+//!    Our own appends and re-saves keep the number and `/ID[0]`; other programs mostly renumber (research §3), so this is a fast first try, never
+//!    the only one.
 //! 2. Otherwise the new version is scanned in order ([`Matcher::scanned`]): a digest found once is that page only with other evidence (review S3,
 //!    decided 2026-11-15): a page next to it, either side, with the digest of a page next to it before, or the new version's `/ID[0]` the same as the edits'
 //!    version's (a re-save keeps it); else not matched, as a blank or stock page another document shares is no evidence it's ours. Found more than
@@ -190,9 +192,10 @@ impl Matcher {
         }
     }
 
-    /// The object numbers to look for in the new version's page list, so only those pages are read for rule 1.
+    /// The object numbers to look for in the new version's page list, so only those pages are read for rule 1: none in another document, where rule
+    /// 1 doesn't hold, so nothing is spent on it there.
     pub fn wants_object(&self, object: (u32, u16)) -> bool {
-        self.by_object.contains_key(&object)
+        self.same_document && self.by_object.contains_key(&object)
     }
 
     /// **Rule 1:** page `page` of the new version has an object number a named page had, and is `now`.
@@ -216,9 +219,10 @@ impl Matcher {
         }
     }
 
-    /// Whether every one of `pages` (old page numbers) is found by its object number, so no scan is needed.
+    /// Whether every one of `pages` (old page numbers) is found by its object number, so no scan is needed. Never for another document (review M1):
+    /// its pages need a neighbour to agree, which only the scan can see.
     pub fn all_found_by_object(&self, pages: &[u32]) -> bool {
-        pages.iter().all(|page| {
+        self.same_document && pages.iter().all(|page| {
             self.old
                 .binary_search_by_key(page, |(at, _)| *at)
                 .is_ok_and(|at| matches!(self.by_id[at], Some(Some(_))))
@@ -286,7 +290,9 @@ impl Matcher {
                 continue;
             };
             let verdict = match self.by_id[at] {
-                Some(Some((new, now))) => Found::At { page: new, now },
+                // Rule 1 holds only in the same document: another document's page at our old number, with our old digest (a stock or blank page from
+                // the same generator), is no more evidence than a digest found once, and goes by the scan's rules (review M1).
+                Some(Some((new, now))) if self.same_document => Found::At { page: new, now },
                 _ if !(self.scanned && self.complete) => Found::NotFound,
                 _ => {
                     let seen = self.seen[at];

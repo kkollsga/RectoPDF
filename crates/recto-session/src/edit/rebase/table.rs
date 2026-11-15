@@ -309,11 +309,18 @@ fn rows() -> Vec<Row> {
     let mut bytes_cut = row("a scan cut at its byte cap plus one", renumbered(&ten), NONE);
     bytes_cut.caps.bytes = 9;
     let mut kept_past_cap = row(
-        "a budget too small to scan the file (9 pages of 10), but every page found by its object number: no scan needed",
+        "a re-save keeping /ID[0], with a budget too small to scan the file (9 pages of 10), but every page found by its object number: no scan needed",
         kept(&ten),
         ALL,
     );
     kept_past_cap.caps.pages = 9;
+    kept_past_cap.same_document = true;
+    let mut kept_past_cap_other = row(
+        "another document keeping our object numbers, with a budget too small to scan it: the numbers alone don't do, so held",
+        kept(&ten),
+        NONE,
+    );
+    kept_past_cap_other.caps.pages = 9;
     let mut objects_past_cap = row(
         "one budget: the pass by object number counts against it, so a budget of one page holds the list though the numbers are kept",
         kept(&ten),
@@ -438,6 +445,11 @@ fn rows() -> Vec<Row> {
             NONE,
         ),
         row(
+            "another document keeping our object numbers, of which only page 4 (a stock page, at its old number) is like ours: the number is no evidence, so held",
+            kept(&[30, 31, 32, 33, 4, 35, 36, 37, 38, 39]),
+            NONE,
+        ),
+        row(
             "pages 3 to 5 reversed, in another document: page 4 is still between pages 3 and 5, the other way round, so it's found",
             renumbered(&[0, 1, 2, 5, 4, 3, 6, 7, 8, 9]),
             ALL,
@@ -466,6 +478,7 @@ fn rows() -> Vec<Row> {
         at_the_cap,
         bytes_cut,
         kept_past_cap,
+        kept_past_cap_other,
         objects_past_cap,
         lookups_at,
         lookups_past,
@@ -694,6 +707,25 @@ fn an_object_listed_twice_stops_the_pass_by_object_number() {
         matches!(found.iter().find(|(old, _)| *old == 4), Some((_, Found::At { page: 4, .. }))),
         "{found:?}"
     );
+}
+
+/// **Failure caught (review M1, both ways):** the shortcut by object number taken for another document (a page at its old number with its old digest,
+/// in a file with another `/ID[0]`, taken with no neighbour agreeing), or lost for our own re-save: a re-save of the same document keeping its object
+/// numbers follows reading only the pages named, with no scan; the same file as another document reads every page as well, and follows only by
+/// neighbours.
+#[test]
+fn the_shortcut_by_object_number_is_taken_only_for_the_same_document() {
+    let mut edits = edited(Kind::Turn);
+    identify(&mut edits, &base(), &[]);
+    let named = identity::identities(&edits).map(|ids| ids.pages().to_vec()).unwrap_or_default();
+    let wanted: Vec<u32> = named.iter().map(|(page, _)| *page).collect();
+    let new: Vec<(Option<Known>, u64)> = kept(&(0..10).collect::<Vec<_>>()).into_iter().map(|page| (Some(known(page)), 1)).collect();
+    let (found, spent) = super::super::matcher::match_pages_spending(&named, &wanted, &new, WorkCaps::STANDARD, true);
+    assert!(found.iter().all(|(_, found)| found.page().is_some()), "{found:?}");
+    assert_eq!(spent.pages() as usize, named.len(), "the same document: only the pages named are read");
+    let (found, spent) = super::super::matcher::match_pages_spending(&named, &wanted, &new, WorkCaps::STANDARD, false);
+    assert!(found.iter().all(|(_, found)| found.page().is_some()), "by neighbours: {found:?}");
+    assert_eq!(spent.pages() as usize, new.len(), "another document: scanned, and nothing spent by object number");
 }
 
 /// **Failure caught:** a list whose new version would be longer than a document may be ([`super::super::MAX_PAGES`]) built anyway, past the cap every

@@ -39,6 +39,15 @@ fn ten(who: &str) -> Vec<u8> {
     document(who, &(1..=10).collect::<Vec<_>>(), false)
 }
 
+/// `bytes` with an `/ID` pair in its trailer, as a writer that keeps the document's `/ID[0]` across saves gives it (the trailer is after the cross
+/// reference, so nothing moves).
+fn with_id(bytes: &[u8], first: &str, second: &str) -> Vec<u8> {
+    let at = bytes.windows(7).rposition(|window| window == b"trailer").expect("a trailer");
+    let (head, tail) = bytes.split_at(at);
+    let tail = String::from_utf8_lossy(tail).replacen(" >>", &format!(" /ID [({first}) ({second})] >>"), 1);
+    [head, tail.as_bytes()].concat()
+}
+
 /// Another program's save: a new file renamed over the old.
 fn replace_file(path: &Path, bytes: &[u8]) {
     let new = path.with_extension("new");
@@ -58,9 +67,14 @@ struct Bed {
 impl Bed {
     /// A journaled session with `doc.pdf`, ten pages of "Mine", open and active, its page 9 turned and every page that names read; and a second tab.
     fn turned_page_9() -> Self {
+        Self::turned_page_9_of(&ten("Mine"))
+    }
+
+    /// [`Self::turned_page_9`], with `doc.pdf` this.
+    fn turned_page_9_of(bytes: &[u8]) -> Self {
         let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-version-change-");
         let path = dir.join("doc.pdf");
-        std::fs::write(&path, ten("Mine")).unwrap();
+        std::fs::write(&path, bytes).unwrap();
         std::fs::write(dir.join("other.pdf"), ten("Other")).unwrap();
         let mut s = Session::new(Real);
         s.journals_mut().set_journaling(true);
@@ -250,8 +264,9 @@ fn a_scan_cut_at_its_cap_matches_nothing_by_digest() {
 /// object numbers is matched by them without a scan. The turn follows, and the new pages are the document's.
 #[test]
 fn pages_appended_by_another_program_are_reached_once_the_edits_follow() {
-    let mut bed = Bed::turned_page_9();
-    bed.changed_and_read(&document("Mine", &(1..=12).collect::<Vec<_>>(), false));
+    let mut bed = Bed::turned_page_9_of(&with_id(&ten("Mine"), "mine", "one"));
+    // The same document saved again, its `/ID[0]` kept (only then is an object number evidence, review M1).
+    bed.changed_and_read(&with_id(&document("Mine", &(1..=12).collect::<Vec<_>>(), false), "mine", "two"));
     // No scan: page 9 and the pages beside it are found by their object numbers, which the new version keeps, and five pages read is all the
     // budget allows, where a scan of the new version would read twelve.
     WORK_CAPS.with(|caps| {
