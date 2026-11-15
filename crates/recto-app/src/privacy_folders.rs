@@ -119,6 +119,11 @@ fn make_every_folder(app: &HeadlessApp, file: &Path) {
     app.advance(6_000);
     app.settle();
     app.recto(Level::ReadOnly, &["search", "doc"]).expect("searched, which makes the page text");
+    // Built off the session's thread: waited for, not assumed. The folder is there before the store marks it, so what's waited for is something
+    // inside it, which the store writes after.
+    let has_something = |folder: &Path| std::fs::read_dir(folder).is_ok_and(|mut entries| entries.next().is_some());
+    let corpus = app.disk().paths().corpus.clone();
+    app.wait_until("the page text made", || has_something(&corpus));
     app.person(r##"{"cmd":"contents_show","which":"generated","tab":"#1"}"##);
     let id = recto_session::TabId(app.tabs()[0].tab);
     app.wait_until("the generated contents kept", || {
@@ -129,6 +134,8 @@ fn make_every_folder(app: &HeadlessApp, file: &Path) {
             )
         })
     });
+    let generated = app.disk().paths().generated.clone();
+    app.wait_until("the generated contents written", || has_something(&generated));
     app.settle();
     let files = recto_update::plan::Files::in_state(&app.disk().paths().root);
     assert!(
