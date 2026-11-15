@@ -528,3 +528,46 @@ fn edited_tabs_counts_tabs_with_unsaved_changes_wherever_their_lists_are() {
     assert!(s.lists().get(c).is_some() && !s.lists().is_edited(c), "c's every step is undone");
     assert_eq!(s.lists().edited_tabs(), 2, "a, asleep, and b; not c");
 }
+
+/// Failure (review of the removal, should-fix 1): a document whose contents are past what a sleep file carries had its facts made at each leave, about a
+/// megabyte encoded and thrown away as the store wouldn't write it, and held whole in the queue meanwhile. It has no sleep facts, as a protected one
+/// hasn't; one just within the cap has.
+#[test]
+fn a_document_whose_contents_pass_the_sleep_files_cap_has_no_sleep_facts() {
+    struct Contents(usize);
+    impl DocLoader for Contents {
+        fn load(&self, _: &Path) -> Result<DocFacts, OpenError> {
+            let title = "t".repeat(recto_core::MAX_TITLE_BYTES);
+            let lines: Vec<TocLine<'_>> = (0..self.0)
+                .map(|at| TocLine {
+                    title: &title,
+                    page: u32::try_from(at % 3).unwrap(),
+                    parent: recto_core::NONE,
+                    depth: 0,
+                })
+                .collect();
+            Ok(DocFacts {
+                page_count: 3,
+                byte_len: 1,
+                encrypted: false,
+                version: "1.7".into(),
+                title: None,
+                toc: Toc::from_lines(&lines, false),
+                renderer_only: false,
+            })
+        }
+    }
+    let per_entry = recto_core::MAX_TITLE_BYTES + size_of::<recto_core::TocEntry>();
+    let within = sleep::MAX_SLEEP_CONTENTS_BYTES / per_entry;
+    let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-contents-cap-");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("doc.pdf");
+    std::fs::write(&path, b"a file").unwrap();
+    for (entries, fits) in [(within, true), (within + 1, false)] {
+        let mut s = Session::new(Contents(entries));
+        s.dormancy_mut().set_sleep_files(true);
+        let id = s.open(&path).unwrap();
+        assert_eq!(s.dormant().sleep_facts(id).is_some(), fits, "{entries} entries of {per_entry} bytes");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

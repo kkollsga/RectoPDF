@@ -132,7 +132,9 @@ impl Dormant<'_> {
             tabs: self.tabs,
             lists: self.lists,
         };
+        // Contents past what a sleep file carries: none, as for a protected one, so they're never encoded to be thrown away or held in the queue.
         if self.password_was_needed(id)
+            || !sleep::contents_fit(toc, sleep::MAX_SLEEP_CONTENTS_BYTES)
             || tab.from_sleep.is_some()
             || self.lists.is_asleep(id)
             || matches!(tab.file.notice(), Some(FileNotice::Changed | FileNotice::Missing | FileNotice::NeedsPassword))

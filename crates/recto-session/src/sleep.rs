@@ -30,6 +30,32 @@ pub const SLEEP_FORMAT: u32 = 4;
 pub const MAX_SLEEP_FILE_BYTES: usize = 1024 * 1024;
 /// Page sizes kept, past which the rest are asked for as they come. What's held of a tab for its file is cut to this too, before it waits to be written.
 pub const MAX_SIZES: usize = 4096;
+/// **What of a document's contents a sleep file may carry, in bytes** ([`contents_bytes`]): a document whose contents are more (a PDF may have up to
+/// 100,000 entries of 512 bytes, so about 2,000 long titles pass this) has no sleep file, as a protected one hasn't, and wakes from its PDF with all of them,
+/// rather than from a file that drops some for the rest of the session. It holds a file within [`MAX_SLEEP_FILE_BYTES`] however its titles are escaped,
+/// with every page size it keeps (`a_file_at_every_cap_is_within_what_a_file_may_be`), and each of the queue's slots to it: with [`MAX_SIZES`] sizes,
+/// about 300 KiB a slot, 5 MiB for its 17 at most.
+pub const MAX_SLEEP_CONTENTS_BYTES: usize = 256 * 1024;
+
+/// **What a document's contents come to, as a sleep file's cap counts them:** each title's bytes and an entry's numbers, and each page-label range's prefix,
+/// twice, as an escape can double it, and its numbers.
+#[must_use]
+pub fn contents_bytes(toc: &Toc) -> usize {
+    let entries: usize = toc
+        .entries()
+        .iter()
+        .map(|entry| toc.title(entry).len() + size_of::<recto_core::TocEntry>())
+        .sum();
+    let labels: usize = toc.labels.ranges().iter().map(|range| 2 * range.prefix.len() + 32).sum();
+    entries + labels
+}
+
+/// Whether a document's contents fit in a sleep file of at most `cap` bytes of them ([`MAX_SLEEP_CONTENTS_BYTES`], set small by a test).
+#[must_use]
+pub fn contents_fit(toc: &Toc, cap: usize) -> bool {
+    contents_bytes(toc) <= cap
+}
+
 /// How much of a file's start [`sleep_format_of`] needs: its header line and the start of its facts, where the format is said first.
 pub const FORMAT_PREFIX_BYTES: usize = 4096;
 
@@ -285,7 +311,13 @@ mod tests {
         let end = body.iter().position(|byte| *byte == b'\n').unwrap();
         let mut meta = serde_json::from_slice::<serde_json::Value>(&body[..end]).unwrap();
         change(&mut meta);
+        // Written as a build writes it, its format first, where the start of a file says it.
+        let format = meta.as_object_mut().unwrap().remove("sleep_format");
         let mut forged = serde_json::to_vec(&meta).unwrap();
+        if let Some(format) = format {
+            let rest = if forged.len() > 2 { [b",".as_slice(), &forged[1..]].concat() } else { b"}".to_vec() };
+            forged = [format!("{{\"sleep_format\":{format}").as_bytes(), &rest].concat();
+        }
         forged.push(b'\n');
         forged.extend_from_slice(&body[end + 1..]);
         decode_sleep(&seal(SLEEP_KIND, 0, &forged), CURRENT_VERSION)
@@ -425,6 +457,56 @@ mod tests {
         assert_eq!(body.iter().filter(|byte| **byte == b'\n').count(), 1, "one line of facts, and nothing after it");
         let meta = serde_json::from_slice::<serde_json::Value>(&body[..body.len() - 1]).unwrap();
         assert!(meta.get("pictures").is_none(), "{meta}");
+    }
+
+    /// Failure (review of the removal, should-fix 1): a document's contents past what a file may be are encoded at each leave and thrown away, as the
+    /// store won't write a file that large, and the tab always wakes from its PDF with nothing said; or the queue holds such contents whole in every slot.
+    /// The cap is said once: at the cap the contents fit, one byte past it they don't (with the cap set small).
+    #[test]
+    fn contents_fit_a_sleep_file_up_to_the_cap_and_not_past_it() {
+        let toc = sample().toc;
+        let bytes = contents_bytes(&toc);
+        assert!(bytes > 0);
+        assert!(contents_fit(&toc, bytes), "at the cap");
+        assert!(!contents_fit(&toc, bytes - 1), "one byte past it");
+    }
+
+    /// Failure: the caps on what a sleep file carries don't hold a file within what a file may be read as, so a document within every cap is never woken
+    /// from its file (the store refuses to write it). At the contents' cap, with titles that each escape to twice their bytes, every page size kept and the
+    /// most page labels, the file is within [`MAX_SLEEP_FILE_BYTES`].
+    #[test]
+    fn a_file_at_every_cap_is_within_what_a_file_may_be() {
+        let title = "\"".repeat(recto_core::MAX_TITLE_BYTES);
+        let per_entry = title.len() + size_of::<recto_core::TocEntry>();
+        let labels: Vec<recto_core::nav::LabelRange> = (0..recto_core::nav::MAX_LABEL_RANGES as u32)
+            .map(|start| recto_core::nav::LabelRange {
+                start,
+                first: 1,
+                style: recto_core::nav::LabelStyle::Decimal,
+                prefix: "\"".repeat(recto_core::nav::MAX_LABEL_PREFIX_BYTES).into(),
+            })
+            .collect();
+        let mut sleep = sample();
+        sleep.file_pages = 100_000;
+        sleep.pages = 100_000;
+        sleep.toc.labels = PageLabels::from_ranges(labels, false);
+        let room = MAX_SLEEP_CONTENTS_BYTES.saturating_sub(contents_bytes(&sleep.toc));
+        let lines: Vec<TocLine<'_>> = (0..room / per_entry)
+            .map(|at| TocLine {
+                title: &title,
+                page: u32::try_from(at).unwrap(),
+                parent: NONE,
+                depth: 0,
+            })
+            .collect();
+        let labels = sleep.toc.labels.clone();
+        sleep.toc = Toc::from_lines(&lines, false);
+        sleep.toc.labels = labels;
+        assert!(contents_fit(&sleep.toc, MAX_SLEEP_CONTENTS_BYTES));
+        sleep.sizes = (0..MAX_SIZES as u32).map(|page| (page, 14_000.5, 14_000.5)).collect();
+        let bytes = encode_sleep(&sleep);
+        assert!(bytes.len() <= MAX_SLEEP_FILE_BYTES, "{} bytes", bytes.len());
+        assert!(decode_sleep(&bytes, CURRENT_VERSION).is_ok());
     }
 
     /// Failure: the pass after a launch keeps a file of an older format, whose pictures stay on disk till the tab's next wake or 30 days, or removes one of
