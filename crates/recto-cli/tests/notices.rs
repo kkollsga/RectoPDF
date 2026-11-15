@@ -159,47 +159,34 @@ fn nothing_in_the_built_app_has_extended_attributes() {
     assert!(text.trim().is_empty(), "files in the bundle with extended attributes:\n{text}");
 }
 
-/// Whether a program carries the Keychain's code: the framework it opens by name, and a call it looks up there.
-fn carries_keychain_code(program: &Path) -> bool {
-    let bytes = std::fs::read(program).unwrap_or_else(|error| panic!("{}: {error}", program.display()));
-    [&b"Security.framework/Security"[..], b"SecItemCopyMatching"]
-        .iter()
-        .any(|needle| bytes.windows(needle.len()).any(|window| window == *needle))
+/// Failure: `recto`, the program an agent runs, carries the code that reaches the Keychain: the Find key's, or Security.framework linked and called by anything (the coordinator's decision, 2026-11-15: only the app's own process). Looked at as it was just built for this test.
+#[test]
+fn recto_carries_no_keychain_code() {
+    let found = recto_platform::find_key::audit::keychain_code_in(Path::new(env!("CARGO_BIN_EXE_recto")));
+    assert!(found.is_empty(), "recto reaches the Keychain: {found:?}");
 }
 
-/// Failure: `recto`, the indexer, the renderer's worker or the updater carries the code that reads the Find key from the Keychain, so a program an agent runs, or a helper, could reach the person's Keychain however the plan reads (the coordinator's decision, 2026-11-15: only the app's own process). The app's own executable carries it, when it's built, which shows the scan sees it.
+/// Failure: a program in the built app other than the app's own carries the code that reaches the Keychain: `recto`, the indexer, the headings helper, the updater, or the renderer's helper; or the app's own doesn't, so the look sees nothing. Run where the app has just been built (`check.sh` asks for it with `RECTO_REQUIRE_APP`, and then a missing app fails).
 #[test]
-fn only_the_app_carries_the_keychains_code() {
-    let recto = PathBuf::from(env!("CARGO_BIN_EXE_recto"));
-    let mut looked = Vec::new();
-    for name in ["recto", "recto-indexer", "recto-render-service", "recto-updater"] {
-        let program = recto.with_file_name(name);
-        if name == "recto" || program.is_file() {
-            assert!(!carries_keychain_code(&program), "{name} carries the Keychain's code");
-            looked.push(name);
-        }
-    }
-    assert!(looked.contains(&"recto"), "{looked:?}");
+fn only_the_apps_own_program_in_the_bundle_reaches_the_keychain() {
     let Some(bundle) = built_bundle() else { return };
+    let keychain = |program: &Path| recto_platform::find_key::audit::keychain_code_in(program);
     assert!(
-        carries_keychain_code(&bundle.join("MacOS/RectoPDF")),
-        "the app's own executable doesn't, so the scan can't see it"
+        !keychain(&bundle.join("MacOS/RectoPDF")).is_empty(),
+        "the app's own executable doesn't reach the Keychain, so the look sees nothing"
     );
     for name in ["recto", "recto-indexer", "recto-headings", "recto-updater"] {
-        assert!(
-            !carries_keychain_code(&bundle.join("MacOS").join(name)),
-            "the app's {name} carries the Keychain's code"
-        );
+        let found = keychain(&bundle.join("MacOS").join(name));
+        assert!(found.is_empty(), "the app's {name} reaches the Keychain: {found:?}");
     }
     let helper = bundle.join("Helpers/RectoRender.app/Contents/MacOS");
-    for entry in std::fs::read_dir(&helper)
+    let programs: Vec<_> = std::fs::read_dir(&helper)
         .unwrap_or_else(|error| panic!("{}: {error}", helper.display()))
         .flatten()
-    {
-        assert!(
-            !carries_keychain_code(&entry.path()),
-            "the renderer's {} carries the Keychain's code",
-            entry.path().display()
-        );
+        .collect();
+    assert!(!programs.is_empty(), "the renderer's helper has no program");
+    for entry in programs {
+        let found = keychain(&entry.path());
+        assert!(found.is_empty(), "the renderer's {} reaches the Keychain: {found:?}", entry.path().display());
     }
 }
