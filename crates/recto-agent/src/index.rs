@@ -149,6 +149,7 @@ fn refused_words(code: &str) -> &'static str {
         "too_large" => "its text is more than an index may hold",
         "not_pdf" => "it couldn't be read as a PDF",
         "security" => "it uses a kind of security that can't be read",
+        "lasting_key_out_of_reach" => "its index was made with this Mac's lasting key, which can't be had just now, so it's kept as it is for a later run",
         "no_find_key" => "only the app keeps an index, sealed with its own key, and this program isn't the app",
         "coarse_file_times" => "it's on a volume whose file times can't show it's been replaced, so an index could answer from old text",
         _ => "it can't be read",
@@ -177,6 +178,11 @@ pub(crate) fn file_index(indexing: &dyn Indexing, path: &Path, want: bool) -> (O
             return (Some(key), FileIndex::Ready(summary.clone()));
         }
         DiskState::Refused(code) => return (Some(key), FileIndex::Refused(code.clone())),
+        // Sealed by the lasting key, which this run can't have just now: left as it is, and this file's search reads its pages.
+        DiskState::SealedElsewhere { lasting: true } if !find_key.source().may_replace_lasting() => {
+            return (Some(key), FileIndex::Refused(corpus::LASTING_KEY_OUT_OF_REACH.to_string()));
+        }
+        DiskState::SealedElsewhere { .. } => 0,
         DiskState::Partial { pages_done } => *pages_done,
         DiskState::Nothing => 0,
     };

@@ -46,7 +46,7 @@ use recto_proto::{CharBox, CharRecord};
 #[cfg(test)]
 use sealed::INNER_LEN;
 pub use sealed::opened_text;
-use sealed::{Entry, PageRecord, RECORD_LEN, open_page, read_seal, read_sealed_json, seal_for_building, seal_page, write_sealed};
+use sealed::{Entry, PageRecord, RECORD_LEN, open_page, read_seal, read_sealed_json, seal_for_building, seal_page, sealed_elsewhere, write_sealed};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
@@ -68,6 +68,8 @@ pub const MAX_DOC_BYTES: u64 = 512 * 1024 * 1024;
 /// Most all corpora together may take, and how long one is kept since it was last used (agent report, D6). The oldest go first.
 pub const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const MAX_AGE: Duration = Duration::from_secs(90 * 24 * 60 * 60);
+/// Why a build left a corpus as it was: the lasting key that sealed it can't be had this run.
+pub const LASTING_KEY_OUT_OF_REACH: &str = "lasting_key_out_of_reach";
 /// Longest one build runs before it stops and leaves the rest for next time.
 pub const MAX_BUILD_TIME: Duration = Duration::from_secs(60 * 60);
 /// Where a file's last key is noted. Not named as a key, so nothing takes it for a corpus.
@@ -394,6 +396,10 @@ pub enum DiskState {
     Ready(Summary),
     /// It won't be indexed, for this reason's code.
     Refused(String),
+    /// Sealed with a key this run hasn't got, lasting or a past run's own. A run that may replace it builds over it; one whose lasting key is only out of reach for now leaves it ([`FindKey`]'s source says which).
+    SealedElsewhere {
+        lasting: bool,
+    },
 }
 
 /// A corpus this key can't open, sealed by another run's key or damaged, reads as nothing: a build throws it away and starts again.
@@ -412,6 +418,11 @@ pub fn disk_state(find_key: &FindKey, root: &Path, key: CorpusKey) -> DiskState 
     }
     if let Some(code) = read_json(&paths.refused).and_then(|refused| refused["code"].as_str().map(str::to_string)) {
         return DiskState::Refused(code);
+    }
+    if seal.is_none()
+        && let Some(lasting) = sealed_elsewhere(&paths)
+    {
+        return DiskState::SealedElsewhere { lasting };
     }
     match fs::symlink_metadata(&paths.table) {
         Ok(_) if seal.is_none() => DiskState::Nothing,
@@ -734,7 +745,11 @@ fn build_with_lock(
         }
         DiskState::Ready(summary) => return Ok(BuildOutcome::AlreadyReady(summary)),
         DiskState::Refused(code) => return Ok(BuildOutcome::Refused(code)),
-        DiskState::Partial { .. } | DiskState::Nothing => {}
+        // The lasting key sealed this and is only out of reach for now: it's the person's, kept for the next run that has the key (the coordinator's decision, 2026-11-15, F4).
+        DiskState::SealedElsewhere { lasting: true } if !find_key.source().may_replace_lasting() => {
+            return Ok(BuildOutcome::Paused(LASTING_KEY_OUT_OF_REACH));
+        }
+        DiskState::SealedElsewhere { .. } | DiskState::Partial { .. } | DiskState::Nothing => {}
     }
     let pages = match feed.page_count() {
         Ok(pages) if pages > MAX_PAGES => return refuse(&paths, "too_large"),

@@ -1817,3 +1817,35 @@ fn an_agent_folder_lives_only_for_the_session_that_asked() {
     );
     assert!(!agent_folders_may_be_there(&root), "nothing's left, so a start needn't look");
 }
+
+/// Failure (the coordinator's decision F4, 2026-11-15): a run whose lasting key is only out of reach for now (the Keychain locked, a read refused) throws away and builds again over what that key sealed, so the person's index is lost to a moment; or a run that can never have the lasting key (not the team's release) can't build at all over a corpus it can't read. The first leaves it whole, through `seal_for_building` as through a build; the second replaces it.
+#[test]
+fn a_lasting_corpus_is_left_when_its_key_is_only_out_of_reach() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let key = key_of(&temp, b"a file");
+    let lasting = FindKey::from_state_file(&temp.0.join("lasting.key")).unwrap();
+    build(&lasting, &root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    let paths = CorpusPaths::new(&root, key);
+    let for_now = FindKey::in_memory_for_now().unwrap();
+    assert_eq!(disk_state(&for_now, &root, key), DiskState::SealedElsewhere { lasting: true });
+    assert!(seal_for_building(&for_now, &paths).is_err(), "a seal was made over what the lasting key sealed");
+    assert_eq!(
+        build(&for_now, &root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap(),
+        BuildOutcome::Paused(LASTING_KEY_OUT_OF_REACH)
+    );
+    assert!(
+        ReadyCorpus::open(&lasting, &root, key).unwrap().is_some(),
+        "the lasting key's corpus was touched"
+    );
+    let never = FindKey::in_memory().unwrap();
+    assert_eq!(disk_state(&never, &root, key), DiskState::SealedElsewhere { lasting: true });
+    assert!(matches!(
+        build(&never, &root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap(),
+        BuildOutcome::Ready { .. }
+    ));
+    assert!(
+        ReadyCorpus::open(&never, &root, key).unwrap().is_some(),
+        "a copy that can never have the lasting key couldn't build"
+    );
+}

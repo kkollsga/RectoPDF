@@ -145,10 +145,22 @@ pub(super) fn read_seal(find_key: &FindKey, paths: &CorpusPaths) -> Option<Corpu
     CorpusSeal::open(find_key, paths.key, &header).ok()
 }
 
-/// The seal to build with: the one there, or a new one, after throwing away anything this key can't open. That's how a corpus sealed by a key that's gone, a run's own or a lost one, is built again.
+/// Whether a corpus is sealed with a key that isn't this one, and if so whether that key lasts, as its header says (read without a key: a hint, which anyone who can write here could change, and changing it can only get a corpus thrown away or kept). `None` if there's no header that reads as one.
+pub(super) fn sealed_elsewhere(paths: &CorpusPaths) -> Option<bool> {
+    let header = local::read_private_file(&paths.seal(), seal::HEADER_BYTES as u64).ok()??;
+    CorpusSeal::lasting(&header)
+}
+
+/// The seal to build with: the one there, or a new one, after throwing away anything this key can't open. That's how a corpus sealed by a key that's gone, a run's own or a lost one, is built again. Never over what a lasting key sealed when this run's lack of it is only for now: that's refused before anything is thrown away.
 pub(super) fn seal_for_building(find_key: &FindKey, paths: &CorpusPaths) -> io::Result<CorpusSeal> {
     if let Some(seal) = read_seal(find_key, paths) {
         return Ok(seal);
+    }
+    if sealed_elsewhere(paths) == Some(true) && !find_key.source().may_replace_lasting() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "sealed by the lasting key, out of reach for now",
+        ));
     }
     clear_text(paths);
     let (seal, header) = CorpusSeal::create(find_key, paths.key)?;

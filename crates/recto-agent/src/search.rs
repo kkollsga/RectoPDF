@@ -1622,6 +1622,35 @@ mod tests {
         assert_eq!(coverage["pages_searched"], 0, "{answer}");
     }
 
+    /// Failure (F4): a search on a run whose lasting key is out of reach for now asks for the file's corpus to be built again over the lasting key's, or reads it as nothing, and `index.note` doesn't say why. It's refused for this run, so the pages are read live, and the corpus is left.
+    #[test]
+    fn a_lasting_corpus_out_of_reach_is_left_and_said() {
+        let folder = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-search-lasting-");
+        recto_platform::local::ensure_private_dir(&folder).unwrap();
+        let path = folder.join("doc.pdf");
+        std::fs::write(&path, b"a file").unwrap();
+        let root = folder.join("corpus.noindex");
+        let key = CorpusKey::of_file(&path).unwrap();
+        let lasting = recto_platform::find_key::FindKey::from_state_file(&folder.join("find.key")).unwrap();
+        recto_index::corpus::build(
+            &lasting,
+            &root,
+            key,
+            &mut Pages(vec![Some(("a page".to_string(), true))]),
+            &recto_index::corpus::DocMeta::default(),
+            &recto_index::corpus::BuildLimits::default(),
+        )
+        .unwrap();
+        let for_now = crate::index::ReadOnlyCorpus(root.clone(), Some(recto_platform::find_key::FindKey::in_memory_for_now().unwrap()));
+        let (_, state) = crate::index::file_index(&for_now, &path, true);
+        assert_eq!(state, crate::index::FileIndex::Refused("lasting_key_out_of_reach".to_string()));
+        assert!(state.scan_note(true).contains("lasting key"), "{}", state.scan_note(true));
+        assert!(
+            recto_index::corpus::ReadyCorpus::open(&lasting, &root, key).is_ok_and(|corpus| corpus.is_some()),
+            "the lasting corpus was touched"
+        );
+    }
+
     /// Gives the key to its first ask and none after, as a search whose look at the index had a key and whose read of it then had none.
     struct KeyOnce {
         root: std::path::PathBuf,
