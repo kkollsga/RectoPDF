@@ -304,6 +304,11 @@ fn pair_record(file: &Path, first: recto_platform::FileStamp, journal: &str, cha
 /// its own steps; the file replaced by another program or not; and the record saying it changed or not. What must hold: [`linked_pair_holds`].
 fn use_a_linked_pair(data: &[u8]) {
     let byte = |at: usize| data.get(at).copied().unwrap_or(0);
+    // One input in eight: a launch is most of a round's cost (about 25 ms in a debug build), the shapes are few (some 10^5), and the smoke test's
+    // 400 rounds took 12 s more with every input (49 s to 61 s, under load).
+    if byte(10) % 8 != 0 {
+        return;
+    }
     let root = folder();
     let Ok(paths) = StatePaths::overridden(&root) else { return };
     if paths.prepare().is_err() {
@@ -349,17 +354,12 @@ fn use_a_linked_pair(data: &[u8]) {
         (record::journal_file_name(Some(first), &file, None), own),
         (record::journal_file_name(other.stamp, &other.path, Some(2)), other),
     ];
-    let store = RecordStore::open(&paths, Flavor::App);
-    if store
-        .write_record(&pair_record(&file, first, &pair[0].0, byte(9) & 1 == 1), &PlaceDelta::default(), false)
-        .is_err()
-    {
-        return;
-    }
+    // Written as a launch finds them, with no store's write (and its flushes) to pay for each input.
+    let main = pair_record(&file, first, &pair[0].0, byte(9) & 1 == 1);
+    let _ = local::write_private_file(&root.join("session").join("record.a.json"), &record::encode_record(&main, 1));
     for (name, shape) in &pair {
         let _ = local::write_private_file(&journals.join(name), &shape.bytes());
     }
-    drop(store);
     if let Loaded::Restored(restored) = RecordStore::open(&paths, Flavor::App).load() {
         linked_pair_holds(*restored, &pair, &journals, now);
     }
@@ -389,7 +389,10 @@ fn linked_pair_holds(restored: recto_control::record_store::Restored, pair: &[(S
         let superseded = is_now(kept_shape.stamp) && !is_now(shape.stamp) && kept_shape.base_seq >= seq;
         assert!(list.set_aside_beside || all_in || superseded, "a list with edits set aside unsaid: {name}");
     }
-    let said = restored.journals.values().any(|list| list.set_aside_beside);
+    // Only where there's a notice to see: a restore for every input is most of what this would cost.
+    if !restored.journals.values().any(|list| list.set_aside_beside) {
+        return;
+    }
     let mut session = Session::new(NamedLoader);
     if session.restore(&restored.record, restored.journals).is_ok() {
         let written = serde_json::to_string(&session.to_record()).unwrap_or_default();
@@ -400,7 +403,7 @@ fn linked_pair_holds(restored: recto_control::record_store::Restored, pair: &[(S
                 .tab_notice(tab.id)
                 .is_some_and(|notice| notice.code() == "edits_set_aside_after_quit")
         });
-        assert!(!said || shown, "the notice is on its tab");
+        assert!(shown, "the notice is on its tab");
     }
 }
 
