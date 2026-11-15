@@ -1997,3 +1997,28 @@ fn a_retry_keeps_the_agent_folder_its_sessions_and_makes_none_after_its_end() {
     build(tk(), &root, key, &mut FakeFeed::new(&[PLAIN, PLAIN, PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
     assert!(!paths.agent.exists(), "a retry after the session's end made its folder again");
 }
+
+/// Failure (the second review's item 6, 2026-11-15): an entry of the corpora's folder that can't be read is skipped. `clear_all`, the person's "clear the Find text", then says everything went while a corpus's text may still be there; eviction adds up the rest as if that were all, and removes on a total that leaves one out. Or, as `main` had it for a clear, the first such entry stops it, and every corpus after it keeps its text. A clear takes the rest and counts the one it couldn't read as failed; eviction stops before anything goes, as it always has.
+#[test]
+fn an_entry_that_cant_be_read_is_never_skipped() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let (first, second) = (key_of(&temp, b"first"), key_of(&temp, b"second"));
+    for key in [first, second] {
+        build(tk(), &root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    }
+    let unread = || Err(io::Error::other("an entry that couldn't be read"));
+    let at = |key: CorpusKey| Ok((key, root.join(key.hex())));
+    let nothing_fits = BuildLimits {
+        max_total_bytes: 0,
+        ..BuildLimits::default()
+    };
+    assert!(
+        evict::evict_found(&root, vec![at(first), unread(), at(second)], &nothing_fits, None).is_err(),
+        "eviction went on without a folder it couldn't look at"
+    );
+    assert!(root.join(first.hex()).is_dir() && root.join(second.hex()).is_dir(), "eviction removed on a total that left one out");
+    let report = evict::clear_found(&root, vec![at(first), unread(), at(second)]);
+    assert_eq!((report.cleared, report.failed), (2, 1), "{report:?}");
+    assert!(!root.join(first.hex()).exists() && !root.join(second.hex()).exists(), "a clear stopped at an entry it couldn't read");
+}

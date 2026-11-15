@@ -15,28 +15,50 @@ pub struct Evicted {
     pub kept_bytes: u64,
 }
 
-/// **The corpus folders under a root:** each folder named as a key, never a link, whatever it's called (a link is someone's trap), and nothing else. The one walk every sweep, eviction and clear goes by. An error is the root's: one that isn't there has none.
-pub(crate) fn key_folders(root: &Path) -> Vec<(CorpusKey, PathBuf)> {
-    try_key_folders(root).unwrap_or_default()
-}
+/// One entry of a root: a corpus folder, or an entry that couldn't be read, which may have been one.
+pub(super) type Found = io::Result<(CorpusKey, PathBuf)>;
 
-fn try_key_folders(root: &Path) -> io::Result<Vec<(CorpusKey, PathBuf)>> {
+/// **The corpus folders under a root:** each folder named as a key, never a link, whatever it's called (a link is someone's trap), and nothing else, with each entry that couldn't be read as its error. The one walk every sweep, eviction and clear goes by. The outer error is the root's.
+fn walk(root: &Path) -> io::Result<Vec<Found>> {
     let mut found = Vec::new();
-    for entry in fs::read_dir(root)?.flatten() {
-        if let Some(key) = entry.file_name().to_str().and_then(CorpusKey::from_hex)
-            && entry.file_type().is_ok_and(|kind| kind.is_dir())
-        {
-            found.push((key, entry.path()));
+    for entry in fs::read_dir(root)? {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                found.push(Err(error));
+                continue;
+            }
+        };
+        let Some(key) = entry.file_name().to_str().and_then(CorpusKey::from_hex) else { continue };
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => found.push(Ok((key, entry.path()))),
+            Ok(_) => {}
+            Err(error) => found.push(Err(error)),
         }
     }
     Ok(found)
 }
 
-/// Removes corpora past their age, then the least recently used until all of them fit. Never `keep`, and never one being built. Only folders named as a key are looked at: anything else under the root isn't ours to touch.
+/// The corpus folders that could be read, for a sweep, which does what it can: one that isn't there has none.
+pub(crate) fn key_folders(root: &Path) -> Vec<(CorpusKey, PathBuf)> {
+    walk(root).unwrap_or_default().into_iter().flatten().collect()
+}
+
+/// The corpus folders, or the first error: what's counted against the caps must be all of them, as `main`'s eviction had it.
+fn try_key_folders(root: &Path) -> io::Result<Vec<(CorpusKey, PathBuf)>> {
+    walk(root)?.into_iter().collect()
+}
+
+/// Removes corpora past their age, then the least recently used until all of them fit. Never `keep`, and never one being built. Only folders named as a key are looked at: anything else under the root isn't ours to touch. A folder that can't be looked at stops it before anything goes, as it always has: what's there can't be added up without it.
 pub fn evict(root: &Path, limits: &BuildLimits, keep: Option<CorpusKey>) -> io::Result<Evicted> {
+    evict_found(root, walk(root)?, limits, keep)
+}
+
+pub(super) fn evict_found(root: &Path, folders: Vec<Found>, limits: &BuildLimits, keep: Option<CorpusKey>) -> io::Result<Evicted> {
+    let folders: Vec<(CorpusKey, PathBuf)> = folders.into_iter().collect::<io::Result<_>>()?;
     let mut found = Vec::new();
     let now = SystemTime::now();
-    for (key, dir) in try_key_folders(root)? {
+    for (key, dir) in folders {
         let used = fs::metadata(CorpusPaths::new(root, key).used)
             .or_else(|_| fs::metadata(&dir))
             .and_then(|meta| meta.modified())
@@ -100,17 +122,26 @@ impl Cleared {
 
 /// Throws away everything that's not being built, and says what went and what didn't.
 pub fn clear_all(root: &Path) -> io::Result<Cleared> {
-    let mut report = Cleared::default();
-    let folders = match try_key_folders(root) {
+    let folders = match walk(root) {
         Ok(folders) => folders,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(report),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Cleared::default()),
         Err(error) => return Err(error),
     };
-    for (key, _) in folders {
-        report.note(remove_unless_building(root, key));
-    }
+    let report = clear_found(root, folders);
     let _ = fs::remove_dir_all(root.join(VERSIONS_FOLDER));
     Ok(report)
+}
+
+/// Clears each folder, and counts an entry that couldn't be read as one that failed: it may be a corpus, whose text is still there, and the answer says so. Not `main`'s way, which stopped at the first such entry with an error and left every later corpus's text where it was; this takes the rest (the second review's item 6, 2026-11-15).
+pub(super) fn clear_found(root: &Path, folders: Vec<Found>) -> Cleared {
+    let mut report = Cleared::default();
+    for folder in folders {
+        match folder {
+            Ok((key, _)) => report.note(remove_unless_building(root, key)),
+            Err(_) => report.failed += 1,
+        }
+    }
+    report
 }
 
 /// Removes a corpus's folder unless a build holds its lock. A build only ever locks a plain file ([`local::append_private_file`]), so anything else at the lock's name, a link or a named pipe someone put there, holds nothing, and is never opened: opening a pipe to write would wait for a reader for ever (the second review's item 2, 2026-11-15). The open itself follows no link and doesn't wait, as a build's does, in case the name is changed between the look and the open.
