@@ -748,6 +748,16 @@ fn a_held_list_over_a_shorter_file_shows_nothing_of_either_version_till_discard_
         drawn(&app);
         let said = notice(&app).expect("the tab says what happened");
         assert!(said.contains("pages aren't shown") && said.contains("Discard"), "{how}: {said}");
+        // A page inside the new file's length, where its page 2 could be drawn: nothing is.
+        app.recto(Level::Full, &["goto", "2"]).expect("page 2 of the held list");
+        drawn(&app);
+        assert_eq!(app.reader().place, "2 of 30", "{how}");
+        assert_eq!(
+            tiles(&app),
+            (0, 0, true),
+            "{how}: no tile of the new file's page 2: {}",
+            app.core().engine.report().0
+        );
         app.recto(Level::Full, &["goto", "28"]).expect("page 28 of the held list");
         drawn(&app);
         assert_eq!(app.reader().place, "28 of 30", "{how}: the held list's count and place");
