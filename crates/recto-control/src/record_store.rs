@@ -2525,8 +2525,9 @@ mod tests {
 
     /// Failure (review of the removal, S1): 0.1.0's installer cloned every sleep file into the copy of the record an update keeps, for a week, so its pictures
     /// of pages outlived the update there; or the pass, going over that copy, touches what a going back needs (journals, kept pages, the record), or follows
-    /// a link out of it. After the pass the copy's older sleep files are gone and everything else in it is byte for byte as it was; a link where the copy's
-    /// folder would be is passed by.
+    /// a link out of it; or the copy, which 0.1.0's installer made without the mark that keeps it out of Time Machine, goes to backups with its history for
+    /// its week. After the pass the copy's older sleep files are gone, everything else in it is byte for byte as it was, and it's marked; a link at any
+    /// step of the way to the copy's journals is passed by, and nothing it leads to is touched or marked.
     #[test]
     fn the_pass_after_a_launch_also_clears_the_older_sleep_files_an_update_kept() {
         let (root, paths) = state();
@@ -2550,19 +2551,33 @@ mod tests {
         .into_iter()
         .map(|(path, bytes)| (put(path, &bytes), bytes))
         .collect();
+        assert!(!local::is_excluded_from_backups(&copy), "made as 0.1.0's installer made it, unmarked");
         let done = store.remove_older_sleep_files(MAX_SLEEP_FILES_LOOKED_AT);
         assert!(!older.exists(), "0.1.0's picture kept in the update's copy: {done:?}");
         for (path, bytes) in &kept {
             assert_eq!(&std::fs::read(path).unwrap(), bytes, "{} changed", path.display());
         }
-        // A link where the copy's journals would be leads somewhere else: nothing there is touched.
-        std::fs::remove_dir_all(&journals).unwrap();
-        let elsewhere = root.join("elsewhere");
-        std::fs::create_dir_all(&elsewhere).unwrap();
-        let outside = put(elsewhere.join("sleep-00000000000000d5.bin"), &sleep_file_of_format(None, 10));
-        std::os::unix::fs::symlink(&elsewhere, &journals).unwrap();
-        store.remove_older_sleep_files(MAX_SLEEP_FILES_LOOKED_AT);
-        assert!(outside.exists(), "a link to another folder was followed");
+        assert!(local::is_excluded_from_backups(&copy), "the copy's history left to Time Machine");
+        // A link at each step of the way, the copy's journals, the copy and the update's folder, leads somewhere else: nothing there is touched or
+        // marked.
+        let update = root.join(UPDATE_COPY[0]);
+        for (at, link) in [journals.clone(), copy.clone(), update.clone()].into_iter().enumerate() {
+            std::fs::remove_dir_all(&update).unwrap();
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            let elsewhere = root.join(format!("elsewhere-{at}"));
+            // Laid out under the link as the copy would be, so a pass that follows it finds an older sleep file where it looks.
+            let under = journals.strip_prefix(&link).unwrap();
+            std::fs::create_dir_all(elsewhere.join(under)).unwrap();
+            let outside = put(elsewhere.join(under).join("sleep-00000000000000d5.bin"), &sleep_file_of_format(None, 10));
+            std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+            store.remove_older_sleep_files(MAX_SLEEP_FILES_LOOKED_AT);
+            assert!(outside.exists(), "a link at {} was followed", link.display());
+            let marked: Vec<PathBuf> = [elsewhere.clone(), elsewhere.join(under)]
+                .into_iter()
+                .filter(|folder| local::is_excluded_from_backups(folder))
+                .collect();
+            assert!(marked.is_empty(), "marked through a link at {}: {marked:?}", link.display());
+        }
         std::fs::remove_dir_all(&root).unwrap();
     }
 

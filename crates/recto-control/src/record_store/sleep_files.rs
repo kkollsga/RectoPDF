@@ -118,7 +118,8 @@ impl RecordStore {
     /// week). Only files named as sleep files, plain files of this user's (a link is never followed or touched, nor a folder on the way that's a link), and
     /// at most `cap` of them in all; of each, only its first [`FORMAT_PREFIX_BYTES`], which say its format ([`sleep_format_of`]). A file that can't say it's
     /// this format or newer goes: nothing of it is what a wake can use, and its tab wakes from its PDF once (in the update's copy, if a going back puts it
-    /// back). Nothing else in either folder is touched. Nothing's removed by a copy that doesn't keep the record. Nothing's said if it fails.
+    /// back). Nothing else in either folder is touched, but for the copy's folder itself, which is marked to be kept out of backups if it isn't (0.1.0's
+    /// installer left it unmarked). Nothing's removed by a copy that doesn't keep the record. Nothing's said if it fails.
     pub fn remove_older_sleep_files(&self, cap: usize) -> OlderSleepFiles {
         let mut done = OlderSleepFiles::default();
         if self.refuses_writes().is_some() {
@@ -126,14 +127,23 @@ impl RecordStore {
         }
         sweep_older(&self.dir().join(JOURNALS), cap, &mut done);
         // The update's copy, only by real folders all the way down from the state folder: a link there could lead anywhere.
+        let real_folder = |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_dir());
         let mut copy = self.root.clone();
-        for part in UPDATE_COPY.iter().chain([&JOURNALS]) {
+        for part in UPDATE_COPY {
             copy.push(part);
-            if !std::fs::symlink_metadata(&copy).is_ok_and(|meta| meta.file_type().is_dir()) {
+            if !real_folder(&copy) {
                 return done;
             }
         }
-        sweep_older(&copy, cap, &mut done);
+        // It holds the edit history, which stays out of Time Machine (PRIVACY.md); 0.1.0's installer made it without the mark the installer gives it now
+        // (`recto_update::install::copy_record`), so it's given here, by the same function. A failure costs only that.
+        if !local::is_excluded_from_backups(&copy) {
+            let _ = local::exclude_from_backups(&copy);
+        }
+        copy.push(JOURNALS);
+        if real_folder(&copy) {
+            sweep_older(&copy, cap, &mut done);
+        }
         done
     }
 }
