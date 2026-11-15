@@ -554,6 +554,33 @@ mod tests {
         std::fs::remove_file(&paths.root).unwrap();
     }
 
+    /// Failure (PRIVACY.md: "never document text"): a palette query an agent sent is written to the activity log as it was typed, and with it whatever the
+    /// agent put there, which may be a document's words. Every command that takes words from outside, as the table's own requests carry them, is logged and
+    /// the state folder's bytes searched for the words: only that a query was given is kept.
+    #[test]
+    fn no_words_an_agent_sends_reach_the_log() {
+        let dir = recto_testpdf::TempDir::new("recto-log-words-");
+        let paths = StatePaths::overridden(&dir).unwrap();
+        let mut log = ActivityLog::new(&paths);
+        for line in [
+            r#"{"cmd":"palette","query":"zyxwvuNEEDLE","run":true}"#,
+            r#"{"cmd":"palette","query":"zyxwvuNEEDLE"}"#,
+            r#"{"cmd":"find","query":"zyxwvuNEEDLE"}"#,
+            r#"{"cmd":"search","query":"zyxwvuNEEDLE"}"#,
+        ] {
+            let command = recto_agent::read(line).unwrap_or_else(|refused| panic!("{line}: {:?}", refused.error));
+            log.record(command.tag(), Level::Control, "ok", &command.log_details());
+        }
+        log.flush_due(true);
+        let mut written = 0;
+        for path in [&paths.log, &paths.other_log, &paths.overrides_log] {
+            let bytes = std::fs::read(path).unwrap_or_default();
+            written += bytes.len();
+            assert!(!String::from_utf8_lossy(&bytes).contains("zyxwvuNEEDLE"), "{}", String::from_utf8_lossy(&bytes));
+        }
+        assert!(written > 0, "something was logged");
+    }
+
     /// Failure: an agent uses `--anyway` and it leaves no line, or one that's counted in with others, or one that a flood of ordinary reading can push out, or by which an agent at Read-only can push out what's changed. Owner, 2026-11-07: "each use" goes in the log.
     #[test]
     fn each_use_of_anyway_has_its_own_line_that_nothing_else_can_push_out() {
