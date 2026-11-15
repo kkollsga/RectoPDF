@@ -657,3 +657,22 @@ fn turned_text_of_tab(app: &HeadlessApp, file: &Path) -> Vec<(u32, String)> {
     app.settle();
     turned_text(app)
 }
+
+/// Failure caught (review F5): under unsaved edits, another program's version B is put in place and held (its page 9 isn't the edits'), then version C,
+/// another file with B's size and time, is renamed in; the look takes C for B, seen already, as it goes by size and time, and C is never looked at, so
+/// the edits stay held (and said changed) though C has every page they use. Another inode is another version under unsaved edits: C is read and the
+/// edits follow onto it.
+#[test]
+fn another_file_with_the_held_versions_size_and_time_is_looked_at() {
+    let (app, file, original, _modified) = edited();
+    let theirs = pdf_bytes("Ours", 10);
+    assert_eq!(theirs.len(), original.len(), "the same size");
+    replace(&file, &theirs);
+    look(&app);
+    assert_eq!(app.session_json()["tabs"][0]["notice"], "changed", "B: page 9 isn't the edits', held");
+    let b_time = std::fs::metadata(&file).and_then(|meta| meta.modified()).expect("B's time");
+    put_back(&file, &original, b_time);
+    look(&app);
+    assert_eq!(notice(&app).as_deref(), Some(FOLLOWED), "C, with B's size and time, is looked at and followed");
+    assert_eq!(turned_text(&app), vec![(9, "Mine page 9".to_owned())]);
+}
