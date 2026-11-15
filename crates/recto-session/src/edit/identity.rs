@@ -445,4 +445,4 @@ pub fn sidecar_caught_up(edits: &PageEdits) -> bool {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

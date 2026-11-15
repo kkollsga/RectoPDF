@@ -667,3 +667,41 @@ fn an_object_listed_twice_stops_the_pass_by_object_number() {
     // And the scan decides: the copy between pages 3 and 5 is page 4, by its neighbours.
     assert!(matches!(found.iter().find(|(old, _)| *old == 4), Some((_, Found::At { page: 4, .. }))), "{found:?}");
 }
+
+/// **Failure caught:** a list whose new version would be longer than a document may be ([`super::super::MAX_PAGES`]) built anyway, past the cap every
+/// other path keeps. Two pages added to a list on a new version already at the cap: held, as too long, and nothing built.
+#[test]
+fn a_list_longer_than_a_document_may_be_on_the_new_version_is_held() {
+    let mut edits = edited(Kind::Insert);
+    identify(&mut edits, &base(), &[]);
+    let found: Vec<(u32, Found)> = identity::identities(&edits)
+        .expect("named")
+        .pages()
+        .iter()
+        .map(|(page, known)| (*page, known.map_or(Found::NotIdentified, |now| Found::At { page: *page, now })))
+        .collect();
+    let at_cap = u32::try_from(super::super::MAX_PAGES).unwrap();
+    let outcome = rebase(&edits, &found, at_cap, &[]);
+    assert!(outcome.onto.is_none());
+    assert!(outcome.edits.iter().any(|edit| edit.held == Some(Held::TooLong)), "{:?}", outcome.edits);
+    assert!(rebase(&edits, &found, at_cap - 2, &[]).onto.is_some(), "at the cap exactly, it's built");
+}
+
+/// **Failure caught:** with identical pages at both ends of the file (a blank first and last page), a turn of one end carried to the other, or held
+/// though its neighbour tells them apart. A cover put first: each end's turn follows to its own end, by the page beside it.
+#[test]
+fn identical_pages_at_both_ends_are_told_apart_by_their_neighbours() {
+    let mut file = base();
+    file[0].content = 50;
+    file[9].content = 50;
+    for end in [0u32, 9] {
+        let mut edits = PageEdits::new(10);
+        edits.rotate(end, 1, 1).unwrap();
+        identify(&mut edits, &file, &[]);
+        let new = renumbered(&[20, 50, 1, 2, 3, 4, 5, 6, 7, 8, 50]);
+        let (found, outcome) = follow(&edits, &new, WorkCaps::STANDARD, None);
+        let onto = outcome.onto.unwrap_or_else(|| panic!("end {end}: held; {found:?}"));
+        let turned: Vec<usize> = (0..onto.slots.len()).filter(|at| onto.slots[*at].quarter_turns != 0).collect();
+        assert_eq!(turned, vec![if end == 0 { 1 } else { 10 }], "end {end}: the turn on its own end");
+    }
+}

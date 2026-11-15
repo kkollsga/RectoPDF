@@ -410,3 +410,53 @@ fn with_only_history_a_file_renamed_in_with_the_same_size_and_time_is_main_s_sam
     assert!(bed.s.lists().get(bed.a).is_some_and(PageEdits::can_redo), "the history kept, as on main");
     assert_eq!(bed.notice(), None);
 }
+
+/// Failure caught (the owner's all-or-nothing for 0.1.1): a list of several edits of which one can't follow (its page changed) followed in part, the
+/// others put on the new version, or the held list not exactly what it is without the matcher. Held whole: the list's record and history as they
+/// were, the tab saying the file changed in today's words, its own version and length the edits' version's, nothing to try again.
+#[test]
+fn a_list_where_one_edit_of_several_cant_follow_is_held_whole_as_before() {
+    let mut bed = Bed::turned_page_9();
+    bed.s.edit_pages(bed.a, |e| e.rotate(2, 1, 1)).unwrap();
+    bed.s.edit_pages(bed.a, |e| e.move_pages(0, 1, 5)).unwrap();
+    bed.identify();
+    let (record_before, stamp_before, pages_before) =
+        (bed.s.lists().edits_record(bed.a).unwrap(), bed.s.tabs().own_stamp(bed.a), bed.s.pages().count(bed.a));
+    let can_undo = bed.s.lists().get(bed.a).unwrap().can_undo();
+    let mut theirs: Vec<recto_testpdf::Page> = (1..=10)
+        .map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("Mine page {page}")])))
+        .collect();
+    theirs[2] = recto_testpdf::Page::new(recto_testpdf::text_lines(&["Their page 3"]));
+    bed.changed_and_read(&recto_testpdf::pages(&theirs));
+    assert_eq!(bed.follow(), vec![None], "page 3 changed: held, though pages 1 and 9 are there");
+    assert_eq!(bed.s.lists().edits_record(bed.a).as_ref(), Some(&record_before), "the list as it was");
+    assert_eq!(bed.s.lists().get(bed.a).unwrap().can_undo(), can_undo, "and its history");
+    assert_eq!(bed.s.tabs().own_stamp(bed.a), stamp_before, "the edits' own version");
+    assert_eq!(bed.s.pages().count(bed.a), pages_before);
+    assert_eq!(bed.s.notices().fit(bed.a), EditsFit::FileChanged);
+    assert_eq!(bed.notice(), Some("file_changed"));
+    assert_eq!(
+        bed.s.notices().said(bed.a).unwrap().message,
+        FileNotice::Changed.message(true),
+        "today's words"
+    );
+    assert!(!version_change::wanted(&bed.s));
+}
+
+/// Failure caught: a list past its cap of named pages (an edit on a page not named) followed, the unnamed page's edit then guessed at. With the cap set
+/// small, a list naming more than it holds is held whole when the file changes, and nothing of the new version is read for it.
+#[test]
+fn a_list_past_its_cap_of_named_pages_is_held() {
+    crate::edit::identity::tests::CAP.with(|cap| cap.set(Some(4)));
+    let mut bed = Bed::turned_page_9();
+    bed.s.edit_pages(bed.a, |e| e.rotate(2, 1, 1)).unwrap();
+    bed.identify();
+    let over = crate::edit::identity::identities(bed.s.lists().get(bed.a).unwrap()).is_some_and(crate::edit::identity::Identities::over_cap);
+    bed.changed_and_read(&document("Mine", &(1..=10).collect::<Vec<_>>(), true));
+    let jobs = version_change::work(&mut bed.s);
+    crate::edit::identity::tests::CAP.with(|cap| cap.set(None));
+    assert!(over, "past the cap");
+    assert!(jobs.is_empty(), "nothing read for it");
+    assert_eq!(bed.notice(), Some("file_changed"));
+    assert_eq!(bed.turned(), vec![2, 8], "held as it was");
+}

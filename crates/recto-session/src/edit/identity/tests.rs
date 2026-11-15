@@ -5,7 +5,7 @@ use super::*;
 
 std::thread_local! {
     /// The cap for this thread's test, when it sets it small ([`super::cap`]).
-    pub(super) static CAP: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    pub(crate) static CAP: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
 fn named(edits: &PageEdits) -> Vec<u32> {
