@@ -44,12 +44,12 @@ fn a_jump_to_a_pages_top_the_host_rounded_into_the_gap_above_is_on_that_page() {
     }
 }
 
-/// Failure: the reader's own scroll of less than a point is taken for the host rounding its view, as a word from the host on its pixel of the place is
-/// (`a_view_the_host_rounded_to_its_pixels_is_still_on_the_place`), so the place stays where the jump left it and the window closed and opened again puts
-/// the view back there. The reader's scroll is the view moving with nothing else changed, an arrival or a change of size not among it: it moves the place,
-/// however short.
+/// Failure: keeping the place through a word from the host on its pixel (`on_host_pixel`) loses the reader's own short scroll. The page view can't tell a
+/// scroll of under a point from such a word (only the host knows whose hand moved it), so under a point the anchor stays and the place the session keeps,
+/// and a restart brings back to the pixel, is where the view is; at a point or more the anchor moves with it, so the window closed and opened again goes
+/// there.
 #[test]
-fn the_readers_own_scroll_of_less_than_a_point_moves_the_place() {
+fn the_readers_own_short_scroll_is_kept_and_a_point_moves_the_anchor() {
     let mut reader = reader_on(100);
     reader.place.scrolled_to = 0;
     settle(&mut reader);
@@ -64,8 +64,13 @@ fn the_readers_own_scroll_of_less_than_a_point_moves_the_place() {
     there.height += 1.0;
     reader.set_viewport(there);
     assert_eq!(reader.places()[0].1.anchor, (40, 0.3));
-    // The reader's own, four tenths of a point down.
+    // The reader's own, four tenths of a point down: what the session keeps.
     there.y = y + 0.4;
+    reader.set_viewport(there);
+    let (_, place) = reader.places()[0];
+    assert_eq!((place.page, place.y), (40, y + 0.4), "kept where the view is: {place:?}");
+    // A point and a half: the anchor too.
+    there.y = y + 1.5;
     reader.set_viewport(there);
     reader.place.scrolled_to = 0;
     reader.window_closed();
@@ -73,9 +78,9 @@ fn the_readers_own_scroll_of_less_than_a_point_moves_the_place() {
     reader.window_opened();
     let back = last_scroll_to(&mut reader);
     assert!(
-        (back - (y + 0.4)).abs() < 1e-6,
+        (back - (y + 1.5)).abs() < 1e-6,
         "sent back to {back}, where the reader had scrolled to {}",
-        y + 0.4
+        y + 1.5
     );
 }
 

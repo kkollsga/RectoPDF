@@ -217,9 +217,10 @@ impl Place {
         // A word from the host on its own pixel of the place, pixel or anchor as `place_y` has it, isn't the reader moving, and both are kept ([`on_host_pixel`]):
         // taken again from the rounded height, the top of a page would be the foot of the one above, from the gap between them; and the pixel dropped by a word
         // from a window of another width, where the view was on the anchor, a launch whose state came in late came back to the anchor and not the pixel (CI run
-        // 43751284816). The reader's own scroll moves the place however short it is: it's the view moving down or up with nothing else changed
-        // (`note_viewport`), which a host's word on its pixel never is, as it comes with an arrival or a change of size.
-        if moved && (self.user_scrolled || !on_host_pixel(viewport.y, doc.place_y())) {
+        // 43751284816). The reader's own scroll of less than a point can't be told from a host's word here: a host's word that moves only the view reads as
+        // a scroll to `note_viewport` too (the slow stage, 2026-11-15: a comparison pane's anchor taken again across a late restart), and only the host
+        // knows whose hand it was (`Panes::viewport`'s `by_reader`). So it's kept as where the view is ([`Reader::places`]), and moves the anchor at a point.
+        if moved && !on_host_pixel(viewport.y, doc.place_y()) {
             doc.place.anchor = anchor_as_the_host_has_it(&doc.layout, viewport.y, page);
             doc.place.exact_y = None;
         }
