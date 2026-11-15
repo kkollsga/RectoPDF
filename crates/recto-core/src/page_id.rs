@@ -25,10 +25,11 @@
 //! 5. A NUL, `E`, and a byte of flags: 1, the content had more entries than its cap or reached its byte cap; 2, the page reached its byte cap; 4, there
 //!    were more images and forms than their cap.
 //!
-//! Every byte hashed in 2 and 4 counts toward [`Caps::page_bytes`] (64 MiB a page): past it, what's left is kind 3 or 4. Every stored byte read counts
-//! toward [`Caps::page_read`] (256 MiB), which bounds a stream that decodes to little from very much. So a hostile page costs at most the caps' time, and
-//! its digest is still the same every time. Memory is a few buffers of [`decode::CHUNK`]: nothing is read whole, but for a stream of an encrypted file
-//! (whose bytes only the reader's decrypting path gives, whole), which is read only when it's under the content cap, and is kind 3 or 4 otherwise.
+//! Every byte hashed in 2 and 4 counts toward [`Caps::page_bytes`] (64 MiB a page): past it, what's left is kind 3 or 4. Every stream's stored length is
+//! charged to [`Caps::page_read`] (256 MiB) before it's read, which bounds a stream that decodes to little from very much. So a hostile page costs at most
+//! the caps' time, and its digest is still the same every time. Memory is a few buffers of [`decode::CHUNK`]: nothing is read whole, but for a stream of
+//! an encrypted file (whose bytes only the reader's decrypting path gives, whole), which is read only when it's at most 8 MiB stored, the size the
+//! other walks of such a file decrypt, and is kind 3 or 4 otherwise.
 //!
 //! **What's left out, deliberately:** `/Rotate`, `/MediaBox`, `/CropBox` (a turn or a crop is a view of the same page: our own turn keeps the identity),
 //! `/Annots` (a highlight added or taken out keeps it), fonts (an optimiser's re-subsetting keeps it), `/StructParents`, `/Group`, metadata, and the page
@@ -247,12 +248,16 @@ fn content_record(reader: &IndexedReader, item: &Object, budget: &mut Budget<'_>
         return;
     }
     let chain = decode::chain_of(descriptor.dictionary(), &|object| deref(reader, object));
-    let taken = match chain.and_then(|chain| take_stream(reader, *id, &descriptor, Some(&chain), limit, budget)) {
-        Some(taken) => Some((0, taken)),
-        None => take_stream(reader, *id, &descriptor, None, limit, budget).map(|taken| (1, taken)),
+    let first = chain.map_or(Taken::Failed, |chain| take_stream(reader, *id, &descriptor, Some(&chain), limit, budget));
+    // Hashed as stored when its filters couldn't be decoded; never tried again once a cap is reached.
+    let first_capped = matches!(first, Taken::Capped);
+    let taken = match first {
+        Taken::Hashed(n, sub) => Some((0, n, sub)),
+        Taken::Failed => take_stream(reader, *id, &descriptor, None, limit, budget).with_kind(1),
+        Taken::Capped => None,
     };
     match taken {
-        Some((kind, (n, sub))) => {
+        Some((kind, n, sub)) => {
             budget.content_left -= n;
             budget.page_left -= n;
             if n == limit {
@@ -263,7 +268,10 @@ fn content_record(reader: &IndexedReader, item: &Object, budget: &mut Budget<'_>
             }
             record(hasher, kind, n, &sub);
         }
-        None => record(hasher, if budget.read_left.get() == 0 { 3 } else { 2 }, 0, &Sha256::new()),
+        None => {
+            let capped = first_capped || budget.read_left.get() == 0;
+            record(hasher, if capped { 3 } else { 2 }, 0, &Sha256::new());
+        }
     }
 }
 
@@ -311,16 +319,17 @@ fn xobject_record(
     }
     let resolve = |object: &Object| deref(reader, object);
     let general = decode::filter_names(&dict, &resolve).is_some_and(|names| names.iter().all(|name| decode::is_general(name)));
-    let taken = if general {
-        match decode::chain_of(&dict, &resolve).and_then(|chain| take_stream(reader, *id, &descriptor, Some(&chain), limit, budget)) {
-            Some(taken) => Some((0, taken)),
-            None => take_stream(reader, *id, &descriptor, None, limit, budget).map(|taken| (3, taken)),
+    let (taken, capped) = if general {
+        match decode::chain_of(&dict, &resolve).map_or(Taken::Failed, |chain| take_stream(reader, *id, &descriptor, Some(&chain), limit, budget)) {
+            Taken::Hashed(n, sub) => (Some((0, n, sub)), false),
+            Taken::Failed => (take_stream(reader, *id, &descriptor, None, limit, budget).with_kind(3), false),
+            Taken::Capped => (None, true),
         }
     } else {
-        take_stream(reader, *id, &descriptor, None, limit, budget).map(|taken| (1, taken))
+        (take_stream(reader, *id, &descriptor, None, limit, budget).with_kind(1), false)
     };
     match taken {
-        Some((kind, (n, sub))) => {
+        Some((kind, n, sub)) => {
             budget.page_left -= n;
             if budget.page_left == 0 {
                 budget.flags |= PAGE_CAPPED;
@@ -329,9 +338,19 @@ fn xobject_record(
             hasher.update(n.to_le_bytes());
             hasher.update(sub.finalize());
         }
-        None => hasher.update([if budget.read_left.get() == 0 { 4 } else { 2 }]),
+        None => hasher.update([if capped || budget.read_left.get() == 0 { 4 } else { 2 }]),
     }
     is_form.then_some(dict)
+}
+
+impl Taken {
+    /// What was hashed, said as this kind of record; nothing for a stream that wasn't.
+    fn with_kind(self, kind: u8) -> Option<(u8, u64, Sha256)> {
+        match self {
+            Taken::Hashed(n, sub) => Some((kind, n, sub)),
+            Taken::Failed | Taken::Capped => None,
+        }
+    }
 }
 
 fn record(hasher: &mut Sha256, kind: u8, n: u64, sub: &Sha256) {
@@ -340,8 +359,19 @@ fn record(hasher: &mut Sha256, kind: u8, n: u64, sub: &Sha256) {
     hasher.update(sub.clone().finalize());
 }
 
-/// Hashes a stream's first `limit` bytes, decoded through `chain` or as stored without one. `None` if it can't be read to there: a decoding error, a read
-/// error, or the page's read cap reached.
+/// What came of reading a stream for its hash.
+enum Taken {
+    /// Its first `n` bytes (decoded, or as stored), hashed.
+    Hashed(u64, Sha256),
+    /// It couldn't be decoded or read: a decoding error, a read error, or no length to read it by.
+    Failed,
+    /// The page's read cap, or the size an encrypted stream is decrypted whole to, was reached before it was read: not read, and not tried again.
+    Capped,
+}
+
+/// Hashes a stream's first `limit` bytes, decoded through `chain` or as stored without one. Its stored length is charged to the page's read cap
+/// **before** anything is read or decrypted (review S1: a stream that decodes to little pulls little through a decoder, so a cap counted as bytes were
+/// pulled let a page decrypt its streams whole a thousand times over).
 fn take_stream(
     reader: &IndexedReader,
     id: ObjectId,
@@ -349,27 +379,40 @@ fn take_stream(
     chain: Option<&[decode::Filter]>,
     limit: u64,
     budget: &Budget<'_>,
-) -> Option<(u64, Sha256)> {
+) -> Taken {
+    let Some(length) = descriptor.encoded_len() else {
+        return Taken::Failed;
+    };
+    let left = budget.read_left.get();
+    if length > left {
+        budget.read_left.set(0);
+        return Taken::Capped;
+    }
+    budget.read_left.set(left - length);
     let stored: Box<dyn Read + '_> = match descriptor.protection() {
-        lopdf::EncodedStreamProtection::Plain => Box::new(Stored(descriptor.open_plain_encoded().ok()?)),
-        // Only the decrypting path gives an encrypted file's bytes, and it gives them whole: taken only under the content cap.
+        lopdf::EncodedStreamProtection::Plain => match descriptor.open_plain_encoded() {
+            Ok(stored) => Box::new(Stored(stored)),
+            Err(_) => return Taken::Failed,
+        },
+        // Only the decrypting path gives an encrypted file's bytes, and it gives them whole: only up to the size the other walks of such a file decrypt
+        // (`crate::effects::MAX_DECRYPTED_DRAWING`), whichever part of the page it's for.
         _ => {
-            if descriptor.encoded_len()? > budget.caps.content_bytes {
-                return None;
+            if length > crate::effects::MAX_DECRYPTED_DRAWING {
+                return Taken::Capped;
             }
-            match reader.resolve_object(id).ok()? {
-                Object::Stream(stream) => Box::new(io::Cursor::new(stream.content)),
-                _ => return None,
+            match reader.resolve_object(id) {
+                Ok(Object::Stream(stream)) => {
+                    #[cfg(test)]
+                    tests::DECRYPTED.with(|bytes| bytes.set(bytes.get() + stream.content.len() as u64));
+                    Box::new(io::Cursor::new(stream.content))
+                }
+                _ => return Taken::Failed,
             }
         }
     };
-    let counted: Box<dyn Read + '_> = Box::new(Counted {
-        inner: stored,
-        left: &budget.read_left,
-    });
     let mut source = match chain {
-        Some(chain) => decode::decoded(counted, chain),
-        None => counted,
+        Some(chain) => decode::decoded(stored, chain),
+        None => stored,
     };
     let mut sub = Sha256::new();
     let mut buf = vec![0u8; decode::CHUNK];
@@ -379,7 +422,7 @@ fn take_stream(
         let read = match source.read(&mut buf[..want]) {
             Ok(read) => read,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(_) => return None,
+            Err(_) => return Taken::Failed,
         };
         if read == 0 {
             break;
@@ -387,7 +430,7 @@ fn take_stream(
         sub.update(&buf[..read]);
         n += read as u64;
     }
-    Some((n, sub))
+    Taken::Hashed(n, sub)
 }
 
 /// A stream's stored bytes, a piece at a time.
@@ -396,25 +439,6 @@ struct Stored(lopdf::EncodedStreamReader);
 impl Read for Stored {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.0.read_chunk(buf).map_err(|_| io::Error::other("a stream's bytes couldn't be read"))
-    }
-}
-
-/// Stored bytes counted against the page's read cap, which is an error when reached.
-struct Counted<'a> {
-    inner: Box<dyn Read + 'a>,
-    left: &'a Cell<u64>,
-}
-
-impl Read for Counted<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let left = self.left.get();
-        if left == 0 {
-            return Err(io::Error::other("the page's read cap"));
-        }
-        let want = buf.len().min(usize::try_from(left).unwrap_or(usize::MAX));
-        let read = self.inner.read(&mut buf[..want])?;
-        self.left.set(left - read as u64);
-        Ok(read)
     }
 }
 

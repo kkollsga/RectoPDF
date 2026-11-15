@@ -19,7 +19,7 @@ const MAX_TIME: Duration = Duration::from_secs(1);
 const MAX_DRAWING_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_DRAWING_TIME: Duration = Duration::from_millis(500);
 /// How much of a protected file's drawing is decrypted to look through, a stream at a time, since that can only be had whole.
-const MAX_DECRYPTED_DRAWING: u64 = 8 * 1024 * 1024;
+pub(crate) const MAX_DECRYPTED_DRAWING: u64 = 8 * 1024 * 1024;
 /// A `/Decode` that long isn't one any image has.
 const MAX_DECODE: usize = 64;
 

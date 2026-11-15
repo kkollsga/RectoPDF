@@ -6,6 +6,11 @@ use recto_testpdf::{Object as Obj, build};
 use std::io::Write;
 use std::sync::Arc;
 
+std::thread_local! {
+    /// Bytes decrypted whole for the digest on this thread: what a file anyone may open costs ([`super::take_stream`]).
+    pub(super) static DECRYPTED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -476,6 +481,60 @@ fn a_file_anyone_may_open_is_identified_by_its_content() {
     let reader = open_bytes_for_identity(Arc::from(encrypted.as_slice())).unwrap();
     let ids = document_ids(&reader).expect("it has an /ID pair");
     assert_ne!(ids.first, ids.second);
+}
+
+/// `plain`, encrypted with an empty password, as a file anyone may open is.
+#[allow(clippy::disallowed_methods)] // A test fixture built with lopdf's eager writer, which alone encrypts; never over a user's file.
+fn encrypted(plain: &[u8]) -> Vec<u8> {
+    use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
+    let mut document = lopdf::Document::load_mem(plain).unwrap();
+    document.trailer.set(
+        "ID",
+        lopdf::Object::Array(vec![
+            lopdf::Object::string_literal("0123456789abcdef"),
+            lopdf::Object::string_literal("fedcba9876543210"),
+        ]),
+    );
+    let state = EncryptionState::try_from(EncryptionVersion::V2 {
+        document: &document,
+        owner_password: "owner",
+        user_password: "",
+        key_length: 128,
+        permissions: Permissions::all(),
+    })
+    .unwrap();
+    document.encrypt(&state).unwrap();
+    let mut out = Vec::new();
+    document.save_to(&mut out).unwrap();
+    out
+}
+
+/// Failure caught (review S1, rules 1 and 6): in a file anyone may open, a stream's bytes come only whole and decrypted, and the page's read cap was
+/// consulted only as the decrypted bytes were pulled through a decoder, after the whole stream had been decrypted; a stream that decodes to nothing
+/// pulls almost none, so a `/Contents` of 1,024 references to one 16 MiB stream decrypted 16 GiB (twice, with the retry as stored) for one page. With
+/// the read cap set small: a `/Contents` of 40 references to one 64 KiB stream that decodes to nothing decrypts no more than the cap.
+#[test]
+fn an_encrypted_stream_is_charged_to_the_read_cap_before_it_is_decrypted() {
+    let mut data = flate(b"");
+    data.extend(std::iter::repeat_n(b' ', 64 << 10));
+    let refs: String = (0..40).map(|_| "4 0 R ").collect();
+    let file = encrypted(&one_page(
+        "",
+        "",
+        &format!("[{refs}]"),
+        vec![Obj::Stream {
+            dict: "/Filter /FlateDecode".into(),
+            data,
+        }],
+    ));
+    let caps = Caps {
+        page_read: 256 << 10,
+        ..Caps::STANDARD
+    };
+    DECRYPTED.with(|bytes| bytes.set(0));
+    let _ = ids_of(&file, &caps);
+    let decrypted = DECRYPTED.with(std::cell::Cell::get);
+    assert!(decrypted <= caps.page_read, "decrypted {decrypted} bytes for a read cap of {}", caps.page_read);
 }
 
 /// **The golden vectors of `recto-page/1`.** Failure caught: any change to what the digest hashes, which would make every digest kept by an older
