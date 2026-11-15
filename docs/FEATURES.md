@@ -107,7 +107,7 @@ back before writing the feature.**
    **Everything that changes what a page shows reaches every renderer,** not only the one on screen. The pilot's set of file highlights a person took
    out and hasn't saved is drawn without them by the worker (`crates/recto-proto/src/hidden.rs`, `crates/recto-render-service/src/host/hidden.rs`,
    `crates/recto-render/src/pdfium/hidden.rs`, set in memory and never written), and the same set had to reach the page view's draws and its in-flight
-   ones (`crates/recto-reader/src/engine/run.rs`: a draw landing after the set changed isn't kept), the thumbnails and the sleep pictures, a print, an
+   ones (`crates/recto-reader/src/engine/run.rs`: a draw landing after the set changed isn't kept), the thumbnails, a print, an
    export and an agent's render, snapshot and SVG (`crates/recto-agent/src/highlighting.rs`, `hidden_in`), the person's Snapshot tool, and search. It
    was found by review three times, one renderer each. `every_renderer_that_draws_a_tab_is_given_its_set` in `crates/recto-agent/src/highlighting.rs`
    now scans the app's crates for every renderer opened outside tests and lists each in `RENDERERS` with what it is for: a feature that changes the
