@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-carry-test: proves tools/release/check-carry.sh fails on a made fault, by name: a journal lost on the way, a tab not on its place,
-# Find's text not carried (CHECK_CARRY_SEED, which only this sets), and passes on the real pair. Needs the real bundles, so it isn't part of
-# release-test.sh: quiet runs, about a minute.
+# Find's text not carried, the version-2 journal a later launch set aside gone (CHECK_CARRY_SEED, which only this sets), and passes on the
+# real pair. Needs the real bundles, so it isn't part of release-test.sh: quiet runs, about a minute each.
 #
 #   tools/release/check-carry-test.sh <RectoPDF-P.zip as published> <RectoPDF.app built for the new version>
 set -uo pipefail
@@ -24,6 +24,11 @@ has "naming the place" "tabs[2].page: 4 then 2" "$out"
 out=$(run find "$1" "$2"); rc=$?
 check "Find's text not carried fails the check" 1 "$rc"
 has "by the session's own answer" "FAIL  B: \`session show\`" "$out"
+# Failure: a tab says its other list was kept in the state folder, and the check believes it without looking.
+out=$(run aside "$1" "$2"); rc=$?
+check "the set-aside list gone fails the check" 1 "$rc"
+has "naming the journal" "version-2 journal is on disk byte for byte, as None" "$out"
+has "and the notice it makes untrue" "FAIL  F: the hidden highlight is said on its tab" "$out"
 # Failure: the check fails the real pair, so its failures on a made fault mean nothing.
 out=$(run "" "$1" "$2"); rc=$?
 check "the real pair passes" 0 "$rc"

@@ -11,7 +11,8 @@ Quiet runs only (off every screen, never active, temp state), on one state folde
      newer journal alone (byte for byte), and show that tab as it says it does;
   D  the new build again: nothing B made was lost on the way.
   E  the previous release again, with an edit made in it on the highlighted tab, as a person who went back might, and
-  F  the new build again: what it shows of both, and that the newer journal is still on disk; the faults found here are named in
+  F  the new build again: what it shows of both, and where the newer journal is on disk, byte for byte (under its name, or set aside
+     as `.not-merged`, which the tab must then say); the faults found here are named in
      the pair's file and said as KNOWN FAULT until they are fixed, when the check fails until their line goes.
 Each comparison says what it compared; every difference not named in an exception, with its reason, fails the check.
 """
@@ -19,6 +20,7 @@ Each comparison says what it compared; every difference not named in an exceptio
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -100,6 +102,21 @@ def flatten(value, path="", out=None):
     return out
 
 
+def excepts(prefix, path):
+    """An exception's key names a path and what's under it; `[*]` in it stands for any index of a list."""
+    return re.match(re.escape(prefix).replace(re.escape("[*]"), r"\[\d+\]"), path) is not None
+
+
+def starts_at_next_word(old, new):
+    """`new` is `old`'s row with the start of a word it began inside cut off: both open on "…", and what's after `new`'s follows a space in `old`."""
+    tail = new[1:]
+    return old.startswith("…") and new.startswith("…") and 0 < len(tail) < len(old) - 1 and old.endswith(tail) and old[-len(tail) - 1].isspace()
+
+
+# The answers besides `qa state` that the pair's file names exceptions for, by their first word: `edits.followed` is every tab's `edits`.
+ANSWERS = ("tabs", "show", "permission", "recent", "view", "where", "edits")
+
+
 def differs(a, b):
     if isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool) and not isinstance(b, bool):
         return abs(a - b) > 1e-6
@@ -109,7 +126,7 @@ def differs(a, b):
 def compare(what, before, after, excepted, new_ok=True):
     """Every path of `before` is in `after` with the same value, but those excepted; paths only `after` has are new in the newer build."""
     one, two = flatten(before), flatten(after)
-    is_excepted = lambda path: any(path.startswith(prefix) for prefix, _ in excepted)
+    is_excepted = lambda path: any(excepts(prefix, path) for prefix, _ in excepted)
     wrong = [f"{p}: {one[p]!r} then {two.get(p, '<nothing>')!r}" for p in sorted(one) if not is_excepted(p) and (p not in two or differs(one[p], two[p]))]
     new = sorted(p for p in two if p not in one and not is_excepted(p))
     if not new_ok:
@@ -229,7 +246,7 @@ def main():
         across = exceptions_from(os.path.join(repo, "tools/release/carry", f"{old_v}-to-{new_v}.txt"))
         restore_dir = os.path.join(repo, "crates/recto-cli/tests/restore/exceptions")
         restart = [e for name in sorted(os.listdir(restore_dir)) if name.endswith(".txt") for e in exceptions_from(os.path.join(restore_dir, name))]
-        state_ex = restart + [(k, w) for k, w in across if not k.startswith(("fault:", "tabs.", "show.", "permission."))]
+        state_ex = restart + [(k, w) for k, w in across if not k.startswith("fault:") and k.split(".")[0] not in ANSWERS]
         pdfs = os.path.join(work, "pdfs")
         state = os.path.join(work, "state")
         os.makedirs(pdfs, mode=0o700)
@@ -279,7 +296,15 @@ def main():
         after = b.snapshot([1, 2, 3])
         save("B", after)
         for key in ("tabs", "recent", "view") + tuple(f"{w} #{t}" for w in ("where", "edits") for t in (1, 2, 3)):
-            compare(f"B: `{key}` as {old_v} left it", before[key], after[key], [(k[len(key) + 1:], w) for k, w in across if k.startswith(key + ".")], new_ok=False)
+            answer = key.split(" #")[0]
+            compare(f"B: `{key}` as {old_v} left it", before[key], after[key], [(k[len(prefix):], w) for k, w in across for prefix in {key + ".", answer + "."} if k.startswith(prefix)], new_ok=False)
+        # What the pair's file excepts by design is held to what it says there, not merely not looked at.
+        followed = {t: after[f"edits #{t}"].get("followed", "<nothing>") for t in (1, 2, 3)}
+        check("B: by design, `edits` says what followed its page onto a changed file, and here nothing did (no file changed)", all(v is None for v in followed.values()), json.dumps(followed))
+        rows = lambda snap: [r["untrusted"]["label"] for r in snap["state"]["app"]["find"]["rows_on_screen"]]
+        cut = [(x, y) for x, y in zip(rows(before), rows(after)) if x != y]
+        check(f"B: by design, Find's rows are {old_v}'s words, those cut mid-word now starting at the next word ({len(cut)} of {len(rows(before))})",
+              len(rows(before)) == len(rows(after)) and all(starts_at_next_word(x, y) for x, y in cut), json.dumps(cut, ensure_ascii=False))
         compare("B: `session show` (tabs, places, zoom, Find's text, the panes) as it was", before["show"], after["show"],
                 [("record.", "the record's own counters, of this run")] + [(k[5:], w) for k, w in across if k.startswith("show.")], new_ok=False)
         compare("B: `permission show` as it was", before["permission"], after["permission"], [(k[11:], w) for k, w in across if k.startswith("permission.")], new_ok=False)
@@ -398,8 +423,21 @@ def main():
         code = (tab.get("file_notice") or {}).get("code")
         if code:
             known(f"F.notice.{code}", f"the tab says `{code}`", json.dumps(tab["file_notice"]))
+        if seed == "aside":
+            for p in files_of(state):
+                if p.endswith(".not-merged"):
+                    os.remove(os.path.join(state, p))
         f_files = files_of(state)
-        check(f"F: {new_v}'s version-2 journal is still on disk byte for byte", all(f_files.get(p) == v2_journals[p] for p in v2_journals))
+        # Where the version-2 journal is: under its own name, or set aside under the store's name for a list it keeps and won't read
+        # (`.not-merged` for `.log`, as Path::with_extension makes it), which nothing prunes and 0.1.0 leaves alone. Byte for byte either way.
+        set_aside_as = lambda p: os.path.splitext(p)[0] + ".not-merged"
+        where = {p: p if f_files.get(p) == v2 else set_aside_as(p) if f_files.get(set_aside_as(p)) == v2 else None for p, v2 in v2_journals.items()}
+        check(f"F: {new_v}'s version-2 journal is on disk byte for byte, as {', '.join(map(str, where.values()))}", len(where) == 1 and all(where.values()),
+              f"journals now {sorted(p for p in f_files if os.path.basename(p).startswith('journal-'))}")
+        if len(forward["highlights #3"]["edits"]) != 1:
+            # The highlight not shown is said on its tab, and the notice's "kept in the state folder" is so: its list is the one set aside.
+            check("F: the hidden highlight is said on its tab (`edits_set_aside_after_quit`), and its list is set aside in the state folder as the notice says",
+                  code == "edits_set_aside_after_quit" and all(w == set_aside_as(p) for p, w in where.items()), f"the tab says {code!r}; the journal is at {where}")
         f.cmd("qa", "quit", "now")
     finally:
         for app in apps:
