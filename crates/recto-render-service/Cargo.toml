@@ -31,6 +31,8 @@ recto-proto.workspace = true
 recto-render.workspace = true
 
 [dev-dependencies]
+# Test-only: `find_key::audit`, the look at a built program for the Keychain's code.
+recto-platform = { workspace = true, features = ["test-seams"] }
 lopdf.workspace = true
 # Its own tests build it with its test seams.
 recto-render-service = { path = ".", features = ["test-seams"] }

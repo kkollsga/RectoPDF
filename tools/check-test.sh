@@ -1548,7 +1548,8 @@ drop_holder
 # Failure: the time waited counted as the stage's own, so the budgets and --slow read a busy machine's queue as slow tests.
 fresh_ledger
 rm -rf "$LOCK"
-bash "$X/fake/check.sh" 5 & HOLDER=$!
+# Alive well past the waiter's start however loaded the machine (a holder of 5 s could end before a slow waiter reached the lock, which then read as stale and was taken with no wait at all), and stopped by drop_holder.
+bash "$X/fake/check.sh" 60 & HOLDER=$!
 mkdir "$LOCK"; echo "$HOLDER $HOLDER $(date +%s) app-tests /other/tree" > "$LOCK/owner"
 # The holder lets go 3.2 s after the waiter has said it waits.
 tfull > "$X/w.out" & waiter=$!
@@ -1557,7 +1558,8 @@ wait "$waiter"; rc=$?
 wait
 out=$(cat "$X/w.out")
 took=$(printf '%s\n' "$out" | sed -nE 's/^check: app-tests took ([0-9]+) s \(waited ([0-9]+) s for the app tier\)$/\1 \2/p')
-check "the stage's seconds are its own and the wait is said apart" "yes" "$([ -n "$took" ] && [ "${took% *}" -le 1 ] && [ "${took#* }" -ge 1 ] && echo yes)"
+# Its own seconds are under the wait's (the wait is 3.2 s; a stage that counted it would be over it), not under a second: a loaded machine takes more than a second to do the rest (full check of build/find-key, 2026-11-15, load about 10: failed with nothing wrong).
+check "the stage's seconds are its own and the wait is said apart" "yes" "$([ -n "$took" ] && [ "${took#* }" -ge 3 ] && [ "${took% *}" -lt "${took#* }" ] && echo yes)"
 # What the run did besides waiting is a second or so, so a ledger that left the wait out is under the wait; one that kept it is over it.
 check "and the ledger's seconds leave the wait out too" "yes" "$([ "$(last_ledger_field 5)" -lt "${took#* }" ] && echo yes)"
 drop_holder

@@ -4,6 +4,7 @@
 //! same against either. See `docs/engineering/agent-interface.md` for why it's one blocking `poll` and no async runtime.
 
 pub mod client;
+pub mod find_keys;
 pub mod finding;
 pub mod generating;
 pub mod helpers;

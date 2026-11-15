@@ -85,6 +85,11 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "a test's probe, never in the app: a stand-in for a compromised renderer, trying the files it's told to from inside the helper's walls",
     ),
     (
+        "recto-platform/src/find_key.rs",
+        2,
+        "the app's own files and tools, never a document: a test state folder's key file put in place, and the test-only look at a built program for the Keychain's code",
+    ),
+    (
         "recto-platform/src/local_mac.rs",
         17,
         "the platform's file primitives, each handed its path by a caller: private state files (links not followed), clones, the untrusted open of \
