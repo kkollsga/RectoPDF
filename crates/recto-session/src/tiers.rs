@@ -82,7 +82,11 @@ impl<L: DocLoader> Session<L> {
                 && ((clean && matches!(tab.file.notice(), Some(FileNotice::Moved { .. } | FileNotice::Changed)))
                     || matches!(tab.file.notice(), Some(FileNotice::HistoryRolledOff | FileNotice::EditsFollowed { .. })))
             {
+                let followed = matches!(tab.file.notice(), Some(FileNotice::EditsFollowed { .. }));
                 tab.file.set_notice(None);
+                if followed {
+                    crate::version_change::told(self, left);
+                }
             }
         }
         self.tabs.set_active(Some(id));

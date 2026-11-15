@@ -381,6 +381,8 @@ pub fn followed<L: DocLoader>(session: &mut Session<L>, matched: &Matched) -> Op
     };
     let positions = onto.positions.clone();
     let let_go = rebase::apply(edits, onto, matched.document);
+    // Not told yet: kept in the sidecar's header, so a quit, a hand-off or a crash before the person has seen it doesn't lose it (review F3).
+    identity::set_followed_untold(edits, true);
     let (pages, seq) = (edits.len(), edits.journal_seq());
     let count = u32::try_from(outcome.edits.len()).unwrap_or(u32::MAX);
     session.journals.retire_kept(let_go);
@@ -395,6 +397,19 @@ pub fn followed<L: DocLoader>(session: &mut Session<L>, matched: &Matched) -> Op
         session.journals.retire_name(old.into());
     }
     Some(Followed { tab: id, pages, edits: count })
+}
+
+/// **The person has been shown that a tab's edits followed** (they left the tab with its notice): its sidecar says so no more.
+pub(crate) fn told<L: DocLoader>(session: &mut Session<L>, id: TabId) {
+    if let Some(edits) = session.lists.get_mut(id) {
+        identity::set_followed_untold(edits, false);
+    }
+}
+
+/// **The notice for a list restored that followed its file and wasn't told** (its sidecar's header), with how many edits it has, as the follow counted
+/// them ([`rebase::edits_in`]). Counts only.
+pub(crate) fn untold_notice(edits: &PageEdits) -> Option<FileNotice> {
+    identity::followed_untold(edits).then(|| FileNotice::EditsFollowed { edits: rebase::edits_in(edits) })
 }
 
 /// The tab is about the new version now: its stamp and length, what's held of the old one gone, the reader on the page they were on, and said.

@@ -147,6 +147,8 @@ impl<L: DocLoader> Session<L> {
                             notice = Some(FileNotice::EditsUnreadable);
                         }
                         let mut edits = restored.edits;
+                        // Edits that followed their file onto a new version the person wasn't told of before the quit (its sidecar says so).
+                        notice = notice.or_else(|| crate::version_change::untold_notice(&edits));
                         if self.journals.journaling() {
                             edits.set_journal_seq(restored.seq);
                         } else {

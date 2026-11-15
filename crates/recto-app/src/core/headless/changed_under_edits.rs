@@ -616,3 +616,44 @@ fn the_reading_place_and_the_trail_keep_their_pages_when_the_edits_follow() {
     app.settle();
     assert_eq!(reading_at(&app), 11, "Back is on \"Mine page 10\"");
 }
+
+/// Failure caught (review F3, decided 2026-11-15): the edits follow, and a quit (or a hand-off, or a crash) before the person has left the tab loses the
+/// notice, which is never in the record, so the person never learns their edits were moved onto another version. The sidecar's header keeps "followed,
+/// not yet told": after a quit straight after the follow the tab says so again, with `edits`'s count; after the person has left the tab (told), a quit
+/// brings nothing back.
+#[test]
+fn the_followed_notice_comes_back_after_a_quit_until_the_person_has_left_the_tab() {
+    let (app, file, _original, _modified) = edited();
+    let other = app.disk().file("other.pdf", &pdf_bytes("Other", 3));
+    app.open(&other);
+    app.open(&file);
+    app.settle();
+    let mut with_cover = vec![recto_testpdf::Page::new(recto_testpdf::text_lines(&["Their cover"]))];
+    with_cover.extend((1..=10).map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("Mine page {page}")]))));
+    replace(&file, &recto_testpdf::pages(&with_cover));
+    look(&app);
+    assert_eq!(notice(&app).as_deref(), Some(FOLLOWED));
+    let (_, disk) = app.quit();
+    let app = disk.start();
+    app.settle();
+    assert_eq!(notice(&app).as_deref(), Some(FOLLOWED), "not yet told: said again");
+    let edits = app.recto(Level::Control, &["edits"]).expect("edits");
+    assert_eq!(edits["followed"]["edits"], 1, "{edits}");
+    assert_eq!(turned_text(&app), vec![(10, "Mine page 9".to_owned())]);
+    // The person goes to the other tab: told. A quit now brings nothing back.
+    app.open(&other);
+    app.settle();
+    let (_, disk) = app.quit();
+    let app = disk.start();
+    app.settle();
+    let first = app.tabs().into_iter().find(|row| row.notice.is_some());
+    assert!(first.is_none(), "told, so nothing said again: {first:?}");
+    assert_eq!(turned_text_of_tab(&app, &file), vec![(10, "Mine page 9".to_owned())]);
+}
+
+/// [`turned_text`] of the tab on `file`, made active first.
+fn turned_text_of_tab(app: &HeadlessApp, file: &Path) -> Vec<(u32, String)> {
+    app.open(file);
+    app.settle();
+    turned_text(app)
+}

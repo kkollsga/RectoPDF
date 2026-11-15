@@ -393,6 +393,38 @@ fn build(mut placement: Placement, gone: &HashSet<u32>, new_pages: u32, old_len:
     (placement.before.is_empty() && placement.after.is_empty() && !slots.is_empty()).then_some((slots, positions))
 }
 
+/// **How many edits a list has, as [`rebase`] judges them:** each page of the file taken out, each moved out of the file's order, each turn of a page
+/// still in order, each run added from another PDF, and each highlight made or taken out on a page the document has. What a follow's notice counts,
+/// so a notice brought back after a restart says the same as the follow did.
+pub fn edits_in(edits: &PageEdits) -> u32 {
+    let own: Vec<u32> = edits.slots.iter().filter(|slot| slot.source == 0).map(|slot| slot.page).collect();
+    let fixed = in_order(&own);
+    let mut present = vec![false; edits.file_pages];
+    for page in &own {
+        if let Some(there) = present.get_mut(*page as usize) {
+            *there = true;
+        }
+    }
+    let shown = |page: u32| present.get(page as usize).copied().unwrap_or(false);
+    let deleted = present.iter().filter(|there| !**there).count();
+    let mut count = deleted;
+    let (mut own_at, mut last_source) = (0usize, 0u16);
+    for slot in &edits.slots {
+        if slot.source != 0 {
+            count += usize::from(slot.source != last_source);
+            last_source = slot.source;
+            continue;
+        }
+        last_source = 0;
+        let is_fixed = fixed.get(own_at).copied().unwrap_or(true);
+        own_at += 1;
+        count += usize::from(!is_fixed || slot.quarter_turns != 0);
+    }
+    count += edits.marks.iter().filter(|mark| mark.source == 0 && shown(mark.page)).count();
+    count += edits.marks.hidden().iter().filter(|key| shown(key.page)).count();
+    u32::try_from(count).unwrap_or(u32::MAX)
+}
+
 /// **Where a place in the list as it was is in the new one** (the reading position, a trail's stop; review F1): its own position if that's known;
 /// else as far past the nearest known position before it as it was (or as far before the nearest after it, with none before), kept short of the
 /// next known position's place, and within the list's `len`. So a place far from the edits keeps its page, shifted by what came in or went before

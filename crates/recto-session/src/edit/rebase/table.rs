@@ -475,6 +475,8 @@ fn every_edit_follows_its_page_or_the_list_is_held() {
             );
             // The seam for slice 3: one verdict an edit, and held exactly when one of them is.
             assert_eq!(outcome.edits.iter().all(|edit| edit.held.is_none()), follows, "{label}: {:?}", outcome.edits);
+            // And as many as a notice brought back after a restart says (`edits_in`).
+            assert_eq!(edits_in(&edits) as usize, outcome.edits.len(), "{label}: {:?}", outcome.edits);
             if let Some(onto) = &outcome.onto {
                 check_on_their_pages(*kind, &row.new, onto, &label);
             }
