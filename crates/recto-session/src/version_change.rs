@@ -229,7 +229,7 @@ impl Following {
     }
 }
 
-/// **One step of a follow's reading,** off the session's lock: up to [`step_bytes`] bytes and as many pages as a job of slice 1's, then it says
+/// **One step of a follow's reading,** off the session's lock: up to a job of slice 1's bytes (`step_bytes`) and as many pages as a job of slice 1's, then it says
 /// there's more, so the page-identity thread is never held by one long file in one piece. Every step's work is under the one budget ([`WorkCaps`]).
 pub fn read_part(following: &mut Following) -> Read {
     let (limit, mut spent, mut pages) = (step_bytes(), 0u64, 0u32);
