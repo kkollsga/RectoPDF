@@ -1393,19 +1393,28 @@ fn a_launch_goes_up_from_the_sleep_file() {
         "{shown}"
     );
     // The rule (`showing::decide`): up as its page is drawn (`ready`, with something on it), or at the cap (1.2 s from the window's opening) only while
-    // the page in view isn't drawn yet, its pages on their paper from the sleep file's facts all the same. A cap that fires for anything else (the state,
-    // the session) is no wake's, and fails here; that a cap is rare is a matter of a machine's speed, which this one launch can't tell.
-    match shown["why"].as_str() {
-        Some("ready") => assert!(shown["tile_layers"].as_u64().unwrap() > 0, "up as ready with nothing on it: {shown}"),
-        Some("cap") => {
+    // the page in view is being drawn, its pages on their paper from the sleep file's facts all the same. Read from the ask that decided (`asks.last`):
+    // a cap that fires for anything else, the state, the session, or a page that nothing is drawing or a wake the host was never told of, which would
+    // never have come up by itself, fails here. What's drawn on its way to the host (`ops_waiting`, `unapplied`) is that page drawn. That a cap is rare
+    // is a matter of a machine's speed, which this one launch can't tell. The host's own timer runs as long as the cap, from as the window's opened, and asks
+    // Rust once more as it runs out: shown by it (`patience`) is the cap when that ask said so, and only then (seen with every worker 400 ms late: the timer
+    // came first, its ask said `cap`).
+    let decided = &shown["asks"]["last"];
+    match (shown["why"].as_str(), decided["said"].as_str()) {
+        (Some("ready"), _) => assert!(shown["tile_layers"].as_u64().unwrap() > 0, "up as ready with nothing on it: {shown}"),
+        (Some("cap" | "patience"), Some("cap")) => {
             assert!(shown["page_layers"].as_u64().unwrap() > 0, "up at the cap with no page on its paper: {shown}");
             assert_eq!(
-                shown["asks"]["last_wait"]["held_by"],
+                decided["held_by"],
                 json!(["page_not_ready"]),
                 "held to the cap by something but its page: {shown}"
             );
+            assert!(
+                ["drawing", "ops_waiting", "unapplied"].contains(&decided["checks"]["not_showable"].as_str().unwrap_or("")),
+                "held to the cap by a page not being drawn: {shown}"
+            );
         }
-        _ => panic!("shown by the host's own patience, past Rust's cap: {shown}"),
+        _ => panic!("shown before Rust's cap said so: {shown}"),
     }
     assert_eq!(
         after["reader"]["last_wake"]["from_sleep"],
