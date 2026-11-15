@@ -32,6 +32,10 @@ pub trait Indexing: Send + Sync {
     fn note_asked(&self) {}
     /// Stops what's on its way for this file, or for all of them: takes it out of the queue, and if it's being built, stops that. What's written stays until something clears it.
     fn cancel(&self, _key: Option<CorpusKey>) {}
+    /// What's known of the Find key the text is sealed with, without taking it: its plan, and where it came from once it has been. Never anything of the key.
+    fn find_key_report(&self) -> Value {
+        Value::Null
+    }
     /// Whether asking here gets anything built.
     fn starts_builds(&self) -> bool {
         true
@@ -339,6 +343,7 @@ fn report(indexing: &dyn Indexing, id: u32, files: &[TabFile], want: bool) -> (V
         "agent_bytes": agent_bytes,
         "indexers_running": running,
         "indexers_waiting": waiting,
+        "find_key": indexing.find_key_report(),
         "note": note,
     });
     (value, first_unready)

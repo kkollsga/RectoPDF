@@ -215,7 +215,8 @@ impl OwnTemp {
         let failed = || AgentError::new(Code::WRITE_FAILED, "The print couldn't be written.", exit::FAILED);
         let folder = recto_platform::local::system_temp_dir().unwrap_or_else(std::env::temp_dir);
         for _ in 0..64 {
-            let path = folder.join(format!(".recto-unnamed-{:016x}", recto_platform::local::random_u64()));
+            // Its process's number too, so a check of what one process left counts only its own.
+            let path = folder.join(format!(".recto-unnamed-{}-{:016x}", std::process::id(), recto_platform::local::random_u64()));
             let mut options = OpenOptions::new();
             options.read(true).write(true).create_new(true);
             #[cfg(unix)]

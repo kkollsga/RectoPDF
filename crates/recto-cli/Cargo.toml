@@ -24,6 +24,8 @@ recto-update.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# Test-only: `find_key::audit`, the look at a built program for the Keychain's code.
+recto-platform = { workspace = true, features = ["test-seams"] }
 # Tests read a refusal's code as the wire does.
 recto-agent = { workspace = true, features = ["test-words"] }
 # To make an encrypted file with permissions, as nothing else here writes one.

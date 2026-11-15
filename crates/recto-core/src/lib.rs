@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 pub mod agreement;
 mod effects;
 pub mod highlights;
+mod marks;
+pub use marks::extends_previous;
 pub mod nav;
 pub mod page_id;
 pub mod save;

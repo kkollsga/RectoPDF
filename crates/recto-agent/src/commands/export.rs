@@ -433,7 +433,7 @@ impl Cmd for Snapshot {
             anyway,
             ..
         } = self;
-        json!({ "tab": super::log_tab(tab), "page": page, "as": recto_core::clean_line(format), "anyway": anyway, "untrusted": out.as_deref().map(super::log_file) })
+        json!({ "tab": super::log_tab(tab), "page": page, "as": crate::render::snapshot::Format::from_name(format).map_or("?", crate::render::snapshot::Format::name), "anyway": anyway, "untrusted": out.as_deref().map(super::log_file) })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         let Self {

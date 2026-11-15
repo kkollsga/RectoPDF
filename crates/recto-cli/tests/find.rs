@@ -152,7 +152,7 @@ fn hits_follow_the_pages_after_an_edit() {
 #[test]
 fn a_query_started_mid_run_stops_the_first() {
     let state = State::new();
-    let host = Arc::new(SessionHost::new(DrawableLoader).with_indexing(&state.paths));
+    let host = Arc::new(SessionHost::new(DrawableLoader).with_indexing(&state.paths, recto_control::find_keys::Host::Cli));
     let file = doc("overlap.pdf", 400, "alpha");
     host.run(
         recto_agent::Actor::Agent(Level::Full),

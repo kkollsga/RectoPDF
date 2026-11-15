@@ -9,6 +9,10 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# For tests only, and never in the app: `AppKey::standing_in`, a stand-in for the Keychain.
+test-seams = []
+
 [dependencies]
 recto-agent.workspace = true
 recto-core.workspace = true

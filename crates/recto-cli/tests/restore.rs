@@ -68,6 +68,7 @@ fn general(path: &str) -> String {
 /// What's allowed to differ across a restart, and why: one file per area under `restore/exceptions/`, each line a path, or the start of one, then its reason. It's short on purpose: anything else that differs is a bug, or goes here with its reason. Files, sorted, so branches adding to different places merge without a conflict (review T3).
 const EXCEPTIONS: &[(&str, &str)] = &[
     ("app", include_str!("restore/exceptions/app.txt")),
+    ("find_key", include_str!("restore/exceptions/find_key.txt")),
     ("hangs", include_str!("restore/exceptions/hangs.txt")),
     ("memory", include_str!("restore/exceptions/memory.txt")),
     ("panes", include_str!("restore/exceptions/panes.txt")),
@@ -82,6 +83,7 @@ const EXCEPTIONS: &[(&str, &str)] = &[
 /// Every path in `qa state` that's been looked at: one file per area under `restore/known/`, sorted. Each comes back, as the test of everything shows, or it's in [`EXCEPTIONS`]. A new one fails until it's added, which is the moment to carry it over.
 const KNOWN_PATHS: &[(&str, &str)] = &[
     ("app", include_str!("restore/known/app.txt")),
+    ("find_key", include_str!("restore/known/find_key.txt")),
     ("panes", include_str!("restore/known/panes.txt")),
     ("printing", include_str!("restore/known/printing.txt")),
     ("reader", include_str!("restore/known/reader.txt")),

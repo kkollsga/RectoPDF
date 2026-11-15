@@ -158,3 +158,35 @@ fn nothing_in_the_built_app_has_extended_attributes() {
     let text = String::from_utf8_lossy(&listed.stdout);
     assert!(text.trim().is_empty(), "files in the bundle with extended attributes:\n{text}");
 }
+
+/// Failure: `recto`, the program an agent runs, carries the code that reaches the Keychain: the Find key's, or Security.framework linked and called by anything (the coordinator's decision, 2026-11-15: only the app's own process). Looked at as it was just built for this test.
+#[test]
+fn recto_carries_no_keychain_code() {
+    let found = recto_platform::find_key::audit::keychain_code_in(Path::new(env!("CARGO_BIN_EXE_recto")));
+    assert!(found.is_empty(), "recto reaches the Keychain: {found:?}");
+}
+
+/// Failure: a program in the built app other than the app's own carries the code that reaches the Keychain: `recto`, the indexer, the headings helper, the updater, or the renderer's helper; or the app's own doesn't, so the look sees nothing. Run where the app has just been built (`check.sh` asks for it with `RECTO_REQUIRE_APP`, and then a missing app fails).
+#[test]
+fn only_the_apps_own_program_in_the_bundle_reaches_the_keychain() {
+    let Some(bundle) = built_bundle() else { return };
+    let keychain = |program: &Path| recto_platform::find_key::audit::keychain_code_in(program);
+    assert!(
+        !keychain(&bundle.join("MacOS/RectoPDF")).is_empty(),
+        "the app's own executable doesn't reach the Keychain, so the look sees nothing"
+    );
+    for name in ["recto", "recto-indexer", "recto-headings", "recto-updater"] {
+        let found = keychain(&bundle.join("MacOS").join(name));
+        assert!(found.is_empty(), "the app's {name} reaches the Keychain: {found:?}");
+    }
+    let helper = bundle.join("Helpers/RectoRender.app/Contents/MacOS");
+    let programs: Vec<_> = std::fs::read_dir(&helper)
+        .unwrap_or_else(|error| panic!("{}: {error}", helper.display()))
+        .flatten()
+        .collect();
+    assert!(!programs.is_empty(), "the renderer's helper has no program");
+    for entry in programs {
+        let found = keychain(&entry.path());
+        assert!(found.is_empty(), "the renderer's {} reaches the Keychain: {found:?}", entry.path().display());
+    }
+}

@@ -20,3 +20,7 @@ recto-index.workspace = true
 recto-platform.workspace = true
 recto-render-service.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# Test-only: `find_key::audit`, the look at a built program for the Keychain's code.
+recto-platform = { workspace = true, features = ["test-seams"] }

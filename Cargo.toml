@@ -38,6 +38,10 @@ sha2 = { version = "0.11", default-features = false }
 # LZW, for the page digest's streaming decode (`recto-core/src/page_id/decode.rs`); already built for lopdf.
 weezl = { version = "0.2", default-features = false, features = ["alloc"] }
 crc32fast = { version = "1", default-features = false }
+# A new key for the Find text (owner, 2026-11-15: "Lets store it encrypted"): the OS's randomness, already built for lopdf.
+getrandom = { version = "0.4", default-features = false }
+# Overwrites the Find key when it goes, in a way the compiler can't drop. Comes with the cipher too (aes-gcm's `zeroize`).
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
 grep-regex = { version = "0.1", default-features = false }
 grep-matcher = { version = "0.1", default-features = false }
 
