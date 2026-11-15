@@ -252,3 +252,46 @@ fn pages_appended_by_another_program_are_reached_once_the_edits_follow() {
     assert_eq!(bed.turned(), vec![8]);
     assert_eq!(bed.s.pages().count(bed.a), 12);
 }
+
+/// Puts `bytes` in the file's place by a rename, with the time the file had put back: the same size and time, another inode.
+fn renamed_in_with_time_kept(path: &Path, bytes: &[u8]) {
+    let modified = std::fs::metadata(path).unwrap().modified().unwrap();
+    let new = path.with_extension("new");
+    std::fs::write(&new, bytes).unwrap();
+    std::fs::File::options().write(true).open(&new).unwrap().set_modified(modified).unwrap();
+    std::fs::rename(&new, path).unwrap();
+}
+
+/// Failure (the changed-file work's review, 2026-11-13, left for the matcher): a different file of the same size, time and page count renamed into
+/// place was taken for the version the edits were made on, as a look goes by size and time: the tab took the new file's number as the edits' own, and
+/// showed the turn on the other file's page 9 (and a save's own check of the number then passed). Another inode under unsaved edits is another version:
+/// with page 9 not in it the edits are held and said; with the same pages (a copy put back, as `cp -p` makes), they follow.
+#[test]
+fn another_file_renamed_in_with_the_same_size_and_time_is_another_version() {
+    let mut bed = Bed::turned_page_9();
+    let made_on = file_stamp(&bed.path).unwrap();
+    let mine = std::fs::read(&bed.path).unwrap();
+    let theirs = ten("Ours");
+    assert_eq!(theirs.len(), mine.len(), "the same size");
+    renamed_in_with_time_kept(&bed.path, &theirs);
+    let now = file_stamp(&bed.path).unwrap();
+    assert!(
+        now.same_contents(made_on) && now.inode != made_on.inode,
+        "size and time tell nothing; the inode does"
+    );
+    let look = record::look_at_file(&bed.path, bed.s.tabs().own_stamp(bed.a));
+    bed.s.apply_file_status(bed.a, look);
+    assert_eq!(bed.s.notices().fit(bed.a), EditsFit::FileChanged, "not taken for the edits' version");
+    assert_eq!(bed.s.tabs().own_stamp(bed.a), Some(made_on));
+    bed.read_again();
+    assert_eq!(bed.follow(), vec![None], "page 9 isn't in it, so the edits are held");
+    assert_eq!(bed.notice(), Some("file_changed"));
+    // The edits' own pages put back by another copy: another inode again, and every page found.
+    renamed_in_with_time_kept(&bed.path, &mine);
+    let look = record::look_at_file(&bed.path, bed.s.tabs().own_stamp(bed.a));
+    bed.s.apply_file_status(bed.a, look);
+    bed.read_again();
+    assert_eq!(bed.follow().len(), 1);
+    assert_eq!(bed.s.notices().fit(bed.a), EditsFit::Fit);
+    assert_eq!(bed.turned(), vec![8]);
+}

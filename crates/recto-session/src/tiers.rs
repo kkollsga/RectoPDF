@@ -153,7 +153,7 @@ impl<L: DocLoader> Session<L> {
         };
         let (edited, list_pages) = (summary.edited, self.lists.get(id).map(PageEdits::file_pages));
         let Some(own) = self.tabs.tab(id).map(|tab| tab.file.stamp) else { return };
-        let other_version = own.is_some_and(|own| !own.same_contents(read));
+        let other_version = own.is_some_and(|own| fit::another_version(own, read));
         // The file at the list's own stamp is another length than the list says, so the list isn't about what was read: the file was replaced between its stamp
         // and its read, an edit landed between a change being noticed and the read, or a journal says what isn't so.
         let other_length = own == Some(read) && list_pages.is_some_and(|list_pages| list_pages != pages);

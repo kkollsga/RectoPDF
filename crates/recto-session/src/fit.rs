@@ -52,6 +52,14 @@ impl EditsFit {
     }
 }
 
+/// **Whether the file found is another version than `own`, the one a tab's edits were made on:** another size or time, or another file in its place
+/// (another inode on the volume, as a rename or a restore puts there), whatever its size and time. A size and time put back are what `cp -p` and a
+/// careful rewrite keep, so going by them alone took a different file with the same size, time and page count for the edits' own (the changed-file
+/// work's review, 2026-11-13); the page matcher then says whether the edits' pages are in it.
+pub(crate) fn another_version(own: FileStamp, now: FileStamp) -> bool {
+    !own.same_contents(now) || (own.inode != 0 && now.inode != 0 && own.inode != now.inode)
+}
+
 /// What a tab says of its file: a stable code for agents and tests, and plain words with nothing from outside in them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NoticeSaid {
