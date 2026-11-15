@@ -51,9 +51,6 @@ impl PageIds {
         let (ids, host) = (Arc::clone(self), Arc::clone(host));
         let spawned = std::thread::Builder::new().name("recto-page-ids".into()).stack_size(512 * 1024).spawn(move || {
             ids.run(&host);
-            // A list it marked tried without reading (protected meanwhile, past its cap) no longer says it's being looked at: the tab's words are
-            // made again once, as the thread goes.
-            host.core.push(crate::queue::CoreCall::Reconcile);
             host.core.nudge();
         });
         if spawned.is_err() {
@@ -111,7 +108,15 @@ impl PageIds {
             *following = None;
         }
         if following.is_none() {
-            let Some(job) = host.session.with_session(|session| version_change::work(session).into_iter().next()) else {
+            let (wanted, job) = host
+                .session
+                .with_session(|session| (version_change::wanted(session), version_change::work(session).into_iter().next()));
+            let Some(job) = job else {
+                // A list wanted and given no job was marked tried without a read (protected meanwhile, past its cap): it no longer says it's being
+                // looked at, so the tab's words are made again. Only then, so an edit's own reading costs no extra publish.
+                if wanted {
+                    host.core.push(crate::queue::CoreCall::Reconcile);
+                }
                 return false;
             };
             // Off the lock: the open, and the descriptor's own check.

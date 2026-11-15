@@ -243,7 +243,13 @@ pub(crate) fn leave_for<L: DocLoader>(session: &mut Session<L>, id: TabId) {
     // A change of the file is news like a clean tab's when what the tab has fits the version it shows (review S1): it goes on the way past. Only once
     // that version has been read in (the tab is warm): heard and not read yet, "changed" is what the read goes by to know edits made meanwhile were made
     // on the version before (`compare_read_with_edits`).
-    let fits = session.notices().fit(left).fits() && session.warm.contains(left);
+    // Asked only of a tab with a list, which is the rare one: a tap at a thousand tabs searches them no more than it did (`per_tab_work`).
+    let fits = !clean
+        && session.warm.contains(left)
+        && session
+            .tabs
+            .tab(left)
+            .is_some_and(|tab| matches!(tab.file.notice(), Some(FileNotice::Changed)) && session.notices().fit_of(tab).fits());
     session.sleeper().touch(left);
     if let Some(tab) = session.tabs.tab_mut(left)
         && ((clean && matches!(tab.file.notice(), Some(FileNotice::Moved { .. } | FileNotice::Changed)))
