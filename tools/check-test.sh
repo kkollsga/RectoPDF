@@ -212,8 +212,8 @@ git checkout -qb work
 commit_code alpha-change
 out=$(full); rc=$?
 check "a full run passes" "0" "$rc"
-sed -E 's/^fmt --manifest-path crates\/recto-headings.*/headings-fmt/; s/^fmt .*/fmt/; s/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^clippy --workspace --locked --target x86_64-pc-windows-gnu.*/windows/; s/^doc -p alpha --no-deps.*/doc-links/; s/^(clippy) .*/\1/; s/^build.*/workers/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app --test restore -j 4 -E .*/slow/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test registrations.*/registrations/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test notices.*/app-bundle/' "$CALLS" > "$X/order"
-check "every stage runs, cheapest and likeliest first" "ratchet fmt headings-fmt clippy headings-clippy windows doc-links workers headings-build headings-tests changed-tests other-tests app-build app-bundle app-tests slow registrations" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
+sed -E 's/^fmt --manifest-path crates\/recto-headings.*/headings-fmt/; s/^fmt .*/fmt/; s/^clippy --manifest-path crates\/recto-headings.*/headings-clippy/; s/^build --locked --manifest-path crates\/recto-headings.*/headings-build/; s/^test --locked --manifest-path crates\/recto-headings.*/headings-tests/; s/^clippy --workspace --locked --target x86_64-pc-windows-gnu.*/windows/; s/^doc -p alpha --no-deps.*/doc-links/; s/^(clippy) .*/\1/; s/^build.*/workers/; s/^check --locked -p alpha --tests$/own-build/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--workspace -E package\(=alpha\)$/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app --test restore -j 4 -E .*/slow/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test registrations.*/registrations/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test notices.*/app-bundle/' "$CALLS" > "$X/order"
+check "every stage runs, cheapest and likeliest first" "ratchet fmt headings-fmt clippy headings-clippy windows doc-links workers headings-build headings-tests own-build changed-tests other-tests app-build app-bundle app-tests slow registrations" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
 has "each stage says how long it took" "check: app-tests took" "$out"
 # Failure: the tests depend on the shell they run in. The same script's first cases, with the variables CI sets (and a part, and a slow switch), must pass.
 if [ -z "${CHECK_TEST_SLICE:-}" ]; then
@@ -618,6 +618,25 @@ check "a change to every crate runs them all as changed, and passes" "0 yes no" 
 : > "$CALLS"
 git checkout -q main
 
+# Failure (CI's compile, 2026-11-15): the changed crates' tests built as `-p` alone, so their libraries had those crates' own features, and the next stage,
+# the whole workspace's, built every one of them again (46 s of CI a run). The first stage runs out of the workspace's build, the rest go by a filter, not
+# `--exclude` (which changes the features too), and each changed crate's tests are still checked with its own features, the one thing the `-p` build caught.
+fresh_ledger
+git checkout -qb first-stage
+echo f >> crates/alpha/src/lib.rs && git add . && git commit -qm alpha-first
+out=$(full); rc=$?
+check "the changed crate's tests run out of the workspace's build" "0 1" "$rc $(grep -c '^nextest run --locked --no-fail-fast --workspace -E package(=alpha)$' "$CALLS")"
+check "and the rest by a filter, with nothing left out of the build" "1 0" "$(grep -c '^nextest run --locked --no-fail-fast --no-tests=pass --workspace -E not (package(=alpha))$' "$CALLS") $(grep -c -- '--exclude' "$CALLS")"
+check "and its tests are checked with its own features first" "1" "$(grep -c '^check --locked -p alpha --tests$' "$CALLS")"
+: > "$CALLS"
+fresh_ledger
+commit_code alpha-first-2
+out=$(STUB_FAIL='check --locked -p alpha --tests' STUB_EXIT=101 full); rc=$?
+check "a changed crate whose tests don't build on their own fails the run, before its tests run" "101 0" "$rc $(grep -c 'package(=alpha)' "$CALLS")"
+check "in the stage of the changed crates' tests" "fail:changed-tests" "$(last_ledger_field 4)"
+: > "$CALLS"
+git checkout -q main
+
 # The real output of an empty ledger.
 fresh_ledger
 check "--runs with nothing recorded says so" "No full runs recorded yet." "$(tools/check.sh --runs)"
@@ -777,7 +796,7 @@ check "the window tier runs" "1" "$(sel_has 'app --test restore --test compare -
 check "the lifecycle tier doesn't" "0" "$(sel_has 'long_session')"
 check "nor the stage that checks what is left registered" "0" "$(sel_has '--test registrations')"
 check "the slow stage runs only what is in the window tier" "1" "$(grep -c 'window_test' "$CALLS.slow" | tr -d ' ')"
-check "its crate's tests run, and the guards" "1" "$(sel_has 'nextest run --locked --no-fail-fast -p beta')"
+check "its crate's tests run, and the guards" "1" "$(sel_has 'nextest run --locked --no-fail-fast --workspace -E package(=beta)$')"
 check "the other crates' tests don't (alpha, gamma)" "0" "$(sel_has 'package(=gamma)')"
 check "the app is built, for the window tier" "1" "$(sel_has '^app-build')"
 check "the run's ledger line says it was selective" "selective" "$(last_ledger_field 7)"
