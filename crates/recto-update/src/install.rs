@@ -622,6 +622,10 @@ pub fn copy_record(session: &Path, before: &Path, after_each: &mut dyn FnMut(&st
     if walk_record(session, before, &mut files).is_err() {
         return false;
     }
+    // The copy holds the edit history, which PRIVACY.md keeps out of Time Machine: marked as the folder of the journals is, before anything's in it.
+    // A failure only costs that mark.
+    let _ = std::fs::create_dir_all(before);
+    let _ = local::exclude_from_backups(before);
     let mut copied = 0u64;
     for (from, to) in files {
         let made = to.parent().is_some_and(|folder| std::fs::create_dir_all(folder).is_ok());
@@ -759,6 +763,13 @@ mod tests {
         std::fs::write(session.join("journals/closed-1.log"), "a closed one").unwrap();
         assert!(copy_record(&session, &before, &mut |_| {}));
         assert!(before.join(".whole").exists());
+        assert!(
+            local::is_excluded_from_backups(&before),
+            "PRIVACY.md: the edit history is kept out of Time Machine, and this is a copy of it"
+        );
+        // Made again by the next update: the mark is on the folder it makes, not on one that was there.
+        assert!(copy_record(&session, &before, &mut |_| {}));
+        assert!(local::is_excluded_from_backups(&before));
         assert!(!before.join("journals/closed-1.log").exists());
         // What a broken new version does.
         std::fs::write(session.join("record.a.json"), "damaged").unwrap();

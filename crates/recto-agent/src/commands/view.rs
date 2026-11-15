@@ -329,8 +329,9 @@ impl Cmd for Palette {
     fn route(&self) -> Runs {
         Runs::App
     }
+    /// Not what's typed: only that a query was given, as `find` says it. Whatever an agent sends may be a document's words.
     fn log_details(&self) -> Value {
-        json!({ "query": self.query.as_deref().map(recto_core::clean_line), "run": self.run })
+        json!({ "query": self.query.is_some(), "run": self.run })
     }
     fn run<A: SessionAccess>(&self, _: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         Err(AgentError::new(

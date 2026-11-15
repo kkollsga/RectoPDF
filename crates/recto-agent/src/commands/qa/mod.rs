@@ -47,7 +47,7 @@ impl Cmd for QaRead {
         Runs::App
     }
     fn log_details(&self) -> Value {
-        json!({ "verb": recto_core::clean_line(&self.verb) })
+        json!({ "verb": known_verb(&self.verb) })
     }
     fn run<A: SessionAccess>(&self, _: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         Err(qa_needs_app())
@@ -96,7 +96,7 @@ impl Cmd for QaDrive {
         Runs::App
     }
     fn log_details(&self) -> Value {
-        json!({ "verb": recto_core::clean_line(&self.verb) })
+        json!({ "verb": known_verb(&self.verb) })
     }
     fn run<A: SessionAccess>(&self, _: &mut Cx<'_, A>) -> Result<Value, AgentError> {
         Err(qa_needs_app())
@@ -104,6 +104,11 @@ impl Cmd for QaDrive {
     fn human(data: &Value) -> String {
         serde_json::to_string_pretty(data).unwrap_or_default()
     }
+}
+
+/// What the log keeps of a verb: its name if the table has it, or `?`. A verb is words an agent chose, so one the table doesn't know isn't kept.
+fn known_verb(verb: &str) -> &str {
+    if verbs::row_of(verb).is_some() { verb } else { "?" }
 }
 
 /// **A verb's level is its own row's,** so one verb can need more than the rest. A verb no row of this command sends has the command's first row's level,
