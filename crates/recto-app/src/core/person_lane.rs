@@ -11,6 +11,7 @@
 //! session thread once it has run; a highlight or its removal as it lands; a print once its pages are read (`printing::Watch::begin`); a save once it has
 //! begun, its tab held for it (`saving::AppSaving::before_writing`).
 
+use super::answer_parts::AnswerParts;
 use super::person;
 use super::{CoreCall, Inner};
 use crate::queue::lane::{Asked, Start, Turn};
@@ -84,9 +85,12 @@ impl PersonsLane<'_> {
     /// **A person's ordered command that runs on a thread of its own** (one that may wait): started now if it's its turn, or parked till it is, counted
     /// as the person's running meanwhile. Never waits.
     pub fn submit_waiting(self, command: Command, turn: Turn) {
-        let counted = person::Counted::new(&self.app.life, &self.app.core);
+        // Answered as refused if it's dropped before its turn, then no longer counted: in that order, as the fields of a tuple go.
+        let held = (self.unrun(command, &turn), person::Counted::new(&self.app.life, &self.app.core));
         let app = Arc::downgrade(self.app);
         let start: Start = Box::new(move |turn| {
+            let (unrun, counted) = held;
+            let command = unrun.run();
             let started = app.upgrade().map(|inner| person::Person::of(&inner).lane().start_waiting(command, Some(turn)));
             drop((started, counted));
         });
@@ -117,16 +121,26 @@ impl PersonsLane<'_> {
         self.asked(self.app.core.lane().ask(turn, start));
     }
 
+    /// `command`, answered as refused if it's dropped from the lane before `turn` comes ([`Unrun`]).
+    fn unrun(self, command: Command, turn: &Turn) -> Unrun {
+        Unrun {
+            app: Arc::downgrade(self.app),
+            command: Some(command),
+            ticket: turn.ticket(),
+        }
+    }
+
     /// What came of asking: started now, parked, or refused at the cap, which the person is told.
     fn asked(self, asked: Asked) {
         match asked {
             Asked::Now(start, turn) => start(turn),
             Asked::Parked => {}
+            // Answered as refused as it's dropped ([`Unrun`]), and said once, here.
             Asked::Full(start, turn) => {
                 drop((start, turn));
                 person::say(self.app.window.notices(), &self.app.core, FULL.to_string());
             }
-            // Dropped with what was waiting at a quit: said if the person stays ([`DROPPED_AT_QUIT`]).
+            // Dropped with what was waiting at a quit, answered as refused as it goes: said if the person stays ([`DROPPED_AT_QUIT`]).
             Asked::Dropped(start, turn) => drop((start, turn)),
         }
     }
@@ -139,7 +153,10 @@ impl PersonsLane<'_> {
         let counted = person::Running::start(Arc::clone(self.app));
         if self.app.life.keeping().restoring() {
             drop(counted);
-            self.app.core.push(CoreCall::Run(turn_come(PersonCommand::input(command), turn)));
+            // Not taken past a freeze that came since it was asked: answered as refused, so its feature isn't left waiting (a paste's SVG).
+            if let Err(run) = self.app.core.push_persons(turn_come(PersonCommand::input(command), turn)) {
+                person::not_run(&AnswerParts::of(self.app), &run.command, super::host::HELD_BACK);
+            }
             return;
         }
         person::on_its_own_thread(command, counted, turn);
@@ -149,8 +166,11 @@ impl PersonsLane<'_> {
     pub fn submit_held(self, run: Box<PersonCommand>) {
         match run.turn {
             Some(turn) => self.start_waiting(run.command, Some(turn)),
+            // Not taken past a freeze that came while it was held: answered as refused, so its feature isn't left waiting (a paste's SVG).
             None => {
-                person::submit(self.app, run.command);
+                if !person::submit(self.app, run.command.clone()) {
+                    person::not_run(&AnswerParts::of(self.app), &run.command, super::host::HELD_BACK);
+                }
             }
         }
     }
@@ -209,9 +229,12 @@ impl PersonsLane<'_> {
                 return None;
             }
         };
-        let counted = person::Counted::new(&self.app.life, &self.app.core);
+        // Answered as refused if it's dropped before its turn, then no longer counted, as in `submit_waiting`.
+        let held = (self.unrun(command, &turn), person::Counted::new(&self.app.life, &self.app.core));
         let core = Arc::downgrade(&self.app.core);
         let start: Start = Box::new(move |turn| {
+            let (unrun, counted) = held;
+            let command = unrun.run();
             if let Some(core) = core.upgrade() {
                 let run = Box::new(PersonCommand {
                     command,
@@ -227,6 +250,36 @@ impl PersonsLane<'_> {
         // Its turn may have come meanwhile, as the command before passed it: then it's queued again at once, named as it is, and runs as it's taken.
         self.asked(self.app.core.lane().ask(turn, start));
         None
+    }
+}
+
+/// **A person's command parked in their lane, answered as refused if it's dropped there** ([`person::not_run`]): refused at the cap, dropped with what was
+/// parked at a quit's patience or at the queue's end. Taken out to run when its turn comes ([`Self::run`]), and then answered by its run, as any is. What
+/// it says it was is the lane's words, which the page says once: [`FULL`] as it's refused, [`DROPPED_AT_QUIT`] if the person stays after the quit.
+struct Unrun {
+    app: std::sync::Weak<Inner>,
+    command: Option<Command>,
+    ticket: u64,
+}
+
+impl Unrun {
+    /// Its turn has come: the command, to run, and nothing answered here.
+    fn run(mut self) -> Command {
+        self.command.take().unwrap_or_else(|| unreachable!("taken only here, once"))
+    }
+}
+
+impl Drop for Unrun {
+    fn drop(&mut self) {
+        let (Some(command), Some(app)) = (self.command.take(), self.app.upgrade()) else {
+            return;
+        };
+        let words = if app.core.lane().dropped_at_quit(self.ticket) {
+            DROPPED_AT_QUIT
+        } else {
+            FULL
+        };
+        person::not_run(&AnswerParts::of(&app), &command, words);
     }
 }
 

@@ -59,7 +59,11 @@ impl Inner {
                 }
                 self.listener.quit_answer(crate::listener::QuitAnswer::for_quit(go, unsaved_tabs));
             }
-            Out::QuitStayed => self.updates.quit_not_taken(),
+            Out::QuitStayed => {
+                self.updates.quit_not_taken();
+                // A promised SVG is made again for a paste, as the app isn't on its way out after all.
+                self.tools.tool().quit_not_taken();
+            }
             _ => {}
         }
     }

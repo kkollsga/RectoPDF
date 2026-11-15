@@ -1,7 +1,9 @@
 //! Writes small PDFs for tests, so expected values come from the bytes rather than from another parser. Test-only: nothing that ships
 //! depends on this crate. No third-party file is committed: the hostile cases here are generated too. Beside them, the one scan of the sources that the
-//! listing tests of what a part lets other code reach share ([`surface`]), as this is the test-only crate every crate with such a test has already.
+//! listing tests of what a part lets other code reach share ([`surface`]), and the lines of a source outside its test items that every scan of shipping
+//! code reads ([`production`]), as this is the test-only crate every crate with such a test has already.
 
+pub mod production;
 pub mod surface;
 
 use std::path::{Path, PathBuf};

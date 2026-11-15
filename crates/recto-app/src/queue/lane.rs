@@ -203,7 +203,8 @@ impl Lane {
 
     /// **A quit's patience ran out with the person's edits still waiting:** what's parked goes, all of it together, and so does every ticket handed out
     /// so far that hasn't acted yet (an undo queued and not yet taken by the session thread), as it asks; what's under way goes on. So what the person
-    /// asked for is done as a prefix, never a later edit without an earlier one (review of the lane, D4; second review, 4).
+    /// asked for is done as a prefix, never a later edit without an earlier one (review of the lane, D4; second review, 4). And at the queue's end (a
+    /// headless app's kill), as the queue takes nothing more. Each parked command goes with what it holds (the app's count of it, its answer as refused).
     pub fn drop_for_quit(&self) {
         let parked = {
             let mut state = lock(&self.state);
@@ -212,6 +213,12 @@ impl Lane {
             take_parked(&mut state)
         };
         drop(parked);
+    }
+
+    /// **Whether the command holding `ticket` was dropped at a quit** ([`Self::drop_for_quit`]) rather than refused at the cap: what its answer as refused
+    /// says it was. A look, which tells nobody.
+    pub fn dropped_at_quit(&self, ticket: u64) -> bool {
+        ticket < lock(&self.state).dropped_below
     }
 
     /// Whether edits were dropped at a quit that the person hasn't been told of, which they are now.
@@ -236,13 +243,6 @@ impl Lane {
             let Some((ticket, queue, start)) = lock(&self.state).runnable() else { return };
             start(Turn { queue: Some(queue), ticket });
         }
-    }
-
-    /// **What's parked goes, all of it together,** with what it holds (the app's count of it): at the queue's end (a headless app's kill), as the queue
-    /// takes nothing more.
-    pub fn drop_parked(&self) {
-        let parked = take_parked(&mut lock(&self.state));
-        drop(parked);
     }
 
     /// How many commands are parked now.

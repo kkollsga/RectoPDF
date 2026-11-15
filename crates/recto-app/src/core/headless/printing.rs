@@ -637,3 +637,32 @@ fn a_turn_asked_after_a_print_isnt_printed() {
     assert_eq!(turned, 0, "printed as the pages were when it was asked");
     assert!(app.core().menu_item_enabled("edit.undo".into()), "and the turn done after it");
 }
+
+/// **Failure (the phase's closing read, 2026-11-15): a print parked behind the person's highlight and then dropped from the lane was never answered,** so
+/// "Preparing the page for printing. [Stop]" showed for good, every later print said "A print is already being prepared.", and the print's `busy` kept a
+/// hand-off refusing, so no update installed. Dropped at the cap, and with what was parked at a quit's patience the person then stayed: the page says the
+/// lane's words once, the print is neither being prepared nor busy, a hand-off is free to go, and the next print prints.
+#[cfg(unix)]
+#[test]
+fn a_print_dropped_from_the_lane_leaves_printing_free() {
+    use super::persons_lane::{Dropped, parked_then_dropped};
+    for how in [Dropped::AtTheCap, Dropped::AtAQuit] {
+        let disk = Disk::new();
+        let doc = disk.pdf("a.pdf", 2);
+        let app = disk.start();
+        app.open(&doc);
+        app.settle();
+        parked_then_dropped(&app, how, || answer(&app, ALL));
+        let printing = app.core().tools.printing();
+        let check = app.core().hand_off_check();
+        assert_eq!(
+            (notice(&app), printing.preparing(), printing.busy(), check.busy),
+            (format!("{:?} []", how.words()), false, false, Vec::new()),
+            "{how:?}: said once, and nothing left under way"
+        );
+        app.core().dismiss_selection_notice();
+        answer(&app, ALL);
+        app.settle();
+        assert_ne!(printed(&app), "none", "{how:?}: the next print prints");
+    }
+}

@@ -223,9 +223,12 @@ pub struct Serving {
 }
 
 /// What's in flight, for an update to wait for. A save from the window counts here, and an agent's save or an export is a command. `commands` counts every
-/// command running through the host, the person's among them, and `persons` the person's commands on threads of their own, from when they're asked for
-/// to when what came of them is said: those are the person's, not an agent's (review of S2, S1).
-pub fn hand_off_check_parts(inner_reads: u32, sheets: u32, commands: u32, persons: u32, saves: u32, printing: bool) -> Vec<BusyItem> {
+/// command running through the host, `agents` those of them an agent's, and `persons` the person's commands on threads of their own, from when they're
+/// asked for (parked in their lane among them) to when what came of them is said: those are the person's, not an agent's (review of S2, S1). Each is
+/// counted as what it is, so neither hides the other (the phase's closing read, 2026-11-15: an agent's was every command less the person's, which a
+/// parked edit of the person's, counted but not yet a command, took it below); a command through the host that's neither an agent's nor counted the
+/// person's yet is the person's.
+pub fn hand_off_check_parts(inner_reads: u32, sheets: u32, commands: u32, agents: u32, persons: u32, saves: u32, printing: bool) -> Vec<BusyItem> {
     let item = |code: &str, message: &str| BusyItem {
         code: code.to_string(),
         message: message.to_string(),
@@ -234,10 +237,10 @@ pub fn hand_off_check_parts(inner_reads: u32, sheets: u32, commands: u32, person
     if sheets > 0 {
         busy.push(item("sheet_open", "A sheet or panel is open over the window."));
     }
-    if commands.saturating_sub(persons) > 0 {
+    if agents > 0 {
         busy.push(item("agent_command", "An agent's command is running."));
     }
-    if persons > 0 {
+    if persons > 0 || commands > agents {
         busy.push(item("person_command", "Something you asked for is still being done."));
     }
     if inner_reads > 0 {
@@ -404,35 +407,40 @@ mod tests {
     /// Failure: an update goes ahead while a document is being saved from the window, so the app quits under the save (SPEC decision 24: a running save finishes first). Each thing in flight is named, and a save is one of them.
     #[test]
     fn a_hand_off_waits_for_a_save() {
-        assert!(hand_off_check_parts(0, 0, 0, 0, 0, false).is_empty());
-        let busy = hand_off_check_parts(0, 0, 0, 0, 1, false);
+        assert!(hand_off_check_parts(0, 0, 0, 0, 0, 0, false).is_empty());
+        let busy = hand_off_check_parts(0, 0, 0, 0, 0, 1, false);
         assert_eq!(busy.iter().map(|item| item.code.as_str()).collect::<Vec<_>>(), ["saving"]);
-        assert_eq!(hand_off_check_parts(1, 1, 2, 1, 1, true).len(), 6);
+        assert_eq!(hand_off_check_parts(1, 1, 2, 1, 1, 1, true).len(), 6);
     }
 
     /// Failure (review of S2, S1): during the person's own print, or another command of theirs on its own thread, the update's check says "An agent's
     /// command is running.", which is an agent's word for the person's action; or an agent's command beside the person's isn't named.
     #[test]
     fn a_persons_command_is_named_as_theirs() {
-        let codes = |commands, persons| {
-            hand_off_check_parts(0, 0, commands, persons, 0, false)
+        let codes = |commands, agents, persons| {
+            hand_off_check_parts(0, 0, commands, agents, persons, 0, false)
                 .into_iter()
                 .map(|item| item.code)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(codes(1, 1), ["person_command"], "the person's command, running through the host");
+        assert_eq!(codes(1, 0, 1), ["person_command"], "the person's command, running through the host");
         assert_eq!(
-            codes(0, 1),
+            codes(0, 0, 1),
             ["person_command"],
             "the person's command, before it runs or as what came of it is said"
         );
-        assert_eq!(codes(2, 1), ["agent_command", "person_command"], "and an agent's beside it");
+        assert_eq!(codes(2, 1, 1), ["agent_command", "person_command"], "and an agent's beside it");
+        assert_eq!(
+            codes(1, 1, 2),
+            ["agent_command", "person_command"],
+            "and an agent's beside the person's parked edit"
+        );
     }
 
     /// Failure: an update quits the app mid-print, because the check only counted running commands, and a print's thread is done before the system's printing has its file (review, 2026-11-08).
     #[test]
     fn a_hand_off_waits_for_a_print() {
-        let busy = hand_off_check_parts(0, 0, 0, 0, 0, true);
+        let busy = hand_off_check_parts(0, 0, 0, 0, 0, 0, true);
         assert_eq!(busy.iter().map(|item| item.code.as_str()).collect::<Vec<_>>(), ["printing"]);
     }
 
@@ -481,22 +489,17 @@ mod tests {
     #[test]
     fn stop_is_refused_by_a_normal_app() {
         let state = recto_testpdf::TempDir::new("rf-");
-        let host = AppHost {
-            engine: Engine::new(EngineConfig::default(), Arc::new(TestEngineEvents)),
-            session: SessionHost::new(DrawableLoader),
-            core: Arc::new(CoreQueue::default()),
-            qa: None,
-            saver: Arc::new(Saver::new(
+        let host = AppHost::new(
+            Engine::new(EngineConfig::default(), Arc::new(TestEngineEvents)),
+            SessionHost::new(DrawableLoader),
+            Arc::new(CoreQueue::default()),
+            None,
+            Arc::new(Saver::new(
                 RecordStore::open(&StatePaths::overridden(&state).unwrap(), Flavor::App),
                 Arc::new(CoreQueue::default()),
                 Arc::new(crate::clock::SystemClock::new()),
             )),
-            running: AtomicU32::new(0),
-            changing: AtomicU32::new(0),
-            handing_off: AtomicBool::new(false),
-            notice: Mutex::new(None),
-            watchers: Mutex::new(None),
-        };
+        );
         assert_eq!(host.stop_refusal().expect("refused").code, "only_the_user_quits");
     }
 }

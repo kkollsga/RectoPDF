@@ -374,6 +374,12 @@ impl Tool {
         lock(&self.paste.state).stop.stop();
     }
 
+    /// The person stayed after a quit's question: a paste's promised SVG is made again (found on the way, 2026-11-15: it was given nothing till the app
+    /// was started again).
+    pub fn quit_not_taken(&self) {
+        self.quitting.store(false, Ordering::SeqCst);
+    }
+
     /// One type of the offer with this number: its bytes, once, dropped from here as they go, or what a promised one is made from. Nothing for an offer replaced since, a type not in it, or a promise on the way out.
     pub fn data(&self, serial: u64, uti: &str) -> Option<Data> {
         let mut offered = lock(&self.offered);
@@ -467,6 +473,21 @@ impl Tool {
     #[cfg(test)]
     pub(crate) fn paste_running(&self) -> bool {
         lock(&self.paste.state).running
+    }
+
+    /// A test's: an offer on the clipboard whose SVG is promised from `promise`, as a box's answer leaves one, under its number.
+    #[cfg(test)]
+    pub(crate) fn offer_a_promise_for_a_test(&self, promise: Promise) -> u64 {
+        let serial = self.serial.fetch_add(1, Ordering::SeqCst) + 1;
+        *lock(&self.offered) = Some(Offered {
+            serial,
+            items: vec![ClipItem::Promised {
+                uti: extract::UTI_SVG,
+                cap: extract::MAX_CLIP_ITEM,
+            }],
+            promise: Some(Box::new(promise)),
+        });
+        serial
     }
 
     /// **The bytes the system's paste is waiting for,** on the UI thread, where the system asks: the person's command's SVG once it's made, or nothing

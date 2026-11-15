@@ -503,7 +503,7 @@ fn two_highlights_and_an_undo_parked_and_a_quit(app: &HeadlessApp) -> std::sync:
     go
 }
 
-fn quit_answers(app: &HeadlessApp) -> usize {
+pub(super) fn quit_answers(app: &HeadlessApp) -> usize {
     app.heard().iter().filter(|heard| matches!(heard, crate::testkit::Heard::QuitAnswer(_))).count()
 }
 
@@ -616,7 +616,7 @@ fn a_command_asked_as_a_hand_off_freezes_doesnt_run_after_its_last_look() {
 
 /// The state folder's own part that the record goes in, made so it can't be written (so a quit asks, and can be stayed), or writable again.
 #[cfg(unix)]
-fn record_folder_writable(app: &HeadlessApp, writable: bool) {
+pub(super) fn record_folder_writable(app: &HeadlessApp, writable: bool) {
     use std::os::unix::fs::PermissionsExt as _;
     let folder = app.core().saver.store.main_folder();
     std::fs::create_dir_all(&folder).expect("the record's folder");
@@ -673,4 +673,95 @@ fn a_save_with_nothing_to_save_leaves_the_refusal_showing() {
         Some("Couldn't highlight: there's no text selected there."),
         "the refusal still showing"
     );
+}
+
+/// **Failure (the phase's closing read, 2026-11-15): a hand-off's busy list left out an agent's command running beside the person's parked edits,** as
+/// an agent's was counted as every command less the person's, and a parked edit is the person's but not yet a command. An agent's turn held as it runs,
+/// with the person's highlight held and an undo parked behind it: the list names both.
+#[test]
+fn a_hand_offs_busy_list_names_an_agents_command_beside_the_persons_parked_edits() {
+    let app = with_a_step_before();
+    selects(&app, (0, 0), (0, 5));
+    let (held, go) = app.hold_next("highlight");
+    menu(&app, HIGHLIGHT_ID);
+    held.recv_timeout(WAIT_LIMIT).expect("the person's highlight held as its pages are read");
+    menu(&app, "edit.undo");
+    flush(&app);
+    assert_eq!(app.core().core.lane().parked(), 1, "the undo parked behind it");
+    let (agents_held, agents_go) = app.hold_next("page_rotate");
+    let busy = std::thread::scope(|scope| {
+        let agent = std::thread::Builder::new()
+            .name("recto-test-agent".into())
+            .spawn_scoped(scope, || {
+                app.agent(Level::Full, r#"{"cmd":"page_rotate","tab":"active","pages":"all","degrees":90}"#)
+            })
+            .expect("the agent's thread");
+        agents_held.recv_timeout(WAIT_LIMIT).expect("the agent's command held as it runs");
+        let busy: Vec<String> = app.core().hand_off_check().busy.into_iter().map(|item| item.code).collect();
+        drop(agents_go);
+        agent.join().expect("the agent's thread").expect("the agent's turn");
+        busy
+    });
+    drop(go);
+    app.settle();
+    assert_eq!(busy, ["agent_command", "person_command"], "neither hides the other");
+}
+
+/// How a command of the person's parked behind their highlight goes from the lane without running.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Dropped {
+    /// Refused at the cap, set to none parked.
+    AtTheCap,
+    /// Dropped with what's parked as a quit's patience runs out, the record unwritable and a page turned unsaved so the quit asks, and the person then
+    /// stays.
+    AtAQuit,
+}
+
+impl Dropped {
+    /// What the page says of it: the lane's words, once.
+    pub(super) fn words(self) -> &'static str {
+        match self {
+            Self::AtTheCap => crate::core::person_lane::FULL,
+            Self::AtAQuit => crate::core::person_lane::DROPPED_AT_QUIT,
+        }
+    }
+}
+
+/// **A command of the person's parked behind their highlight in the tab showing, then dropped from the lane** as `how` says, and the highlight let go
+/// and landed: `ask` asks for the command, as the window does. For a feature's own test that what it marked busy as it was asked is free again.
+#[cfg(unix)]
+pub(super) fn parked_then_dropped(app: &HeadlessApp, how: Dropped, ask: impl FnOnce()) {
+    if let Dropped::AtAQuit = how {
+        menu(app, "rotate.right");
+        app.settle();
+    }
+    selects(app, (0, 0), (0, 5));
+    let (held, go) = app.hold_next("highlight");
+    menu(app, HIGHLIGHT_ID);
+    held.recv_timeout(WAIT_LIMIT).expect("the highlight held as its pages are read");
+    match how {
+        Dropped::AtTheCap => {
+            app.core().core.lane().set_cap(0);
+            ask();
+            flush(app);
+            assert_eq!(app.core().core.lane().parked(), 0, "refused at the cap");
+        }
+        Dropped::AtAQuit => {
+            record_folder_writable(app, false);
+            ask();
+            flush(app);
+            assert_eq!(app.core().core.lane().parked(), 1, "parked behind the highlight");
+            app.core().quit_requested();
+            app.wait_until("the quit's question, past its patience", || {
+                app.advance(crate::listener::QUIT_PATIENCE_MS);
+                quit_answers(app) == 1
+            });
+            assert_eq!(app.core().core.lane().parked(), 0, "dropped with what was parked");
+            app.stay();
+            record_folder_writable(app, true);
+        }
+    }
+    drop(go);
+    app.settle();
+    app.core().core.lane().set_cap(crate::queue::lane::CAP);
 }

@@ -769,6 +769,32 @@ mod tests {
         ),
     ];
 
+    /// How many renderers a source opens outside its test items, and how many times it hands one the tab's set: every production line, read past any test
+    /// item however early in the file ([`crate::policy_guards::production_lines`]), and none of a comment.
+    fn renderers_in(text: &str) -> (usize, usize) {
+        let code = crate::policy_guards::production_lines(text);
+        let lines = || code.iter().map(|(_, line)| *line).filter(|line| !line.trim_start().starts_with("//"));
+        let opens = lines()
+            .map(|line| {
+                ["open_for_text(", "DocRenderer::new(", "DocRenderer::with_file("]
+                    .iter()
+                    .map(|call| line.matches(call).count())
+                    .sum::<usize>()
+            })
+            .sum::<usize>();
+        let given = lines().map(|line| line.matches("hidden.draw_for(").count()).sum::<usize>();
+        (opens, given)
+    }
+
+    /// **Failure (the phase's closing read, 2026-11-15): the renderer scan read a file only to its first `#[cfg(test)]`,** so in a file with a test-only
+    /// item near its top (`core/snapshot_tool.rs`, `core/person.rs`, `core/printing.rs` among them) a renderer opened after it, never given the tab's set,
+    /// went unseen. Seeded after an early test-only static: it's counted, and the test module's own isn't.
+    #[test]
+    fn the_renderer_scan_reads_past_an_early_test_item() {
+        let source = "#[cfg(test)]\nstatic SEAM: u8 = 0;\nfn sink() {\n    let doc = DocRenderer::new(path);\n    // DocRenderer::new( in a comment\n}\n#[cfg(test)]\nmod tests {\n    fn t() {\n        DocRenderer::new(x);\n    }\n}\n";
+        assert_eq!(renderers_in(source), (1, 0), "the one after the early test item, not given the set");
+    }
+
     /// **Failure (second review of R4.3, S3): a new way of drawing a tab's pages skips the tab's set**, as the Snapshot tool's did, and copies or shows
     /// a highlight the person took out. Every renderer opened in the app's crates outside tests is in [`RENDERERS`] with what it's for, and one that
     /// draws a tab hands it the set as often as it opens one: a new one fails here until it's said which it is.
@@ -790,18 +816,7 @@ mod tests {
             let mut paths = Vec::new();
             files(&crates.join(krate).join("src"), &mut paths);
             for path in paths {
-                let text = std::fs::read_to_string(&path).unwrap();
-                let code = text.split("#[cfg(test)]").next().unwrap_or_default();
-                let lines = || code.lines().filter(|line| !line.trim_start().starts_with("//"));
-                let opens = lines()
-                    .map(|line| {
-                        ["open_for_text(", "DocRenderer::new(", "DocRenderer::with_file("]
-                            .iter()
-                            .map(|call| line.matches(call).count())
-                            .sum::<usize>()
-                    })
-                    .sum::<usize>();
-                let given = lines().map(|line| line.matches("hidden.draw_for(").count()).sum::<usize>();
+                let (opens, given) = renderers_in(&std::fs::read_to_string(&path).unwrap());
                 if opens > 0 {
                     let name = path.strip_prefix(crates).unwrap().to_string_lossy().replace('\\', "/");
                     found.push((name, opens, given));

@@ -133,6 +133,16 @@ pub(super) fn on_its_own_thread(command: Command, counted: Running, turn: Option
     }
 }
 
+/// **A person's command that never ran, answered as refused** (the phase's closing read, 2026-11-15): one dropped from their lane (refused at its cap,
+/// dropped at a quit's patience, or at the queue's end), or held for a late keep's restore and not taken past a freeze. Its feature marked itself busy as
+/// it was asked (a print being prepared, the snapshot tool copying, a paste's SVG being made, the update menu's mark) and is free again only once the
+/// command's answered, so it's answered here as [`Code::CANCELLED`], which no feature says words for: each feature's own steps after run, and nothing is
+/// said twice, as what the drop is (`words`) has been said by the page already, or isn't said (a freeze, which takes nothing a person does).
+pub(super) fn not_run(parts: &AnswerParts<'_>, command: &Command, words: &str) {
+    let refused = Err(AgentError::new(Code::CANCELLED, words, recto_agent::exit::BUSY));
+    answered(parts, command, Origin::Input, &refused);
+}
+
 /// What the person is told is a command of theirs that ended in a panic, as a refusal: a feature with words of its own for it says those.
 pub const PANICKED: &str = "That couldn't be done.";
 

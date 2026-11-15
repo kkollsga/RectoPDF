@@ -9,6 +9,9 @@ use recto_agent::{Actor, Runs};
 #[cfg(test)]
 mod route_tests;
 
+/// What a command asked past a hand-off's or a quit's freeze is refused with.
+pub(super) const HELD_BACK: &str = "The app is being updated, so this wasn't done.";
+
 /// The session the socket and the app share.
 pub struct AppHost {
     pub engine: Engine,
@@ -20,6 +23,9 @@ pub struct AppHost {
     pub running: AtomicU32,
     /// Those of them anything of which can be in what a quit writes, which a quit waits for ([`super::command_kinds::changes`]).
     pub changing: AtomicU32,
+    /// Those of them an agent's, which a hand-off names as an agent's: counted as they run, not worked out from the person's, which are counted from
+    /// when they're asked, so neither hides the other (the phase's closing read, 2026-11-15).
+    pub agents: AtomicU32,
     /// An update is under way, past the last look: what's written is what comes back, so nothing more is done.
     pub handing_off: AtomicBool,
     /// What a read of the record told the reader, while they've not moved on.
@@ -32,25 +38,49 @@ pub struct AppHost {
 struct Counted<'a> {
     host: &'a AppHost,
     changes: bool,
+    agents: bool,
 }
 
 impl<'a> Counted<'a> {
-    fn start(host: &'a AppHost, changes: bool) -> Self {
+    fn start(host: &'a AppHost, changes: bool, agents: bool) -> Self {
         host.running.fetch_add(1, Ordering::SeqCst);
         if changes {
             host.changing.fetch_add(1, Ordering::SeqCst);
         }
-        Self { host, changes }
+        if agents {
+            host.agents.fetch_add(1, Ordering::SeqCst);
+        }
+        Self { host, changes, agents }
     }
 }
 
 impl Drop for Counted<'_> {
     fn drop(&mut self) {
+        if self.agents {
+            self.host.agents.fetch_sub(1, Ordering::SeqCst);
+        }
         self.host.command_ended(self.changes);
     }
 }
 
 impl AppHost {
+    /// The host, with nothing running, nothing said and no watchers yet.
+    pub(super) fn new(engine: Engine, session: SessionHost<DrawableLoader>, core: Arc<CoreQueue>, qa: Option<Arc<QaBridge>>, saver: Arc<Saver>) -> Self {
+        Self {
+            engine,
+            session,
+            core,
+            qa,
+            saver,
+            running: AtomicU32::new(0),
+            changing: AtomicU32::new(0),
+            agents: AtomicU32::new(0),
+            handing_off: AtomicBool::new(false),
+            notice: Mutex::new(None),
+            watchers: Mutex::new(None),
+        }
+    }
+
     /// **A command run as `origin` says it was asked:** one asked before a freeze whose turn in the person's lane has come goes through it
     /// ([`crate::queue::Origin::held_back_by_a_freeze`]), as on the session thread's queue; anything else asked now is refused past it.
     pub fn run_as(&self, actor: Actor, command: &Command, events: &mut Vec<Event>, origin: crate::queue::Origin) -> Result<Value, AgentError> {
@@ -92,12 +122,9 @@ impl AppHost {
         // Counted first, and then looked: a hand-off that's set this flag and sees no count can't have this one slip past both looks. Past the last look, a change would be lost: what's been written is what comes back.
         let changes = !asks_only && super::command_kinds::changes(command);
         // Let go as this returns, however: a command that panicked was counted running for good.
-        let _counted = (!asks_only).then(|| Counted::start(self, changes));
+        let _counted = (!asks_only).then(|| Counted::start(self, changes, actor.is_agent()));
         if !asks_only && self.handing_off.load(Ordering::SeqCst) && origin.held_back_by_a_freeze() {
-            return Err(
-                AgentError::new(Code::BUSY, "The app is being updated, so this wasn't done.", recto_agent::exit::BUSY)
-                    .then("Try again in a moment, when it's back."),
-            );
+            return Err(AgentError::new(Code::BUSY, HELD_BACK, recto_agent::exit::BUSY).then("Try again in a moment, when it's back."));
         }
         #[cfg(test)]
         self.core.holds.at(command.tag());
