@@ -248,14 +248,6 @@ pub(crate) fn page_hits(text: &str, needle: &str, page: u32, room: usize, is_hid
     (total, hits)
 }
 
-/// Whether a character belongs with the one before it as one letter on screen: a combining mark, a joiner, a variation selector, or an emoji's skin tone. A cut never goes before one.
-fn is_extender(c: char) -> bool {
-    matches!(c,
-        '\u{300}'..='\u{36f}' | '\u{483}'..='\u{489}' | '\u{591}'..='\u{5bd}' | '\u{64b}'..='\u{65f}' | '\u{900}'..='\u{903}' | '\u{93a}'..='\u{94f}'
-        | '\u{1ab0}'..='\u{1aff}' | '\u{1dc0}'..='\u{1dff}' | '\u{200c}' | '\u{200d}' | '\u{20d0}'..='\u{20ff}' | '\u{3099}'..='\u{309a}'
-        | '\u{fe00}'..='\u{fe0f}' | '\u{fe20}'..='\u{fe2f}' | '\u{1f3fb}'..='\u{1f3ff}' | '\u{e0100}'..='\u{e01ef}')
-}
-
 /// The last [`BEFORE`] characters of what's before a hit, on one line, starting on a word.
 fn piece_before(text: &str) -> Box<str> {
     let taken: Vec<char> = text.chars().rev().take(BEFORE + 1).collect();
@@ -291,7 +283,7 @@ fn piece(text: &str, most: usize) -> Box<str> {
 /// **A cut at the start of a piece goes to a word:** `kept` is the characters taken from the end of what's before the hit, and `before` the one just past
 /// its start. If that's a space, or `kept` starts with one, the cut is already between words. Otherwise the part word at the start goes, up to its space
 /// (unless nothing else would be left). With no space to cut at, as in Chinese or Japanese, or one long word, it stays cut at its length, only never
-/// starting inside a letter with its marks, or an emoji with its joiner ([`is_extender`]); a flag's two halves aren't held together.
+/// starting inside a letter with its marks, or an emoji with its joiner ([`recto_core::extends_previous`]); a flag's two halves aren't held together.
 fn start_on_a_word(kept: &mut Vec<char>, before: char) {
     if before.is_whitespace() || kept.first().is_none_or(|first| first.is_whitespace()) {
         return;
@@ -302,7 +294,7 @@ fn start_on_a_word(kept: &mut Vec<char>, before: char) {
         kept.drain(..space);
         return;
     }
-    let inside = kept.iter().take_while(|c| is_extender(**c)).count();
+    let inside = kept.iter().take_while(|c| recto_core::extends_previous(**c)).count();
     kept.drain(..inside);
 }
 
@@ -319,7 +311,7 @@ fn end_on_a_word(kept: &mut Vec<char>, next: char) {
     }
     // Cut with no space: not before an extender, which would be left without its letter.
     let mut next = next;
-    while is_extender(next) {
+    while recto_core::extends_previous(next) {
         let Some(last) = kept.pop() else { break };
         next = last;
     }
@@ -963,26 +955,47 @@ mod tests {
         let found = &hits(&cjk, "needle")[0];
         assert_eq!(found.before.chars().count(), BEFORE + 1, "{found:?}");
         assert_eq!(found.after.chars().count(), AFTER + 1, "{found:?}");
-        // An accent, a joiner: whole at the cut. Here the cap falls on the base letter, so the cut moves back before it.
-        for (unit, what) in [("e\u{301}", "an accent"), ("\u{1f468}\u{200d}\u{1f469}", "a joined emoji")] {
-            for shift in 0..4 {
-                let text = format!("{}needle{}", "z".repeat(shift) + &unit.repeat(40), unit.repeat(100) + &"z".repeat(shift));
+    }
+
+    /// Failure: a row's piece starts or ends on a mark, cut from the letter it goes with (an accent alone at the start of a piece, or the letter at its end
+    /// with its accent left out). The cap's cut falls on every position of a cluster, at both ends: the padding sits against the needle, so each round moves
+    /// where the 24 characters before it and the 64 after it end, for clusters of two and three characters and for letters of several scripts.
+    #[test]
+    fn a_row_never_cuts_a_letter_from_its_marks() {
+        let ends = |row: &Hit, text: &str| {
+            let (before, after) = (row.before.trim_start_matches('\u{2026}'), row.after.trim_end_matches('\u{2026}'));
+            let start = row.start as usize - before.chars().count();
+            let end = row.end as usize + after.chars().count();
+            (
+                before.chars().next(),
+                text.chars().nth(start.wrapping_sub(1)).filter(|_| start > 0),
+                text.chars().nth(end),
+                after.chars().last(),
+            )
+        };
+        for (unit, what) in [
+            ("e\u{301}", "an accent"),
+            ("e\u{301}\u{323}", "two accents"),
+            ("\u{1f44d}\u{1f3fd}", "an emoji with its skin tone"),
+            ("\u{e01}\u{e34}\u{e49}", "Thai with its vowel and tone mark"),
+        ] {
+            let width = unit.chars().count();
+            for shift in 0..=width {
+                let pad = "z".repeat(shift);
+                let text = format!("{}{pad}needle{pad}{}", unit.repeat(40), unit.repeat(100));
                 let row = &hits(&text, "needle")[0];
-                for piece in [&row.before, &row.after] {
-                    let inner = piece.trim_matches('\u{2026}');
-                    let first = inner.chars().next();
-                    assert!(
-                        first.is_none_or(|c| !super::is_extender(c)),
-                        "{what}, shift {shift}: starts inside a cluster: {piece:?}"
-                    );
-                }
-                let ends = row.after.trim_end_matches('\u{2026}').chars().last();
-                let leftover = text.chars().nth(row.end as usize + row.after.trim_end_matches('\u{2026}').chars().count());
+                let (first, before_it, after_it, last) = ends(row, &text);
                 assert!(
-                    leftover.is_none_or(|c| !super::is_extender(c)) || ends.is_none(),
-                    "{what}, shift {shift}: ends inside a cluster: {:?}",
+                    first.is_some_and(|c| !recto_core::extends_previous(c)),
+                    "{what}, shift {shift}: the row starts on a mark: {:?}",
+                    row.before
+                );
+                assert!(
+                    after_it.is_some_and(|c| !recto_core::extends_previous(c)) && last.is_some(),
+                    "{what}, shift {shift}: the row ends before a mark: {:?}",
                     row.after
                 );
+                assert!(before_it.is_some(), "{what}, shift {shift}: the cut was made");
             }
         }
     }

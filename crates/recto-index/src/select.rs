@@ -970,12 +970,7 @@ impl PageText {
 }
 
 fn is_word(ch: char) -> bool {
-    ch.is_alphanumeric() || ch == '_' || is_mark(ch)
-}
-
-/// The common combining marks, which aren't letters by themselves and don't end a word.
-fn is_mark(ch: char) -> bool {
-    matches!(ch, '\u{300}'..='\u{36F}' | '\u{483}'..='\u{487}' | '\u{591}'..='\u{5BD}' | '\u{610}'..='\u{61A}' | '\u{64B}'..='\u{65F}' | '\u{900}'..='\u{903}' | '\u{1AB0}'..='\u{1AFF}' | '\u{1DC0}'..='\u{1DFF}' | '\u{20D0}'..='\u{20FF}' | '\u{FE20}'..='\u{FE2F}')
+    ch.is_alphanumeric() || ch == '_' || recto_core::extends_previous(ch)
 }
 
 fn is_ideograph(ch: char) -> bool {
