@@ -59,10 +59,12 @@ on any commit; what only the real app shows (its windows, AppKit) isn't in these
 |---|---|---|---|
 | A page of text, from its sleep file's facts | 0.4 to 1.7 ms | 22.8 to 64.4 ms, median 26.8 | median 32.4 ms |
 | A page of text, no sleep file (from its PDF) | 2.0 to 28.6 ms, median 8.7 | 24.1 to 68.2 ms, median 32.2 | median 37.9 ms |
-| A slow page, from its facts | 0.9 to 1.6 ms | 76.9 to 85.5 ms (one run of five didn't end in the 20 s it was given) | about 115 ms |
+| A slow page, from its facts | 0.9 to 1.6 ms | 76.9 to 85.5 ms (four runs: the fifth was the harness's, below) | about 115 ms |
 | A slow page, no sleep file | 3.3 to 28.8 ms, median 10.5 | 46.3 to 84.0 ms, median 79.7 | median 114.3 ms |
 
 **The pass after a launch, over the folder at its cap** (a quiet run of the real app, debug build, `qa state`'s `record.sleep.older_files`; 4,000 files of 65 KB as 0.1.0 wrote them, 256 MiB, just written so likely in the system's cache; three runs, load 30 to 47): all 4,000 removed in 0.22 to 0.44 s, reading 16.4 MB (4 KiB each), on its own thread after the state was taken in.
+
+**The "wake that never ended" was a lost record, not a stalled wake** (one run in that table, one of 20 in the review's, about one in 30 here on the PDF route, which `main` shares). A wake is noted (`Reader::note_wake`, on the session thread) and its tab shown (`activate`) in two steps, each under the page view's lock; a frame the host applied between them (the UI thread's `applied`) found the hot tab wasn't the waking one and threw the wake away, so `last_wake` stayed the tab before's and nothing recorded the first frame or sharp. The tab itself was drawn (12 tiles on its layers and settled, in the kept state). Fixed: a wake noted and not yet shown is kept through an apply (`a_frame_applied_between_a_wakes_note_and_its_tab_shown_keeps_the_wake`, failing first). The harness also waits now for the page view to let go of a tab put to sleep before it taps it, which was a first guess at the cause and not it. Every route then ran 20 times clean (in the hand-back).
 
 Before, a wake from a picture had its first frame at once (0.27 to 0.48 ms, measured on 2026-11-13; this harness run on `main` gave one value of five, 1.1 ms, as it missed `main`'s wake report in the other four, so it isn't a before figure); now the first frame with
 something drawn is the first tile, about 25 ms for a page of text here and 90 to 100 ms in the real app as measured before (a new worker's first tile:

@@ -180,3 +180,42 @@ fn why_a_window_cant_go_up_reads_back_as_itself() {
         assert_eq!(NotShowable::from_code(NotShowable::code(Some(reason))), Some(reason));
     }
 }
+
+/// Failure (the "wake that never ended" of 2026-11-15, 1 in about 30 on the PDF route): a wake is noted on the session thread and its tab activated in a
+/// second step, each under the page view's lock; the host applying a frame in between (the UI thread's `applied`) found the hot tab wasn't the waking one
+/// and threw the wake away, so `last_wake` stayed the tab before's and nothing recorded the tab's first frame or sharp, though it was drawn. A wake noted
+/// and not yet activated is kept through an apply, and recorded once its tab is shown.
+#[test]
+fn a_frame_applied_between_a_wakes_note_and_its_tab_shown_keeps_the_wake() {
+    let mut reader = reader_on(5);
+    settle(&mut reader);
+    reader.note_wake(2, Instant::now());
+    // The host applies a frame of tab 1 before tab 2 is activated.
+    reader.host.unapplied = true;
+    reader.applied();
+    reader.activate(
+        2,
+        5,
+        0,
+        PageMap {
+            files: vec![PathBuf::from("/d/2.pdf")],
+            ..map()
+        },
+        &[1],
+        None,
+        Spread::Single,
+    );
+    reader.host.take_ops();
+    let scrolled = reader.place.jump.map_or(0, std::num::NonZeroU64::get);
+    reader.set_viewport(Viewport {
+        scrolled_to: scrolled,
+        ..view(0.0)
+    });
+    settle(&mut reader);
+    reader.host.take_ops();
+    reader.host.unapplied = true;
+    reader.applied();
+    let wake = reader.wake.last_wake().expect("a wake");
+    assert_eq!(wake.tab, 2, "the wake of the tab shown, not the one before: {wake:?}");
+    assert!(wake.first_frame_us.is_some() && wake.sharp_us.is_some(), "{wake:?}");
+}

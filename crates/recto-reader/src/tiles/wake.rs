@@ -286,13 +286,17 @@ impl Reader {
     /// Goes through how a wake's going, each time the host has applied something.
     pub(super) fn track_wake(&mut self) {
         let Some((began, mut report)) = self.wake.waking else { return };
-        if self.docs.hot != Some(report.tab) {
-            self.wake.waking = None;
-            return;
-        }
         // Past this, it's not the wake that's being looked at any more.
         if began.elapsed() > WAKE_FOLLOWED_FOR {
             self.wake.finish_wake();
+            return;
+        }
+        if self.docs.hot != Some(report.tab) {
+            // Noted and not yet shown: the note and the showing are two steps, and a frame the host applies between them is the tab before's. Kept, and
+            // looked at once its tab is shown; one never shown is ended by the time above, or replaced by the next note.
+            if report.had != WakeStock::NotLooked {
+                self.wake.waking = None;
+            }
             return;
         }
         let Some(doc) = self.docs.shown() else { return };
