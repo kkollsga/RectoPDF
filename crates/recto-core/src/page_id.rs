@@ -15,13 +15,21 @@
 //!    of the kind-0 entries, in order of first use), looked up in the page's effective `/Resources` `/XObject` (its own, or the nearest ancestor's). A
 //!    record is `u32le(length of the name)`, the name, a kind byte, and for kinds 0, 1 and 3 `u64le(n)` and the SHA-256 of the `n` bytes; then
 //!    `u32le(children)` and a record (of the same shape, without children) for each name a form's own content gives `Do`, looked up in the form's
-//!    `/Resources` `/XObject` (the page's if it has none). Kinds: 0, every filter general, decoded (for a form, its content, whose names are its
-//!    children); 1, a filter not general (an image codec), as stored; 2, nothing by that name, or it isn't a stream or can't be read (no length or
-//!    hash, and no children); 3, general but it didn't decode, as stored; 4, **an image past its cap** (`/Subtype /Image`, whose bytes as kind 0, 1
-//!    or 3 would hash more than [`Caps::xobject_bytes`], 16 MiB): the byte 4, the kind it would have been, `u64le(n)` and the SHA-256 of exactly its
-//!    first `n` = 16 MiB (decoded or as stored, as that kind is), then `u64le` of its stream's stored length, then its `/Width`, `/Height` and
-//!    `/BitsPerComponent`, its `/ColorSpace`'s name and its `/Filter` names as written, each framed (`image_says`). Only a form drawn by the page's
-//!    content has children; one drawn by a form is a record with none.
+//!    `/Resources` `/XObject` (the page's if the form has no `/Resources`; a `/Resources` without `/XObject` is a lookup in nothing, never the
+//!    page's). Kinds: 0, every filter general, decoded (for a form, its content, whose names are its children); 1, a filter not general (an image
+//!    codec), as stored; 2, nothing by that name, or it isn't a stream or can't be read (no length or hash, and no children); 3, general but it didn't
+//!    decode, as stored, and for a form no children (what its content's first part drew before the error is taken back); 4, **an image past its
+//!    cap** (`/Subtype /Image`, whose bytes as kind 0, 1 or 3 would hash more than [`Caps::xobject_bytes`], 16 MiB): the byte 4, the kind it would
+//!    have been, `u64le(n)` and the SHA-256 of exactly its first `n` = 16 MiB (decoded or as stored, as that kind is), then `u64le` of its stream's
+//!    stored length, then its `/Width`, `/Height` and `/BitsPerComponent`, its `/ColorSpace`'s name and its `/Filter` names as written, each framed
+//!    (`image_says`). Only a form drawn by the page's content has children; one drawn by a form is a record with none.
+//!
+//!    **Said exactly, where code alone said it before** (second review): a stream's *stored length* is the checked length of its bytes as lopdf's
+//!    reader frames the stream in the file (`encoded_len`; a stream it can't frame safely has none and is kind 2), never `/Length` as written; an
+//!    image's `/Width`, `/Height`, `/BitsPerComponent`, `/ColorSpace` and `/Filter` are taken with references resolved (an indirect `/Width 7 0 R`
+//!    is its integer); a name is looked up by the bytes the scan took ([`scan`]: a `#xx` is its byte; a lone `#` is kept as it is, where lopdf ended
+//!    the resource's key, so it finds nothing: kind 2); and an image that needs its 16 MiB when the page has less than that left of its 64 MiB is
+//!    the page's cap reached, not a kind 4.
 //!
 //!    **The honest limit of kind 4** (coordinator, 2026-11-15): two images equal in their first 16 MiB, their stored length and what they say of
 //!    themselves, and different after, hash alike. Big scans often share their first megabytes (a white margin, a header), which is why the stored

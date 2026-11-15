@@ -833,6 +833,31 @@ fn golden_pages() -> Vec<(&'static str, Vec<u8>)> {
     margin.truncate(16 << 20);
     margin.extend(std::iter::repeat_n(7u8, 4096));
     pages.push(("an image past its cap, another tail", page_with_image(&margin, 4096, true)));
+    // Added after the second review: a form whose content fails after drawing (kind 3, no children), names with `#` (a `#xx` is its byte, a lone `#`
+    // finds nothing), and an inline image whose data holds what looks like a `Do`.
+    pages.push(("a form that fails to decode", page_with_a_failing_form().0));
+    pages.push((
+        "names with #",
+        one_page(
+            "",
+            "/XObject << /Im1 5 0 R >>",
+            "4 0 R",
+            vec![stream("", b"/Im#31 Do /B#2 Do"), stream(JPEG_DICT, IMAGE)],
+        ),
+    ));
+    pages.push((
+        "an inline image",
+        one_page(
+            "",
+            "/XObject << /Im1 5 0 R /Im2 6 0 R >>",
+            "4 0 R",
+            vec![
+                stream("", b"q BI /W 2 /H 1 /CS /G /BPC 8 ID \x00/Im1 Do EI\xff EI Q /Im2 Do"),
+                stream(JPEG_DICT, IMAGE),
+                stream(JPEG_DICT, b"\xff\xd8 the second \xff\xd9"),
+            ],
+        ),
+    ));
     pages
 }
 
@@ -863,6 +888,12 @@ fn golden_vectors_of_recto_page_1() {
             "an image past its cap, another tail",
             "b5f1f59a255c1c1edadc116be2506dcc9c0d2116c7a70bdde5df81639ebc5695",
         ),
+        (
+            "a form that fails to decode",
+            "fb7c753b33290acdcb3e39badac94cbee61542a3b407d511f472f68d942013bc",
+        ),
+        ("names with #", "e41dc5de3b9a58e4a9db446a05e0143f7356482e301ac7dfdec37262eb5e98b5"),
+        ("an inline image", "919925aaeace7faf744205570b8319de9733839a2ac098934e560fc7b12860f1"),
     ];
     let pages = golden_pages();
     let got: Vec<(&str, String)> = pages.iter().map(|(what, bytes)| (*what, hex(&digest_of(bytes)))).collect();
