@@ -1643,12 +1643,37 @@ mod tests {
         .unwrap();
         let for_now = crate::index::ReadOnlyCorpus(root.clone(), Some(recto_platform::find_key::FindKey::in_memory_for_now().unwrap()));
         let (_, state) = crate::index::file_index(&for_now, &path, true);
-        assert_eq!(state, crate::index::FileIndex::Refused("lasting_key_out_of_reach".to_string()));
-        assert!(state.scan_note(true).contains("lasting key"), "{}", state.scan_note(true));
+        assert_eq!(state, crate::index::FileIndex::NotNow);
         assert!(
             recto_index::corpus::ReadyCorpus::open(&lasting, &root, key).is_ok_and(|corpus| corpus.is_some()),
             "the lasting corpus was touched"
         );
+        // Told as a file that couldn't be read just now is: nothing an agent gets tells the two apart (the second review's item 7).
+        let other = folder.join("other.pdf");
+        std::fs::write(&other, b"another file").unwrap();
+        let failing = FailsNow(root.clone(), recto_platform::find_key::FindKey::in_memory_for_now().unwrap());
+        let (_, unread) = crate::index::file_index(&failing, &other, true);
+        assert_eq!(unread, state, "a file that couldn't be read just now and the lasting key out of reach read differently");
+        assert_eq!((unread.word(), unread.scan_note(true)), (state.word(), state.scan_note(true)));
+    }
+
+    /// An indexer whose build of every file just failed for a cause of the moment.
+    struct FailsNow(std::path::PathBuf, recto_platform::find_key::FindKey);
+
+    impl Indexing for FailsNow {
+        fn root(&self) -> &std::path::Path {
+            &self.0
+        }
+        fn find_key(&self) -> Option<&recto_platform::find_key::FindKey> {
+            Some(&self.1)
+        }
+        fn want(&self, _path: &std::path::Path, _key: CorpusKey) {}
+        fn job(&self, _key: CorpusKey) -> crate::index::JobState {
+            crate::index::JobState::Failed("couldnt_read".to_string())
+        }
+        fn load(&self) -> (u32, u32) {
+            (0, 0)
+        }
     }
 
     /// Gives the key to its first ask and none after, as a search whose look at the index had a key and whose read of it then had none.

@@ -286,7 +286,8 @@ impl Shared {
                 path: job.path.clone(),
                 corpus: job.key.short(),
                 state,
-                code: report["code"].clone(),
+                // A cause of the moment is `not_now` to anyone hearing this, whichever it was: see `told_to_agents`.
+                code: report["code"].as_str().map_or_else(|| report["code"].clone(), |code| json!(recto_agent::index::told_to_agents(code))),
                 pages: report["pages"].clone(),
             });
         }
