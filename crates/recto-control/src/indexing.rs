@@ -87,6 +87,8 @@ impl std::fmt::Debug for Indexer {
 
 impl Indexer {
     pub fn new(root: &Path, key_plan: Plan) -> Self {
+        // This process holds the Find key once an index is used, and pages' text: a crash leaves no image of its memory.
+        recto_platform::find_key::forbid_core_dumps();
         let indexer = Self::with_limits(
             root,
             Box::new(HelperProcess {
@@ -863,6 +865,14 @@ mod tests {
         indexer.shut_down();
         assert!(paths.agent.is_dir(), "another live session's folder was set aside at this one's end");
         drop(theirs);
+    }
+
+    /// Failure (the second review's item 8, 2026-11-15): a process that holds the Find key outside the helper, the app or `recto` with an index, can still leave an image of its memory, the key and pages' text in it, if a crash comes after someone raised the core limit. Making the session's indexer lowers it to nothing, for good.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_process_with_an_index_leaves_no_core() {
+        let _indexer = Indexer::new(Path::new("/nowhere"), Plan::Memory);
+        assert_eq!(recto_platform::find_key::core_limit(), Some((0, 0)), "a process with an index may still write a core");
     }
 
     /// Failure: `stop` finds a build still queued and starts it after the session has gone, or asking afterwards starts one.

@@ -243,7 +243,7 @@ pub fn read_from_stdin() -> io::Result<FindKey> {
     FindKey::read_from(&mut io::stdin())
 }
 
-/// For a process that holds the key or pages' text: a crash leaves no image of its memory. No caller yet: the indexer calls it once the Find text is sealed (slice 2). macOS writes none unless the limit's raised, and this lowers it for good whatever the shell set. A crash report still carries registers and the stack's addresses, not memory.
+/// For a process that holds the key or pages' text: a crash leaves no image of its memory. Called by the indexer helper first thing, and by `recto_control::indexing::Indexer::new`, so by the app and by `recto` on a state with an index, before either can take the key. macOS writes none unless the limit's raised, and this lowers it for good whatever the shell set: the cost is that someone who raised `ulimit -c` to debug the app gets no core file from it. The crash report macOS writes (`ReportCrash`, an `.ips`) doesn't depend on the limit, so the app keeps those; it carries registers and the stack's addresses, not memory.
 pub fn forbid_core_dumps() {
     #[cfg(target_os = "macos")]
     {
@@ -251,6 +251,15 @@ pub fn forbid_core_dumps() {
         // SAFETY: a plain call with a value on the stack.
         let _ = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &none) };
     }
+}
+
+/// The core limit now, soft and hard, for a test that [`forbid_core_dumps`] was called. `None` where it can't be read.
+#[cfg(any(test, feature = "test-seams"))]
+#[must_use]
+pub fn core_limit() -> Option<(u64, u64)> {
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: a plain call with a value on the stack.
+    (unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut limit) } == 0).then_some((limit.rlim_cur, limit.rlim_max))
 }
 
 impl Drop for FindKey {

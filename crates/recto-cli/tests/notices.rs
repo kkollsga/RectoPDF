@@ -166,6 +166,19 @@ fn recto_carries_no_keychain_code() {
     assert!(found.is_empty(), "recto reaches the Keychain: {found:?}");
 }
 
+/// Failure (the second review's item 8, 2026-11-15): the headings helper, which reads a hostile PDF and never holds the Find key, carries the code that seals and opens the Find text, so a bug there is a way to it. The seal's own constants (its header's mark and its key's derivation's label, from `recto_index::seal`) are in no byte of it; they are in the indexer's, so the look isn't at nothing.
+#[test]
+fn the_headings_helper_carries_no_find_text_cipher() {
+    let Some(bundle) = built_bundle() else { return };
+    let seal_marks: [&[u8]; 2] = [b"RECTOSL1", b"recto find text v4"];
+    let carries = |name: &str| {
+        let bytes = std::fs::read(bundle.join("MacOS").join(name)).unwrap_or_else(|error| panic!("{name}: {error}"));
+        seal_marks.iter().filter(|mark| bytes.windows(mark.len()).any(|window| window == **mark)).count()
+    };
+    assert_eq!(carries("recto-indexer"), seal_marks.len(), "the indexer doesn't carry the seal's marks, so the look sees nothing");
+    assert_eq!(carries("recto-headings"), 0, "the headings helper carries the Find text's seal");
+}
+
 /// Failure: a program in the built app other than the app's own carries the code that reaches the Keychain: `recto`, the indexer, the headings helper, the updater, or the renderer's helper; or the app's own doesn't, so the look sees nothing. Run where the app has just been built (`check.sh` asks for it with `RECTO_REQUIRE_APP`, and then a missing app fails).
 #[test]
 fn only_the_apps_own_program_in_the_bundle_reaches_the_keychain() {
