@@ -688,10 +688,15 @@ mod tests {
     /// Failure: saying where the Find key stands, as `qa state` and `index status` do on every read, takes the key, so a look at state reaches the Keychain, or does it on whatever thread asked, the UI's included. It's said from the plan alone until something that may wait has taken it.
     #[test]
     fn the_key_is_said_without_being_taken() {
-        fn never() -> Option<(FindKey, Option<&'static str>)> {
+        fn never(_team: &'static str) -> Option<(FindKey, Option<&'static str>)> {
             panic!("saying where the key stands took it")
         }
-        let indexer = Indexer::with_limits(Path::new("/nowhere"), Box::new(Fails), BuildLimits::default(), Plan::AppKeychain(never));
+        let indexer = Indexer::with_limits(
+            Path::new("/nowhere"),
+            Box::new(Fails),
+            BuildLimits::default(),
+            Plan::AppKeychain(crate::find_keys::AppKey::standing_in(never)),
+        );
         assert_eq!(indexer.find_key_report(), json!({ "plan": "keychain", "source": null, "why": null }));
         assert_eq!(Indexing::find_key_report(&indexer), indexer.find_key_report(), "index status says the same");
         let memory = Indexer::with_runner(Path::new("/nowhere"), Box::new(Fails));
