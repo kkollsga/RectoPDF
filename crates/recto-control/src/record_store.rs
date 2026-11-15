@@ -655,7 +655,7 @@ impl RecordStore {
                     progress.journal_bytes.remove(&name);
                     page_ids::remove(&folder, &name, &mut progress);
                     if let Some(closed) = closed_journal_name(&name) {
-                        let _ = std::fs::rename(&path, folder.join(closed));
+                        let _ = close_journal(&path, &folder.join(closed));
                     }
                     closed_one = true;
                 } else {
@@ -707,7 +707,7 @@ impl RecordStore {
                 progress.journal_bytes.remove(&name);
                 page_ids::remove(&folder, &name, &mut progress);
                 if let Some(closed) = closed_journal_name(&name) {
-                    let _ = std::fs::rename(&path, folder.join(closed));
+                    let _ = close_journal(&path, &folder.join(closed));
                 }
                 closed_one = true;
             } else {
@@ -970,10 +970,7 @@ impl RecordStore {
         // Its age is its own, which is what the 30 days go by, and it's this user's alone. Synced again, as both are changes since the copy was synced.
         let made = (|| -> std::io::Result<FileStamp> {
             local::make_private_file(&kept)?;
-            let file = OpenOptions::new().write(true).open(&kept)?;
-            file.set_modified(std::time::SystemTime::now())?;
-            file.sync_all()?;
-            drop(file);
+            age_starts_now(&kept)?;
             local::sync_folder_of(&kept)?;
             file_stamp(&kept)
         })();
@@ -1117,6 +1114,22 @@ fn remove_temp_files(dir: &Path) {
             }
         }
     }
+}
+
+/// **This file's age starts now,** which is what its 30 days go by: a copy or a rename keeps the original's time, and the prune ages by it. Synced.
+/// A failure leaves the file as it is; the caller goes on (an old time costs the file its days, not its place).
+fn age_starts_now(path: &Path) -> std::io::Result<()> {
+    let file = OpenOptions::new().write(true).open(path)?;
+    file.set_modified(std::time::SystemTime::now())?;
+    file.sync_all()
+}
+
+/// A journal given its closed name, and its 30 days counted from now ([`age_starts_now`]): its history is kept 30 days from the close, not from its last
+/// edit. A failure to set the time keeps the file, and the close goes on.
+fn close_journal(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::rename(from, to)?;
+    let _ = age_starts_now(to);
+    Ok(())
 }
 
 /// Closed PDFs' histories and the files kept for histories, for 30 days within 1 GiB, oldest out first. A look at their sizes and times, with nothing read, when something's running anyway: no timer. Only a launch knows which kept files open tabs need, so only it says, and only it lets any go. Kept files in use count towards the limit. One that goes while a closed history needs it costs that history those steps, and it says so when it's taken up.
@@ -1306,7 +1319,7 @@ fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress
             if let Some((carried, _, _)) = carried_over(&folder, &parsed, now, &about, progress) {
                 progress.journal_bytes.remove(&carried);
                 if let Some(closed) = closed_journal_name(&carried) {
-                    let _ = std::fs::rename(folder.join(&carried), folder.join(closed));
+                    let _ = close_journal(&folder.join(&carried), &folder.join(closed));
                 }
             }
             if carried_name_differs(&path, &about, now) {
@@ -1318,7 +1331,7 @@ fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress
         if !restored.edits.is_edited() {
             // Nothing unsaved and no tab: a closed PDF's, which a crash caught before it could say so.
             if let Some(closed) = closed_journal_name(&name) {
-                let _ = std::fs::rename(&path, folder.join(closed));
+                let _ = close_journal(&path, &folder.join(closed));
             }
             continue;
         }
@@ -2538,6 +2551,44 @@ mod tests {
             "kept for when it's opened, under a name no launch reads"
         );
         assert!(record::validate_record(&restored.record).is_ok());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Failure: a closed PDF's history is aged from its journal's last write, as a rename keeps the time, so history last written over 30 days ago is
+    /// removed by the first prune after the PDF is closed, though it promises 30 days from the close (PRIVACY.md). A journal a crash left for a PDF with nothing
+    /// unsaved, written long ago, is closed by the next launch: the prune that follows leaves it, and its age is from the close.
+    #[test]
+    fn a_closed_journals_age_starts_when_it_is_closed() {
+        let (root, paths) = state();
+        let store = RecordStore::open(&paths, Flavor::App);
+        store.write_record(&sample(1), &PlaceDelta::default(), false).unwrap();
+        let name = record::journal_file_name(None, Path::new("/d/closed.pdf"), None);
+        let header = JournalHeader::new(8, Path::new("/d/closed.pdf"), None, 5, 0);
+        let work = JournalWork {
+            pages: Vec::new(),
+            retired: Vec::new(),
+            appends: vec![recto_session::JournalAppend {
+                tab: TabId(8),
+                name: name.clone(),
+                header,
+                through: 2,
+                ops: vec![JournalOp::Rotate(0, 1, 1, record::AuthorName::Agent), JournalOp::Undo],
+                closing: false,
+                base: None,
+                replaces: None,
+            }],
+        };
+        assert!(store.write_journals(&work, false).1.is_none());
+        drop(store);
+        let folder = root.join("session").join(JOURNALS);
+        let long_ago = std::time::SystemTime::now() - Duration::from_secs((CLOSED_JOURNAL_DAYS + 20) * 86_400);
+        OpenOptions::new().write(true).open(folder.join(&name)).unwrap().set_modified(long_ago).unwrap();
+        let store = RecordStore::open(&paths, Flavor::App);
+        let Loaded::Restored(_) = store.load() else { panic!() };
+        let closed = folder.join(record::closed_journal_name(&name).unwrap());
+        assert!(closed.exists(), "closed by the launch");
+        prune_history(&folder, None);
+        assert!(closed.exists(), "30 days from the close, not from the last write");
         std::fs::remove_dir_all(&root).unwrap();
     }
 
