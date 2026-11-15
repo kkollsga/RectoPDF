@@ -34,7 +34,7 @@ impl<L: DocLoader> Session<L> {
             toc_open = tab.toc_open;
             place = self.pages().place_words(tab.id, tab.page);
             if tab.toc_open
-                && let Some(toc) = self.warm.toc(tab.id)
+                && let Some(toc) = file_contents(self, tab)
             {
                 let view = self.generated.view(tab.id);
                 let note = contents_note(tab.contents_verdict, view, tab.generated_contents, toc.entries().len());
@@ -136,10 +136,17 @@ impl<L: DocLoader> Session<L> {
     }
 }
 
+/// **A tab's own file's contents, where they're the tab's:** what was read of the file, unless its pages are withheld ([`EditsFit::shows_own_pages`]:
+/// the file is known to be another than the edits are about, so its outline's pages aren't the list's, and the person would see what an agent's
+/// `contents` is refused; review S2). Then the sidebar has no rows of it and offers no generated ones, a fold finds no entry, and no band is set.
+fn file_contents<'s, L: DocLoader>(session: &'s Session<L>, tab: &TabRecord) -> Option<&'s Arc<Toc>> {
+    session.warm.toc(tab.id).filter(|_| session.notices().fit_of(tab).shows_own_pages())
+}
+
 /// The contents the sidebar shows for a tab in hand: its generated ones if they're chosen and ready, or its own. A tab in hand, so a walk over every tab
 /// needn't look each up again.
 fn shown_contents_of<L: DocLoader>(session: &Session<L>, tab: &TabRecord) -> Option<Arc<Toc>> {
-    let own = session.warm.toc(tab.id)?;
+    let own = file_contents(session, tab)?;
     Some(match (tab.generated_contents, session.generated.view(tab.id)) {
         (true, Some(GeneratedView::Ready(generated))) => Arc::clone(generated),
         _ => Arc::clone(own),

@@ -69,8 +69,8 @@ impl<L: DocLoader> Session<L> {
         }
         self.sleeper().touch(id);
         let tab = self.tabs.tab(id).ok_or(SessionError::NoSuchTab)?;
-        if tab.renderer_only {
-            return Err(SessionError::RendererOnly);
+        if let Some(refused) = edit_refused(&self.notices(), tab) {
+            return Err(refused);
         }
         let page_count = tab.page_count;
         // Its list is 8 bytes a page, so a file or a record claiming billions has to be stopped here.
@@ -125,7 +125,7 @@ impl<L: DocLoader> Session<L> {
         // Edits that didn't fit their file, undone or discarded back to nothing unsaved: what's left is history about another version, which redo mustn't bring
         // back, so it goes, and the tab is the file as last read, said once, as only history is when its file's found changed (`compare_read_with_edits`).
         // Not for edits whose version is only unknown: their history is about the file they read, whichever version that was.
-        if !fit.fits() && fit != EditsFit::VersionUnknown && !self.lists.is_edited(id) {
+        if fit.file_known_other() && !self.lists.is_edited(id) {
             self.let_go_of_list(id);
             let own = self.tabs.tab(id).and_then(|tab| tab.file.stamp);
             let now = self.tabs.path_of(id).and_then(|path| file_stamp(&path).ok());
@@ -322,11 +322,11 @@ impl<L: DocLoader> Session<L> {
         self.step_back_or_on(id, by, PageEdits::try_undo)
     }
 
-    /// Whether a tab's pages can be edited now: it's there, more than the renderer can read its file, and its edits can be read. What greys out the panel's Rotate. Cheap: no list is woken for it.
+    /// Whether a tab's pages can be edited now: it's there, nothing refuses an edit of it (`edit_refused`: more than the renderer reads its file, and its edits aren't about a file known to be another), and its edits can be read. What greys out the panel's Rotate. Cheap: no list is woken for it.
     pub fn can_edit_pages(&self, id: TabId) -> bool {
         self.tabs
             .tab(id)
-            .is_some_and(|tab| !tab.renderer_only && !matches!(tab.file.notice(), Some(FileNotice::EditsUnreadable)))
+            .is_some_and(|tab| edit_refused(&self.notices(), tab).is_none() && !matches!(tab.file.notice(), Some(FileNotice::EditsUnreadable)))
     }
 
     /// The panel's Rotate, by the owner. Outside edit mode it turns every page together, as one step that one undo takes back; in edit mode, the page being read. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment). Usefull when there is a scan issue or similar, for a quick fix."
@@ -384,4 +384,15 @@ impl<L: DocLoader> Session<L> {
     pub fn discard_edits(&mut self, id: TabId) {
         self.clear_history(id, ClearReason::Discard);
     }
+}
+
+/// **Why a tab takes no new edit, whoever would make it,** or nothing: what [`Session::edit_pages_as`] refuses by and what [`Session::can_edit_pages`] greys
+/// the controls by, so a control is never offered that the edit would refuse (review F3). Only the renderer reads its file, so its pages can't be
+/// changed; or its edits are about a file known to be another ([`EditsFit::file_known_other`]), and a new one would be about pages it doesn't show.
+fn edit_refused(notices: &crate::fit::Notices<'_>, tab: &TabRecord) -> Option<SessionError> {
+    if tab.renderer_only {
+        return Some(SessionError::RendererOnly);
+    }
+    let fit = notices.fit_of(tab);
+    fit.file_known_other().then_some(SessionError::EditsDontFit(fit))
 }

@@ -161,17 +161,18 @@ fn run(shared: &Shared) {
             all_told(shared, &mut reader);
             reader.work.note_started(&job, None);
         }
+        // The one check every job meets before its file is read, links included.
+        let (refused, own) = refused_now(shared, &job);
         if matches!(job.kind, JobKind::Links) {
-            read_links(shared, &renderers, job);
+            read_links(shared, &renderers, job, refused.is_some(), own);
             continue;
         }
         let mut file_changed = false;
-        let (added_changed, own) = added_file_now(shared, &job);
-        let outcome = if added_changed {
+        let outcome = if let Some(message) = refused {
             match job.kind {
                 JobKind::Text { .. } => Outcome::TextFailed,
                 _ => Outcome::PageFailed {
-                    message: ADDED_FILE_CHANGED.to_string(),
+                    message: message.to_string(),
                     may_pass: false,
                 },
             }
@@ -348,12 +349,13 @@ fn big_workers_rest(renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, 
 }
 
 /// A page's links, read from the file's structure, here and with no worker.
-fn read_links(shared: &Shared, renderers: &HashMap<PathBuf, OpenDoc>, job: Job) {
+fn read_links(shared: &Shared, renderers: &HashMap<PathBuf, OpenDoc>, job: Job, refused: bool, own: bool) {
     // Read from the file's structure, here and with no worker. Only a file a worker already has open and answering, so a disk gone to sleep holds this thread no longer than a draw would: a page that isn't drawn yet has its links read when it is.
     // Through the renderer's own open file and its password, so the links are of the version being drawn, a protected file's too. A file seen replaced and not taken up yet offers none: they'd be the new version's over the old pages.
-    let own = lock(&shared.reader).docs.is_own_file(job.tab, &job.file);
+    // A page [`refused_now`] refuses (the tab's own pages withheld, or an added PDF changed) offers none either: they'd be of a version its page isn't.
     let links = renderers
         .get(&job.file)
+        .filter(|_| !refused)
         .filter(|open| !open.replaced && !open.doc.file_seen_changed() && open.serves(job.tab, own))
         .and_then(|open| {
             open.doc.read_structure(|file, password| {
@@ -528,16 +530,24 @@ fn added_needs_password(job: &Job) -> Outcome {
     }
 }
 
-/// Whether the job's file is an added PDF that's changed since its pages were added, and whether it's the tab's own file. **An added PDF that's changed
-/// isn't drawn from** (the saved point's review): a stat, before each job, since drawing goes by path.
-fn added_file_now(shared: &Shared, job: &Job) -> (bool, bool) {
-    let (expected, own) = {
+/// **Why a job's page isn't drawn from its file, if it isn't,** and whether the file is the tab's own: the tab's own pages withheld while its unsaved
+/// edits don't fit the file (`tiles/withheld.rs`), or an added PDF that's changed since its pages were added (the saved point's review: a stat, before
+/// each job, since drawing goes by path). Either way the page says why and isn't drawn.
+fn refused_now(shared: &Shared, job: &Job) -> (Option<&'static str>, bool) {
+    let (expected, own, withheld) = {
         let reader = lock(&shared.reader);
-        (reader.docs.expected_stamp(job.tab, &job.file), reader.docs.is_own_file(job.tab, &job.file))
+        (
+            reader.docs.expected_stamp(job.tab, &job.file),
+            reader.docs.is_own_file(job.tab, &job.file),
+            reader.docs.withholds(job.tab, &job.file),
+        )
     };
+    if withheld {
+        return (Some(crate::tiles::WITHHELD_WORDS), own);
+    }
     let changed =
         expected.is_some_and(|expected| !recto_platform::file_stamp(&job.file).is_ok_and(|now| now.same_contents(expected) && now.inode == expected.inode));
-    (changed, own)
+    (changed.then_some(ADDED_FILE_CHANGED), own)
 }
 
 /// What a job for a PDF added to the tab came to: a want of a password is the page's, never its document's ([`added_needs_password`]).

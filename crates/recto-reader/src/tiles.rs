@@ -28,6 +28,7 @@ mod refresh;
 mod report;
 mod scratch;
 mod wake;
+mod withheld;
 mod zoom;
 
 #[cfg(any(test, feature = "qa"))]
@@ -49,6 +50,7 @@ use pointer::Pointer;
 use scratch::Scratch;
 use wake::Waking;
 pub use wake::{NotShowable, SleepMaterial, SleepView, WakeEnd, WakeReport, WakeStock};
+pub(crate) use withheld::{WORDS as WITHHELD_WORDS, set as withhold_own_pages};
 
 pub use zoom::{MAX_ZOOM, MIN_ZOOM, ZOOM_STEP, Zoom, typed_zoom, zoom_after_scroll, zoom_percent};
 

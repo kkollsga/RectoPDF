@@ -609,6 +609,7 @@ Docs::pub(crate) fn hot_tab(&self) -> Option<u32>
 Docs::pub(crate) fn is_own_file(&self, tab: u32, file: &std::path::Path) -> bool
 Docs::pub(crate) fn set_band(&mut self, band: Option<(u32, u16, u16)>)
 Docs::pub(crate) fn shown(&self) -> Option<&DocView>
+Docs::pub(crate) fn withholds(&self, tab: u32, file: &std::path::Path) -> bool
 DrawKind (pub enum, derives Clone, Copy, Debug, PartialEq, Eq)
 Engine (pub struct, derives Clone)
 Engine::pub fn activate(&self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>, spread: crate::layout::Spread)
@@ -745,6 +746,7 @@ Points::pub fn page_seen(&self, page: u32) -> Option<crate::snapshot::PageSeen>
 Points::pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)>
 Points::pub fn page_turns(&self, page: u32) -> u8
 Points::pub fn set_band(&self, band: Option<(u32, u16, u16)>)
+Points::pub fn withhold_own_pages(&self, tab: u32, on: bool)
 Qa (pub struct, derives Clone, Copy) [qa feature only]
 Qa::pub fn at_rest(&self) -> Option<(u64, u64)> [qa feature only]
 Qa::pub fn follow_is_pending(&self) -> bool [qa feature only]
@@ -933,6 +935,7 @@ WorkerFigures::pub fn walled(&self) -> u32
 Zoom (pub enum, derives Clone, Copy, Debug, PartialEq)
 fn (pub(crate)) pub(crate) fn put_hidden(sets: &mut HiddenSets, tab: u32, file: PathBuf, set: Option<Arc<HiddenAnnots>>) -> Vec<u32>
 fn (pub(crate)) pub(crate) fn redraw_own_pages(reader: &mut Reader, tab: u32, file_pages: &[u32])
+fn (pub(crate)) pub(crate) fn set(reader: &mut Reader, tab: u32, on: bool) -> bool
 fn (pub(crate)) pub(crate) fn set_band(reader: &mut Reader, band: Option<(u32, u16, u16)>)
 fn (pub(crate)) pub(crate) fn system_takes_only_when_told() [qa feature only]
 fn (pub(crate)) pub(crate) fn tell(host: &mut HostQueue, docs: &Docs, marks: &TabMarks, paper: PaperKind)

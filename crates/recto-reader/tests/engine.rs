@@ -895,6 +895,121 @@ fn a_page_from_an_added_pdf_that_changed_isnt_drawn() {
     assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1);
 }
 
+/// Failure (the QA pass before 0.1.1): a tab whose unsaved edits were held when its file was replaced kept showing the earlier version's drawn tiles
+/// until a scroll happened to ask for a page, and drew the new file's pages under the held list's numbers, with their text selectable. Withheld: every
+/// tile of it goes at once, nothing more of its own file is drawn or read for the selection, each page says why and the view settles; shown again,
+/// it draws, at the place it was.
+#[test]
+fn a_tabs_own_pages_withheld_are_neither_drawn_nor_selectable_and_come_back_when_shown_again() {
+    let file = TempPdf::new(
+        "held.pdf",
+        &pages(&[Page::new(text_lines(&["Alpha beta gamma delta"])), Page::new(text_lines(&["Second page"]))]),
+    );
+    let (engine, _events) = started(&file, 2);
+    let (x, y, fit) = settled_on_page(&engine, 0);
+    assert!(
+        engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1,
+        "drawn first: {}",
+        engine.report().0
+    );
+    engine.points().withhold_own_pages(1, true);
+    let ops = pump(&engine, HANG);
+    assert!(settles(&engine), "a withheld page is as it'll be: {}", engine.report().0);
+    let report = engine.report().0;
+    assert_eq!(report["pages_withheld"], true, "{report}");
+    assert_eq!(report["tiles"]["attached"], 0, "no tile of it shows: {report}");
+    assert_eq!(report["tiles"]["kept"], 0, "nor is any kept: {report}");
+    assert!(!ops.iter().any(|op| matches!(op, Op::Attach { .. })), "nothing new goes on a page: {ops:?}");
+    assert!(
+        engine.note().is_some_and(|note| note.contains("unsaved edits don't fit")),
+        "the page says why: {:?}",
+        engine.note()
+    );
+    // The person's double-click on a word of it takes nothing: its text isn't read.
+    let mut ops = engine.selection().press(x + 74.0 * fit, y + (792.0 - 720.0 - 4.0) * fit, 2, false);
+    ops.extend(engine.selection().release());
+    engine.applied();
+    ops.extend(pump(&engine, HANG));
+    assert!(
+        !engine.selection().has_any(),
+        "nothing selectable on a withheld page: {}",
+        engine.report().0["selection"]
+    );
+    assert!(highlight_on(&ops, 0).is_none_or(|rects| rects.is_empty()), "{ops:?}");
+    // Shown again: its pages draw, at the place it was.
+    engine.points().withhold_own_pages(1, false);
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
+    let report = engine.report().0;
+    assert_eq!(report["pages_withheld"], false, "{report}");
+    assert!(report["tiles"]["attached"].as_u64().unwrap() >= 1, "drawn again: {report}");
+    assert_eq!(engine.note(), None);
+}
+
+/// Failure (review F2 of `build/shorter-file-pages`): links jobs went around the drawing thread's one check, so a tab whose own pages are withheld would
+/// still offer the links of the file there now over its empty pages, and nothing held it. Withheld, the link under the pointer is none, asked as often
+/// as it likes; shown again, the same point is the link.
+#[test]
+fn a_withheld_tab_offers_no_links() {
+    let file = TempPdf::new("linked.pdf", &recto_testpdf::linked_document());
+    let (engine, _events) = started(&file, 12);
+    let (x, y, fit) = settled_on_page(&engine, 0);
+    // The first link on page 1, in points from its top left.
+    let (link_x, link_y) = (x + 100.0 * fit, y + 120.0 * fit);
+    // Asked as the pointer asks, over and over, for a bounded time: a page's links come a moment after they're first asked for.
+    let asked = |engine: &Engine, within: Duration| {
+        let deadline = Instant::now() + within;
+        loop {
+            let hit = engine.links().at(link_x, link_y);
+            if hit.is_some() || Instant::now() >= deadline {
+                return hit;
+            }
+            pump(engine, Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
+        }
+    };
+    assert!(asked(&engine, HANG).is_some(), "the link is there first");
+    engine.points().withhold_own_pages(1, true);
+    pump(&engine, HANG);
+    // Asked once, its job answered (the only job left once it's settled), and asked again: none.
+    let jobs = |engine: &Engine| engine.report().0["counts"]["jobs"].as_u64().unwrap();
+    let before = jobs(&engine);
+    assert!(engine.links().at(link_x, link_y).is_none(), "not held yet");
+    let deadline = Instant::now() + HANG;
+    while jobs(&engine) == before && Instant::now() < deadline {
+        pump(&engine, Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
+    }
+    assert!(jobs(&engine) > before, "the links were asked for: {}", engine.report().0);
+    assert!(engine.links().at(link_x, link_y).is_none(), "no link of the file over a withheld page");
+    assert!(settles(&engine), "and asking doesn't keep it busy: {}", engine.report().0);
+    engine.points().withhold_own_pages(1, false);
+    pump(&engine, HANG);
+    assert!(asked(&engine, HANG).is_some(), "shown again, the link is there");
+}
+
+/// Failure (review of `build/shorter-file-pages`): a copy on its way when a tab's own pages became withheld was dropped with the selection and said
+/// nothing, so the person waited for a copy that never came. It's told as stopped, in the words a file changing has, and nothing of it is given.
+#[test]
+fn a_copy_on_its_way_when_pages_are_withheld_says_it_stopped() {
+    let file = TempPdf::new("copying.pdf", &pages(&[Page::new(text_lines(&["First"])), Page::new(text_lines(&["Second"]))]));
+    let (engine, _events) = started(&file, 2);
+    settled_on_page(&engine, 0);
+    engine.selection().select_all();
+    pump(&engine, HANG);
+    assert!(engine.selection().has_any());
+    engine.selection().copy(false);
+    engine.points().withhold_own_pages(1, true);
+    pump(&engine, HANG);
+    assert!(!engine.selection().has_any(), "nothing selected on withheld pages");
+    assert!(engine.selection().take_copied().is_none(), "nothing of it given");
+    assert!(
+        engine.selection().notice().is_some_and(|notice| notice.text.contains("copy stopped")),
+        "{:?}",
+        engine.selection().notice()
+    );
+}
+
 /// Failure: a snapshot box dragged from one page across the break onto the next reads the pointer in the next page's coordinates, so the box jumps to near the top of the pressed page, or comes out with the wrong size. The point must be taken onto the pressed page and held to its edge.
 #[test]
 fn a_snapshot_box_dragged_across_a_page_break_stays_on_its_page() {

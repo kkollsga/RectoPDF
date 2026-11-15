@@ -1,4 +1,4 @@
-//! **Points and pages of the tab showing, from the engine's callers:** where a point of the document is on a page and back, how many pages there are and how each is shown. The snapshot tool, the print panel and QA's clicks take it alone. Short locks and some sums.
+//! **Points and pages of the tab showing, from the engine's callers:** where a point of the document is on a page and back, how many pages there are and how each is shown, a tab's own pages withheld or not among it. The snapshot tool, the print panel and QA's clicks take it alone. Short locks and some sums.
 //!
 //! A borrow of the [`Engine`], built inline by [`Engine::points`]: each method takes the page view's lock exactly as the `Engine` method it was until R3.6
 //! did, in the same order with the same locks after it, so the engine's lock map holds as it was.
@@ -74,6 +74,15 @@ impl Points<'_> {
     /// pass; and set with the top of the view already outside it, it wakes the core at once ([`crate::tiles::set_band`]). A short lock.
     pub fn set_band(&self, band: Option<(u32, u16, u16)>) {
         crate::tiles::set_band(&mut lock(&self.engine.shared.reader), band);
+    }
+
+    /// **Whether a tab's own pages are shown at all:** withheld (`on`), or shown again, as the session decides while its unsaved edits don't fit its file
+    /// (`tiles/withheld.rs`). For the tab it names, shown or held warm. Cheap when nothing changes, so the app says it on every pass for the tab it shows.
+    pub fn withhold_own_pages(&self, tab: u32, on: bool) {
+        let mut reader = lock(&self.engine.shared.reader);
+        if crate::tiles::withhold_own_pages(&mut reader, tab, on) {
+            self.engine.after(reader);
+        }
     }
 
     pub fn has_document(&self) -> bool {

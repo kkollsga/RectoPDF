@@ -32,6 +32,40 @@ impl EditsFit {
         self == Self::FileChanged
     }
 
+    /// **The file on disk is known to be another than the edits are about** (the coordinator's decisions of 2026-11-15, from the QA pass before 0.1.1):
+    /// it changed under them, whether or not the version they were made on is known, or their journal names a length it hasn't. **The one rule** for what
+    /// follows from that: the tab's own pages are withheld ([`Self::shows_own_pages`]), no more edits are taken (`Session::edit_pages_as`), and its words
+    /// say both ([`Self::said`]). Not where only the version the edits were made on isn't known (`VersionUnknown`): nothing has been found against the
+    /// file, so the tab shows it and takes edits as before, while Save and an agent's reads stay refused, as for every state that doesn't fit.
+    pub fn file_known_other(self) -> bool {
+        match self {
+            Self::FileChanged | Self::FileChangedVersionUnknown | Self::NotThisFile => true,
+            Self::Fit | Self::VersionUnknown => false,
+        }
+    }
+
+    /// **What a new edit refused is told,** by the one rule ([`Self::file_known_other`]), or nothing where an edit is taken: the one place for these
+    /// words, which the session's error and the agent's refusal both say.
+    pub fn edit_refused_words(self) -> Option<&'static str> {
+        match self {
+            Self::FileChanged => Some("No more edits can be made here: the file changed on disk after its unsaved edits were made."),
+            // An edit can have come after the change was heard and before the read (the dropped-stamp route): only that the file changed is known.
+            Self::FileChangedVersionUnknown => {
+                Some("No more edits can be made here: the file changed on disk, and which version its unsaved edits were made on isn't known.")
+            }
+            Self::NotThisFile => Some("No more edits can be made here: this tab's unsaved edits don't fit its file."),
+            Self::Fit | Self::VersionUnknown => None,
+        }
+    }
+
+    /// **Whether the tab shows its own file's pages** ("nothing of the old file is shown as the new"): not while the file is known to be another
+    /// ([`Self::file_known_other`]), as the list's numbers are about a version or a length the file on disk isn't, so none of its pages is drawn, sized,
+    /// read for the selection or given links, and neither are the edits' highlights; the tab keeps the list's count and place, and its notice says why.
+    /// Pages added from another PDF keep their own rule. Discard, Undo back to nothing unsaved, or the earlier version put back shows them again.
+    pub fn shows_own_pages(self) -> bool {
+        !self.file_known_other()
+    }
+
     /// What the tab says of it, as a code and the words: [`FileNotice::Changed`]'s where the file changed, as that's what happened.
     pub fn said(self) -> Option<NoticeSaid> {
         match self {
@@ -42,7 +76,7 @@ impl EditsFit {
             }),
             Self::NotThisFile => Some(NoticeSaid {
                 code: "edits_dont_fit",
-                message: "This tab's unsaved edits don't fit this file as it is on disk. They're kept, but they can't be saved onto it, here or as a copy. Nothing has been written to the file.",
+                message: "This tab's unsaved edits don't fit this file as it is on disk, so its pages aren't shown and the edits can't be saved onto it, here or as a copy. Discard the edits to see the file as it is now. Nothing has been written to the file.",
             }),
             Self::VersionUnknown => Some(NoticeSaid {
                 code: "edits_version_unknown",
@@ -59,6 +93,10 @@ impl EditsFit {
 pub(crate) fn another_version(own: FileStamp, now: FileStamp) -> bool {
     !own.same_contents(now) || (own.inode != 0 && now.inode != 0 && own.inode != now.inode)
 }
+
+/// What a tab says while a follow of its edits into the new version is being read (the coordinator's words, 2026-11-15, provisional): the pages are
+/// withheld meanwhile, and whether the edits follow or are held isn't known yet.
+const LOOKING: &str = "This file changed on disk. Looking at whether your unsaved edits fit the new version.";
 
 /// What a tab says of its file: a stable code for agents and tests, and plain words with nothing from outside in them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -181,6 +219,13 @@ impl Notices<'_> {
         self.lists.get(id).map(|_| self.tabs.own_stamp(id).filter(|_| self.fit(id).fits()))
     }
 
+    /// **Whether a tab's own pages are withheld** ([`EditsFit::shows_own_pages`]): what the page view is told, and what `tabs` and `where` say. A
+    /// tab with no unsaved edits fits whatever its record says, so it's answered from the lists with no search of the tabs: asked for every tab a
+    /// walk goes over (`where` in `tabs`) and on every publish for the tab shown, it mustn't search them for each (`tests::per_tab_work`).
+    pub fn pages_withheld(&self, id: TabId) -> bool {
+        self.lists.is_edited(id) && !self.fit(id).shows_own_pages()
+    }
+
     /// What a tab says of its file, if anything: that it can't be found first, then that its edits don't fit it, which nothing else may hide, then its notice.
     pub fn said(&self, id: TabId) -> Option<NoticeSaid> {
         self.said_of(self.tabs.tab(id)?)
@@ -188,13 +233,22 @@ impl Notices<'_> {
 
     /// [`Self::said`], for a tab whose record is in hand, with no lookup of the tab: see [`Self::fit_of`].
     pub(crate) fn said_of(&self, tab: &TabRecord) -> Option<NoticeSaid> {
+        let fit = self.fit_of(tab);
         let said = |notice: &FileNotice| NoticeSaid {
             code: notice.code(),
-            message: notice.message(self.lists.has_list(tab.id)),
+            // "Changed" is said by this only where the fit's own words don't come first, so none are held there: it never speaks of edits, not even
+            // where a list exists (edits made on the version shown after the change was read: review S1, 2026-11-15). Other notices (a file gone,
+            // which comes first) speak of a list's edits where there is one.
+            message: notice.message(!matches!(notice, FileNotice::Changed) && self.lists.has_list(tab.id)),
         };
         match tab.file.notice() {
             Some(missing @ FileNotice::Missing) => Some(said(missing)),
-            notice => self.fit_of(tab).said().or_else(|| notice.map(said)),
+            // While a follow of its edits into the new version may still land, what's true is only that it's being looked at.
+            _ if crate::version_change::under_way(self, tab) => Some(NoticeSaid {
+                code: FileNotice::Changed.code(),
+                message: LOOKING,
+            }),
+            notice => fit.said().or_else(|| notice.map(said)),
         }
     }
 }

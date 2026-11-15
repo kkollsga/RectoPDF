@@ -55,6 +55,8 @@ impl Reader {
             "surfaces": self.work.surfaces.report(),
             // Pages in the tab shown waiting for their look on dark paper to be tried again: not settled, and not failed.
             "looks_held": doc.map_or(0, |doc| doc.drawing.issues.values().filter(|issue| issue.message.is_none()).count()),
+            // Its own pages aren't drawn while its unsaved edits don't fit its file (`withheld.rs`).
+            "pages_withheld": doc.is_some_and(|doc| doc.drawing.withheld),
             "note": self.note,
             "low_res_pages": low_res_pages,
             "tiles": {

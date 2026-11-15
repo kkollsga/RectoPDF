@@ -155,6 +155,8 @@ pub(super) struct DocDrawing {
     pub(super) size_on_trust: bool,
     /// Which version each of its files is, as a worker last said. **Nothing drawn of another version is shown:** that's checked as each goes on a layer, so however a file came to be replaced, and whatever was on its way, an old picture can't be what's showing.
     pub(super) versions: HashMap<PathBuf, u64>,
+    /// Its own file's pages aren't drawn, sized or read: its unsaved edits don't fit the file ([`super::withheld`]).
+    pub(super) withheld: bool,
 }
 
 impl DocView {
@@ -212,6 +214,7 @@ impl DocView {
                 floor,
                 size_on_trust: false,
                 versions: HashMap::new(),
+                withheld: false,
             },
             band: (u32::MAX, 0, 0),
         }

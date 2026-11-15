@@ -6,6 +6,7 @@
 use crate::queue::CoreCall;
 use crate::testkit::headless::HeadlessApp;
 use recto_agent::Level;
+use serde_json::json;
 use std::path::{Path, PathBuf};
 
 /// A PDF of `pages` pages whose text says `who` and the page.
@@ -69,7 +70,11 @@ fn edits_on_a_replaced_file_save_nowhere_say_so_and_fit_again_when_its_put_back(
     replace(&file, &theirs);
     look(&app);
     let said = notice(&app).expect("the tab says what happened");
-    assert!(said.contains("changed on disk") && said.contains("kept"), "{said}");
+    // The edits are still the tab's (Discard is what lets them go) and nothing's written; the words of 2026-11-15 say it without "kept".
+    assert!(
+        said.contains("changed on disk") && said.contains("Discard the edits") && said.contains("Nothing has been written"),
+        "{said}"
+    );
     assert!(!said.to_lowercase().contains("save as"), "{said}");
     let copy = file.with_file_name("copy.pdf");
     for words in [vec!["save"], vec!["save-as", "--out", copy.to_str().unwrap()]] {
@@ -675,4 +680,271 @@ fn another_file_with_the_held_versions_size_and_time_is_looked_at() {
     look(&app);
     assert_eq!(notice(&app).as_deref(), Some(FOLLOWED), "C, with B's size and time, is looked at and followed");
     assert_eq!(turned_text(&app), vec![(9, "Mine page 9".to_owned())]);
+}
+
+/// The view the host would have: a Retina window, the page at its fit.
+fn window_view() -> recto_reader::Viewport {
+    recto_reader::Viewport {
+        x: 0.0,
+        y: 0.0,
+        width: 1168.0,
+        height: 900.0,
+        frame_width: 1168.0,
+        magnification: 1.0,
+        backing: 2.0,
+        live: false,
+        scrolled_to: u64::MAX,
+    }
+}
+
+/// Draws what's in the window's view, as the host would with its UI thread, till it's at rest: where the view is now, so a test's place means what it says.
+fn drawn(app: &HeadlessApp) {
+    let report = app.core().engine.report().0;
+    let at = |key: &str| report[key].as_f64().unwrap_or(0.0);
+    let mut view = recto_reader::Viewport {
+        x: at("scroll_x"),
+        y: at("scroll_y"),
+        ..window_view()
+    };
+    crate::testkit::headless::applied_as_the_host(&app.core().engine.set_viewport(view));
+    crate::testkit::headless::host_turns(app, &mut view, true);
+}
+
+/// The tiles the reading page view has on pages and keeps, and whether it withholds the tab's own pages.
+fn tiles(app: &HeadlessApp) -> (u64, u64, bool) {
+    let report = app.core().engine.report().0;
+    let count = |key: &str| report["tiles"][key].as_u64().unwrap_or(u64::MAX);
+    (count("attached"), count("kept"), report["pages_withheld"] == true)
+}
+
+/// Failure (the QA pass before 0.1.1, on the real app): a 30-page file with unsaved edits (a turn on page 28, a highlight on page 25) replaced on disk by
+/// a 12-page version, by rename or written in place. The edits can't follow, so the list is held, and then the tab kept showing the earlier version's
+/// drawn page 25, drew the new file's pages 1 to 12 under the held list's numbers, and left pages 13 to 30 blank with nothing said. Now, while held:
+/// the tab reads "28 of 30" (the list's count and place), no tile of either version is on any page or kept, the edits' highlights aren't given to draw,
+/// the notice says the pages aren't shown, an agent is told the same (`pages_withheld`, its page reads refused as `source_changed`, a new edit
+/// refused); Discard brings the tab to the file as it is ("12 of 12"), drawn, with nothing written to it.
+#[test]
+fn a_held_list_over_a_shorter_file_shows_nothing_of_either_version_till_discard_brings_the_file() {
+    for in_place in [false, true] {
+        let how = if in_place { "written in place" } else { "renamed over" };
+        let app = HeadlessApp::start();
+        app.core().engine.waking().window_up();
+        let file = app.disk().file("long.pdf", &pdf_bytes("Mine", 30));
+        app.open(&file);
+        app.recto(Level::Control, &["page", "rotate", "28", "--by", "90"]).expect("turned");
+        app.agent(Level::Control, r##"{"cmd":"highlight","tab":"active","page":25,"chars":"0-4"}"##)
+            .expect("highlighted");
+        app.recto(Level::Full, &["goto", "25"]).expect("to page 25");
+        drawn(&app);
+        assert!(tiles(&app).0 >= 1, "{how}: page 25 drawn first: {:?}", tiles(&app));
+        // The first twelve pages, as the QA pass's generator left them: pages 25 and 28 aren't in it, so the list is held.
+        let theirs = pdf_bytes("Mine", 12);
+        if in_place {
+            std::fs::write(&file, &theirs).expect("written in place");
+        } else {
+            replace(&file, &theirs);
+        }
+        look(&app);
+        drawn(&app);
+        let said = notice(&app).expect("the tab says what happened");
+        assert!(said.contains("pages aren't shown") && said.contains("Discard"), "{how}: {said}");
+        // A page inside the new file's length, where its page 2 could be drawn: nothing is.
+        app.recto(Level::Full, &["goto", "2"]).expect("page 2 of the held list");
+        drawn(&app);
+        assert_eq!(app.reader().place, "2 of 30", "{how}");
+        assert_eq!(
+            tiles(&app),
+            (0, 0, true),
+            "{how}: no tile of the new file's page 2: {}",
+            app.core().engine.report().0
+        );
+        app.recto(Level::Full, &["goto", "28"]).expect("page 28 of the held list");
+        drawn(&app);
+        assert_eq!(app.reader().place, "28 of 30", "{how}: the held list's count and place");
+        let (attached, kept, withheld) = tiles(&app);
+        assert_eq!(
+            (attached, kept, withheld),
+            (0, 0, true),
+            "{how}: no tile of either version: {}",
+            app.core().engine.report().0
+        );
+        let id = recto_session::TabId(app.session_json()["tabs"][0]["id"].as_u64().expect("a tab") as u32);
+        let shown = app
+            .core()
+            .host
+            .session
+            .with_session(|s| crate::model::pane_snapshot(s, id, true, &[id]).map(|pane| (pane.withheld, pane.marks.is_none())));
+        assert_eq!(shown, Some((true, true)), "{how}: withheld, and its highlights aren't given to draw");
+        let at = app.recto(Level::ReadOnly, &["where"]).expect("where");
+        assert_eq!(
+            (&at["pages_withheld"], &at["pages"], &at["page"]),
+            (&json!(true), &json!(30), &json!(28)),
+            "{how}: {at}"
+        );
+        for page in ["5", "28"] {
+            let refused = app.recto(Level::Full, &["text", "--page", page]).expect_err("refused");
+            assert_eq!(refused.code, "source_changed", "{how}, page {page}: {refused:?}");
+        }
+        assert!(!app.reader().can_rotate, "{how}: Rotate isn't offered, as it would be refused");
+        let refused = app.recto(Level::Control, &["page", "rotate", "3", "--by", "90"]).expect_err("no more edits");
+        assert_eq!(refused.code, "file_changed", "{how}: {refused:?}");
+        assert!(refused.message.contains("No more edits"), "{how}: {refused:?}");
+        app.recto(Level::Full, &["discard"]).expect("discarded");
+        drawn(&app);
+        assert_eq!(app.reader().place, "12 of 12", "{how}: the file as it is now");
+        assert!(app.reader().can_rotate, "{how}: Rotate offered again");
+        let (attached, _, withheld) = tiles(&app);
+        assert!(attached >= 1 && !withheld, "{how}: its pages drawn: {}", app.core().engine.report().0);
+        let at = app.recto(Level::ReadOnly, &["where"]).expect("where");
+        assert!(at.get("pages_withheld").is_none(), "{how}: {at}");
+        assert_eq!(std::fs::read(&file).expect("the file"), theirs, "{how}: nothing written to the file");
+    }
+}
+
+/// The kinds of the sidebar's rows under the tab, as an agent's `sidebar` gives them: contents entries and the note over them.
+fn rows_under_the_tab(app: &HeadlessApp) -> Vec<String> {
+    let sidebar = app.recto(Level::ReadOnly, &["sidebar"]).expect("sidebar");
+    sidebar["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .filter_map(|row| row["kind"].as_str())
+        .filter(|kind| *kind != "tab")
+        .map(String::from)
+        .collect()
+}
+
+/// Failure (review S2 of `build/shorter-file-pages`): a held tab's contents pane listed the new file's outline, mapped through the held list's
+/// positions so a row went to the wrong place, while an agent's `contents` on the same tab was refused; and its page field named pages by the new
+/// file's labels, through the same positions. While the pages are withheld the pane has no rows of the file's contents and offers none generated,
+/// `contents` is refused, the page field says only the number; after Discard, all of it is the file's again.
+#[test]
+fn a_held_tabs_contents_and_page_labels_arent_the_new_files() {
+    // Contents: six pages with an outline, page 5 turned, made four pages with an outline by another program.
+    let app = HeadlessApp::start();
+    let file = app.disk().file("outlined.pdf", &super::files::with_sections(6));
+    app.open(&file);
+    app.recto(Level::Control, &["page", "rotate", "5", "--by", "90"]).expect("turned");
+    app.settle();
+    assert!(
+        rows_under_the_tab(&app).contains(&"contents".to_string()),
+        "its contents first: {:?}",
+        rows_under_the_tab(&app)
+    );
+    let theirs = super::files::with_sections(4);
+    replace(&file, &theirs);
+    look(&app);
+    assert!(app.recto(Level::ReadOnly, &["where"]).expect("where")["pages_withheld"] == true, "held");
+    assert_eq!(
+        rows_under_the_tab(&app),
+        Vec::<String>::new(),
+        "no rows of the new file's contents, and none offered"
+    );
+    assert_eq!(app.sidebar().contents_count, 0);
+    let refused = app.recto(Level::Full, &["contents"]).expect_err("an agent's contents is refused");
+    assert_eq!(refused.code, "source_changed", "{refused:?}");
+    app.recto(Level::Full, &["discard"]).expect("discarded");
+    app.settle();
+    assert!(
+        rows_under_the_tab(&app).contains(&"contents".to_string()),
+        "the file's contents again: {:?}",
+        rows_under_the_tab(&app)
+    );
+    // Labels: twelve plain pages, page 12 turned, made the twelve labelled pages of a book (`i` to `iv`, `1` to `6`, `A-1`, `A-2`) by another program.
+    let app = HeadlessApp::start();
+    let file = app.disk().file("plain.pdf", &pdf_bytes("Mine", 12));
+    app.open(&file);
+    app.recto(Level::Control, &["page", "rotate", "12", "--by", "90"]).expect("turned");
+    app.recto(Level::Full, &["goto", "2"]).expect("to page 2");
+    app.settle();
+    replace(&file, &recto_testpdf::linked_document());
+    look(&app);
+    assert!(app.recto(Level::ReadOnly, &["where"]).expect("where")["pages_withheld"] == true, "held");
+    assert_eq!(app.reader().place, "2 of 12", "the number, not the new file's label for its page 2");
+    // The person types a label of the new file in the page field: not a page of the held list, so nothing moves.
+    app.act(crate::core::controls::UiAction::PageTyped { text: "iv".into() });
+    app.settle();
+    assert_eq!(app.reader().place, "2 of 12", "a label of the new file isn't a page of the held list");
+    app.recto(Level::Full, &["discard"]).expect("discarded");
+    app.settle();
+    assert_eq!(app.reader().place, "ii (2 of 12)", "the file's label again");
+    app.act(crate::core::controls::UiAction::PageTyped { text: "iv".into() });
+    app.settle();
+    assert_eq!(app.reader().place, "iv (4 of 12)");
+}
+
+/// Failure (review F1 of `build/shorter-file-pages`): nothing held that a tab's pages come back when the version its edits were made on is written back
+/// over the file in place (same number, bytes and time), where the map the page view is given doesn't change: a withhold kept from before passed every
+/// test. Held, then put back so: its pages are drawn again, no notice, and no page says it can't be shown.
+#[test]
+fn a_tabs_pages_come_back_when_its_edits_version_is_written_back_in_place() {
+    let (app, file, original, modified) = edited();
+    app.core().engine.waking().window_up();
+    drawn(&app);
+    rewrite_in_place(&file, &pdf_bytes("Theirs", 5));
+    look(&app);
+    drawn(&app);
+    assert_eq!(tiles(&app), (0, 0, true), "held: {}", app.core().engine.report().0);
+    rewrite_in_place(&file, &original);
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .and_then(|open| open.set_modified(modified))
+        .expect("its time");
+    look(&app);
+    drawn(&app);
+    let (attached, _, withheld) = tiles(&app);
+    assert!(attached >= 1 && !withheld, "drawn again: {}", app.core().engine.report().0);
+    assert_eq!(notice(&app), None);
+    assert_eq!(app.core().engine.note(), None, "no page says it can't be shown");
+}
+
+/// Failure (review of `build/shorter-file-pages`): only the tab's own file's pages are withheld while its edits are held, but every highlight went,
+/// those on pages added from another PDF too, which are still drawn. Held: the added page is drawn and keeps its highlight; the own file's go.
+#[test]
+fn a_held_tabs_pages_added_from_another_pdf_keep_their_highlights() {
+    let app = HeadlessApp::start();
+    app.core().engine.waking().window_up();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 10));
+    let added = app.disk().file("added.pdf", &pdf_bytes("Added", 2));
+    app.open(&file);
+    app.recto(Level::Full, &["page", "insert", added.to_str().unwrap(), "--at", "11"])
+        .expect("added at the end");
+    app.agent(Level::Control, r##"{"cmd":"highlight","tab":"active","page":11,"chars":"0-4"}"##)
+        .expect("a highlight on the added page");
+    app.agent(Level::Control, r##"{"cmd":"highlight","tab":"active","page":3,"chars":"0-4"}"##)
+        .expect("one on the own file's page 3");
+    app.recto(Level::Control, &["page", "rotate", "9", "--by", "90"]).expect("turned");
+    app.settle();
+    replace(&file, &pdf_bytes("Theirs", 5));
+    look(&app);
+    let id = recto_session::TabId(app.session_json()["tabs"][0]["id"].as_u64().expect("a tab") as u32);
+    let marks = app.core().host.session.with_session(|s| {
+        crate::model::pane_snapshot(s, id, true, &[id]).and_then(|pane| {
+            pane.withheld
+                .then_some(pane.marks.map(|marks| marks.pages.iter().map(|(page, _)| *page).collect::<Vec<_>>()))
+        })
+    });
+    assert_eq!(marks, Some(Some(vec![10])), "withheld, with only the added page's highlight (position 10)");
+    app.recto(Level::Full, &["goto", "11"]).expect("to the added page");
+    drawn(&app);
+    let (attached, _, withheld) = tiles(&app);
+    assert!(withheld && attached >= 1, "the added page is drawn: {}", app.core().engine.report().0);
+}
+
+/// Failure (second review of `build/shorter-file-pages`): a follow whose file changed again before it was read (so it's not read, and the list isn't
+/// tried against that version again) left the tab saying it was being looked at, as nothing else made its words again. Held as the follow starts, the
+/// file replaced again, then let go: the tab says the held words, with no other look.
+#[test]
+fn a_follow_whose_file_changed_again_says_the_held_words() {
+    let (app, file, _original, _modified) = edited();
+    let (held, go) = app.hold_next("follow_starting");
+    replace(&file, &pdf_bytes("Theirs", 5));
+    app.send(CoreCall::LookAtShown);
+    held.recv_timeout(crate::testkit::headless::WAIT_LIMIT).expect("the follow held as it starts");
+    replace(&file, &pdf_bytes("Others", 6));
+    drop(go);
+    app.settle();
+    let said = notice(&app).expect("the tab says what happened");
+    assert!(said.contains("Discard the edits"), "the held words, not still being looked at: {said}");
 }
