@@ -256,5 +256,115 @@ out=$("$ENT" --check "$E/framework.app" 2>&1); rc=$?
 check "entitlements: code in Frameworks claiming the group is refused" 1 "$rc"
 has "entitlements: and named" "Contents/Frameworks/claims claims the app's identity" "$out"
 
+# ---- release-zip.sh --no-notarize: the preflight stops the release's own path, and the release's path is as it was ----
+# The real release-zip.sh in a made repository, with the tools that would reach a keychain, Apple or a signature (codesign, security, xcrun,
+# spctl) and the scripts it calls replaced by ones that write down what they were asked; so no key, network or real signing.
+R="$X/zip"; RB="$R/bin"; CALLS="$R/calls"
+mkdir -p "$RB" "$R/repo/app" "$R/repo/tools/release" "$R/repo/crates/recto-update/src"
+# As release-zip.sh names its paths (cd and pwd), so the calls written down compare: TMPDIR ends in a slash here.
+R="$(cd "$R" && pwd -P)"; RB="$R/bin"; CALLS="$R/calls"
+export CALLS
+logger() { # name, then the script's body after the line that writes the call down
+  printf '#!/bin/sh\necho "%s $*" >> "$CALLS"\n%s\n' "$1" "${2:-}" > "$3"; chmod +x "$3"
+}
+logger codesign 'case "$1" in -dv) echo "TeamIdentifier=TEAMID1" >&2 ;; esac' "$RB/codesign"
+# In one write, as the real one's few lines are: release-zip.sh reads it with `grep -q` under pipefail, which a second write could meet closed.
+logger security 'printf "  1) ABCDEF \"Developer ID Application: Test (TEAMID1)\"\n     1 valid identities found\n"' "$RB/security"
+logger xcrun 'case "$1 $2" in "notarytool submit") echo "{\"status\":\"Accepted\",\"id\":\"made\"}" ;; esac' "$RB/xcrun"
+logger spctl '' "$RB/spctl"
+cp "$SOURCE/app/release-zip.sh" "$R/repo/app/release-zip.sh"
+logger build.sh '' "$R/repo/app/build.sh"
+logger render-helper.sh '' "$R/repo/app/render-helper.sh"
+logger app-entitlements.sh '' "$R/repo/tools/release/app-entitlements.sh"
+logger notes.sh 'echo "made notes"' "$R/repo/tools/release/notes.sh"
+printf '[workspace.package]\nversion = "9.9.9"\n' > "$R/repo/Cargo.toml"
+printf 'pub const TEAM_ID: &str = "TEAMID1";\npub const REPO: &str = "https://example.invalid/made";\n' > "$R/repo/crates/recto-update/src/lib.rs"
+echo "made notices" > "$R/repo/THIRD-PARTY-NOTICES.txt"
+printf '/app/build.noindex\n' > "$R/repo/.gitignore"
+MA="$R/repo/app/build.noindex/RectoPDF.app"
+mkdir -p "$MA/Contents/MacOS" "$MA/Contents/Resources"
+cp "$R/repo/THIRD-PARTY-NOTICES.txt" "$MA/Contents/Resources/Licenses.txt"
+printf '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>9.9.9</string><key>LSMinimumSystemVersion</key><string>15.0</string></dict></plist>' > "$MA/Contents/Info.plist"
+# The app's `recto` answers a quiet run as a release that drew does, and refuses a test's verbs; its installer unpacks a zip.
+logger recto 'case "$1 $2" in
+  "qa state") echo "{\"data\":{\"app\":{\"pages\":{\"tile_layers\":1}},\"reader\":{\"settled\":true,\"pages\":1,\"tiles\":{\"attached\":1}},\"memory\":{\"workers_walled\":1},\"update\":{\"build\":\"release\"}}}" ;;
+  "qa update-clock"|"qa as-person"|"qa owner-edit"|"qa save-as"|"qa save-from") exit 1 ;;
+esac' "$MA/Contents/MacOS/recto"
+logger recto-updater 'mkdir -p "$3" && ditto -x -k "$2" "$3"' "$MA/Contents/MacOS/recto-updater"
+git -C "$R/repo" init -q && git -C "$R/repo" add -A && git -C "$R/repo" -c user.name=t -c user.email=t@t commit -qm made
+signing() { # the signing job's settings, the made tools first on PATH, and release-zip.sh's arguments
+  : > "$CALLS"
+  env PATH="$RB:$PATH" RECTO_SIGN_IDENTITY="Developer ID Application: Test (TEAMID1)" RECTO_NOTARY_PROFILE=made \
+    RECTO_PROVISION_PROFILE="$R/repo/Cargo.toml" "$R/repo/app/release-zip.sh" "$@" 2>&1
+}
+OUTDIR="$R/repo/app/build.noindex/release"
+# Failure: --no-notarize is taken where it would make an unnotarized release (the full local --signed path, the build job's), or alone.
+for args in "--no-notarize" "--signed --no-notarize" "--built-only --no-notarize"; do
+  # shellcheck disable=SC2086 # the arguments, split on purpose
+  out=$(signing $args); rc=$?
+  check "release-zip: $args is refused" 2 "$rc"
+  has "release-zip: $args, and why" "--no-notarize goes with --signed --already-built or with --check-signed" "$out"
+done
+check "release-zip: a refused --no-notarize built and signed nothing" "" "$(cat "$CALLS")"
+# Failure: the preflight's signing notarizes (minutes of Apple's service, and a submission of a build nobody released), staples or zips,
+# or doesn't sign by the release's own build.sh --sign-only and check the team.
+out=$(signing --signed --already-built --no-notarize); rc=$?
+calls=$(cat "$CALLS")
+check "release-zip: the preflight's signing passes ($out)" 0 "$rc"
+has "release-zip: the preflight signs as the release does" "build.sh --sign-only" "$calls"
+has "release-zip: and checks the team" "codesign -dv --verbose=2 $MA/Contents/Helpers/RectoRender.app" "$calls"
+hasnt "release-zip: the preflight doesn't notarize" "notarytool" "$calls"
+hasnt "release-zip: nor staple" "stapler" "$calls"
+check "release-zip: nor zip" "no" "$([ -e "$OUTDIR" ] && echo yes || echo no)"
+# Failure: the release's own signing, the same command without the flag, no longer notarizes, staples, checks Gatekeeper and zips.
+out=$(signing --signed --already-built); rc=$?
+calls=$(cat "$CALLS")
+check "release-zip: the release's signing passes ($out)" 0 "$rc"
+has "release-zip: the release signs" "build.sh --sign-only" "$calls"
+has "release-zip: the release notarizes" "xcrun notarytool submit" "$calls"
+has "release-zip: the release staples" "xcrun stapler staple $MA" "$calls"
+has "release-zip: the release asks Gatekeeper" "spctl --assess --type execute --verbose=2 $MA" "$calls"
+check "release-zip: the release zips" "yes" "$([ -f "$OUTDIR/RectoPDF-9.9.9.zip" ] && [ -f "$OUTDIR/latest.json" ] && echo yes || echo no)"
+# Failure: the preflight's run of the signed app asks for a ticket it can't have or a zip that isn't there, or skips the release's checks
+# of the signed app and its quiet run.
+out=$(signing --check-signed --no-notarize); rc=$?
+calls=$(cat "$CALLS")
+check "release-zip: the preflight's checks of the signed app pass ($out)" 0 "$rc"
+has "release-zip: the preflight checks the entitlements" "app-entitlements.sh --check $MA" "$calls"
+has "release-zip: the preflight checks the helper" "render-helper.sh --check $MA" "$calls"
+has "release-zip: the preflight runs the signed app drawing a PDF" "recto qa state --json" "$calls"
+hasnt "release-zip: the preflight asks for no ticket" "stapler" "$calls"
+hasnt "release-zip: nor checks a zip" "check-zip" "$calls"
+# Failure: the release's own run of the stapled app no longer validates its ticket or checks the zip as the updater will.
+out=$(signing --check-signed); rc=$?
+calls=$(cat "$CALLS")
+check "release-zip: the release's checks of the stapled app pass ($out)" 0 "$rc"
+has "release-zip: the release validates the ticket" "xcrun stapler validate $MA" "$calls"
+has "release-zip: the release runs the stapled app" "recto qa state --json" "$calls"
+has "release-zip: the release checks the zip as the updater will" "recto-updater check-zip $OUTDIR/RectoPDF-9.9.9.zip" "$calls"
+
+# ---- preflight-app.sh and limited.sh: the preflight's real-app steps ----
+# Failure: the preflight's signing path runs on a person's Mac, where a team signing would reach their keychain.
+for mode in --build --sign --check; do
+  out=$(env -u GITHUB_ACTIONS "$SOURCE/tools/release/preflight-app.sh" "$mode" 2>&1); rc=$?
+  check "preflight-app: $mode is refused outside CI" 2 "$rc"
+  has "preflight-app: $mode, and why" "on its runner only (GITHUB_ACTIONS is unset)" "$out"
+done
+# Failure: a signing or a launch that waits (as on a keychain prompt) holds the preflight for its whole job instead of failing at its limit
+# with its name; or a failure under the limit is taken as a pass. `security` is a made one, so nothing reads this Mac's keychains.
+limits() { env PATH="$RB:$PATH" bash -c '. "$1"; shift; limited "$@"' _ "$SOURCE/tools/release/limited.sh" "$@" 2>&1; }
+started=$(date +%s)
+out=$(limits 1 "a made wait" sleep 30); rc=$?
+check "limited: a command past its limit fails" 1 "$rc"
+has "limited: and names itself" "a made wait didn't finish in 1 s: it hung" "$out"
+has "limited: with the keychains as they are" "signing identities:" "$out"
+check "limited: at its limit, not the command's end" yes "$([ $(($(date +%s) - started)) -lt 10 ] && echo yes || echo no)"
+out=$(limits 10 "a made failure" false); rc=$?
+check "limited: a failure under the limit fails" 1 "$rc"
+has "limited: and says so" "a made failure failed (exit 1" "$out"
+out=$(limits 10 "a made pass" true); rc=$?
+check "limited: a pass passes" 0 "$rc"
+has "limited: with its time" "ok  a made pass (" "$out"
+
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."

@@ -1,7 +1,14 @@
-# Checks the release's signing secrets work, building and publishing nothing (docs/RELEASING.md): the certificate opens with its
-# password and is the team's Developer ID Application identity, it signs with a secure timestamp, and Apple accepts the
-# notarization key. Run by hand (`gh workflow run release-preflight.yml`); in the `release` Environment, so it waits for the
-# owner's approval like a release. It loads the keys with the same script the release's signing job does.
+# Checks the release's signing secrets work, and the release's build and team signing on the real app, publishing nothing and
+# notarizing nothing (docs/RELEASING.md): the certificate opens with its password and is the team's Developer ID Application
+# identity, it signs with a secure timestamp, Apple accepts the notarization key, and the app the release's build job builds is signed
+# by the release's signing job's own code with the provisioning profile, then verified and launched once the keys are gone
+# (tools/release/preflight-app.sh). Run by hand (`gh workflow run release-preflight.yml`); in the `release` Environment, like a
+# release. It loads the keys with the same script the release's signing job does.
+#
+# How long: 49 s before the real app was in it (run 43761944758, 2026-11-15). The app's full-LTO build is most of it now: 0.1.0's build
+# step took 7 min 14 s (run 43120258114), and its signing and checks under a minute; so about 10 to 12 minutes, an estimate. No Rust
+# cache, as release.yml's build job has none: CI's cache holds its dev and test builds, not a full-LTO release, and costs 2 to 3.5
+# minutes to restore (ci.yml), and a cold build is what the release's is. The build's own limit is 30 minutes, the job's 45.
 name: Release preflight
 on:
   workflow_dispatch:
@@ -11,22 +18,25 @@ concurrency:
   group: release-preflight
 jobs:
   preflight:
-    name: Signing secrets
+    name: Signing secrets, and the real app signed
     runs-on: macos-26
     environment: release
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # THE RULE, as release.yml's: nothing of the product is compiled OR RUN while a signing key or the notarization key is loaded, as a
       # build script or the code it builds could sign or notarize as the team (the security reads of the Find key's branch, 2026-11-15). So
-      # everything this job builds is built here, first, with no secret in any step's environment; the steps with the keys only sign; the
-      # keychain and the profile file are removed, and seen gone, before anything signed runs.
+      # everything this job builds is built here, first, with no secret in any step's environment (preflight-app.sh --build says first that
+      # there's no identity here); the steps with the keys only sign; the keychain and the profile file are removed, and seen gone, before
+      # anything signed runs (preflight-app.sh --check says so again).
       - name: Rust, as pinned in rust-toolchain.toml, with no secret here
         run: rustup toolchain install
       - name: Build the probes, the app's own key path among them, with no secret here
         run: tools/release/dp-keychain-probe.sh --build "$RUNNER_TEMP/dp-probe-built"
+      - name: Build the real app as the release's build job does (app/release-zip.sh --built-only), with no secret here
+        run: tools/release/preflight-app.sh --build
       - name: Certificate and notarization key, from the Environment's secrets
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
@@ -63,6 +73,15 @@ jobs:
           umask 077
           printf '%s' "$MACOS_PROVISION_PROFILE" | base64 --decode > "$RUNNER_TEMP/recto.provisionprofile"
           tools/release/dp-keychain-probe.sh --sign "$PREFLIGHT_IDENTITY" "$RUNNER_TEMP/recto.provisionprofile" "$RUNNER_TEMP/dp-probe-built"
+      # The release's signing job's own command, up to where it would notarize (app/release-zip.sh --signed --already-built --no-notarize),
+      # with the settings that job writes to its environment; names and paths only, none of them a secret.
+      - name: The real app signed by the team with the profile, as the release signs it, stopped before notarizing (nothing runs here)
+        env:
+          RECTO_SIGN_IDENTITY: ${{ env.PREFLIGHT_IDENTITY }}
+          RECTO_NOTARY_PROFILE: recto-notary
+          RECTO_NOTARY_KEYCHAIN: ${{ env.PREFLIGHT_KEYCHAIN }}
+          RECTO_PROVISION_PROFILE: ${{ runner.temp }}/recto.provisionprofile
+        run: tools/release/preflight-app.sh --sign
       - name: The keys gone before anything signed runs
         run: |
           tools/release/keychain.sh --remove "$RUNNER_TEMP/recto-preflight.keychain-db"
@@ -72,9 +91,13 @@ jobs:
           case "$found" in *"0 valid identities found"*) ;; *) echo "::error::a signing identity is still here, so nothing may run"; exit 1 ;; esac
       - name: The Find key in the data-protection keychain, the probes and the app's own key path run, with no key here
         run: tools/release/dp-keychain-probe.sh --run "$RUNNER_TEMP/dp-probe-built"
+      - name: The signed app verified, its entitlements and helper checked, launched, and its quiet run drawing a PDF, with no key here
+        run: tools/release/preflight-app.sh --check
       - name: Remove the keychain and anything of a secret
         if: always()
         run: |
           tools/release/keychain.sh --remove "$RUNNER_TEMP/recto-preflight.keychain-db"
           rm -f "$RUNNER_TEMP/preflight-probe" "$RUNNER_TEMP/recto.provisionprofile"
           rm -rf "$RUNNER_TEMP"/dp-keychain-probe.* "$RUNNER_TEMP/dp-probe-built"
+          # The signed app holds the profile, embedded.
+          rm -rf app/build.noindex "$RUNNER_TEMP/preflight-built-app.zip"
