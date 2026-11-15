@@ -775,12 +775,14 @@ fn a_held_list_over_a_shorter_file_shows_nothing_of_either_version_till_discard_
             let refused = app.recto(Level::Full, &["text", "--page", page]).expect_err("refused");
             assert_eq!(refused.code, "source_changed", "{how}, page {page}: {refused:?}");
         }
+        assert!(!app.reader().can_rotate, "{how}: Rotate isn't offered, as it would be refused");
         let refused = app.recto(Level::Control, &["page", "rotate", "3", "--by", "90"]).expect_err("no more edits");
         assert_eq!(refused.code, "file_changed", "{how}: {refused:?}");
         assert!(refused.message.contains("No more edits"), "{how}: {refused:?}");
         app.recto(Level::Full, &["discard"]).expect("discarded");
         drawn(&app);
         assert_eq!(app.reader().place, "12 of 12", "{how}: the file as it is now");
+        assert!(app.reader().can_rotate, "{how}: Rotate offered again");
         let (attached, _, withheld) = tiles(&app);
         assert!(attached >= 1 && !withheld, "{how}: its pages drawn: {}", app.core().engine.report().0);
         let at = app.recto(Level::ReadOnly, &["where"]).expect("where");

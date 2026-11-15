@@ -761,6 +761,8 @@ fn only_a_file_known_to_be_another_withholds_its_pages_and_takes_no_more_edits()
         assert_eq!(bed.s.notices().fit(a), expected);
         let other = expected.file_known_other();
         assert_eq!(bed.s.notices().pages_withheld(a), other, "{expected:?}");
+        // The controls are offered by the same rule the edit is refused by (review F3).
+        assert_eq!(bed.s.can_edit_pages(a), !other, "{expected:?}: Rotate offered");
         let before = bed.s.lists().edits_record(a);
         for by in [Author::Owner, Author::Agent] {
             let edited = bed.s.edit_pages_as(a, by, |e| e.rotate(0, 1, 1));
