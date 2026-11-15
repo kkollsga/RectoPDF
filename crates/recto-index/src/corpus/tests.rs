@@ -1,4 +1,5 @@
 use super::*;
+use std::fs::OpenOptions;
 /// A folder of its own, private and removed at the end.
 struct Temp(recto_testpdf::TempDir);
 
