@@ -80,11 +80,13 @@ mod tests {
         assert_eq!(recto_update::updater::KEEP_RECORD_COPY_MS, 7 * 86_400_000, "a copy of the session for a week");
         assert_eq!(recto_control::log::MAX_LOG_BYTES * 6, 6 * 1024 * 1024, "the activity log, at most 6 MiB");
         // No picture of a page in a sleep file: its format holds facts and nothing after them, and a file of one could never be the size of a picture.
-        assert!(recto_session::sleep::SLEEP_FORMAT >= 4, "the format before held pictures");
-        assert!(
-            recto_session::sleep::MAX_SLEEP_FILE_BYTES <= 1024 * 1024,
-            "a sleep file the size of pictures is read"
-        );
+        const { assert!(recto_session::sleep::SLEEP_FORMAT >= 4, "the format before held pictures") };
+        const {
+            assert!(
+                recto_session::sleep::MAX_SLEEP_FILE_BYTES <= 1024 * 1024,
+                "a sleep file the size of pictures is read"
+            )
+        };
         for words in [
             "No picture of any page is kept",
             "90 days after it was last used, within 2 GiB",
