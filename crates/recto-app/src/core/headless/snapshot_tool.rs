@@ -201,6 +201,10 @@ fn the_snapshot_tool_does_what_it_did() {
     let mut lines = Vec::new();
 
     take_box(&app);
+    // What the window was last given is the answer's notice, not "Copying…": the coverage golden holds the host's calls by kind, as both orders of the
+    // clipboard's and the window's are right, so it's held here (the phase's closing read, 2026-11-15).
+    let shown = app.reader().selection_notice.map(|notice| notice.text);
+    assert_eq!(shown.as_deref(), Some("Copied the snapshot as PNG, text, SVG and JPG."), "the window shows the answer");
     lines.push(format!("a box on a text page | {}", a_box(&app, &doc, 0, false)));
     let text = reference(&doc, 0, false)
         .into_iter()
