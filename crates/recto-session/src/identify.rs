@@ -1,11 +1,12 @@
 //! **Reading what the edits' pages are, while their file is the version they're about** (the page matcher). A list names pages as its steps are made
 //! ([`crate::edit::identity`]); this is what reads them: [`work`] says which tabs' files to read and which pages, [`read`] reads them off the session's
 //! lock, and [`identified`] takes in what was read, if the file is still the version the edits are about. The app's page-identity thread runs the three
-//! (`recto-app`'s `core/page_ids.rs`); nothing here keeps a thread, a handle or a buffer.
+//! (`recto-app`'s `core/page_ids.rs`); nothing here keeps a thread, a handle or a buffer but the [`Opened`] file its caller holds across jobs.
 //!
 //! **Never for a protected document** (the coordinator's decision, 2026-11-15): a tab opened with a password the person typed, or needing one, is never
 //! read here, so no digest of it is made, kept or shown; its edits are held as before when its file changes. Nor for a file only the renderer can read,
-//! as the digest is the structure reader's. Every open goes through the file wall (`recto_core::page_id::open_for_identity`).
+//! as the digest is the structure reader's. Every open goes through the file wall, and what's opened is checked by its own descriptor to be the version
+//! the edits are about (`recto_core::page_id::open_version_for_identity`).
 
 use crate::edit::identity::{self, Known};
 use crate::{DocLoader, Session, TabId};
@@ -207,7 +208,7 @@ pub fn read_in(job: &IdentifyJob, opened: &mut Option<Opened>) -> Option<Identif
 }
 
 /// **Takes in what was read,** if the tab's edits are still about that version of its file and it's still readable for them. Says whether anything
-/// was taken in, which its journal then gets.
+/// was taken in (or given up on), which its journal's sidecar then gets.
 pub fn identified<L: DocLoader>(session: &mut Session<L>, found: &Identified) -> bool {
     if readable(session, found.tab).is_none_or(|(_, stamp)| stamp != found.stamp) {
         return false;

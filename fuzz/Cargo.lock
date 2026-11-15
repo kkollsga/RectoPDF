@@ -512,6 +512,7 @@ name = "recto-fuzz"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "flate2",
  "recto-agent",
  "recto-control",
  "recto-core",
@@ -525,6 +526,7 @@ dependencies = [
  "recto-testpdf",
  "recto-update",
  "serde_json",
+ "weezl",
 ]
 
 [[package]]
