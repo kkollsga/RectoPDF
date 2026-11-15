@@ -15,6 +15,14 @@
 #     no guard a case that would prompt is seen to wait (that shows it's real).
 #   - An item planted by C, and one by D, under the same names: what A and B get is reported (whether a program of this user's could
 #     plant a key it knows).
+#   - Items planted where the app could meet them (the second security review, S2): for any application, by `security -A` and by
+#     SecItemAdd with an open access list, in the keychain the app reads; in a keychain of the planter's own, ahead in the search list,
+#     with and without its partition list set for the team, and as the default keychain. Each read by A and B with the app's guard,
+#     by the default search list and by the app's own lookup of one named keychain. Reported, for the release's claim.
+#   - What an item's access holds, for the check that an item is the app's own (Task A2): the app's own item (made by A, inspected by A
+#     and by B, which must accept it), and items planted by C and by D trusting A alone, trusting A and the planter, open to any
+#     application, and with a partition entry forged at the add or set after it. Each in a fresh keychain, read by the app's lookup of
+#     that keychain alone; each line says what the access lists and the partition list hold (names and counts) and what the rule says.
 # Each probe has a limit, by perl's alarm; one that doesn't answer in it waited, as on a prompt. Prints status codes and times, never
 # the item. Uploads nothing. The keychain, the probes and the search list are put back on any exit.
 set -euo pipefail
@@ -22,6 +30,8 @@ identity="${1:?usage: tools/release/keychain-probe.sh <signing identity>}"
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 dir="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/keychain-probe.XXXXXX")"
 pk="$dir/probe.keychain-db"
+# A keychain of the planter's own, with its own password: what a same-user program can make.
+pk2="$dir/planter.keychain-db"
 orig_default="$(security default-keychain -d user | tr -d '" ')"
 orig_list="$(security list-keychains -d user | tr -d '"')"
 # shellcheck disable=SC2329 # run by the trap below
@@ -30,6 +40,7 @@ restore() {
   security list-keychains -d user -s $orig_list >/dev/null 2>&1 || true
   security default-keychain -d user -s "$orig_default" >/dev/null 2>&1 || true
   security delete-keychain "$pk" >/dev/null 2>&1 || true
+  security delete-keychain "$pk2" >/dev/null 2>&1 || true
   rm -rf "$dir"
 }
 trap restore EXIT
@@ -62,17 +73,20 @@ failed=0
 # else; `gone` is errSecItemNotFound (-25300); `report` asserts nothing and says what happened. A probe past its limit waited, as on a
 # prompt, which is never what `refused` is.
 step() {
-  local want="$1" build="$2" mode="$3" interaction="$4" limit=20 out code=0 status
+  local want="$1" build="$2" mode="$3" interaction="$4" named="${5:-}" limit=20 out code=0 status
+  local extra=("${@:6}")
   [ "$interaction" != none ] || limit=10
-  out="$(perl -e 'alarm shift; exec @ARGV' "$limit" "$dir/$build" "$mode" "$interaction")" || code=$?
+  out="$(perl -e 'alarm shift; exec @ARGV' "$limit" "$dir/$build" "$mode" "$interaction" ${named:+"$named"} ${extra[@]+"${extra[@]}"})" || code=$?
   if [ "$code" -eq 142 ]; then
     status=waited
   else
     status="$(printf '%s' "$out" | sed -n 's/^status=\(-*[0-9]*\) .*/\1/p')"
   fi
-  local line="$build $mode ($interaction): ${status:-no answer} ${out#status=* }"
+  local line="$build $mode ($interaction${named:+, $(basename "$named") alone}): ${status:-no answer} ${out#status=* }"
+  # `accept`: read, and the item-is-ours rule accepts it.
+  [ "$want:$status" != accept:0 ] || [[ "$out" == *rule=accept* ]] || status="0, refused by the rule"
   case "$want:$status" in
-    ok:0 | refused:-25293 | refused:-25308 | refused:-25244 | gone:-25300 | report:*) echo "  $want  $line" ;;
+    accept:0 | ok:0 | refused:-25293 | refused:-25308 | refused:-25244 | gone:-25300 | report:*) echo "  $want  $line" ;;
     *) echo "::error::wanted $want: $line (exit $code)"; failed=1 ;;
   esac
 }
@@ -104,4 +118,86 @@ for planter in c d; do
   step ok "$planter" delete global
 done
 step gone a read global
+
+# Planted where the app could meet it (the second security review, S2). Each read by A and B with the app's guard, by the default search
+# list and by the lookup the app makes, of the login keychain alone (here the probe's own keychain stands for it).
+team="$(codesign -dv "$dir/a" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
+svc=io.github.kkollsga.RectoPDF.keychain-probe
+reads() {
+  for reader in a b; do
+    step report "$reader" read global
+    step report "$reader" read global "$pk"
+  done
+}
+echo "Planted for any application, in the keychain the app reads: by security -A"
+security add-generic-password -A -s "$svc" -a probe -w "$(openssl rand -hex 16)" "$pk"
+reads
+security delete-generic-password -s "$svc" -a probe "$pk" >/dev/null
+echo "Planted for any application, in the keychain the app reads: by C's SecItemAdd with an open access list"
+step ok c add-open global "$pk"
+reads
+step ok c delete global "$pk"
+echo "Planted in a keychain of the planter's own, ahead in the search list"
+pk2_pass="$(openssl rand -hex 24)"
+security create-keychain -p "$pk2_pass" "$pk2"
+security set-keychain-settings "$pk2"
+security unlock-keychain -p "$pk2_pass" "$pk2"
+security add-generic-password -A -s "$svc" -a probe -w "$(openssl rand -hex 16)" "$pk2"
+security list-keychains -d user -s "$pk2" "$pk"
+reads
+echo "The same, with its partition list set for the team"
+security set-generic-password-partition-list -S "teamid:$team,apple-tool:,apple:" -s "$svc" -k "$pk2_pass" "$pk2" >/dev/null
+reads
+echo "The planter's keychain as the default"
+security list-keychains -d user -s "$pk" "$pk2"
+security default-keychain -d user -s "$pk2"
+reads
+security default-keychain -d user -s "$pk"
+security list-keychains -d user -s "$pk"
+security delete-keychain "$pk2"
+
+# What an item's access holds, and what the item-is-ours rule says of it. Each case in a fresh keychain, so nothing of one is left for
+# the next, read by the app's lookup of that keychain alone.
+fresh() {
+  security delete-keychain "$pk" >/dev/null 2>&1 || true
+  security create-keychain -p "$pk_pass" "$pk"
+  security set-keychain-settings "$pk"
+  security unlock-keychain -p "$pk_pass" "$pk"
+  security list-keychains -d user -s "$pk"
+  security default-keychain -d user -s "$pk"
+}
+inspects() {
+  for reader in a b; do step report "$reader" inspect global "$pk" "$team"; done
+}
+echo "The app's own item, made by A: A and B must read it and the rule must accept it"
+fresh
+step ok a add global "$pk"
+step accept a inspect global "$pk" "$team"
+step accept b inspect global "$pk" "$team"
+for planter in c d; do
+  echo "Planted by $planter, trusting A alone"
+  fresh
+  step report "$planter" add-trusting global "$pk" "$team" "$dir/a"
+  inspects
+  echo "Planted by $planter, trusting A and itself"
+  fresh
+  step report "$planter" add-trusting global "$pk" "$team" "$dir/a" self
+  inspects
+  echo "Planted by $planter, trusting A alone, with a partition entry for the team forged at the add"
+  fresh
+  step report "$planter" add-forged global "$pk" "$team" "$dir/a"
+  inspects
+  echo "Planted by $planter, then its access set with a forged partition entry"
+  fresh
+  step report "$planter" add-then-forge global "$pk" "$team" "$dir/a"
+  inspects
+done
+echo "Open to any application, by security -A"
+fresh
+security add-generic-password -A -s "$svc" -a probe -w "$(openssl rand -hex 16)" "$pk"
+inspects
+echo "Open to any application, by C's SecItemAdd with an open access list"
+fresh
+step ok c add-open global "$pk"
+inspects
 exit "$failed"
