@@ -70,7 +70,11 @@ impl<L: DocLoader> Session<L> {
                     notice: match notices.fit_of(tab) {
                         EditsFit::FileChanged | EditsFit::FileChangedVersionUnknown => Some(FileNotice::Changed),
                         // News of the moment, which an app from before it couldn't read.
-                        _ => tab.file.notice().filter(|notice| !matches!(notice, FileNotice::EditsFollowed { .. })).cloned(),
+                        _ => tab
+                            .file
+                            .notice()
+                            .filter(|notice| !matches!(notice, FileNotice::EditsFollowed { .. } | FileNotice::EditsSetAsideAfterQuit))
+                            .cloned(),
                     },
                     journal: journals.name_of(*id).map(ToString::to_string),
                     edits: lists.summary(*id),
@@ -142,6 +146,9 @@ impl<L: DocLoader> Session<L> {
                     Some(restored) => {
                         if restored.rolled_off {
                             notice = Some(FileNotice::HistoryRolledOff);
+                        }
+                        if restored.set_aside_beside {
+                            notice = Some(FileNotice::EditsSetAsideAfterQuit);
                         }
                         if restored.lost_lines {
                             notice = Some(FileNotice::EditsUnreadable);

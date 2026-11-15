@@ -91,6 +91,7 @@ fn use_a_journal(bytes: &[u8]) {
             seq: applied as u64,
             lost_lines: parsed.lost_lines,
             rolled_off: false,
+            set_aside_beside: false,
         };
         session
             .restore(&main, HashMap::from([(name, list)]))

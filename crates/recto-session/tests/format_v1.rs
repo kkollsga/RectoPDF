@@ -97,6 +97,7 @@ fn a_version_1_record_comes_back_out_of_the_session_the_same() {
         seq: applied as u64,
         lost_lines: false,
         rolled_off: false,
+        set_aside_beside: false,
     };
     let mut session = Session::default();
     session.restore(&saved, HashMap::from([(journal, restored)])).expect("it's taken");

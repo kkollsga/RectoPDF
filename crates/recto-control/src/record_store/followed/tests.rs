@@ -78,6 +78,40 @@ fn edited_journal(store: &RecordStore, tab: u32, file: &Path, stamp: FileStamp) 
     name
 }
 
+/// A journal for tab 1 about `stamp` of `file` under `name`, as a list started again leaves it: from a list of `base_turns` turns at step `base_seq`
+/// (written whole), then `more` turns appended. Its steps are `base_seq + more`.
+fn journal_from(store: &RecordStore, name: &str, file: &Path, stamp: FileStamp, base_seq: u64, base_turns: usize, more: usize) {
+    let (base, _) = PageEdits::replay(5, None, &vec![rotation(); base_turns]).unwrap();
+    let append = |through: u64, ops: Vec<JournalOp>, base: Option<recto_session::record::EditsRecord>| JournalWork {
+        pages: Vec::new(),
+        retired: Vec::new(),
+        appends: vec![JournalAppend {
+            tab: TabId(1),
+            name: name.to_string(),
+            header: JournalHeader::new(1, file, Some(stamp), 5, 0),
+            through,
+            ops,
+            closing: false,
+            base,
+            replaces: None,
+        }],
+    };
+    assert!(store.write_journals(&append(base_seq, Vec::new(), Some(base.to_record())), false).1.is_none());
+    if more > 0 {
+        assert!(store.write_journals(&append(base_seq + more as u64, vec![rotation(); more], None), false).1.is_none());
+    }
+}
+
+/// What the person is shown of tab 1 once `restored` is the session, and whether the record written of it then has a trace of the set-aside notice
+/// (which no app before it could read).
+fn shown(restored: Restored) -> (Option<&'static str>, bool) {
+    let mut session = recto_session::Session::new(recto_session::DiskLoader);
+    session.restore(&restored.record, restored.journals).unwrap();
+    let code = session.tabs().tab_notice(TabId(1)).map(|notice| notice.code());
+    let written = serde_json::to_string(&session.to_record()).unwrap();
+    (code, written.contains("edits_set_aside_after_quit"))
+}
+
 /// The followed list: its turn on the new version, its pages known there, and "not yet told".
 fn followed_list() -> PageEdits {
     let (mut list, _) = PageEdits::replay(5, None, &[rotation()]).unwrap();
@@ -221,6 +255,12 @@ fn a_crash_at_each_point_of_a_follow_leaves_the_old_list_or_the_new_one_whole() 
         if point == "both journals" {
             assert!(bed.journals().join(&old).with_extension("not-merged").exists(), "set aside, not removed");
         }
+        let (code, _) = shown(restored);
+        assert_ne!(
+            code,
+            Some("edits_set_aside_after_quit"),
+            "{point}: the old list a follow superseded is set aside unsaid (review M2)"
+        );
     }
 }
 
@@ -288,6 +328,8 @@ fn a_linked_journal_about_another_version_than_now_is_set_aside() {
         assert_eq!(restored.record.tabs[0].journal.as_deref(), Some(old.as_str()), "{why}: the tab's own list");
         assert!(!restored.journals.contains_key(&new), "{why}");
         assert!(bed.journals().join(&new).with_extension("not-merged").exists(), "{why}: set aside");
+        // Review M2: a list with unsaved edits set aside, not one a follow superseded, is said on its tab, and never written into the record.
+        assert_eq!(shown(restored), (Some("edits_set_aside_after_quit"), false), "{why}: said, and not in the record");
     }
 }
 
@@ -318,22 +360,23 @@ fn a_forged_journal_with_another_tabs_id_takes_nothing_from_it() {
     let _ = forged;
 }
 
-/// Failure caught (the coordinator's check 3: ids are the record's, so a leftover journal can carry a tab's id and path): an old leftover with the
-/// tab's id and path whose file happens to be the file now displaces the journal the tab rightly claimed, which is about the file now too. The rule
-/// fires only when the claimed journal isn't about the file now: the tab keeps its own, and the leftover is set aside.
+/// Failure caught (the coordinator's check 3: ids are the record's, so a leftover journal can carry a tab's id and path): an older leftover with the
+/// tab's id and path whose file happens to be the file now displaces the journal the tab rightly claimed, which is about the file now too, and newer.
+/// The tab keeps its own; the leftover, older by its steps and all of them in the tab's list (its steps no more than where the tab's list started
+/// again), is set aside, unsaid as nothing in it is lost. Review M2 changed the case this test had (the leftover newer by its steps): that one takes
+/// over now, in `a_newer_list_of_the_same_version_takes_over_and_says_so_unless_the_older_is_in_it`.
 #[test]
 fn a_leftover_with_the_tabs_id_never_displaces_a_journal_about_the_file_now() {
     let bed = Bed::new();
     let store = RecordStore::open(&bed.paths, Flavor::App);
-    let own = edited_journal(&store, 1, &bed.file, bed.old_stamp);
+    let own = record::journal_file_name(Some(bed.old_stamp), &bed.file, None);
+    journal_from(&store, &own, &bed.file, bed.old_stamp, 2, 1, 1);
     store
         .write_record(&session(vec![tab(1, &bed.file, bed.old_stamp, &own)]), &PlaceDelta::default(), false)
         .unwrap();
-    // A leftover under another name, about this file as it is, newer by its steps.
+    // A leftover under another name, about this file as it is, older by its steps.
     let leftover = record::journal_file_name(Some(bed.old_stamp), &bed.file, Some(3));
-    let (mut work, _) = follow_work(1, &bed.file, bed.old_stamp, &own, true, false, 9);
-    work.appends[0].name = leftover.clone();
-    assert!(store.write_journals(&work, false).1.is_none());
+    journal_from(&store, &leftover, &bed.file, bed.old_stamp, 0, 0, 1);
     drop(store);
     let restored = bed.load();
     assert_eq!(restored.record.tabs.len(), 1);
@@ -343,4 +386,35 @@ fn a_leftover_with_the_tabs_id_never_displaces_a_journal_about_the_file_now() {
         "the tab keeps the journal it claimed"
     );
     assert!(bed.journals().join(&leftover).with_extension("not-merged").exists(), "the leftover set aside");
+    assert_eq!(shown(restored), (None, false), "all of the leftover's steps are in the tab's list: nothing to say");
+}
+
+/// **Failure caught (review M2):** two lists of one tab about the same version, left by a crash between a journal started again under another name and
+/// the old one's removal: the older kept and the newer set aside (the person's last edits gone from the tab, unsaid), or the older set aside with edits
+/// the newer hasn't, unsaid. The newer by its steps takes over, the older is set aside, and the tab says so unless every step of the older is in the
+/// newer: known by sequence, as the older's steps are no more than where the newer started again from the whole list.
+#[test]
+fn a_newer_list_of_the_same_version_takes_over_and_says_so_unless_the_older_is_in_it() {
+    for older_in_it in [true, false] {
+        let bed = Bed::new();
+        let store = RecordStore::open(&bed.paths, Flavor::App);
+        let own = edited_journal(&store, 1, &bed.file, bed.old_stamp);
+        store
+            .write_record(&session(vec![tab(1, &bed.file, bed.old_stamp, &own)]), &PlaceDelta::default(), false)
+            .unwrap();
+        let newer = record::journal_file_name(Some(bed.old_stamp), &bed.file, Some(3));
+        // The tab's list is at step 1. Started again from step 1 (the older's one turn in it) or from step 0 (not), then on to step 2.
+        let (base_seq, base_turns) = if older_in_it { (1, 1) } else { (0, 0) };
+        journal_from(&store, &newer, &bed.file, bed.old_stamp, base_seq, base_turns, 1 + usize::from(!older_in_it));
+        drop(store);
+        let restored = bed.load();
+        let label = if older_in_it { "the older in the newer" } else { "the older not in it" };
+        assert_eq!(restored.record.tabs.len(), 1, "{label}");
+        assert_eq!(restored.record.tabs[0].journal.as_deref(), Some(newer.as_str()), "{label}: the newer list");
+        assert_eq!(restored.journals[&newer].seq, 2, "{label}");
+        assert!(!restored.journals.contains_key(&own), "{label}");
+        assert!(bed.journals().join(&own).with_extension("not-merged").exists(), "{label}: the older set aside");
+        let said = (!older_in_it).then_some("edits_set_aside_after_quit");
+        assert_eq!(shown(restored), (said, false), "{label}");
+    }
 }

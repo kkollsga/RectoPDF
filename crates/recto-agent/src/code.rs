@@ -190,6 +190,7 @@ codes! {
     EDITS_DONT_MATCH = "edits_dont_match", Next::ByExit;
     EDITS_FOLLOWED = "edits_followed", Next::ByExit;
     EDITS_NOT_MERGED = "edits_not_merged", Next::ByExit;
+    EDITS_SET_ASIDE_AFTER_QUIT = "edits_set_aside_after_quit", Next::ByExit;
     EDITS_UNREADABLE = "edits_unreadable", Next::ByExit;
     EDITS_VERSION_UNKNOWN = "edits_version_unknown", Next::ByExit;
     EXPORT_MEMORY_TIGHT = "export_memory_tight", Next::ByExit;

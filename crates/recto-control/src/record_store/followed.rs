@@ -9,8 +9,13 @@
 //! old journal is **set aside, not removed** (`.not-merged`, the store's existing name for a journal it keeps and won't use: it says nothing to the
 //! person, nothing prunes it, and 0.1.0 leaves it alone as it isn't a journal's name), with its sidecar gone (an orphan's), so if this misjudges, the
 //! person's earlier list is still on disk. A linked journal that doesn't take over is set aside the same way: never a second tab on the file.
+//!
+//! **Two lists of one version** (review M2: a journal started again under another name, with a crash before the old one's removal): the newer by its
+//! steps takes over, as nothing about the file argues for the older. And a list set aside other than the old one a follow superseded, with edits not
+//! all in the one kept, is said on the tab (`FileNotice::EditsSetAsideAfterQuit`, kept out of the record): on `main` it came back as a second tab, so
+//! nothing was hidden, and nothing a person made is put out of reach unsaid now either.
 
-use super::{JournalRead, Progress, claim, page_ids, read_journal};
+use super::{JournalRead, Progress, claim, page_ids, read_journal, restored_from};
 use recto_platform::{FileStamp, file_stamp};
 use recto_session::RestoredEdits;
 use recto_session::record::{FileRecord, SessionRecord};
@@ -31,8 +36,11 @@ pub(super) fn unclaimed(
         return None;
     }
     match after_a_follow(folder, &read, record, taken, journals, progress) {
-        Link::TakesOver(at) => {
+        Link::TakesOver { at, said } => {
             claim(folder, read, record, at, progress, journals);
+            if said && let Some(kept) = record.tabs[at].journal.clone() {
+                mark(journals, &kept);
+            }
             None
         }
         Link::SetAside => None,
@@ -44,13 +52,43 @@ pub(super) fn unclaimed(
 enum Link {
     /// Not linked to a tab that's claimed its journal: as before.
     None,
-    /// It takes over as the tab's (at this place in the record), the tab's claimed one set aside: claim it.
-    TakesOver(usize),
+    /// It takes over as the tab's (at this place in the record), the tab's claimed one set aside: claim it. `said`: the one set aside has edits not
+    /// all in this one, so the tab says another list was kept to one side.
+    TakesOver { at: usize, said: bool },
     /// Linked, but not the tab's: set aside.
     SetAside,
 }
 
-/// **An unclaimed journal, after every tab has claimed the journal it names:** whether it's what a follow's crash left beside a tab's (see the module).
+/// What's known of a journal for the rule: its file, its steps, where it last started again from a whole list, and whether it holds unsaved edits.
+struct Steps {
+    file: Option<FileRecord>,
+    seq: u64,
+    base_seq: u64,
+    edited: bool,
+}
+
+impl Steps {
+    /// Every step of `self` is in `other`, known by sequence: the two are one tab's lists about one version, and `other` started again from the
+    /// whole list at or after `self`'s last step (a list started again under another name carries every step before it).
+    fn all_in(&self, other: &Steps) -> bool {
+        self.file.is_some() && self.file == other.file && self.seq <= other.base_seq
+    }
+
+    /// Set aside, it takes something from the person they aren't told of: it holds edits, and not all of them are in the list kept.
+    fn would_be_lost(&self, kept: &Steps) -> bool {
+        self.edited && !self.all_in(kept)
+    }
+}
+
+/// **An unclaimed journal, after every tab has claimed the journal it names:** whether it's what a crash left beside a tab's, and which of the two the
+/// tab keeps. The rule, in this order (review M2):
+/// 1. A follow's: the unclaimed one is about the file as it is now, the claimed one isn't, and it's no older than the claimed list (its base at or past
+///    the claimed list's steps). It takes over, and the claimed one is the old list it superseded: set aside, unsaid.
+/// 2. A list started again under another name for the same version: the newer by its steps takes over, the older is set aside.
+/// 3. Otherwise the tab keeps the one it claimed, and the unclaimed one is set aside.
+///
+/// Set aside in 2 or 3 with edits not all in the one kept (by sequence, [`Steps::all_in`]), the tab says so
+/// ([`recto_session::record::FileNotice::EditsSetAsideAfterQuit`]): nothing a person made is put out of reach unsaid.
 fn after_a_follow(
     folder: &Path,
     read: &JournalRead,
@@ -81,20 +119,53 @@ fn after_a_follow(
             .zip(now)
             .is_some_and(|(file, now)| file.same_contents(now) && file.inode == now.inode)
     };
-    let claimed_file = read_journal(&folder.join(&claimed)).ok().flatten().and_then(|(parsed, _)| parsed.header.file);
-    let no_older = journals.get(&claimed).is_some_and(|list| header.base_seq >= list.seq);
-    if is_now(header.file) && !is_now(claimed_file) && no_older {
+    let claimed_header = read_journal(&folder.join(&claimed)).ok().flatten().map(|(parsed, _)| parsed.header);
+    let Some(claimed_list) = journals.get(&claimed) else { return Link::None };
+    let kept = Steps {
+        file: claimed_header.as_ref().and_then(|header| header.file),
+        seq: claimed_list.seq,
+        base_seq: claimed_header.as_ref().map_or(0, |header| header.base_seq),
+        edited: claimed_list.edits.is_edited(),
+    };
+    let unclaimed = restored_from(&read.parsed).map(|list| Steps {
+        file: header.file,
+        seq: list.seq,
+        base_seq: header.base_seq,
+        edited: list.edits.is_edited(),
+    });
+    let Some(unclaimed) = unclaimed else {
+        // Doesn't replay: kept to one side, its tab keeping its own, and said as nothing of it can be shown.
+        set_aside(folder, &read.name, progress);
+        mark(journals, &claimed);
+        return Link::SetAside;
+    };
+    let follow = is_now(header.file) && !is_now(kept.file) && header.base_seq >= kept.seq;
+    let newer_of_one_version = kept.file.is_some() && kept.file == unclaimed.file && unclaimed.seq > kept.seq;
+    if follow || newer_of_one_version {
+        let said = !follow && kept.would_be_lost(&unclaimed);
         journals.remove(&claimed);
         set_aside(folder, &claimed, progress);
         let tab = &mut record.tabs[at];
         tab.file = header.file;
         tab.page_count = header.file_pages;
-        // What the record said of the old list (its file changed under it) isn't so of this one, which is about the file as it is.
-        tab.notice = None;
-        return Link::TakesOver(at);
+        if follow {
+            // What the record said of the old list (its file changed under it) isn't so of this one, which is about the file as it is.
+            tab.notice = None;
+        }
+        return Link::TakesOver { at, said };
     }
     set_aside(folder, &read.name, progress);
+    if unclaimed.would_be_lost(&kept) {
+        mark(journals, &claimed);
+    }
     Link::SetAside
+}
+
+/// The list kept for a tab is told another of its lists was set aside beside it.
+fn mark(journals: &mut HashMap<String, RestoredEdits>, kept: &str) {
+    if let Some(list) = journals.get_mut(kept) {
+        list.set_aside_beside = true;
+    }
 }
 
 /// A journal kept to one side under the store's `.not-merged` name, its sidecar gone with it.

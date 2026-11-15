@@ -149,7 +149,7 @@ impl<L: DocLoader> Session<L> {
                 // A file gone, a password asked for or another tab's edits kept elsewhere is still so, and said over this.
                 if !matches!(
                     tab.file.notice(),
-                    Some(FileNotice::Missing | FileNotice::NeedsPassword | FileNotice::EditsNotMerged)
+                    Some(FileNotice::Missing | FileNotice::NeedsPassword | FileNotice::EditsNotMerged | FileNotice::EditsSetAsideAfterQuit)
                 ) {
                     tab.file
                         .set_notice(Some(if replaced { FileNotice::Changed } else { FileNotice::HistoryRolledOff }));

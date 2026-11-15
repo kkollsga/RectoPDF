@@ -249,6 +249,7 @@ fn restored_from(parsed: &ParsedJournal) -> Option<RestoredEdits> {
         seq: parsed.header.base_seq + applied as u64,
         lost_lines: lost,
         rolled_off: false,
+        set_aside_beside: false,
     })
 }
 

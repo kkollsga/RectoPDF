@@ -137,6 +137,7 @@ mod tests {
             seq: 1,
             lost_lines: false,
             rolled_off: false,
+            set_aside_beside: false,
         };
         let mut after = Session::new(crate::DrawableLoader);
         after

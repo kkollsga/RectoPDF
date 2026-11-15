@@ -28,6 +28,11 @@ pub enum FileNotice {
         /// How many edits followed.
         edits: u32,
     },
+    /// A launch found two lists of this one tab's unsaved edits that a crash left (a journal started again under another name, or a follow's, cut
+    /// short), kept one, and set the other aside in the state folder with its edits not all in this one (`recto_control`'s `record_store/followed.rs`,
+    /// review M2). **Never written into a record**, as [`Self::EditsFollowed`] isn't: an app from before it can't read it. Said until the person discards
+    /// or the app quits, as [`Self::EditsNotMerged`] is said.
+    EditsSetAsideAfterQuit,
 }
 
 impl FileNotice {
@@ -42,6 +47,7 @@ impl FileNotice {
             Self::EditsNotMerged => "edits_not_merged",
             Self::HistoryRolledOff => "history_rolled_off",
             Self::EditsFollowed { .. } => "edits_followed",
+            Self::EditsSetAsideAfterQuit => "edits_set_aside_after_quit",
         }
     }
 
@@ -70,6 +76,10 @@ impl FileNotice {
             // The owner's words, 2026-11-15.
             (Self::EditsFollowed { .. }, _) => {
                 "This file was changed by another program. Your unsaved edits were moved onto the same pages of the new version."
+            }
+            // The coordinator's words, 2026-11-15, put to the owner: one line to change.
+            (Self::EditsSetAsideAfterQuit, _) => {
+                "After an unexpected quit, this tab had two lists of unsaved edits that can't be merged. These are one list, and the other has been kept in the state folder. Nothing has been written to the file."
             }
             (Self::EditsUnreadable, _) => {
                 "Some of this tab's unsaved edits couldn't be read back, so it shows what could be. What couldn't has been kept in the state folder, and nothing has been written to the file."
