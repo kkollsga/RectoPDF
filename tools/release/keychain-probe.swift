@@ -4,7 +4,11 @@
 // keychain the default and the only one searched while it runs, so this touches nothing else. It prints the status code and the time,
 // never the item's bytes.
 //
-//   keychain-probe <add|read|delete> <none|per-call|global>
+//   keychain-probe <add|read|delete|add-open> <none|per-call|global> [<keychain>]
+//
+// With a keychain named, the lookup searches that keychain alone (kSecMatchSearchList) and an add puts the item there (kSecUseKeychain),
+// as the app does with the login keychain; with none, the default search list and the default keychain. `add-open` adds with an
+// access list that lets any application read the item, as a planter could.
 //
 // `global` refuses interaction for the whole process (SecKeychainSetUserInteractionAllowed), as the app does; `per-call` sets only
 // kSecUseAuthenticationUIFail on the query, which Apple's header says governs data-protection items only; `none` refuses nothing, to show
@@ -14,8 +18,8 @@ import Security
 
 let build = "PROBE_BUILD"
 let args = CommandLine.arguments
-guard args.count == 3, ["add", "read", "delete"].contains(args[1]), ["none", "per-call", "global"].contains(args[2]) else {
-    FileHandle.standardError.write("usage: keychain-probe <add|read|delete> <none|per-call|global>\n".data(using: .utf8)!)
+guard args.count == 3 || args.count == 4, ["add", "read", "delete", "add-open"].contains(args[1]), ["none", "per-call", "global"].contains(args[2]) else {
+    FileHandle.standardError.write("usage: keychain-probe <add|read|delete|add-open> <none|per-call|global> [<keychain>]\n".data(using: .utf8)!)
     exit(2)
 }
 let (mode, interaction) = (args[1], args[2])
@@ -30,15 +34,40 @@ var query: [String: Any] = [
 if interaction == "per-call" {
     query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
 }
+var named: SecKeychain?
+if args.count == 4 {
+    guard SecKeychainOpen(args[3], &named) == errSecSuccess, named != nil else {
+        print("\(build) \(mode): the keychain couldn't be opened")
+        exit(3)
+    }
+}
 let started = Date()
 var status: OSStatus
 switch mode {
-case "add":
+case "add", "add-open":
     var bytes = [UInt8](repeating: 0, count: 32)
     _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
     query[kSecValueData as String] = Data(bytes)
+    if let named { query[kSecUseKeychain as String] = named }
+    if mode == "add-open" {
+        // Any application may read it: the decrypt entries' application list set to none, which means any.
+        var access: SecAccess?
+        guard SecAccessCreate("keychain-probe" as CFString, nil, &access) == errSecSuccess, let access else {
+            print("\(build) add-open: no access list"); exit(3)
+        }
+        let acls = SecAccessCopyMatchingACLList(access, kSecACLAuthorizationDecrypt) as? [SecACL] ?? []
+        for acl in acls {
+            var apps: CFArray?
+            var description: CFString?
+            var prompt = SecKeychainPromptSelector()
+            _ = SecACLCopyContents(acl, &apps, &description, &prompt)
+            _ = SecACLSetContents(acl, nil, description ?? ("keychain-probe" as CFString), prompt)
+        }
+        query[kSecAttrAccess as String] = access
+    }
     status = SecItemAdd(query as CFDictionary, nil)
 case "read":
+    if let named { query[kSecMatchSearchList as String] = [named] }
     query[kSecReturnData as String] = true
     query[kSecMatchLimit as String] = kSecMatchLimitOne
     var found: CFTypeRef?
@@ -48,6 +77,7 @@ case "read":
         exit(4)
     }
 default:
+    if let named { query[kSecMatchSearchList as String] = [named] }
     status = SecItemDelete(query as CFDictionary)
 }
 let ms = Int(Date().timeIntervalSince(started) * 1000)
