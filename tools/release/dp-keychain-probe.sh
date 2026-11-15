@@ -4,7 +4,10 @@
 # keychain, in the team's access group). Run by the release preflight, on its runner only: the data-protection keychain has no file of its
 # own to point a probe at, so nothing of this runs on a person's Mac.
 #
-#   tools/release/dp-keychain-probe.sh <signing identity> <provisioning profile>
+#   tools/release/dp-keychain-probe.sh --build <folder>                                   Builds the probes into <folder>, with no secret
+#                                                                                         anywhere: the release's rule that nothing is compiled
+#                                                                                         while a signing key is loaded (the second security read).
+#   tools/release/dp-keychain-probe.sh <signing identity> <provisioning profile> <folder>  Bundles, signs and runs what --build made there.
 #
 # First the profile is checked, and the run stops with a plain sentence if it isn't the one the app needs: a macOS Developer ID profile
 # (all devices) for the app's App ID and team, allowing the app's keychain group, expiring more than 60 days from now, and made for the
@@ -23,8 +26,8 @@
 #   4. C+ is stopped by the system at launch, or, if it runs, is refused as C is.
 #   5. B still reads A's bytes after all of that.
 #   6. A deletes it, and B then finds nothing.
-#   7. The app's own code, as it ships (the security read's F3): `recto-keychain-probe`, built from crates/recto-platform with the
-#      `keychain-probe` feature, runs the app's own way to its key (the same dictionaries, switch and release check) under a probe's
+#   7. The app's own code, as it ships (the security read's F3): `recto-keychain-probe`, built by --build from crates/recto-platform
+#      with the `keychain-probe` feature, runs the app's own way to its key (the same dictionaries, switch and release check) under a probe's
 #      service name, in a bundle signed as A is: its key comes from the keychain, and a second launch reads the same one; signed by the
 #      team without the entitlements it gets a key in memory for now (keychain_not_entitled); signed ad hoc, a key in memory
 #      (not_signed_by_the_team), never asking.
@@ -33,9 +36,63 @@
 # Removes the item and everything it made on any exit.
 set -euo pipefail
 umask 077
-identity="${1:?usage: tools/release/dp-keychain-probe.sh <signing identity> <provisioning profile>}"
-profile="${2:?usage: tools/release/dp-keychain-probe.sh <signing identity> <provisioning profile>}"
 root="$(cd "$(dirname "$0")/../.." && pwd)"
+# What tells apart why a signing would wait (run 43751288571 hung at its first team signing for the job's whole 20 minutes): the keychains
+# searched and the default, the signing keychain's settings (asked under a limit, as a locked keychain may wait to be unlocked), and how many
+# signing identities are found. Paths and counts only.
+now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time * 1000'; }
+keychains() {
+  echo "  keychains searched: $(security list-keychains -d user | tr -d '"' | tr -s ' \n' ' ')"
+  echo "  default keychain: $(security default-keychain -d user | tr -d '" ')"
+  if [ -n "${PREFLIGHT_KEYCHAIN:-}" ]; then
+    case " $(security list-keychains -d user | tr -d '"' | tr -s ' \n' ' ') " in
+      *" $PREFLIGHT_KEYCHAIN "*) echo "  the signing keychain is searched" ;;
+      *) echo "  the signing keychain isn't searched" ;;
+    esac
+    echo "  the signing keychain's settings: $(perl -e 'alarm shift; exec @ARGV' 10 security show-keychain-info "$PREFLIGHT_KEYCHAIN" 2>&1 | tr '\n' ' ' || true)"
+  fi
+  echo "  signing identities: $(perl -e 'alarm shift; exec @ARGV' 10 security find-identity -v -p codesigning 2>/dev/null | tail -1 || true)"
+}
+# limited <seconds> <what> <command...>: the command under a limit, with its milliseconds; one that passes its limit hung, which is said with
+# the keychains as they are then, and ends the run.
+limited() {
+  local limit="$1" what="$2" started code=0 ms
+  shift 2
+  started=$(now_ms)
+  perl -e 'alarm shift; exec @ARGV' "$limit" "$@" || code=$?
+  ms=$(($(now_ms) - started))
+  if [ "$code" -eq 142 ]; then
+    echo "::error::$what didn't finish in $limit s: it hung"
+    keychains
+    exit 1
+  elif [ "$code" -ne 0 ]; then
+    echo "::error::$what failed (exit $code, after $ms ms)"
+    exit 1
+  fi
+  echo "  ok  $what ($ms ms)"
+}
+
+# --build: the Swift probe four times, and the app's own key path from crates/recto-platform, into a folder; no secret is needed or read.
+if [ "${1:-}" = --build ]; then
+  out="${2:?usage: tools/release/dp-keychain-probe.sh --build <folder>}"
+  mkdir -p "$out"
+  echo "The builds"
+  for build in a b d e; do
+    sed "s/PROBE_BUILD/$build/" "$root/tools/release/dp-keychain-probe.swift" > "$out/$build.swift"
+    limited 120 "building $build" swiftc -O "$out/$build.swift" -o "$out/$build"
+  done
+  limited 1200 "building the app's own key path" \
+    cargo build --release --locked --manifest-path "$root/Cargo.toml" -p recto-platform --features keychain-probe --bin recto-keychain-probe
+  cp "${CARGO_TARGET_DIR:-$root/target}/release/recto-keychain-probe" "$out/own"
+  exit 0
+fi
+usage="usage: tools/release/dp-keychain-probe.sh <signing identity> <provisioning profile> <folder from --build>"
+identity="${1:?$usage}"
+profile="${2:?$usage}"
+built="${3:?$usage}"
+for program in a b d e own; do
+  [ -x "$built/$program" ] || { echo "::error::$built/$program isn't there: run tools/release/dp-keychain-probe.sh --build first, before any key is loaded" >&2; exit 1; }
+done
 dir="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dp-keychain-probe.XXXXXX")"
 team=$(sed -n 's/^pub const TEAM_ID: &str = "\([A-Z0-9]*\)";$/\1/p' "$root/crates/recto-update/src/lib.rs")
 [ -n "$team" ] || { echo "::error::the team's ID couldn't be read from crates/recto-update/src/lib.rs" >&2; exit 1; }
@@ -91,48 +148,9 @@ print(f"  ok  macOS Developer ID, {app_id}, keychain group allowed, expires {exp
 EOF
 rm -f "$dir/profile.plist"
 
-# What tells apart why a signing would wait (run 43751288571 hung at its first team signing for the job's whole 20 minutes): the keychains
-# searched and the default, the signing keychain's settings (asked under a limit, as a locked keychain may wait to be unlocked), and how many
-# signing identities are found. Paths and counts only.
-now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time * 1000'; }
-keychains() {
-  echo "  keychains searched: $(security list-keychains -d user | tr -d '"' | tr -s ' \n' ' ')"
-  echo "  default keychain: $(security default-keychain -d user | tr -d '" ')"
-  if [ -n "${PREFLIGHT_KEYCHAIN:-}" ]; then
-    case " $(security list-keychains -d user | tr -d '"' | tr -s ' \n' ' ') " in
-      *" $PREFLIGHT_KEYCHAIN "*) echo "  the signing keychain is searched" ;;
-      *) echo "  the signing keychain isn't searched" ;;
-    esac
-    echo "  the signing keychain's settings: $(perl -e 'alarm shift; exec @ARGV' 10 security show-keychain-info "$PREFLIGHT_KEYCHAIN" 2>&1 | tr '\n' ' ' || true)"
-  fi
-  echo "  signing identities: $(perl -e 'alarm shift; exec @ARGV' 10 security find-identity -v -p codesigning 2>/dev/null | tail -1 || true)"
-}
-# limited <seconds> <what> <command...>: the command under a limit, with its milliseconds; one that passes its limit hung, which is said with
-# the keychains as they are then, and ends the run.
-limited() {
-  local limit="$1" what="$2" started code=0 ms
-  shift 2
-  started=$(now_ms)
-  perl -e 'alarm shift; exec @ARGV' "$limit" "$@" || code=$?
-  ms=$(($(now_ms) - started))
-  if [ "$code" -eq 142 ]; then
-    echo "::error::$what didn't finish in $limit s: it hung"
-    keychains
-    exit 1
-  elif [ "$code" -ne 0 ]; then
-    echo "::error::$what failed (exit $code, after $ms ms)"
-    exit 1
-  fi
-  echo "  ok  $what ($ms ms)"
-}
-
 echo "The keychains, before any signing"
 keychains
-echo "The builds"
-for build in a b d e; do
-  sed "s/PROBE_BUILD/$build/" "$root/tools/release/dp-keychain-probe.swift" > "$dir/$build.swift"
-  limited 120 "building $build" swiftc -O "$dir/$build.swift" -o "$dir/$build"
-done
+for build in a b d e; do cp "$built/$build" "$dir/$build"; done
 cat > "$dir/probe.entitlements" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -242,10 +260,7 @@ step ok A delete
 step gone B read
 
 echo "7. The app's own code, as it ships, takes its key from the keychain"
-target="${CARGO_TARGET_DIR:-$root/target}"
-limited 1200 "building the app's own key path" \
-  cargo build --release --locked --manifest-path "$root/Cargo.toml" -p recto-platform --features keychain-probe --bin recto-keychain-probe
-bundle R "$target/release/recto-keychain-probe"
+bundle R "$built/own"
 limited 60 "the team signing R, the app's own code, with the entitlements and its profile" \
   codesign --force --options runtime --timestamp=none --entitlements "$dir/probe.entitlements" --sign "$sign_key" "$dir/R.app"
 cp -R "$dir/R.app" "$dir/Rbare.app"

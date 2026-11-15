@@ -19,6 +19,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # THE RULE, as release.yml's: nothing is compiled or run of the product while a signing key or the notarization key is loaded, as a
+      # build script could sign or notarize as the team (the second security read of the Find key's branch, 2026-11-15). So everything this
+      # job builds is built here, first, with no secret in any step's environment; the steps after the keys only bundle, sign and run it.
+      - name: Rust, as pinned in rust-toolchain.toml, with no secret here
+        run: rustup toolchain install
+      - name: Build the probes, the app's own key path among them, with no secret here
+        run: tools/release/dp-keychain-probe.sh --build "$RUNNER_TEMP/dp-probe-built"
       - name: Certificate and notarization key, from the Environment's secrets
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
@@ -46,9 +53,6 @@ jobs:
       # the profile is checked (Developer ID, macOS, the app's App ID, team and keychain group, 60 days or more to run, made for the
       # certificate that signs), then bundles signed with it are launched and the probe measures what must hold. The profile goes to a
       # file of this job's alone and is never printed; neither is the certificate.
-      # The probe builds the app's own way to its key from crates/recto-platform (its section 7), so Rust as pinned, as CI has it.
-      - name: Rust, as pinned in rust-toolchain.toml
-        run: rustup toolchain install
       - name: The provisioning profile, and the Find key in the data-protection keychain
         env:
           MACOS_PROVISION_PROFILE: ${{ secrets.MACOS_PROVISION_PROFILE }}
@@ -56,10 +60,10 @@ jobs:
           [ -n "$MACOS_PROVISION_PROFILE" ] || { echo "::error::set the secret MACOS_PROVISION_PROFILE: the app's Developer ID provisioning profile, base64 (docs/RELEASING.md)"; exit 1; }
           umask 077
           printf '%s' "$MACOS_PROVISION_PROFILE" | base64 --decode > "$RUNNER_TEMP/recto.provisionprofile"
-          tools/release/dp-keychain-probe.sh "$PREFLIGHT_IDENTITY" "$RUNNER_TEMP/recto.provisionprofile"
+          tools/release/dp-keychain-probe.sh "$PREFLIGHT_IDENTITY" "$RUNNER_TEMP/recto.provisionprofile" "$RUNNER_TEMP/dp-probe-built"
       - name: Remove the keychain and anything of a secret
         if: always()
         run: |
           tools/release/keychain.sh --remove "$RUNNER_TEMP/recto-preflight.keychain-db"
           rm -f "$RUNNER_TEMP/preflight-probe" "$RUNNER_TEMP/recto.provisionprofile"
-          rm -rf "$RUNNER_TEMP"/dp-keychain-probe.*
+          rm -rf "$RUNNER_TEMP"/dp-keychain-probe.* "$RUNNER_TEMP/dp-probe-built"
