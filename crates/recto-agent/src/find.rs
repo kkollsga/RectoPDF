@@ -248,16 +248,25 @@ pub(crate) fn page_hits(text: &str, needle: &str, page: u32, room: usize, is_hid
     (total, hits)
 }
 
+/// Whether a cut between `before` and `after` would split one letter on screen: `after` is a mark, a joiner or a skin tone for it, or `before` is a
+/// zero-width joiner, which joins what follows it to what's before it (an emoji family is one sequence of them). A sequence longer than the cap is left
+/// out whole, so a piece never ends or starts on a joiner.
+fn glued(before: char, after: char) -> bool {
+    recto_core::extends_previous(after) || before == '\u{200d}'
+}
+
 /// The last [`BEFORE`] characters of what's before a hit, on one line, starting on a word.
 fn piece_before(text: &str) -> Box<str> {
     let taken: Vec<char> = text.chars().rev().take(BEFORE + 1).collect();
     let cut = taken.len() > BEFORE;
     let mut kept: Vec<char> = taken.iter().take(BEFORE).rev().copied().collect();
+    // Cut text is said to be, if there was any in the window to say: a window of blanks and controls only isn't.
+    let had_text = cut && kept.iter().any(|c| !c.is_whitespace() && !c.is_control());
     if cut {
         start_on_a_word(&mut kept, taken[BEFORE]);
     }
     let joined = one_line(&kept.into_iter().collect::<String>(), true);
-    if cut && !joined.is_empty() {
+    if had_text {
         format!("{CUT}{}", joined.trim_start()).into()
     } else {
         joined.into()
@@ -268,12 +277,13 @@ fn piece_before(text: &str) -> Box<str> {
 fn piece(text: &str, most: usize) -> Box<str> {
     let mut kept: Vec<char> = text.chars().take(most + 1).collect();
     let cut = kept.len() > most;
+    let had_text = cut && kept.iter().any(|c| !c.is_whitespace() && !c.is_control());
     if cut {
         let next = kept.remove(most);
         end_on_a_word(&mut kept, next);
     }
     let joined = one_line(&kept.into_iter().collect::<String>(), false);
-    if cut && !joined.is_empty() {
+    if had_text {
         format!("{}{CUT}", joined.trim_end()).into()
     } else {
         joined.into()
@@ -294,8 +304,11 @@ fn start_on_a_word(kept: &mut Vec<char>, before: char) {
         kept.drain(..space);
         return;
     }
-    let inside = kept.iter().take_while(|c| recto_core::extends_previous(**c)).count();
-    kept.drain(..inside);
+    let mut before = before;
+    while let Some(first) = kept.first().copied().filter(|first| glued(before, *first)) {
+        before = first;
+        kept.remove(0);
+    }
 }
 
 /// The same at the end of a piece: `kept` is the first characters of what's after the hit, and `next` the one just past its end.
@@ -311,8 +324,8 @@ fn end_on_a_word(kept: &mut Vec<char>, next: char) {
     }
     // Cut with no space: not before an extender, which would be left without its letter.
     let mut next = next;
-    while recto_core::extends_previous(next) {
-        let Some(last) = kept.pop() else { break };
+    while let Some(last) = kept.last().copied().filter(|last| glued(*last, next)) {
+        kept.pop();
         next = last;
     }
 }
@@ -962,6 +975,7 @@ mod tests {
     /// where the 24 characters before it and the 64 after it end, for clusters of two and three characters and for letters of several scripts.
     #[test]
     fn a_row_never_cuts_a_letter_from_its_marks() {
+        let glue_free = |before: char, after: char| !super::glued(before, after);
         let ends = |row: &Hit, text: &str| {
             let (before, after) = (row.before.trim_start_matches('\u{2026}'), row.after.trim_end_matches('\u{2026}'));
             let start = row.start as usize - before.chars().count();
@@ -978,6 +992,7 @@ mod tests {
             ("e\u{301}\u{323}", "two accents"),
             ("\u{1f44d}\u{1f3fd}", "an emoji with its skin tone"),
             ("\u{e01}\u{e34}\u{e49}", "Thai with its vowel and tone mark"),
+            ("\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}", "a family joined by joiners"),
         ] {
             let width = unit.chars().count();
             for shift in 0..=width {
@@ -996,8 +1011,37 @@ mod tests {
                     row.after
                 );
                 assert!(before_it.is_some(), "{what}, shift {shift}: the cut was made");
+                // A joiner is never the last thing in a piece, or the first after the cut: the sequence is whole or left out.
+                assert!(
+                    !row.after.trim_end_matches('\u{2026}').ends_with('\u{200d}'),
+                    "{what}, shift {shift}: a dangling joiner: {:?}",
+                    row.after
+                );
+                assert!(
+                    !row.before.trim_start_matches('\u{2026}').starts_with('\u{200d}'),
+                    "{what}, shift {shift}: starts on a joiner: {:?}",
+                    row.before
+                );
+                if let (Some(joined), Some(next)) = (row.after.trim_end_matches('\u{2026}').chars().last(), after_it) {
+                    assert!(glue_free(joined, next), "{what}, shift {shift}: cut inside a sequence");
+                }
+                if let (Some(first), Some(prev)) = (first, before_it) {
+                    assert!(glue_free(prev, first), "{what}, shift {shift}: cut inside a sequence at the start");
+                }
             }
         }
+    }
+
+    /// Failure: text that is only marks around the hit is cut to nothing, and the row says nothing of it: no ellipsis where text was cut.
+    #[test]
+    fn a_cut_that_leaves_only_marks_still_says_so() {
+        let zalgo = "\u{301}\u{323}\u{338}".repeat(60);
+        let row = &hits(&format!("{zalgo}needle{zalgo}"), "needle")[0];
+        assert_eq!((&*row.before, &*row.after), ("\u{2026}", "\u{2026}"), "text was cut, and the row says so");
+        // Nothing but blanks cut: nothing to say.
+        let blank = " ".repeat(200);
+        let row = &hits(&format!("{blank}needle{blank}"), "needle")[0];
+        assert!(!row.before.contains('\u{2026}') && !row.after.contains('\u{2026}'), "{row:?}");
     }
 
     /// Failure: a control character from the document reaches a row as it is.
