@@ -236,10 +236,15 @@ fn the_page_text_the_notice_says_is_stored_encrypted_is_not_in_the_folder_in_the
     let app = disk.builder().indexing(true).start();
     app.open(&file);
     let found = app.recto(Level::ReadOnly, &["search", "zebrafish"]).expect("searched");
-    assert!(found.to_string().contains("zebrafish"), "the search finds the word, so the text is in the corpus: {found}");
+    assert!(
+        found.to_string().contains("zebrafish"),
+        "the search finds the word, so the text is in the corpus: {found}"
+    );
     let corpus = app.disk().paths().corpus.clone();
     // The corpus is built off the session's thread, and usable only once its summary is written, last.
-    app.wait_until("the page text built and sealed", || files_under(&corpus).iter().any(|path| path.ends_with("ready.sealed")));
+    app.wait_until("the page text built and sealed", || {
+        files_under(&corpus).iter().any(|path| path.ends_with("ready.sealed"))
+    });
     let files = files_under(&corpus);
     assert!(files.iter().any(|path| path.ends_with("text.pack")), "the pack is there: {files:?}");
     for path in files {
