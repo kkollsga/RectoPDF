@@ -567,6 +567,8 @@ mod tests {
             r#"{"cmd":"palette","query":"zyxwvuNEEDLE"}"#,
             r#"{"cmd":"find","query":"zyxwvuNEEDLE"}"#,
             r#"{"cmd":"search","query":"zyxwvuNEEDLE"}"#,
+            // The one route a password travels on a command: a quiet run's `qa password`, whose value is read from stdin. Only the verb is logged.
+            r#"{"cmd":"qa_drive","verb":"password","value":"zyxwvuNEEDLE"}"#,
         ] {
             let command = recto_agent::read(line).unwrap_or_else(|refused| panic!("{line}: {:?}", refused.error));
             log.record(command.tag(), Level::Control, "ok", &command.log_details());
