@@ -39,3 +39,8 @@ pub(super) fn prompts_switched_off() -> bool {
 pub(super) fn load_or_create(_service: &str, _account: &str, _group: &str) -> Result<FindKey, Refused> {
     Err(Refused::Unavailable)
 }
+
+#[cfg(feature = "keychain-probe")]
+pub(super) fn remove(_service: &str, _account: &str, _group: &str) -> i32 {
+    -1
+}

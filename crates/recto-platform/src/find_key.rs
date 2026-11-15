@@ -261,8 +261,13 @@ impl App {
 
 /// **The app's own key, and why it isn't the Keychain's when it isn't.** The Keychain is asked only by a copy that is the team's release, checked whole ([`keychain`]); any refusal, and every other copy, gets a key in memory, with the refusal's code. `None` only when the OS gives no randomness, and then nothing is indexed. The only way to the Keychain from outside this crate. Its one caller is `recto_control::find_keys::AppKey`, made only by the app's start; the indexer takes it on no main thread.
 pub fn load_for_the_app(app: App) -> Option<(FindKey, Option<&'static str>)> {
+    load_under(app, keychain::SERVICE)
+}
+
+/// The app's way to its key under `service`: [`keychain::SERVICE`] for the app, and a probe's own for the release preflight, so what the preflight measures is this very code (the security read's F3).
+fn load_under(app: App, service: &str) -> Option<(FindKey, Option<&'static str>)> {
     let refused = match refused_by(keychain::signed_as_a_release(app.team)) {
-        None => match keychain::load_or_create(keychain::SERVICE, keychain::ACCOUNT, &app.access_group()) {
+        None => match keychain::load_or_create(service, keychain::ACCOUNT, &app.access_group()) {
             // Said in `qa state` if the switch couldn't be set: nothing prompted, but nothing then guarded against it.
             Ok(key) => return Some((key, why_with_the_keychains_key(keychain::prompts_switched_off()))),
             Err(refused) => refused,
@@ -270,6 +275,24 @@ pub fn load_for_the_app(app: App) -> Option<(FindKey, Option<&'static str>)> {
         Some(refused) => refused,
     };
     FindKey::fresh(fallback_source(refused)).ok().map(|key| (key, Some(refused.code())))
+}
+
+/// **For the release preflight's probe only** (`recto-keychain-probe`, built with the `keychain-probe` feature, which nothing shipped turns on): the app's own way to its key, under the probe's `service`, and the item's removal after.
+#[cfg(feature = "keychain-probe")]
+pub mod probe {
+    use super::{App, FindKey, keychain, load_under};
+
+    /// As the app takes its key, under `service`.
+    #[must_use]
+    pub fn load(app: App, service: &str) -> Option<(FindKey, Option<&'static str>)> {
+        load_under(app, service)
+    }
+
+    /// Removes the probe's item: its status.
+    #[must_use]
+    pub fn remove(app: App, service: &str) -> i32 {
+        keychain::remove(service, keychain::ACCOUNT, &app.access_group())
+    }
 }
 
 /// What's said beside a key the Keychain gave: nothing, unless the process-wide switch couldn't be set, which doesn't stop the key being taken (the security read's F1).

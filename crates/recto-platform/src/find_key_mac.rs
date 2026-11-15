@@ -98,6 +98,8 @@ unsafe extern "C" {
 struct Security {
     copy_matching: unsafe extern "C" fn(CfRef, *mut CfRef) -> OsStatus,
     add: unsafe extern "C" fn(CfRef, *mut CfRef) -> OsStatus,
+    #[cfg(feature = "keychain-probe")]
+    delete: unsafe extern "C" fn(CfRef) -> OsStatus,
     copy_self: unsafe extern "C" fn(u32, *mut CfRef) -> OsStatus,
     copy_static: unsafe extern "C" fn(CfRef, u32, *mut CfRef) -> OsStatus,
     #[cfg(test)]
@@ -166,6 +168,8 @@ fn security() -> Option<&'static Security> {
                 Some(Security {
                     copy_matching: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(CfRef, *mut CfRef) -> OsStatus>(find(c"SecItemCopyMatching")?),
                     add: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(CfRef, *mut CfRef) -> OsStatus>(find(c"SecItemAdd")?),
+                    #[cfg(feature = "keychain-probe")]
+                    delete: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(CfRef) -> OsStatus>(find(c"SecItemDelete")?),
                     copy_self: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(u32, *mut CfRef) -> OsStatus>(find(c"SecCodeCopySelf")?),
                     copy_static: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(CfRef, u32, *mut CfRef) -> OsStatus>(find(c"SecCodeCopyStaticCode")?),
                     #[cfg(test)]
@@ -349,6 +353,27 @@ pub(super) fn load_or_create(service: &str, account: &str, group: &str) -> Resul
         ERR_SEC_DUPLICATE_ITEM => load_existing(sec, query.0),
         status => Err(refusal(status)),
     }
+}
+
+/// Removes the item under `service` and `account` in `group`, for the release preflight's probe alone: its status, or -1 when nothing could be asked.
+#[cfg(feature = "keychain-probe")]
+pub(super) fn remove(service: &str, account: &str, group: &str) -> OsStatus {
+    let Some(sec) = security() else { return -1 };
+    let (Some(service), Some(account), Some(group)) = (cf_string(service), cf_string(account), cf_string(group)) else {
+        return -1;
+    };
+    let Some(query) = dictionary(&[
+        (sec.keys.class, sec.keys.generic_password),
+        (sec.keys.service, service.0),
+        (sec.keys.account, account.0),
+        // SAFETY: a framework constant, never released.
+        (sec.keys.data_protection, unsafe { kCFBooleanTrue }),
+        (sec.keys.access_group, group.0),
+    ]) else {
+        return -1;
+    };
+    // SAFETY: a query dictionary.
+    unsafe { (sec.delete)(query.0) }
 }
 
 /// The item's names, as CoreFoundation strings.

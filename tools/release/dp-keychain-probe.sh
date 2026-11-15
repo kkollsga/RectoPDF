@@ -23,6 +23,11 @@
 #   4. C+ is stopped by the system at launch, or, if it runs, is refused as C is.
 #   5. B still reads A's bytes after all of that.
 #   6. A deletes it, and B then finds nothing.
+#   7. The app's own code, as it ships (the security read's F3): `recto-keychain-probe`, built from crates/recto-platform with the
+#      `keychain-probe` feature, runs the app's own way to its key (the same dictionaries, switch and release check) under a probe's
+#      service name, in a bundle signed as A is: its key comes from the keychain, and a second launch reads the same one; signed by the
+#      team without the entitlements it gets a key in memory for now (keychain_not_entitled); signed ad hoc, a key in memory
+#      (not_signed_by_the_team), never asking.
 # No step may wait: there's no switch to turn prompts off here, and one that waits past its limit is taken as a prompt and fails the run.
 # Prints status codes, times and an 8-hex prefix of the probe's own random bytes' hash; never the profile, the certificate or the item.
 # Removes the item and everything it made on any exit.
@@ -39,6 +44,7 @@ app_id="$team.$bundle_id"
 group="$app_id"
 # shellcheck disable=SC2329 # run by the trap below
 cleanup() {
+  [ -x "$dir/R.app/Contents/MacOS/probe" ] && perl -e 'alarm shift; exec @ARGV' 20 "$dir/R.app/Contents/MacOS/probe" remove "$team" "$bundle_id" >/dev/null 2>&1
   for build in A B; do
     [ -x "$dir/$build.app/Contents/MacOS/probe" ] && perl -e 'alarm shift; exec @ARGV' 20 "$dir/$build.app/Contents/MacOS/probe" delete "$group" >/dev/null 2>&1 && break
   done
@@ -234,4 +240,43 @@ same_bytes B
 echo "6. A deletes it, and B then finds nothing"
 step ok A delete
 step gone B read
+
+echo "7. The app's own code, as it ships, takes its key from the keychain"
+target="${CARGO_TARGET_DIR:-$root/target}"
+limited 1200 "building the app's own key path" \
+  cargo build --release --locked --manifest-path "$root/Cargo.toml" -p recto-platform --features keychain-probe --bin recto-keychain-probe
+bundle R "$target/release/recto-keychain-probe"
+limited 60 "the team signing R, the app's own code, with the entitlements and its profile" \
+  codesign --force --options runtime --timestamp=none --entitlements "$dir/probe.entitlements" --sign "$sign_key" "$dir/R.app"
+cp -R "$dir/R.app" "$dir/Rbare.app"
+limited 60 "the team signing R again without the entitlements" codesign --force --options runtime --timestamp=none --sign "$sign_key" "$dir/Rbare.app"
+cp -R "$dir/R.app" "$dir/Radhoc.app"
+limited 60 "signing R ad hoc" codesign --force --sign - "$dir/Radhoc.app"
+# own <name> <what it must say, as a pattern>: one launch of the app's own code, its answer held to the pattern, its milliseconds said.
+own_key=""
+own() {
+  local name="$1" want="$2" out code=0 started ms
+  started=$(now_ms)
+  out="$(perl -e 'alarm shift; exec @ARGV' 60 "$dir/$name.app/Contents/MacOS/probe" load "$team" "$bundle_id" 2>/dev/null)" || code=$?
+  ms=$(($(now_ms) - started))
+  # shellcheck disable=SC2053 # the wanted answer is a pattern on purpose: the key's hash isn't known ahead
+  if [ "$code" -eq 142 ]; then
+    echo "::error::waited, as on a prompt: $name"
+    failed=1
+  elif [[ "$out" == $want ]]; then
+    echo "  ok  $name: $out ($ms ms)"
+  else
+    echo "::error::wanted $want: $name: ${out:-no answer (exit $code)} ($ms ms)"
+    failed=1
+  fi
+  own_key="$(printf '%s' "$out" | sed -n 's/.* key=\([0-9a-f]*\)$/\1/p')"
+}
+own R "source=keychain why=- key=*"
+first_key="$own_key"
+own R "source=keychain why=- key=*"
+if [ -n "$first_key" ] && [ "$own_key" = "$first_key" ]; then echo "  ok  a second launch read the same key"; else echo "::error::a second launch of the app's own code didn't read the key the first made"; failed=1; fi
+own Rbare "source=memory why=keychain_not_entitled key=*"
+own Radhoc "source=memory why=not_signed_by_the_team key=*"
+out="$(perl -e 'alarm shift; exec @ARGV' 20 "$dir/R.app/Contents/MacOS/probe" remove "$team" "$bundle_id" 2>/dev/null || true)"
+if [ "$out" = "status=0" ]; then echo "  ok  R removed its item"; else echo "::error::R couldn't remove its item: ${out:-no answer}"; failed=1; fi
 exit "$failed"
