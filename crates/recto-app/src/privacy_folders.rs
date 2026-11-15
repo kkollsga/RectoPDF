@@ -245,14 +245,30 @@ fn the_page_text_the_notice_says_is_stored_encrypted_is_not_in_the_folder_in_the
     app.wait_until("the page text built and sealed", || {
         files_under(&corpus).iter().any(|path| path.ends_with("ready.sealed"))
     });
-    let files = files_under(&corpus);
-    assert!(files.iter().any(|path| path.ends_with("text.pack")), "the pack is there: {files:?}");
-    for path in files {
-        let bytes = std::fs::read(&path).expect("a file");
-        assert!(
-            !bytes.windows(b"zebrafish".len()).any(|window| window == b"zebrafish"),
-            "{} holds the document's words in the clear",
-            path.display()
-        );
+    // The builder may still be putting away a file of its own (its lock, a file it renames into place) after the summary is there: a file
+    // listed and gone before it's read starts the pass again, so every file that stays is read whole, and one that's there even for a
+    // moment is read if it's caught. (2026-11-15: main's check failed here on a listed file that was gone, the read's error unnamed.)
+    let mut passes = 0;
+    'pass: loop {
+        let files = files_under(&corpus);
+        assert!(files.iter().any(|path| path.ends_with("text.pack")), "the pack is there: {files:?}");
+        for path in &files {
+            let bytes = match std::fs::read(path) {
+                Ok(bytes) => bytes,
+                Err(gone) if gone.kind() == std::io::ErrorKind::NotFound => {
+                    passes += 1;
+                    assert!(passes < 50, "{} was listed and gone, 50 times over: the folder never settles", path.display());
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue 'pass;
+                }
+                Err(other) => panic!("{} couldn't be read: {other}", path.display()),
+            };
+            assert!(
+                !bytes.windows(b"zebrafish".len()).any(|window| window == b"zebrafish"),
+                "{} holds the document's words in the clear",
+                path.display()
+            );
+        }
+        break;
     }
 }
