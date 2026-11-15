@@ -5,7 +5,7 @@ use recto_proto::{TileRect, device_size};
 use recto_reader::engine::EngineEvents;
 use recto_reader::layout::PageBox;
 use recto_reader::paper::{DARK_PAPER, PageLook};
-use recto_reader::tiles::{Op, PageMap, SleepShot, SleepView, Viewport};
+use recto_reader::tiles::{Op, PageMap, SleepView, Viewport};
 use recto_reader::{Engine, EngineConfig, PaperKind};
 use recto_render_service::{DocRenderer, Policy, ServiceConfig, TileRequest, TileResult};
 use recto_testpdf::{Object, Page, TempPdf, first_extra_object, pages_with, text_lines};
@@ -493,59 +493,6 @@ fn a_white_page_whose_band_fills_its_first_tile_turns_over() {
     assert!(seen.iter().all(|rgb| *rgb == DARK_PAPER), "turned over to the paper's tone: {seen:06x?}");
 }
 
-/// Failure: a tab woken onto its sleep picture, where the slide shows dark, then turns the slide light on the first sharp tile, as a page with no images got a page of text's look when no picture of the whole page was at hand: the sleep picture stands for the page's preview, so the first job is a tile, on a renderer that has decided nothing. Every sharper tile of the slide shown after the sleep picture is dark, and the white page of text turns over as before.
-#[test]
-fn woken_onto_a_sleep_picture_a_dark_page_stays_dark() {
-    let file = slide_and_text_pages();
-    // The version a worker says the file is, as a sleep file keeps it: a picture of no known version gives way to a preview.
-    let version = {
-        let mut doc = renderer(&file.0);
-        doc.page_size(0).unwrap();
-        doc.known_version()
-    };
-    assert!(version.is_some());
-    for (page, dark) in [(0, true), (1, false)] {
-        let picture = PixelSurface::create(306, 396).unwrap();
-        let colour = if dark { [0u8, 0, 0, 0xFF] } else { [0x23, 0x20, 0x1E, 0xFF] };
-        picture
-            .with_pixels(|pixels| pixels.chunks_mut(4).for_each(|pixel| pixel.copy_from_slice(&colour)))
-            .unwrap();
-        let view_of_sleep = SleepView {
-            version,
-            usual: Some(PageBox { width: 612.0, height: 792.0 }),
-            sizes: Vec::new(),
-            pictures: vec![SleepShot {
-                page,
-                scale: 0.5,
-                paper: PaperKind::Dark,
-                surface: picture,
-            }],
-            handed_back: false,
-        };
-        let (shown, report) = shown_on_dark_paper_after(&file.0, 2, page, Policy::default(), view(0.0), |engine| {
-            engine.waking().note_wake(1, Instant::now());
-            engine.waking().give_sleep(1, view_of_sleep);
-        });
-        assert_eq!(report["last_wake"]["from_sleep"], true, "{report}");
-        // No preview was drawn, at about 1 a point here: the sleep picture stood for it, so the first job was a tile.
-        assert!(
-            !shown.iter().any(|tile| tile.density() > 0.6 && tile.density() < 1.5),
-            "a preview was drawn: {:?}",
-            shown.iter().map(Shown::density).collect::<Vec<_>>()
-        );
-        // Sharper than the sleep picture's 0.5 a point: what was drawn after it.
-        let seen = background_shown(&shown, page, 0.6);
-        assert!(!seen.is_empty(), "page {}: nothing sharp shown: {report}", page + 1);
-        for rgb in seen {
-            if dark {
-                assert!(luma(rgb) < 40, "the slide: {rgb:06x}");
-            } else {
-                assert_eq!(rgb, DARK_PAPER, "the page of text: {rgb:06x}");
-            }
-        }
-    }
-}
-
 /// Failure: the real USGS cover `70278165`, a photo under half of a black page, turns over on dark paper and comes out a white page round its photo (owner, 2026-11-13: a page already dark is never turned over). Decided from the look picture, with its images known and judged whole, it's shown as it is, dimmed.
 #[test]
 fn the_real_black_cover_is_never_turned_over() {
@@ -753,30 +700,16 @@ fn dark_paper_view_costs() {
         zoomed_in.as_secs_f64() * 1000.0,
         overview_took.as_secs_f64() * 1000.0
     );
-    // A wake onto a sleep picture of page 1, to the first tile sharper than it, ten times.
-    let version = {
-        let mut doc = renderer(&file.0);
-        doc.page_size(0).unwrap();
-        doc.known_version()
-    };
+    // A wake from a sleep file's facts, to the first sharp tile, ten times.
     let mut wakes = Vec::new();
     for _ in 0..10 {
         let engine = new_engine();
-        let picture = PixelSurface::create(306, 396).unwrap();
         engine.waking().note_wake(1, Instant::now());
         engine.waking().give_sleep(
             1,
             SleepView {
-                version,
                 usual: Some(PageBox { width: 612.0, height: 792.0 }),
                 sizes: Vec::new(),
-                pictures: vec![SleepShot {
-                    page: 0,
-                    scale: 0.5,
-                    paper: PaperKind::Dark,
-                    surface: picture,
-                }],
-                handed_back: false,
             },
         );
         let started = Instant::now();
@@ -806,7 +739,7 @@ fn dark_paper_view_costs() {
     }
     wakes.sort_unstable();
     println!(
-        "a wake onto a sleep picture to the first sharp tile: p50 {:.1} ms, most {:.1}",
+        "a wake from a sleep file's facts to the first sharp tile: p50 {:.1} ms, most {:.1}",
         wakes[wakes.len() / 2].as_secs_f64() * 1000.0,
         wakes[wakes.len() - 1].as_secs_f64() * 1000.0
     );

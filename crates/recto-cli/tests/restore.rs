@@ -832,63 +832,24 @@ fn coloured_with_id(colours: &[&str], id: &str) -> Vec<u8> {
     out
 }
 
-/// Which of red, green and blue each sleep file's pictures mostly are, read as anything else would, by the file's name.
-fn colours_in_sleep_files(state: &State) -> Vec<(String, Vec<&'static str>)> {
+/// Every sleep file in the state folder, read as anything else would: what each says it's about (no picture of any page is in one since 2026-11-15).
+fn sleep_files_read(state: &State) -> Vec<recto_session::sleep::SleepFile> {
     sleep_files(state)
         .iter()
-        .map(|file| {
-            let sleep = recto_session::sleep::decode_sleep(&std::fs::read(file).unwrap(), recto_session::record::CURRENT_VERSION).unwrap();
-            let colours = sleep.pictures.iter().map(|picture| {
-                let (blue, green, red) = picture.bgra.as_chunks::<4>().0.iter().fold((0u64, 0u64, 0u64), |sum, pixel| {
-                    (sum.0 + u64::from(pixel[0]), sum.1 + u64::from(pixel[1]), sum.2 + u64::from(pixel[2]))
-                });
-                // Black on white paper, as another tab's is, is none of them.
-                if red > green.max(blue) {
-                    "red"
-                } else if green > red.max(blue) {
-                    "green"
-                } else if blue > red.max(green) {
-                    "blue"
-                } else {
-                    "paper"
-                }
-            });
-            (file.file_name().unwrap().to_string_lossy().to_string(), colours.collect())
-        })
+        .map(|file| recto_session::sleep::decode_sleep(&std::fs::read(file).unwrap(), recto_session::record::CURRENT_VERSION).unwrap())
         .collect()
 }
 
-/// Failure (full check, 2026-11-08, reproduced with 3 GB memory spikes beside the run): a tab left for another has what it showed marked discardable, and the system takes that back whenever it needs the pages, with no word to the app. Put to sleep after that, the tab's sleep file had no picture at all (`left: []` in `a_new_version_of_a_file_has_none_of_the_old_ones_pictures`), and it woke to bare paper. It sleeps with what it showed when it was left.
-#[test]
-fn a_tab_put_to_sleep_has_its_picture_after_the_system_takes_its_tiles() {
-    let state = State::at(Level::Full);
-    let Some(run) = Run::on(&state) else { return };
-    run.ok(&["qa", "appearance", "light"]);
-    run.ok(&["qa", "sleep-write-gap", "0"]);
-    let folder = state.root.join("docs");
-    std::fs::create_dir_all(&folder).unwrap();
-    let (file, other) = (folder.join("colour.pdf"), text_document(&folder, "other.pdf", 2));
-    std::fs::write(&file, pages(&[page_of(RED)])).unwrap();
-    run.ok(&["open", file.to_str().unwrap()]);
-    run.settled();
-    run.ok(&["open", other.to_str().unwrap()]);
-    run.settled();
-    let on_tab = tab_on(&run, "colour.pdf");
-    run.ok(&["qa", "memory-pressure", "discard"]);
-    assert_eq!(run.ok(&["session", "sleep", "--tab", &on_tab])["dormant"], true);
-    assert_eq!(
-        colours_in_sleep_files(&state)
-            .iter()
-            .flat_map(|(_, colours)| colours.clone())
-            .collect::<Vec<_>>(),
-        ["red"],
-        "what it showed when it was left"
-    );
+/// The stamps of the files the sleep files are about.
+fn stamps_in_sleep_files(state: &State) -> Vec<recto_platform::FileStamp> {
+    sleep_files_read(state).iter().map(|sleep| sleep.file).collect()
 }
 
-/// Failure (review, blocks the merge): a sleep file keeps the old file's picture under the new file's name, for good: a red PDF replaced by a blue one, or saved over, has red in the next sleep file and every wake after it, restarts included. With a redaction, that picture would be what was removed. Everything drawn of a file goes with that version of it, on this route and on a save.
+/// Failure (review, blocks the merge): a sleep file keeps the old file's facts under the new file's name, for good: a PDF replaced by another, or saved over,
+/// has the old version's sleep file there and every wake after it, restarts included. With a redaction, its contents would be what was removed. A sleep file
+/// goes with that version of its file, on this route and on a save.
 #[test]
-fn a_new_version_of_a_file_has_none_of_the_old_ones_pictures() {
+fn a_new_version_of_a_file_has_none_of_the_old_ones_sleep_files() {
     let state = State::at(Level::Full);
     let Some(run) = Run::on(&state) else { return };
     run.ok(&["qa", "appearance", "light"]);
@@ -918,14 +879,8 @@ fn a_new_version_of_a_file_has_none_of_the_old_ones_pictures() {
             .unwrap()
     );
     run.ok(&["session", "sleep", "--tab", &on_tab]);
-    assert_eq!(
-        colours_in_sleep_files(&state)
-            .iter()
-            .flat_map(|(_, colours)| colours.clone())
-            .collect::<Vec<_>>(),
-        ["red"],
-        "the old one, red, as it should be"
-    );
+    let red = recto_platform::file_stamp(&file).unwrap();
+    assert_eq!(stamps_in_sleep_files(&state), [red], "the old one, as it should be");
     // Another app puts blue there, and it's woken from what it had.
     std::thread::sleep(Duration::from_millis(20));
     std::fs::write(&file, pages(&[page_of(BLUE), page_of(BLUE)])).unwrap();
@@ -936,16 +891,11 @@ fn a_new_version_of_a_file_has_none_of_the_old_ones_pictures() {
     run.ok(&["tap", &other_tab]);
     run.settled();
     run.ok(&["session", "sleep", "--tab", &on_tab]);
-    let colours = colours_in_sleep_files(&state);
-    assert!(
-        !colours.iter().any(|(_, colours)| colours.contains(&"red")),
-        "nothing red, under any name: {colours:?}"
-    );
-    assert!(
-        colours.iter().any(|(_, colours)| colours.contains(&"blue")),
-        "and it's the new one that's there: {colours:?}"
-    );
-    // A save, with no sleep file in between to hide behind: the picture's still in memory at the moment it's saved.
+    let blue = recto_platform::file_stamp(&file).unwrap();
+    let stamps = stamps_in_sleep_files(&state);
+    assert!(!stamps.contains(&red), "nothing of the old one, under any name: {stamps:?}");
+    assert!(stamps.contains(&blue), "and it's the new one that's there: {stamps:?}");
+    // A save, with no sleep file in between to hide behind: the tab's view is still in memory at the moment it's saved.
     run.ok(&["tap", &on_tab]);
     run.settled();
     let written = folder.join("written.pdf");
@@ -955,14 +905,9 @@ fn a_new_version_of_a_file_has_none_of_the_old_ones_pictures() {
     run.ok(&["tap", &other_tab]);
     run.settled();
     run.ok(&["session", "sleep", "--tab", &on_tab]);
-    wait_until("the old version's goes", || {
-        !colours_in_sleep_files(&state).iter().any(|(_, colours)| colours.contains(&"blue"))
-    });
-    assert!(
-        colours_in_sleep_files(&state).iter().any(|(_, colours)| colours.contains(&"green")),
-        "{:?}",
-        colours_in_sleep_files(&state)
-    );
+    wait_until("the old version's goes", || !stamps_in_sleep_files(&state).contains(&blue));
+    let green = recto_platform::file_stamp(&file).unwrap();
+    assert!(stamps_in_sleep_files(&state).contains(&green), "{:?}", stamps_in_sleep_files(&state));
     // And across a restart, what comes up isn't any of the old ones, and its next file isn't either.
     run.quit();
     let run = Run::on(&state).unwrap();
@@ -974,11 +919,8 @@ fn a_new_version_of_a_file_has_none_of_the_old_ones_pictures() {
     run.ok(&["tap", &other_tab]);
     run.settled();
     run.ok(&["session", "sleep", "--tab", &on_tab]);
-    let colours = colours_in_sleep_files(&state);
-    assert!(
-        !colours.iter().any(|(_, colours)| colours.contains(&"red") || colours.contains(&"blue")),
-        "{colours:?}"
-    );
+    let stamps = stamps_in_sleep_files(&state);
+    assert!(!stamps.contains(&red) && !stamps.contains(&blue), "{stamps:?}");
 }
 
 fn tab_on(run: &Run<'_>, name: &str) -> String {
@@ -1019,16 +961,18 @@ fn a_warm_tab_shows_its_file_as_it_is_now() {
     run.ok(&["tap", &tab_on(&run, "other.pdf")]);
     run.settled();
     run.ok(&["session", "sleep", "--tab", &tab_on(&run, "colour.pdf")]);
-    let colours = colours_in_sleep_files(&state);
+    let stamps = stamps_in_sleep_files(&state);
+    let now = recto_platform::file_stamp(&file).unwrap();
     assert!(
-        colours.iter().any(|(_, colours)| colours.contains(&"blue")) && !colours.iter().any(|(_, colours)| colours.contains(&"red")),
-        "{colours:?}"
+        stamps.contains(&now) && stamps.iter().all(|stamp| *stamp == now || stamp.inode != now.inode),
+        "the file as it is now, and nothing of the one replaced: {stamps:?}"
     );
 }
 
-/// Failure (review follow-up 1): a file replaced while the app was closed, and its tab the one on screen: the window goes up with the old file's picture from its sleep file, before anything's looked at the file.
+/// Failure (review follow-up 1): a file replaced while the app was closed, and its tab the one on screen: the window goes up with the old file's facts from its
+/// sleep file (its length, its pages' sizes), before anything's looked at the file.
 #[test]
-fn a_launch_doesnt_show_a_picture_of_a_file_thats_been_replaced() {
+fn a_launch_doesnt_go_up_from_the_sleep_file_of_a_file_thats_been_replaced() {
     let state = State::at(Level::Full);
     let Some(run) = Run::on(&state) else { return };
     run.ok(&["qa", "appearance", "light"]);
@@ -1038,15 +982,11 @@ fn a_launch_doesnt_show_a_picture_of_a_file_thats_been_replaced() {
     std::fs::write(&file, pages(&[page_of(RED)])).unwrap();
     run.ok(&["open", file.to_str().unwrap()]);
     run.settled();
-    // The system takes back what's discardable whenever it likes, the page's preview with it once its tiles cover it: the picture's made from those.
-    let emptied = run.ok(&["qa", "memory-pressure", "discard"])["emptied"].as_u64().unwrap();
-    assert!(emptied > 0, "the system took nothing, so this doesn't test a picture made from the tiles");
-    // What it asks of the app is waited for as anything is, or a hand-off on a starved machine finds it still going and refuses.
-    run.settled();
     run.hand_off();
-    assert!(
-        colours_in_sleep_files(&state).iter().any(|(_, colours)| colours.contains(&"red")),
-        "there's a red picture to come up with"
+    assert_eq!(
+        stamps_in_sleep_files(&state),
+        [recto_platform::file_stamp(&file).unwrap()],
+        "there's a sleep file to come up with"
     );
     std::thread::sleep(Duration::from_millis(20));
     std::fs::write(&file, pages(&[page_of(BLUE), page_of(BLUE)])).unwrap();
@@ -1055,15 +995,17 @@ fn a_launch_doesnt_show_a_picture_of_a_file_thats_been_replaced() {
     let report = run.report();
     assert_eq!(
         report["reader"]["last_wake"]["from_sleep"], false,
-        "no picture of the old one: {}",
+        "nothing of the old one: {}",
         report["reader"]["last_wake"]
     );
     assert_eq!(run.ok(&["where"])["pages"], 2);
 }
 
-/// Failure (review follow-up 3): a file rewritten with its size, time and number as they were keeps the old picture in its next sleep file, as nothing but the stamp was compared. Which version of a file it is comes from what opening it reads anyway, its ID and where its trailers end, and a picture of another goes. A file with no ID whose every object's at the same place can't be told this way: see `docs/engineering/state-record.md`.
+/// Failure (review follow-up 3): a file rewritten with its size, time and number as they were keeps the old version's facts in its next sleep file, as
+/// nothing but the stamp was compared. Which version of a file it is comes from what opening it reads anyway, its ID and where its trailers end, and a sleep
+/// file of another goes. A file with no ID whose every object's at the same place can't be told this way: see `docs/engineering/state-record.md`.
 #[test]
-fn a_rewrite_that_keeps_its_stamp_doesnt_keep_its_picture() {
+fn a_rewrite_that_keeps_its_stamp_doesnt_keep_its_sleep_file() {
     let state = State::at(Level::Full);
     let Some(run) = Run::on(&state) else { return };
     run.ok(&["qa", "appearance", "light"]);
@@ -1078,7 +1020,9 @@ fn a_rewrite_that_keeps_its_stamp_doesnt_keep_its_picture() {
     run.ok(&["open", other.to_str().unwrap()]);
     run.settled();
     run.ok(&["session", "sleep", "--tab", &tab_on(&run, "colour.pdf")]);
-    assert!(colours_in_sleep_files(&state).iter().any(|(_, colours)| colours.contains(&"red")));
+    let versions = || sleep_files_read(&state).iter().map(|sleep| sleep.version).collect::<Vec<_>>();
+    let first = versions();
+    assert!(first.len() == 1 && first[0].is_some(), "a sleep file of a version a worker said: {first:?}");
     // The same length, the same file, and its time put back.
     let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
     std::fs::write(&file, coloured_with_id(&[BLUE], "other-version-id")).unwrap();
@@ -1089,8 +1033,8 @@ fn a_rewrite_that_keeps_its_stamp_doesnt_keep_its_picture() {
     run.ok(&["tap", &tab_on(&run, "other.pdf")]);
     run.settled();
     run.ok(&["session", "sleep", "--tab", &tab_on(&run, "colour.pdf")]);
-    let colours = colours_in_sleep_files(&state);
-    assert!(!colours.iter().any(|(_, colours)| colours.contains(&"red")), "{colours:?}");
+    let now = versions();
+    assert!(!now.contains(&first[0]), "the old version's sleep file: {now:?}");
 }
 
 /// Failure (review follow-up 4): with a tab's edits unreadable just now, `recto text` says there's no such page, for every page, which says nothing of why. It says its edits can't be read.
@@ -1125,7 +1069,7 @@ fn reading_a_page_says_when_its_edits_cant_be_read() {
 /// for files that now have sleep files like any other; that side is `recto-app`'s `core::headless::encrypted_sleep`). A red page behind a real password:
 /// adding it to a plain green document is refused, as it needs the password; opened by the person with the password, drawn, and left, then every tab off
 /// screen put to sleep by memory pressure (an agent may not ask for a protected tab's sleep) and an update's hand-off writing what it writes: the plain
-/// document's green pictures are in its sleep file, so pictures were written, and no sleep file has a red one.
+/// document has its sleep file, so sleep files were written, and there's none of the protected one's.
 #[test]
 #[allow(clippy::disallowed_methods)] // A test fixture built with lopdf's eager writer, which alone encrypts or rebuilds; never over a user's file.
 fn a_protected_pdfs_pages_never_reach_a_sleep_file() {
@@ -1178,12 +1122,12 @@ fn a_protected_pdfs_pages_never_reach_a_sleep_file() {
     run.ok(&["qa", "memory-pressure", "warning"]);
     run.settled();
     run.hand_off();
-    let colours = colours_in_sleep_files(&state);
+    let stamps = stamps_in_sleep_files(&state);
     assert!(
-        colours.iter().any(|(_, colours)| colours.contains(&"green")),
-        "the plain document's pictures were written: {colours:?}"
+        stamps.contains(&recto_platform::file_stamp(&plain).unwrap()),
+        "the plain document's sleep file was written: {stamps:?}"
     );
-    assert!(colours.iter().all(|(_, colours)| !colours.contains(&"red")), "{colours:?}");
+    assert!(!stamps.contains(&recto_platform::file_stamp(&locked).unwrap()), "{stamps:?}");
 }
 
 /// Failure (review): a forged sleep file says a 3-page PDF has 100 pages, and that goes on being believed through drawing and another sleep, and a rotation lands on a page that isn't there. The worker's word goes over it as soon as it has the file open: the sleep file goes, and the file's read.
@@ -1324,7 +1268,7 @@ fn a_sleep_file_thats_wrong_only_costs_the_quick_way() {
     }
     assert!(
         gone,
-        "its old picture's still there: {:?} {}",
+        "its old sleep file's still there: {:?} {}",
         sleep_files(&state),
         run.report()["record"]["sleep"]
     );
@@ -1384,12 +1328,9 @@ fn pressure_and_the_budget_do_what_being_left_alone_does() {
     });
 }
 
-/// Failure (decision 24): a launch or a hand-off waits for sharp pages before there's a window, which on a heavy page is most of a second; or its first frame's anything but the place with something on every page. It goes up from the sleep file with the picture on.
-///
-/// With the system having taken back what's discardable before the hand-off, as it does under memory pressure whenever it likes (load 77, 2026-11-14), so
-/// the picture is made from the page's tiles: the file has a right picture of the page and the launch goes up from it. A quit may then write it once more,
-/// its picture now from the page's preview, and what it holds is still a right picture. That a quit with nothing changed writes nothing is held in process,
-/// where the system takes only when a test says: `recto-app`'s `a_quit_with_nothing_changed_writes_nothing`.
+/// Failure (decision 24): a launch or a hand-off waits for sharp pages before there's a window, which on a heavy page is most of a second; or its first
+/// frame's anything but the place, its pages on their paper, with something on them. It goes up from the sleep file's facts, at the place. That a quit with
+/// nothing changed writes nothing is held in process: `recto-app`'s `a_quit_with_nothing_changed_writes_nothing`.
 #[test]
 fn a_launch_goes_up_from_the_sleep_file() {
     let state = State::at(Level::Full);
@@ -1404,22 +1345,8 @@ fn a_launch_goes_up_from_the_sleep_file() {
     run.ok(&["goto", "4"]);
     run.settled();
     let before = run.report();
-    let emptied = run.ok(&["qa", "memory-pressure", "discard"])["emptied"].as_u64().unwrap();
-    assert!(emptied > 0, "the system took nothing, so this doesn't test a picture made from the tiles");
-    // What it asks of the app is waited for as anything is, or a hand-off on a starved machine finds it still going and refuses.
-    run.settled();
     run.hand_off();
     assert_eq!(sleep_files(&state).len(), 1, "the hand-off wrote it");
-    let red = |when: &str| {
-        let colours = colours_in_sleep_files(&state);
-        assert!(
-            colours
-                .iter()
-                .all(|(_, colours)| !colours.is_empty() && colours.iter().all(|colour| *colour == "red")),
-            "{when}: a red picture of each page it has one of: {colours:?}"
-        );
-    };
-    red("its picture made from the tiles");
     let written = std::fs::read(&sleep_files(&state)[0]).unwrap();
     let run = Run::on(&state).unwrap();
     run.settled();
@@ -1430,7 +1357,12 @@ fn a_launch_goes_up_from_the_sleep_file() {
         (shown["scroll_y"].as_f64().unwrap() - before["reader"]["scroll_y"].as_f64().unwrap()).abs() < 1.0,
         "{shown}"
     );
-    assert!(shown["tile_layers"].as_u64().unwrap() > 0, "something on it: {shown}");
+    // Up as its page was drawn (`ready`), or at the cap on a starved machine, its pages on their paper either way: what it may not do is go up as ready
+    // with nothing on it.
+    assert!(
+        shown["why"] != "ready" || shown["tile_layers"].as_u64().unwrap() > 0,
+        "something on it: {shown}"
+    );
     assert_eq!(
         after["reader"]["last_wake"]["from_sleep"],
         true,
@@ -1440,11 +1372,9 @@ fn a_launch_goes_up_from_the_sleep_file() {
         after["reader"]["tiles"],
         written.len()
     );
-    assert_eq!(after["reader"]["last_wake"]["blank_frames"], 0);
     assert_eq!(after["record"]["sleep"]["woken_from_file"], 1);
     run.quit();
     assert_eq!(sleep_files(&state).len(), 1);
-    red("after the quit");
 }
 
 /// What a Save would write, for this test: the document's pages, as lopdf has them.

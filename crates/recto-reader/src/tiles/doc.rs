@@ -1,7 +1,7 @@
 //! **The tabs the page view holds,** and which of them is showing ([`Docs`]), and **a tab it holds,** hot or warm: its pages and where they are, where the reader is in it ([`DocPlace`]), and what's drawn of it and known about drawing it ([`DocDrawing`]). One is held for each hot and warm tab, and none for a cold one.
 
 use super::cache::Entry;
-use super::{MAX_SEEN_REMEMBERED, MAX_ZOOM, MIN_ZOOM, PageMap, RawPicture, SavedPlace};
+use super::{MAX_SEEN_REMEMBERED, MAX_ZOOM, MIN_ZOOM, PageMap, SavedPlace};
 use crate::layout::{PageLayout, Spread};
 use recto_platform::FileStamp;
 use std::collections::{HashMap, HashSet};
@@ -153,10 +153,8 @@ pub(super) struct DocDrawing {
     pub(super) floor: u64,
     /// It came up from a sleep file, so a page shows on what its size is taken to be before it's been asked.
     pub(super) size_on_trust: bool,
-    /// Which version each of its files is, as a worker last said. **Nothing drawn of another version is shown, or goes in a sleep file:** that's checked as each goes on a layer, so however a file came to be replaced, and whatever was on its way, an old picture can't be what's showing.
+    /// Which version each of its files is, as a worker last said. **Nothing drawn of another version is shown:** that's checked as each goes on a layer, so however a file came to be replaced, and whatever was on its way, an old picture can't be what's showing.
     pub(super) versions: HashMap<PathBuf, u64>,
-    /// **What it showed when it was left,** a picture of each page in view then, for its sleep file. What it left on screen is marked discardable and the system takes that back whenever it needs the memory, without a word, so without these a tab put to sleep after that slept with no picture and woke to bare paper. Taken while it's still on the screen, so it's all there. At most [`super::wake::MAX_LEFT_PICTURE_BYTES`] for each of the few tabs held off screen, the session's warm ones. Gone when it's shown again, its file's another version, the system says memory's short, or the window closes.
-    pub(super) left_pictures: Option<Vec<RawPicture>>,
 }
 
 impl DocView {
@@ -214,7 +212,6 @@ impl DocView {
                 floor,
                 size_on_trust: false,
                 versions: HashMap::new(),
-                left_pictures: None,
             },
             band: (u32::MAX, 0, 0),
         }

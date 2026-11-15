@@ -281,7 +281,6 @@ fn a_restored_tab_takes_no_sleep_file_of_the_tab_it_replaced() {
         toc: Toc::default(),
         usual: None,
         sizes: Vec::new(),
-        pictures: Vec::new(),
     };
     s.dormancy.woke_from_file(a, sleep);
     s.restore(&another_session_with(1), HashMap::new()).unwrap();

@@ -240,7 +240,6 @@ fn the_workers_word_on_a_files_length_goes_over_a_sleep_files() {
         toc: Toc::default(),
         usual: None,
         sizes: Vec::new(),
-        pictures: Vec::new(),
     };
     s.sleeper().wake_from_sleep(a, &forged(100));
     s.tap(a).unwrap();
@@ -370,7 +369,7 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
     assert!(s.dormant().sleep_facts(locked).is_none(), "its contents don't go on disk");
     assert!(s.dormant().sleep_to_read(locked).is_none());
     assert!(
-        s.dormant().sleep_facts(open_to_anyone).is_some_and(|facts| facts.pictures_allowed),
+        s.dormant().sleep_facts(open_to_anyone).is_some(),
         "encrypted, but opened with no password: nothing a sleep file could give away"
     );
     for at in 0..MAX_WARM {
@@ -385,57 +384,18 @@ fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
     assert_eq!(left[0].0.sleep.file_pages, 3);
     assert!(s.sleeper().take_left_warm().is_empty());
     // An encrypted file's pages in a plain document: a file that needs a password can't be added at all, so what's added opens for anyone, and the
-    // document keeps its pictures (2026-11-13; before, it lost them).
+    // document keeps its sleep file.
     let plain = s.open(&file("plain.pdf")).unwrap();
-    assert!(s.dormant().sleep_facts(plain).unwrap().pictures_allowed);
     let open_file = file("open-to-anyone.pdf");
     let facts = s.loader().load(&open_file).unwrap();
     assert!(facts.encrypted);
     s.insert_pdf_with_facts(plain, Author::Owner, 0, &open_file, &facts, file_stamp(&open_file).ok())
         .unwrap();
     assert!(
-        s.dormant().sleep_facts(plain).unwrap().pictures_allowed,
-        "a page from a file anyone may open keeps the document's pictures"
+        s.dormant().sleep_facts(plain).is_some(),
+        "a page from a file anyone may open keeps the document's sleep file"
     );
     assert!(!s.lists().get(plain).unwrap().added_sources()[0].protected);
-    // A journal written before, with a page it called protected: carried through, so the document has no pictures till those pages are gone.
-    let mut edits = PageEdits::new(3);
-    edits.insert_pdf_noting(0, &file("old.pdf"), 1, None, true).unwrap();
-    let record = edits.to_record();
-    assert!(record.added[0].protected);
-    let mut read = PageEdits::from_record(&record).unwrap();
-    assert!(read.has_protected_pages(), "an old record's flag still holds");
-    read.delete(0, 1).unwrap();
-    assert!(!read.has_protected_pages(), "with those pages gone from the document, it's fine again");
-    std::fs::remove_dir_all(&dir).unwrap();
-}
-
-/// Failure (review round 1 of the measured faults, S3): a page added before 2026-11-13 from an encrypted file was recorded as protected, and such a
-/// journal is still read. Since then an added page is never marked so, and nothing held what an old flag still means: the document it's taken into has
-/// no pictures in its sleep file until those pages are gone. The same list unflagged has them, so it's the flag that decides.
-#[test]
-fn a_tab_taking_up_an_old_journals_protected_page_has_no_sleep_pictures() {
-    let dir = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-old-protected-");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut s = journaled(3);
-    s.dormancy_mut().set_sleep_files(true);
-    for (name, protected) in [("flagged.pdf", true), ("unflagged.pdf", false)] {
-        let path = dir.join(name);
-        std::fs::write(&path, b"a file").unwrap();
-        let id = s.open(&path).unwrap();
-        // As a journal written before reads back: a page added at the front, its source flagged as the old rule had it.
-        let mut written = PageEdits::new(3);
-        written.insert_pdf_noting(0, &dir.join("added.pdf"), 1, None, protected).unwrap();
-        let read = PageEdits::from_record(&written.to_record()).unwrap();
-        s.journal_desk()
-            .take_up_history(id, &format!("journal-00000000000000{}.log", if protected { "a1" } else { "a2" }), read, 1);
-        assert_eq!(s.lists().get(id).map(PageEdits::len), Some(4), "{name}: the list was taken up");
-        let facts = s.dormant().sleep_facts(id).unwrap_or_else(|| panic!("{name} has sleep facts"));
-        assert_eq!(
-            facts.pictures_allowed, !protected,
-            "{name}: pictures only without a page the old journal called protected"
-        );
-    }
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

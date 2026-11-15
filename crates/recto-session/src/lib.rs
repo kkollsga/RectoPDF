@@ -516,8 +516,6 @@ pub struct SleepFacts {
     pub id: TabId,
     pub path: PathBuf,
     pub sleep: sleep::SleepFile,
-    /// No page of the document's from a protected file.
-    pub pictures_allowed: bool,
 }
 
 /// What's kept of a tab's edits while it's left alone, for a look without opening it.

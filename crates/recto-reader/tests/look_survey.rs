@@ -371,7 +371,7 @@ impl recto_reader::engine::EngineEvents for Quiet {
 #[allow(unsafe_code)]
 fn wakes() {
     use recto_reader::layout::{PageBox, Spread};
-    use recto_reader::tiles::{Op, PageMap, SleepShot, SleepView, Viewport};
+    use recto_reader::tiles::{Op, PageMap, SleepView, Viewport};
     use recto_reader::{Engine, EngineConfig, PaperKind};
     use std::time::Duration;
     let list = std::fs::read_to_string(std::env::var("RECTO_WAKE_LIST").unwrap()).unwrap();
@@ -394,7 +394,6 @@ fn wakes() {
         let mut doc = DocRenderer::new(Path::new(path), None, ServiceConfig::discover().unwrap(), Policy::default()).unwrap();
         let (width, height) = doc.page_size(0).unwrap();
         let count = doc.known_page_count().unwrap();
-        let version = doc.known_version();
         let in_view = if spread == Spread::TwoUp { 2 } else { 1 };
         let images: Vec<usize> = (0..in_view)
             .map(|page| doc.image_boxes(page, 1).ok().flatten().map_or(usize::MAX, |boxes| boxes.len()))
@@ -415,22 +414,11 @@ fn wakes() {
             engine.set_paper(PaperKind::Dark);
             engine.set_spread(spread);
             engine.waking().note_wake(1, Instant::now());
-            let pictures = (0..in_view)
-                .map(|page| SleepShot {
-                    page,
-                    scale: 0.5,
-                    paper: PaperKind::Dark,
-                    surface: PixelSurface::create((width * 0.5) as u32, (height * 0.5) as u32).unwrap(),
-                })
-                .collect();
             engine.waking().give_sleep(
                 1,
                 SleepView {
-                    version,
                     usual: Some(PageBox { width, height }),
                     sizes: Vec::new(),
-                    pictures,
-                    handed_back: false,
                 },
             );
             let map = PageMap {

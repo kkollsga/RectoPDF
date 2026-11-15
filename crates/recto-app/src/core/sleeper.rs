@@ -13,13 +13,11 @@ use crate::queue::CoreQueue;
 use recto_agent::DrawableLoader;
 use recto_control::host::SessionHost;
 use recto_control::record_store::RecordStore;
-use recto_platform::surface::PixelSurface;
 use recto_reader::Engine;
 use recto_reader::layout::PageBox;
-use recto_reader::paper::PaperKind;
-use recto_reader::{SleepMaterial, SleepShot, SleepView};
+use recto_reader::{SleepMaterial, SleepView};
 use recto_session::record::{FileStatus, look_at_file};
-use recto_session::sleep::{SleepFile, SleepPicture};
+use recto_session::sleep::SleepFile;
 use recto_session::{SleepFacts, TabId};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -60,6 +58,8 @@ pub struct Sleeper {
     answers: Mutex<Vec<(u64, Outcome)>>,
     /// The last ticket handed out.
     tickets: AtomicU64,
+    /// What the pass after the launch that removes older sleep files came to, and how long it took in microseconds, once it's done ([`sweep_older`]).
+    older: Mutex<Option<(recto_control::record_store::OlderSleepFiles, u64)>>,
 }
 
 /// Answers kept for agents that asked for a sleep file and haven't taken them yet. Each asker takes its own at once, so a few cover agents asking together.
@@ -190,6 +190,7 @@ impl Sleeper {
             background_hurry: std::sync::atomic::AtomicBool::new(false),
             answers: Mutex::new(Vec::new()),
             tickets: AtomicU64::new(0),
+            older: Mutex::new(None),
         }
     }
 
@@ -255,8 +256,8 @@ impl Sleeper {
         answers.push((asked.ticket, outcome));
     }
 
-    /// **What an agent is told of the sleep file it asked for under `ticket`**, in Rust's words, from that write's own outcome: put off, or its facts written
-    /// without pictures, as agents' share of the hour is used, and when it comes back; nothing if it wasn't cut short. `on_screen`: the tab on screen's, at
+    /// **What an agent is told of the sleep file it asked for under `ticket`**, in Rust's words, from that write's own outcome: put off, as agents' share of
+    /// the hour is used, and when it comes back; nothing if it wasn't cut short. `on_screen`: the tab on screen's, at
     /// the agent's `session save`.
     pub(super) fn take_asked_words(&self, ticket: u64, on_screen: bool) -> Option<String> {
         let outcome = {
@@ -372,6 +373,9 @@ impl Sleeper {
     }
 
     pub fn report(&self) -> Value {
+        let older = lock(&self.older).map(|(done, micros)| {
+            json!({ "looked_at": done.looked_at, "removed": done.removed, "bytes_read": done.bytes_read, "stopped_at_cap": done.stopped_at_cap, "micros": micros })
+        });
         let (counts, after_seconds, budget_bytes, agent_bytes) = {
             let machine = lock(&self.machine);
             (
@@ -388,8 +392,7 @@ impl Sleeper {
             "gone_dormant": { "left_alone": counts.left_alone, "budget": counts.budget, "pressure": counts.pressure, "asked": counts.asked },
             "sleep_files_written": counts.sleep_files,
             "writes_put_off": counts.writes_put_off,
-            "writes_for_paper": counts.writes_for_paper,
-            "writes_for_place": counts.writes_for_place,
+            "writes_for_list": counts.writes_for_list,
             "writes_skipped_busy": counts.writes_skipped_busy,
             "agent_share_used": counts.agent_share_used,
             "agent_bytes_this_hour": agent_bytes,
@@ -399,6 +402,7 @@ impl Sleeper {
             "system_pressure": { "warning": counts.system_warning, "critical": counts.system_critical },
             "looks_running": self.looks.running(),
             "leaving": self.leaving.report(),
+            "older_files": older,
         })
     }
 }
@@ -450,9 +454,10 @@ impl Sleeper {
         }
     }
 
-    /// **Tabs pushed out of the warm ones, their sleep files queued,** with their pictures copied just before the page view lets go of them: a quick copy of each, of those whose time's come, queued as it's made, so what's held is the queue's cap and the one being copied. Packing a photograph takes long enough to hold up whatever's asked for next, so the one writer does that ([`crate::sleep_queue`]). Each waits [`crate::sleeper::LEAVING_WAIT_MS`] first (the cool-down on the write). A flush hurries what's waiting and waits for it for what's left of its time, then writes the tab on screen's file.
-    /// `shown` is the tab being shown: what's queued for it was copied as it left, so it's taken back, not written, and said for its first frame
-    /// ([`give_sleep_view`]); it's queued again when it next leaves.
+    /// **Tabs pushed out of the warm ones, their sleep files queued,** with their facts taken just before the page view lets go of them, queued as each is
+    /// taken, so what's held is the queue's cap. A slow disk would hold up whatever's asked for next, so the one writer writes them ([`crate::sleep_queue`]). Each waits [`crate::sleeper::LEAVING_WAIT_MS`] first (the cool-down on the write). A flush hurries what's waiting and waits for it for what's left of its time, then writes the tab on screen's file.
+    /// `shown` is the tab being shown: what's queued for it was taken as it left, so it's taken back, not written, and its pages' sizes are its first
+    /// frame's ([`give_sleep_view`]); it's queued again when it next leaves.
     /// A writer's started by `start_writer` if the queue says there's none.
     pub(super) fn queue_those_leaving(&self, on_hand: &OnHand<'_>, shown: TabId, start_writer: StartsWriter<'_>) -> Option<(SleepFacts, SleepMaterial)> {
         let back = self.leaving.take_back(shown);
@@ -563,7 +568,7 @@ impl Sleeper {
 /// **The session and the page views, borrowed from the app for the sleeper's calls,** which read them and own neither: made for a call, or once for the
 /// session thread's run inside [`GoingDormant`]. It's for three things:
 /// - **what a tab's sleep file is made from now** ([`Self::facts_and_material`], [`Self::material`]): what the session says of it, and what its page view
-///   holds, taken against the pages the session says the tab has now ([`pages_now`]), so that no picture in it is of a page deleted, moved or turned since it
+///   holds, taken against the pages the session says the tab has now ([`pages_now`]), so that no size in it is of a page deleted, moved or turned since it
 ///   was drawn. The one place that rule is carried out, for a tab going dormant, one leaving the warm ones and one written in place;
 /// - **which page view holds a tab** ([`Self::engine_for`]), for what the budget's look costs it;
 /// - **the session**, for the looks at woken tabs' files and the next deadline at the end of a call ([`Sleeper::after_a_call`]).
@@ -786,7 +791,8 @@ impl StartsWriter<'_> {
 }
 
 impl Sleeper {
-    /// A sleep file from what's known and what's on hand. With no pictures to hand, as with a closed window or what the system's taken, what's there already stands, if it's about the same list. Past the limits, a tab that's only moving about keeps what it has, and one with nothing yet has its facts, which is small and says what the PDF would.
+    /// A sleep file from what's known and what's on hand: the tab's facts. Past the limits, a tab that's only moving about keeps what it has, and one with
+    /// nothing yet has its facts, which is small and says what the PDF would.
     fn write_with_material(
         &self,
         store: &RecordStore,
@@ -801,34 +807,25 @@ impl Sleeper {
         self.write_holding_lock(store, keeps, facts, material, by)
     }
 
-    /// The same, with the one-at-a-time lock held: what it carries is the machine's to say ([`Write`]), and an agent's is measured against its share before
-    /// it's written. Says what came of it.
+    /// The same, with the one-at-a-time lock held: whether it's written is the machine's to say ([`Write`]), and an agent's is measured against its share
+    /// before it's written. Says what came of it.
     ///
     /// **Only a copy that keeps the record writes one** ([`Keeper::may_write`], the rule every writer of the record goes by): the queue's writer and an
     /// asked sleep aren't behind the saver's gate, and the store's own refusal goes by its lock, which a copy can hold while it doesn't keep the record (a late
     /// keep's read, or its read past its patience). So nothing's written then, and nothing's said to have been.
-    fn write_holding_lock(&self, store: &RecordStore, keeps: &KeepsRecord<'_>, mut facts: SleepFacts, material: SleepMaterial, by: By) -> Option<Outcome> {
+    fn write_holding_lock(&self, store: &RecordStore, keeps: &KeepsRecord<'_>, facts: SleepFacts, material: SleepMaterial, by: By) -> Option<Outcome> {
         if !keeps.may_write() {
             return None;
         }
-        let material = crate::sleep_writer::allowed_material(&mut facts, material);
-        let SleepFacts {
-            id,
-            path,
-            sleep,
-            pictures_allowed,
-        } = facts;
+        let SleepFacts { id, path, sleep } = facts;
         let there = store.read_sleep(sleep.file, &path);
-        let new_dark = material.pictures.first().map(|picture| picture.paper == PaperKind::Dark);
-        let write = self.step(Event::Write {
+        let there_stale = there.as_ref().is_some_and(|there| crate::sleep_writer::there_is_stale(there, &sleep));
+        let (write, cut_for_share) = match self.step(Event::Write {
             id,
             by,
             there: there.is_some(),
-            pictures_allowed,
-            there_for_other_paper: crate::sleep_writer::there_for_other_paper(there.as_ref(), new_dark),
-            there_for_other_place: crate::sleep_writer::there_for_other_place(there.as_ref(), &sleep, &material),
-        });
-        let (mut write, mut cut_for_share) = match write {
+            there_stale,
+        }) {
             Some(Out::Write(write)) => (write, false),
             Some(Out::ShareCut(write)) => (write, true),
             _ => return None,
@@ -836,50 +833,23 @@ impl Sleeper {
         if write == Write::PutOff {
             return Some(Outcome { write, cut_for_share });
         }
-        let had_file = there.is_some();
-        let in_view = material.in_view.clone();
-        let mut sleep = with_material(sleep, material);
-        if write == Write::FactsOnly {
-            sleep.pictures.clear();
-        } else {
-            sleep = crate::sleep_writer::with_older_pictures(sleep, there, &in_view);
-        }
-        // An agent's file, packed and measured as it's written: written only if it fits what's left of agents' share, or else its facts alone if those
-        // fit and the tab has no file, or nothing. The bytes measured are the bytes handed to the store, so the share counts what reaches the drive and
-        // nothing's packed twice (a photograph's page takes milliseconds, on the session thread for an agent's `session sleep`).
-        let mut measured = None;
-        while by.agent() {
+        let sleep = with_material(sleep, material);
+        // An agent's file, measured as it's written: written only if it fits what's left of agents' share. The bytes measured are the bytes handed to the
+        // store, so the share counts what reaches the drive.
+        if by.agent() {
             let packed = recto_session::sleep::encode_sleep(&sleep);
-            let pictures = !sleep.pictures.is_empty();
-            match self.step(Event::AgentSize {
-                bytes: packed.len() as u64,
-                pictures,
-                there: had_file,
-            }) {
-                None => {
-                    measured = Some(packed);
-                    break;
-                }
-                Some(Out::ShareCut(Write::FactsOnly)) if pictures => {
-                    (write, cut_for_share) = (Write::FactsOnly, true);
-                    sleep.pictures.clear();
-                }
-                _ => {
-                    return Some(Outcome {
-                        write: Write::PutOff,
-                        cut_for_share: true,
-                    });
-                }
+            if self.step(Event::AgentSize { bytes: packed.len() as u64 }).is_some() {
+                return Some(Outcome {
+                    write: Write::PutOff,
+                    cut_for_share: true,
+                });
             }
+            let bytes = store.write_sleep_bytes(&path, sleep.file, &packed);
+            debug_assert!(bytes == 0 || bytes == packed.len() as u64, "an agent's file is written as measured");
+            let _ = self.step(Event::Wrote { id, bytes });
+            return Some(Outcome { write, cut_for_share });
         }
-        let bytes = match &measured {
-            Some(packed) => store.write_sleep_bytes(&path, sleep.file, packed),
-            None => store.write_sleep(&path, &sleep),
-        };
-        debug_assert!(
-            measured.as_ref().is_none_or(|packed| bytes == 0 || bytes == packed.len() as u64),
-            "an agent's file is written as measured"
-        );
+        let bytes = store.write_sleep(&path, &sleep);
         let _ = self.step(Event::Wrote { id, bytes });
         Some(Outcome { write, cut_for_share })
     }
@@ -922,9 +892,34 @@ impl Inner {
     }
 }
 
-/// What a tab's first frame shows, for the page view: from the file just read, or its sleep file if nobody's read it, whichever way this tab's been asked for. Only what's about the document as it is now. Each picture says what paper it's for, and only goes on that. On the session thread, with no lock on the page view while the surfaces are made.
-/// `back` is what was taken back from the queue for it, a tab shown again inside its wait: the page view let go of its pictures as it left, and these are
-/// them, held to the same checks as a sleep file's (this version of its file, these pages).
+/// **Every sleep file of an older format is removed, once after a launch** (owner, 2026-11-15: no picture of a page is kept, and every format before this
+/// one, 0.1.0's included, could hold some; until then such a file went only at its tab's next wake, or after 30 days): on a thread of its own, started once
+/// the state's taken in so it's off the UI thread and the first frame's path, which has read the tab on screen's file already. It holds the record's keeper
+/// and the sleeper, not the app, and ends when the pass does; the pass looks at [`recto_control::record_store::MAX_SLEEP_FILES_LOOKED_AT`] sleep files at
+/// most, past which the next launch's goes on. Nothing's removed by a copy that doesn't keep the record. Counted till its end as a way back to the session
+/// thread, so the app isn't settled while it's going. What it came to is in `qa state`'s `record.sleep.older_files`.
+pub(super) fn sweep_older(on_disk: &OnDisk, core: &Arc<CoreQueue>) {
+    let (keeper, sleeper) = (Arc::clone(on_disk.keeper()), Arc::clone(on_disk.sleeper()));
+    let way_back = core.way_back();
+    let _ = std::thread::Builder::new()
+        .name("recto-sleep-sweep".into())
+        .stack_size(256 * 1024)
+        .spawn(move || {
+            let began = Instant::now();
+            let done = if keeper.asks().may_write() {
+                keeper.store().remove_older_sleep_files(recto_control::record_store::MAX_SLEEP_FILES_LOOKED_AT)
+            } else {
+                recto_control::record_store::OlderSleepFiles::default()
+            };
+            *lock(&sleeper.older) = Some((done, u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX)));
+            drop(way_back);
+        });
+}
+
+/// What a tab's first frame takes from its sleep file, for the page view: its pages' sizes, so its place is on its paper at once, from the file just read,
+/// or its sleep file if nobody's read it, whichever way this tab's been asked for. Only what's about the document as it is now. On the session thread.
+/// `back` is what was taken back from the queue for it, a tab shown again inside its wait: its facts as it left, newer than any file on disk for it, held
+/// to the same checks as a sleep file's (this version of its file, these pages).
 pub(super) fn give_sleep_view(
     session: &SessionHost<DrawableLoader>,
     store: &RecordStore,
@@ -933,14 +928,7 @@ pub(super) fn give_sleep_view(
     back: Option<(SleepFacts, SleepMaterial)>,
 ) {
     let read = session.with_session(|session| session.dormancy_mut().take_sleep_read(id));
-    // What was waiting first: it's what the tab left with last, newer than any file on disk for it, which may be of where it was the time before. Held to
-    // the check a sleep file's pictures are.
-    let back = back.map(|(mut facts, material)| {
-        let material = crate::sleep_writer::allowed_material(&mut facts, material);
-        with_material(facts.sleep, material)
-    });
-    let handed_back = back.is_some();
-    let sleep = back.or(read).or_else(|| {
+    let sleep = back.map(|(facts, material)| with_material(facts.sleep, material)).or(read).or_else(|| {
         let (stamp, path) = session.with_session(|session| session.dormant().sleep_to_read_awake(id))?;
         store.read_sleep(stamp, &path)
     });
@@ -957,25 +945,11 @@ pub(super) fn give_sleep_view(
         return;
     }
     let page_box = |(width, height): (f32, f32)| PageBox { width, height };
-    let mut pictures = Vec::with_capacity(sleep.pictures.len());
-    for picture in &sleep.pictures {
-        if let Some(surface) = surface_of(picture) {
-            pictures.push(SleepShot {
-                page: picture.page,
-                scale: picture.scale,
-                paper: if picture.dark { PaperKind::Dark } else { PaperKind::White },
-                surface,
-            });
-        }
-    }
     engine.waking().give_sleep(
         id.0,
         SleepView {
-            version: sleep.version,
             usual: sleep.usual.map(page_box),
             sizes: sleep.sizes.iter().map(|(page, width, height)| (*page, page_box((*width, *height)))).collect(),
-            pictures,
-            handed_back,
         },
     );
 }
@@ -984,34 +958,7 @@ fn with_material(mut sleep: SleepFile, material: SleepMaterial) -> SleepFile {
     sleep.version = material.version;
     sleep.usual = material.usual.map(|size| (size.width, size.height));
     sleep.sizes = material.sizes.into_iter().map(|(page, size)| (page, size.width, size.height)).collect();
-    sleep.pictures = material
-        .pictures
-        .into_iter()
-        .map(|picture| SleepPicture {
-            page: picture.page,
-            scale: picture.scale,
-            width: picture.width,
-            height: picture.height,
-            dark: picture.paper == PaperKind::Dark,
-            bgra: picture.bgra,
-        })
-        .collect();
     sleep
-}
-
-/// A surface of its own for a picture. Rows of a surface can be padded.
-fn surface_of(picture: &SleepPicture) -> Option<PixelSurface> {
-    let surface = PixelSurface::create(picture.width, picture.height).ok()?;
-    let stride = surface.stride() as usize;
-    let row = picture.width as usize * 4;
-    surface
-        .with_pixels(|target| {
-            for (line, pixels) in target.chunks_exact_mut(stride).zip(picture.bgra.chunks_exact(row)) {
-                line[..row].copy_from_slice(pixels);
-            }
-        })
-        .ok()?;
-    Some(surface)
 }
 
 pub use crate::version_of;
@@ -1068,7 +1015,7 @@ fn after_answering() {
     }
 }
 
-/// **What the session says a tab's pages are now,** as its page view would be given them: what a sleep file's pictures are checked against, so that none is of a page that's been deleted, moved or turned since it was drawn.
+/// **What the session says a tab's pages are now,** as its page view would be given them: what a sleep file's sizes are checked against, so that none is of a page that's been deleted, moved or turned since.
 fn pages_now<L: recto_session::DocLoader>(session: &recto_session::Session<L>, id: TabId) -> Option<recto_reader::tiles::PageMap> {
     crate::model::pane_snapshot(session, id, false, &[]).map(|shown| shown.map)
 }
@@ -1119,7 +1066,7 @@ mod tests {
         sleeper.answer(
             mine,
             Some(Outcome {
-                write: Write::WithPictures,
+                write: Write::Facts,
                 cut_for_share: false,
             }),
         );

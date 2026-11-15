@@ -102,19 +102,22 @@ fn use_a_journal(bytes: &[u8]) {
     }
 }
 
-/// A sleep file: refused, or one that's within every cap, and reads back as it was once it's been written again.
+/// A sleep file: refused, or one of facts within every cap, which reads back as it was once it's been written again. Whatever the bytes, the format the
+/// pass after a launch reads from their start is read without a panic, and one that says it's older is never decoded (whose facts could have pictures after
+/// them). A file whose start says nothing the pass reads as older too, and removes; that one may still decode, a forged one, which is harmless.
 fn use_a_sleep_file(bytes: &[u8]) {
+    let format = recto_session::sleep::sleep_format_of(bytes);
     let Ok(sleep) = recto_session::sleep::decode_sleep(bytes, CURRENT_VERSION) else {
         return;
     };
-    assert!(sleep.pictures.len() <= recto_session::sleep::MAX_SLEEP_PICTURES);
-    for picture in &sleep.pictures {
-        assert!(picture.bgra.len() <= recto_session::sleep::MAX_PICTURE_BYTES);
-        assert_eq!(picture.bgra.len(), picture.width as usize * picture.height as usize * 4);
-        assert!(picture.page < sleep.pages);
-    }
+    assert!(
+        format.is_none_or(|format| format >= recto_session::sleep::SLEEP_FORMAT),
+        "a file that says it's of an older format, as its start reads, was read: {format:?}"
+    );
+    assert!(sleep.sizes.len() <= recto_session::sleep::MAX_SIZES);
+    assert!(sleep.sizes.iter().all(|(page, ..)| *page < sleep.pages));
     let again = recto_session::sleep::decode_sleep(&recto_session::sleep::encode_sleep(&sleep), CURRENT_VERSION).expect("what was read can be written");
-    assert_eq!(again.pictures.len(), sleep.pictures.len());
+    assert_eq!(again, sleep);
 }
 
 fn use_a_log(bytes: &[u8]) {

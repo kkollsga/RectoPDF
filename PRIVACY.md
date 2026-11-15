@@ -22,7 +22,7 @@ All of it is in your user folder, readable only by you.
 |---|---|---|
 | Your session: open tabs, where you were in each, the window, the last thing you searched for, Back and Forward, and the 20 files you opened last | `~/Library/Application Support/RectoPDF/agent/session/` | Until it changes. If a session can't be read, up to three unreadable ones are set aside beside it |
 | Unsaved edits and undo history, per PDF. Never written into the PDF | `session/journals/` in that folder | While the PDF is open, then 30 days, within 1 GiB in all |
-| A small picture of where you were in a tab that's gone idle, and its contents, so it comes back at once | `session/journals/` | 30 days, within 256 MiB in all |
+| For a tab that's gone idle, its contents and the sizes of its pages, so it comes back at its place at once. No picture of any page | `session/journals/` | 30 days, within 256 MiB in all |
 | One backup of a PDF as it was before you first saved it | `~/Library/Application Support/RectoPDF/agent/backups.noindex/` | 30 days, within 1 GiB in all |
 | Page text of PDFs you searched with Find, so the next search is fast | `~/Library/Caches/RectoPDF/corpus.noindex/` | 90 days after it was last used, within 2 GiB in all. A changed file's old text goes |
 | Generated contents you asked for | `~/Library/Caches/RectoPDF/contents.noindex/` | 90 days, within 32 MiB in all |
@@ -30,9 +30,11 @@ All of it is in your user folder, readable only by you.
 | The previous version of the app, to go back to if a new one won't start | `.RectoPDF-update`, a hidden folder beside the app, usually in `/Applications` | Until the next update |
 | Agent access and its activity log (below) | `~/Library/Application Support/RectoPDF/agent/` | The log keeps at most 6 MiB, the oldest going first |
 
-The edit history, the pictures, the backups, the page text and the generated contents are kept out of Time Machine, and the page text and generated contents out of Spotlight.
+The edit history, the idle tabs' contents, the backups, the page text and the generated contents are kept out of Time Machine, and the page text and generated contents out of Spotlight.
 
-**Passwords are never kept.** A password-protected PDF asks again after a restart. Its page text isn't kept for searching, and no picture of its pages is kept.
+**No picture of any page is kept.** A tab you're not reading comes back from its PDF, its pages in place as they're drawn. Pictures that an earlier version kept are removed the first time this version starts.
+
+**Passwords are never kept.** A password-protected PDF asks again after a restart. Its page text isn't kept for searching, and nothing of its pages is kept for when it's idle.
 
 macOS also keeps a few things of its own for any app, such as the folder you last opened a file from.
 

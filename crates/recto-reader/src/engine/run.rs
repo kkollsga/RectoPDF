@@ -4,7 +4,6 @@
 
 use crate::layout::PageBox;
 use crate::paper::{DarkTile, PaperKind, dark_rgb, dim_page, dim_rgb, is_grey, turn_over};
-use crate::tiles::sleep_draw::SleepDraws;
 use crate::tiles::{DrawKind, Job, JobKind, JobPlan, Outcome, Renew};
 use recto_index::select::PageText;
 use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig, TileKind, TileRequest, TileResult, Workers};
@@ -156,16 +155,8 @@ fn run(shared: &Shared) {
             rest_or_wait_for_a_surface(planned, seen, shared, &mut renderers, &policy, &mut resting_since);
             continue;
         };
-        // **A job for a tab off screen's place ([`SleepDraws`]) starts no worker:** it's done by the one its file has, or not at all. Nor does it put off a big worker's rest, which goes on between its jobs as it does with none.
-        let workers = if SleepDraws::is_for(&lock(&shared.reader), job.tab) {
-            if big_workers_rest(&mut renderers, &policy, &mut resting_since).is_some_and(|left| left.is_zero()) {
-                publish_workers(shared, &mut renderers);
-            }
-            Workers::OnlyTheOneThere
-        } else {
-            resting_since = None;
-            Workers::MayStart
-        };
+        resting_since = None;
+        let workers = Workers::MayStart;
         {
             let mut reader = lock(&shared.reader);
             all_told(shared, &mut reader);

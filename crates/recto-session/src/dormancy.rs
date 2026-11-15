@@ -179,7 +179,6 @@ mod tests {
             toc: Toc::default(),
             usual: None,
             sizes: Vec::new(),
-            pictures: Vec::new(),
         }
     }
 

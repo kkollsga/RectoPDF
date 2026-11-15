@@ -271,7 +271,6 @@ fn a_file_found_to_be_another_version_doesnt_write_the_old_ones_contents_into_a_
         toc: Titled("Old").load(&paths[0]).unwrap().toc,
         usual: None,
         sizes: Vec::new(),
-        pictures: Vec::new(),
     };
     store.sleeps.lock().unwrap().push((stamp, paths[0].clone(), sleep::encode_sleep(&old)));
     let x = s.open(&paths[0]).unwrap();
@@ -331,7 +330,7 @@ fn facts_said(names: &Names, facts: &SleepFacts) -> String {
     let sleep = &facts.sleep;
     let titles: Vec<&str> = sleep.toc.entries().iter().map(|entry| sleep.toc.title(entry)).collect();
     names.say(format_args!(
-        "tab {} {} file {:?} file_pages {} pages {} list_seq {} renderer_only {} version {:?} toc {titles:?} usual {:?} sizes {:?} pictures {} pictures_allowed {}",
+        "tab {} {} file {:?} file_pages {} pages {} list_seq {} renderer_only {} version {:?} toc {titles:?} usual {:?} sizes {:?}",
         facts.id.0,
         facts.path.display(),
         sleep.file,
@@ -342,8 +341,6 @@ fn facts_said(names: &Names, facts: &SleepFacts) -> String {
         sleep.version,
         sleep.usual,
         sleep.sizes,
-        sleep.pictures.len(),
-        facts.pictures_allowed
     ))
 }
 

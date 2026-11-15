@@ -52,7 +52,8 @@ mod tests {
         assert!(text.starts_with("# Privacy"), "{}", file.display());
     }
 
-    /// Failure: the statement promises what the code no longer does: a level allowing other than what `recto permission show` says, or numbers kept that have since changed.
+    /// Failure: the statement promises what the code no longer does: a level allowing other than what `recto permission show` says, numbers kept that have
+    /// since changed, or no picture of any page kept (owner, 2026-11-15) while a sleep file's format can hold one.
     #[test]
     fn the_statement_says_what_the_code_does() {
         let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../PRIVACY.md")).unwrap();
@@ -78,7 +79,14 @@ mod tests {
         assert_eq!(recto_core::save::MAX_BACKUP_BYTES, gib, "within 1 GiB");
         assert_eq!(recto_update::updater::KEEP_RECORD_COPY_MS, 7 * 86_400_000, "a copy of the session for a week");
         assert_eq!(recto_control::log::MAX_LOG_BYTES * 6, 6 * 1024 * 1024, "the activity log, at most 6 MiB");
+        // No picture of a page in a sleep file: its format holds facts and nothing after them, and a file of one could never be the size of a picture.
+        assert!(recto_session::sleep::SLEEP_FORMAT >= 4, "the format before held pictures");
+        assert!(
+            recto_session::sleep::MAX_SLEEP_FILE_BYTES <= 1024 * 1024,
+            "a sleep file the size of pictures is read"
+        );
         for words in [
+            "No picture of any page is kept",
             "90 days after it was last used, within 2 GiB",
             "90 days, within 32 MiB",
             "the 20 files you opened last",

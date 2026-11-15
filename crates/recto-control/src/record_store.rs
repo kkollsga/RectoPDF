@@ -29,6 +29,7 @@ use recto_session::record::{
 };
 use recto_session::sleep::SleepFile;
 use recto_session::{HistorySource, JournalOutcome, JournalWork, RestoredEdits, TakenHistory};
+pub use sleep_files::{MAX_SLEEP_FILES_LOOKED_AT, OlderSleepFiles};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
@@ -1464,6 +1465,7 @@ mod tests {
     use super::*;
     use recto_session::TabId;
     use recto_session::record::{FileRecord, MAIN_KIND, PathField};
+    use recto_session::sleep::MAX_SLEEP_FILE_BYTES;
     use recto_session::sleep::encode_sleep;
 
     fn state() -> (recto_testpdf::TempDir, StatePaths) {
@@ -2277,7 +2279,6 @@ mod tests {
             toc: recto_core::Toc::default(),
             usual: Some((612.0, 792.0)),
             sizes: Vec::new(),
-            pictures: Vec::new(),
         };
         let measured = encode_sleep(&sleep);
         let on_disk = root.join("session").join(JOURNALS).join(record::sleep_file_name(stamp, &file));
@@ -2313,7 +2314,6 @@ mod tests {
             toc: recto_core::Toc::default(),
             usual: Some((612.0, 792.0)),
             sizes: Vec::new(),
-            pictures: Vec::new(),
         };
         assert!(store.write_sleep(&file, &sleep) > 0);
         assert_eq!(store.read_sleep(stamp, &file), Some(sleep.clone()));
@@ -2368,7 +2368,6 @@ mod tests {
             toc: recto_core::Toc::default(),
             usual: Some((612.0, 792.0)),
             sizes: Vec::new(),
-            pictures: Vec::new(),
         };
         assert!(store.write_sleep(&file, &sleep) > 0);
         assert_eq!(store.read_sleep(stamp, &file), Some(sleep.clone()), "today's reads");
@@ -2409,7 +2408,6 @@ mod tests {
             toc,
             usual: Some((612.0, 792.0)),
             sizes: Vec::new(),
-            pictures: Vec::new(),
         };
         assert!(store.write_sleep(&file, &sleep) > 0);
         let read = store.read_sleep(stamp, &file).expect("today's reads");
@@ -2432,6 +2430,127 @@ mod tests {
         std::fs::write(&on_disk, record::seal(recto_session::sleep::SLEEP_KIND, 0, &older)).unwrap();
         assert_eq!(store.read_sleep(stamp, &file), None, "the previous format isn't read");
         assert!(!on_disk.exists(), "and it's removed");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A sleep file's bytes as a build of `format` wrote them, with `pictures` bytes after its facts as format 3's held, or with no format said (0.1.0's).
+    fn sleep_file_of_format(format: Option<u32>, pictures: usize) -> Vec<u8> {
+        let stamp = FileStamp {
+            size: 1,
+            mtime_ns: 1,
+            device: 1,
+            inode: 1,
+        };
+        let sleep = SleepFile {
+            file: stamp,
+            file_pages: 3,
+            pages: 3,
+            list_seq: 0,
+            renderer_only: false,
+            version: None,
+            toc: recto_core::Toc::default(),
+            usual: Some((612.0, 792.0)),
+            sizes: Vec::new(),
+        };
+        let good = encode_sleep(&sleep);
+        let body = std::str::from_utf8(&good[good.iter().position(|byte| *byte == b'\n').unwrap() + 1..]).unwrap();
+        let now = format!("{{\"sleep_format\":{},", recto_session::sleep::SLEEP_FORMAT);
+        let facts = body
+            .trim_end()
+            .replacen(&now, &format.map_or("{".to_string(), |format| format!("{{\"sleep_format\":{format},")), 1);
+        let mut bytes = facts.into_bytes();
+        bytes.push(b'\n');
+        bytes.extend(std::iter::repeat_n(0x7f, pictures));
+        record::seal(recto_session::sleep::SLEEP_KIND, 0, &bytes)
+    }
+
+    /// Failure (owner, 2026-11-15: no picture of a page is kept): a sleep file of an older format, 0.1.0's included, with pictures of pages in it, stays on
+    /// disk for a tab that's never woken again (up to 30 days); or the pass after a launch removes what isn't a sleep file of an older format (a journal, a
+    /// page-id file, a file of this format, which costs its tab the quick way back), or follows a link out of the folder. Only sleep files of an older
+    /// format, or that can't say theirs, go; only the start of each is read.
+    #[test]
+    fn the_pass_after_a_launch_removes_only_sleep_files_of_an_older_format() {
+        let (root, paths) = state();
+        let store = RecordStore::open(&paths, Flavor::App);
+        let folder = root.join("session").join(JOURNALS);
+        std::fs::create_dir_all(&folder).unwrap();
+        let put = |name: &str, bytes: &[u8]| {
+            let path = folder.join(name);
+            local::write_private_file(&path, bytes).unwrap();
+            path
+        };
+        let now = put("sleep-00000000000000a1.bin", &sleep_file_of_format(Some(recto_session::sleep::SLEEP_FORMAT), 0));
+        let newer = put(
+            "sleep-00000000000000a2.bin",
+            &sleep_file_of_format(Some(recto_session::sleep::SLEEP_FORMAT + 1), 0),
+        );
+        let of_0_1_0 = put("sleep-00000000000000a3.bin", &sleep_file_of_format(None, 70_000));
+        let format_3 = put("sleep-00000000000000a4.bin", &sleep_file_of_format(Some(3), 70_000));
+        let junk = put("sleep-00000000000000a5.bin", b"not a sleep file");
+        let journal = put("journal-00000000000000a6.log", &sleep_file_of_format(None, 10));
+        let ids = put("pages-00000000000000a7.ids", &sleep_file_of_format(None, 10));
+        let not_merged = put("journal-00000000000000a8.log.not-merged", &sleep_file_of_format(None, 10));
+        let outside = root.join("outside.bin");
+        std::fs::write(&outside, sleep_file_of_format(None, 10)).unwrap();
+        let link = folder.join("sleep-00000000000000a9.bin");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        let done = store.remove_older_sleep_files(MAX_SLEEP_FILES_LOOKED_AT);
+        assert!(now.exists() && newer.exists(), "this format and a newer one stay");
+        assert!(!of_0_1_0.exists() && !format_3.exists() && !junk.exists(), "older ones go");
+        assert!(journal.exists() && ids.exists() && not_merged.exists(), "nothing but sleep files is touched");
+        assert!(link.symlink_metadata().is_ok() && outside.exists(), "a link is neither followed nor removed");
+        assert_eq!((done.looked_at, done.removed, done.stopped_at_cap), (5, 3, false), "{done:?}");
+        assert!(
+            done.bytes_read <= 5 * recto_session::sleep::FORMAT_PREFIX_BYTES as u64,
+            "only the start of each is read: {done:?}"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Failure: the pass after a launch, past its cap, goes on through the whole folder (a folder of a hostile number of files holds a launch's thread for
+    /// as long), or stops and says nothing, so what's left looks done. At the cap plus one with the cap small: it stops after the cap, says so, and the next
+    /// pass removes the rest; a file left meanwhile is still refused and removed at its first read.
+    #[test]
+    fn the_pass_after_a_launch_stops_at_its_cap_and_the_next_goes_on() {
+        let (root, paths) = state();
+        let store = RecordStore::open(&paths, Flavor::App);
+        let folder = root.join("session").join(JOURNALS);
+        std::fs::create_dir_all(&folder).unwrap();
+        let cap = 2;
+        let older: Vec<PathBuf> = (0..=cap)
+            .map(|at| {
+                let path = folder.join(format!("sleep-00000000000000b{at}.bin"));
+                local::write_private_file(&path, &sleep_file_of_format(None, 100)).unwrap();
+                path
+            })
+            .collect();
+        let first = store.remove_older_sleep_files(cap);
+        assert_eq!(
+            (first.looked_at, first.removed, first.stopped_at_cap),
+            (cap as u32, cap as u32, true),
+            "{first:?}"
+        );
+        assert_eq!(older.iter().filter(|path| path.exists()).count(), 1, "one left past the cap");
+        let next = store.remove_older_sleep_files(cap);
+        assert_eq!((next.looked_at, next.removed, next.stopped_at_cap), (1, 1, false), "{next:?}");
+        assert!(older.iter().all(|path| !path.exists()));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Failure: a sleep file of an older format past what a file of facts can be (one with pictures, up to 32 MiB before) isn't read, and isn't removed
+    /// either, so its pictures stay till the prune. It's removed at its read, as one that doesn't read is.
+    #[test]
+    fn an_older_sleep_file_too_large_to_read_is_removed_at_its_read() {
+        let (root, paths) = state();
+        let store = RecordStore::open(&paths, Flavor::App);
+        let file = root.join("doc.pdf");
+        std::fs::write(&file, b"contents").unwrap();
+        let stamp = file_stamp(&file).unwrap();
+        let on_disk = root.join("session").join(JOURNALS).join(record::sleep_file_name(stamp, &file));
+        std::fs::create_dir_all(on_disk.parent().unwrap()).unwrap();
+        local::write_private_file(&on_disk, &sleep_file_of_format(Some(3), MAX_SLEEP_FILE_BYTES + 1)).unwrap();
+        assert_eq!(store.read_sleep(stamp, &file), None);
+        assert!(!on_disk.exists(), "it's gone");
         std::fs::remove_dir_all(&root).unwrap();
     }
 
