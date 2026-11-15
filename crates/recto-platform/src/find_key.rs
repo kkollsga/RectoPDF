@@ -261,15 +261,29 @@ impl App {
 
 /// **The app's own key, and why it isn't the Keychain's when it isn't.** The Keychain is asked only by a copy that is the team's release, checked whole ([`keychain`]); any refusal, and every other copy, gets a key in memory, with the refusal's code. `None` only when the OS gives no randomness, and then nothing is indexed. The only way to the Keychain from outside this crate. Its one caller is `recto_control::find_keys::AppKey`, made only by the app's start; the indexer takes it on no main thread.
 pub fn load_for_the_app(app: App) -> Option<(FindKey, Option<&'static str>)> {
-    let refused = if keychain::signed_as_a_release(app.team) {
-        match keychain::load_or_create(keychain::SERVICE, keychain::ACCOUNT, &app.access_group()) {
-            Ok(key) => return Some((key, None)),
+    let refused = match refused_by(keychain::signed_as_a_release(app.team)) {
+        None => match keychain::load_or_create(keychain::SERVICE, keychain::ACCOUNT, &app.access_group()) {
+            // Said in `qa state` if the switch couldn't be set: nothing prompted, but nothing then guarded against it.
+            Ok(key) => return Some((key, why_with_the_keychains_key(keychain::prompts_switched_off()))),
             Err(refused) => refused,
-        }
-    } else {
-        keychain::Refused::NotTheTeam
+        },
+        Some(refused) => refused,
     };
     FindKey::fresh(fallback_source(refused)).ok().map(|key| (key, Some(refused.code())))
+}
+
+/// What's said beside a key the Keychain gave: nothing, unless the process-wide switch couldn't be set, which doesn't stop the key being taken (the security read's F1).
+fn why_with_the_keychains_key(switched_off: bool) -> Option<&'static str> {
+    (!switched_off).then_some("keychain_prompts_not_switched_off")
+}
+
+/// What the release check's answer means for the Keychain: asked, refused as not the team's (a check made and failed), or refused as not to be had (a check that couldn't be made, which gives a key in memory for now).
+fn refused_by(answer: keychain::Release) -> Option<keychain::Refused> {
+    match answer {
+        keychain::Release::Yes => None,
+        keychain::Release::No => Some(keychain::Refused::NotTheTeam),
+        keychain::Release::Unknown => Some(keychain::Refused::Unavailable),
+    }
 }
 
 /// **Which key a run of the app goes on with when the Keychain gave none, by why** (the decision apart from the Keychain, so it's tested both ways): a copy that's not the team's release can never have the lasting key, so its key in memory may build over what that key sealed ([`Source::Memory`]); any other refusal means the lasting key may be there and is out of reach for now, so what it sealed is left as it is ([`Source::MemoryForNow`]).
@@ -363,6 +377,24 @@ mod keychain;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure (the security read's F1): a release check that couldn't be made (Security.framework not had, this copy's code not found, a requirement that didn't compile) is taken for "not the team's release", whose key in memory may build over the person's lasting index; or one made and failed is taken for one not made. Each answer has its refusal, and only "not the team's" may replace.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_release_check_that_wasnt_made_never_builds_over_the_lasting_index() {
+        use keychain::{Refused, Release};
+        assert_eq!(refused_by(Release::Yes), None);
+        assert_eq!(refused_by(Release::No), Some(Refused::NotTheTeam));
+        assert_eq!(refused_by(Release::Unknown), Some(Refused::Unavailable));
+        assert!(
+            !fallback_source(Refused::Unavailable).may_replace_lasting(),
+            "a check not made gave a key that builds over the lasting index"
+        );
+        assert!(fallback_source(Refused::NotTheTeam).may_replace_lasting());
+        // The switch missing or refusing is said, and takes nothing away.
+        assert_eq!(why_with_the_keychains_key(true), None);
+        assert_eq!(why_with_the_keychains_key(false), Some("keychain_prompts_not_switched_off"));
+    }
 
     /// Failure (the second review's item 4, 2026-11-15): the app's key after a Keychain refusal is the wrong kind either way. A copy that's not the team's release gets a key only for now, so it can never build over a corpus it can't read; or a release whose Keychain is locked, or whose item can't be read, gets one that may replace, so the person's index is thrown away for a moment's refusal.
     #[test]

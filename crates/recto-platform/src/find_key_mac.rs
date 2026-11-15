@@ -104,6 +104,8 @@ struct Security {
     static_with_path: unsafe extern "C" fn(CfRef, u32, *mut CfRef) -> OsStatus,
     requirement: unsafe extern "C" fn(CfRef, u32, *mut CfRef) -> OsStatus,
     check_static: unsafe extern "C" fn(CfRef, u32, CfRef) -> OsStatus,
+    /// Whether the process-wide switch is off, as it's set before anything else is asked. Not having it doesn't stop the key being taken (the security read's F1): the data-protection keychain doesn't prompt for an item like this one, and it's said in `qa state` if so.
+    switch_off: bool,
     keys: Keys,
 }
 
@@ -153,12 +155,12 @@ fn security() -> Option<&'static Security> {
             };
             // SAFETY: each constant's symbol is the address of a CFStringRef, read once.
             let key = |name: &CStr| find(name).map(|found| unsafe { *found.cast::<CfRef>() }).filter(|value| !value.is_null());
-            // SAFETY: the function's real signature, `OSStatus (Boolean)`.
-            let no_interaction: unsafe extern "C" fn(CfBoolean) -> OsStatus = unsafe { std::mem::transmute(find(SWITCH)?) };
-            // SAFETY: as declared above. Refused for the whole process, for good: see the module's notes.
-            if unsafe { no_interaction(0) } != ERR_SEC_SUCCESS {
-                return None;
-            }
+            let switch_off = find(SWITCH).is_some_and(|found| {
+                // SAFETY: the function's real signature, `OSStatus (Boolean)`.
+                let no_interaction: unsafe extern "C" fn(CfBoolean) -> OsStatus = unsafe { std::mem::transmute(found) };
+                // SAFETY: as declared above. Refused for the whole process, for good: see the module's notes.
+                unsafe { no_interaction(0) == ERR_SEC_SUCCESS }
+            });
             // SAFETY: each is the named function's real signature.
             unsafe {
                 Some(Security {
@@ -174,6 +176,7 @@ fn security() -> Option<&'static Security> {
                         c"SecRequirementCreateWithString",
                     )?),
                     check_static: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(CfRef, u32, CfRef) -> OsStatus>(find(c"SecStaticCodeCheckValidity")?),
+                    switch_off,
                     keys: Keys {
                         class: key(c"kSecClass")?,
                         generic_password: key(c"kSecClassGenericPassword")?,
@@ -242,35 +245,57 @@ fn dictionary(pairs: &[(CfRef, CfRef)]) -> Option<Owned> {
     .made()
 }
 
-/// Whether static code meets a requirement, with the executable, every sealed resource and the nested code validated ([`K_SEC_CS_RELEASE_CHECK`]).
-fn static_code_meets(sec: &Security, code: &Owned, requirement: &str) -> bool {
-    let Some(text) = cf_string(requirement) else { return false };
+/// What checking static code against a requirement said, with the executable, every sealed resource and the nested code validated ([`K_SEC_CS_RELEASE_CHECK`]): the check's status, or `None` when it couldn't be made (the requirement didn't compile).
+fn static_code_check(sec: &Security, code: &Owned, requirement: &str) -> Option<OsStatus> {
+    let text = cf_string(requirement)?;
     let mut compiled: CfRef = std::ptr::null();
     // SAFETY: a string and an out-pointer.
     if unsafe { (sec.requirement)(text.0, 0, &mut compiled) } != ERR_SEC_SUCCESS {
-        return false;
+        return None;
     }
-    let Some(compiled) = Owned(compiled).made() else { return false };
+    let compiled = Owned(compiled).made()?;
     // SAFETY: a static code object and a requirement, both held.
-    unsafe { (sec.check_static)(code.0, K_SEC_CS_RELEASE_CHECK, compiled.0) == ERR_SEC_SUCCESS }
+    Some(unsafe { (sec.check_static)(code.0, K_SEC_CS_RELEASE_CHECK, compiled.0) })
+}
+
+/// Whether this copy is the team's release, as one of three answers: only a check that was made and failed says it isn't (the security read's F1). One that couldn't be made says nothing either way, and the run takes a key in memory for now, which never builds over the lasting key's index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Release {
+    Yes,
+    No,
+    Unknown,
+}
+
+/// What a check's status, or its not being made, answers.
+fn release_answer(status: Option<OsStatus>) -> Release {
+    match status {
+        None => Release::Unknown,
+        Some(ERR_SEC_SUCCESS) => Release::Yes,
+        Some(_) => Release::No,
+    }
+}
+
+/// Whether the process-wide switch is off: not, if Security.framework couldn't be had, or the switch wasn't there or refused.
+pub(super) fn prompts_switched_off() -> bool {
+    security().is_some_and(|sec| sec.switch_off)
 }
 
 /// **Whether this running copy is the team's release, checked whole:** its code on disk, the bundle it was launched from, validated against its signature (the executable, every sealed resource, nested code, strictly) and held to the Developer ID requirement the updater uses. A development build is ad hoc and fails; so does an ad hoc signature claiming the team, and a release with a resource changed. Costs a hash of the whole bundle, once per run, on the thread that takes the key.
-pub(super) fn signed_as_a_release(team: &str) -> bool {
-    let Some(sec) = security() else { return false };
+pub(super) fn signed_as_a_release(team: &str) -> Release {
+    let Some(sec) = security() else { return Release::Unknown };
     let mut running: CfRef = std::ptr::null();
     // SAFETY: an out-pointer for the call.
     if unsafe { (sec.copy_self)(0, &mut running) } != ERR_SEC_SUCCESS {
-        return false;
+        return Release::Unknown;
     }
-    let Some(running) = Owned(running).made() else { return false };
+    let Some(running) = Owned(running).made() else { return Release::Unknown };
     let mut on_disk: CfRef = std::ptr::null();
     // SAFETY: the running code above, and an out-pointer.
     if unsafe { (sec.copy_static)(running.0, 0, &mut on_disk) } != ERR_SEC_SUCCESS {
-        return false;
+        return Release::Unknown;
     }
-    let Some(on_disk) = Owned(on_disk).made() else { return false };
-    static_code_meets(sec, &on_disk, &crate::signing::developer_id_requirement(team))
+    let Some(on_disk) = Owned(on_disk).made() else { return Release::Unknown };
+    release_answer(static_code_check(sec, &on_disk, &crate::signing::developer_id_requirement(team)))
 }
 
 /// Whether the code at `path` meets `requirement`, checked as [`signed_as_a_release`] checks this copy: for its tests, on a bundle they make.
@@ -288,7 +313,9 @@ fn path_meets(path: &std::path::Path, requirement: &str) -> bool {
     if unsafe { (sec.static_with_path)(url.0, 0, &mut code) } != ERR_SEC_SUCCESS {
         return false;
     }
-    Owned(code).made().is_some_and(|code| static_code_meets(sec, &code, requirement))
+    Owned(code)
+        .made()
+        .is_some_and(|code| release_answer(static_code_check(sec, &code, requirement)) == Release::Yes)
 }
 
 /// The key under `service` and `account` in the access `group`, made and added the first time: at most three Keychain calls, a look, an add, and a look again if another run added one first. Only [`super::load_for_the_app`] calls this, and only once [`signed_as_a_release`] has said yes.
@@ -422,7 +449,11 @@ mod tests {
     /// Failure: a test build counts as the team's release, so a quiet run or a test would reach the person's Keychain.
     #[test]
     fn a_test_build_is_not_a_release() {
-        assert!(!signed_as_a_release("6GND8Z2C7Z"), "an ad hoc test binary passed as the team's release");
+        assert_eq!(
+            signed_as_a_release("6GND8Z2C7Z"),
+            Release::No,
+            "an ad hoc test binary passed as the team's release, or its check wasn't made"
+        );
     }
 
     /// Failure: an item whose data is empty or isn't 32 bytes is read as a key, or reading it makes a slice from CoreFoundation's null pointer (undefined behaviour: empty `CFData` has none). Fed straight to the read path, with no Keychain.
@@ -475,6 +506,23 @@ mod tests {
         std::fs::write(bundle.join("Contents/Resources/words.txt"), b"changed after").unwrap();
         assert!(!path_meets(&bundle, "always"), "a bundle with a resource changed passed the check");
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// Failure (the security read's F1): a release check that couldn't be made (a requirement that didn't compile) reads as "not the team's release", so a run that may simply have failed to look builds over the person's lasting index; or one that was made and failed reads as unknown, so a development build waits for a Keychain it will never have. Only a made check's failure is "no".
+    #[test]
+    fn only_a_check_that_was_made_and_failed_says_not_the_release() {
+        assert_eq!(release_answer(Some(ERR_SEC_SUCCESS)), Release::Yes);
+        for status in [-67050, -67062, -67061, -1] {
+            assert_eq!(release_answer(Some(status)), Release::No, "{status}");
+        }
+        assert_eq!(release_answer(None), Release::Unknown);
+        let sec = security().expect("Security.framework");
+        let here = Owned(std::ptr::null());
+        assert_eq!(
+            static_code_check(sec, &here, "not a requirement ("),
+            None,
+            "a requirement that doesn't compile gave a status"
+        );
     }
 
     /// Failure: a lookup that was refused (a locked keychain, an item another signature made or planted, any answer but "no item") goes on to add one, so the app writes a second key beside a planted one, or over the person's own while their keychain is locked. Only "no item" leads to an add; every other status the probe has seen, and any other, is a refusal.

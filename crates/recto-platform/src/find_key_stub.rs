@@ -20,8 +20,20 @@ impl Refused {
     }
 }
 
-pub(super) fn signed_as_a_release(_team: &str) -> bool {
-    false
+/// Whether this copy is the team's release: never, where there's no Keychain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Release {
+    Yes,
+    No,
+    Unknown,
+}
+
+pub(super) fn signed_as_a_release(_team: &str) -> Release {
+    Release::No
+}
+
+pub(super) fn prompts_switched_off() -> bool {
+    true
 }
 
 pub(super) fn load_or_create(_service: &str, _account: &str, _group: &str) -> Result<FindKey, Refused> {
