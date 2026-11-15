@@ -559,3 +559,29 @@ fn a_paste_that_panics_leaves_the_next_paste_working() {
     let svg = clipboard_data(&app, offer.serial, extract::UTI_SVG).expect("the next paste gets its SVG");
     assert!(String::from_utf8_lossy(&svg).contains("<svg"), "an SVG");
 }
+
+/// **Failure (found on the way, 2026-11-15): a quit the person stayed after left the snapshot tool quitting for good,** so every later paste of a box's
+/// promised SVG got nothing until the app was started again. With a page turned unsaved and the record unwritable, so the quit asks, and Stay: a box
+/// taken after gives its SVG.
+#[cfg(unix)]
+#[test]
+fn a_paste_after_a_stayed_quit_gets_its_svg() {
+    use super::persons_lane::{quit_answers, record_folder_writable};
+    let disk = Disk::new();
+    let doc = disk.file("snapshot.pdf", &text_and_image());
+    let app = disk.start();
+    app.open(&doc);
+    app.act(UiAction::Menu { id: "rotate.right".into() });
+    app.settle();
+    tool_on(&app);
+    record_folder_writable(&app, false);
+    app.core().quit_requested();
+    app.wait_until("the quit's question", || quit_answers(&app) == 1);
+    app.stay();
+    record_folder_writable(&app, true);
+    app.settle();
+    take_box(&app);
+    let (_, bytes) = offered(&app).expect("offered");
+    let svg = bytes.into_iter().find(|(uti, _)| uti == extract::UTI_SVG).and_then(|(_, svg)| svg);
+    assert!(svg.is_some_and(|svg| String::from_utf8_lossy(&svg).contains("<svg")), "the paste gets its SVG");
+}

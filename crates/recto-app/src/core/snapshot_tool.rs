@@ -374,6 +374,12 @@ impl Tool {
         lock(&self.paste.state).stop.stop();
     }
 
+    /// The person stayed after a quit's question: a paste's promised SVG is made again (found on the way, 2026-11-15: it was given nothing till the app
+    /// was started again).
+    pub fn quit_not_taken(&self) {
+        self.quitting.store(false, Ordering::SeqCst);
+    }
+
     /// One type of the offer with this number: its bytes, once, dropped from here as they go, or what a promised one is made from. Nothing for an offer replaced since, a type not in it, or a promise on the way out.
     pub fn data(&self, serial: u64, uti: &str) -> Option<Data> {
         let mut offered = lock(&self.offered);

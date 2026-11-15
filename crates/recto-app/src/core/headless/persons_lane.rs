@@ -503,7 +503,7 @@ fn two_highlights_and_an_undo_parked_and_a_quit(app: &HeadlessApp) -> std::sync:
     go
 }
 
-fn quit_answers(app: &HeadlessApp) -> usize {
+pub(super) fn quit_answers(app: &HeadlessApp) -> usize {
     app.heard().iter().filter(|heard| matches!(heard, crate::testkit::Heard::QuitAnswer(_))).count()
 }
 
@@ -616,7 +616,7 @@ fn a_command_asked_as_a_hand_off_freezes_doesnt_run_after_its_last_look() {
 
 /// The state folder's own part that the record goes in, made so it can't be written (so a quit asks, and can be stayed), or writable again.
 #[cfg(unix)]
-fn record_folder_writable(app: &HeadlessApp, writable: bool) {
+pub(super) fn record_folder_writable(app: &HeadlessApp, writable: bool) {
     use std::os::unix::fs::PermissionsExt as _;
     let folder = app.core().saver.store.main_folder();
     std::fs::create_dir_all(&folder).expect("the record's folder");
