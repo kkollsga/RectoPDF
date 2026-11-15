@@ -54,8 +54,8 @@ pub fn claim_agent_folder(root: &Path, key: CorpusKey) -> Option<AgentClaim> {
     Some(AgentClaim(file))
 }
 
-/// Moves a session's folder aside, in one rename to a name of its own, and lets the session's hold go: the end of the session that made it.
-pub fn retire_agent_folder(root: &Path, key: CorpusKey, claim: Option<AgentClaim>) {
+/// Moves a session's folder aside, in one rename to a name of its own, and lets the session's hold go: the end of the session that holds it. Only with its claim: a session that got none, because another live session holds the folder, has nothing to set aside (the second review's item 1, 2026-11-15).
+pub fn retire_agent_folder(root: &Path, key: CorpusKey, claim: AgentClaim) {
     if let Some(paths) = checked(root, key)
         && is_real_dir(&paths.agent)
     {

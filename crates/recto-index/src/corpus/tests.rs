@@ -1809,9 +1809,8 @@ fn an_agent_folder_lives_only_for_the_session_that_holds_it() {
     assert!(agent(mine).is_dir() && agent(theirs).is_dir() && !agent(dead).exists());
     assert!(!CorpusPaths::new(&root, mine).temp_page.exists(), "a half-made page stayed");
     // The end of a session: set aside in one rename each, to a name of its own, twice over, with nothing removed then.
-    retire_agent_folder(&root, mine, Some(my_claim));
-    drop(claim_agent_folder(&root, mine));
-    retire_agent_folder(&root, mine, None);
+    retire_agent_folder(&root, mine, my_claim);
+    retire_agent_folder(&root, mine, claim_agent_folder(&root, mine).expect("a claim on a folder made again"));
     assert_eq!(
         aside(mine).len(),
         2,
@@ -1856,21 +1855,22 @@ fn a_link_on_the_way_to_an_agent_folder_is_never_followed() {
         }
         note_agent_folder(&root);
         sweep_agent_folders(&root, &[]);
-        retire_agent_folder(&root, key, None);
+        // No claim can be had through the link, and a session's end sets aside only what it holds a claim on.
         assert!(
             claim_agent_folder(&root, key).is_none(),
             "a claim was made through a link at the {level} folder"
         );
         assert!(untouched(), "the sweep or a session's end went through a link at the {level} folder");
     }
-    // A link in the agent folder's own place, and in a set-aside one's.
+    // A link in the agent folder's own place, put there under a session that holds a claim on the real one, and in a set-aside one's.
     let key = with_agent_folder(&temp, &root, "real");
     let paths = CorpusPaths::new(&root, key);
+    let claim = claim_agent_folder(&root, key).expect("a claim on the real folder");
     fs::remove_dir_all(&paths.agent).unwrap();
     std::os::unix::fs::symlink(outside.join("agent"), &paths.agent).unwrap();
     std::os::unix::fs::symlink(outside.join("agent.gone.1.2"), paths.dir.join("agent.gone.9.9")).unwrap();
     sweep_agent_folders(&root, &[]);
-    retire_agent_folder(&root, key, None);
+    retire_agent_folder(&root, key, claim);
     assert!(untouched(), "the sweep or a session's end went through a link at the agent folder");
 }
 

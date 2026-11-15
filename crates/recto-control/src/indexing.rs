@@ -58,8 +58,8 @@ struct Inner {
     sweep_due: bool,
     /// Corpora this session's key can't read have been looked for, once the key was taken for a build.
     unreadable_swept: bool,
-    /// The agents' folders this session asked for, which live as long as it does. At most [`MAX_AGENT_FOLDERS`]: past that the oldest is set aside at once.
-    agent_folders: VecDeque<(CorpusKey, Option<corpus::AgentClaim>)>,
+    /// The agents' folders this session holds, which live as long as it does. At most [`MAX_AGENT_FOLDERS`]: past that the oldest is set aside at once. One another live session holds isn't here: it's that session's to end.
+    agent_folders: VecDeque<(CorpusKey, corpus::AgentClaim)>,
 }
 
 struct Shared {
@@ -297,9 +297,10 @@ impl Indexing for Indexer {
         {
             corpus::retire_agent_folder(&self.0.root, oldest, claim);
         }
-        // One file held open, and locked, for each folder this session asked for: at most `MAX_AGENT_FOLDERS`, and none until an agent asks.
-        let claim = corpus::claim_agent_folder(&self.0.root, key);
-        inner.agent_folders.push_back((key, claim));
+        // One file held open, and locked, for each folder this session holds: at most `MAX_AGENT_FOLDERS`, and none until an agent asks. No claim, and the folder isn't this session's to set aside: another live session holds it, or the folders on the way aren't private ones. The next ask tries again.
+        if let Some(claim) = corpus::claim_agent_folder(&self.0.root, key) {
+            inner.agent_folders.push_back((key, claim));
+        }
     }
 
     fn want(&self, path: &Path, key: CorpusKey) {
@@ -819,6 +820,23 @@ mod tests {
             json!({ "plan": "memory", "source": "memory", "why": null }),
             "once taken, where it came from"
         );
+    }
+
+    /// Failure (the second review's item 1, 2026-11-15): a session that asked for an agent's folder another live session holds, and so got no claim on it, sets that folder aside at its own end, out from under the session still using it. Only a folder this session holds is set aside; the other's stays while its holder lives.
+    #[test]
+    fn a_session_without_a_claim_leaves_another_sessions_folder() {
+        let temp = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-agent-claim-");
+        let root = temp.join("corpus.noindex");
+        let paths = corpus::CorpusPaths::new(&root, key(1));
+        for dir in [root.as_path(), paths.dir.parent().unwrap(), &paths.dir, &paths.app] {
+            recto_platform::local::ensure_private_dir(dir).unwrap();
+        }
+        let theirs = corpus::claim_agent_folder(&root, key(1)).expect("the other session's claim");
+        let indexer = Indexer::with_runner(&root, Box::new(Fails));
+        Indexing::made_agent_folder(&indexer, key(1));
+        indexer.shut_down();
+        assert!(paths.agent.is_dir(), "another live session's folder was set aside at this one's end");
+        drop(theirs);
     }
 
     /// Failure: `stop` finds a build still queued and starts it after the session has gone, or asking afterwards starts one.
