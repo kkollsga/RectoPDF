@@ -61,6 +61,11 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "the state folder's own record files, named by the app: flushed to the drive, a kept copy written, and a record that couldn't be read copied aside",
     ),
     ("recto-control/src/record_store/lock.rs", 1, "the state folder's lock file, named by the app"),
+    (
+        "recto-control/src/record_store/sleep_files.rs",
+        1,
+        "the state folder's own sleep files, opened (no link followed) by the pass after a launch that removes older ones",
+    ),
     ("recto-control/src/server.rs", 1, "the socket's lock file in the state folder, named by the app"),
     (
         "recto-control/src/terminal.rs",

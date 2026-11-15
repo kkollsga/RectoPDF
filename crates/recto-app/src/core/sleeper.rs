@@ -58,8 +58,8 @@ pub struct Sleeper {
     answers: Mutex<Vec<(u64, Outcome)>>,
     /// The last ticket handed out.
     tickets: AtomicU64,
-    /// What the pass after the launch that removes older sleep files came to, and how long it took in microseconds, once it's done ([`sweep_older`]).
-    older: Mutex<Option<(recto_control::record_store::OlderSleepFiles, u64)>>,
+    /// What the pass after the launch that removes older sleep files came to, once it's done ([`sweep_older`]).
+    older: OlderPass,
 }
 
 /// Answers kept for agents that asked for a sleep file and haven't taken them yet. Each asker takes its own at once, so a few cover agents asking together.
@@ -190,7 +190,7 @@ impl Sleeper {
             background_hurry: std::sync::atomic::AtomicBool::new(false),
             answers: Mutex::new(Vec::new()),
             tickets: AtomicU64::new(0),
-            older: Mutex::new(None),
+            older: OlderPass::default(),
         }
     }
 
@@ -373,7 +373,7 @@ impl Sleeper {
     }
 
     pub fn report(&self) -> Value {
-        let older = lock(&self.older).map(|(done, micros)| {
+        let older = self.older.get().map(|(done, micros)| {
             json!({ "looked_at": done.looked_at, "removed": done.removed, "bytes_read": done.bytes_read, "stopped_at_cap": done.stopped_at_cap, "micros": micros })
         });
         let (counts, after_seconds, budget_bytes, agent_bytes) = {
@@ -892,6 +892,46 @@ impl Inner {
     }
 }
 
+/// **What the pass that removes older sleep files came to,** in two words the sleeper keeps for `qa state`, as a lock and an `Option` of it would have the
+/// sleeper's state past its budget for a number read once: the files looked at and removed (each under [`MAX_LOOKED_AT_BITS`]), whether it stopped at its
+/// cap and that it's done, in one; the bytes it read and its time in microseconds, each held to 32 bits, in the other.
+#[derive(Debug, Default)]
+struct OlderPass {
+    counts: AtomicU64,
+    read: AtomicU64,
+}
+
+/// Bits for a count of sleep files the pass looks at: past [`recto_control::record_store::MAX_SLEEP_FILES_LOOKED_AT`].
+const MAX_LOOKED_AT_BITS: u32 = 24;
+const _: () = assert!(recto_control::record_store::MAX_SLEEP_FILES_LOOKED_AT < 1 << MAX_LOOKED_AT_BITS);
+
+impl OlderPass {
+    fn set(&self, done: recto_control::record_store::OlderSleepFiles, took: Duration) {
+        let micros = u32::try_from(took.as_micros()).unwrap_or(u32::MAX);
+        let bytes = u32::try_from(done.bytes_read).unwrap_or(u32::MAX);
+        self.read.store(u64::from(bytes) << 32 | u64::from(micros), Ordering::SeqCst);
+        let counts = 1 << 63 | u64::from(done.stopped_at_cap) << 62 | u64::from(done.looked_at) << MAX_LOOKED_AT_BITS | u64::from(done.removed);
+        self.counts.store(counts, Ordering::SeqCst);
+    }
+
+    /// What it came to and how long it took in microseconds, once it's done.
+    fn get(&self) -> Option<(recto_control::record_store::OlderSleepFiles, u64)> {
+        let counts = self.counts.load(Ordering::SeqCst);
+        if counts >> 63 == 0 {
+            return None;
+        }
+        let read = self.read.load(Ordering::SeqCst);
+        let mask = (1 << MAX_LOOKED_AT_BITS) - 1;
+        let done = recto_control::record_store::OlderSleepFiles {
+            looked_at: u32::try_from(counts >> MAX_LOOKED_AT_BITS & mask).unwrap_or(u32::MAX),
+            removed: u32::try_from(counts & mask).unwrap_or(u32::MAX),
+            bytes_read: read >> 32,
+            stopped_at_cap: counts >> 62 & 1 == 1,
+        };
+        Some((done, read & u64::from(u32::MAX)))
+    }
+}
+
 /// **Every sleep file of an older format is removed, once after a launch** (owner, 2026-11-15: no picture of a page is kept, and every format before this
 /// one, 0.1.0's included, could hold some; until then such a file went only at its tab's next wake, or after 30 days): on a thread of its own, started once
 /// the state's taken in so it's off the UI thread and the first frame's path, which has read the tab on screen's file already. It holds the record's keeper
@@ -911,7 +951,7 @@ pub(super) fn sweep_older(on_disk: &OnDisk, core: &Arc<CoreQueue>) {
             } else {
                 recto_control::record_store::OlderSleepFiles::default()
             };
-            *lock(&sleeper.older) = Some((done, u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX)));
+            sleeper.older.set(done, began.elapsed());
             drop(way_back);
         });
 }
@@ -1084,6 +1124,22 @@ mod tests {
             sleeper.answer(sleeper.asking(agent), Some(cut));
         }
         assert_eq!(lock(&sleeper.answers).len(), MAX_ASKED_ANSWERS, "unclaimed answers are capped");
+    }
+
+    /// Failure: what the pass that removes older sleep files came to reads back as something else in `qa state` (a count in another's bits), or as done
+    /// before it is.
+    #[test]
+    fn the_older_files_pass_reads_back_as_it_was() {
+        let pass = OlderPass::default();
+        assert!(pass.get().is_none(), "not done yet");
+        let done = recto_control::record_store::OlderSleepFiles {
+            looked_at: recto_control::record_store::MAX_SLEEP_FILES_LOOKED_AT as u32,
+            removed: 4_000,
+            bytes_read: 32 * 1024 * 1024,
+            stopped_at_cap: true,
+        };
+        pass.set(done, Duration::from_micros(123_456));
+        assert_eq!(pass.get(), Some((done, 123_456)));
     }
 
     /// Failure: coming back to the app with a file on a disk that's stopped answering starts another look thread per tab each time, without end (review O3): a tab already being looked at must not get a second thread, and no more than `MAX_LOOKS` at once. And a look asked for while one is under way is lost, so a file changed after that one looked isn't noticed when the app comes to the front (seen once in the opening shots, under load).
