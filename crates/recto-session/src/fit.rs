@@ -213,13 +213,19 @@ impl Notices<'_> {
 
     /// [`Self::said`], for a tab whose record is in hand, with no lookup of the tab: see [`Self::fit_of`].
     pub(crate) fn said_of(&self, tab: &TabRecord) -> Option<NoticeSaid> {
+        let fit = self.fit_of(tab);
         let said = |notice: &FileNotice| NoticeSaid {
             code: notice.code(),
-            message: notice.message(self.lists.has_list(tab.id)),
+            // "Changed" speaks of the edits only where the file is known to be another than they're about, never because a list exists: edits made on
+            // the version shown (the file changed, then the person edited) get the words a clean tab gets (review S1, 2026-11-15).
+            message: notice.message(match notice {
+                FileNotice::Changed => fit.file_known_other(),
+                _ => self.lists.has_list(tab.id),
+            }),
         };
         match tab.file.notice() {
             Some(missing @ FileNotice::Missing) => Some(said(missing)),
-            notice => self.fit_of(tab).said().or_else(|| notice.map(said)),
+            notice => fit.said().or_else(|| notice.map(said)),
         }
     }
 }

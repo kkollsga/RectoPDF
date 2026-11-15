@@ -781,3 +781,44 @@ fn only_a_file_known_to_be_another_withholds_its_pages_and_takes_no_more_edits()
         assert!(!bed.s.notices().pages_withheld(a), "{expected:?}: back to nothing unsaved, its pages show");
     }
 }
+
+/// Failure (review S1 of `build/shorter-file-pages`): a clean tab's file was replaced, then the person edited the new version: the edits fit what the
+/// tab shows, but its "changed" notice was still set and a list now existed, so the tab said the held words ("its pages aren't shown… Discard the
+/// edits…") over pages it was showing and edits that save; and as the tab had a list, leaving it didn't let the notice go. The same for a list of only
+/// history when the file changes. The edits' clause follows whether the file is known to be another, and the notice goes on the way past as a clean
+/// tab's does.
+#[test]
+fn edits_made_on_the_version_shown_get_a_clean_tabs_words_and_lose_them_on_leaving() {
+    let words = |bed: &Bed, a: TabId| bed.s.notices().said(a).map(|said| said.message);
+    let plain = FileNotice::Changed.message(false);
+    // Replaced while clean, then edited.
+    let (mut bed, a, b) = Bed::new(10);
+    replace_file(&bed.path(), b"v2, five pages, saved by another app");
+    bed.pages.set(5);
+    assert!(bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.tabs().own_stamp(a))));
+    // Read again where it is, as the app does for the tab showing, so it isn't left on the way.
+    bed.s.warm.clear_contents();
+    bed.s.wake_active();
+    assert_eq!(bed.s.pages().count(a), 5, "the new version is read");
+    assert_eq!(words(&bed, a), Some(plain), "clean, the new version is said");
+    bed.s.edit_pages(a, |e| e.rotate(1, 1, 1)).unwrap();
+    assert_eq!(bed.s.notices().fit(a), EditsFit::Fit);
+    assert_eq!(words(&bed, a), Some(plain), "edited on the version shown: the same words");
+    assert!(!bed.s.notices().pages_withheld(a));
+    let whole = bed.s.begin_save(a, false).unwrap().unwrap();
+    assert_eq!(whole.stamp, Some(bed.stamp_now()), "and it saves onto the version shown");
+    bed.s.end_save(a);
+    bed.s.tap(b).unwrap();
+    bed.s.tap(a).unwrap();
+    assert_eq!(words(&bed, a), None, "left and back: said, as a clean tab's is");
+    // A list of only history when the file changes.
+    let (mut bed, a, _b) = Bed::new(10);
+    bed.s.edit_pages(a, |e| e.rotate(1, 1, 1)).unwrap();
+    assert!(bed.s.undo_edit(a));
+    replace_file(&bed.path(), b"v2, saved by another app");
+    assert!(bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.tabs().own_stamp(a))));
+    bed.s.warm.clear_contents();
+    bed.s.wake_active();
+    assert!(!bed.s.lists().is_edited(a), "nothing unsaved");
+    assert_eq!(words(&bed, a), Some(plain), "only history, nothing held: the plain words");
+}
