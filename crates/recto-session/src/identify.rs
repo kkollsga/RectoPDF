@@ -15,6 +15,19 @@ use std::path::PathBuf;
 
 /// Most pages one job reads, so one tab's many can't hold the thread from the others; the rest are the next job's.
 pub const MAX_PAGES_A_JOB: usize = 512;
+/// How long one job reads before it gives up on its file (rule 1 and 6): a real page takes about a millisecond and its caps bound a hostile one to
+/// about a second, but 8,192 hostile pages would hold a core for hours. Past this, the pages the tab names and hasn't had read are no longer named, so
+/// nothing reads them again until an edit names them; their edits can't follow a change, which the list says ([`identity::Identities::over_cap`]).
+pub const MAX_JOB_TIME: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// [`MAX_JOB_TIME`], which a test sets to nothing on its own thread to hold it without a hostile file.
+fn job_time() -> std::time::Duration {
+    #[cfg(test)]
+    if let Some(time) = crate::tests::identify::JOB_TIME.with(std::cell::Cell::get) {
+        return time;
+    }
+    MAX_JOB_TIME
+}
 
 /// One tab's file to read, and which of its pages.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,6 +46,8 @@ pub struct Identified {
     pub stamp: FileStamp,
     pub pages: Vec<(u32, Known)>,
     pub document: Option<DocumentIds>,
+    /// It stopped at [`MAX_JOB_TIME`], before every page asked was read.
+    pub gave_up: bool,
 }
 
 /// Whether a tab's pages may be read for it now: its list names pages not read, its edits fit its file, whose version is known, and it isn't protected.
@@ -77,7 +92,21 @@ pub fn read(job: &IdentifyJob) -> Option<Identified> {
     }
     let reader = recto_core::page_id::open_for_identity(&job.path).ok()?;
     let map = reader.page_map().ok()?;
-    let read = recto_core::page_id::identify_pages(&reader, &map, &job.pages);
+    let (began, limit) = (std::time::Instant::now(), job_time());
+    let mut pages = Vec::with_capacity(job.pages.len());
+    let mut gave_up = false;
+    for page in &job.pages {
+        if began.elapsed() > limit {
+            gave_up = true;
+            break;
+        }
+        if let Some(entry) = map.get(*page as usize) {
+            pages.push((
+                *page,
+                Known::of(&recto_core::page_id::identify_page(&reader, entry, &recto_core::page_id::Caps::STANDARD)),
+            ));
+        }
+    }
     let document = recto_core::page_id::document_ids(&reader);
     drop(reader);
     if !current() {
@@ -86,8 +115,9 @@ pub fn read(job: &IdentifyJob) -> Option<Identified> {
     Some(Identified {
         tab: job.tab,
         stamp: job.stamp,
-        pages: job.pages.iter().zip(read).filter_map(|(page, id)| Some((*page, Known::of(&id?)))).collect(),
+        pages,
         document,
+        gave_up,
     })
 }
 
@@ -97,8 +127,10 @@ pub fn identified<L: DocLoader>(session: &mut Session<L>, found: &Identified) ->
     if readable(session, found.tab).is_none_or(|(_, stamp)| stamp != found.stamp) {
         return false;
     }
-    session
-        .lists
-        .get_mut(found.tab)
-        .is_some_and(|edits| identity::found(edits, &found.pages, found.document))
+    let Some(edits) = session.lists.get_mut(found.tab) else { return false };
+    let taken = identity::found(edits, &found.pages, found.document);
+    if found.gave_up {
+        identity::give_up(edits);
+    }
+    taken
 }

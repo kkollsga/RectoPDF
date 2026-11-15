@@ -4,6 +4,11 @@
 use super::*;
 use crate::identify::{self, IdentifyJob};
 
+std::thread_local! {
+    /// How long a job may read on this thread, when a test says ([`crate::identify::MAX_JOB_TIME`]).
+    pub(crate) static JOB_TIME: Cell<Option<std::time::Duration>> = const { Cell::new(None) };
+}
+
 /// A loader that reads the real file's facts, as the app's does.
 struct Real;
 
@@ -110,4 +115,24 @@ fn a_job_reads_a_bounded_number_of_pages() {
     assert!(identify::identified(&mut s, &found));
     let next = identify::work(&s);
     assert_eq!((next[0].tab, next[0].pages.len()), (id, 10));
+}
+
+/// Failure caught (rules 1 and 6): a file whose pages each cost their caps (seconds apiece) holds the thread for hours over a tab's thousands of named
+/// pages, and is read again after every edit. A job that passes its time gives up: what it read is taken in, the rest is named no more, the list says
+/// some pages couldn't be identified, and nothing is asked again. Held with the time set to nothing: the first page is read, and no more.
+#[test]
+fn a_job_past_its_time_gives_up_on_the_rest() {
+    let (_dir, _path, mut s, id) = open_ten();
+    s.edit_pages(id, |e| e.rotate(0, 10, 1)).unwrap();
+    JOB_TIME.with(|time| time.set(Some(std::time::Duration::ZERO)));
+    let job = identify::work(&s).remove(0);
+    let found = identify::read(&job).unwrap();
+    JOB_TIME.with(|time| time.set(None));
+    assert!(found.gave_up);
+    assert!(found.pages.len() <= 1, "{:?}", found.pages.len());
+    identify::identified(&mut s, &found);
+    let ids = crate::edit::identity::identities(s.lists().get(id).unwrap()).unwrap();
+    assert!(ids.over_cap());
+    assert!(ids.pages().iter().all(|(_, known)| known.is_some()));
+    assert!(!identify::has_work(&s), "nothing asked again");
 }

@@ -58,7 +58,7 @@ impl Known {
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Identities {
     pages: Vec<(u32, Option<Known>)>,
-    /// More pages were named than [`MAX_IDENTIFIED`] holds.
+    /// More pages were named than [`MAX_IDENTIFIED`] holds, or than could be read in time ([`give_up`]): an edit on a page not named can't follow it.
     over_cap: bool,
     /// The file's `/ID` pair, as read with the pages, if it has one.
     document: Option<recto_core::page_id::DocumentIds>,
@@ -81,7 +81,7 @@ impl Identities {
         &self.pages
     }
 
-    /// Whether more pages were named than the cap holds.
+    /// Whether more pages were named than the cap holds, or could be read in time.
     pub fn over_cap(&self) -> bool {
         self.over_cap
     }
@@ -241,6 +241,15 @@ pub fn found(edits: &mut PageEdits, pages: &[(u32, Known)], document: Option<rec
     };
     edits.note(|| JournalOp::Identified(record));
     true
+}
+
+/// **Reading this file's pages took too long:** the pages named and not read are named no more, and the list says some of its pages couldn't be
+/// identified, so nothing reads them again until an edit names them ([`crate::identify::MAX_JOB_TIME`]).
+pub fn give_up(edits: &mut PageEdits) {
+    if let Some(ids) = edits.identities.as_deref_mut() {
+        ids.pages.retain(|(_, known)| known.is_some());
+        ids.over_cap = true;
+    }
 }
 
 /// A journal's line of what was read, replayed: what isn't named, or doesn't read as an identity, is left out, so a hostile journal can do no more than
