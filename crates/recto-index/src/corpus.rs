@@ -588,6 +588,31 @@ impl ReadyCorpus {
     }
 }
 
+/// **What's kept of a document, as its key reads it:** the text of every page of a corpus folder that opens, finished or not, in order up to the first that doesn't, then its title and outline if they're there. For a check that a document's words are on disk, or gone, now that a look at the bytes can't say: `recto-cli`'s index tests. Nothing in the app reads text this way.
+pub fn opened_text(find_key: &FindKey, root: &Path, key: CorpusKey) -> Vec<String> {
+    let paths = CorpusPaths::new(root, key);
+    let Some(seal) = read_seal(find_key, &paths) else { return Vec::new() };
+    let mut found = Vec::new();
+    let table = local::read_private_file(&paths.table, u64::from(MAX_PAGES) * RECORD_LEN as u64)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if let Ok(pack) = local::open_private_file(&paths.pack) {
+        let pack_len = pack.metadata().map_or(0, |meta| meta.len());
+        let mut buffer = Vec::new();
+        for (page, bytes) in table.as_chunks::<RECORD_LEN>().0.iter().enumerate() {
+            let Some((record, blob)) = Entry::decode(bytes).and_then(|entry| open_page(&pack, pack_len, &seal, page as u32, entry, &mut buffer)) else {
+                break;
+            };
+            found.push(String::from_utf8_lossy(&buffer[blob][..record.text_len as usize]).into_owned());
+        }
+    }
+    if let Some(meta) = read_sealed_json(&seal, &paths.meta, Purpose::Meta) {
+        found.push(meta.to_string());
+    }
+    found
+}
+
 /// Notes that a corpus has been used, for eviction, at most once an hour so a search needn't write.
 fn note_used(paths: &CorpusPaths) {
     let fresh = fs::metadata(&paths.used)
