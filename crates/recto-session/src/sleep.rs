@@ -319,7 +319,11 @@ mod tests {
         let format = meta.as_object_mut().unwrap().remove("sleep_format");
         let mut forged = serde_json::to_vec(&meta).unwrap();
         if let Some(format) = format {
-            let rest = if forged.len() > 2 { [b",".as_slice(), &forged[1..]].concat() } else { b"}".to_vec() };
+            let rest = if forged.len() > 2 {
+                [b",".as_slice(), &forged[1..]].concat()
+            } else {
+                b"}".to_vec()
+            };
             forged = [format!("{{\"sleep_format\":{format}").as_bytes(), &rest].concat();
         }
         forged.push(b'\n');

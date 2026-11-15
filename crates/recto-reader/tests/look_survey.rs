@@ -70,7 +70,7 @@ fn sizes() {
             }
             pages += 1;
             // A page with no images is decided too, since 2026-11-13: its background may be dark.
-            let Some(boxes) = doc.image_boxes(page, 1).ok().flatten() else { continue };
+            let Some(boxes) = doc.image_boxes(page, 1) else { continue };
             let Some((w, h, look_picture, ms)) = picture_of(&mut doc, page, 512.0) else {
                 continue;
             };
@@ -161,7 +161,7 @@ fn pages() {
             if doc.page_size(page).is_err() {
                 continue;
             }
-            let boxes = doc.image_boxes(page, 1).ok().flatten();
+            let boxes = doc.image_boxes(page, 1);
             let Some((w, h, picture, _)) = picture_of(&mut doc, page, 512.0) else {
                 println!("PAGE {name} p{} undrawn", page + 1);
                 continue;
@@ -255,7 +255,7 @@ fn survey() {
                 println!("{name} p{} didn't draw", page + 1);
                 continue;
             }
-            let boxes = doc.image_boxes(page, 1).ok().flatten();
+            let boxes = doc.image_boxes(page, 1);
             let stride = surface.stride() as usize;
             surface
                 .with_pixels(|pixels| {
@@ -305,7 +305,7 @@ fn small_pictures() {
         let name = Path::new(path).file_stem().unwrap().to_string_lossy().to_string();
         let mut file_small = Vec::new();
         for page in list.split(',').filter_map(|page| page.parse::<u32>().ok()).map(|page| page - 1) {
-            if doc.page_size(page).is_err() || !doc.image_boxes(page, 1).ok().flatten().is_some_and(|boxes| boxes.is_empty()) {
+            if doc.page_size(page).is_err() || !doc.image_boxes(page, 1).is_some_and(|boxes| boxes.is_empty()) {
                 continue;
             }
             // The page is loaded by the size and the walk, as it would be by then in the app, and its first picture is drawn cold, as the small one is after a wake; then the look picture and the small one again, warm.
@@ -396,7 +396,7 @@ fn wakes() {
         let count = doc.known_page_count().unwrap();
         let in_view = if spread == Spread::TwoUp { 2 } else { 1 };
         let images: Vec<usize> = (0..in_view)
-            .map(|page| doc.image_boxes(page, 1).ok().flatten().map_or(usize::MAX, |boxes| boxes.len()))
+            .map(|page| doc.image_boxes(page, 1).map_or(usize::MAX, |boxes| boxes.len()))
             .collect();
         drop(doc);
         let (mut first, mut all) = (Vec::new(), Vec::new());

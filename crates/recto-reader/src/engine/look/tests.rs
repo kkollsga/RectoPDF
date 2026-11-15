@@ -43,8 +43,8 @@ impl LookSource for StandIn {
         false
     }
 
-    fn image_boxes(&mut self, _page: u32, _generation: u64) -> Result<Option<Vec<[u16; 4]>>, RenderFailure> {
-        Ok(self.boxes.clone())
+    fn image_boxes(&mut self, _page: u32, _generation: u64) -> Option<Vec<[u16; 4]>> {
+        self.boxes.clone()
     }
 
     fn is_stale(&self, _generation: u64) -> bool {

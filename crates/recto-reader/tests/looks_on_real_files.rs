@@ -234,7 +234,7 @@ fn look_of(doc: &mut DocRenderer, page: u32, edge: f32, whole: bool) -> (bool, V
     let boxes = if whole {
         None
     } else {
-        Some(doc.image_boxes(page, 1).unwrap().expect("its images are known"))
+        Some(doc.image_boxes(page, 1).expect("its images are known"))
     };
     let stride = surface.stride() as usize;
     let look = surface.with_pixels(|pixels| PageLook::decide(boxes.as_deref(), pixels, stride, w, h)).unwrap();
@@ -535,7 +535,7 @@ fn the_owners_vector_drawing_turns_over() {
     }
     let file = TempPdf::new("drawing.pdf", &pages_with(&[Page::new(drawing.into_bytes())], "", Vec::new()));
     let mut doc = renderer(&file.0);
-    assert_eq!(doc.image_boxes(0, 1).unwrap().map(|boxes| boxes.len()), Some(0), "no images");
+    assert_eq!(doc.image_boxes(0, 1).map(|boxes| boxes.len()), Some(0), "no images");
     assert_eq!(
         look_of(&mut doc, 0, 512.0, false),
         (false, Vec::new(), Vec::new()),

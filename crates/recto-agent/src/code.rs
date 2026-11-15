@@ -367,8 +367,6 @@ codes! {
     WEB_LINK_NEEDS_USER = "web_link_needs_user", Next::ByExit;
     WOULD_CLEAR_REDO = "would_clear_redo", Next::ByExit;
     WOULD_DISCARD_USER_EDITS = "would_discard_user_edits", Next::ByExit;
-    WOULD_START_HEAVY_RENDERER = "would_start_heavy_renderer", Next::ByExit;
-    WOULD_START_RENDERER = "would_start_renderer", Next::ByExit;
     WRITE_FAILED = "write_failed", Next::ByExit;
     WRONG_APP = "wrong_app", Next::ByExit;
     WRONG_VERSION = "wrong_version", Next::Says("Stop the old session with `recto stop` and start this version with `recto serve --background`.");
