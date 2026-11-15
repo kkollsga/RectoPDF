@@ -60,6 +60,16 @@ debug = false
 opt-level = 2
 debug = false
 
+# Every test that opens a PDF parses it through lopdf, and unoptimised that was the biggest part of the protected-document walks' own work: in the walk
+# of a tab that followed a protected one, 46 % of its thread's samples were `recto_core::inspect` (2026-11-15). The same binaries taking turns on this
+# Mac (load 12 to 35): a fuzz smoke test 6.0 to 1.6 CPU-s, a deep outline 3.5 to 1.6, that walk 44 to 33; the in-process suite run side by side with
+# itself, user CPU 185 to 156 s; the policy walks under `--like-ci`'s limits 57 to 78 s of wall to 42 to 47. Its own build: 4 to 5 s to 12 s, once
+# per cache (CI's cache key has this file in it, so a change here is built once and saved). Optimisation only: debug assertions and overflow checks
+# stay on, as for every dev build.
+[profile.dev.package.lopdf]
+opt-level = 2
+debug = false
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

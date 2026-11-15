@@ -10,7 +10,7 @@
 #
 # The cache, and its limit. GitHub keeps 10 GB of cache for the repository and evicts the least recently used beyond it. On 2026-11-12 it held 10.81 GB in 8
 # caches, the Rust ones about 3.1 GB each, and a cache saved on a branch was evicted within 20 minutes, so the next run fell back to an old one and saved
-# again. So: one Rust cache per Cargo.lock, `check-<hash>`, saved only on main and only on a miss. Every job restores, a branch from main's, falling back by
+# again. So: one Rust cache per Cargo.lock (and root Cargo.toml, for its profiles), `check-<hash>`, saved only on main and only on a miss. Every job restores, a branch from main's, falling back by
 # prefix to the latest `check-` cache (the split's `check-core-` and `check-app-` ones included) when its Cargo.lock differs, so it starts warm. With the
 # sandbox jobs' (about 0.15 and 0.22 GB) and PDFium's (3 MB) that is about 3.5 GB a lock. A cache per job or per branch, or a save on branches, puts it past
 # 10 GB again: count it against this first.
@@ -87,7 +87,9 @@ jobs:
             !target/pdfium
             !target/nextest
             !target/recto-evidence
-          key: check-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          # The root Cargo.toml is in the key for its profiles: a dependency's opt-level is part of what's cached (lopdf's, 2026-11-15, 12 s to
+          # build here against 4 to 5), so a change to them is built once and saved, not again every run until Cargo.lock next changes.
+          key: check-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml') }}
           restore-keys: |
             check-
       # What the cache holds, after the restore and again before the save: sizes only, 30 lines a listing, a few seconds (tools/ci-cache-report.sh;
@@ -184,7 +186,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: sandbox-${{ matrix.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          key: sandbox-${{ matrix.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml') }}
           restore-keys: sandbox-${{ matrix.os }}-
       - name: Where this runs
         run: sw_vers && echo "HOME=$HOME"
