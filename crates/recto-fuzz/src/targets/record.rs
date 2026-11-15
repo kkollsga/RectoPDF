@@ -173,6 +173,10 @@ fn use_a_store(record_bytes: &[u8], journal_bytes: &[u8], log_bytes: &[u8]) {
     let _ = local::write_private_file(&session_dir.join("record.a.json"), record_bytes);
     let _ = local::write_private_file(&session_dir.join("places.log"), log_bytes);
     let _ = local::write_private_file(&session_dir.join("journals").join(&name), journal_bytes);
+    // And again under another name: two journals with the same tab's id and path, a linked pair as a follow's crash leaves them (slice 2's
+    // `record_store::followed`), so whichever way the input lands, the pair is judged and nothing comes back twice.
+    let again = record::journal_file_name(None, Path::new("/fuzz/p12.pdf"), Some(2));
+    let _ = local::write_private_file(&session_dir.join("journals").join(&again), journal_bytes);
     for _ in 0..2 {
         let store = RecordStore::open(&paths, Flavor::App);
         let loaded = store.load();

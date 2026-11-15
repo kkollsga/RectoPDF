@@ -15,6 +15,7 @@
 //! **Versions.** A record from a newer app is never touched. This app works in a folder of its own version beside it, which is also what a migration keeps: going forward copies the old folder first, so going back finds it as it was.
 
 /// The record's lock: who keeps it, waiting for it, and letting go of it.
+mod followed;
 mod lock;
 mod page_ids;
 mod sleep_files;
@@ -1259,6 +1260,15 @@ fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress
         // Already taken over by what it would be: a save's crash left both.
         if journals.contains_key(&read.name) {
             continue;
+        }
+        // A follow's crash left both (`followed`): the tab's own id and path, about the file as it is now.
+        match followed::after_a_follow(&folder, &read, record, &taken_tabs, &mut journals, progress) {
+            followed::Link::TakesOver(at) => {
+                claim(&folder, read, record, at, progress, &mut journals);
+                continue;
+            }
+            followed::Link::SetAside => continue,
+            followed::Link::None => {}
         }
         // A save was confirmed and this is its new journal, with the old one gone, and a crash kept the record from hearing. The tab names what's gone, on a path that's now this file.
         let moved_on = record.tabs.iter().enumerate().position(|(at, tab)| {
