@@ -63,7 +63,7 @@ mod decode;
 mod scan;
 
 use lopdf::{Dictionary, Object, ObjectId, PageMapEntry};
-/// The lazy reader and page map the digest reads through, for a caller that keeps a file open across reads ([`open_for_identity`]).
+/// The lazy reader and page map the digest reads through, for a caller that keeps a file open across reads ([`open_version_for_identity`]).
 pub use lopdf::{IndexedReader, PageMap};
 use scan::DoScan;
 use sha2::{Digest, Sha256};
@@ -134,19 +134,15 @@ pub struct DocumentIds {
     pub second: [u8; 16],
 }
 
-/// Opens a file for its pages' identities, through the file wall, as every read of a document by its path is. A file that needs a password is refused:
-/// its pages are never identified.
-pub fn open_for_identity(path: &Path) -> Result<IndexedReader, crate::OpenError> {
-    crate::open_reader_cached(path)
-}
-
-/// [`open_for_identity`] of exactly this version of the file: `None` unless the file opened (by its own descriptor, not its path) has the device, number,
-/// size and modification time of `stamp`, so a file renamed into place for the moment of the open is never identified for another (slice 2's review).
+/// **Opens exactly this version of a file for its pages' identities,** through the file wall, as every read of a document by its path is: `None`
+/// unless the file opened (by its own descriptor, not its path) has the device, number, size and modification time of `stamp`, so a file renamed into
+/// place for the moment of the open is never identified for another (slice 2's review). A file that needs a password is refused: its pages are never
+/// identified. The only open by a path: there's none that skips the opened file's check (second review).
 pub fn open_version_for_identity(path: &Path, stamp: recto_platform::FileStamp) -> Option<IndexedReader> {
     crate::open_reader_cached_at(path, stamp).ok().flatten()
 }
 
-/// [`open_for_identity`] on bytes in memory, for tests and the fuzzer.
+/// [`open_version_for_identity`] on bytes in memory, for tests and the fuzzer.
 pub fn open_bytes_for_identity(bytes: std::sync::Arc<[u8]>) -> Result<IndexedReader, crate::OpenError> {
     crate::open_bytes(bytes)
 }

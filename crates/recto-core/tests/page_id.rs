@@ -6,8 +6,14 @@ use recto_core::save::{self, NewHighlight, PageRef, SaveRequest, Target};
 use recto_testpdf::{Object as Raw, Page, TempDir, pages_with, text_lines};
 use std::path::{Path, PathBuf};
 
+/// The file as it is now, opened as the app opens one for its pages: for this version, checked by what's opened.
+fn open(path: &Path) -> page_id::IndexedReader {
+    let stamp = recto_platform::file_stamp(path).expect("its version");
+    page_id::open_version_for_identity(path, stamp).expect("it opens")
+}
+
 fn identities(path: &Path) -> Vec<PageIdentity> {
-    let reader = page_id::open_for_identity(path).expect("it opens");
+    let reader = open(path);
     let map = reader.page_map().expect("its pages");
     let pages: Vec<u32> = (0..map.len() as u32).collect();
     page_id::identify_pages(&reader, &map, &pages)
@@ -18,7 +24,7 @@ fn identities(path: &Path) -> Vec<PageIdentity> {
 
 /// Every page's digest, `None` for one with no identity (past a cap).
 fn digests(path: &Path) -> Vec<Option<String>> {
-    let reader = page_id::open_for_identity(path).expect("it opens");
+    let reader = open(path);
     let map = reader.page_map().expect("its pages");
     let pages: Vec<u32> = (0..map.len() as u32).collect();
     page_id::identify_pages(&reader, &map, &pages)
@@ -142,7 +148,7 @@ fn golden_vectors_on_real_files() {
     ];
     let mut got = Vec::new();
     for (name, _) in golden {
-        let reader = page_id::open_for_identity(&bench.join(name)).expect("it opens");
+        let reader = open(&bench.join(name));
         let map = reader.page_map().unwrap();
         got.push(hex(&page_id::identify_pages(&reader, &map, &[0])[0].unwrap().digest[..16]));
     }
