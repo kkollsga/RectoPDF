@@ -113,6 +113,16 @@ impl Indexer {
         }))
     }
 
+    /// The Find key, taken the first time a thread that may wait asks for it: never the UI thread ([`Shared::find_key`]).
+    pub fn find_key(&self) -> Option<&FindKey> {
+        self.0.find_key()
+    }
+
+    /// What's known of the key without taking it: the plan, and where it came from once something has.
+    pub fn find_key_report(&self) -> Value {
+        find_keys::report(&self.0.key_plan, self.0.key.get())
+    }
+
     pub fn attach(&self, notify: Notifier) {
         let _ = self.0.notify.set(notify);
     }
@@ -157,7 +167,11 @@ impl Indexer {
 }
 
 impl Shared {
+    /// **Never on the UI thread:** there, nothing is taken, and the answer is no key, as if this host kept no index, so a search the UI thread made would read pages; nothing is remembered, so the next ask from a thread that may wait takes it. The Keychain is one call away, which may block.
     fn find_key(&self) -> Option<&FindKey> {
+        if recto_platform::thread::is_main_thread() {
+            return self.key.get().and_then(|loaded| loaded.key.as_ref());
+        }
         self.key.get_or_init(|| find_keys::load(&self.key_plan)).key.as_ref()
     }
 
@@ -255,8 +269,8 @@ impl Indexing for Indexer {
         self.0.find_key()
     }
 
-    fn key_note(&self) -> Option<&'static str> {
-        self.0.key.get().and_then(|loaded| loaded.why)
+    fn find_key_report(&self) -> Value {
+        Indexer::find_key_report(self)
     }
 
     fn want(&self, path: &Path, key: CorpusKey) {

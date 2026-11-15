@@ -80,6 +80,13 @@ impl ThreadPort {
     }
 }
 
+/// Whether the calling thread is the process's main thread: in the app, the UI thread.
+#[must_use]
+pub fn is_main_thread() -> bool {
+    // SAFETY: a plain query of the calling thread.
+    unsafe { libc::pthread_main_np() == 1 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

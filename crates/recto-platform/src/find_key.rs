@@ -6,6 +6,8 @@
 //! - **Memory**, for everything else and whenever the Keychain can't be had: a development build, a locked or refusing Keychain, an item this copy can't read. What's sealed with it can't be read by the next run, which removes it and builds again when asked.
 //!
 //! The indexer gets the key from the session on its stdin, as 32 raw bytes before its job: never in its arguments, its environment or a file. [`FindKey::write_to`] and [`FindKey::read_from`] are the two ends.
+//!
+//! **What's overwritten, and what isn't** (as true as Rust lets this be said): the key's own 32 bytes, in one box that's never moved or copied by this code, and a key file's bytes once read, are overwritten when they go (`zeroize`). Not: the copy CoreFoundation makes to add the key to the Keychain or to hand it back, which is its memory to free ([`keychain`]); the bytes in the pipe's kernel buffer until the helper reads them; and, from slice 2, what HKDF and AES derive from it on their own stacks beyond what `aes-gcm`'s `zeroize` covers. A process that can read this one's memory has the key anyway.
 
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -69,7 +71,7 @@ impl FindKey {
     pub fn from_state_file(path: &Path) -> io::Result<Self> {
         if let Some(mut stored) = crate::local::read_private_file(path, KEY_BYTES as u64 + 1)? {
             let read = Self::from_slice(&stored, Source::StateFile);
-            crate::secret::wipe(std::mem::take(&mut stored));
+            zeroize::Zeroize::zeroize(&mut stored);
             return read.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not a key"));
         }
         let key = Self::fresh(Source::StateFile)?;
@@ -125,7 +127,8 @@ impl FindKey {
         Ok(key)
     }
 
-    /// A key a test makes up. Never for anything that's kept.
+    /// A key a test makes up. Never for anything that's kept: only built for this crate's tests and with `test-seams`, which nothing shipped turns on.
+    #[cfg(any(test, feature = "test-seams"))]
     pub fn for_tests(byte: u8) -> Self {
         Self {
             bytes: Box::new([byte; KEY_BYTES]),
@@ -177,8 +180,7 @@ pub fn forbid_core_dumps() {
 
 impl Drop for FindKey {
     fn drop(&mut self) {
-        self.bytes.fill(0);
-        std::hint::black_box(&self.bytes);
+        zeroize::Zeroize::zeroize(self.bytes.as_mut_slice());
     }
 }
 

@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 # A new key for the Find text: `find_key.rs`. Already built for lopdf.
 getrandom.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc.workspace = true

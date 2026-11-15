@@ -625,6 +625,7 @@ impl QaBridge {
             "reader": self.engine.report().0,
             "panes": comparison,
             "session": self.inner().map_or(Value::Null, |inner| inner.state_json()),
+            "find_key": self.inner().map_or(Value::Null, |inner| inner.host.session.find_key_report()),
             "update": self.inner().map_or(Value::Null, |inner| inner.updates.report()),
             "record": self.inner().map_or(Value::Null, |inner| inner.record_report()),
             "memory": {

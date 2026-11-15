@@ -18,6 +18,8 @@ recto-session.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# Test-only: `FindKey::for_tests`.
+recto-platform = { workspace = true, features = ["test-seams"] }
 # Tests read a refusal's code as the wire does.
 recto-agent = { workspace = true, features = ["test-words"] }
 recto-testpdf.workspace = true

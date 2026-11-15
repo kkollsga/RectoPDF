@@ -52,7 +52,7 @@ fn link(target: &Path, path: &Path) {
 /// The Find key the fuzzed corpora are sealed with.
 fn fk() -> &'static recto_platform::find_key::FindKey {
     static KEY: std::sync::OnceLock<recto_platform::find_key::FindKey> = std::sync::OnceLock::new();
-    KEY.get_or_init(|| recto_platform::find_key::FindKey::for_tests(5))
+    KEY.get_or_init(|| recto_platform::find_key::FindKey::in_memory().expect("a key"))
 }
 
 fn key() -> CorpusKey {

@@ -2,6 +2,8 @@
 //!
 //! **Nothing ever prompts:** interaction is refused for this process before the first call, so a locked Keychain or an item this copy may not read is a refusal, never a sheet. The caller then runs on a key in memory ([`super::FindKey::in_memory`]) and never adds a second item.
 //!
+//! **CoreFoundation's copies:** adding the key copies it into a `CFData`, and reading it hands back another; both are CoreFoundation's to free, and neither is overwritten, as `CFData` can't be told to. Each lives for the one call. The key itself is copied straight out into [`FindKey`]'s own memory.
+//!
 //! Security.framework is opened only when this is asked, so no program that never asks loads it: the indexer, `recto` and the workers never do. Never called on the UI thread: the session asks on the indexer's thread, the first time a corpus is used.
 
 use super::{FindKey, KEY_BYTES, Source};

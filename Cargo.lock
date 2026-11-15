@@ -888,6 +888,7 @@ dependencies = [
  "getrandom",
  "libc",
  "recto-testpdf",
+ "zeroize",
 ]
 
 [[package]]

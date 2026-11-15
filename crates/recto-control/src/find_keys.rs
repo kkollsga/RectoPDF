@@ -5,6 +5,7 @@
 
 use crate::state::StatePaths;
 use recto_platform::find_key::FindKey;
+use serde_json::{Value, json};
 use std::path::PathBuf;
 
 /// How the app takes its key: `recto_platform::find_key::load_for_the_app` with the team, passed in by the app's own start and by nothing else.
@@ -30,6 +31,18 @@ pub enum Plan {
     NoKey(&'static str),
 }
 
+impl Plan {
+    /// What the plan is, in a word, for `qa state` and `index status`.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::StateFile(_) => "state_file",
+            Self::AppKeychain(_) => "keychain",
+            Self::Memory => "memory",
+            Self::NoKey(_) => "none",
+        }
+    }
+}
+
 /// The plan for a session on these folders. A real run never gets a file key: only a state folder named by the override can.
 pub fn plan(paths: &StatePaths, host: Host) -> Plan {
     match (paths.overridden, host) {
@@ -44,6 +57,20 @@ pub fn plan(paths: &StatePaths, host: Host) -> Plan {
 pub struct Loaded {
     pub key: Option<FindKey>,
     pub why: Option<&'static str>,
+}
+
+/// What `qa state` and `index status` say of the key: the plan, and once it's been taken, where it came from and why that isn't the plan's own. Never anything of the key.
+pub fn report(plan: &Plan, loaded: Option<&Loaded>) -> Value {
+    let why = match (plan, loaded) {
+        (Plan::NoKey(why), _) => Some(*why),
+        (_, Some(loaded)) => loaded.why,
+        (_, None) => None,
+    };
+    json!({
+        "plan": plan.code(),
+        "source": loaded.and_then(|loaded| loaded.key.as_ref()).map(|key| key.source().code()),
+        "why": why,
+    })
 }
 
 /// Takes the key the plan says. Blocks for one Keychain call at most, so never on the UI thread.
@@ -91,6 +118,20 @@ mod tests {
         assert!(matches!(plan(&real, Host::Cli), Plan::NoKey("not_the_app")));
         let none = load(&plan(&real, Host::Cli));
         assert!(none.key.is_none());
+        assert_eq!(
+            report(&plan(&real, Host::Cli), Some(&none)),
+            json!({ "plan": "none", "source": null, "why": "not_the_app" })
+        );
+        assert_eq!(
+            report(&plan(&real, app), None),
+            json!({ "plan": "keychain", "source": null, "why": null }),
+            "said before it's been taken, and without taking it"
+        );
+        let taken = load(&plan(&quiet, Host::Cli));
+        assert_eq!(
+            report(&plan(&quiet, Host::Cli), Some(&taken)),
+            json!({ "plan": "state_file", "source": "state_file", "why": null })
+        );
     }
 
     /// Failure: the Keychain code is reached from somewhere other than this one plan, so a helper, `recto` or a test could ask it. The source is held to one caller.

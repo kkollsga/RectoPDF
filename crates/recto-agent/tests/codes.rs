@@ -117,6 +117,7 @@ const OWN_REASONS: &[(&str, &str)] = &[
     ("recto-index/src/corpus.rs", "why an index was refused, turned into words"),
     ("recto-update/src/updater.rs", "an update's status, an answer's field"),
     // Where the Find key came from and why it isn't the Keychain's: said in `qa state` and `index status`, never a refusal.
+    ("recto-control/src/find_keys.rs", "the Find key's plan, an answer's field"),
     ("recto-platform/src/find_key.rs", "where the Find key came from, an answer's field"),
     ("recto-platform/src/find_key_mac.rs", "why the Keychain gave no Find key, an answer's field"),
     ("recto-platform/src/find_key_stub.rs", "why the Keychain gave no Find key, an answer's field"),

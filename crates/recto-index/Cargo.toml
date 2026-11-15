@@ -25,5 +25,7 @@ hkdf.workspace = true
 getrandom.workspace = true
 
 [dev-dependencies]
+# Test-only: `FindKey::for_tests`.
+recto-platform = { workspace = true, features = ["test-seams"] }
 # Test-only: fresh temp folders.
 recto-testpdf.workspace = true

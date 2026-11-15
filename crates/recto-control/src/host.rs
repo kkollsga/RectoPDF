@@ -247,6 +247,11 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         self
     }
 
+    /// What `qa state` says of the Find key: its plan, and where it came from once an index has used it. Never takes it.
+    pub fn find_key_report(&self) -> Value {
+        self.indexer.as_ref().map_or(Value::Null, Indexer::find_key_report)
+    }
+
     /// Find, for the app's own sidebar.
     pub fn finder(&self) -> &Finder {
         &self.finder

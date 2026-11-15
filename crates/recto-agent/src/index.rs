@@ -26,9 +26,9 @@ pub trait Indexing: Send + Sync {
     fn root(&self) -> &Path;
     /// The key the text there is sealed with. `None` where this host keeps no index, and then nothing is read or built.
     fn find_key(&self) -> Option<&FindKey>;
-    /// Why the key isn't the lasting one this host would want, as a code, once it's been asked for. Never anything of the key.
-    fn key_note(&self) -> Option<&'static str> {
-        None
+    /// What's known of the Find key the text is sealed with, without taking it: its plan, and where it came from once it has been. Never anything of the key.
+    fn find_key_report(&self) -> Value {
+        Value::Null
     }
     /// Someone wants this file indexed. Nothing happens if it's already on its way, and the oldest ask gives way if there are too many.
     fn want(&self, path: &Path, key: CorpusKey);
@@ -360,6 +360,7 @@ fn report(indexing: &dyn Indexing, id: u32, files: &[TabFile], want: bool) -> (V
         "agent_bytes": agent_bytes,
         "indexers_running": running,
         "indexers_waiting": waiting,
+        "find_key": indexing.find_key_report(),
         "note": note,
     });
     (value, first_unready)

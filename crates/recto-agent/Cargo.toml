@@ -33,6 +33,8 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# Test-only: `FindKey::for_tests`.
+recto-platform = { workspace = true, features = ["test-seams"] }
 # Its own integration tests read codes as the wire does.
 recto-agent = { path = ".", features = ["test-words"] }
 # To make an encrypted file with permissions, as nothing else here writes one.
