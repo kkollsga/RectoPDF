@@ -64,9 +64,10 @@ pub fn page_highlights_bytes(bytes: Arc<[u8]>, page: u32) -> Result<PageHighligh
     Ok(highlights_of(&open_bytes(bytes)?, page, Limits::default()))
 }
 
-/// [`page_highlights`] on a file already open, as the page matcher reads the new version once for every page it needs.
-pub fn page_highlights_in(reader: &IndexedReader, page: u32) -> PageHighlights {
-    highlights_of(reader, page, Limits::default())
+/// [`page_highlights`] of a page of a file already open, by its entry in the page map in hand, as the page matcher reads the new version once for
+/// every page it needs (no page map built again per page). With how many annotations were looked at, which the matcher counts as work.
+pub fn page_highlights_at(reader: &IndexedReader, entry: &lopdf::PageMapEntry) -> (PageHighlights, usize) {
+    highlights_at(reader, entry, Limits::default())
 }
 
 /// The limits a read keeps to, set small by the tests so each is held at itself plus one.
@@ -93,22 +94,29 @@ fn highlights_of(reader: &IndexedReader, page: u32, limits: Limits) -> PageHighl
     let Some(entry) = reader.page_map().ok().and_then(|map| map.get(page as usize).cloned()) else {
         return PageHighlights::default();
     };
-    let frame = frame_of(reader, &entry);
+    highlights_at(reader, &entry, limits).0
+}
+
+/// [`highlights_of`] a page by its entry, with how many annotations were looked at.
+fn highlights_at(reader: &IndexedReader, entry: &lopdf::PageMapEntry, limits: Limits) -> (PageHighlights, usize) {
+    let frame = frame_of(reader, entry);
     let mut out = PageHighlights {
         frame,
         ..PageHighlights::default()
     };
-    let Some(size) = frame.shown_size() else { return out };
+    let Some(size) = frame.shown_size() else { return (out, 0) };
     let annots = match reader
         .resolve_object(entry.id())
         .ok()
         .and_then(|dict| dict.as_dict().ok()?.get(b"Annots").ok().and_then(|annots| deref(reader, annots)))
     {
         Some(Object::Array(items)) => items,
-        _ => return out,
+        _ => return (out, 0),
     };
     out.truncated = annots.len() > limits.annots;
+    let mut looked = 0;
     for (index, item) in annots.iter().take(limits.annots).enumerate() {
+        looked += 1;
         if Instant::now() >= limits.deadline {
             out.truncated = true;
             break;
@@ -133,7 +141,7 @@ fn highlights_of(reader: &IndexedReader, page: u32, limits: Limits) -> PageHighl
             rect: rect_of(reader, &annot),
         });
     }
-    out
+    (out, looked)
 }
 
 /// A number the file says, if it's one and finite.

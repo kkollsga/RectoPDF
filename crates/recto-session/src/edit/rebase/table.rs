@@ -7,7 +7,7 @@
 
 use super::super::identity::{self, Known};
 use super::super::marks::{FileKey, FileMark, MarkChange, MarkPage, MarkRect};
-use super::super::matcher::{Found, ScanCaps, match_pages};
+use super::super::matcher::{Found, WorkCaps, match_pages};
 use super::super::{PageEdits, PageSlot};
 use super::*;
 
@@ -136,7 +136,7 @@ fn identify(edits: &mut PageEdits, file: &[Page], unread: &[u32]) {
 
 /// The match and the rebase, as the session runs them, of a list onto `new`; the file's own highlight is on the same place of its page there unless
 /// `annots` says what that page has.
-fn follow(edits: &PageEdits, new: &[Page], caps: ScanCaps, annots: Option<Vec<(u32, Option<[f32; 4]>)>>) -> (Vec<(u32, Found)>, Outcome) {
+fn follow(edits: &PageEdits, new: &[Page], caps: WorkCaps, annots: Option<Vec<(u32, Option<[f32; 4]>)>>) -> (Vec<(u32, Found)>, Outcome) {
     follow_as(edits, new, caps, annots, false)
 }
 
@@ -144,13 +144,25 @@ fn follow(edits: &PageEdits, new: &[Page], caps: ScanCaps, annots: Option<Vec<(u
 fn follow_as(
     edits: &PageEdits,
     new: &[Page],
-    caps: ScanCaps,
+    caps: WorkCaps,
     annots: Option<Vec<(u32, Option<[f32; 4]>)>>,
     same_document: bool,
 ) -> (Vec<(u32, Found)>, Outcome) {
+    follow_costing(edits, new, caps, annots, same_document, 1)
+}
+
+/// [`follow_as`], each page of the new version costing `cost` bytes.
+fn follow_costing(
+    edits: &PageEdits,
+    new: &[Page],
+    caps: WorkCaps,
+    annots: Option<Vec<(u32, Option<[f32; 4]>)>>,
+    same_document: bool,
+    cost: u64,
+) -> (Vec<(u32, Found)>, Outcome) {
     let named = identity::identities(edits).map(|ids| ids.pages().to_vec()).unwrap_or_default();
     let wanted: Vec<u32> = named.iter().map(|(page, _)| *page).collect();
-    let new_ids: Vec<(Option<Known>, u64)> = new.iter().map(|page| (page.identified.then(|| known(*page)), 1)).collect();
+    let new_ids: Vec<(Option<Known>, u64)> = new.iter().map(|page| (page.identified.then(|| known(*page)), cost)).collect();
     let found = match_pages(&named, &wanted, &new_ids, caps, same_document);
     let on_page = annots.unwrap_or_else(|| vec![(file_key().index, Some(file_key().rect))]);
     let refound: Vec<(FileKey, Option<FileKey>)> = edits
@@ -238,7 +250,7 @@ fn check_on_their_pages(kind: Kind, new: &[Page], onto: &Onto, row: &str) {
 struct Row {
     name: &'static str,
     new: Vec<Page>,
-    caps: ScanCaps,
+    caps: WorkCaps,
     follows: [bool; 6],
     /// Pages of the base the page-identity thread hadn't read when the file changed.
     unread: &'static [u32],
@@ -246,6 +258,8 @@ struct Row {
     annots: Option<Vec<(u32, Option<[f32; 4]>)>>,
     /// The new version has the edits' version's `/ID[0]` (a re-save that keeps it); by default it hasn't, so a page found once needs a neighbour.
     same_document: bool,
+    /// What each page of the new version costs in bytes to read.
+    cost: u64,
 }
 
 const ALL: [bool; 6] = [true; 6];
@@ -255,11 +269,12 @@ fn row(name: &'static str, new: Vec<Page>, follows: [bool; 6]) -> Row {
     Row {
         name,
         new,
-        caps: ScanCaps::STANDARD,
+        caps: WorkCaps::STANDARD,
         follows,
         unread: &[],
         annots: None,
         same_document: false,
+        cost: 1,
     }
 }
 
@@ -289,8 +304,29 @@ fn rows() -> Vec<Row> {
     at_the_cap.caps.pages = 10;
     let mut bytes_cut = row("a scan cut at its byte cap plus one", renumbered(&ten), NONE);
     bytes_cut.caps.bytes = 9;
-    let mut kept_past_cap = row("caps far too small, but every page found by its object number: no scan needed", kept(&ten), ALL);
-    kept_past_cap.caps = ScanCaps { pages: 1, bytes: 1 };
+    let mut kept_past_cap = row(
+        "a budget too small to scan the file (9 pages of 10), but every page found by its object number: no scan needed",
+        kept(&ten),
+        ALL,
+    );
+    kept_past_cap.caps.pages = 9;
+    let mut objects_past_cap = row(
+        "one budget: the pass by object number counts against it, so a budget of one page holds the list though the numbers are kept",
+        kept(&ten),
+        NONE,
+    );
+    objects_past_cap.caps.pages = 1;
+    // Pages that cost lookups and no bytes (references to things that aren't streams): the budget is held in lookups, at ten pages' worth.
+    let mut lookups_at = row("pages costing lookups and no bytes, at the lookups' budget: ten pages' worth, ten pages", renumbered(&ten), ALL);
+    lookups_at.caps.lookups = 10 * super::super::matcher::PAGE_LOOKUPS;
+    lookups_at.cost = 0;
+    let mut lookups_past = row(
+        "pages costing lookups and no bytes, past the lookups' budget: ten pages' worth, eleven pages",
+        renumbered(&duplicated_far),
+        NONE,
+    );
+    lookups_past.caps.lookups = 10 * super::super::matcher::PAGE_LOOKUPS;
+    lookups_past.cost = 0;
     let mut unread = row("page 4 not read before the file changed", renumbered(&ten), NONE);
     unread.unread = &[4];
     // An insert after page 4 and a move of page 4 are placed by page 4 and page 7; an edit that names page 4 alone (a deletion) still needs it found.
@@ -409,6 +445,9 @@ fn rows() -> Vec<Row> {
         at_the_cap,
         bytes_cut,
         kept_past_cap,
+        objects_past_cap,
+        lookups_at,
+        lookups_past,
         unread,
         base_unidentifiable,
         annot_moved,
@@ -426,7 +465,7 @@ fn every_edit_follows_its_page_or_the_list_is_held() {
         for (kind, follows) in KINDS.iter().zip(row.follows) {
             let mut edits = edited(*kind);
             identify(&mut edits, &base(), row.unread);
-            let (found, outcome) = follow_as(&edits, &row.new, row.caps, row.annots.clone(), row.same_document);
+            let (found, outcome) = follow_costing(&edits, &row.new, row.caps, row.annots.clone(), row.same_document, row.cost);
             let label = format!("{}, {kind:?}", row.name);
             assert_eq!(
                 outcome.onto.is_some(),
@@ -453,7 +492,7 @@ fn two_pages_claiming_one_are_neither_found() {
     let mut edits = PageEdits::new(10);
     edits.rotate(3, 2, 1).unwrap();
     identify(&mut edits, &file, &[]);
-    let (found, outcome) = follow_as(&edits, &renumbered(&[4]), ScanCaps::STANDARD, None, true);
+    let (found, outcome) = follow_as(&edits, &renumbered(&[4]), WorkCaps::STANDARD, None, true);
     assert!(outcome.onto.is_none());
     assert!(
         matches!(found.iter().find(|(old, _)| *old == 3), Some((_, Found::Claimed | Found::Ambiguous))),
@@ -469,7 +508,7 @@ fn a_highlight_on_a_page_the_person_deleted_goes_with_the_history_and_loses_noth
     let mut edits = edited(Kind::Highlight);
     edits.delete(4, 1).unwrap();
     identify(&mut edits, &base(), &[]);
-    let (_, outcome) = follow(&edits, &renumbered(&[0, 1, 20, 2, 3, 4, 5, 6, 7, 8, 9]), ScanCaps::STANDARD, None);
+    let (_, outcome) = follow(&edits, &renumbered(&[0, 1, 20, 2, 3, 4, 5, 6, 7, 8, 9]), WorkCaps::STANDARD, None);
     let onto = outcome.onto.expect("follows");
     assert!(onto.marks.is_empty(), "nothing carried onto the new version");
     apply(&mut edits, onto, None);
@@ -491,7 +530,7 @@ fn a_list_put_onto_the_new_version_ends_its_history_there_and_names_the_new_page
     assert!(edits.can_redo());
     identify(&mut edits, &base(), &[]);
     let new = renumbered(&[0, 1, 20, 2, 3, 4, 5, 6, 7, 8, 9]);
-    let (_, outcome) = follow(&edits, &new, ScanCaps::STANDARD, None);
+    let (_, outcome) = follow(&edits, &new, WorkCaps::STANDARD, None);
     let onto = outcome.onto.expect("follows");
     assert_eq!(onto.positions[4], Some(5), "the page being read at position 4 is at 5 now");
     apply(&mut edits, onto, None);
@@ -518,7 +557,7 @@ fn a_page_moved_to_the_front_stays_before_the_page_it_was_next_to() {
     edits.move_pages(6, 1, 0).unwrap();
     identify(&mut edits, &base(), &[]);
     let new = renumbered(&[20, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    let (_, outcome) = follow(&edits, &new, ScanCaps::STANDARD, None);
+    let (_, outcome) = follow(&edits, &new, WorkCaps::STANDARD, None);
     let onto = outcome.onto.expect("follows");
     let contents: Vec<u8> = onto.slots.iter().map(|slot| new[slot.page as usize].content).collect();
     assert_eq!(contents, vec![20, 6, 0, 1, 2, 3, 4, 5, 7, 8, 9]);
@@ -532,7 +571,7 @@ fn a_list_with_no_page_of_its_own_left_is_held() {
     edits.insert_pdf_noting(2, std::path::Path::new("/d/other.pdf"), 1, None, false).unwrap();
     edits.delete(0, 2).unwrap();
     identify(&mut edits, &base()[..2], &[]);
-    let (_, outcome) = follow(&edits, &renumbered(&[0, 1, 5]), ScanCaps::STANDARD, None);
+    let (_, outcome) = follow(&edits, &renumbered(&[0, 1, 5]), WorkCaps::STANDARD, None);
     assert!(outcome.onto.is_none());
     assert!(outcome.edits.iter().any(|edit| edit.held == Some(Held::NoAnchor)), "{:?}", outcome.edits);
 }
@@ -567,7 +606,7 @@ fn more_alike_pages_than_the_cap_are_none_of_them_looked_for() {
             )
         })
         .collect();
-    let found = match_pages(&named, &[0], &new, ScanCaps::STANDARD, false);
+    let found = match_pages(&named, &[0], &new, WorkCaps::STANDARD, false);
     assert!(found.iter().all(|(_, found)| *found == Found::NotFound), "{found:?}");
 }
 
@@ -596,4 +635,24 @@ fn a_place_keeps_its_page_by_the_nearest_known_and_the_distance_from_it() {
     squeezed[8] = Some(4);
     assert_eq!(moved_position(&squeezed, 6, 9), 3, "short of the next known place, not past it");
     assert_eq!(moved_position(&[None, None], 1, 2), 1, "nothing known: where it was");
+}
+
+/// **Failure caught (review F2):** a hostile page list that names one page object many times makes the pass by object number read that page again and
+/// again (each read up to the digest's caps), as each listing was a page to look at. The pass stops at the second listing of an object: page 4's object
+/// listed 1,000 times more costs one read of it, and the scan that follows (which the one budget holds) decides.
+#[test]
+fn an_object_listed_twice_stops_the_pass_by_object_number() {
+    let mut edits = edited(Kind::Turn);
+    identify(&mut edits, &base(), &[]);
+    let named = identity::identities(&edits).map(|ids| ids.pages().to_vec()).unwrap_or_default();
+    let mut new: Vec<(Option<Known>, u64)> = kept(&(0..10).collect::<Vec<_>>()).into_iter().map(|page| (Some(known(page)), 1)).collect();
+    let listed_again = new[4];
+    new.extend(std::iter::repeat_n(listed_again, 1_000));
+    let wanted: Vec<u32> = named.iter().map(|(page, _)| *page).collect();
+    let (found, spent) = super::super::matcher::match_pages_spending(&named, &wanted, &new, WorkCaps::STANDARD, false);
+    // The pass reads each named page's object once at most, and the scan each page of the new version once.
+    let bound = named.len() + new.len();
+    assert!(spent.pages() as usize <= bound, "{} pages read, past {bound}", spent.pages());
+    // And the scan decides: the copy between pages 3 and 5 is page 4, by its neighbours.
+    assert!(matches!(found.iter().find(|(old, _)| *old == 4), Some((_, Found::At { page: 4, .. }))), "{found:?}");
 }

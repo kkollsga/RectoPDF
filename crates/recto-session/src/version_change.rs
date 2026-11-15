@@ -15,7 +15,7 @@
 
 use crate::edit::identity::{self, Known};
 use crate::edit::marks::FileKey;
-use crate::edit::matcher::{Budget, Found, Matcher, ScanCaps};
+use crate::edit::matcher::{ANNOT_LOOKUPS, Budget, Found, Matcher, WorkCaps};
 use crate::edit::{PageEdits, rebase};
 use crate::fit::EditsFit;
 use crate::record::FileNotice;
@@ -23,13 +23,13 @@ use crate::{DocLoader, Session, TabId};
 use recto_platform::FileStamp;
 use std::path::PathBuf;
 
-/// The scan's caps, which a test sets small on its own thread to hold them at their limit plus one with a small file.
-fn scan_caps() -> ScanCaps {
+/// The one budget of a follow's reading, which a test sets small on its own thread to hold it at its limit plus one with a small file.
+fn work_caps() -> WorkCaps {
     #[cfg(test)]
-    if let Some(caps) = crate::tests::version_change::SCAN_CAPS.with(std::cell::Cell::get) {
+    if let Some(caps) = crate::tests::version_change::WORK_CAPS.with(std::cell::Cell::get) {
         return caps;
     }
-    ScanCaps::STANDARD
+    WorkCaps::STANDARD
 }
 
 /// One tab whose edits may follow their pages into the version of its file there now.
@@ -119,98 +119,240 @@ pub fn work<L: DocLoader>(session: &mut Session<L>) -> Vec<FollowJob> {
     jobs
 }
 
-/// **Reads the new version and matches the named pages in it,** off the session's lock: `None` if the file isn't the version found, before the read or
-/// after it, or can't be opened. Bounded by [`ScanCaps`] and the digest's own caps a page.
-pub fn read(job: &FollowJob) -> Option<Matched> {
-    let current = || recto_platform::file_stamp(&job.path).ok() == Some(job.to);
-    if !current() {
-        return None;
+/// **A follow being read, kept by the page-identity thread across its steps** ([`read_part`]): the new version open, the match so far, and what's been
+/// spent of the one budget. One at a time, and only while a tab's edits are following: nothing here per idle tab. What it holds is the job's copy of the
+/// named pages, the match's few words for each (both at most [`identity::MAX_IDENTIFIED`]), and the file open as slice 1's thread keeps one.
+pub struct Following {
+    job: FollowJob,
+    opened: crate::identify::Opened,
+    matcher: Option<Matcher>,
+    budget: Budget,
+    phase: Phase,
+    document: Option<recto_core::page_id::DocumentIds>,
+}
+
+impl std::fmt::Debug for Following {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Following").field("tab", &self.job.tab).field("phase", &self.phase).finish_non_exhaustive()
     }
-    // Opened through the file wall and checked by its own descriptor against the version found (review S1): a file renamed in for the moment of the
-    // open is never matched for it.
+}
+
+/// Where a follow's reading is.
+#[derive(Debug)]
+enum Phase {
+    /// The pages with an object number a named page had, from this place in the page list; each object once (`seen`).
+    Objects { next: usize, seen: std::collections::HashSet<(u32, u16)> },
+    /// Every page in order, from this place.
+    Scan { next: usize },
+    /// The file's highlights the edits take out, looked for again on their pages, by page: the match's verdicts, and those found so far.
+    Highlights {
+        found: Vec<(u32, Found)>,
+        refound: Vec<(FileKey, Option<FileKey>)>,
+        next: usize,
+    },
+}
+
+/// What a step of a follow's reading came to.
+#[derive(Debug)]
+pub enum Read {
+    /// More to read: the next step goes on from here.
+    More,
+    Matched(Box<Matched>),
+    /// The file isn't the version found any more (or doesn't open as it): nothing read is used.
+    NotRead,
+}
+
+/// What a step reads at most: as many bytes as a job of slice 1's (`crate::identify::MAX_JOB_BYTES`), and as many pages, so a step of pages that cost
+/// lookups and no bytes is bounded too. A test sets it small on its own thread.
+fn step_bytes() -> u64 {
+    #[cfg(test)]
+    if let Some(bytes) = crate::tests::version_change::STEP_BYTES.with(std::cell::Cell::get) {
+        return bytes;
+    }
+    crate::identify::MAX_JOB_BYTES
+}
+
+const STEP_PAGES: u32 = crate::identify::MAX_PAGES_A_JOB as u32;
+
+/// **Starts reading a follow:** the new version opened through the file wall and checked by its own descriptor against the version found (review S1),
+/// so a file renamed in for the moment of the open is never matched for it. `None` if it isn't that version or doesn't open.
+pub fn start(job: FollowJob) -> Option<Following> {
     let opened = crate::identify::Opened::open(&job.path, job.to)?;
-    let (reader, map) = (opened.reader(), opened.map());
-    let caps = recto_core::page_id::Caps::STANDARD;
-    let identify = |entry| {
-        let read = recto_core::page_id::read_page(reader, entry, &caps);
-        // A page that reached a cap has no identity: nothing is matched to it (slice 1's rule).
-        (read.identity.as_ref().map(Known::of), read.bytes)
-    };
+    let document = recto_core::page_id::document_ids(opened.reader());
     // A re-save keeps `/ID[0]`; another document hasn't it, and a page found once in it needs a neighbour to agree (review S3).
-    let document = recto_core::page_id::document_ids(reader);
     let same_document = matches!((job.document, document), (Some(was), Some(now)) if was.first == now.first);
-    let mut matcher = Matcher::new(&job.named, same_document);
-    // Rule 1: the pages with an object number a named page had, at most as many as are named, under the scan's bytes as a whole (not its pages: a
-    // re-save that keeps the numbers is matched without a scan however long it is).
-    let mut budget = Budget::new(ScanCaps {
-        pages: u32::MAX,
-        bytes: ScanCaps::STANDARD.bytes,
-    });
-    for (page, entry) in map.iter().enumerate() {
-        let id = entry.id();
-        if !matcher.wants_object((id.0, id.1)) {
-            continue;
-        }
-        if !budget.room() {
-            break;
-        }
-        let (now, cost) = identify(entry);
-        budget.spend(cost);
-        if let Some(now) = now {
-            matcher.by_object(u32::try_from(page).ok()?, now);
-        }
-    }
-    let read: Vec<u32> = job.named.iter().filter(|(_, known)| known.is_some()).map(|(page, _)| *page).collect();
-    if !matcher.all_found_by_object(&read) {
-        let mut budget = Budget::new(scan_caps());
-        let mut complete = true;
-        for (page, entry) in map.iter().enumerate() {
-            if !budget.room() {
-                complete = false;
-                break;
-            }
-            let (now, cost) = identify(entry);
-            budget.spend(cost);
-            match now {
-                Some(now) => matcher.scanned(u32::try_from(page).ok()?, now),
-                None => matcher.scanned_unidentified(),
-            }
-        }
-        if complete {
-            matcher.scan_complete();
-        }
-    }
-    let found = matcher.finish(&job.named);
-    let refound = job
-        .hidden
-        .iter()
-        .map(|key| {
-            let at = found.binary_search_by_key(&key.page, |(page, _)| *page).ok().and_then(|at| found[at].1.page());
-            let again = at.and_then(|(page, _)| {
-                let on_page: Vec<(u32, Option<[f32; 4]>)> = recto_core::highlights::page_highlights_in(reader, page)
-                    .found
-                    .iter()
-                    .map(|highlight| (highlight.index, highlight.rect))
-                    .collect();
-                rebase::refind(*key, page, &on_page)
-            });
-            (*key, again)
-        })
-        .collect();
-    let pages = u32::try_from(map.len()).ok()?;
-    drop(opened);
-    if !current() {
-        return None;
-    }
-    Some(Matched {
-        tab: job.tab,
-        to: job.to,
-        changes: job.changes,
-        found,
-        pages,
-        refound,
+    Some(Following {
+        matcher: Some(Matcher::new(&job.named, same_document)),
+        budget: Budget::new(work_caps()),
+        phase: Phase::Objects {
+            next: 0,
+            seen: std::collections::HashSet::new(),
+        },
+        opened,
+        job,
         document,
     })
+}
+
+impl Following {
+    /// The job this is the reading of.
+    pub fn job(&self) -> &FollowJob {
+        &self.job
+    }
+}
+
+/// **One step of a follow's reading,** off the session's lock: up to [`step_bytes`] bytes and as many pages as a job of slice 1's, then it says
+/// there's more, so the page-identity thread is never held by one long file in one piece. Every step's work is under the one budget ([`WorkCaps`]).
+pub fn read_part(following: &mut Following) -> Read {
+    let (limit, mut spent, mut pages) = (step_bytes(), 0u64, 0u32);
+    let caps = recto_core::page_id::Caps::STANDARD;
+    let Following {
+        job,
+        opened,
+        matcher,
+        budget,
+        phase,
+        document,
+    } = following;
+    let (reader, map) = (opened.reader(), opened.map());
+    loop {
+        if spent >= limit || pages >= STEP_PAGES {
+            return still(job, Read::More);
+        }
+        match phase {
+            Phase::Objects { next, seen } => {
+                let Some(matcher_now) = matcher.as_mut() else { return Read::NotRead };
+                let ended = match map.get(*next) {
+                    None => true,
+                    Some(entry) => {
+                        let id = entry.id();
+                        let object = (id.0, id.1);
+                        if !matcher_now.wants_object(object) {
+                            *next += 1;
+                            false
+                        } else if !seen.insert(object) {
+                            matcher_now.listed_twice(object);
+                            true
+                        } else if !budget.room() {
+                            true
+                        } else {
+                            let read = recto_core::page_id::read_page(reader, entry, &caps);
+                            budget.page(read.bytes);
+                            (spent, pages) = (spent.saturating_add(read.bytes), pages + 1);
+                            // A page that reached a cap has no identity: nothing is matched to it (slice 1's rule).
+                            if let Some(identity) = &read.identity {
+                                matcher_now.by_object(u32::try_from(*next).unwrap_or(u32::MAX), Known::of(identity));
+                            }
+                            *next += 1;
+                            false
+                        }
+                    }
+                };
+                if ended {
+                    *phase = after_objects(job, matcher);
+                }
+            }
+            Phase::Scan { next } => {
+                let Some(matcher_now) = matcher.as_mut() else { return Read::NotRead };
+                let entry = map.get(*next);
+                let at_budget = !budget.room();
+                if entry.is_none() || at_budget {
+                    if entry.is_none() {
+                        matcher_now.scan_complete();
+                    }
+                    *phase = to_highlights(job, matcher);
+                    continue;
+                }
+                let Some(entry) = entry else { continue };
+                let read = recto_core::page_id::read_page(reader, entry, &caps);
+                budget.page(read.bytes);
+                (spent, pages) = (spent.saturating_add(read.bytes), pages + 1);
+                match &read.identity {
+                    Some(identity) => matcher_now.scanned(u32::try_from(*next).unwrap_or(u32::MAX), Known::of(identity)),
+                    None => matcher_now.scanned_unidentified(),
+                }
+                *next += 1;
+            }
+            Phase::Highlights { found, refound, next } => {
+                // The keys are in order of the page they're on, so each page's highlights are read once for all of its keys.
+                let Some((key, _)) = refound.get(*next).copied() else {
+                    let Ok(length) = u32::try_from(map.len()) else { return Read::NotRead };
+                    let matched = Matched {
+                        tab: job.tab,
+                        to: job.to,
+                        changes: job.changes,
+                        found: std::mem::take(found),
+                        pages: length,
+                        refound: std::mem::take(refound),
+                        document: *document,
+                    };
+                    return still(job, Read::Matched(Box::new(matched)));
+                };
+                let at = found.binary_search_by_key(&key.page, |(page, _)| *page).ok().and_then(|at| found[at].1.page());
+                let end = refound[*next..].iter().position(|(other, _)| other.page != key.page).map_or(refound.len(), |run| *next + run);
+                if let Some((page, _)) = at
+                    && budget.room()
+                    && let Some(entry) = map.get(page as usize)
+                {
+                    let (highlights, looked) = recto_core::highlights::page_highlights_at(reader, entry);
+                    budget.lookups((looked as u64).saturating_mul(ANNOT_LOOKUPS).saturating_add(1));
+                    pages += 1;
+                    let on_page: Vec<(u32, Option<[f32; 4]>)> = highlights.found.iter().map(|highlight| (highlight.index, highlight.rect)).collect();
+                    for (key, again) in &mut refound[*next..end] {
+                        *again = rebase::refind(*key, page, &on_page);
+                    }
+                }
+                // Not found, or past the budget: not found again, and that edit is held.
+                *next = end;
+            }
+        }
+    }
+}
+
+/// The step's answer, if the file is still the version found; else nothing it read is used.
+fn still(job: &FollowJob, read: Read) -> Read {
+    if recto_platform::file_stamp(&job.path).ok() == Some(job.to) { read } else { Read::NotRead }
+}
+
+/// After the pass by object number: the highlights if every page read before is found by it, else the scan.
+fn after_objects(job: &FollowJob, matcher: &mut Option<Matcher>) -> Phase {
+    let read: Vec<u32> = job.named.iter().filter(|(_, known)| known.is_some()).map(|(page, _)| *page).collect();
+    if matcher.as_ref().is_some_and(|matcher| matcher.all_found_by_object(&read)) {
+        to_highlights(job, matcher)
+    } else {
+        Phase::Scan { next: 0 }
+    }
+}
+
+/// The match decided, and the highlights to look for again, by the page they're on.
+fn to_highlights(job: &FollowJob, matcher: &mut Option<Matcher>) -> Phase {
+    let found = matcher.take().map(|matcher| matcher.finish(&job.named)).unwrap_or_default();
+    let mut refound: Vec<(FileKey, Option<FileKey>)> = job.hidden.iter().map(|key| (*key, None)).collect();
+    refound.sort_by_key(|(key, _)| key.page);
+    Phase::Highlights { found, refound, next: 0 }
+}
+
+/// **Reads the new version and matches the named pages in it, every step at once,** off the session's lock: `None` if the file isn't the version found,
+/// before the read or after it, or can't be opened. What the tests use; the page-identity thread takes it a step at a time.
+pub fn read(job: &FollowJob) -> Option<Matched> {
+    let mut following = start(job.clone())?;
+    loop {
+        match read_part(&mut following) {
+            Read::More => {}
+            Read::Matched(matched) => return Some(*matched),
+            Read::NotRead => return None,
+        }
+    }
+}
+
+/// Whether a follow being read is still wanted: the tab may still follow into that version, and nothing was edited since its job was made. A look at
+/// one tab, under the lock, between steps.
+pub fn current<L: DocLoader>(session: &Session<L>, job: &FollowJob) -> bool {
+    may_follow(session, job.tab, job.to).is_some()
+        && session
+            .lists
+            .get(job.tab)
+            .is_some_and(|edits| identity::follow_wanted(edits) == Some(job.to) && edits.changes() == job.changes)
 }
 
 /// **A job's file couldn't be read as the version found** (it changed again, or doesn't open): not tried again for that version. A change since is

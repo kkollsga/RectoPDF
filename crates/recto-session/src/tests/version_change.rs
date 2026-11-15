@@ -2,12 +2,14 @@
 //! taken in under it, and what the tab says. The pure rules are the table in `edit/rebase/table.rs`; this is that the session does what they say.
 
 use super::*;
-use crate::edit::matcher::ScanCaps;
+use crate::edit::matcher::WorkCaps;
 use crate::version_change;
 
 std::thread_local! {
-    /// The scan's caps on this thread, when a test sets them small (`crate::version_change::scan_caps`).
-    pub(crate) static SCAN_CAPS: Cell<Option<ScanCaps>> = const { Cell::new(None) };
+    /// A follow's one budget on this thread, when a test sets it small (`crate::version_change::work_caps`).
+    pub(crate) static WORK_CAPS: Cell<Option<WorkCaps>> = const { Cell::new(None) };
+    /// How many bytes a step of a follow's reading may read on this thread, when a test says (`crate::version_change::step_bytes`).
+    pub(crate) static STEP_BYTES: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
 /// A loader that reads the real file's facts, as the app's does.
@@ -223,17 +225,23 @@ fn an_edit_made_while_the_match_is_read_waits_for_the_next_one() {
     assert_eq!(bed.turned(), vec![2, 8]);
 }
 
-/// Failure caught (rule 6): a scan of a long new version not cut at its caps, or one cut short that takes a digest seen once for the only one. With
-/// the page cap at ten and the new version eleven pages long, renumbered by its cover, nothing is matched by digest and the list is held; with the cap
-/// at eleven it follows.
+/// Failure caught (rule 6, review F2): a scan of a long new version not cut at the follow's one budget, or one cut short that takes a digest seen
+/// once for the only one. With the budget at ten pages and the new version eleven pages long, renumbered by its cover, nothing is matched by digest and
+/// the list is held; with room for the scan and the pass by object number before it (which counts against the same budget), it follows. The limit plus
+/// one exactly is the table's (`edit/rebase/table.rs`), where what each page costs is known.
 #[test]
 fn a_scan_cut_at_its_cap_matches_nothing_by_digest() {
-    for (cap, follows) in [(10, false), (11, true)] {
+    for (cap, follows) in [(10, false), (11 + 6, true)] {
         let mut bed = Bed::turned_page_9();
         bed.changed_and_read(&document("Mine", &(1..=10).collect::<Vec<_>>(), true));
-        SCAN_CAPS.with(|caps| caps.set(Some(ScanCaps { pages: cap, bytes: u64::MAX })));
+        WORK_CAPS.with(|caps| {
+            caps.set(Some(WorkCaps {
+                pages: cap,
+                ..WorkCaps::STANDARD
+            }));
+        });
         let followed = bed.follow();
-        SCAN_CAPS.with(|caps| caps.set(None));
+        WORK_CAPS.with(|caps| caps.set(None));
         assert_eq!(followed[0].is_some(), follows, "cap {cap}");
     }
 }
@@ -244,10 +252,16 @@ fn a_scan_cut_at_its_cap_matches_nothing_by_digest() {
 fn pages_appended_by_another_program_are_reached_once_the_edits_follow() {
     let mut bed = Bed::turned_page_9();
     bed.changed_and_read(&document("Mine", &(1..=12).collect::<Vec<_>>(), false));
-    // Nothing may be scanned: page 9 is found by its object number, which the new version keeps.
-    SCAN_CAPS.with(|caps| caps.set(Some(ScanCaps { pages: 0, bytes: 0 })));
+    // No scan: page 9 and the pages beside it are found by their object numbers, which the new version keeps, and five pages read is all the
+    // budget allows, where a scan of the new version would read twelve.
+    WORK_CAPS.with(|caps| {
+        caps.set(Some(WorkCaps {
+            pages: 5,
+            ..WorkCaps::STANDARD
+        }));
+    });
     let followed = bed.follow();
-    SCAN_CAPS.with(|caps| caps.set(None));
+    WORK_CAPS.with(|caps| caps.set(None));
     assert_eq!(followed[0].map(|followed| followed.pages), Some(12));
     assert_eq!(bed.turned(), vec![8]);
     assert_eq!(bed.s.pages().count(bed.a), 12);
@@ -340,4 +354,41 @@ fn a_discard_after_the_edits_followed_lets_the_notice_go() {
     assert_eq!(bed.notice(), None, "nothing was moved that's still here");
     assert_eq!(bed.s.tabs().tab_notice(bed.a), None);
     assert!(bed.s.lists().get(bed.a).is_none_or(|list| !list.is_edited()));
+}
+
+/// Failure caught (review F2): a follow read in one piece, holding the page-identity thread for as long as the new version takes to read, however long
+/// that is; or one that, taken a step at a time, matches otherwise than in one piece. With a step of one byte (each step one page), the reading takes
+/// many steps and comes to the same match.
+#[test]
+fn a_follow_is_read_a_step_at_a_time_and_comes_to_the_same_match() {
+    let mut bed = Bed::turned_page_9();
+    bed.changed_and_read(&document("Mine", &(1..=10).collect::<Vec<_>>(), true));
+    let job = version_change::work(&mut bed.s).remove(0);
+    let whole = version_change::read(&job).expect("read whole");
+    STEP_BYTES.with(|bytes| bytes.set(Some(1)));
+    let mut following = version_change::start(job.clone()).expect("opened");
+    let mut steps = 0;
+    let matched = loop {
+        steps += 1;
+        match version_change::read_part(&mut following) {
+            version_change::Read::More => {}
+            version_change::Read::Matched(matched) => break *matched,
+            version_change::Read::NotRead => panic!("not read"),
+        }
+    };
+    STEP_BYTES.with(|bytes| bytes.set(None));
+    assert!(steps > 11, "a page a step, over the pass by object number and the scan: {steps} steps");
+    assert_eq!(matched, whole);
+}
+
+/// Failure caught: a follow being read across steps goes on after the person edits the list, or the file changes again, and its match of the list as it
+/// was is taken in. Between steps it's asked whether it's still wanted: after an edit it isn't, and the next job is about the list as it is.
+#[test]
+fn a_follow_being_read_is_dropped_when_the_list_is_edited_between_its_steps() {
+    let mut bed = Bed::turned_page_9();
+    bed.changed_and_read(&document("Mine", &(1..=10).collect::<Vec<_>>(), true));
+    let job = version_change::work(&mut bed.s).remove(0);
+    assert!(version_change::current(&bed.s, &job));
+    bed.s.edit_pages(bed.a, |e| e.rotate(2, 1, 1)).unwrap();
+    assert!(!version_change::current(&bed.s, &job), "an edit since: not this job's any more");
 }

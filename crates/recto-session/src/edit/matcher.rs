@@ -11,7 +11,7 @@
 //!    version's (a re-save keeps it); else not matched, as a blank or stock page another document shares is no evidence it's ours. Found more than
 //!    once, it's the copy whose neighbour either side agrees, if exactly one copy's does; else not matched. Found nowhere: not matched.
 //! 3. Two old pages that come to one new page are neither matched.
-//! 4. A scan stopped at its caps ([`ScanCaps`]) can't say a digest was found only once, so it matches nothing by digest: only rule 1 holds then.
+//! 4. A scan stopped at the budget ([`WorkCaps`]) can't say a digest was found only once, so it matches nothing by digest: only rule 1 holds then.
 //!
 //! **Bounded** (rule 1 and rule 6): memory is a few words a page named ([`super::identity::MAX_IDENTIFIED`] at most), never a word a page of the new
 //! version, which can be as long as a hostile file likes. An old digest that more than [`MAX_ALIKE`] named pages share is told apart by nothing, so
@@ -24,43 +24,75 @@ use std::collections::HashMap;
 /// by digest.
 pub const MAX_ALIKE: usize = 64;
 
-/// How far a scan of the new version goes: at most this many pages, and this many bytes hashed or read, whichever comes first.
+/// **The one budget a follow's reading of the new version spends** (review F2): the pages read by object number, the scan, and the file's highlights
+/// looked for again, all counted together in work, never in time (a time is a machine's). Bytes are what [`recto_core::page_id::read_page`] charges
+/// (stored lengths and bytes hashed); pages are digests read; lookups are objects looked up. At the budget the scan isn't complete, so nothing is
+/// matched by digest, and an edit not found by then is held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ScanCaps {
-    pub pages: u32,
+pub struct WorkCaps {
     pub bytes: u64,
+    pub pages: u32,
+    pub lookups: u64,
 }
 
-impl ScanCaps {
-    /// 200,000 pages (as many as an edited document may have, [`super::MAX_PAGES`]) or 2 GiB.
+impl WorkCaps {
+    /// 2 GiB, 200,000 pages (as many as an edited document may have, [`super::MAX_PAGES`]), and 300 million lookups (about what 200,000 pages
+    /// are charged at [`PAGE_LOOKUPS`] each, with room for the highlights looked for).
     pub const STANDARD: Self = Self {
-        pages: 200_000,
         bytes: 2 << 30,
+        pages: 200_000,
+        lookups: 300_000_000,
     };
 }
 
-/// **What's left of a scan's caps,** asked before each page is read and told what it cost after.
+/// **What a page's read is charged in lookups: a bound, not a count.** The digest's own lookups aren't told (`PageRead` says bytes only), so each read is
+/// charged the most it can dereference under `recto-page/1`'s caps: its content streams, the XObjects it draws, and a few for the page, its resources
+/// and their dictionaries. A page of references to things that aren't streams costs no bytes, and this.
+pub const PAGE_LOOKUPS: u64 = recto_core::page_id::Caps::STANDARD.content_streams as u64 + recto_core::page_id::Caps::STANDARD.xobjects as u64 + 4;
+
+/// What a highlight looked at on a page is charged in lookups, again a bound: itself, its subtype, colour and rect, and each of its quadrilaterals' at
+/// most.
+pub const ANNOT_LOOKUPS: u64 = 4 + recto_core::highlights::MAX_QUADS as u64;
+
+/// **What's left of [`WorkCaps`],** asked before each piece of work and told what it cost after.
 #[derive(Clone, Copy, Debug)]
 pub struct Budget {
-    caps: ScanCaps,
-    pages: u32,
+    caps: WorkCaps,
     bytes: u64,
+    pages: u32,
+    lookups: u64,
 }
 
 impl Budget {
-    pub fn new(caps: ScanCaps) -> Self {
-        Self { caps, pages: 0, bytes: 0 }
+    pub fn new(caps: WorkCaps) -> Self {
+        Self {
+            caps,
+            bytes: 0,
+            pages: 0,
+            lookups: 0,
+        }
     }
 
-    /// Whether another page may be read.
+    /// Whether more may be read.
     pub fn room(&self) -> bool {
-        self.pages < self.caps.pages && self.bytes < self.caps.bytes
+        self.pages < self.caps.pages && self.bytes < self.caps.bytes && self.lookups < self.caps.lookups
     }
 
-    /// A page was read, at this many bytes hashed or read.
-    pub fn spend(&mut self, cost: u64) {
+    /// A page was read, at this many bytes.
+    pub fn page(&mut self, bytes: u64) {
         self.pages = self.pages.saturating_add(1);
-        self.bytes = self.bytes.saturating_add(cost);
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.lookups = self.lookups.saturating_add(PAGE_LOOKUPS);
+    }
+
+    /// The pages read so far.
+    pub fn pages(&self) -> u32 {
+        self.pages
+    }
+
+    /// Objects were looked up.
+    pub fn lookups(&mut self, lookups: u64) {
+        self.lookups = self.lookups.saturating_add(lookups);
     }
 }
 
@@ -176,6 +208,14 @@ impl Matcher {
         };
     }
 
+    /// **A page list names this object a second time** (a hostile page tree can list one page many times): no copy of it is that page by its number,
+    /// and the pass by object number stops here, as one that went on could be made to read the same page without end.
+    pub fn listed_twice(&mut self, object: (u32, u16)) {
+        if let Some(&at) = self.by_object.get(&object) {
+            self.by_id[at] = Some(None);
+        }
+    }
+
     /// Whether every one of `pages` (old page numbers) is found by its object number, so no scan is needed.
     pub fn all_found_by_object(&self, pages: &[u32]) -> bool {
         pages.iter().all(|page| {
@@ -275,33 +315,53 @@ impl Matcher {
     }
 }
 
-/// **The whole match over a new version in hand,** as the driver runs it: by object number, then a scan if any of `wanted` isn't found, cut at `caps`
-/// (counting each page's `cost`, its bytes hashed or read). For the table tests, where the new version is a list; a page of it with no identity is
-/// `None`.
+/// **The whole match over a new version in hand,** as the session runs it: by object number, then a scan if any of `wanted` isn't found, all under one
+/// budget of `caps` (each page costing its bytes, and [`PAGE_LOOKUPS`]). For the table tests, where the new version is a list; a page of it with no
+/// identity is `None`.
 pub fn match_pages(
     named: &[(u32, Option<Known>)],
     wanted: &[u32],
     new: &[(Option<Known>, u64)],
-    caps: ScanCaps,
+    caps: WorkCaps,
     same_document: bool,
 ) -> Vec<(u32, Found)> {
+    match_pages_spending(named, wanted, new, caps, same_document).0
+}
+
+/// [`match_pages`], with what it spent of the budget.
+pub fn match_pages_spending(
+    named: &[(u32, Option<Known>)],
+    wanted: &[u32],
+    new: &[(Option<Known>, u64)],
+    caps: WorkCaps,
+    same_document: bool,
+) -> (Vec<(u32, Found)>, Budget) {
     let mut matcher = Matcher::new(named, same_document);
-    for (page, (now, _)) in new.iter().enumerate() {
-        if let Some(now) = now
-            && matcher.wants_object(now.object)
-        {
-            matcher.by_object(u32::try_from(page).unwrap_or(u32::MAX), *now);
+    let mut budget = Budget::new(caps);
+    let mut seen = std::collections::HashSet::new();
+    for (page, (now, cost)) in new.iter().enumerate() {
+        let Some(now) = now else { continue };
+        if !matcher.wants_object(now.object) {
+            continue;
         }
+        if !seen.insert(now.object) {
+            matcher.listed_twice(now.object);
+            break;
+        }
+        if !budget.room() {
+            break;
+        }
+        budget.page(*cost);
+        matcher.by_object(u32::try_from(page).unwrap_or(u32::MAX), *now);
     }
     if !matcher.all_found_by_object(wanted) {
-        let mut budget = Budget::new(caps);
         let mut complete = true;
         for (page, (now, cost)) in new.iter().enumerate() {
             if !budget.room() {
                 complete = false;
                 break;
             }
-            budget.spend(*cost);
+            budget.page(*cost);
             match now {
                 Some(now) => matcher.scanned(u32::try_from(page).unwrap_or(u32::MAX), *now),
                 None => matcher.scanned_unidentified(),
@@ -311,5 +371,5 @@ pub fn match_pages(
             matcher.scan_complete();
         }
     }
-    matcher.finish(named)
+    (matcher.finish(named), budget)
 }

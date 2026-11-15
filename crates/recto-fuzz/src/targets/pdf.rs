@@ -143,7 +143,11 @@ fn read(bytes: &[u8]) {
                 assert!(read.bytes <= caps.page_read.saturating_add(caps.page_bytes), "a page cost {}", read.bytes);
                 assert_eq!(read, recto_core::page_id::read_page(&reader, entry, &caps));
             }
-            assert_highlights_hold(&recto_core::highlights::page_highlights_in(&reader, 0));
+            if let Some(entry) = map.get(0) {
+                let (highlights, looked) = recto_core::highlights::page_highlights_at(&reader, entry);
+                assert!(looked <= recto_core::highlights::MAX_PAGE_ANNOTS, "{looked} annotations looked at");
+                assert_highlights_hold(&highlights);
+            }
         }
         if let Ok(inventory) = signatures_in_bytes(shared) {
             assert_inventory_holds(&inventory, bytes.len() as u64);

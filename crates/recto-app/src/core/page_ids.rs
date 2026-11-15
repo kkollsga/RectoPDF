@@ -60,8 +60,9 @@ impl PageIds {
     }
 
     fn run(&self, host: &AppHost) {
-        // The file being read, kept across jobs while it's the same version, and gone with the thread.
+        // The file being read, kept across jobs while it's the same version, and gone with the thread; and a follow being read, the same.
         let mut opened = None;
+        let mut following: Option<recto_session::version_change::Following> = None;
         loop {
             self.again.store(false, Ordering::SeqCst);
             let jobs = host.session.with_session(|session| recto_session::identify::work(session));
@@ -77,26 +78,10 @@ impl PageIds {
                 // What was read goes in the journals, as an edit's operations do.
                 host.saver.edit_made();
             }
-            // Edits whose file changed under them, following their pages into the new version or held (`recto_session::version_change`).
-            let follows = host.session.with_session(recto_session::version_change::work);
-            for job in &follows {
-                // Off the lock, as a page's identity is read.
-                let matched = recto_session::version_change::read(job);
-                let followed = host.session.with_session(|session| match &matched {
-                    Some(matched) => recto_session::version_change::followed(session, matched),
-                    None => {
-                        recto_session::version_change::not_read(session, job);
-                        None
-                    }
-                });
-                if let Some(followed) = followed {
-                    host.saver.edit_made();
-                    host.core.push(crate::queue::CoreCall::Reconcile);
-                    host.tell(vec![recto_agent::event::edits_followed(&followed)]);
-                }
-            }
-            // Each job followed, held, was marked unreadable or was overtaken by an edit, whose own job comes next: each round is progress.
-            let taken = taken || !follows.is_empty();
+            // Edits whose file changed under them, following their pages into the new version or held (`recto_session::version_change`): one follow
+            // at a time, a step a round (bounded by bytes and pages, as a job above is), so this thread is never held by one long file in one piece.
+            let stepped = self.follow_step(host, &mut following);
+            let taken = taken || stepped;
             // More to read (a job read only to its byte budget), or asked again meanwhile: look again. A file that keeps refusing gives no work back,
             // and one with a page of no identity is given up on, so this ends once every job's had its turn and nothing new is asked.
             if taken || self.again.load(Ordering::SeqCst) {
@@ -108,6 +93,51 @@ impl PageIds {
                 return;
             }
         }
+    }
+}
+
+impl PageIds {
+    /// **One step of a follow:** the one being read goes on if it's still wanted (else it's dropped, and the next job is about the list as it is now),
+    /// or the next tab's starts. Its reading is off the lock; what it found is taken in under it. Says whether there was a step.
+    fn follow_step(&self, host: &AppHost, following: &mut Option<recto_session::version_change::Following>) -> bool {
+        use recto_session::version_change::{self, Read};
+        if following
+            .as_ref()
+            .is_some_and(|follow| !host.session.with_session(|session| version_change::current(session, follow.job())))
+        {
+            *following = None;
+        }
+        if following.is_none() {
+            let Some(job) = host.session.with_session(|session| version_change::work(session).into_iter().next()) else {
+                return false;
+            };
+            // Off the lock: the open, and the descriptor's own check.
+            match version_change::start(job.clone()) {
+                Some(follow) => *following = Some(follow),
+                None => {
+                    host.session.with_session(|session| version_change::not_read(session, &job));
+                    return true;
+                }
+            }
+        }
+        let Some(follow) = following.as_mut() else { return false };
+        match version_change::read_part(follow) {
+            Read::More => {}
+            Read::NotRead => {
+                let job = follow.job().clone();
+                *following = None;
+                host.session.with_session(|session| version_change::not_read(session, &job));
+            }
+            Read::Matched(matched) => {
+                *following = None;
+                if let Some(followed) = host.session.with_session(|session| version_change::followed(session, &matched)) {
+                    host.saver.edit_made();
+                    host.core.push(crate::queue::CoreCall::Reconcile);
+                    host.tell(vec![recto_agent::event::edits_followed(&followed)]);
+                }
+            }
+        }
+        true
     }
 }
 
