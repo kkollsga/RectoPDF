@@ -616,9 +616,9 @@ if [ "$mode" = --full ] && [ "$part" != window ] && [ "$part" != lifecycle ] && 
   # by side. A failure prints that script's output whole (without its ok lines, last 40).
   tool_out=$(mktemp -d "${TMPDIR:-/tmp}/recto-tool-test.XXXXXX")
   tool_pids="" tool_launched=""
-  for tool in ratchet hygiene check feature; do
+  for tool in ratchet hygiene check feature release; do
     case " $scope_tools_which " in *" $tool "*) ;; *) continue ;; esac
-    case "$tool" in ratchet) tool_test=tools/ratchet-test.sh ;; hygiene) tool_test=tools/target-hygiene-test.sh ;; feature) tool_test=tools/new-feature-test.sh ;; *) tool_test=tools/check-test.sh ;; esac
+    case "$tool" in ratchet) tool_test=tools/ratchet-test.sh ;; hygiene) tool_test=tools/target-hygiene-test.sh ;; feature) tool_test=tools/new-feature-test.sh ;; release) tool_test=tools/release/release-test.sh ;; *) tool_test=tools/check-test.sh ;; esac
     [ -f "$tool_test" ] || continue
     ( started=$(date +%s); tool_rc=0; "$tool_test" > "$tool_out/$tool.out" 2>&1 || tool_rc=$?; echo "$tool_rc $(($(date +%s) - started)) $tool_test" > "$tool_out/$tool.rc" ) &
     tool_pids="$tool_pids $!" tool_launched="$tool_launched $tool"

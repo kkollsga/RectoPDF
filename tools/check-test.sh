@@ -589,8 +589,10 @@ seg_G() {
 check "this script and the push guard agree on what a document is" "1" "$(grep -c "grep -vE '^docs/|\\\\.md\$'" "$SOURCE/tools/hooks/pre-push")"
 check "the memory uses that same rule" "1" "$(grep -c '\$2 !~ /^docs\\/|\\.md\$/' "$SOURCE/tools/check.sh")"
 
-# Failure: code starts reading a document, so a doc-only change can change a result while the memory says nothing changed.
-readers=$(git -C "$SOURCE" grep -lE '"(\.\./)*docs/|"(\.\./)*(SPEC|AGENTS|CLAUDE)\.md"|include_(str|bytes)!\("[^"]*\.md"' -- crates app fuzz tools ':!tools/check-test.sh' 2>/dev/null | wc -l | tr -d ' ')
+# Failure: code starts reading a document, so a doc-only change can change a result while the memory says nothing changed. One reader is so by design:
+# tools/release/notes.sh makes the release's body from docs/releases/X.Y.Z.md, and runs only in the release (its gate and its signing job), never
+# in a check whose pass is remembered; its own test feeds it made files.
+readers=$(git -C "$SOURCE" grep -lE '"(\.\./)*docs/|"(\.\./)*(SPEC|AGENTS|CLAUDE)\.md"|include_(str|bytes)!\("[^"]*\.md"' -- crates app fuzz tools ':!tools/check-test.sh' ':!tools/release/notes.sh' 2>/dev/null | wc -l | tr -d ' ')
 check "no code here reads a document" "0" "$readers"
 
 # Failure: a pass recorded in one worktree isn't seen in another, so each runs its own.
@@ -1053,6 +1055,8 @@ check "check.sh and what its test copies into its repository need check-test.sh"
 check "and so does its own test" "check" "$(tests_for tools/check-test.sh)"
 check "a file no rule maps runs all three" "ratchet hygiene check" "$(tests_for tools/dev-build.sh)"
 check "and so does .config/ and .github/" "ratchet hygiene check ratchet hygiene check" "$(tests_for .config/nextest.toml) $(tests_for .github/workflows/ci.yml)"
+# Failure: a change to the release scripts or to release-zip.sh, which calls them, runs no test of theirs, and a broken notes or bump script is met at the tag.
+check "the release scripts and release-zip.sh need the release test alone" "release release release release" "$(for f in tools/release/notes.sh tools/release/bump.sh tools/release/release-test.sh app/release-zip.sh; do tests_for $f; done | tr '\n' ' ' | sed 's/ $//')"
 git checkout -q main; git checkout -qb ci-scope-tool
 echo "# x" >> tools/ratchet.sh; git add . && git commit -qm "ci ratchet only"
 echo cc >> crates/alpha/src/lib.rs && git add . && git commit -qm "ci crate"

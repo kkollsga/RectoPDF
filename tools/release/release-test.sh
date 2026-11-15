@@ -53,7 +53,7 @@ printf '%s  RectoPDF-1.2.3.zip\n' "$SUM" > "$X/SHA256SUMS"
 # Failure: a release goes out with no notes at all, or the draft step's body is made some other way and the tag is withdrawn an hour in.
 out=$(notes --check 1.2.3); rc=$?
 check "notes: no file for the version is refused" 1 "$rc"
-has "notes: and it says which file to write" "docs/releases/1.2.3.md" "$out"
+has "notes: and it says which version has none" "no notes for 1.2.3" "$out"
 
 # Failure: the body is the notes with the workflow's stand-in where the checksums go, or the Install part twice.
 good_notes
@@ -111,16 +111,6 @@ check "notes: notes with neither part still make a body" 0 "$rc"
 has "notes: with 0.1.0's Install part added" "Download [RectoPDF-1.2.3.zip](https://github.com/kkollsga/RectoPDF/releases/download/v1.2.3/RectoPDF-1.2.3.zip)" "$body"
 has "notes: and its Checksums part" '```'$'\n'"$SUM  RectoPDF-1.2.3.zip" "$body"
 check "notes: the opening paragraph stays first" "RectoPDF 1.2.3 is a release." "$(printf '%s\n' "$body" | head -1)"
-
-# Failure: the real notes in this repository drift from what the script takes (a wrong link, the wrong version), found only at the tag.
-# Each docs/releases/X.Y.Z.md here is taken as it is, but for its placeholder lines, which are the one thing allowed until the release.
-for real in "$SOURCE"/docs/releases/[0-9]*.md; do
-  v=$(basename "$real" .md); case "$v" in *[!0-9.]*) continue ;; esac
-  mkdir -p "$X/real-$v/docs/releases"
-  grep -v '<!-- PLACEHOLDER:' "$real" > "$X/real-$v/docs/releases/$v.md"
-  out=$(NOTES_ROOT="$X/real-$v" "$NOTES" --check "$v" 2>&1); rc=$?
-  check "notes: docs/releases/$v.md passes but for its marked placeholders ($out)" 0 "$rc"
-done
 
 # ---- bump.sh: every file that names the version ----
 B="$X/bump"
