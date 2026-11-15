@@ -561,7 +561,9 @@ fn take_stream(
         Some(chain) => decode::decoded(stored, chain),
         None => stored,
     };
-    // One byte past what may be hashed says a cap is reached, whatever a decoder holds back or reads ahead. A prefix is of the stream's own cap only.
+    // One byte past what may be hashed says a cap is reached. Each read asks for no more than that byte, and a decoder reads nothing past the unit
+    // holding it (its group, row or run, as [`decode`] defines them), so what's in the stream after it never decides anything. A prefix is of the
+    // stream's own cap only.
     let prefix = prefix && limit <= budget.page_left;
     let limit = limit.min(budget.page_left);
     let mut sub = Sha256::new();

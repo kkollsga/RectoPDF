@@ -479,6 +479,47 @@ fn a_page_past_the_content_cap_has_no_identity() {
     assert_eq!(big((16 << 20) + 1), None);
 }
 
+/// Failure caught (second review, F3): a decoder that decodes ahead of what's asked meets a bad byte past the cap's byte and fails the stream (hashed
+/// as stored, an identity) where a decoder that gives no more than asked reaches the cap (no identity), so the digest depends on how far a decoder
+/// reads ahead, not on the file. With the content's cap at 8 bytes: ASCII85 of 12 bytes, then a byte that isn't a digit, reaches the cap (as a lazy
+/// decode does); with a cap the stream fits in, the same stream fails and is hashed as stored.
+#[test]
+fn a_bad_byte_past_the_cap_reaches_the_cap_as_a_lazy_decode_does() {
+    let page = one_page("", "", "4 0 R", vec![stream("/Filter /ASCII85Decode", b"zz!!!!!x")]);
+    let small = Caps {
+        content_bytes: 8,
+        ..Caps::STANDARD
+    };
+    assert_eq!(digest_under(&page, &small), None, "the cap's byte is reached before the bad byte");
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(1, b"zz!!!!!x"));
+    expected.extend_from_slice(b"X");
+    expected.extend_from_slice(&0u32.to_le_bytes());
+    expected.extend_from_slice(b"E");
+    assert_eq!(digest_under(&page, &Caps::STANDARD).map(|digest| hex(&digest)), Some(hex(&sha(&expected))));
+    // A predictor's unit is its row, and RunLength's its run (the definition, [`decode`]): a bad row or a run cut short that holds the cap's byte
+    // fails the stream, which is then hashed as stored, within the cap.
+    let as_stored = |dict: &str, data: &[u8], cap: u64| {
+        let page = one_page("", "", "4 0 R", vec![stream(dict, data)]);
+        let mut expected = b"recto-page/1\0C".to_vec();
+        expected.extend_from_slice(&1u32.to_le_bytes());
+        expected.extend(content_bytes(1, data));
+        expected.extend_from_slice(b"X");
+        expected.extend_from_slice(&0u32.to_le_bytes());
+        expected.extend_from_slice(b"E");
+        let caps = Caps {
+            content_bytes: cap,
+            ..Caps::STANDARD
+        };
+        assert_eq!(digest_under(&page, &caps).map(|digest| hex(&digest)), Some(hex(&sha(&expected))), "{dict}");
+    };
+    let mut rows = vec![0u8; 42];
+    rows.extend_from_slice(&[9; 21]);
+    as_stored("/Filter /FlateDecode /DecodeParms << /Predictor 12 /Columns 20 >>", &flate(&rows), 50);
+    as_stored("/Filter /RunLengthDecode", &[129, b'a', 9, b'x', b'x'], 129);
+}
+
 /// Failure caught: the stream and image counts aren't capped where the definition says, so a page of 100,000 streams costs what it likes, or a page
 /// past them is hashed by part of itself. At 1,024 streams and 256 images drawn the page has an identity (and the last of each counts); one more of
 /// either and it has none.
