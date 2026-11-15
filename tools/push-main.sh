@@ -6,12 +6,13 @@
 #   tools/push-main.sh --watch [sha]   watch a commit's run on main (default: origin/main)
 #   tools/push-main.sh --status        one line on the last pushed main commit's CI, for tools/check.sh: exit 0 green, running or marked known, 1 red, 2 unknown, 3 never ran
 #   tools/push-main.sh --budget        the warning when CI's check is over its time budget, from the kept times alone; `tools/check.sh` ends every run with it
+#   tools/push-main.sh --longest-job <0|1>   which job is CI's wall, from `name<TAB>conclusion<TAB>seconds` lines on stdin (1: the run must have the light job); prints `seconds<TAB>job`, exit 1 if it isn't green
 #   tools/push-main.sh --known <sha> --until YYYY-MM-DD --why "what is known"
 #                                      marks that commit's red CI as known until the date, at most 7 days ahead, so `check.sh --full` on main stamps again
 #
 # A finished watch prints the result, the failed jobs, the failed tests with their "failed N of M" lines (tools/check-rerun.sh) and the artifacts with how
 # to fetch them, and keeps the result in the git common dir (recto-ci-main). Every call to `gh` is bounded (PUSH_MAIN_GH_TIMEOUT, 20 s), and `gh` missing,
-# signed out or offline is said plainly, never waited on. A green run's check time is kept (recto-ci-times) and said against CI's budget (CI_BUDGET). A run cancelled by a newer push is "superseded", not red, and the watch follows the newer run. The watch gives up after PUSH_MAIN_LIMIT seconds (45 min), looking every PUSH_MAIN_POLL (30 s).
+# signed out or offline is said plainly, never waited on. A green run's longest job's time (check, or light when it is the longer) is kept (recto-ci-times) and said against CI's budget (CI_BUDGET); a run is green here only when both jobs are. A run cancelled by a newer push is "superseded", not red, and the watch follows the newer run. The watch gives up after PUSH_MAIN_LIMIT seconds (45 min), looking every PUSH_MAIN_POLL (30 s).
 #
 # Which runs it sees (2026-11-13: a push of 91 files was called "documents only" and given up on at 3 min, while its run sat queued): GitHub's run list
 # leaves a run that is still queued out of an answer filtered by --branch or --commit, though the unfiltered list shows it. So the list is asked
@@ -34,7 +35,7 @@ WORKFLOW=CI
 common=$(git rev-parse --git-common-dir)
 results="$common/recto-ci-main"
 known="$common/recto-ci-known"
-# How long CI's check job may take, in seconds, and where each green run's time is kept. Owner, 2026-11-12: "Add a rule so the ci doesnt regress in the
+# How long CI's longest job (`check`, or `light` if it were ever longer) may take, in seconds, and where each green run's time is kept. Owner, 2026-11-12: "Add a rule so the ci doesnt regress in the
 # future." The one place to edit the budget, and it only goes down: lower it when a merge makes CI faster (25 min on 2026-11-12, when runs took 18 to 33;
 # 21 min on 2026-11-13, when five green runs in a row took 15 min 56 s to 19 min 35 s).
 CI_BUDGET=${PUSH_MAIN_CI_BUDGET:-1260}
@@ -225,7 +226,7 @@ recent_times() { [ -s "$times" ] && awk -F'\t' '!seen[$3]++' "$times" | tail -5;
 
 # Keeps a run's time unless that run is already kept. Two watchers can be here at once: the check and the write are one step under a lock directory (mkdir
 # is atomic, as in tools/check.sh's app-tier lock), the file is rewritten whole and moved into place, and a lock still there after 5 s is a dead taker's.
-keep_time() { # run id, sha, seconds
+keep_time() { # run id, sha, seconds, the job it was (check or light; a line from before the split has none)
   local i=0
   until mkdir "$times.lock" 2>/dev/null; do
     i=$((i + 1))
@@ -233,22 +234,54 @@ keep_time() { # run id, sha, seconds
     sleep 0.1
   done
   if ! awk -F'\t' -v id="$1" '$3 == id { found = 1 } END { exit !found }' "$times" 2>/dev/null; then
-    { cat "$times" 2>/dev/null; printf '%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$2" "$1" "$3"; } > "$times.new.$$" && mv "$times.new.$$" "$times"
+    { cat "$times" 2>/dev/null; printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$2" "$1" "$3" "${4:-check}"; } > "$times.new.$$" && mv "$times.new.$$" "$times"
   fi
   rmdir "$times.lock" 2>/dev/null
   return 0
 }
 
-# A green run's check job against the budget: its seconds are kept, and the median of the last five green runs is what counts, as one slow runner says
+# Which job is the wall a person waits, from a run's jobs: lines of `name<TAB>conclusion<TAB>seconds` on stdin; the one argument is 1 when the run is meant to
+# have the light job (its workflow has one), 0 for a run of the one-job layout. Prints `seconds<TAB>name` of the longer of `check` and `light` (the tie to
+# `check`), and nothing, exit 1, when the run isn't green by them: `check` missing or not success, `light` not success, or missing when it is meant to be
+# there. Other jobs (the sandbox's) have a budget of their own and are not in this one. Pure, so a test gives it made-up lists.
+longest_job() {
+  awk -F'\t' -v need_light="$1" '
+    $1 == "check" || $1 == "light" { seen[$1] = 1; ok[$1] = ($2 == "success"); secs[$1] = $3 + 0 }
+    END {
+      if (!seen["check"] || !ok["check"]) exit 1
+      if (seen["light"] && !ok["light"]) exit 1
+      if (need_light == 1 && !seen["light"]) exit 1
+      if (seen["light"] && secs["light"] > secs["check"]) printf "%d\tlight\n", secs["light"]
+      else printf "%d\tcheck\n", secs["check"]
+    }'
+}
+
+# Whether the workflow at a commit has the light job (the file as that commit had it; the file here when the commit's isn't to be read).
+workflow_has_light() { # sha
+  local workflow
+  workflow=$(git show "$1:$WORKFLOW_FILE" 2>/dev/null) || workflow=""
+  printf '%s\n' "$workflow" | grep -q '^jobs:' || workflow=$(cat "$WORKFLOW_FILE" 2>/dev/null)
+  printf '%s\n' "$workflow" | grep -q '^  light:'
+}
+
+# A green run's longest job against the budget: its seconds are kept, and the median of the last five green runs is what counts, as one slow runner says
 # little. Over the budget is said loudly and fails nothing: a runner's speed isn't the commit's fault, but a median over it is the next task (AGENTS.md).
+# The run is green here only when the check job and the light job both are: a run whose light job failed or never ran keeps no time and says so.
 ci_time() {
-  local secs median n
-  secs=$(gh_bounded run view "$1" --json jobs --jq '[.jobs[] | select(.name == "check") | ((.completedAt | fromdate) - (.startedAt | fromdate))] | max // empty') || return 0
+  local jobs need=0 longest secs name median n
+  jobs=$(gh_bounded run view "$1" --json jobs --jq '.jobs[] | "\(.name)\t\(.conclusion)\t\(try ((.completedAt | fromdate) - (.startedAt | fromdate)) catch 0)"') || return 0
+  [ -n "$jobs" ] || return 0
+  workflow_has_light "$2" && need=1
+  longest=$(printf '%s\n' "$jobs" | longest_job "$need") || {
+    echo "push-main: no time kept for $1: its check job or its light job isn't green here ($(printf '%s' "$jobs" | awk -F'\t' '$1 == "check" || $1 == "light" { printf "%s%s %s", sep, $1, $2; sep = ", " }'))." >&2
+    return 0
+  }
+  secs=${longest%%$'\t'*} name=${longest#*$'\t'}
   [[ "$secs" =~ ^[0-9]+$ ]] && [ "$secs" -gt 0 ] || return 0
-  keep_time "$1" "$2" "$secs"
+  keep_time "$1" "$2" "$secs" "$name"
   n=$(recent_times | wc -l | tr -d ' ')
   median=$(recent_times | cut -f4 | sort -n | sed -n "$(((n + 1) / 2))p")
-  echo "push-main: CI's check took $(mins "$secs"); the median of the last $n green runs is $(mins "$median"), and the budget is $(mins "$CI_BUDGET")."
+  echo "push-main: CI's longest job, $name, took $(mins "$secs"); the median of the last $n green runs is $(mins "$median"), and the budget is $(mins "$CI_BUDGET")."
   budget_warning
 }
 
@@ -263,7 +296,7 @@ budget_warning() {
   [[ "$median" =~ ^[0-9]+$ ]] && [ "$median" -gt "$CI_BUDGET" ] || return 0
   {
     echo "==================== WARNING: CI IS OVER ITS TIME BUDGET ===================="
-    echo "main's CI check took a median of $(mins "$median") over its last $n green runs. The budget is $(mins "$CI_BUDGET"): over by $(mins $((median - CI_BUDGET)))."
+    echo "main's CI took a median of $(mins "$median") over its last $n green runs. The budget is $(mins "$CI_BUDGET"): over by $(mins $((median - CI_BUDGET)))."
     echo "This is not background noise and it is not someone else's job. Read it, and act on it in this task:"
     echo "  1. Add no test that launches the app, sleeps, or waits out a default. Test what Rust decides in process (recto-app's testkit)."
     echo "  2. If your branch adds test seconds, take them out, or say how many and why in your hand-back. Silence about it is a defect."
@@ -450,6 +483,7 @@ case "${1:-}" in
   --watch) watch "${2:-refs/remotes/origin/main}" ;;
   --status) status ;;
   --budget) budget_warning ;;
+  --longest-job) longest_job "${2:-1}" ;;
   --ignored) ignore_globs ;;
   --known) shift; mark_known "$@" ;;
   *) sed -n '2,13p' "$0" >&2; exit 2 ;;

@@ -120,7 +120,14 @@ case "$*" in
     case "$*" in *--branch*|*--commit*) j="[$(printf '%s' "$j" | tr -d '\n' | sed -E 's/^\[//; s/\]$//; s/\},\{/}\n{/g' | grep -Ev '"status":"(queued|in_progress|waiting|pending)"' | paste -sd, -)]" ;; esac
     printf '%s\n' "$j" ;;
   # How long a run's check job took, in seconds: nothing unless the case says (STUB_GH_CHECK_SECS).
-  "run view"*"fromdate"*) echo "${STUB_GH_CHECK_SECS:-}" ;;
+  # Every job of the run, as `name conclusion seconds`: the check job's, the sandbox's (which is never the wall), and with STUB_GH_LIGHT=<conclusion>:<seconds> the light job.
+  "run view"*"fromdate"*)
+    if [ -n "${STUB_GH_CHECK_SECS:-}" ]; then
+      printf 'check\t%s\t%s\nsandbox (macos-15)\tsuccess\t99999\n' "${STUB_GH_CHECK_CONCLUSION:-success}" "$STUB_GH_CHECK_SECS"
+      # The light job is green and short unless the case says otherwise; STUB_GH_LIGHT=none leaves it out.
+      light=${STUB_GH_LIGHT-success:100}
+      [ "$light" = none ] || printf 'light\t%s\t%s\n' "${light%%:*}" "${light#*:}"
+    fi ;;
   # A run's jobs: name, conclusion, steps, steps failed or cut off, id. By default a part that ran and failed; STUB_GH_JOBS for others.
   "run view"*"--json jobs"*"steps"*) printf "${STUB_GH_JOBS:-check (core)\tsuccess\t15\t0\t1\ncheck (lifecycle)\tfailure\t15\t1\t2\n}" ;;
   "run view"*"--json jobs"*) echo "check (lifecycle)" ;;
@@ -992,44 +999,56 @@ branch_with parts
 echo p >> crates/alpha/src/lib.rs && git add . && git commit -qm parts-1
 check "a named part that doesn't exist is refused" "2" "$(CHECK_PART=bogus CHECK_ALL=1 tools/check.sh --full > /dev/null 2>&1; echo $?)"
 check "and a part with --quick" "2" "$(CHECK_PART=core tools/check.sh --quick > /dev/null 2>&1; echo $?)"
+# Every call a part makes, one a line and sorted, in a file of its own: the stubs log each stage's command, the tools' tests and the ratchet included.
+# CI's setting: no event to compare with, so the tools' tests run, and nothing is slow-staged.
+ci_part() { : > "$CALLS"; env CI=true CHECK_PART="$1" CHECK_ALL=1 GITHUB_REF_NAME=main GITHUB_EVENT_NAME=workflow_dispatch tools/check.sh --full > "$X/part-$1.out" 2>&1; sort "$CALLS" > "$X/calls-$1"; }
 : > "$CALLS"
-CHECK_PART=core full > "$X/part.out"
-check "core has no tools' tests when nothing under tools/ changed and it isn't CI" "0" "$(grep -c '^check-test$' "$CALLS")"
-: > "$CALLS"
-CI=true CHECK_PART=core CHECK_ALL=1 GITHUB_REF_NAME=main GITHUB_EVENT_NAME=workflow_dispatch tools/check.sh --full > /dev/null 2>&1
-check "on CI with no base to compare with, the tools' own tests run, in core" "1 1" "$(grep -c '^check-test$' "$CALLS") $(grep -c '^ratchet-test$' "$CALLS")"
-check "the gate runs once in core" "1" "$(grep -c '^clippy --workspace --all-targets' "$CALLS")"
-: > "$CALLS"
-CI=true CHECK_PART=window CHECK_ALL=1 GITHUB_REF_NAME=main GITHUB_EVENT_NAME=workflow_dispatch tools/check.sh --full > /dev/null 2>&1
-check "and not in an app part" "0" "$(grep -c '^check-test$' "$CALLS")"
-: > "$CALLS"
-CHECK_PART=core full > /dev/null
-check "core runs the gate and the workspace" "1 1" "$(grep -c '^clippy --workspace --all-targets' "$CALLS") $(grep -c -- '--no-tests=pass --workspace\|--no-tests=pass -p\|--no-tests=pass' "$CALLS")"
-check "but no app" "0" "$(grep -c 'app-build\|--test restore' "$CALLS")"
-: > "$CALLS"
-CHECK_PART=window full > /dev/null
-check "window builds the app and runs the window tier only" "1 1 0" "$(grep -c '^app-build$' "$CALLS") $(grep -c -- '--test compare --test evidence -j 4 -E test(~window_test)' "$CALLS") $(grep -c 'long_session' "$CALLS")"
-check "with the notices, and no gate or workspace tests" "1 0 0" "$(grep -c -- '--test notices' "$CALLS") $(grep -c '^clippy' "$CALLS") $(grep -c -- '--workspace' "$CALLS")"
-check "and no tools' tests" "0" "$(grep -c '^check-test$' "$CALLS")"
-check "and no registrations" "0" "$(grep -c -- '--test registrations' "$CALLS")"
-: > "$CALLS"
-CHECK_PART=lifecycle full > /dev/null
-check "lifecycle runs the lifecycle tier and the registrations" "1 1 0" "$(grep -c 'long_session -j 4 -E test(~life_test)' "$CALLS") $(grep -c -- '--test registrations' "$CALLS") $(grep -c 'window_test' "$CALLS")"
-check "and not the notices" "0" "$(grep -c -- '--test notices' "$CALLS")"
+CHECK_PART=light full > "$X/part.out"
+check "light has no tools' tests when nothing under tools/ changed and it isn't CI" "0" "$(grep -c '^check-test$' "$CALLS")"
+check "but it has the ratchet and the cargo check of the changed crate's tests, and nothing that builds the workspace's tests or the app" "1 1 0 0" "$(grep -c '^ratchet$' "$CALLS") $(grep -c '^check --locked -p alpha --tests$' "$CALLS") $(grep -c -- 'nextest run\|^app-build$\|^build ' "$CALLS") $(grep -c '^clippy' "$CALLS")"
+ci_part light
+check "on CI with no base to compare with, the tools' own tests run, in light" "1 1" "$(grep -c '^check-test$' "$X/calls-light") $(grep -c '^ratchet-test$' "$X/calls-light")"
+ci_part core
+check "the gate runs once, in core, with the layout, and core has no tools' tests and no ratchet" "1 1 0 0" "$(grep -c '^clippy --workspace --all-targets' "$X/calls-core") $(grep -c '^fmt --all --check' "$X/calls-core") $(grep -c '^check-test$' "$X/calls-core") $(grep -c '^ratchet$' "$X/calls-core")"
+check "core has the workspace's tests and the headings'" "1 1" "$(grep -c -- '--no-tests=pass' "$X/calls-core") $(grep -c '^test --locked --manifest-path crates/recto-headings' "$X/calls-core")"
+check "but no app" "0" "$(grep -c 'app-build\|--test restore' "$X/calls-core")"
+ci_part window
+check "window builds the app and runs the window tier only" "1 1 0" "$(grep -c '^app-build$' "$X/calls-window") $(grep -c -- '--test compare --test evidence -j 4 -E test(~window_test)' "$X/calls-window") $(grep -c 'long_session' "$X/calls-window")"
+check "with the notices, and no gate, layout, ratchet, tools' tests or workspace tests" "1 0 0 0 0 0" "$(grep -c -- '--test notices' "$X/calls-window") $(grep -c '^clippy' "$X/calls-window") $(grep -c '^fmt ' "$X/calls-window") $(grep -c '^ratchet$' "$X/calls-window") $(grep -c '^check-test$' "$X/calls-window") $(grep -c -- '--workspace' "$X/calls-window")"
+check "and no registrations" "0" "$(grep -c -- '--test registrations' "$X/calls-window")"
+ci_part lifecycle
+check "lifecycle runs the lifecycle tier and the registrations" "1 1 0" "$(grep -c 'long_session -j 4 -E test(~life_test)' "$X/calls-lifecycle") $(grep -c -- '--test registrations' "$X/calls-lifecycle") $(grep -c 'window_test' "$X/calls-lifecycle")"
+check "and not the notices" "0" "$(grep -c -- '--test notices' "$X/calls-lifecycle")"
 check "no part is a ledger line, a pass, or a stamp for the push guard" "0 0 0" "$(runs_in_ledger) $([ -f "$PASSES" ] && wc -l < "$PASSES" | tr -d ' ' || echo 0) $([ -f "$CHECKED" ] && wc -l < "$CHECKED" | tr -d ' ' || echo 0)"
 : > "$CALLS"
 CHECK_PART=window full > /dev/null
 check "a part runs again on the same code: it is never remembered" "true" "$([ "$(wc -l < "$CALLS" | tr -d ' ')" -gt 0 ] && echo true || echo false)"
-: > "$CALLS"
-# The three parts are what a run of everything is: the same commands, except that the app tests are split by tier (the window part's filter and the
-# lifecycle part's, which together are every test in the binaries) and the slow stage is split the same way.
-full > /dev/null
-all_calls=$(grep -vE -- '--test app --test restore' "$CALLS" | sort -u)
-: > "$CALLS"
-for p in core window lifecycle; do CHECK_PART=$p CHECK_ALL=1 tools/check.sh --full > /dev/null 2>&1; done
-parts_calls=$(grep -vE -- '--test app --test restore' "$CALLS" | sort -u)
-check "the parts together run what a run of everything does" "$all_calls" "$parts_calls"
-check "and the app tests are in the parts as two filters, not the unfiltered whole" "1 1 0" "$(grep -c -- '--test compare --test evidence -j 4 -E test(~window_test)' "$CALLS") $(grep -c -- 'long_session -j 4 -E test(~life_test)' "$CALLS") $(grep -c -- 'long_session --test evidence -j 4$' "$CALLS")"
+
+# Failure (2026-11-15): CI's one job had everything on its critical path, and a split into two jobs can lose a stage (one nobody runs) or run one twice. CI's two
+# jobs are light and heavy, and every call of a run of everything is in exactly one of them: together they are the same calls, once each, with no call in both.
+# The app's tests are the two tiers' filters in the parts but the one unfiltered run in a run of everything, so those lines are left out (the case above and the
+# next hold them).
+ci_part all
+ci_part heavy
+same_calls() { grep -vE -- '--test app --test restore' "$1" | sort; }
+check "light and heavy together run what a run of everything does, each call once" "$(same_calls "$X/calls-all")" "$( { same_calls "$X/calls-light"; same_calls "$X/calls-heavy"; } | sort)"
+check "no call is in both" "" "$(comm -12 <(sort -u "$X/calls-light") <(sort -u "$X/calls-heavy"))"
+check "and light has the stages that were moved out, heavy none of them" "1 1 1 1 0 0 0 0" "$(grep -c '^ratchet$' "$X/calls-light") $(grep -c '^check-test$' "$X/calls-light") $(grep -c '^ratchet-test$' "$X/calls-light") $(grep -c '^check --locked -p alpha --tests$' "$X/calls-light") $(grep -c '^ratchet$' "$X/calls-heavy") $(grep -c '^check-test$' "$X/calls-heavy") $(grep -c '^ratchet-test$' "$X/calls-heavy") $(grep -c '^check --locked -p alpha --tests$' "$X/calls-heavy")"
+# Core, window and lifecycle are heavy, split: every call of heavy is in exactly one of them, as a heavy run is those three at once.
+for part in core window lifecycle; do ci_part "$part"; done
+check "heavy is core, window and lifecycle together" "$(same_calls "$X/calls-heavy" | sort -u)" "$( { same_calls "$X/calls-core"; same_calls "$X/calls-window"; same_calls "$X/calls-lifecycle"; } | sort -u)"
+check "the app tests are two filters in window and lifecycle, and the unfiltered whole in heavy, which is both tiers" "1 1 1" "$(grep -c -- '--test compare --test evidence -j 4 -E test(~window_test)' "$X/calls-window") $(grep -c -- 'long_session -j 4 -E test(~life_test)' "$X/calls-lifecycle") $(grep -c -- 'long_session --test evidence -j 4$' "$X/calls-heavy")"
+# The CI workflow runs exactly those two parts, so a stage can't be in neither because a job is missing, or in two because one is repeated.
+check "the workflow's jobs run the light part and the heavy part, once each" "heavy light" "$(grep -E '^ +CHECK_PART:' "$SOURCE/.github/workflows/ci.yml" | awk '{ print $2 }' | sort | tr '\n' ' ' | sed 's/ $//')"
+# The same check seen failing: a stage that every part leaves out (here the light part is made to run nothing, as a part dropped from the case would) is not what a
+# run of everything does, and the comparison above says so.
+sed 's/^  light) runs_light=1 ;;$/  light) ;;/' tools/check.sh > "$X/check-dropped.sh"
+check "the mutation is in the copy" "2" "$(diff tools/check.sh "$X/check-dropped.sh" | grep -c '^[<>]')"
+cp tools/check.sh "$X/check-kept.sh"; cp "$X/check-dropped.sh" tools/check.sh
+ci_part light
+cp "$X/check-kept.sh" tools/check.sh
+check "a part that has lost its stages is seen: the light part then runs no ratchet, tools' tests or crate check" "0 0 0" "$(grep -c '^ratchet$' "$X/calls-light") $(grep -c '^check-test$' "$X/calls-light") $(grep -c '^check --locked -p alpha --tests$' "$X/calls-light")"
+check "and the whole no longer equals a run of everything" "no" "$([ "$(same_calls "$X/calls-all")" = "$( { same_calls "$X/calls-light"; same_calls "$X/calls-heavy"; } | sort)" ] && echo yes || echo no)"
 
 }
 
@@ -1040,13 +1059,14 @@ seg_L() {
 # tools/ (the hooks too), .config/ and .github/, here and on CI alike.
 git checkout -q main
 git push -q origin main
-ci_core() { : > "$CALLS"; env CI=true CHECK_PART=core "$@" tools/check.sh --full > "$X/ci.out" 2>&1; echo "$(grep -c '^check-test$' "$CALLS") $(grep -c '^ratchet-test$' "$CALLS")"; }
+ci_core() { : > "$CALLS"; env CI=true CHECK_PART=light "$@" tools/check.sh --full > "$X/ci.out" 2>&1; echo "$(grep -c '^check-test$' "$CALLS") $(grep -c '^ratchet-test$' "$CALLS")"; }
 branch_ci() { ci_core GITHUB_REF_NAME="$(git rev-parse --abbrev-ref HEAD)" GITHUB_EVENT_NAME=push; }
 git checkout -qb ci-crate
 echo cc >> crates/alpha/src/lib.rs && git add . && git commit -qm ci-crate
 check "on CI, a branch that changed no tool since origin/main skips the tools' tests" "0 0" "$(branch_ci)"
 has "and says why" "the tools' tests are skipped: nothing under tools/, .config/ or .github/ changed since $(git merge-base origin/main HEAD | cut -c1-12)" "$(cat "$X/ci.out")"
-check "but still runs the rest of core" "1 1" "$(grep -c '^clippy --workspace --all-targets' "$CALLS") $(grep -c -- '--no-tests=pass --workspace' "$CALLS")"
+ci_core CHECK_PART=heavy GITHUB_REF_NAME="$(git rev-parse --abbrev-ref HEAD)" GITHUB_EVENT_NAME=push > /dev/null
+check "but heavy still runs the rest: the gate and the workspace's tests" "1 1" "$(grep -c '^clippy --workspace --all-targets' "$CALLS") $(grep -c -- '--no-tests=pass --workspace' "$CALLS")"
 # Failure (2026-11-13): the ratchet's baseline counted as a tool, so every push that only locked a lower number in ran the tools' own tests on CI (183 to
 # 267 s, eight pushes in one evening), and a branch that lowered one ran everything here. It is numbers the ratchet has already checked, first.
 git checkout -q main; git checkout -qb ci-baseline
@@ -1247,7 +1267,7 @@ check "a green watch ends with 0 and says so" "0 yes" "$rc $(printf '%s' "$out" 
 # nothing said so. A green run's time is kept and said against the budget; the median of the last five decides, so one slow runner isn't an alarm.
 rm -f .git/recto-ci-times
 out=$(STUB_GH_CHECK_SECS=600 STUB_GH_RUNS="$(run_of success 141 "$pushed")" PUSH_MAIN_POLL=0 PUSH_MAIN_CI_BUDGET=900 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
-has "a green run's check time is said against the budget" "CI's check took 10 min 0 s; the median of the last 1 green runs is 10 min 0 s, and the budget is 15 min 0 s." "$out"
+has "a green run's check time is said against the budget" "CI's longest job, check, took 10 min 0 s; the median of the last 1 green runs is 10 min 0 s, and the budget is 15 min 0 s." "$out"
 check "under it, nothing more is said, and the time is kept" "no 600" "$(printf '%s' "$out" | grep -q "TIME BUDGET" && echo yes || echo no) $(tail -1 .git/recto-ci-times | cut -f4)"
 out=$(STUB_GH_CHECK_SECS=2000 STUB_GH_RUNS="$(run_of success 142 "$pushed")" PUSH_MAIN_POLL=0 PUSH_MAIN_CI_BUDGET=900 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
 check "one slow run among fast ones isn't over the budget, and never fails the watch" "0 no" "$rc $(printf '%s' "$out" | grep -q "TIME BUDGET" && echo yes || echo no)"
@@ -1263,7 +1283,46 @@ check "asking GitHub nothing for it" "$asked" "$(grep -c fromdate "$CALLS.gh" 2>
 check "within the budget a check says nothing of it" "no" "$(tools/check.sh --quick 2>&1 | grep -q "TIME BUDGET" && echo yes || echo no)"
 check "and the watch is still green" "0" "$rc"
 out=$(STUB_GH_RUNS="$(run_of success 14 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1)
-check "a time gh can't give is neither said nor kept" "no 3" "$(printf '%s' "$out" | grep -q "CI's check took" && echo yes || echo no) $(wc -l < .git/recto-ci-times | tr -d ' ')"
+check "a time gh can't give is neither said nor kept" "no 3" "$(printf '%s' "$out" | grep -q "CI's longest job" && echo yes || echo no) $(wc -l < .git/recto-ci-times | tr -d ' ')"
+# Failure (2026-11-15): CI became two jobs, check and light, in parallel. The budget read only `check`, so a light job that took longer, or failed, or never ran,
+# said nothing. The wall a person waits is the longest of them; the run is green only when both are; a run of the one-job layout still reads right.
+lj() { printf "$1" | tools/push-main.sh --longest-job "$2" 2>&1; echo "rc=$?"; }
+check "the longest job is the wall: check" "900	check
+rc=0" "$(lj 'check\tsuccess\t900\nlight\tsuccess\t300\n' 1)"
+check "the longest job is the wall: light, when it is longer" "400	light
+rc=0" "$(lj 'check\tsuccess\t300\nlight\tsuccess\t400\n' 1)"
+check "a tie is the check job's" "300	check
+rc=0" "$(lj 'light\tsuccess\t300\ncheck\tsuccess\t300\n' 1)"
+check "the sandbox's jobs are not in it, however long" "300	check
+rc=0" "$(lj 'sandbox (macos-15)\tsuccess\t9000\ncheck\tsuccess\t300\nlight\tsuccess\t100\n' 1)"
+check "a failed light job is not green, whatever the check took" "rc=1" "$(lj 'check\tsuccess\t300\nlight\tfailure\t100\n' 1)"
+check "nor one that was cancelled (no runner)" "rc=1" "$(lj 'check\tsuccess\t300\nlight\tcancelled\t0\n' 1)"
+check "a missing light job is not green when the run is meant to have it" "rc=1" "$(lj 'check\tsuccess\t300\n' 1)"
+check "a failed or missing check job is not green" "rc=1 rc=1" "$(lj 'check\tfailure\t300\nlight\tsuccess\t100\n' 1 | tr '\n' ' ' | sed 's/ $//') $(lj 'light\tsuccess\t100\n' 1 | tr '\n' ' ' | sed 's/ $//')"
+check "a run of the one-job layout still reads right" "300	check
+rc=0" "$(lj 'check\tsuccess\t300\nsandbox (macos-15)\tsuccess\t900\n' 0)"
+check "and a light job that is there is held even when the run isn't meant to have it" "rc=1" "$(lj 'check\tsuccess\t300\nlight\tfailure\t100\n' 0)"
+# Through the watch, with the workflow as the commit has it: the light job being longer is what is kept, with its name; a failed one keeps nothing.
+rm -f .git/recto-ci-times
+out=$(STUB_GH_CHECK_SECS=600 STUB_GH_LIGHT=success:700 STUB_GH_RUNS="$(run_of success 241 "$pushed")" PUSH_MAIN_WORKFLOW_FILE="$SOURCE/.github/workflows/ci.yml" PUSH_MAIN_POLL=0 PUSH_MAIN_CI_BUDGET=900 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+has "the watch says which job was the wall" "CI's longest job, light, took 11 min 40 s" "$out"
+check "and keeps its seconds and its name" "700 light" "$(tail -1 .git/recto-ci-times | cut -f4,5 | tr '\t' ' ')"
+out=$(STUB_GH_CHECK_SECS=600 STUB_GH_LIGHT=failure:700 STUB_GH_RUNS="$(run_of success 242 "$pushed")" PUSH_MAIN_WORKFLOW_FILE="$SOURCE/.github/workflows/ci.yml" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+has "a run whose light job isn't green keeps no time, and says so" "no time kept for 242" "$out"
+check "and the file has only the first" "1" "$(wc -l < .git/recto-ci-times | tr -d ' ')"
+out=$(STUB_GH_LIGHT=none STUB_GH_CHECK_SECS=600 STUB_GH_RUNS="$(run_of success 243 "$pushed")" PUSH_MAIN_WORKFLOW_FILE="$SOURCE/.github/workflows/ci.yml" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1)
+has "a run with no light job, where its commit's workflow has one, keeps no time" "no time kept for 243" "$out"
+printf 'jobs:\n  check:\n    runs-on: x\n' > "$X/ci-one-job.yml"
+out=$(PUSH_MAIN_WORKFLOW_FILE="$X/ci-one-job.yml" STUB_GH_LIGHT=none STUB_GH_CHECK_SECS=600 STUB_GH_RUNS="$(run_of success 244 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1)
+has "and with a workflow of the one job, the check's time is the wall" "CI's longest job, check, took 10 min 0 s" "$out"
+check "lines kept before the split (four fields) and after (five) are read together by the median" "a median of 10 min 0 s" "$(printf 'd\ts\t1\t500\nd\ts\t2\t600\td\nd\ts\t3\t700\tlight\n' | sed 's/\td$//' > .git/recto-ci-times; PUSH_MAIN_CI_BUDGET=100 tools/push-main.sh --budget 2>&1 | grep -o 'a median of 10 min 0 s')"
+# A light job that never got a runner is the run never having run, not red: nothing of the code was shown.
+out=$(STUB_GH_JOBS='check\tsuccess\t15\t0\t1\nlight\tcancelled\t0\t0\t2\n' STUB_GH_RUNS="$(run_of failure 245 "$pushed")" STUB_GH_RUNS_AFTER="$(run_of success 245 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1)
+has "a light job that never got a runner is reported as never run, not red" "CI NEVER RAN on main" "$out"
+has "naming the job" "light (cancelled, 0 steps" "$out"
+out=$(STUB_GH_JOBS='check\tsuccess\t15\t0\t1\nlight\tfailure\t9\t1\t2\n' STUB_GH_RUNS="$(run_of failure 246 "$pushed")" PUSH_MAIN_POLL=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
+check "while one whose light job ran a step that failed is red" "1" "$rc"
+rm -f .git/recto-ci-times .git/recto-ci-main "$CALLS.gh-rerun"
 rm -f .git/recto-ci-times
 out=$(STUB_GH_RUNS="$(run_of "" 15 "$pushed" in_progress)" PUSH_MAIN_POLL=0 PUSH_MAIN_LIMIT=0 tools/push-main.sh --watch "$pushed" 2>&1); rc=$?
 check "a watch that runs out of time ends with 3 and says how to look again" "3 yes" "$rc $(printf '%s' "$out" | grep -q "tools/push-main.sh --watch" && echo yes)"

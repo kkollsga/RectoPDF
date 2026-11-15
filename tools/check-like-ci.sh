@@ -5,7 +5,7 @@
 # test filter runs with CI's nextest profile, CI's concurrency for it, and its tests held by what macOS gives any process (taskpolicy), as CI's runner, a
 # virtual M1 with 3 cores and 7 GB, is slower than this Mac (the lifecycle part: about 4.5 min of tests there, 95 s here alone, 2026-11-12).
 #
-#   tools/check.sh --like-ci core|window|lifecycle             that part, as CI runs it (CHECK_PART), with the limits
+#   tools/check.sh --like-ci light|heavy|core|window|lifecycle     that part, as CI runs it (CHECK_PART), with the limits
 #   tools/check.sh --like-ci '<nextest filter>' [--times N]    those tests, N times, with "failed N of M" (a failure's rerun.txt gives this line)
 #       [--profile ci] [--jobs N]                              CI's profile and concurrency unless given: 4 for the app's tests, 3 for the rest
 #
@@ -51,14 +51,14 @@ like_ci_main() {
       *) [ -z "$target" ] || { echo "like-ci: one part or one filter (quote it)." >&2; return 2; }; target=$1; shift ;;
     esac
   done
-  [ -n "$target" ] || { echo "like-ci: name a part (core, window, lifecycle) or a nextest filter." >&2; return 2; }
+  [ -n "$target" ] || { echo "like-ci: name a part (light, heavy, core, window, lifecycle) or a nextest filter." >&2; return 2; }
   case "$times$jobs" in *[!0-9]*) echo "like-ci: --times and --jobs are numbers." >&2; return 2 ;; esac
   local limits=${LIKE_CI_LIMITS-$LIKE_CI_LIMITS_DEFAULT}
   export CHECK_LIKE_CI_WRAP=""
   [ -z "$limits" ] || CHECK_LIKE_CI_WRAP="taskpolicy $limits"
   export CHECK_LIKE_CI=1 NEXTEST_PROFILE=$profile
   case "$target" in
-    core | window | lifecycle)
+    light | heavy | core | window | lifecycle)
       [ "$times" = 1 ] || { echo "like-ci: --times goes with a filter; a part runs once." >&2; return 2; }
       [ -n "$jobs" ] || { [ "$target" = core ] && jobs=3; }
       local shown=${jobs:-4}
