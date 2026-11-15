@@ -10,6 +10,9 @@ Quiet runs only (off every screen, never active, temp state), on one state folde
   C  the previous release again on what B left, as a copy that went back would: it must start, keep every tab and place, leave the
      newer journal alone (byte for byte), and show that tab as it says it does;
   D  the new build again: nothing B made was lost on the way.
+  E  the previous release again, with an edit made in it on the highlighted tab, as a person who went back might, and
+  F  the new build again: what it shows of both, and that the newer journal is still on disk; the faults found here are named in
+     the pair's file and said as KNOWN FAULT until they are fixed, when the check fails until their line goes.
 Each comparison says what it compared; every difference not named in an exception, with its reason, fails the check.
 """
 
@@ -355,7 +358,49 @@ def main():
                 note(f"D: KNOWN FAULT, tab #{t['tab']} says `{code}` though its edits read back whole: {acknowledged[f'D.notice.{code}']}")
             else:
                 fail(f"D: tab #{t['tab']} says `{code}` though its edits read back whole", json.dumps(t["file_notice"]))
-        d.cmd("qa", "quit", "now")
+        d.handoff()
+        d_files = files_of(state)
+        v2_journals = {p: d_ for p, d_ in d_files.items() if os.path.basename(p).startswith("journal-") and journal_version(d_) == 2}
+
+        def known(where, what, detail):
+            """A fault found and reported: said as KNOWN FAULT while it's in the pair's file, a failure once it isn't (and so seen when it's fixed)."""
+            if where in acknowledged:
+                note(f"{where.split('.')[0]}: KNOWN FAULT, {what}: {acknowledged[where]}")
+            else:
+                fail(f"{where.split('.')[0]}: {what}", detail)
+
+        # ---- E: the previous release again, and an edit made in it on the highlighted tab, as a person who went back might ----
+        e = Run(old_app, f"E ({old_v} again, an edit)", state, pdfs)
+        e.start()
+        e.cmd("tap", f"#{v2_tab}"); e.settled()
+        e.cmd("page", "rotate", "1", "--by", "90", "--tab", f"#{v2_tab}")
+        e.settled()
+        save("E", e.snapshot([1, 2, 3]))
+        e.handoff()
+        e_files = files_of(state)
+        kept = [p for p in v2_journals if e_files.get(p) == v2_journals[p]]
+        check(f"E: {old_v}'s edit left {new_v}'s version-2 journal on disk byte for byte ({len(v2_journals)})", len(kept) == len(v2_journals) == 1,
+              f"journals now {[(p, journal_version(x)) for p, x in e_files.items() if os.path.basename(p).startswith('journal-')]}")
+
+        # ---- F: the new build again: what's shown and what's on disk ----
+        f = Run(new_copy, f"F ({new_v} again)", state, pdfs)
+        f.start()
+        forward = f.snapshot([1, 2, 3])
+        forward["highlights #3"] = f.cmd("highlights", "--tab", f"#{v2_tab}")
+        save("F", forward)
+        tab = next(t for t in forward["tabs"]["tabs"] if t["tab"] == v2_tab)
+        turned = any(run.get("rotation_degrees") for run in forward[f"edits #{v2_tab}"]["runs"])
+        check(f"F: the turn made in {old_v} is shown", turned, json.dumps(forward[f"edits #{v2_tab}"]["runs"])[:300])
+        if len(forward["highlights #3"]["edits"]) == 1:
+            ok(f"F: the highlight {new_v} made is shown beside it")
+        else:
+            known("F.highlight_hidden", f"the highlight {new_v} made isn't shown ({len(forward['highlights #3']['edits'])} listed), though its journal is on disk", json.dumps(forward["highlights #3"])[:300])
+        code = (tab.get("file_notice") or {}).get("code")
+        if code:
+            known(f"F.notice.{code}", f"the tab says `{code}`", json.dumps(tab["file_notice"]))
+        f_files = files_of(state)
+        check(f"F: {new_v}'s version-2 journal is still on disk byte for byte", all(f_files.get(p) == v2_journals[p] for p in v2_journals))
+        f.cmd("qa", "quit", "now")
     finally:
         for app in apps:
             subprocess.run([LSREGISTER, "-u", app], capture_output=True)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # release/check-carry: the state a person has, carried from the previous release to the new build and back, in quiet runs on one temp
 # state folder, with the real binaries: the previous release as published, the new one as built (ad hoc signed is fine; a quiet run
-# doesn't check the team). tools/release/carry/check_carry.py says the four runs and what each compares.
+# doesn't check the team). tools/release/carry/check_carry.py says the six runs and what each compares.
 #
 #   tools/release/check-carry.sh <RectoPDF-P.zip as published> <RectoPDF.app built for the new version> [<evidence folder>]
 #
