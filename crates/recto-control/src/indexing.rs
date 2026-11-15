@@ -599,7 +599,17 @@ mod tests {
         let temp = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-limits-");
         recto_platform::local::ensure_private_dir(&temp).unwrap();
         let (root, generous) = (temp.join("corpus.noindex"), BuildLimits::default());
-        let build = |key: CorpusKey| corpus::build(&FindKey::for_tests(1), &root, key, &mut OnePage, &corpus::DocMeta::default(), &generous).unwrap();
+        let build = |key: CorpusKey| {
+            corpus::build(
+                &FindKey::from_state_file(&temp.join("find.key")).unwrap(),
+                &root,
+                key,
+                &mut OnePage,
+                &corpus::DocMeta::default(),
+                &generous,
+            )
+            .unwrap()
+        };
         let (old, recent) = (key(1), key(2));
         build(old);
         build(recent);
@@ -623,14 +633,14 @@ mod tests {
         // Past 90 days, under the size.
         age(old, 91);
         age(recent, 1);
-        let by_age = Indexer::with_limits(&root, Box::new(Fails), generous, Plan::Memory);
+        let by_age = Indexer::with_limits(&root, Box::new(Fails), generous, Plan::StateFile(temp.join("find.key")));
         by_age.note_asked();
         wait_until_gone(old);
         assert!(root.join(recent.hex()).exists(), "what's within its time stays");
         // 89 days is within it.
         build(old);
         age(old, 89);
-        let within = Indexer::with_limits(&root, Box::new(Fails), generous, Plan::Memory);
+        let within = Indexer::with_limits(&root, Box::new(Fails), generous, Plan::StateFile(temp.join("find.key")));
         within.note_asked();
         let deadline = Instant::now() + Duration::from_secs(10);
         while within.0.lock().working && Instant::now() < deadline {
@@ -643,7 +653,7 @@ mod tests {
             max_total_bytes: corpus::folder_bytes(&root.join(recent.hex())) + 1,
             ..BuildLimits::default()
         };
-        let by_size = Indexer::with_limits(&root, Box::new(Fails), tight, Plan::Memory);
+        let by_size = Indexer::with_limits(&root, Box::new(Fails), tight, Plan::StateFile(temp.join("find.key")));
         by_size.note_asked();
         wait_until_gone(old);
         assert!(root.join(recent.hex()).exists(), "the most recently used goes last");
@@ -663,7 +673,7 @@ mod tests {
         recto_platform::local::ensure_private_dir(&temp).unwrap();
         let root = temp.join("corpus.noindex");
         corpus::build(
-            &FindKey::for_tests(1),
+            &FindKey::from_state_file(&temp.join("find.key")).unwrap(),
             &root,
             key(1),
             &mut OnePage,
@@ -671,7 +681,7 @@ mod tests {
             &BuildLimits::default(),
         )
         .unwrap();
-        let indexer = Indexer::with_limits(&root, Box::new(Changed), BuildLimits::default(), Plan::Memory);
+        let indexer = Indexer::with_limits(&root, Box::new(Changed), BuildLimits::default(), Plan::StateFile(temp.join("find.key")));
         // Past the first sweep, with room to spare, so it's the run's own look that matters.
         indexer.ask(job(2));
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -686,7 +696,7 @@ mod tests {
                 max_total_bytes: 1,
                 ..BuildLimits::default()
             },
-            Plan::Memory,
+            Plan::StateFile(temp.join("find.key")),
         );
         tight.0.lock().sweep_due = false;
         tight.ask(job(2));
