@@ -337,7 +337,7 @@ mod tests {
         assert!(short.socket.ends_with("run/recto.sock"));
     }
 
-    /// Failure: the state folder is made open to others, or one someone else made is used as it is.
+    /// Failure: the state folder is made open to others, or one someone else made is used as it is. And the test itself widens no folder but its own (a shared socket folder, widened, refuses every other state folder that uses it).
     #[test]
     fn prepare_makes_private_folders_and_refuses_open_ones() {
         use std::os::unix::fs::PermissionsExt;
@@ -348,7 +348,8 @@ mod tests {
         paths.prepare().unwrap();
         assert_eq!(std::fs::metadata(&paths.root).unwrap().permissions().mode() & 0o777, 0o700);
         assert_eq!(std::fs::metadata(&paths.run_dir).unwrap().permissions().mode() & 0o777, 0o700);
-        std::fs::set_permissions(&paths.run_dir, std::fs::Permissions::from_mode(0o775)).unwrap();
+        // A folder of the test's own. With a long temp folder the socket's folder is the user's shared short one (`/tmp/recto-<uid>`), and widening that refused every state folder whose socket lives there, for good, until someone narrowed it: the log's tests failed by turns on this Mac for that.
+        std::fs::set_permissions(paths.root.join("run"), std::fs::Permissions::from_mode(0o775)).unwrap();
         assert_eq!(paths.prepare().unwrap_err().code, "state_refused");
         std::fs::remove_dir_all(&root).unwrap();
     }

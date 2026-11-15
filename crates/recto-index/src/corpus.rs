@@ -39,7 +39,7 @@ use recto_proto::{CharBox, CharRecord};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -1189,11 +1189,11 @@ fn resume_point(paths: &CorpusPaths, pages: u32) -> io::Result<ResumePoint> {
         point.bytes += record.blob_len() as u64 + RECORD_LEN as u64;
     }
     drop(pack);
-    if let Ok(file) = OpenOptions::new().write(true).open(&paths.table) {
-        file.set_len(u64::from(point.pages) * RECORD_LEN as u64)?;
-    }
-    if let Ok(file) = OpenOptions::new().write(true).open(&paths.pack) {
-        file.set_len(point.pack_end)?;
+    // Opened as a build opens them, so a link or a named pipe put in a file's place is never followed or waited on, and the build after this stops on it.
+    for (path, len) in [(&paths.table, u64::from(point.pages) * RECORD_LEN as u64), (&paths.pack, point.pack_end)] {
+        if let Ok(file) = local::append_private_file(path) {
+            file.set_len(len)?;
+        }
     }
     Ok(point)
 }
@@ -1649,17 +1649,17 @@ pub fn clear_all(root: &Path) -> io::Result<Cleared> {
 
 fn remove_unless_building(root: &Path, key: CorpusKey) -> io::Result<()> {
     let paths = CorpusPaths::new(root, key);
-    let lock = match OpenOptions::new().write(true).open(&paths.lock) {
-        Ok(lock) => Some(lock),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error),
+    let lock = match fs::symlink_metadata(&paths.lock) {
+        Ok(meta) if meta.is_file() => Some(local::append_private_file(&paths.lock)?),
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+        _ => None,
     };
     if let Some(lock) = &lock
         && lock.try_lock().is_err()
     {
         return Err(io::ErrorKind::WouldBlock.into());
     }
-    // `remove_dir_all` doesn't follow links.
+    // A build only locks a plain file, opened as above, with no link followed and no wait: a link or a named pipe at the lock's name is held by no build, and is never opened, as a pipe would wait for a reader for ever (the Find text's second security review, item 2, 2026-11-15). `remove_dir_all` doesn't follow links.
     fs::remove_dir_all(root.join(key.hex()))
 }
 

@@ -1,4 +1,5 @@
 use super::*;
+use std::fs::OpenOptions;
 /// A folder of its own, private and removed at the end.
 struct Temp(recto_testpdf::TempDir);
 
@@ -960,6 +961,79 @@ fn the_agent_folder_is_held_to_the_same_rules() {
     assert!(fs::read_to_string(paths.page_file(1, 4)).unwrap().contains("read at last"));
     let manifest: Value = serde_json::from_slice(&fs::read(&paths.manifest).unwrap()).unwrap();
     assert_eq!(manifest["failed_pages"], json!([]));
+}
+
+/// Failure (from the Find text's second security review, item 2, 2026-11-15; in 0.1.0): a named pipe put where a corpus's build lock goes makes a clear wait for ever, the person's own "clear the Find text" included, as opening a pipe to write waits for a reader. Nothing can be building on a lock that isn't a plain file, so the clear goes on and takes the folder. If the clear is stuck, the test opens the pipe to read, which lets it go, and fails.
+#[test]
+fn a_pipe_at_the_build_lock_never_holds_up_a_clear() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let key = key_of(&temp, b"a file");
+    build(&root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    let paths = CorpusPaths::new(&root, key);
+    fs::remove_file(&paths.lock).unwrap();
+    assert!(std::process::Command::new("/usr/bin/mkfifo").arg(&paths.lock).status().unwrap().success());
+    let (sent, got) = std::sync::mpsc::channel();
+    let cleared_root = root.clone();
+    let clearing = std::thread::spawn(move || sent.send(clear(&cleared_root, key).map_err(|error| error.kind())));
+    let outcome = got.recv_timeout(std::time::Duration::from_secs(20));
+    if outcome.is_err() {
+        let _ = fs::File::open(&paths.lock);
+    }
+    let _ = clearing.join();
+    assert_eq!(outcome.expect("a clear waited on a pipe at the build lock"), Ok(()));
+    assert!(!paths.dir.exists(), "the corpus with a pipe at its lock wasn't cleared");
+}
+
+/// Failure (found beside the Find text's second security review, 2026-11-15; in 0.1.0): going on from a build that stopped partway cuts its files back by opening them to write with links followed and waiting, so a named pipe put at `text.pack` holds the helper for ever, and every document after it waits in the queue; and a link put there has a file outside the corpora cut short. A pipe or a link there is left as it is: the build doesn't wait on it, and nothing it points at changes.
+#[test]
+fn going_on_from_a_stopped_build_never_waits_on_or_follows_what_is_at_its_files() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let outside = temp.0.join("outside.txt");
+    fs::write(&outside, b"a file of the person's, outside the corpora").unwrap();
+    for planted in ["pipe", "link"] {
+        let key = key_of(&temp, planted.as_bytes());
+        build(
+            &root,
+            key,
+            &mut FakeFeed::new(&[PLAIN, Fake::Stop]),
+            &DocMeta::default(),
+            &BuildLimits::default(),
+        )
+        .unwrap();
+        let paths = CorpusPaths::new(&root, key);
+        assert_eq!(disk_state(&root, key), DiskState::Partial { pages_done: 1 }, "{planted}");
+        fs::remove_file(&paths.pack).unwrap();
+        if planted == "pipe" {
+            assert!(std::process::Command::new("/usr/bin/mkfifo").arg(&paths.pack).status().unwrap().success());
+        } else {
+            std::os::unix::fs::symlink(&outside, &paths.pack).unwrap();
+        }
+        let (sent, got) = std::sync::mpsc::channel();
+        let building_root = root.clone();
+        let building = std::thread::spawn(move || {
+            let outcome = build(
+                &building_root,
+                key,
+                &mut FakeFeed::new(&[PLAIN, PLAIN]),
+                &DocMeta::default(),
+                &BuildLimits::default(),
+            );
+            sent.send(outcome.is_ok() || outcome.is_err())
+        });
+        let ended = got.recv_timeout(std::time::Duration::from_secs(20));
+        if ended.is_err() {
+            let _ = fs::File::open(&paths.pack);
+        }
+        let _ = building.join();
+        assert!(ended.is_ok(), "going on from a stopped build waited on a {planted} at its pack");
+        assert_eq!(
+            fs::read(&outside).unwrap(),
+            b"a file of the person's, outside the corpora",
+            "a file a link at the pack points at was changed"
+        );
+    }
 }
 
 /// Failure: a corpus someone has damaged panics the session, or its bad bytes reach an agent as a document's text. Each way it can fail to add up is said, and a page past the end of a file or with broken UTF-8 isn't believed.
