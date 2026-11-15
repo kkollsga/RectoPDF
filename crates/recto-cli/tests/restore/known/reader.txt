@@ -5,6 +5,7 @@ reader.magnification
 reader.note
 reader.page
 reader.pages
+reader.pages_withheld
 reader.paper
 reader.scroll_x
 reader.scroll_y
