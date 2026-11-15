@@ -13,7 +13,7 @@ Last updated 2026-11-12. Behaviour is in `SPEC.md`, and the reasons behind it ar
 | **2. First real app** | A native window you can read in, with real screenshots | **Nearly done** | 8–12 |
 | **3. Complete reader** | Find, menus, ⌘K, session restore, image copy, snapshot and SVG | **In progress: first release** | 10–15 |
 | **7. Release** | Hardened, signed, installable first release | **Next, with phase 3: first release** | 8–12 |
-| **R. Restructuring** | Fast checks that reach the app's logic, one implementation for the window and the CLI, every feature in its own compartment (`docs/reviews/2026-11-12-development-speed.md`) | **Under way** (owner, 2026-11-12: "Yes you have the goahead"). Before any other phase 4–6 work | 45–62 |
+| **R. Restructuring** | Fast checks that reach the app's logic, one implementation for the window and the CLI, every feature in its own compartment (`docs/reviews/2026-11-12-development-speed.md`) | **Done 2026-11-15** (owner's go-ahead 2026-11-12; closed on the second independent read, with its numeric targets ended by the owner on 2026-11-14: `docs/OWNER-RULES.md`). What it left is in "What is left, in order" below | 45–62 |
 | **4. Saving and editing** | Native Save, edit mode, annotations, forms, signature image | Save (stages 1 and 2) in the first release; the rest of editing after it | 25–40 |
 | **5. Tools** | Compress, OCR, passwords, compare, redaction, watermarks and more | After the first release | 20–35 |
 | **6. Agent sidebar** | Ask a question about a PDF, with your own `claude` | After the first release | 8–12 |
@@ -34,12 +34,7 @@ Open items only, by where they are in this plan; features not yet built are coun
 - Phase R, the whole-phase review: what is left of S2's follow-ups after `build/snapshot-command` merged (2026-11-15): the lines under that item.
 - (done 2026-11-15) Phase R, R3.7 and the person's lane: how fast the window answers a key or click, measured with nothing else running: no case moved by more than 5.8 µs from the step's start (the numbers are under R3.7).
 
-**Phase R's close**
-- Phase R, R4.3: the second independent read of the whole phase and the closing process review; then phase R is done.
-- (done 2026-11-15, `build/close-fixes`) The closing read's fixes: a print, a box or click, or a paste dropped before it ran (the lane's cap, a quit's patience, a freeze after a late keep's restore) is answered as refused, so its feature isn't left busy; the two source scans read past a file's first test item; a hand-off names an agent's command beside the person's parked edits. Found on the way and fixed: a Stay after a quit's question left every paste of a box's SVG giving nothing.
-- Found 2026-11-15 (`build/close-fixes`), not fixed, the coordinator's to decide: the update menu's row marks the menu before its `submit`, and a submit refused at a freeze leaves the mark, so the next update news said is put up as an alert too.
-- Found 2026-11-15: three more copies of `production_lines` (`recto-agent/tests/codes.rs`, `recto-session/src/tests/changed_file.rs`, `recto-cli/tests/named_threads.rs`) beside the one in `recto-testpdf`; to go onto it.
-- Phase R, R2.4's review: the window's Save still runs by a route of its own beside the person's commands (may land with `build/snapshot-command`).
+**Phase R's close: done 2026-11-15.** The second independent read found the work sound to release from; its three findings are merged or settled (`build/close-fixes`; the comparison walk's segment back with a longer wait and a truer record); the window's Save was found to run the person's `save` through the one door already, and the size guard's item was stale. The closing review is in `docs/PROCESS.md`.
 
 **Before 0.1.1**
 - Phase R, R4: the page matcher: unsaved edits stay on their own page when the file changes on disk, or are set aside and said, never put on another page (with what the changed-file work left for it).
