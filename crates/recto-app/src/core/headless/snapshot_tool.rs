@@ -560,6 +560,40 @@ fn a_paste_that_panics_leaves_the_next_paste_working() {
     assert!(String::from_utf8_lossy(&svg).contains("<svg"), "an SVG");
 }
 
+/// **Failure (the phase's closing read, 2026-11-15): a box parked behind the person's highlight and then dropped from the lane was never answered,** so the
+/// tool said "Copying…" for good and was dead: busy, a hand-off and every settle waiting on it, and no box taken again. Dropped at the cap, and with what
+/// was parked at a quit's patience the person then stayed: the page says the lane's words once, the tool is at rest, and the next box copies as the
+/// golden has it.
+#[cfg(unix)]
+#[test]
+fn a_box_dropped_from_the_lane_leaves_the_tool_working() {
+    use super::persons_lane::{Dropped, parked_then_dropped};
+    for how in [Dropped::AtTheCap, Dropped::AtAQuit] {
+        let disk = Disk::new();
+        let doc = disk.file("snapshot.pdf", &text_and_image());
+        let app = disk.start();
+        app.open(&doc);
+        app.settle();
+        tool_on(&app);
+        parked_then_dropped(&app, how, || let_go_of_a_box(&app));
+        let shown = app.reader().selection_notice.map(|notice| notice.text);
+        assert_eq!(
+            (shown.as_deref(), notice(&app), app.core().tools.tool().busy()),
+            (Some(how.words()), "-".to_string(), false),
+            "{how:?}: said once, by the page, and the tool at rest"
+        );
+        app.core().dismiss_selection_notice();
+        take_box(&app);
+        // The quit's case turned the page first, unsaved, so that the quit asks.
+        let turns = u8::from(matches!(how, Dropped::AtAQuit));
+        assert_eq!(
+            a_box(&app, &doc, turns, false),
+            "\"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image*, public.jpeg] | same",
+            "{how:?}: the next box copies"
+        );
+    }
+}
+
 /// **Failure (found on the way, 2026-11-15): a quit the person stayed after left the snapshot tool quitting for good,** so every later paste of a box's
 /// promised SVG got nothing until the app was started again. With a page turned unsaved and the record unwritable, so the quit asks, and Stay: a box
 /// taken after gives its SVG.
@@ -584,4 +618,43 @@ fn a_paste_after_a_stayed_quit_gets_its_svg() {
     let (_, bytes) = offered(&app).expect("offered");
     let svg = bytes.into_iter().find(|(uti, _)| uti == extract::UTI_SVG).and_then(|(_, svg)| svg);
     assert!(svg.is_some_and(|svg| String::from_utf8_lossy(&svg).contains("<svg")), "the paste gets its SVG");
+}
+
+/// **Failure (the phase's closing read, 2026-11-15): a paste of a promised SVG held while a late keep's saved session was read, then not taken past a
+/// freeze as the restore let it go, was never answered,** so the paste was counted under way for good and every later paste got nothing. Held, frozen,
+/// the restore let in: the paste's no longer under way and gives nothing; unfrozen, a paste of a box taken on the restored session gets its SVG.
+#[test]
+fn a_paste_held_for_a_restore_and_dropped_by_a_freeze_leaves_the_next_paste_working() {
+    use super::late_lock::{a_saved_session, let_the_restore_in, restoring_held};
+    let app = restoring_held(a_saved_session());
+    let tool = app.core().tools.tool();
+    let serial = tool.offer_a_promise_for_a_test(snapshot_tool::Promise {
+        tab: 1,
+        position: 0,
+        rect: BOX,
+        as_seen: extract::AsSeen {
+            quarter_turns: 0,
+            file_page: 0,
+            own: true,
+        },
+    });
+    let pasted = app.act(UiAction::Pasted {
+        serial,
+        uti: extract::UTI_SVG.into(),
+    });
+    assert!(pasted.understood && tool.paste_running(), "the paste's command sent, and held for the restore");
+    app.core().set_frozen(true);
+    let_the_restore_in(&app);
+    assert!(!tool.paste_running(), "answered, though it was never run");
+    assert_eq!(tool.wait_for_paste(), None, "and it gives nothing");
+    app.core().set_frozen(false);
+    tool_on(&app);
+    take_box(&app);
+    let (_, bytes) = offered(&app).expect("offered");
+    let svg = bytes.into_iter().find(|(uti, _)| uti == extract::UTI_SVG).and_then(|(_, svg)| svg);
+    assert!(
+        svg.is_some_and(|svg| String::from_utf8_lossy(&svg).contains("<svg")),
+        "the next paste gets its SVG"
+    );
+    drop(app.quit());
 }

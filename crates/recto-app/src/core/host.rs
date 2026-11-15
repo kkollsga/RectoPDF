@@ -9,6 +9,9 @@ use recto_agent::{Actor, Runs};
 #[cfg(test)]
 mod route_tests;
 
+/// What a command asked past a hand-off's or a quit's freeze is refused with.
+pub(super) const HELD_BACK: &str = "The app is being updated, so this wasn't done.";
+
 /// The session the socket and the app share.
 pub struct AppHost {
     pub engine: Engine,
@@ -94,10 +97,7 @@ impl AppHost {
         // Let go as this returns, however: a command that panicked was counted running for good.
         let _counted = (!asks_only).then(|| Counted::start(self, changes));
         if !asks_only && self.handing_off.load(Ordering::SeqCst) && origin.held_back_by_a_freeze() {
-            return Err(
-                AgentError::new(Code::BUSY, "The app is being updated, so this wasn't done.", recto_agent::exit::BUSY)
-                    .then("Try again in a moment, when it's back."),
-            );
+            return Err(AgentError::new(Code::BUSY, HELD_BACK, recto_agent::exit::BUSY).then("Try again in a moment, when it's back."));
         }
         #[cfg(test)]
         self.core.holds.at(command.tag());

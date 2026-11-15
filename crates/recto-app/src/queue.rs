@@ -302,15 +302,31 @@ impl CoreQueue {
     }
 
     pub fn push(&self, call: CoreCall) {
+        if self.frozen.load(Ordering::SeqCst) && call.is_user_action() {
+            return;
+        }
+        self.queue(call);
+    }
+
+    /// **A person's command, queued unless a hand-off's or a quit's freeze holds it back,** when it's given back for its caller to answer as refused: one
+    /// asked before the freeze whose feature waits for its answer (a paste's SVG held while a late keep's restore was read). Looked at once, so it's either
+    /// queued or given back, never dropped unanswered between two looks.
+    pub fn push_persons(&self, run: Box<PersonCommand>) -> Result<(), Box<PersonCommand>> {
+        if self.frozen.load(Ordering::SeqCst) && run.origin.held_back_by_a_freeze() {
+            return Err(run);
+        }
+        self.queue(CoreCall::Run(run));
+        Ok(())
+    }
+
+    /// A call queued, past the freeze's look: many reasons to look one look, nothing into an abandoned queue, and notes of pages drawn held to the cap.
+    fn queue(&self, call: CoreCall) {
         #[cfg(test)]
         if matches!(call, CoreCall::Reconcile) {
             self.reconciles_asked.fetch_add(1, Ordering::SeqCst);
         }
         // Many reasons to look can wait for one look.
         if matches!(call, CoreCall::Reconcile) && self.reconcile_queued.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        if self.frozen.load(Ordering::SeqCst) && call.is_user_action() {
             return;
         }
         let mut calls = lock(&self.calls);
@@ -378,7 +394,8 @@ impl CoreQueue {
         drop(calls);
         // Outside the lock: a person's turn among them passes as it's dropped, and may start the next, which the abandoned queue then drops.
         drop(taken);
-        self.lane.drop_parked();
+        // A kill is a quit that waits for nothing: what's parked goes as a quit's patience drops it.
+        self.lane.drop_for_quit();
         self.reconcile_queued.store(false, Ordering::SeqCst);
         self.end();
     }

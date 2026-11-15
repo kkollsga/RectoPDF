@@ -674,3 +674,62 @@ fn a_save_with_nothing_to_save_leaves_the_refusal_showing() {
         "the refusal still showing"
     );
 }
+
+/// How a command of the person's parked behind their highlight goes from the lane without running.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Dropped {
+    /// Refused at the cap, set to none parked.
+    AtTheCap,
+    /// Dropped with what's parked as a quit's patience runs out, the record unwritable and a page turned unsaved so the quit asks, and the person then
+    /// stays.
+    AtAQuit,
+}
+
+impl Dropped {
+    /// What the page says of it: the lane's words, once.
+    pub(super) fn words(self) -> &'static str {
+        match self {
+            Self::AtTheCap => crate::core::person_lane::FULL,
+            Self::AtAQuit => crate::core::person_lane::DROPPED_AT_QUIT,
+        }
+    }
+}
+
+/// **A command of the person's parked behind their highlight in the tab showing, then dropped from the lane** as `how` says, and the highlight let go
+/// and landed: `ask` asks for the command, as the window does. For a feature's own test that what it marked busy as it was asked is free again.
+#[cfg(unix)]
+pub(super) fn parked_then_dropped(app: &HeadlessApp, how: Dropped, ask: impl FnOnce()) {
+    if let Dropped::AtAQuit = how {
+        menu(app, "rotate.right");
+        app.settle();
+    }
+    selects(app, (0, 0), (0, 5));
+    let (held, go) = app.hold_next("highlight");
+    menu(app, HIGHLIGHT_ID);
+    held.recv_timeout(WAIT_LIMIT).expect("the highlight held as its pages are read");
+    match how {
+        Dropped::AtTheCap => {
+            app.core().core.lane().set_cap(0);
+            ask();
+            flush(app);
+            assert_eq!(app.core().core.lane().parked(), 0, "refused at the cap");
+        }
+        Dropped::AtAQuit => {
+            record_folder_writable(app, false);
+            ask();
+            flush(app);
+            assert_eq!(app.core().core.lane().parked(), 1, "parked behind the highlight");
+            app.core().quit_requested();
+            app.wait_until("the quit's question, past its patience", || {
+                app.advance(crate::listener::QUIT_PATIENCE_MS);
+                quit_answers(app) == 1
+            });
+            assert_eq!(app.core().core.lane().parked(), 0, "dropped with what was parked");
+            app.stay();
+            record_folder_writable(app, true);
+        }
+    }
+    drop(go);
+    app.settle();
+    app.core().core.lane().set_cap(crate::queue::lane::CAP);
+}

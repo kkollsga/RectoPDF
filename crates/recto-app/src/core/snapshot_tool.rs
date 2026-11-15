@@ -475,6 +475,21 @@ impl Tool {
         lock(&self.paste.state).running
     }
 
+    /// A test's: an offer on the clipboard whose SVG is promised from `promise`, as a box's answer leaves one, under its number.
+    #[cfg(test)]
+    pub(crate) fn offer_a_promise_for_a_test(&self, promise: Promise) -> u64 {
+        let serial = self.serial.fetch_add(1, Ordering::SeqCst) + 1;
+        *lock(&self.offered) = Some(Offered {
+            serial,
+            items: vec![ClipItem::Promised {
+                uti: extract::UTI_SVG,
+                cap: extract::MAX_CLIP_ITEM,
+            }],
+            promise: Some(Box::new(promise)),
+        });
+        serial
+    }
+
     /// **The bytes the system's paste is waiting for,** on the UI thread, where the system asks: the person's command's SVG once it's made, or nothing
     /// once it's refused, or at [`PASTE_PATIENCE_MS`] on the app's clock, when the SVG being made is stopped. Takes no lock but this paste's own, never
     /// the session's.
