@@ -1,13 +1,13 @@
 //! **The key the Find text is sealed with** (owner, 2026-11-15: "Find text is a indexed copy of the pdf text? Lets store it encrypted"). 32 random bytes, held in memory only while a session or the indexer that was handed it lives, overwritten when it goes, never printed, logged, cloned or serialised, and never answered to any command.
 //!
 //! Where it comes from is decided once, by whoever starts a session, and said by [`Source`]:
-//! - **The Keychain**, for a copy of the app signed by the team, and only the app's own process: [`keychain`]. Every call refuses interaction, so nothing ever prompts.
+//! - **The Keychain**, for a copy of the app that is the team's release, checked whole, and only the app's own process: [`keychain`]. Interaction is refused for the whole process before the first call, so nothing prompts.
 //! - **A file in a test state folder**, for quiet runs and tests, which must never touch the person's Keychain: [`FindKey::from_state_file`]. Only a state folder named by `RECTO_STATE_DIR` can get one, by the caller's choice, and the file is the state folder's own.
 //! - **Memory**, for everything else and whenever the Keychain can't be had: a development build, a locked or refusing Keychain, an item this copy can't read. What's sealed with it can't be read by the next run, which removes it and builds again when asked.
 //!
 //! The indexer gets the key from the session on its stdin, as 32 raw bytes before its job: never in its arguments, its environment or a file. [`FindKey::write_to`] and [`FindKey::read_from`] are the two ends.
 //!
-//! **What's overwritten, and what isn't** (as true as Rust lets this be said): the key's own 32 bytes, in one box that's never moved or copied by this code, and a key file's bytes once read, are overwritten when they go (`zeroize`). Not: the copy CoreFoundation makes to add the key to the Keychain or to hand it back, which is its memory to free ([`keychain`]); the bytes in the pipe's kernel buffer until the helper reads them; and, from slice 2, what HKDF and AES derive from it on their own stacks beyond what `aes-gcm`'s `zeroize` covers. A process that can read this one's memory has the key anyway.
+//! **What's overwritten, and what isn't** (as true as Rust lets this be said): the key's own 32 bytes, in one box they're written into in place (from the OS's randomness, the pipe, the Keychain's data or a key file's bytes, never through a copy on the stack) and never moved, and a key file's bytes once read, are overwritten when they go (`zeroize`). Not: the copy CoreFoundation makes to add the key to the Keychain or to hand it back, which is its memory to free ([`keychain`]); the bytes in the pipe's kernel buffer until the helper reads them; and, from slice 2, what HKDF and AES derive from it on their own stacks beyond what `aes-gcm`'s `zeroize` covers. A process that can read this one's memory has the key anyway.
 
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -63,36 +63,64 @@ impl FindKey {
         Ok(Self { bytes, source })
     }
 
-    /// The key kept in a test state folder's own file, made the first time. A file that's there and isn't exactly a key, or isn't private to this user, is refused, never fixed: the caller runs on a key in memory.
+    /// The key kept in a test state folder's own file, made the first time. A file that's there and isn't exactly 32 bytes, or that anyone but this user may read or write (any bit of group or other in its mode), or isn't a plain file of theirs, is refused, never fixed: the caller runs on a key in memory.
+    ///
+    /// A new key is written whole to a name of its own, synced, and only then given the key file's name, in one step that fails if anything's there already (`renamex_np` with `RENAME_EXCL`): so a run reading at the same moment sees no file or the whole key, never part of one, two runs starting at once can't both write (the loser reads the winner's), and a write that fails leaves nothing behind.
     ///
     /// # Errors
     ///
     /// As above, and when the file can't be read or made.
     pub fn from_state_file(path: &Path) -> io::Result<Self> {
-        if let Some(mut stored) = crate::local::read_private_file(path, KEY_BYTES as u64 + 1)? {
-            let read = Self::from_slice(&stored, Source::StateFile);
-            zeroize::Zeroize::zeroize(&mut stored);
-            return read.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not a key"));
+        match crate::local::open_private_file(path) {
+            Ok(file) => return Self::read_key_file(file),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
         let key = Self::fresh(Source::StateFile)?;
-        // Made new, so a link planted at the name is never followed, and two runs starting at once can't both write: the loser reads the winner's.
-        match crate::local::create_private_file(path) {
-            Ok(mut file) => {
-                file.write_all(key.bytes.as_slice())?;
-                file.sync_all()?;
-                Ok(key)
+        let temp = path.with_extension(format!("{}.{:016x}.tmp", std::process::id(), crate::local::random_u64()));
+        let written = crate::local::create_private_file(&temp).and_then(|mut file| {
+            file.write_all(key.bytes.as_slice())?;
+            file.sync_all()
+        });
+        let placed = written.and_then(|()| rename_if_absent(&temp, path));
+        match placed {
+            Ok(()) => Ok(key),
+            Err(error) => {
+                let _ = std::fs::remove_file(&temp);
+                if error.kind() == io::ErrorKind::AlreadyExists {
+                    return Self::from_state_file(path);
+                }
+                Err(error)
             }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Self::from_state_file(path),
-            Err(error) => Err(error),
         }
     }
 
-    fn from_slice(bytes: &[u8], source: Source) -> Option<Self> {
-        let bytes: &[u8; KEY_BYTES] = bytes.try_into().ok()?;
-        Some(Self {
-            bytes: Box::new(*bytes),
+    fn read_key_file(file: std::fs::File) -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if file.metadata()?.permissions().mode() & 0o077 != 0 {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "a key others may read or write"));
+            }
+        }
+        let mut stored = Vec::with_capacity(KEY_BYTES + 1);
+        file.take(KEY_BYTES as u64 + 1).read_to_end(&mut stored)?;
+        let read = Self::from_slice(&stored, Source::StateFile);
+        zeroize::Zeroize::zeroize(&mut stored);
+        read.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not a key"))
+    }
+
+    /// Exactly 32 bytes, copied straight into the key's own box.
+    pub(crate) fn from_slice(bytes: &[u8], source: Source) -> Option<Self> {
+        if bytes.len() != KEY_BYTES {
+            return None;
+        }
+        let mut key = Self {
+            bytes: Box::new([0u8; KEY_BYTES]),
             source,
-        })
+        };
+        key.bytes.copy_from_slice(bytes);
+        Some(key)
     }
 
     /// What's sealed with this. Only the sealing code asks.
@@ -137,9 +165,9 @@ impl FindKey {
     }
 }
 
-/// **The app's own key, and why it isn't the Keychain's when it isn't.** The Keychain is asked only by a copy signed by `team`; any refusal, and every other copy, gets a key in memory, with the refusal's code. `None` only when the OS gives no randomness, and then nothing is indexed. The one caller is the app's session, on the indexer's thread: never the UI thread, `recto`, a helper, or a test state folder.
+/// **The app's own key, and why it isn't the Keychain's when it isn't.** The Keychain is asked only by a copy that is `team`'s release, checked whole ([`keychain`]); any refusal, and every other copy, gets a key in memory, with the refusal's code. `None` only when the OS gives no randomness, and then nothing is indexed. The only way to the Keychain from outside this crate. Its one caller is `recto_control::find_keys::AppKey`, made only by the app's start; the indexer takes it on no main thread.
 pub fn load_for_the_app(team: &str) -> Option<(FindKey, Option<&'static str>)> {
-    let refused = if keychain::signed_by_team(team) {
+    let refused = if keychain::signed_as_a_release(team) {
         match keychain::load_or_create(keychain::SERVICE, keychain::ACCOUNT) {
             Ok(key) => return Some((key, None)),
             Err(refused) => refused.code(),
@@ -168,7 +196,7 @@ pub fn read_from_stdin() -> io::Result<FindKey> {
     FindKey::read_from(&mut io::stdin())
 }
 
-/// For a process that holds the key or pages' text: a crash leaves no image of its memory. macOS writes none unless the limit's raised, and this lowers it for good whatever the shell set. A crash report still carries registers and the stack's addresses, not memory.
+/// For a process that holds the key or pages' text: a crash leaves no image of its memory. No caller yet: the indexer calls it once the Find text is sealed (slice 2). macOS writes none unless the limit's raised, and this lowers it for good whatever the shell set. A crash report still carries registers and the stack's addresses, not memory.
 pub fn forbid_core_dumps() {
     #[cfg(target_os = "macos")]
     {
@@ -190,9 +218,31 @@ impl std::fmt::Debug for FindKey {
     }
 }
 
+/// Gives `temp` the name `to`, in one step that fails with `AlreadyExists` if anything's at `to`.
+#[cfg(target_os = "macos")]
+fn rename_if_absent(temp: &Path, to: &Path) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let (from, to) = (
+        std::ffi::CString::new(temp.as_os_str().as_bytes())?,
+        std::ffi::CString::new(to.as_os_str().as_bytes())?,
+    );
+    // SAFETY: two NUL-terminated paths, valid for the call.
+    if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn rename_if_absent(temp: &Path, to: &Path) -> io::Result<()> {
+    std::fs::hard_link(temp, to)?;
+    std::fs::remove_file(temp)
+}
+
 #[cfg_attr(target_os = "macos", path = "find_key_mac.rs")]
 #[cfg_attr(not(target_os = "macos"), path = "find_key_stub.rs")]
-pub mod keychain;
+mod keychain;
 
 #[cfg(test)]
 mod tests {
@@ -215,7 +265,7 @@ mod tests {
         assert!(FindKey::read_from(&mut &[1u8; 31][..]).is_err(), "a short key was taken");
     }
 
-    /// Failure: a test state folder's key changes from one run to the next, so every quiet run's corpus is unreadable to the next; or a file that isn't a key, or anyone else's, is used.
+    /// Failure: a test state folder's key changes from one run to the next, so every quiet run's corpus is unreadable to the next; or a file that isn't exactly a key, or that anyone else may read or write, is used; or making the key leaves a half-written file a racer could read, or a temp file behind.
     #[test]
     #[cfg(unix)]
     fn a_state_folders_key_lasts_and_a_wrong_file_is_refused() {
@@ -231,13 +281,55 @@ mod tests {
         assert_eq!(first.source(), Source::StateFile);
         assert_eq!(FindKey::from_state_file(&path).unwrap().bytes(), first.bytes());
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(FindKey::from_state_file(&path).is_ok(), "readable by others is still this user's own file");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
-        assert!(FindKey::from_state_file(&path).is_err(), "a key anyone can write was used");
-        std::fs::remove_file(&path).unwrap();
-        crate::local::write_private_file(&path, &[7; 31]).unwrap();
-        assert!(FindKey::from_state_file(&path).is_err(), "31 bytes were taken for a key");
+        let names: Vec<_> = std::fs::read_dir(&temp).unwrap().flatten().map(|entry| entry.file_name()).collect();
+        assert_eq!(names, [std::ffi::OsString::from("find.key")], "a temp file was left beside the key");
+        for mode in [0o640, 0o604, 0o620, 0o666] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert!(FindKey::from_state_file(&path).is_err(), "a key of mode {mode:o} was used");
+        }
+        for length in [31, 33, 64] {
+            std::fs::remove_file(&path).unwrap();
+            crate::local::write_private_file(&path, &vec![7; length]).unwrap();
+            assert!(FindKey::from_state_file(&path).is_err(), "{length} bytes were taken for a key");
+        }
         let _ = std::fs::remove_dir_all(&temp);
+    }
+}
+
+/// **What a built program holds of the Keychain**, for the tests that hold `recto` and every helper to having none: the framework's path this module opens it by (the code that reaches the Keychain at all), a load command for Security.framework (`otool -L`), and an import of any `_Sec…` function (`nm -u`). Each finding is said in words; none is nothing. Fails outright if the program or a tool to look at it is missing, so a check can't pass by looking at nothing.
+#[cfg(any(test, feature = "test-seams"))]
+pub mod audit {
+    use std::path::Path;
+
+    fn tool(program: &str, args: &[&str], on: &Path) -> String {
+        let out = std::process::Command::new(program)
+            .args(args)
+            .arg(on)
+            .output()
+            .unwrap_or_else(|error| panic!("{program} can't be run: {error}"));
+        assert!(out.status.success(), "{program} {}: {}", on.display(), String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// Everything in `program` that reaches the Keychain, said in words.
+    #[must_use]
+    pub fn keychain_code_in(program: &Path) -> Vec<String> {
+        let bytes = std::fs::read(program).unwrap_or_else(|error| panic!("{}: {error}", program.display()));
+        let mut found = Vec::new();
+        let path = b"Security.framework/Security";
+        if bytes.windows(path.len()).any(|window| window == path) {
+            found.push("names Security.framework's path, as the Keychain's code opens it".to_string());
+        }
+        for line in tool("/usr/bin/otool", &["-L"], program).lines().skip(1) {
+            if line.contains("Security.framework") {
+                found.push(format!("links {}", line.trim()));
+            }
+        }
+        for line in tool("/usr/bin/nm", &["-u"], program).lines() {
+            if line.trim().starts_with("_Sec") {
+                found.push(format!("imports {}", line.trim()));
+            }
+        }
+        found
     }
 }
