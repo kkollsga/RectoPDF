@@ -588,3 +588,40 @@ fn clearing_history_between_a_follows_steps_leaves_the_turn_on_its_page() {
     assert_eq!(bed.turned(), vec![9], "current {current}: the turn on \"Mine page 9\", page 10 now");
     assert_eq!(bed.notice(), Some("edits_followed"));
 }
+
+/// Failure (second review of `build/shorter-file-pages`): between a look hearing the file changed and the read of the new version, a tab whose edits
+/// may still follow said the held words ("…Discard the edits…"): the tab showing for as long as the read takes, and a tab behind until it's tapped,
+/// in its sidebar row and an agent's `tabs`. Heard and not read, it's being looked at, shown or behind; one that can never follow (protected, past its
+/// cap of named pages) says the held words at once.
+#[test]
+fn heard_and_not_yet_read_a_tab_that_may_follow_is_being_looked_at() {
+    let looking = "This file changed on disk. Looking at whether your unsaved edits fit the new version.";
+    let heard = |bed: &mut Bed| {
+        replace_file(&bed.path, &document("Mine", &(1..=10).collect::<Vec<_>>(), true));
+        let look = record::look_at_file(&bed.path, bed.s.tabs().own_stamp(bed.a));
+        assert!(bed.s.apply_file_status(bed.a, look), "heard");
+    };
+    let said = |bed: &Bed| bed.s.notices().said(bed.a).unwrap().message;
+    // The tab showing, and a tab behind.
+    for behind in [false, true] {
+        let mut bed = Bed::turned_page_9();
+        if behind {
+            bed.s.tap(bed.b).unwrap();
+        }
+        heard(&mut bed);
+        assert_eq!(said(&bed), looking, "behind {behind}: heard, not read");
+    }
+    // Protected: never followed.
+    let mut bed = Bed::turned_page_9();
+    bed.s.tabs.note_password_used(bed.a);
+    heard(&mut bed);
+    assert_eq!(said(&bed), FileNotice::Changed.message(true), "protected: the held words at once");
+    // Past its cap of named pages: never followed.
+    crate::edit::identity::tests::CAP.with(|cap| cap.set(Some(4)));
+    let mut bed = Bed::turned_page_9();
+    bed.s.edit_pages(bed.a, |e| e.rotate(2, 1, 1)).unwrap();
+    bed.identify();
+    crate::edit::identity::tests::CAP.with(|cap| cap.set(None));
+    heard(&mut bed);
+    assert_eq!(said(&bed), FileNotice::Changed.message(true), "past its cap: the held words at once");
+}
