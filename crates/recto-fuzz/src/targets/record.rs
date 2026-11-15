@@ -223,6 +223,169 @@ fn use_a_store(record_bytes: &[u8], journal_bytes: &[u8], log_bytes: &[u8]) {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// **Two journals of one tab, their headers from the input** (slice 2's crash rule, `record_store::followed`, review M2): the second journal's tab id, path,
+/// version (none, the record's, the file as it is now, or a third), where it started again from a whole list (up or down from the first's steps) and
+/// its own steps; the file replaced by another program or not; and the record saying it changed or not. What must hold: a journal with unsaved edits
+/// never leaves the folder (it's a tab's list, or set aside under its `.not-merged` name), and one set aside with edits not all in the list kept
+/// (by sequence) that isn't the old list a follow superseded leaves its notice on the tab, which is never written into the record.
+fn use_a_linked_pair(data: &[u8]) {
+    use recto_platform::FileStamp;
+    use recto_session::record::{AuthorName, JournalHeader, JournalOp};
+    let byte = |at: usize| data.get(at).copied().unwrap_or(0);
+    let root = folder();
+    let Ok(paths) = StatePaths::overridden(&root) else { return };
+    if paths.prepare().is_err() {
+        return;
+    }
+    let folder = root.join("session").join("journals");
+    let _ = local::ensure_private_dir(&root.join("session"));
+    let _ = local::ensure_private_dir(&folder);
+    let file = root.join("doc.pdf");
+    if std::fs::write(&file, b"the version the edits were made on").is_err() {
+        return;
+    }
+    let Ok(first) = recto_platform::file_stamp(&file) else { return };
+    let now = if byte(0) & 1 == 1 {
+        let new = file.with_extension("new");
+        let _ = std::fs::write(&new, b"another program's version, longer than the first");
+        let _ = std::fs::rename(&new, &file);
+        recto_platform::file_stamp(&file).unwrap_or(first)
+    } else {
+        first
+    };
+    let third = FileStamp {
+        size: first.size.wrapping_add(7),
+        ..first
+    };
+    let turn = JournalOp::Rotate(0, 1, 1, AuthorName::Owner);
+    // (tab, path, version, where it started again, the whole list's turns then, the turns after)
+    type Shape = (u32, PathBuf, Option<FileStamp>, u64, usize, usize);
+    let journal = |(tab, path, stamp, base_seq, base_turns, turns): &Shape| -> Vec<u8> {
+        let header = JournalHeader::new(*tab, path, *stamp, 12, *base_seq);
+        let base = (*base_turns > 0)
+            .then(|| PageEdits::replay(12, None, &vec![turn.clone(); *base_turns]).ok().map(|(list, _)| list.to_record()))
+            .flatten();
+        let mut bytes = record::journal_start(&header, base.as_ref());
+        bytes.extend_from_slice(&record::journal_lines(&vec![turn.clone(); *turns]));
+        bytes
+    };
+    let own: Shape = (1, file.clone(), Some(first), u64::from(byte(1) % 4), usize::from(byte(2) % 3), usize::from(byte(3) % 3));
+    let other: Shape = (
+        if byte(4) & 1 == 0 { 1 } else { 2 },
+        if byte(4) & 2 == 0 { file.clone() } else { root.join("other.pdf") },
+        match byte(5) % 4 {
+            0 => None,
+            1 => Some(first),
+            2 => Some(now),
+            _ => Some(third),
+        },
+        u64::from(byte(6) % 6),
+        usize::from(byte(7) % 3),
+        usize::from(byte(8) % 3),
+    );
+    let own_name = record::journal_file_name(Some(first), &file, None);
+    let other_name = record::journal_file_name(other.2, &other.1, Some(2));
+    let store = RecordStore::open(&paths, Flavor::App);
+    let mut tab = record::TabEntry {
+        id: 1,
+        path: record::PathField::from_path(&file),
+        file: Some(first.into()),
+        page: 0,
+        page_count: 12,
+        place: None,
+        view_rotation: 0,
+        toc_open: true,
+        layout: Default::default(),
+        renderer_only: false,
+        selection: None,
+        notice: None,
+        journal: Some(own_name.clone()),
+        edits: None,
+        generated_contents: false,
+        contents_folds: Vec::new(),
+        back: Vec::new(),
+        forward: Vec::new(),
+        password: false,
+    };
+    if byte(9) & 1 == 1 {
+        tab.notice = Some(record::FileNotice::Changed);
+    }
+    let main = recto_session::record::SessionRecord {
+        app: record::AppRecord::default(),
+        view: record::ViewRecord::default(),
+        find: record::FindRecord::default(),
+        edit_mode: false,
+        active: Some(1),
+        next_id: 3,
+        tabs: vec![tab],
+        comparison: None,
+        recent: Vec::new(),
+        withheld_places: record::WithheldPlaces::default(),
+    };
+    if store.write_record(&main, &PlaceDelta::default(), false).is_err() {
+        return;
+    }
+    for (name, shape) in [(&own_name, &own), (&other_name, &other)] {
+        let _ = local::write_private_file(&folder.join(name), &journal(shape));
+    }
+    drop(store);
+    let Loaded::Restored(restored) = RecordStore::open(&paths, Flavor::App).load() else {
+        let _ = std::fs::remove_dir_all(&root);
+        return;
+    };
+    // Each journal's steps and edits, as written.
+    let steps = |shape: &Shape| -> (u64, bool) {
+        let base = (shape.4 > 0)
+            .then(|| PageEdits::replay(12, None, &vec![turn.clone(); shape.4]).ok().map(|(list, _)| list.to_record()))
+            .flatten();
+        let edited = PageEdits::replay(12, base.as_ref(), &vec![turn.clone(); shape.5]).is_ok_and(|(list, _)| list.is_edited());
+        (shape.3 + shape.5 as u64, edited)
+    };
+    let is_now = |stamp: Option<FileStamp>| stamp.is_some_and(|stamp| stamp.same_contents(now) && stamp.inode == now.inode);
+    let set_aside = |name: &str| folder.join(name).with_extension("not-merged").exists();
+    for (name, shape) in [(&own_name, &own), (&other_name, &other)] {
+        let (seq, edited) = steps(shape);
+        if !edited {
+            continue;
+        }
+        assert!(
+            restored.journals.contains_key(name.as_str()) || set_aside(name),
+            "a journal with unsaved edits is a tab's or set aside: {name}"
+        );
+        if restored.journals.contains_key(name.as_str()) {
+            continue;
+        }
+        // Set aside: the list kept for tab 1 says so, unless every step of this is in it, or it's the old list a follow superseded.
+        let kept = restored.record.tabs.iter().find(|tab| tab.id == 1).and_then(|tab| tab.journal.clone());
+        let Some((kept_name, list)) = kept.as_ref().and_then(|kept| Some((kept, restored.journals.get(kept)?))) else {
+            continue;
+        };
+        let kept_shape = if kept_name == &own_name { &own } else { &other };
+        let all_in = shape.2.is_some() && shape.2 == kept_shape.2 && seq <= kept_shape.3;
+        let superseded = is_now(kept_shape.2) && !is_now(shape.2) && kept_shape.3 >= seq;
+        assert!(
+            list.set_aside_beside || all_in || superseded,
+            "a list with edits set aside unsaid: {name} beside {kept_name}"
+        );
+    }
+    let mut session = Session::new(NamedLoader);
+    let said: Vec<bool> = restored.journals.values().map(|list| list.set_aside_beside).collect();
+    if session.restore(&restored.record, restored.journals).is_ok() {
+        let written = serde_json::to_string(&session.to_record()).unwrap_or_default();
+        assert!(!written.contains("edits_set_aside_after_quit"), "never in the record");
+        if said.iter().any(|said| *said) {
+            assert!(
+                session
+                    .tabs()
+                    .iter()
+                    .any(|tab| session.tabs().tab_notice(tab.id).is_some_and(|notice| notice.code() == "edits_set_aside_after_quit")),
+                "the notice is on its tab"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// One input as a main record, a journal and a log, as it is and with what checks it made good.
 pub fn check(data: &[u8]) {
     within("record", BUDGET, || {
@@ -244,5 +407,6 @@ pub fn check(data: &[u8]) {
         use_a_log(&log);
         use_a_store(&record::seal(MAIN_KIND, 1, data), &journal, &log);
         use_a_store(data, data, data);
+        use_a_linked_pair(data);
     });
 }
