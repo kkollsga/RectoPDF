@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 
 pub mod identity;
 pub mod marks;
+pub mod matcher;
+pub mod rebase;
 
 /// Most pages one edited document may have.
 pub const MAX_PAGES: usize = 200_000;

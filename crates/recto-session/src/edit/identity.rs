@@ -62,6 +62,16 @@ pub struct Identities {
     over_cap: bool,
     /// The file's `/ID` pair, as read with the pages, if it has one.
     document: Option<recto_core::page_id::DocumentIds>,
+    /// The file was found to be another version, this one, and the edits may follow their pages into it ([`crate::version_change`]); `tried` once
+    /// that's been tried and they were held, so it isn't tried again for this version. Not kept: a restart finds the version again when it reads it.
+    follow: Option<Follow>,
+}
+
+/// A version of the file the edits may follow their pages into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Follow {
+    pub to: recto_platform::FileStamp,
+    pub tried: bool,
 }
 
 impl std::fmt::Debug for Identities {
@@ -88,6 +98,11 @@ impl Identities {
 
     pub fn document(&self) -> Option<recto_core::page_id::DocumentIds> {
         self.document
+    }
+
+    /// The version the edits may follow their pages into, if one's been found.
+    pub fn follow(&self) -> Option<Follow> {
+        self.follow
     }
 
     /// What's known of one page, if it was named and has been read.
@@ -252,6 +267,59 @@ pub fn give_up(edits: &mut PageEdits) {
     }
 }
 
+/// **The file was found to be another version, `to`:** the edits may follow their pages into it, once, unless they've been tried against it already.
+/// Says whether that's new. A list that names no page has nothing to follow by, and is held as it is.
+pub(crate) fn may_follow(edits: &mut PageEdits, to: recto_platform::FileStamp) -> bool {
+    let Some(ids) = edits.identities.as_deref_mut() else { return false };
+    if ids.follow.is_some_and(|follow| follow.to == to) {
+        return false;
+    }
+    ids.follow = Some(Follow { to, tried: false });
+    true
+}
+
+/// What's wanted of the list: whether it may follow its pages into a version not yet tried. A look at its own field, for the session thread after
+/// every call (no tab looked up).
+pub fn follow_wanted(edits: &PageEdits) -> Option<recto_platform::FileStamp> {
+    edits.identities.as_deref()?.follow.filter(|follow| !follow.tried).map(|follow| follow.to)
+}
+
+/// Following was tried against `to` and the edits were held (or it no longer applies): not tried again for it.
+pub(crate) fn follow_tried(edits: &mut PageEdits, to: Option<recto_platform::FileStamp>) {
+    if let Some(ids) = edits.identities.as_deref_mut() {
+        match to {
+            Some(to) if ids.follow.is_some_and(|follow| follow.to == to) => ids.follow = Some(Follow { to, tried: true }),
+            Some(_) => {}
+            None => ids.follow = None,
+        }
+    }
+}
+
+/// **The list is on another version of the file now** ([`super::rebase`]): what's named is these pages of it, each with what it is there, and the
+/// pages beside them, to be read. What couldn't be named before still can't.
+pub(super) fn onto(edits: &mut PageEdits, pages: Vec<(u32, Known)>) {
+    let over_cap = edits.identities.as_deref().is_some_and(|ids| ids.over_cap);
+    let file_pages = edits.file_pages();
+    let mut ids = Identities {
+        over_cap,
+        ..Identities::default()
+    };
+    ids.name(
+        pages
+            .iter()
+            .flat_map(|(page, _)| [page.checked_sub(1), Some(*page), page.checked_add(1)])
+            .flatten()
+            .filter(|page| *page < file_pages)
+            .collect(),
+    );
+    for (page, known) in pages {
+        if let Ok(at) = ids.pages.binary_search_by_key(&page, |(at, _)| *at) {
+            ids.pages[at].1 = Some(known);
+        }
+    }
+    edits.identities = (!ids.pages.is_empty() || ids.over_cap).then(|| Box::new(ids));
+}
+
 /// A journal's line of what was read, replayed: what isn't named, or doesn't read as an identity, is left out, so a hostile journal can do no more than
 /// leave pages unread.
 pub(super) fn replayed(edits: &mut PageEdits, record: &IdentifiedRecord) {
@@ -303,6 +371,7 @@ pub(super) fn from_record(record: Option<&IdentitiesRecord>, file_pages: u32) ->
         pages: record.pages.iter().map(|page| (page.0, page.known())).collect(),
         over_cap: record.over_cap,
         document: record.document.as_ref().and_then(DocumentRecord::ids),
+        follow: None,
     }))
 }
 
