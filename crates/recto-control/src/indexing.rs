@@ -749,6 +749,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp);
     }
 
+    /// Failure: saying where the Find key stands, as `qa state` and `index status` do on every read, takes the key, so a look at state reaches the Keychain, or does it on whatever thread asked, the UI's included. It's said from the plan alone until something that may wait has taken it.
+    #[test]
+    fn the_key_is_said_without_being_taken() {
+        fn never(_team: &'static str) -> Option<(FindKey, Option<&'static str>)> {
+            panic!("saying where the key stands took it")
+        }
+        let indexer = Indexer::with_limits(
+            Path::new("/nowhere"),
+            Box::new(Fails),
+            BuildLimits::default(),
+            Plan::AppKeychain(crate::find_keys::AppKey::standing_in(never)),
+        );
+        assert_eq!(indexer.find_key_report(), json!({ "plan": "keychain", "source": null, "why": null }));
+        assert_eq!(Indexing::find_key_report(&indexer), indexer.find_key_report(), "index status says the same");
+        let memory = Indexer::with_runner(Path::new("/nowhere"), Box::new(Fails));
+        assert!(memory.find_key().is_some());
+        assert_eq!(
+            memory.find_key_report(),
+            json!({ "plan": "memory", "source": "memory", "why": null }),
+            "once taken, where it came from"
+        );
+    }
+
     /// Failure: `stop` finds a build still queued and starts it after the session has gone, or asking afterwards starts one.
     #[test]
     fn nothing_starts_after_shut_down() {

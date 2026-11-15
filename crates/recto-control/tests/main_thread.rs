@@ -9,6 +9,6 @@ fn the_main_thread_never_reaches_the_keys_loader() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),
-        "main=true main_got=false main_reached=false other_got=true other_reached=true"
+        "main=true main_got=false main_took=null other_got=true other_took=\"memory\""
     );
 }

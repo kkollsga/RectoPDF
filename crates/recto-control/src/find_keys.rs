@@ -8,8 +8,43 @@ use recto_platform::find_key::FindKey;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-/// How the app takes its key: `recto_platform::find_key::load_for_the_app` with the team, passed in by the app's own start and by nothing else.
-pub type AppKey = fn() -> Option<(FindKey, Option<&'static str>)>;
+/// A way to the key for a team: the key, and why it's in memory if it is.
+pub type Loader = fn(&'static str) -> Option<(FindKey, Option<&'static str>)>;
+
+/// **How the app takes its key:** `recto_platform::find_key::load_for_the_app` with the team. Made only by [`AppKey::for_the_app`], which the app's start alone calls; its field is private, so nothing else can make one, and a test holds the source to those two places.
+#[derive(Clone, Copy)]
+pub struct AppKey {
+    load: Loader,
+    team: &'static str,
+}
+
+impl AppKey {
+    /// The app's key, from the Keychain if this copy is `team`'s release, checked whole. Called by `recto-app`'s start and nowhere else.
+    #[must_use]
+    pub fn for_the_app(team: &'static str) -> Self {
+        Self {
+            load: recto_platform::find_key::load_for_the_app,
+            team,
+        }
+    }
+
+    /// One that stands in for the Keychain, for a test of what's around it.
+    #[cfg(any(test, feature = "test-seams"))]
+    #[must_use]
+    pub fn standing_in(load: Loader) -> Self {
+        Self { load, team: "test" }
+    }
+
+    fn load(self) -> Option<(FindKey, Option<&'static str>)> {
+        (self.load)(self.team)
+    }
+}
+
+impl std::fmt::Debug for AppKey {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.write_str("AppKey")
+    }
+}
 
 /// Who's hosting the session.
 #[derive(Clone, Copy, Debug)]
@@ -73,7 +108,7 @@ pub fn report(plan: &Plan, loaded: Option<&Loaded>) -> Value {
     })
 }
 
-/// Takes the key the plan says. Blocks for one Keychain call at most, so never on the UI thread.
+/// Takes the key the plan says. Can block for a check of this copy's whole signature and up to three Keychain calls, so never on the UI thread: the indexer takes it on no main thread.
 pub fn load(plan: &Plan) -> Loaded {
     match plan {
         Plan::StateFile(path) => match FindKey::from_state_file(path) {
@@ -83,7 +118,7 @@ pub fn load(plan: &Plan) -> Loaded {
                 why: Some("state_file_unreadable"),
             },
         },
-        Plan::AppKeychain(load) => match load() {
+        Plan::AppKeychain(app) => match app.load() {
             Some((key, why)) => Loaded { key: Some(key), why },
             None => Loaded {
                 key: None,
@@ -107,10 +142,10 @@ mod tests {
     fn only_the_apps_real_run_asks_the_keychain() {
         let temp = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-find-keys-");
         let quiet = StatePaths::overridden(&temp).unwrap();
-        fn never() -> Option<(FindKey, Option<&'static str>)> {
+        fn never(_team: &'static str) -> Option<(FindKey, Option<&'static str>)> {
             panic!("a test reached the app's Keychain loader")
         }
-        let app = Host::App(never);
+        let app = Host::App(AppKey::standing_in(never));
         let in_file = |plan: Plan| matches!(plan, Plan::StateFile(path) if path == quiet.root.join("find.key"));
         assert!(in_file(plan(&quiet, app)) && in_file(plan(&quiet, Host::Cli)));
         let real = StatePaths::users_own().unwrap();
@@ -134,12 +169,12 @@ mod tests {
         );
     }
 
-    /// Failure: the Keychain code is reached from somewhere other than this one plan, so a helper, `recto` or a test could ask it. The source is held to one caller.
+    /// Failure: the way to the Keychain is reached, named, aliased or wrapped anywhere but its two places: `recto_platform::find_key::load_for_the_app`, named only in `AppKey::for_the_app`, and that, named only by the app's start. So a helper, `recto` or a test could ask the Keychain however the plan reads. Every mention of either name counts, outside comments and this test, and each file's count is held.
     #[test]
-    fn the_keychain_has_one_caller() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let mut callers = Vec::new();
-        let mut stack = vec![root.to_path_buf()];
+    fn the_keychain_has_one_way_in() {
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let mut found = std::collections::BTreeMap::new();
+        let mut stack = vec![crates.to_path_buf()];
         while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir).unwrap().flatten() {
                 let path = entry.path();
@@ -147,31 +182,39 @@ mod tests {
                     if !path.ends_with("target") {
                         stack.push(path);
                     }
-                } else if path.extension().is_some_and(|ext| ext == "rs") {
-                    let text = std::fs::read_to_string(&path).unwrap_or_default();
-                    for (number, line) in text.lines().enumerate() {
-                        if (line.contains("load_for_the_app(") || line.contains("keychain::load_or_create("))
-                            && !line.trim_start().starts_with("//")
-                            && !line.contains("pub fn ")
-                        {
-                            callers.push(format!("{}:{}", path.strip_prefix(root).unwrap().display(), number + 1));
-                        }
-                    }
+                    continue;
+                }
+                if path.extension().is_none_or(|ext| ext != "rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                // This test's own words, and the tests below it, aren't a way in.
+                let text = if path.ends_with("recto-control/src/find_keys.rs") {
+                    text.split("#[cfg(test)]\nmod tests").next().unwrap_or_default().to_string()
+                } else {
+                    text
+                };
+                let mentions: usize = text
+                    .lines()
+                    .filter(|line| !line.trim_start().starts_with("//"))
+                    .map(|line| line.matches("load_for_the_app").count() + line.matches("for_the_app(").count())
+                    .sum();
+                if mentions > 0 {
+                    found.insert(path.strip_prefix(crates).unwrap().display().to_string(), mentions);
                 }
             }
         }
-        // By file: the app's own start, `load_for_the_app` for the Keychain, and this test's own words.
-        let mut files: Vec<String> = callers.iter().map(|at| at.rsplit_once(':').unwrap().0.to_string()).collect();
-        files.sort();
-        files.dedup();
-        assert_eq!(
-            files,
-            [
-                "recto-app/src/core/start.rs",
-                "recto-control/src/find_keys.rs",
-                "recto-platform/src/find_key.rs"
-            ],
-            "the Keychain is reached from somewhere new: {callers:?}"
-        );
+        let expected: std::collections::BTreeMap<String, usize> = [
+            // `AppKey::for_the_app(` called once.
+            ("recto-app/src/core/start.rs", 1),
+            // `pub fn for_the_app(` and the one `load_for_the_app` in it.
+            ("recto-control/src/find_keys.rs", 2),
+            // `pub fn load_for_the_app(`, which names both.
+            ("recto-platform/src/find_key.rs", 2),
+        ]
+        .into_iter()
+        .map(|(file, count)| (file.to_string(), count))
+        .collect();
+        assert_eq!(found, expected, "the way to the Keychain is named somewhere new");
     }
 }

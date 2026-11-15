@@ -47,6 +47,13 @@ jobs:
         run: |
           xcrun notarytool history --keychain-profile recto-notary --keychain "$PREFLIGHT_KEYCHAIN" --output-format json >/dev/null
           echo "notarytool: the key, its ID and the issuer are accepted"
+      # The Find key's Keychain item on the team's real signature (docs/PLAN.md, the Find text's encryption), last, so a probe that fails
+      # hides none of the checks above. In a keychain of the probe's own, made the default for its run and put back: a later team build
+      # reads what an earlier one made, an ad hoc build and a team build of another identifier are refused, a locked keychain is too, and
+      # nothing waits on a prompt with the app's guard; the other guards and planted items are reported. Prints codes and times, uploads
+      # nothing.
+      - name: The Find key's Keychain item, on the team's signature
+        run: tools/release/keychain-probe.sh "$PREFLIGHT_IDENTITY"
       - name: Remove the keychain and anything of a secret
         if: always()
         run: |

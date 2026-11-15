@@ -106,12 +106,15 @@ pub(super) fn print_files_left() -> Vec<String> {
             entries
                 .flatten()
                 .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .filter(|name| {
-                    name.starts_with(&format!("recto-print-{pid}-")) || name.starts_with(&format!(".recto-{pid}-")) || name.starts_with(".recto-unnamed-")
-                })
+                .filter(|name| is_print_file_of(name, pid))
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Whether a name in the temp folder is one of process `pid`'s print files.
+fn is_print_file_of(name: &str, pid: u32) -> bool {
+    name.starts_with(&format!("recto-print-{pid}-")) || name.starts_with(&format!(".recto-{pid}-")) || name.starts_with(&format!(".recto-unnamed-{pid}-"))
 }
 
 /// **The files with no name this process holds a descriptor of,** by inode, with each one's permissions, sorted: where the person's print's file is while
@@ -665,4 +668,20 @@ fn a_print_dropped_from_the_lane_leaves_printing_free() {
         app.settle();
         assert_ne!(printed(&app), "none", "{how:?}: the next print prints");
     }
+}
+
+/// Failure: another process's print (a test running beside this one, another run on this Mac) has its unnamed file in the shared temp folder for its
+/// moment, and this process's check counts it as a leftover of its own: a test failing for what another process did (the full check of
+/// `build/find-key`, 2026-11-15: `closing_the_tab_mid_print_lets_the_key_go` saw `.recto-unnamed-e3775755aa70bd88`, which no process here left). Only
+/// this process's own count.
+#[test]
+fn another_processs_print_file_isnt_counted_as_this_ones() {
+    // By name alone, with no file made: a file in the shared temp folder would be seen by the tests beside this one under plain `cargo test`, which runs them as threads of one process.
+    let pid = std::process::id();
+    let other = format!(".recto-unnamed-{}-{:016x}", pid.wrapping_add(1), recto_platform::local::random_u64());
+    assert!(!is_print_file_of(&other, pid), "another process's print file counted as this one's");
+    assert!(
+        is_print_file_of(&format!(".recto-unnamed-{pid}-{:016x}", recto_platform::local::random_u64()), pid),
+        "this process's own print file wasn't seen"
+    );
 }
