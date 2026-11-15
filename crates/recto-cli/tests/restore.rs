@@ -916,7 +916,13 @@ fn a_new_version_of_a_file_has_none_of_the_old_ones_sleep_files() {
     run.ok(&["tap", &on_tab]);
     run.settled();
     let written = folder.join("written.pdf");
-    std::fs::write(&written, pages(&[page_of_size(GREEN, 400.0, 500.0), page_of_size(GREEN, 400.0, 500.0)])).unwrap();
+    // The pages as shown, and a version a worker tells from the one before: these files have no ID, so it goes by their length, and the same pages of
+    // another colour are as long (`version_of`).
+    let saved_page = || Page {
+        content: format!("{GREEN} rg 0 0 612 792 re f % as saved").into_bytes(),
+        ..page_of_size(GREEN, 400.0, 500.0)
+    };
+    std::fs::write(&written, pages(&[saved_page(), saved_page()])).unwrap();
     run.ok(&["qa", "save-from", written.to_str().unwrap()]);
     run.settled();
     run.ok(&["tap", &other_tab]);
