@@ -48,7 +48,7 @@ pub(super) fn reading_line(layout: &PageLayout, y: f64, height: f64, page: u32) 
     let count = layout.count();
     let document = layout.document_height();
     if count == 0 || !y.is_finite() || !height.is_finite() || height <= 0.0 || height > document {
-        return layout.anchor_for(y, page);
+        return anchor_as_the_host_has_it(layout, y, page);
     }
     let end = document + layout.end_room().1 - height;
     let start = (end - height).max(0.0);
@@ -57,13 +57,24 @@ pub(super) fn reading_line(layout: &PageLayout, y: f64, height: f64, page: u32) 
         return (count - 1, 1.0);
     }
     let last = layout.rect(count - 1);
-    layout.anchor_for(y + along * (last.y + last.height - end).max(0.0), page)
+    anchor_as_the_host_has_it(layout, y + along * (last.y + last.height - end).max(0.0), page)
 }
 
 /// **The host's pixel: a view within [`HOST_ROUNDING`] of a place is on it.** The host puts the view on its own pixels, a fraction of a point from where it
-/// was sent.
+/// was sent, either way. The one rule about that rounding: whether a word from the host is on the place ([`Place::track`]), and where in which page a
+/// height is ([`anchor_as_the_host_has_it`]), for the place and for the line the contents' entry is found by ([`reading_line`]), so they can't disagree.
 pub(super) fn on_host_pixel(view_y: f64, place_y: f64) -> bool {
     (view_y - place_y).abs() < HOST_ROUNDING
+}
+
+/// **Where in which page a height is, as the host's pixels have it:** on the host's pixel of the top of the row below it ([`on_host_pixel`]), it's that
+/// row's top, and otherwise [`PageLayout::anchor_for`]. A jump to a page's top that the host rounded into the gap above it is on that page, not at the foot
+/// of the page before (the on-screen pass, 2026-11-15: pages 6, 21 and 26 of a 30-page file with a chapter every five pages marked the chapter before).
+/// A few lookups of the layout.
+pub(super) fn anchor_as_the_host_has_it(layout: &PageLayout, y: f64, page: u32) -> (u32, f64) {
+    let below = layout.top(layout.page_at(y + HOST_ROUNDING));
+    let y = if below > y && on_host_pixel(y, below) { below } else { y };
+    layout.anchor_for(y, page)
 }
 
 /// Moves the place clock on, saying where it's come to.
@@ -209,7 +220,7 @@ impl Place {
         // 43751284816). The reader's own scroll moves the place however short it is: it's the view moving down or up with nothing else changed
         // (`note_viewport`), which a host's word on its pixel never is, as it comes with an arrival or a change of size.
         if moved && (self.user_scrolled || !on_host_pixel(viewport.y, doc.place_y())) {
-            doc.place.anchor = doc.layout.anchor_for(viewport.y, page);
+            doc.place.anchor = anchor_as_the_host_has_it(&doc.layout, viewport.y, page);
             doc.place.exact_y = None;
         }
         doc.place.scroll_x = viewport.x;
