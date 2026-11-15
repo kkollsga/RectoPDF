@@ -20,8 +20,9 @@ impl Refused {
     }
 }
 
-/// Whether this copy is the team's release: never, where there's no Keychain.
+/// Whether this copy is the team's release: never, where there's no Keychain. The three answers the Mac's check gives, as `find_key` names them all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(super) enum Release {
     Yes,
     No,
