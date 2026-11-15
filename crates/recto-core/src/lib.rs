@@ -265,8 +265,13 @@ pub struct DocFacts {
 /// descriptor the app holds on a file with no name (the person's print) can't be opened again by a path. Refused as the reader always refused: not there,
 /// not allowed, or not a PDF, which is also the wall's own answer, the same as for a folder or a pipe.
 fn open_source(path: &Path) -> Result<FileSource, OpenError> {
+    FileSource::from_file(open_document_file(path)?).map_err(|_| OpenError::NotAllowed)
+}
+
+/// The file [`open_source`] reads, opened through the wall.
+fn open_document_file(path: &Path) -> Result<std::fs::File, OpenError> {
     use recto_platform::document_file::{self, Refused};
-    let file = document_file::open_regular(path).map_err(|refused| match refused {
+    document_file::open_regular(path).map_err(|refused| match refused {
         Refused::Look(error) => match error.kind() {
             ErrorKind::NotFound => OpenError::NotFound,
             ErrorKind::PermissionDenied => OpenError::NotAllowed,
@@ -274,8 +279,7 @@ fn open_source(path: &Path) -> Result<FileSource, OpenError> {
         },
         Refused::Open(_) => OpenError::NotAllowed,
         Refused::NotADocument => OpenError::NotPdf,
-    })?;
-    FileSource::from_file(file).map_err(|_| OpenError::NotAllowed)
+    })
 }
 
 /// Opens a file for the lazy reader, through the file wall ([`open_source`]).
@@ -291,6 +295,22 @@ pub(crate) fn open_reader_cached(path: &Path) -> Result<IndexedReader, OpenError
         lopdf::IndexedReaderOptions::default(),
         lopdf::IndexedReaderCacheOptions::new(READ_CACHE_BYTES, READ_CACHE_ENTRIES),
     ))
+}
+
+/// [`open_reader_cached`] of the file at `path` only if what was opened is the version `stamp` says, by the opened descriptor's own device, number, size
+/// and time: so a file renamed into place for the moment of the open is never read for another. `Ok(None)` when it isn't that version.
+pub(crate) fn open_reader_cached_at(path: &Path, stamp: recto_platform::FileStamp) -> Result<Option<IndexedReader>, OpenError> {
+    let file = open_document_file(path)?;
+    if recto_platform::open_file_stamp(&file).ok() != Some(stamp) {
+        return Ok(None);
+    }
+    let source = FileSource::from_file(file).map_err(|_| OpenError::NotAllowed)?;
+    checked_reader(IndexedReader::open_cached(
+        source,
+        lopdf::IndexedReaderOptions::default(),
+        lopdf::IndexedReaderCacheOptions::new(READ_CACHE_BYTES, READ_CACHE_ENTRIES),
+    ))
+    .map(Some)
 }
 
 /// What [`open_reader_cached`] may keep: enough for a page's annotations and their streams, and gone with the read.

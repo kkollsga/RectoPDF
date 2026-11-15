@@ -7,6 +7,17 @@ use crate::identify::{self, IdentifyJob};
 std::thread_local! {
     /// How many bytes a job may read on this thread, when a test says ([`crate::identify::MAX_JOB_BYTES`]).
     pub(crate) static JOB_BYTES: Cell<Option<u64>> = const { Cell::new(None) };
+    /// What a test does to the file just before its open (`true`) and just after (`false`), on this thread.
+    static AROUND_OPEN: std::cell::RefCell<Option<Box<dyn Fn(bool)>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The seam at `Opened::open`'s open, for a test that changes what's at the path for that moment.
+pub(crate) fn around_open(before: bool) {
+    AROUND_OPEN.with(|seam| {
+        if let Some(seam) = seam.borrow().as_ref() {
+            seam(before);
+        }
+    });
 }
 
 /// A loader that reads the real file's facts, as the app's does.
@@ -191,4 +202,37 @@ fn a_page_with_no_identity_gives_up_on_this_version() {
     assert!(!identify::has_work(&s), "nothing asked again");
     s.edit_pages(id, |e| e.rotate(7, 1, 1)).unwrap();
     assert!(!identify::has_work(&s), "nor after another edit, on this version");
+}
+
+/// Failure caught (slice 2's review, 2026-11-15): the file's version is checked by its path before and after the read, and never on what was opened,
+/// so someone who can write the folder renames another file into place for the moment of the open and the original back (the same file number, size
+/// and time on both looks): the identities recorded are the other file's, which a later crafted version uses to pull an edit onto another page. With
+/// another file put at the path for the open alone, nothing is read.
+#[test]
+fn a_file_swapped_in_for_the_open_alone_is_never_read() {
+    let (dir, path, mut s, id) = open_ten();
+    let other = dir.join("other.pdf");
+    std::fs::write(&other, ten_pages("Theirs")).unwrap();
+    s.edit_pages(id, |e| e.rotate(8, 1, 1)).unwrap();
+    let job = identify::work(&s).remove(0);
+    let (kept, at, theirs) = (dir.join("doc.keep"), path.clone(), other.clone());
+    AROUND_OPEN.with(|seam| {
+        *seam.borrow_mut() = Some(Box::new(move |before| {
+            if before {
+                std::fs::rename(&at, &kept).unwrap();
+                std::fs::rename(&theirs, &at).unwrap();
+            } else {
+                std::fs::rename(&at, &theirs).unwrap();
+                std::fs::rename(&kept, &at).unwrap();
+            }
+        }));
+    });
+    let found = identify::read(&job);
+    AROUND_OPEN.with(|seam| *seam.borrow_mut() = None);
+    assert_eq!(
+        recto_platform::file_stamp(&path).unwrap(),
+        job.stamp,
+        "the path looks as it did, before and after"
+    );
+    assert_eq!(found, None, "the other file's pages were read for this one's");
 }

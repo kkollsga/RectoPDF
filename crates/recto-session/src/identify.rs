@@ -71,12 +71,19 @@ pub struct Opened {
 }
 
 impl Opened {
-    /// The file at `path`, if it's that version and opens through the file wall (`recto_core::page_id::open_for_identity`).
+    /// The file at `path`, if it's that version by its path and, once opened through the file wall, by its own descriptor
+    /// (`recto_core::page_id::open_version_for_identity`).
     pub fn open(path: &std::path::Path, stamp: FileStamp) -> Option<Self> {
         if !is_version(path, stamp) {
             return None;
         }
-        let reader = recto_core::page_id::open_for_identity(path).ok()?;
+        #[cfg(test)]
+        crate::tests::identify::around_open(true);
+        // What's opened is checked by its own descriptor, as what's at the path can change for the moment of the open and back.
+        let opened = recto_core::page_id::open_version_for_identity(path, stamp);
+        #[cfg(test)]
+        crate::tests::identify::around_open(false);
+        let reader = opened?;
         let map = reader.page_map().ok()?;
         Some(Self {
             path: path.to_path_buf(),

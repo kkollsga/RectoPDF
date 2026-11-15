@@ -128,6 +128,12 @@ pub fn open_for_identity(path: &Path) -> Result<IndexedReader, crate::OpenError>
     crate::open_reader_cached(path)
 }
 
+/// [`open_for_identity`] of exactly this version of the file: `None` unless the file opened (by its own descriptor, not its path) has the device, number,
+/// size and modification time of `stamp`, so a file renamed into place for the moment of the open is never identified for another (slice 2's review).
+pub fn open_version_for_identity(path: &Path, stamp: recto_platform::FileStamp) -> Option<IndexedReader> {
+    crate::open_reader_cached_at(path, stamp).ok().flatten()
+}
+
 /// [`open_for_identity`] on bytes in memory, for tests and the fuzzer.
 pub fn open_bytes_for_identity(bytes: std::sync::Arc<[u8]>) -> Result<IndexedReader, crate::OpenError> {
     crate::open_bytes(bytes)
