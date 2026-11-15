@@ -141,16 +141,34 @@ pub(super) fn read_sealed_json(seal: &CorpusSeal, path: &Path, purpose: Purpose)
     serde_json::from_slice(&chunk[plain]).ok()
 }
 
+/// What `seal.bin` gave: nothing there, its bytes, or a failure to read it, which says nothing about whose it is.
+enum Header {
+    Absent,
+    Read(Vec<u8>),
+    Unreadable,
+}
+
+fn read_header(paths: &CorpusPaths) -> Header {
+    match local::read_private_file(&paths.seal(), seal::HEADER_BYTES as u64) {
+        Ok(None) => Header::Absent,
+        Ok(Some(bytes)) => Header::Read(bytes),
+        Err(_) => Header::Unreadable,
+    }
+}
+
 /// The corpus's seal, if its header is there and this key opens it.
 pub(super) fn read_seal(find_key: &FindKey, paths: &CorpusPaths) -> Option<CorpusSeal> {
-    let header = local::read_private_file(&paths.seal(), seal::HEADER_BYTES as u64).ok()??;
+    let Header::Read(header) = read_header(paths) else { return None };
     CorpusSeal::open(find_key, paths.key, &header).ok()
 }
 
-/// Whether a corpus is sealed with a key that isn't this one, and if so whether that key lasts, as its header says (read without a key: a hint, which anyone who can write here could change, and changing it can only get a corpus thrown away or kept). `None` if there's no header that reads as one.
+/// Whether a corpus is sealed with a key that isn't this one, and if so whether that key lasts, as its header says (read without a key: a hint, which anyone who can write here could change, and changing it can only get a corpus thrown away or kept). `None` if there's no header, or one that reads and isn't one: only those may lead to a clear. A header that's there and can't be read just now (a mode the private read refuses, a file past its size, an error from the disk) is taken as the lasting key's, so a run without that key leaves it (the second review's S1, 2026-11-15).
 pub(super) fn sealed_elsewhere(paths: &CorpusPaths) -> Option<bool> {
-    let header = local::read_private_file(&paths.seal(), seal::HEADER_BYTES as u64).ok()??;
-    CorpusSeal::lasting(&header)
+    match read_header(paths) {
+        Header::Absent => None,
+        Header::Read(header) => CorpusSeal::lasting(&header),
+        Header::Unreadable => Some(true),
+    }
 }
 
 /// The seal to build with: the one there, or a new one, after throwing away anything this key can't open. That's how a corpus sealed by a key that's gone, a run's own or a lost one, is built again. Never over what a lasting key sealed when this run's lack of it is only for now: that's refused before anything is thrown away.

@@ -1884,6 +1884,33 @@ fn set_aside_of(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Failure (the second review's S1, 2026-11-15): a header that's there but can't be read just now (here, a mode another user could write, which the private read refuses) reads as no header, so a run whose lasting key is only out of reach for now throws away the person's corpus and seals a new one. Only a header that isn't there, or that reads and isn't one, may lead to a clear; any other failure to read it is taken as the lasting key's, and left.
+#[test]
+fn a_header_that_cant_be_read_is_left_by_a_run_without_its_key() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let key = key_of(&temp, b"a file");
+    let lasting = FindKey::from_state_file(&temp.0.join("lasting.key")).unwrap();
+    build(&lasting, &root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    let paths = CorpusPaths::new(&root, key);
+    let header = fs::read(paths.seal()).unwrap();
+    fs::set_permissions(paths.seal(), fs::Permissions::from_mode(0o666)).unwrap();
+    let for_now = FindKey::in_memory_for_now().unwrap();
+    assert_eq!(disk_state(&for_now, &root, key), DiskState::SealedElsewhere { lasting: true });
+    assert!(seal_for_building(&for_now, &paths).is_err(), "a seal was made over a header that couldn't be read");
+    assert_eq!(
+        build(&for_now, &root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap(),
+        BuildOutcome::Paused(LASTING_KEY_OUT_OF_REACH)
+    );
+    assert_eq!(fs::read(paths.seal()).unwrap(), header, "the header was replaced");
+    fs::set_permissions(paths.seal(), fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(
+        ReadyCorpus::open(&lasting, &root, key).unwrap().is_some(),
+        "the lasting key's corpus was thrown away"
+    );
+}
+
 /// Failure (the coordinator's decision F4, 2026-11-15): a run whose lasting key is only out of reach for now (the Keychain locked, a read refused) throws away and builds again over what that key sealed, so the person's index is lost to a moment; or a run that can never have the lasting key (not the team's release) can't build at all over a corpus it can't read. The first leaves it whole, through `seal_for_building` as through a build; the second replaces it.
 #[test]
 fn a_lasting_corpus_is_left_when_its_key_is_only_out_of_reach() {
