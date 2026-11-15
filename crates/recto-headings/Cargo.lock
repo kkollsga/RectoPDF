@@ -729,6 +729,7 @@ dependencies = [
  "lopdf",
  "recto-platform",
  "sha2 0.11.1",
+ "weezl",
 ]
 
 [[package]]

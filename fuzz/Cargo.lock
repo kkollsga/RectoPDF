@@ -504,6 +504,7 @@ dependencies = [
  "lopdf",
  "recto-platform",
  "sha2",
+ "weezl",
 ]
 
 [[package]]
@@ -594,6 +595,7 @@ dependencies = [
  "flate2",
  "recto-core",
  "recto-platform",
+ "recto-proto",
  "serde",
  "serde_json",
 ]

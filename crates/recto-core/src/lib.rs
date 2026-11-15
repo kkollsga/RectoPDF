@@ -15,6 +15,7 @@ pub mod agreement;
 mod effects;
 pub mod highlights;
 pub mod nav;
+pub mod page_id;
 pub mod save;
 mod save_error;
 mod signatures;

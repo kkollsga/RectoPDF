@@ -717,6 +717,7 @@ dependencies = [
  "recto-platform",
  "recto-testpdf",
  "sha2",
+ "weezl",
 ]
 
 [[package]]
