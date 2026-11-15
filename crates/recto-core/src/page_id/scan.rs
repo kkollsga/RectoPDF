@@ -6,15 +6,18 @@
 //! - Whitespace is NUL, tab, line feed, form feed, carriage return and space; the delimiters are `( ) < > [ ] { } / %`.
 //! - A comment runs from `%` to the end of its line. A string runs from `(` to its matching `)`, a backslash escaping the byte after it. A hex string
 //!   runs from `<` to `>`. A dictionary is from `<<` to its matching `>>`, and an array from `[` to its matching `]`.
-//! - A name is `/` and the regular bytes after it, each `#` and two hex digits taken as that byte. One longer than 127 bytes is no name here.
+//! - A name is `/` and the regular bytes after it, each `#` and two hex digits taken as that byte. A `#` not followed by two hex digits is kept as it
+//!   is, with what was read of the digits (lopdf ends a name there, so a lookup of such a name in the resources finds nothing: kind 2). One longer
+//!   than 127 bytes is no name here.
 //! - A name directly before the operator `Do`, outside any dictionary or array, is a name drawn. Anything else between them (a number, a string, another
 //!   operator) means it isn't.
 //! - An inline image (`BI`, its dictionary, `ID`, a whitespace byte and its data) is skipped to a whitespace byte, `EI` and a whitespace byte or a
 //!   delimiter.
 //! - At most [`MAX_NAMES`] different names are kept; one more says the page draws more than it (a cap: the page has no identity).
 //!
-//! It holds at most [`MAX_NAMES`] names of 127 bytes and a few bytes of state, whatever it's given, and never fails: a mistake here can only change
-//! which images a digest holds, never what the scan costs.
+//! It holds at most [`MAX_NAMES`] names of 127 bytes, their sorted index and a few bytes of state, whatever it's given, and never fails; each byte
+//! costs a few steps, and a name drawn a lookup of about 8 comparisons. Its promise: a mistake here can only change which images are hashed, or whether
+//! the page passes 256 names and so has no identity, never what the scan costs.
 
 /// Most different names kept: the digest's cap on images and forms ([`super::Caps::xobjects`]).
 pub(super) const MAX_NAMES: usize = 256;
@@ -76,6 +79,9 @@ pub(super) struct Mark {
 #[derive(Clone, Debug)]
 pub(super) struct DoScan {
     names: Vec<Vec<u8>>,
+    /// Indexes into `names`, sorted by the name: a name drawn is looked up in about 8 comparisons, not one for each name kept (a `Do` for each few
+    /// bytes against 256 names cost about 250 comparisons a byte of input). 512 bytes at most.
+    sorted: Vec<u16>,
     core: Core,
 }
 
@@ -83,6 +89,7 @@ impl Default for DoScan {
     fn default() -> Self {
         Self {
             names: Vec::new(),
+            sorted: Vec::new(),
             core: Core {
                 overflowed: false,
                 state: State::Normal,
@@ -137,6 +144,7 @@ impl DoScan {
     /// Back to `mark`: what was fed since is as if it never was.
     pub(super) fn back_to(&mut self, mark: Mark) {
         self.names.truncate(mark.names);
+        self.sorted.retain(|at| usize::from(*at) < mark.names);
         self.core = mark.core;
     }
 
@@ -322,13 +330,19 @@ impl DoScan {
 
     fn keep_name(&mut self) {
         let name = &self.core.name_buf[..self.core.name_len.min(MAX_NAME)];
-        if self.core.overflowed || self.names.iter().any(|kept| kept.as_slice() == name) {
+        if self.core.overflowed {
             return;
         }
+        let names = &self.names;
+        let Err(slot) = self.sorted.binary_search_by(|at| names[usize::from(*at)].as_slice().cmp(name)) else {
+            return;
+        };
         if self.names.len() == MAX_NAMES {
             self.core.overflowed = true;
             return;
         }
+        // At most MAX_NAMES (256) names, so an index always fits.
+        self.sorted.insert(slot, u16::try_from(self.names.len()).unwrap_or(u16::MAX));
         self.names.push(name.to_vec());
     }
 }
@@ -399,7 +413,8 @@ mod tests {
     }
 
     /// Failure caught: a stream that didn't decode (hashed as stored instead) leaves the names of its first part, so the digest depends on how far a
-    /// decoder got before its error. Put back to its mark, the scan is as before the stream.
+    /// decoder got before its error; or names taken back stay in the lookup of names seen, so one drawn again after is dropped. Put back to its mark,
+    /// the scan is as before the stream.
     #[test]
     fn a_stream_taken_back_leaves_nothing() {
         let mut scan = DoScan::default();
@@ -410,6 +425,10 @@ mod tests {
         scan.feed(b") /D Do");
         scan.end_of_stream();
         assert_eq!(scan.names(), [b"A".to_vec(), b"D".to_vec()]);
+        // A name taken back is a name not seen: drawn again, it's kept again, and a name kept stays kept once.
+        scan.feed(b"/B Do /A Do /B Do");
+        scan.end_of_stream();
+        assert_eq!(scan.names(), [b"A".to_vec(), b"D".to_vec(), b"B".to_vec()]);
     }
 
     /// Failure caught: hostile bytes panic the scan or make it hold more than its bound. Every byte value, deep nesting, an unclosed string and an
