@@ -4,7 +4,8 @@
 //! **Its bytes:** a header, then entries, appended as pages are read; never rewritten for a step.
 //! - Header: [`MAGIC`] (`recto-pages`, then a version byte, 1); the journal's file name, a length byte (at most [`MAX_NAME`]) and its bytes; the file
 //!   version the entries are of, as `u64le` size, `i64le` modification time in nanoseconds and `u64le` file number (the journal's own header says
-//!   these; the device isn't, as a volume can come back under another); `u32le` the file's page count; and a check of all of it.
+//!   these; the device isn't, as a volume can come back under another); `u32le` the file's page count; a byte of flags (1: the list followed its file
+//!   onto this version and the person hasn't been told yet, slice 2's; other bits are kept 0 and read as nothing); and a check of all of it.
 //! - A page: `P`, `u32le` page (zero-based, of that version), the 16 bytes of its digest, `u32le` object number, `u16le` generation, `u32le` frame tag,
 //!   and a check: 35 bytes.
 //! - The file's `/ID` pair: `D`, the two 16-byte tags, and a check: 37 bytes.
@@ -28,7 +29,7 @@ pub const PAGE_ENTRY: usize = 35;
 /// The `/ID` pair's entry's length.
 pub const DOCUMENT_ENTRY: usize = 37;
 /// Most bytes a sidecar is read to or written to: its header, a page entry for every page a list may name, and room for a few `/ID` pairs.
-pub const MAX_BYTES: usize = 12 + 1 + MAX_NAME + 8 + 8 + 8 + 4 + 4 + MAX_IDENTIFIED * PAGE_ENTRY + 64 * DOCUMENT_ENTRY;
+pub const MAX_BYTES: usize = 12 + 1 + MAX_NAME + 8 + 8 + 8 + 4 + 1 + 4 + MAX_IDENTIFIED * PAGE_ENTRY + 64 * DOCUMENT_ENTRY;
 
 /// What a sidecar's entries are of: the journal and the version of its file.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,6 +39,8 @@ pub struct Header {
     pub mtime_ns: i64,
     pub inode: u64,
     pub file_pages: u32,
+    /// The list followed its file onto this version and the person hasn't been told yet ([`super::followed_untold`]).
+    pub followed_untold: bool,
 }
 
 impl Header {
@@ -49,6 +52,7 @@ impl Header {
             mtime_ns: stamp.mtime_ns,
             inode: stamp.inode,
             file_pages,
+            followed_untold: false,
         }
     }
 
@@ -73,6 +77,7 @@ impl Header {
         out.extend_from_slice(&self.mtime_ns.to_le_bytes());
         out.extend_from_slice(&self.inode.to_le_bytes());
         out.extend_from_slice(&self.file_pages.to_le_bytes());
+        out.push(u8::from(self.followed_untold));
         out.extend_from_slice(&check(&out));
         Some(out)
     }
@@ -185,7 +190,8 @@ fn header(bytes: &[u8]) -> Option<(Header, usize)> {
     let mtime_ns = i64::from_le_bytes(take(bytes, at + 8)?);
     let inode = u64::from_le_bytes(take(bytes, at + 16)?);
     let file_pages = u32::from_le_bytes(take(bytes, at + 24)?);
-    at += 28;
+    let flags = *bytes.get(at + 28)?;
+    at += 29;
     if take::<4>(bytes, at)? != check(&bytes[..at]) {
         return None;
     }
@@ -196,6 +202,7 @@ fn header(bytes: &[u8]) -> Option<(Header, usize)> {
             mtime_ns,
             inode,
             file_pages,
+            followed_untold: flags & 1 != 0,
         },
         at + 4,
     ))
@@ -275,6 +282,7 @@ mod tests {
             mtime_ns: -5,
             inode: 99,
             file_pages: 20,
+            followed_untold: false,
         }
     }
 
@@ -332,6 +340,16 @@ mod tests {
         long[12] = 200;
         assert_eq!(decode(&long), None, "a name past its limit");
         assert_eq!(decode(b"recto-pages\x02"), None, "another version");
+        let mut told = header();
+        told.followed_untold = true;
+        assert!(decode(&told.encode().unwrap()).unwrap().header.followed_untold, "the flag reads back");
+        let mut other_bits = header().encode().unwrap();
+        let flags = other_bits.len() - 5;
+        other_bits[flags] = 0xfe;
+        let sum = check(&other_bits[..other_bits.len() - 4]);
+        let end = other_bits.len();
+        other_bits[end - 4..].copy_from_slice(&sum);
+        assert!(!decode(&other_bits).unwrap().header.followed_untold, "bits not known are nothing");
         assert_eq!(decode(&vec![0u8; MAX_BYTES + 1]), None, "too large");
         for cut in 0..good.len() {
             let _ = decode(&good[..cut]);

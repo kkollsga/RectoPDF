@@ -76,7 +76,7 @@ pub(super) fn take_in(folder: &Path, journal: &str, header: &JournalHeader, edit
     };
     match sidecar::decode(&bytes) {
         Some(read) if read.header.is_of(journal, header) => {
-            identity::restored(edits, &read.pages, read.document);
+            identity::restored(edits, &read.pages, read.document, read.header.followed_untold);
             progress.sidecars.insert(name, (read.good as u64, read.header));
         }
         _ => {

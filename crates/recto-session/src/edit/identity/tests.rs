@@ -176,7 +176,7 @@ fn a_followed_list_rewrites_its_sidecar_whole_for_the_new_version() {
 fn a_restored_list_takes_in_its_sidecar_and_writes_nothing_again() {
     let mut edits = PageEdits::new(20);
     edits.rotate(9, 1, 1).unwrap();
-    restored(&mut edits, &[(9, known(9)), (15, known(15)), (25, known(25))], None);
+    restored(&mut edits, &[(9, known(9)), (15, known(15)), (25, known(25))], None, false);
     let ids = identities(&edits).unwrap();
     assert_eq!(ids.known(9), Some(known(9)));
     assert_eq!(ids.known(15), Some(known(15)), "named by the sidecar alone: a page of the journal's base");
@@ -218,4 +218,26 @@ fn a_save_moves_the_named_pages_to_the_saved_file() {
     assert!(after.contains(&9), "file page 11 is page 9 of the saved file: {after:?}");
     assert!(!after.contains(&19) && after.iter().all(|page| *page < 18), "{after:?}");
     assert_eq!(identities(&edits).unwrap().known(9), None, "to be read again in the saved file");
+}
+
+/// Failure caught (for slice 2): that a list followed its file and the person wasn't told yet is lost at a restart, so they're never told; or telling
+/// them doesn't reach the sidecar. Set or cleared, the sidecar is written whole with the flag in its header; restored, it says it again.
+#[test]
+fn whether_a_follow_was_told_goes_in_the_sidecars_header() {
+    let mut edits = PageEdits::new(20);
+    edits.rotate(9, 1, 1).unwrap();
+    found(&mut edits, &[(9, known(9))], None);
+    let first = sidecar_waiting(&edits).unwrap();
+    sidecar_written(&mut edits, &first, sidecar::Done::Written);
+    set_followed_untold(&mut edits, true);
+    assert!(followed_untold(&edits));
+    let waiting = sidecar_waiting(&edits).expect("written again");
+    assert!(waiting.whole);
+    sidecar_written(&mut edits, &waiting, sidecar::Done::Written);
+    set_followed_untold(&mut edits, true);
+    assert!(sidecar_waiting(&edits).is_none(), "no change, no write");
+    let mut back = PageEdits::new(20);
+    restored(&mut back, &[(9, known(9))], None, true);
+    assert!(followed_untold(&back));
+    assert!(sidecar_caught_up(&back));
 }

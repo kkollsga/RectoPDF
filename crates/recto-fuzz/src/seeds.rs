@@ -534,6 +534,7 @@ pub fn sidecar_seeds() -> Vec<Vec<u8>> {
         mtime_ns: 1,
         inode: 2,
         file_pages: 12,
+        followed_untold: false,
     };
     let known = |seed: u8| Known {
         digest: [seed; 16],

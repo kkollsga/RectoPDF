@@ -34,7 +34,7 @@ pub fn check_sidecar(bytes: &[u8]) {
         assert!(read.pages.iter().all(|(page, _)| *page < read.header.file_pages));
         assert!(read.pages.windows(2).all(|pair| pair[0].0 < pair[1].0), "ascending, each page once");
         let mut edits = recto_session::edit::PageEdits::new(20);
-        identity::restored(&mut edits, &read.pages, read.document);
+        identity::restored(&mut edits, &read.pages, read.document, read.header.followed_untold);
         if let Some(ids) = identity::identities(&edits) {
             assert!(ids.pages().len() <= identity::MAX_IDENTIFIED);
             assert!(ids.pages().iter().all(|(page, _)| *page < 20));

@@ -86,6 +86,8 @@ pub struct Identities {
     whole: bool,
     /// A page of this version had no identity: no more pages are named until the version changes, so a hostile file can't keep the reader busy.
     closed: bool,
+    /// The list followed its file onto this version and the person hasn't been told yet (slice 2's; kept in the sidecar's header).
+    followed_untold: bool,
 }
 
 impl std::fmt::Debug for Identities {
@@ -294,17 +296,33 @@ pub fn followed(edits: &mut PageEdits, pages: &[(u32, Known)], document: Option<
         document_unwritten: document.is_some(),
         whole: true,
         closed: false,
+        followed_untold: false,
     };
     edits.identities = Some(Box::new(ids));
+}
+
+/// Whether the list followed its file onto this version and the person hasn't been told yet: what its sidecar's header says (slice 2 sets and clears it).
+pub fn followed_untold(edits: &PageEdits) -> bool {
+    edits.identities.as_deref().is_some_and(|ids| ids.followed_untold)
+}
+
+/// Says the list followed its file onto this version and the person hasn't been told (`true`), or has been (`false`). A change goes in the sidecar's
+/// header, which is written whole at the next write for it.
+pub fn set_followed_untold(edits: &mut PageEdits, untold: bool) {
+    let ids = edits.identities.get_or_insert_with(Box::default);
+    if ids.followed_untold != untold {
+        ids.followed_untold = untold;
+        ids.whole = true;
+    }
 }
 
 /// **What a journal's sidecar held, taken in for a list restored from it** (by the record store, after the journal's replay, and only for a sidecar
 /// whose header is this journal's and this version's): each page is named, if the cap has room, and known, unless it was read already. Nothing is to be
 /// written of them again. What a hostile sidecar can do is bounded here too: a page past the file's length is left out.
-pub fn restored(edits: &mut PageEdits, pages: &[(u32, Known)], document: Option<DocumentIds>) {
+pub fn restored(edits: &mut PageEdits, pages: &[(u32, Known)], document: Option<DocumentIds>, followed_untold: bool) {
     let file_pages = edits.file_pages();
     let valid: Vec<u32> = pages.iter().map(|(page, _)| *page).filter(|page| *page < file_pages).collect();
-    if valid.is_empty() && document.is_none() {
+    if valid.is_empty() && document.is_none() && !followed_untold {
         return;
     }
     let ids = edits.identities.get_or_insert_with(Box::default);
@@ -319,6 +337,7 @@ pub fn restored(edits: &mut PageEdits, pages: &[(u32, Known)], document: Option<
     if document.is_some() {
         ids.document = document;
     }
+    ids.followed_untold = followed_untold;
 }
 
 /// **What's waiting to go in the sidecar:** the entries of the pages read since the last write (or all known, when it's to be written whole), encoded.

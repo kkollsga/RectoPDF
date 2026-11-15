@@ -76,9 +76,11 @@ impl JournalDesk<'_> {
             let Some(tab) = self.tabs.tab(id) else { continue };
             let Some(stamp) = tab.file.stamp else { continue };
             let journal = self.name_for(id);
+            let mut header = edit::identity::sidecar::Header::new(&journal, stamp, tab.page_count);
+            header.followed_untold = self.lists.get(id).is_some_and(edit::identity::followed_untold);
             out.push(PagesAppend {
                 tab: id,
-                header: edit::identity::sidecar::Header::new(&journal, stamp, tab.page_count),
+                header,
                 journal,
                 waiting,
             });
