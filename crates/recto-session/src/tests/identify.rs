@@ -318,3 +318,31 @@ fn a_tab_whose_version_goes_unknown_isnt_held_by_its_sidecar() {
     assert!(!s.journal_look().has_work(), "and nothing waits for it");
     assert!(s.journal_look().checkpoint_if_caught_up(id).is_some(), "the tab may go to disk");
 }
+
+/// A loader that says a file has two pages more than its page tree has, as a file whose renderer and structure reader count differently can.
+struct TwoMore;
+
+impl DocLoader for TwoMore {
+    fn load(&self, path: &Path) -> Result<DocFacts, OpenError> {
+        let mut facts = recto_core::inspect(path)?;
+        facts.page_count += 2;
+        Ok(facts)
+    }
+}
+
+/// Failure caught (second review): a named page the file's page tree doesn't have stays wanted for good, so every call with journal work wakes the
+/// page-identity thread, which opens the file again and builds its page map again for nothing. It's tried, as a page past a cap is: one job, and
+/// nothing asked again.
+#[test]
+fn a_page_the_page_tree_doesnt_have_is_tried() {
+    let (_dir, path, _, _) = open_ten();
+    let mut s = Session::new(TwoMore);
+    let id = s.open(&path).unwrap();
+    s.edit_pages(id, |e| e.rotate(11, 1, 1)).unwrap();
+    let job = identify::work(&s).remove(0);
+    assert_eq!(job.pages, vec![9, 10, 11]);
+    let found = identify::read(&job).unwrap();
+    assert_eq!((found.pages.len(), found.tried.clone()), (1, vec![10, 11]));
+    assert!(identify::identified(&mut s, &found));
+    assert!(!identify::has_work(&s), "nothing asked again");
+}
