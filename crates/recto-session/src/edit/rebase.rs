@@ -393,6 +393,33 @@ fn build(mut placement: Placement, gone: &HashSet<u32>, new_pages: u32, old_len:
     (placement.before.is_empty() && placement.after.is_empty() && !slots.is_empty()).then_some((slots, positions))
 }
 
+/// **Where a place in the list as it was is in the new one** (the reading position, a trail's stop; review F1): its own position if that's known;
+/// else as far past the nearest known position before it as it was (or as far before the nearest after it, with none before), kept short of the
+/// next known position's place, and within the list's `len`. So a place far from the edits keeps its page, shifted by what came in or went before
+/// it where that's known, and never jumps to the nearest edited page.
+pub fn moved_position(positions: &[Option<u32>], position: u32, len: u32) -> u32 {
+    let last = len.saturating_sub(1);
+    let at = (position as usize).min(positions.len().saturating_sub(1));
+    if let Some(Some(now)) = positions.get(at) {
+        return (*now).min(last);
+    }
+    let before = positions[..at].iter().enumerate().rev().find_map(|(from, now)| Some((from, (*now)?)));
+    let after = positions.get(at + 1..).unwrap_or_default().iter().enumerate().find_map(|(from, now)| Some((at + 1 + from, (*now)?)));
+    let distance = |from: usize, to: usize| u32::try_from(to.abs_diff(from)).unwrap_or(u32::MAX);
+    let mut now = match (before, after) {
+        (Some((from, now)), _) => now.saturating_add(distance(from, at)),
+        (None, Some((from, now))) => now.saturating_sub(distance(at, from)),
+        (None, None) => position,
+    };
+    if let Some((_, next)) = after
+        && before.is_none_or(|(_, previous)| previous < next)
+        && now >= next
+    {
+        now = next.saturating_sub(1);
+    }
+    now.min(last)
+}
+
 /// **Puts a list onto the new version** [`rebase`] made it for: its pages, highlights and named pages are the new version's from here, and the undo
 /// history ends here (owner, 2026-11-15: the edits stay, and ⌘Z doesn't go back past the change). The journal gets the whole list next. Says which
 /// files kept for the history nothing needs now.

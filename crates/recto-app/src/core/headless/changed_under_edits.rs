@@ -579,3 +579,40 @@ fn two_protected_documents_changed_under_edits_tell_an_agent_the_same() {
     let would_be_held = run(10, "Theirs");
     assert_eq!(would_follow, would_be_held, "the same, heard and asked");
 }
+
+/// The page the session has the tab on, counted from 1, read off the session (not by a command, which would end with a look of its own).
+fn reading_at(app: &HeadlessApp) -> u32 {
+    let page = app
+        .core()
+        .host
+        .session
+        .with_session(|s| s.tabs().active().and_then(|id| s.tabs().tab(id)).map(|tab| tab.page));
+    page.expect("a tab being read") + 1
+}
+
+/// Failure caught (review F1): the edits follow, and the person reading page 25 of 30, far from the page they turned (page 4), is taken to the page
+/// beside the turned one, as their place was mapped to the nearest edited page; or Back goes there too. With a cover another program put first, the
+/// tab is on "Mine page 25" (26 now), and Back is on "Mine page 10" (11 now): each place keeps its page, by the nearest known page and the distance from
+/// it.
+#[test]
+fn the_reading_place_and_the_trail_keep_their_pages_when_the_edits_follow() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 30));
+    app.open(&file);
+    app.recto(Level::Control, &["page", "rotate", "4", "--by", "90"]).expect("rotated");
+    for page in [10, 25] {
+        app.agent(Level::Control, &format!(r#"{{"cmd":"goto","page":{page}}}"#)).expect("went");
+    }
+    app.settle();
+    assert_eq!(reading_at(&app), 25);
+    let mut with_cover = vec![recto_testpdf::Page::new(recto_testpdf::text_lines(&["Their cover"]))];
+    with_cover.extend((1..=30).map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("Mine page {page}")]))));
+    replace(&file, &recto_testpdf::pages(&with_cover));
+    look(&app);
+    assert_eq!(notice(&app).as_deref(), Some(FOLLOWED));
+    assert_eq!(turned_text(&app), vec![(5, "Mine page 4".to_owned())]);
+    assert_eq!(reading_at(&app), 26, "still on \"Mine page 25\", one on for the cover");
+    app.agent(Level::Control, r#"{"cmd":"back"}"#).expect("back");
+    app.settle();
+    assert_eq!(reading_at(&app), 11, "Back is on \"Mine page 10\"");
+}

@@ -257,20 +257,17 @@ pub fn followed<L: DocLoader>(session: &mut Session<L>, matched: &Matched) -> Op
 
 /// The tab is about the new version now: its stamp and length, what's held of the old one gone, the reader on the page they were on, and said.
 fn on_the_new_version<L: DocLoader>(session: &mut Session<L>, id: TabId, matched: &Matched, positions: &[Option<u32>], edits: u32) {
-    // Where a position of the list as it was is now: its own place if it's known, else the nearest before it that is.
-    let moved = |position: u32| -> Option<u32> {
-        let position = (position as usize).min(positions.len().checked_sub(1)?);
-        positions[..=position].iter().rev().find_map(|at| *at)
-    };
     session.journal_desk().retire_sleep_file(id);
     session.generated.forget(id);
     let pages = session.lists.get(id).map_or(matched.pages, PageEdits::len);
+    // Where a place in the list as it was is now (`rebase::moved_position`).
+    let moved = |position: u32| Some(rebase::moved_position(positions, position, pages));
     if let Some(tab) = session.tabs.tab_mut(id) {
         tab.folds = None;
         tab.file.take_version(Some(matched.to));
         tab.file.set_notice(Some(FileNotice::EditsFollowed { edits }));
         tab.page_count = matched.pages;
-        tab.page = moved(tab.page).unwrap_or(0).min(pages.saturating_sub(1));
+        tab.page = rebase::moved_position(positions, tab.page, pages);
         tab.place_dirty = true;
         tab.problem = None;
         if let Some(trail) = tab.reading.trail.as_deref_mut() {

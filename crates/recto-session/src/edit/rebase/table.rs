@@ -574,3 +574,26 @@ fn more_alike_pages_than_the_cap_are_none_of_them_looked_for() {
 fn page_of_4() -> Page {
     page(4, 0)
 }
+
+/// **Failure caught (review F1):** a place in the list (the reading position, a trail's stop) far from the edits mapped to the nearest edited page:
+/// reading page 150 with a turn on page 4 taken to page 6. Written by hand from the rule: its own place if known; else the nearest known before it plus
+/// the distance, kept short of the next known place; with none before, the nearest after it less the distance; within the list.
+#[test]
+fn a_place_keeps_its_page_by_the_nearest_known_and_the_distance_from_it() {
+    // Positions 3 to 5 known (a turn on page 4 and its neighbours), one page inserted before them by another program; the list is 201 long now.
+    let mut positions = vec![None; 200];
+    positions[3] = Some(4);
+    positions[4] = Some(5);
+    positions[5] = Some(6);
+    assert_eq!(moved_position(&positions, 150, 201), 151, "far past the edits: shifted by the one inserted before it");
+    assert_eq!(moved_position(&positions, 4, 201), 5, "known: its own place");
+    assert_eq!(moved_position(&positions, 1, 201), 2, "before every known place: the nearest after it less the distance");
+    assert_eq!(moved_position(&positions, 199, 150), 149, "within the list");
+    assert_eq!(moved_position(&positions, 900, 201), 200, "past the old list: its last place, kept in the new one");
+    // Kept short of the next known place: pages taken out between two known ones.
+    let mut squeezed = vec![None; 10];
+    squeezed[2] = Some(2);
+    squeezed[8] = Some(4);
+    assert_eq!(moved_position(&squeezed, 6, 9), 3, "short of the next known place, not past it");
+    assert_eq!(moved_position(&[None, None], 1, 2), 1, "nothing known: where it was");
+}
