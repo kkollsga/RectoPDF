@@ -35,7 +35,7 @@ use lopdf::{
 use recto_platform::FileStamp;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 /// Most bytes one object may take while a save reads it. The review's measurement: at lopdf's 4 MiB a 4 KB hostile file reaches about 1.5 GB during a save. The corpus's largest is 50 KB.
 pub const SAVE_OBJECT_BYTES: u64 = 1024 * 1024;
@@ -131,6 +131,7 @@ pub fn open_for_save(path: &Path) -> Result<IndexedReader, SaveError> {
 }
 
 mod annotate;
+mod backups;
 mod catalog;
 mod in_memory;
 pub use annotate::{GoneHighlight, HIGHLIGHT_RGB, MAX_EDGE, MAX_GONE, MAX_RECTS, MarksWritten, NewHighlight, RECT_SLACK};
@@ -138,6 +139,7 @@ pub use in_memory::{HIGHLIGHTS_DONT_HOLD, highlights_in_memory, plan_in_memory, 
 mod copying;
 mod streams;
 pub use crate::signatures::{SignatureFacts, persons_signature, signature_facts, signature_facts_of};
+pub use backups::{backup_name, backup_of, keep_backup, prune_backups};
 use catalog::{catalog_additions, update_catalog};
 use copying::*;
 use streams::{EncodedRead, LazyStream};
@@ -1413,77 +1415,6 @@ impl Plan {
         }
         Ok(())
     }
-}
-
-/// **The one backup of an original, made before its first save over itself** (owner, 2026-11-08). An APFS clone where it can be, which costs no space until the original's blocks are gone, or else a copy, synced. Named for the file's real path, so a later save of the same file finds it and makes none: it's the original, not the last version. Says where it went, or `None` if there already was one.
-pub fn keep_backup(original: &Path, folder: &Path) -> std::io::Result<Option<PathBuf>> {
-    recto_platform::local::ensure_private_dir(folder)?;
-    let _ = recto_platform::local::exclude_from_backups(folder);
-    let real = original.canonicalize()?;
-    let target = folder.join(backup_name(&real));
-    if target.exists() {
-        return Ok(None);
-    }
-    let partial = folder.join(format!(".{}.partial", backup_name(&real)));
-    let _ = std::fs::remove_file(&partial);
-    if recto_platform::local::clone_file(&real, &partial).is_err() {
-        std::fs::copy(&real, &partial)?;
-    }
-    std::fs::File::open(&partial)?.sync_all()?;
-    let _ = recto_platform::local::make_private_file(&partial);
-    std::fs::rename(&partial, &target)?;
-    let _ = recto_platform::local::sync_folder_of(&target);
-    Ok(Some(target))
-}
-
-/// A backup's name: a hash of the path it's of, so the name says nothing of the file, with `.pdf` so Quick Look shows it.
-pub fn backup_name(real: &Path) -> String {
-    use sha2::Digest;
-    let digest = sha2::Sha256::digest(real.as_os_str().as_encoded_bytes());
-    let mut name = String::from("original-");
-    for byte in &digest[..12] {
-        name.push_str(&format!("{byte:02x}"));
-    }
-    name.push_str(".pdf");
-    name
-}
-
-/// The backup of this file, if there is one.
-pub fn backup_of(original: &Path, folder: &Path) -> Option<PathBuf> {
-    let found = folder.join(backup_name(&original.canonicalize().ok()?));
-    found.is_file().then_some(found)
-}
-
-/// Backups past [`BACKUP_DAYS`] go, then the oldest until what's left is within [`MAX_BACKUP_BYTES`]. Says how many went. Run when a session starts, never on a timer.
-pub fn prune_backups(folder: &Path, now: SystemTime) -> usize {
-    let Ok(entries) = std::fs::read_dir(folder) else { return 0 };
-    let mut found: Vec<(SystemTime, u64, PathBuf)> = entries
-        .filter_map(Result::ok)
-        .take(65_536)
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.starts_with("original-") && name.ends_with(".pdf"))
-        })
-        .filter_map(|entry| {
-            let meta = entry.metadata().ok()?;
-            meta.is_file()
-                .then(|| (meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), meta.len(), entry.path()))
-        })
-        .collect();
-    found.sort();
-    let mut gone = 0;
-    let mut total: u64 = found.iter().map(|(_, len, _)| *len).sum();
-    let limit = Duration::from_secs(BACKUP_DAYS * 24 * 60 * 60);
-    for (made, len, path) in found {
-        let old = now.duration_since(made).is_ok_and(|age| age > limit);
-        if (old || total > MAX_BACKUP_BYTES) && std::fs::remove_file(&path).is_ok() {
-            total -= len;
-            gone += 1;
-        }
-    }
-    gone
 }
 
 #[cfg(test)]
