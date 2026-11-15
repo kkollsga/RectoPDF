@@ -15,14 +15,15 @@ use std::path::Path;
 /// How long a key is.
 pub const KEY_BYTES: usize = 32;
 
-/// Where this run's key came from. Said in `qa state` and `index status`, and nothing about the key itself.
+/// Where this run's key came from. Said in `qa state` and `index status`, and nothing about the key itself. A key handed to a helper keeps its session's source: what it seals is the session's, and lasts as the session's key does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     Keychain,
     StateFile,
+    /// In memory, as this copy can never have a lasting key: not the team's release, or a host with nothing to keep.
     Memory,
-    /// Handed over by the session that started this process.
-    Handed,
+    /// In memory for now: a lasting key exists and can't be had this run (the Keychain locked, a read refused, an item not this copy's, a key file that won't read). What's sealed with the lasting key is left as it is.
+    MemoryForNow,
 }
 
 impl Source {
@@ -30,14 +31,38 @@ impl Source {
         match self {
             Self::Keychain => "keychain",
             Self::StateFile => "state_file",
-            Self::Memory => "memory",
-            Self::Handed => "handed",
+            Self::Memory | Self::MemoryForNow => "memory",
         }
     }
 
     /// Whether what's sealed with it can be read by a later run.
     pub fn lasts(self) -> bool {
         matches!(self, Self::Keychain | Self::StateFile)
+    }
+
+    /// Whether a run on this key may throw away and build again over a corpus a lasting key sealed. Not when the lasting key is only out of reach for now: that corpus is the person's, for the next run that has its key.
+    pub fn may_replace_lasting(self) -> bool {
+        self != Self::MemoryForNow
+    }
+
+    /// The one byte it crosses a pipe as.
+    fn byte(self) -> u8 {
+        match self {
+            Self::Memory => 0,
+            Self::MemoryForNow => 1,
+            Self::Keychain => 2,
+            Self::StateFile => 3,
+        }
+    }
+
+    fn from_byte(byte: u8) -> Option<Self> {
+        Some(match byte {
+            0 => Self::Memory,
+            1 => Self::MemoryForNow,
+            2 => Self::Keychain,
+            3 => Self::StateFile,
+            _ => return None,
+        })
     }
 }
 
@@ -55,6 +80,15 @@ impl FindKey {
     /// When the OS gives no randomness, which leaves nothing to seal with: the caller indexes nothing.
     pub fn in_memory() -> io::Result<Self> {
         Self::fresh(Source::Memory)
+    }
+
+    /// A key for this run alone, when a lasting key exists and can't be had now: [`Source::MemoryForNow`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::in_memory`].
+    pub fn in_memory_for_now() -> io::Result<Self> {
+        Self::fresh(Source::MemoryForNow)
     }
 
     fn fresh(source: Source) -> io::Result<Self> {
@@ -132,26 +166,30 @@ impl FindKey {
         self.source
     }
 
-    /// Hands the key to a helper: 32 raw bytes on its stdin, before anything else is written there.
+    /// Hands the key to a helper: 32 raw bytes on its stdin, then one for its source, before anything else is written there. The source goes too, as what the helper seals says whether it lasts.
     ///
     /// # Errors
     ///
     /// When the pipe is closed.
     pub fn write_to(&self, pipe: &mut impl Write) -> io::Result<()> {
-        pipe.write_all(self.bytes.as_slice())
+        pipe.write_all(self.bytes.as_slice())?;
+        pipe.write_all(&[self.source.byte()])
     }
 
-    /// The helper's end: exactly 32 bytes, read straight into the key's own memory, so no buffer holds a copy. `stdin` must be read unbuffered for that: [`read_from_stdin`].
+    /// The helper's end: exactly 32 bytes, read straight into the key's own memory, so no buffer holds a copy, then its source's byte. `stdin` must be read unbuffered for that: [`read_from_stdin`].
     ///
     /// # Errors
     ///
-    /// When fewer than 32 bytes come.
+    /// When fewer than 33 bytes come, or the last isn't a source.
     pub fn read_from(pipe: &mut impl Read) -> io::Result<Self> {
         let mut key = Self {
             bytes: Box::new([0u8; KEY_BYTES]),
-            source: Source::Handed,
+            source: Source::Memory,
         };
         pipe.read_exact(key.bytes.as_mut_slice())?;
+        let mut source = [0u8; 1];
+        pipe.read_exact(&mut source)?;
+        key.source = Source::from_byte(source[0]).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not a source"))?;
         Ok(key)
     }
 
@@ -173,9 +211,11 @@ pub fn load_for_the_app(team: &str) -> Option<(FindKey, Option<&'static str>)> {
             Err(refused) => refused.code(),
         }
     } else {
-        keychain::Refused::NotTheTeam.code()
+        // This copy can never have the lasting key, so a run of it may build over what that key sealed.
+        return FindKey::in_memory().ok().map(|key| (key, Some(keychain::Refused::NotTheTeam.code())));
     };
-    FindKey::in_memory().ok().map(|key| (key, Some(refused)))
+    // The lasting key is there and out of reach for now: what it sealed is left as it is.
+    FindKey::in_memory_for_now().ok().map(|key| (key, Some(refused)))
 }
 
 /// The key from this process's stdin, read with no buffer in between: `std::io::stdin()` reads ahead into a buffer of its own, which would keep a copy of the key for the life of the process. Call it before anything else reads stdin.
@@ -260,7 +300,18 @@ mod tests {
         let mut reader = pipe.as_slice();
         let handed = FindKey::read_from(&mut reader).unwrap();
         assert_eq!(handed.bytes(), key.bytes());
-        assert_eq!(handed.source(), Source::Handed);
+        assert_eq!(
+            handed.source(),
+            key.source(),
+            "a handed key loses its session's source, so what the helper seals says it doesn't last"
+        );
+        for source in [Source::Memory, Source::MemoryForNow, Source::Keychain, Source::StateFile] {
+            assert_eq!(Source::from_byte(source.byte()), Some(source));
+        }
+        assert!(FindKey::read_from(&mut &[1u8; 32][..]).is_err(), "a key with no source was taken");
+        let mut bad = vec![1u8; 32];
+        bad.push(9);
+        assert!(FindKey::read_from(&mut bad.as_slice()).is_err(), "a source that isn't one was taken");
         assert_eq!(reader, b"{\"job\":1}\n", "the job after the key is left for the job's reader");
         assert!(FindKey::read_from(&mut &[1u8; 31][..]).is_err(), "a short key was taken");
     }

@@ -53,4 +53,17 @@ fn no_word_of_a_document_is_on_disk_as_it_is() {
         "the index the search read isn't the one on disk: {opened}"
     );
     assert_eq!(app.core().host.session.find_key_report()["source"], "state_file");
+    // Built by the real helper with the state folder's key, which lasts: its header says so, and a run on a key in memory leaves it (the security review of slices 2 and 3, S1: a key handed to the helper said it didn't last, so every such run swept the app's corpora).
+    let corpus = recto_index::corpus::CorpusPaths::new(&paths.corpus, CorpusKey::of_file(&file).unwrap());
+    let header = std::fs::read(corpus.app.join("seal.bin")).expect("the corpus's seal");
+    assert_eq!(
+        recto_index::seal::CorpusSeal::lasting(&header),
+        Some(true),
+        "the helper sealed with a key it said doesn't last"
+    );
+    recto_index::corpus::remove_unreadable(&FindKey::in_memory().unwrap(), &paths.corpus);
+    assert!(
+        corpus.app.join("seal.bin").is_file(),
+        "a run on a key in memory swept a corpus the lasting key sealed"
+    );
 }

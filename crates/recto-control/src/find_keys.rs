@@ -114,7 +114,8 @@ pub fn load(plan: &Plan) -> Loaded {
         Plan::StateFile(path) => match FindKey::from_state_file(path) {
             Ok(key) => Loaded { key: Some(key), why: None },
             Err(_) => Loaded {
-                key: FindKey::in_memory().ok(),
+                // The folder's key is there and won't read: what it sealed is left as it is.
+                key: FindKey::in_memory_for_now().ok(),
                 why: Some("state_file_unreadable"),
             },
         },
