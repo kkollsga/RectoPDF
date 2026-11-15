@@ -350,7 +350,10 @@ impl Inner {
             session
                 .tabs()
                 .iter()
-                .filter_map(|tab| Some((tab.id.0.to_string(), serde_json::to_value(session.list_record_anywhere(tab.id)?).ok()?)))
+                .filter_map(|tab| {
+                    let list = page_ids::without_digests(serde_json::to_value(session.list_record_anywhere(tab.id)?).ok()?);
+                    Some((tab.id.0.to_string(), list))
+                })
                 .collect::<serde_json::Map<_, _>>()
         });
         value["edits_full"] = Value::Object(lists);

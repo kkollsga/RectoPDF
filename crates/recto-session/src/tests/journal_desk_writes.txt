@@ -1,22 +1,22 @@
 has work: true
 == edits, undo and redo on two tabs
 append journal-9ccfbc814d8f7846.log 208 bytes
-8aca310a {"format":"recto-journal","version":1,"tab":1,"path":"/d/a.pdf","file":null,"file_pages":5,"base_seq":0,"saving":null}
+c378f5c1 {"format":"recto-journal","version":3,"tab":1,"path":"/d/a.pdf","file":null,"file_pages":5,"base_seq":0,"saving":null}
 2c9f90cf {"r":[0,1,1,"o"]}
 ed42a1b3 {"m":[0,1,2,"a"]}
 43a087cb "u"
 224fc659 "f"
 append journal-fccfeb8706d87b0f.log 153 bytes
-fe3cc3e7 {"format":"recto-journal","version":1,"tab":2,"path":"/d/b.pdf","file":null,"file_pages":5,"base_seq":0,"saving":null}
+b78e072c {"format":"recto-journal","version":3,"tab":2,"path":"/d/b.pdf","file":null,"file_pages":5,"base_seq":0,"saving":null}
 f352f203 {"d":[4,1,"o"]}
 == a refused write, then two more steps
 append journal-fccfeb8706d87b0f.log 54 bytes
 6252ca10 {"r":[0,2,3,"a"]}
 ed114f0f {"r":[1,1,1,"o"]}
 == a saved
-base journal-170ef1d00b92ebaf.log 507 bytes
-a135cc30 {"format":"recto-journal","version":1,"tab":1,"path":"/d/a.pdf","file":{"size":9,"mtime_ns":1,"device":1,"inode":2},"file_pages":5,"base_seq":6,"saving":null}
-1a0b3cab {"base":{"file_pages":5,"pages":[[0,0,5,0]],"added":[],"undo":[{"by":"o","step":{"rotate":{"start":0,"len":1,"quarter_turns":3}}},{"by":"a","step":{"move":{"start":2,"len":1,"to":0}}}],"redo":[],"history_dropped":false,"owner_step_dropped":false,"identities":{"pages":[{"p":0},{"p":1},{"p":2},{"p":3},{"p":4}],"over_cap":false}}}
+base journal-170ef1d00b92ebaf.log 477 bytes
+50e3ba8d {"format":"recto-journal","version":3,"tab":1,"path":"/d/a.pdf","file":{"size":9,"mtime_ns":1,"device":1,"inode":2},"file_pages":5,"base_seq":6,"saving":null}
+3794a6f3 {"base":{"file_pages":5,"pages":[[0,0,5,0]],"added":[],"undo":[{"by":"o","step":{"rotate":{"start":0,"len":1,"quarter_turns":3}}},{"by":"a","step":{"move":{"start":2,"len":1,"to":0}}}],"redo":[],"history_dropped":false,"owner_step_dropped":false,"identities":{"pages":[0,1,2,3,4],"over_cap":false}}}
 replaced journal-9ccfbc814d8f7846.log 0 bytes
 == an edit after the save
 append journal-170ef1d00b92ebaf.log 27 bytes
@@ -27,9 +27,9 @@ append journal-fccfeb8706d87b0f.log 27 bytes
 2c9f90cf {"r":[0,1,1,"o"]}
 == a closed with its history
 replaced journal-170ef1d00b92ebaf.log 0 bytes
-base journal-8a1b4df5e29f3f2c.log 575 bytes
-df68d584 {"format":"recto-journal","version":1,"tab":1,"path":"/d/a.pdf","file":{"size":10,"mtime_ns":1,"device":1,"inode":2},"file_pages":5,"base_seq":9,"saving":null}
-1e74fcb2 {"base":{"file_pages":5,"pages":[[0,0,5,0]],"added":[],"undo":[{"by":"o","step":{"rotate":{"start":0,"len":1,"quarter_turns":3}}},{"by":"a","step":{"move":{"start":2,"len":1,"to":0}}},{"by":"o","step":{"rotate":{"start":2,"len":1,"quarter_turns":2}}}],"redo":[],"history_dropped":false,"owner_step_dropped":false,"identities":{"pages":[{"p":0},{"p":1},{"p":2},{"p":3},{"p":4}],"over_cap":false}}}
+base journal-8a1b4df5e29f3f2c.log 545 bytes
+6a49ccc3 {"format":"recto-journal","version":3,"tab":1,"path":"/d/a.pdf","file":{"size":10,"mtime_ns":1,"device":1,"inode":2},"file_pages":5,"base_seq":9,"saving":null}
+5daa6d11 {"base":{"file_pages":5,"pages":[[0,0,5,0]],"added":[],"undo":[{"by":"o","step":{"rotate":{"start":0,"len":1,"quarter_turns":3}}},{"by":"a","step":{"move":{"start":2,"len":1,"to":0}}},{"by":"o","step":{"rotate":{"start":2,"len":1,"quarter_turns":2}}}],"redo":[],"history_dropped":false,"owner_step_dropped":false,"identities":{"pages":[0,1,2,3,4],"over_cap":false}}}
 retire sleep-170ef1d00b92ebaf.bin 0 bytes
 retire sleep-8a1b4df5e29f3f2c.bin 0 bytes
 taken up: journal-8a1b4df5e29f3f2c.log
@@ -42,6 +42,6 @@ lists by journal: [("journal-8a1b4df5e29f3f2c.log", EditsRecord { file_pages: 5,
 has work: false
 checkpoint journal-9ef274e474b2f5a5.log
 4617b6c1 {"format":"recto-journal","version":1,"tab":1,"path":"/d/p.pdf","file":null,"file_pages":5,"base_seq":0,"saving":null}
-fc7529a2 {"base":{"file_pages":5,"pages":[[0,0,1,1],[0,1,4,0]],"added":[],"undo":[{"by":"o","step":{"rotate":{"start":0,"len":1,"quarter_turns":3}}}],"redo":[],"history_dropped":false,"owner_step_dropped":false,"identities":{"pages":[{"p":0},{"p":1},{"p":2}],"over_cap":false}}}
-writes: 8, bytes: 1578
+2e69b0eb {"base":{"file_pages":5,"pages":[[0,0,1,1],[0,1,4,0]],"added":[],"undo":[{"by":"o","step":{"rotate":{"start":0,"len":1,"quarter_turns":3}}}],"redo":[],"history_dropped":false,"owner_step_dropped":false,"identities":{"pages":[0,1,2],"over_cap":false}}}
+writes: 8, bytes: 1518
 files left: ["journal-8a1b4df5e29f3f2c.log"]

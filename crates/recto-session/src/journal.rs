@@ -64,6 +64,7 @@ impl JournalDesk<'_> {
         let (tab, path, edits) = (self.tabs.tab(id)?, self.tabs.named_path(id)?, self.lists.get(id)?);
         let (through, ops) = edits.journal_waiting()?;
         let mut header = JournalHeader::new(id.0, &path, tab.file.stamp, tab.page_count, 0);
+        header.version = crate::identify::journal_version(tab, edits, header.version);
         header.saving = edits.saving().map(Into::into);
         // A journal starting again has all of it in its first line, whatever's come since.
         if let Some(replaces) = self.journals.fresh_of(id) {

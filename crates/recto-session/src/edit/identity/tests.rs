@@ -133,9 +133,9 @@ fn a_hostile_journals_identities_are_left_out_and_the_edits_kept() {
     found(&mut edits, &[(9, known(9))], None);
     let mut record = edits.to_record();
     for bad in [
-        |ids: &mut IdentitiesRecord| ids.pages[0].page = 99,
+        |ids: &mut IdentitiesRecord| ids.pages[0].0 = 99,
         |ids: &mut IdentitiesRecord| ids.pages.swap(0, 1),
-        |ids: &mut IdentitiesRecord| ids.pages[1].page = ids.pages[0].page,
+        |ids: &mut IdentitiesRecord| ids.pages[1].0 = ids.pages[0].0,
     ] {
         let mut forged = record.clone();
         bad(forged.identities.as_mut().unwrap());
@@ -144,8 +144,8 @@ fn a_hostile_journals_identities_are_left_out_and_the_edits_kept() {
         assert_eq!(back.slots(), edits.slots(), "the edits are kept");
     }
     let ids = record.identities.as_mut().unwrap();
-    let at = ids.pages.iter().position(|page| page.page == 9).unwrap();
-    ids.pages[at].digest = Some("not hex at all, and not 32 long".into());
+    let at = ids.pages.iter().position(|page| page.0 == 9).unwrap();
+    ids.pages[at].1 = Some("not a packed identity at all".into());
     let back = PageEdits::from_record(&record).unwrap();
     assert_eq!(identities(&back).unwrap().known(9), None, "a digest that isn't one is unread");
 }
@@ -183,4 +183,23 @@ fn a_journals_base_with_identities_is_read_by_an_app_from_before() {
     let parsed = parse_journal(&journal, JOURNAL_VERSION).unwrap();
     let (back, _) = PageEdits::replay(20, parsed.base.as_ref(), &parsed.ops).unwrap();
     assert_eq!(identities(&back).unwrap().known(9), Some(known(9)));
+}
+
+/// Failure caught: a page's packed identity doesn't read back as it went in (a byte of the digest, the object number or the frame lost or moved), so
+/// after a restart no edit could follow its page; or a string of the wrong length or alphabet reads as one.
+#[test]
+fn a_packed_identity_reads_back_exactly() {
+    for seed in [0u8, 1, 0x7f, 0xff] {
+        let known = Known {
+            digest: std::array::from_fn(|at| seed.wrapping_add(at as u8).wrapping_mul(37)),
+            object: (u32::from(seed) * 1_000_003 + 7, u16::from(seed) * 3),
+            frame: u32::from(seed).wrapping_mul(0x9e37_79b9),
+        };
+        let record = PageIdRecord::of(4, &known);
+        assert_eq!(record.1.as_deref().map(str::len), Some(35));
+        assert_eq!(record.known(), Some(known));
+    }
+    for bad in ["", "AAAA", "not+base64/url/at/all/but/35/chars", &"A".repeat(36)] {
+        assert_eq!(PageIdRecord(0, Some(bad.to_string())).known(), None, "{bad:?}");
+    }
 }

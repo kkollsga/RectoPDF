@@ -172,7 +172,7 @@ fn a_checkpoint_keeps_a_save_in_progress() {
     let (header, base) = s.journal_look().checkpoint_if_caught_up(a).unwrap();
     assert_eq!(header.saving, Some(target.into()));
     assert_eq!(header.keeping, Some(keeping.to_record()), "nor what it kept");
-    let parsed = record::parse_journal(&record::journal_start(&header, Some(&base)), record::CURRENT_VERSION).unwrap();
+    let parsed = record::parse_journal(&record::journal_start(&header, Some(&base)), record::JOURNAL_VERSION).unwrap();
     assert_eq!(parsed.header.saving, Some(target.into()));
 }
 

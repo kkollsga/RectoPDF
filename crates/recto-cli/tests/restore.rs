@@ -2229,7 +2229,7 @@ fn what_became_of_a_file_is_said_and_its_edits_stay() {
     assert!(quiet["rows"].is_array());
 }
 
-/// Failure: reading writes to the disk all the time, wearing it for nothing: SPEC's budget. At rest, 0 bytes. Scrolling for a while, at most a line, as a minute hasn't passed. A burst of edits, about what the steps come to and not a rewrite per step. Going to the background writes what changed, and nothing after that when nothing has.
+/// Failure: reading writes to the disk all the time, wearing it for nothing: SPEC's budget. At rest, 0 bytes. Scrolling for a while, at most a line, as a minute hasn't passed. A burst of edits, about what the steps come to (about 40 bytes each) and what each page they name is (about 48 bytes a page, once: the page matcher), and not a rewrite per step; the same pages turned again, the steps alone, as what a page is is never written twice. Going to the background writes what changed, and nothing after that when nothing has.
 #[test]
 fn it_writes_only_what_happened() {
     let state = State::new();
@@ -2253,22 +2253,47 @@ fn it_writes_only_what_happened() {
     let scrolling = written() - before;
     eprintln!("3 s of scrolling wrote {scrolling} bytes, including the activity log's line");
     assert!(scrolling < 32 * 1024, "{scrolling}");
-    // A scripted burst: each is a line of about 25 bytes, and they go out together in one append.
-    let before = run.ok(&["session", "show"])["record"]["wrote_bytes"].as_u64().unwrap();
-    for at in 0..50 {
-        run.ok(&["qa", "as-person", &format!("page rotate {} --by 90", at % 60 + 1)]);
-    }
-    let began = Instant::now();
-    let wrote = loop {
-        let now = run.ok(&["session", "show"])["record"]["wrote_bytes"].as_u64().unwrap() - before;
-        if now > 1000 {
-            break now;
-        }
-        assert!(began.elapsed() < Duration::from_secs(20));
-        std::thread::sleep(Duration::from_millis(100));
+    // A scripted burst: each is a line of about 25 bytes, and they go out together in one append. And what each page an edit names is (the page
+    // matcher), read once and written once, in about 48 bytes a page: the 50 turns of pages 1 to 50 name pages 1 to 52.
+    let wrote_since = |before: u64| run.ok(&["session", "show"])["record"]["wrote_bytes"].as_u64().unwrap() - before;
+    let named = || {
+        let ids = run.report()["session"]["edits_full"]["1"]["identities"].clone();
+        (ids["pages"].as_u64().unwrap_or(0), ids["read"].as_u64().unwrap_or(0))
     };
-    eprintln!("50 edits wrote {wrote} bytes to the journal");
-    assert!(wrote < 50 * 40 + 1000, "{wrote}");
+    // Waits for the burst's bytes: something written, every page named read, and nothing more written for 3 s (the journals go 2 s after the last change).
+    let burst = |before: u64| {
+        let began = Instant::now();
+        let (mut last, mut steady) = (0, 0);
+        loop {
+            let (now, (pages, read)) = (wrote_since(before), named());
+            steady = if now == last { steady + 1 } else { 0 };
+            last = now;
+            if now > 1000 && pages > 0 && read == pages && steady >= 30 {
+                return now;
+            }
+            assert!(began.elapsed() < Duration::from_secs(30), "wrote {now}, named {pages}, read {read}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let turn_fifty = || {
+        for at in 0..50 {
+            run.ok(&["qa", "as-person", &format!("page rotate {} --by 90", at % 60 + 1)]);
+        }
+    };
+    let before = run.ok(&["session", "show"])["record"]["wrote_bytes"].as_u64().unwrap();
+    turn_fifty();
+    let wrote = burst(before);
+    let (pages, _) = named();
+    eprintln!("50 edits naming {pages} pages wrote {wrote} bytes to the journal");
+    assert_eq!(pages, 52, "pages 1 to 50 and the pages either side");
+    assert!(wrote < 50 * 40 + pages * 48 + 1000, "{wrote}");
+    // The same pages turned again name none anew, so nothing is read or written of them again: the steps' lines alone.
+    let before = run.ok(&["session", "show"])["record"]["wrote_bytes"].as_u64().unwrap();
+    turn_fifty();
+    let again = burst(before);
+    eprintln!("the same 50 turned again wrote {again} bytes");
+    assert_eq!(named(), (52, 52));
+    assert!(again < 50 * 40 + 1000, "the pages' identities were written again: {again}");
     run.quit();
 }
 

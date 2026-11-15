@@ -366,12 +366,10 @@ fn record_seeds() -> Vec<Vec<u8>> {
         bytes.extend_from_slice(&recto_session::record::journal_lines(&[
             recto_session::record::JournalOp::Rotate(8, 1, 1, recto_session::record::AuthorName::Owner),
             recto_session::record::JournalOp::Identified(recto_session::edit::identity::IdentifiedRecord {
-                pages: vec![recto_session::edit::identity::PageIdRecord {
-                    page,
-                    digest: Some("00112233445566778899aabbccddeeff".into()),
-                    object: Some((20, 0)),
-                    frame: Some(7),
-                }],
+                pages: vec![recto_session::edit::identity::PageIdRecord(
+                    0,
+                    Some("ABEiM0RVZneImaq7zN3u_wQAAAAAAAcAAAA".into()),
+                )],
                 document: None,
             }),
         ]));

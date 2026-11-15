@@ -2638,12 +2638,10 @@ mod tests {
         let folder = root.join("session").join(JOURNALS);
         let identified = || {
             JournalOp::Identified(recto_session::edit::identity::IdentifiedRecord {
-                pages: vec![recto_session::edit::identity::PageIdRecord {
-                    page: 0,
-                    digest: Some("00112233445566778899aabbccddeeff".into()),
-                    object: Some((4, 0)),
-                    frame: Some(7),
-                }],
+                pages: vec![recto_session::edit::identity::PageIdRecord(
+                    0,
+                    Some("ABEiM0RVZneImaq7zN3u_wQAAAAAAAcAAAA".into()),
+                )],
                 document: None,
             })
         };

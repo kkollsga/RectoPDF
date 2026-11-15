@@ -84,3 +84,14 @@ impl PageIds {
         }
     }
 }
+
+/// **A list's record as QA reads it, with what its pages are said only as counts:** a digest is of a document's content, and `qa state` is read by an
+/// agent (at Full, in a development build), so the named pages are how many, how many read, and whether some couldn't be.
+pub(crate) fn without_digests(mut list: serde_json::Value) -> serde_json::Value {
+    if let Some(ids) = list.get_mut("identities") {
+        let pages = ids["pages"].as_array().map_or(0, Vec::len);
+        let read = ids["pages"].as_array().map_or(0, |pages| pages.iter().filter(|page| page.is_array()).count());
+        *ids = serde_json::json!({ "pages": pages, "read": read, "over_cap": ids["over_cap"] });
+    }
+    list
+}

@@ -59,6 +59,18 @@ fn readable<L: DocLoader>(session: &Session<L>, id: TabId) -> Option<(PathBuf, F
     Some((session.tabs.path_of(id)?, tab.file.stamp?))
 }
 
+/// **The version a new journal starts at:** [`crate::record::JOURNAL_VERSION`] where its list names pages that will be read, as what's read of them is
+/// written to it within moments of its first lines, and a journal made at an older version then has its header written again over everything it holds
+/// so far (`recto-control`'s record store, `journal_marked_at`), which the SSD-wear budget counts; `otherwise` where nothing will be.
+pub fn journal_version(tab: &crate::TabRecord, edits: &crate::edit::PageEdits, otherwise: u32) -> u32 {
+    let readable = !crate::registry::withheld_tab(tab) && !tab.renderer_only;
+    if readable && identity::identities(edits).is_some_and(|ids| !ids.pages().is_empty()) {
+        crate::record::JOURNAL_VERSION
+    } else {
+        otherwise
+    }
+}
+
 /// Whether there's anything for [`work`]: a look at the edited tabs' lists alone, which the session thread asks after an edit.
 pub fn has_work<L: DocLoader>(session: &Session<L>) -> bool {
     session.lists.iter().any(|(id, edits)| {

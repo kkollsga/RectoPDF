@@ -78,3 +78,78 @@ fn a_password_opened_documents_pages_are_never_read() {
     app.wait_until("the edit in its journal", || journal(&app, id).is_some_and(|journal| !journal.ops.is_empty()));
     assert!(!has_identified(journal(&app, id)), "no line of what its pages are");
 }
+
+/// **Failure caught: a page's digest reaches an agent, the person's window, or a log** (the coordinator's rule, 2026-11-15: a digest is of a document's
+/// content; `qa state` printed every named page's, in hex, until slice 1's review of its own full check). A tab whose pages are named and read, by the
+/// person's edit and an agent's at Full: no digest, in hex, or packed as the journal keeps it, or its first 21 characters (the digest's part of the
+/// packed string), is in any answer an agent gets at Full, `qa state`, any event, what the window is given, the Debug print of the list or
+/// its record, or any file of the state folder but the journals, which keep them by design.
+#[test]
+fn no_digest_reaches_an_answer_an_event_the_window_or_a_log() {
+    let app = HeadlessApp::start();
+    let file = app.disk().pdf("doc.pdf", 10);
+    app.open(&file);
+    app.hear_events();
+    app.person(r#"{"cmd":"page_rotate","tab":"active","pages":"3","degrees":90}"#);
+    app.recto(Level::Full, &["page", "rotate", "8", "--by", "90"]).expect("rotated");
+    app.wait_until("the edited pages read", || {
+        let pages = named(&app).1;
+        !pages.is_empty() && pages.iter().all(|(_, read)| *read)
+    });
+    app.advance(6_000);
+    let (id, _) = named(&app);
+    app.wait_until("what was read in the journal", || has_identified(journal(&app, id)));
+    // What would give a digest away: each page's, in hex, packed, and the packed string's digest part.
+    let (secrets, debug) = app.core().host.session.with_session(|session| {
+        let edits = session.lists().get(id).expect("the list");
+        let mut secrets: Vec<String> = identity::identities(edits)
+            .expect("named")
+            .pages()
+            .iter()
+            .filter_map(|(_, known)| known.map(|known| known.digest.iter().map(|byte| format!("{byte:02x}")).collect()))
+            .collect();
+        for page in edits.to_record().identities.expect("named").pages {
+            let packed = page.1.expect("read");
+            secrets.push(packed[..21].to_string());
+            secrets.push(packed);
+        }
+        (secrets, format!("{edits:?} {:?}", edits.to_record()))
+    });
+    assert!(secrets.len() >= 12, "{secrets:?}");
+    let mut seen = vec![("Debug of the list and its record".to_string(), debug)];
+    for words in [&["tabs"][..], &["where"], &["edits"], &["session", "show"], &["pages"], &["undo"], &["redo"]] {
+        let answer = app
+            .recto(Level::Full, words)
+            .map_or_else(|error| format!("{error:?}"), |answer| answer.to_string());
+        seen.push((format!("recto {}", words.join(" ")), answer));
+    }
+
+    // `qa state`'s session and record are these two, which the real app's QA bridge answers with (a headless core has no bridge to ask through).
+    let session = app.session_json().to_string();
+    assert!(session.contains("identities"), "qa state's session says the named pages");
+    seen.push(("qa state's session".into(), session));
+    seen.push(("qa state's record".into(), app.record_json().to_string()));
+    seen.push(("events".into(), format!("{:?}", app.heard_events())));
+    seen.push(("what the host heard".into(), format!("{:?}", app.heard())));
+    seen.push(("the window's reader".into(), format!("{:?}", app.reader())));
+    seen.push(("the sidebar".into(), format!("{:?}", app.sidebar())));
+    let state = app.core().saver.store.main_folder();
+    let mut folders = vec![state];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_none_or(|name| name != "journals") {
+                    folders.push(path);
+                }
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                seen.push((path.display().to_string(), String::from_utf8_lossy(&bytes).into_owned()));
+            }
+        }
+    }
+    for (what, text) in &seen {
+        for secret in &secrets {
+            assert!(!text.contains(secret.as_str()), "a digest ({secret}) in {what}");
+        }
+    }
+}

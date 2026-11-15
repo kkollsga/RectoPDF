@@ -258,7 +258,7 @@ pub(super) fn replayed(edits: &mut PageEdits, record: &IdentifiedRecord) {
     let Some(ids) = edits.identities.as_deref_mut() else { return };
     for page in &record.pages {
         if let Some(known) = page.known()
-            && let Ok(at) = ids.pages.binary_search_by_key(&page.page, |(at, _)| *at)
+            && let Ok(at) = ids.pages.binary_search_by_key(&page.0, |(at, _)| *at)
         {
             ids.pages[at].1 = Some(known);
         }
@@ -283,12 +283,7 @@ pub(super) fn to_record(edits: &PageEdits) -> Option<IdentitiesRecord> {
             .iter()
             .map(|(page, known)| match known {
                 Some(known) => PageIdRecord::of(*page, known),
-                None => PageIdRecord {
-                    page: *page,
-                    digest: None,
-                    object: None,
-                    frame: None,
-                },
+                None => PageIdRecord(*page, None),
             })
             .collect(),
         over_cap: ids.over_cap,
@@ -300,12 +295,12 @@ pub(super) fn to_record(edits: &PageEdits) -> Option<IdentitiesRecord> {
 /// none of it can be trusted to be the list's. Nothing else of the list depends on them.
 pub(super) fn from_record(record: Option<&IdentitiesRecord>, file_pages: u32) -> Option<Box<Identities>> {
     let record = record?;
-    let ordered = record.pages.windows(2).all(|pair| pair[0].page < pair[1].page);
-    if !ordered || record.pages.len() > MAX_IDENTIFIED || record.pages.iter().any(|page| page.page >= file_pages) {
+    let ordered = record.pages.windows(2).all(|pair| pair[0].0 < pair[1].0);
+    if !ordered || record.pages.len() > MAX_IDENTIFIED || record.pages.iter().any(|page| page.0 >= file_pages) {
         return None;
     }
     Some(Box::new(Identities {
-        pages: record.pages.iter().map(|page| (page.page, page.known())).collect(),
+        pages: record.pages.iter().map(|page| (page.0, page.known())).collect(),
         over_cap: record.over_cap,
         document: record.document.as_ref().and_then(DocumentRecord::ids),
     }))
@@ -337,7 +332,7 @@ impl std::fmt::Debug for IdentitiesRecord {
         formatter
             .debug_struct("IdentitiesRecord")
             .field("pages", &self.pages.len())
-            .field("read", &self.pages.iter().filter(|page| page.digest.is_some()).count())
+            .field("read", &self.pages.iter().filter(|page| page.1.is_some()).count())
             .field("over_cap", &self.over_cap)
             .finish_non_exhaustive()
     }
@@ -352,37 +347,99 @@ impl std::fmt::Debug for IdentifiedRecord {
     }
 }
 
-/// One named page: its number in the file, and, once read, its digest (32 hex digits), object number and frame tag.
+/// One named page: its number in the file (`12`), and, once read, what it is, as one string (`[12,"…"]`): the 16 bytes of its digest, its object
+/// number (4 bytes) and generation (2) and its frame tag (4), little-endian, in base64url with no padding, 35 characters. Compact because a journal
+/// gets it for every page an edit names (the SSD-wear budget, `recto-cli`'s `it_writes_only_what_happened`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PageIdRecord {
-    #[serde(rename = "p")]
-    pub page: u32,
-    #[serde(rename = "d", default, skip_serializing_if = "Option::is_none")]
-    pub digest: Option<String>,
-    #[serde(rename = "o", default, skip_serializing_if = "Option::is_none")]
-    pub object: Option<(u32, u16)>,
-    #[serde(rename = "f", default, skip_serializing_if = "Option::is_none")]
-    pub frame: Option<u32>,
+#[serde(from = "PageIdWire", into = "PageIdWire")]
+pub struct PageIdRecord(pub u32, pub Option<String>);
+
+/// [`PageIdRecord`] as it's written: the page alone, or the page and what it is.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum PageIdWire {
+    Named(u32),
+    Read(u32, String),
 }
+
+impl From<PageIdWire> for PageIdRecord {
+    fn from(wire: PageIdWire) -> Self {
+        match wire {
+            PageIdWire::Named(page) => Self(page, None),
+            PageIdWire::Read(page, packed) => Self(page, Some(packed)),
+        }
+    }
+}
+
+impl From<PageIdRecord> for PageIdWire {
+    fn from(record: PageIdRecord) -> Self {
+        match record.1 {
+            None => Self::Named(record.0),
+            Some(packed) => Self::Read(record.0, packed),
+        }
+    }
+}
+
+/// Bytes in a page's packed identity.
+const PACKED: usize = 26;
 
 impl PageIdRecord {
     fn of(page: u32, known: &Known) -> Self {
-        Self {
-            page,
-            digest: Some(hex(&known.digest)),
-            object: Some(known.object),
-            frame: Some(known.frame),
-        }
+        let mut packed = [0u8; PACKED];
+        packed[..16].copy_from_slice(&known.digest);
+        packed[16..20].copy_from_slice(&known.object.0.to_le_bytes());
+        packed[20..22].copy_from_slice(&known.object.1.to_le_bytes());
+        packed[22..].copy_from_slice(&known.frame.to_le_bytes());
+        Self(page, Some(base64url(&packed)))
     }
 
-    /// What's known of the page, if all of it's there and the digest is 32 hex digits.
+    /// What's known of the page, if it's been read and its string is a packed identity.
     fn known(&self) -> Option<Known> {
+        let packed = unbase64url::<PACKED>(self.1.as_deref()?)?;
+        let at = |range: std::ops::Range<usize>| packed.get(range);
         Some(Known {
-            digest: unhex(self.digest.as_deref()?)?,
-            object: self.object?,
-            frame: self.frame?,
+            digest: at(0..16)?.try_into().ok()?,
+            object: (
+                u32::from_le_bytes(at(16..20)?.try_into().ok()?),
+                u16::from_le_bytes(at(20..22)?.try_into().ok()?),
+            ),
+            frame: u32::from_le_bytes(at(22..26)?.try_into().ok()?),
         })
     }
+}
+
+const BASE64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+fn base64url(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (at, byte)| n | (u32::from(*byte) << (16 - 8 * at)));
+        for at in 0..=chunk.len() {
+            out.push(char::from(BASE64URL[((n >> (18 - 6 * at)) & 63) as usize]));
+        }
+    }
+    out
+}
+
+/// Exactly `N` bytes from base64url with no padding, or nothing: any other length or character isn't one.
+fn unbase64url<const N: usize>(text: &str) -> Option<[u8; N]> {
+    if text.len() != N.div_ceil(3) * 4 - (3 - N % 3) % 3 {
+        return None;
+    }
+    let value = |c: u8| BASE64URL.iter().position(|b| *b == c).map(|at| at as u32);
+    let mut out = [0u8; N];
+    let mut written = 0;
+    for chunk in text.as_bytes().chunks(4) {
+        let mut n = 0u32;
+        for (at, c) in chunk.iter().enumerate() {
+            n |= value(*c)? << (18 - 6 * at);
+        }
+        for at in 0..chunk.len() - 1 {
+            *out.get_mut(written)? = (n >> (16 - 8 * at)) as u8;
+            written += 1;
+        }
+    }
+    (written == N).then_some(out)
 }
 
 /// A document's `/ID` pair, as two tags of 32 hex digits.
