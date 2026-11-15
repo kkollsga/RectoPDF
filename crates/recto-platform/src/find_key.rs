@@ -208,14 +208,21 @@ pub fn load_for_the_app(team: &str) -> Option<(FindKey, Option<&'static str>)> {
     let refused = if keychain::signed_as_a_release(team) {
         match keychain::load_or_create(keychain::SERVICE, keychain::ACCOUNT) {
             Ok(key) => return Some((key, None)),
-            Err(refused) => refused.code(),
+            Err(refused) => refused,
         }
     } else {
-        // This copy can never have the lasting key, so a run of it may build over what that key sealed.
-        return FindKey::in_memory().ok().map(|key| (key, Some(keychain::Refused::NotTheTeam.code())));
+        keychain::Refused::NotTheTeam
     };
-    // The lasting key is there and out of reach for now: what it sealed is left as it is.
-    FindKey::in_memory_for_now().ok().map(|key| (key, Some(refused)))
+    FindKey::fresh(fallback_source(refused)).ok().map(|key| (key, Some(refused.code())))
+}
+
+/// **Which key a run of the app goes on with when the Keychain gave none, by why** (the decision apart from the Keychain, so it's tested both ways): a copy that's not the team's release can never have the lasting key, so its key in memory may build over what that key sealed ([`Source::Memory`]); any other refusal means the lasting key may be there and is out of reach for now, so what it sealed is left as it is ([`Source::MemoryForNow`]).
+fn fallback_source(refused: keychain::Refused) -> Source {
+    if refused == keychain::Refused::NotTheTeam {
+        Source::Memory
+    } else {
+        Source::MemoryForNow
+    }
 }
 
 /// The key from this process's stdin, read with no buffer in between: `std::io::stdin()` reads ahead into a buffer of its own, which would keep a copy of the key for the life of the process. Call it before anything else reads stdin.
@@ -287,6 +294,30 @@ mod keychain;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure (the second review's item 4, 2026-11-15): the app's key after a Keychain refusal is the wrong kind either way. A copy that's not the team's release gets a key only for now, so it can never build over a corpus it can't read; or a release whose Keychain is locked, or whose item can't be read, gets one that may replace, so the person's index is thrown away for a moment's refusal.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_refusal_gives_the_key_its_reason_says() {
+        use keychain::Refused;
+        let table = [
+            (Refused::NotTheTeam, Source::Memory),
+            (Refused::Unavailable, Source::MemoryForNow),
+            (Refused::Unreadable(-25293), Source::MemoryForNow),
+            (Refused::Unreadable(-25308), Source::MemoryForNow),
+            (Refused::NotAKey, Source::MemoryForNow),
+            (Refused::NoRandomness, Source::MemoryForNow),
+            (Refused::Other(-1), Source::MemoryForNow),
+        ];
+        for (refused, source) in table {
+            assert_eq!(fallback_source(refused), source, "{refused:?}");
+            assert_eq!(
+                fallback_source(refused).may_replace_lasting(),
+                refused == Refused::NotTheTeam,
+                "{refused:?}"
+            );
+        }
+    }
 
     /// Failure: a key can be printed, or two runs get the same key from nothing, or a key handed over arrives as something else.
     #[test]
