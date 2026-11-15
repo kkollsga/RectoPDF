@@ -1,4 +1,4 @@
-//! `recto-indexer`: builds one document's search corpus, and exits. Started by the session, one at a time. It takes its job as one line on stdin, so a file's name stays out of `ps`, and it ends as soon as stdin closes, so it doesn't outlive whoever started it however they ended. It says how it went as one line of JSON on stdout. Anything else, such as being killed, is safe: `recto_index::corpus` goes on from where it stopped next time.
+//! `recto-indexer`: builds one document's search corpus, and exits. Started by the session, one at a time. It takes the Find key as 32 bytes on stdin, read with no buffer so nothing else holds a copy, then its job as one line, so a file's name stays out of `ps`, and it ends as soon as stdin closes, so it doesn't outlive whoever started it however they ended. It says how it went as one line of JSON on stdout. Anything else, such as being killed, is safe: `recto_index::corpus` goes on from where it stopped next time.
 //!
 //! It holds no PDFium. Pages come from a worker like any other, under limits of its own. It's a process of its own, rather than a thread in the session, because what it uses goes when it exits, and a page of two million characters takes tens of megabytes to read: the session's footprint stays where it was.
 
@@ -208,6 +208,13 @@ fn outcome_json(outcome: &BuildOutcome) -> Value {
 }
 
 fn main() {
+    // It holds the key and pages' text, so a crash leaves no image of its memory.
+    recto_platform::find_key::forbid_core_dumps();
+    // First, before anything reads stdin through its buffer. Never in the arguments, the environment or a file.
+    let Ok(find_key) = recto_platform::find_key::read_from_stdin() else {
+        say(&json!({ "state": "failed", "code": "bad_job" }));
+        return;
+    };
     let Some(job) = job() else {
         say(&json!({ "state": "failed", "code": "bad_job" }));
         return;
@@ -239,7 +246,7 @@ fn main() {
         Err(OpenError::PasswordNeeded) => {
             let mut feed = RefusedFeed("needs_password");
             report(
-                corpus::build_for_file(&file, &root, key, &mut feed, &DocMeta::default(), &limits),
+                corpus::build_for_file(&find_key, &file, &root, key, &mut feed, &DocMeta::default(), &limits),
                 RenderStats::default(),
                 0,
             );
@@ -254,7 +261,7 @@ fn main() {
         check_hidden: true,
         hidden_check_failures: 0,
     };
-    let built = corpus::build_for_file(&file, &root, key, &mut feed, &meta, &limits);
+    let built = corpus::build_for_file(&find_key, &file, &root, key, &mut feed, &meta, &limits);
     report(built, feed.stats(), feed.hidden_check_failures);
 }
 

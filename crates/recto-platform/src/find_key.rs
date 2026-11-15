@@ -165,6 +165,16 @@ pub fn read_from_stdin() -> io::Result<FindKey> {
     FindKey::read_from(&mut io::stdin())
 }
 
+/// For a process that holds the key or pages' text: a crash leaves no image of its memory. macOS writes none unless the limit's raised, and this lowers it for good whatever the shell set. A crash report still carries registers and the stack's addresses, not memory.
+pub fn forbid_core_dumps() {
+    #[cfg(target_os = "macos")]
+    {
+        let none = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        // SAFETY: a plain call with a value on the stack.
+        let _ = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &none) };
+    }
+}
+
 impl Drop for FindKey {
     fn drop(&mut self) {
         self.bytes.fill(0);

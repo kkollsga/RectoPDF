@@ -76,8 +76,9 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
     ),
     (
         "recto-index/src/corpus.rs",
-        5,
-        "the index's own files under the app's index folder: its table and pack written and read, and its lock",
+        7,
+        "the index's own files under the app's index folder: its table and pack written and read, and its lock; the pack read again to add up a \
+         build's sealed records and to find the pages a retry reads",
     ),
     (
         "recto-platform/src/bin/recto-sandbox-probe.rs",

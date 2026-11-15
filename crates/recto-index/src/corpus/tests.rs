@@ -1,4 +1,10 @@
 use super::*;
+
+/// The Find key these tests seal with.
+fn tk() -> &'static FindKey {
+    static KEY: std::sync::OnceLock<FindKey> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| FindKey::for_tests(9))
+}
 /// A folder of its own, private and removed at the end.
 struct Temp(recto_testpdf::TempDir);
 
@@ -127,13 +133,49 @@ fn every_file(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     found
 }
 
-/// Only what's the document's or what it costs, leaving out when things happened.
+/// Only what's the document's or what it costs, leaving out when things happened: every page as it opens, the title and outline, the summary but its time, the agent folder's files, and the pack's and table's lengths. Sealed bytes differ from one build to the next by design (new nonces, a new seal), so what's the same is what they open to.
 fn built_files(root: &Path, key: CorpusKey) -> Vec<(PathBuf, Vec<u8>)> {
     let paths = CorpusPaths::new(root, key);
-    every_file(&paths.dir)
-        .into_iter()
-        .filter(|(name, _)| !name.ends_with("used") && !name.ends_with("build.lock") && !name.ends_with("ready.json"))
-        .collect()
+    let agent = if paths.agent.is_dir() { every_file(&paths.agent) } else { Vec::new() };
+    let mut out: Vec<(PathBuf, Vec<u8>)> = agent.into_iter().map(|(name, bytes)| (Path::new("agent").join(name), bytes)).collect();
+    let Ok(Some(corpus)) = ReadyCorpus::open(tk(), root, key) else {
+        return out;
+    };
+    let mut buffer = Vec::new();
+    for page in 0..corpus.pages() {
+        let stored = corpus.page(page, &mut buffer).unwrap();
+        let view = format!(
+            "{:?} {} {} {} {} {:?} {:?} {:?}",
+            stored.kind,
+            stored.hidden_checked,
+            stored.hidden_flagged,
+            stored.has_tag_chars,
+            stored.spans_dropped,
+            stored.reason,
+            stored.also_spelled(),
+            stored.hidden_spans()
+        );
+        out.push((PathBuf::from(format!("page {page}")), [view.as_bytes(), b"\n", stored.text.as_bytes()].concat()));
+    }
+    let meta = read_sealed_json(&corpus.seal, &paths.meta, Purpose::Meta).unwrap();
+    out.push((PathBuf::from("meta"), meta.to_string().into_bytes()));
+    let mut summary = corpus.summary.clone();
+    summary.retried_at = 0;
+    out.push((PathBuf::from("summary"), format!("{summary:?}").into_bytes()));
+    out.push((
+        PathBuf::from("lengths"),
+        format!("{} {}", fs::metadata(&paths.pack).unwrap().len(), fs::metadata(&paths.table).unwrap().len()).into_bytes(),
+    ));
+    out.sort();
+    out
+}
+
+/// Changes what a finished corpus's sealed summary says, and seals it again, as a test's way to move its clock.
+fn edit_summary(paths: &CorpusPaths, edit: impl FnOnce(&mut Value)) {
+    let seal = read_seal(tk(), paths).unwrap();
+    let mut ready = read_sealed_json(&seal, &paths.ready, Purpose::Summary).unwrap();
+    edit(&mut ready);
+    write_sealed(&seal, &paths.ready, Purpose::Summary, ready.to_string().as_bytes(), false).unwrap();
 }
 
 /// Failure: a replaced file answers from its old text, because its size and modification time were put back. A copy with `cp -p` over the top, or a save that keeps the time, must look like a new file, and the same file looked at twice like the same one.
@@ -253,7 +295,7 @@ fn the_folder_is_what_an_agent_will_read() {
         renderer_only: false,
         file_bytes: 12,
     };
-    let BuildOutcome::Ready { summary, stats } = build(&root, key, &mut FakeFeed::new(&pages), &meta, &BuildLimits::default()).unwrap() else {
+    let BuildOutcome::Ready { summary, stats } = build(tk(), &root, key, &mut FakeFeed::new(&pages), &meta, &BuildLimits::default()).unwrap() else {
         panic!()
     };
     assert_eq!((stats.pages_built, stats.pages_resumed), (4, 0));
@@ -263,7 +305,7 @@ fn the_folder_is_what_an_agent_will_read() {
     );
     let paths = CorpusPaths::new(&root, key);
     assert!(!paths.agent.exists(), "a build keeps the text once");
-    ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap();
+    ensure_agent_folder(tk(), &root, key, &BuildLimits::default()).unwrap();
     let page = |number: u32| fs::read_to_string(paths.page_file(number, 4)).unwrap();
     assert!(paths.page_file(0, 4).ends_with("agent/pages/0001.md"), "{:?}", paths.page_file(0, 4));
     let first = page(0);
@@ -353,6 +395,7 @@ fn a_page_with_more_hidden_text_than_marks_says_so() {
     let root = temp.0.join("corpus");
     let many: &'static str = Box::leak("#abc| x\n".repeat(crate::MAX_HIDDEN_SPANS + 3).into_boxed_str());
     build(
+        tk(),
         &root,
         key,
         &mut FakeFeed::new(&[Fake::Text(many), PLAIN]),
@@ -361,7 +404,7 @@ fn a_page_with_more_hidden_text_than_marks_says_so() {
     )
     .unwrap();
     let paths = CorpusPaths::new(&root, key);
-    ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap();
+    ensure_agent_folder(tk(), &root, key, &BuildLimits::default()).unwrap();
     let first_line = |page: u32| fs::read_to_string(paths.page_file(page, 4)).unwrap().lines().next().unwrap().to_string();
     assert!(first_line(0).contains(" spans=partial"), "{}", first_line(0));
     assert!(!first_line(1).contains("spans="), "{}", first_line(1));
@@ -417,10 +460,10 @@ fn a_finished_corpus_reads_back_exactly() {
         page_of(Vec::new(), true),
     ]);
     assert!(matches!(
-        build(&root, key, &mut feed, &DocMeta::default(), &BuildLimits::default()).unwrap(),
+        build(tk(), &root, key, &mut feed, &DocMeta::default(), &BuildLimits::default()).unwrap(),
         BuildOutcome::Ready { .. }
     ));
-    let corpus = ReadyCorpus::open(&root, key).unwrap().unwrap();
+    let corpus = ReadyCorpus::open(tk(), &root, key).unwrap().unwrap();
     assert_eq!(corpus.pages(), 5);
     let mut buffer = Vec::new();
     {
@@ -470,30 +513,30 @@ fn a_stopped_build_isnt_used_and_going_on_comes_out_the_same() {
         Fake::Unchecked("the last page"),
     ];
     assert!(matches!(
-        build(&root_a, key, &mut FakeFeed::new(&whole), &DocMeta::default(), &BuildLimits::default()).unwrap(),
+        build(tk(), &root_a, key, &mut FakeFeed::new(&whole), &DocMeta::default(), &BuildLimits::default()).unwrap(),
         BuildOutcome::Ready { .. }
     ));
 
     let mut stopped = whole.clone();
     stopped[4] = Fake::Stop;
     assert_eq!(
-        build(&root_b, key, &mut FakeFeed::new(&stopped), &DocMeta::default(), &BuildLimits::default()).unwrap(),
+        build(tk(), &root_b, key, &mut FakeFeed::new(&stopped), &DocMeta::default(), &BuildLimits::default()).unwrap(),
         BuildOutcome::Paused("stopped_here")
     );
-    assert_eq!(disk_state(&root_b, key), DiskState::Partial { pages_done: 4 });
+    assert_eq!(disk_state(tk(), &root_b, key), DiskState::Partial { pages_done: 4 });
     assert_eq!(
-        ReadyCorpus::open(&root_b, key).unwrap().map(|corpus| corpus.pages()),
+        ReadyCorpus::open(tk(), &root_b, key).unwrap().map(|corpus| corpus.pages()),
         None,
         "half a document must not answer"
     );
     assert_eq!(
-        ensure_agent_folder(&root_b, key, &BuildLimits::default()),
+        ensure_agent_folder(tk(), &root_b, key, &BuildLimits::default()),
         Err(AgentFolderError::NotReady),
         "and an agent can't be handed half of one"
     );
 
     let mut feed = FakeFeed::new(&whole);
-    let BuildOutcome::Ready { stats, .. } = build(&root_b, key, &mut feed, &DocMeta::default(), &BuildLimits::default()).unwrap() else {
+    let BuildOutcome::Ready { stats, .. } = build(tk(), &root_b, key, &mut feed, &DocMeta::default(), &BuildLimits::default()).unwrap() else {
         panic!()
     };
     assert_eq!((stats.pages_resumed, stats.pages_built, feed.reads), (4, 2, 2), "only the rest is read");
@@ -507,7 +550,7 @@ fn a_torn_end_is_cut_back_to_the_last_good_page() {
     let key = key_of(&temp, b"a file");
     let whole = [PLAIN, Fake::Text("page #two has this| in it"), Fake::Text("page three"), PLAIN];
     let (clean_root, torn) = (temp.0.join("clean"), temp.0.join("torn"));
-    build(&clean_root, key, &mut FakeFeed::new(&whole), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    build(tk(), &clean_root, key, &mut FakeFeed::new(&whole), &DocMeta::default(), &BuildLimits::default()).unwrap();
     let clean = built_files(&clean_root, key);
     let paths = CorpusPaths::new(&torn, key);
     let stop_at = |stop: usize| {
@@ -562,11 +605,11 @@ fn a_torn_end_is_cut_back_to_the_last_good_page() {
     ];
     for (what, tear, expected) in tears {
         let _ = fs::remove_dir_all(&torn);
-        build(&torn, key, &mut FakeFeed::new(&stop_at(3)), &DocMeta::default(), &BuildLimits::default()).unwrap();
+        build(tk(), &torn, key, &mut FakeFeed::new(&stop_at(3)), &DocMeta::default(), &BuildLimits::default()).unwrap();
         tear(&paths);
         let mut feed = FakeFeed::new(&whole);
         let BuildOutcome::Ready { stats, .. } =
-            build(&torn, key, &mut feed, &DocMeta::default(), &BuildLimits::default()).unwrap_or_else(|error| panic!("{what}: {error}"))
+            build(tk(), &torn, key, &mut feed, &DocMeta::default(), &BuildLimits::default()).unwrap_or_else(|error| panic!("{what}: {error}"))
         else {
             panic!("{what}")
         };
@@ -594,12 +637,12 @@ fn a_protected_document_leaves_no_text_behind() {
         }
     }
     assert_eq!(
-        build(&root, key, &mut Locked, &DocMeta::default(), &BuildLimits::default()).unwrap(),
+        build(tk(), &root, key, &mut Locked, &DocMeta::default(), &BuildLimits::default()).unwrap(),
         BuildOutcome::Refused("needs_password".to_string())
     );
-    assert_eq!(disk_state(&root, key), DiskState::Refused("needs_password".to_string()));
+    assert_eq!(disk_state(tk(), &root, key), DiskState::Refused("needs_password".to_string()));
     assert_eq!(
-        build(&root, key, &mut Locked, &DocMeta::default(), &BuildLimits::default()).unwrap(),
+        build(tk(), &root, key, &mut Locked, &DocMeta::default(), &BuildLimits::default()).unwrap(),
         BuildOutcome::Refused("needs_password".to_string()),
         "not tried again"
     );
@@ -610,7 +653,7 @@ fn a_protected_document_leaves_no_text_behind() {
     let key = key_of(&temp, b"another");
     let late = [Fake::Text("words that must not stay"), Fake::Refuse];
     assert_eq!(
-        build(&root, key, &mut FakeFeed::new(&late), &DocMeta::default(), &BuildLimits::default()).unwrap(),
+        build(tk(), &root, key, &mut FakeFeed::new(&late), &DocMeta::default(), &BuildLimits::default()).unwrap(),
         BuildOutcome::Refused("needs_password".to_string())
     );
     for (name, bytes) in every_file(&CorpusPaths::new(&root, key).dir) {
@@ -630,12 +673,12 @@ fn a_document_too_large_to_keep_is_refused_and_cleaned_up() {
     };
     let pages = vec![PLAIN; 100];
     assert_eq!(
-        build(&root, key, &mut FakeFeed::new(&pages), &DocMeta::default(), &limits).unwrap(),
+        build(tk(), &root, key, &mut FakeFeed::new(&pages), &DocMeta::default(), &limits).unwrap(),
         BuildOutcome::Refused("too_large".to_string())
     );
     let paths = CorpusPaths::new(&root, key);
     assert!(!paths.pack.exists() && !paths.agent.exists());
-    assert_eq!(disk_state(&root, key), DiskState::Refused("too_large".to_string()));
+    assert_eq!(disk_state(tk(), &root, key), DiskState::Refused("too_large".to_string()));
     struct Enormous;
     impl PageFeed for Enormous {
         fn page_count(&mut self) -> Result<u32, FeedError> {
@@ -650,7 +693,7 @@ fn a_document_too_large_to_keep_is_refused_and_cleaned_up() {
     }
     let key = key_of(&temp, b"a second file");
     assert_eq!(
-        build(&root, key, &mut Enormous, &DocMeta::default(), &BuildLimits::default()).unwrap(),
+        build(tk(), &root, key, &mut Enormous, &DocMeta::default(), &BuildLimits::default()).unwrap(),
         BuildOutcome::Refused("too_large".to_string())
     );
 }
@@ -664,10 +707,10 @@ fn a_file_changing_during_a_build_throws_it_away() {
     let mut feed = FakeFeed::new(&[PLAIN, PLAIN]);
     feed.same_file = false;
     assert_eq!(
-        build(&root, key, &mut feed, &DocMeta::default(), &BuildLimits::default()).unwrap(),
+        build(tk(), &root, key, &mut feed, &DocMeta::default(), &BuildLimits::default()).unwrap(),
         BuildOutcome::FileChanged
     );
-    assert_eq!(disk_state(&root, key), DiskState::Nothing);
+    assert_eq!(disk_state(tk(), &root, key), DiskState::Nothing);
     assert!(!CorpusPaths::new(&root, key).ready.exists());
 }
 
@@ -678,11 +721,11 @@ fn a_page_that_fails_is_said_and_the_rest_go_on() {
     let key = key_of(&temp, b"a file");
     let root = temp.0.join("corpus");
     let pages = [PLAIN, Fake::Failed, Fake::Text("after the bomb")];
-    let BuildOutcome::Ready { summary, .. } = build(&root, key, &mut FakeFeed::new(&pages), &DocMeta::default(), &BuildLimits::default()).unwrap() else {
+    let BuildOutcome::Ready { summary, .. } = build(tk(), &root, key, &mut FakeFeed::new(&pages), &DocMeta::default(), &BuildLimits::default()).unwrap() else {
         panic!()
     };
     assert_eq!(summary.failed_pages, 1);
-    let corpus = ReadyCorpus::open(&root, key).unwrap().unwrap();
+    let corpus = ReadyCorpus::open(tk(), &root, key).unwrap().unwrap();
     let mut buffer = Vec::new();
     assert_eq!(corpus.page(1, &mut buffer).unwrap().kind, PageKind::Failed);
     assert_eq!(corpus.page(2, &mut buffer).unwrap().text, "after the bomb");
@@ -695,16 +738,16 @@ fn a_temporary_failure_gets_read_again_and_comes_out_as_if_it_never_happened() {
     let key = key_of(&temp, b"a file");
     let root = temp.0.join("corpus");
     let pages = [PLAIN, Fake::LostWorkerOnce("the words of a page that was only unlucky"), PLAIN];
-    let BuildOutcome::Ready { summary, .. } = build(&root, key, &mut FakeFeed::new(&pages), &DocMeta::default(), &BuildLimits::default()).unwrap() else {
+    let BuildOutcome::Ready { summary, .. } = build(tk(), &root, key, &mut FakeFeed::new(&pages), &DocMeta::default(), &BuildLimits::default()).unwrap() else {
         panic!()
     };
     assert_eq!((summary.failed_pages, summary.retry_pages), (0, 0), "{summary:?}");
-    let corpus = ReadyCorpus::open(&root, key).unwrap().unwrap();
+    let corpus = ReadyCorpus::open(tk(), &root, key).unwrap().unwrap();
     let mut buffer = Vec::new();
     let page = corpus.page(1, &mut buffer).unwrap();
     assert_eq!((page.kind, page.text), (PageKind::Text, "the words of a page that was only unlucky"));
     let paths = CorpusPaths::new(&root, key);
-    ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap();
+    ensure_agent_folder(tk(), &root, key, &BuildLimits::default()).unwrap();
     let file = fs::read_to_string(paths.page_file(1, 4)).unwrap();
     assert!(file.contains("only unlucky") && file.contains("text=native"), "{file}");
     let manifest: Value = serde_json::from_slice(&fs::read(&paths.manifest).unwrap()).unwrap();
@@ -724,7 +767,7 @@ fn a_page_that_keeps_failing_stops_being_tried() {
     let key = key_of(&temp, b"a file");
     let root = temp.0.join("corpus");
     let pages = [PLAIN, Fake::LostWorker, Fake::Failed];
-    let BuildOutcome::Ready { summary, .. } = build(&root, key, &mut FakeFeed::new(&pages), &DocMeta::default(), &BuildLimits::default()).unwrap() else {
+    let BuildOutcome::Ready { summary, .. } = build(tk(), &root, key, &mut FakeFeed::new(&pages), &DocMeta::default(), &BuildLimits::default()).unwrap() else {
         panic!()
     };
     assert_eq!((summary.failed_pages, summary.retry_pages, summary.retries), (2, 1, 1), "{summary:?}");
@@ -732,23 +775,23 @@ fn a_page_that_keeps_failing_stops_being_tried() {
 
     let paths = CorpusPaths::new(&root, key);
     let age = |retries: u32| {
-        let mut ready: Value = serde_json::from_slice(&fs::read(&paths.ready).unwrap()).unwrap();
-        ready["retried_at"] = json!(now_seconds() - RETRY_PAUSE.as_secs() - 1);
-        ready["retries"] = json!(retries);
-        fs::write(&paths.ready, ready.to_string()).unwrap();
+        edit_summary(&paths, |ready| {
+            ready["retried_at"] = json!(now_seconds() - RETRY_PAUSE.as_secs() - 1);
+            ready["retries"] = json!(retries);
+        });
     };
     age(1);
     let mut feed = FakeFeed::new(&pages);
-    let BuildOutcome::AlreadyReady(after) = build(&root, key, &mut feed, &DocMeta::default(), &BuildLimits::default()).unwrap() else {
+    let BuildOutcome::AlreadyReady(after) = build(tk(), &root, key, &mut feed, &DocMeta::default(), &BuildLimits::default()).unwrap() else {
         panic!()
     };
     assert_eq!(feed.reads, 1, "only the page that might read another time is read again");
     assert_eq!(after.retries, 2);
-    assert!(ReadyCorpus::open(&root, key).unwrap().is_some(), "and it's still usable");
+    assert!(ReadyCorpus::open(tk(), &root, key).unwrap().is_some(), "and it's still usable");
 
     age(MAX_RETRIES);
     let mut feed = FakeFeed::new(&pages);
-    let BuildOutcome::AlreadyReady(last) = build(&root, key, &mut feed, &DocMeta::default(), &BuildLimits::default()).unwrap() else {
+    let BuildOutcome::AlreadyReady(last) = build(tk(), &root, key, &mut feed, &DocMeta::default(), &BuildLimits::default()).unwrap() else {
         panic!()
     };
     assert_eq!(feed.reads, 0, "it's been tried enough");
@@ -767,6 +810,7 @@ fn a_retry_keeps_to_the_cap_on_a_document() {
         ..BuildLimits::default()
     };
     let BuildOutcome::Ready { summary, .. } = build(
+        tk(),
         &root,
         key,
         &mut FakeFeed::new(&[PLAIN, Fake::LostWorkerOnce(large)]),
@@ -787,13 +831,13 @@ fn a_pack_may_be_longer_than_it_says_and_never_shorter() {
     let temp = Temp::new();
     let key = key_of(&temp, b"a file");
     let root = temp.0.join("corpus");
-    build(&root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    build(tk(), &root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
     let paths = CorpusPaths::new(&root, key);
     let mut pack = OpenOptions::new().append(true).open(&paths.pack).unwrap();
     pack.write_all(b"text nothing points at").unwrap();
-    assert!(ReadyCorpus::open(&root, key).unwrap().is_some());
+    assert!(ReadyCorpus::open(tk(), &root, key).unwrap().is_some());
     pack.set_len(2).unwrap();
-    assert_eq!(ReadyCorpus::open(&root, key).unwrap_err(), Damaged);
+    assert_eq!(ReadyCorpus::open(tk(), &root, key).unwrap_err(), Damaged);
 }
 
 /// Failure: making agents' folders adds up to as much again per document, past the cap on all of them, with nothing to bring it back until the next build or session.
@@ -803,7 +847,7 @@ fn an_agent_folder_makes_room_too() {
     let root = temp.0.join("corpus");
     let (old, wanted) = (CorpusKey([1; 32]), CorpusKey([2; 32]));
     for key in [old, wanted] {
-        build(&root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+        build(tk(), &root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
     }
     File::options()
         .write(true)
@@ -815,7 +859,7 @@ fn an_agent_folder_makes_room_too() {
         max_total_bytes: folder_bytes(&root.join(wanted.hex())) + 1,
         ..BuildLimits::default()
     };
-    ensure_agent_folder(&root, wanted, &tight).unwrap();
+    ensure_agent_folder(tk(), &root, wanted, &tight).unwrap();
     assert!(!root.join(old.hex()).exists(), "the total stayed over its cap");
     assert!(CorpusPaths::new(&root, wanted).manifest.is_file(), "and what was asked for stays");
 }
@@ -838,7 +882,7 @@ fn the_agent_folder_is_made_on_demand_from_the_pack() {
         renderer_only: false,
         file_bytes: 12,
     };
-    let BuildOutcome::Ready { summary, .. } = build(&root, key, &mut FakeFeed::new(&pages), &meta, &BuildLimits::default()).unwrap() else {
+    let BuildOutcome::Ready { summary, .. } = build(tk(), &root, key, &mut FakeFeed::new(&pages), &meta, &BuildLimits::default()).unwrap() else {
         panic!()
     };
     let paths = CorpusPaths::new(&root, key);
@@ -847,7 +891,7 @@ fn the_agent_folder_is_made_on_demand_from_the_pack() {
     assert!(summary.corpus_bytes < 32 * 1024, "{summary:?}");
     fs::remove_file(temp.0.join("doc.pdf")).unwrap();
 
-    let made = ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap();
+    let made = ensure_agent_folder(tk(), &root, key, &BuildLimits::default()).unwrap();
     assert_eq!((made.path.as_path(), made.pages_written), (paths.agent.as_path(), 4));
     assert!(agent_folder_bytes(&root, key).is_some());
     let read = |page: u32| fs::read_to_string(paths.page_file(page, 4)).unwrap();
@@ -871,7 +915,7 @@ fn the_agent_folder_is_made_on_demand_from_the_pack() {
     assert_eq!(manifest["untrusted"]["outline"][0]["t"], "One");
     assert_eq!(manifest["file_bytes"], 12);
     assert_eq!(
-        ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap().pages_written,
+        ensure_agent_folder(tk(), &root, key, &BuildLimits::default()).unwrap().pages_written,
         0,
         "there's nothing to do twice"
     );
@@ -884,6 +928,7 @@ fn asking_for_the_agent_folder_mends_what_a_power_cut_left() {
     let key = key_of(&temp, b"a file");
     let root = temp.0.join("corpus");
     build(
+        tk(),
         &root,
         key,
         &mut FakeFeed::new(&[PLAIN, PLAIN, PLAIN]),
@@ -891,12 +936,12 @@ fn asking_for_the_agent_folder_mends_what_a_power_cut_left() {
         &BuildLimits::default(),
     )
     .unwrap();
-    ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap();
+    ensure_agent_folder(tk(), &root, key, &BuildLimits::default()).unwrap();
     let paths = CorpusPaths::new(&root, key);
     let whole = fs::read(paths.page_file(1, 4)).unwrap();
     fs::write(paths.page_file(0, 4), b"").unwrap();
     fs::remove_file(paths.page_file(1, 4)).unwrap();
-    assert_eq!(ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap().pages_written, 2);
+    assert_eq!(ensure_agent_folder(tk(), &root, key, &BuildLimits::default()).unwrap().pages_written, 2);
     assert_eq!(
         fs::read(paths.page_file(0, 4)).unwrap(),
         whole.iter().map(|byte| if *byte == b'2' { b'1' } else { *byte }).collect::<Vec<u8>>()
@@ -904,7 +949,7 @@ fn asking_for_the_agent_folder_mends_what_a_power_cut_left() {
     assert_eq!(fs::read(paths.page_file(1, 4)).unwrap(), whole);
     fs::remove_file(&paths.manifest).unwrap();
     assert_eq!(agent_folder_bytes(&root, key), None, "with no manifest it isn't finished");
-    assert_eq!(ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap().pages_written, 0);
+    assert_eq!(ensure_agent_folder(tk(), &root, key, &BuildLimits::default()).unwrap().pages_written, 0);
     assert!(paths.manifest.is_file());
 }
 
@@ -914,30 +959,38 @@ fn the_agent_folder_is_held_to_the_same_rules() {
     let temp = Temp::new();
     let key = key_of(&temp, b"a file");
     let root = temp.0.join("corpus");
-    assert_eq!(ensure_agent_folder(&root, key, &BuildLimits::default()), Err(AgentFolderError::NotReady));
-    build(&root, key, &mut FakeFeed::new(&[PLAIN, PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    assert_eq!(ensure_agent_folder(tk(), &root, key, &BuildLimits::default()), Err(AgentFolderError::NotReady));
+    build(
+        tk(),
+        &root,
+        key,
+        &mut FakeFeed::new(&[PLAIN, PLAIN]),
+        &DocMeta::default(),
+        &BuildLimits::default(),
+    )
+    .unwrap();
     let paths = CorpusPaths::new(&root, key);
 
     let lock = local::append_private_file(&paths.lock).unwrap();
     lock.try_lock().unwrap();
-    assert_eq!(ensure_agent_folder(&root, key, &BuildLimits::default()), Err(AgentFolderError::Busy));
+    assert_eq!(ensure_agent_folder(tk(), &root, key, &BuildLimits::default()), Err(AgentFolderError::Busy));
     drop(lock);
 
     let tight = BuildLimits {
         max_doc_bytes: 4096,
         ..BuildLimits::default()
     };
-    assert_eq!(ensure_agent_folder(&root, key, &tight), Err(AgentFolderError::TooLarge));
+    assert_eq!(ensure_agent_folder(tk(), &root, key, &tight), Err(AgentFolderError::TooLarge));
     assert!(!paths.agent.exists(), "what's too large leaves nothing behind");
 
     let pack = fs::read(&paths.pack).unwrap();
     let mut bad = pack.clone();
     bad[0] = bad[0].wrapping_add(1);
     fs::write(&paths.pack, bad).unwrap();
-    assert_eq!(ensure_agent_folder(&root, key, &BuildLimits::default()), Err(AgentFolderError::Damaged));
+    assert_eq!(ensure_agent_folder(tk(), &root, key, &BuildLimits::default()), Err(AgentFolderError::Damaged));
     fs::write(&paths.pack, pack).unwrap();
 
-    ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap();
+    ensure_agent_folder(tk(), &root, key, &BuildLimits::default()).unwrap();
     assert!(paths.manifest.is_file() && paths.pack.is_file());
     clear(&root, key).unwrap();
     assert!(
@@ -949,14 +1002,12 @@ fn the_agent_folder_is_held_to_the_same_rules() {
     let key = key_of(&temp, b"another file");
     let paths = CorpusPaths::new(&root, key);
     let flaky = [PLAIN, Fake::LostWorker];
-    build(&root, key, &mut FakeFeed::new(&flaky), &DocMeta::default(), &BuildLimits::default()).unwrap();
-    ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap();
+    build(tk(), &root, key, &mut FakeFeed::new(&flaky), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    ensure_agent_folder(tk(), &root, key, &BuildLimits::default()).unwrap();
     assert!(fs::read_to_string(paths.page_file(1, 4)).unwrap().contains("text=failed"));
-    let mut ready: Value = serde_json::from_slice(&fs::read(&paths.ready).unwrap()).unwrap();
-    ready["retried_at"] = json!(now_seconds() - RETRY_PAUSE.as_secs() - 1);
-    fs::write(&paths.ready, ready.to_string()).unwrap();
+    edit_summary(&paths, |ready| ready["retried_at"] = json!(now_seconds() - RETRY_PAUSE.as_secs() - 1));
     let fixed = [PLAIN, Fake::Text("read at last")];
-    build(&root, key, &mut FakeFeed::new(&fixed), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    build(tk(), &root, key, &mut FakeFeed::new(&fixed), &DocMeta::default(), &BuildLimits::default()).unwrap();
     assert!(fs::read_to_string(paths.page_file(1, 4)).unwrap().contains("read at last"));
     let manifest: Value = serde_json::from_slice(&fs::read(&paths.manifest).unwrap()).unwrap();
     assert_eq!(manifest["failed_pages"], json!([]));
@@ -968,7 +1019,15 @@ fn a_damaged_corpus_is_not_believed() {
     let temp = Temp::new();
     let key = key_of(&temp, b"a file");
     let root = temp.0.join("corpus");
-    build(&root, key, &mut FakeFeed::new(&[PLAIN, PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    build(
+        tk(),
+        &root,
+        key,
+        &mut FakeFeed::new(&[PLAIN, PLAIN]),
+        &DocMeta::default(),
+        &BuildLimits::default(),
+    )
+    .unwrap();
     let paths = CorpusPaths::new(&root, key);
     let (ready, table, pack) = (fs::read(&paths.ready).unwrap(), fs::read(&paths.table).unwrap(), fs::read(&paths.pack).unwrap());
     let restore = || {
@@ -976,73 +1035,73 @@ fn a_damaged_corpus_is_not_believed() {
         fs::write(&paths.table, &table).unwrap();
         fs::write(&paths.pack, &pack).unwrap();
     };
-    fs::write(&paths.ready, b"not json").unwrap();
-    assert!(ReadyCorpus::open(&root, key).unwrap().is_none(), "no mark that reads, so not finished");
+    fs::write(&paths.ready, b"not sealed").unwrap();
+    assert_eq!(ReadyCorpus::open(tk(), &root, key).unwrap_err(), Damaged, "a mark that doesn't open");
+    assert_eq!(
+        disk_state(tk(), &root, key),
+        DiskState::Partial { pages_done: 2 },
+        "and it isn't called finished"
+    );
     restore();
-    fs::write(&paths.ready, br#"{"format":"v0"}"#).unwrap();
-    assert_eq!(ReadyCorpus::open(&root, key).unwrap_err(), Damaged, "a mark of another format");
-    assert_eq!(disk_state(&root, key), DiskState::Partial { pages_done: 2 }, "and it isn't called finished");
-    restore();
+    assert_eq!(
+        ReadyCorpus::open(&FindKey::for_tests(1), &root, key).unwrap_err(),
+        Damaged,
+        "a corpus sealed by another key"
+    );
+    assert_eq!(
+        disk_state(&FindKey::for_tests(1), &root, key),
+        DiskState::Nothing,
+        "and to that key there's nothing to go on from"
+    );
     fs::write(&paths.pack, b"short").unwrap();
-    assert_eq!(ReadyCorpus::open(&root, key).unwrap_err(), Damaged, "a pack of the wrong length");
+    assert_eq!(ReadyCorpus::open(tk(), &root, key).unwrap_err(), Damaged, "a pack of the wrong length");
     restore();
     let mut shorter = table.clone();
     shorter.truncate(RECORD_LEN);
     fs::write(&paths.table, shorter).unwrap();
-    assert_eq!(ReadyCorpus::open(&root, key).unwrap_err(), Damaged, "a table of the wrong length");
+    assert_eq!(ReadyCorpus::open(tk(), &root, key).unwrap_err(), Damaged, "a table of the wrong length");
     restore();
-    let mut bad = pack.clone();
-    bad[0] = 0xFF;
-    fs::write(&paths.pack, bad).unwrap();
-    let corpus = ReadyCorpus::open(&root, key).unwrap().unwrap();
-    assert_eq!(corpus.page(0, &mut Vec::new()).unwrap_err(), Damaged, "text that isn't UTF-8");
+    // Any byte of the pack changed: a page's chunk doesn't open, whatever the byte became.
+    for at in [
+        0,
+        seal::NONCE_BYTES,
+        seal::NONCE_BYTES + INNER_LEN,
+        pack.len() / 2 - 1,
+        pack.len() / 2,
+        pack.len() - 1,
+    ] {
+        let mut bad = pack.clone();
+        bad[at] = bad[at].wrapping_add(1);
+        fs::write(&paths.pack, bad).unwrap();
+        let corpus = ReadyCorpus::open(tk(), &root, key).unwrap().unwrap();
+        assert!(
+            (0..corpus.pages()).any(|page| corpus.page(page, &mut Vec::new()).is_err()),
+            "byte {at} of the pack changed and every page still opened"
+        );
+    }
     restore();
     let mut far = table.clone();
     far[..8].copy_from_slice(&u64::MAX.to_le_bytes());
     fs::write(&paths.table, far).unwrap();
-    let corpus = ReadyCorpus::open(&root, key).unwrap().unwrap();
+    let corpus = ReadyCorpus::open(tk(), &root, key).unwrap().unwrap();
     assert_eq!(corpus.page(0, &mut Vec::new()).unwrap_err(), Damaged, "a record past the end of the file");
     restore();
     let mut huge = table.clone();
     huge[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
     fs::write(&paths.table, huge).unwrap();
-    let corpus = ReadyCorpus::open(&root, key).unwrap().unwrap();
+    let corpus = ReadyCorpus::open(tk(), &root, key).unwrap().unwrap();
     assert_eq!(corpus.page(0, &mut Vec::new()).unwrap_err(), Damaged, "a record asking for 4 GiB");
     restore();
-    // A byte changed to another good one, which UTF-8 can't see.
-    let mut other = pack.clone();
-    other[0] = other[0].wrapping_add(1);
-    fs::write(&paths.pack, other).unwrap();
-    let corpus = ReadyCorpus::open(&root, key).unwrap().unwrap();
-    assert_eq!(
-        corpus.page(0, &mut Vec::new()).unwrap_err(),
-        Damaged,
-        "a page's text changed and still good UTF-8"
-    );
-    restore();
-    // Page 2's record said to be page 1's: its text is as good as any, and it's another page's.
+    // Page 2's entry said to be page 1's: its chunk is as good as any, and it's another page's.
     let mut swapped = table.clone();
     swapped.copy_within(RECORD_LEN..RECORD_LEN * 2, 0);
     fs::write(&paths.table, swapped).unwrap();
-    let corpus = ReadyCorpus::open(&root, key).unwrap().unwrap();
+    let corpus = ReadyCorpus::open(tk(), &root, key).unwrap().unwrap();
     assert_eq!(
         corpus.page(0, &mut Vec::new()).unwrap_err(),
         Damaged,
-        "one page's record standing in for another's"
+        "one page's chunk standing in for another's"
     );
-    restore();
-    // What a record says of its page, a bit at a time: hidden text reading as clean, or another shape of page altogether.
-    for (byte, change) in [(21, FLAG_HIDDEN_FLAGGED), (21, FLAG_HIDDEN_CHECKED), (20, 3), (8, 1), (12, 1), (16, 1), (22, 1)] {
-        let mut flipped = table.clone();
-        flipped[byte] ^= change;
-        fs::write(&paths.table, flipped).unwrap();
-        let corpus = ReadyCorpus::open(&root, key).unwrap().unwrap();
-        assert_eq!(
-            corpus.page(0, &mut Vec::new()).map(|page| page.text.to_string()),
-            Err(Damaged),
-            "byte {byte} of a record changed by {change}"
-        );
-    }
     restore();
     // One file's folder under another file's name.
     let other_key = key_of(&temp, b"a different file");
@@ -1058,12 +1117,12 @@ fn a_damaged_corpus_is_not_believed() {
             .success()
     );
     assert_eq!(
-        ReadyCorpus::open(&root, other_key).unwrap_err(),
+        ReadyCorpus::open(tk(), &root, other_key).unwrap_err(),
         Damaged,
         "a folder copied under another file's key answers for it"
     );
-    assert_ne!(disk_state(&root, other_key), disk_state(&root, key));
-    assert!(ReadyCorpus::open(&root, key).unwrap().is_some());
+    assert_ne!(disk_state(tk(), &root, other_key), disk_state(tk(), &root, key));
+    assert!(ReadyCorpus::open(tk(), &root, key).unwrap().is_some());
     assert!(
         Aux::read(&[0xFF, 0xFF]).is_none() && Aux::read(&[1, 0, 200, 0]).is_none() && Aux::read(&[0, 0, 200, 0, 0, 0]).is_none(),
         "what's beside the text is checked too"
@@ -1076,7 +1135,7 @@ fn reading_back_doesnt_wait_or_follow_or_fill_memory() {
     let temp = Temp::new();
     let key = key_of(&temp, b"a file");
     let root = temp.0.join("corpus");
-    build(&root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    build(tk(), &root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
     let paths = CorpusPaths::new(&root, key);
     let (table, pack) = (fs::read(&paths.table).unwrap(), fs::read(&paths.pack).unwrap());
     let restore = |path: &Path, bytes: &[u8]| {
@@ -1090,10 +1149,10 @@ fn reading_back_doesnt_wait_or_follow_or_fill_memory() {
     };
     let started = Instant::now();
     fifo(&paths.table);
-    assert_eq!(ReadyCorpus::open(&root, key).unwrap_err(), Damaged, "a pipe at the table");
+    assert_eq!(ReadyCorpus::open(tk(), &root, key).unwrap_err(), Damaged, "a pipe at the table");
     restore(&paths.table, &table);
     fifo(&paths.pack);
-    assert_eq!(ReadyCorpus::open(&root, key).unwrap_err(), Damaged, "a pipe at the pack");
+    assert_eq!(ReadyCorpus::open(tk(), &root, key).unwrap_err(), Damaged, "a pipe at the pack");
     restore(&paths.pack, &pack);
     assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
 
@@ -1105,32 +1164,32 @@ fn reading_back_doesnt_wait_or_follow_or_fill_memory() {
         .set_len(64 * 1024 * 1024 * 1024)
         .unwrap();
     assert_eq!(
-        ReadyCorpus::open(&root, key).unwrap_err(),
+        ReadyCorpus::open(tk(), &root, key).unwrap_err(),
         Damaged,
         "a huge table is read before its length is looked at"
     );
     restore(&paths.table, &table);
-    assert!(ReadyCorpus::open(&root, key).unwrap().is_some(), "and it's all there again");
+    assert!(ReadyCorpus::open(tk(), &root, key).unwrap().is_some(), "and it's all there again");
 
     // A link at the pack, at the table, at the folder and at the root.
     let elsewhere = temp.file("elsewhere", &pack);
     fs::remove_file(&paths.pack).unwrap();
     std::os::unix::fs::symlink(&elsewhere, &paths.pack).unwrap();
-    assert_eq!(ReadyCorpus::open(&root, key).unwrap_err(), Damaged, "a link at the pack");
+    assert_eq!(ReadyCorpus::open(tk(), &root, key).unwrap_err(), Damaged, "a link at the pack");
     restore(&paths.pack, &pack);
     let key_folder = root.join(key.hex());
     let moved = temp.0.join("moved-away");
     fs::rename(&key_folder, &moved).unwrap();
     std::os::unix::fs::symlink(&moved, &key_folder).unwrap();
-    assert_eq!(ReadyCorpus::open(&root, key).unwrap_err(), Damaged, "a link at the key's folder");
-    assert_eq!(disk_state(&root, key), DiskState::Nothing);
+    assert_eq!(ReadyCorpus::open(tk(), &root, key).unwrap_err(), Damaged, "a link at the key's folder");
+    assert_eq!(disk_state(tk(), &root, key), DiskState::Nothing);
     fs::remove_file(&key_folder).unwrap();
     fs::rename(&moved, &key_folder).unwrap();
     let linked_root = temp.0.join("linked-root");
     std::os::unix::fs::symlink(&root, &linked_root).unwrap();
-    assert_eq!(ReadyCorpus::open(&linked_root, key).unwrap_err(), Damaged, "a link at the root");
-    assert_eq!(disk_state(&linked_root, key), DiskState::Nothing);
-    assert!(ReadyCorpus::open(&root, key).unwrap().is_some());
+    assert_eq!(ReadyCorpus::open(tk(), &linked_root, key).unwrap_err(), Damaged, "a link at the root");
+    assert_eq!(disk_state(tk(), &linked_root, key), DiskState::Nothing);
+    assert!(ReadyCorpus::open(tk(), &root, key).unwrap().is_some());
 }
 
 /// Failure: the corpus folder grows for ever, one that's in use goes, one being built is pulled out from under its builder, or anything in the folder that isn't a corpus gets deleted.
@@ -1141,7 +1200,15 @@ fn eviction_takes_the_oldest_and_nothing_else() {
     let doc = temp.file("doc.pdf", b"a doc");
     let keys: Vec<CorpusKey> = (0..4u8).map(|at| CorpusKey([at + 1; 32])).collect();
     for key in &keys {
-        build(&root, *key, &mut FakeFeed::new(&[PLAIN, PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+        build(
+            tk(),
+            &root,
+            *key,
+            &mut FakeFeed::new(&[PLAIN, PLAIN]),
+            &DocMeta::default(),
+            &BuildLimits::default(),
+        )
+        .unwrap();
     }
     let _ = doc;
     let now = SystemTime::now();
@@ -1202,11 +1269,11 @@ fn a_finished_build_makes_room() {
         ..BuildLimits::default()
     };
     let (first, second) = (CorpusKey([1; 32]), CorpusKey([2; 32]));
-    build(&root, first, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
-    build(&root, second, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &tight).unwrap();
+    build(tk(), &root, first, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    build(tk(), &root, second, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &tight).unwrap();
     assert!(!root.join(first.hex()).exists(), "the old one made way");
     assert!(
-        ReadyCorpus::open(&root, second).unwrap().is_some(),
+        ReadyCorpus::open(tk(), &root, second).unwrap().is_some(),
         "and the one just built stays, whatever the cap"
     );
 }
@@ -1221,16 +1288,24 @@ fn a_build_makes_room_however_it_comes_out() {
         ..BuildLimits::default()
     };
     let old = CorpusKey([1; 32]);
-    build(&root, old, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    build(tk(), &root, old, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
     assert_eq!(
-        build(&root, CorpusKey([2; 32]), &mut FakeFeed::new(&[Fake::Stop]), &DocMeta::default(), &tight).unwrap(),
+        build(tk(), &root, CorpusKey([2; 32]), &mut FakeFeed::new(&[Fake::Stop]), &DocMeta::default(), &tight).unwrap(),
         BuildOutcome::Paused("stopped_here")
     );
     assert!(!root.join(old.hex()).exists(), "a build that paused left the folder over its cap");
 
-    build(&root, old, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    build(tk(), &root, old, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
     assert_eq!(
-        build(&root, CorpusKey([3; 32]), &mut FakeFeed::new(&[Fake::Refuse]), &DocMeta::default(), &tight).unwrap(),
+        build(
+            tk(),
+            &root,
+            CorpusKey([3; 32]),
+            &mut FakeFeed::new(&[Fake::Refuse]),
+            &DocMeta::default(),
+            &tight
+        )
+        .unwrap(),
         BuildOutcome::Refused("needs_password".to_string())
     );
     assert!(!root.join(old.hex()).exists(), "a build that was refused left the folder over its cap");
@@ -1243,7 +1318,7 @@ fn a_full_disk_gets_room_back() {
     let root = temp.0.join("corpus");
     let keys: Vec<CorpusKey> = (1..=3u8).map(|at| CorpusKey([at; 32])).collect();
     for key in &keys {
-        build(&root, *key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+        build(tk(), &root, *key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
     }
     let report = make_room(&root, &BuildLimits::default(), keys[2]).unwrap();
     assert_eq!(report.corpora, 2, "{report:?}");
@@ -1262,8 +1337,18 @@ fn notes_about_versions_say_nothing_and_dont_pile_up() {
     let root = temp.0.join("corpus");
     let (file, other) = (temp.file("a-very-distinctive-name.pdf", b"one"), temp.file("other.pdf", b"other"));
     let (first, other_key) = (CorpusKey::of_file(&file).unwrap(), CorpusKey::of_file(&other).unwrap());
-    build_for_file(&file, &root, first, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
     build_for_file(
+        tk(),
+        &file,
+        &root,
+        first,
+        &mut FakeFeed::new(&[PLAIN]),
+        &DocMeta::default(),
+        &BuildLimits::default(),
+    )
+    .unwrap();
+    build_for_file(
+        tk(),
         &other,
         &root,
         other_key,
@@ -1283,7 +1368,16 @@ fn notes_about_versions_say_nothing_and_dont_pile_up() {
     let second = CorpusKey::of_file(&file).unwrap();
     assert_ne!(first, second);
     assert_eq!(keys_of_file(&root, &file), vec![second, first], "the old one can still be found");
-    build_for_file(&file, &root, second, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    build_for_file(
+        tk(),
+        &file,
+        &root,
+        second,
+        &mut FakeFeed::new(&[PLAIN]),
+        &DocMeta::default(),
+        &BuildLimits::default(),
+    )
+    .unwrap();
     assert!(!root.join(first.hex()).exists());
     assert!(root.join(other_key.hex()).exists(), "another file's stays");
     assert_eq!(keys_of_file(&root, &file), vec![second]);
@@ -1306,6 +1400,7 @@ fn the_corpus_folder_stays_out_of_backups() {
     let temp = Temp::new();
     let root = temp.0.join("corpus.noindex");
     build(
+        tk(),
         &root,
         CorpusKey([1; 32]),
         &mut FakeFeed::new(&[PLAIN]),
@@ -1327,13 +1422,21 @@ fn a_partial_build_of_an_old_version_can_be_found_and_goes() {
     let secret: &'static str = "the secret that gets redacted";
     let stopped = [Fake::Text(secret), Fake::Stop];
     assert_eq!(
-        build_for_file(&file, &root, first, &mut FakeFeed::new(&stopped), &DocMeta::default(), &BuildLimits::default()).unwrap(),
+        build_for_file(
+            tk(),
+            &file,
+            &root,
+            first,
+            &mut FakeFeed::new(&stopped),
+            &DocMeta::default(),
+            &BuildLimits::default()
+        )
+        .unwrap(),
         BuildOutcome::Paused("stopped_here")
     );
-    assert!(
-        String::from_utf8_lossy(&fs::read(CorpusPaths::new(&root, first).pack).unwrap()).contains(secret),
-        "it's meant to have been written"
-    );
+    let pack = fs::read(CorpusPaths::new(&root, first).pack).unwrap();
+    assert!(pack.len() > secret.len(), "it's meant to have been written");
+    assert!(!String::from_utf8_lossy(&pack).contains(secret), "a page's text is on disk as it is");
     assert!(keys_of_file(&root, &file).contains(&first), "a partial build's text can't be found");
 
     fs::write(&file, b"after the redaction!").unwrap();
@@ -1347,12 +1450,30 @@ fn a_partial_build_of_an_old_version_can_be_found_and_goes() {
     // Its removal fails the first time, as it's locked: the note must stay.
     let lock = local::append_private_file(&CorpusPaths::new(&root, first).lock).unwrap();
     lock.try_lock().unwrap();
-    build_for_file(&file, &root, second, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    build_for_file(
+        tk(),
+        &file,
+        &root,
+        second,
+        &mut FakeFeed::new(&[PLAIN]),
+        &DocMeta::default(),
+        &BuildLimits::default(),
+    )
+    .unwrap();
     assert!(root.join(first.hex()).exists(), "it's being built by something, so it stays");
     assert_eq!(keys_of_file(&root, &file), vec![second, first], "and it's still noted");
     drop(lock);
     // The next finish takes it.
-    build_for_file(&file, &root, second, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    build_for_file(
+        tk(),
+        &file,
+        &root,
+        second,
+        &mut FakeFeed::new(&[PLAIN]),
+        &DocMeta::default(),
+        &BuildLimits::default(),
+    )
+    .unwrap();
     assert!(!root.join(first.hex()).exists(), "the old partial text is still on disk");
     assert_eq!(keys_of_file(&root, &file), vec![second]);
     for (name, bytes) in every_file(&root) {
@@ -1369,6 +1490,7 @@ fn notes_on_a_file_are_capped_and_the_oldest_text_goes() {
     let first = CorpusKey([1; 32]);
     for at in 0..(MAX_KEYS_PER_ALIAS + 3) {
         build_for_file(
+            tk(),
             &file,
             &root,
             CorpusKey([at as u8 + 1; 32]),
@@ -1410,7 +1532,7 @@ fn only_one_builds_at_a_time() {
     let lock = local::append_private_file(&CorpusPaths::new(&root, key).lock).unwrap();
     lock.try_lock().unwrap();
     assert_eq!(
-        build(&root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap(),
+        build(tk(), &root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap(),
         BuildOutcome::Busy
     );
     assert_eq!(clear(&root, key).unwrap_err().kind(), io::ErrorKind::WouldBlock, "and clearing leaves it alone");
@@ -1439,7 +1561,7 @@ fn a_clear_that_fails_doesnt_read_as_being_built() {
     let temp = Temp::new();
     let root = temp.0.join("corpus");
     let key = CorpusKey([4; 32]);
-    build(&root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    build(tk(), &root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
     let app = CorpusPaths::new(&root, key).app;
     fs::set_permissions(&app, fs::Permissions::from_mode(0o500)).unwrap();
     let report = clear_all(&root).unwrap();
@@ -1489,10 +1611,10 @@ fn the_largest_page_there_can_be_reads_back() {
         }
     }
     assert!(matches!(
-        build(&root, key, &mut Largest, &DocMeta::default(), &BuildLimits::default()).unwrap(),
+        build(tk(), &root, key, &mut Largest, &DocMeta::default(), &BuildLimits::default()).unwrap(),
         BuildOutcome::Ready { .. }
     ));
-    let corpus = ReadyCorpus::open(&root, key).unwrap().unwrap();
+    let corpus = ReadyCorpus::open(tk(), &root, key).unwrap().unwrap();
     let mut buffer = Vec::new();
     let page = corpus.page(0, &mut buffer).unwrap();
     assert_eq!((page.kind, page.text.chars().count()), (PageKind::Text, recto_proto::MAX_PAGE_CHARS as usize));
@@ -1502,20 +1624,24 @@ fn the_largest_page_there_can_be_reads_back() {
 #[test]
 fn a_record_stays_small() {
     assert!(size_of::<PageRecord>() <= 32);
-    assert_eq!(RECORD_LEN, 28);
+    assert_eq!(RECORD_LEN, 12);
     let record = PageRecord {
-        offset: 9,
         text_len: 8,
         aux_len: 7,
         chars: 6,
         kind: PageKind::Failed,
         flags: 5,
         reason: 2,
-        check: 77,
     };
-    assert_eq!(PageRecord::decode(&record.encode()), Some(record));
-    assert_eq!(PageRecord::decode(&[0; 28]), None, "no such kind");
-    assert_eq!(PageRecord::decode(&[1; 3]), None);
+    let mut inner = Vec::new();
+    record.write_inner(&mut inner);
+    assert_eq!(inner.len(), INNER_LEN);
+    assert_eq!(PageRecord::read_inner(&inner, 15), Some(record));
+    assert_eq!(PageRecord::read_inner(&inner, 14), None, "lengths that don't add up");
+    assert_eq!(PageRecord::read_inner(&[0; 16], 0), None, "no such kind");
+    assert_eq!(PageRecord::read_inner(&[1; 3], 0), None);
+    let entry = Entry { offset: 9, len: 77 };
+    assert_eq!(Entry::decode(&entry.encode()), Some(entry));
     assert_eq!(page_width(9999), 4);
     assert_eq!(page_width(10_000), 5);
     assert_eq!(disk_size(0), 4096);
@@ -1529,15 +1655,15 @@ fn a_link_in_the_manifests_place_is_replaced_not_followed() {
     let key = key_of(&temp, b"a file");
     let root = temp.0.join("corpus");
     let pages = [Fake::Text("One page"), Fake::Text("And another")];
-    build(&root, key, &mut FakeFeed::new(&pages), &DocMeta::default(), &BuildLimits::default()).unwrap();
-    ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap();
+    build(tk(), &root, key, &mut FakeFeed::new(&pages), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    ensure_agent_folder(tk(), &root, key, &BuildLimits::default()).unwrap();
     let paths = CorpusPaths::new(&root, key);
     let elsewhere = temp.file("elsewhere.json", b"{\"not\":\"the manifest\"}");
     for target in [elsewhere.clone(), temp.0.join("nothing-here")] {
         fs::remove_file(&paths.manifest).unwrap();
         std::os::unix::fs::symlink(&target, &paths.manifest).unwrap();
         assert_eq!(agent_folder_bytes(&root, key), None, "a link isn't a finished folder");
-        ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap();
+        ensure_agent_folder(tk(), &root, key, &BuildLimits::default()).unwrap();
         let meta = fs::symlink_metadata(&paths.manifest).unwrap();
         assert!(meta.is_file(), "the manifest is a file of its own again");
         let manifest: Value = serde_json::from_slice(&fs::read(&paths.manifest).unwrap()).unwrap();
@@ -1549,4 +1675,67 @@ fn a_link_in_the_manifests_place_is_replaced_not_followed() {
         b"{\"not\":\"the manifest\"}",
         "what the link pointed at is untouched"
     );
+}
+
+/// Failure: a page's text, a title or an outline entry is on disk as it is anywhere in the corpus folder after a build and a read, so another program running as this user reads the Find text (owner, 2026-11-15: "Lets store it encrypted"). Every byte of every file is scanned for each word.
+#[test]
+fn no_text_of_the_document_is_on_disk_as_it_is() {
+    let temp = Temp::new();
+    let file = temp.file("doc.pdf", b"a document");
+    let key = CorpusKey::of_file(&file).unwrap();
+    let root = temp.0.join("corpus");
+    let pages = [
+        Fake::Text("quixotic zephyr marmalade"),
+        Fake::Text("perihelion #obsidian| lantern"),
+        Fake::Text("hyphen-\nated words"),
+    ];
+    let meta = DocMeta {
+        title: Some("Confidential merger memorandum".to_string()),
+        outline: vec![(0, Some(1), "Indemnification schedule".to_string())],
+        ..DocMeta::default()
+    };
+    build_for_file(tk(), &file, &root, key, &mut FakeFeed::new(&pages), &meta, &BuildLimits::default()).unwrap();
+    let corpus = ReadyCorpus::open(tk(), &root, key).unwrap().unwrap();
+    assert!(corpus.page(0, &mut Vec::new()).unwrap().text.contains("zephyr"), "the text reads back");
+    for (name, bytes) in every_file(&root) {
+        let bytes = String::from_utf8_lossy(&bytes).to_lowercase();
+        for word in [
+            "quixotic",
+            "zephyr",
+            "marmalade",
+            "perihelion",
+            "obsidian",
+            "lantern",
+            "hyphenated",
+            "confidential",
+            "memorandum",
+            "indemnification",
+        ] {
+            assert!(!bytes.contains(word), "{word} is in {} as it is", name.display());
+        }
+    }
+}
+
+/// Failure: text kept before it was sealed stays on disk after the first launch that seals, or the pass removes more than old formats' folders: a corpus of today, a link, or anything not named as a key.
+#[test]
+fn text_from_before_it_was_sealed_goes_and_nothing_else_does() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let key = key_of(&temp, b"a file");
+    build(tk(), &root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    let old = root.join(key.hex()).join("v3").join("app");
+    fs::create_dir_all(&old).unwrap();
+    fs::write(old.join("text.pack"), b"plain text of before").unwrap();
+    let elsewhere = temp.0.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let other = key_of(&temp, b"another file");
+    fs::create_dir_all(root.join(other.hex())).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, root.join(other.hex()).join("v3")).unwrap();
+    fs::create_dir_all(root.join("not-a-key").join("v3")).unwrap();
+    assert!(plain_corpora_may_be_there(&root));
+    assert_eq!(remove_plain_corpora(&root), 1);
+    assert!(!root.join(key.hex()).join("v3").exists(), "the old text is still there");
+    assert!(ReadyCorpus::open(tk(), &root, key).unwrap().is_some(), "today's corpus went with it");
+    assert!(elsewhere.is_dir() && root.join("not-a-key").join("v3").is_dir(), "something not ours went");
+    assert!(!plain_corpora_may_be_there(&root), "a start would look again for nothing");
 }

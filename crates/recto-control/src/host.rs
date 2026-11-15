@@ -203,7 +203,7 @@ impl SessionHost<DrawableLoader> {
     #[must_use]
     pub fn serving(paths: &StatePaths) -> Self {
         Self::on_state(paths, DrawableLoader)
-            .with_indexing(paths)
+            .with_indexing(paths, crate::find_keys::Host::Cli)
             .with_generating(paths)
             .with_own_record(paths)
             .with_backups(paths)
@@ -240,8 +240,8 @@ impl<L: DocLoader + Clone> SessionHost<L> {
 
     /// With documents indexed on demand, under the state folder's corpus folder.
     #[must_use]
-    pub fn with_indexing(mut self, paths: &StatePaths) -> Self {
-        let indexer = Indexer::new(&paths.corpus);
+    pub fn with_indexing(mut self, paths: &StatePaths, host: crate::find_keys::Host) -> Self {
+        let indexer = Indexer::new(&paths.corpus, crate::find_keys::plan(paths, host));
         self.finder = Finder::new(Some(indexer.clone()));
         self.indexer = Some(indexer);
         self

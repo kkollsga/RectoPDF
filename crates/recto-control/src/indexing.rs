@@ -2,9 +2,11 @@
 //!
 //! The work is in a helper process, `recto-indexer`, at [`crate::helpers::HELPER_PRIORITY`], utility. The one thread here exists only while there's something to build. It starts the helper, sleeps until it's done, and takes the next. With nothing to build, there's no thread, no process and nothing to wake up for.
 
+use crate::find_keys::{self, Loaded, Plan};
 use recto_agent::Event;
 use recto_agent::index::{Indexing, JobState};
 use recto_index::corpus::{self, BuildLimits, CorpusKey};
+use recto_platform::find_key::FindKey;
 use recto_platform::helper::{Priority, Spawned};
 use serde_json::{Value, json};
 use std::any::Any;
@@ -35,7 +37,7 @@ pub struct IndexJob {
 
 /// What building comes down to, so a test can stand in for a process. `started` is given something whose dropping stops the build.
 pub trait Runner: Send + Sync {
-    fn run(&self, job: &IndexJob, root: &Path, started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value;
+    fn run(&self, job: &IndexJob, root: &Path, find_key: &FindKey, started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value;
 }
 
 #[derive(Default)]
@@ -56,6 +58,9 @@ struct Inner {
 
 struct Shared {
     root: PathBuf,
+    /// Where the Find key comes from, and the key once it's been asked for: the first time an index is used, on whichever thread asks, never the UI's.
+    key_plan: Plan,
+    key: OnceLock<Loaded>,
     limits: BuildLimits,
     runner: Box<dyn Runner>,
     inner: Mutex<Inner>,
@@ -73,27 +78,31 @@ impl std::fmt::Debug for Indexer {
 }
 
 impl Indexer {
-    pub fn new(root: &Path) -> Self {
-        let indexer = Self::with_runner(
+    pub fn new(root: &Path, key_plan: Plan) -> Self {
+        let indexer = Self::with_limits(
             root,
             Box::new(HelperProcess {
                 priority: crate::helpers::HELPER_PRIORITY,
             }),
+            BuildLimits::default(),
+            key_plan,
         );
-        // Only if there's something to do: an ordinary start stays one thread, with one look at a folder.
-        if corpus::old_folder_is_there(root) {
+        // Only if there's something to do: an ordinary start stays one thread, with two looks at a folder. Text from before it was sealed goes at the first launch that can see it.
+        if corpus::old_folder_is_there(root) || corpus::plain_corpora_may_be_there(root) {
             indexer.start_working(&mut indexer.0.lock());
         }
         indexer
     }
 
     pub fn with_runner(root: &Path, runner: Box<dyn Runner>) -> Self {
-        Self::with_limits(root, runner, BuildLimits::default())
+        Self::with_limits(root, runner, BuildLimits::default(), Plan::Memory)
     }
 
-    fn with_limits(root: &Path, runner: Box<dyn Runner>, limits: BuildLimits) -> Self {
+    fn with_limits(root: &Path, runner: Box<dyn Runner>, limits: BuildLimits, key_plan: Plan) -> Self {
         Self(Arc::new(Shared {
             root: root.to_path_buf(),
+            key_plan,
+            key: OnceLock::new(),
             limits,
             runner,
             inner: Mutex::new(Inner {
@@ -148,6 +157,10 @@ impl Indexer {
 }
 
 impl Shared {
+    fn find_key(&self) -> Option<&FindKey> {
+        self.key.get_or_init(|| find_keys::load(&self.key_plan)).key.as_ref()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -164,6 +177,7 @@ impl Shared {
             // First, before anything's built, and on this thread because it walks a folder of any size.
             if std::mem::take(&mut self.lock().sweep_due) {
                 corpus::remove_old_folder(&self.root);
+                corpus::remove_plain_corpora(&self.root);
                 let _ = corpus::evict(&self.root, &self.limits, None);
             }
             let job = {
@@ -181,7 +195,10 @@ impl Shared {
                 corpus: job.key.short(),
             });
             let report = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.runner.run(&job, &self.root, &mut |stop| {
+                let Some(find_key) = self.find_key() else {
+                    return json!({ "state": "failed", "code": "no_find_key" });
+                };
+                self.runner.run(&job, &self.root, find_key, &mut |stop| {
                     let mut inner = self.lock();
                     // Stopped while this was starting: not keeping it stops it now.
                     if !inner.stopped && !inner.cancelled {
@@ -229,6 +246,14 @@ impl Shared {
 impl Indexing for Indexer {
     fn root(&self) -> &Path {
         &self.0.root
+    }
+
+    fn find_key(&self) -> Option<&FindKey> {
+        self.0.find_key()
+    }
+
+    fn key_note(&self) -> Option<&'static str> {
+        self.0.key.get().and_then(|loaded| loaded.why)
     }
 
     fn want(&self, path: &Path, key: CorpusKey) {
@@ -286,7 +311,7 @@ pub struct HelperProcess {
 }
 
 impl Runner for HelperProcess {
-    fn run(&self, job: &IndexJob, root: &Path, started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
+    fn run(&self, job: &IndexJob, root: &Path, find_key: &FindKey, started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
         let failed = |code: &str| json!({ "state": "failed", "code": code });
         let Some(exe) = helper_exe() else { return failed("indexer_missing") };
         let (Some(file), Some(root)) = (job.path.to_str(), root.to_str()) else {
@@ -296,9 +321,9 @@ impl Runner for HelperProcess {
         let Ok(Spawned { mut child, mut stdin, stdout }) = crate::helpers::spawn_helper(&exe, &[], self.priority) else {
             return failed("indexer_wouldnt_start");
         };
-        // On stdin, so a file's name stays out of `ps`.
+        // On stdin, so a file's name stays out of `ps`: the Find key first, as 32 raw bytes from its own memory, then the job. Never in the arguments, the environment or a file.
         let line = json!({ "file": file, "root": root, "key": job.key.hex() }).to_string() + "\n";
-        if stdin.write_all(line.as_bytes()).is_err() {
+        if find_key.write_to(&mut stdin).and_then(|()| stdin.write_all(line.as_bytes())).is_err() {
             let _ = child.kill();
             let _ = child.wait();
             return failed("indexer_wouldnt_start");
@@ -365,9 +390,9 @@ pub fn read_report(said: &str) -> Value {
 }
 
 /// Runs one build here and now, blocking until it's over, for `budget index`.
-pub fn build_now(path: &Path, key: CorpusKey, root: &Path, priority: Priority) -> Value {
+pub fn build_now(path: &Path, key: CorpusKey, root: &Path, find_key: &FindKey, priority: Priority) -> Value {
     let mut keep = None;
-    HelperProcess { priority }.run(&IndexJob { path: path.to_path_buf(), key }, root, &mut |stop| keep = Some(stop))
+    HelperProcess { priority }.run(&IndexJob { path: path.to_path_buf(), key }, root, find_key, &mut |stop| keep = Some(stop))
 }
 
 #[cfg(test)]
@@ -389,7 +414,7 @@ mod tests {
     struct Runs(Arc<Stand>);
 
     impl Runner for Runs {
-        fn run(&self, _job: &IndexJob, _root: &Path, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
+        fn run(&self, _job: &IndexJob, _root: &Path, _find_key: &FindKey, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
             let stand = &self.0;
             let now = stand.running.fetch_add(1, Ordering::SeqCst) + 1;
             stand.most_at_once.fetch_max(now, Ordering::SeqCst);
@@ -453,7 +478,7 @@ mod tests {
     struct Fails;
 
     impl Runner for Fails {
-        fn run(&self, _job: &IndexJob, _root: &Path, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
+        fn run(&self, _job: &IndexJob, _root: &Path, _find_key: &FindKey, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
             json!({ "state": "failed", "code": "render_worker_missing" })
         }
     }
@@ -473,7 +498,7 @@ mod tests {
 
         struct Panics;
         impl Runner for Panics {
-            fn run(&self, _job: &IndexJob, _root: &Path, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
+            fn run(&self, _job: &IndexJob, _root: &Path, _find_key: &FindKey, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
                 panic!("a bug");
             }
         }
@@ -491,7 +516,7 @@ mod tests {
     fn a_paused_build_isnt_a_failure_and_goes_on_when_asked() {
         struct Paused(Arc<AtomicU32>);
         impl Runner for Paused {
-            fn run(&self, _job: &IndexJob, _root: &Path, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
+            fn run(&self, _job: &IndexJob, _root: &Path, _find_key: &FindKey, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 json!({ "state": "paused", "code": "too_busy" })
             }
@@ -571,7 +596,7 @@ mod tests {
         let temp = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-limits-");
         recto_platform::local::ensure_private_dir(&temp).unwrap();
         let (root, generous) = (temp.join("corpus.noindex"), BuildLimits::default());
-        let build = |key: CorpusKey| corpus::build(&root, key, &mut OnePage, &corpus::DocMeta::default(), &generous).unwrap();
+        let build = |key: CorpusKey| corpus::build(&FindKey::for_tests(1), &root, key, &mut OnePage, &corpus::DocMeta::default(), &generous).unwrap();
         let (old, recent) = (key(1), key(2));
         build(old);
         build(recent);
@@ -595,14 +620,14 @@ mod tests {
         // Past 90 days, under the size.
         age(old, 91);
         age(recent, 1);
-        let by_age = Indexer::with_limits(&root, Box::new(Fails), generous);
+        let by_age = Indexer::with_limits(&root, Box::new(Fails), generous, Plan::Memory);
         by_age.note_asked();
         wait_until_gone(old);
         assert!(root.join(recent.hex()).exists(), "what's within its time stays");
         // 89 days is within it.
         build(old);
         age(old, 89);
-        let within = Indexer::with_limits(&root, Box::new(Fails), generous);
+        let within = Indexer::with_limits(&root, Box::new(Fails), generous, Plan::Memory);
         within.note_asked();
         let deadline = Instant::now() + Duration::from_secs(10);
         while within.0.lock().working && Instant::now() < deadline {
@@ -615,7 +640,7 @@ mod tests {
             max_total_bytes: corpus::folder_bytes(&root.join(recent.hex())) + 1,
             ..BuildLimits::default()
         };
-        let by_size = Indexer::with_limits(&root, Box::new(Fails), tight);
+        let by_size = Indexer::with_limits(&root, Box::new(Fails), tight, Plan::Memory);
         by_size.note_asked();
         wait_until_gone(old);
         assert!(root.join(recent.hex()).exists(), "the most recently used goes last");
@@ -627,15 +652,23 @@ mod tests {
     fn a_run_that_ends_any_way_makes_room() {
         struct Changed;
         impl Runner for Changed {
-            fn run(&self, _job: &IndexJob, _root: &Path, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
+            fn run(&self, _job: &IndexJob, _root: &Path, _find_key: &FindKey, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
                 json!({ "state": "changed" })
             }
         }
         let temp = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "recto-any-way-");
         recto_platform::local::ensure_private_dir(&temp).unwrap();
         let root = temp.join("corpus.noindex");
-        corpus::build(&root, key(1), &mut OnePage, &corpus::DocMeta::default(), &BuildLimits::default()).unwrap();
-        let indexer = Indexer::with_limits(&root, Box::new(Changed), BuildLimits::default());
+        corpus::build(
+            &FindKey::for_tests(1),
+            &root,
+            key(1),
+            &mut OnePage,
+            &corpus::DocMeta::default(),
+            &BuildLimits::default(),
+        )
+        .unwrap();
+        let indexer = Indexer::with_limits(&root, Box::new(Changed), BuildLimits::default(), Plan::Memory);
         // Past the first sweep, with room to spare, so it's the run's own look that matters.
         indexer.ask(job(2));
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -650,6 +683,7 @@ mod tests {
                 max_total_bytes: 1,
                 ..BuildLimits::default()
             },
+            Plan::Memory,
         );
         tight.0.lock().sweep_due = false;
         tight.ask(job(2));

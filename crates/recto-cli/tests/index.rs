@@ -292,12 +292,18 @@ fn start_helper(file: &Path, root: &Path, key: CorpusKey) -> std::process::Child
         .spawn()
         .unwrap();
     let line = serde_json::json!({ "file": file, "root": root, "key": key.hex() }).to_string() + "\n";
+    find_key_of(root).write_to(child.stdin.as_mut().unwrap()).unwrap();
     child.stdin.as_mut().unwrap().write_all(line.as_bytes()).unwrap();
     child
 }
 
+/// The key a test state folder's session seals with: the folder's own `find.key`, beside its corpus folder.
+fn find_key_of(root: &Path) -> recto_platform::find_key::FindKey {
+    recto_platform::find_key::FindKey::from_state_file(&root.parent().unwrap().join("find.key")).unwrap()
+}
+
 fn pages_done(root: &Path, key: CorpusKey) -> u32 {
-    match recto_index::corpus::disk_state(root, key) {
+    match recto_index::corpus::disk_state(&find_key_of(root), root, key) {
         recto_index::corpus::DiskState::Partial { pages_done } => pages_done,
         _ => 0,
     }
@@ -864,6 +870,7 @@ fn corpus_with_a_failed_page(state: &State, file: &TempPdf, page: u32) {
     };
     state.paths.prepare().unwrap();
     let built = recto_index::corpus::build(
+        &find_key_of(&state.paths.corpus),
         &state.paths.corpus,
         key,
         &mut feed,
@@ -1112,7 +1119,7 @@ fn lowering_to_off_stops_indexing() {
         std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
     }
     assert!(
-        matches!(recto_index::corpus::disk_state(&root, running_key), recto_index::corpus::DiskState::Partial { pages_done } if pages_done < 1200),
+        matches!(recto_index::corpus::disk_state(&find_key_of(&root), &root, running_key), recto_index::corpus::DiskState::Partial { pages_done } if pages_done < 1200),
         "it kept writing at Off, to the end"
     );
     assert!(!all_text_under(&root).contains("offqueuedword"), "a waiting file got written at Off");

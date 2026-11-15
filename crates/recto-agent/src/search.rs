@@ -215,7 +215,10 @@ fn corpus_for<'a>(open: &'a mut Option<(u16, ReadyCorpus)>, file: u16, key: Corp
     if open.as_ref().is_none_or(|(open_file, _)| *open_file != file) {
         *open = None;
         let indexing = indexing.ok_or(Damaged)?;
-        *open = Some((file, ReadyCorpus::open(indexing.root(), key)?.ok_or(Damaged)?));
+        *open = Some((
+            file,
+            ReadyCorpus::open(indexing.find_key().ok_or(Damaged)?, indexing.root(), key)?.ok_or(Damaged)?,
+        ));
     }
     open.as_ref().map(|(_, corpus)| corpus).ok_or(Damaged)
 }
@@ -1519,6 +1522,7 @@ mod tests {
         let key = CorpusKey::of_file(&path).unwrap();
         let count = pages.len() as u32;
         recto_index::corpus::build(
+            &recto_platform::find_key::FindKey::for_tests(1),
             &root,
             key,
             &mut Pages(pages),
@@ -1538,7 +1542,7 @@ mod tests {
                 tab: 1,
                 keys: None,
             },
-            indexing: crate::index::ReadOnlyCorpus(root),
+            indexing: crate::index::ReadOnlyCorpus(root, Some(recto_platform::find_key::FindKey::for_tests(1))),
         }
     }
 

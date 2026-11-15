@@ -49,6 +49,12 @@ fn link(target: &Path, path: &Path) {
     let _ = (target, path);
 }
 
+/// The Find key the fuzzed corpora are sealed with.
+fn fk() -> &'static recto_platform::find_key::FindKey {
+    static KEY: std::sync::OnceLock<recto_platform::find_key::FindKey> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| recto_platform::find_key::FindKey::for_tests(5))
+}
+
 fn key() -> CorpusKey {
     CorpusKey::from_hex(&"c3".repeat(32)).unwrap_or_else(|| unreachable!())
 }
@@ -170,9 +176,9 @@ fn made(base: &Path) -> Made {
     std::fs::write(&file, b"%PDF-1.7 made for the corpus target").expect("the file a corpus is of");
     let root = base.join("made");
     local::ensure_private_dir(&root).expect("a private folder");
-    let built = corpus::build_for_file(&file, &root, key(), &mut Feed, &meta(), &limits()).expect("a corpus builds");
+    let built = corpus::build_for_file(fk(), &file, &root, key(), &mut Feed, &meta(), &limits()).expect("a corpus builds");
     assert!(matches!(built, BuildOutcome::Ready { .. }), "{built:?}");
-    corpus::ensure_agent_folder(&root, key(), &limits()).expect("its agent folder");
+    corpus::ensure_agent_folder(fk(), &root, key(), &limits()).expect("its agent folder");
     let texts = read_all(&root).expect("what was built reads back");
     let mut entries = Vec::new();
     walk(&root, &root, &mut entries);
@@ -182,7 +188,7 @@ fn made(base: &Path) -> Made {
 
 /// Every page of a corpus that's there and adds up.
 fn read_all(root: &Path) -> Option<Vec<String>> {
-    let corpus = ReadyCorpus::open(root, key()).ok()??;
+    let corpus = ReadyCorpus::open(fk(), root, key()).ok()??;
     let mut buffer = Vec::new();
     (0..corpus.pages())
         .map(|page| corpus.page(page, &mut buffer).ok().map(|stored| stored.text.to_string()))
@@ -324,8 +330,8 @@ fn reseal(root: &Path) {
 
 /// Everything that reads a corpus, on what's there now.
 fn read_back(root: &Path, made: &Made) {
-    let _ = corpus::disk_state(root, key());
-    if let Ok(Some(found)) = ReadyCorpus::open(root, key()) {
+    let _ = corpus::disk_state(fk(), root, key());
+    if let Ok(Some(found)) = ReadyCorpus::open(fk(), root, key()) {
         // The table as it is on disk, to hold what's read to what its record said.
         let table = std::fs::read(root.join(key().hex()).join(corpus::FORMAT).join("app").join("pages.bin")).unwrap_or_default();
         let mut buffer = Vec::new();
@@ -345,7 +351,7 @@ fn read_back(root: &Path, made: &Made) {
             }
         }
     }
-    if let Ok(folder) = corpus::ensure_agent_folder(root, key(), &limits()) {
+    if let Ok(folder) = corpus::ensure_agent_folder(fk(), root, key(), &limits()) {
         assert!(folder.path.join("manifest.json").is_file(), "a finished agent folder has its manifest");
         let size: u64 = std::fs::read_dir(folder.path.join("pages"))
             .map(|entries| entries.flatten().filter_map(|entry| entry.metadata().ok()).map(|meta| meta.len()).sum())
@@ -371,12 +377,12 @@ fn check_in(base: &Path, data: &[u8]) {
         }
         read_back(&root, made);
         // A build goes on from what's there, believing only records that hold up.
-        let _ = corpus::build(&root, key(), &mut Feed, &meta(), &limits());
+        let _ = corpus::build(fk(), &root, key(), &mut Feed, &meta(), &limits());
         read_back(&root, made);
         // Cleared, it's built again from the file, and every page reads back as it was written.
         corpus::forget_file(&root, &made.file);
         if corpus::clear(&root, key()).is_ok() || !root.join(key().hex()).exists() {
-            let built = corpus::build(&root, key(), &mut Feed, &meta(), &limits());
+            let built = corpus::build(fk(), &root, key(), &mut Feed, &meta(), &limits());
             assert!(matches!(built, Ok(BuildOutcome::Ready { .. })), "{built:?}");
             assert_eq!(read_all(&root).as_ref(), Some(&made.texts), "built again, it reads back as written");
         }

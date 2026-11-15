@@ -5,6 +5,7 @@ use crate::TabRef;
 use crate::{AgentError, ConditionState, SessionAccess, exit, select};
 use recto_index::corpus::{self, CorpusKey, DiskState, Summary};
 use recto_platform::FileStamp;
+use recto_platform::find_key::FindKey;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -23,6 +24,12 @@ pub enum JobState {
 pub trait Indexing: Send + Sync {
     /// Where corpora live.
     fn root(&self) -> &Path;
+    /// The key the text there is sealed with. `None` where this host keeps no index, and then nothing is read or built.
+    fn find_key(&self) -> Option<&FindKey>;
+    /// Why the key isn't the lasting one this host would want, as a code, once it's been asked for. Never anything of the key.
+    fn key_note(&self) -> Option<&'static str> {
+        None
+    }
     /// Someone wants this file indexed. Nothing happens if it's already on its way, and the oldest ask gives way if there are too many.
     fn want(&self, path: &Path, key: CorpusKey);
     fn job(&self, key: CorpusKey) -> JobState;
@@ -38,13 +45,16 @@ pub trait Indexing: Send + Sync {
     }
 }
 
-/// For a route that lives no longer than one command, such as `recto local`: it reads what's been built and starts nothing.
-#[derive(Clone, Debug)]
-pub struct ReadOnlyCorpus(pub PathBuf);
+/// For a route that lives no longer than one command, such as `recto local`: it reads what's been built and starts nothing. With no key, it reads nothing either.
+#[derive(Debug)]
+pub struct ReadOnlyCorpus(pub PathBuf, pub Option<FindKey>);
 
 impl Indexing for ReadOnlyCorpus {
     fn root(&self) -> &Path {
         &self.0
+    }
+    fn find_key(&self) -> Option<&FindKey> {
+        self.1.as_ref()
     }
     fn want(&self, _path: &Path, _key: CorpusKey) {}
     fn job(&self, _key: CorpusKey) -> JobState {
@@ -137,6 +147,7 @@ fn refused_words(code: &str) -> &'static str {
         "too_large" => "its text is more than an index may hold",
         "not_pdf" => "it couldn't be read as a PDF",
         "security" => "it uses a kind of security that can't be read",
+        "no_find_key" => "only the app keeps an index, sealed with its own key, and this program isn't the app",
         "coarse_file_times" => "it's on a volume whose file times can't show it's been replaced, so an index could answer from old text",
         _ => "it can't be read",
     }
@@ -151,7 +162,10 @@ pub(crate) fn file_index(indexing: &dyn Indexing, path: &Path, want: bool) -> (O
     if !corpus::can_be_indexed(path) {
         return (Some(key), FileIndex::Refused("coarse_file_times".to_string()));
     }
-    let disk = corpus::disk_state(indexing.root(), key);
+    let Some(find_key) = indexing.find_key() else {
+        return (Some(key), FileIndex::Refused("no_find_key".to_string()));
+    };
+    let disk = corpus::disk_state(find_key, indexing.root(), key);
     let pages_done = match &disk {
         DiskState::Ready(summary) => {
             // What it holds is good to use meanwhile: this only reads again pages that failed for a temporary reason.
@@ -242,7 +256,14 @@ fn make_agent_folder(indexing: &dyn Indexing, file: &TabFile) -> Result<(), Agen
     let (Some(key), FileIndex::Ready(_), true) = (CorpusKey::of_file(&file.path).ok(), file_index(indexing, &file.path, true).1, current) else {
         return Ok(());
     };
-    match corpus::ensure_agent_folder(indexing.root(), key, &corpus::BuildLimits::default()) {
+    let Some(find_key) = indexing.find_key() else {
+        return Err(AgentError::new(
+            Code::INDEX_FAILED,
+            "This program keeps no index, so there's no folder to write from.",
+            exit::FAILED,
+        ));
+    };
+    match corpus::ensure_agent_folder(find_key, indexing.root(), key, &corpus::BuildLimits::default()) {
         Ok(_) | Err(corpus::AgentFolderError::NotReady) => Ok(()),
         Err(corpus::AgentFolderError::Busy) => Err(AgentError::new(Code::BUSY, "This document's index is being written right now.", exit::BUSY)),
         Err(corpus::AgentFolderError::TooLarge) => {
