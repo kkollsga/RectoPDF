@@ -22,6 +22,7 @@ crc32fast.workspace = true
 # The Find text is sealed on disk: `seal.rs`.
 aes-gcm.workspace = true
 hkdf.workspace = true
+getrandom.workspace = true
 
 [dev-dependencies]
 # Test-only: fresh temp folders.

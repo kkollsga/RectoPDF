@@ -138,6 +138,11 @@ impl CorpusKey {
         Some(Self(key))
     }
 
+    /// What goes in a corpus's own key, so its chunks open only under this name: [`crate::seal`].
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
     pub fn hex(&self) -> String {
         let mut out = String::with_capacity(64);
         for byte in self.0 {

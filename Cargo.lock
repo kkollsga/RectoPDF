@@ -860,6 +860,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "crc32fast",
+ "getrandom",
  "hkdf",
  "recto-core",
  "recto-platform",

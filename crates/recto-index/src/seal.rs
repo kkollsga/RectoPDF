@@ -1,0 +1,248 @@
+//! **The Find text, sealed** (owner, 2026-11-15: "Find text is a indexed copy of the pdf text? Lets store it encrypted"). Every part of a corpus that came from the document is kept as independent chunks of AES-256-GCM, so a search still reads one page at a time into one buffer, a build can still be killed at any point, and a chunk that's been changed, cut short, moved to another page or copied from another corpus fails to open, which throws the corpus away as any damage does.
+//!
+//! **One key per corpus.** Each corpus has a header, `seal.bin`: 8 bytes of magic, 32 random bytes of salt, and a check chunk. Its key is HKDF-SHA256 of the Find key ([`recto_platform::find_key`]) with that salt, and the corpus's own key in the info, so a folder renamed or copied under another file's key can't be opened. A new header is made whenever a corpus is started from nothing, so a rebuilt corpus never shares a key with what it replaces.
+//!
+//! **Nonces are random,** 96 bits from the OS for every chunk, and written in front of it. A corpus holds at most 200,000 pages, each sealed at most 1 + 3 retries times plus restarts, so well under 2^21 chunks per key: the chance of two alike is under 2^-55, far inside NIST's 2^-32 for random nonces (SP 800-38D §8.3). A restarted build draws new ones, so a page sealed twice, killed and sealed again with other text, never reuses a nonce. Nothing to count, so nothing to get wrong after a kill.
+//!
+//! **What a chunk says to someone without the key:** its length (the page's text and what's beside it, plus 28 bytes) and where it is. So the number of pages, each page's length, and which pages have no text, as the table always said. Nothing else.
+//!
+//! A chunk is `nonce (12) | ciphertext | tag (16)`. Its associated data says what it is: a page and its number, the summary, the title and outline, or the header's check.
+
+use crate::corpus::CorpusKey;
+use aes_gcm::aead::{AeadInOut, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce, Tag};
+use recto_platform::find_key::FindKey;
+use sha2::Sha256;
+
+pub const NONCE_BYTES: usize = 12;
+pub const TAG_BYTES: usize = 16;
+/// What sealing adds to a chunk.
+pub const OVERHEAD: usize = NONCE_BYTES + TAG_BYTES;
+const MAGIC: &[u8; 8] = b"RECTOSL1";
+const SALT_BYTES: usize = 32;
+/// The header: magic, salt and a check chunk of nothing.
+pub const HEADER_BYTES: usize = MAGIC.len() + SALT_BYTES + OVERHEAD;
+const INFO: &[u8] = b"recto find text v4\0";
+
+/// What a chunk is, said in its associated data, so one can't stand for another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Purpose {
+    Page(u32),
+    Summary,
+    Meta,
+    Check,
+}
+
+impl Purpose {
+    fn associated(self) -> [u8; 5] {
+        let (kind, number) = match self {
+            Self::Page(page) => (1, page),
+            Self::Summary => (2, 0),
+            Self::Meta => (3, 0),
+            Self::Check => (4, 0),
+        };
+        let mut out = [kind, 0, 0, 0, 0];
+        out[1..].copy_from_slice(&number.to_le_bytes());
+        out
+    }
+}
+
+/// It didn't open: the wrong key, a changed byte, a chunk cut short or put where another belongs. All the same to a reader, which throws the corpus away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Unopened;
+
+/// One corpus's key, ready to seal and open its chunks. Its key schedule is overwritten when it goes (`aes-gcm`'s `zeroize`).
+pub struct CorpusSeal {
+    cipher: Aes256Gcm,
+}
+
+impl std::fmt::Debug for CorpusSeal {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.write_str("CorpusSeal")
+    }
+}
+
+impl CorpusSeal {
+    fn derive(find_key: &FindKey, salt: &[u8], corpus: CorpusKey) -> Self {
+        let mut okm = [0u8; 32];
+        let hkdf = hkdf::Hkdf::<Sha256>::new(Some(salt), find_key.bytes());
+        // 32 bytes is far inside HKDF-SHA256's limit of 8,160.
+        let _ = hkdf.expand_multi_info(&[INFO, corpus.as_bytes()], &mut okm);
+        let cipher = Aes256Gcm::new(&okm.into());
+        okm.fill(0);
+        std::hint::black_box(&okm);
+        Self { cipher }
+    }
+
+    /// A new corpus's seal, and its header to be written before its first chunk.
+    ///
+    /// # Errors
+    ///
+    /// When the OS gives no randomness.
+    pub fn create(find_key: &FindKey, corpus: CorpusKey) -> std::io::Result<(Self, Vec<u8>)> {
+        let mut salt = [0u8; SALT_BYTES];
+        getrandom::fill(&mut salt).map_err(|_| std::io::Error::other("no randomness"))?;
+        let seal = Self::derive(find_key, &salt, corpus);
+        let mut header = Vec::with_capacity(HEADER_BYTES);
+        header.extend_from_slice(MAGIC);
+        header.extend_from_slice(&salt);
+        let mut check = Vec::with_capacity(OVERHEAD);
+        seal.seal(Purpose::Check, &mut check, |_| {})?;
+        header.extend_from_slice(&check);
+        Ok((seal, header))
+    }
+
+    /// The seal a header says, if this key opens it for this corpus.
+    ///
+    /// # Errors
+    ///
+    /// [`Unopened`] for anything else: the wrong key, another corpus's header, or bytes that aren't one.
+    pub fn open(find_key: &FindKey, corpus: CorpusKey, header: &[u8]) -> Result<Self, Unopened> {
+        if header.len() != HEADER_BYTES || !header.starts_with(MAGIC) {
+            return Err(Unopened);
+        }
+        let seal = Self::derive(find_key, &header[MAGIC.len()..MAGIC.len() + SALT_BYTES], corpus);
+        let mut check = [0u8; OVERHEAD];
+        check.copy_from_slice(&header[MAGIC.len() + SALT_BYTES..]);
+        seal.open_in_place(Purpose::Check, &mut check)?;
+        Ok(seal)
+    }
+
+    /// Seals what `write` puts in `out`, in place: `out` is cleared, room is left for the nonce, `write` appends the plain bytes, and they're encrypted where they lie, so the only copy of them is this buffer.
+    ///
+    /// # Errors
+    ///
+    /// When the OS gives no randomness, or the chunk is past what GCM can seal (64 GiB, far past [`crate::corpus`]'s caps).
+    pub fn seal(&self, purpose: Purpose, out: &mut Vec<u8>, write: impl FnOnce(&mut Vec<u8>)) -> std::io::Result<()> {
+        out.clear();
+        out.resize(NONCE_BYTES, 0);
+        write(out);
+        let (nonce, plain) = out.split_at_mut(NONCE_BYTES);
+        getrandom::fill(nonce).map_err(|_| std::io::Error::other("no randomness"))?;
+        let nonce = Nonce::try_from(&*nonce).map_err(|_| std::io::Error::other("nonce"))?;
+        let tag = self
+            .cipher
+            .encrypt_inout_detached(&nonce, &purpose.associated(), plain.into())
+            .map_err(|_| std::io::Error::other("too large to seal"))?;
+        out.extend_from_slice(&tag);
+        Ok(())
+    }
+
+    /// Opens a chunk where it lies, and says where its plain bytes are in it. A chunk that doesn't open is left as it was, and nothing of it is plain.
+    ///
+    /// # Errors
+    ///
+    /// [`Unopened`].
+    pub fn open_in_place(&self, purpose: Purpose, chunk: &mut [u8]) -> Result<std::ops::Range<usize>, Unopened> {
+        if chunk.len() < OVERHEAD {
+            return Err(Unopened);
+        }
+        let end = chunk.len() - TAG_BYTES;
+        let (head, tag) = chunk.split_at_mut(end);
+        let tag = Tag::try_from(&*tag).map_err(|_| Unopened)?;
+        let (nonce, sealed) = head.split_at_mut(NONCE_BYTES);
+        let nonce = Nonce::try_from(&*nonce).map_err(|_| Unopened)?;
+        self.cipher
+            .decrypt_inout_detached(&nonce, &purpose.associated(), sealed.into(), &tag)
+            .map_err(|_| Unopened)?;
+        Ok(NONCE_BYTES..end)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn corpus(byte: u8) -> CorpusKey {
+        CorpusKey::from_hex(&format!("{byte:02x}").repeat(32)).unwrap()
+    }
+
+    fn sealed(seal: &CorpusSeal, purpose: Purpose, text: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        seal.seal(purpose, &mut out, |out| out.extend_from_slice(text)).unwrap();
+        out
+    }
+
+    /// Failure: a page's text is on disk as it is, or comes back other than it went in, or a sealed chunk is longer than its text and the 28 bytes said.
+    #[test]
+    fn a_chunk_hides_its_text_and_gives_it_back() {
+        let key = FindKey::for_tests(1);
+        let (seal, header) = CorpusSeal::create(&key, corpus(1)).unwrap();
+        assert_eq!(header.len(), HEADER_BYTES);
+        let text = b"force majeure clause: the parties agree";
+        let mut chunk = sealed(&seal, Purpose::Page(3), text);
+        assert_eq!(chunk.len(), text.len() + OVERHEAD);
+        assert!(
+            !chunk.windows(8).any(|window| text.windows(8).any(|word| word == window)),
+            "plain text in a sealed chunk"
+        );
+        let opened = seal.open_in_place(Purpose::Page(3), &mut chunk).unwrap();
+        assert_eq!(&chunk[opened], text);
+        let reopened = CorpusSeal::open(&key, corpus(1), &header).unwrap();
+        let mut again = sealed(&seal, Purpose::Page(0), b"");
+        assert!(
+            reopened.open_in_place(Purpose::Page(0), &mut again).is_ok(),
+            "the header's seal can't open what the made seal sealed"
+        );
+    }
+
+    /// Failure: a chunk opens for what it isn't: with a byte changed anywhere, cut short, as another page, as the summary, under another file's key, under another Find key, or with a header that isn't this corpus's.
+    #[test]
+    fn anything_but_the_chunk_itself_is_refused() {
+        let key = FindKey::for_tests(1);
+        let (seal, header) = CorpusSeal::create(&key, corpus(1)).unwrap();
+        let chunk = sealed(&seal, Purpose::Page(7), b"page seven's text");
+        for at in 0..chunk.len() {
+            let mut bad = chunk.clone();
+            bad[at] ^= 0x40;
+            assert_eq!(
+                seal.open_in_place(Purpose::Page(7), &mut bad),
+                Err(Unopened),
+                "a byte changed at {at} still opened"
+            );
+        }
+        for len in 0..chunk.len() {
+            assert_eq!(
+                seal.open_in_place(Purpose::Page(7), &mut chunk[..len].to_vec()),
+                Err(Unopened),
+                "cut to {len} still opened"
+            );
+        }
+        assert_eq!(
+            seal.open_in_place(Purpose::Page(8), &mut chunk.clone()),
+            Err(Unopened),
+            "opened as another page"
+        );
+        assert_eq!(seal.open_in_place(Purpose::Summary, &mut chunk.clone()), Err(Unopened), "opened as the summary");
+        assert!(CorpusSeal::open(&key, corpus(2), &header).is_err(), "another file's corpus opened this header");
+        assert!(
+            CorpusSeal::open(&FindKey::for_tests(2), corpus(1), &header).is_err(),
+            "another Find key opened this header"
+        );
+        let mut short = header.clone();
+        short.pop();
+        assert!(CorpusSeal::open(&key, corpus(1), &short).is_err());
+        let mut magic = header.clone();
+        magic[0] ^= 1;
+        assert!(CorpusSeal::open(&key, corpus(1), &magic).is_err());
+    }
+
+    /// Failure: two corpora, or the same one started again from nothing, get the same key, so a chunk of one opens in the other; or two sealings of the same text match, which says the text is the same and, under GCM, a nonce used twice.
+    #[test]
+    fn every_corpus_and_every_chunk_is_its_own() {
+        let key = FindKey::for_tests(1);
+        let (first, _) = CorpusSeal::create(&key, corpus(1)).unwrap();
+        let (again, _) = CorpusSeal::create(&key, corpus(1)).unwrap();
+        let chunk = sealed(&first, Purpose::Page(0), b"the same text");
+        assert_eq!(
+            again.open_in_place(Purpose::Page(0), &mut chunk.clone()),
+            Err(Unopened),
+            "a rebuilt corpus shares its key"
+        );
+        let mut nonces = std::collections::HashSet::new();
+        for _ in 0..10_000 {
+            let chunk = sealed(&first, Purpose::Page(0), b"the same text");
+            assert!(nonces.insert(chunk[..NONCE_BYTES].to_vec()), "a nonce came twice");
+        }
+    }
+}
