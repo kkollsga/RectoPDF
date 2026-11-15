@@ -300,6 +300,41 @@ fn pages_appended_by_another_program_are_reached_once_the_edits_follow() {
     assert_eq!(bed.s.pages().count(bed.a), 12);
 }
 
+/// **Failure caught:** a follow's job, its reading part way, or its match printed with a page's digest or the document's `/ID` in it (what's printed
+/// can reach a log; a digest is of a document's content). Each one's `Debug`, at each step, holds neither, in any form `Debug` writes bytes in.
+#[test]
+fn a_follows_job_reading_and_match_print_no_digest_and_no_id() {
+    let mut bed = Bed::turned_page_9_of(&with_id(&ten("Mine"), "mine", "one"));
+    bed.changed_and_read(&with_id(&document("Mine", &(1..=10).collect::<Vec<_>>(), true), "mine", "two"));
+    let list = bed.s.lists().get(bed.a).unwrap();
+    let ids = crate::edit::identity::identities(list).expect("named");
+    let document = ids.document().expect("its /ID read");
+    let mut secrets: Vec<String> = ids.pages().iter().filter_map(|(_, known)| Some(format!("{:?}", (*known)?.digest))).collect();
+    secrets.extend([format!("{:?}", document.first), format!("{:?}", document.second)]);
+    let hex = |bytes: &[u8; 16]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    secrets.extend([hex(&document.first), hex(&document.second)]);
+    let clean = |printed: String| {
+        assert!(!secrets.is_empty() && secrets.iter().all(|secret| !printed.contains(secret.as_str())), "{printed}");
+    };
+    let jobs = version_change::work(&mut bed.s);
+    let job = jobs.first().expect("a job");
+    clean(format!("{job:?} {document:?}"));
+    STEP_BYTES.with(|bytes| bytes.set(Some(1)));
+    let mut following = version_change::start(job.clone()).expect("opened");
+    loop {
+        clean(format!("{following:?}"));
+        match version_change::read_part(&mut following) {
+            version_change::Read::More => {}
+            version_change::Read::Matched(matched) => {
+                clean(format!("{matched:?}"));
+                break;
+            }
+            version_change::Read::NotRead => panic!("read"),
+        }
+    }
+    STEP_BYTES.with(|bytes| bytes.set(None));
+}
+
 /// Puts `bytes` in the file's place by a rename, with the time the file had put back: the same size and time, another inode.
 fn renamed_in_with_time_kept(path: &Path, bytes: &[u8]) {
     let modified = std::fs::metadata(path).unwrap().modified().unwrap();
