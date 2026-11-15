@@ -69,7 +69,8 @@ impl<L: DocLoader> Session<L> {
                     // Edits on a version the file isn't any more are said to be whatever notice is over them, as the tab says it: so a restore knows.
                     notice: match notices.fit_of(tab) {
                         EditsFit::FileChanged | EditsFit::FileChangedVersionUnknown => Some(FileNotice::Changed),
-                        _ => tab.file.notice().cloned(),
+                        // News of the moment, which an app from before it couldn't read.
+                        _ => tab.file.notice().filter(|notice| **notice != FileNotice::EditsFollowed).cloned(),
                     },
                     journal: journals.name_of(*id).map(ToString::to_string),
                     edits: lists.summary(*id),

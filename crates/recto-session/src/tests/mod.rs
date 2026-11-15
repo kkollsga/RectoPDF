@@ -29,6 +29,7 @@ mod sleeper;
 mod tabs;
 mod tiers;
 mod trail_tests;
+pub(crate) mod version_change;
 mod view;
 
 struct FakeLoader {

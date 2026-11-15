@@ -188,6 +188,7 @@ codes! {
     DOWNLOAD_FAILED = "download_failed", Next::ByExit;
     EDITS_DONT_FIT = "edits_dont_fit", Next::ByExit;
     EDITS_DONT_MATCH = "edits_dont_match", Next::ByExit;
+    EDITS_FOLLOWED = "edits_followed", Next::ByExit;
     EDITS_NOT_MERGED = "edits_not_merged", Next::ByExit;
     EDITS_UNREADABLE = "edits_unreadable", Next::ByExit;
     EDITS_VERSION_UNKNOWN = "edits_version_unknown", Next::ByExit;

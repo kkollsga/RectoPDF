@@ -64,6 +64,11 @@ pub fn page_highlights_bytes(bytes: Arc<[u8]>, page: u32) -> Result<PageHighligh
     Ok(highlights_of(&open_bytes(bytes)?, page, Limits::default()))
 }
 
+/// [`page_highlights`] on a file already open, as the page matcher reads the new version once for every page it needs.
+pub fn page_highlights_in(reader: &IndexedReader, page: u32) -> PageHighlights {
+    highlights_of(reader, page, Limits::default())
+}
+
 /// The limits a read keeps to, set small by the tests so each is held at itself plus one.
 #[derive(Clone, Copy)]
 struct Limits {

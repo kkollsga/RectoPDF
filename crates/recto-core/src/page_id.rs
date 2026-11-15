@@ -126,6 +126,19 @@ pub fn identify_page(reader: &IndexedReader, entry: &PageMapEntry, caps: &Caps) 
     }
 }
 
+/// **One page's identity under `caps`, with what reading it cost** (its bytes hashed or its stored bytes read, whichever is more), and whether it
+/// reached a cap, as the page matcher's scan of a new version counts them against its own caps (`recto-session`'s `edit::matcher`).
+pub fn identify_page_costed(reader: &IndexedReader, entry: &PageMapEntry, caps: &Caps) -> (PageIdentity, u64, bool) {
+    let id = entry.id();
+    let (digest, cost, capped) = digest_costed(reader, entry, caps);
+    let identity = PageIdentity {
+        digest,
+        object: (id.0, id.1),
+        frame: frame_tag(crate::nav::frame_of(reader, entry)),
+    };
+    (identity, cost, capped)
+}
+
 /// The document's `/ID` pair, if it has one of two strings.
 pub fn document_ids(reader: &IndexedReader) -> Option<DocumentIds> {
     let ids = reader.trailer_entry_owned(b"ID").ok()??;
@@ -171,6 +184,11 @@ const PAGE_CAPPED: u8 = 2;
 const XOBJECTS_CAPPED: u8 = 4;
 
 fn digest(reader: &IndexedReader, entry: &PageMapEntry, caps: &Caps) -> [u8; 32] {
+    digest_costed(reader, entry, caps).0
+}
+
+/// [`digest`], with the bytes it hashed or read (whichever is more) and whether a cap was reached.
+fn digest_costed(reader: &IndexedReader, entry: &PageMapEntry, caps: &Caps) -> ([u8; 32], u64, bool) {
     let mut budget = Budget {
         caps,
         page_left: caps.page_bytes,
@@ -208,7 +226,9 @@ fn digest(reader: &IndexedReader, entry: &PageMapEntry, caps: &Caps) -> [u8; 32]
     }
     hasher.update(b"\0E");
     hasher.update([budget.flags]);
-    hasher.finalize().into()
+    let hashed = caps.page_bytes.saturating_sub(budget.page_left);
+    let read = caps.page_read.saturating_sub(budget.read_left.get());
+    (hasher.finalize().into(), hashed.max(read), budget.flags != 0)
 }
 
 /// The entries of `/Contents`: one for a stream, each element for an array (a reference to an array followed once).

@@ -14,6 +14,7 @@ pub mod palette;
 pub mod record;
 pub mod sleep;
 pub mod trail;
+pub mod version_change;
 
 mod contents;
 mod dirs;

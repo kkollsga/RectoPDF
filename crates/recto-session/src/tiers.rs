@@ -80,7 +80,7 @@ impl<L: DocLoader> Session<L> {
             self.sleeper().touch(left);
             if let Some(tab) = self.tabs.tab_mut(left)
                 && ((clean && matches!(tab.file.notice(), Some(FileNotice::Moved { .. } | FileNotice::Changed)))
-                    || matches!(tab.file.notice(), Some(FileNotice::HistoryRolledOff)))
+                    || matches!(tab.file.notice(), Some(FileNotice::HistoryRolledOff | FileNotice::EditsFollowed)))
             {
                 tab.file.set_notice(None);
             }
@@ -218,6 +218,12 @@ impl<L: DocLoader> Session<L> {
                 }
             }
             None => {}
+        }
+        // Another version than the edits' own, which is known: they may follow their pages into it (the page matcher, [`crate::version_change`]).
+        if let Some((Some(_), seen, Some(_), true, _)) = elsewhere
+            && let Some(list) = self.lists.get_mut(id)
+        {
+            edit::identity::may_follow(list, seen);
         }
     }
 

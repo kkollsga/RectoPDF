@@ -378,6 +378,7 @@ pub fn apply(edits: &mut PageEdits, onto: Onto) -> Vec<Box<Path>> {
     edits.slots = slots;
     edits.marks.onto(|mark| marks.get(&mark.id).copied(), hidden);
     edits.changes += 1;
+    // SLICE 1 SIDECAR: once identities live in a sidecar beside the journal, this goes through slice 1's own writer for it, never a journal.
     super::identity::onto(edits, named);
     let let_go = edits.drop_history();
     edits.differs = edits.differs_from_the_file();
