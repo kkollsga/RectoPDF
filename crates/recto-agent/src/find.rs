@@ -330,6 +330,13 @@ fn end_on_a_word(kept: &mut Vec<char>, next: char) {
     }
 }
 
+/// The characters `recto_core::is_invisible_format` covers that a row keeps: the joiners and variation selectors, which a script or an emoji needs to read
+/// right and which don't change the order text is drawn in. The rest (bidi controls, which reorder the row, and the tag characters, fillers and
+/// invisible operators, which hide words) are left out.
+fn makes_a_letter_right(c: char) -> bool {
+    matches!(c, '\u{200C}' | '\u{200D}' | '\u{FE00}'..='\u{FE0F}' | '\u{180B}'..='\u{180F}' | '\u{E0100}'..='\u{E01EF}')
+}
+
 /// Any run of whitespace as one space, keeping one at the edge that touches the hit, so words stay apart. Control characters go: a document's text is only drawn, and never as a command.
 fn one_line(text: &str, keep_end: bool) -> String {
     let mut out = String::with_capacity(text.len());
@@ -339,7 +346,7 @@ fn one_line(text: &str, keep_end: bool) -> String {
             space = true;
             continue;
         }
-        if c.is_control() {
+        if c.is_control() || (recto_core::is_invisible_format(c) && !makes_a_letter_right(c)) {
             continue;
         }
         if space && !out.is_empty() {
@@ -1042,6 +1049,29 @@ mod tests {
         let blank = " ".repeat(200);
         let row = &hits(&format!("{blank}needle{blank}"), "needle")[0];
         assert!(!row.before.contains('\u{2026}') && !row.after.contains('\u{2026}'), "{row:?}");
+    }
+
+    /// Failure (rule 6, before this branch): a bidi control from the document reaches a row. The host draws a row as one string, before + matched + after, so an
+    /// unclosed right-to-left override (U+202E) in the text before a hit reverses the bold match and what follows it. Characters that draw nothing
+    /// (`recto_core::is_invisible_format`) are left out of a row, but for the joiners and selectors that make a letter or an emoji right, which a script
+    /// needs (a Persian word with its half-space, an emoji with its selector).
+    #[test]
+    fn what_reorders_or_hides_text_never_reaches_a_row() {
+        let text = "before \u{202E}evil \u{2066}x\u{2069} \u{200F}\u{061C}needle after\u{202D}\u{E0041}\u{FEFF} end";
+        let found = &hits(text, "needle")[0];
+        let all: String = [&found.before, &found.matched, &found.after].into_iter().map(|piece| &**piece).collect();
+        let hidden: Vec<char> = all.chars().filter(|c| recto_core::is_invisible_format(*c)).collect();
+        assert!(hidden.is_empty(), "left in the row: {hidden:?} of {all:?}");
+        assert_eq!(&*found.matched, "needle");
+        let kept = hits(
+            "\u{645}\u{6CC}\u{200C}\u{62E}\u{648}\u{627}\u{647}\u{645} needle \u{2764}\u{FE0F} \u{1F468}\u{200D}\u{1F469}",
+            "needle",
+        )[0]
+        .clone();
+        assert!(
+            kept.before.contains('\u{200C}') && kept.after.contains('\u{FE0F}') && kept.after.contains('\u{200D}'),
+            "{kept:?}"
+        );
     }
 
     /// Failure: a control character from the document reaches a row as it is.
