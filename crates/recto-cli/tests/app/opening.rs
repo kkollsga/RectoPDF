@@ -54,14 +54,18 @@ fn held_the_window(hangs: &Value) -> Result<(), String> {
 /// Failure: the rule's judge lets a waiting thread pass because the machine was slow, or fails a starved one.
 #[test]
 fn a_waiting_window_is_told_from_a_starved_one() {
-    let hangs = |over_2s: u64, waiting: u64, running: u64| {
-        serde_json::json!({ "over_2s": over_2s, "worst": { "waiting_looks": waiting, "running_looks": running, "cpu_ms": 84, "wall_ms": 1238 } })
-    };
+    let hangs = |over_2s: u64, waiting: u64, running: u64| serde_json::json!({ "over_2s": over_2s, "worst": { "waiting_looks": waiting, "running_looks": running, "cpu_ms": 84, "wall_ms": 1238 } });
     assert!(held_the_window(&hangs(0, 0, 1)).is_ok(), "starved: ready to run, little CPU");
     assert!(held_the_window(&hangs(0, 2, 1)).is_ok(), "a short wait");
-    assert!(held_the_window(&hangs(0, 3, 1)).unwrap_err().contains("waiting"), "slept, then waited for a core");
+    assert!(
+        held_the_window(&hangs(0, 3, 1)).unwrap_err().contains("waiting"),
+        "slept, then waited for a core"
+    );
     assert!(held_the_window(&hangs(1, 0, 9)).is_err(), "the fail bound is the fail bound");
-    assert!(held_the_window(&serde_json::json!({ "over_2s": 0, "worst": null })).is_ok(), "no stretch over a second");
+    assert!(
+        held_the_window(&serde_json::json!({ "over_2s": 0, "worst": null })).is_ok(),
+        "no stretch over a second"
+    );
 }
 
 /// Failure (PLAN, phase 4): opening reads a file's structure with lopdf on the UI thread, so a hostile file that's slow to read (here three
