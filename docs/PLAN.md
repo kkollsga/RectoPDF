@@ -37,6 +37,7 @@ Open items only, by where they are in this plan; features not yet built are coun
 **Phase R's close: done 2026-11-15.** The second independent read found the work sound to release from; its three findings are merged or settled (`build/close-fixes`; the comparison walk's segment back with a longer wait and a truer record); the window's Save was found to run the person's `save` through the one door already, and the size guard's item was stale. The closing review is in `docs/PROCESS.md`.
 
 **Before 0.1.1**
+- [ ] The Find text stored encrypted (owner, 2026-11-15: "Lets store it encrypted", then "Everything goes into 0.1.1"): the key where other programs can't read it, the pack encrypted in pieces, old plain text removed at the first launch, `PRIVACY.md`. `build/find-text-encrypted`: design 2026-11-16, built and reviewed by 2026-11-20 (an estimate until the design is in).
 - [ ] No pictures of pages on disk (owner, 2026-11-15, `docs/OWNER-RULES.md`, privacy): sleep files carry facts only, old pictures are removed at the first launch, an idle tab and a launch show the empty pages in their paper colour, size and place until each is drawn, with no "Loading…" (owner, the same day); `PRIVACY.md`, `SPEC.md` and `docs/engineering/sleep.md` say so. `build/no-page-pictures`, started 2026-11-15; to merge 2026-11-16.
 - (done 2026-11-15) The page matcher's first two slices are merged (`build/page-matcher` at 35b12826, `build/page-matcher-2` at 71c6865b; two independent review rounds each, the last fixes read by the coordinator): unsaved edits follow their pages when the file changes on disk if every page they use is found, or are all held as before. Slice 3 (single edits set aside, the undo history kept when nothing moved) is after the release.
 - Phase 7: a real signed update end to end, with everything compared before and after.
@@ -166,7 +167,7 @@ Open items only, by where they are in this plan; features not yet built are coun
 - Phase R, the whole-phase review: whether `save --replace` at Full over a signed file is covered by rule 5.
 - Phase R, R4: whether a starved test machine may fail the 2 s stall check.
 - Phase R, R4: the dark-paper line cases (a photo off the edge with a dark sidebar, a chart beside a photo, white text on a mid-tone page).
-- Phase R, R4: the search index (the Find text) readable by other programs of yours outside macOS's folder protection: said in `PRIVACY.md` for 0.1.1, and stored encrypted as the first item of 0.1.2 (owner, 2026-11-15: "Lets store it encrypted"; `build/find-text-encrypted`, design started 2026-11-15, design to the owner 2026-11-16); the sleep files' pictures are removed in 0.1.1.
+- Phase R, R4: the search index (the Find text) readable by other programs of yours outside macOS's folder protection: stored encrypted in 0.1.1 (see "Before 0.1.1"); the sleep files' pictures are removed in 0.1.1.
 - Phase R, R4: saving into a password-protected PDF, edits on a tab that can't be saved, and a Save As that removes the password.
 - Phase R, R4.3: an Undo asked while an edit lands that is then refused.
 - Phase R, R4.3: whether an SVG of a page should carry its annotations.
