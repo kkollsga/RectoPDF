@@ -28,7 +28,7 @@ pub struct Stall {
     pub window_ms: u64,
     /// What most of the watcher's looks at the stretch saw the thread doing: see `waiting_looks`.
     pub state: &'static str,
-    /// Of the watcher's looks at this stretch past a second, how many saw the thread waiting, and how many saw it running or ready to run. One look says
+    /// Of the watcher's looks at this stretch, from its first, how many saw the thread waiting, and how many saw it running or ready to run. One look says
     /// little: a thread that slept two seconds and then waited for a core on a starved machine is `running_or_runnable` at its last look (CI, 2026-11-13).
     pub waiting_looks: u32,
     pub running_looks: u32,
@@ -54,13 +54,22 @@ struct Shared {
     thread: Mutex<Option<Thread>>,
     /// The UI thread's Mach port, taken on its first `busy`, or zero.
     port: AtomicU32,
-    /// The watcher's first look at the stretch that began then, and the thread's CPU time and the time at it: what `Stall::cpu_ms` counts from.
-    first_began: AtomicU64,
-    first_cpu_ms: AtomicU64,
-    first_at: AtomicU64,
+    /// What the watcher saw of the stretch it is looking at.
+    seen: Seen,
     /// The QA verb being waited for, if any. Set by the QA channel; the UI thread never takes this lock.
     verb: Mutex<([u8; VERB_MAX], usize)>,
     worst: Mutex<Option<Stall>>,
+}
+
+/// The watcher's first look at the stretch that began at `began`, and the thread's CPU time and the time at it (what `Stall::cpu_ms` counts from), and its
+/// looks at the stretch by what they saw: every look from the first, not only those past a second.
+#[derive(Default)]
+struct Seen {
+    began: AtomicU64,
+    cpu_ms: AtomicU64,
+    at: AtomicU64,
+    waiting: AtomicU32,
+    running: AtomicU32,
 }
 
 #[derive(Clone)]
@@ -86,9 +95,7 @@ impl Watchdog {
             failed_stretch: AtomicU64::new(0),
             thread: Mutex::new(None),
             port: AtomicU32::new(0),
-            first_began: AtomicU64::new(0),
-            first_cpu_ms: AtomicU64::new(0),
-            first_at: AtomicU64::new(0),
+            seen: Seen::default(),
             verb: Mutex::new(([0; VERB_MAX], 0)),
             worst: Mutex::new(None),
         }))
@@ -204,11 +211,20 @@ fn look(shared: &Shared, now_ms: u64, sample: Option<Sample>) {
     let stalled = now_ms.saturating_sub(began);
     count(shared, began, stalled);
     if let Some(sample) = sample
-        && shared.first_began.swap(began, Ordering::AcqRel) != began
+        && shared.seen.began.swap(began, Ordering::AcqRel) != began
     {
         // The first look at this stretch: what CPU time is counted from.
-        shared.first_cpu_ms.store(sample.cpu_ms, Ordering::Relaxed);
-        shared.first_at.store(now_ms, Ordering::Relaxed);
+        shared.seen.cpu_ms.store(sample.cpu_ms, Ordering::Relaxed);
+        shared.seen.at.store(now_ms, Ordering::Relaxed);
+        shared.seen.waiting.store(0, Ordering::Relaxed);
+        shared.seen.running.store(0, Ordering::Relaxed);
+    }
+    if let Some(sample) = sample {
+        match sample.state {
+            RunState::Waiting | RunState::Uninterruptible => shared.seen.waiting.fetch_add(1, Ordering::Relaxed),
+            RunState::Running => shared.seen.running.fetch_add(1, Ordering::Relaxed),
+            RunState::Stopped | RunState::Other => 0,
+        };
     }
     if stalled >= NOTE_MS {
         record(shared, began, now_ms, sample, false);
@@ -221,23 +237,20 @@ fn record(shared: &Shared, began: u64, now_ms: u64, sample: Option<Sample>, ende
         let slot = shared.verb.lock().unwrap_or_else(PoisonError::into_inner);
         String::from_utf8_lossy(&slot.0[..slot.1]).into_owned()
     };
-    let (first_cpu, first_at) = if shared.first_began.load(Ordering::Acquire) == began {
-        (shared.first_cpu_ms.load(Ordering::Relaxed), shared.first_at.load(Ordering::Relaxed))
+    let (first_cpu, first_at) = if shared.seen.began.load(Ordering::Acquire) == began {
+        (shared.seen.cpu_ms.load(Ordering::Relaxed), shared.seen.at.load(Ordering::Relaxed))
     } else {
         // Never looked at before: no window to count from.
         (sample.map_or(0, |sample| sample.cpu_ms), now_ms)
     };
     let mut worst = shared.worst.lock().unwrap_or_else(PoisonError::into_inner);
     let before = worst.as_ref().filter(|stall| stall.began == began);
-    let (mut waiting_looks, mut running_looks) = before.map_or((0, 0), |before| (before.waiting_looks, before.running_looks));
-    // The end is the thread seeing itself, always running: only the watcher's looks are counted.
-    if let (false, Some(sample)) = (ended, sample) {
-        match sample.state {
-            RunState::Waiting | RunState::Uninterruptible => waiting_looks += 1,
-            RunState::Running => running_looks += 1,
-            RunState::Stopped | RunState::Other => {}
-        }
-    }
+    // The looks counted since the stretch's first: a sleep of a second and a bit is seen waiting by the looks before the second, and the one after may find the thread ready to run.
+    let (waiting_looks, running_looks) = if shared.seen.began.load(Ordering::Acquire) == began {
+        (shared.seen.waiting.load(Ordering::Relaxed), shared.seen.running.load(Ordering::Relaxed))
+    } else {
+        (0, 0)
+    };
     let state = if waiting_looks > 0 && waiting_looks >= running_looks {
         RunState::Waiting.name()
     } else if running_looks > 0 {
@@ -464,5 +477,28 @@ mod tests {
             busy.look_sampled(now, runnable);
         }
         assert_eq!(busy.worst_stall().unwrap().state, "running_or_runnable");
+    }
+
+    /// Failure (CI run 43711366303, 2026-11-15): a stretch of 1.2 s was judged from the one look after its second, which found the thread ready to run, as
+    /// looks before the second weren't counted. A thread that slept through three looks and then waited for a core must read as having waited, and one
+    /// that was ready to run in every look, using a little CPU, as starved.
+    #[test]
+    fn looks_before_the_second_count_for_what_the_stretch_was() {
+        let dog = Watchdog::new();
+        dog.0.busy_since.store(1, Ordering::Release);
+        for now in [250, 500, 750] {
+            dog.look_sampled(now, sample(10, RunState::Waiting));
+        }
+        assert_eq!(dog.worst_stall(), None, "under a second isn't recorded");
+        dog.look_sampled(1_250, sample(11, RunState::Running));
+        let slept = dog.worst_stall().unwrap();
+        assert_eq!((slept.waiting_looks, slept.running_looks, slept.state), (3, 1, "waiting"));
+        let starved = Watchdog::new();
+        starved.0.busy_since.store(1, Ordering::Release);
+        for now in [250, 500, 750, 1_000, 1_250] {
+            starved.look_sampled(now, sample(10, RunState::Running));
+        }
+        let starved = starved.worst_stall().unwrap();
+        assert_eq!((starved.waiting_looks, starved.running_looks), (0, 5));
     }
 }
