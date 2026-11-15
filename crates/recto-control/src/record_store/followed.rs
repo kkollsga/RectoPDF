@@ -68,11 +68,19 @@ fn after_a_follow(
     else {
         return Link::None;
     };
-    let Some(claimed) = record.tabs[at].journal.clone().filter(|claimed| journals.contains_key(claimed) && *claimed != read.name) else {
+    let Some(claimed) = record.tabs[at]
+        .journal
+        .clone()
+        .filter(|claimed| journals.contains_key(claimed) && *claimed != read.name)
+    else {
         return Link::None;
     };
     let now = record.tabs[at].path.to_path().and_then(|path| file_stamp(&path).ok());
-    let is_now = |file: Option<FileRecord>| file.map(FileStamp::from).zip(now).is_some_and(|(file, now)| file.same_contents(now) && file.inode == now.inode);
+    let is_now = |file: Option<FileRecord>| {
+        file.map(FileStamp::from)
+            .zip(now)
+            .is_some_and(|(file, now)| file.same_contents(now) && file.inode == now.inode)
+    };
     let claimed_file = read_journal(&folder.join(&claimed)).ok().flatten().and_then(|(parsed, _)| parsed.header.file);
     let no_older = journals.get(&claimed).is_some_and(|list| header.base_seq >= list.seq);
     if is_now(header.file) && !is_now(claimed_file) && no_older {

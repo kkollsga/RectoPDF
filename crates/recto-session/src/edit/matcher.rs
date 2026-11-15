@@ -262,7 +262,11 @@ impl Matcher {
             }
             let (old_before, old_after) = self.neighbours[at];
             // Next to a page that was next to it, on either side: a run another program reversed keeps its pages' neighbours, the other way round.
-            if [old_before, old_after].into_iter().flatten().any(|old| Some(old) == before || Some(old) == after) {
+            if [old_before, old_after]
+                .into_iter()
+                .flatten()
+                .any(|old| Some(old) == before || Some(old) == after)
+            {
                 seen.by_neighbour = seen.by_neighbour.saturating_add(1);
                 seen.neighbour_at = Some((page, now));
             }
@@ -318,13 +322,7 @@ impl Matcher {
 /// **The whole match over a new version in hand,** as the session runs it: by object number, then a scan if any of `wanted` isn't found, all under one
 /// budget of `caps` (each page costing its bytes, and [`PAGE_LOOKUPS`]). For the table tests, where the new version is a list; a page of it with no
 /// identity is `None`.
-pub fn match_pages(
-    named: &[(u32, Option<Known>)],
-    wanted: &[u32],
-    new: &[(Option<Known>, u64)],
-    caps: WorkCaps,
-    same_document: bool,
-) -> Vec<(u32, Found)> {
+pub fn match_pages(named: &[(u32, Option<Known>)], wanted: &[u32], new: &[(Option<Known>, u64)], caps: WorkCaps, same_document: bool) -> Vec<(u32, Found)> {
     match_pages_spending(named, wanted, new, caps, same_document).0
 }
 

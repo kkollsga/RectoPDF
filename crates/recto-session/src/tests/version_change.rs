@@ -420,8 +420,11 @@ fn a_list_where_one_edit_of_several_cant_follow_is_held_whole_as_before() {
     bed.s.edit_pages(bed.a, |e| e.rotate(2, 1, 1)).unwrap();
     bed.s.edit_pages(bed.a, |e| e.move_pages(0, 1, 5)).unwrap();
     bed.identify();
-    let (record_before, stamp_before, pages_before) =
-        (bed.s.lists().edits_record(bed.a).unwrap(), bed.s.tabs().own_stamp(bed.a), bed.s.pages().count(bed.a));
+    let (record_before, stamp_before, pages_before) = (
+        bed.s.lists().edits_record(bed.a).unwrap(),
+        bed.s.tabs().own_stamp(bed.a),
+        bed.s.pages().count(bed.a),
+    );
     let can_undo = bed.s.lists().get(bed.a).unwrap().can_undo();
     let mut theirs: Vec<recto_testpdf::Page> = (1..=10)
         .map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("Mine page {page}")])))
@@ -435,11 +438,7 @@ fn a_list_where_one_edit_of_several_cant_follow_is_held_whole_as_before() {
     assert_eq!(bed.s.pages().count(bed.a), pages_before);
     assert_eq!(bed.s.notices().fit(bed.a), EditsFit::FileChanged);
     assert_eq!(bed.notice(), Some("file_changed"));
-    assert_eq!(
-        bed.s.notices().said(bed.a).unwrap().message,
-        FileNotice::Changed.message(true),
-        "today's words"
-    );
+    assert_eq!(bed.s.notices().said(bed.a).unwrap().message, FileNotice::Changed.message(true), "today's words");
     assert!(!version_change::wanted(&bed.s));
 }
 

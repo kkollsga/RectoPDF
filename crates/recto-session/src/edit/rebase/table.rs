@@ -321,7 +321,11 @@ fn rows() -> Vec<Row> {
     );
     objects_past_cap.caps.pages = 1;
     // Pages that cost lookups and no bytes (references to things that aren't streams): the budget is held in lookups, at ten pages' worth.
-    let mut lookups_at = row("pages costing lookups and no bytes, at the lookups' budget: ten pages' worth, ten pages", renumbered(&ten), ALL);
+    let mut lookups_at = row(
+        "pages costing lookups and no bytes, at the lookups' budget: ten pages' worth, ten pages",
+        renumbered(&ten),
+        ALL,
+    );
     lookups_at.caps.lookups = 10 * super::super::matcher::PAGE_LOOKUPS;
     lookups_at.cost = 0;
     let mut lookups_past = row(
@@ -644,11 +648,23 @@ fn a_place_keeps_its_page_by_the_nearest_known_and_the_distance_from_it() {
     positions[3] = Some(4);
     positions[4] = Some(5);
     positions[5] = Some(6);
-    assert_eq!(moved_position(&positions, 150, 201), 151, "far past the edits: shifted by the one inserted before it");
+    assert_eq!(
+        moved_position(&positions, 150, 201),
+        151,
+        "far past the edits: shifted by the one inserted before it"
+    );
     assert_eq!(moved_position(&positions, 4, 201), 5, "known: its own place");
-    assert_eq!(moved_position(&positions, 1, 201), 2, "before every known place: the nearest after it less the distance");
+    assert_eq!(
+        moved_position(&positions, 1, 201),
+        2,
+        "before every known place: the nearest after it less the distance"
+    );
     assert_eq!(moved_position(&positions, 199, 150), 149, "within the list");
-    assert_eq!(moved_position(&positions, 900, 201), 200, "past the old list: its last place, kept in the new one");
+    assert_eq!(
+        moved_position(&positions, 900, 201),
+        200,
+        "past the old list: its last place, kept in the new one"
+    );
     // Kept short of the next known place: pages taken out between two known ones.
     let mut squeezed = vec![None; 10];
     squeezed[2] = Some(2);
@@ -674,7 +690,10 @@ fn an_object_listed_twice_stops_the_pass_by_object_number() {
     let bound = named.len() + new.len();
     assert!(spent.pages() as usize <= bound, "{} pages read, past {bound}", spent.pages());
     // And the scan decides: the copy between pages 3 and 5 is page 4, by its neighbours.
-    assert!(matches!(found.iter().find(|(old, _)| *old == 4), Some((_, Found::At { page: 4, .. }))), "{found:?}");
+    assert!(
+        matches!(found.iter().find(|(old, _)| *old == 4), Some((_, Found::At { page: 4, .. }))),
+        "{found:?}"
+    );
 }
 
 /// **Failure caught:** a list whose new version would be longer than a document may be ([`super::super::MAX_PAGES`]) built anyway, past the cap every

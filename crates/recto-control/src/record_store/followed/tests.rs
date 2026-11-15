@@ -243,7 +243,10 @@ fn a_new_journal_beside_the_old_versions_sidecar_drops_the_sidecar() {
     let restored = bed.load();
     let list = &restored.journals[&new].edits;
     assert!(list.is_edited());
-    assert!(identity::identities(list).is_none() && !identity::followed_untold(list), "nothing of the stale sidecar taken");
+    assert!(
+        identity::identities(list).is_none() && !identity::followed_untold(list),
+        "nothing of the stale sidecar taken"
+    );
     assert!(!sidecar.exists(), "and it goes");
 }
 
@@ -258,7 +261,11 @@ fn two_journals_for_one_path_without_the_tabs_id_are_as_on_main() {
     drop(store);
     let restored = bed.load();
     let journals: Vec<Option<&str>> = restored.record.tabs.iter().map(|tab| tab.journal.as_deref()).collect();
-    assert_eq!(journals, vec![Some(old.as_str()), Some(new.as_str())], "the tab keeps its own, and the other comes back beside it");
+    assert_eq!(
+        journals,
+        vec![Some(old.as_str()), Some(new.as_str())],
+        "the tab keeps its own, and the other comes back beside it"
+    );
     assert!(bed.journals().join(&old).exists() && bed.journals().join(&new).exists());
 }
 
@@ -270,13 +277,7 @@ fn a_linked_journal_about_another_version_than_now_is_set_aside() {
         let bed = Bed::new();
         let (store, old, to) = before_the_follow(&bed);
         let (about, seq) = match why {
-            "about a third version" => (
-                FileStamp {
-                    size: to.size + 1,
-                    ..to
-                },
-                2,
-            ),
+            "about a third version" => (FileStamp { size: to.size + 1, ..to }, 2),
             _ => (to, 0),
         };
         let (work, new) = follow_work(1, &bed.file, about, &old, true, false, seq);
@@ -336,6 +337,10 @@ fn a_leftover_with_the_tabs_id_never_displaces_a_journal_about_the_file_now() {
     drop(store);
     let restored = bed.load();
     assert_eq!(restored.record.tabs.len(), 1);
-    assert_eq!(restored.record.tabs[0].journal.as_deref(), Some(own.as_str()), "the tab keeps the journal it claimed");
+    assert_eq!(
+        restored.record.tabs[0].journal.as_deref(),
+        Some(own.as_str()),
+        "the tab keeps the journal it claimed"
+    );
     assert!(bed.journals().join(&leftover).with_extension("not-merged").exists(), "the leftover set aside");
 }

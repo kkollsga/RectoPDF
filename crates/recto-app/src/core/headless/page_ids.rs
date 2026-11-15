@@ -239,8 +239,9 @@ fn no_digest_reaches_an_answer_an_event_the_window_or_a_log() {
     read_and_written(&app, "the followed list's sidecar written");
     let (after, debug_after) = app.core().host.session.with_session(|session| {
         let edits = session.lists().get(id).expect("the list");
-        let after: Vec<[u8; 16]> =
-            identity::identities(edits).map(|ids| ids.pages().iter().filter_map(|(_, known)| known.map(|known| known.digest)).collect()).unwrap_or_default();
+        let after: Vec<[u8; 16]> = identity::identities(edits)
+            .map(|ids| ids.pages().iter().filter_map(|(_, known)| known.map(|known| known.digest)).collect())
+            .unwrap_or_default();
         (after, format!("{edits:?} {:?} {:?}", edits.to_record(), identity::sidecar_waiting(edits)))
     });
     assert!(!after.is_empty(), "the followed list knows its pages in the new version");

@@ -157,7 +157,11 @@ pub struct Following {
 
 impl std::fmt::Debug for Following {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("Following").field("tab", &self.job.tab).field("phase", &self.phase).finish_non_exhaustive()
+        formatter
+            .debug_struct("Following")
+            .field("tab", &self.job.tab)
+            .field("phase", &self.phase)
+            .finish_non_exhaustive()
     }
 }
 
@@ -313,7 +317,10 @@ pub fn read_part(following: &mut Following) -> Read {
                     return still(job, Read::Matched(Box::new(matched)));
                 };
                 let at = found.binary_search_by_key(&key.page, |(page, _)| *page).ok().and_then(|at| found[at].1.page());
-                let end = refound[*next..].iter().position(|(other, _)| other.page != key.page).map_or(refound.len(), |run| *next + run);
+                let end = refound[*next..]
+                    .iter()
+                    .position(|(other, _)| other.page != key.page)
+                    .map_or(refound.len(), |run| *next + run);
                 if let Some((page, _)) = at
                     && budget.room()
                     && let Some(entry) = map.get(page as usize)
@@ -335,7 +342,11 @@ pub fn read_part(following: &mut Following) -> Read {
 
 /// The step's answer, if the file is still the version found; else nothing it read is used.
 fn still(job: &FollowJob, read: Read) -> Read {
-    if recto_platform::file_stamp(&job.path).ok() == Some(job.to) { read } else { Read::NotRead }
+    if recto_platform::file_stamp(&job.path).ok() == Some(job.to) {
+        read
+    } else {
+        Read::NotRead
+    }
 }
 
 /// After the pass by object number: the highlights if every page read before is found by it, else the scan.
@@ -433,7 +444,9 @@ pub(crate) fn told<L: DocLoader>(session: &mut Session<L>, id: TabId) {
 /// **The notice for a list restored that followed its file and wasn't told** (its sidecar's header), with how many edits it has, as the follow counted
 /// them ([`rebase::edits_in`]). Counts only.
 pub(crate) fn untold_notice(edits: &PageEdits) -> Option<FileNotice> {
-    identity::followed_untold(edits).then(|| FileNotice::EditsFollowed { edits: rebase::edits_in(edits) })
+    identity::followed_untold(edits).then(|| FileNotice::EditsFollowed {
+        edits: rebase::edits_in(edits),
+    })
 }
 
 /// The tab is about the new version now: its stamp and length, what's held of the old one gone, the reader on the page they were on, and said.

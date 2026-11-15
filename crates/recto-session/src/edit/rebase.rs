@@ -454,7 +454,12 @@ pub fn moved_position(positions: &[Option<u32>], position: u32, len: u32) -> u32
         return (*now).min(last);
     }
     let before = positions[..at].iter().enumerate().rev().find_map(|(from, now)| Some((from, (*now)?)));
-    let after = positions.get(at + 1..).unwrap_or_default().iter().enumerate().find_map(|(from, now)| Some((at + 1 + from, (*now)?)));
+    let after = positions
+        .get(at + 1..)
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .find_map(|(from, now)| Some((at + 1 + from, (*now)?)));
     let distance = |from: usize, to: usize| u32::try_from(to.abs_diff(from)).unwrap_or(u32::MAX);
     let mut now = match (before, after) {
         (Some((from, now)), _) => now.saturating_add(distance(from, at)),

@@ -32,9 +32,13 @@ impl<L: DocLoader> Session<L> {
         let elsewhere = tab.file.elsewhere().filter(|_| !fit.fits());
         // Under unsaved edits another file in its place is another version, whatever its size and time (review F5): it's looked at.
         let seen_again = |now: &FileStamp| {
-            elsewhere
-                .and_then(|elsewhere| elsewhere.seen)
-                .is_some_and(|seen| if edited { !fit::another_version(seen, *now) } else { seen.same_contents(*now) })
+            elsewhere.and_then(|elsewhere| elsewhere.seen).is_some_and(|seen| {
+                if edited {
+                    !fit::another_version(seen, *now)
+                } else {
+                    seen.same_contents(*now)
+                }
+            })
         };
         let known = match &status {
             FileStatus::NotLooked => true,
