@@ -245,10 +245,21 @@ fn the_page_text_the_notice_says_is_stored_encrypted_is_not_in_the_folder_in_the
     app.wait_until("the page text built and sealed", || {
         files_under(&corpus).iter().any(|path| path.ends_with("ready.sealed"))
     });
-    let files = files_under(&corpus);
-    assert!(files.iter().any(|path| path.ends_with("text.pack")), "the pack is there: {files:?}");
-    for path in files {
-        let bytes = std::fs::read(&path).expect("a file");
+    // After the summary the build still notes which versions the file has had (`by-file/`, each put in place by a rename from a `.tmp` beside it), so a
+    // file listed can be gone when it's read (a full check at a load of 34, 2026-11-15: "a file: NotFound"). A file gone holds nothing; the folder is
+    // listed again until a listing reads whole.
+    let read = std::cell::RefCell::new(Vec::new());
+    app.wait_until("every file of the corpus read from one listing", || {
+        let whole: Option<Vec<(PathBuf, Vec<u8>)>> = files_under(&corpus)
+            .into_iter()
+            .map(|path| std::fs::read(&path).ok().map(|bytes| (path, bytes)))
+            .collect();
+        whole.map(|files| *read.borrow_mut() = files).is_some()
+    });
+    let files = read.into_inner();
+    let paths: Vec<&PathBuf> = files.iter().map(|(path, _)| path).collect();
+    assert!(paths.iter().any(|path| path.ends_with("text.pack")), "the pack is there: {paths:?}");
+    for (path, bytes) in files {
         assert!(
             !bytes.windows(b"zebrafish".len()).any(|window| window == b"zebrafish"),
             "{} holds the document's words in the clear",
