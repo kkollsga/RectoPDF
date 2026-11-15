@@ -554,31 +554,82 @@ mod tests {
         std::fs::remove_file(&paths.root).unwrap();
     }
 
-    /// Failure (PRIVACY.md: "never document text"): a palette query an agent sent is written to the activity log as it was typed, and with it whatever the
-    /// agent put there, which may be a document's words. Every command that takes words from outside, as the table's own requests carry them, is logged and
-    /// the state folder's bytes searched for the words: only that a query was given is kept.
+    /// Failure (PRIVACY.md: "never document text"): a command's log details keep words the agent sent: a palette's query, an export's format, a QA verb. For
+    /// every row of the command table and each of its arguments that takes free words (a tab's name, text, the rest of the line), the command is built from
+    /// a request with a sentinel there and its other required arguments set, logged as the server logs it, and the three log files' bytes are searched for
+    /// the sentinel. **Allowed, by an explicit short list:** a file argument (`Kind::Path`), which is logged as a cleaned file name, by design (the log says
+    /// "with file names"); nothing else holds words. An argument of any other kind (a number, a choice, a duration) can't carry a sentence, and a password
+    /// has no argument to go in: the one `qa` row that takes one reads it from stdin, as `value`, which isn't in the table's arguments, so it's asked by
+    /// name below, with the line the wire takes.
     #[test]
     fn no_words_an_agent_sends_reach_the_log() {
+        use recto_agent::table::{Kind, TABLE};
+        const SENTINEL: &str = "zyxwvuNEEDLE";
+        let default = |kind: Kind| -> Option<String> {
+            Some(match kind {
+                Kind::Tab => "#1".into(),
+                Kind::Page | Kind::Pages | Kind::PagesOpen | Kind::Count(_) | Kind::Positive(_) => "1".into(),
+                Kind::Path => "/tmp/a.pdf".into(),
+                Kind::Scale | Kind::ScaleOrMax => "1".into(),
+                Kind::Duration => "1s".into(),
+                Kind::Degrees => "90".into(),
+                Kind::Level => "full".into(),
+                Kind::Switch => return None,
+                Kind::Text | Kind::Rest => "x".into(),
+                Kind::Choice(words) | Kind::List(words) => (*words.first()?).into(),
+                Kind::Size => "10x10".into(),
+                Kind::Rect => "0,0,10,10".into(),
+                Kind::Fraction => "0.5".into(),
+            })
+        };
         let dir = recto_testpdf::TempDir::new("recto-log-words-");
         let paths = StatePaths::overridden(&dir).unwrap();
         let mut log = ActivityLog::new(&paths);
-        for line in [
-            r#"{"cmd":"palette","query":"zyxwvuNEEDLE","run":true}"#,
-            r#"{"cmd":"palette","query":"zyxwvuNEEDLE"}"#,
-            r#"{"cmd":"find","query":"zyxwvuNEEDLE"}"#,
-            r#"{"cmd":"search","query":"zyxwvuNEEDLE"}"#,
-            // The one route a password travels on a command: a quiet run's `qa password`, whose value is read from stdin. Only the verb is logged.
-            r#"{"cmd":"qa_drive","verb":"password","value":"zyxwvuNEEDLE"}"#,
-        ] {
-            let command = recto_agent::read(line).unwrap_or_else(|refused| panic!("{line}: {:?}", refused.error));
-            log.record(command.tag(), Level::Control, "ok", &command.log_details());
+        let mut tried = 0;
+        for spec in TABLE {
+            for under_test in spec.args.iter().filter(|arg| matches!(arg.kind, Kind::Tab | Kind::Text | Kind::Rest)) {
+                let mut words: Vec<String> = spec.name.split(' ').map(str::to_string).collect();
+                for arg in spec.args.iter().filter(|arg| arg.required || arg.key == under_test.key) {
+                    let value = if arg.key == under_test.key {
+                        Some(format!("{SENTINEL} words"))
+                    } else {
+                        default(arg.kind)
+                    };
+                    if let Some(flag) = arg.flag {
+                        words.push(flag.to_string());
+                    }
+                    words.extend(value);
+                }
+                // A command this can't build (a flag it needs, a refusal at parse) isn't logged with details: it is counted below, so the test can't pass empty.
+                let Ok(command) = recto_agent::table::parse_cli(&words).and_then(|invocation| invocation.command()) else {
+                    continue;
+                };
+                tried += 1;
+                log.record(command.tag(), Level::Control, "ok", &command.log_details());
+            }
         }
-        log.flush_due(true);
+        assert!(tried >= 20, "only {tried} commands were built, so the walk proves little");
+        // The one row whose password goes on the wire as `value`.
+        let command = recto_agent::read(&format!(r#"{{"cmd":"qa_drive","verb":"password","value":"{SENTINEL}"}}"#)).expect("the password row");
+        log.record(command.tag(), Level::Control, "ok", &command.log_details());
+        // A verb or an export format an agent makes up is words too.
+        for line in [
+            format!(r#"{{"cmd":"qa_drive","verb":"{SENTINEL} words"}}"#),
+            format!(r#"{{"cmd":"qa_read","verb":"{SENTINEL} words"}}"#),
+            format!(r##"{{"cmd":"snapshot","tab":"#1","page":1,"rect":[0,0,10,10],"as":"{SENTINEL} words"}}"##),
+        ] {
+            if let Ok(command) = recto_agent::read(&line) {
+                log.record(command.tag(), Level::Control, "ok", &command.log_details());
+            }
+        }
+        log.flush();
         let mut written = 0;
         for path in [&paths.log, &paths.other_log, &paths.overrides_log] {
             let bytes = std::fs::read(path).unwrap_or_default();
             written += bytes.len();
-            assert!(!String::from_utf8_lossy(&bytes).contains("zyxwvuNEEDLE"), "{}", String::from_utf8_lossy(&bytes));
+            let text = String::from_utf8_lossy(&bytes);
+            let leaked: Vec<&str> = text.lines().filter(|line| line.contains(SENTINEL)).collect();
+            assert!(leaked.is_empty(), "the words an agent sent are in the log:\n{}", leaked.join("\n"));
         }
         assert!(written > 0, "something was logged");
     }
