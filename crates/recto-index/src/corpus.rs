@@ -1647,10 +1647,12 @@ pub fn clear_all(root: &Path) -> io::Result<Cleared> {
     Ok(report)
 }
 
+/// Removes a corpus's folder unless a build holds its lock. A build only ever locks a plain file ([`local::append_private_file`]), so anything else at the lock's name, a link or a named pipe someone put there, holds nothing, and is never opened: opening a pipe to write would wait for a reader for ever (the Find text's second security review, item 2, 2026-11-15). The open itself follows no link and doesn't wait, as a build's does, in case the name is changed between the look and the open.
 fn remove_unless_building(root: &Path, key: CorpusKey) -> io::Result<()> {
     let paths = CorpusPaths::new(root, key);
-    let lock = match OpenOptions::new().write(true).open(&paths.lock) {
-        Ok(lock) => Some(lock),
+    let lock = match fs::symlink_metadata(&paths.lock) {
+        Ok(meta) if meta.is_file() => Some(local::append_private_file(&paths.lock)?),
+        Ok(_) => None,
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => return Err(error),
     };
