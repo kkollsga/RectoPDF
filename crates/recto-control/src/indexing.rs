@@ -67,6 +67,8 @@ struct Shared {
     /// Where the Find key comes from, and the key once it's been asked for: the first time an index is used, on whichever thread asks, never the UI's.
     key_plan: Plan,
     key: OnceLock<Loaded>,
+    /// Find has started the key's taking without waiting for it ([`Indexer::find_key_in_hand`]).
+    key_asked: std::sync::atomic::AtomicBool,
     limits: BuildLimits,
     runner: Box<dyn Runner>,
     inner: Mutex<Inner>,
@@ -104,11 +106,12 @@ impl Indexer {
         Self::with_limits(root, runner, BuildLimits::default(), Plan::Memory)
     }
 
-    fn with_limits(root: &Path, runner: Box<dyn Runner>, limits: BuildLimits, key_plan: Plan) -> Self {
+    pub(crate) fn with_limits(root: &Path, runner: Box<dyn Runner>, limits: BuildLimits, key_plan: Plan) -> Self {
         Self(Arc::new(Shared {
             root: root.to_path_buf(),
             key_plan,
             key: OnceLock::new(),
+            key_asked: std::sync::atomic::AtomicBool::new(false),
             limits,
             runner,
             inner: Mutex::new(Inner {
@@ -122,6 +125,28 @@ impl Indexer {
     /// The Find key, taken the first time a thread that may wait asks for it: never the UI thread ([`Shared::find_key`]).
     pub fn find_key(&self) -> Option<&FindKey> {
         self.0.find_key()
+    }
+
+    /// **The key if it's in hand, never waiting for it:** for Find, which a person's search must never wait on the key for (the second review's item 5, 2026-11-15). Taking it checks this copy's whole bundle against its signature before the Keychain is asked: by `what_the_release_check_costs`, 578–652 ms in five runs on a 143 MB build of the app (2026-11-15, warm cache, the machine under load), as the review measured 0.62–0.71 s on the 141 MB release. The first ask while it isn't in hand starts its taking on its own thread and goes on without it, so that search reads its pages live and touches no corpus, and a later one has the key. Starts nothing on the UI thread.
+    pub fn find_key_in_hand(&self) -> Option<&FindKey> {
+        use std::sync::atomic::Ordering;
+        if let Some(loaded) = self.0.key.get() {
+            return loaded.key.as_ref();
+        }
+        if !recto_platform::thread::is_main_thread() && !self.0.key_asked.swap(true, Ordering::SeqCst) {
+            let shared = Arc::clone(&self.0);
+            // The same thread, by name and stack, that `take_the_key` takes it on. Anyone else who asks meanwhile waits for this one's taking, so it's taken once.
+            let taking = std::thread::Builder::new()
+                .name("recto-find-key".into())
+                .stack_size(KEY_THREAD_STACK)
+                .spawn(move || {
+                    shared.key.get_or_init(|| find_keys::load(&shared.key_plan));
+                });
+            if taking.is_err() {
+                self.0.key_asked.store(false, Ordering::SeqCst);
+            }
+        }
+        None
     }
 
     /// What's known of the key without taking it: the plan, and where it came from once something has.
