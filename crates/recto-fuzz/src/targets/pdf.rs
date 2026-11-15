@@ -135,6 +135,19 @@ fn read(bytes: &[u8]) {
                 "a page's identity changed between two reads"
             );
             let _ = recto_core::page_id::document_ids(&reader);
+            // The page matcher's scan of a new version (slice 2): each page's identity with its cost, the same each time, and its highlights as the
+            // matcher reads them on the reader it has open.
+            for entry in map.iter().take(16) {
+                let caps = recto_core::page_id::Caps::STANDARD;
+                let read = recto_core::page_id::read_page(&reader, entry, &caps);
+                assert!(read.bytes <= caps.page_read.saturating_add(caps.page_bytes), "a page cost {}", read.bytes);
+                assert_eq!(read, recto_core::page_id::read_page(&reader, entry, &caps));
+            }
+            if let Some(entry) = map.get(0) {
+                let (highlights, looked) = recto_core::highlights::page_highlights_at(&reader, entry);
+                assert!(looked <= recto_core::highlights::MAX_PAGE_ANNOTS, "{looked} annotations looked at");
+                assert_highlights_hold(&highlights);
+            }
         }
         if let Ok(inventory) = signatures_in_bytes(shared) {
             assert_inventory_holds(&inventory, bytes.len() as u64);

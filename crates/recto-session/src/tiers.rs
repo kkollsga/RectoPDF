@@ -74,17 +74,7 @@ impl<L: DocLoader> Session<L> {
         // Only the tab on screen holds a generated list in memory. The rest are on disk, and a cold tab stays a cold tab's size.
         self.generated.keep_ready_only_for(id);
         self.sleeper().wake_list(id);
-        // A moved or changed file with nothing riding on it has been said on the way past.
-        if let Some(left) = self.tabs.active().filter(|left| *left != id) {
-            let clean = !self.lists.has_list(left);
-            self.sleeper().touch(left);
-            if let Some(tab) = self.tabs.tab_mut(left)
-                && ((clean && matches!(tab.file.notice(), Some(FileNotice::Moved { .. } | FileNotice::Changed)))
-                    || matches!(tab.file.notice(), Some(FileNotice::HistoryRolledOff)))
-            {
-                tab.file.set_notice(None);
-            }
-        }
+        leave_for(self, id);
         self.tabs.set_active(Some(id));
         if self.warm.bring_to_front(id) {
             return;
@@ -153,7 +143,8 @@ impl<L: DocLoader> Session<L> {
         };
         let (edited, list_pages) = (summary.edited, self.lists.get(id).map(PageEdits::file_pages));
         let Some(own) = self.tabs.tab(id).map(|tab| tab.file.stamp) else { return };
-        let other_version = own.is_some_and(|own| !own.same_contents(read));
+        // Under unsaved edits another file in its place is another version whatever its size and time; with none, as before the page matcher.
+        let other_version = own.is_some_and(|own| if edited { fit::another_version(own, read) } else { !own.same_contents(read) });
         // The file at the list's own stamp is another length than the list says, so the list isn't about what was read: the file was replaced between its stamp
         // and its read, an edit landed between a change being noticed and the read, or a journal says what isn't so.
         let other_length = own == Some(read) && list_pages.is_some_and(|list_pages| list_pages != pages);
@@ -219,6 +210,12 @@ impl<L: DocLoader> Session<L> {
             }
             None => {}
         }
+        // Another version than the edits' own, which is known: they may follow their pages into it (the page matcher, [`crate::version_change`]).
+        if let Some((Some(_), seen, Some(_), true, _)) = elsewhere
+            && let Some(list) = self.lists.get_mut(id)
+        {
+            edit::identity::may_follow(list, seen);
+        }
     }
 
     pub(crate) fn remember_warm(&mut self, id: TabId, toc: Arc<Toc>) {
@@ -230,5 +227,28 @@ impl<L: DocLoader> Session<L> {
         // The least recent's gone cold, so what its sleep file needs is kept long enough to write that.
         let dormancy = &mut self.dormancy;
         self.warm.push(id, toc, |left| dormancy.note_left(left));
+    }
+}
+
+/// **The tab showing is left for `id`:** what it said on the way past has been said, and goes (a moved or changed file with nothing riding on it, a
+/// history that rolled off, edits that followed their file, which are then told). The one statement of leaving a tab: going to another
+/// ([`Session::activate`], by a tap, an agent's `goto` or `tap`, a file open already, the next tab or pane after a close) and opening another file
+/// ([`Session::open_with_facts`]). Not a leaving: closing the tab showing (it's gone, and its news with it), and a restore (a session replaced, with
+/// nothing in it shown yet). A function of the session's, not a method: `Session` is held to its method count.
+pub(crate) fn leave_for<L: DocLoader>(session: &mut Session<L>, id: TabId) {
+    let Some(left) = session.tabs.active().filter(|left| *left != id) else {
+        return;
+    };
+    let clean = !session.lists.has_list(left);
+    session.sleeper().touch(left);
+    if let Some(tab) = session.tabs.tab_mut(left)
+        && ((clean && matches!(tab.file.notice(), Some(FileNotice::Moved { .. } | FileNotice::Changed)))
+            || matches!(tab.file.notice(), Some(FileNotice::HistoryRolledOff | FileNotice::EditsFollowed { .. })))
+    {
+        let followed = matches!(tab.file.notice(), Some(FileNotice::EditsFollowed { .. }));
+        tab.file.set_notice(None);
+        if followed {
+            crate::version_change::told(session, left);
+        }
     }
 }

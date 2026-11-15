@@ -19,11 +19,27 @@ impl<L: DocLoader> Session<L> {
         let Some(tab) = self.tabs.tab(id) else { return false };
         let has_edits = self.lists.has_list(id);
         let edited = self.lists.is_edited(id);
+        // Under unsaved edits, another file in its place is another version, though its size and time are the version's ([`fit::another_version`]).
+        let status = match status {
+            FileStatus::Same(now) if edited && tab.file.stamp.is_some_and(|own| own.same_contents(now) && fit::another_version(own, now)) => {
+                FileStatus::Changed(now)
+            }
+            status => status,
+        };
         let (stamp, missing) = (tab.file.stamp, matches!(tab.file.notice(), Some(FileNotice::Missing)));
         // Under edits that don't fit, the version last taken in, found again, is nothing new; any other is, as what's held is of that one (F2).
         let fit = self.notices().fit(id);
         let elsewhere = tab.file.elsewhere().filter(|_| !fit.fits());
-        let seen_again = |now: &FileStamp| elsewhere.and_then(|elsewhere| elsewhere.seen).is_some_and(|seen| seen.same_contents(*now));
+        // Under unsaved edits another file in its place is another version, whatever its size and time (review F5): it's looked at.
+        let seen_again = |now: &FileStamp| {
+            elsewhere.and_then(|elsewhere| elsewhere.seen).is_some_and(|seen| {
+                if edited {
+                    !fit::another_version(seen, *now)
+                } else {
+                    seen.same_contents(*now)
+                }
+            })
+        };
         let known = match &status {
             FileStatus::NotLooked => true,
             FileStatus::Changed(now) => seen_again(now) && !missing,

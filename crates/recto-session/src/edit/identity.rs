@@ -116,6 +116,16 @@ pub struct Identities {
     spent: u64,
     /// The list followed its file onto this version and the person hasn't been told yet (slice 2's; kept in the sidecar's header).
     followed_untold: bool,
+    /// The file was found to be another version, this one, and the edits may follow their pages into it ([`crate::version_change`]); `tried` once
+    /// that's been tried and they were held, so it isn't tried again for this version. Not kept: a restart finds the version again when it reads it.
+    follow: Option<Follow>,
+}
+
+/// A version of the file the edits may follow their pages into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Follow {
+    pub to: recto_platform::FileStamp,
+    pub tried: bool,
 }
 
 impl std::fmt::Debug for Identities {
@@ -144,6 +154,11 @@ impl Identities {
 
     pub fn document(&self) -> Option<DocumentIds> {
         self.document
+    }
+
+    /// The version the edits may follow their pages into, if one's been found.
+    pub fn follow(&self) -> Option<Follow> {
+        self.follow
     }
 
     /// What's known of one page, if it was named and has been read.
@@ -357,6 +372,34 @@ pub fn give_up(edits: &mut PageEdits) {
     }
 }
 
+/// **The file was found to be another version, `to`:** the edits may follow their pages into it, once, unless they've been tried against it already.
+/// Says whether that's new. A list that names no page has nothing to follow by, and is held as it is.
+pub(crate) fn may_follow(edits: &mut PageEdits, to: recto_platform::FileStamp) -> bool {
+    let Some(ids) = edits.identities.as_deref_mut() else { return false };
+    if ids.follow.is_some_and(|follow| follow.to == to) {
+        return false;
+    }
+    ids.follow = Some(Follow { to, tried: false });
+    true
+}
+
+/// What's wanted of the list: whether it may follow its pages into a version not yet tried. A look at its own field, for the session thread after
+/// every call (no tab looked up).
+pub fn follow_wanted(edits: &PageEdits) -> Option<recto_platform::FileStamp> {
+    edits.identities.as_deref()?.follow.filter(|follow| !follow.tried).map(|follow| follow.to)
+}
+
+/// Following was tried against `to` and the edits were held (or it no longer applies): not tried again for it.
+pub(crate) fn follow_tried(edits: &mut PageEdits, to: Option<recto_platform::FileStamp>) {
+    if let Some(ids) = edits.identities.as_deref_mut() {
+        match to {
+            Some(to) if ids.follow.is_some_and(|follow| follow.to == to) => ids.follow = Some(Follow { to, tried: true }),
+            Some(_) => {}
+            None => ids.follow = None,
+        }
+    }
+}
+
 /// **The file was followed to a new version** (slice 2's rebase): `pages` (by their numbers in the new file) are what those pages are there, and the
 /// whole of what's known is of the new version, so the sidecar is written again whole, with the new version's stamp, at the next write; what it held of
 /// the old version is gone with it. A page past the new file's length or past the cap isn't kept. Pages stay as named only by these, read.
@@ -377,6 +420,17 @@ pub fn followed(edits: &mut PageEdits, pages: &[(u32, Known)], document: Option<
         ..Identities::default()
     };
     edits.identities = Some(Box::new(ids));
+}
+
+/// **After [`followed`]:** each known page's neighbours in the new version are named too, to be read there, so the next change of the file can tell
+/// copies apart again (slice 2). Nothing is read here.
+pub(super) fn name_neighbours(edits: &mut PageEdits) {
+    let pages: Vec<u32> = edits
+        .identities
+        .as_deref()
+        .map(|ids| ids.pages.iter().map(|(page, _)| *page).collect())
+        .unwrap_or_default();
+    name_with_neighbours(edits, pages);
 }
 
 /// Whether the list followed its file onto this version and the person hasn't been told yet: what its sidecar's header says (slice 2 sets and clears it).
@@ -471,4 +525,4 @@ pub fn sidecar_caught_up(edits: &PageEdits) -> bool {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -180,8 +180,67 @@ fn sequence(data: &[u8]) {
             cost += 1 + model.slots.len() / 512;
         }
     }
+    // The list onto another version of its file, as the page matcher puts it, from verdicts the input chooses (slice 2): never a panic, and a list
+    // that follows has each page of the new version once at most and keeps every turn and added page. On a copy, so the end game is the model's.
+    if let Some(edits) = session.lists().get(model.id) {
+        onto_another_version(edits.clone(), data);
+    }
     // Everything still on the lists gives back what it says it will, all the way down, and then up again.
     end_game(&mut session, &mut model);
+}
+
+/// Catches: a rebase onto another version that panics, puts a page of the new version on the list twice or past its end, or drops a turn or an added
+/// page of the person's, whatever the matcher said. The new version is the old one turned round by an amount and with pages added, some old pages not
+/// found, all from the input.
+fn onto_another_version(mut edits: recto_session::edit::PageEdits, data: &[u8]) {
+    use recto_session::edit::identity::Known;
+    use recto_session::edit::matcher::Found;
+    let seed = data.iter().fold(0x9e37_79b9_u32, |hash, byte| hash.rotate_left(5) ^ u32::from(*byte));
+    let file_pages = edits.file_pages();
+    let added = seed % 4;
+    let new_pages = file_pages + added;
+    let shift = if file_pages == 0 { 0 } else { (seed >> 4) % file_pages };
+    let found: Vec<(u32, Found)> = (0..file_pages)
+        .map(|page| {
+            let verdict = if (seed >> (page % 24)) & 7 == 0 {
+                Found::NotFound
+            } else {
+                let new = (page + shift) % file_pages;
+                Found::At {
+                    page: new,
+                    now: Known {
+                        digest: [0; 16],
+                        object: (new, 0),
+                        frame: 0,
+                    },
+                }
+            };
+            (page, verdict)
+        })
+        .collect();
+    let turns_before = edits.slots().iter().filter(|slot| slot.quarter_turns != 0).count();
+    let added_before = edits.slots().iter().filter(|slot| slot.source != 0).count();
+    let outcome = recto_session::edit::rebase::rebase(&edits, &found, new_pages, &[]);
+    let Some(onto) = outcome.onto else { return };
+    let mut own: Vec<u32> = onto.slots.iter().filter(|slot| slot.source == 0).map(|slot| slot.page).collect();
+    assert!(own.iter().all(|page| *page < new_pages), "a page past the new version's end");
+    own.sort_unstable();
+    let before = own.len();
+    own.dedup();
+    assert_eq!(own.len(), before, "a page of the new version twice");
+    assert_eq!(
+        onto.slots.iter().filter(|slot| slot.quarter_turns != 0).count(),
+        turns_before,
+        "a turn lost or made"
+    );
+    assert_eq!(
+        onto.slots.iter().filter(|slot| slot.source != 0).count(),
+        added_before,
+        "an added page lost or made"
+    );
+    recto_session::edit::rebase::apply(&mut edits, onto, None);
+    assert!(!edits.can_undo() && !edits.can_redo(), "the history ends at the change");
+    assert_eq!(edits.file_pages(), new_pages);
 }
 
 /// Runs one step, by whoever's making it, and mirrors it in the model.

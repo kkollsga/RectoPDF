@@ -37,6 +37,7 @@ pub fn about(event: &Event) -> About<'_> {
         Event::PageChanged { tab, .. }
         | Event::EditsChanged { tab, .. }
         | Event::Saved { tab, .. }
+        | Event::EditsFollowed { tab, .. }
         | Event::PageDrawn { tab, .. }
         | Event::PageFailed { tab, .. }
         | Event::LayoutChanged { tab, .. } => About::Document(*tab),

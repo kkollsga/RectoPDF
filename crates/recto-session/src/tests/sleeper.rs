@@ -27,6 +27,7 @@ impl HistorySource for Store {
             seq: parsed.header.base_seq + applied as u64,
             lost_lines: false,
             rolled_off: false,
+            set_aside_beside: false,
         })
     }
 

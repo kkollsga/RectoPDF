@@ -14,6 +14,7 @@ pub mod palette;
 pub mod record;
 pub mod sleep;
 pub mod trail;
+pub mod version_change;
 
 mod contents;
 mod dirs;
@@ -494,6 +495,9 @@ pub struct RestoredEdits {
     pub lost_lines: bool,
     /// Steps had to go, as a file kept for them isn't what it was.
     pub rolled_off: bool,
+    /// Another list of this tab's, with edits not all in this one, was set aside beside it at the launch (a crash's two journals, review M2): the tab
+    /// says so ([`record::FileNotice::EditsSetAsideAfterQuit`]).
+    pub set_aside_beside: bool,
 }
 
 /// Why a history's being cleared. SPEC decision 25. A confirmed redaction or hidden-data removal, or what's been removed could be got back from it. A file changed outside the app, as its steps no longer apply. A discard, which is all of a tab's edits. And the user's asking for it, with Clear Edit History.

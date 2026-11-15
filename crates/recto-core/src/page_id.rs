@@ -127,11 +127,19 @@ pub struct PageRead {
 }
 
 /// What's said of a document as a whole: a 16-byte SHA-256 prefix of each of its trailer's `/ID` strings, where it has two. Tells a re-save (`/ID[0]`
-/// kept) from another document, in the words only; nothing is matched by it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// kept) from another document, which the page matcher goes by (`recto-session`'s `edit::matcher`): a page is taken by its old object number alone,
+/// or by a digest found once with no neighbour agreeing, only in a version with the same `/ID[0]`. Its `Debug` says nothing of the bytes: they're of
+/// a document, and what's printed can reach a log.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct DocumentIds {
     pub first: [u8; 16],
     pub second: [u8; 16],
+}
+
+impl std::fmt::Debug for DocumentIds {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("DocumentIds").finish_non_exhaustive()
+    }
 }
 
 /// **Opens exactly this version of a file for its pages' identities,** through the file wall, as every read of a document by its path is: `None`

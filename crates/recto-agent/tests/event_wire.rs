@@ -15,6 +15,7 @@ const GOLDEN: &[(&str, &str)] = &[
     ("page_changed", r#"{"event":"page_changed","page":7,"tab":5}"#),
     ("edits_changed", r#"{"edited":true,"event":"edits_changed","pages":12,"tab":5}"#),
     ("saved", r#"{"event":"saved","tab":5,"writer":"lopdf"}"#),
+    ("edits_followed", r#"{"edits":3,"event":"edits_followed","pages":11,"tab":5}"#),
     ("page_drawn", r#"{"event":"page_drawn","page":2,"tab":5}"#),
     ("page_failed", r#"{"code":"render_failed","event":"page_failed","page":2,"tab":5}"#),
     ("indexing_started", r#"{"corpus":"ab12","event":"indexing_started"}"#),
@@ -66,6 +67,7 @@ fn made() -> Vec<(&'static str, Event)> {
         ("page_changed", Event::PageChanged { tab, page: 7 }),
         ("edits_changed", Event::EditsChanged { tab, pages: 12, edited: true }),
         ("saved", Event::Saved { tab, writer: "lopdf" }),
+        ("edits_followed", Event::EditsFollowed { tab, pages: 11, edits: 3 }),
         ("page_drawn", Event::PageDrawn { tab, page: 2 }),
         (
             "page_failed",

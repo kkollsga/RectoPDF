@@ -388,6 +388,7 @@ pub(crate) const ROWS_DISCARD: &[Spec] = &[Spec {
 
 fn edits_words(data: &Value) -> String {
     let mut out = edit_state(data);
+    out.extend(crate::followed::words(data));
     for run in data["runs"].as_array().map_or(&[][..], Vec::as_slice) {
         let _ = write!(out, "\n  pages {}: ", text(&run["pages"]));
         match run["untrusted"]["added_file"].as_str() {

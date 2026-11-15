@@ -15,6 +15,7 @@
 //! **Versions.** A record from a newer app is never touched. This app works in a folder of its own version beside it, which is also what a migration keeps: going forward copies the old folder first, so going back finds it as it was.
 
 /// The record's lock: who keeps it, waiting for it, and letting go of it.
+mod followed;
 mod lock;
 mod page_ids;
 mod sleep_files;
@@ -248,6 +249,7 @@ fn restored_from(parsed: &ParsedJournal) -> Option<RestoredEdits> {
         seq: parsed.header.base_seq + applied as u64,
         lost_lines: lost,
         rolled_off: false,
+        set_aside_beside: false,
     })
 }
 
@@ -1256,10 +1258,10 @@ fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress
         }
     }
     for read in unclaimed {
-        // Already taken over by what it would be: a save's crash left both.
-        if journals.contains_key(&read.name) {
+        // Already taken over by what it would be (a save's crash left both), or what a follow's crash left beside a tab's (`followed`).
+        let Some(read) = followed::unclaimed(&folder, read, record, &taken_tabs, &mut journals, progress) else {
             continue;
-        }
+        };
         // A save was confirmed and this is its new journal, with the old one gone, and a crash kept the record from hearing. The tab names what's gone, on a path that's now this file.
         let moved_on = record.tabs.iter().enumerate().position(|(at, tab)| {
             !taken_tabs[at]
@@ -1439,6 +1441,7 @@ fn claim(folder: &Path, read: JournalRead, record: &mut SessionRecord, at: usize
     tab.journal = Some(name.clone());
     tab.edits = Some(restored.edits.summary());
     page_ids::take_in(folder, &name, &parsed.header, &mut restored.edits, progress);
+    followed::untold_over_changed(tab, &parsed.header, &restored.edits);
     progress.journal_bytes.insert(name.clone(), good_bytes);
     journals.insert(name, restored);
 }

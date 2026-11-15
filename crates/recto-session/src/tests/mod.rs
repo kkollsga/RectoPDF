@@ -29,6 +29,7 @@ mod sleeper;
 mod tabs;
 mod tiers;
 mod trail_tests;
+pub(crate) mod version_change;
 mod view;
 
 struct FakeLoader {
@@ -103,6 +104,7 @@ fn back_from(files: &HashMap<String, Vec<u8>>) -> HashMap<String, RestoredEdits>
                     edits,
                     seq: parsed.header.base_seq + applied as u64,
                     rolled_off: false,
+                    set_aside_beside: false,
                     lost_lines: parsed.lost_lines,
                 },
             )

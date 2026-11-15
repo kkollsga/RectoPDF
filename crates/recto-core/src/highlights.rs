@@ -64,22 +64,41 @@ pub fn page_highlights_bytes(bytes: Arc<[u8]>, page: u32) -> Result<PageHighligh
     Ok(highlights_of(&open_bytes(bytes)?, page, Limits::default()))
 }
 
+/// [`page_highlights`] of a page of a file already open, by its entry in the page map in hand, as the page matcher reads the new version once for
+/// every page it needs (no page map built again per page). With how many annotations were looked at, which the matcher counts as work. **Bounded by
+/// its counts alone, with no time limit** (review N2): the matcher's work is counted in its one budget and never in time, so whether an edit follows
+/// doesn't depend on the machine. An agent's `highlights` keeps [`MAX_READ_TIME`].
+pub fn page_highlights_at(reader: &IndexedReader, entry: &lopdf::PageMapEntry) -> (PageHighlights, usize) {
+    highlights_at(reader, entry, Limits::counted())
+}
+
 /// The limits a read keeps to, set small by the tests so each is held at itself plus one.
 #[derive(Clone, Copy)]
 struct Limits {
     annots: usize,
     highlights: usize,
     quads: usize,
-    deadline: Instant,
+    /// When the read stops, or none: then the counts alone bound it.
+    deadline: Option<Instant>,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         Self {
+            deadline: Some(Instant::now() + MAX_READ_TIME),
+            ..Self::counted()
+        }
+    }
+}
+
+impl Limits {
+    /// The counts, with no time limit: [`page_highlights_at`]'s.
+    fn counted() -> Self {
+        Self {
             annots: MAX_PAGE_ANNOTS,
             highlights: MAX_PAGE_HIGHLIGHTS,
             quads: MAX_QUADS,
-            deadline: Instant::now() + MAX_READ_TIME,
+            deadline: None,
         }
     }
 }
@@ -88,23 +107,30 @@ fn highlights_of(reader: &IndexedReader, page: u32, limits: Limits) -> PageHighl
     let Some(entry) = reader.page_map().ok().and_then(|map| map.get(page as usize).cloned()) else {
         return PageHighlights::default();
     };
-    let frame = frame_of(reader, &entry);
+    highlights_at(reader, &entry, limits).0
+}
+
+/// [`highlights_of`] a page by its entry, with how many annotations were looked at.
+fn highlights_at(reader: &IndexedReader, entry: &lopdf::PageMapEntry, limits: Limits) -> (PageHighlights, usize) {
+    let frame = frame_of(reader, entry);
     let mut out = PageHighlights {
         frame,
         ..PageHighlights::default()
     };
-    let Some(size) = frame.shown_size() else { return out };
+    let Some(size) = frame.shown_size() else { return (out, 0) };
     let annots = match reader
         .resolve_object(entry.id())
         .ok()
         .and_then(|dict| dict.as_dict().ok()?.get(b"Annots").ok().and_then(|annots| deref(reader, annots)))
     {
         Some(Object::Array(items)) => items,
-        _ => return out,
+        _ => return (out, 0),
     };
     out.truncated = annots.len() > limits.annots;
+    let mut looked = 0;
     for (index, item) in annots.iter().take(limits.annots).enumerate() {
-        if Instant::now() >= limits.deadline {
+        looked += 1;
+        if limits.deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             out.truncated = true;
             break;
         }
@@ -128,7 +154,7 @@ fn highlights_of(reader: &IndexedReader, page: u32, limits: Limits) -> PageHighl
             rect: rect_of(reader, &annot),
         });
     }
-    out
+    (out, looked)
 }
 
 /// A number the file says, if it's one and finite.
@@ -314,10 +340,7 @@ mod tests {
         );
         // The app's own counts, with a time limit no machine meets: this test is of the counts, and the time limit has its own (below). With the app's
         // 500 ms counted from the test's start, a starved machine ran out of it before the last reads and found nothing (a full check at load 32).
-        let keep = Limits {
-            deadline: Instant::now() + Duration::from_secs(24 * 60 * 60),
-            ..Limits::default()
-        };
+        let keep = Limits { ..Limits::counted() };
         let quad = "50 720 150 720 50 708 150 708 ";
         // Highlights: `max` of them are all kept, one more is cut and said.
         let many = |count: usize| vec![ONE; count];
@@ -351,12 +374,25 @@ mod tests {
         );
     }
 
+    /// Failure (review N2): the page matcher's read of a page's highlights stopped by the clock, so whether an edit follows depends on the machine
+    /// (its work is counted, never timed). The counted form has no time limit: with the time already up, it reads the page whole and says nothing cut.
+    #[test]
+    fn the_counted_read_has_no_time_limit() {
+        let late = Limits {
+            deadline: Some(Instant::now()),
+            ..Limits::counted()
+        };
+        assert!(highlights_of(&page_with(&[ONE], ""), 0, late).truncated, "timed, it stops");
+        let read = highlights_of(&page_with(&[ONE], ""), 0, Limits::counted());
+        assert_eq!((read.found.len(), read.truncated), (1, false));
+    }
+
     /// Failure (review of R4.3): a page's read has no time limit, as a read of links has, so a page of costly annotations holds an agent's
     /// `recto highlights` and a removal's look for as long as it takes. Held with the time already up: nothing's read, and it says it was cut short.
     #[test]
     fn a_read_stops_at_its_time_and_says_so() {
         let late = Limits {
-            deadline: Instant::now(),
+            deadline: Some(Instant::now()),
             ..Limits::default()
         };
         let read = highlights_of(&page_with(&[ONE], ""), 0, late);

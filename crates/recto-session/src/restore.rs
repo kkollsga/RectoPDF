@@ -69,7 +69,12 @@ impl<L: DocLoader> Session<L> {
                     // Edits on a version the file isn't any more are said to be whatever notice is over them, as the tab says it: so a restore knows.
                     notice: match notices.fit_of(tab) {
                         EditsFit::FileChanged | EditsFit::FileChangedVersionUnknown => Some(FileNotice::Changed),
-                        _ => tab.file.notice().cloned(),
+                        // News of the moment, which an app from before it couldn't read.
+                        _ => tab
+                            .file
+                            .notice()
+                            .filter(|notice| !matches!(notice, FileNotice::EditsFollowed { .. } | FileNotice::EditsSetAsideAfterQuit))
+                            .cloned(),
                     },
                     journal: journals.name_of(*id).map(ToString::to_string),
                     edits: lists.summary(*id),
@@ -142,10 +147,15 @@ impl<L: DocLoader> Session<L> {
                         if restored.rolled_off {
                             notice = Some(FileNotice::HistoryRolledOff);
                         }
+                        if restored.set_aside_beside {
+                            notice = Some(FileNotice::EditsSetAsideAfterQuit);
+                        }
                         if restored.lost_lines {
                             notice = Some(FileNotice::EditsUnreadable);
                         }
                         let mut edits = restored.edits;
+                        // Edits that followed their file onto a new version the person wasn't told of before the quit (its sidecar says so).
+                        notice = notice.or_else(|| crate::version_change::untold_notice(&edits));
                         if self.journals.journaling() {
                             edits.set_journal_seq(restored.seq);
                         } else {

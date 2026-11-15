@@ -91,6 +91,7 @@ fn use_a_journal(bytes: &[u8]) {
             seq: applied as u64,
             lost_lines: parsed.lost_lines,
             rolled_off: false,
+            set_aside_beside: false,
         };
         session
             .restore(&main, HashMap::from([(name, list)]))
@@ -173,6 +174,10 @@ fn use_a_store(record_bytes: &[u8], journal_bytes: &[u8], log_bytes: &[u8]) {
     let _ = local::write_private_file(&session_dir.join("record.a.json"), record_bytes);
     let _ = local::write_private_file(&session_dir.join("places.log"), log_bytes);
     let _ = local::write_private_file(&session_dir.join("journals").join(&name), journal_bytes);
+    // And again under another name: two journals with the same tab's id and path, a linked pair as a follow's crash leaves them (slice 2's
+    // `record_store::followed`), so whichever way the input lands, the pair is judged and nothing comes back twice.
+    let again = record::journal_file_name(None, Path::new("/fuzz/p12.pdf"), Some(2));
+    let _ = local::write_private_file(&session_dir.join("journals").join(&again), journal_bytes);
     for _ in 0..2 {
         let store = RecordStore::open(&paths, Flavor::App);
         let loaded = store.load();
@@ -218,6 +223,190 @@ fn use_a_store(record_bytes: &[u8], journal_bytes: &[u8], log_bytes: &[u8]) {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// One journal of a linked pair, as the input shapes it: its tab, path and version, where it started again from a whole list and that list's turns,
+/// and the turns after.
+struct Shape {
+    tab: u32,
+    path: PathBuf,
+    stamp: Option<recto_platform::FileStamp>,
+    base_seq: u64,
+    base_turns: usize,
+    turns: usize,
+}
+
+impl Shape {
+    fn turn() -> record::JournalOp {
+        record::JournalOp::Rotate(0, 1, 1, record::AuthorName::Owner)
+    }
+
+    fn base(&self) -> Option<record::EditsRecord> {
+        (self.base_turns > 0)
+            .then(|| {
+                PageEdits::replay(12, None, &vec![Self::turn(); self.base_turns])
+                    .ok()
+                    .map(|(list, _)| list.to_record())
+            })
+            .flatten()
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        let header = record::JournalHeader::new(self.tab, &self.path, self.stamp, 12, self.base_seq);
+        let mut bytes = record::journal_start(&header, self.base().as_ref());
+        bytes.extend_from_slice(&record::journal_lines(&vec![Self::turn(); self.turns]));
+        bytes
+    }
+
+    /// Its steps, and whether it holds unsaved edits.
+    fn steps(&self) -> (u64, bool) {
+        let edited = PageEdits::replay(12, self.base().as_ref(), &vec![Self::turn(); self.turns]).is_ok_and(|(list, _)| list.is_edited());
+        (self.base_seq + self.turns as u64, edited)
+    }
+}
+
+/// The record of a linked pair: tab 1 on `file` at `first`, naming `journal`, saying its file changed if `changed`.
+fn pair_record(file: &Path, first: recto_platform::FileStamp, journal: &str, changed: bool) -> record::SessionRecord {
+    record::SessionRecord {
+        app: record::AppRecord::default(),
+        view: record::ViewRecord::default(),
+        find: record::FindRecord::default(),
+        edit_mode: false,
+        active: Some(1),
+        next_id: 3,
+        tabs: vec![record::TabEntry {
+            id: 1,
+            path: record::PathField::from_path(file),
+            file: Some(first.into()),
+            page: 0,
+            page_count: 12,
+            place: None,
+            view_rotation: 0,
+            toc_open: true,
+            layout: Default::default(),
+            renderer_only: false,
+            selection: None,
+            notice: changed.then_some(record::FileNotice::Changed),
+            journal: Some(journal.to_string()),
+            edits: None,
+            generated_contents: false,
+            contents_folds: Vec::new(),
+            back: Vec::new(),
+            forward: Vec::new(),
+            password: false,
+        }],
+        comparison: None,
+        recent: Vec::new(),
+        withheld_places: record::WithheldPlaces::default(),
+    }
+}
+
+/// **Two journals of one tab, their headers from the input** (slice 2's crash rule, `record_store::followed`, review M2): the second journal's tab id, path,
+/// version (none, the record's, the file as it is now, or a third), where it started again from a whole list (up or down from the first's steps) and
+/// its own steps; the file replaced by another program or not; and the record saying it changed or not. What must hold: [`linked_pair_holds`].
+fn use_a_linked_pair(data: &[u8]) {
+    let byte = |at: usize| data.get(at).copied().unwrap_or(0);
+    // One input in eight: a launch is most of a round's cost (about 25 ms in a debug build), the shapes are few (some 10^5), and the smoke test's
+    // 400 rounds took 12 s more with every input (49 s to 61 s, under load).
+    if byte(10) % 8 != 0 {
+        return;
+    }
+    let root = folder();
+    let Ok(paths) = StatePaths::overridden(&root) else { return };
+    if paths.prepare().is_err() {
+        return;
+    }
+    let journals = root.join("session").join("journals");
+    let _ = local::ensure_private_dir(&root.join("session"));
+    let _ = local::ensure_private_dir(&journals);
+    let file = root.join("doc.pdf");
+    if std::fs::write(&file, b"the version the edits were made on").is_err() {
+        return;
+    }
+    let Ok(first) = recto_platform::file_stamp(&file) else { return };
+    let now = if byte(0) & 1 == 1 {
+        let new = file.with_extension("new");
+        let _ = std::fs::write(&new, b"another program's version, longer than the first");
+        let _ = std::fs::rename(&new, &file);
+        recto_platform::file_stamp(&file).unwrap_or(first)
+    } else {
+        first
+    };
+    let third = recto_platform::FileStamp {
+        size: first.size.wrapping_add(7),
+        ..first
+    };
+    let own = Shape {
+        tab: 1,
+        path: file.clone(),
+        stamp: Some(first),
+        base_seq: u64::from(byte(1) % 4),
+        base_turns: usize::from(byte(2) % 3),
+        turns: usize::from(byte(3) % 3),
+    };
+    let other = Shape {
+        tab: if byte(4) & 1 == 0 { 1 } else { 2 },
+        path: if byte(4) & 2 == 0 { file.clone() } else { root.join("other.pdf") },
+        stamp: [None, Some(first), Some(now), Some(third)][usize::from(byte(5) % 4)],
+        base_seq: u64::from(byte(6) % 6),
+        base_turns: usize::from(byte(7) % 3),
+        turns: usize::from(byte(8) % 3),
+    };
+    let pair = [
+        (record::journal_file_name(Some(first), &file, None), own),
+        (record::journal_file_name(other.stamp, &other.path, Some(2)), other),
+    ];
+    // Written as a launch finds them, with no store's write (and its flushes) to pay for each input.
+    let main = pair_record(&file, first, &pair[0].0, byte(9) & 1 == 1);
+    let _ = local::write_private_file(&root.join("session").join("record.a.json"), &record::encode_record(&main, 1));
+    for (name, shape) in &pair {
+        let _ = local::write_private_file(&journals.join(name), &shape.bytes());
+    }
+    if let Loaded::Restored(restored) = RecordStore::open(&paths, Flavor::App).load() {
+        linked_pair_holds(*restored, &pair, &journals, now);
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A journal with unsaved edits never leaves the folder (it's a tab's list, or set aside under its `.not-merged` name), and one set aside with edits not
+/// all in the list kept (by sequence) that isn't the old list a follow superseded leaves its notice on the tab, which is never written into the record.
+fn linked_pair_holds(restored: recto_control::record_store::Restored, pair: &[(String, Shape); 2], journals: &Path, now: recto_platform::FileStamp) {
+    let is_now = |stamp: Option<recto_platform::FileStamp>| stamp.is_some_and(|stamp| stamp.same_contents(now) && stamp.inode == now.inode);
+    for (name, shape) in pair {
+        let (seq, edited) = shape.steps();
+        let claimed = restored.journals.contains_key(name.as_str());
+        if !edited || claimed {
+            continue;
+        }
+        assert!(
+            journals.join(name).with_extension("not-merged").exists(),
+            "a journal with unsaved edits is a tab's or set aside: {name}"
+        );
+        // Set aside: the list kept for tab 1 says so, unless every step of this is in it, or it's the old list a follow superseded.
+        let kept = restored.record.tabs.iter().find(|tab| tab.id == 1).and_then(|tab| tab.journal.as_deref());
+        let Some((kept_shape, list)) = kept.and_then(|kept| Some((&pair.iter().find(|(name, _)| name == kept)?.1, restored.journals.get(kept)?))) else {
+            continue;
+        };
+        let all_in = shape.stamp.is_some() && shape.stamp == kept_shape.stamp && seq <= kept_shape.base_seq;
+        let superseded = is_now(kept_shape.stamp) && !is_now(shape.stamp) && kept_shape.base_seq >= seq;
+        assert!(list.set_aside_beside || all_in || superseded, "a list with edits set aside unsaid: {name}");
+    }
+    // Only where there's a notice to see: a restore for every input is most of what this would cost.
+    if !restored.journals.values().any(|list| list.set_aside_beside) {
+        return;
+    }
+    let mut session = Session::new(NamedLoader);
+    if session.restore(&restored.record, restored.journals).is_ok() {
+        let written = serde_json::to_string(&session.to_record()).unwrap_or_default();
+        assert!(!written.contains("edits_set_aside_after_quit"), "never in the record");
+        let shown = session.tabs().iter().any(|tab| {
+            session
+                .tabs()
+                .tab_notice(tab.id)
+                .is_some_and(|notice| notice.code() == "edits_set_aside_after_quit")
+        });
+        assert!(shown, "the notice is on its tab");
+    }
+}
+
 /// One input as a main record, a journal and a log, as it is and with what checks it made good.
 pub fn check(data: &[u8]) {
     within("record", BUDGET, || {
@@ -239,5 +428,6 @@ pub fn check(data: &[u8]) {
         use_a_log(&log);
         use_a_store(&record::seal(MAIN_KIND, 1, data), &journal, &log);
         use_a_store(data, data, data);
+        use_a_linked_pair(data);
     });
 }

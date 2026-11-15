@@ -26,6 +26,7 @@ mod file_wall;
 #[cfg(test)]
 mod file_wall_scan_tests;
 pub mod find;
+mod followed;
 pub mod generated;
 pub mod human;
 pub mod index;
@@ -931,6 +932,7 @@ const MAX_EDIT_RUNS: usize = 1000;
 /// The edited page order, as runs of pages from one file with one rotation.
 fn edits_json<L: DocLoader>(session: &Session<L>, actor: Actor, id: TabId) -> Value {
     let mut data = edit_state_json(session, actor, id);
+    data["followed"] = followed::said(session, id);
     let Some(edits) = session.lists().get(id) else {
         data["runs"] = json!([]);
         data["runs_truncated"] = json!(false);

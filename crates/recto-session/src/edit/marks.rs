@@ -613,6 +613,20 @@ impl Marks {
         self.hidden.clone()
     }
 
+    /// **Onto another version of the file** (the page matcher, [`super::rebase`]): each highlight on a page of the tab's own file goes to the page
+    /// `onto` gives, or goes where it gives none; the file's highlights taken out are `hidden` now. Those of added PDFs stay as they are.
+    pub(super) fn onto(&mut self, onto: impl Fn(&Mark) -> Option<u32>, hidden: Vec<FileKey>) {
+        self.list.retain_mut(|mark| {
+            if mark.source != 0 {
+                return true;
+            }
+            onto(mark).map(|page| mark.page = page).is_some()
+        });
+        self.lines = self.list.iter().map(|mark| mark.rects.len()).sum();
+        self.hidden = hidden;
+        self.changes = tick();
+    }
+
     /// Numbers past any a step names, so one brought back by an undo never meets a new one.
     pub(super) fn count_past(&mut self, step: &MarkStep) {
         for mark in step.adds() {

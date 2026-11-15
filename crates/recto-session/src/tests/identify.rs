@@ -5,7 +5,7 @@ use super::*;
 use crate::identify::{self, IdentifyJob};
 
 /// What a test does around `Opened::open`'s open: called with `true` just before it and `false` just after.
-type AroundOpen = Box<dyn Fn(bool)>;
+pub(crate) type AroundOpen = Box<dyn Fn(bool)>;
 
 std::thread_local! {
     /// How many bytes a job may read on this thread, when a test says ([`crate::identify::MAX_JOB_BYTES`]).
@@ -13,7 +13,7 @@ std::thread_local! {
     /// A version's budget for a list on this thread, when a test says (`crate::edit::identity::VERSION_BYTES`).
     pub(crate) static VERSION_BYTES: Cell<Option<u64>> = const { Cell::new(None) };
     /// What a test does to the file just before its open (`true`) and just after (`false`), on this thread.
-    static AROUND_OPEN: std::cell::RefCell<Option<AroundOpen>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static AROUND_OPEN: std::cell::RefCell<Option<AroundOpen>> = const { std::cell::RefCell::new(None) };
 }
 
 /// The seam at `Opened::open`'s open, for a test that changes what's at the path for that moment.

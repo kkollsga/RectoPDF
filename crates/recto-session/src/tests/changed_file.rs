@@ -250,6 +250,7 @@ fn a_restored_tab_whose_file_changed_under_its_edits_doesnt_fit_till_a_look_says
         seq: 1,
         lost_lines: false,
         rolled_off: false,
+        set_aside_beside: false,
     };
     let mut s = Session::new(Shifting {
         pages: Rc::clone(&bed.pages),

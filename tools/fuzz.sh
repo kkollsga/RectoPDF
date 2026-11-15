@@ -60,7 +60,9 @@ failed=()
 for target in "${targets[@]}"; do
   corpus="$work/corpus/$target"
   artifacts="$work/artifacts/$target"
-  mkdir -p "$corpus" "$artifacts"
+  # The targets make their state folders inside this one, which must be there: it's removed after each target (a run of `record` alone, or after
+  # another target, panicked on its first input, 2026-11-15).
+  mkdir -p "$corpus" "$artifacts" "$RECTO_FUZZ_STATE"
   "$seeder" "$target" "$corpus"
   extra=()
   case "$target" in pdf_bytes|pdf_tree|page_decode) extra+=("-dict=$PWD/fuzz/dict/pdf.dict") ;; esac
