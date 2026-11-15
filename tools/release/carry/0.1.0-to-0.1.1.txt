@@ -1,0 +1,10 @@
+# What may differ between a session as 0.1.0 left it and as 0.1.1 shows it, by design, each with its reason: a path of `qa state` (or `tabs.`, `show.`,
+# `permission.` and so on for those answers), then why. Beside these, the restore tests' own exceptions hold (crates/recto-cli/tests/restore/exceptions/).
+# `fault:<where>` names a fault found and reported, which the check says as KNOWN FAULT instead of failing on.
+app.menu_bar The menu bar is the build's, not the session's: 0.1.1 adds Mark Up (Highlight, Remove Highlight) before Tools, and each item says its key mask and whether it is the system's.
+app.save_button.frame The window's own buttons sit a point lower in 0.1.1: the window's layout is the build's.
+app.sidebar_button.frame As app.save_button.frame.
+permission.set_at_ms A quiet run sets its level as it starts, so the time it was set is that run's.
+fault:D.notice.edits_unreadable Found 2026-11-15 by this check, reported: after 0.1.0 has run on 0.1.1's state (a copy that went back), its record carries `notice: edits_unreadable` for the tab whose journal it left alone, and 0.1.1 restores that notice next time though it reads the journal whole. The edits are all there; the words are wrong.
+fault:F.highlight_hidden Found 2026-11-15 by this check, reported: after a copy went back to 0.1.0 and an edit was made there on the highlighted tab, 0.1.0 starts a journal of its own (version 1) beside 0.1.1's version 2, and 0.1.1 next time reads only 0.1.0's: the highlight isn't shown, though its journal is still on disk.
+fault:F.notice.edits_not_merged Found with F.highlight_hidden: the tab then says it "was open in two tabs with different unsaved edits", which it wasn't.
