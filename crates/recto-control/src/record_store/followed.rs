@@ -10,15 +10,38 @@
 //! person, nothing prunes it, and 0.1.0 leaves it alone as it isn't a journal's name), with its sidecar gone (an orphan's), so if this misjudges, the
 //! person's earlier list is still on disk. A linked journal that doesn't take over is set aside the same way: never a second tab on the file.
 
-use super::{JournalRead, Progress, page_ids, read_journal};
+use super::{JournalRead, Progress, claim, page_ids, read_journal};
 use recto_platform::{FileStamp, file_stamp};
 use recto_session::RestoredEdits;
 use recto_session::record::{FileRecord, SessionRecord};
 use std::collections::HashMap;
 use std::path::Path;
 
+/// **An unclaimed journal, after every tab has claimed the journal it names,** taken care of here or given back: one a save's crash left beside the
+/// journal it was carried over to (already in `journals` by its name) is done with; one a follow's crash left is claimed by its tab, or set aside.
+pub(super) fn unclaimed(
+    folder: &Path,
+    read: JournalRead,
+    record: &mut SessionRecord,
+    taken: &[bool],
+    journals: &mut HashMap<String, RestoredEdits>,
+    progress: &mut Progress,
+) -> Option<JournalRead> {
+    if journals.contains_key(&read.name) {
+        return None;
+    }
+    match after_a_follow(folder, &read, record, taken, journals, progress) {
+        Link::TakesOver(at) => {
+            claim(folder, read, record, at, progress, journals);
+            None
+        }
+        Link::SetAside => None,
+        Link::None => Some(read),
+    }
+}
+
 /// What an unclaimed journal is to a tab that has claimed one.
-pub(super) enum Link {
+enum Link {
     /// Not linked to a tab that's claimed its journal: as before.
     None,
     /// It takes over as the tab's (at this place in the record), the tab's claimed one set aside: claim it.
@@ -28,7 +51,7 @@ pub(super) enum Link {
 }
 
 /// **An unclaimed journal, after every tab has claimed the journal it names:** whether it's what a follow's crash left beside a tab's (see the module).
-pub(super) fn after_a_follow(
+fn after_a_follow(
     folder: &Path,
     read: &JournalRead,
     record: &mut SessionRecord,

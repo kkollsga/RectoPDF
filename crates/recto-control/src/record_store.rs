@@ -1257,19 +1257,8 @@ fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress
         }
     }
     for read in unclaimed {
-        // Already taken over by what it would be: a save's crash left both.
-        if journals.contains_key(&read.name) {
-            continue;
-        }
-        // A follow's crash left both (`followed`): the tab's own id and path, about the file as it is now.
-        match followed::after_a_follow(&folder, &read, record, &taken_tabs, &mut journals, progress) {
-            followed::Link::TakesOver(at) => {
-                claim(&folder, read, record, at, progress, &mut journals);
-                continue;
-            }
-            followed::Link::SetAside => continue,
-            followed::Link::None => {}
-        }
+        // Already taken over by what it would be (a save's crash left both), or what a follow's crash left beside a tab's (`followed`).
+        let Some(read) = followed::unclaimed(&folder, read, record, &taken_tabs, &mut journals, progress) else { continue };
         // A save was confirmed and this is its new journal, with the old one gone, and a crash kept the record from hearing. The tab names what's gone, on a path that's now this file.
         let moved_on = record.tabs.iter().enumerate().position(|(at, tab)| {
             !taken_tabs[at]
