@@ -1,6 +1,7 @@
-//! **A tab's file changed on disk by another program while it has unsaved edits,** on the app's own core with real files. Until the page matcher exists
-//! (owner, 2026-11-13), an edit names its page by its number in the version it was made on, so what holds here is that nothing is written, the edits are kept,
-//! and the words say what's true: they can't be saved, here or as a copy, while the other version is in place.
+//! **A tab's file changed on disk by another program while it has unsaved edits,** on the app's own core with real files. The page matcher (owner,
+//! 2026-11-13; slice 2, 2026-11-15) follows every edit onto its page in the new version, or holds the whole list: held, nothing is written, the edits are
+//! kept, and the words say what's true (they can't be saved, here or as a copy, while the other version is in place); followed, the tab says so in the
+//! owner's words, an agent watching hears it, and `edits` says it.
 
 use crate::queue::CoreCall;
 use crate::testkit::headless::HeadlessApp;
@@ -109,10 +110,12 @@ fn edits_on_a_replaced_file_save_nowhere_say_so_and_fit_again_when_its_put_back(
     assert_eq!(problem.save_as_title, None, "Save As isn't offered, as it would be refused: {problem:?}");
     assert!(!problem.message.contains("Save As"), "{problem:?}");
     assert!(app.reader().edited, "the edits are still here");
-    // The version they were made on, put back as it was: they fit it, the tab says nothing, and they save.
+    // The version they were made on, put back as it was by a backup tool, under a new number: another file in its place, so the page matcher looks,
+    // finds every page, and the edits follow onto it, said (the coordinator's ruling of 2026-11-15: never silent about a replaced file; a version put back
+    // under its own number fits silently, `edits_fit_again_when_their_version_is_written_back_over_the_file_in_place`). Then they save.
     put_back(&file, &original, modified);
     look(&app);
-    assert_eq!(notice(&app), None);
+    assert_eq!(notice(&app).as_deref(), Some(FOLLOWED), "said, not silent");
     app.recto(Level::Full, &["save"]).expect("saved");
     app.settle();
     let saved = std::fs::read(&file).expect("the file");
@@ -287,12 +290,13 @@ fn assert_kept_and_nothing_written(app: &HeadlessApp, file: &Path, theirs: &[u8]
     assert_eq!(std::fs::read(file).expect("the file"), theirs, "{what}: nothing written");
 }
 
-/// Pinned for the page matcher (2026-11-13): page 9 of ten turned, and the file becomes five pages, then the same ten pages in another order, then fourteen.
-/// No panic anywhere, the edits are kept, nothing is written, and asking for a page, inside the new file's end or past it, fails in words rather than reading
-/// the other version as the edited document's page (the test once took any answer).
-/// (The edited document stays the edit list's ten positions whatever the file's length: the four pages appended aren't reachable until the matcher.)
+/// Pinned for the page matcher (2026-11-13), and changed by it as it meant to (slice 2): page 9 of ten turned, and the file becomes five other pages (held:
+/// no panic, the edits kept, nothing written, and asking for a page, inside the new file's end or past it, fails in words rather than reading the other version
+/// as the edited document's page), then the same ten pages in another order (followed: the turn on "Mine page 9", second now), then fourteen in order
+/// (followed again: the turn on page 9, and the four pages another program appended are the document's). Failure caught: an edit on another page than its
+/// own, or held where its page is plainly there, or the appended pages out of reach.
 #[test]
-fn edits_under_a_file_that_shrinks_reorders_or_grows_are_kept_and_nothing_is_written() {
+fn edits_under_a_file_that_shrinks_reorders_or_grows_are_held_or_follow_their_page() {
     let (app, file, _original, _modified) = edited();
     let edits_before = app.session_json()["tabs"][0]["edits"].clone();
     let five = pdf_bytes("Theirs", 5);
@@ -312,17 +316,86 @@ fn edits_under_a_file_that_shrinks_reorders_or_grows_are_kept_and_nothing_is_wri
     let reordered = recto_testpdf::pages(&reordered);
     replace(&file, &reordered);
     look(&app);
-    assert_kept_and_nothing_written(&app, &file, &reordered, &edits_before, "the same pages reordered");
+    assert_eq!(notice(&app).as_deref(), Some(FOLLOWED));
+    assert_eq!(
+        turned_text(&app),
+        vec![(2, "Mine page 9".to_owned())],
+        "the turn on its own page, second in the new order"
+    );
+    assert_eq!(std::fs::read(&file).expect("the file"), reordered, "nothing written");
     let fourteen = pdf_bytes("Mine", 14);
     replace(&file, &fourteen);
     look(&app);
-    assert_kept_and_nothing_written(&app, &file, &fourteen, &edits_before, "four pages appended");
-    // Marks what the page matcher changes: until it, the edited document is the list's ten positions whatever the file's length, so the four pages appended
-    // aren't in it. Nothing a person relies on is pinned here; when the matcher lands, this is the line it means to change.
+    assert_eq!(notice(&app).as_deref(), Some(FOLLOWED));
+    assert_eq!(turned_text(&app), vec![(9, "Mine page 9".to_owned())]);
     assert_eq!(
         app.session_json()["tabs"][0]["edits"]["pages"],
-        10,
-        "the appended pages aren't in the edited document, until the matcher"
+        14,
+        "the four pages appended are the document's"
+    );
+    let page_14 = app.recto(Level::Full, &["text", "--page", "14"]).expect("page 14 is there");
+    assert!(page_14.to_string().contains("Mine page 14"), "{page_14}");
+}
+
+/// The owner's words for a list that followed (2026-11-15).
+const FOLLOWED: &str = "This file was changed by another program. Your unsaved edits were moved onto the same pages of the new version.";
+
+/// Each turned page of the edited document, 1-based, with its text as an agent reads it.
+fn turned_text(app: &HeadlessApp) -> Vec<(u32, String)> {
+    let edits = app.recto(Level::Full, &["edits"]).expect("edits");
+    let mut out = Vec::new();
+    for run in edits["runs"].as_array().expect("runs") {
+        if run["rotation_degrees"] == 0 {
+            continue;
+        }
+        let pages = run["pages"].as_str().expect("pages");
+        let page: u32 = pages.split('-').next().and_then(|page| page.parse().ok()).expect("a page");
+        let text = app.recto(Level::Full, &["text", "--page", &page.to_string()]).expect("its text");
+        let text = text["untrusted"]["text"].as_str().map_or_else(|| text.to_string(), str::to_owned);
+        out.push((page, text.trim().to_owned()));
+    }
+    out
+}
+
+/// Failure caught: a page another program inserted before the edited one, and the turn shown on the page that's at its old number now; the person not
+/// told, or told in other words; an agent watching not hearing it (an announcement is made when something changed), or `edits` not saying it, or saying a
+/// digest. The turn follows "Mine page 9" to page 10, the tab and `edits` say so in counts, the agent hears `edits_followed` once, and leaving the tab lets
+/// the news go.
+#[test]
+fn a_turn_follows_its_page_past_a_cover_another_program_added_and_is_said_and_heard() {
+    let (app, file, _original, _modified) = edited();
+    let mut watching = app.agent_watches(Level::Control);
+    let mut with_cover = vec![recto_testpdf::Page::new(recto_testpdf::text_lines(&["Their cover"]))];
+    with_cover.extend((1..=10).map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("Mine page {page}")]))));
+    replace(&file, &recto_testpdf::pages(&with_cover));
+    look(&app);
+    assert_eq!(notice(&app).as_deref(), Some(FOLLOWED));
+    assert_eq!(turned_text(&app), vec![(10, "Mine page 9".to_owned())]);
+    let edits = app.recto(Level::Control, &["edits"]).expect("edits");
+    assert_eq!(edits["followed"]["edits"], 1, "{edits}");
+    assert_eq!(edits["followed"]["onto"]["bytes"], std::fs::metadata(&file).expect("its size").len(), "{edits}");
+    assert_eq!(edits["pages"], 11);
+    assert!(!edits["can_undo"].as_bool().expect("can_undo"), "the history ends at the change");
+    let heard: Vec<serde_json::Value> = watching.heard().into_iter().filter(|event| event["event"] == "edits_followed").collect();
+    assert_eq!(heard.len(), 1, "{heard:?}");
+    assert_eq!((heard[0]["pages"].as_u64(), heard[0]["edits"].as_u64()), (Some(11), Some(1)), "{heard:?}");
+    // Counts and the file's own stamp: nothing of what a page is (`qa state`'s counts of named pages are slice 1's, held by its own test).
+    let said = format!("{}{}", edits["followed"], heard[0]);
+    assert!(!said.contains("digest") && !said.contains("identit"), "{said}");
+    assert_eq!(
+        edits["followed"].as_object().map(|followed| followed.len()),
+        Some(2),
+        "how many, and onto which version: {said}"
+    );
+    // Nothing more is heard for it: a look again finds what's known.
+    look(&app);
+    assert!(watching.heard().iter().all(|event| event["event"] != "edits_followed"), "said once");
+    app.recto(Level::Full, &["save"]).expect("saved onto the new version");
+    app.settle();
+    let saved = std::fs::read(&file).expect("the file");
+    assert!(
+        saved.starts_with(&recto_testpdf::pages(&with_cover)),
+        "appended to the new version, the other program's cover kept"
     );
 }
 
@@ -434,6 +507,13 @@ fn edits_fit_again_when_their_version_is_written_back_over_the_file_in_place() {
     assert_eq!(number(&file), before, "the same file, as `cp` over it leaves it");
     look(&app);
     assert_eq!(notice(&app), None, "the version the edits were made on is back");
+    // Silently, and with its history: under its own number it's the edits' own version, not one they followed onto.
+    let edits = app.recto(Level::Full, &["edits"]).expect("edits");
+    assert_eq!(
+        (edits["can_undo"].as_bool(), &edits["followed"]),
+        (Some(true), &serde_json::Value::Null),
+        "{edits}"
+    );
     app.recto(Level::Full, &["save"]).expect("saved");
     app.settle();
     let saved = std::fs::read(&file).expect("the file");
@@ -463,4 +543,39 @@ fn find_typed_after_the_file_changed_under_the_edits_says_why_it_cant_search() {
     app.settle();
     let (rows, status, _) = find_shown(&app);
     assert!(rows > 0, "found again: {status}");
+}
+
+/// Failure caught (the coordinator's rule, 2026-11-15): a document opened with its password has its pages matched against a new version, so its edits
+/// follow, or an agent learns from what it hears or what `edits` says whether they would have (which says something of its pages). Two protected
+/// documents, each with page 9 turned by the person, each changed by another program: one as the edits would follow (pages appended), one as they'd be
+/// held (other pages). An agent watching at Full hears the same of both and gets the same answer from `edits`, and neither tab says its edits followed.
+#[test]
+fn two_protected_documents_changed_under_edits_tell_an_agent_the_same() {
+    use super::files::locked_saying;
+    use super::withheld_events::{PASSWORD, person_unlocks, protected};
+    let run = |pages: usize, word: &str| {
+        let disk = crate::testkit::headless::Disk::new();
+        let file = protected(&disk, 10, "Locked");
+        let app = disk.start();
+        person_unlocks(&app, &file);
+        let mut watching = app.agent_watches(Level::Full);
+        app.person(r#"{"cmd":"page_rotate","tab":"active","pages":"9","degrees":90}"#);
+        app.settle();
+        let before = watching.heard();
+        replace(&file, &locked_saying(PASSWORD, pages, word, lopdf::encryption::Permissions::all()));
+        look(&app);
+        let heard = watching.heard();
+        let edits = app
+            .recto(Level::Full, &["edits"])
+            .map_or_else(|refused| refused.code.to_string(), |answer| answer.to_string());
+        assert_ne!(
+            notice(&app).as_deref(),
+            Some(FOLLOWED),
+            "{pages} pages of {word}: a protected tab's edits never follow"
+        );
+        (before, heard, edits)
+    };
+    let would_follow = run(12, "Locked");
+    let would_be_held = run(10, "Theirs");
+    assert_eq!(would_follow, would_be_held, "the same, heard and asked");
 }

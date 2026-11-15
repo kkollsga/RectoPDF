@@ -80,7 +80,7 @@ impl<L: DocLoader> Session<L> {
             self.sleeper().touch(left);
             if let Some(tab) = self.tabs.tab_mut(left)
                 && ((clean && matches!(tab.file.notice(), Some(FileNotice::Moved { .. } | FileNotice::Changed)))
-                    || matches!(tab.file.notice(), Some(FileNotice::HistoryRolledOff | FileNotice::EditsFollowed)))
+                    || matches!(tab.file.notice(), Some(FileNotice::HistoryRolledOff | FileNotice::EditsFollowed { .. })))
             {
                 tab.file.set_notice(None);
             }

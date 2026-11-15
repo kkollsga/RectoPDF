@@ -548,6 +548,7 @@ pub const EVENTS: &[(&str, &str)] = &[
     ("page_changed", "pages"),
     ("edits_changed", "edits"),
     ("saved", "edits"),
+    ("edits_followed", "edits"),
     ("page_drawn", "draws"),
     ("page_failed", "draws"),
     ("indexing_started", "indexing"),

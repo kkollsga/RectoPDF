@@ -534,7 +534,10 @@ pub enum FileNotice {
     HistoryRolledOff,
     /// It was changed by another program, and every unsaved edit followed its page into the new version (the page matcher, `crate::version_change`).
     /// **Never written into a record** (`restore.rs`): an app from before it can't read it, and would take the whole record for damaged.
-    EditsFollowed,
+    EditsFollowed {
+        /// How many edits followed.
+        edits: u32,
+    },
 }
 
 impl FileNotice {
@@ -548,7 +551,7 @@ impl FileNotice {
             Self::EditsUnreadable => "edits_unreadable",
             Self::EditsNotMerged => "edits_not_merged",
             Self::HistoryRolledOff => "history_rolled_off",
-            Self::EditsFollowed => "edits_followed",
+            Self::EditsFollowed { .. } => "edits_followed",
         }
     }
 
@@ -575,7 +578,9 @@ impl FileNotice {
                 "This PDF was open in two tabs with different unsaved edits, which can't be merged. These are one tab's, and the other's have been kept in the state folder. Nothing has been written to the file."
             }
             // The owner's words, 2026-11-15.
-            (Self::EditsFollowed, _) => "This file was changed by another program. Your unsaved edits were moved onto the same pages of the new version.",
+            (Self::EditsFollowed { .. }, _) => {
+                "This file was changed by another program. Your unsaved edits were moved onto the same pages of the new version."
+            }
             (Self::EditsUnreadable, _) => {
                 "Some of this tab's unsaved edits couldn't be read back, so it shows what could be. What couldn't has been kept in the state folder, and nothing has been written to the file."
             }

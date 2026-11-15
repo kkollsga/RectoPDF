@@ -203,6 +203,14 @@ pub fn read(job: &FollowJob) -> Option<Matched> {
     })
 }
 
+/// **A job's file couldn't be read as the version found** (it changed again, or doesn't open): not tried again for that version. A change since is
+/// found again by the next read of the tab, which asks for that one.
+pub fn not_read<L: DocLoader>(session: &mut Session<L>, job: &FollowJob) {
+    if let Some(edits) = session.lists.get_mut(job.tab) {
+        identity::follow_tried(edits, Some(job.to));
+    }
+}
+
 /// **Takes a match in,** if the tab's edits are still about the version they were and the file is still the one matched, and nothing was edited
 /// meanwhile: every edit follows its page and the tab says so, or the list is held exactly as it was, and isn't tried again for that version.
 /// `None` when nothing changed.
@@ -224,7 +232,7 @@ pub fn followed<L: DocLoader>(session: &mut Session<L>, matched: &Matched) -> Op
     let (pages, seq) = (edits.len(), edits.journal_seq());
     let count = u32::try_from(outcome.edits.len()).unwrap_or(u32::MAX);
     session.journals.retire_kept(let_go);
-    on_the_new_version(session, id, matched, &positions);
+    on_the_new_version(session, id, matched, &positions, count);
     // A journal goes by its file's identity, which this has changed, as after a save: the old one goes once the new one's there.
     let replaces = session.journals.forget_name(id).map(String::from);
     session.journals.drop_fresh(id);
@@ -238,7 +246,7 @@ pub fn followed<L: DocLoader>(session: &mut Session<L>, matched: &Matched) -> Op
 }
 
 /// The tab is about the new version now: its stamp and length, what's held of the old one gone, the reader on the page they were on, and said.
-fn on_the_new_version<L: DocLoader>(session: &mut Session<L>, id: TabId, matched: &Matched, positions: &[Option<u32>]) {
+fn on_the_new_version<L: DocLoader>(session: &mut Session<L>, id: TabId, matched: &Matched, positions: &[Option<u32>], edits: u32) {
     // Where a position of the list as it was is now: its own place if it's known, else the nearest before it that is.
     let moved = |position: u32| -> Option<u32> {
         let position = (position as usize).min(positions.len().checked_sub(1)?);
@@ -250,7 +258,7 @@ fn on_the_new_version<L: DocLoader>(session: &mut Session<L>, id: TabId, matched
     if let Some(tab) = session.tabs.tab_mut(id) {
         tab.folds = None;
         tab.file.take_version(Some(matched.to));
-        tab.file.set_notice(Some(FileNotice::EditsFollowed));
+        tab.file.set_notice(Some(FileNotice::EditsFollowed { edits }));
         tab.page_count = matched.pages;
         tab.page = moved(tab.page).unwrap_or(0).min(pages.saturating_sub(1));
         tab.place_dirty = true;

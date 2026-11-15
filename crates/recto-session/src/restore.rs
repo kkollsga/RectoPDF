@@ -70,7 +70,7 @@ impl<L: DocLoader> Session<L> {
                     notice: match notices.fit_of(tab) {
                         EditsFit::FileChanged | EditsFit::FileChangedVersionUnknown => Some(FileNotice::Changed),
                         // News of the moment, which an app from before it couldn't read.
-                        _ => tab.file.notice().filter(|notice| **notice != FileNotice::EditsFollowed).cloned(),
+                        _ => tab.file.notice().filter(|notice| !matches!(notice, FileNotice::EditsFollowed { .. })).cloned(),
                     },
                     journal: journals.name_of(*id).map(ToString::to_string),
                     edits: lists.summary(*id),

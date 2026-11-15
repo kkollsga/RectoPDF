@@ -24,7 +24,8 @@ pub(crate) fn journal_work_after_a_call(host: &Arc<AppHost>, ids: &Arc<PageIds>)
         (
             session.journals().has_pending(),
             journal_work,
-            journal_work && recto_session::identify::has_work(session),
+            // Edits that may follow their pages into another version of their file: a look at each list's own field, no tab looked up.
+            (journal_work && recto_session::identify::has_work(session)) || recto_session::version_change::wanted(session),
         )
     });
     if wanted {
@@ -71,6 +72,26 @@ impl PageIds {
                 // What was read goes in the journals, as an edit's operations do.
                 host.saver.edit_made();
             }
+            // Edits whose file changed under them, following their pages into the new version or held (`recto_session::version_change`).
+            let follows = host.session.with_session(recto_session::version_change::work);
+            for job in &follows {
+                // Off the lock, as a page's identity is read.
+                let matched = recto_session::version_change::read(job);
+                let followed = host.session.with_session(|session| match &matched {
+                    Some(matched) => recto_session::version_change::followed(session, matched),
+                    None => {
+                        recto_session::version_change::not_read(session, job);
+                        None
+                    }
+                });
+                if let Some(followed) = followed {
+                    host.saver.edit_made();
+                    host.core.push(crate::queue::CoreCall::Reconcile);
+                    host.tell(vec![recto_agent::event::edits_followed(&followed)]);
+                }
+            }
+            // Each job followed, held, was marked unreadable or was overtaken by an edit, whose own job comes next: each round is progress.
+            let taken = taken || !follows.is_empty();
             // More to read (a job read only its first pages), or asked again meanwhile: look again. A file that keeps refusing gives no work back, so
             // this ends once every job's had its turn and nothing new is asked.
             if taken || self.again.load(Ordering::SeqCst) {

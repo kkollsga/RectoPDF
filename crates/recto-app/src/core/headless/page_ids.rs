@@ -116,7 +116,26 @@ fn no_digest_reaches_an_answer_an_event_the_window_or_a_log() {
         (secrets, format!("{edits:?} {:?}", edits.to_record()))
     });
     assert!(secrets.len() >= 12, "{secrets:?}");
-    let mut seen = vec![("Debug of the list and its record".to_string(), debug)];
+    // And through a change the edits follow (slice 2): another program appends two pages, the match reads the new version, the edits follow, and the
+    // notice, `edits`'s `followed`, its event and the matcher's Debug are all looked at below with the rest.
+    let longer: Vec<recto_testpdf::Page> = (1..=12)
+        .map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("doc.pdf page {page}")])))
+        .collect();
+    let incoming = app.disk().file("incoming.pdf", &recto_testpdf::pages(&longer));
+    std::fs::rename(&incoming, &file).expect("another program's version, put in place");
+    app.send(crate::queue::CoreCall::LookAtShown);
+    app.settle();
+    app.wait_until("the edits followed their pages", || {
+        app.tabs()
+            .first()
+            .and_then(|row| row.notice.clone())
+            .is_some_and(|said| said.contains("moved onto the same pages"))
+    });
+    let debug = format!(
+        "{debug} {}",
+        app.core().host.session.with_session(|session| format!("{:?}", session.lists().get(id)))
+    );
+    let mut seen = vec![("Debug of the list and its record, before and after it followed".to_string(), debug)];
     for words in [&["tabs"][..], &["where"], &["edits"], &["session", "show"], &["pages"], &["undo"], &["redo"]] {
         let answer = app
             .recto(Level::Full, words)

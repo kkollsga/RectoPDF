@@ -10,7 +10,7 @@ use recto_agent::Level;
 use serde_json::Value;
 use std::path::Path;
 
-const PASSWORD: &str = "open sesame";
+pub(super) const PASSWORD: &str = "open sesame";
 
 /// A small window at one pixel a point, as the kit's drawing tests use: what's decided here doesn't depend on a picture's size.
 fn window_view() -> recto_reader::Viewport {

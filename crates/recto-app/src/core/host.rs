@@ -131,6 +131,14 @@ impl AppHost {
         run()
     }
 
+    /// **News from outside a command** (the page-identity thread's): to the watchers, by the one outlet that judges what of it may go to an agent
+    /// ([`recto_agent::withheld`]). The window hears of it by the reconcile its sender asks for.
+    pub(crate) fn tell(&self, events: Vec<Event>) {
+        if let Some(notify) = lock(&self.watchers).clone() {
+            notify(events);
+        }
+    }
+
     /// **The session's news reaches the app from the start, and watchers once the socket runs** (slow mode, 2026-11-11: with the socket's first answer late, Find came back with its hits and not the hit gone to). The app heard of Find's hits and of generated contents only once the socket's server ran and attached, so what finished before that, or all of it with the socket another session's, was heard by nobody. Given once, as the session takes it once.
     pub fn listen(self: &Arc<Self>) {
         let core = Arc::clone(&self.core);

@@ -39,6 +39,14 @@ pub enum Event {
         tab: TabId,
         writer: &'static str,
     },
+    /// The tab's file was changed by another program, and its unsaved edits followed their pages into the new version (the page matcher): how many
+    /// edits, and the document's length now. Counts only: what a page is (its digest) never goes anywhere. Never told of a document opened with a
+    /// password ([`crate::withheld`]), whose edits never follow.
+    EditsFollowed {
+        tab: TabId,
+        pages: u32,
+        edits: u32,
+    },
     /// A page was drawn, 1-based.
     PageDrawn {
         tab: TabId,
@@ -122,6 +130,7 @@ impl Event {
             Self::PageChanged { .. } => "page_changed",
             Self::EditsChanged { .. } => "edits_changed",
             Self::Saved { .. } => "saved",
+            Self::EditsFollowed { .. } => "edits_followed",
             Self::PageDrawn { .. } => "page_drawn",
             Self::PageFailed { .. } => "page_failed",
             Self::IndexingStarted { .. } => "indexing_started",
@@ -140,7 +149,7 @@ impl Event {
         match self {
             Self::TabOpened { .. } | Self::TabActivated { .. } | Self::TabClosed { .. } => "tabs",
             Self::PageChanged { .. } => "pages",
-            Self::EditsChanged { .. } | Self::Saved { .. } => "edits",
+            Self::EditsChanged { .. } | Self::Saved { .. } | Self::EditsFollowed { .. } => "edits",
             Self::PageDrawn { .. } | Self::PageFailed { .. } => "draws",
             Self::IndexingStarted { .. } | Self::IndexingFinished { .. } => "indexing",
             Self::ContentsGenerating { .. } | Self::ContentsGenerated { .. } => "contents",
@@ -158,6 +167,7 @@ impl Event {
             Self::PageChanged { tab, page } => json!({ "tab": tab.0, "page": page }),
             Self::EditsChanged { tab, pages, edited } => json!({ "tab": tab.0, "pages": pages, "edited": edited }),
             Self::Saved { tab, writer } => json!({ "tab": tab.0, "writer": writer }),
+            Self::EditsFollowed { tab, pages, edits } => json!({ "tab": tab.0, "pages": pages, "edits": edits }),
             Self::PageDrawn { tab, page } => json!({ "tab": tab.0, "page": page }),
             Self::PageFailed { tab, page, code } => json!({ "tab": tab.0, "page": page, "code": code }),
             Self::IndexingStarted { corpus, .. } => json!({ "corpus": corpus }),
@@ -248,6 +258,15 @@ pub fn edits_changed<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
     }
 }
 
+/// A tab's unsaved edits followed their pages into a new version of its file: counts only, as the session said them.
+pub fn edits_followed(followed: &recto_session::version_change::Followed) -> Event {
+    Event::EditsFollowed {
+        tab: followed.tab,
+        pages: followed.pages,
+        edits: followed.edits,
+    }
+}
+
 /// A save and what it left of the tab's edits.
 pub fn saved<L: DocLoader>(session: &Session<L>, id: TabId, writer: &'static str) -> [Event; 2] {
     [Event::Saved { tab: id, writer }, edits_changed(session, id)]
@@ -293,6 +312,7 @@ pub(crate) mod tests {
             Event::PageChanged { tab, page: 1 },
             Event::EditsChanged { tab, pages: 1, edited: false },
             Event::Saved { tab, writer: "lopdf" },
+            Event::EditsFollowed { tab, pages: 1, edits: 1 },
             Event::PageDrawn { tab, page: 1 },
             Event::PageFailed { tab, page: 1, code: "x" },
             Event::IndexingStarted {
@@ -338,6 +358,7 @@ pub(crate) mod tests {
                 | Event::PageChanged { .. }
                 | Event::EditsChanged { .. }
                 | Event::Saved { .. }
+                | Event::EditsFollowed { .. }
                 | Event::PageDrawn { .. }
                 | Event::PageFailed { .. }
                 | Event::IndexingStarted { .. }
