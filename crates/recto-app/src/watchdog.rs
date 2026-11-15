@@ -28,7 +28,7 @@ pub struct Stall {
     pub window_ms: u64,
     /// What most of the watcher's looks at the stretch saw the thread doing: see `waiting_looks`.
     pub state: &'static str,
-    /// Of the watcher's looks at this stretch past a second, how many saw the thread waiting, and how many saw it running or ready to run. One look says
+    /// Of the watcher's looks at this stretch, from its first, how many saw the thread waiting, and how many saw it running or ready to run. One look says
     /// little: a thread that slept two seconds and then waited for a core on a starved machine is `running_or_runnable` at its last look (CI, 2026-11-13).
     pub waiting_looks: u32,
     pub running_looks: u32,
@@ -58,6 +58,9 @@ struct Shared {
     first_began: AtomicU64,
     first_cpu_ms: AtomicU64,
     first_at: AtomicU64,
+    /// The watcher's looks at the stretch `first_began` names, by what they saw: every look from the first, not only those past a second.
+    looks_waiting: AtomicU32,
+    looks_running: AtomicU32,
     /// The QA verb being waited for, if any. Set by the QA channel; the UI thread never takes this lock.
     verb: Mutex<([u8; VERB_MAX], usize)>,
     worst: Mutex<Option<Stall>>,
@@ -89,6 +92,8 @@ impl Watchdog {
             first_began: AtomicU64::new(0),
             first_cpu_ms: AtomicU64::new(0),
             first_at: AtomicU64::new(0),
+            looks_waiting: AtomicU32::new(0),
+            looks_running: AtomicU32::new(0),
             verb: Mutex::new(([0; VERB_MAX], 0)),
             worst: Mutex::new(None),
         }))
@@ -209,6 +214,15 @@ fn look(shared: &Shared, now_ms: u64, sample: Option<Sample>) {
         // The first look at this stretch: what CPU time is counted from.
         shared.first_cpu_ms.store(sample.cpu_ms, Ordering::Relaxed);
         shared.first_at.store(now_ms, Ordering::Relaxed);
+        shared.looks_waiting.store(0, Ordering::Relaxed);
+        shared.looks_running.store(0, Ordering::Relaxed);
+    }
+    if let Some(sample) = sample {
+        match sample.state {
+            RunState::Waiting | RunState::Uninterruptible => shared.looks_waiting.fetch_add(1, Ordering::Relaxed),
+            RunState::Running => shared.looks_running.fetch_add(1, Ordering::Relaxed),
+            RunState::Stopped | RunState::Other => 0,
+        };
     }
     if stalled >= NOTE_MS {
         record(shared, began, now_ms, sample, false);
@@ -229,15 +243,12 @@ fn record(shared: &Shared, began: u64, now_ms: u64, sample: Option<Sample>, ende
     };
     let mut worst = shared.worst.lock().unwrap_or_else(PoisonError::into_inner);
     let before = worst.as_ref().filter(|stall| stall.began == began);
-    let (mut waiting_looks, mut running_looks) = before.map_or((0, 0), |before| (before.waiting_looks, before.running_looks));
-    // The end is the thread seeing itself, always running: only the watcher's looks are counted.
-    if let (false, Some(sample)) = (ended, sample) {
-        match sample.state {
-            RunState::Waiting | RunState::Uninterruptible => waiting_looks += 1,
-            RunState::Running => running_looks += 1,
-            RunState::Stopped | RunState::Other => {}
-        }
-    }
+    // The looks counted since the stretch's first: a sleep of a second and a bit is seen waiting by the looks before the second, and the one after may find the thread ready to run.
+    let (waiting_looks, running_looks) = if shared.first_began.load(Ordering::Acquire) == began {
+        (shared.looks_waiting.load(Ordering::Relaxed), shared.looks_running.load(Ordering::Relaxed))
+    } else {
+        (0, 0)
+    };
     let state = if waiting_looks > 0 && waiting_looks >= running_looks {
         RunState::Waiting.name()
     } else if running_looks > 0 {
@@ -464,5 +475,28 @@ mod tests {
             busy.look_sampled(now, runnable);
         }
         assert_eq!(busy.worst_stall().unwrap().state, "running_or_runnable");
+    }
+
+    /// Failure (CI run 43711366303, 2026-11-15): a stretch of 1.2 s was judged from the one look after its second, which found the thread ready to run, as
+    /// looks before the second weren't counted. A thread that slept through three looks and then waited for a core must read as having waited, and one
+    /// that was ready to run in every look, using a little CPU, as starved.
+    #[test]
+    fn looks_before_the_second_count_for_what_the_stretch_was() {
+        let dog = Watchdog::new();
+        dog.0.busy_since.store(1, Ordering::Release);
+        for now in [250, 500, 750] {
+            dog.look_sampled(now, sample(10, RunState::Waiting));
+        }
+        assert_eq!(dog.worst_stall(), None, "under a second isn't recorded");
+        dog.look_sampled(1_250, sample(11, RunState::Running));
+        let slept = dog.worst_stall().unwrap();
+        assert_eq!((slept.waiting_looks, slept.running_looks, slept.state), (3, 1, "waiting"));
+        let starved = Watchdog::new();
+        starved.0.busy_since.store(1, Ordering::Release);
+        for now in [250, 500, 750, 1_000, 1_250] {
+            starved.look_sampled(now, sample(10, RunState::Running));
+        }
+        let starved = starved.worst_stall().unwrap();
+        assert_eq!((starved.waiting_looks, starved.running_looks), (0, 5));
     }
 }
