@@ -69,11 +69,14 @@ impl<L: DocLoader> Session<L> {
                     // Edits on a version the file isn't any more are said to be whatever notice is over them, as the tab says it: so a restore knows.
                     notice: match notices.fit_of(tab) {
                         EditsFit::FileChanged | EditsFit::FileChangedVersionUnknown => Some(FileNotice::Changed),
-                        // News of the moment, which an app from before it couldn't read.
-                        _ => tab
+                        // News of the moment, which an app from before it couldn't read. And "changed" over edits that fit the version shown (made on
+                        // it after the change was read in): a restore takes "changed" with edits as the file changed under them (second review of
+                        // `build/shorter-file-pages`), so it isn't written; the news goes on leaving the tab anyway.
+                        fit => tab
                             .file
                             .notice()
                             .filter(|notice| !matches!(notice, FileNotice::EditsFollowed { .. } | FileNotice::EditsSetAsideAfterQuit))
+                            .filter(|notice| !(fit.fits() && matches!(notice, FileNotice::Changed) && lists.is_edited(*id)))
                             .cloned(),
                     },
                     journal: journals.name_of(*id).map(ToString::to_string),

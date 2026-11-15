@@ -835,3 +835,36 @@ fn edits_made_on_the_version_shown_get_a_clean_tabs_words_and_lose_them_on_leavi
     assert!(!bed.s.lists().is_edited(a), "nothing unsaved");
     assert_eq!(words(&bed, a), Some(plain), "only history, nothing held: the plain words");
 }
+
+/// Failure (second review of `build/shorter-file-pages`): a clean tab's file was replaced and read, then edited on the new version, so its edits fit; the
+/// record kept its "changed" notice, and a restore reads "changed" with edits as the file changed under them: after a restart the tab came back held
+/// (pages withheld, Rotate off, the held words) until the restore's look landed. Restored at once, before any look, its edits fit.
+#[test]
+fn edits_made_on_the_version_shown_fit_at_once_after_a_restore() {
+    let (mut bed, a, _b) = Bed::new(10);
+    replace_file(&bed.path(), b"v2, saved by another app");
+    assert!(bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.tabs().own_stamp(a))));
+    bed.s.warm.clear_contents();
+    bed.s.wake_active();
+    bed.s.edit_pages(a, |e| e.rotate(1, 1, 1)).unwrap();
+    assert_eq!(bed.s.notices().fit(a), EditsFit::Fit);
+    bed.write_journal();
+    let saved = bed.s.to_record();
+    let journal = saved.tabs.iter().find(|tab| tab.id == a.0).and_then(|tab| tab.journal.clone()).unwrap();
+    let mut edits = PageEdits::new(10);
+    edits.rotate(1, 1, 1).unwrap();
+    let restored = RestoredEdits {
+        edits,
+        seq: 1,
+        lost_lines: false,
+        rolled_off: false,
+        set_aside_beside: false,
+    };
+    let mut s = Session::new(Shifting {
+        pages: Rc::clone(&bed.pages),
+        replace_with: Rc::clone(&bed.replace_with),
+    });
+    s.restore(&saved, HashMap::from([(journal, restored)])).unwrap();
+    assert_eq!(s.notices().fit(a), EditsFit::Fit, "at once, before any look or read");
+    assert!(!s.notices().pages_withheld(a) && s.can_edit_pages(a), "its pages shown, Rotate offered");
+}
