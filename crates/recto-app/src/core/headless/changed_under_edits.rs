@@ -6,6 +6,7 @@
 use crate::queue::CoreCall;
 use crate::testkit::headless::HeadlessApp;
 use recto_agent::Level;
+use serde_json::json;
 use std::path::{Path, PathBuf};
 
 /// A PDF of `pages` pages whose text says `who` and the page.
@@ -69,7 +70,11 @@ fn edits_on_a_replaced_file_save_nowhere_say_so_and_fit_again_when_its_put_back(
     replace(&file, &theirs);
     look(&app);
     let said = notice(&app).expect("the tab says what happened");
-    assert!(said.contains("changed on disk") && said.contains("kept"), "{said}");
+    // The edits are still the tab's (Discard is what lets them go) and nothing's written; the words of 2026-11-15 say it without "kept".
+    assert!(
+        said.contains("changed on disk") && said.contains("Discard the edits") && said.contains("Nothing has been written"),
+        "{said}"
+    );
     assert!(!said.to_lowercase().contains("save as"), "{said}");
     let copy = file.with_file_name("copy.pdf");
     for words in [vec!["save"], vec!["save-as", "--out", copy.to_str().unwrap()]] {
@@ -675,4 +680,105 @@ fn another_file_with_the_held_versions_size_and_time_is_looked_at() {
     look(&app);
     assert_eq!(notice(&app).as_deref(), Some(FOLLOWED), "C, with B's size and time, is looked at and followed");
     assert_eq!(turned_text(&app), vec![(9, "Mine page 9".to_owned())]);
+}
+
+/// The view the host would have: a Retina window, the page at its fit.
+fn window_view() -> recto_reader::Viewport {
+    recto_reader::Viewport {
+        x: 0.0,
+        y: 0.0,
+        width: 1168.0,
+        height: 900.0,
+        frame_width: 1168.0,
+        magnification: 1.0,
+        backing: 2.0,
+        live: false,
+        scrolled_to: u64::MAX,
+    }
+}
+
+/// Draws what's in the window's view, as the host would with its UI thread, till it's at rest.
+fn drawn(app: &HeadlessApp) {
+    let mut view = window_view();
+    crate::testkit::headless::applied_as_the_host(&app.core().engine.set_viewport(view));
+    crate::testkit::headless::host_turns(app, &mut view, true);
+}
+
+/// The tiles the reading page view has on pages and keeps, and whether it withholds the tab's own pages.
+fn tiles(app: &HeadlessApp) -> (u64, u64, bool) {
+    let report = app.core().engine.report().0;
+    let count = |key: &str| report["tiles"][key].as_u64().unwrap_or(u64::MAX);
+    (count("attached"), count("kept"), report["pages_withheld"] == true)
+}
+
+/// Failure (the QA pass before 0.1.1, on the real app): a 30-page file with unsaved edits (a turn on page 28, a highlight on page 25) replaced on disk by
+/// a 12-page version, by rename or written in place. The edits can't follow, so the list is held, and then the tab kept showing the earlier version's
+/// drawn page 25, drew the new file's pages 1 to 12 under the held list's numbers, and left pages 13 to 30 blank with nothing said. Now, while held:
+/// the tab reads "28 of 30" (the list's count and place), no tile of either version is on any page or kept, the edits' highlights aren't given to draw,
+/// the notice says the pages aren't shown, an agent is told the same (`pages_withheld`, its page reads refused as `source_changed`, a new edit
+/// refused); Discard brings the tab to the file as it is ("12 of 12"), drawn, with nothing written to it.
+#[test]
+fn a_held_list_over_a_shorter_file_shows_nothing_of_either_version_till_discard_brings_the_file() {
+    for in_place in [false, true] {
+        let how = if in_place { "written in place" } else { "renamed over" };
+        let app = HeadlessApp::start();
+        app.core().engine.waking().window_up();
+        let file = app.disk().file("long.pdf", &pdf_bytes("Mine", 30));
+        app.open(&file);
+        app.recto(Level::Control, &["page", "rotate", "28", "--by", "90"]).expect("turned");
+        app.agent(Level::Control, r##"{"cmd":"highlight","tab":"active","page":25,"chars":"0-4"}"##)
+            .expect("highlighted");
+        app.recto(Level::Full, &["goto", "25"]).expect("to page 25");
+        drawn(&app);
+        assert!(tiles(&app).0 >= 1, "{how}: page 25 drawn first: {:?}", tiles(&app));
+        // The first twelve pages, as the QA pass's generator left them: pages 25 and 28 aren't in it, so the list is held.
+        let theirs = pdf_bytes("Mine", 12);
+        if in_place {
+            std::fs::write(&file, &theirs).expect("written in place");
+        } else {
+            replace(&file, &theirs);
+        }
+        look(&app);
+        drawn(&app);
+        let said = notice(&app).expect("the tab says what happened");
+        assert!(said.contains("pages aren't shown") && said.contains("Discard"), "{how}: {said}");
+        app.recto(Level::Full, &["goto", "28"]).expect("page 28 of the held list");
+        drawn(&app);
+        assert_eq!(app.reader().place, "28 of 30", "{how}: the held list's count and place");
+        let (attached, kept, withheld) = tiles(&app);
+        assert_eq!(
+            (attached, kept, withheld),
+            (0, 0, true),
+            "{how}: no tile of either version: {}",
+            app.core().engine.report().0
+        );
+        let id = recto_session::TabId(app.session_json()["tabs"][0]["id"].as_u64().expect("a tab") as u32);
+        let shown = app
+            .core()
+            .host
+            .session
+            .with_session(|s| crate::model::pane_snapshot(s, id, true, &[id]).map(|pane| (pane.withheld, pane.marks.is_none())));
+        assert_eq!(shown, Some((true, true)), "{how}: withheld, and its highlights aren't given to draw");
+        let at = app.recto(Level::ReadOnly, &["where"]).expect("where");
+        assert_eq!(
+            (&at["pages_withheld"], &at["pages"], &at["page"]),
+            (&json!(true), &json!(30), &json!(28)),
+            "{how}: {at}"
+        );
+        for page in ["5", "28"] {
+            let refused = app.recto(Level::Full, &["text", "--page", page]).expect_err("refused");
+            assert_eq!(refused.code, "source_changed", "{how}, page {page}: {refused:?}");
+        }
+        let refused = app.recto(Level::Control, &["page", "rotate", "3", "--by", "90"]).expect_err("no more edits");
+        assert_eq!(refused.code, "file_changed", "{how}: {refused:?}");
+        assert!(refused.message.contains("No more edits"), "{how}: {refused:?}");
+        app.recto(Level::Full, &["discard"]).expect("discarded");
+        drawn(&app);
+        assert_eq!(app.reader().place, "12 of 12", "{how}: the file as it is now");
+        let (attached, _, withheld) = tiles(&app);
+        assert!(attached >= 1 && !withheld, "{how}: its pages drawn: {}", app.core().engine.report().0);
+        let at = app.recto(Level::ReadOnly, &["where"]).expect("where");
+        assert!(at.get("pages_withheld").is_none(), "{how}: {at}");
+        assert_eq!(std::fs::read(&file).expect("the file"), theirs, "{how}: nothing written to the file");
+    }
 }

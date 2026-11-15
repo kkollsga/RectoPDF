@@ -273,6 +273,12 @@ impl AgentError {
 
 impl From<SessionError> for AgentError {
     fn from(error: SessionError) -> Self {
+        // One rule and one set of words for a person's edit and an agent's, wherever it was refused.
+        if let SessionError::EditsDontFit(fit) = error
+            && let Some(refused) = unfit::refusal(fit, unfit::Asked::Edit)
+        {
+            return refused;
+        }
         let exit = match error {
             SessionError::NoSuchTab | SessionError::Open(recto_core::OpenError::NotFound) | SessionError::Edit(recto_session::edit::EditError::OutOfRange) => {
                 exit::NOT_FOUND
@@ -1185,6 +1191,10 @@ fn where_json<L: DocLoader>(session: &Session<L>, actor: Actor, id: TabId) -> Va
     // Said only when it is, so a tab whose place isn't withheld answers as it always did.
     if place.is_none() {
         out["place_withheld"] = json!(true);
+    }
+    // Said only while it is: its own pages aren't shown, as its unsaved edits don't fit its file (`file_notice` says why).
+    if session.notices().pages_withheld(id) {
+        out["pages_withheld"] = json!(true);
     }
     out
 }

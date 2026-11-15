@@ -72,6 +72,11 @@ impl<L: DocLoader> Session<L> {
         if tab.renderer_only {
             return Err(SessionError::RendererOnly);
         }
+        // Edits over a file known to be another take no more: whoever makes it, a new one would be about pages the tab doesn't show.
+        let fit = self.notices().fit_of(tab);
+        if fit.file_known_other() {
+            return Err(SessionError::EditsDontFit(fit));
+        }
         let page_count = tab.page_count;
         // Its list is 8 bytes a page, so a file or a record claiming billions has to be stopped here.
         if page_count as usize > edit::MAX_PAGES && !self.lists.contains(id) {

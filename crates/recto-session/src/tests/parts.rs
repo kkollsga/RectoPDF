@@ -383,6 +383,7 @@ const LISTED: &[&str] = &[
     "Notices: impl in fit.rs",
     "Notices: pub fn fit",
     "Notices: pub fn own_file_expected",
+    "Notices: pub fn pages_withheld",
     "Notices: pub fn said",
     "Session: pub fn notices -> Notices<'_>",
     "Pages: impl in pages.rs",

@@ -895,6 +895,57 @@ fn a_page_from_an_added_pdf_that_changed_isnt_drawn() {
     assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1);
 }
 
+/// Failure (the QA pass before 0.1.1): a tab whose unsaved edits were held when its file was replaced kept showing the earlier version's drawn tiles
+/// until a scroll happened to ask for a page, and drew the new file's pages under the held list's numbers, with their text selectable. Withheld: every
+/// tile of it goes at once, nothing more of its own file is drawn or read for the selection, each page says why and the view settles; shown again,
+/// it draws, at the place it was.
+#[test]
+fn a_tabs_own_pages_withheld_are_neither_drawn_nor_selectable_and_come_back_when_shown_again() {
+    let file = TempPdf::new(
+        "held.pdf",
+        &pages(&[Page::new(text_lines(&["Alpha beta gamma delta"])), Page::new(text_lines(&["Second page"]))]),
+    );
+    let (engine, _events) = started(&file, 2);
+    let (x, y, fit) = settled_on_page(&engine, 0);
+    assert!(
+        engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1,
+        "drawn first: {}",
+        engine.report().0
+    );
+    engine.points().withhold_own_pages(1, true);
+    let ops = pump(&engine, HANG);
+    assert!(settles(&engine), "a withheld page is as it'll be: {}", engine.report().0);
+    let report = engine.report().0;
+    assert_eq!(report["pages_withheld"], true, "{report}");
+    assert_eq!(report["tiles"]["attached"], 0, "no tile of it shows: {report}");
+    assert_eq!(report["tiles"]["kept"], 0, "nor is any kept: {report}");
+    assert!(!ops.iter().any(|op| matches!(op, Op::Attach { .. })), "nothing new goes on a page: {ops:?}");
+    assert!(
+        engine.note().is_some_and(|note| note.contains("unsaved edits don't fit")),
+        "the page says why: {:?}",
+        engine.note()
+    );
+    // The person's double-click on a word of it takes nothing: its text isn't read.
+    let mut ops = engine.selection().press(x + 74.0 * fit, y + (792.0 - 720.0 - 4.0) * fit, 2, false);
+    ops.extend(engine.selection().release());
+    engine.applied();
+    ops.extend(pump(&engine, HANG));
+    assert!(
+        !engine.selection().has_any(),
+        "nothing selectable on a withheld page: {}",
+        engine.report().0["selection"]
+    );
+    assert!(highlight_on(&ops, 0).is_none_or(|rects| rects.is_empty()), "{ops:?}");
+    // Shown again: its pages draw, at the place it was.
+    engine.points().withhold_own_pages(1, false);
+    pump(&engine, HANG);
+    assert!(settles(&engine), "{}", engine.report().0);
+    let report = engine.report().0;
+    assert_eq!(report["pages_withheld"], false, "{report}");
+    assert!(report["tiles"]["attached"].as_u64().unwrap() >= 1, "drawn again: {report}");
+    assert_eq!(engine.note(), None);
+}
+
 /// Failure: a snapshot box dragged from one page across the break onto the next reads the pointer in the next page's coordinates, so the box jumps to near the top of the pressed page, or comes out with the wrong size. The point must be taken onto the pressed page and held to its edge.
 #[test]
 fn a_snapshot_box_dragged_across_a_page_break_stays_on_its_page() {

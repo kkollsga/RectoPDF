@@ -32,6 +32,26 @@ impl EditsFit {
         self == Self::FileChanged
     }
 
+    /// **The file on disk is known to be another than the edits are about** (the coordinator's decisions of 2026-11-15, from the QA pass before 0.1.1):
+    /// it changed under them, whether or not the version they were made on is known, or their journal names a length it hasn't. **The one rule** for what
+    /// follows from that: the tab's own pages are withheld ([`Self::shows_own_pages`]), no more edits are taken (`Session::edit_pages_as`), and its words
+    /// say both ([`Self::said`]). Not where only the version the edits were made on isn't known (`VersionUnknown`): nothing has been found against the
+    /// file, so the tab shows it and takes edits as before, while Save and an agent's reads stay refused, as for every state that doesn't fit.
+    pub fn file_known_other(self) -> bool {
+        match self {
+            Self::FileChanged | Self::FileChangedVersionUnknown | Self::NotThisFile => true,
+            Self::Fit | Self::VersionUnknown => false,
+        }
+    }
+
+    /// **Whether the tab shows its own file's pages** ("nothing of the old file is shown as the new"): not while the file is known to be another
+    /// ([`Self::file_known_other`]), as the list's numbers are about a version or a length the file on disk isn't, so none of its pages is drawn, sized,
+    /// read for the selection or given links, and neither are the edits' highlights; the tab keeps the list's count and place, and its notice says why.
+    /// Pages added from another PDF keep their own rule. Discard, Undo back to nothing unsaved, or the earlier version put back shows them again.
+    pub fn shows_own_pages(self) -> bool {
+        !self.file_known_other()
+    }
+
     /// What the tab says of it, as a code and the words: [`FileNotice::Changed`]'s where the file changed, as that's what happened.
     pub fn said(self) -> Option<NoticeSaid> {
         match self {
@@ -42,7 +62,7 @@ impl EditsFit {
             }),
             Self::NotThisFile => Some(NoticeSaid {
                 code: "edits_dont_fit",
-                message: "This tab's unsaved edits don't fit this file as it is on disk. They're kept, but they can't be saved onto it, here or as a copy. Nothing has been written to the file.",
+                message: "This tab's unsaved edits don't fit this file as it is on disk, so its pages aren't shown and the edits can't be saved onto it, here or as a copy. Discard the edits to see the file as it is now. Nothing has been written to the file.",
             }),
             Self::VersionUnknown => Some(NoticeSaid {
                 code: "edits_version_unknown",
@@ -179,6 +199,11 @@ impl Notices<'_> {
     /// couldn't be woken is refused before any page is read.
     pub fn own_file_expected(&self, id: TabId) -> Option<Option<FileStamp>> {
         self.lists.get(id).map(|_| self.tabs.own_stamp(id).filter(|_| self.fit(id).fits()))
+    }
+
+    /// **Whether a tab's own pages are withheld** ([`EditsFit::shows_own_pages`]): what the page view is told, and what `tabs` and `where` say.
+    pub fn pages_withheld(&self, id: TabId) -> bool {
+        !self.fit(id).shows_own_pages()
     }
 
     /// What a tab says of its file, if anything: that it can't be found first, then that its edits don't fit it, which nothing else may hide, then its notice.

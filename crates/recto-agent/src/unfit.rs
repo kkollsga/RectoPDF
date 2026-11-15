@@ -1,4 +1,4 @@
-//! **What's said when a tab's unsaved edits don't fit its file** ([`recto_session::Notices::fit`]): Save, Save As, Find and `search` are refused, in words that
+//! **What's said when a tab's unsaved edits don't fit its file** ([`recto_session::Notices::fit`]): Save, Save As, Find, `search` and new edits are refused, in words that
 //! say what's true of how they don't fit, and with the one way on there is. The same for the person and an agent: the app's Find and save show these words.
 
 use crate::Code;
@@ -14,6 +14,8 @@ pub enum Asked {
     Find,
     /// An agent's `search`.
     Search,
+    /// A new edit, by the person or an agent: a page moved, turned, deleted or added, a highlight added or taken away. Undo, redo and Discard aren't.
+    Edit,
 }
 
 /// What an agent's told to do when the version the edits were made on is known: for its save, and for its Find.
@@ -31,6 +33,10 @@ const NEVER_KNOWN_NEXT: &str = "Tell the user: which version of the file these e
 /// **The refusal of `asked` on a tab whose edits are `fit`,** or nothing if they fit. An edit names its page by its number in the version it was made on, so
 /// until the page matcher (owner, 2026-11-13) nothing found in or written from the file as it is can be put on a page of the edited document.
 pub fn refusal(fit: EditsFit, asked: Asked) -> Option<AgentError> {
+    // A new edit is refused only over a file known to be another: the session's one rule, which it refuses by.
+    if asked == Asked::Edit && !fit.file_known_other() {
+        return None;
+    }
     let message = match (fit, asked) {
         (EditsFit::Fit, _) => return None,
         (EditsFit::FileChanged | EditsFit::FileChangedVersionUnknown, Asked::Save) => recto_core::save::SaveError::FileChanged.message(),
@@ -40,18 +46,23 @@ pub fn refusal(fit: EditsFit, asked: Asked) -> Option<AgentError> {
         (EditsFit::FileChanged | EditsFit::FileChangedVersionUnknown, Asked::Search) => {
             "This file can't be searched: it changed on disk after its unsaved edits were made.".into()
         }
+        (EditsFit::FileChanged | EditsFit::FileChangedVersionUnknown, Asked::Edit) => {
+            "No more edits can be made here: the file changed on disk after its unsaved edits were made.".into()
+        }
         (EditsFit::NotThisFile, Asked::Save) => {
             "These edits don't fit this file as it is on disk, so saving them could put them on the wrong pages. Nothing was written, and your edits are kept."
                 .into()
         }
         (EditsFit::NotThisFile, Asked::Find) => "Find can't search this file: its unsaved edits don't fit it.".into(),
         (EditsFit::NotThisFile, Asked::Search) => "This file can't be searched: its unsaved edits don't fit it.".into(),
+        (EditsFit::NotThisFile, Asked::Edit) => "No more edits can be made here: this tab's unsaved edits don't fit its file.".into(),
         (EditsFit::VersionUnknown, Asked::Save) => {
             "Which version of this file these edits were made on isn't known, so saving them could put them on the wrong pages. Nothing was written, and your edits are kept."
                 .into()
         }
         (EditsFit::VersionUnknown, Asked::Find) => "Find can't search this file: which version its unsaved edits were made on isn't known.".into(),
         (EditsFit::VersionUnknown, Asked::Search) => "This file can't be searched: which version its unsaved edits were made on isn't known.".into(),
+        (EditsFit::VersionUnknown, Asked::Edit) => return None,
     };
     let next = match fit {
         EditsFit::FileChanged => CHANGED_UNDER_EDITS_NEXT,
@@ -72,7 +83,9 @@ mod tests {
     /// changed says it did.
     #[test]
     fn each_way_the_edits_dont_fit_says_what_is_true_and_its_one_way_on() {
-        for asked in [Asked::Save, Asked::Find, Asked::Search] {
+        // Only edits over a file known to be another are refused a new edit: not where only their version isn't known.
+        assert!(refusal(EditsFit::VersionUnknown, Asked::Edit).is_none());
+        for asked in [Asked::Save, Asked::Find, Asked::Search, Asked::Edit] {
             assert!(refusal(EditsFit::Fit, asked).is_none());
             let known = refusal(EditsFit::FileChanged, asked).unwrap();
             assert_eq!(known.code, "file_changed");
@@ -86,12 +99,13 @@ mod tests {
                 !unknown.next.contains("earlier version back") && unknown.next.contains("discard"),
                 "{unknown:?}"
             );
-            let unknown_version = refusal(EditsFit::VersionUnknown, asked).unwrap();
-            assert_eq!(unknown_version.code, "edits_version_unknown");
-            for text in [&unknown_version.message, &unknown_version.next] {
-                assert!(!text.contains("changed") && !text.contains("don't fit"), "{unknown_version:?}");
+            if let Some(unknown_version) = refusal(EditsFit::VersionUnknown, asked) {
+                assert_eq!(unknown_version.code, "edits_version_unknown");
+                for text in [&unknown_version.message, &unknown_version.next] {
+                    assert!(!text.contains("changed") && !text.contains("don't fit"), "{unknown_version:?}");
+                }
+                assert!(unknown_version.next.contains("discard"), "{unknown_version:?}");
             }
-            assert!(unknown_version.next.contains("discard"), "{unknown_version:?}");
             let journal = refusal(EditsFit::NotThisFile, asked).unwrap();
             assert_eq!(journal.code, "edits_dont_fit");
             assert!(!journal.message.contains("changed") && !journal.next.contains("changed"), "{journal:?}");

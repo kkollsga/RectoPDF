@@ -709,3 +709,75 @@ fn a_second_change_under_edits_that_dont_fit_is_news_and_a_third_look_isnt() {
         assert!(!bed.s.apply_file_status(a, look(&bed)), "{what}: a third look at v3 does nothing");
     }
 }
+
+/// Failure (the QA pass before 0.1.1): a tab whose edits were held over a replaced file showed the new file's pages under the held list's numbers, its
+/// held highlights over them, and took new edits onto pages it no longer had. **The rule, by every way edits can stand against their file:** where the
+/// file is known to be another than the edits are about, its pages are withheld, the words say so, and every new edit is refused whoever makes it (the
+/// list untouched), while Undo still goes back, and once nothing unsaved is left the tab is the file as it is, its pages shown; where it isn't known to
+/// be another, the tab shows its pages and takes edits.
+#[test]
+fn only_a_file_known_to_be_another_withholds_its_pages_and_takes_no_more_edits() {
+    // Each state, whether the file on disk is known to be another than the edits are about, and why.
+    let table = [
+        (EditsFit::Fit, false, "the edits are about this file"),
+        (EditsFit::FileChanged, true, "it changed under them, from a version that's known"),
+        (
+            EditsFit::FileChangedVersionUnknown,
+            true,
+            "it changed under them, from a version that isn't known",
+        ),
+        (EditsFit::NotThisFile, true, "their journal names a length it hasn't"),
+        (
+            EditsFit::VersionUnknown,
+            false,
+            "only which version they're about isn't known: nothing is found against the file",
+        ),
+    ];
+    for (fit, other, why) in table {
+        assert_eq!(fit.file_known_other(), other, "{fit:?}: {why}");
+        assert_eq!(fit.shows_own_pages(), !other, "{fit:?}: {why}");
+        // What the tab says while its pages are withheld says they aren't shown, and how to see the file; and only then.
+        let said = fit.said().map(|said| said.message).unwrap_or_default();
+        assert_eq!(said.contains("pages aren't shown") && said.contains("Discard"), other, "{fit:?}: {said}");
+    }
+    let fits = || {
+        let (mut bed, a, b) = Bed::new(10);
+        bed.s.edit_pages(a, |e| e.rotate(8, 1, 1)).unwrap();
+        (bed, a, b)
+    };
+    let replaced = || {
+        let (mut bed, a, b) = fits();
+        replace_file(&bed.path(), b"another version, saved by another app");
+        bed.s.apply_file_status(a, record::look_at_file(&bed.path(), bed.s.tabs().own_stamp(a)));
+        (bed, a, b)
+    };
+    for (expected, (mut bed, a, _b)) in [
+        (EditsFit::Fit, fits()),
+        (EditsFit::FileChanged, replaced()),
+        (EditsFit::FileChangedVersionUnknown, dropped_stamp()),
+        (EditsFit::NotThisFile, journal_of_another_length()),
+        (EditsFit::VersionUnknown, never_stamped()),
+    ] {
+        assert_eq!(bed.s.notices().fit(a), expected);
+        let other = expected.file_known_other();
+        assert_eq!(bed.s.notices().pages_withheld(a), other, "{expected:?}");
+        let before = bed.s.lists().edits_record(a);
+        for by in [Author::Owner, Author::Agent] {
+            let edited = bed.s.edit_pages_as(a, by, |e| e.rotate(0, 1, 1));
+            if other {
+                assert_eq!(edited, Err(SessionError::EditsDontFit(expected)), "{expected:?}, {by:?}");
+                assert_eq!(bed.s.lists().edits_record(a), before, "{expected:?}, {by:?}: the list is untouched");
+            } else {
+                assert_eq!(edited, Ok(()), "{expected:?}, {by:?}");
+            }
+        }
+        if !other {
+            continue;
+        }
+        // Undo isn't an edit: it goes back, and with nothing unsaved left the tab is the file as it is, its pages shown.
+        while bed.s.lists().is_edited(a) {
+            assert!(bed.s.undo_edit(a), "{expected:?}: Undo goes back");
+        }
+        assert!(!bed.s.notices().pages_withheld(a), "{expected:?}: back to nothing unsaved, its pages show");
+    }
+}

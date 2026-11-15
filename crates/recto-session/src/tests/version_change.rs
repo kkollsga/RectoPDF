@@ -237,24 +237,29 @@ fn a_protected_tabs_edits_never_follow() {
     assert!(version_change::work(&mut bed.s).is_empty());
 }
 
-/// Failure caught: an edit made after the match was read and before it was taken in is lost or put on the wrong page, as the match was of the list
-/// before it. The match is dropped, and the next job, about the list as it is, follows.
+/// Failure caught: the list changed after the match was read and before it was taken in (an Undo: no new edit reaches a held list since 2026-11-15),
+/// and the match, of the list before it, was taken in all the same. The match is dropped, and the next job, about the list as it is, follows.
 #[test]
-fn an_edit_made_while_the_match_is_read_waits_for_the_next_one() {
+fn an_undo_made_while_the_match_is_read_waits_for_the_next_one() {
     let mut bed = Bed::turned_page_9();
+    bed.s.edit_pages(bed.a, |e| e.rotate(2, 1, 1)).unwrap();
+    bed.identify();
     bed.changed_and_read(&document("Mine", &(1..=10).collect::<Vec<_>>(), true));
     let jobs = version_change::work(&mut bed.s);
     let matched = version_change::read(&jobs[0]).unwrap();
-    bed.s.edit_pages(bed.a, |e| e.rotate(2, 1, 1)).unwrap();
-    assert_eq!(version_change::followed(&mut bed.s, &matched), None);
-    // The new edit's pages are read while the edits don't fit no more than slice 1 allows: they aren't, so the new turn's page can't follow.
-    assert!(version_change::wanted(&bed.s), "asked again");
+    assert!(bed.s.undo_edit(bed.a), "the turn of page 3 taken back while the match is read");
     assert_eq!(
-        bed.follow(),
-        vec![None],
-        "page 3 wasn't read while the file was the edits' version, so the list is held"
+        version_change::followed(&mut bed.s, &matched),
+        None,
+        "the match of the list before the Undo isn't taken in"
     );
-    assert_eq!(bed.turned(), vec![2, 8]);
+    assert!(version_change::wanted(&bed.s), "asked again");
+    assert_eq!(bed.follow().len(), 1);
+    assert_eq!(
+        bed.turned(),
+        vec![9],
+        "the next one follows the list as it is: the turn on \"Mine page 9\", page 10 now"
+    );
 }
 
 /// Failure caught (rule 6, review F2): a scan of a long new version not cut at the follow's one budget, or one cut short that takes a digest seen
@@ -452,16 +457,20 @@ fn a_follow_is_read_a_step_at_a_time_and_comes_to_the_same_match() {
     assert_eq!(matched, whole);
 }
 
-/// Failure caught: a follow being read across steps goes on after the person edits the list, or the file changes again, and its match of the list as it
-/// was is taken in. Between steps it's asked whether it's still wanted: after an edit it isn't, and the next job is about the list as it is.
+/// Failure caught: a follow being read across steps goes on after the person changes the list (an Undo: no new edit reaches a held list since
+/// 2026-11-15), or the file changes again, and its match of the list as it was is taken in. Between steps it's asked whether it's still wanted: after
+/// an Undo it isn't, and the next job is about the list as it is.
 #[test]
-fn a_follow_being_read_is_dropped_when_the_list_is_edited_between_its_steps() {
+fn a_follow_being_read_is_dropped_when_the_list_is_undone_between_its_steps() {
     let mut bed = Bed::turned_page_9();
+    bed.s.edit_pages(bed.a, |e| e.rotate(2, 1, 1)).unwrap();
+    bed.identify();
     bed.changed_and_read(&document("Mine", &(1..=10).collect::<Vec<_>>(), true));
     let job = version_change::work(&mut bed.s).remove(0);
     assert!(version_change::current(&bed.s, &job));
-    bed.s.edit_pages(bed.a, |e| e.rotate(2, 1, 1)).unwrap();
-    assert!(!version_change::current(&bed.s, &job), "an edit since: not this job's any more");
+    assert!(bed.s.undo_edit(bed.a), "the turn of page 3 taken back");
+    assert!(bed.s.lists().is_edited(bed.a), "the turn of page 9 is still unsaved");
+    assert!(!version_change::current(&bed.s, &job), "an Undo since: not this job's any more");
 }
 
 /// Failure caught (review: "with no unsaved edits behaviour is exactly `main`'s"): a tab with only history (its edit undone, nothing unsaved) and its

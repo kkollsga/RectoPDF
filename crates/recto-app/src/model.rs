@@ -852,6 +852,8 @@ pub struct PaneSnapshot {
     pub marks: Option<Arc<recto_reader::tiles::TabMarks>>,
     /// Where on the page at the top of its view the contents' current entry changes, for its page view to wake the core when the top of the view leaves it.
     pub band: Option<recto_core::Band>,
+    /// Its own file's pages aren't shown, as its unsaved edits don't fit the file ([`recto_session::EditsFit::shows_own_pages`]).
+    pub withheld: bool,
 }
 
 pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, first: bool, panes: &[TabId]) -> Option<PaneSnapshot> {
@@ -925,6 +927,7 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
             height: place.page_height,
         }),
     });
+    let withheld = session.notices().pages_withheld(id);
     // Edits that can't be read just now can't say what's on the pages, so it's the file that's shown.
     let pages = if session.lists().is_asleep(id) {
         tab.page_count
@@ -943,8 +946,10 @@ pub fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabI
         title: tab.name.to_string(),
         jump: None,
         toc: session.warm().toc(id).cloned(),
-        marks: crate::core::highlight::marks_of(session, id),
+        // Withheld, the edits' highlights go with the pages they're on.
+        marks: crate::core::highlight::marks_of(session, id).filter(|_| !withheld),
         band: recto_session::reading_band(session, tab),
+        withheld,
     })
 }
 
