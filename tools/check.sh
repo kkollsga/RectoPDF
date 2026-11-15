@@ -333,10 +333,12 @@ names_or_stop() {
 SLOW_TESTS='test(=slow_stage::everything_comes_back_after_a_quit_when_every_wait_is_late) | test(=a_protected_tab_asks_again_after_a_quit) | test(=the_first_frame_is_the_right_one) | test(=slow::a_quiet_run_with_no_switch_is_never_slow)'
 export SLOW_TESTS
 # How a run is shaped, set below from the mode and what changed, and read by `run`:
-#   tests_first    the crates whose tests go first (what changed is most likely to fail)
+#   tests_first    the crates whose tests go first (what changed is most likely to fail), as `-p` arguments
+#   first_filter   the same crates as a filter: with a second stage to follow, the first runs their tests out of the workspace's build (`run`)
 #   other_mode     all: every other test; filter: the tests of other_filter; none
 #   app_mode       both, window, lifecycle or none: which tiers of tests that launch the app
 tests_first=""
+first_filter=""
 tests=()
 other_mode=none
 other_filter=""
@@ -405,11 +407,17 @@ case "$mode" in
     fi
     # What this work changed is what's most likely to fail, so it runs first, and the rest skip it.
     for c in $scope_changed; do tests_first="$tests_first -p $c"; done
+    [ -z "$scope_changed" ] || first_filter=$(printf '%s\n' $scope_changed | packages_filter)
     if [ "$scope_all" = 1 ]; then
       other_mode=all
       app_mode=both
       tests=(--workspace)
-      for c in $scope_changed; do tests+=(--exclude "$c"); done
+      # The rest by a filter, not `--exclude`: leaving a crate out of the selection changes the features its dev-dependencies turn on, and the libraries
+      # the first stage built would be built again (`run`).
+      if [ -n "$first_filter" ]; then
+        other_mode=filter
+        other_filter="not ($first_filter)"
+      fi
       # Every crate changed, as a rustfmt pass does: the changed ones are all of them, and nothing's left for the rest. `--workspace` with every member
       # left out is an error, not an empty run.
       all=$(for folder in crates/*/; do echo "${folder}x"; done | crates_in)
@@ -529,8 +537,20 @@ run() {
   # The app's own tests run below, against an app built from this tree. An older one lying around says nothing.
   if [ -n "$tests_first" ]; then
     stage changed-tests
-    # shellcheck disable=SC2086
-    RECTO_SKIP_APP=1 nt --locked --no-fail-fast $tests_first
+    if [ "$other_mode" = none ]; then
+      # shellcheck disable=SC2086
+      RECTO_SKIP_APP=1 nt --locked --no-fail-fast $tests_first
+    else
+      # With a second stage to follow, the changed crates' tests run out of the build that stage uses, the whole workspace's, so it builds nothing again.
+      # Built as `-p` alone, the libraries had each crate's own features, and the second stage built all of them again with the workspace's: 46 s of
+      # CI's compile a run, median of 20 runs (2026-11-15). What that build alone had caught is held here, as a check of each changed crate's tests with
+      # its own features: a dev-dependency feature only another crate's tests turned on (2d4b0ba7) fails this, not the run below.
+      local c
+      for c in $tests_first; do
+        [ "$c" = -p ] || cargo check --locked -p "$c" --tests
+      done
+      RECTO_SKIP_APP=1 nt --locked --no-fail-fast --workspace -E "$first_filter"
+    fi
   fi
   if [ "$other_mode" = all ]; then
     stage other-tests
@@ -667,7 +687,7 @@ if [ "$gate_status" -ne 0 ]; then
   exit "$gate_status"
 fi
 export -f app_tier_owner app_tier_stale app_tier_held_by app_tier_take app_tier_stale_of app_tier_stopped app_tier_release run stage nt code_state untracked_that_counts tracked_code tracked_tree junit_failed args_without_filter nt_jobs rerun_failed rerun_table
-export app_tier_dir CHECK_TOP_PID check_mark part mode tests_first other_mode other_filter app_mode slow_filter WINDOW_TESTS LIFECYCLE_TESTS
+export app_tier_dir CHECK_TOP_PID check_mark part mode tests_first first_filter other_mode other_filter app_mode slow_filter WINDOW_TESTS LIFECYCLE_TESTS
 export tests_joined="${tests[*]-}"
 status=0
 tools/sysguard/heavy.sh bash -c 'tests=($tests_joined); run' "check.sh$mode" || status=$?
