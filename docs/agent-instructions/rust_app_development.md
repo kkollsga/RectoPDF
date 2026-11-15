@@ -1023,6 +1023,7 @@ The brief is the only context the worker has. It holds:
   the same six tests);
 - **the tests by failure and tier, before code** (§6.6): a reviewer then checks a list, and "which tier" forces the
   question of where the rule lives;
+- for a security change, its attack question (§5.3): what the app newly holds or does, and who could reach it;
 - the exact checks to run ("run the gate" gets the whole gate) and what "done" means: the command, the CLI, the control,
   the QA look, tests, shots light and dark;
 - when to call back (below), and "commit with this trailer, don't merge";
@@ -1065,10 +1066,21 @@ settled rules don't cover and reports it after.
   "hunt for these failures" found surfaces shared across documents, an agent route that erased the owner's edits, and a
   save that overwrote a newer file while returning success. Their findings are checked: they read only, so they can be
   wrong, and the worker confirms each or rejects it with evidence, by a repro where it can.
+- **A security change carries its attack question, in the brief and again in the review's brief:** what does the app
+  now hold or do that it didn't before (an open descriptor, a plain copy of something protected, a state derived from a
+  secret), and by which commands or paths could another party reach it? RectoPDF's print of a password-protected
+  document was prepared in a file with no name on disk; the design and the build both missed that the app's own
+  descriptor could be opened again by path (/dev/fd/N) through an ordinary "open this file" command. The review found
+  it only because its brief asked exactly that question.
 - **Two rounds per branch at most.** Rounds of 15 then 14 findings came partly from features added during fixes. Serious
   findings block; the rest go in the plan as tracked items. The second round reviews what the fixes added (a second
   round on a search index found 14 more defects, one a regex that could hold a thread for hours). **The coordinator
   reads the last fix's diff itself** before merging.
+- **When a second round finds a new residue of the same cause, reconsider the rule before building a third round.**
+  Hiding a value derived from a secret (where a tab had been left by following a protected document) took RectoPDF four
+  review rounds: each fix closed the state the last review found and exposed the next state derived from the same
+  release. The fifth closed it by changing the rule (nothing the other party does ever releases it), which made the
+  residues unreachable rather than fixed one by one. Two rounds in, the pattern was already visible.
 - **A whole-code review every few merges and before a step is called done:** structure, duplication, what agents can
   reach, how code and tests read. Its findings are ranked into the plan, and the serious ones are fixed before the next
   feature.
