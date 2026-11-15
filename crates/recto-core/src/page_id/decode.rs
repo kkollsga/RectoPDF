@@ -1,7 +1,30 @@
 //! **The general filters, decoded a piece at a time,** for the page digest ([`super`]): `FlateDecode`, `LZWDecode`, `ASCIIHexDecode`, `ASCII85Decode` and
 //! `RunLengthDecode`, with the PNG and TIFF predictors of `/DecodeParms`. Each wraps the reader before it, so a stream is never held whole: what's in memory
 //! at once is a few buffers of [`CHUNK`] bytes and a predictor's row, which is capped. Every input is hostile: a decoder that meets what it can't read
-//! returns an error, which the digest turns into "hashed as stored", and never panics.
+//! returns an error, and never panics.
+//!
+//! **This is part of `recto-page/1`'s definition** (normative, with the golden vectors in `super`'s tests): what decodes, and to what, decides a
+//! stream's kind (0 decoded; otherwise 1 or 3, hashed as stored) and its bytes.
+//! - **Which filters:** `/Filter` absent (no filter: the stored bytes are the decoded ones), a name, or an array of at most [`MAX_FILTERS`] (8) names,
+//!   each resolved through references; anything else is a filter not known. The general names are the five above and their abbreviations `Fl`, `LZW`,
+//!   `AHx`, `A85` and `RL`; a chain with any other is not general.
+//! - **Which parameters:** `/DecodeParms` (or `/DP`) absent or null (none for any filter); one dictionary for a chain of one filter (for a longer chain,
+//!   refused, as which filter it's for isn't knowable); or an array of exactly as many entries as filters, each a dictionary or null. Any other form, or
+//!   a value in one that isn't an integer, is refused: the stream doesn't decode.
+//! - **Predictors:** `/Predictor` 1 or absent, none; 2, TIFF, only with `/BitsPerComponent` 8; 10 to 15, PNG, each row saying its own filter (0 to 4;
+//!   any other is an error). `/Colors` 1 to 32, `/BitsPerComponent` 1, 2, 4, 8 or 16, `/Columns` 1 to 2^24, defaults 1, 8 and 1; a row of more than
+//!   [`MAX_ROW`] bytes (`Colors × BitsPerComponent × Columns`, rounded up to bytes) is refused. A short last row is left out, as it's no whole row.
+//!   PNG's filters reach back by `max(1, ceil(Colors × BitsPerComponent / 8))` bytes.
+//! - **Flate:** zlib (RFC 1950), through `flate2`: a stream cut short (no final block), a wrong Adler-32 or bad data is an error, so the stream is
+//!   hashed as stored. `/EarlyChange` for LZW: an integer, 0 for none, anything else (and the default) for early change; MSB first, codes from 9 bits, clear
+//!   256 and end 257; a code that can't be is an error, and input ending without the end code ends there.
+//! - **ASCIIHex:** pairs of hex digits of either case to `>`; whitespace and NUL between are skipped; an odd last digit is followed by a 0; the input's
+//!   end without `>` ends it too; any other byte is an error.
+//! - **ASCII85:** groups of five digits `!` to `u` to `~` (what follows it isn't read); `z` for four zeros, only at a group's start; whitespace and NUL
+//!   are skipped; a last group of 2 to 4 digits is padded with `u` and gives one byte fewer than its digits, one of 1 is an error, as is a group past
+//!   2^32 or any other byte; the input's end ends it as `~` would.
+//! - **RunLength:** a length byte, then that many plus one bytes as they are (0 to 127), or the next byte 257 minus it times (129 to 255); 128 or the
+//!   input's end ends it; a run cut short is an error.
 
 use lopdf::{Dictionary, Object};
 use std::io::{self, BufRead, BufReader, Read};
@@ -585,6 +608,31 @@ mod tests {
         let mut out = Vec::new();
         Predicted::new(Box::new(&[10u8, 20, 1, 2, 5][..]), tiff).read_to_end(&mut out).unwrap();
         assert_eq!(out, [10, 20, 11, 22], "the short last row is left out");
+    }
+
+    /// Failure caught: the decoders do other than the module doc says where it's said in words only (and so a page's kind and bytes differ from
+    /// the definition): a Flate stream cut short is an error, and so is a wrong Adler-32; ASCIIHex and ASCII85 end at the input's end as at their
+    /// end marks; ASCII85's last group of 2 to 4 digits gives a byte fewer; RunLength ends at the input's end.
+    #[test]
+    fn the_decoders_do_what_their_doc_says_at_the_edges() {
+        let text = b"BT /F1 12 Tf 72 712 Td (Hello) Tj ET\n".repeat(200);
+        let mut flated = Vec::new();
+        {
+            use std::io::Write;
+            let mut encoder = flate2::write::ZlibEncoder::new(&mut flated, flate2::Compression::none());
+            encoder.write_all(&text).unwrap();
+            encoder.finish().unwrap();
+        }
+        assert!(run(&[Filter::Flate(None)], &flated[..flated.len() / 2]).is_err(), "a stream cut short");
+        assert_eq!(run(&[Filter::Flate(None)], &flated).unwrap(), text, "and whole, it decodes");
+        let mut wrong = flated.clone();
+        *wrong.last_mut().unwrap() ^= 1;
+        assert!(run(&[Filter::Flate(None)], &wrong).is_err(), "a wrong Adler-32");
+        assert_eq!(run(&[Filter::AsciiHex], b"414").unwrap(), b"A@");
+        assert_eq!(run(&[Filter::Ascii85], b"87cURD]i,\"Ebo80").unwrap(), b"Hello World!");
+        assert_eq!(run(&[Filter::Ascii85], b"87cUR~>").unwrap(), b"Hell");
+        assert_eq!(run(&[Filter::Ascii85], b"87cU~>").unwrap(), b"Hel");
+        assert_eq!(run(&[Filter::RunLength], &[1, b'a', b'b']).unwrap(), b"ab");
     }
 
     /// Failure caught: a hostile stream that panics a decoder (and with it the identity thread) or runs without end. Bad digits, a bad PNG row filter,

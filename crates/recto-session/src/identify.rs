@@ -113,10 +113,12 @@ pub fn read(job: &IdentifyJob) -> Option<Identified> {
             break;
         }
         if let Some(entry) = map.get(*page as usize) {
-            pages.push((
-                *page,
-                Known::of(&recto_core::page_id::identify_page(&reader, entry, &recto_core::page_id::Caps::STANDARD)),
-            ));
+            let Some(identity) = recto_core::page_id::identify_page(&reader, entry, &recto_core::page_id::Caps::STANDARD) else {
+                // A page past a cap has no identity: its edits can't follow it.
+                gave_up = true;
+                break;
+            };
+            pages.push((*page, Known::of(&identity)));
         }
     }
     let document = recto_core::page_id::document_ids(&reader);

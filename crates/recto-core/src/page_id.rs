@@ -1,54 +1,53 @@
 //! **What a page is, by its content: the digest `recto-page/1`,** the identity the page matcher follows unsaved edits by when their file changes on disk
 //! (owner, 2026-11-13: "we need to run a page matcher of some kind. That's the way we can ensure edits on the correct page"), and the one the locator's
-//! page reference will carry (PLAN 8.1). **This is its one definition.** A change to what goes in is a new name (`recto-page/2`), never an edit of this
-//! one: what's kept of it (journals, and later the corpus and tokens) compares prefixes of digests made by older builds. The golden test vectors in this
-//! module's tests pin it.
+//! page reference will carry (PLAN 8.1). **This module doc, [`decode`]'s and [`scan`]'s are its one definition, and the golden vectors in this module's
+//! tests (made files, run everywhere CI runs) are that definition as bytes, from 2026-11-15 on.** A change to what goes in is a new name
+//! (`recto-page/2`), never an edit of this one: what's kept of it (the sidecars of journals, and later the corpus and tokens) compares digests made by
+//! older builds.
 //!
-//! **What's hashed,** SHA-256 over, in order:
+//! **What's hashed,** SHA-256 over, in order (`u32le` and `u64le` are little-endian integers):
 //! 1. The bytes `recto-page/1` and a NUL.
-//! 2. **Content.** Each entry of the page's `/Contents` (a stream, or an array of them; references followed, a nested array not), the first
-//!    [`Caps::content_streams`] (1,024) of them, each as one record: a kind byte, `u64le(n)`, then the SHA-256 of those `n` bytes. Kinds:
-//!    0, decoded through the general filters ([`decode`]: Flate, LZW, ASCIIHex, ASCII85, RunLength, with PNG and TIFF predictors);
-//!    1, hashed as stored, as its filters couldn't be decoded (another filter, bad data or parameters, or more stored bytes read than
-//!    [`Caps::page_read`]);
-//!    2, not a stream or not readable at all (`n` is 0);
-//!    3, not read, as a cap was reached first (`n` is 0).
-//!    The content's bytes together are at most [`Caps::content_bytes`] (16 MiB): a stream that reaches it is hashed to there, and every one after it is
-//!    kind 3.
-//! 3. A NUL and `X`.
-//! 4. **Images and forms.** The page's effective `/Resources` `/XObject` (the page's own or the nearest ancestor's), its entries sorted by the name's
-//!    bytes. For each: `u32le(name length)`, the name, a kind byte, and for kinds 0, 1 and 3 `u64le(n)` and the SHA-256 of the stream's first `n`
-//!    bytes, at most [`Caps::xobject_bytes`] (16 MiB). Kinds: 0, every filter general, decoded; 1, an image codec or a filter not known, as stored;
-//!    2, not a stream, or the entry isn't a reference; 3, general but it didn't decode, as stored; 4, not read, as a cap was reached first. A form
-//!    (`/Subtype /Form`) of the page's own is followed by the records of its own `/Resources` `/XObject`, sorted, one level only. At most
-//!    [`Caps::xobjects`] (64) records in all.
-//! 5. A NUL, `E`, and a byte of flags: 1, the content had more entries than its cap or reached its byte cap; 2, the page reached its byte cap; 4, there
-//!    were more images and forms than their cap.
+//! 2. **Content:** `C`, `u32le(count)`, and a record for each entry of the page's `/Contents` (a stream, or an array of them; a reference to either
+//!    followed once; a nested array is an entry that isn't a stream). A record is a kind byte, `u64le(n)` and the SHA-256 of those `n` bytes. Kinds:
+//!    0, decoded through the general filters ([`decode`]; a stream with no filter is its bytes); 1, hashed as stored, as a filter isn't general, its
+//!    parameters aren't taken, or it didn't decode; 2, not a stream or not readable (`n` is 0).
+//! 3. **Images and forms the content draws:** `X`, `u32le(count)`, and a record for each name the content gives `Do` ([`scan`], over the decoded bytes
+//!    of the kind-0 entries, in order of first use), looked up in the page's effective `/Resources` `/XObject` (its own, or the nearest ancestor's). A
+//!    record is `u32le(length of the name)`, the name, a kind byte, and for kinds 0, 1 and 3 `u64le(n)` and the SHA-256 of the `n` bytes; then
+//!    `u32le(children)` and a record (of the same shape, without children) for each name a form's own content gives `Do`, looked up in the form's
+//!    `/Resources` `/XObject` (the page's if it has none). Kinds: 0, every filter general, decoded (for a form, its content, whose names are its
+//!    children); 1, a filter not general (an image codec), as stored; 2, nothing by that name, or it isn't a stream or can't be read (no length or hash, and no children); 3, general
+//!    but it didn't decode, as stored. Only a form drawn by the page's content has children; one drawn by a form is a record with none.
+//! 4. `E`.
 //!
-//! Every byte hashed in 2 and 4 counts toward [`Caps::page_bytes`] (64 MiB a page): past it, what's left is kind 3 or 4. Every stream's stored length is
-//! charged to [`Caps::page_read`] (256 MiB) before it's read, which bounds a stream that decodes to little from very much. So a hostile page costs at most
-//! the caps' time, and its digest is still the same every time. Memory is a few buffers of [`decode::CHUNK`]: nothing is read whole, but for a stream of
-//! an encrypted file (whose bytes only the reader's decrypting path gives, whole), which is read only when it's at most 8 MiB stored, the size the
-//! other walks of such a file decrypt, and is kind 3 or 4 otherwise.
+//! **A page that reaches a cap has no identity** ([`read_page`] gives `None`): so a digest never depends on where a cap fell, on how much a decoder read
+//! ahead or on how a library buffers, only on the file. The caps, [`Caps::STANDARD`], each counted exactly: more than 1,024 entries of `/Contents`;
+//! more than 16 MiB hashed of the content together; more than 64 records of images and forms (at the page and in its forms together, or more names
+//! than [`scan::MAX_NAMES`]); more than 16 MiB hashed of one image or form; more than 64 MiB hashed in all; more than 256 MiB of stored length of the
+//! streams opened (each charged its length when it's opened, before a byte is read, and again if it's read again as stored); and in a file anyone may
+//! open (encrypted with an empty password), a stream over 8 MiB stored, as the reader gives such a stream only whole, decrypted. So a hostile page costs
+//! at most the caps, holding a few buffers of [`decode::CHUNK`] and a predictor's row.
 //!
 //! **What's left out, deliberately:** `/Rotate`, `/MediaBox`, `/CropBox` (a turn or a crop is a view of the same page: our own turn keeps the identity),
-//! `/Annots` (a highlight added or taken out keeps it), fonts (an optimiser's re-subsetting keeps it), `/StructParents`, `/Group`, metadata, and the page
-//! object's number. The frame the page is shown in is said apart from the digest, by [`PageIdentity::frame`], so a highlight isn't carried onto a
-//! page whose crop or turn another program changed.
+//! `/Annots` (a highlight added or taken out keeps it), fonts (an optimiser's re-subsetting keeps it), XObjects in the resources the content doesn't
+//! draw (documents sharing one `/Resources` at the page tree's top would otherwise put every image in every page's digest), `/StructParents`,
+//! `/Group`, metadata, and the page object's number. The frame the page is shown in is said apart from the digest, by [`PageIdentity::frame`], so a
+//! highlight isn't carried onto a page whose crop or turn another program changed.
 //!
-//! **Changed from the research's sketch** (`docs/research/2026-11-14-locator.md` §5.2), before anything kept a digest: each stream is a record of its
-//! kind, length and own hash rather than its bytes after their length (a stream is read a piece at a time, so its length isn't known first); and the
-//! sketch's path for a stream that doesn't decode hashed its stored bytes with no cap at all (292 MiB for the one-page USGS map, in a prototype on
-//! 2026-11-15), where here every path is under the page's cap.
+//! **Changed from the research's sketch** (`docs/research/2026-11-14-locator.md` §5.2) before anything kept a digest: each stream is a record of its
+//! kind, length and own hash (a stream is read a piece at a time, so its length isn't known first); every section and form is framed with counts; only
+//! what the content draws is hashed; and every path is under the page's caps, where the sketch's path for a stream that didn't decode had none (292
+//! MiB hashed for the one-page USGS map, in a prototype on 2026-11-15).
 //!
 //! **Where it runs:** over the lazy `lopdf::IndexedReader`, with no PDFium and no worker, holding nothing after it returns, on the app's page-identity
 //! thread, never the UI thread. A file that needed the person's password is never given here: its edits are held as before (`recto-session`).
 
 mod decode;
+mod scan;
 
 use lopdf::{Dictionary, IndexedReader, Object, ObjectId, PageMapEntry};
+use scan::DoScan;
 use sha2::{Digest, Sha256};
-use std::cell::Cell;
 use std::io::{self, Read};
 use std::path::Path;
 
@@ -71,7 +70,7 @@ impl Caps {
     pub const STANDARD: Self = Self {
         content_streams: 1024,
         content_bytes: 16 << 20,
-        xobjects: 64,
+        xobjects: scan::MAX_NAMES,
         xobject_bytes: 16 << 20,
         page_bytes: 64 << 20,
         page_read: 256 << 20,
@@ -79,8 +78,8 @@ impl Caps {
 }
 
 /// One page's identity: its digest, the page object's number as a fast first try (our own appends keep it; other programs mostly renumber, research
-/// §3), and its frame's tag.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// §3), and its frame's tag. Its `Debug` says neither digest nor tag: a digest is of a document's content, and what's printed can reach a log.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct PageIdentity {
     /// `recto-page/1`, whole. What's kept is a prefix.
     pub digest: [u8; 32],
@@ -88,6 +87,20 @@ pub struct PageIdentity {
     /// The first four bytes of SHA-256 over `recto-frame/1`, a NUL, the file's own quarter turns and the shown box (left, bottom, right, top as `f32`
     /// little-endian), as [`crate::nav`] reads them: equal frames, equal tags. Not part of the digest.
     pub frame: u32,
+}
+
+impl std::fmt::Debug for PageIdentity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("PageIdentity").field("object", &self.object).finish_non_exhaustive()
+    }
+}
+
+/// What reading one page came to: its identity, or `None` where it reached a cap; and the bytes it cost (stored lengths charged and bytes hashed), for a
+/// caller that reads many pages to a budget of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PageRead {
+    pub identity: Option<PageIdentity>,
+    pub bytes: u64,
 }
 
 /// What's said of a document as a whole: a 16-byte SHA-256 prefix of each of its trailer's `/ID` strings, where it has two. Tells a re-save (`/ID[0]`
@@ -109,21 +122,39 @@ pub fn open_bytes_for_identity(bytes: std::sync::Arc<[u8]>) -> Result<IndexedRea
     crate::open_bytes(bytes)
 }
 
-/// The identities of these pages (zero-based) of a document, in the order asked: `None` for a page it doesn't have.
+/// The identities of these pages (zero-based) of a document, in the order asked: `None` for a page it doesn't have, or one with no identity as it
+/// reached a cap.
 pub fn identify_pages(reader: &IndexedReader, map: &lopdf::PageMap, pages: &[u32]) -> Vec<Option<PageIdentity>> {
     pages
         .iter()
-        .map(|page| map.get(*page as usize).map(|entry| identify_page(reader, entry, &Caps::STANDARD)))
+        .map(|page| map.get(*page as usize).and_then(|entry| identify_page(reader, entry, &Caps::STANDARD)))
         .collect()
 }
 
-/// One page's identity, under `caps`.
-pub fn identify_page(reader: &IndexedReader, entry: &PageMapEntry, caps: &Caps) -> PageIdentity {
+/// One page's identity under `caps`: `None` where it reached one.
+pub fn identify_page(reader: &IndexedReader, entry: &PageMapEntry, caps: &Caps) -> Option<PageIdentity> {
+    read_page(reader, entry, caps).identity
+}
+
+/// One page's identity under `caps`, and what reading it cost.
+pub fn read_page(reader: &IndexedReader, entry: &PageMapEntry, caps: &Caps) -> PageRead {
+    let mut budget = Budget {
+        caps,
+        page_left: caps.page_bytes,
+        content_left: caps.content_bytes,
+        read_left: caps.page_read,
+        records: 0,
+        cost: 0,
+    };
+    let digest = digest(reader, entry, &mut budget).ok();
     let id = entry.id();
-    PageIdentity {
-        digest: digest(reader, entry, caps),
-        object: (id.0, id.1),
-        frame: frame_tag(crate::nav::frame_of(reader, entry)),
+    PageRead {
+        identity: digest.map(|digest| PageIdentity {
+            digest,
+            object: (id.0, id.1),
+            frame: frame_tag(crate::nav::frame_of(reader, entry)),
+        }),
+        bytes: budget.cost,
     }
 }
 
@@ -157,59 +188,88 @@ fn frame_tag(frame: crate::nav::Frame) -> u32 {
     u32::from_le_bytes([tag[0], tag[1], tag[2], tag[3]])
 }
 
-/// What's left of a page's caps as it's hashed.
+/// A cap was reached: the page has no identity.
+struct Capped;
+
+/// What's left of a page's caps as it's hashed, and what it has cost.
 struct Budget<'c> {
     caps: &'c Caps,
     page_left: u64,
     content_left: u64,
-    /// Stored bytes still to be read, shared by every reader made for the page.
-    read_left: Cell<u64>,
-    flags: u8,
+    read_left: u64,
+    /// Records of images and forms so far.
+    records: usize,
+    /// Stored lengths charged and bytes hashed: [`PageRead::bytes`].
+    cost: u64,
 }
 
-const CONTENT_CAPPED: u8 = 1;
-const PAGE_CAPPED: u8 = 2;
-const XOBJECTS_CAPPED: u8 = 4;
+impl Budget<'_> {
+    /// One more record of an image or form, within the cap.
+    fn record(&mut self) -> Result<(), Capped> {
+        self.records += 1;
+        if self.records > self.caps.xobjects { Err(Capped) } else { Ok(()) }
+    }
+}
 
-fn digest(reader: &IndexedReader, entry: &PageMapEntry, caps: &Caps) -> [u8; 32] {
-    let mut budget = Budget {
-        caps,
-        page_left: caps.page_bytes,
-        content_left: caps.content_bytes,
-        read_left: Cell::new(caps.page_read),
-        flags: 0,
-    };
+fn digest(reader: &IndexedReader, entry: &PageMapEntry, budget: &mut Budget<'_>) -> Result<[u8; 32], Capped> {
     let mut hasher = Sha256::new();
     hasher.update(DIGEST_NAME.as_bytes());
     hasher.update([0]);
     let page = dict_at(reader, entry.id());
     let contents = page.as_ref().and_then(|page| page.get(b"Contents").ok().cloned());
-    for (at, item) in content_entries(reader, contents).iter().enumerate() {
-        if at == caps.content_streams {
-            budget.flags |= CONTENT_CAPPED;
-            break;
-        }
-        content_record(reader, item, &mut budget, &mut hasher);
+    let entries = content_entries(reader, contents);
+    if entries.len() > budget.caps.content_streams {
+        return Err(Capped);
     }
-    hasher.update(b"\0X");
+    hasher.update(b"C");
+    hasher.update(count(entries.len()));
+    let mut scan = DoScan::default();
+    for item in &entries {
+        content_record(reader, item, budget, &mut hasher, &mut scan)?;
+    }
+    drop(entries);
+    if scan.overflowed() {
+        return Err(Capped);
+    }
     let resources = entry
         .inherited()
         .resources()
         .and_then(|owner| dict_at(reader, owner))
         .and_then(|owner| resolved_dict(reader, owner.get(b"Resources").ok()?));
-    let mut records = 0usize;
-    for (name, value) in xobjects_of(reader, resources.as_ref()) {
-        let form = xobject_record(reader, &name, &value, &mut budget, &mut records, &mut hasher);
-        if let Some(form) = form {
-            let own = resolved_dict(reader, form.get(b"Resources").ok().unwrap_or(&Object::Null));
-            for (name, value) in xobjects_of(reader, own.as_ref()) {
-                xobject_record(reader, &name, &value, &mut budget, &mut records, &mut hasher);
-            }
+    let page_xobjects = xobjects_in(reader, resources.as_ref());
+    hasher.update(b"X");
+    hasher.update(count(scan.names().len()));
+    for name in scan.names() {
+        budget.record()?;
+        let mut children = DoScan::default();
+        let form = xobject_record(reader, page_xobjects.as_ref(), name, budget, &mut hasher, Some(&mut children))?;
+        children.end_of_stream();
+        let Some(form) = form else {
+            hasher.update(count(0));
+            continue;
+        };
+        if children.overflowed() {
+            return Err(Capped);
+        }
+        let own = form
+            .get(b"Resources")
+            .ok()
+            .and_then(|own| resolved_dict(reader, own))
+            .map(|own| xobjects_in(reader, Some(&own)));
+        let lookup = own.as_ref().unwrap_or(&page_xobjects).as_ref();
+        hasher.update(count(children.names().len()));
+        for child in children.names() {
+            budget.record()?;
+            xobject_record(reader, lookup, child, budget, &mut hasher, None)?;
         }
     }
-    hasher.update(b"\0E");
-    hasher.update([budget.flags]);
-    hasher.finalize().into()
+    hasher.update(b"E");
+    Ok(hasher.finalize().into())
+}
+
+/// A count as it's hashed: every count here is under a cap far below `u32::MAX`.
+fn count(n: usize) -> [u8; 4] {
+    u32::try_from(n).unwrap_or(u32::MAX).to_le_bytes()
 }
 
 /// The entries of `/Contents`: one for a stream, each element for an array (a reference to an array followed once).
@@ -232,173 +292,144 @@ fn content_entries(reader: &IndexedReader, contents: Option<Object>) -> Vec<Obje
     }
 }
 
-fn content_record(reader: &IndexedReader, item: &Object, budget: &mut Budget<'_>, hasher: &mut Sha256) {
-    let limit = budget.content_left.min(budget.page_left);
-    let Object::Reference(id) = item else {
-        record(hasher, 2, 0, &Sha256::new());
-        return;
+/// One entry of the content, hashed, with the names it draws fed to `scan` if it decoded.
+fn content_record(reader: &IndexedReader, item: &Object, budget: &mut Budget<'_>, hasher: &mut Sha256, scan: &mut DoScan) -> Result<(), Capped> {
+    let readable = match item {
+        Object::Reference(id) => reader.resolve_stream_descriptor(*id).ok().map(|descriptor| (*id, descriptor)),
+        _ => None,
     };
-    let Ok(descriptor) = reader.resolve_stream_descriptor(*id) else {
-        record(hasher, 2, 0, &Sha256::new());
-        return;
+    let Some((id, descriptor)) = readable else {
+        record(hasher, 2, 0, Sha256::new());
+        return Ok(());
     };
-    if limit == 0 {
-        budget.flags |= CONTENT_CAPPED;
-        record(hasher, 3, 0, &Sha256::new());
-        return;
-    }
+    let limit = budget.content_left;
     let chain = decode::chain_of(descriptor.dictionary(), &|object| deref(reader, object));
-    let first = chain.map_or(Taken::Failed, |chain| take_stream(reader, *id, &descriptor, Some(&chain), limit, budget));
-    // Hashed as stored when its filters couldn't be decoded; never tried again once a cap is reached.
-    let first_capped = matches!(first, Taken::Capped);
-    let taken = match first {
-        Taken::Hashed(n, sub) => Some((0, n, sub)),
-        Taken::Failed => take_stream(reader, *id, &descriptor, None, limit, budget).with_kind(1),
-        Taken::Capped => None,
+    let mark = scan.mark();
+    let decoded = match &chain {
+        Some(chain) => take_stream(reader, id, &descriptor, Some(chain), limit, budget, Some(scan))?,
+        None => Taken::Failed,
     };
+    let (kind, taken) = match decoded {
+        Taken::Hashed(n, sub) => (0, Taken::Hashed(n, sub)),
+        Taken::Failed => {
+            // What it drew is what it decoded to, which it didn't.
+            scan.back_to(mark);
+            (1, take_stream(reader, id, &descriptor, None, limit, budget, None)?)
+        }
+    };
+    scan.end_of_stream();
     match taken {
-        Some((kind, n, sub)) => {
+        Taken::Hashed(n, sub) => {
             budget.content_left -= n;
-            budget.page_left -= n;
-            if n == limit {
-                budget.flags |= CONTENT_CAPPED;
-                if budget.page_left == 0 {
-                    budget.flags |= PAGE_CAPPED;
-                }
-            }
-            record(hasher, kind, n, &sub);
+            record(hasher, kind, n, sub);
         }
-        None => {
-            let capped = first_capped || budget.read_left.get() == 0;
-            record(hasher, if capped { 3 } else { 2 }, 0, &Sha256::new());
-        }
+        Taken::Failed => record(hasher, 2, 0, Sha256::new()),
     }
+    Ok(())
 }
 
-/// The entries of a resource dictionary's `/XObject`, sorted by name.
-fn xobjects_of(reader: &IndexedReader, resources: Option<&Dictionary>) -> Vec<(Vec<u8>, Object)> {
-    let Some(xobjects) = resources.and_then(|resources| resolved_dict(reader, resources.get(b"XObject").ok()?)) else {
-        return Vec::new();
-    };
-    let mut entries: Vec<(Vec<u8>, Object)> = xobjects.iter().map(|(name, value)| (name.clone(), value.clone())).collect();
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
-    entries
+/// A resource dictionary's `/XObject`, resolved: looked up by name, never copied out or sorted.
+fn xobjects_in(reader: &IndexedReader, resources: Option<&Dictionary>) -> Option<Dictionary> {
+    resolved_dict(reader, resources?.get(b"XObject").ok()?)
 }
 
-/// One image's or form's record. Gives the form's dictionary back when it's a form, for its own entries to follow.
+/// One image's or form's record, found by `name` in `xobjects`. Gives the form's dictionary back when it's a form whose content decoded, its names fed
+/// to `children`.
 fn xobject_record(
     reader: &IndexedReader,
+    xobjects: Option<&Dictionary>,
     name: &[u8],
-    value: &Object,
     budget: &mut Budget<'_>,
-    records: &mut usize,
     hasher: &mut Sha256,
-) -> Option<Dictionary> {
-    if *records == budget.caps.xobjects {
-        budget.flags |= XOBJECTS_CAPPED;
-        return None;
-    }
-    *records += 1;
-    hasher.update(u32::try_from(name.len()).unwrap_or(u32::MAX).to_le_bytes());
+    children: Option<&mut DoScan>,
+) -> Result<Option<Dictionary>, Capped> {
+    hasher.update(count(name.len()));
     hasher.update(name);
-    let Object::Reference(id) = value else {
-        hasher.update([2]);
-        return None;
+    let found = match xobjects.and_then(|xobjects| xobjects.get(name).ok()) {
+        Some(Object::Reference(id)) => reader.resolve_stream_descriptor(*id).ok().map(|descriptor| (*id, descriptor)),
+        _ => None,
     };
-    let Ok(descriptor) = reader.resolve_stream_descriptor(*id) else {
+    let Some((id, descriptor)) = found else {
         hasher.update([2]);
-        return None;
+        return Ok(None);
     };
-    let dict = descriptor.dictionary().clone();
-    let is_form = matches!(dict.get(b"Subtype").ok().and_then(|subtype| deref(reader, subtype)), Some(Object::Name(name)) if name == b"Form");
-    let limit = budget.caps.xobject_bytes.min(budget.page_left);
-    if limit == 0 {
-        budget.flags |= PAGE_CAPPED;
-        hasher.update([4]);
-        return is_form.then_some(dict);
-    }
+    let dict = descriptor.dictionary();
     let resolve = |object: &Object| deref(reader, object);
-    let general = decode::filter_names(&dict, &resolve).is_some_and(|names| names.iter().all(|name| decode::is_general(name)));
-    let (taken, capped) = if general {
-        match decode::chain_of(&dict, &resolve).map_or(Taken::Failed, |chain| take_stream(reader, *id, &descriptor, Some(&chain), limit, budget)) {
-            Taken::Hashed(n, sub) => (Some((0, n, sub)), false),
-            Taken::Failed => (take_stream(reader, *id, &descriptor, None, limit, budget).with_kind(3), false),
-            Taken::Capped => (None, true),
+    let is_form = matches!(dict.get(b"Subtype").ok().and_then(resolve), Some(Object::Name(subtype)) if subtype == b"Form");
+    let limit = budget.caps.xobject_bytes;
+    let general = decode::filter_names(dict, &resolve).is_some_and(|names| names.iter().all(|name| decode::is_general(name)));
+    let (kind, taken, scanned) = if general {
+        let scan = children.filter(|_| is_form);
+        let scanned = scan.is_some();
+        match decode::chain_of(dict, &resolve) {
+            Some(chain) => match take_stream(reader, id, &descriptor, Some(&chain), limit, budget, scan)? {
+                Taken::Hashed(n, sub) => (0, Taken::Hashed(n, sub), scanned),
+                Taken::Failed => (3, take_stream(reader, id, &descriptor, None, limit, budget, None)?, false),
+            },
+            None => (3, take_stream(reader, id, &descriptor, None, limit, budget, None)?, false),
         }
     } else {
-        (take_stream(reader, *id, &descriptor, None, limit, budget).with_kind(1), false)
+        (1, take_stream(reader, id, &descriptor, None, limit, budget, None)?, false)
     };
     match taken {
-        Some((kind, n, sub)) => {
-            budget.page_left -= n;
-            if budget.page_left == 0 {
-                budget.flags |= PAGE_CAPPED;
-            }
+        Taken::Hashed(n, sub) => {
             hasher.update([kind]);
             hasher.update(n.to_le_bytes());
             hasher.update(sub.finalize());
         }
-        None => hasher.update([if capped || budget.read_left.get() == 0 { 4 } else { 2 }]),
-    }
-    is_form.then_some(dict)
-}
-
-impl Taken {
-    /// What was hashed, said as this kind of record; nothing for a stream that wasn't.
-    fn with_kind(self, kind: u8) -> Option<(u8, u64, Sha256)> {
-        match self {
-            Taken::Hashed(n, sub) => Some((kind, n, sub)),
-            Taken::Failed | Taken::Capped => None,
+        Taken::Failed => {
+            hasher.update([2]);
+            return Ok(None);
         }
     }
+    // A form whose content wasn't decoded draws nothing that can be known, so it has no children; but it's still a form, with its count.
+    Ok(is_form.then(|| if scanned { dict.clone() } else { Dictionary::new() }))
 }
 
-fn record(hasher: &mut Sha256, kind: u8, n: u64, sub: &Sha256) {
+fn record(hasher: &mut Sha256, kind: u8, n: u64, sub: Sha256) {
     hasher.update([kind]);
     hasher.update(n.to_le_bytes());
-    hasher.update(sub.clone().finalize());
+    hasher.update(sub.finalize());
 }
 
 /// What came of reading a stream for its hash.
 enum Taken {
-    /// Its first `n` bytes (decoded, or as stored), hashed.
+    /// Its `n` bytes (decoded, or as stored), hashed.
     Hashed(u64, Sha256),
     /// It couldn't be decoded or read: a decoding error, a read error, or no length to read it by.
     Failed,
-    /// The page's read cap, or the size an encrypted stream is decrypted whole to, was reached before it was read: not read, and not tried again.
-    Capped,
 }
 
-/// Hashes a stream's first `limit` bytes, decoded through `chain` or as stored without one. Its stored length is charged to the page's read cap
-/// **before** anything is read or decrypted (review S1: a stream that decodes to little pulls little through a decoder, so a cap counted as bytes were
-/// pulled let a page decrypt its streams whole a thousand times over).
+/// Hashes a stream, decoded through `chain` or as stored without one, feeding what it decodes to `scan`. Its stored length is charged to the page's read
+/// cap **before** anything is read or decrypted (review S1: a stream that decodes to little pulls little through a decoder, so a cap counted as bytes
+/// were pulled let a page decrypt its streams whole a thousand times over). More than `limit` bytes, or than the page has left, is a cap reached.
 fn take_stream(
     reader: &IndexedReader,
     id: ObjectId,
     descriptor: &lopdf::IndexedStreamDescriptor,
     chain: Option<&[decode::Filter]>,
     limit: u64,
-    budget: &Budget<'_>,
-) -> Taken {
+    budget: &mut Budget<'_>,
+    mut scan: Option<&mut DoScan>,
+) -> Result<Taken, Capped> {
     let Some(length) = descriptor.encoded_len() else {
-        return Taken::Failed;
+        return Ok(Taken::Failed);
     };
-    let left = budget.read_left.get();
-    if length > left {
-        budget.read_left.set(0);
-        return Taken::Capped;
+    if length > budget.read_left {
+        return Err(Capped);
     }
-    budget.read_left.set(left - length);
+    budget.read_left -= length;
+    budget.cost = budget.cost.saturating_add(length);
     let stored: Box<dyn Read + '_> = match descriptor.protection() {
         lopdf::EncodedStreamProtection::Plain => match descriptor.open_plain_encoded() {
             Ok(stored) => Box::new(Stored(stored)),
-            Err(_) => return Taken::Failed,
+            Err(_) => return Ok(Taken::Failed),
         },
         // Only the decrypting path gives an encrypted file's bytes, and it gives them whole: only up to the size the other walks of such a file decrypt
         // (`crate::effects::MAX_DECRYPTED_DRAWING`), whichever part of the page it's for.
         _ => {
             if length > crate::effects::MAX_DECRYPTED_DRAWING {
-                return Taken::Capped;
+                return Err(Capped);
             }
             match reader.resolve_object(id) {
                 Ok(Object::Stream(stream)) => {
@@ -406,7 +437,7 @@ fn take_stream(
                     tests::DECRYPTED.with(|bytes| bytes.set(bytes.get() + stream.content.len() as u64));
                     Box::new(io::Cursor::new(stream.content))
                 }
-                _ => return Taken::Failed,
+                _ => return Ok(Taken::Failed),
             }
         }
     };
@@ -414,23 +445,33 @@ fn take_stream(
         Some(chain) => decode::decoded(stored, chain),
         None => stored,
     };
+    // One byte past what may be hashed says a cap is reached, whatever a decoder holds back or reads ahead.
+    let limit = limit.min(budget.page_left);
     let mut sub = Sha256::new();
     let mut buf = vec![0u8; decode::CHUNK];
     let mut n = 0u64;
-    while n < limit {
-        let want = usize::try_from((limit - n).min(decode::CHUNK as u64)).unwrap_or(decode::CHUNK);
+    loop {
+        let want = usize::try_from((limit + 1 - n).min(decode::CHUNK as u64)).unwrap_or(decode::CHUNK);
         let read = match source.read(&mut buf[..want]) {
             Ok(read) => read,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(_) => return Taken::Failed,
+            Err(_) => return Ok(Taken::Failed),
         };
         if read == 0 {
             break;
         }
-        sub.update(&buf[..read]);
         n += read as u64;
+        if n > limit {
+            return Err(Capped);
+        }
+        sub.update(&buf[..read]);
+        if let Some(scan) = scan.as_deref_mut() {
+            scan.feed(&buf[..read]);
+        }
     }
-    Taken::Hashed(n, sub)
+    budget.page_left -= n;
+    budget.cost = budget.cost.saturating_add(n);
+    Ok(Taken::Hashed(n, sub))
 }
 
 /// A stream's stored bytes, a piece at a time.
