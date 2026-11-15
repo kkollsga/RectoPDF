@@ -226,6 +226,8 @@ has "entitlements: another program that claims the group" "Contents/MacOS/recto 
 /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -keyout "$E/k.pem" -out "$E/c.pem" -days 1 -subj "/CN=release-test" >/dev/null 2>&1
 printf '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Entitlements</key><dict><key>com.apple.application-identifier</key><string>6GND8Z2C7Z.io.github.kkollsga.RectoPDF</string><key>keychain-access-groups</key><array><string>6GND8Z2C7Z.*</string></array></dict></dict></plist>' > "$E/profile.plist"
 /usr/bin/openssl cms -sign -nodetach -binary -outform DER -in "$E/profile.plist" -signer "$E/c.pem" -inkey "$E/k.pem" -out "$E/made.provisionprofile" 2>/dev/null
+# Failure: the made profile isn't one `security cms -D` decodes, so the cases below pass or fail on that rather than on what they name.
+has "entitlements: the made profile decodes, with its App ID" "6GND8Z2C7Z.io.github.kkollsga.RectoPDF" "$(security cms -D -i "$E/made.provisionprofile" 2>&1)"
 # Failure: the checker refuses a bundle as a release makes it, so its refusals of the others mean nothing.
 bundle "$E/right.app"
 cp "$E/made.provisionprofile" "$E/right.app/Contents/embedded.provisionprofile"
@@ -237,6 +239,8 @@ check "entitlements: a bundle as a release makes it passes ($out)" 0 "$rc"
 bundle "$E/more.app"
 cp "$E/made.provisionprofile" "$E/more.app/Contents/embedded.provisionprofile"
 sed 's#</dict></plist>#  <key>com.apple.security.get-task-allow</key><true/>\n</dict></plist>#' "$E/claims.plist" > "$E/more.plist"
+# Failure: the plist with one more is malformed (a sed that writes `\n` as it is), so codesign signs nothing and the case fails for another reason.
+check "entitlements: the plist with one more is valid" 0 "$(plutil -lint "$E/more.plist" >/dev/null 2>&1; echo $?)"
 codesign --force --sign - --entitlements "$E/more.plist" "$E/more.app" 2>/dev/null
 out=$("$ENT" --check "$E/more.app" 2>&1); rc=$?
 check "entitlements: one entitlement more is refused" 1 "$rc"
