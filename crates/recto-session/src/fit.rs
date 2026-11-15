@@ -217,9 +217,11 @@ impl Notices<'_> {
         self.lists.get(id).map(|_| self.tabs.own_stamp(id).filter(|_| self.fit(id).fits()))
     }
 
-    /// **Whether a tab's own pages are withheld** ([`EditsFit::shows_own_pages`]): what the page view is told, and what `tabs` and `where` say.
+    /// **Whether a tab's own pages are withheld** ([`EditsFit::shows_own_pages`]): what the page view is told, and what `tabs` and `where` say. A
+    /// tab with no unsaved edits fits whatever its record says, so it's answered from the lists with no search of the tabs: asked for every tab a
+    /// walk goes over (`where` in `tabs`) and on every publish for the tab shown, it mustn't search them for each (`tests::per_tab_work`).
     pub fn pages_withheld(&self, id: TabId) -> bool {
-        !self.fit(id).shows_own_pages()
+        self.lists.is_edited(id) && !self.fit(id).shows_own_pages()
     }
 
     /// What a tab says of its file, if anything: that it can't be found first, then that its edits don't fit it, which nothing else may hide, then its notice.
