@@ -1441,6 +1441,7 @@ fn claim(folder: &Path, read: JournalRead, record: &mut SessionRecord, at: usize
     tab.journal = Some(name.clone());
     tab.edits = Some(restored.edits.summary());
     page_ids::take_in(folder, &name, &parsed.header, &mut restored.edits, progress);
+    followed::untold_over_changed(tab, &parsed.header, &restored.edits);
     progress.journal_bytes.insert(name.clone(), good_bytes);
     journals.insert(name, restored);
 }

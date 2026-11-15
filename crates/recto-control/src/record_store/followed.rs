@@ -17,8 +17,9 @@
 
 use super::{JournalRead, Progress, claim, page_ids, read_journal, restored_from};
 use recto_platform::{FileStamp, file_stamp};
+use recto_session::edit::{PageEdits, identity};
+use recto_session::record::{FileNotice, FileRecord, JournalHeader, SessionRecord, TabEntry};
 use recto_session::RestoredEdits;
-use recto_session::record::{FileRecord, SessionRecord};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -114,11 +115,7 @@ fn after_a_follow(
         return Link::None;
     };
     let now = record.tabs[at].path.to_path().and_then(|path| file_stamp(&path).ok());
-    let is_now = |file: Option<FileRecord>| {
-        file.map(FileStamp::from)
-            .zip(now)
-            .is_some_and(|(file, now)| file.same_contents(now) && file.inode == now.inode)
-    };
+    let is_now = |file: Option<FileRecord>| is_the_file(file, now);
     let claimed_header = read_journal(&folder.join(&claimed)).ok().flatten().map(|(parsed, _)| parsed.header);
     let Some(claimed_list) = journals.get(&claimed) else { return Link::None };
     let kept = Steps {
@@ -159,6 +156,25 @@ fn after_a_follow(
         mark(journals, &claimed);
     }
     Link::SetAside
+}
+
+/// Whether a journal's file is the file as it is (size, time and inode).
+fn is_the_file(file: Option<FileRecord>, now: Option<FileStamp>) -> bool {
+    file.map(FileStamp::from)
+        .zip(now)
+        .is_some_and(|(file, now)| file.same_contents(now) && file.inode == now.inode)
+}
+
+/// **A list claimed that followed its file and wasn't told, under a record saying the file changed** (review N1): a record written in the moment
+/// between noticing the change and the follow, or naming the old journal a crash then left gone. The list is about the file as it is, so the record's
+/// "changed" isn't so of it: it goes, and the tab says the edits followed (`recto_session::version_change::untold_notice`) rather than holding them.
+pub(super) fn untold_over_changed(tab: &mut TabEntry, header: &JournalHeader, edits: &PageEdits) {
+    if matches!(tab.notice, Some(FileNotice::Changed))
+        && identity::followed_untold(edits)
+        && is_the_file(header.file, tab.path.to_path().and_then(|path| file_stamp(&path).ok()))
+    {
+        tab.notice = None;
+    }
 }
 
 /// The list kept for a tab is told another of its lists was set aside beside it.

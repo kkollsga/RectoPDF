@@ -294,3 +294,53 @@ fn no_digest_reaches_an_answer_an_event_the_window_or_a_log() {
         }
     }
 }
+
+/// **Failure caught (review N1's second half):** the person told that their edits followed (they left the tab with its notice), and the sidecar's header
+/// still saying "not yet told", as only its flag changed, with no journal operation to carry a write: so every restart says it again. Followed, then
+/// killed: the restart says it (F3). Left, the sidecar's header is seen rewritten; killed again: the restart doesn't.
+#[test]
+fn a_follow_the_person_was_told_of_isnt_said_again_after_a_restart() {
+    const FOLLOWED: &str = "moved onto the same pages of the new version";
+    let said = |app: &HeadlessApp| app.tabs().into_iter().any(|row| row.notice.is_some_and(|notice| notice.contains(FOLLOWED)));
+    let disk = Disk::new();
+    let file = disk.pdf("doc.pdf", 10);
+    let other = disk.pdf("other.pdf", 2);
+    let app = disk.start();
+    app.open(&other);
+    app.open(&file);
+    app.recto(Level::Control, &["page", "rotate", "9", "--by", "90"]).expect("rotated");
+    read_and_written(&app, "the edited pages read and written");
+    // Another program adds a cover, and the turn follows "doc.pdf page 9" to page 10.
+    let mut with_cover = vec![recto_testpdf::Page::new(recto_testpdf::text_lines(&["Their cover"]))];
+    with_cover.extend((1..=10).map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("doc.pdf page {page}")]))));
+    let incoming = file.with_extension("incoming");
+    std::fs::write(&incoming, recto_testpdf::pages(&with_cover)).unwrap();
+    std::fs::rename(&incoming, &file).unwrap();
+    app.send(crate::queue::CoreCall::LookAtShown);
+    app.settle();
+    assert!(said(&app), "followed and said");
+    read_and_written(&app, "the new version's pages and the flag in the sidecar");
+    let id = tab_named(&app, "doc");
+    assert!(sidecar(&app, id).expect("a sidecar").header.followed_untold, "not yet told, on disk");
+    let app = app.kill().start();
+    assert!(said(&app), "a crash before the person saw it: said again");
+    let doc = tab_named(&app, "doc");
+    app.recto(Level::Full, &["tap", &format!("#{}", tab_named(&app, "other").0)]).expect("to the other tab");
+    app.settle();
+    assert!(!said(&app), "left with its notice: told");
+    app.advance(6_000);
+    app.wait_until("the sidecar's header rewritten as told", || {
+        sidecar(&app, doc).is_some_and(|read| !read.header.followed_untold)
+    });
+    let app = app.kill().start();
+    assert!(!said(&app), "told before the restart: not said again");
+}
+
+/// The id of the tab whose name (its file's, without the extension) is `name`.
+fn tab_named(app: &HeadlessApp, name: &str) -> TabId {
+    app.core()
+        .host
+        .session
+        .with_session(|session| session.tabs().iter().find(|tab| &*tab.name == name).map(|tab| tab.id))
+        .expect("its tab")
+}

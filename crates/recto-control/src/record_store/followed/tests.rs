@@ -418,3 +418,24 @@ fn a_newer_list_of_the_same_version_takes_over_and_says_so_unless_the_older_is_i
         assert_eq!(shown(restored), (said, false), "{label}");
     }
 }
+
+/// **Failure caught (review N1):** a follow done and not yet told, with the record saying the file changed under the edits (written in the moment
+/// between noticing the change and the follow, then a crash before the next): the record's "changed" taken for the restored list, which is about the
+/// file as it is, so the follow is never said and the list is held as changed. The old journal gone and the new one's sidecar written ("not yet told"),
+/// the record naming the old: the tab says the edits followed.
+#[test]
+fn a_follow_not_yet_told_is_said_over_a_records_changed() {
+    let bed = Bed::new();
+    let store = RecordStore::open(&bed.paths, Flavor::App);
+    let old = edited_journal(&store, 1, &bed.file, bed.old_stamp);
+    let to = bed.replaced(b"another program's version, longer than the first");
+    let mut held = tab(1, &bed.file, bed.old_stamp, &old);
+    held.notice = Some(FileNotice::Changed);
+    store.write_record(&session(vec![held]), &PlaceDelta::default(), false).unwrap();
+    let (work, new) = follow_work(1, &bed.file, to, &old, false, true, 2);
+    assert!(store.write_journals(&work, false).1.is_none());
+    drop(store);
+    let restored = bed.load();
+    assert_eq!(restored.record.tabs[0].journal.as_deref(), Some(new.as_str()));
+    assert_eq!(shown(restored).0, Some("edits_followed"));
+}
