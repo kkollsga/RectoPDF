@@ -77,6 +77,18 @@ mod tests {
         assert_eq!(recto_session::MAX_RECENT, 20, "the 20 files opened last");
         assert_eq!(recto_core::save::BACKUP_DAYS, 30, "one backup, 30 days");
         assert_eq!(recto_core::save::MAX_BACKUP_BYTES, gib, "within 1 GiB");
+        // The edit history, the pages a save took out and the idle tabs' contents are pruned together: 30 days, 1 GiB in all, and the idle tabs' own 256 MiB.
+        assert_eq!(
+            (
+                recto_control::record_store::CLOSED_JOURNAL_DAYS,
+                recto_control::record_store::MAX_CLOSED_JOURNAL_BYTES / gib,
+                recto_control::record_store::MAX_SLEEP_BYTES / (1024 * 1024)
+            ),
+            (30, 1, 256),
+            "the edit history and kept pages: 30 days, 1 GiB; idle tabs: 256 MiB"
+        );
+        assert_eq!(recto_session::record::MAX_FIND_BYTES, 4 * 1024, "what was typed in Find: up to 4 KiB each");
+        assert_eq!(recto_session::record::KEPT_EXTENSION, "keptpages", "the kept pages' files");
         assert_eq!(recto_update::updater::KEEP_RECORD_COPY_MS, 7 * 86_400_000, "a copy of the session for a week");
         assert_eq!(recto_control::log::MAX_LOG_BYTES * 6, 6 * 1024 * 1024, "the activity log, at most 6 MiB");
         // No picture of a page in a sleep file. What this holds: the format is the one with no pictures in it, and a file is read only up to a size a
@@ -95,7 +107,13 @@ mod tests {
             "90 days after it was last used, within 2 GiB",
             "90 days, within 32 MiB",
             "the 20 files you opened last",
-            "kept for a week",
+            "| A week |",
+            "each up to 4 KiB",
+            "30 days after the save, within 1 GiB in all with the edit history",
+            "within 256 MiB in all",
+            "`update/before/`",
+            "`activity*.jsonl`",
+            "its path is in the file's header",
             "at most 6 MiB",
         ] {
             assert!(text.contains(words), "{words}");
