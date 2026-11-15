@@ -213,6 +213,9 @@ pub mod document_file;
 
 /// A password the person typed, held so its bytes are overwritten when it goes, and the file identity it's kept by.
 pub mod secret;
+
+/// The key the Find text is sealed with, and where it comes from.
+pub mod find_key;
 pub use secret::{MAX_PASSWORD_BYTES, Password};
 
 /// **Whether this was built as a release:** `RECTO_RELEASE` set when it's compiled, by `app/release-zip.sh`, and it can't be turned on later. The one place it's read: the updater, the renderer's host and the slow mode all go by this (review 1: three crates each read it, and nothing held them to agree).

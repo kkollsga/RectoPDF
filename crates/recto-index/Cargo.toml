@@ -19,6 +19,9 @@ serde_json.workspace = true
 sha2.workspace = true
 # A checksum per page, in hardware on this Mac. Already in the tree through flate2, so it adds no crate.
 crc32fast.workspace = true
+# The Find text is sealed on disk: `seal.rs`.
+aes-gcm.workspace = true
+hkdf.workspace = true
 
 [dev-dependencies]
 # Test-only: fresh temp folders.
