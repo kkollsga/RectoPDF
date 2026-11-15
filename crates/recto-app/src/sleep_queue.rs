@@ -123,6 +123,8 @@ impl LeavingQueue {
     pub fn push_due(&mut self, facts: SleepFacts, mut material: SleepMaterial, due: u64, caused_by: Author) -> bool {
         // Nothing held that its sleep file couldn't carry: a hostile file's thousands of page sizes are cut to what a file keeps.
         material.sizes.truncate(MAX_SIZES);
+        // And the room the whole table took goes with it.
+        material.sizes.shrink_to_fit();
         if let Some(at) = self.queue.iter().position(|leaving| leaving.facts.id == facts.id) {
             self.remove(at);
             self.counts.replaced += 1;
@@ -602,14 +604,17 @@ mod tests {
 
     /// Failure (AGENTS rule 1, caps on everything from outside): a tab of a hostile file whose pages are each another size is queued with every size it
     /// knows, up to the page view's whole table for each of the tabs waiting, though a file keeps only [`MAX_SIZES`]. Queued, it holds no more than a file
-    /// keeps.
+    /// keeps: in what it holds as well as in what it counts, as a cut list keeps the room of the whole one (found 2026-11-15: a tab of a hostile file of 100,000
+    /// pages, each another size, would hold 1.2 MB of room in its slot, and 16 slots could be held).
     #[test]
     fn a_tab_queued_holds_no_more_sizes_than_its_file_keeps() {
         let mut queue = LeavingQueue::default();
         let mut many = material(0);
-        many.sizes = (0..=MAX_SIZES as u32).map(|page| (page, PageBox { width: 1.0, height: 1.0 })).collect();
+        many.sizes = (0..=4 * MAX_SIZES as u32).map(|page| (page, PageBox { width: 1.0, height: 1.0 })).collect();
         let _ = queue.push(facts(1), many);
-        assert_eq!(queue.queue[0].material.sizes.len(), MAX_SIZES);
+        let sizes = &queue.queue[0].material.sizes;
+        assert_eq!(sizes.len(), MAX_SIZES);
+        assert!(sizes.capacity() <= MAX_SIZES, "the room of the whole list held: {}", sizes.capacity());
     }
 
     /// Failure: the writer stays when there's nothing to write, a thread held at rest; or a tab queued as it ends finds it still there and is never written. Its end is said under the queue's lock, and the next tab starts another.
