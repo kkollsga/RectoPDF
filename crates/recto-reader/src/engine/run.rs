@@ -161,12 +161,13 @@ fn run(shared: &Shared) {
             all_told(shared, &mut reader);
             reader.work.note_started(&job, None);
         }
+        // The one check every job meets before its file is read, links included.
+        let (refused, own) = refused_now(shared, &job);
         if matches!(job.kind, JobKind::Links) {
-            read_links(shared, &renderers, job);
+            read_links(shared, &renderers, job, refused.is_some(), own);
             continue;
         }
         let mut file_changed = false;
-        let (refused, own) = refused_now(shared, &job);
         let outcome = if let Some(message) = refused {
             match job.kind {
                 JobKind::Text { .. } => Outcome::TextFailed,
@@ -348,17 +349,13 @@ fn big_workers_rest(renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, 
 }
 
 /// A page's links, read from the file's structure, here and with no worker.
-fn read_links(shared: &Shared, renderers: &HashMap<PathBuf, OpenDoc>, job: Job) {
+fn read_links(shared: &Shared, renderers: &HashMap<PathBuf, OpenDoc>, job: Job, refused: bool, own: bool) {
     // Read from the file's structure, here and with no worker. Only a file a worker already has open and answering, so a disk gone to sleep holds this thread no longer than a draw would: a page that isn't drawn yet has its links read when it is.
     // Through the renderer's own open file and its password, so the links are of the version being drawn, a protected file's too. A file seen replaced and not taken up yet offers none: they'd be the new version's over the old pages.
-    let (own, withheld) = {
-        let reader = lock(&shared.reader);
-        (reader.docs.is_own_file(job.tab, &job.file), reader.docs.withholds(job.tab, &job.file))
-    };
-    // A tab whose own pages are withheld offers none of their links: they'd be of a version its pages aren't.
+    // A page [`refused_now`] refuses (the tab's own pages withheld, or an added PDF changed) offers none either: they'd be of a version its page isn't.
     let links = renderers
         .get(&job.file)
-        .filter(|_| !withheld)
+        .filter(|_| !refused)
         .filter(|open| !open.replaced && !open.doc.file_seen_changed() && open.serves(job.tab, own))
         .and_then(|open| {
             open.doc.read_structure(|file, password| {

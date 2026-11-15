@@ -946,6 +946,48 @@ fn a_tabs_own_pages_withheld_are_neither_drawn_nor_selectable_and_come_back_when
     assert_eq!(engine.note(), None);
 }
 
+/// Failure (review F2 of `build/shorter-file-pages`): links jobs went around the drawing thread's one check, so a tab whose own pages are withheld would
+/// still offer the links of the file there now over its empty pages, and nothing held it. Withheld, the link under the pointer is none, asked as often
+/// as it likes; shown again, the same point is the link.
+#[test]
+fn a_withheld_tab_offers_no_links() {
+    let file = TempPdf::new("linked.pdf", &recto_testpdf::linked_document());
+    let (engine, _events) = started(&file, 12);
+    let (x, y, fit) = settled_on_page(&engine, 0);
+    // The first link on page 1, in points from its top left.
+    let (link_x, link_y) = (x + 100.0 * fit, y + 120.0 * fit);
+    // Asked as the pointer asks, over and over, for a bounded time: a page's links come a moment after they're first asked for.
+    let asked = |engine: &Engine, within: Duration| {
+        let deadline = Instant::now() + within;
+        loop {
+            let hit = engine.links().at(link_x, link_y);
+            if hit.is_some() || Instant::now() >= deadline {
+                return hit;
+            }
+            pump(engine, Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
+        }
+    };
+    assert!(asked(&engine, HANG).is_some(), "the link is there first");
+    engine.points().withhold_own_pages(1, true);
+    pump(&engine, HANG);
+    // Asked once, its job answered (the only job left once it's settled), and asked again: none.
+    let jobs = |engine: &Engine| engine.report().0["counts"]["jobs"].as_u64().unwrap();
+    let before = jobs(&engine);
+    assert!(engine.links().at(link_x, link_y).is_none(), "not held yet");
+    let deadline = Instant::now() + HANG;
+    while jobs(&engine) == before && Instant::now() < deadline {
+        pump(&engine, Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
+    }
+    assert!(jobs(&engine) > before, "the links were asked for: {}", engine.report().0);
+    assert!(engine.links().at(link_x, link_y).is_none(), "no link of the file over a withheld page");
+    assert!(settles(&engine), "and asking doesn't keep it busy: {}", engine.report().0);
+    engine.points().withhold_own_pages(1, false);
+    pump(&engine, HANG);
+    assert!(asked(&engine, HANG).is_some(), "shown again, the link is there");
+}
+
 /// Failure: a snapshot box dragged from one page across the break onto the next reads the pointer in the next page's coordinates, so the box jumps to near the top of the pressed page, or comes out with the wrong size. The point must be taken onto the pressed page and held to its edge.
 #[test]
 fn a_snapshot_box_dragged_across_a_page_break_stays_on_its_page() {
