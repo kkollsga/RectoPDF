@@ -1,6 +1,6 @@
 //! **The page-identity thread on the app's own core** (`core/page_ids.rs`, the page matcher's first part): an edit's pages are read for what they are,
 //! off the session's lock, and go in the journal's sidecar, never the journal; never for a document opened with its password; read again after a
-//! restart without waiting for an edit; a page of no identity can't fail a hand-off or a dormancy; and the thread is gone once there's nothing to read.
+//! restart without waiting for an edit; a list closed by its budget can't fail a hand-off or a dormancy; and the thread is gone once there's nothing to read.
 
 use super::withheld_events::{person_unlocks, protected};
 use crate::testkit::headless::{Disk, HeadlessApp};
@@ -107,34 +107,35 @@ fn a_password_opened_documents_pages_are_never_read() {
     assert!(names.iter().all(|name| !name.starts_with("pages-")), "no sidecar: {names:?}");
 }
 
-/// Ten pages saying their numbers, the fourth past a cap (a `/Contents` of 1,025 entries), so it has no identity.
-fn ten_with_a_capped_page(disk: &Disk) -> PathBuf {
+/// Ten pages that each cost a ninth of a version's budget, or a little more (`recto_session::edit::identity::VERSION_BYTES`): each page's `/Contents`
+/// is 255 references to one stream of 1 MiB that decodes to nothing (an empty zlib stream, then spaces), charged its stored length each time, as a
+/// crafted file would be. A file of about 1 MiB whose reading gives up after nine pages.
+fn ten_past_the_budget(disk: &Disk) -> PathBuf {
     use recto_testpdf::Object;
     let kids: String = (0..10).map(|at| format!("{} 0 R ", 3 + at)).collect();
     let mut objects = vec![
         Object::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
         Object::Dict(format!("<< /Type /Pages /Kids [{kids}] /Count 10 >>")),
     ];
-    let many: String = (0..1025).map(|_| "13 0 R ").collect();
-    objects.extend((0..10).map(|at| {
-        let contents = if at == 3 { format!("[{many}]") } else { format!("{} 0 R", 13 + at) };
-        Object::Dict(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {contents} >>"))
-    }));
-    objects.extend((0..10).map(|at| Object::Stream {
-        dict: String::new(),
-        data: format!("BT /F1 12 Tf 72 712 Td (Page {}) Tj ET", at + 1).into_bytes(),
-    }));
-    disk.file("capped.pdf", &recto_testpdf::build(&objects))
+    let many: String = (0..255).map(|_| "13 0 R ").collect();
+    objects.extend((0..10).map(|_| Object::Dict(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents [{many}] >>"))));
+    let mut nothing = vec![0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01];
+    nothing.resize(1 << 20, b' ');
+    objects.push(Object::Stream {
+        dict: "/Filter /FlateDecode".into(),
+        data: nothing,
+    });
+    disk.file("costly.pdf", &recto_testpdf::build(&objects))
 }
 
-/// Failure caught (review item 2): a page that had no identity (given up on) makes the in-memory list differ from what its journal reads back as,
-/// so a hand-off fails with `read_back_differs` and the tab can never go dormant: identities were part of the list's record, and the journal's replay
-/// named the pages again that the give-up had dropped. A turn of every page of a file whose fourth page has no identity: reading gives up there, the tab
-/// goes dormant, and a hand-off's read-back passes.
+/// Failure caught (second review): a list closed by its version's budget (`identity::give_up`) leaves what it read waiting for the sidecar with
+/// nothing to write it from, so the journals are never caught up and the tab can never checkpoint or go dormant, nor a hand-off pass (seen: with
+/// `give_up` dropping the pages read with those not read, this test waits out its limit for `caught_up`). A turn of every page of a file whose pages
+/// each cost a ninth of the budget: nine are read and in the sidecar, the list is closed, the tab goes dormant and a hand-off's read-back passes.
 #[test]
-fn a_page_given_up_on_fails_neither_a_dormancy_nor_a_hand_off() {
+fn a_list_closed_by_its_budget_still_sleeps_and_hands_off() {
     let disk = Disk::new();
-    let file = ten_with_a_capped_page(&disk);
+    let file = ten_past_the_budget(&disk);
     let other = disk.pdf("other.pdf", 2);
     let app = disk.start();
     app.open(&file);
@@ -143,9 +144,10 @@ fn a_page_given_up_on_fails_neither_a_dormancy_nor_a_hand_off() {
     let (id, pages) = named(&app);
     assert_eq!(
         pages.iter().map(|(page, _)| *page).collect::<Vec<_>>(),
-        vec![0, 1, 2],
-        "read to the page with no identity"
+        (0..9).collect::<Vec<u32>>(),
+        "read to the budget"
     );
+    assert_eq!(sidecar(&app, id).expect("a sidecar").pages.len(), 9);
     app.core().host.session.with_session(|session| {
         assert!(identity::identities(session.lists().get(id).unwrap()).unwrap().over_cap());
     });

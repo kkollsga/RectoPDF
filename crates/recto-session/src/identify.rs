@@ -38,6 +38,9 @@ pub struct IdentifyJob {
     /// The version the edits are about: read only if the file is still that, before and after.
     pub stamp: FileStamp,
     pub pages: Vec<u32>,
+    /// What's left of the version's budget for the list (`identity::budget_left`): the job reads no page once it's spent this, nor past its own
+    /// [`MAX_JOB_BYTES`].
+    pub budget: u64,
 }
 
 /// What a job read. Its `Debug` says how many pages, never what they are.
@@ -47,8 +50,11 @@ pub struct Identified {
     pub stamp: FileStamp,
     pub pages: Vec<(u32, Known)>,
     pub document: Option<DocumentIds>,
-    /// A page had no identity (it reached a cap): reading stopped there, and the list names no more of this version ([`identity::give_up`]).
-    pub gave_up: bool,
+    /// Pages read and found to have no identity (each reached a cap), or that the file's page tree doesn't have: each is marked tried alone
+    /// ([`identity::tried`]), and reading went on to the next.
+    pub tried: Vec<u32>,
+    /// What the job's reads cost, counted against the version's budget ([`identity::spend`]).
+    pub bytes: u64,
 }
 
 impl std::fmt::Debug for Identified {
@@ -57,7 +63,8 @@ impl std::fmt::Debug for Identified {
             .debug_struct("Identified")
             .field("tab", &self.tab)
             .field("pages", &self.pages.len())
-            .field("gave_up", &self.gave_up)
+            .field("tried", &self.tried.len())
+            .field("bytes", &self.bytes)
             .finish_non_exhaustive()
     }
 }
@@ -153,7 +160,13 @@ pub fn work<L: DocLoader>(session: &Session<L>) -> Vec<IdentifyJob> {
             }
             pages.truncate(MAX_PAGES_A_JOB);
             let (path, stamp) = readable(session, *id)?;
-            Some(IdentifyJob { tab: *id, path, stamp, pages })
+            Some(IdentifyJob {
+                tab: *id,
+                path,
+                stamp,
+                pages,
+                budget: identity::budget_left(edits),
+            })
         })
         .collect()
 }
@@ -165,8 +178,8 @@ pub fn read(job: &IdentifyJob) -> Option<Identified> {
 }
 
 /// [`read`], with the file `opened` kept from an earlier job if it's this file at this version, and kept there for the next: what the page-identity
-/// thread does, so a file's page map is built once however many jobs its pages take. Reads up to [`MAX_JOB_BYTES`] (at least one page); the pages
-/// left are the next job's.
+/// thread does, so a file's page map is built once however many jobs its pages take. Reads up to [`MAX_JOB_BYTES`] and the version's budget left
+/// (at least one page); the pages left are the next job's, or, once the budget is spent, nobody's.
 pub fn read_in(job: &IdentifyJob, opened: &mut Option<Opened>) -> Option<Identified> {
     if !is_version(&job.path, job.stamp) {
         *opened = None;
@@ -176,22 +189,25 @@ pub fn read_in(job: &IdentifyJob, opened: &mut Option<Opened>) -> Option<Identif
         *opened = Opened::open(&job.path, job.stamp);
     }
     let open = opened.as_ref()?;
-    let (budget, mut spent) = (job_bytes(), 0u64);
+    let (budget, mut spent) = (job_bytes().min(job.budget), 0u64);
     let mut pages = Vec::with_capacity(job.pages.len());
-    let mut gave_up = false;
+    let mut tried = Vec::new();
     for page in &job.pages {
         if spent >= budget {
             break;
         }
-        let Some(entry) = open.map.get(*page as usize) else { continue };
+        // A page the page tree doesn't have is tried, or every job with journal work would open the file again to look for it.
+        let Some(entry) = open.map.get(*page as usize) else {
+            tried.push(*page);
+            continue;
+        };
         let read = recto_core::page_id::read_page(&open.reader, entry, &recto_core::page_id::Caps::STANDARD);
         spent = spent.saturating_add(read.bytes);
-        let Some(identity) = read.identity else {
-            // A page past a cap has no identity: its edits can't follow it, and nothing more of this version is read.
-            gave_up = true;
-            break;
-        };
-        pages.push((*page, Known::of(&identity)));
+        match read.identity {
+            Some(identity) => pages.push((*page, Known::of(&identity))),
+            // Past a cap: this page's edits can't follow it, and the pages after it are read as ever.
+            None => tried.push(*page),
+        }
     }
     let document = recto_core::page_id::document_ids(&open.reader);
     if !is_version(&job.path, job.stamp) {
@@ -203,20 +219,20 @@ pub fn read_in(job: &IdentifyJob, opened: &mut Option<Opened>) -> Option<Identif
         stamp: job.stamp,
         pages,
         document,
-        gave_up,
+        tried,
+        bytes: spent,
     })
 }
 
-/// **Takes in what was read,** if the tab's edits are still about that version of its file and it's still readable for them. Says whether anything
-/// was taken in (or given up on), which its journal's sidecar then gets.
+/// **Takes in what was read,** if the tab's edits are still about that version of its file and it's still readable for them: the pages read, the pages
+/// tried, and what it cost, against the version's budget. Says whether anything changed, which its journal's sidecar then gets.
 pub fn identified<L: DocLoader>(session: &mut Session<L>, found: &Identified) -> bool {
     if readable(session, found.tab).is_none_or(|(_, stamp)| stamp != found.stamp) {
         return false;
     }
     let Some(edits) = session.lists.get_mut(found.tab) else { return false };
     let taken = identity::found(edits, &found.pages, found.document);
-    if found.gave_up {
-        identity::give_up(edits);
-    }
-    taken || found.gave_up
+    let tried = identity::tried(edits, &found.tried);
+    let closed = identity::spend(edits, found.bytes);
+    taken || tried || closed
 }
