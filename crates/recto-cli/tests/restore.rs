@@ -816,6 +816,14 @@ fn page_of(colour: &str) -> Page {
     Page::new(format!("{colour} rg 0 0 612 792 re f").into_bytes())
 }
 
+/// The same, at a size of its own, so a sleep file's sizes tell the version they're of.
+fn page_of_size(colour: &str, width: f32, height: f32) -> Page {
+    Page {
+        media: (width, height),
+        ..page_of(colour)
+    }
+}
+
 const RED: &str = "1 0 0";
 const BLUE: &str = "0 0 1";
 const GREEN: &str = "0 1 0";
@@ -884,7 +892,7 @@ fn a_new_version_of_a_file_has_none_of_the_old_ones_sleep_files() {
     assert_eq!(stamps_in_sleep_files(&state), [red], "the old one, as it should be");
     // Another app puts blue there, and it's woken from what it had.
     std::thread::sleep(Duration::from_millis(20));
-    std::fs::write(&file, pages(&[page_of(BLUE), page_of(BLUE)])).unwrap();
+    std::fs::write(&file, pages(&[page_of_size(BLUE, 400.0, 500.0), page_of_size(BLUE, 400.0, 500.0)])).unwrap();
     run.ok(&["tap", &on_tab]);
     wait_until("it finds the new one", || run.ok(&["where"])["pages"] == 2);
     run.settled();
@@ -896,11 +904,17 @@ fn a_new_version_of_a_file_has_none_of_the_old_ones_sleep_files() {
     let stamps = stamps_in_sleep_files(&state);
     assert!(!stamps.contains(&red), "nothing of the old one, under any name: {stamps:?}");
     assert!(stamps.contains(&blue), "and it's the new one that's there: {stamps:?}");
+    // Its facts are the new version's, not the old one's under the new stamp: two pages of 400 by 500, where the old had one of 612 by 792.
+    let blue_file: Vec<_> = sleep_files_read(&state).into_iter().filter(|sleep| sleep.file == blue).collect();
+    let facts: Vec<(u32, Option<(f32, f32)>)> = blue_file.iter().map(|sleep| (sleep.file_pages, sleep.usual)).collect();
+    assert_eq!(facts, [(2, Some((400.0, 500.0)))], "the old version's facts under the new stamp");
+    let blue_version = blue_file[0].version;
+    assert!(blue_version.is_some(), "a version a worker said");
     // A save, with no sleep file in between to hide behind: the tab's view is still in memory at the moment it's saved.
     run.ok(&["tap", &on_tab]);
     run.settled();
     let written = folder.join("written.pdf");
-    std::fs::write(&written, pages(&[page_of(GREEN), page_of(GREEN)])).unwrap();
+    std::fs::write(&written, pages(&[page_of_size(GREEN, 400.0, 500.0), page_of_size(GREEN, 400.0, 500.0)])).unwrap();
     run.ok(&["qa", "save-from", written.to_str().unwrap()]);
     run.settled();
     run.ok(&["tap", &other_tab]);
@@ -909,6 +923,11 @@ fn a_new_version_of_a_file_has_none_of_the_old_ones_sleep_files() {
     wait_until("the old version's goes", || !stamps_in_sleep_files(&state).contains(&blue));
     let green = recto_platform::file_stamp(&file).unwrap();
     assert!(stamps_in_sleep_files(&state).contains(&green), "{:?}", stamps_in_sleep_files(&state));
+    let saved: Vec<_> = sleep_files_read(&state).into_iter().filter(|sleep| sleep.file == green).collect();
+    assert!(
+        !saved.is_empty() && saved.iter().all(|sleep| sleep.file_pages == 2 && sleep.version != blue_version),
+        "the version before the save's facts under the saved one's stamp: {saved:?}"
+    );
     // And across a restart, what comes up isn't any of the old ones, and its next file isn't either.
     run.quit();
     let run = Run::on(&state).unwrap();
@@ -948,7 +967,7 @@ fn a_warm_tab_shows_its_file_as_it_is_now() {
     run.settled();
     assert_eq!(run.report()["reader"]["documents_held"], 2, "it's warm, with its pages held");
     let replacement = folder.join("replacement.pdf");
-    std::fs::write(&replacement, pages(&[page_of(BLUE), page_of(BLUE)])).unwrap();
+    std::fs::write(&replacement, pages(&[page_of_size(BLUE, 400.0, 500.0), page_of_size(BLUE, 400.0, 500.0)])).unwrap();
     std::fs::rename(&replacement, &file).unwrap();
     run.ok(&["tap", &tab_on(&run, "colour.pdf")]);
     run.settled();
@@ -968,6 +987,13 @@ fn a_warm_tab_shows_its_file_as_it_is_now() {
         stamps.contains(&now) && stamps.iter().all(|stamp| *stamp == now || stamp.inode != now.inode),
         "the file as it is now, and nothing of the one replaced: {stamps:?}"
     );
+    // And its facts are the new file's, not the held view's of the old one: pages of 400 by 500, where the old were 612 by 792.
+    let facts: Vec<(u32, Option<(f32, f32)>)> = sleep_files_read(&state)
+        .iter()
+        .filter(|sleep| sleep.file == now)
+        .map(|sleep| (sleep.file_pages, sleep.usual))
+        .collect();
+    assert_eq!(facts, [(2, Some((400.0, 500.0)))], "the replaced file's sizes under the new one's stamp");
 }
 
 /// Failure (review follow-up 1): a file replaced while the app was closed, and its tab the one on screen: the window goes up with the old file's facts from its
@@ -1358,12 +1384,21 @@ fn a_launch_goes_up_from_the_sleep_file() {
         (shown["scroll_y"].as_f64().unwrap() - before["reader"]["scroll_y"].as_f64().unwrap()).abs() < 1.0,
         "{shown}"
     );
-    // Up as its page was drawn (`ready`), or at the cap on a starved machine, its pages on their paper either way: what it may not do is go up as ready
-    // with nothing on it.
-    assert!(
-        shown["why"] != "ready" || shown["tile_layers"].as_u64().unwrap() > 0,
-        "something on it: {shown}"
-    );
+    // The rule (`showing::decide`): up as its page is drawn (`ready`, with something on it), or at the cap (1.2 s from the window's opening) only while
+    // the page in view isn't drawn yet, its pages on their paper from the sleep file's facts all the same. A cap that fires for anything else (the state,
+    // the session) is no wake's, and fails here; that a cap is rare is a matter of a machine's speed, which this one launch can't tell.
+    match shown["why"].as_str() {
+        Some("ready") => assert!(shown["tile_layers"].as_u64().unwrap() > 0, "up as ready with nothing on it: {shown}"),
+        Some("cap") => {
+            assert!(shown["page_layers"].as_u64().unwrap() > 0, "up at the cap with no page on its paper: {shown}");
+            assert_eq!(
+                shown["asks"]["last_wait"]["held_by"],
+                json!(["page_not_ready"]),
+                "held to the cap by something but its page: {shown}"
+            );
+        }
+        _ => panic!("shown by the host's own patience, past Rust's cap: {shown}"),
+    }
     assert_eq!(
         after["reader"]["last_wake"]["from_sleep"],
         true,
