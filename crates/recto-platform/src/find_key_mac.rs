@@ -270,12 +270,18 @@ pub(super) enum Release {
     Unknown,
 }
 
+/// The statuses that are a check made and failed: the code isn't signed, or isn't as signed, or doesn't meet the requirement, or its resources aren't as sealed. From the macOS SDK's `Security.framework/Headers/CSCommon.h`: errSecCSUnsigned, errSecCSSignatureFailed, errSecCSResourcesNotSealed, errSecCSResourcesNotFound, errSecCSBadResource, errSecCSResourceRulesInvalid, errSecCSReqFailed, errSecCSSignatureInvalid, errSecCSInfoPlistFailed, errSecCSResourceDirectoryFailed, errSecCSBadNestedCode, errSecCSUnsealedAppRoot, errSecCSWeakResourceRules, errSecCSBadMainExecutable, errSecCSUnsealedFrameworkRoot, errSecCSSignatureUntrusted, errSecCSRevokedNotarization. Every other status, such as errSecCSSignatureNotVerifiable (-67060: the verifier couldn't read the code) or errSecCSStaticCodeChanged (-67034: the code on disk isn't what's running, as after an update in place), says the check couldn't be made (the second security read's item 4).
+const NOT_THE_RELEASE: &[OsStatus] = &[
+    -67062, -67061, -67057, -67056, -67054, -67053, -67050, -67045, -67030, -67023, -67021, -67014, -67013, -67010, -67008, -66996, -66992,
+];
+
 /// What a check's status, or its not being made, answers.
 fn release_answer(status: Option<OsStatus>) -> Release {
     match status {
         None => Release::Unknown,
         Some(ERR_SEC_SUCCESS) => Release::Yes,
-        Some(_) => Release::No,
+        Some(status) if NOT_THE_RELEASE.contains(&status) => Release::No,
+        Some(_) => Release::Unknown,
     }
 }
 
@@ -537,8 +543,13 @@ mod tests {
     #[test]
     fn only_a_check_that_was_made_and_failed_says_not_the_release() {
         assert_eq!(release_answer(Some(ERR_SEC_SUCCESS)), Release::Yes);
-        for status in [-67050, -67062, -67061, -1] {
+        // A made check's failures, from CSCommon.h: not signed, signature changed, requirement not met, a resource changed, nested code changed.
+        for status in [-67062, -67061, -67050, -67054, -67021, -66996] {
             assert_eq!(release_answer(Some(status)), Release::No, "{status}");
+        }
+        // Couldn't be made: the code unreadable to the verifier, the disk changed under the running copy, an unsupported requirement, anything else.
+        for status in [-67060, -67034, -67051, -67052, -1, 1] {
+            assert_eq!(release_answer(Some(status)), Release::Unknown, "{status}");
         }
         assert_eq!(release_answer(None), Release::Unknown);
         let sec = security().expect("Security.framework");
