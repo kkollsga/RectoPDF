@@ -26,7 +26,7 @@ All of it is in your user folder, readable only by you.
 | Which page is which, for the edit history to follow a file that changes: a digest of each page, nothing of its text | `session/journals/` | As long as the edit history it belongs to, and removed with it |
 | For a tab that's gone idle, its contents and the sizes of its pages, so it comes back at its place at once. No picture of any page | `session/journals/` | 30 days, within 256 MiB in all |
 | One backup of a PDF as it was before you first saved it | `~/Library/Application Support/RectoPDF/agent/backups.noindex/` | 30 days, within 1 GiB in all |
-| Page text of PDFs you searched with Find, so the next search is fast | `~/Library/Caches/RectoPDF/corpus.noindex/` | 90 days after it was last used, within 2 GiB in all. A changed file's old text goes |
+| Page text of PDFs you searched with Find, so the next search is fast. **Stored encrypted** (below) | `~/Library/Caches/RectoPDF/corpus.noindex/` | 90 days after it was last used, within 2 GiB in all. A changed file's old text goes |
 | Generated contents you asked for | `~/Library/Caches/RectoPDF/contents.noindex/` | 90 days, within 32 MiB in all |
 | Update settings, when it last checked, and what's on offer | `~/Library/Application Support/RectoPDF/agent/updates.json`, `update.log` and `update/` | Until they change |
 | A copy of your session from just before an update, to go back to if the new version won't start: everything in `session/` but the histories of PDFs you'd closed, so it holds the edit history and kept pages too | `update/before/` in that folder | A week |
@@ -38,6 +38,12 @@ Kept out of Time Machine: the edit history (with the idle tabs' contents, the pa
 **No picture of any page is kept.** A tab you're not reading comes back from its PDF, its pages in place as they're drawn. Pictures that an earlier version kept are removed the first time this version starts.
 
 **Passwords are never kept.** A password-protected PDF asks again after a restart. Its page text isn't kept for searching, and nothing of its pages is kept for when it's idle.
+
+**The page text is stored encrypted** (AES-256-GCM), each PDF's under a key of its own, made from one key that RectoPDF keeps in your Mac's data-protection keychain, in an access group only the signed RectoPDF release can use. On the machine where this was measured (a build runner, not yet a Mac of a person's), a program that isn't that release, whether unsigned, signed ad hoc or signed by another developer, was refused the key, and refused putting a key of its own or changing or removing the key. So another program you run, a script or an agent included, can't read the page text, and it can't read the key. It can still see that a folder is there for a PDF (named by a hash of the file's identity, not its name or path), how big its files are and when they were written, which shows how many pages there are and how long each page's text is. And, running as you, it can delete or damage the folders: RectoPDF then builds that text again at your next search, and never believes text it can't open. The same holds for the title and outline kept with it. What the folders hold is unchanged: the same PDFs, never one that needed a password, for the same 90 days and 2 GiB.
+
+Two cases are different. **A copy of RectoPDF that isn't the signed release** (one someone built themselves), or a Mac where the keychain can't be used at the time, keeps the key in memory only, so the page text it makes can't be opened after RectoPDF quits and is built again the next time you search. **`recto index --agent`**, which you or a program ask for, also writes a folder of one plain Markdown file per page of that PDF beside the encrypted text, for a program to search with its own tools; any program you run can read it while it exists. It's set aside when RectoPDF quits, and removed the next time RectoPDF runs.
+
+**Page text kept by RectoPDF 0.1.0 was plain.** It's removed the first time the new version starts, and each PDF's text is made again, encrypted, when you next search it.
 
 macOS also keeps a few things of its own for any app, such as the folder you last opened a file from.
 
@@ -66,4 +72,4 @@ Quit RectoPDF, then move these to the Bin:
 
 That removes everything above, including unsaved edits and undo history, so save what you want to keep first. To clear only the list of recent files, choose File > Open Recent > Clear Menu.
 
-To remove RectoPDF itself, move RectoPDF from Applications to the Bin as well.
+The key the page text is encrypted with stays in your keychain when you do this; it opens nothing once the folders are gone. To remove RectoPDF itself, move RectoPDF from Applications to the Bin as well.

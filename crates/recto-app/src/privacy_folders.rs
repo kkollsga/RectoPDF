@@ -204,3 +204,50 @@ fn every_folder_the_notice_keeps_out_of_backups_is_marked_and_no_folder_is_unacc
         assert!(seen.contains(&row.at), "no route made `{}`: the test makes it, or the row goes", row.at);
     }
 }
+
+/// Every file under `root`, links not followed.
+fn files_under(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut folders = vec![root.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => folders.push(entry.path()),
+                Ok(kind) if kind.is_file() => found.push(entry.path()),
+                _ => {}
+            }
+        }
+    }
+    found
+}
+
+/// Failure: `PRIVACY.md` says the page text kept for Find is stored encrypted, and a build leaves a document's words in a file under `corpus.noindex`
+/// (a format that isn't sealed, or a file beside the pack that holds the text), so another program of the person's can read it. The words searched for
+/// are in the document and are found by the search, so the folder does hold its text, and none of it is readable there.
+#[test]
+fn the_page_text_the_notice_says_is_stored_encrypted_is_not_in_the_folder_in_the_clear() {
+    let notice = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../PRIVACY.md")).expect("PRIVACY.md");
+    assert!(
+        notice.contains("The page text is stored encrypted"),
+        "the notice's paragraph on the page text's encryption is what this test holds to the folder"
+    );
+    let disk = Disk::new();
+    let file = disk.pdf("zebrafish.pdf", 3);
+    let app = disk.builder().indexing(true).start();
+    app.open(&file);
+    let found = app.recto(Level::ReadOnly, &["search", "zebrafish"]).expect("searched");
+    assert!(found.to_string().contains("zebrafish"), "the search finds the word, so the text is in the corpus: {found}");
+    let corpus = app.disk().paths().corpus.clone();
+    // The corpus is built off the session's thread, and usable only once its summary is written, last.
+    app.wait_until("the page text built and sealed", || files_under(&corpus).iter().any(|path| path.ends_with("ready.sealed")));
+    let files = files_under(&corpus);
+    assert!(files.iter().any(|path| path.ends_with("text.pack")), "the pack is there: {files:?}");
+    for path in files {
+        let bytes = std::fs::read(&path).expect("a file");
+        assert!(
+            !bytes.windows(b"zebrafish".len()).any(|window| window == b"zebrafish"),
+            "{} holds the document's words in the clear",
+            path.display()
+        );
+    }
+}
