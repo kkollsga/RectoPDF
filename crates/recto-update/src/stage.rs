@@ -237,7 +237,7 @@ pub fn may_go_back_to(app: &Path, team: Option<&str>, builds_allowed: bool, iden
     if !verifies(&[]) {
         return false;
     }
-    let requirement = format!("={}", developer_id_requirement(team));
+    let requirement = format!("={}", recto_platform::signing::developer_id_requirement(team));
     verifies(&["-R", &requirement]) || (builds_allowed && has_identifiers(app, identifier, helper_required))
 }
 
@@ -315,13 +315,6 @@ pub fn app_version(app: &Path) -> Option<String> {
     Some(crate::version::running(&short, development.as_deref()))
 }
 
-/// The Developer ID rule: an Apple-issued certificate, of this team.
-fn developer_id_requirement(team: &str) -> String {
-    format!(
-        "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"{team}\""
-    )
-}
-
 /// What the signature's hash of an app is, as `codesign` says it.
 fn cdhash_of(app: &str) -> Result<String, StageError> {
     let (_, _, ran) = tool(CODESIGN, &["-d", "-vvv", app], QUICK_LIMIT, 64 * 1024).map_err(|_| StageError::now("tool_missing", "a system tool is missing"))?;
@@ -369,7 +362,7 @@ pub fn verify_app_as(app: &Path, trust: Trust, version: &str, bundle_id: &str, n
         return Err(StageError::lasting("signature", "the app's signature doesn't verify"));
     }
     if let Trust::DeveloperId { team } = trust {
-        let requirement = format!("={}", developer_id_requirement(team));
+        let requirement = format!("={}", recto_platform::signing::developer_id_requirement(team));
         if matches!(
             ask_tool(CODESIGN, &["--verify", "--deep", "--strict", "-R", &requirement, path], TOOL_LIMIT)?,
             Answer::No
@@ -393,7 +386,7 @@ pub fn still_what_was_verified(app: &Path, cdhash: &str, version: &str, team: Op
     if app_version(app).as_deref() != Some(version) {
         return false;
     }
-    let requirement = team.map(|team| format!("={}", developer_id_requirement(team)));
+    let requirement = team.map(|team| format!("={}", recto_platform::signing::developer_id_requirement(team)));
     let mut args = vec!["--verify", "--deep", "--strict"];
     if let Some(requirement) = &requirement {
         args.extend(["-R", requirement.as_str()]);
