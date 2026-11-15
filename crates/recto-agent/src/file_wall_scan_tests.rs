@@ -81,6 +81,11 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
          build's sealed records and to find the pages a retry reads",
     ),
     (
+        "recto-index/src/corpus/sealed.rs",
+        1,
+        "the index's own pack under the app's index folder, read to say what it keeps of a document: `opened_text`, for the index tests",
+    ),
+    (
         "recto-platform/src/bin/recto-sandbox-probe.rs",
         2,
         "a test's probe, never in the app: a stand-in for a compromised renderer, trying the files it's told to from inside the helper's walls",
