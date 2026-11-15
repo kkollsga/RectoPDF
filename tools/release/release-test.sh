@@ -190,5 +190,37 @@ check "bump: a file that no longer names the version fails --check" 1 "$rc"
 out=$("$BUMP" --check 2>&1); rc=$?
 check "bump: this repository is at one version ($out)" 0 "$rc"
 
+# ---- app-entitlements.sh: the release's entitlements, and a signed bundle checked against them ----
+ENT="$SOURCE/tools/release/app-entitlements.sh"
+E="$X/entitlements"; mkdir -p "$E"
+"$ENT" --write "$E/claims.plist"
+# Failure: the entitlements a release signs with aren't a plist codesign reads, or name another App ID than the profile's.
+check "entitlements: --write makes a plist" 0 "$(plutil -lint "$E/claims.plist" >/dev/null 2>&1; echo $?)"
+has "entitlements: with the App ID and the group" "<string>6GND8Z2C7Z.io.github.kkollsga.RectoPDF</string>" "$(cat "$E/claims.plist")"
+bundle() { # path: a bundle of two made programs, signed ad hoc, which is all `--check` reads
+  mkdir -p "$1/Contents/MacOS"
+  cp /usr/bin/true "$1/Contents/MacOS/RectoPDF"
+  cp /usr/bin/true "$1/Contents/MacOS/recto"
+  printf '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>io.github.kkollsga.RectoPDF</string><key>CFBundleExecutable</key><string>RectoPDF</string></dict></plist>' > "$1/Contents/Info.plist"
+}
+# Failure: a release whose bundle has no provisioning profile passes, though its main executable can't then launch with the entitlements.
+bundle "$E/no-profile.app"
+codesign --force --sign - "$E/no-profile.app/Contents/MacOS/recto" 2>/dev/null
+codesign --force --sign - --entitlements "$E/claims.plist" "$E/no-profile.app" 2>/dev/null
+out=$("$ENT" --check "$E/no-profile.app" 2>&1); rc=$?
+check "entitlements: a bundle with no profile is refused" 1 "$rc"
+has "entitlements: and named" "the bundle has no Contents/embedded.provisionprofile" "$out"
+hasnt "entitlements: while its main executable's claims are right" "the app's main executable claims" "$out"
+# Failure: a release whose profile isn't one, whose main executable claims nothing, or whose other programs claim the app's group passes.
+bundle "$E/wrong.app"
+echo "not a profile" > "$E/wrong.app/Contents/embedded.provisionprofile"
+codesign --force --sign - --entitlements "$E/claims.plist" "$E/wrong.app/Contents/MacOS/recto" 2>/dev/null
+codesign --force --sign - "$E/wrong.app" 2>/dev/null
+out=$("$ENT" --check "$E/wrong.app" 2>&1); rc=$?
+check "entitlements: a wrong bundle is refused" 1 "$rc"
+has "entitlements: a profile that isn't one" "isn't a signed provisioning profile" "$out"
+has "entitlements: a main executable that claims nothing" "the app's main executable claims com.apple.application-identifier = None" "$out"
+has "entitlements: another program that claims the group" "Contents/MacOS/recto claims the app's identity or keychain group" "$out"
+
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."
