@@ -782,6 +782,17 @@ fn only_a_file_known_to_be_another_withholds_its_pages_and_takes_no_more_edits()
         }
         assert!(!bed.s.notices().pages_withheld(a), "{expected:?}: back to nothing unsaved, its pages show");
     }
+    // Clear History isn't an edit either: allowed while held, it takes the history and leaves the unsaved edits, held as they were.
+    for (expected, (mut bed, a, _b)) in [
+        (EditsFit::FileChanged, replaced()),
+        (EditsFit::FileChangedVersionUnknown, dropped_stamp()),
+        (EditsFit::NotThisFile, journal_of_another_length()),
+    ] {
+        assert!(bed.s.clear_history(a, ClearReason::UserAsked), "{expected:?}: allowed");
+        assert!(bed.s.lists().is_edited(a), "{expected:?}: the unsaved edits stay");
+        assert_eq!(bed.s.lists().undo_and_redo(a), (false, false), "{expected:?}: the history's gone");
+        assert_eq!(bed.s.notices().fit(a), expected, "{expected:?}: held as they were");
+    }
 }
 
 /// Failure (review S1 of `build/shorter-file-pages`): a clean tab's file was replaced, then the person edited the new version: the edits fit what the

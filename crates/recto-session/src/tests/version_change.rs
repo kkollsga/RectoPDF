@@ -564,3 +564,27 @@ fn while_a_follow_is_read_the_tab_says_its_being_looked_at_then_what_came_of_it(
         }
     }
 }
+
+/// Clear History stays allowed while a list is held (it isn't an edit: Discard is what brings the file), so it can land between a follow's steps:
+/// failure caught, the follow then lost the edits' pages, put a turn on another page, or followed a list whose history it had read as it was. The
+/// history goes, the unsaved turn stays, and the follow, dropped or not, ends with the turn on its own page in the new version.
+#[test]
+fn clearing_history_between_a_follows_steps_leaves_the_turn_on_its_page() {
+    let mut bed = Bed::turned_page_9();
+    bed.changed_and_read(&document("Mine", &(1..=10).collect::<Vec<_>>(), true));
+    let job = version_change::work(&mut bed.s).remove(0);
+    assert!(bed.s.clear_history(bed.a, ClearReason::UserAsked), "allowed while held");
+    assert!(bed.s.lists().is_edited(bed.a), "the unsaved turn stays");
+    assert!(!bed.s.lists().get(bed.a).unwrap().can_undo(), "the history's gone");
+    let current = version_change::current(&bed.s, &job);
+    let landed = if current {
+        version_change::read(&job).and_then(|matched| version_change::followed(&mut bed.s, &matched))
+    } else {
+        None
+    };
+    if landed.is_none() {
+        assert_eq!(bed.follow().len(), 1, "current {current}: the next job, about the list as it is");
+    }
+    assert_eq!(bed.turned(), vec![9], "current {current}: the turn on \"Mine page 9\", page 10 now");
+    assert_eq!(bed.notice(), Some("edits_followed"));
+}
