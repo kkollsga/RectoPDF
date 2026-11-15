@@ -675,6 +675,33 @@ fn a_save_with_nothing_to_save_leaves_the_refusal_showing() {
     );
 }
 
+/// **Failure (the phase's closing read, 2026-11-15): a hand-off's busy list left out an agent's command running beside the person's parked edits,** as
+/// an agent's was counted as every command less the person's, and a parked edit is the person's but not yet a command. An agent's turn held as it runs,
+/// with the person's highlight held and an undo parked behind it: the list names both.
+#[test]
+fn a_hand_offs_busy_list_names_an_agents_command_beside_the_persons_parked_edits() {
+    let app = with_a_step_before();
+    selects(&app, (0, 0), (0, 5));
+    let (held, go) = app.hold_next("highlight");
+    menu(&app, HIGHLIGHT_ID);
+    held.recv_timeout(WAIT_LIMIT).expect("the person's highlight held as its pages are read");
+    menu(&app, "edit.undo");
+    flush(&app);
+    assert_eq!(app.core().core.lane().parked(), 1, "the undo parked behind it");
+    let (agents_held, agents_go) = app.hold_next("page_rotate");
+    let busy = std::thread::scope(|scope| {
+        let agent = scope.spawn(|| app.agent(Level::Full, r#"{"cmd":"page_rotate","tab":"active","pages":"all","degrees":90}"#));
+        agents_held.recv_timeout(WAIT_LIMIT).expect("the agent's command held as it runs");
+        let busy: Vec<String> = app.core().hand_off_check().busy.into_iter().map(|item| item.code).collect();
+        drop(agents_go);
+        agent.join().expect("the agent's thread").expect("the agent's turn");
+        busy
+    });
+    drop(go);
+    app.settle();
+    assert_eq!(busy, ["agent_command", "person_command"], "neither hides the other");
+}
+
 /// How a command of the person's parked behind their highlight goes from the lane without running.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Dropped {

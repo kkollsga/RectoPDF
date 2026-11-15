@@ -15,6 +15,8 @@ pub struct Running {
     pub commands: u32,
     /// Those of them anything of which can be in what a quit writes ([`super::command_kinds::changes`]).
     pub changing: u32,
+    /// Those of them an agent's.
+    pub agents: u32,
     /// The person's commands on threads of their own, from when they're asked to when what came of them is said, their edits parked in the lane among them.
     pub persons: u32,
     /// Files being read off the session thread, for a tab or an open, a person's command among them to run again once it's in.
@@ -32,6 +34,7 @@ impl Running {
             sheets: life.sheets_open(),
             commands: host.running.load(Ordering::SeqCst),
             changing: host.changing.load(Ordering::SeqCst),
+            agents: host.agents.load(Ordering::SeqCst),
             persons: life.persons_running(),
             reads: life.reads_running(),
             saves: tools.save_ui().running.load(Ordering::SeqCst),
@@ -42,7 +45,7 @@ impl Running {
     /// **The hand-off's: everything under way,** each named in the person's words.
     #[must_use]
     pub fn busy(&self) -> Vec<BusyItem> {
-        super::hand_off_check_parts(self.reads, self.sheets, self.commands, self.persons, self.saves, self.printing)
+        super::hand_off_check_parts(self.reads, self.sheets, self.commands, self.agents, self.persons, self.saves, self.printing)
     }
 
     /// **The quit's: what can change what it writes** (the record, a journal, a document's file): the person's commands, their parked edits among

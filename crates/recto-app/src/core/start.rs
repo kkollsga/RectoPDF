@@ -95,6 +95,7 @@ impl Inner {
             saver: Arc::clone(&saver),
             running: AtomicU32::new(0),
             changing: AtomicU32::new(0),
+            agents: AtomicU32::new(0),
             handing_off: AtomicBool::new(false),
             notice: Mutex::new(None),
             watchers: Mutex::new(None),
