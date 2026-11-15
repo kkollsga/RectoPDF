@@ -102,6 +102,10 @@ pub(super) fn open_page(
     if !entry.is_bounded() || entry.end() > pack_len {
         return None;
     }
+    // A page longer than any before it grows the buffer, which frees the old room as it was: what's there is overwritten first.
+    if entry.len as usize > buffer.capacity() {
+        zeroize::Zeroize::zeroize(buffer);
+    }
     buffer.resize(entry.len as usize, 0);
     recto_platform::read_exact_at(pack, buffer, entry.offset).ok()?;
     let plain = seal.open_in_place(Purpose::Page(page), buffer).ok()?;

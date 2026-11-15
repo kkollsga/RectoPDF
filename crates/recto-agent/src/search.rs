@@ -547,6 +547,13 @@ pub(crate) struct Slot {
     live: Option<recto_index::Normalized>,
 }
 
+/// **The page a corpus's chunk opened into is overwritten when the search ends**, the whole of the buffer's room (`zeroize`), so the last page read from the sealed text doesn't stay in freed memory. A buffer that has to grow for a longer page is overwritten before it does (`recto_index::corpus`). What isn't: what a search makes from a page's text (its folding, its hits, its snippets) is ordinary memory, as a page read live always was.
+impl Drop for Slot {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.buffer);
+    }
+}
+
 /// Reads pages by whichever way each file's can be read, the one way for every kind of search.
 pub(crate) struct Reader<'a> {
     plan: &'a Plan,

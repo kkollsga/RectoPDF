@@ -23,6 +23,8 @@ crc32fast.workspace = true
 aes-gcm.workspace = true
 hkdf.workspace = true
 getrandom.workspace = true
+# A page's opened text overwritten before its buffer grows.
+zeroize.workspace = true
 
 [dev-dependencies]
 # Test-only: `FindKey::for_tests`.

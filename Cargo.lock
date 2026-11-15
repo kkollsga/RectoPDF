@@ -743,6 +743,7 @@ dependencies = [
  "recto-testpdf",
  "serde",
  "serde_json",
+ "zeroize",
 ]
 
 [[package]]
@@ -868,6 +869,7 @@ dependencies = [
  "recto-testpdf",
  "serde_json",
  "sha2",
+ "zeroize",
 ]
 
 [[package]]
