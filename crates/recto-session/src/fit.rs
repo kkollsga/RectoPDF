@@ -76,11 +76,11 @@ impl EditsFit {
             }),
             Self::NotThisFile => Some(NoticeSaid {
                 code: "edits_dont_fit",
-                message: "This tab's unsaved edits don't fit this file as it is on disk, so its pages aren't shown and the edits can't be saved onto it, here or as a copy. Discard the edits to see the file as it is now. Nothing has been written to the file.",
+                message: "This file isn't the one your unsaved edits were made on, so its pages aren't shown: they can't be saved onto it. Discard them to see the file as it is now.",
             }),
             Self::VersionUnknown => Some(NoticeSaid {
                 code: "edits_version_unknown",
-                message: "Which version of this file these unsaved edits were made on isn't known, so they can't be saved onto it, here or as a copy. They're kept, and nothing has been written to the file.",
+                message: "Which version of this file your unsaved edits were made on isn't known, so they can't be saved onto it. They're kept.",
             }),
         }
     }
