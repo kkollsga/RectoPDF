@@ -10,6 +10,11 @@
 #   app/release-zip.sh --signed --already-built   Sign, notarize, staple and zip what was built, and run nothing of it. The signing job.
 #   app/release-zip.sh --check-signed             Run the stapled app and check the zip, once the keys are gone again.
 #
+# What the release preflight does with them (.github/workflows/release-preflight.yml, tools/release/preflight-app.sh), so the team's signing is
+# tried on the real app without a tag, by the release's own code up to where notarization would start:
+#   app/release-zip.sh --signed --already-built --no-notarize   The signing job's signing and its checks, then stops: no notarization, staple or zip.
+#   app/release-zip.sh --check-signed --no-notarize             --check-signed's checks and run of the app, but the ticket's and the zip's.
+#
 # --signed needs (docs/RELEASING.md, "What the owner has to add"):
 #   RECTO_SIGN_IDENTITY    "Developer ID Application: <name> (<team>)", of TEAM_ID in crates/recto-update/src/lib.rs
 #   RECTO_NOTARY_PROFILE   a notarytool keychain profile (xcrun notarytool store-credentials)
@@ -23,7 +28,7 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$APP_DIR/.." && pwd)"
-ALLOW_DIRTY=0; SIGNED=0; BUILT_ONLY=0; ALREADY_BUILT=0; CHECK_SIGNED=0
+ALLOW_DIRTY=0; SIGNED=0; BUILT_ONLY=0; ALREADY_BUILT=0; CHECK_SIGNED=0; NO_NOTARIZE=0
 for a in "$@"; do
     case "$a" in
         --allow-dirty) ALLOW_DIRTY=1 ;;
@@ -31,10 +36,16 @@ for a in "$@"; do
         --built-only) BUILT_ONLY=1 ;;
         --already-built) ALREADY_BUILT=1 ;;
         --check-signed) CHECK_SIGNED=1 ;;
-        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+        --no-notarize) NO_NOTARIZE=1 ;;
+        -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
         *) echo "unknown argument: $a" >&2; exit 2 ;;
     esac
 done
+# Only where it stops a release's own path early, never where it would make an unnotarized release: a zip made without notarizing would
+# look like one.
+if [ "$NO_NOTARIZE" = 1 ] && ! { [ "$SIGNED" = 1 ] && [ "$ALREADY_BUILT" = 1 ]; } && [ "$CHECK_SIGNED" = 0 ]; then
+    echo "--no-notarize goes with --signed --already-built or with --check-signed: it stops those before notarization" >&2; exit 2
+fi
 
 if [ -n "$(git -C "$REPO" status --porcelain)" ]; then
     if [ "$ALLOW_DIRTY" = 1 ]; then echo "WARNING: dirty git tree (--allow-dirty): a test build, not a release."
@@ -184,11 +195,15 @@ notarize() {
 }
 
 # Signs with the Developer ID, notarizes and staples. Runs nothing of the app's.
-sign_it() {
+sign_it() { sign_team; notarize_it; }
+# The signing alone, with its checks (build.sh --sign-only checks the helper and the entitlements): all the preflight runs of sign_it.
+sign_team() {
     "$APP_DIR/build.sh" --sign-only
     echo "==> Developer ID: team $(team_of "$APP")"
     [ "$(team_of "$APP")" = "$TEAM_ID" ] || { echo "the app isn't signed by team $TEAM_ID" >&2; exit 1; }
     [ "$(team_of "$APP/Contents/Helpers/RectoRender.app")" = "$TEAM_ID" ] || { echo "the renderer helper isn't signed by team $TEAM_ID" >&2; exit 1; }
+}
+notarize_it() {
     echo "==> Notarize and staple the app (waits for Apple)"
     ditto -c -k --sequesterRsrc --keepParent "$APP" "$WORK/notarize.zip"
     notarize "$WORK/notarize.zip"
@@ -243,15 +258,25 @@ check_zip() {
 if [ "$CHECK_SIGNED" = 1 ]; then
     # In the signing job, once the keys are gone: the stapled app runs and draws, and the zip is one the updater takes.
     [ "$(team_of "$APP")" = "$TEAM_ID" ] || { echo "the app isn't signed by team $TEAM_ID" >&2; exit 1; }
-    xcrun stapler validate "$APP"
+    # The preflight's app is signed and not notarized, so it has no ticket and no zip: everything else is the same.
+    [ "$NO_NOTARIZE" = 1 ] || xcrun stapler validate "$APP"
     "$APP_DIR/render-helper.sh" --check "$APP"
     "$REPO/tools/release/app-entitlements.sh" --check "$APP"
     run_it
+    if [ "$NO_NOTARIZE" = 1 ]; then
+        echo "==> The signed app ran and drew. Not checked here, as it isn't notarized: the stapled ticket, Gatekeeper and the zip."
+        exit 0
+    fi
     check_zip signed
 elif [ "$ALREADY_BUILT" = 1 ]; then
     [ "$SIGNED" = 1 ] || { echo "--already-built goes with --signed" >&2; exit 2; }
     [ -x "$APP/Contents/MacOS/recto-updater" ] || { echo "there's no built app to sign" >&2; exit 1; }
-    sign_it
+    sign_team
+    if [ "$NO_NOTARIZE" = 1 ]; then
+        echo "==> Signed by team $TEAM_ID and checked, and stopped there (--no-notarize): nothing notarized, stapled or zipped, and nothing of the app has run."
+        exit 0
+    fi
+    notarize_it
     zip_it
     echo "==> Signed and zipped in $OUT. Nothing of the app has run here: --check-signed does that, once the keys are gone."
     exit 0
