@@ -77,7 +77,7 @@ impl Reader {
                 "discards_lost": self.counts.discards_lost,
             },
             "documents_held": self.docs.views.len(),
-            "last_wake": self.wake.last_wake().map(|wake| json!({ "tab": wake.tab, "from_sleep": wake.from_facts, "first_frame_us": wake.first_frame_us, "sharp_us": wake.sharp_us, "blank_frames": wake.blank_frames, "had": wake.had.word() })),
+            "last_wake": self.wake.last_wake().map(|wake| json!({ "tab": wake.tab, "from_sleep": wake.from_facts, "first_frame_us": wake.first_frame_us, "sharp_us": wake.sharp_us, "blank_frames": wake.blank_frames, "had": wake.had.word(), "ended": wake.ended.word() })),
             "window_open": self.window_open,
             "selection": self.pointer.selecting.report(),
         }))
