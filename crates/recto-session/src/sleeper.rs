@@ -164,7 +164,7 @@ impl Sleeper<'_> {
     pub fn file_length_is(&mut self, id: TabId, pages: u32, version: u64) -> bool {
         let Some(tab) = self.tabs.tab_mut(id) else { return false };
         let Some(said) = tab.from_sleep.take() else { return false };
-        // The same length and, if it said, the same version: it was right. A sleep file that didn't say is right about the length only, which is all it's been used for, its pictures having gone if they weren't.
+        // The same length and, if it said, the same version: it was right. A sleep file that didn't say is right about the length only, which is all it's been used for.
         if tab.page_count == pages && (said == 0 || said == version) {
             return false;
         }

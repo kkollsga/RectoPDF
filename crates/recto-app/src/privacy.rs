@@ -79,7 +79,10 @@ mod tests {
         assert_eq!(recto_core::save::MAX_BACKUP_BYTES, gib, "within 1 GiB");
         assert_eq!(recto_update::updater::KEEP_RECORD_COPY_MS, 7 * 86_400_000, "a copy of the session for a week");
         assert_eq!(recto_control::log::MAX_LOG_BYTES * 6, 6 * 1024 * 1024, "the activity log, at most 6 MiB");
-        // No picture of a page in a sleep file: its format holds facts and nothing after them, and a file of one could never be the size of a picture.
+        // No picture of a page in a sleep file. What this holds: the format is the one with no pictures in it, and a file is read only up to a size a
+        // picture-carrying file would pass; the phrase below is in the statement. What it doesn't hold: that no route writes a picture (that's
+        // `core::headless::sleeping::every_route_that_writes_a_sleep_file_writes_no_picture`, on the files read back), or that 0.1.0's are gone
+        // (`the_launch_removes_every_sleep_file_of_an_older_format` and the store's pass tests). A phrase found is the statement saying it, not it true.
         const { assert!(recto_session::sleep::SLEEP_FORMAT >= 4, "the format before held pictures") };
         const {
             assert!(

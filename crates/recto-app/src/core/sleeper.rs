@@ -455,7 +455,7 @@ impl Sleeper {
     }
 
     /// **Tabs pushed out of the warm ones, their sleep files queued,** with their facts taken just before the page view lets go of them, queued as each is
-    /// taken, so what's held is the queue's cap. A slow disk would hold up whatever's asked for next, so the one writer writes them ([`crate::sleep_queue`]). Each waits [`crate::sleeper::LEAVING_WAIT_MS`] first (the cool-down on the write). A flush hurries what's waiting and waits for it for what's left of its time, then writes the tab on screen's file.
+    /// taken, so what's held is the queue's cap. A slow disk would hold up whatever's asked for next, so the one writer writes them ([`crate::sleep_queue`]). Each waits [`crate::sleeper::LEAVING_WAIT_MS`] first (the cool-down on the write). A flush writes the tab on screen's file first, then hurries what's waiting and waits for it for what's left of its time ([`Self::sleep_at_flush`]).
     /// `shown` is the tab being shown: what's queued for it was taken as it left, so it's taken back, not written, and its pages' sizes are its first
     /// frame's ([`give_sleep_view`]); it's queued again when it next leaves.
     /// A writer's started by `start_writer` if the queue says there's none.

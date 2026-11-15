@@ -220,14 +220,17 @@ fn waking_an_idle_tab() {
     println!("load after: {}", load());
 }
 
-/// **What a sleep file of a real document comes to,** asserting nothing: the first 25 PDFs of `RECTO_SLEEP_SIZES_DIR` (the bench folder of the distillPDF
-/// checkout if it's there), each opened and drawn, then put to sleep: its file's bytes, sorted, with the average. Runs when asked:
+/// **What a sleep file of a real document comes to,** asserting nothing: the first 25 PDFs of the folder `RECTO_SLEEP_SIZES_DIR` names (2026-11-15:
+/// distillPDF's `benchmarking/bench100`), each opened and drawn, then put to sleep: its file's bytes, sorted, with the average. Runs when asked:
 ///
 /// `tools/sysguard/heavy.sh cargo nextest run --locked -p recto-app -p recto-render-service --features recto-app/testkit --run-ignored only --no-capture -E 'test(=core::headless::wake_costs::sleep_file_sizes_of_real_documents)'`
 #[test]
 #[ignore = "a measurement, run when asked"]
 fn sleep_file_sizes_of_real_documents() {
-    let folder = std::env::var("RECTO_SLEEP_SIZES_DIR").unwrap_or_else(|_| "/Volumes/EksternalHome/Koding/Rust/distillPDF/benchmarking/bench100".into());
+    let Ok(folder) = std::env::var("RECTO_SLEEP_SIZES_DIR") else {
+        println!("set RECTO_SLEEP_SIZES_DIR to a folder of real PDFs");
+        return;
+    };
     let Ok(entries) = std::fs::read_dir(&folder) else {
         println!("no folder of real documents at {folder}");
         return;
