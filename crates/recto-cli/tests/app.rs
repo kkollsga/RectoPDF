@@ -2813,7 +2813,7 @@ fn qa_password_is_only_for_a_tests_own_file() {
     assert_eq!(code, exit::USAGE, "no password on the command line: {reply}");
 }
 
-/// Failure: a file deleted, moved or replaced while it's open isn't noticed when the person comes back to the app, so they read a file that's gone or an old version as the new one, with nothing said.
+/// Failure: a file deleted, moved or replaced while it's open isn't noticed when the person comes back to the app, so they read a file that's gone or an old version as the new one, with nothing said; or (the page matcher) unsaved edits on a file another program changed aren't followed onto their pages in the real app, or the window doesn't say so.
 #[test]
 fn a_file_changed_while_open_is_said_when_the_app_comes_back() {
     let Some(run) = Run::start() else { return };
@@ -2840,6 +2840,38 @@ fn a_file_changed_while_open_is_said_when_the_app_comes_back() {
     run.ok(&["qa", "frontmost", "on"]);
     wait_for(&run, |state| state["app"]["note"].as_str().is_some_and(|note| note.contains("can't be found")));
     std::fs::rename(&moved, &file.0).ok();
+    // The page matcher (slice 2), in the same launch: page 9 of ten turned, and another program adds a cover; the turn follows its page, and the window
+    // says so in the owner's words, shot light and dark for the coordinator to look at (kept in `RECTO_TEST_SHOTS`'s folder when it's set).
+    let page = |index: usize| Page::new(text_lines(&[&format!("follow page {}", index + 1), "Here the word turned shows"]));
+    let ten = TempPdf::new("follow.pdf", &pages(&(0..10).map(page).collect::<Vec<_>>()));
+    run.ok(&["open", ten.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["page", "rotate", "9", "--by", "90"]);
+    // Settled includes the page-identity thread reading what the turn names.
+    run.settled();
+    run.ok(&["qa", "frontmost", "off"]);
+    let mut with_cover = vec![Page::new(text_lines(&["A cover another program added"]))];
+    with_cover.extend((0..10).map(page));
+    let incoming = ten.0.with_extension("incoming");
+    std::fs::write(&incoming, pages(&with_cover)).unwrap();
+    std::fs::rename(&incoming, &ten.0).unwrap();
+    run.ok(&["qa", "frontmost", "on"]);
+    wait_for(&run, |state| {
+        state["app"]["note"].as_str() == Some("This file was changed by another program. Your unsaved edits were moved onto the same pages of the new version.")
+    });
+    let edits = run.ok(&["edits"]);
+    assert_eq!((edits["pages"].as_u64(), edits["followed"]["edits"].as_u64()), (Some(11), Some(1)), "{edits}");
+    run.ok(&["goto", "10"]);
+    for appearance in ["light", "dark"] {
+        run.ok(&["qa", "appearance", appearance]);
+        run.settled();
+        let out = run.state.root.join(format!("edits-followed-{appearance}.png"));
+        run.ok(&["qa", "shot", "--out", out.to_str().unwrap()]);
+        if let Some(keep) = std::env::var_os("RECTO_TEST_SHOTS") {
+            std::fs::create_dir_all(&keep).ok();
+            std::fs::copy(&out, std::path::Path::new(&keep).join(out.file_name().unwrap())).ok();
+        }
+    }
 }
 
 fn named_document(name: &str, count: usize, word: &str) -> TempPdf {
