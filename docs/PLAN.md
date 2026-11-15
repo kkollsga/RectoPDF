@@ -166,7 +166,7 @@ Open items only, by where they are in this plan; features not yet built are coun
 - Phase R, the whole-phase review: whether `save --replace` at Full over a signed file is covered by rule 5.
 - Phase R, R4: whether a starved test machine may fail the 2 s stall check.
 - Phase R, R4: the dark-paper line cases (a photo off the edge with a dark sidebar, a chart beside a photo, white text on a mid-tone page).
-- Phase R, R4: the search index (the Find text) readable by other programs of yours outside macOS's folder protection: said in `PRIVACY.md` for 0.1.1, and protecting it is designed as the first item of 0.1.2 (owner, 2026-11-15); the sleep files' pictures are removed in 0.1.1.
+- Phase R, R4: the search index (the Find text) readable by other programs of yours outside macOS's folder protection: said in `PRIVACY.md` for 0.1.1, and stored encrypted as the first item of 0.1.2 (owner, 2026-11-15: "Lets store it encrypted"; `build/find-text-encrypted`, design started 2026-11-15, design to the owner 2026-11-16); the sleep files' pictures are removed in 0.1.1.
 - Phase R, R4: saving into a password-protected PDF, edits on a tab that can't be saved, and a Save As that removes the password.
 - Phase R, R4.3: an Undo asked while an edit lands that is then refused.
 - Phase R, R4.3: whether an SVG of a page should carry its annotations.
