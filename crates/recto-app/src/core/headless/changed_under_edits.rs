@@ -697,9 +697,15 @@ fn window_view() -> recto_reader::Viewport {
     }
 }
 
-/// Draws what's in the window's view, as the host would with its UI thread, till it's at rest.
+/// Draws what's in the window's view, as the host would with its UI thread, till it's at rest: where the view is now, so a test's place means what it says.
 fn drawn(app: &HeadlessApp) {
-    let mut view = window_view();
+    let report = app.core().engine.report().0;
+    let at = |key: &str| report[key].as_f64().unwrap_or(0.0);
+    let mut view = recto_reader::Viewport {
+        x: at("scroll_x"),
+        y: at("scroll_y"),
+        ..window_view()
+    };
     crate::testkit::headless::applied_as_the_host(&app.core().engine.set_viewport(view));
     crate::testkit::headless::host_turns(app, &mut view, true);
 }
@@ -853,4 +859,30 @@ fn a_held_tabs_contents_and_page_labels_arent_the_new_files() {
     app.act(crate::core::controls::UiAction::PageTyped { text: "iv".into() });
     app.settle();
     assert_eq!(app.reader().place, "iv (4 of 12)");
+}
+
+/// Failure (review F1 of `build/shorter-file-pages`): nothing held that a tab's pages come back when the version its edits were made on is written back
+/// over the file in place (same number, bytes and time), where the map the page view is given doesn't change: a withhold kept from before passed every
+/// test. Held, then put back so: its pages are drawn again, no notice, and no page says it can't be shown.
+#[test]
+fn a_tabs_pages_come_back_when_its_edits_version_is_written_back_in_place() {
+    let (app, file, original, modified) = edited();
+    app.core().engine.waking().window_up();
+    drawn(&app);
+    rewrite_in_place(&file, &pdf_bytes("Theirs", 5));
+    look(&app);
+    drawn(&app);
+    assert_eq!(tiles(&app), (0, 0, true), "held: {}", app.core().engine.report().0);
+    rewrite_in_place(&file, &original);
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .and_then(|open| open.set_modified(modified))
+        .expect("its time");
+    look(&app);
+    drawn(&app);
+    let (attached, _, withheld) = tiles(&app);
+    assert!(attached >= 1 && !withheld, "drawn again: {}", app.core().engine.report().0);
+    assert_eq!(notice(&app), None);
+    assert_eq!(app.core().engine.note(), None, "no page says it can't be shown");
 }
