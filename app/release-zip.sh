@@ -203,32 +203,20 @@ zip_it() {
     ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUT/$ZIP"
     (cd "$OUT" && shasum -a 256 "$ZIP" > SHA256SUMS)
     # latest.json: what the app's updater reads. Every value comes from this script.
-    local zip_sha min_macos prev
+    local zip_sha min_macos
     zip_sha="$(cd "$OUT" && shasum -a 256 "$ZIP" | cut -d' ' -f1)"
     min_macos="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist")"
     [ -n "$min_macos" ] || { echo "no LSMinimumSystemVersion in the app" >&2; exit 1; }
     printf '{"version":"%s","tag":"%s","minimum_macos":"%s","zip":"%s","sha256":"%s"}\n' \
         "$VERSION" "$TAG" "$min_macos" "$ZIP" "$zip_sha" > "$OUT/latest.json"
     python3 -I -c 'import json,sys; json.load(open(sys.argv[1]))' "$OUT/latest.json"
-    # The notes: each commit since the tag before this one, by its subject.
-    prev="$(git -C "$REPO" describe --tags --abbrev=0 "HEAD^" 2>/dev/null || true)"
-    {
-        echo "## Install"
-        echo
-        echo "macOS 15 or later, Apple silicon. Download [$ZIP]($REPO_URL/releases/download/$TAG/$ZIP), open it and drag RectoPDF to Applications."
-        echo
-        echo "RectoPDF updates itself from here on (RectoPDF menu, Settings)."
-        echo
-        echo "## Changes"
-        echo
-        if [ -n "$prev" ]; then git -C "$REPO" log --format='- %s' "$prev..HEAD" | cut -c1-200; else echo "- First release."; fi
-        echo
-        echo "## Checksums"
-        echo
-        echo '```'
-        cat "$OUT/SHA256SUMS"
-        echo '```'
-    } > "$OUT/NOTES.md"
+    # The notes: docs/releases/$VERSION.md with its checksums, never the commit log (tools/release/notes.sh says what it refuses). A release
+    # stops here when they aren't ready; a local check says so and goes on without them, as it's never published.
+    if ! "$REPO/tools/release/notes.sh" "$VERSION" "$OUT/SHA256SUMS" > "$OUT/NOTES.md"; then
+        rm -f "$OUT/NOTES.md"
+        if [ "$SIGNED" = 1 ]; then echo "the release notes aren't ready, so there's no release" >&2; exit 1; fi
+        echo "WARNING: no NOTES.md: the release notes aren't ready (above), and a release would stop here."
+    fi
 }
 
 # The zip as the updater will take it: its own reader, not the system's.
