@@ -185,7 +185,7 @@ impl JournalLook<'_> {
         let edits = self.lists.get(id)?;
         let (seq, waiting) = edits.journal_waiting()?;
         // Nor while what's been read of its pages waits for the sidecar, which a list gone to disk would lose.
-        if !waiting.is_empty() || self.journals.is_fresh(id) || !edit::identity::sidecar_caught_up(edits) {
+        if !waiting.is_empty() || self.journals.is_fresh(id) || self.sidecar_waits(id, edits) {
             return None;
         }
         let tab = self.tabs.tab(id)?;
@@ -207,10 +207,17 @@ impl JournalLook<'_> {
     /// Whether there's anything for [`JournalDesk::work`], which is asked often and costs a look per edited tab.
     pub fn has_work(&self) -> bool {
         self.journals.has_pending()
-            || self.lists.iter().any(|(_, edits)| {
+            || self.lists.iter().any(|(id, edits)| {
                 edits
                     .journal_waiting()
-                    .is_some_and(|(_, ops)| !ops.is_empty() || !edit::identity::sidecar_caught_up(edits))
+                    .is_some_and(|(_, ops)| !ops.is_empty() || self.sidecar_waits(*id, edits))
             })
+    }
+
+    /// Whether what's been read of a list's pages waits for a sidecar that can be written: one is written only for a version of the file that's known
+    /// ([`JournalDesk::work`]'s `pages_work`), and a tab's version can go unknown while entries wait (a file replaced mid-read, `tiers.rs`), which
+    /// mustn't keep the journals busy and the tab from going to disk for good. A tab is looked up only for a list whose sidecar isn't caught up.
+    fn sidecar_waits(&self, id: TabId, edits: &edit::PageEdits) -> bool {
+        !edit::identity::sidecar_caught_up(edits) && self.tabs.tab(id).is_some_and(|tab| tab.file.stamp.is_some())
     }
 }

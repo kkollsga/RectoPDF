@@ -293,3 +293,28 @@ fn a_file_swapped_in_for_the_open_alone_is_never_read() {
     );
     assert_eq!(found, None, "the other file's pages were read for this one's");
 }
+
+/// Failure caught (second review): what was read of a tab's pages waits for its sidecar, and the tab's version then goes unknown (a file replaced
+/// mid-read, whose stamp the session drops, `tiers.rs`): the sidecar can't be written without a version, so the journals say they have work for good,
+/// and the tab can never checkpoint or go dormant. A sidecar that can't be written holds nothing: no work, and the tab checkpoints.
+#[test]
+fn a_tab_whose_version_goes_unknown_isnt_held_by_its_sidecar() {
+    let (_dir, _path, mut s, id) = open_ten();
+    s.journals_mut().set_journaling(true);
+    s.edit_pages(id, |e| e.rotate(8, 1, 1)).unwrap();
+    let found = identify::read(&identify::work(&s).remove(0)).unwrap();
+    assert!(identify::identified(&mut s, &found));
+    // The journal's operation is written, and the sidecar isn't yet.
+    let work = s.journal_desk().work();
+    assert_eq!(work.pages.len(), 1, "the sidecar's entries wait");
+    let written = work.appends.iter().map(|append| (append.tab, append.through, append.name.clone())).collect();
+    s.journal_desk().outcome(JournalOutcome {
+        written,
+        ..JournalOutcome::default()
+    });
+    assert!(s.journal_look().has_work(), "the sidecar waits, with a version to write it for");
+    s.tabs.tab_mut(id).unwrap().file.stamp = None;
+    assert!(s.journal_desk().work().pages.is_empty(), "nothing to write it for");
+    assert!(!s.journal_look().has_work(), "and nothing waits for it");
+    assert!(s.journal_look().checkpoint_if_caught_up(id).is_some(), "the tab may go to disk");
+}
