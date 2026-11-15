@@ -68,7 +68,7 @@ fn no_word_of_a_document_is_on_disk_as_it_is() {
     );
 }
 
-/// Failure (the security review of slices 2 and 3, F8): `index status` tells an agent why the key isn't the Keychain's, `keychain_locked` and the like, so an agent at any level learns the state of the person's Keychain. Agents get where the key came from, and nothing else, at every level that may ask; `qa state`, which only a test build has, keeps the rest.
+/// Failure (the security review of slices 2 and 3, F8): `index status` tells an agent why the key isn't the Keychain's, `keychain_item_unreadable` and the like, so an agent at any level learns the state of the person's Keychain. Agents get where the key came from, and nothing else, at every level that may ask; `qa state`, which only a test build has, keeps the rest.
 #[test]
 fn an_agent_is_told_where_the_key_came_from_and_nothing_else() {
     let disk = Disk::new();

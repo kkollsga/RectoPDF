@@ -2,7 +2,7 @@
 //!
 //! **Asked only by a copy that is the team's release, checked whole:** [`signed_as_a_release`] holds this process's code on disk to the Developer ID requirement the updater uses ([`crate::signing`]), validating the executable and every sealed resource, nested code included, so a copy with a resource changed, or an ad hoc signature claiming the team, never asks.
 //!
-//! **Nothing prompts: the process-wide switch is what's relied on.** `SecKeychainSetUserInteractionAllowed(false)` is set before the first call and never set back, so a locked keychain, or an item this copy's signature isn't trusted for, is a refusal, never a sheet. The per-query `kSecUseAuthenticationUIFail` is set as well, but Apple's header says it governs the data-protection keychain only ("Legacy keychain items will still activate UI"), so it isn't counted on; the probe measures each alone. The switch is the whole process's: it silences every keychain prompt the app could raise, of which there are none besides this one (the app reads no other item; signing, notarizing and the updater's checks are other processes), and `recto-platform`'s source is held by a test to set it nowhere else. The caller then runs on a key in memory ([`super::FindKey::in_memory`]) and never adds a second item.
+//! **Nothing prompts: the process-wide switch is the only guard,** measured on the team's real signature by the release preflight's probe (run 43699949398, 2026-11-15, `tools/release/keychain-probe.sh`): with `SecKeychainSetUserInteractionAllowed(false)`, a later build of the same team read the item with no prompt (0, in 9 to 14 ms); an ad hoc build, a team build of another identifier, a locked keychain and an item another signature planted were each refused with `errSecAuthFailed` (-25293) in 8 to 44 ms. With the per-query `kSecUseAuthenticationUIFail` alone, or no guard, each of those waited on a prompt: the flag governs the data-protection keychain only, as Apple's header says, and isn't counted on. The switch is set before the first call and never set back. It is the whole process's: it silences every keychain prompt the app could raise, of which there are none besides this one (the app reads no other item; signing, notarizing and the updater's checks are other processes), and a test holds the crates to naming it nowhere else. The caller then runs on a key in memory for now ([`super::FindKey::in_memory_for_now`]) and never adds a second item.
 //!
 //! **CoreFoundation's copies:** adding the key copies it into a `CFData`, and reading it hands back another; both are CoreFoundation's to free, and neither is overwritten, as `CFData` can't be told to. Each lives for the one call. The key itself is copied straight from that data into [`FindKey`]'s own memory.
 //!
@@ -36,10 +36,8 @@ pub(super) enum Refused {
     NotTheTeam,
     /// Security.framework, or something in it, couldn't be had.
     Unavailable,
-    /// The Keychain is locked, and unlocking it would need the person.
-    Locked,
-    /// There's an item this copy may not read: another signature made it. It isn't replaced, so items can't pile up.
-    NotOurs(OsStatus),
+    /// There may be an item, and this copy can't read it now: the keychain locked, or an item another signature made or planted. The two answer alike (`errSecAuthFailed`, measured by the probe; `errSecInteractionNotAllowed` is taken the same), so they aren't told apart. Nothing is added: a planted item costs the app its lasting key while it's there, and never gives it one someone else knows.
+    Unreadable(OsStatus),
     /// The item holds something that isn't a key.
     NotAKey,
     /// The OS gave no randomness for a new key.
@@ -52,8 +50,7 @@ impl Refused {
         match self {
             Self::NotTheTeam => "not_signed_by_the_team",
             Self::Unavailable => "keychain_unavailable",
-            Self::Locked => "keychain_locked",
-            Self::NotOurs(_) => "keychain_item_not_ours",
+            Self::Unreadable(_) => "keychain_item_unreadable",
             Self::NotAKey => "keychain_item_not_a_key",
             Self::NoRandomness => "no_randomness",
             Self::Other(_) => "keychain_refused",
@@ -293,12 +290,10 @@ pub(super) fn load_or_create(service: &str, account: &str) -> Result<FindKey, Re
     // SAFETY: a query dictionary and an out-pointer.
     let status = unsafe { (sec.copy_matching)(query.0, &mut found) };
     let found = Owned(found);
-    match status {
-        ERR_SEC_SUCCESS => return key_from_data(&found),
-        ERR_SEC_ITEM_NOT_FOUND => {}
-        ERR_SEC_INTERACTION_NOT_ALLOWED => return Err(Refused::Locked),
-        // `errSecAuthFailed` and the like: the item is there and isn't this copy's to read.
-        other => return Err(Refused::NotOurs(other)),
+    match after_lookup(status) {
+        Lookup::Found => return key_from_data(&found),
+        Lookup::Absent => {}
+        Lookup::Refused(status) => return Err(Refused::Unreadable(status)),
     }
     let key = FindKey::fresh(Source::Keychain).map_err(|_| Refused::NoRandomness)?;
     // SAFETY: the key's bytes live for the call, and CF copies them. The copy is CF's to free, and isn't overwritten: CFData can't be told to.
@@ -318,7 +313,7 @@ pub(super) fn load_or_create(service: &str, account: &str) -> Result<FindKey, Re
         ERR_SEC_SUCCESS => Ok(key),
         // Another run of the app added one first: that one is the key.
         ERR_SEC_DUPLICATE_ITEM => load_existing(sec, query.0),
-        ERR_SEC_INTERACTION_NOT_ALLOWED => Err(Refused::Locked),
+        ERR_SEC_INTERACTION_NOT_ALLOWED => Err(Refused::Unreadable(ERR_SEC_INTERACTION_NOT_ALLOWED)),
         other => Err(Refused::Other(other)),
     }
 }
@@ -328,9 +323,27 @@ fn load_existing(sec: &Security, query: CfRef) -> Result<FindKey, Refused> {
     // SAFETY: a query dictionary and an out-pointer.
     let status = unsafe { (sec.copy_matching)(query, &mut found) };
     let found = Owned(found);
+    match after_lookup(status) {
+        Lookup::Found => key_from_data(&found),
+        Lookup::Absent | Lookup::Refused(_) => Err(Refused::Unreadable(status)),
+    }
+}
+
+/// What a lookup's status means for what comes next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lookup {
+    Found,
+    /// No item: the only answer after which one is added.
+    Absent,
+    /// Anything else: nothing is added.
+    Refused(OsStatus),
+}
+
+fn after_lookup(status: OsStatus) -> Lookup {
     match status {
-        ERR_SEC_SUCCESS => key_from_data(&found),
-        status => Err(Refused::NotOurs(status)),
+        ERR_SEC_SUCCESS => Lookup::Found,
+        ERR_SEC_ITEM_NOT_FOUND => Lookup::Absent,
+        other => Lookup::Refused(other),
     }
 }
 
@@ -410,6 +423,16 @@ mod tests {
         std::fs::write(bundle.join("Contents/Resources/words.txt"), b"changed after").unwrap();
         assert!(!path_meets(&bundle, "always"), "a bundle with a resource changed passed the check");
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// Failure: a lookup that was refused (a locked keychain, an item another signature made or planted, any answer but "no item") goes on to add one, so the app writes a second key beside a planted one, or over the person's own while their keychain is locked. Only "no item" leads to an add; every other status the probe has seen, and any other, is a refusal.
+    #[test]
+    fn only_no_item_leads_to_an_add() {
+        assert_eq!(after_lookup(ERR_SEC_ITEM_NOT_FOUND), Lookup::Absent);
+        assert_eq!(after_lookup(ERR_SEC_SUCCESS), Lookup::Found);
+        for status in [-25293, ERR_SEC_INTERACTION_NOT_ALLOWED, -25244, ERR_SEC_DUPLICATE_ITEM, -128, -34018, -1, 1] {
+            assert_eq!(after_lookup(status), Lookup::Refused(status), "{status} would go on to add an item");
+        }
     }
 
     /// Failure: something else in the app turns the process-wide switch back on, or touches it at all, so a later Keychain call could prompt: it's set off once, here, and nowhere else names it (the Keychain's code is opened by name, so a call to it is a mention of it).
