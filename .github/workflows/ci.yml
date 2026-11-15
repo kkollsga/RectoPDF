@@ -8,6 +8,16 @@
 # check is one job again, three macOS jobs a run; CHECK_PART stays in tools/check.sh for local use and `--like-ci`. Kept from the split: the cache layout,
 # the tools' tests only when what they test changed, and registrations running after a failed app stage.
 #
+# Two jobs, not one (2026-11-15). The `check` job had grown to 958, 1,371 and 1,264 s against a 1,260 s budget, and two stages in it didn't need to be: the tools' own
+# tests (check-test.sh 156 s, the ratchet's 29 s, on a run that changed tools/ or .github/) and the `cargo check --tests` of each changed crate (4, 131 and 73 s).
+# So `light` runs those, in parallel, and `check` the rest: CHECK_PART=light and CHECK_PART=heavy (tools/check.sh), which are every stage between them, each in
+# exactly one (tools/check-test.sh holds that, and that the two values here are those two). Local runs are unchanged: `tools/check.sh --full` is both in one go.
+# `light` is on macOS and not on ubuntu-latest because what it runs is: the tools' tests use BSD `sed -i ''`, `date -j`, `stat -f` and the queue's `sysctl`, and
+# `cargo check` of the app's crates wants the same SDK as `check`. macos-15 and not macos-26: that image got runners on 2026-11-12 when macos-26 didn't (the
+# sandbox job below uses both), and the work in it doesn't depend on the newer one. It restores the cache `check` saves and never saves one: the dependencies
+# the gate's clippy built are check artifacts too, so the loop only builds the workspace's crates. If it never gets a runner the run is "never ran", not red
+# (tools/push-main.sh), and a merge waits on nothing that is not there.
+#
 # The cache, and its limit. GitHub keeps 10 GB of cache for the repository and evicts the least recently used beyond it. On 2026-11-12 it held 10.81 GB in 8
 # caches, the Rust ones about 3.1 GB each, and a cache saved on a branch was evicted within 20 minutes, so the next run fell back to an old one and saved
 # again. So: one Rust cache per Cargo.lock (and root Cargo.toml, for its profiles), `check-<hash>`, saved only on main and only on a miss. Every job restores, a branch from main's, falling back by
@@ -21,7 +31,7 @@
 # so no older `check-` cache matches by prefix: the first run after this is a cold build, once. Not pruned: stale test executables from the prefix
 # fallback. Cargo keeps no record of which files a run used, and atime isn't reliable here, so no rule could be shown never to delete what the next run needs.
 #
-# How long. A whole run took 12 to 15 minutes in one job (2026-11-12), and the tools' tests add about 3 when they run. A failed stage's tests run again
+# How long. A whole run took 12 to 15 minutes in one job (2026-11-12), and the tools' tests added about 3 when they ran (now in `light`, beside it). A failed stage's tests run again
 # (tools/check-rerun.sh, R0.7c): at most 8 tests, no round after 240 s of a stage's rounds, and no round at all after 360 s of the whole run's
 # (CHECK_RERUN_TOTAL_SECONDS), so a badly broken branch adds at most 360 s and one round (nextest ends a test at 300 s): 11 minutes. 15 + 3 + 11 is 29;
 # the limit is 45, for a slow runner.
@@ -42,9 +52,8 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  # What a full check runs, as tools/check.sh says with CI set: the compile gate, the workspace tests, the tools' own tests when what they test changed since
-  # CI's base (`ci_base` in tools/check-scope.sh, which needs the history: the whole of it is checked out), the app, built, and both tiers of its tests, then
-  # what is left registered. The ratchet (tools/ratchet.sh) runs first.
+  # What a full check runs as its heavy part (CHECK_PART=heavy, tools/check.sh): the layout, the compile gate, the workspace tests, the app, built, and both tiers
+  # of its tests, then what is left registered. The ratchet, the tools' tests and the per-crate feature check are `light`'s.
   check:
     runs-on: macos-26
     timeout-minutes: 45
@@ -108,15 +117,22 @@ jobs:
       # lines start with "cache-report"). Read the two against each other and against the restore's "Cache Size" line.
       - name: What the restored cache holds
         run: tools/ci-cache-report.sh after-restore
-      - name: Full check
+      - name: Full check, its heavy part
         run: tools/check.sh --full
         env:
+          CHECK_PART: heavy
           # A failing test's quiet-run logs are copied here before its state folder goes (crates/recto-cli/tests/common/mod.rs).
           RECTO_TEST_LOGS: ${{ runner.temp }}/recto-test-logs
           # And its evidence, one folder a failed test and a folder a rerun round (crates/recto-cli/tests/common/evidence.rs, tools/check-rerun.sh): every
           # launch's messages, `qa state`, threads, a sample, the slow seams, the machine, Launch Services and the command that runs it again on a Mac. Uploaded
           # with the logs below. A failed stage's tests run again 4 times here (CHECK_RERUN, set by tools/check.sh on CI) and the log has "failed N of M".
           RECTO_EVIDENCE: ${{ runner.temp }}/recto-test-logs/evidence
+      # Debug info is off in this job's builds (CARGO_PROFILE_DEV_DEBUG above) unless a "lines" run asked for it, and nothing writes a .dSYM then: the ones in
+      # the restored cache are old (2.9 GiB in 202 entries, the same in three runs, 2026-11-15) and only cost the next restore. Only they go: an earlier
+      # attempt at pruning found no safe rule for the rest. A "lines" run keeps what it made.
+      - name: Dead debug-symbol bundles, left out of the cache
+        if: success() && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true' && inputs.lines != true
+        run: find target -name '*.dSYM' -prune -exec rm -rf {} +
       - name: What the cache holds, before it is saved
         if: success() && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         run: tools/ci-cache-report.sh before-save
@@ -160,6 +176,47 @@ jobs:
           path: .git/recto-test-times
           retention-days: 14
           if-no-files-found: ignore
+  # What a full check runs as its light part (CHECK_PART=light): the ratchet, the how-to pages' paths, the tools' own tests when what they test changed since CI's
+  # base (`ci_base` in tools/check-scope.sh, which needs the history: the whole of it is checked out), and `cargo check --tests` of each changed crate. No
+  # nextest, no PDFium build, no app. The cache is restored for the check's dependencies and never saved here: one job saves it (`check`).
+  light:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      MIN_FREE: '0'
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: ${{ inputs.lines && 'line-tables-only' || '0' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Rust, as pinned in rust-toolchain.toml
+        run: rustup toolchain install
+      # tools/check.sh fetches PDFium for every part, from this cache or the checksummed download.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/pdfium
+          key: pdfium-${{ hashFiles('tools/pdfium.sh') }}
+      - name: Rust's cache, restored (never saved here)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            !~/.cargo/registry/src
+            !target/pdfium
+            !target/nextest
+            !target/recto-evidence
+          key: check-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml') }}
+          restore-keys: |
+            check-
+      - name: Full check, its light part
+        run: tools/check.sh --full
+        env:
+          CHECK_PART: light
   # The renderer's sandbox on the oldest macOS a release supports (LSMinimumSystemVersion 15.0) and on the newest runner, where the home folder is
   # under /Users, unlike the Mac this was built on. The walls lean on how the kernel describes ports and on the App Sandbox's own variables, so a
   # change in either between versions fails here, not on a user's Mac as a renderer that won't start.

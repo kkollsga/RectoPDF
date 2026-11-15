@@ -10,7 +10,9 @@
 #   tools/check.sh --full --why "what this run decides"    A branch gets two full runs. A third needs a stated reason, which goes in the ledger.
 #   tools/check.sh --runs     Full runs per branch, from the ledger, and what counts against this branch's budget.
 #   tools/check.sh --slow     The newest kept run's 20 slowest tests, each tier's time against its budget, the slow stage, and the stages against the run before.
-#   CHECK_PART=core|window|lifecycle tools/check.sh --full    Just that part of what a full run covers, as CI splits it into jobs; never recorded as a pass.
+#   CHECK_PART=light|heavy|core|window|lifecycle tools/check.sh --full    Just that part of what a full run covers, as CI splits it into jobs; never recorded as a pass.
+#                             CI's two jobs are light (the ratchet, the how-to pages, the tools' own tests, each changed crate's `cargo check --tests`) and heavy (all the rest,
+#                             which is core, window and lifecycle together); every stage is in exactly one of them (tools/check-test.sh holds that).
 #   tools/check.sh --like-ci <part or filter> [--times N]   CI's profile, concurrency and slower machine, by limits on the process (tools/check-like-ci.sh); never a pass.
 #
 # A pass counts for identical code: --full on a clean tree whose code has already passed says so, lets the push guard accept this commit and runs
@@ -58,15 +60,25 @@ while [ $# -gt 0 ]; do
 done
 mode="${mode:---quick}"
 [ -z "$why_given" ] || [ "$mode" = --full ] || usage
-# A named part of a full run (CI runs the parts as jobs of their own): core is the gate, the workspace tests and the tools' tests, window and lifecycle the
-# app's two tiers (tools/check-scope.sh). The parts together are everything. A part is never remembered or counted as a run.
+# A named part of a full run (CI runs the parts as jobs of their own). light is what builds little or nothing: the ratchet, the how-to pages' paths, the tools'
+# own tests and the per-crate `cargo check --tests` (2026-11-15: they were 156 s and up to 131 s on the critical path of the one big job, and on a Mac the tools'
+# tests need no cargo build). core is the layout, the compile gate and the workspace tests, window and lifecycle the app's two tiers (tools/check-scope.sh).
+# So light, core, window and lifecycle are four parts that together are everything and share no stage, and heavy is core, window and lifecycle in one run:
+# CI's two jobs are light and heavy. A part is never remembered or counted as a run.
 part=${CHECK_PART:-all}
 case "$part" in
   all) ;;
-  core | window | lifecycle)
+  light | heavy | core | window | lifecycle)
     [ "$mode" = --full ] || { echo "check: CHECK_PART=$part only goes with --full." >&2; exit 2; }
     ;;
-  *) echo "check: CHECK_PART is core, window or lifecycle, not '$part'." >&2; exit 2 ;;
+  *) echo "check: CHECK_PART is light, heavy, core, window or lifecycle, not '$part'." >&2; exit 2 ;;
+esac
+# Which stages this run has, by the part (the one place that says so): the light ones, and the core ones (layout, gate, headings' tests, workspace tests).
+runs_light=0 runs_core=0
+case "$part" in
+  all) runs_light=1 runs_core=1 ;;
+  light) runs_light=1 ;;
+  heavy | core) runs_core=1 ;;
 esac
 # One line, because the ledger is one line per run.
 why=$(printf '%s' "$why" | tr '\t\n' '  ' | sed -E 's/^ +| +$//g' | cut -c1-200)
@@ -518,6 +530,16 @@ gate() {
     echo "check: $c's doc links took $(($(date +%s) - at)) s"
   done
 }
+# The changed crates' tests compiled with their own features (see `run`): the light part's one stage that builds, and in a run of everything it is in
+# changed-tests. Only when a second stage follows them (other_mode), as `run` says.
+features_check() {
+  set -e
+  [ -n "$tests_first" ] && [ "$other_mode" != none ] || return 0
+  local c
+  for c in $tests_first; do
+    [ "$c" = -p ] || cargo check --locked -p "$c" --tests
+  done
+}
 run() {
   set -e
   # That it really started, past the queue, and on what. A refusal or a job stopped while waiting never gets here.
@@ -526,6 +548,13 @@ run() {
   [ -n "${RECTO_EVIDENCE:-}" ] || rm -rf "$CHECK_EVIDENCE_ROOT"
   mkdir -p "$CHECK_EVIDENCE_ROOT"
   tracked_tree > "$check_mark.tree"
+  # The light part's own work here is the one check below and nothing else: no worker, no headings, no workspace test, no app.
+  if [ "$runs_light" = 1 ] && [ "$runs_core" = 0 ]; then
+    stage features-check
+    features_check
+    stage done
+    return 0
+  fi
   # Tests start the worker, the indexer and the headings helper, and `-p` alone wouldn't build them.
   # Object files cargo leaves in deps make every test that makes a surface slow (tools/target-hygiene.sh, 2026-11-12). Skipped by a check-test stub tree.
   if [ -x tools/target-hygiene.sh ]; then tools/target-hygiene.sh; fi
@@ -533,7 +562,7 @@ run() {
   cargo build --locked -p recto-render-service -p recto-indexer
   cargo build --locked --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}" --bin recto-headings
   stage headings-tests
-  [ "$part" = window ] || [ "$part" = lifecycle ] || cargo test --locked --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}"
+  [ "$runs_core" = 0 ] || cargo test --locked --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}"
   # The app's own tests run below, against an app built from this tree. An older one lying around says nothing.
   if [ -n "$tests_first" ]; then
     stage changed-tests
@@ -545,10 +574,7 @@ run() {
       # Built as `-p` alone, the libraries had each crate's own features, and the second stage built all of them again with the workspace's: 46 s of
       # CI's compile a run, median of 20 runs (2026-11-15). What that build alone had caught is held here, as a check of each changed crate's tests with
       # its own features: a dev-dependency feature only another crate's tests turned on (2d4b0ba7) fails this, not the run below.
-      local c
-      for c in $tests_first; do
-        [ "$c" = -p ] || cargo check --locked -p "$c" --tests
-      done
+      [ "$runs_light" = 0 ] || features_check
       RECTO_SKIP_APP=1 nt --locked --no-fail-fast --workspace -E "$first_filter"
     fi
   fi
@@ -612,12 +638,14 @@ tools/pdfium.sh >/dev/null
 check_mark=$(mktemp "${TMPDIR:-/tmp}/recto-check.XXXXXX")
 trap 'rm -rf "$check_mark" "$check_mark.tree" "$check_mark.stages" "$check_mark.junit" "$check_mark.failed" "$check_mark.waited"; app_tier_release; ci_budget_warning' EXIT
 # Structure that may only shrink (tools/ratchet.sh, tools/ratchet/baseline.txt): seconds, builds nothing, so it fails first, before anything is queued.
-ratchet_started=$(date +%s)
-tools/ratchet.sh
-echo "check: ratchet took $(($(date +%s) - ratchet_started)) s"
+if [ "$runs_light" = 1 ]; then
+  ratchet_started=$(date +%s)
+  tools/ratchet.sh
+  echo "check: ratchet took $(($(date +%s) - ratchet_started)) s"
+fi
 # The how-to pages name only paths and names that exist (DOC_PATH_FILES, tools/doc-paths.sh): builds nothing, so it goes before anything is queued.
 # One that's there and can't run fails the check: a guard that skips itself holds nothing.
-if [ -e tools/doc-paths.sh ] && { [ "$mode" = --quick ] || [ "$mode" = --full ]; } && [ "$part" != window ] && [ "$part" != lifecycle ]; then
+if [ -e tools/doc-paths.sh ] && { [ "$mode" = --quick ] || [ "$mode" = --full ]; } && [ "$runs_light" = 1 ]; then
   [ -x tools/doc-paths.sh ] || { echo "check: tools/doc-paths.sh isn't executable, so the how-to pages aren't checked. \`chmod +x\` it." >&2; exit 1; }
   tools/doc-paths.sh
 fi
@@ -625,10 +653,10 @@ fi
 # against CI's base, `ci_base`): the tool is held by the tool and not by someone running its test by hand. Each builds nothing and runs on a throwaway
 # repository and lock, so nothing is queued for them. On CI they took 173 s of every run's
 # core part whatever changed (run 43195226598).
-if [ "$mode" = --full ] && [ "$part" != window ] && [ "$part" != lifecycle ] && [ "$scope_tools" = 0 ]; then
+if [ "$mode" = --full ] && [ "$runs_light" = 1 ] && [ "$scope_tools" = 0 ]; then
   echo "check: the tools' tests are skipped: $scope_tools_why."
 fi
-if [ "$mode" = --full ] && [ "$part" != window ] && [ "$part" != lifecycle ] && [ "$scope_tools" = 1 ]; then
+if [ "$mode" = --full ] && [ "$runs_light" = 1 ] && [ "$scope_tools" = 1 ]; then
   echo "check: the tools' tests run: $scope_tools_why."
   tools_started=$(date +%s)
   # Only the tests of the tools that changed (tool_tests_for, tools/check-scope.sh), side by side: each is a script on a throwaway repository and lock of its
@@ -666,7 +694,7 @@ fi
 # The compile gate, before any test is queued. The layout first, outside the queue as it builds nothing: one layout, so two branches that each add a field
 # to a struct literal merge without a conflict (guide §2.8). `cargo fmt --all` fixes it. Then clippy and the Windows check, a quick job of their own: a
 # failure is refused at once the next time on the same code, and no full run is counted for it.
-if ! { cargo fmt --all --check && cargo fmt --manifest-path crates/recto-headings/Cargo.toml --all --check; }; then
+if [ "$runs_core" = 1 ] && ! { cargo fmt --all --check && cargo fmt --manifest-path crates/recto-headings/Cargo.toml --all --check; }; then
   echo "check: the layout is off, so nothing was queued. \`cargo fmt --all\` fixes it." >&2
   exit 1
 fi
@@ -679,15 +707,15 @@ done
 export doc_crates
 export -f gate
 gate_status=0
-if [ "$part" != window ] && [ "$part" != lifecycle ]; then
+if [ "$runs_core" = 1 ]; then
   HEAVY_CLASS=quick tools/sysguard/heavy.sh bash -c gate "check.sh$mode gate" || gate_status=$?
 fi
 if [ "$gate_status" -ne 0 ]; then
   echo "check: the compile gate failed, so no test was queued and no run was counted. Fix it, then run the check again." >&2
   exit "$gate_status"
 fi
-export -f app_tier_owner app_tier_stale app_tier_held_by app_tier_take app_tier_stale_of app_tier_stopped app_tier_release run stage nt code_state untracked_that_counts tracked_code tracked_tree junit_failed args_without_filter nt_jobs rerun_failed rerun_table
-export app_tier_dir CHECK_TOP_PID check_mark part mode tests_first first_filter other_mode other_filter app_mode slow_filter WINDOW_TESTS LIFECYCLE_TESTS
+export -f app_tier_owner app_tier_stale app_tier_held_by app_tier_take app_tier_stale_of app_tier_stopped app_tier_release run features_check stage nt code_state untracked_that_counts tracked_code tracked_tree junit_failed args_without_filter nt_jobs rerun_failed rerun_table
+export app_tier_dir CHECK_TOP_PID check_mark part runs_light runs_core mode tests_first first_filter other_mode other_filter app_mode slow_filter WINDOW_TESTS LIFECYCLE_TESTS
 export tests_joined="${tests[*]-}"
 status=0
 tools/sysguard/heavy.sh bash -c 'tests=($tests_joined); run' "check.sh$mode" || status=$?
