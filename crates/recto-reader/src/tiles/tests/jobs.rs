@@ -285,3 +285,26 @@ fn a_failed_page_says_why_and_isnt_asked_for_again() {
     assert_eq!(reader.note(), Some("This page couldn't be drawn."));
     assert!(reader.next_job().is_none_or(|job| job.position != 0));
 }
+
+/// Failure: a tile or a region still being drawn for the tab just left (a heavy page's region can run seconds, in a worker of up to a gigabyte) goes on to its
+/// deadline for nobody, as if it were the tab showing's. Once another tab is shown, what's running for the one left is wanted no longer, so it's cancelled.
+#[test]
+fn a_tile_still_drawing_for_the_tab_just_left_is_wanted_no_longer() {
+    let other = PageMap {
+        files: vec![PathBuf::from("/d/2.pdf")],
+        ..map()
+    };
+    let mut reader = Reader::new();
+    reader.set_viewport(view(0.0));
+    reader.activate(2, 10, 0, other.clone(), &[], None, Spread::Single);
+    reader.set_viewport(view(0.0));
+    settle(&mut reader);
+    reader.activate(1, 40, 0, map(), &[2], None, Spread::Single);
+    reader.set_viewport(view(0.0));
+    let job = a_draw_job(&mut reader, DrawKind::Tile);
+    reader.work.note_started(&job, None);
+    assert!(reader.running_is_wanted(), "drawing for the tab showing");
+    reader.activate(2, 10, 0, other, &[1], None, Spread::Single);
+    reader.set_viewport(view(0.0));
+    assert!(!reader.running_is_wanted(), "a tile for a tab off screen is wanted by nobody");
+}
