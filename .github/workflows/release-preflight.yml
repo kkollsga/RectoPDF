@@ -14,7 +14,7 @@ jobs:
     name: Signing secrets
     runs-on: macos-26
     environment: release
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,9 +49,21 @@ jobs:
       # nothing.
       - name: The Find key's Keychain item, on the team's signature
         run: tools/release/keychain-probe.sh "$PREFLIGHT_IDENTITY"
+      # The provisioning profile and the Find key's item in the data-protection keychain (the owner's decision, 2026-11-15), last of all:
+      # the profile is checked (Developer ID, macOS, the app's App ID, team and keychain group, 60 days or more to run, made for the
+      # certificate that signs), then bundles signed with it are launched and the probe measures what must hold. The profile goes to a
+      # file of this job's alone and is never printed; neither is the certificate.
+      - name: The provisioning profile, and the Find key in the data-protection keychain
+        env:
+          MACOS_PROVISION_PROFILE: ${{ secrets.MACOS_PROVISION_PROFILE }}
+        run: |
+          [ -n "$MACOS_PROVISION_PROFILE" ] || { echo "::error::set the secret MACOS_PROVISION_PROFILE: the app's Developer ID provisioning profile, base64 (docs/RELEASING.md)"; exit 1; }
+          umask 077
+          printf '%s' "$MACOS_PROVISION_PROFILE" | base64 --decode > "$RUNNER_TEMP/recto.provisionprofile"
+          tools/release/dp-keychain-probe.sh "$PREFLIGHT_IDENTITY" "$RUNNER_TEMP/recto.provisionprofile"
       - name: Remove the keychain and anything of a secret
         if: always()
         run: |
           tools/release/keychain.sh --remove "$RUNNER_TEMP/recto-preflight.keychain-db"
-          rm -f "$RUNNER_TEMP/preflight-probe"
-          rm -rf "$RUNNER_TEMP"/keychain-probe.*
+          rm -f "$RUNNER_TEMP/preflight-probe" "$RUNNER_TEMP/recto.provisionprofile"
+          rm -rf "$RUNNER_TEMP"/keychain-probe.* "$RUNNER_TEMP"/dp-keychain-probe.*
