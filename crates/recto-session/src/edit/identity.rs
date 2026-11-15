@@ -36,8 +36,9 @@ use recto_core::page_id::DocumentIds;
 pub const MAX_IDENTIFIED: usize = 8_192;
 
 /// **Most bytes one version of a file costs to read for one list** (`PageRead::bytes`: stored lengths charged and bytes hashed), after which the list is
-/// closed for that version. 2 GiB: about six pages at every cap, and far past real documents (the 5,872 pages of the corpus cost XX in all, measured
-/// 2026-11-15, release); at the disk cache's speed a few seconds of one core, where 8,192 pages at their caps were an estimated half hour or more.
+/// closed for that version. 2 GiB: about six pages at every cap, and far past real documents (every page of the corpus's most costly file, a NASA
+/// report, costs 264.5 MiB in all, and its 5,872 pages 2,747 MiB together, in 4.1 s of CPU, measured 2026-11-15 on a release build at a load of 3);
+/// a few seconds of one core, where 8,192 pages at their caps were an estimated half hour or more.
 pub const VERSION_BYTES: u64 = 2 << 30;
 
 /// [`VERSION_BYTES`], which a test sets small on its own thread to hold it at its limit plus one.
