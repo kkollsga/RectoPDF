@@ -108,14 +108,16 @@ impl Panes {
     pub fn set_count(&self, primary: &Engine, count: usize, paper: PaperKind, window_open: bool) {
         let count = count.clamp(1, MAX_PANES);
         let mut extra = lock(&self.extra);
-        let closing = extra.len() + 1 > count;
+        let mut finding = false;
         while extra.len() + 1 > count {
             if let Some(gone) = extra.pop() {
+                finding |= gone.selection().image_finding();
                 gone.shut_down();
             }
         }
-        // A pane's click being looked for goes with it: the app looks again at what the page views want, which stops that look.
-        if closing {
+        // A pane's click being looked for goes with it: the app looks again at what the page views want, which stops that look. Only then, as a
+        // comparison's toggle is on the hot path.
+        if finding {
             self.hooks.image_wanted();
         }
         while extra.len() + 1 < count {
@@ -412,17 +414,28 @@ mod tests {
     }
 
     /// Failure (the second review of `build/image-select`, fix 4): a comparison's pane closes with a click in it being looked for and nobody is told, so
-    /// that pane's private worker runs on for a page view that's gone. Closing panes tells the app to look again at what the page views want, which stops
-    /// it; opening them says nothing.
+    /// that pane's private worker runs on for a page view that's gone; or every close is news, a call on the session thread for nothing on a hot path.
+    /// Closing a pane with a click being found tells the app to look again at what the page views want, which stops it; opening panes, or closing ones
+    /// with none, says nothing.
     #[test]
     fn closing_a_pane_has_the_app_look_again_at_the_clicks_wanted() {
         let heard = Arc::new(Heard::default());
         let primary = Engine::new(EngineConfig::default(), Arc::new(Quiet));
         let panes = Panes::new(Arc::clone(&heard) as Arc<dyn EngineEvents>, EngineConfig::default());
+        let told = || heard.0.load(std::sync::atomic::Ordering::SeqCst);
         panes.set_count(&primary, 3, PaperKind::White, true);
-        assert_eq!(heard.0.load(std::sync::atomic::Ordering::SeqCst), 0, "opening panes says nothing");
+        assert_eq!(told(), 0, "opening panes says nothing");
+        panes.set_count(&primary, 2, PaperKind::White, true);
+        assert_eq!(told(), 0, "closing one with no click being found says nothing");
+        // A click on the second pane's page, being found: its text isn't read yet, as this page view has no thread.
+        let second = panes.engines(&primary)[1].clone();
+        showing(&second, 2);
+        let (x, y) = second.points().document_point(0, 300.0, 300.0).expect("laid out");
+        let _ = second.selection().press(x, y, 1, false);
+        let _ = second.selection().release();
+        assert!(second.selection().image_finding(), "the click is being found");
         panes.set_count(&primary, 1, PaperKind::White, true);
-        assert_eq!(heard.0.load(std::sync::atomic::Ordering::SeqCst), 1, "closing them is news, once");
+        assert_eq!(told(), 1, "closing its pane is news, once");
         primary.shut_down();
     }
 
