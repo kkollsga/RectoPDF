@@ -892,6 +892,37 @@ fn a_click_on_a_page_in_a_form_gets_its_own_boxes_even_with_dark_papers_known() 
     assert_eq!(doc.image_boxes(0, 0), Some(vec![whole]), "dark paper's as it was, after the click's");
 }
 
+/// Failure (the independent read before 0.1.2): another app rewrites the file, and a click (or dark paper) is still answered from where the old file's pictures were, until a
+/// draw happens to reopen it: a figure that is now there gets "no picture" under the click, or one that went is picked as empty paper. Answers kept before the rewrite aren't
+/// served after it, whichever kind and whether or not a job has run in between.
+#[test]
+fn places_kept_of_a_file_are_not_served_once_another_app_has_rewritten_it() {
+    let picture = |size: u32| {
+        let image = recto_testpdf::first_extra_object(1);
+        recto_testpdf::pages_with(
+            &[Page::new(format!("q 100 0 0 100 50 50 cm /Im0 Do Q\n").into_bytes())],
+            &format!("/XObject << /Im0 {image} 0 R >>"),
+            vec![recto_testpdf::Object::Stream {
+                dict: format!("/Type /XObject /Subtype /Image /Width {size} /Height {size} /BitsPerComponent 8 /ColorSpace /DeviceGray"),
+                data: vec![90; (size * size) as usize],
+            }],
+        )
+    };
+    let file = TempPdf::new("rewritten.pdf", &picture(4));
+    let mut doc = renderer(&file.0, Policy::default());
+    assert_eq!(doc.image_boxes_for_a_click(0, 0).expect("asked").boxes.len(), 1, "the picture");
+    assert_eq!(doc.image_boxes(0, 0).expect("asked").len(), 1, "dark paper's too");
+    // Written in place by another app: a page with no picture at all, and a different length.
+    std::fs::write(&file.0, pages(&[Page::new(text_lines(&["Only text now, with no picture on it"]))])).unwrap();
+    assert_eq!(
+        doc.image_boxes_for_a_click(0, 0),
+        Some(recto_proto::ClickPlaces::default()),
+        "a click is answered from the file as it is"
+    );
+    assert_eq!(doc.image_boxes(0, 0), Some(Vec::new()), "and so is dark paper");
+    assert!(doc.take_file_changed(), "and the renderer says the file changed, once");
+}
+
 /// Failure: the renderer's worker carries the code that reaches the Keychain: the Find key's, or Security.framework linked and called by anything (the coordinator's decision, 2026-11-15: only the app's own process does). Looked at as it was just built for this test.
 #[test]
 fn the_worker_carries_no_keychain_code() {
