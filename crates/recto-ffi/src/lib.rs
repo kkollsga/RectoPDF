@@ -989,16 +989,10 @@ impl AppCore {
         }
     }
 
-    /// Whether the pointer's over text, for the I-beam. A page not read yet says no, and its text is read when there's nothing better to do.
+    /// Whether the pointer's over text, for the I-beam ([`recto_app::linking::over_text`]).
     pub fn pointer_is_over_text(&self, pane: u32, x: f64, y: f64) -> bool {
-        // The snapshot tool's pointer is a crosshair wherever it is.
-        if self.inner.tools.tool().is_on() {
-            return false;
-        }
-        self.inner
-            .panes
-            .engine(&self.inner.engine, pane as usize)
-            .is_some_and(|engine| engine.selection().is_over_text(x, y))
+        let engine = self.inner.panes.engine(&self.inner.engine, pane as usize);
+        recto_app::linking::over_text(engine, self.inner.tools.tool().is_on(), x, y)
     }
 
     /// How far to scroll per step of a drag this far past the view's edge.

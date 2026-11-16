@@ -137,7 +137,13 @@ pub fn pointer_look(
         };
         return ("link", hint);
     }
-    (if engine.selection().is_over_text(x, y) { "ibeam" } else { "arrow" }, None)
+    (if over_text(Some(engine), false, x, y) { "ibeam" } else { "arrow" }, None)
+}
+
+/// **Whether the pointer's on text, for the I-beam:** never with the snapshot tool on, whose pointer is a crosshair wherever it is. A page not read yet says
+/// no, and its text is read when there's nothing better to do. The bridge's `pointer_is_over_text`, and [`pointer_look`]'s.
+pub fn over_text(engine: Option<recto_reader::Engine>, snapshot_on: bool, x: f64, y: f64) -> bool {
+    !snapshot_on && engine.is_some_and(|engine| engine.selection().is_over_text(x, y))
 }
 
 #[cfg(test)]
