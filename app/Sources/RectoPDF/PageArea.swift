@@ -604,7 +604,7 @@ final class CenteringClipView: NSClipView {
 
     /// A press or right-click on a page gives the keyboard to the page when the sidebar's lists have it, so Escape and the plain keys reach Rust (they reach it only through the root view). Find's and the other fields keep it.
     func takeKeyboardFromSidebar() {
-        guard let window, window.firstResponder is NSTableView else { return }
+        guard let window = scrollView.window, window.firstResponder is NSTableView else { return }
         window.makeFirstResponder(window.contentView)
     }
 
