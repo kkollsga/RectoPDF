@@ -92,6 +92,7 @@ fn use_a_journal(bytes: &[u8]) {
             lost_lines: parsed.lost_lines,
             rolled_off: false,
             set_aside_beside: false,
+            set_aside_earlier: false,
         };
         session
             .restore(&main, HashMap::from([(name, list)]))
@@ -410,6 +411,107 @@ fn linked_pair_holds(restored: recto_control::record_store::Restored, pair: &[(S
     }
 }
 
+/// **A tab's two lists after a copy went back to an older app** (`record_store::went_back`), their shapes from the input's bytes 12 to 19: where the
+/// newer list (N, with a highlight) is (under its own name, set aside by 0.1.1 as `.not-merged`, kept as `.earlier`, or something that isn't a
+/// journal under N's set-aside name), whose id and path it has, a turn of its own or not, and its version; the older list's (O's) version (one, two,
+/// or none), its base and where it starts, its turns and a save begun; the file changed on disk or not; and what the record says. What must hold:
+/// nothing a person made leaves the folder (N's bytes are a file's first bytes, merged or kept; O's are a file's, kept or aged as a closed history),
+/// a launch restores, and the set-aside notice is never written into a record.
+fn use_a_went_back_pair(data: &[u8]) {
+    let byte = |at: usize| data.get(at).copied().unwrap_or(0);
+    // One input in 32 (the seeds reach each shape): a launch is most of a round's cost, and at one in eight the smoke test's 400 rounds took
+    // about 4 s more under load (22 s to 27 s, 2026-11-16).
+    if byte(12) % 32 != 0 {
+        return;
+    }
+    let root = folder();
+    let Ok(paths) = StatePaths::overridden(&root) else { return };
+    if paths.prepare().is_err() {
+        return;
+    }
+    let journals = root.join("session").join("journals");
+    let _ = local::ensure_private_dir(&root.join("session"));
+    let _ = local::ensure_private_dir(&journals);
+    let file = root.join("doc.pdf");
+    if std::fs::write(&file, b"the version the edits were made on").is_err() {
+        return;
+    }
+    let Ok(stamp) = recto_platform::file_stamp(&file) else { return };
+    let highlight = record::JournalOp::Mark(recto_session::edit::marks::MarkOp::Add {
+        pages: vec![recto_session::edit::marks::MarkPage {
+            source: 0,
+            page: 3,
+            rects: vec![recto_session::edit::marks::MarkRect {
+                x: 1.0,
+                y: 1.0,
+                width: 50.0,
+                height: 10.0,
+            }],
+        }],
+        by: record::AuthorName::Owner,
+    });
+    let n_header = record::JournalHeader {
+        version: if byte(15) & 2 == 0 { record::MARKED_JOURNAL_VERSION } else { CURRENT_VERSION },
+        ..record::JournalHeader::new(
+            if byte(14) & 1 == 0 { 1 } else { 2 },
+            &if byte(14) & 2 == 0 { file.clone() } else { root.join("other.pdf") },
+            Some(stamp),
+            12,
+            0,
+        )
+    };
+    let mut n_ops = vec![highlight];
+    if byte(15) & 1 == 1 {
+        n_ops.push(Shape::turn());
+    }
+    let n = [record::journal_start(&n_header, None), record::journal_lines(&n_ops)].concat();
+    let o_header = record::JournalHeader {
+        version: [CURRENT_VERSION, record::MARKED_JOURNAL_VERSION, 0][usize::from(byte(16) % 3)],
+        ..record::JournalHeader::new(1, &file, Some(stamp), 12, u64::from(byte(17) % 3))
+    };
+    let o_base = (byte(17) & 4 != 0).then(|| PageEdits::new(12).to_record());
+    let mut o_ops = vec![Shape::turn(); usize::from(byte(18) % 3)];
+    if byte(18) & 8 != 0 {
+        o_ops.push(record::JournalOp::Saving(recto_platform::FileStamp { size: 1, ..stamp }.into()));
+    }
+    let o = [record::journal_start(&o_header, o_base.as_ref()), record::journal_lines(&o_ops)].concat();
+    let newer = record::journal_file_name(Some(stamp), &file, None);
+    let older = record::journal_file_name(Some(stamp), &file, Some(1));
+    let stem = newer.trim_end_matches(".log");
+    let (n_name, n_bytes) = match byte(13) % 4 {
+        0 => (newer.clone(), n),
+        1 => (format!("{stem}.not-merged"), n),
+        2 => (format!("{stem}.earlier"), n),
+        _ => (format!("{stem}.not-merged"), b"not a journal\n".repeat(usize::from(byte(13)))),
+    };
+    let mut main = pair_record(&file, stamp, &older, false);
+    main.tabs[0].notice = (byte(19) & 2 != 0).then_some(record::FileNotice::EditsUnreadable);
+    let _ = local::write_private_file(&root.join("session").join("record.a.json"), &record::encode_record(&main, 1));
+    let _ = local::write_private_file(&journals.join(&n_name), &n_bytes);
+    let _ = local::write_private_file(&journals.join(&older), &o);
+    if byte(19) & 1 == 1 {
+        let _ = std::fs::write(&file, b"another program's version, longer than the first");
+    }
+    if let Loaded::Restored(restored) = RecordStore::open(&paths, Flavor::App).load() {
+        let mut session = Session::new(NamedLoader);
+        assert!(
+            session.restore(&restored.record, restored.journals).is_ok(),
+            "what a load gives can be restored"
+        );
+        let written = serde_json::to_string(&session.to_record()).unwrap_or_default();
+        assert!(!written.contains("went_back"), "never in the record");
+    }
+    let held: Vec<Vec<u8>> = std::fs::read_dir(&journals)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| std::fs::read(entry.path()).ok())
+        .collect();
+    assert!(held.iter().any(|there| there.starts_with(&n_bytes)), "N's bytes are still a file's first bytes");
+    assert!(held.contains(&o), "O's bytes are still a file's");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// One input as a main record, a journal and a log, as it is and with what checks it made good.
 pub fn check(data: &[u8]) {
     within("record", BUDGET, || {
@@ -432,5 +534,6 @@ pub fn check(data: &[u8]) {
         use_a_store(&record::seal(MAIN_KIND, 1, data), &journal, &log);
         use_a_store(data, data, data);
         use_a_linked_pair(data);
+        use_a_went_back_pair(data);
     });
 }

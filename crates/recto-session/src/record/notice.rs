@@ -33,6 +33,11 @@ pub enum FileNotice {
     /// review M2). **Never written into a record**, as [`Self::EditsFollowed`] isn't: an app from before it can't read it. Said until the person discards
     /// or the app quits, as [`Self::EditsNotMerged`] is said.
     EditsSetAsideAfterQuit,
+    /// A copy went back to an earlier version of the app, which couldn't read this tab's edits and started a list of its own; coming forward, the two
+    /// couldn't be combined (`recto_control`'s `record_store/went_back.rs`): the later list, the earlier version's, is shown, and the one from before
+    /// is kept in the state folder. **Never written into a record,** as [`Self::EditsSetAsideAfterQuit`] isn't: each launch says it again from the
+    /// list kept, while the tab's list is the one it couldn't be combined with. Said, and dismissed, as [`Self::EditsSetAsideAfterQuit`] is.
+    EditsSetAsideWentBack,
 }
 
 impl FileNotice {
@@ -48,6 +53,7 @@ impl FileNotice {
             Self::HistoryRolledOff => "history_rolled_off",
             Self::EditsFollowed { .. } => "edits_followed",
             Self::EditsSetAsideAfterQuit => "edits_set_aside_after_quit",
+            Self::EditsSetAsideWentBack => "edits_set_aside_went_back",
         }
     }
 
@@ -81,6 +87,10 @@ impl FileNotice {
             // The coordinator's words, 2026-11-15, put to the owner: one line to change.
             (Self::EditsSetAsideAfterQuit, _) => {
                 "After an unexpected quit, this tab had two lists of unsaved edits that can't be merged. These are one list, and the other has been kept in the state folder. Nothing has been written to the file."
+            }
+            // The coordinator's words, 2026-11-16.
+            (Self::EditsSetAsideWentBack, _) => {
+                "Edits made before RectoPDF went back to an earlier version couldn't be combined with the ones made in it. The later ones are shown here; the earlier ones have been kept. Nothing has been written to the file."
             }
             (Self::EditsUnreadable, _) => {
                 "Some of this tab's unsaved edits couldn't be read back, so it shows what could be. What couldn't has been kept in the state folder, and nothing has been written to the file."

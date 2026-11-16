@@ -17,6 +17,7 @@ impl HistorySource for MemorySource {
             lost_lines: false,
             rolled_off: false,
             set_aside_beside: false,
+            set_aside_earlier: false,
         })
     }
 }

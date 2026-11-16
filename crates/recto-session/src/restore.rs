@@ -75,7 +75,12 @@ impl<L: DocLoader> Session<L> {
                         fit => tab
                             .file
                             .notice()
-                            .filter(|notice| !matches!(notice, FileNotice::EditsFollowed { .. } | FileNotice::EditsSetAsideAfterQuit))
+                            .filter(|notice| {
+                                !matches!(
+                                    notice,
+                                    FileNotice::EditsFollowed { .. } | FileNotice::EditsSetAsideAfterQuit | FileNotice::EditsSetAsideWentBack
+                                )
+                            })
                             .filter(|notice| !(fit.fits() && matches!(notice, FileNotice::Changed) && lists.is_edited(*id)))
                             .cloned(),
                     },
@@ -152,6 +157,9 @@ impl<L: DocLoader> Session<L> {
                         }
                         if restored.set_aside_beside {
                             notice = Some(FileNotice::EditsSetAsideAfterQuit);
+                        }
+                        if restored.set_aside_earlier {
+                            notice = Some(FileNotice::EditsSetAsideWentBack);
                         }
                         if restored.lost_lines {
                             notice = Some(FileNotice::EditsUnreadable);

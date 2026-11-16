@@ -14,11 +14,14 @@
 //!
 //! **Versions.** A record from a newer app is never touched. This app works in a folder of its own version beside it, which is also what a migration keeps: going forward copies the old folder first, so going back finds it as it was.
 
+#[cfg(test)]
+mod cold_start_tests;
 /// The record's lock: who keeps it, waiting for it, and letting go of it.
 mod followed;
 mod lock;
 mod page_ids;
 mod sleep_files;
+mod went_back;
 use crate::state::StatePaths;
 use recto_platform::{FileStamp, file_stamp, local};
 use recto_session::edit::{AddedSource, PageEdits};
@@ -31,7 +34,7 @@ use recto_session::sleep::SleepFile;
 use recto_session::{HistorySource, JournalOutcome, JournalWork, RestoredEdits, TakenHistory};
 pub use sleep_files::{MAX_SLEEP_BYTES, MAX_SLEEP_FILES_LOOKED_AT, OlderSleepFiles, UPDATE_COPY};
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -251,6 +254,7 @@ fn restored_from(parsed: &ParsedJournal) -> Option<RestoredEdits> {
         lost_lines: lost,
         rolled_off: false,
         set_aside_beside: false,
+        set_aside_earlier: false,
     })
 }
 
@@ -1121,8 +1125,11 @@ fn remove_temp_files(dir: &Path) {
 /// the time only decides pruning, so one the drive didn't get before a crash costs a file its fresh days, which the next close or launch sets again, and a
 /// flush at every close is the wear this file's `sync` keeps to its writes of bytes (owner: "reduce SSD wear as much as we can"). The file is given back
 /// for a caller that flushes its own bytes anyway. A failure leaves the file as it is; the caller goes on (an old time costs it its days, not its place).
+///
+/// **Opened without following a link** (the review of `build/carry-two-journals`, item 3): a link left at a name of ours would otherwise have this set
+/// the time of whatever it points at, a person's PDF among them, whose journals then stop matching it. Only a plain file of this user's is opened.
 fn age_starts_now(path: &Path) -> std::io::Result<File> {
-    let file = OpenOptions::new().write(true).open(path)?;
+    let file = local::open_private_file(path)?;
     file.set_modified(std::time::SystemTime::now())?;
     Ok(file)
 }
@@ -1227,14 +1234,7 @@ struct JournalRead {
 fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress, not_merged: &[String]) -> HashMap<String, RestoredEdits> {
     let folder = dir.join(JOURNALS);
     let mut journals = HashMap::new();
-    let mut names: Vec<String> = std::fs::read_dir(&folder)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
-        .filter(|name| is_journal_name(name))
-        .collect();
-    names.sort_unstable();
+    let (names, aside) = went_back::names_in(&folder);
     let mut read_total = 0u64;
     let mut reads = Vec::new();
     for name in names {
@@ -1274,6 +1274,13 @@ fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress
             _ => unclaimed.push(read),
         }
     }
+    // A tab's list an older app started, after a copy went back, beside the newer app's list from before (`went_back`).
+    let mut launch = went_back::Launch {
+        folder: &folder,
+        progress: &mut *progress,
+        read_total: &mut read_total,
+    };
+    went_back::take_earlier(&mut launch, &aside, record, &taken_tabs, &mut journals, &mut unclaimed);
     for read in unclaimed {
         // Already taken over by what it would be (a save's crash left both), or what a follow's crash left beside a tab's (`followed`).
         let Some(read) = followed::unclaimed(&folder, read, record, &taken_tabs, &mut journals, progress) else {
@@ -1425,6 +1432,7 @@ fn claim(folder: &Path, read: JournalRead, record: &mut SessionRecord, at: usize
         tab.notice = Some(FileNotice::EditsUnreadable);
         return;
     };
+    went_back::unreadable_answered(folder, tab, &name, &parsed.header);
     let mut good_bytes = parsed.good_bytes;
     if restored.lost_lines {
         // What couldn't be used is kept, as the notice says it is. Then there's a clean start: a line replay can't pass would otherwise hide everything added after it, and every hand-off would fail against it.
@@ -1483,6 +1491,7 @@ mod tests {
     use recto_session::record::{FileRecord, MAIN_KIND, PathField};
     use recto_session::sleep::MAX_SLEEP_FILE_BYTES;
     use recto_session::sleep::encode_sleep;
+    use std::fs::OpenOptions;
 
     fn state() -> (recto_testpdf::TempDir, StatePaths) {
         let root = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), "rs");
