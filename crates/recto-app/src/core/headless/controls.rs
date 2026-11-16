@@ -271,7 +271,10 @@ fn a_control_on_the_window_thread_names_its_pass_and_off_it_does_not() {
     assert!(core.window.main_busy(false));
     core.act(UiAction::FindOpen);
     let other = std::sync::Arc::clone(&core);
-    std::thread::spawn(move || other.act(UiAction::ToggleSidebar))
+    std::thread::Builder::new()
+        .name("test-qa-channel".into())
+        .spawn(move || other.act(UiAction::ToggleSidebar))
+        .expect("a thread")
         .join()
         .expect("the other thread's action");
     // A pass is kept only over 16 ms of wall time: held that long by the clock, not by a sleep.
