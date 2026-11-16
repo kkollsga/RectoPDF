@@ -407,7 +407,7 @@ has "worker-env: and says the vmmap line or why not" "vmmap --summary $set_one" 
 kill "$set_one" 2>/dev/null; wait "$set_one" 2>/dev/null
 
 # ---- carry/expect.py: what check-carry expects of a pair, by what its older release can read, on made states ----
-out=$(python3 -I "$SOURCE/tools/release/carry/expect_test.py" 2>&1); rc=$?
+out=$(python3 -I -B "$SOURCE/tools/release/carry/expect_test.py" 2>&1); rc=$?
 check "carry expectations: their own test passes ($(printf '%s\n' "$out" | sed -n 's/^Ran \([0-9]*\) tests.*/\1/p') cases)" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out" | tail -30
 

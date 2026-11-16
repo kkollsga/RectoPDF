@@ -17,4 +17,4 @@ evidence="${3:-$REPO/target/release-tools/check-carry}"
 rm -rf "$evidence"; mkdir -p "$evidence"
 # The temp folder a quiet run may reach (0.1.1's file wall): the system's own, whatever this shell has set.
 export TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"
-exec python3 -I "$REPO/tools/release/carry/check_carry.py" "$REPO" "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")" "$(cd "$2" && pwd)" "$evidence"
+exec python3 -I -B "$REPO/tools/release/carry/check_carry.py" "$REPO" "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")" "$(cd "$2" && pwd)" "$evidence"

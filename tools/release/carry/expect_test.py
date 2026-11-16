@@ -1,7 +1,7 @@
 """expect_test: check-carry's expectations of a pair (expect.py), on made states, for an older release that can't read a version-2 journal (0.1.0)
 and one that can (0.1.1 and later). Each case names the failure it catches. No app is run: about a second. Run by tools/release/release-test.sh.
 
-    python3 -I tools/release/carry/expect_test.py
+    python3 -I -B tools/release/carry/expect_test.py
 """
 
 import os
