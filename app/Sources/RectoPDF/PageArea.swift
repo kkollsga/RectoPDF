@@ -64,8 +64,15 @@ final class PageDocumentView: NSView {
 /// The page area's scrolling. ⌘ with a wheel or two fingers zooms instead, and doesn't also scroll.
 final class PageScrollView: NSScrollView {
     var commandScrolled: ((NSEvent) -> Void)?
+    /// A pinch's step, which AppKit makes as a change of magnification and then of the view's origin, run so the page view hears of it once (`PageArea.zooming`).
+    var magnifying: ((() -> Void) -> Void)?
     /// Plain wheels handed on to AppKit's own scrolling, for QA.
     private(set) var wheelsPassedOn = 0
+
+    override func magnify(with event: NSEvent) {
+        guard let magnifying else { return super.magnify(with: event) }
+        magnifying { super.magnify(with: event) }
+    }
 
     override func scrollWheel(with event: NSEvent) {
         if event.modifierFlags.contains(.command) {
@@ -178,6 +185,10 @@ final class CenteringClipView: NSClipView {
         // The page goes under the transparent title bar, with nothing above or over it.
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.commandScrolled = { [weak self] event in self?.commandScroll(event) }
+        scrollView.magnifying = { [weak self] change in
+            guard let self else { return change() }
+            self.zooming(change)
+        }
         // Up and down, the slim thumb and no track, whatever the system's setting (owner, 2026-11-07: "the scroll thumb always visible, the rail always hidden"). Across, when zoomed past the window, the slim thumb along the bottom (`HorizontalThumbView`): no system scroller anywhere on a page area, as a fading one's knob animation kept every pane's scroller for good.
         scrollView.hasVerticalScroller = false
         scrollView.hasHorizontalScroller = false
@@ -611,7 +622,7 @@ final class CenteringClipView: NSClipView {
         let value = core.zoomAfterScroll(current: scrollView.magnification, points: points)
         let inWindow = event.window == nil ? (scrollView.window?.convertPoint(fromScreen: event.locationInWindow) ?? event.locationInWindow) : event.locationInWindow
         setLive(true)
-        scrollView.setMagnification(value, centeredAt: documentView.convert(inWindow, from: nil))
+        zooming { scrollView.setMagnification(value, centeredAt: documentView.convert(inWindow, from: nil)) }
         // A wheel says nothing when it stops, so a pause says it.
         liveEnd?.invalidate()
         let timer = Timer(timeInterval: 0.15, repeats: false) { [weak self] _ in
@@ -875,8 +886,24 @@ final class CenteringClipView: NSClipView {
     /// What the end of a pinch does, and the menu, and `recto qa zoom`.
     func setZoom(_ value: Double) {
         let clip = scrollView.contentView.bounds
-        scrollView.setMagnification(value, centeredAt: NSPoint(x: clip.midX, y: clip.midY))
+        zooming { scrollView.setMagnification(value, centeredAt: NSPoint(x: clip.midX, y: clip.midY)) }
         setLive(false)
+    }
+
+    /// **A zoom reaches the page view once, as a whole.** AppKit's `setMagnification(_:centeredAt:)`, and a pinch's step, change the magnification and then
+    /// move the view's origin to the point it's about, each with a notification of its own. Told of the first alone, the page view lays its rows out for the
+    /// new zoom and moves the view across from where it was before AppKit's move, which then lands on top: a zoom to 3 on the USGS map from the fit left the
+    /// view at the page's right edge, where Rust's own zoom (applied inside `apply`, so told once) leaves it on the middle, and the tile shown was 4 MiB
+    /// larger (the release candidate's quiet run, 2026-11-16). As in a batch of Rust's ops, what moves is noted and told once, when the zoom is done.
+    func zooming(_ change: () -> Void) {
+        guard !applying else { return change() }
+        applying = true
+        change()
+        applying = false
+        if viewportDirty {
+            viewportDirty = false
+            sendViewport()
+        }
     }
 
     /// What a scroll does, and what `recto qa scroll` calls.
