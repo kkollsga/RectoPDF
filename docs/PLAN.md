@@ -59,6 +59,13 @@ Open items only, by where they are in this plan; features not yet built are coun
   - [ ] Before 0.1.2's tag, in the release preflight on the team's signature: the worker has `MallocLargeCache=0` (`ps -E`) and "Malloc Large (empty)" is about 0 after a zoom on a heavy page (`vmmap --summary`). Read from libmalloc's source: nothing in the hardened runtime or the sandbox removes it; every measurement so far is on ad hoc signed builds.
   - Decided by the owner, 2026-11-16 (`docs/OWNER-RULES.md`): the line between a scan and a picture stays at 95% of the page ("Lets do 95%"), as built. Known with it: an A4 scan on a letter page (about 91.5%), or a scan with real margins, is picked as a picture; a full-bleed photo never is.
 
+- **Release 0.1.2** (owner, 2026-11-16: "Lets release 0.1.2?", `docs/OWNER-RULES.md`). Said: ready to tag on 17 November, the tag and the publishing on the owner's plain yes. In hand since the evening of the 16th:
+  - [ ] The two faults of a copy that went back to 0.1.0 and comes forward (D and F, below, "To be fixed before 0.1.2 is published"), and the `.not-merged` journal: `build/carry-two-journals`.
+  - [ ] The release gate's two fixes, the allocator setting checked in the preflight on the team's signature, and RELEASING's steps for 0.1.2: `build/release-0.1.2-tools`.
+  - [ ] The notes, `docs/releases/0.1.2.md`, with their sources: `build/notes-0.1.2`.
+  - [ ] An independent read of the last two merges and of the whole of what 0.1.2 adds.
+  - [ ] Then, the coordinator's: `release-preflight.yml` run; the bump on a branch; the dress rehearsal with `check-carry` and `check-draft` against the 0.1.1 zip; `main`'s full check and green CI; the on-screen pass with screenshots to the owner; the tag (A) and the draft's checks; publishing (B).
+
 **Phase R's close: done 2026-11-15.** The second independent read found the work sound to release from; its three findings are merged or settled (`build/close-fixes`; the comparison walk's segment back with a longer wait and a truer record); the window's Save was found to run the person's `save` through the one door already, and the size guard's item was stale. The closing review is in `docs/PROCESS.md`.
 
 **Before 0.1.1**
