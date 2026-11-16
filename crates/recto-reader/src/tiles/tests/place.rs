@@ -319,9 +319,11 @@ fn a_turn_keeps_the_place_in_the_page_and_across() {
     reader.place.scrolled_to = 0;
     settle(&mut reader);
     let page = reader.docs.shown().unwrap().layout.rect(3);
+    // The zoom taken first, then the view across: one word with both is a zoom, which moves the view across with the rows.
     let mut at = view(page.y + page.height * 0.4);
-    at.x = 30.0;
     at.magnification = 2.0;
+    reader.set_viewport(at);
+    at.x = 30.0;
     reader.set_viewport(at);
     reader.place.take_moved_page();
     let before = reader.places()[0].1;

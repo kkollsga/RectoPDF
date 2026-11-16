@@ -468,12 +468,12 @@ fn comparisons_leave_no_views_behind() {
     assert!(growing.is_empty(), "grew with every comparison, {STRETCH} at a time: {growing:?}");
 }
 
-/// Failure: the page area has a system scroller across again (a rail, or a fading knob that kept its view for good), the thumb across shows with a page no wider than its pane or is missing with one wider, sits over the page number's corner or is as thick as a rail, or the way VoiceOver and a click beside it move a page across doesn't move it. Owner, 2026-11-07/08: "the scroll thumb always visible, the rail always hidden: for the page area too".
+/// Failure: the page area has a system scroller across again (a rail, or a fading knob that kept its view for good), the thumb across shows with a page no wider than its pane or is missing with one wider, sits over the page number's corner or is as thick as a rail, or the way VoiceOver and a click beside it move a page across doesn't move it. Owner, 2026-11-07/08: "the scroll thumb always visible, the rail always hidden: for the page area too" Or (the release candidate's quiet run, 2026-11-16) a zoom the host makes about the view's middle, as the end of a pinch and `qa zoom` do, ends with the view at the page's right edge and not its middle: AppKit's zoom moves the magnification and then the view's origin, and the page view, told of the first alone, moved the view across before AppKit's own move landed on top. Seen with one page of the USGS map's size (2232 by 2016 points), a document shorter than the window at the fit, and not with letter pages or six of the map's; the page's middle stays in the middle, its gutters equal.
 #[test]
 fn the_thumb_across_shows_with_a_page_wider_than_its_pane() {
     let state = State::new();
     let Some(run) = Run::on(&state) else { return };
-    let file = document("wide", 6, (612.0, 792.0));
+    let file = document("wide", 1, (2232.0, 2016.0));
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.ok(&["qa", "scroller-style", "overlay"]);
     run.settled();
@@ -483,6 +483,15 @@ fn the_thumb_across_shows_with_a_page_wider_than_its_pane() {
     assert_eq!(run.report()["app"]["pages"]["horizontal_scroller"], false);
     run.ok(&["qa", "zoom", "3"]);
     run.settled();
+    let pages = run.report()["app"]["pages"].clone();
+    let gutter = |side: &str| pages["page_gutters"][0][side].as_f64().unwrap();
+    assert!(
+        (gutter("left") - gutter("right")).abs() < 2.0,
+        "zoomed about the middle, the page's middle stays there: gutters {} and {}, across {}",
+        gutter("left"),
+        gutter("right"),
+        pages["scroll_x"]
+    );
     let wide = across(&run);
     assert_eq!(wide["shown"], true, "{wide}");
     assert!(wide["thumb_height"].as_f64().unwrap() < 7.0, "thinner than the system's: {wide}");

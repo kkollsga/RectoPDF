@@ -615,6 +615,12 @@ impl Reader {
                 self.host.ops.push_back(Op::ScrollAcross { x });
             }
         }
+        // What's drawn is planned for where the view is going, not where the host had it before the move: planned from the old place, a heavy page drew a
+        // region for the part of the page the view was leaving as well, and kept both on screen (the release candidate's quiet run, 2026-11-16: two tiles,
+        // 36 MiB, at the USGS map's zoom, where one of 20 MiB had done).
+        if let Some(x) = across {
+            self.viewport.x = x;
+        }
         // After the refresh, which is what moves the tiles' scale on.
         self.refresh(MAX_ATTACH_PER_TURN);
         self.cancel_if_unwanted();

@@ -371,11 +371,13 @@ fn a_save_leaves_zoom_place_layout_and_selection_as_they_were() {
         reader.activate(1, 10, 0, turned, &[], None, spread);
         follow_host(&mut reader, view(0.0));
         settle_sized(&mut reader, letter());
-        reader.zoom(Zoom::To(1.28));
+        // Zoomed past the window, so there's a place across to keep (a page that fits is centred, with none): the zoom taken first, then the view across.
+        reader.zoom(Zoom::To(2.0));
         let page = reader.docs.shown().unwrap().layout.rect(on);
         let mut at = view(page.y + page.height * 0.4);
+        at.magnification = 2.0;
+        reader.set_viewport(at);
         at.x = 25.0;
-        at.magnification = 1.28;
         reader.set_viewport(at);
         reader.place.take_moved_page();
         let selected = Range {
