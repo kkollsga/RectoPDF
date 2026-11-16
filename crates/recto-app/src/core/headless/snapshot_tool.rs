@@ -666,3 +666,25 @@ fn a_paste_held_for_a_restore_and_dropped_by_a_freeze_leaves_the_next_paste_work
     );
     drop(app.quit());
 }
+
+/// **Failure (a guard put in before Capture, 2026-11-16): the tool turned on from the Tools menu stops staying on,** so a person taking several boxes in a
+/// row has to turn it on again for each. A box, a click on an image and a click on nothing in turn, each taken, and the tool is still on and drawing
+/// nothing after every one.
+#[test]
+fn the_tool_turned_on_from_the_menu_stays_on_after_each_capture() {
+    let disk = Disk::new();
+    let doc = disk.file("snapshot.pdf", &text_and_image());
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    tool_on(&app);
+    for (what, from, to) in [
+        ("a box", (BOX[0], BOX[1]), Some((BOX[0] + BOX[2], BOX[1] + BOX[3]))),
+        ("a click on an image", (120.0, 270.0), None),
+        ("a click on nothing", (400.0, 600.0), None),
+    ] {
+        mouse(&app, from, to);
+        let tool = app.core().tools.tool();
+        assert!(tool.is_on() && !tool.is_drawing(), "{what}: the tool is still on, and the box gone");
+    }
+}
