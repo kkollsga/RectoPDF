@@ -90,15 +90,37 @@ fn fake_worker() {
             }
             // Where the page's images are, the same at any limit: asking is a walk of its objects, with nothing drawn.
             Kind::ImagesRequest => {
-                let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
+                let (job_id, _, for_a_click) = proto::decode_images_request(&frame.payload).unwrap();
                 if mode == "low_res_walk_overruns" {
                     leak_for_ever();
                 }
-                proto::PageImages {
-                    job_id,
-                    boxes: vec![[0, 0, 32_768, 32_768]],
+                // Only a walk for a click's places goes wrong: dark paper's is answered.
+                if for_a_click && mode == "click_walk_overruns" {
+                    leak_for_ever();
                 }
-                .encode()
+                if for_a_click && mode == "click_walk_crashes" {
+                    isolate::exit_now(1);
+                }
+                // Refused the first time asked, whoever asks, and answered after: a walk that failed for a moment.
+                if mode == "walk_refused_once" {
+                    let mark = std::env::var("RECTO_FAKE_MARK").unwrap();
+                    if !std::path::Path::new(&mark).exists() {
+                        std::fs::write(&mark, b"refused").unwrap();
+                        send_all(&channel, &proto::encode_failed(job_id, FailCode::Internal), &[]).unwrap();
+                        continue;
+                    }
+                }
+                // Where the page's images are, the same at any limit: asking is a walk of its objects, with nothing drawn.
+                let boxes = vec![[0, 0, 32_768, 32_768]];
+                if for_a_click {
+                    proto::PageImagesForAClick {
+                        job_id,
+                        places: proto::ClickPlaces { boxes, beyond: None },
+                    }
+                    .encode()
+                } else {
+                    proto::PageImages { job_id, boxes }.encode()
+                }
             }
             Kind::TextRequest => {
                 let job = TextJob::decode(&frame.payload).unwrap();
@@ -1174,4 +1196,58 @@ fn a_worker_starts_with_the_allocator_setting_and_nothing_else() {
         classes.contains(&NORMAL) && classes.contains(&HEAVY),
         "expected a normal and a heavy start, saw limits {classes:?}"
     );
+}
+
+/// Failure (the independent read before 0.1.2, first finding): a walk for a click's places that fails in the background, as a worker killed while the Mac is busy, a crash, or a
+/// cap, is kept as "no picture there", so a click on a figure later, on an idle Mac, picks nothing until the file changes. A walk ahead of a click keeps only an answer; a failure
+/// keeps nothing, and the click asks as it would have without it. Seeded by the stand-in refusing the first walk it is asked.
+#[test]
+fn a_failed_prefetch_keeps_nothing_and_a_click_still_finds_the_figure() {
+    let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
+    let mark = file.0.with_file_name("walk-refused-once");
+    let _ = std::fs::remove_file(&mark);
+    let slot = HeavySlot::new();
+    let mut config = config("walk_refused_once", &slot);
+    config.extra_env.push(("RECTO_FAKE_MARK".into(), mark.to_str().unwrap().into()));
+    let mut doc = DocRenderer::new(&file.0, None, config, policy()).unwrap();
+    assert_eq!(
+        doc.largest_image_pixels(0, 0).unwrap(),
+        0,
+        "the first look, with a worker that then has the page"
+    );
+    let _ = recto_render_service::prefetch_click_places(&mut doc, 0, u64::MAX);
+    assert!(mark.exists(), "the prefetch's walk was the one refused");
+    let places = doc.image_boxes_for_a_click(0, 0).expect("a click asks again");
+    let _ = std::fs::remove_file(&mark);
+    assert_eq!(places.boxes.len(), 1, "the figure is there for a click: {places:?}");
+}
+
+/// Failure (the independent read before 0.1.2, second finding): the kills of walks ahead of a click are counted with the 16 that dark paper's walk and a click's share, so plain
+/// scrolling on white paper, where each walk killed is a worker lost, stops dark paper asking where pictures are for the rest of the document. 17 prefetch walks killed, and dark
+/// paper still gets its answer.
+#[test]
+fn a_prefetch_killed_in_its_walk_leaves_dark_papers_cap_alone() {
+    let (mut doc, _file) = doc_with("click_walk_overruns", policy(), &HeavySlot::new());
+    for page in 0..17 {
+        doc.largest_image_pixels(page, 0).unwrap();
+        assert!(
+            recto_render_service::prefetch_click_places(&mut doc, page, u64::MAX),
+            "page {page}: a walk was made"
+        );
+        assert_eq!(doc.worker_pid(), None, "page {page}: the worker that was killed in it isn't replaced for it");
+    }
+    assert_eq!(doc.stats().memory_kills, 17, "each walk was killed");
+    assert_eq!(doc.image_boxes(0, 0), Some(vec![[0, 0, 32_768, 32_768]]), "dark paper's walk is still asked");
+}
+
+/// Failure (the same finding): a worker lost in a prefetch's walk is replaced for it, as a draw's is (a worker that has drawn is tried again in a new one after a crash), so reading
+/// starts a process, opens the file in it and walks again, for a walk nobody asked for. One crash, and no second worker.
+#[test]
+fn a_prefetch_that_loses_its_worker_doesnt_start_another() {
+    let (mut doc, _file) = doc_with("click_walk_crashes", policy(), &HeavySlot::new());
+    done(doc.render_tile(&request(1), &surface()));
+    doc.largest_image_pixels(1, 0).unwrap();
+    assert!(recto_render_service::prefetch_click_places(&mut doc, 1, u64::MAX), "a walk was made");
+    assert_eq!(doc.worker_pid(), None, "no worker is started for it");
+    assert_eq!(doc.stats().crashes, 1, "the one that was lost, and no second");
 }

@@ -34,6 +34,7 @@ pub use budget::{
     measure_budget, measure_viewport, page_box_region, page_device_size, plan_regions,
 };
 pub use host::contents::{ContentsDone, ContentsEvent, ContentsRequest};
+pub use host::images::prefetch_click_places;
 mod page_deadline;
 #[cfg(feature = "test-seams")]
 mod test_deadline;

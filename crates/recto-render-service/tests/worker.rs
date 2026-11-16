@@ -923,6 +923,103 @@ fn places_kept_of_a_file_are_not_served_once_another_app_has_rewritten_it() {
     assert!(doc.take_file_changed(), "and the renderer says the file changed, once");
 }
 
+/// A page with one picture on it, for a click's places.
+fn one_figure() -> Vec<u8> {
+    let image = recto_testpdf::first_extra_object(1);
+    recto_testpdf::pages_with(
+        &[Page::new(b"q 100 0 0 100 50 50 cm /Im0 Do Q\n".to_vec())],
+        &format!("/XObject << /Im0 {image} 0 R >>"),
+        vec![recto_testpdf::Object::Stream {
+            dict: "/Type /XObject /Subtype /Image /Width 4 /Height 4 /BitsPerComponent 8 /ColorSpace /DeviceGray".into(),
+            data: vec![90; 16],
+        }],
+    )
+}
+
+/// Failure (the independent read before 0.1.2, second finding): a prefetch with no worker alive starts one, so a page whose worker was let go at rest, or a file just opened, costs a
+/// process, an open and a walk for nobody. It asks nothing and starts nothing.
+#[test]
+fn a_prefetch_with_no_worker_alive_starts_none() {
+    let file = TempPdf::new("figure.pdf", &one_figure());
+    let mut doc = renderer(&file.0, Policy::default());
+    assert!(
+        !recto_render_service::prefetch_click_places(&mut doc, 0, u64::MAX),
+        "no worker alive: nothing to ask"
+    );
+    assert_eq!(doc.worker_pid(), None, "and none started for it");
+    doc.largest_image_pixels(0, 0).unwrap();
+    doc.kill_worker();
+    assert!(
+        !recto_render_service::prefetch_click_places(&mut doc, 0, u64::MAX),
+        "a worker let go: nothing to ask"
+    );
+    assert_eq!(doc.worker_pid(), None, "and none started for it");
+    assert_eq!(
+        doc.image_boxes_for_a_click(0, 0).expect("a click asks").boxes.len(),
+        1,
+        "a click still starts one and finds the figure"
+    );
+}
+
+/// **A measurement, not a check:** what a page's first look costs a worker, and what the click's walk costs on top, over the pages of real files (`RECTO_FIRST_LOOK_DIR`: a
+/// folder of PDFs; `RECTO_FIRST_LOOK_PAGES` pages of each, evenly spaced, 40 if not set). For each page, as the reader's first look at it is: `largest_image_pixels` (with the click's
+/// walk inside it where the code does that), then the click's walk alone (kept already where the first look did it). One line a file and the worst page, in microseconds.
+/// `RECTO_FIRST_LOOK_DIR=... tools/sysguard/heavy.sh cargo nextest run --release --locked -p recto-render-service --run-ignored only --no-capture -E 'test(=first_look_cost)'`
+#[test]
+#[ignore = "a measurement on real files, release build: RECTO_FIRST_LOOK_DIR"]
+fn first_look_cost() {
+    let Some(dir) = std::env::var_os("RECTO_FIRST_LOOK_DIR") else {
+        eprintln!("first_look_cost: set RECTO_FIRST_LOOK_DIR");
+        return;
+    };
+    let want: u32 = std::env::var("RECTO_FIRST_LOOK_PAGES").ok().and_then(|text| text.parse().ok()).unwrap_or(40);
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|e| e == "pdf"))
+        .collect();
+    files.sort();
+    for path in files {
+        let mut doc = renderer(&path, Policy::default());
+        let Ok(count) = doc.page_count() else { continue };
+        let step = (count / want).max(1);
+        let (mut first, mut walk): (Vec<u128>, Vec<u128>) = (Vec::new(), Vec::new());
+        let mut worst = (0u128, 0u32);
+        for page in (0..count).step_by(step as usize).take(want as usize) {
+            let began = std::time::Instant::now();
+            if doc.largest_image_pixels(page, 0).is_err() {
+                continue;
+            }
+            let looked = began.elapsed().as_micros();
+            let began = std::time::Instant::now();
+            let _ = doc.image_boxes_for_a_click(page, 0);
+            let walked = began.elapsed().as_micros();
+            first.push(looked);
+            walk.push(walked);
+            if looked > worst.0 {
+                worst = (looked, page + 1);
+            }
+        }
+        // The first page of a file starts the worker and opens the document: left out.
+        let (mut first, mut walk) = (first.split_off(1.min(first.len())), walk.split_off(1.min(walk.len())));
+        first.sort_unstable();
+        walk.sort_unstable();
+        let at = |list: &[u128], part: usize| list.get((list.len().saturating_sub(1)) * part / 100).copied().unwrap_or(0);
+        eprintln!(
+            "first_look {:<42} pages {:>3}  first look us p50 {:>6} p95 {:>6} max {:>6} (page {:>5})  walk after it us p50 {:>6} max {:>6}",
+            path.file_name().unwrap().to_string_lossy(),
+            first.len(),
+            at(&first, 50),
+            at(&first, 95),
+            first.last().copied().unwrap_or(0),
+            worst.1,
+            at(&walk, 50),
+            walk.last().copied().unwrap_or(0)
+        );
+    }
+}
+
 /// Failure: the renderer's worker carries the code that reaches the Keychain: the Find key's, or Security.framework linked and called by anything (the coordinator's decision, 2026-11-15: only the app's own process does). Looked at as it was just built for this test.
 #[test]
 fn the_worker_carries_no_keychain_code() {

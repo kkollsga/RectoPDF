@@ -16,6 +16,19 @@ pub(super) fn box_ops(reader: &mut Reader) {
     }
 }
 
+/// **The pages on show of the tab showing, as the file and page a renderer knows them by, with a generation of their own,** for the thread that draws to read their click
+/// places while it has nothing else to do (`engine/run.rs`, `prefetch_at_rest`): so a click after a pause, when the worker has been let go, is answered from what's kept.
+/// Nothing is planned or sent from here and no job is made: the thread asks of the worker it has, between its turns, and a newer view cancels the generation.
+pub(crate) fn pages_on_show(reader: &mut Reader) -> Option<(Vec<(std::path::PathBuf, u32)>, u64)> {
+    let tab = reader.docs.hot?;
+    let doc = reader.docs.views.get(&tab)?;
+    if doc.drawing.problem.is_some() || reader.viewport.height <= 0.0 {
+        return None;
+    }
+    let pages: Vec<(std::path::PathBuf, u32)> = reader.visible_pages(doc).filter_map(|page| doc.map.source(page)).collect();
+    (!pages.is_empty()).then(|| (pages, reader.work.fresh_generation()))
+}
+
 /// Whether a page of the tab showing is known to be heavy, which is never drawn for a hidden-text check.
 fn heavy(reader: &Reader, page: u32) -> bool {
     reader.docs.shown().and_then(|doc| doc.drawing.heavy.get(&page).copied()).unwrap_or(false)

@@ -947,6 +947,7 @@ fn (pub(crate)) pub(crate) fn found(reader: &mut Reader, tab: u32, serial: u32, 
 fn (pub(crate)) pub(crate) fn let_go(reader: &mut Reader) -> bool
 fn (pub(crate)) pub(crate) fn looking(reader: &Reader) -> Option<(u32, PagePoint, u32)>
 fn (pub(crate)) pub(crate) fn not_found(reader: &mut Reader, tab: u32, serial: u32)
+fn (pub(crate)) pub(crate) fn pages_on_show(reader: &mut Reader) -> Option<(Vec<(std::path::PathBuf, u32)>, u64)>
 fn (pub(crate)) pub(crate) fn picked(reader: &Reader) -> Option<(u32, ImagePick)>
 fn (pub(crate)) pub(crate) fn put_hidden(sets: &mut HiddenSets, tab: u32, file: PathBuf, set: Option<Arc<HiddenAnnots>>) -> Vec<u32>
 fn (pub(crate)) pub(crate) fn redraw_own_pages(reader: &mut Reader, tab: u32, file_pages: &[u32])
