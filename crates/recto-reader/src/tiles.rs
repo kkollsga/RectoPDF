@@ -593,10 +593,7 @@ impl Reader {
         self.place.note_viewport(was, viewport);
         let (mut moved_layout, mut across) = (false, None);
         if let Some(doc) = self.docs.hot.and_then(|tab| self.docs.views.get_mut(&tab)) {
-            if doc.layout.set_frame(viewport.frame_width) && was.frame_width != viewport.frame_width {
-                moved_layout = true;
-            }
-            across = doc.take_magnification(&viewport, self.place.jump.is_some());
+            (moved_layout, across) = doc.take_view(&was, &viewport, self.place.jump.is_some());
             // A jump under way says the host hasn't caught up with what it's been told, and that includes the zoom.
             if !viewport.live && self.place.jump.is_none() {
                 doc.place.magnification = viewport.magnification;
