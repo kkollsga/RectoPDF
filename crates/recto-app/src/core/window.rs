@@ -21,6 +21,20 @@ use recto_session::{ContentsFollow, TabId};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+/// A bridge call names itself on the line it already has (`self.inner.doing("scroll").saver.view_changed()`), which costs the bridge no line of its own and
+/// is no method of the app's core: the window's thread says what it begins, for a stall's record ([`Watchdog::note_doing`]), and the core is handed back.
+pub trait Doing {
+    #[must_use]
+    fn doing(&self, what: &'static str) -> &Self;
+}
+
+impl Doing for super::Inner {
+    fn doing(&self, what: &'static str) -> &Self {
+        self.window.note_doing(what);
+        self
+    }
+}
+
 /// **What the window is and says:** what the host tells of it for the record, its appearance and panel, the contents' follow, the UI thread's hang watchdog, and the
 /// notices that go by themselves.
 pub struct Window {
@@ -297,6 +311,17 @@ impl Window {
     /// The UI thread has woken, or (`block`) a block of the host's begins on it: true if this began a stretch the hang watchdog times.
     pub fn main_busy(&self, block: bool) -> bool {
         self.watchdog.enter(block)
+    }
+
+    /// The UI thread says what it begins, for a stall's record ([`Watchdog::note_doing`]): does nothing off that thread.
+    pub fn note_doing(&self, what: &'static str) {
+        self.watchdog.note_doing(what);
+    }
+
+    /// The stretches over the budget kept so far, for a test of what a control said it began.
+    #[cfg(test)]
+    pub(crate) fn kept_stretches(&self) -> Vec<crate::watchdog::SlowStretch> {
+        self.watchdog.slow_stretches().0
     }
 
     /// The UI thread is about to sleep.

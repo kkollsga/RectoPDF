@@ -75,6 +75,38 @@ pub enum UiAction {
     },
 }
 
+impl UiAction {
+    /// The control's name, for a stall's record (`qa state` `hangs.over_budget`) and the coverage list: its kind, one word, static so noting it allocates nothing.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Menu { .. } => "Menu",
+            Self::Row { .. } => "Row",
+            Self::PaneRead { .. } => "PaneRead",
+            Self::Chevron { .. } => "Chevron",
+            Self::Open { .. } => "Open",
+            Self::OpenRecent { .. } => "OpenRecent",
+            Self::FindTyped { .. } => "FindTyped",
+            Self::FindOpen => "FindOpen",
+            Self::FindClose => "FindClose",
+            Self::FindReturn { .. } => "FindReturn",
+            Self::FindChoose { .. } => "FindChoose",
+            Self::PageTyped { .. } => "PageTyped",
+            Self::Swiped { .. } => "Swiped",
+            Self::ZoomTyped { .. } => "ZoomTyped",
+            Self::ToggleSidebar => "ToggleSidebar",
+            Self::PaletteRun { .. } => "PaletteRun",
+            Self::CloseAnswered { .. } => "CloseAnswered",
+            Self::SaveAs { .. } => "SaveAs",
+            Self::SettingChosen { .. } => "SettingChosen",
+            Self::LinkClicked { .. } => "LinkClicked",
+            Self::SnapshotTaken => "SnapshotTaken",
+            Self::Pasted { .. } => "Pasted",
+            Self::Print { .. } => "Print",
+        }
+    }
+}
+
 /// What came of an action for the host: what's left for it to do, and whether the action was something to act on (a typed page or zoom that's understood).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Acted {
@@ -105,6 +137,7 @@ impl Inner {
     /// sent to the one executor ([`super::person::submit`]). What isn't one command (a menu id's row, the palette's, an open, the close prompt's answer,
     /// Save As, a setting, the zoom, run where it's asked) is its feature's whole, and returns here.
     pub fn act(self: &Arc<Self>, action: UiAction) -> Acted {
+        self.window.note_doing(action.name());
         let command = match action {
             UiAction::Menu { id } => return Acted::host(self.perform(id)),
             UiAction::Row { row, adding } => {

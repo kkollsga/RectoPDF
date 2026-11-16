@@ -61,7 +61,7 @@ pub use session::*;
 pub use start::*;
 pub use tools::Tools;
 use unlocking::*;
-pub use window::{AppState, Window, WindowPlacement};
+pub use window::{AppState, Doing, Window, WindowPlacement};
 
 use crate::RecentFile;
 use crate::SelectionNotice;

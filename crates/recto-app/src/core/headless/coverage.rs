@@ -280,7 +280,6 @@ pub(super) fn every_kind(app: &HeadlessApp) -> Vec<(String, UiAction)> {
 /// A control's name: its kind, and what tells its forms apart.
 fn kind(action: &UiAction) -> String {
     let name = match action {
-        UiAction::Menu { .. } => "Menu",
         UiAction::Row { row, adding } => match (row.kind, adding) {
             (RowKind::Tab, false) => "Row(tab)",
             (RowKind::Tab, true) => "Row(tab, adding)",
@@ -288,33 +287,14 @@ fn kind(action: &UiAction) -> String {
             (RowKind::Contents, true) => "Row(contents, adding)",
             (RowKind::Note, _) => "Row(note)",
         },
-        UiAction::PaneRead { .. } => "PaneRead",
-        UiAction::Chevron { .. } => "Chevron",
-        UiAction::Open { .. } => "Open",
-        UiAction::OpenRecent { .. } => "OpenRecent",
-        UiAction::FindTyped { .. } => "FindTyped",
-        UiAction::FindOpen => "FindOpen",
-        UiAction::FindClose => "FindClose",
-        UiAction::FindReturn { .. } => "FindReturn",
-        UiAction::FindChoose { .. } => "FindChoose",
-        UiAction::PageTyped { .. } => "PageTyped",
-        UiAction::Swiped { .. } => "Swiped",
-        UiAction::LinkClicked { .. } => "LinkClicked",
-        UiAction::SnapshotTaken => "SnapshotTaken",
-        UiAction::Pasted { .. } => "Pasted",
-        UiAction::ZoomTyped { .. } => "ZoomTyped",
-        UiAction::ToggleSidebar => "ToggleSidebar",
-        UiAction::PaletteRun { .. } => "PaletteRun",
         UiAction::CloseAnswered { choice, .. } => match choice {
             CloseChoice::Cancel => "CloseAnswered(Cancel)",
             CloseChoice::SaveAs => "CloseAnswered(SaveAs)",
             CloseChoice::Save => "CloseAnswered(Save)",
             CloseChoice::DontSave => "CloseAnswered(DontSave)",
         },
-        UiAction::SaveAs { .. } => "SaveAs",
-        UiAction::SettingChosen { .. } => "SettingChosen",
-        UiAction::Print { to_file: false, .. } => "Print",
         UiAction::Print { to_file: true, .. } => "Print(to a file)",
+        other => other.name(),
     };
     format!("UiAction::{name}")
 }
