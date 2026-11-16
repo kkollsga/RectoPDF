@@ -17,11 +17,16 @@ pub(super) struct Known {
     /// `places` has been forgotten, past its cap, and nobody's been told.
     places_cleared: bool,
     /// Where each page's images may be, for a click (`DocRenderer::image_boxes_for_a_click`): apart from dark paper's, so its answer is never this one.
-    /// At most [`MAX_IMAGE_PLACES`] pages of 64 boxes and the one past them, 8 bytes each, and only pages clicked on.
+    /// At most [`MAX_IMAGE_PLACES`] pages of 64 boxes and the one past them, 8 bytes each (520 a page): the pages the tab's worker has looked at for their first draw ([`DocRenderer::largest_image_pixels`]'s job asks as it goes, `recto-reader`'s `engine/run.rs`) and those clicked on.
     click_places: HashMap<u32, Option<proto::ClickPlaces>>,
 }
 
 impl Known {
+    /// Whether any page's places are kept, which is when a stamp check before serving one is worth its `fstat`.
+    pub(super) fn holds_any(&self) -> bool {
+        !self.places.is_empty() || !self.click_places.is_empty()
+    }
+
     /// The file is another now: nothing known of its pages holds.
     pub(super) fn forget(&mut self) {
         self.traits.clear();
@@ -76,6 +81,7 @@ impl DocRenderer {
 
     /// Where a page's images are, as parts of the page in 65535ths, or `None` if it isn't known: this job went stale, the page isn't one that can be asked about, or the asking failed or was refused, as a page with more images than an answer holds is. Those aren't "there are no images", and a caller mustn't treat them so. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it.
     pub fn image_boxes(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>> {
+        forget_places_of_a_replaced_file(self);
         if let Some(known) = self.images.places.get(&page) {
             return known.clone();
         }
@@ -98,6 +104,7 @@ impl DocRenderer {
     /// form's box. `None` if it isn't known: stale (nothing remembered), or the page couldn't be asked or the asking failed, which a click takes as no
     /// picture there. Remembered apart from dark paper's, under the same cap.
     pub fn image_boxes_for_a_click(&mut self, page: u32, generation: u64) -> Option<proto::ClickPlaces> {
+        forget_places_of_a_replaced_file(self);
         if let Some(known) = self.images.click_places.get(&page) {
             return known.clone();
         }
@@ -114,6 +121,15 @@ impl DocRenderer {
     /// Whether the places of a page's images have been forgotten since this was last asked, with a lot of pages looked up. It says nothing about the file: it's for whoever decided something from those places, which might not be decided the same way twice.
     pub fn take_image_places_cleared(&mut self) -> bool {
         std::mem::take(&mut self.images.places_cleared)
+    }
+}
+
+/// **What's kept of the file's pictures isn't served for a file another app has rewritten.** An answer kept is given with no job, so the stamp check every job makes
+/// ([`DocRenderer::reopen_if_replaced`], which forgets them, as it does when a worker finds the file changed) wouldn't have run: a click after a rewrite got the old file's "no
+/// picture". One `fstat` (about a microsecond), and only when something's kept; a miss goes to a job, which checks as every job does.
+fn forget_places_of_a_replaced_file(doc: &mut DocRenderer) {
+    if doc.images.holds_any() {
+        doc.reopen_if_replaced();
     }
 }
 

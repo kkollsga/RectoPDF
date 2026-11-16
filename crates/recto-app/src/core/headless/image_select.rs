@@ -234,6 +234,33 @@ fn a_click_starts_a_private_worker_only_where_an_image_may_be() {
     assert!(told.is_empty(), "its box neither taken off nor put back: {told:?}");
 }
 
+/// Failure (the independent read before 0.1.2): a worker is let go at rest (3 s on a heavy page), and the first still click after the pause, on a margin, starts a worker
+/// again for the page's click filter (172 MiB over the tab on the USGS map, 0.1 s), because the page's answer wasn't kept. The tab's worker reads it as the page is first
+/// looked at, so a margin click after the worker has gone starts none and sends no look; the same click on a page that has never been looked at in this renderer still may.
+#[test]
+fn a_click_after_the_worker_was_let_go_starts_no_worker() {
+    let disk = Disk::new();
+    let doc = disk.file("figure.pdf", &figure());
+    let app = opened(disk, &doc);
+    let engine = || app.core().panes.reading_engine(&app.core().engine);
+    // The page's text, which the pointer reads over the page, so the click has nothing to read with a worker.
+    let (x, y) = engine()
+        .points()
+        .document_point(0, f64::from(ON_TEXT.0), f64::from(ON_TEXT.1))
+        .expect("page 1 is laid out");
+    let _ = engine().selection().is_over_text(x, y);
+    app.settle();
+    assert!(!engine().workers().pids().is_empty(), "the page was drawn by the tab's worker");
+    engine().memory_pressure(false);
+    app.wait_until("the tab's worker let go", || engine().workers().pids().is_empty());
+    assert_eq!(looks_sent(&app, |app| drop(let_go(app, OFF, None, 1))), 0, "a blank margin");
+    assert!(
+        engine().workers().pids().is_empty(),
+        "the click started a worker: {:?}",
+        engine().workers().pids()
+    );
+}
+
 /// Failure (S2 of the review): a click's look runs on to its limit after the person has moved on from the click, a private worker of 351 MiB on the USGS
 /// map for nothing, holding a quit or an update's hand-off and every later look behind it: after Escape, the snapshot tool turned on, another tab, an edit
 /// that moves the page, a newer click, or a quit. With the look held as it begins, each of these stops it, and it ends without its image being picked.
