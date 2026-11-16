@@ -53,6 +53,14 @@ fn fake_worker() {
             Kind::Open => {
                 let mut handles = frame.handles;
                 cancel_word = Some(SharedMemory::map(handles.pop().unwrap(), control::LEN).unwrap());
+                // A test that asks what a started worker was given: one line a start, its limit and its whole environment.
+                if let Some(report) = std::env::var_os("RECTO_FAKE_ENV_REPORT") {
+                    use std::io::Write;
+                    let mut vars: Vec<String> = std::env::vars().map(|(k, v)| format!("{k}={v}")).collect();
+                    vars.sort();
+                    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(report).unwrap();
+                    writeln!(file, "{limit} {}", vars.join(" ")).unwrap();
+                }
                 match mode.as_str() {
                     "open_unreadable" => proto::encode_failed(0, FailCode::Unreadable),
                     "open_not_pdf" => proto::encode_failed(0, FailCode::NotPdf),
@@ -1123,4 +1131,34 @@ fn text_jobs_share_a_heavy_worker_and_dont_need_one() {
     let heavy = doc.worker_pid();
     assert_eq!(doc.page_characters(0, false, false).unwrap().chars.len(), 1);
     assert_eq!(doc.worker_pid(), heavy);
+}
+
+/// Failure: the allocator setting that keeps a resting worker small (`MallocLargeCache=0`, `worker_env::WORKER_ENV`) never reaches a worker, for the normal class or the heavy one
+/// (an environment built another way, or left empty), and nothing says so: on an OS whose large cache is off already the memory test passes all the same. A worker's environment is
+/// the setting and what a test put there, and nothing else: whatever the app's own environment holds (its paths, a password) stays out of a worker.
+#[test]
+fn a_worker_starts_with_the_allocator_setting_and_nothing_else() {
+    let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
+    let report = file.0.with_file_name("env-report");
+    let _ = std::fs::remove_file(&report);
+    let slot = HeavySlot::new();
+    let mut config = config("fits_heavy", &slot);
+    config.extra_env.push(("RECTO_FAKE_ENV_REPORT".into(), report.to_str().unwrap().into()));
+    let mut doc = DocRenderer::new(&file.0, None, config, policy()).unwrap();
+    // Page 0 doesn't fit the normal limit and does fit the heavy one: two workers start, one of each class.
+    done(doc.render_tile(&request(0), &surface()));
+    let lines = std::fs::read_to_string(&report).unwrap();
+    let _ = std::fs::remove_file(&report);
+    let mut classes = Vec::new();
+    for line in lines.lines() {
+        let (limit, vars) = line.split_once(' ').unwrap();
+        classes.push(limit.parse::<u64>().unwrap());
+        // What a test put there is the stand-in's own: its mode, where to report, its limit. And the one the system adds to every process it starts (the text encoding).
+        let ours: Vec<&str> = vars
+            .split(' ')
+            .filter(|var| !["RECTO_FAKE=", "RECTO_FAKE_ENV_REPORT=", "RECTO_WORKER_LIMIT=", "__CF_USER_TEXT_ENCODING="].iter().any(|own| var.starts_with(own)))
+            .collect();
+        assert_eq!(ours, ["MallocLargeCache=0"], "a worker with limit {limit} started with another environment");
+    }
+    assert!(classes.contains(&NORMAL) && classes.contains(&HEAVY), "expected a normal and a heavy start, saw limits {classes:?}");
 }
