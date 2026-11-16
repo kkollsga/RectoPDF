@@ -3483,8 +3483,16 @@ fn the_snapshot_tool_takes_a_box_and_an_image_to_the_clipboard() {
     run.ok(&["qa", "menu", "tools.snapshot"]);
     let on = run.report();
     assert_eq!(on["snapshot"]["on"], true, "{on}");
+    assert_eq!(on["snapshot"]["once"], false, "from the menu bar it isn't one-shot: {on}");
     assert_eq!(menu_item(&on, "tools.snapshot")["checked"], true, "the menu says so");
+    // A press on the page takes the keyboard from the sidebar, so Escape and the plain keys reach Rust (Capture's Escape).
+    run.ok(&["qa", "focus", "sidebar"]);
     run.ok(&["qa", "mouse-down", "1:60,50"]);
+    assert_eq!(
+        run.report()["session"]["app"]["focus"]["view"],
+        "page",
+        "the press moved the keyboard to the page"
+    );
     run.ok(&["qa", "mouse-drag", "1:400,300"]);
     let drawing = run.report();
     let shown = &drawing["app"]["pages"]["snapshot_box"];

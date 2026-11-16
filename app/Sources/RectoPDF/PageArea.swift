@@ -25,6 +25,7 @@ final class PageDocumentView: NSView {
             if let menu = menu(for: event) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
             return
         }
+        pointer?.takeKeyboardFromSidebar()
         pointer?.pointerDown(atWindow: event.locationInWindow, clicks: event.clickCount, shift: event.modifierFlags.contains(.shift))
     }
 
@@ -597,7 +598,14 @@ final class CenteringClipView: NSClipView {
 
     /// What a press anywhere in this pane does first, before it reaches a page: this pane's the one being read.
     func focus() {
+        takeKeyboardFromSidebar()
         core.paneFocused(pane: pane)
+    }
+
+    /// A press or right-click on a page gives the keyboard to the page when the sidebar's lists have it, so Escape and the plain keys reach Rust (they reach it only through the root view). Find's and the other fields keep it.
+    func takeKeyboardFromSidebar() {
+        guard let window, window.firstResponder is NSTableView else { return }
+        window.makeFirstResponder(window.contentView)
     }
 
     /// A zoom by ⌘-scroll waits a moment for the wheel to stop before its pages are drawn sharp: while it does, what's drawn is about to change.
