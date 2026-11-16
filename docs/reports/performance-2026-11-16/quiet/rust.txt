@@ -1,0 +1,101 @@
+warning: unused import: `std::time::Duration`
+  --> crates/recto-core/src/save.rs:38:5
+   |
+38 | use std::time::Duration;
+   |     ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `recto-core` (lib) generated 1 warning (run `cargo fix --lib -p recto-core` to apply 1 suggestion)
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.22s
+────────────
+ Nextest run ID 58ad5659-9cfa-46db-9a36-7dc529ce69ce with nextest profile: default
+    Starting 3 tests across 13 binaries (825 tests skipped)
+       START [         ] (1/3) recto-app core::headless::flick_cost::flicking_through_ten_large_tabs
+
+running 1 test
+run 0: footprint at the start 4.3 MiB; after each round (MiB, threads) [(42.9, 7), (43.0, 7), (43.0, 7)]; queue peak 1 tabs, null B; sleep files 10 (3370 B); load 10:08  up 3 days, 13:09, 6 users, load averages: 2,98 3,43 3,99
+run 1: footprint at the start 6.3 MiB; after each round (MiB, threads) [(43.2, 7), (43.2, 7), (43.2, 7)]; queue peak 1 tabs, null B; sleep files 10 (3368 B); load 10:08  up 3 days, 13:09, 6 users, load averages: 2,82 3,39 3,97
+run 2: footprint at the start 6.4 MiB; after each round (MiB, threads) [(43.2, 7), (43.2, 7), (43.2, 6)]; queue peak 1 tabs, null B; sleep files 10 (3367 B); load 10:08  up 3 days, 13:09, 6 users, load averages: 2,82 3,39 3,97
+test core::headless::flick_cost::flicking_through_ten_large_tabs ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 5.21s
+
+        PASS [   5.217s] (1/3) recto-app core::headless::flick_cost::flicking_through_ten_large_tabs
+       START [         ] (2/3) recto-app core::headless::input_to_frame::input_to_frame
+
+running 1 test
+tap row            1 tabs  ui p99      1.1  published p50     43.8  p95     52.6  p99     60.6
+open its tab       1 tabs  ui p99      1.0  published p50     67.5  p95     76.8  p99     82.3
+contents jump      1 tabs  ui p99      1.0  published p50     53.8  p95     55.0  p99     58.0
+link click         1 tabs  ui p99      0.9  published p50     53.8  p95     55.0  p99     57.1
+typed page         1 tabs  ui p99      0.8  published p50     53.7  p95     58.7  p99     61.8
+find typed         1 tabs  ui p99      1.2  published p50     63.7  p95     73.3  p99     83.1
+find step          1 tabs  ui p99      1.2  published p50     54.3  p95     57.1  p99     61.5
+compare click      1 tabs  ui p99      1.0  published p50     42.6  p95     49.0  p99     53.3
+pane focus         1 tabs  ui p99      0.8  published p50     42.2  p95     51.8  p99     52.9
+zoom               1 tabs  ui p99      2.5  published p50     27.8  p95     32.7  p99     34.2
+sidebar toggle     1 tabs  ui p99      1.1  published p50     42.9  p95     52.9  p99     58.1
+rotate             1 tabs  ui p99      1.8  published p50     52.6  p95     64.4  p99     87.8
+undo               1 tabs  ui p99      1.0  published p50     50.9  p95     57.6  p99     76.6
+open new file      1 tabs  ui p99      1.9  published p50    224.2  p95    317.2  p99    328.7
+scroll crossing an entry     1 tabs  ui p99      2.9  published p50     43.0  p95     47.4  p99     50.6
+scroll within an entry     1 tabs  ui p99      1.4  published p50     29.9  p95     32.9  p99     35.0
+events for watchers     1 tabs  ui p99      0.5  published p50     24.8  p95     27.9  p99     30.8
+tap row          100 tabs  ui p99      1.6  published p50     96.1  p95    105.4  p99    109.8
+open its tab     100 tabs  ui p99      0.9  published p50    119.7  p95    133.9  p99    142.5
+contents jump    100 tabs  ui p99      1.0  published p50     53.2  p95     58.0  p99     60.5
+link click       100 tabs  ui p99      0.9  published p50     53.6  p95     58.0  p99     60.2
+typed page       100 tabs  ui p99      0.9  published p50     53.6  p95     58.4  p99     60.8
+find typed       100 tabs  ui p99      1.5  published p50     64.3  p95     71.4  p99     80.5
+find step        100 tabs  ui p99      1.2  published p50     57.8  p95     61.3  p99     66.7
+compare click    100 tabs  ui p99      0.9  published p50    110.2  p95    130.4  p99    138.8
+pane focus       100 tabs  ui p99      1.0  published p50     78.4  p95     85.2  p99     89.2
+zoom             100 tabs  ui p99      1.9  published p50     27.8  p95     31.4  p99     35.0
+sidebar toggle   100 tabs  ui p99      0.9  published p50     45.9  p95     53.3  p99     56.4
+rotate           100 tabs  ui p99      1.1  published p50     55.5  p95     65.8  p99     81.5
+undo             100 tabs  ui p99      0.9  published p50     54.6  p95     60.0  p99     65.2
+open new file    100 tabs  ui p99      2.0  published p50    247.7  p95    330.1  p99    342.4
+scroll crossing an entry   100 tabs  ui p99      2.5  published p50     47.5  p95     51.8  p99     55.1
+scroll within an entry   100 tabs  ui p99      1.2  published p50     30.8  p95     32.8  p99     35.5
+events for watchers   100 tabs  ui p99      0.5  published p50     26.8  p95     30.7  p99     34.0
+tap row         1000 tabs  ui p99      1.5  published p50    180.2  p95    188.0  p99    195.0
+open its tab    1000 tabs  ui p99      1.5  published p50    215.1  p95    221.5  p99    228.4
+contents jump   1000 tabs  ui p99      1.0  published p50     95.5  p95    107.3  p99    114.8
+link click      1000 tabs  ui p99      1.1  published p50     98.9  p95    107.4  p99    117.0
+typed page      1000 tabs  ui p99      1.7  published p50    112.6  p95    117.1  p99    155.3
+find typed      1000 tabs  ui p99      1.6  published p50     95.5  p95    107.1  p99    122.3
+find step       1000 tabs  ui p99      1.4  published p50     87.4  p95    111.2  p99    116.1
+compare click   1000 tabs  ui p99      1.5  published p50    202.8  p95    225.5  p99    239.0
+pane focus      1000 tabs  ui p99      0.9  published p50    164.5  p95    176.6  p99    181.4
+zoom            1000 tabs  ui p99      2.2  published p50     43.7  p95     50.7  p99     56.6
+sidebar toggle  1000 tabs  ui p99      0.9  published p50     82.0  p95     86.4  p99     89.8
+rotate          1000 tabs  ui p99      1.3  published p50     90.5  p95    109.9  p99    129.9
+undo            1000 tabs  ui p99      1.0  published p50     88.8  p95     97.0  p99     99.6
+open new file   1000 tabs  ui p99      1.5  published p50    340.9  p95    352.6  p99    433.6
+scroll crossing an entry  1000 tabs  ui p99      2.7  published p50     86.9  p95     93.1  p99     96.7
+scroll within an entry  1000 tabs  ui p99      1.2  published p50     48.2  p95     51.2  p99     58.0
+events for watchers  1000 tabs  ui p99      1.5  published p50     45.4  p95     52.8  p99     57.0
+test core::headless::input_to_frame::input_to_frame ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 4.52s
+
+        PASS [   4.529s] (2/3) recto-app core::headless::input_to_frame::input_to_frame
+       START [         ] (3/3) recto-app core::headless::wake_costs::waking_an_idle_tab
+
+running 1 test
+load before: 10:08  up 3 days, 13:09, 6 users, load averages: 2,75 3,37 3,96
+text page, from its sleep file's facts: showing [0.9, 0.9, 1.2, 1.3, 1.6] ms; on paper [0.9, 0.9, 1.2, 1.3, 1.6] ms; first frame [57.8, 61.4, 62.5, 67.7, 68.2] ms; sharp [65.1, 69.0, 70.4, 75.0, 75.1] ms
+text page, no sleep file, from its PDF: showing [1.6, 1.6, 1.6, 2.3, 2.4] ms; on paper [1.6, 1.6, 1.6, 27.0, 28.3] ms; first frame [62.0, 62.8, 62.9, 64.4, 68.9] ms; sharp [69.2, 70.3, 70.8, 72.0, 75.8] ms
+        SLOW [> 60.000s] (───) recto-app core::headless::wake_costs::waking_an_idle_tab
+test core::headless::wake_costs::waking_an_idle_tab has been running for over 60 seconds
+slow page, from its sleep file's facts: showing [0.9, 0.9, 0.9, 0.9, 0.9] ms; on paper [0.9, 0.9, 0.9, 0.9, 0.9] ms; first frame [79.1, 80.2, 81.3, 81.4, 83.2] ms; sharp [113.5, 114.1, 115.3, 115.4, 117.0] ms
+slow page, no sleep file, from its PDF: showing [1.6, 2.0, 3.4, 4.4, 5.1] ms; on paper [1.6, 2.0, 3.4, 27.8, 28.5] ms; first frame [74.6, 80.3, 80.4, 81.1, 84.3] ms; sharp [107.9, 113.8, 114.9, 115.1, 118.3] ms
+load after: 10:10  up 3 days, 13:11, 6 users, load averages: 1,69 2,82 3,68
+test core::headless::wake_costs::waking_an_idle_tab ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 103.78s
+
+        PASS [ 103.789s] (3/3) recto-app core::headless::wake_costs::waking_an_idle_tab
+────────────
+     Summary [ 113.536s] 3 tests run: 3 passed (1 slow), 825 skipped
