@@ -664,5 +664,25 @@ mod tests {
             least = least.min(began.elapsed().as_nanos() as f64 / 200_000.0);
         }
         println!("wake and sleep: {least:.0} ns a pair");
+        // The same with a word said inside (the window's thread: the thread-local read and the stores), and one said off the window's thread's watch (the read alone).
+        let (mut said, mut ignored) = (f64::MAX, f64::MAX);
+        let other = Watchdog::new();
+        for _ in 0..7 {
+            let began = Instant::now();
+            for _ in 0..200_000 {
+                assert!(dog.enter(false));
+                dog.note_doing("select_press");
+                dog.idle();
+            }
+            said = said.min(began.elapsed().as_nanos() as f64 / 200_000.0);
+            let began = Instant::now();
+            for _ in 0..200_000 {
+                assert!(dog.enter(false));
+                other.note_doing("select_press");
+                dog.idle();
+            }
+            ignored = ignored.min(began.elapsed().as_nanos() as f64 / 200_000.0);
+        }
+        println!("wake, a word, sleep: {said:.0} ns a pair; a word to another watch: {ignored:.0} ns a pair");
     }
 }
