@@ -10,7 +10,7 @@
 
 ## The renderer worker
 
-**The process.** One worker per document, in a plain child process on a socket pair, with shared memory for pixels and one shared word for cancelling. It inherits nothing but its channel (`POSIX_SPAWN_CLOEXEC_DEFAULT`) and an empty environment, gets the document as a descriptor, and never learns a path. No thread in the host: the call blocks its caller, which is never the UI thread, and watches while a job is in flight. A cold tab has no `DocRenderer`, so it pays for none of this.
+**The process.** One worker per document, in a plain child process on a socket pair, with shared memory for pixels and one shared word for cancelling. It inherits nothing but its channel (`POSIX_SPAWN_CLOEXEC_DEFAULT`) and an environment empty but for `MallocLargeCache=0`, which keeps freed large blocks from piling up in it as a heavy page is zoomed (`worker_env.rs`, `docs/engineering/app-memory.md` 2026-11-16), gets the document as a descriptor, and never learns a path. No thread in the host: the call blocks its caller, which is never the UI thread, and watches while a job is in flight. A cold tab has no `DocRenderer`, so it pays for none of this.
 
 **Limits**, all held from outside the worker, because it may be compromised:
 

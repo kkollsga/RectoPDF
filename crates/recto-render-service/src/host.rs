@@ -1936,7 +1936,12 @@ impl Worker {
         let arg_refs: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
         // A stand-in worker gets no arguments of ours, so this is how it learns its limit. The real one has it in its arguments and an empty environment.
         let limit_text = limit.to_string();
-        let mut env_refs: Vec<(&str, &str)> = config.extra_env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let mut env_refs: Vec<(&str, &str)> = config
+            .extra_env
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .chain(crate::worker_env::WORKER_ENV.iter().copied())
+            .collect();
         if config.replace_args.is_some() {
             env_refs.push(("RECTO_WORKER_LIMIT", &limit_text));
         }

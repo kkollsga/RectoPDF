@@ -37,6 +37,7 @@ pub use host::contents::{ContentsDone, ContentsEvent, ContentsRequest};
 mod page_deadline;
 #[cfg(feature = "test-seams")]
 mod test_deadline;
+mod worker_env;
 pub use host::{
     CancelHandle, DocRenderer, DrawPurpose, ExportRefusal, HeavySlot, KillReason, LowRes, LowResWhy, PageCharacters, PageDrawState, Policy, RenderFailure,
     RenderStats, ServiceConfig, Surface, Target, Tile, TileRequest, TileResult, WallsDown,

@@ -48,3 +48,35 @@ The 1,000-tab "after" ran at a higher load than the "before". Run again later at
 **Before and after on the app's own fixes,** same runs. `TextLine` for `NSTextField`: 1,000 tabs of NASA 5.68 to 2.48 MiB over 2 tabs, and a 400-tab run's heap growth from 2.9 MiB to 0.1. Letting a big worker go: USGS map at rest 433 to 36 MiB. Previews outliving tiles: 84 blank steps on seen pages at 40 pages a second, in a debug run, to 0.
 
 **About the off-screen numbers.** A real window has a backing store and a window-server share that this doesn't, so treat the memory figures as a floor until the MacBook spike. The platform report's sRGB window alone cost 17.6 MiB in a visible state.
+
+## The heavy map at a zoom, and what the worker holds (2026-11-16)
+
+The USGS map (`gov_usgs_usgs70277338`, 346 MiB, one page, 66 images) was past the 415 to 450 MiB the owner accepted: 455 to 458 MiB of tree after a zoom to about 2x and a scroll, 510 to 513 after about 3x, the worker's peak 477 to 480.
+
+**What the worker holds.** The page drawn in-process with PDFium as the reader asks for it (one region of at most 32 MiB, view 3024 x 1964, scales 0.681, 2.043, 2.043 a scroll down, 3.065), `vmmap --summary` and `malloc_history -allBySize` under `MallocStackLogging=lite` after each step, release, load 4 to 10:
+- What PDFium really holds is **about 300 MiB, the same fitted and at 3x**: the page's 73 image streams read whole when the page loads (`CPDF_SyntaxParser::ReadStream`, kept with the document) **160 MiB**; its cache of decoded images (`CPDF_PageImageCache`, 27 bitmaps) **95**; one image stream's bytes read again to decode it **30**; paths and fonts about 10.
+- The rest was **freed large blocks the allocator kept** ("Malloc Large (empty)"): 52 MiB after the fitted draw, then 109, 170, 197, as each zoom's buffers came in new sizes and were let go. So the footprint went 361, 422, 483, 511 while PDFium's own stayed at 300.8 to 301.0. `malloc_zone_pressure_relief` released none of it; `MallocLargeCache=0` stops it (`MallocDeferredReclaim=0` and `MallocAggressiveMadvise=1` didn't). With the cache off the same steps peaked at 317, 373, 395, 397 MiB, the footprint back to 297 after each: a zoomed pass needs about 67 MiB above what the page holds, besides the region's own 30.
+
+**The fix:** the host starts each worker with `MallocLargeCache=0` (`crates/recto-render-service/src/worker_env.rs`). It reaches the sandboxed helper (`ps -E` on the app's worker shows it). Release app, `recto qa budget --file rfc9110 --heavy <map> --runs 1`, three runs each, the base at 12:58 to 13:02 (load 3.4 to 6.0), the fix at 13:08 to 13:13 (load 2.6 to 6.5), other workers' builds in the queue beside both:
+
+| The map | Before | After |
+|---|---|---|
+| Tree, fitted | 384.7, 385.8, 389.2 MiB | **322.8, 323.0, 322.9** |
+| Tree after about 2x and a scroll | 454.6, 455.6, 458.0 | **345.6, 345.8, 345.8** |
+| Tree after about 3x | 510.4, 511.1, 513.5 | **335.9, 336.1, 336.1** |
+| Worker's peak over the run | 476.7, 477.4, 479.6 | **374.0, 374.1, 374.2** |
+| App; tree 4 s later | 33.7 to 33.9; 33.5 to 33.6 | 33.6 to 33.7; 33.5 to 33.6 |
+| First view from process start | 1,164, 1,187, 2,047 ms | 1,163, 1,065, 1,092 |
+| Zoom to about 2x, settled | 410, 408, 507 ms | 410, 417, 408 |
+| Scroll a quarter window | 65, 64, 78 ms | 65, 65, 65 |
+| Zoom to about 3x, settled | 562, 550, 897 ms | 553, 545, 546 |
+
+So the worst the tree can have reached is the worker's peak plus the app, about 408 MiB, against 511 before: under the 450 accepted at every step. No page was drawn at a lower resolution in any run. The zoom times are settled times, the marks' fade in them, and didn't move. In-process the pass itself is a little slower without the cache (each large block is fresh pages from the system): three runs each at load 8 to 10, median ms a pass with and without, fitted 518 and 565, 2x 260 and 291, the scroll 387 and 443, 3x 277 and 311, about a tenth, which the app's settled times don't show.
+
+**Ordinary pages,** the same runs, before and after: `rfc9110`'s text page 35.4 to 36.0 MiB and 34.8 to 35.0 (worker 9.6 to 10.0 and 8.9 to 9.1); scrolling at 6 pages a second 43.4 to 43.7 and 42.2 to 42.8, at 40 44.3 to 45.7 and 43.5 to 43.8. A quiet run per build of each colour page, settled, three each: NASA `ntrs20240002628` p50 43.0 to 43.3 and 41.0 to 41.5 (worker peak 16.4 to 16.5 and 14.3 to 14.7). **Shaded backgrounds** (`ntrs20220005969` p175): settled **213.2 to 213.5 MiB and 96.2 to 96.5**, worker peak 185.3 to 185.5 and 140.5 to 140.8. But 4 s later it's 44.2 to 44.5 before and **96.0 to 96.3 after**: that page's worker now holds 53.5 to 53.8 MiB after drawing (the tree less the app and the p50 worker), under the 64 MiB at which a resting worker is let go after 3 s (`big_workers_rest`), so it stays until its 30 s idle exit, where before it held 168.8 to 168.9 and went at 3 s.
+
+**The shaded page's peak**, by the same in-process way, drawn per 512 px tile at the app's 2.48 over a 1520 x 1400 view, `MallocStackLogging=full` for the freed blocks: what's held after the draw is 51 MiB; the peak, 123.5 MiB with the cache off, is one **soft mask in JPEG 2000 decoded by OpenJPEG at 4 bytes a sample, 71 MiB** (`CPDF_DIB::StartLoadMaskDIB` > `LoadJpxBitmap` > `opj_j2k_update_image_data`), with another mask's 17.8 MiB and three JPEG 2000 images' 3.4 to 4.5 MiB each. Not PDFium's buffers for transparency, as was said on 2026-11-08.
+
+**Held by** `memory::zooming_into_a_heavy_page_costs_no_more_than_the_zoomed_view_alone`: a made page with the map's size and its two largest images (5104 x 6004, run-length encoded so the file is 2.9 MB), drawn through the reader's steps, may peak no higher than the 3x view drawn alone in a fresh worker plus 16 MiB. With the cache on it was 96 against 59 MiB, off 63 against 59. The made page holds tens of MiB where the map holds 300: it tests what a zoom adds, not what the map costs.
+
+**Not measured:** a visible window; NASA scrolled and zoomed as run A has it (52.4 MiB in the report); the made 2 GiB file's scroll; any of this with nothing else running.
