@@ -368,3 +368,9 @@ From `89955067` (2026-11-14 16:28) to `6aab5734` (2026-11-15 01:52). Numbers fro
 
 **Structure.** The key has one way in (`load_for_the_app`, held by a test that counts `load_or_create(` and `signed_as_a_release(` per file); the indexer holds only a key bound to its corpus; `recto` carries no Keychain code (a test on the built programs). Hubs: `corpus.rs` grew by a four-line guard; the sealing lives in `seal.rs` and `corpus/sealed.rs`.
 
+## 2026-11-16, night: 0.1.1 published
+
+- **Out:** 01:25 UTC, inside the owner's date ("Release should be 16gh morning the latest."). Checks and numbers are in PLAN's line for it.
+- **What it cost that it needn't have: about 1 h 40 min.** The first tag's release run (43776362451) spent its hour in the gate and withdrew the tag. Cause, from its log: the gate asked for CI's run on the newest commit that changed code on any line of history, which under a `--no-ff` merge was the branch's commit, never the end of a push. 0.1.0's tag didn't show it because its newest code commit was the pushed head. The dress rehearsal and the two preflight workflows ran everything after the gate and not the gate.
+- **What changes:** a release step that only a tag's push runs is run as written against `main` before the tag (the gate's step was, after the fix, in under a minute: that is the rehearsal it lacked). The gate gives up after ten minutes with no run started, not sixty. The review's two should-fixes are in PLAN before 0.1.2's tag.
+- **Kept:** nothing was published on a failed check; the workflow withdrew its own tag; the fix had a full check, an independent review and a green CI run before the second tag.
