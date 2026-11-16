@@ -137,6 +137,7 @@ const ROWS: &[(&str, Rows)] = &[
     ("opening", super::opening::row),
     ("palette", super::palette::row),
     ("snapshot_tool", super::snapshot_tool::row),
+    ("image_select", super::image_select::row),
     ("printing", super::printing::row),
     ("window_rows", super::window_rows::row),
 ];

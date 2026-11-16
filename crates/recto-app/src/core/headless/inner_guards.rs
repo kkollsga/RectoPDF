@@ -126,6 +126,7 @@ AnswerParts (pub struct, derives Clone, Copy)
 AnswerParts::pub fn ask_password(&self, path: &Path)
 AnswerParts::pub fn fail_open(&self, words: String)
 AnswerParts::pub fn find_handle<R>(&self, step: impl FnOnce(&FindHandle<'_, dyn Listener>) -> R) -> R
+AnswerParts::pub fn image_looked<R>(&self, said: impl FnOnce(&super::image_select::ImageSelect, &[Engine]) -> R) -> R
 AnswerParts::pub fn notice(&self, words: String)
 AnswerParts::pub fn person(&self) -> Person<'a>
 AnswerParts::pub fn print_answered(&self, said: impl FnOnce(&super::printing::Printing))
@@ -286,6 +287,7 @@ OnDisk::pub(crate) fn sleeper(&self) -> &Arc<Sleeper>
 OnDisk::pub(super) fn new(keeper: Arc<Keeper>, sleeper: Arc<Sleeper>) -> Self
 OnDisk::pub(super) fn starts_writer(&self) -> StartsWriter<'_>
 Person (pub struct, derives Clone, Copy)
+Person::pub fn copy_image(self) -> bool
 Person::pub fn save(self, tab: recto_session::TabId)
 Person::pub fn snapshot_anyway(self, serial: u64)
 Person::pub fn submit(self, command: Command) -> bool
@@ -329,6 +331,7 @@ RowParts::pub fn can_save(&self) -> bool
 RowParts::pub fn cancel_print(&self)
 RowParts::pub fn copy_selection(&self, anyway: bool)
 RowParts::pub fn edit_landing(&self, tab: TabId) -> bool
+RowParts::pub fn let_go_image(&self)
 RowParts::pub fn mark_update_menu(&self) -> bool
 RowParts::pub fn open(&self, path: PathBuf)
 RowParts::pub fn open_palette(&self)
@@ -356,6 +359,7 @@ Serving.pub(crate) waiting_server: Mutex<Option<Server>>
 Tools (pub struct)
 Tools::pub fn chrome(&self) -> &crate::chrome::Chrome
 Tools::pub fn folds(&self) -> &crate::sidebar_access::Folds
+Tools::pub fn image_select(&self) -> &image_select::ImageSelect
 Tools::pub fn new(save_step: &Arc<AtomicU8>) -> Self
 Tools::pub fn printing(&self) -> &printing::Printing
 Tools::pub fn prompts(&self) -> &crate::prompts::Prompts

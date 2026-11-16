@@ -6,6 +6,7 @@ pub mod find;
 pub mod generated_contents;
 pub mod highlight;
 pub mod host;
+pub mod image_select;
 pub mod palette;
 pub mod printing;
 pub mod qa;

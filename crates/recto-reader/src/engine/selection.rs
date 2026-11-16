@@ -10,7 +10,7 @@ use crate::tiles::Op;
 /// What the selection is and what's done to it, on this page view.
 #[derive(Clone, Copy)]
 pub struct Selection<'a> {
-    engine: &'a Engine,
+    pub(super) engine: &'a Engine,
 }
 
 // size: one reference, so taking it costs what calling a method of `Engine` did.

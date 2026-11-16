@@ -68,7 +68,12 @@ pub(crate) fn every_command() -> Vec<Command> {
             strip_metadata: false,
             anyway: false,
         }),
-        Command::from(crate::commands::export::Images { tab: tab(), page: 1 }),
+        Command::from(crate::commands::export::Images {
+            tab: tab(),
+            page: 1,
+            at: None,
+            as_seen: None,
+        }),
         Command::from(crate::commands::export::Image {
             tab: tab(),
             page: 1,

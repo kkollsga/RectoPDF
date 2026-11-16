@@ -3,7 +3,7 @@
 //! for that need, which the listing in `headless/inner_guards.rs` shows to a reviewer (docs/FEATURES.md, step 6). Of its 19 methods (2026-11-14), 14 serve
 //! one feature each (reading_tab viewing's; selected highlights'; copy_selection, select_all and toggle_panel the window's own rows'; can_save saving's;
 //! update_installs and mark_update_menu the updates'; zoom_for_person the zoom's; open opening's; open_palette the palette's; toggle_snapshot_tool the
-//! snapshot tool's; cancel_print and refused_print_anyway printing's), four are shared (published, tell_host, reconcile, person), and one makes it. What starts on a thread of its
+//! snapshot tool's; cancel_print and refused_print_anyway printing's; let_go_image an image picked with a click's, 2026-11-16), four are shared (published, tell_host, reconcile, person), and one makes it. What starts on a thread of its
 //! own as the person is [`RowParts::person`]'s, which a way marked `Agents::AsTheMenu` never calls: an agent's palette run executes that way.
 //!
 //! Built once for each menu id asked about ([`RowParts::of`]), from references the app already holds: nothing is copied, locked or allocated to make it.
@@ -75,7 +75,15 @@ impl<'a> RowParts<'a> {
     /// The person's selection in the pane being read, to the system's clipboard, by the page view's own copy; `anyway` once they've said to copy a
     /// protected document's text.
     pub fn copy_selection(&self, anyway: bool) {
+        if self.person.copy_image() {
+            return;
+        }
         self.panes.reading_engine(self.engine).selection().copy(anyway);
+    }
+
+    /// An image picked with a click's own: let go in every pane, its box taken off ([`super::image_select::let_go`]).
+    pub fn let_go_image(&self) {
+        super::image_select::let_go(self.panes, self.engine);
     }
 
     /// Everything selected in the pane being read.
@@ -135,7 +143,9 @@ impl<'a> RowParts<'a> {
 
     /// The snapshot tool's own: the pointer's tool on or off.
     pub fn toggle_snapshot_tool(&self) {
-        self.tools.tool().toggle();
+        if self.tools.tool().toggle() {
+            super::image_select::let_go(self.panes, self.engine);
+        }
     }
 
     /// Printing's own: the person's print being prepared stopped.

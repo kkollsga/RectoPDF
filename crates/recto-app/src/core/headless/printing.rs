@@ -468,7 +468,7 @@ fn a_print_that_fails_mid_way_leaves_nothing() {
 
 /// The session held by another thread, as a save or a long read holds it, until the returned sender is dropped: a print's thread can't get past its page
 /// list meanwhile.
-fn session_held(app: &HeadlessApp) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+pub(super) fn session_held(app: &HeadlessApp) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
     let core = std::sync::Arc::clone(app.core());
     let (held_tx, held_rx) = std::sync::mpsc::channel();
     let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();

@@ -103,6 +103,11 @@ pub enum ReaderOp {
         rgb: u32,
         lighten: bool,
     },
+    /// An image picked with a click: its box on a page, in the page's own coordinates, or none to take it off. A solid line in the selection's colour.
+    ImageBox {
+        page: u32,
+        rect: Option<HighlightRect>,
+    },
 }
 
 /// A page's rectangles as the host takes them.
@@ -187,6 +192,10 @@ impl From<Op> for ReaderOp {
                 pages: pages.into_iter().map(|(page, rects)| MarkPage { page, rects: pieces(rects) }).collect(),
                 rgb,
                 lighten,
+            },
+            Op::ImageBox { page, rect } => Self::ImageBox {
+                page,
+                rect: rect.and_then(|rect| pieces(vec![rect]).pop()),
             },
         }
     }

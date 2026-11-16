@@ -19,7 +19,6 @@ pub fn locked_allowing(password: &str, pages: usize, permissions: lopdf::encrypt
 /// The same, each page saying "`word` page N": two protected files that differ in their words as well as their length.
 #[allow(clippy::disallowed_methods)] // As above.
 pub fn locked_saying(password: &str, pages: usize, word: &str, permissions: lopdf::encryption::Permissions) -> Vec<u8> {
-    use lopdf::encryption::{EncryptionState, EncryptionVersion};
     use lopdf::{Object, dictionary};
     let plain: Vec<recto_testpdf::Page> = (0..pages)
         .map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("{word} page {}", page + 1)])))
@@ -35,6 +34,19 @@ pub fn locked_saying(password: &str, pages: usize, word: &str, permissions: lopd
     );
     let root = document.trailer.get(b"Root").unwrap().as_reference().unwrap();
     document.get_object_mut(root).unwrap().as_dict_mut().unwrap().set("Outlines", outlines);
+    encrypted(document, password, permissions)
+}
+
+/// `plain`'s bytes, protected with `password` and allowing what `permissions` say.
+#[allow(clippy::disallowed_methods)] // As above.
+pub fn locked_bytes(plain: &[u8], password: &str, permissions: lopdf::encryption::Permissions) -> Vec<u8> {
+    encrypted(lopdf::Document::load_mem(plain).unwrap(), password, permissions)
+}
+
+#[allow(clippy::disallowed_methods)] // As above.
+fn encrypted(mut document: lopdf::Document, password: &str, permissions: lopdf::encryption::Permissions) -> Vec<u8> {
+    use lopdf::Object;
+    use lopdf::encryption::{EncryptionState, EncryptionVersion};
     document.trailer.set(
         "ID",
         Object::Array(vec![Object::string_literal("0123456789abcdef"), Object::string_literal("0123456789abcdef")]),

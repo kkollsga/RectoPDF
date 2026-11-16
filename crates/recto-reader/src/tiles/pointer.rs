@@ -18,8 +18,10 @@ pub(crate) struct Pointer {
 }
 
 // size: held at what it was on 2026-11-13 (macOS, debug and release alike) before R3.6 moved `Reader`'s methods onto its parts, so the move, or a field added later, can't grow it unseen.
+// 664 bytes then; 536 once a copy on its way was boxed (2026-11-16), and 568 with the image picked with a click beside the text selection (32 bytes:
+// the click waiting, the image boxed, the page its box is on), `build/image-select`.
 #[cfg(target_os = "macos")]
-const _: () = assert!(size_of::<Pointer>() <= 664, "what the pointer does grew");
+const _: () = assert!(size_of::<Pointer>() <= 568, "what the pointer does grew");
 
 impl Pointer {
     pub(super) fn new() -> Self {
@@ -31,10 +33,11 @@ impl Pointer {
         }
     }
 
-    /// The mouse went up: a drag that was selecting or pressing a link ends.
+    /// The mouse went up: a drag that was selecting or pressing a link ends, and a still single click off any link may want the image under it
+    /// ([`crate::image_pick`]).
     pub(crate) fn selection_release(&mut self) {
-        self.linking.release();
-        self.selecting.release();
+        let still = self.linking.release();
+        self.selecting.release(still);
     }
 
     /// The link a click has just landed on, taken once.
@@ -127,6 +130,7 @@ impl Reader {
                 self.host.ops.push_back(Op::Highlight { page, rects });
             }
         }
+        super::image_pick::box_ops(self);
     }
 
     /// The mouse went down at a point in the document. Cheap: at worst it looks through a page already here.

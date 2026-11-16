@@ -85,6 +85,16 @@ impl<'a> Person<'a> {
     pub fn snapshot_anyway(self, serial: u64) {
         super::snapshot_tool::anyway(self.app, serial);
     }
+
+    /// An image picked with a click's own: the person's Copy of it, taken as the snapshot tool's click on it is ([`super::image_select::copy`],
+    /// [`super::snapshot_tool::taken`]); false with none picked.
+    pub fn copy_image(self) -> bool {
+        let copying = super::image_select::copy(&self.app.panes, &self.app.engine, self.app.tools.tool());
+        if copying {
+            super::snapshot_tool::taken(self.app);
+        }
+        copying
+    }
 }
 
 /// Whether a person's command, as it's queued, is one that runs on a thread of its own: one that may wait, or isn't the session's to answer. Only a command
@@ -273,6 +283,7 @@ const ANSWERED: &[fn(&AnswerParts<'_>, &Ran<'_>)] = &[
     super::updates::answered,
     super::printing::answered,
     super::snapshot_tool::answered,
+    super::image_select::answered,
 ];
 
 pub(super) fn answered(parts: &AnswerParts<'_>, command: &Command, origin: Origin, result: &Result<Value, AgentError>) {

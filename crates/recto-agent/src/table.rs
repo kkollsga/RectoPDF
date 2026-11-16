@@ -74,6 +74,8 @@ pub enum Kind {
     Size,
     /// `x,y,width,height` in points.
     Rect,
+    /// `x,y` in points: a place on a page.
+    Point,
     /// A share of something, from `0` to `1`, as `0.3`.
     Fraction,
     /// Everything left on the line.
@@ -1205,6 +1207,14 @@ fn read_value(arg: &Arg, value: &str) -> Result<Value, String> {
                 _ => Err(bad()),
             }
         }
+        Kind::Point => {
+            let bad = || format!("`{}` isn't a place. Write x,y in points, such as 120,88.", recto_core::clean_line(value));
+            let numbers = value.split(',').map(str::parse::<f32>).collect::<Result<Vec<_>, _>>().map_err(|_| bad())?;
+            match numbers[..] {
+                [x, y] if x.is_finite() && y.is_finite() && x >= 0.0 && y >= 0.0 => Ok(json!(numbers)),
+                _ => Err(bad()),
+            }
+        }
         Kind::Switch | Kind::Rest => Err("That doesn't take a value.".to_string()),
     }
 }
@@ -1405,6 +1415,7 @@ mod tests {
             Kind::Choice(words) | Kind::List(words) => words[0],
             Kind::Size => "10x10",
             Kind::Rect => "1,2,3,4",
+            Kind::Point => "1,2",
             Kind::Switch | Kind::Rest => "",
         }
     }

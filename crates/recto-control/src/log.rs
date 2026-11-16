@@ -579,6 +579,7 @@ mod tests {
                 Kind::Choice(words) | Kind::List(words) => (*words.first()?).into(),
                 Kind::Size => "10x10".into(),
                 Kind::Rect => "0,0,10,10".into(),
+                Kind::Point => "10,10".into(),
                 Kind::Fraction => "0.5".into(),
             })
         };

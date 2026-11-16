@@ -53,7 +53,7 @@ pub enum UiAction {
     /// A switch in Settings.
     SettingChosen { id: String, on: bool },
     /// The mouse came up on a page in `pane` after a press: the link the click landed on, if the page view says it landed on one, is followed
-    /// ([`super::reconcile::link_clicked`]).
+    /// ([`super::reconcile::link_clicked`]); a still click off any link, not on text, looks for the image under it ([`super::image_select::clicked`]).
     LinkClicked { pane: u32 },
     /// The mouse came up with the snapshot tool on: the box or click it took is taken, to the clipboard ([`super::snapshot_tool::taken`]).
     SnapshotTaken,
@@ -150,7 +150,16 @@ impl Inner {
                 return Acted::DONE;
             }
             UiAction::SettingChosen { id, on } => super::updates::setting_command(&id, on),
-            UiAction::LinkClicked { pane } => super::reconcile::link_clicked(self, pane as usize),
+            UiAction::LinkClicked { pane } => {
+                super::image_select::clicked(
+                    &self.panes,
+                    &self.engine,
+                    self.tools.image_select(),
+                    super::person::Person::of(self),
+                    pane as usize,
+                );
+                super::reconcile::link_clicked(self, pane as usize)
+            }
             UiAction::SnapshotTaken => {
                 super::snapshot_tool::taken(self);
                 return Acted::DONE;

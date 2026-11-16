@@ -367,6 +367,19 @@ impl Tool {
         ops
     }
 
+    /// **The person's Copy of an image picked with a click in read mode** ([`super::image_select::copy`]): kept as a release keeps this tool's click on it,
+    /// for [`taken`], so it's the same command by the same job, with this tool's words, Copy anyway and one job at a time.
+    pub(super) fn take_image(&self, tab: u32, position: u32, seen: extract::AsSeen, [x, y]: [f32; 2]) {
+        let wanted = Wanted::Image { x, y };
+        lock(&self.jobs).taken = Some(Job {
+            tab,
+            position,
+            seen,
+            wanted,
+            anyway: false,
+        });
+    }
+
     /// The app's on its way out: a paste that asks now for a promised SVG gets nothing, rather than holding the quit up for a worker.
     pub fn quitting(&self) {
         self.quitting.store(true, Ordering::SeqCst);

@@ -36,6 +36,9 @@ impl Inner {
     /// Whether a menu item can be chosen now. Asked when a menu opens and on its key. By the item's rule in `menus`: an id without one can't be chosen.
     pub fn menu_item_enabled(&self, id: String) -> bool {
         use menus::Enable;
+        if let Some(on) = super::image_select::enabled(&id, || self.panes.reading_engine(&self.engine)) {
+            return on && updates::takes_input_now(self.life.window_interactive(), &id);
+        }
         let Some(rule) = menus::enable_rule(&id) else { return false };
         if !updates::takes_input_now(self.life.window_interactive(), &id) {
             return false;

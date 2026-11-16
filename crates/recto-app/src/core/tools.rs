@@ -1,7 +1,7 @@
 //! **The window's features with state of their own,** held together for the app: the sheets that ask, saving's, the snapshot tool, the sidebar's folds, the
 //! chrome's marks, printing, ⌘K and Find's field. Each is its feature's own type, in its own file; this only holds them.
 
-use super::{printing, saving, snapshot_tool};
+use super::{image_select, printing, saving, snapshot_tool};
 use std::sync::atomic::AtomicU8;
 use std::sync::{Arc, Mutex};
 
@@ -26,6 +26,8 @@ pub struct Tools {
     find_field: Mutex<crate::find::Field>,
     /// The page-identity thread's state, for the page matcher: no thread at rest.
     page_ids: Arc<super::page_ids::PageIds>,
+    /// An image picked with a click: the look for it under way, and the newest click waiting.
+    image_select: image_select::ImageSelect,
 }
 
 impl Tools {
@@ -41,6 +43,7 @@ impl Tools {
             palette: crate::palette::Palette::default(),
             find_field: Mutex::new(crate::find::Field::default()),
             page_ids: Arc::default(),
+            image_select: image_select::ImageSelect::default(),
         }
     }
 
@@ -87,6 +90,11 @@ impl Tools {
     /// The Find field as the session thread last set it, for the UI thread.
     pub(crate) fn find_field(&self) -> &Mutex<crate::find::Field> {
         &self.find_field
+    }
+
+    /// An image picked with a click.
+    pub fn image_select(&self) -> &image_select::ImageSelect {
+        &self.image_select
     }
 
     /// The page-identity thread's state.

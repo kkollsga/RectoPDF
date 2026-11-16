@@ -19,6 +19,7 @@ mod cache;
 mod doc;
 mod geometry;
 mod host;
+pub(crate) mod image_pick;
 mod jobs;
 mod marks;
 mod place;
@@ -177,6 +178,12 @@ pub enum Op {
         pages: Vec<(u32, Vec<recto_index::select::Rect>)>,
         rgb: u32,
         lighten: bool,
+    },
+    /// An image picked with a click ([`crate::image_pick`]): its box on a page, in the page's own coordinates, or none to take it off. A layer of the
+    /// page's, as the selection's is.
+    ImageBox {
+        page: u32,
+        rect: Option<recto_index::select::Rect>,
     },
 }
 

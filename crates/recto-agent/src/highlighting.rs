@@ -745,7 +745,8 @@ mod tests {
             5,
             3,
             "a snapshot's picture and SVG (the agent's), and the person's to the clipboard, its PNG and JPG and its SVG, each given the set, opened in one \
-             place (`PersonsPage::open`, twice: with their password or without); the rest copy an embedded image or read text",
+             place (`PersonsPage::open`, twice: with their password or without); the rest copy an embedded image, list a page's images (`images`, the \
+             person's with their password as their click on one), or read text",
         ),
         ("recto-agent/src/loader.rs", 1, 0, "a file's facts when it's opened"),
         ("recto-agent/src/print.rs", 1, 1, "each page printed"),
@@ -755,7 +756,6 @@ mod tests {
             1,
             "`recto render`; the others are `open_for_text` itself, named and opening",
         ),
-        ("recto-agent/src/render/image.rs", 1, 0, "the embedded images a page has"),
         ("recto-agent/src/render/snapshot.rs", 1, 0, "whether the file allows copying"),
         ("recto-agent/src/render/svg.rs", 1, 1, "`recto export svg`"),
         ("recto-agent/src/search.rs", 1, 0, "the text searched"),

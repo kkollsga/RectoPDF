@@ -479,9 +479,9 @@
 {"cmd":"ExportSvg"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"images","page":3}
-    ok images Images { tab: "active", page: 3 }
+    ok images Images { tab: "active", page: 3, at: None, as_seen: None }
 {"cmd":"images","tab":"#2","page":3}
-    ok images Images { tab: "#2", page: 3 }
+    ok images Images { tab: "#2", page: 3, at: None, as_seen: None }
 {"cmd":"images","page":3,"extra":1}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"images","page":3,"tab":{}}
@@ -497,7 +497,7 @@
 ["images"]
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 ["images","#2",3]
-    ok images Images { tab: "#2", page: 3 }
+    ok images Images { tab: "#2", page: 3, at: None, as_seen: None }
 {"cmd":"Images"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"image","page":3,"number":3,"out":"/d/x.pdf"}
