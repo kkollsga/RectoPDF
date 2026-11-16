@@ -66,6 +66,11 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         1,
         "the state folder's own sleep files, opened (no link followed) by the pass after a launch that removes older ones",
     ),
+    (
+        "recto-control/src/record_store/went_back.rs",
+        1,
+        "the state folder's own list kept beside a tab after a copy went back, its first line read (no link followed) to say whose it is",
+    ),
     ("recto-control/src/server.rs", 1, "the socket's lock file in the state folder, named by the app"),
     (
         "recto-control/src/terminal.rs",
