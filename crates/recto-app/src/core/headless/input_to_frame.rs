@@ -212,23 +212,27 @@ fn measure(tabs: usize) {
 }
 
 /// A still click on a page, off any link and any text, as the bridge's mouse calls make it: the page view's press and release, then the window's
-/// `LinkClicked` (owner, 2026-11-16: a click in read mode may pick an image). What's timed is the UI thread's part and the session thread's flush after it;
-/// the page view then asks its own thread whether an image is under the point (these pages have none, so no look is sent and no worker of the click's own
-/// is started), which each run waits for untimed before the next, so nothing of a click is left running behind it or behind the cases after this one.
+/// `LinkClicked` (owner, 2026-11-16: a click in read mode may pick an image). What's timed is the UI thread's part and the session thread's flush after it.
+/// This app draws no window, so its page view's thread plans nothing and the click's text and image boxes are never asked: no job, look or worker of the
+/// click's runs here at all (where a window is drawn, `click_cost` measures what they cost). Each run's click replaces the one before, and the last is let
+/// go, so nothing of a click is left behind the cases after this one.
 fn page_click(app: &HeadlessApp, tabs: usize) {
-    let decided = |app: &HeadlessApp| {
-        let deciding = || app.core().panes.reading_engine(&app.core().engine).selection().image_finding();
-        app.wait_until("the click decided", || !deciding() && !app.core().tools.tool().busy());
-    };
-    case(app, "page click", tabs, decided, |app, first| {
-        let inner = app.core();
-        let engine = inner.panes.reading_engine(&inner.engine);
-        let (x, y) = engine.points().document_point(0, if first { 400.0 } else { 450.0 }, 600.0).unwrap_or_default();
-        let _ = engine.selection().press(x, y, 1, false);
-        let _ = engine.selection().release();
-        app.act(UiAction::LinkClicked { pane: 0 });
-    });
-    decided(app);
+    case(
+        app,
+        "page click",
+        tabs,
+        |_| {},
+        |app, first| {
+            let inner = app.core();
+            let engine = inner.panes.reading_engine(&inner.engine);
+            let (x, y) = engine.points().document_point(0, if first { 400.0 } else { 450.0 }, 600.0).unwrap_or_default();
+            let _ = engine.selection().press(x, y, 1, false);
+            let _ = engine.selection().release();
+            app.act(UiAction::LinkClicked { pane: 0 });
+        },
+    );
+    app.core().panes.reading_engine(&app.core().engine).selection().let_go_image();
+    app.settle();
     assert!(!app.core().tools.tool().busy(), "no look left running behind the cases after this one");
 }
 
