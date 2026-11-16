@@ -208,7 +208,59 @@ fn measure(tabs: usize) {
         at.set(to);
     });
     events_for_watchers(&app, tabs, recto_session::TabId(a.tab));
+    live_zoom(&app, tabs);
     drop(app.quit());
+}
+
+/// One line of a zoom's table: the window's thread's own time a step, at p50, p99 and the worst, in microseconds, and how many times a step told the page
+/// view where the view is and how many ops came back, on average.
+fn report_steps(case: &str, tabs: usize, mut took: Vec<Duration>, calls: u32, ops: usize) {
+    took.sort_unstable();
+    let steps = took.len() as f64;
+    eprintln!(
+        "{case:<14} {tabs:>5} tabs  step p50 {:>8.1}  p99 {:>8.1}  worst {:>8.1}  calls a step {:>4.2}  ops a step {:>5.2}",
+        micros(&took, 0.5),
+        micros(&took, 0.99),
+        took.last().map_or(0.0, |worst| worst.as_secs_f64() * 1e6),
+        f64::from(calls) / steps,
+        ops as f64 / steps
+    );
+}
+
+/// **A zoom on the window's thread, a step at a time** (the read of 2026-11-16 before 0.1.2: a zoom now lays the pages out across, so each step may send the
+/// document's width and the view across, and the host tells the page view again after applying them). The page being read in a window, at the fit; each
+/// step is what a pinch's or a ⌘-scroll's step does there ([`HeadlessApp::zoom_step`]): AppKit moves the view about the pointer, 100 points right of the
+/// middle, the host tells the page view, applies what comes back and tells it again while that moved the view. "zoom step" alternates the fit and 1.1, one
+/// step each; "pinch, 30 steps" is 30 steps of 3% from the fit, past the window's width (2.43), and the step that ends it, then back to the fit untimed.
+fn live_zoom(app: &HeadlessApp, tabs: usize) {
+    use crate::testkit::zoomed::FRAME;
+    let pointer = FRAME / 2.0 + 100.0;
+    let mut view = app.zoom_view();
+    app.settle();
+    let (mut took, mut calls, mut ops) = (Vec::with_capacity(RUNS), 0, 0);
+    for run in 0..RUNS {
+        let began = Instant::now();
+        let step = app.zoom_step(&mut view, if run % 2 == 0 { 1.1 } else { 1.0 }, pointer, true);
+        took.push(began.elapsed());
+        (calls, ops) = (calls + step.calls, ops + step.ops);
+    }
+    app.zoom_step(&mut view, 1.0, pointer, false);
+    app.settle();
+    report_steps("zoom step", tabs, took, calls, ops);
+    let (mut took, mut calls, mut ops) = (Vec::with_capacity(RUNS), 0, 0);
+    for _ in 0..RUNS / 31 {
+        let mut magnification = 1.0;
+        for step in 0..=30 {
+            magnification *= if step < 30 { 1.03 } else { 1.0 };
+            let began = Instant::now();
+            let made = app.zoom_step(&mut view, magnification, pointer, step < 30);
+            took.push(began.elapsed());
+            (calls, ops) = (calls + made.calls, ops + made.ops);
+        }
+        app.zoom_step(&mut view, 1.0, pointer, false);
+        app.settle();
+    }
+    report_steps("pinch, 30 steps", tabs, took, calls, ops);
 }
 
 /// A still click on a page, off any link and any text, as the bridge's mouse calls make it: the page view's press and release, then the window's
