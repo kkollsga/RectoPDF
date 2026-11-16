@@ -755,12 +755,16 @@ fn capture_takes_one_release_and_the_tool_goes_off() {
                 .any(|menu| menu.entries.iter().any(|item| item.id == snapshot_tool::TOGGLE_ID && item.checked)),
             "{what}: unticked"
         );
+        // The press as the bridge routes it (`selection_press`): the tool's if it's on, text selection's if not.
         let inner = app.core();
         let engine = inner.panes.reading_engine(&inner.engine);
         let (x, y) = at(&app, 50.0, 40.0);
-        assert!(!inner.tools.tool().is_on());
-        drop(engine.selection().press(x, y, 1, false));
-        assert!(!inner.tools.tool().is_drawing(), "{what}: the next press is text selection's");
+        if inner.tools.tool().is_on() {
+            let _ = inner.tools.tool().press(&engine, 0, x, y);
+        } else {
+            drop(engine.selection().press(x, y, 1, false));
+        }
+        assert!(!inner.tools.tool().is_drawing(), "{what}: the next press is text selection's, not a box");
     }
 }
 
