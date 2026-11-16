@@ -1713,7 +1713,7 @@ mod tests {
         assert!(workers_gone(&engine), "memory pressure let the idle worker go: {}", engine.report().0);
         engine.shut_down();
         let policy = recto_render_service::Policy {
-            retire_bytes: 1,
+            rest_bytes: 1,
             heavy_idle_exit: Duration::from_millis(300),
             ..recto_render_service::Policy::default()
         };

@@ -83,6 +83,9 @@ pub struct Policy {
     pub export_slot_wait: Duration,
     /// Past this footprint after a job, the worker is retired before its next job for another page.
     pub retire_bytes: u64,
+    /// A worker past this footprint is let go once nothing has been done for [`Self::heavy_idle_exit`], where any other waits the 30 s of `idle_exit`. Not `retire_bytes`:
+    /// that line decides what a worker may hold *between pages while it is being used*, and a worker let go there costs a restart per page.
+    pub rest_bytes: u64,
     /// Bytes of surfaces a worker may be sent before it's retired, as it could be holding on to them all, and no limit on its own memory would see that. Twice this and it goes at once. What a worker can pin is held to this.
     pub surface_bytes_cap: u64,
     /// A job running longer than this has its worker killed.
@@ -120,6 +123,10 @@ impl Default for Policy {
             // Far longer than an idle heavy worker can hold the slot, which is 8 s at most, so only real use of it can make an export time out.
             export_slot_wait: Duration::from_secs(60),
             retire_bytes: 64 * 1024 * 1024,
+            // 2026-11-16, release app, quiet, one worker a file: what a worker rests at after ordinary pages is 9.5 to 10 MiB (`rfc9110`), 15 (NASA `ntrs20240002628`) and
+            // at most 16 MiB after four sweeps of 6 pages a second; the shaded page (NASA `ntrs20220005969` p175) rests at 54 and the USGS map at 301. 32 MiB is twice what
+            // ordinary pages reached, and 22 under the shaded page, which was kept for 30 s at 54 under the old line (it was `retire_bytes`, 64). `docs/engineering/app-memory.md`.
+            rest_bytes: 32 * 1024 * 1024,
             // About 80 pages of text a tile at a time, or 30 regions of a heavy map, for a restart of 17 ms or the map's own load.
             surface_bytes_cap: 1024 * 1024 * 1024,
             // Platform §2.6. The slowest real page at 2x took 939 ms ([`crate::page_deadline`]).

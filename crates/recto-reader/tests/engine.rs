@@ -463,22 +463,15 @@ fn a_closed_window_lets_the_worker_go() {
     assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1);
 }
 
-/// Failure: a heavy page at rest holds its worker's hundreds of megabytes for the 30 s of the idle rule, when it could have gone once the reader had paused. Set so that any worker counts as big. It must go by itself, with nobody calling, and the page must still be on screen.
-#[test]
-fn a_worker_holding_a_lot_is_let_go_at_rest() {
-    let file = document(1);
-    let events = Arc::new(Events::default());
-    let policy = recto_render_service::Policy {
-        retire_bytes: 1,
-        ..recto_render_service::Policy::default()
-    };
+/// An engine on one file with a policy of its own, its page drawn and settled, and the worker's footprint then.
+fn settled_with(file: &TempPdf, policy: recto_render_service::Policy) -> (Engine, u64) {
     let engine = Engine::new(
         EngineConfig {
             service: None,
             policy: Some(policy),
             keys: None,
         },
-        events,
+        Arc::new(Events::default()),
     );
     engine.qa().system_takes_only_when_told();
     engine.set_viewport(view(0.0));
@@ -501,12 +494,46 @@ fn a_worker_holding_a_lot_is_let_go_at_rest() {
     engine.set_viewport(view(0.0));
     pump(&engine, HANG);
     assert!(settles(&engine), "{}", engine.report().0);
-    let deadline = Instant::now() + HANG;
-    while engine.workers().footprint().0 > 0 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
+    let held = engine.workers().footprint().0;
+    (engine, held)
+}
+
+/// Failure: a page at rest holds its worker's memory for the 30 s of the idle rule when it could have gone once the reader had paused (2026-11-16: the shaded NASA page's worker
+/// rested at 54 MiB for 30 s under a line of 64 that was the retirement line, where the map's was let go in 3 s). The worker is judged by [`Policy::rest_bytes`] and no other number:
+/// one over it goes by itself, with nobody calling and the page still on screen, and one under it stays, as it is what makes the next page fast. The line is the test's own, from
+/// what the worker really holds here, so nothing depends on how big a page's worker is on this machine.
+#[test]
+fn a_worker_is_let_go_at_rest_over_the_rest_line_and_kept_under_it() {
+    let file = document(1);
+    let policy = |rest_bytes| recto_render_service::Policy {
+        rest_bytes,
+        // The retirement line at its default must have no say at rest: the worker is far under 64 MiB.
+        heavy_idle_exit: Duration::from_millis(300),
+        // The ordinary idle rule can't be what lets the worker go inside the bound below.
+        idle_exit: Duration::from_secs(600),
+        ..recto_render_service::Policy::default()
+    };
+    let (probe, held) = settled_with(&file, policy(u64::MAX));
+    assert!(held > 0 && held < recto_render_service::Policy::default().retire_bytes, "a text page's worker is small: {held}");
+    probe.shut_down();
+
+    let (over, _) = settled_with(&file, policy(held / 2));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while over.workers().footprint().0 > 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50)); // ratchet: poll
     }
-    assert_eq!(engine.workers().footprint().0, 0, "it should have gone by now");
-    assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1, "the page stays on screen");
+    assert_eq!(over.workers().footprint().0, 0, "a worker over the rest line should have gone by now");
+    assert!(over.report().0["tiles"]["attached"].as_u64().unwrap() >= 1, "the page stays on screen");
+    over.shut_down();
+
+    // Under the line: kept past several times the time a worker over it goes in.
+    let (under, _) = settled_with(&file, policy(held * 2));
+    let until = Instant::now() + Duration::from_millis(1500);
+    while Instant::now() < until {
+        assert!(under.workers().footprint().0 > 0, "a worker under the rest line was let go");
+        std::thread::sleep(Duration::from_millis(50)); // ratchet: poll
+    }
+    under.shut_down();
 }
 
 /// The highlight on a page in what the host was last told, keeping what each op said. What's selected is said whole each time.
