@@ -48,10 +48,21 @@ fn bad_number() -> AgentError {
 }
 
 /// `recto images`: where a page's images are, or with `at` the one on top there, as [`image_clip`] finds it. Its page is opened as `whose` says: with the
-/// person's password for their own document, as the snapshot tool's click opens it.
-pub(crate) fn images(whose: &ClipPage<'_>, at: Option<[f32; 2]>) -> Result<Value, AgentError> {
+/// person's password for their own document, as the snapshot tool's click opens it. **`stop` ends it** (the person's look for a click's image, which a
+/// newer click, a copy, a let-go or a quit stops): before its worker is opened, nothing is; after, the worker's cancel word reaches the listing. Either way
+/// it's refused as `cancelled`.
+pub(crate) fn images(whose: &ClipPage<'_>, at: Option<[f32; 2]>, stop: &ClipStop) -> Result<Value, AgentError> {
+    let stopped = || AgentError::new(Code::CANCELLED, "A newer click took its place.", exit::FAILED);
+    if stop.is_stopped() {
+        return Err(stopped());
+    }
     let mut doc = whose.whose.open(whose.path)?;
-    image::list_command(&mut doc, whose.path, whose.file_page + 1, at)
+    stop.attach(&doc);
+    let listed = image::list_command(&mut doc, whose.path, whose.file_page + 1, at);
+    if stop.is_stopped() {
+        return Err(stopped());
+    }
+    listed
 }
 
 /// `recto image`: one of a page's images to a new file, as itself. `.jpg` takes a JPEG's own bytes and refuses anything else, as that would be re-encoded; `.png` takes any image, losslessly.

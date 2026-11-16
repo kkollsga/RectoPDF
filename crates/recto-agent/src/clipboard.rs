@@ -61,6 +61,11 @@ pub trait ClipboardSink: Send + Sync {
     fn offer(&self, clip: Clip);
     /// A promised type, made for the paste waiting for it.
     fn made(&self, bytes: Vec<u8>);
+    /// **The person's look for a click's image begins** (`images` with the window's clipboard): the stop for it, which a newer click, a copy, the click
+    /// let go or a quit sets. One that's never stopped, for a sink with no looks of its own.
+    fn begin_look(&self) -> ClipStop {
+        ClipStop::default()
+    }
 }
 
 /// **An agent's command asking for the window's clipboard,** refused: only the person's own snapshot goes there.

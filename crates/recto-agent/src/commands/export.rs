@@ -171,12 +171,13 @@ pub struct Images {
     #[serde(default)]
     pub tab: TabRef,
     pub page: u32,
-    /// **Only the image on top at `x, y`,** in points from the page's top left as it's shown, found as the snapshot tool's click finds it: what a click
-    /// in read mode picks (owner, 2026-11-16), which the window sends as the person's.
+    /// **Only the image on top at `x, y`,** in points from the page's top left as its file shows it (its own turn, before an unsaved one), as `image
+    /// --at` takes it and the snapshot tool's click finds it: what a click in read mode picks (owner, 2026-11-16), which the window sends as the person's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<[f32; 2]>,
-    /// The click's page as the person saw it, which it's refused by if another page is in its place by the time it runs ([`extract::AsSeen`]). The
-    /// window's, sent with `at`, and out of the CLI's flags.
+    /// **The page as it was seen** ([`extract::AsSeen`]): the command is refused as moved if another page, or another file's, is in its place by the time
+    /// it runs. The window sends it with its click's `at`, as its page may move before the look runs; it's out of the CLI's flags, and an agent may send it
+    /// on the wire to the same end. It doesn't make a command the window's: what an agent's finds is its answer alone, and picks nothing in the window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub as_seen: Option<extract::AsSeen>,
 }
@@ -219,7 +220,9 @@ impl Cmd for Images {
         if let Some(seen) = as_seen {
             seen.still(&whose)?;
         }
-        let mut data = extract::images(&whose, *at)?;
+        // The person's look for a click's image is stopped when they move on, through the window's clipboard's one slot; an agent's has no stop.
+        let stop = access.clipboard(cx.actor).map(|sink| sink.begin_look()).unwrap_or_default();
+        let mut data = extract::images(&whose, *at, &stop)?;
         describe_source(&mut data, *page, &source);
         Ok(data)
     }
@@ -721,12 +724,12 @@ pub(crate) const ROWS_IMAGES: &[Spec] = &[Spec {
             flag: Some("--at"),
             kind: Kind::Point,
             required: false,
-            help: "Only the image on top at `x,y`, in points from the page's top left as it's shown: what a click there picks in the window, and what the snapshot tool's click copies.",
+            help: "Only the image on top at `x,y`, in points from the page's top left as its file shows it (its own turn, before an unsaved one): what a click there picks in the window, and what the snapshot tool's click copies.",
         },
         TAB,
     ],
     bare_page: true,
-    data: "`{ page, source_page, from_added_file, at, count, listed, worker_peak_bytes, width_pt, height_pt, images: [ { number, rect: [x, y, width, height], width, height, jpeg, suggested_ending } ], untrusted: { added_file } }`. `rect` is in points from the page's top left, as it's shown, held to the page. `width` and `height` are the image's own pixels. `count` is every image, and `listed` how many are here: at most 4,096, the first drawn. An image wholly off the page keeps its number and isn't listed. `jpeg: true` means its stream is a JPEG, so `.jpg` may take its own bytes. With `--at`, `images` holds only the image on top there, the last drawn whose box holds the point, or nothing.",
+    data: "`{ page, source_page, from_added_file, at, count, listed, worker_peak_bytes, width_pt, height_pt, images: [ { number, rect: [x, y, width, height], width, height, jpeg, suggested_ending } ], untrusted: { added_file } }`. `rect` is in points from the page's top left as its file shows it (its own turn, before an unsaved one), held to the page. `width` and `height` are the image's own pixels. `count` is every image, and `listed` how many are here: at most 4,096, the first drawn. An image wholly off the page keeps its number and isn't listed. `jpeg: true` means its stream is a JPEG, so `.jpg` may take its own bytes. With `--at`, `images` holds only the image on top there, the last drawn whose box holds the point, or nothing.",
     examples: &["recto images 3", "recto images --page 3 --json", "recto images 3 --at 120,88"],
     client_wait_s: 600,
     ..BASE
