@@ -17,8 +17,8 @@ pub(super) struct Known {
     /// `places` has been forgotten, past its cap, and nobody's been told.
     places_cleared: bool,
     /// Where each page's images may be, for a click (`DocRenderer::image_boxes_for_a_click`): apart from dark paper's, so its answer is never this one.
-    /// At most [`MAX_IMAGE_PLACES`] pages of [`proto::MAX_CLICK_IMAGE_BOXES`] boxes of 8 bytes, and only pages clicked on.
-    click_places: HashMap<u32, Option<Vec<[u16; 4]>>>,
+    /// At most [`MAX_IMAGE_PLACES`] pages of 64 boxes and the one past them, 8 bytes each, and only pages clicked on.
+    click_places: HashMap<u32, Option<proto::ClickPlaces>>,
 }
 
 impl Known {
@@ -80,7 +80,9 @@ impl DocRenderer {
             return known.clone();
         }
         // Stale says nothing about the page, so nothing's remembered.
-        let boxes = places_asked(self, page, generation, false)?;
+        let boxes = places_asked(self, page, generation, false, |payload| {
+            proto::PageImages::decode(payload).map(|images| (images.job_id, images.boxes))
+        })?;
         // One decision a page: its tiles are drawn at different times, and none of them may disagree. What's cached past this cap is long off the screen.
         if self.images.places.len() >= MAX_IMAGE_PLACES {
             self.images.places.clear();
@@ -90,23 +92,23 @@ impl DocRenderer {
         boxes
     }
 
-    /// **Where a page's images may be, for a click** (the reader's image picked with a click): a superset, never too many, at most
-    /// [`proto::MAX_CLICK_IMAGE_BOXES`] boxes, the walk's answer to a request with the click's flag (`places.rs`); or dark paper's boxes for the page, if it
-    /// has them, which are the same. `None` if it isn't known: stale (nothing remembered), or the page couldn't be asked or the asking failed, which a click
-    /// takes as no picture there. Remembered apart from dark paper's, under the same cap, so dark paper's answer is never this one.
-    pub fn image_boxes_for_a_click(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>> {
-        if let Some(Some(boxes)) = self.images.places.get(&page) {
-            return Some(boxes.clone());
-        }
+    /// **Where a page's images may be, for a click** (the reader's image picked with a click): a superset, never too many, the walk's answer to a request
+    /// with the click's flag (`places.rs`), typed as it's decoded: the pictures' boxes, each by its own box through the forms it's in, and apart from
+    /// them the box where a picture may be anywhere, which is never read as one. Never dark paper's boxes, which give a picture in a form the outermost
+    /// form's box. `None` if it isn't known: stale (nothing remembered), or the page couldn't be asked or the asking failed, which a click takes as no
+    /// picture there. Remembered apart from dark paper's, under the same cap.
+    pub fn image_boxes_for_a_click(&mut self, page: u32, generation: u64) -> Option<proto::ClickPlaces> {
         if let Some(known) = self.images.click_places.get(&page) {
             return known.clone();
         }
-        let boxes = places_asked(self, page, generation, true)?;
+        let places = places_asked(self, page, generation, true, |payload| {
+            proto::PageImagesForAClick::decode(payload).map(|images| (images.job_id, images.places))
+        })?;
         if self.images.click_places.len() >= MAX_IMAGE_PLACES {
             self.images.click_places.clear();
         }
-        self.images.click_places.insert(page, boxes.clone());
-        boxes
+        self.images.click_places.insert(page, places.clone());
+        places
     }
 
     /// Whether the places of a page's images have been forgotten since this was last asked, with a lot of pages looked up. It says nothing about the file: it's for whoever decided something from those places, which might not be decided the same way twice.
@@ -115,8 +117,16 @@ impl DocRenderer {
     }
 }
 
-/// Asks `doc`'s worker where a page's images are, dark paper's way or a click's (a function of the renderer's, not one of its methods, which are many): `None` if `generation` went stale, which says nothing about the page.
-fn places_asked(doc: &mut DocRenderer, page: u32, generation: u64, for_a_click: bool) -> Option<Option<Vec<[u16; 4]>>> {
+/// Asks `doc`'s worker where a page's images are, dark paper's way or a click's, its answer read by `decode`, the one for that request's shape, so a
+/// worker answering with the other's is a violation (a function of the renderer's, not one of its methods, which are many): `None` if `generation` went
+/// stale, which says nothing about the page.
+fn places_asked<T>(
+    doc: &mut DocRenderer,
+    page: u32,
+    generation: u64,
+    for_a_click: bool,
+    decode: impl Fn(&[u8]) -> Result<(u32, T), ProtoError>,
+) -> Option<Option<T>> {
     if doc.control.is_stale(generation) {
         return None;
     }
@@ -139,17 +149,11 @@ fn places_asked(doc: &mut DocRenderer, page: u32, generation: u64, for_a_click: 
         proto::encode_images_request(job_id, page)
     };
     let (kills, busy) = (doc.kills(), doc.left_out.busy);
-    // A click's answer may hold one box more; dark paper's held to its own count, so a worker answering it with a click's shape is a violation.
-    let decode = if for_a_click {
-        proto::PageImages::decode_for_a_click
-    } else {
-        proto::PageImages::decode
-    };
     let reply = doc.run_job(job_id, page, false, class, Some(generation), &[], &frame, |reply| match reply.kind {
         Kind::Images => {
-            let images = decode(&reply.payload)?;
-            if images.job_id == job_id {
-                Ok(images.boxes)
+            let (answered, places) = decode(&reply.payload)?;
+            if answered == job_id {
+                Ok(places)
             } else {
                 Err(ProtoError("image boxes answer a different job"))
             }

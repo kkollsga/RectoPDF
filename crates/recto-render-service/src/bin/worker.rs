@@ -215,7 +215,7 @@ fn handle(
                     false => backend.image_boxes(page).map(|boxes| proto::PageImages { job_id, boxes }.encode()),
                     true => backend
                         .image_boxes_for_a_click(page)
-                        .map(|boxes| proto::PageImages { job_id, boxes }.encode_for_a_click()),
+                        .map(|places| proto::PageImagesForAClick { job_id, places }.encode()),
                 }
                 .unwrap_or_else(|code| proto::encode_failed(job_id, code)),
             )

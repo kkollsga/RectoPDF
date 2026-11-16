@@ -840,16 +840,56 @@ fn a_clicks_ask_for_a_crowded_page_leaves_dark_papers_answer_as_it_was() {
     let mut doc = renderer(&file.0, Policy::default());
     assert_eq!(doc.image_boxes(0, 0), None, "too many for dark paper");
     let for_a_click = doc.image_boxes_for_a_click(0, 0).expect("a click's superset");
-    assert_eq!(for_a_click.len(), recto_proto::MAX_CLICK_IMAGE_BOXES);
+    assert_eq!(for_a_click.boxes.len(), recto_proto::MAX_IMAGE_BOXES);
+    assert!(for_a_click.beyond.is_some(), "and the box round the rest");
     assert_eq!(doc.image_boxes(0, 0), None, "dark paper's answer as it was, after the click's");
     let mut fresh = renderer(&file.0, Policy::default());
-    assert_eq!(
-        fresh.image_boxes_for_a_click(0, 0).map(|boxes| boxes.len()),
-        Some(recto_proto::MAX_CLICK_IMAGE_BOXES)
-    );
+    assert_eq!(fresh.image_boxes_for_a_click(0, 0), Some(for_a_click));
     assert_eq!(fresh.image_boxes(0, 0), None, "and with the click's asked first");
-    assert_eq!(fresh.image_boxes_for_a_click(1, 0), Some(Vec::new()), "a page with none: none for a click");
+    assert_eq!(
+        fresh.image_boxes_for_a_click(1, 0),
+        Some(recto_proto::ClickPlaces::default()),
+        "a page with none: none for a click"
+    );
     assert_eq!(fresh.image_boxes(1, 0), Some(Vec::new()));
+}
+
+/// Failure (the review of `build/scan-not-picked`, its first regression): with dark paper on, a click is given dark paper's boxes for the page, which put a
+/// picture inside a form at the outermost form's box, so on a page wrapped in one page-wide form the figure is the page and a click on it picks nothing; or
+/// the click's ask changes dark paper's answer. Through the real worker, dark paper asked first: the click's places have the figure by its own box (200 x
+/// 150 at 100, 242 from the top of a 612 x 792 page) and the picture over the page apart from it; dark paper's are the outermost form's, before and after.
+#[test]
+fn a_click_on_a_page_in_a_form_gets_its_own_boxes_even_with_dark_papers_known() {
+    let first = recto_testpdf::first_extra_object(1);
+    let picture = |size: u32| recto_testpdf::Object::Stream {
+        dict: format!("/Type /XObject /Subtype /Image /Width {size} /Height {size} /BitsPerComponent 8 /ColorSpace /DeviceGray"),
+        data: vec![90; (size * size) as usize],
+    };
+    let form = recto_testpdf::Object::Stream {
+        dict: format!(
+            "/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /XObject << /Bg {} 0 R /Im {} 0 R >> >>",
+            first + 1,
+            first + 2
+        ),
+        data: b"q 612 0 0 792 0 0 cm /Bg Do Q q 200 0 0 150 100 400 cm /Im Do Q".to_vec(),
+    };
+    let file = TempPdf::new(
+        "in-a-form.pdf",
+        &recto_testpdf::pages_with(
+            &[Page::new(b"q /Fm Do Q".to_vec())],
+            &format!("/XObject << /Fm {first} 0 R >>"),
+            vec![form, picture(4), picture(2)],
+        ),
+    );
+    let mut doc = renderer(&file.0, Policy::default());
+    let whole = [0, 0, u16::MAX, u16::MAX];
+    assert_eq!(doc.image_boxes(0, 0), Some(vec![whole]), "dark paper's: the outermost form's box");
+    let places = doc.image_boxes_for_a_click(0, 0).expect("the click's places");
+    let figure = [10_708, 20_025, 32_125, 32_437];
+    let near = |found: &[u16; 4]| found.iter().zip(figure).all(|(side, want)| side.abs_diff(want) <= 2);
+    assert!(places.boxes.iter().any(near), "the figure by its own box: {places:?}");
+    assert!(places.boxes.contains(&whole) && places.beyond.is_none(), "{places:?}");
+    assert_eq!(doc.image_boxes(0, 0), Some(vec![whole]), "dark paper's as it was, after the click's");
 }
 
 /// Failure: the renderer's worker carries the code that reaches the Keychain: the Find key's, or Security.framework linked and called by anything (the coordinator's decision, 2026-11-15: only the app's own process does). Looked at as it was just built for this test.

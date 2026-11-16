@@ -44,8 +44,10 @@ type FPDF_ANNOTATION = *mut c_void;
 type FPDF_BOOL = c_int;
 
 mod contents;
+mod geometry;
 mod hidden;
 use contents::Walk;
+use geometry::{Area, IDENTITY, M, apply, inverse, then, to_f32};
 
 /// `fpdfview.h`: a transform.
 #[repr(C)]
@@ -724,11 +726,11 @@ impl RenderBackend for PdfiumBackend {
     }
 
     fn image_boxes(&mut self, page: u32) -> Result<Vec<[u16; 4]>, RenderError> {
-        self.image_places(page, ImagePlaces::default())
+        self.image_places(page, ImagePlaces::default(), false).map(ImagePlaces::into_places)
     }
 
-    fn image_boxes_for_a_click(&mut self, page: u32) -> Result<Vec<[u16; 4]>, RenderError> {
-        self.image_places(page, ImagePlaces::for_a_click())
+    fn image_boxes_for_a_click(&mut self, page: u32) -> Result<recto_proto::ClickPlaces, RenderError> {
+        self.image_places(page, ImagePlaces::for_a_click(), true).map(ImagePlaces::into_click_places)
     }
 
     fn page_text_until(&mut self, page: u32, options: TextOptions, cancel: &dyn Cancel) -> Result<PageChars, RenderError> {
@@ -815,43 +817,61 @@ impl RenderBackend for PdfiumBackend {
 
 impl PdfiumBackend {
     /// **Where a page's images are, by `places`' rule** (dark paper's, or a click's superset: `places.rs`): one walk over the page's objects, its forms
-    /// included, that decodes nothing.
-    fn image_places(&mut self, page: u32, mut places: ImagePlaces) -> Result<Vec<[u16; 4]>, RenderError> {
+    /// included, that decodes nothing. An image in a form has its bounds in the form's own space: dark paper takes the outermost form's bounds for it, as
+    /// it always has; `own_boxes` (a click's) takes its own, through the forms' matrices, as the contents walk places it (`geometry::placed`), so a figure
+    /// in a page-wide form isn't the page.
+    fn image_places(&mut self, page: u32, mut places: ImagePlaces, own_boxes: bool) -> Result<ImagePlaces, RenderError> {
         self.load_page(page)?;
         let Some(handle) = self.open_page_handle() else {
             return Err(FailCode::Internal);
         };
         let api = self.api;
         let (mut looked_at, mut cut_short) = (0usize, false);
-        // Where a point of the page lands, as a part of the page. By PDFium's own mapping, so a rotated page and a cropped one come out right, however they got that way.
+        // Where a point of the page lands, as a part of the page. By PDFium's own mapping, so a rotated page and a cropped one come out right, however they
+        // got that way. A point far past the page, a hostile matrix's, saturates there (`FXSYS_roundf`) and is held to the page here.
         const PARTS: c_int = 65_535;
-        let place = |x: f32, y: f32| -> Option<(u16, u16)> {
+        let place = |x: f64, y: f64| -> Option<(u16, u16)> {
             let (mut device_x, mut device_y): (c_int, c_int) = (0, 0);
             // SAFETY: the page is live for this whole function, and the two out-pointers are valid for writes.
-            let ok = unsafe { (api.FPDF_PageToDevice)(handle, 0, 0, PARTS, PARTS, 0, f64::from(x), f64::from(y), &raw mut device_x, &raw mut device_y) };
+            let ok = unsafe { (api.FPDF_PageToDevice)(handle, 0, 0, PARTS, PARTS, 0, x, y, &raw mut device_x, &raw mut device_y) };
             (ok != 0).then(|| (device_x.clamp(0, PARTS) as u16, device_y.clamp(0, PARTS) as u16))
         };
+        // What takes a holder's contents to the page, and the outermost form it's in, for the objects waiting in it: the page's own first, then a form's.
+        // `None` where a form's matrix can't be read. The walk takes the waiting objects last first, so those of a holder are all taken before any of the
+        // holder that pushed it, and a holder is let go when the walk is back above it: never more than the forms one inside another, nine.
+        let mut holders: Vec<(Option<M>, FPDF_PAGEOBJECT)> = vec![(Some(IDENTITY), std::ptr::null_mut())];
         // SAFETY: the page is live for this whole function, and every object comes from it or a form on it. Indexes are below the counts just read.
         unsafe {
-            let mut waiting: Vec<(FPDF_PAGEOBJECT, u32, FPDF_PAGEOBJECT)> = Vec::new();
+            let mut waiting: Vec<(FPDF_PAGEOBJECT, u32, u32)> = Vec::new();
             let count = (api.FPDFPage_CountObjects)(handle).max(0);
             cut_short |= count > MAX_OBJECTS_LOOKED_AT as c_int;
             for index in 0..count.min(MAX_OBJECTS_LOOKED_AT as c_int) {
-                let object = (api.FPDFPage_GetObject)(handle, index);
-                waiting.push((object, 0, object));
+                waiting.push(((api.FPDFPage_GetObject)(handle, index), 0, 0));
             }
-            while let Some((object, depth, top)) = waiting.pop() {
+            while let Some((object, depth, holder)) = waiting.pop() {
                 looked_at += 1;
                 if object.is_null() || looked_at > MAX_OBJECTS_LOOKED_AT {
                     cut_short |= !object.is_null();
                     continue;
                 }
+                holders.truncate(holder as usize + 1);
+                debug_assert!(holders.len() <= MAX_FORM_DEPTH as usize + 1);
+                let (matrix, outermost) = holders[holder as usize];
                 match (api.FPDFPageObj_GetType)(object) {
-                    // An image in a form has its bounds in the form's own space, so it's the outermost form's that say where it is on the page.
                     FPDF_PAGEOBJ_IMAGE => {
-                        let (mut left, mut bottom, mut right, mut top_edge) = (0.0, 0.0, 0.0, 0.0);
-                        if (api.FPDFPageObj_GetBounds)(top, &raw mut left, &raw mut bottom, &raw mut right, &raw mut top_edge) != 0
-                            && let (Some(one), Some(two)) = (place(left, top_edge), place(right, bottom))
+                        let area = if own_boxes {
+                            matrix.and_then(|matrix| geometry::placed(api, object, &matrix))
+                        } else {
+                            // Dark paper's, as it was: the outermost form's bounds as PDFium gives them.
+                            geometry::bounds_of(api, if outermost.is_null() { object } else { outermost }).map(|[left, bottom, right, top]| Area {
+                                left: f64::from(left),
+                                bottom: f64::from(bottom),
+                                right: f64::from(right),
+                                top: f64::from(top),
+                            })
+                        };
+                        if let Some(Area { left, bottom, right, top }) = area
+                            && let (Some(one), Some(two)) = (place(left, top), place(right, bottom))
                         {
                             let found = [one.0.min(two.0), one.1.min(two.1), one.0.max(two.0), one.1.max(two.1)];
                             if places.add(found).is_break() {
@@ -865,8 +885,13 @@ impl PdfiumBackend {
                         let room = MAX_OBJECTS_LOOKED_AT.saturating_sub(waiting.len());
                         let inside = (api.FPDFFormObj_CountObjects)(object).max(0) as usize;
                         cut_short |= inside > room;
-                        for index in 0..inside.min(room) {
-                            waiting.push(((api.FPDFFormObj_GetObject)(object, index as c_ulong), depth + 1, top));
+                        if inside.min(room) > 0 {
+                            let inner = matrix.and_then(|matrix| geometry::inside_form(api, object, &matrix));
+                            holders.push((inner, if outermost.is_null() { object } else { outermost }));
+                            let holder = (holders.len() - 1) as u32;
+                            for index in 0..inside.min(room) {
+                                waiting.push(((api.FPDFFormObj_GetObject)(object, index as c_ulong), depth + 1, holder));
+                            }
                         }
                     }
                     // A form too deep to walk could hold a picture.
@@ -879,7 +904,7 @@ impl PdfiumBackend {
         if cut_short {
             places.unplaced();
         }
-        Ok(places.into_places())
+        Ok(places)
     }
     /// The area of the open page that's shown, and how far it's turned. All zero if PDFium can't say, which leaves the page with nowhere to select.
     fn page_frame(&self) -> PageFrame {

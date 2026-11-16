@@ -590,11 +590,11 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
         JobKind::Links => Outcome::Links(None),
         // A click's filter: where the tab's own worker has the page's pictures, a superset asked for a click and kept apart from dark paper's (`host/images.rs`).
         JobKind::ImageBoxes { at, .. } => {
-            let boxes = doc.image_boxes_for_a_click(job.source_page, job.generation);
+            let places = doc.image_boxes_for_a_click(job.source_page, job.generation);
             if doc.is_stale(job.generation) {
                 Outcome::Cancelled
             } else {
-                Outcome::ImageUnder(crate::image_pick::under(boxes.as_deref(), *at))
+                Outcome::ImageUnder(crate::image_pick::under(places.as_ref(), *at))
             }
         }
         JobKind::Size => match doc.page_size(job.source_page) {

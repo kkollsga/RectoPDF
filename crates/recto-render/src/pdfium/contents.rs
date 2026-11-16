@@ -86,95 +86,6 @@ const FONT_SERIF: c_int = 1 << 1;
 const FONT_ITALIC: c_int = 1 << 6;
 const FONT_FORCE_BOLD: c_int = 1 << 18;
 
-type M = [f64; 6];
-const IDENTITY: M = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-
-/// `first` then `next`.
-fn then(first: &M, next: &M) -> M {
-    [
-        first[0] * next[0] + first[1] * next[2],
-        first[0] * next[1] + first[1] * next[3],
-        first[2] * next[0] + first[3] * next[2],
-        first[2] * next[1] + first[3] * next[3],
-        first[4] * next[0] + first[5] * next[2] + next[4],
-        first[4] * next[1] + first[5] * next[3] + next[5],
-    ]
-}
-
-fn apply(m: &M, x: f64, y: f64) -> (f64, f64) {
-    (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5])
-}
-
-fn inverse(m: &M) -> Option<M> {
-    let det = m[0] * m[3] - m[1] * m[2];
-    if det == 0.0 || !det.is_finite() {
-        return None;
-    }
-    Some([
-        m[3] / det,
-        -m[1] / det,
-        -m[2] / det,
-        m[0] / det,
-        (m[2] * m[5] - m[3] * m[4]) / det,
-        (m[1] * m[4] - m[0] * m[5]) / det,
-    ])
-}
-
-fn to_f32(m: &M) -> Option<Mat> {
-    let out = m.map(|value| value as f32);
-    out.iter().all(|value| value.is_finite()).then_some(out)
-}
-
-/// An area, left bottom right top, in page coordinates.
-#[derive(Clone, Copy, Debug)]
-struct Area {
-    left: f64,
-    bottom: f64,
-    right: f64,
-    top: f64,
-}
-
-impl Area {
-    fn through(self, m: &M) -> Self {
-        let corners = [
-            apply(m, self.left, self.bottom),
-            apply(m, self.right, self.bottom),
-            apply(m, self.left, self.top),
-            apply(m, self.right, self.top),
-        ];
-        let mut out = Self {
-            left: f64::INFINITY,
-            bottom: f64::INFINITY,
-            right: f64::NEG_INFINITY,
-            top: f64::NEG_INFINITY,
-        };
-        for (x, y) in corners {
-            out.left = out.left.min(x);
-            out.right = out.right.max(x);
-            out.bottom = out.bottom.min(y);
-            out.top = out.top.max(y);
-        }
-        out
-    }
-
-    fn is_finite(self) -> bool {
-        [self.left, self.bottom, self.right, self.top].iter().all(|value| value.is_finite())
-    }
-
-    fn meets(self, other: Self) -> bool {
-        self.left <= other.right && other.left <= self.right && self.bottom <= other.top && other.bottom <= self.top
-    }
-
-    /// More than touching.
-    fn overlaps(self, other: Self) -> bool {
-        self.left < other.right && other.left < self.right && self.bottom < other.top && other.bottom < self.top
-    }
-
-    fn inside(self, other: Self) -> bool {
-        self.left >= other.left && self.right <= other.right && self.bottom >= other.bottom && self.top <= other.top
-    }
-}
-
 /// One holder of objects on the way down: the page, or a form in it.
 struct Level {
     form: FPDF_PAGEOBJECT,
@@ -724,30 +635,11 @@ impl Walk {
 
     /// An object's area on the page, or `None` if it has none that makes sense.
     fn area_of(&self, object: FPDF_PAGEOBJECT) -> Option<Area> {
-        let (mut left, mut bottom, mut right, mut top) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
-        // SAFETY: the object is live with its page, and the out-pointers are live for the call.
-        let ok = unsafe { (self.api.FPDFPageObj_GetBounds)(object, &raw mut left, &raw mut bottom, &raw mut right, &raw mut top) };
-        if ok == 0 {
-            return None;
-        }
-        let area = Area {
-            left: f64::from(left),
-            bottom: f64::from(bottom),
-            right: f64::from(right),
-            top: f64::from(top),
-        }
-        .through(&self.level().matrix);
-        area.is_finite().then_some(area)
+        geometry::placed(self.api, object, &self.level().matrix)
     }
 
     fn object_matrix(&self, object: FPDF_PAGEOBJECT) -> Option<M> {
-        let mut m = FS_MATRIX::default();
-        // SAFETY: as above.
-        if unsafe { (self.api.FPDFPageObj_GetMatrix)(object, &raw mut m) } == 0 {
-            return None;
-        }
-        let m = [f64::from(m.a), f64::from(m.b), f64::from(m.c), f64::from(m.d), f64::from(m.e), f64::from(m.f)];
-        m.iter().all(|value| value.is_finite()).then_some(m)
+        geometry::matrix_of(self.api, object)
     }
 
     /// Red, green, blue, opacity.
@@ -1153,11 +1045,10 @@ impl Walk {
         if self.levels.len() >= MAX_LEVELS {
             return Ok(());
         }
-        let Some(own) = self.object_matrix(object) else {
+        let Some(matrix) = geometry::inside_form(self.api, object, &self.level().matrix) else {
             self.note(NoteCode::NotFinite);
             return Ok(());
         };
-        let matrix = then(&own, &self.level().matrix);
         let (clip, clip_depth) = if text_only {
             (0, 0)
         } else {

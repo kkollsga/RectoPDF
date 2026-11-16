@@ -9,9 +9,10 @@
 //! 1. **The page's text first** ([`Verdict`]), as it's held: text that shows keeps a click (coordinator, 2026-11-16), as a caption drawn over a figure is
 //!    text's to select. A page whose text isn't held yet waits for its read, which the press asked for already.
 //! 2. **Then the tab's own worker,** which has the page open, says whether any picture is under the point ([`Under`]): its walk over the page's objects, for
-//!    a click (`DocRenderer::image_boxes_for_a_click`): dark paper's boxes where it has them, and past 64 pictures apart the boxes held and one round the
-//!    rest, so always a superset. A page it can't say of (its drawing failed or was stopped, it's withheld or its file refused, its walks killed past
-//!    their cap) has no picture to a click, which picks nothing there; the snapshot tool still serves it. No picture there: nothing's looked for.
+//!    a click (`DocRenderer::image_boxes_for_a_click`): each picture by its own box, through the forms it's in, and past 64 pictures apart the boxes
+//!    held and one round the rest, so always a superset. A page it can't say of (its drawing failed or was stopped, it's withheld or its file refused,
+//!    its walks killed past their cap) has no picture to a click, which picks nothing there; the snapshot tool still serves it. No picture there:
+//!    nothing's looked for.
 //! 3. **Then, on text not yet checked for hidden text** (a page's first read has no check, as the check draws the page), the check: hidden text, as a scan's
 //!    OCR layer, doesn't keep the click. Asked only where a picture may be, so a click on text with none under it draws nothing. It always comes to an
 //!    answer: a check tried and failed, or a page known to be heavy (never drawn for a check, as for a copy), takes its text as showing.
@@ -41,7 +42,7 @@
 
 use crate::paper::LEAST_BACKGROUND;
 use recto_index::select::{PagePoint, PageText, Rect};
-use recto_proto::MAX_IMAGE_BOXES;
+use recto_proto::ClickPlaces;
 use serde_json::{Value, json};
 use std::num::NonZeroU32;
 
@@ -104,23 +105,18 @@ fn is_the_page_in_parts([left, top, right, bottom]: [u16; 4]) -> bool {
     covers(side(left, right) * side(top, bottom), f64::from(u16::MAX) * f64::from(u16::MAX))
 }
 
-/// **Whether `at` is in any of `boxes`,** that isn't the page's own ([`is_the_page`]), both in 65535ths of the page from its top left
-/// (`[left, top, right, bottom]` and `[x, y]`), edges included. A box that is the page, held alone, may be a scan or a fold of several pictures into one
-/// (past 64 apart, `recto-render`'s `places.rs`), which the box can't tell: with no other box under the point, the answer is no picture here, so the page's
-/// folded figures past 64 pictures are the one thing a click there can't pick. The 65th box of an answer, the one round every picture past the 64th,
-/// is never the page: it only says a picture may be anywhere in it, so the look runs and its answer's own box is judged ([`is_the_page`]). Its place in the
-/// answer is kept from the worker's walk (`into_places`, the wire's order), but a whole-page box the walk adds for a place it couldn't read, on a page of fewer
-/// than 64 pictures, is last of fewer and can't be told from a scan's: it is taken as the page. `None`, boxes the worker couldn't give (its page failed, withheld, refused, stopped), is no picture: a click picks nothing there. A box from a hostile
-/// file is only compared, so one upside down or of no area holds nothing.
-pub fn under(boxes: Option<&[[u16; 4]]>, [x, y]: [u16; 2]) -> Under {
+/// **Whether a picture may be under `at`,** as the tab's own worker has the page's pictures (`recto_proto::ClickPlaces`), all in 65535ths of the page
+/// from its top left (`[left, top, right, bottom]` and `[x, y]`), edges included. A picture's box that is the page's own ([`is_the_page`]) doesn't count:
+/// held alone it may be a scan, or past 64 apart a fold of several pictures into one (`recto-render`'s `places.rs`), which the box can't tell, so the
+/// page's figures folded with a scan past 64 pictures are the one thing a click there can't pick. `beyond`, the walk's "a picture may be anywhere in
+/// here" (round every picture past the 64 held, or the whole page where a place couldn't be read or the walk was cut short), always counts: it is never
+/// a picture's own box, so the look runs and its answer's own box is judged ([`is_the_page`]). `None`, places the worker couldn't give (its page failed,
+/// withheld, refused, stopped), is no picture: a click picks nothing there. A box from a hostile file is only compared, so one upside down or of no area
+/// holds nothing.
+pub fn under(places: Option<&ClickPlaces>, [x, y]: [u16; 2]) -> Under {
     let holds = |&[left, top, right, bottom]: &[u16; 4]| (left..=right).contains(&x) && (top..=bottom).contains(&y);
-    // The box past the 64th (`beyond`, the last of 65) is the worker saying a picture may be anywhere in it: never taken for a page.
-    let may_be = |(at, one): (usize, &[u16; 4])| holds(one) && (at == MAX_IMAGE_BOXES || !is_the_page_in_parts(*one));
-    if boxes.is_some_and(|boxes| boxes.iter().enumerate().any(may_be)) {
-        Under::Yes
-    } else {
-        Under::No
-    }
+    let may_be = |places: &ClickPlaces| places.beyond.as_ref().is_some_and(holds) || places.boxes.iter().any(|one| holds(one) && !is_the_page_in_parts(*one));
+    if places.is_some_and(may_be) { Under::Yes } else { Under::No }
 }
 
 /// **A point on a page of `size` points, in 65535ths of it,** as the worker's boxes are: `None` for a page of no size or a point that isn't finite, and a
@@ -465,6 +461,14 @@ mod tests {
         PagePoint { page, x, y }
     }
 
+    /// The worker's places for a click of these pictures' boxes, with nothing past them.
+    fn only(boxes: &[[u16; 4]]) -> ClickPlaces {
+        ClickPlaces {
+            boxes: boxes.to_vec(),
+            beyond: None,
+        }
+    }
+
     /// A click at `point` taken through every stage to its look, as the `serial`th, nothing there being text and the worker saying an image is.
     fn looking_at(image: &mut ImageSelection, point: PagePoint, serial: u32) {
         image.clicked(point, serial, Verdict::Image);
@@ -534,9 +538,44 @@ mod tests {
     fn a_scans_box_alone_under_a_point_is_no_picture_but_a_figure_over_it_is() {
         let scan = [0, 0, u16::MAX, u16::MAX];
         let figure = [20_000, 20_000, 40_000, 40_000];
-        assert_eq!(under(Some(&[scan]), [30_000, 30_000]), Under::No);
-        assert_eq!(under(Some(&[scan, figure]), [30_000, 30_000]), Under::Yes);
-        assert_eq!(under(Some(&[scan, figure]), [50_000, 50_000]), Under::No, "on the scan beside the figure");
+        assert_eq!(under(Some(&only(&[scan])), [30_000, 30_000]), Under::No);
+        assert_eq!(under(Some(&only(&[scan, figure])), [30_000, 30_000]), Under::Yes);
+        assert_eq!(
+            under(Some(&only(&[scan, figure])), [50_000, 50_000]),
+            Under::No,
+            "on the scan beside the figure"
+        );
+    }
+
+    /// Failure (the review of `build/scan-not-picked`, its second regression, and the case it left): the walk's "a picture may be anywhere" box, which
+    /// a walk cut short makes the whole page, is read as a picture that is the page wherever it falls among the boxes, so on a page of over 20,000
+    /// objects with an inset picture after them, or a page of fewer than 64 pictures where one's place couldn't be read, a click on the picture picks
+    /// nothing. `beyond` always counts, on any page, whatever covers it; a picture's own box that is the page still doesn't.
+    #[test]
+    fn a_box_where_a_picture_may_be_anywhere_is_never_the_page() {
+        let whole = [0, 0, u16::MAX, u16::MAX];
+        let cut_short = |boxes: &[[u16; 4]]| ClickPlaces {
+            boxes: boxes.to_vec(),
+            beyond: Some(whole),
+        };
+        assert_eq!(under(Some(&cut_short(&[])), [30_000, 30_000]), Under::Yes, "no pictures met before the cap");
+        assert_eq!(
+            under(Some(&cut_short(&[[1, 1, 9, 9]])), [30_000, 30_000]),
+            Under::Yes,
+            "one met, of fewer than 64"
+        );
+        assert_eq!(
+            under(Some(&cut_short(&[whole])), [30_000, 30_000]),
+            Under::Yes,
+            "a scan met, and the walk cut short"
+        );
+        assert_eq!(under(Some(&only(&[whole])), [30_000, 30_000]), Under::No, "the same scan, the walk whole");
+        let round_the_rest = ClickPlaces {
+            boxes: vec![[1, 1, 9, 9]],
+            beyond: Some([20_000, 20_000, 40_000, 40_000]),
+        };
+        assert_eq!(under(Some(&round_the_rest), [30_000, 30_000]), Under::Yes);
+        assert_eq!(under(Some(&round_the_rest), [50_000, 50_000]), Under::No, "outside every box");
     }
 
     /// Failure (owner, 2026-11-16): the look finds the picture on top, and it is the page (the figure's box was folded into a scan's, or the scan was all the
@@ -561,12 +600,12 @@ mod tests {
         assert_eq!(in_parts(at(0, f32::NAN, 1.0), LETTER), None);
         assert_eq!(in_parts(at(0, 1.0, 1.0), (0.0, 792.0)), None, "a page of no size");
         let figure = [20_000, 20_000, 40_000, 40_000];
-        assert_eq!(under(Some(&[figure]), middle), Under::Yes);
-        assert_eq!(under(Some(&[figure]), [40_000, 20_000]), Under::Yes, "on its edge");
-        assert_eq!(under(Some(&[figure]), [40_001, 30_000]), Under::No);
-        assert_eq!(under(Some(&[]), middle), Under::No, "a page with no images");
+        assert_eq!(under(Some(&only(&[figure])), middle), Under::Yes);
+        assert_eq!(under(Some(&only(&[figure])), [40_000, 20_000]), Under::Yes, "on its edge");
+        assert_eq!(under(Some(&only(&[figure])), [40_001, 30_000]), Under::No);
+        assert_eq!(under(Some(&only(&[])), middle), Under::No, "a page with no images");
         assert_eq!(
-            under(Some(&[[40_000, 40_000, 20_000, 20_000], [5, 5, 5, 5]]), middle),
+            under(Some(&only(&[[40_000, 40_000, 20_000, 20_000], [5, 5, 5, 5]])), middle),
             Under::No,
             "upside down, or of no area"
         );

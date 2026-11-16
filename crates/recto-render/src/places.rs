@@ -7,13 +7,14 @@
 //! **What touches.** Boxes that overlap, or whose edges meet or are at most [`TOUCH`] apart along a stretch of some length: strips of one picture abut exactly, give or take the rounding to 65535ths. Boxes that meet only at a corner don't touch: photos laid out on a diagonal share one point, and one point isn't one picture.
 //!
 //! **For a click** ([`ImagePlaces::for_a_click`], the reader's image picked with a click): the same walk, but where too many pictures apart would stop it,
-//! the 64 boxes held stay and **every place met after is folded into one more box round them all**, so the answer is a superset of where the page's
-//! pictures are, at most 65 boxes: a click under none of them is under no picture. A place whose bounds can't be read, or a walk cut short by its cap on
-//! objects, makes that box the whole page, as a picture could be anywhere. Dark paper never asks this way, so its answer is as it was.
+//! the 64 boxes held stay and **every place met after is folded into one more box round them all**, `beyond`, so the answer is a superset of where the
+//! page's pictures are: a click under none of them is under no picture. A place whose bounds can't be read, or a walk cut short by its caps, makes `beyond`
+//! the whole page, as a picture could be anywhere. `beyond` is given apart from the places ([`ImagePlaces::into_click_places`]), as it is never a picture's
+//! own box and must never be read as one that covers the page. Dark paper never asks this way, so its answer is as it was.
 //!
 //! **What it costs, whatever the page.** At most [`MAX_IMAGE_BOXES`] boxes are held at any moment. Up to the step, each place found is compared with each of them once. At the step the boxes held are folded, each taken out and put back as a place found past the step. Past it, a place is compared with each box held once, in a pass; a pass that folds one in is followed by another, as the box has grown and may now touch one it didn't, and a pass that folds none ends it. Every fold takes away a box that an earlier place put there, so there are no more folds than places, and over the walk no more than `2 × 64` comparisons a place on average, with the 64 held boxes counted again at the step, and the walk's own cap of 20,000 objects.
 
-use recto_proto::MAX_IMAGE_BOXES;
+use recto_proto::{ClickPlaces, MAX_IMAGE_BOXES};
 use std::ops::ControlFlow;
 
 /// How far apart, in 65535ths of the page, two edges may be and still meet: the rounding of each to 65535ths.
@@ -124,11 +125,18 @@ impl ImagePlaces {
         ControlFlow::Continue(())
     }
 
-    /// The places, and for a click the box past them if there is one: at most [`MAX_IMAGE_BOXES`], or one more for a click.
+    /// Dark paper's places: at most [`MAX_IMAGE_BOXES`]. Its walk never has a box past them.
     pub(crate) fn into_places(self) -> Vec<[u16; 4]> {
-        let mut found = self.found;
-        found.extend(self.beyond);
-        found
+        debug_assert!(self.beyond.is_none(), "only a click's walk has a box past the places");
+        self.found
+    }
+
+    /// A click's: the places, and apart from them the box past them, if there is one, which is never a picture's own (`recto_proto::ClickPlaces`).
+    pub(crate) fn into_click_places(self) -> ClickPlaces {
+        ClickPlaces {
+            boxes: self.found,
+            beyond: self.beyond,
+        }
     }
 }
 
@@ -206,8 +214,9 @@ mod tests {
 
     /// Failure (the second review of `build/image-select`): for a click, a page of more pictures apart than an answer holds is refused, so every click on
     /// it, a margin's too, costs a private worker; or the box past the 64 held leaves out a picture met after them, so a click on it picks nothing; or a
-    /// picture whose place can't be said is left out. For a click, 80 apart are 65 boxes, every place inside one of them, the margin between them under
-    /// none; a picture with no place makes the last box the whole page; and dark paper's walk of the same page is still too many.
+    /// picture whose place can't be said is left out, or the whole page said for it is given among the places, where it reads as a scan (the review of
+    /// `build/scan-not-picked`). For a click, 80 apart are 64 places and the box past them, every place inside one of them, the margin between them under
+    /// none; a picture with no place makes the box past them the whole page, apart from the places; and dark paper's walk of the same page is still too many.
     #[test]
     fn for_a_click_too_many_pictures_are_a_superset_of_65_boxes() {
         let places: Vec<[u16; 4]> = apart(80).collect();
@@ -215,8 +224,10 @@ mod tests {
         for place in &places {
             assert!(click.add(*place).is_continue(), "a click's walk never stops");
         }
-        let found = click.into_places();
-        assert_eq!(found.len(), MAX_IMAGE_BOXES + 1);
+        let ClickPlaces { boxes, beyond } = click.into_click_places();
+        assert_eq!(boxes.len(), MAX_IMAGE_BOXES);
+        let found: Vec<[u16; 4]> = boxes.into_iter().chain(beyond).collect();
+        assert_eq!(found.len(), MAX_IMAGE_BOXES + 1, "and the box past them");
         let inside = |place: &[u16; 4]| {
             found
                 .iter()
@@ -230,7 +241,14 @@ mod tests {
         let mut unplaced = ImagePlaces::for_a_click();
         let _ = unplaced.add(square(0, 0, 10));
         unplaced.unplaced();
-        assert_eq!(unplaced.into_places(), vec![square(0, 0, 10), WHOLE_PAGE]);
+        assert_eq!(
+            unplaced.into_click_places(),
+            ClickPlaces {
+                boxes: vec![square(0, 0, 10)],
+                beyond: Some(WHOLE_PAGE)
+            },
+            "the whole page apart from the places, with fewer than 64"
+        );
         let mut dark = ImagePlaces::default();
         dark.unplaced();
         assert_eq!(dark.into_places(), Vec::<[u16; 4]>::new(), "dark paper's walk keeps what it has");

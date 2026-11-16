@@ -793,8 +793,10 @@ fn a_page_with_more_images_than_an_answer_holds_is_refused() {
     assert_eq!(backend.image_boxes(1), Err(recto_render::FailCode::TooLarge), "65 places");
     // For a click (the reader's image picked with a click), the same page is the 64 held and one box round the rest; and a page dark paper is given
     // boxes for is given the same boxes.
-    let for_a_click = backend.image_boxes_for_a_click(1).expect("never too many for a click");
-    assert_eq!(for_a_click.len(), 65, "{for_a_click:?}");
+    let places = backend.image_boxes_for_a_click(1).expect("never too many for a click");
+    assert_eq!(places.boxes.len(), 64, "{places:?}");
+    let for_a_click: Vec<[u16; 4]> = places.boxes.into_iter().chain(places.beyond).collect();
+    assert_eq!(for_a_click.len(), 65, "and the box round the rest: {for_a_click:?}");
     // Page 1 is page 0's 64 places and one more: each of them is inside a box of the click's answer.
     let inside = |place: &[u16; 4]| {
         for_a_click
@@ -802,8 +804,87 @@ fn a_page_with_more_images_than_an_answer_holds_is_refused() {
             .any(|held| held[0] <= place[0] && held[1] <= place[1] && held[2] >= place[2] && held[3] >= place[3])
     };
     assert!(found.iter().all(inside), "a superset of the pictures: {for_a_click:?}");
-    assert_eq!(backend.image_boxes_for_a_click(3), backend.image_boxes(3), "64 in a row: as dark paper's");
+    assert_eq!(
+        backend.image_boxes_for_a_click(3).map(|places| (places.boxes, places.beyond)),
+        backend.image_boxes(3).map(|boxes| (boxes, None)),
+        "64 in a row: as dark paper's"
+    );
     assert_eq!(backend.image_boxes(2).map(|found| found.len()), Ok(64), "65 images in 64 places");
     assert_eq!(backend.image_boxes(3).map(|found| found.len()), Ok(64), "64 in a row: each as it is");
     assert_eq!(backend.image_boxes(4).map(|found| found.len()), Ok(1), "65 in a row: folded into one");
+}
+
+/// A page wrapped in a form, as re-imposed, stamped and slide-deck pages are: `/Outer`, page-wide, draws a picture over the whole page and `/Inner`, a form
+/// drawn at 100, 400 at twice its size, which holds the figure, 100 x 75 in its own space: 200 x 150 points at 100, 400 on the page. Page 2 nests forms
+/// whose matrices a hostile file chose, each round a picture: one that flattens everything to a point, and one at about the largest scale a float holds
+/// that draws itself, so it goes as deep as the walk goes and its numbers past what a double holds.
+fn pages_in_forms() -> Vec<u8> {
+    let first = recto_testpdf::first_extra_object(2);
+    let (outer, inner, flat, big, background, figure) = (first, first + 1, first + 2, first + 3, first + 4, first + 5);
+    let resources = format!("/XObject << /Outer {outer} 0 R /Inner {inner} 0 R /Flat {flat} 0 R /Huge {big} 0 R /Bg {background} 0 R /Im {figure} 0 R >>");
+    let form = |matrix: &str, bbox: &str, data: &[u8]| recto_testpdf::Object::Stream {
+        dict: format!("/Type /XObject /Subtype /Form /BBox [{bbox}] /Matrix [{matrix}] /Resources << {resources} >>"),
+        data: data.to_vec(),
+    };
+    let picture = |size: u32| recto_testpdf::Object::Stream {
+        dict: format!("/Type /XObject /Subtype /Image /Width {size} /Height {size} /BitsPerComponent 8 /ColorSpace /DeviceGray"),
+        data: vec![90; (size * size) as usize],
+    };
+    // About the largest scale a float holds: a few forms of it one inside another are past what a double holds.
+    let huge = "3".to_string() + &"0".repeat(38);
+    recto_testpdf::pages_with(
+        &[Page::new(b"q /Outer Do Q".to_vec()), Page::new(b"q /Flat Do Q q /Huge Do Q".to_vec())],
+        &resources,
+        vec![
+            form("1 0 0 1 0 0", "0 0 612 792", b"q 612 0 0 792 0 0 cm /Bg Do Q q 1 0 0 1 100 400 cm /Inner Do Q"),
+            form("2 0 0 2 0 0", "0 0 100 75", b"q 100 0 0 75 0 0 cm /Im Do Q"),
+            form("0 0 0 0 0 0", "0 0 612 792", b"q 50 0 0 50 10 10 cm /Im Do Q q /Huge Do Q"),
+            form(&format!("{huge} 0 0 {huge} 0 0"), "0 0 612 792", b"q 50 0 0 50 10 10 cm /Im Do Q q /Huge Do Q"),
+            picture(4),
+            picture(2),
+        ],
+    )
+}
+
+/// Failure (the review of `build/scan-not-picked`, its first regression): the walk for a click gives a picture inside a form the outermost form's box, so on
+/// a page wrapped in one page-wide form a figure's box is the page, which the reader takes for a scan, and a click on the figure picks nothing; or the
+/// forms' matrices aren't followed down, so the box is somewhere else. And dark paper's walk, which judges by the outermost form's box, is left exactly as
+/// it was. Real PDFium, a figure two forms down, the inner one drawn at twice its size.
+#[test]
+fn a_clicks_walk_places_a_picture_in_forms_by_its_own_box() {
+    let _turn = turn();
+    let file = TempPdf::new("in-forms.pdf", &pages_in_forms());
+    let mut backend = open(&file);
+    let parts = |x: f32, y: f32| ((x / 612.0 * 65_535.0).round(), ((792.0 - y) / 792.0 * 65_535.0).round());
+    let ((left, top), (right, bottom)) = (parts(100.0, 550.0), parts(300.0, 400.0));
+    let near = |found: &[u16; 4]| {
+        let sides = [left, top, right, bottom];
+        found.iter().zip(sides).all(|(side, want)| (f32::from(*side) - want).abs() <= 1.0)
+    };
+    let places = backend.image_boxes_for_a_click(0).expect("the walk for a click");
+    assert!(places.boxes.iter().any(near), "the figure by its own box: {places:?}");
+    assert!(
+        places.boxes.contains(&[0, 0, u16::MAX, u16::MAX]),
+        "the picture over the whole page by its own: {places:?}"
+    );
+    assert_eq!((places.boxes.len(), places.beyond), (2, None), "nothing more: {places:?}");
+    assert_eq!(
+        backend.image_boxes(0),
+        Ok(vec![[0, 0, u16::MAX, u16::MAX]]),
+        "dark paper's: both pictures by the outermost form's box, as before"
+    );
+}
+
+/// Failure (rule 6): a form whose matrix flattens it to a point, or one that draws itself at a scale whose numbers go past what a double holds, makes the
+/// walk for a click panic or run on, or gives a box upside down; or dark paper's answer for such a page changes. The walk ends, every box comes out the
+/// right way round and held to the page (a `u16` of it), what it couldn't place is "a picture may be anywhere", and dark paper's answer is as it was.
+#[test]
+fn a_clicks_walk_through_hostile_form_matrices_holds_to_the_page() {
+    let _turn = turn();
+    let file = TempPdf::new("in-forms.pdf", &pages_in_forms());
+    let mut backend = open(&file);
+    let places = backend.image_boxes_for_a_click(1).expect("an answer");
+    let right_way_round = |sides: &[u16; 4]| sides[0] <= sides[2] && sides[1] <= sides[3];
+    assert!(places.boxes.iter().chain(&places.beyond).all(right_way_round), "{places:?}");
+    assert_eq!(backend.image_boxes(1), Ok(vec![[0, u16::MAX, 0, u16::MAX]]), "dark paper's, as before");
 }
