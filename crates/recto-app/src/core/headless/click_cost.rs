@@ -187,7 +187,10 @@ fn click_cost() {
         applied_as_the_host(&app.core().engine.set_viewport(view));
         host_turns(&app, &mut view, true);
         app.settle();
-        std::thread::sleep(Duration::from_secs_f64(pause));
+        let until = Instant::now() + Duration::from_secs_f64(pause);
+        while Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50)); // ratchet: poll
+        }
         let (workers, _) = tree(&worker());
         eprintln!("click_cost {only}: pause {pause} s, tab workers alive at the click {}", workers.len());
         measure(&app, "blank margin", margin.expect("a margin"), &[1]);

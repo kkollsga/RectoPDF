@@ -81,7 +81,7 @@ impl DocRenderer {
 
     /// Where a page's images are, as parts of the page in 65535ths, or `None` if it isn't known: this job went stale, the page isn't one that can be asked about, or the asking failed or was refused, as a page with more images than an answer holds is. Those aren't "there are no images", and a caller mustn't treat them so. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it.
     pub fn image_boxes(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>> {
-        self.forget_places_of_a_replaced_file();
+        forget_places_of_a_replaced_file(self);
         if let Some(known) = self.images.places.get(&page) {
             return known.clone();
         }
@@ -104,7 +104,7 @@ impl DocRenderer {
     /// form's box. `None` if it isn't known: stale (nothing remembered), or the page couldn't be asked or the asking failed, which a click takes as no
     /// picture there. Remembered apart from dark paper's, under the same cap.
     pub fn image_boxes_for_a_click(&mut self, page: u32, generation: u64) -> Option<proto::ClickPlaces> {
-        self.forget_places_of_a_replaced_file();
+        forget_places_of_a_replaced_file(self);
         if let Some(known) = self.images.click_places.get(&page) {
             return known.clone();
         }
@@ -118,18 +118,18 @@ impl DocRenderer {
         places
     }
 
-    /// **What's kept of the file's pictures isn't served for a file another app has rewritten.** An answer kept is given with no job, so the stamp check every job makes
-    /// ([`Self::reopen_if_replaced`], which forgets them, as it does when a worker finds the file changed) wouldn't have run: a click after a rewrite got the old file's "no
-    /// picture". One `fstat` (about a microsecond), and only when something's kept; a miss goes to a job, which checks as every job does.
-    fn forget_places_of_a_replaced_file(&mut self) {
-        if self.images.holds_any() {
-            self.reopen_if_replaced();
-        }
-    }
-
     /// Whether the places of a page's images have been forgotten since this was last asked, with a lot of pages looked up. It says nothing about the file: it's for whoever decided something from those places, which might not be decided the same way twice.
     pub fn take_image_places_cleared(&mut self) -> bool {
         std::mem::take(&mut self.images.places_cleared)
+    }
+}
+
+/// **What's kept of the file's pictures isn't served for a file another app has rewritten.** An answer kept is given with no job, so the stamp check every job makes
+/// ([`DocRenderer::reopen_if_replaced`], which forgets them, as it does when a worker finds the file changed) wouldn't have run: a click after a rewrite got the old file's "no
+/// picture". One `fstat` (about a microsecond), and only when something's kept; a miss goes to a job, which checks as every job does.
+fn forget_places_of_a_replaced_file(doc: &mut DocRenderer) {
+    if doc.images.holds_any() {
+        doc.reopen_if_replaced();
     }
 }
 

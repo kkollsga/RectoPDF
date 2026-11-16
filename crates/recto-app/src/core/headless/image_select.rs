@@ -244,14 +244,21 @@ fn a_click_after_the_worker_was_let_go_starts_no_worker() {
     let app = opened(disk, &doc);
     let engine = || app.core().panes.reading_engine(&app.core().engine);
     // The page's text, which the pointer reads over the page, so the click has nothing to read with a worker.
-    let (x, y) = engine().points().document_point(0, f64::from(ON_TEXT.0), f64::from(ON_TEXT.1)).expect("page 1 is laid out");
+    let (x, y) = engine()
+        .points()
+        .document_point(0, f64::from(ON_TEXT.0), f64::from(ON_TEXT.1))
+        .expect("page 1 is laid out");
     let _ = engine().selection().is_over_text(x, y);
     app.settle();
     assert!(!engine().workers().pids().is_empty(), "the page was drawn by the tab's worker");
     engine().memory_pressure(false);
     app.wait_until("the tab's worker let go", || engine().workers().pids().is_empty());
     assert_eq!(looks_sent(&app, |app| drop(let_go(app, OFF, None, 1))), 0, "a blank margin");
-    assert!(engine().workers().pids().is_empty(), "the click started a worker: {:?}", engine().workers().pids());
+    assert!(
+        engine().workers().pids().is_empty(),
+        "the click started a worker: {:?}",
+        engine().workers().pids()
+    );
 }
 
 /// Failure (S2 of the review): a click's look runs on to its limit after the person has moved on from the click, a private worker of 351 MiB on the USGS
