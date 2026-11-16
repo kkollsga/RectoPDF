@@ -44,6 +44,12 @@ impl ThreadPort {
     }
 }
 
+/// The calling thread's own CPU time. Not known here.
+#[must_use]
+pub fn own_cpu_us() -> Option<u64> {
+    None
+}
+
 /// Whether the calling thread is the process's main thread. Not known here.
 #[must_use]
 pub fn is_main_thread() -> bool {
