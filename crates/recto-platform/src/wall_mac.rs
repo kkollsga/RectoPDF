@@ -69,7 +69,7 @@ pub fn in_a_sandbox() -> bool {
 }
 
 /// Whether the App Sandbox is in force on this process: the kernel says it's sandboxed, and the App Sandbox gave it a container, which it says in `APP_SANDBOX_CONTAINER_ID`. The host
-/// starts a worker with an empty environment, so only the App Sandbox can have put that there, and an inherited seatbelt alone, which sets nothing, reads as no. Both are positive
+/// starts a worker with one setting in its environment (the allocator's, `worker_env::WORKER_ENV` in `recto-render-service`) and nothing else, so only the App Sandbox can have put that there, and an inherited seatbelt alone, which sets nothing, reads as no. Both are positive
 /// answers, so nothing here depends on where the user's home folder is, and nothing is denied or logged.
 pub fn sandbox_in_force() -> bool {
     in_a_sandbox() && std::env::var_os("APP_SANDBOX_CONTAINER_ID").is_some_and(|id| !id.is_empty())

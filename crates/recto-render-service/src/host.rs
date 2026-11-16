@@ -1934,7 +1934,7 @@ impl Worker {
             }
         };
         let arg_refs: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
-        // A stand-in worker gets no arguments of ours, so this is how it learns its limit. The real one has it in its arguments and an empty environment.
+        // A stand-in worker gets no arguments of ours, so this is how it learns its limit. The real one has it in its arguments, and its environment is [`crate::worker_env::WORKER_ENV`] alone.
         let limit_text = limit.to_string();
         let mut env_refs: Vec<(&str, &str)> = config
             .extra_env
