@@ -784,7 +784,7 @@ impl AppCore {
 
     /// A pane's view moved. On every scroll: a short lock and a few map lookups, and in a comparison with synced scroll, a short lock on each other pane to send it along, whose ops come by `ops_ready`. Apply what comes back in the same transaction.
     pub fn set_viewport(&self, pane: u32, viewport: ViewportInput) -> Vec<ReaderOp> {
-        self.inner.doing("scroll").saver.view_changed();
+        self.inner.saver.view_changed();
         let (ops, focused) = self.inner.panes.viewport(
             &self.inner.engine,
             pane as usize,
@@ -927,7 +927,7 @@ impl AppCore {
     /// The mouse went down on a page, in the document view's coordinates, the same at any zoom. Apply what comes back in the same transaction. It looks through text already here and never waits for any.
     /// In a comparison, a press in a pane makes it the one being read, and what was selected in another goes, so there's one selection to copy.
     pub fn selection_press(&self, pane: u32, x: f64, y: f64, clicks: u32, shift: bool) -> Vec<ReaderOp> {
-        let Some(engine) = self.inner.doing("select_press").panes.engine(&self.inner.engine, pane as usize) else {
+        let Some(engine) = self.inner.panes.pointer_engine("select_press", &self.inner.engine, pane as usize) else {
             return Vec::new();
         };
         if let Some(tab) = self.inner.panes.focus(pane as usize) {
@@ -947,7 +947,7 @@ impl AppCore {
     }
 
     pub fn selection_drag(&self, pane: u32, x: f64, y: f64) -> Vec<ReaderOp> {
-        let Some(engine) = self.inner.doing("select_drag").panes.engine(&self.inner.engine, pane as usize) else {
+        let Some(engine) = self.inner.panes.pointer_engine("select_drag", &self.inner.engine, pane as usize) else {
             return Vec::new();
         };
         if self.inner.tools.tool().is_drawing() {
@@ -958,7 +958,7 @@ impl AppCore {
 
     /// The mouse went up. A still single click on a link follows it, by Rust's rule: within the document at once, a web or email address only once the sheet's been answered, and anything else never, with a notice saying why.
     pub fn selection_release(&self, pane: u32) -> Vec<ReaderOp> {
-        let Some(engine) = self.inner.doing("select_release").panes.engine(&self.inner.engine, pane as usize) else {
+        let Some(engine) = self.inner.panes.pointer_engine("select_release", &self.inner.engine, pane as usize) else {
             return Vec::new();
         };
         if self.inner.tools.tool().is_drawing() {

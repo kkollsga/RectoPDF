@@ -617,6 +617,7 @@ impl Tool {
     /// **One type's bytes made with the copy, for the offer with this number,** once, handed over and dropped from here. Nothing for a promised one, which
     /// a paste asks the person's command for ([`super::controls::UiAction::Pasted`], [`Self::wait_for_paste`]). The bridge's `clipboard_data`.
     pub fn ready_bytes(&self, serial: u64, uti: &str) -> Option<Vec<u8>> {
+        crate::watchdog::note_doing_here("clipboard_data");
         match self.data(serial, uti)? {
             Data::Ready(bytes) => Some(bytes),
             Data::Make(..) => None,

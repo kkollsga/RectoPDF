@@ -259,7 +259,7 @@ fn every_control_has_a_name_of_its_own_for_the_stall_record() {
         let kind = std::mem::discriminant(action);
         assert_eq!(*by_name.entry(name).or_insert(kind), kind, "{name} names two kinds of control");
     }
-    assert_eq!(by_name.len(), 23, "one name for each of the 23 kinds of control: {:?}", by_name.keys());
+    // That the list holds every kind is `every_kind_of_control`'s own check (`place`'s match is exhaustive), so no count is repeated here.
 }
 
 /// Failure (the stall record, 2026-11-16): `Inner::act` stops saying what it begins, so a stall in a control is kept with no name, or one run off the window's
@@ -285,4 +285,52 @@ fn a_control_on_the_window_thread_names_its_pass_and_off_it_does_not() {
     core.window.main_idle();
     let kept = core.window.kept_stretches();
     assert_eq!(kept.last().map(|stretch| stretch.doing.as_str()), Some("FindOpen"), "{kept:?}");
+}
+
+/// Failure (the stall record, 2026-11-16): a bridge call that the window's thread makes (a scroll, a press, a drag or a release on a page, a paste's bytes) stops
+/// naming its pass, so a stall in it is kept with no name, or under the word of a call before it. Each of the five functions the bridge reaches names its pass
+/// when called on the window's thread, and one called from another thread (the QA channel's) names nothing.
+#[test]
+fn the_calls_the_bridge_makes_name_their_pass_on_the_window_thread_and_off_it_do_not() {
+    let (app, _) = every_kind_of_control();
+    let core = std::sync::Arc::clone(app.core());
+    let name_of = |call: &dyn Fn()| {
+        assert!(core.window.main_busy(false));
+        call();
+        let until = std::time::Instant::now() + Duration::from_millis(20);
+        while std::time::Instant::now() < until {
+            std::hint::spin_loop();
+        }
+        core.window.main_idle();
+        core.window
+            .kept_stretches()
+            .iter()
+            .map(|stretch| stretch.doing.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let reached: [(&str, &dyn Fn()); 5] = [
+        ("scroll", &|| {
+            drop(core.panes.viewport(&core.engine, 0, false, recto_reader::Viewport::default()))
+        }),
+        ("select_press", &|| drop(core.panes.pointer_engine("select_press", &core.engine, 0))),
+        ("select_drag", &|| drop(core.panes.pointer_engine("select_drag", &core.engine, 0))),
+        ("select_release", &|| drop(core.panes.pointer_engine("select_release", &core.engine, 0))),
+        ("clipboard_data", &|| drop(core.tools.tool().ready_bytes(1, "public.utf8-plain-text"))),
+    ];
+    for (word, call) in reached {
+        let kept = name_of(call);
+        // Each call's pass is its own stretch (the list is longest first, so not in order), and each word is one of its own.
+        assert!(kept.iter().any(|kept| kept == word), "{word}: {kept:?}");
+    }
+    // From another thread: the QA channel's. Its word isn't the window's.
+    let kept = name_of(&|| {
+        let other = std::sync::Arc::clone(&core);
+        std::thread::Builder::new()
+            .name("test-qa-channel".into())
+            .spawn(move || drop(other.panes.pointer_engine("qa_word", &other.engine, 0)))
+            .expect("a thread")
+            .join()
+            .expect("the other thread");
+    });
+    assert!(!kept.iter().any(|word| word == "qa_word"), "{kept:?}");
 }

@@ -70,6 +70,13 @@ impl Panes {
         }
     }
 
+    /// The page view a pointer's press, drag or release goes to, and the window's thread names its pass `what` (`select_press`, `select_drag`,
+    /// `select_release`) for a stall's record. Only the bridge's pointer calls come here; a look or the session's reading is [`Self::engine`].
+    pub fn pointer_engine(&self, what: &'static str, primary: &Engine, pane: usize) -> Option<Engine> {
+        crate::watchdog::note_doing_here(what);
+        self.engine(primary, pane)
+    }
+
     /// Where a point on a page of a pane is in that pane's document, for QA to go through what the mouse goes through: `None` with no such pane or page.
     pub fn document_point(&self, primary: &Engine, pane: usize, page: u32, x: f64, y: f64) -> Option<(f64, f64)> {
         self.engine(primary, pane)?.points().document_point(page, x, y)
@@ -203,6 +210,7 @@ impl Panes {
 
     /// **A pane's view moved,** on the UI thread: a short lock on that pane, and for the reader's own scroll in a comparison, a short lock on each other pane to send it along. Says whether the pane being read changed, for the session to be told.
     pub fn viewport(&self, primary: &Engine, pane: usize, by_reader: bool, viewport: Viewport) -> (Vec<recto_reader::Op>, Option<TabId>) {
+        crate::watchdog::note_doing_here("scroll");
         let Some(engine) = self.engine(primary, pane) else {
             return (Vec::new(), None);
         };
