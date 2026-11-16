@@ -619,11 +619,14 @@ mod tests {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let spinner = {
             let stop = Arc::clone(&stop);
-            std::thread::spawn(move || {
-                while !stop.load(Ordering::Relaxed) {
-                    std::hint::spin_loop();
-                }
-            })
+            std::thread::Builder::new()
+                .name("test-spinner".into())
+                .spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        std::hint::spin_loop();
+                    }
+                })
+                .expect("a thread")
         };
         wait_blocked(40);
         stop.store(true, Ordering::Relaxed);

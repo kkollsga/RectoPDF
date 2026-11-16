@@ -324,9 +324,13 @@ fn the_calls_the_bridge_makes_name_their_pass_on_the_window_thread_and_off_it_do
     }
     // From another thread: the QA channel's. Its word isn't the window's.
     let kept = name_of(&|| {
-        std::thread::scope(|scope| {
-            scope.spawn(|| drop(core.panes.pointer_engine("qa_word", &core.engine, 0)));
-        });
+        let other = std::sync::Arc::clone(&core);
+        std::thread::Builder::new()
+            .name("test-qa-channel".into())
+            .spawn(move || drop(other.panes.pointer_engine("qa_word", &other.engine, 0)))
+            .expect("a thread")
+            .join()
+            .expect("the other thread");
     });
     assert!(!kept.iter().any(|word| word == "qa_word"), "{kept:?}");
 }
