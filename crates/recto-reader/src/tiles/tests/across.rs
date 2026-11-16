@@ -337,3 +337,33 @@ fn a_resize_or_the_sidebar_at_a_zoom_keeps_the_page_centred_or_its_middle_still(
         }
     }
 }
+
+/// Failure (the release candidate's quiet run, 2026-11-16): on a heavy page, as the USGS map is, a zoom that moves the view across draws a region for the
+/// part of the page the view was leaving: the page view's thread plans straight after the host's first word, which still has the view where it was before
+/// the move, and the region for where the view goes comes after, both kept on screen (two tiles, 36 MiB, where one of 20 MiB had done). Zoomed from the fit
+/// past the window's width about its middle, the first region planned, before the host has said where the move took it, covers the view as the move leaves
+/// it: its left edge and its middle.
+#[test]
+fn the_first_region_drawn_after_a_zoom_is_where_the_view_goes() {
+    let (mut reader, mut host) = on_page_three();
+    reader.docs.views.get_mut(&1).unwrap().drawing.heavy.insert(3, true);
+    host.zoom_at(3.0, FRAME / 2.0);
+    let ops = reader.set_viewport(host.viewport());
+    host.apply(ops);
+    let job = std::iter::from_fn(|| reader.next_job())
+        .take(64)
+        .find(|job| job.position == 3 && matches!(job.kind, JobKind::Draw { .. }))
+        .expect("a region of page 3 is drawn at the new zoom");
+    let JobKind::Draw { scale, rect, .. } = job.kind else { unreachable!() };
+    let per_point = 1.0 / f64::from(scale);
+    let (left, right) = (f64::from(rect.x) * per_point, f64::from(rect.x + rect.width) * per_point);
+    for across in [1.0, FRAME / 2.0] {
+        let point = host.page_point_under(&reader, 3, across);
+        assert!(
+            point >= left - 1.0 && point <= right + 1.0,
+            "the view went to page points {:.0} to {:.0}; the region drawn first is {left:.0} to {right:.0}",
+            host.page_point_under(&reader, 3, 0.0),
+            host.page_point_under(&reader, 3, FRAME)
+        );
+    }
+}
