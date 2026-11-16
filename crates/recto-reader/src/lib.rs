@@ -6,8 +6,10 @@
 //! - [`paper`]: dark paper, as a change to a tile's pixels.
 //! - [`selection`]: selected text, as a host layer: what the pointer did, what's been read for it, and a copy on its way.
 //! - [`snapshot`]: the snapshot tool's box, and what a release takes.
+//! - [`image_pick`]: an image picked with a click in read mode, the other kind of selection.
 
 pub mod engine;
+pub mod image_pick;
 pub mod layout;
 pub mod links;
 pub mod paper;

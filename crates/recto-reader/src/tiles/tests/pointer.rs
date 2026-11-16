@@ -119,7 +119,7 @@ fn a_page_pointed_at_has_its_links_read_and_a_click_found() {
     assert_eq!(hit.target, LinkTarget::Page { page: 4, within: None });
     assert_eq!(reader.docs.shown().unwrap().position_in_same_file(0, 4), Some(4));
     reader.selection_press(x, y, 1, false);
-    reader.pointer.selection_release();
+    reader.selection_release();
     assert_eq!(reader.pointer.take_clicked_link().map(|hit| hit.page), Some(0));
     // Another tab: what's known goes with the one that was showing. Held before (the page's links just read), none after.
     assert_eq!(reader.pointer.link_pages_held(), 1, "the page's links are held while its tab shows");

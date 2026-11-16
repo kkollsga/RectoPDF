@@ -1,7 +1,8 @@
 //! **What a feature's answer to a person's command may read of the app and do in it** ([`super::person`]'s list of answers): the argument every answer is
 //! given, in place of the app, on the thread the command ran on. Its fields are private, so what an answer may do is the list of methods below, each named
 //! for the need; an answer that needs something else adds one method here, named for that need, which the listing in `headless/inner_guards.rs` shows to a
-//! reviewer (docs/FEATURES.md, step 6). Of its 12 methods (2026-11-14), `say` is shared by four answers and the other ten serve one feature each (`print_answered` printing's).
+//! reviewer (docs/FEATURES.md, step 6). Of its 12 methods (2026-11-14), `say` is shared by four answers and the other ten serve one feature each (`print_answered` printing's); a 13th, `image_looked`,
+//! an image picked with a click's (2026-11-16).
 //! **[`AnswerParts::find_handle`] is the one wide reach:** Find's own, it hands the answer a `FindHandle` whose fields are `pub` (the session, the panes,
 //! the page view, the listener), so any answer that calls it can reach those; only Find's does, and narrowing it to what Find's answer needs is in PLAN.
 //! What starts on a thread of its own as the person is [`AnswerParts::person`]'s.
@@ -116,7 +117,18 @@ impl<'a> AnswerParts<'a> {
         if said(self.tools.tool()) {
             self.listener.copy_ready();
         }
+        // A click's look that waited behind the snapshot starts at the app's next look at what the page views want.
+        if self.tools.tool().look_to_start() {
+            self.core.push(super::CoreCall::ImageLooks);
+        }
         self.core.push(super::CoreCall::Reconcile);
+    }
+
+    /// An image picked with a click's own: what came of a click's look, to the snapshot tool's slot it ran in and the page views that may be waiting for
+    /// it, then the app's next look at what they want, so a look that waited starts ([`super::image_select::answered`]).
+    pub fn image_looked(&self, said: impl FnOnce(&super::snapshot_tool::Tool, &[Engine])) {
+        said(self.tools.tool(), &self.panes.engines(self.engine));
+        self.core.push(super::CoreCall::ImageLooks);
     }
 
     /// What the person may start on a thread of its own.

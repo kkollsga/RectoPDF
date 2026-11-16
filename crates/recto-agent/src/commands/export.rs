@@ -164,13 +164,22 @@ impl Cmd for ExportSvg {
     }
 }
 
-/// Where a page's images are, and what each is.
+/// Where a page's images are, and what each is: all of them, or with `at` the one on top there, as the snapshot tool's click finds it.
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Images {
     #[serde(default)]
     pub tab: TabRef,
     pub page: u32,
+    /// **Only the image on top at `x, y`,** in points from the page's top left as its file shows it (its own turn, before an unsaved one), as `image
+    /// --at` takes it and the snapshot tool's click finds it: what a click in read mode picks (owner, 2026-11-16), which the window sends as the person's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<[f32; 2]>,
+    /// **The page as it was seen** ([`extract::AsSeen`]): the command is refused as moved if another page, or another file's, is in its place by the time
+    /// it runs. The window sends it with its click's `at`, as its page may move before the look runs; it's out of the CLI's flags, and an agent may send it
+    /// on the wire to the same end. It doesn't make a command the window's: what an agent's finds is its answer alone, and picks nothing in the window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub as_seen: Option<extract::AsSeen>,
 }
 
 impl Cmd for Images {
@@ -194,18 +203,32 @@ impl Cmd for Images {
         Runs::Session
     }
     fn log_details(&self) -> Value {
-        let Self { tab, page } = self;
-        json!({ "tab": super::log_tab(tab), "page": page })
+        let Self { tab, page, at, .. } = self;
+        let mut details = json!({ "tab": super::log_tab(tab), "page": page });
+        if let Some(at) = at {
+            details["at"] = json!(at);
+        }
+        details
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        let Self { tab, page } = self;
+        let Self { tab, page, at, as_seen } = self;
         let access = cx.access;
-        {
-            let (_, _, source) = locate(access, tab, *page)?;
-            let mut data = extract::images(&source.path, source.page + 1)?;
-            describe_source(&mut data, *page, &source);
-            Ok(data)
+        let (id, _, source) = locate(access, tab, *page)?;
+        // The person's own document is read with the password they typed, as the snapshot tool's click reads it; an agent's never is.
+        let keys = access.persons_keys(cx.actor);
+        let whose = clip_page(access, id, &source, keys.as_ref());
+        if let Some(seen) = as_seen {
+            seen.still(&whose)?;
         }
+        // The window's look for a click's image (`at` with the page as seen) is stopped when the person moves on, through the window's clipboard's one
+        // slot; a plain `images`, the person's or an agent's, and an agent's look have no stop.
+        let stop = match (at, as_seen, access.clipboard(cx.actor)) {
+            (Some(at), Some(_), Some(sink)) => sink.begin_look(id.0, *page, *at),
+            _ => extract::ClipStop::default(),
+        };
+        let mut data = extract::images(&whose, *at, &stop)?;
+        describe_source(&mut data, *page, &source);
+        Ok(data)
     }
     fn human(data: &Value) -> String {
         images(data)
@@ -698,10 +721,20 @@ pub(crate) const ROWS_IMAGES: &[Spec] = &[Spec {
     tag: "images",
     group: GROUP_READ,
     summary: "Where a page's images are, numbered in the order the page draws them, with each one's own size and whether it's a JPEG. `recto image` takes one out by its number.",
-    args: &[PAGE_OR_BARE, TAB],
+    args: &[
+        PAGE_OR_BARE,
+        Arg {
+            key: "at",
+            flag: Some("--at"),
+            kind: Kind::Point,
+            required: false,
+            help: "Only the image on top at `x,y`, in points from the page's top left as its file shows it (its own turn, before an unsaved one): what a click there picks in the window, and what the snapshot tool's click copies.",
+        },
+        TAB,
+    ],
     bare_page: true,
-    data: "`{ page, source_page, from_added_file, count, listed, worker_peak_bytes, width_pt, height_pt, images: [ { number, rect: [x, y, width, height], width, height, jpeg, suggested_ending } ], untrusted: { added_file } }`. `rect` is in points from the page's top left, as it's shown, held to the page. `width` and `height` are the image's own pixels. `count` is every image, and `listed` how many are here: at most 4,096, the first drawn. An image wholly off the page keeps its number and isn't listed. `jpeg: true` means its stream is a JPEG, so `.jpg` may take its own bytes.",
-    examples: &["recto images 3", "recto images --page 3 --json"],
+    data: "`{ page, source_page, from_added_file, at, count, listed, worker_peak_bytes, width_pt, height_pt, images: [ { number, rect: [x, y, width, height], width, height, jpeg, suggested_ending } ], untrusted: { added_file } }`. `rect` is in points from the page's top left as its file shows it (its own turn, before an unsaved one), held to the page. `width` and `height` are the image's own pixels. `count` is every image, and `listed` how many are here: at most 4,096, the first drawn. An image wholly off the page keeps its number and isn't listed. `jpeg: true` means its stream is a JPEG, so `.jpg` may take its own bytes. With `--at`, `images` holds only the image on top there, the last drawn whose box holds the point, or nothing.",
+    examples: &["recto images 3", "recto images --page 3 --json", "recto images 3 --at 120,88"],
     client_wait_s: 600,
     ..BASE
 }];
@@ -933,6 +966,9 @@ fn export_svg_result(data: &Value) -> String {
 
 fn images(data: &Value) -> String {
     let rows = data["images"].as_array().map_or(&[][..], Vec::as_slice);
+    if rows.is_empty() && data["at"].is_array() {
+        return format!("There's no image at {}, {} on page {}.", data["at"][0], data["at"][1], number(&data["page"]));
+    }
     if number(&data["count"]) == 0 {
         return format!("Page {} has no images.", number(&data["page"]));
     }

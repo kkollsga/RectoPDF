@@ -3,6 +3,7 @@
 
 mod back_after_a_jump;
 mod changed_under_edits;
+mod click_cost;
 mod closing;
 mod compare;
 mod contents;
@@ -19,6 +20,7 @@ mod find_text_sealed;
 mod finding;
 mod first_show;
 mod highlight;
+mod image_select;
 mod inner_guards;
 mod input_to_frame;
 mod late_lock;

@@ -816,6 +816,42 @@ fn only_the_file_changing_says_the_file_changed() {
     assert!(!doc.take_file_changed(), "once");
 }
 
+/// Failure (the second review of `build/image-select`): a click's ask for where a crowded page's pictures are changes what dark paper is told of that page,
+/// so dark paper judges it by a click's superset where it judged it whole; or a click is refused on such a page, so every click there costs a private
+/// worker. Through the real worker: 70 pictures apart are too many for dark paper, before and after a click's ask, and 65 boxes for a click, which every
+/// picture is inside; a plain page is the same to both.
+#[test]
+fn a_clicks_ask_for_a_crowded_page_leaves_dark_papers_answer_as_it_was() {
+    let content: String = (0..70)
+        .map(|at| format!("q 8 0 0 8 {} {} cm /Im0 Do Q\n", 20 + (at % 10) * 50, 40 + (at / 10) * 60))
+        .collect();
+    let image = recto_testpdf::first_extra_object(2);
+    let file = TempPdf::new(
+        "crowded.pdf",
+        &recto_testpdf::pages_with(
+            &[Page::new(content.into_bytes()), Page::new(text_lines(&["No pictures"]))],
+            &format!("/XObject << /Im0 {image} 0 R >>"),
+            vec![recto_testpdf::Object::Stream {
+                dict: "/Type /XObject /Subtype /Image /Width 2 /Height 2 /BitsPerComponent 8 /ColorSpace /DeviceGray".into(),
+                data: vec![40, 200, 200, 40],
+            }],
+        ),
+    );
+    let mut doc = renderer(&file.0, Policy::default());
+    assert_eq!(doc.image_boxes(0, 0), None, "too many for dark paper");
+    let for_a_click = doc.image_boxes_for_a_click(0, 0).expect("a click's superset");
+    assert_eq!(for_a_click.len(), recto_proto::MAX_CLICK_IMAGE_BOXES);
+    assert_eq!(doc.image_boxes(0, 0), None, "dark paper's answer as it was, after the click's");
+    let mut fresh = renderer(&file.0, Policy::default());
+    assert_eq!(
+        fresh.image_boxes_for_a_click(0, 0).map(|boxes| boxes.len()),
+        Some(recto_proto::MAX_CLICK_IMAGE_BOXES)
+    );
+    assert_eq!(fresh.image_boxes(0, 0), None, "and with the click's asked first");
+    assert_eq!(fresh.image_boxes_for_a_click(1, 0), Some(Vec::new()), "a page with none: none for a click");
+    assert_eq!(fresh.image_boxes(1, 0), Some(Vec::new()));
+}
+
 /// Failure: the renderer's worker carries the code that reaches the Keychain: the Find key's, or Security.framework linked and called by anything (the coordinator's decision, 2026-11-15: only the app's own process does). Looked at as it was just built for this test.
 #[test]
 fn the_worker_carries_no_keychain_code() {

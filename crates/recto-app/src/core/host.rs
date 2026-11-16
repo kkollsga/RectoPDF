@@ -463,6 +463,10 @@ impl EngineEvents for EngineHooks {
     fn copy_ready(&self) {
         self.listener.copy_ready();
     }
+
+    fn image_wanted(&self) {
+        self.core.push(CoreCall::ImageLooks);
+    }
 }
 
 #[cfg(test)]

@@ -6,6 +6,11 @@
 //!
 //! **What touches.** Boxes that overlap, or whose edges meet or are at most [`TOUCH`] apart along a stretch of some length: strips of one picture abut exactly, give or take the rounding to 65535ths. Boxes that meet only at a corner don't touch: photos laid out on a diagonal share one point, and one point isn't one picture.
 //!
+//! **For a click** ([`ImagePlaces::for_a_click`], the reader's image picked with a click): the same walk, but where too many pictures apart would stop it,
+//! the 64 boxes held stay and **every place met after is folded into one more box round them all**, so the answer is a superset of where the page's
+//! pictures are, at most 65 boxes: a click under none of them is under no picture. A place whose bounds can't be read, or a walk cut short by its cap on
+//! objects, makes that box the whole page, as a picture could be anywhere. Dark paper never asks this way, so its answer is as it was.
+//!
 //! **What it costs, whatever the page.** At most [`MAX_IMAGE_BOXES`] boxes are held at any moment. Up to the step, each place found is compared with each of them once. At the step the boxes held are folded, each taken out and put back as a place found past the step. Past it, a place is compared with each box held once, in a pass; a pass that folds one in is followed by another, as the box has grown and may now touch one it didn't, and a pass that folds none ends it. Every fold takes away a box that an earlier place put there, so there are no more folds than places, and over the walk no more than `2 × 64` comparisons a place on average, with the 64 held boxes counted again at the step, and the walk's own cap of 20,000 objects.
 
 use recto_proto::MAX_IMAGE_BOXES;
@@ -22,6 +27,17 @@ pub(crate) struct ImagePlaces {
     folding: bool,
     /// How many comparisons of two boxes, all told. See the module's notes for the bound.
     compared: usize,
+    /// For a click: past too many pictures apart, the box round every place met since, rather than stopping (the module's notes).
+    for_a_click: bool,
+    beyond: Option<[u16; 4]>,
+}
+
+/// The whole page, in 65535ths.
+const WHOLE_PAGE: [u16; 4] = [0, 0, u16::MAX, u16::MAX];
+
+/// The box round two.
+fn round(one: [u16; 4], two: [u16; 4]) -> [u16; 4] {
+    [one[0].min(two[0]), one[1].min(two[1]), one[2].max(two[2]), one[3].max(two[3])]
 }
 
 /// Whether two boxes overlap or meet along an edge, as the module's notes say.
@@ -34,8 +50,29 @@ fn touch(one: [u16; 4], two: [u16; 4]) -> bool {
 }
 
 impl ImagePlaces {
-    /// Takes a place the walk found. `Break` once there are too many pictures apart to tell: the walk can stop.
+    /// The walk for a click: a superset of where the pictures are, never too many (the module's notes).
+    pub(crate) fn for_a_click() -> Self {
+        Self {
+            for_a_click: true,
+            ..Self::default()
+        }
+    }
+
+    /// For a click, a picture whose place can't be said, or the walk cut short: it could be anywhere, so the box past the rest is the whole page. Nothing
+    /// for dark paper's walk, which judges by the places it has.
+    pub(crate) fn unplaced(&mut self) {
+        if self.for_a_click {
+            self.beyond = Some(WHOLE_PAGE);
+        }
+    }
+
+    /// Takes a place the walk found. `Break` once there are too many pictures apart to tell: the walk can stop. For a click, never: past that, every place
+    /// goes into the one box round them.
     pub(crate) fn add(&mut self, place: [u16; 4]) -> ControlFlow<()> {
+        if let Some(beyond) = &mut self.beyond {
+            *beyond = round(*beyond, place);
+            return ControlFlow::Continue(());
+        }
         if !self.folding {
             self.compared += self.found.len();
             if self.found.contains(&place) {
@@ -77,14 +114,21 @@ impl ImagePlaces {
             }
         }
         if self.found.len() == MAX_IMAGE_BOXES {
+            if self.for_a_click {
+                self.beyond = Some(grown);
+                return ControlFlow::Continue(());
+            }
             return ControlFlow::Break(());
         }
         self.found.push(grown);
         ControlFlow::Continue(())
     }
 
+    /// The places, and for a click the box past them if there is one: at most [`MAX_IMAGE_BOXES`], or one more for a click.
     pub(crate) fn into_places(self) -> Vec<[u16; 4]> {
-        self.found
+        let mut found = self.found;
+        found.extend(self.beyond);
+        found
     }
 }
 
@@ -158,6 +202,39 @@ mod tests {
         assert_eq!(walk(apart(64)).0.map(|found| found.len()), Some(MAX_IMAGE_BOXES));
         assert_eq!(walk(apart(65)).0, None);
         assert_eq!(walk(apart(64).chain(apart(1))).0.map(|found| found.len()), Some(MAX_IMAGE_BOXES));
+    }
+
+    /// Failure (the second review of `build/image-select`): for a click, a page of more pictures apart than an answer holds is refused, so every click on
+    /// it, a margin's too, costs a private worker; or the box past the 64 held leaves out a picture met after them, so a click on it picks nothing; or a
+    /// picture whose place can't be said is left out. For a click, 80 apart are 65 boxes, every place inside one of them, the margin between them under
+    /// none; a picture with no place makes the last box the whole page; and dark paper's walk of the same page is still too many.
+    #[test]
+    fn for_a_click_too_many_pictures_are_a_superset_of_65_boxes() {
+        let places: Vec<[u16; 4]> = apart(80).collect();
+        let mut click = ImagePlaces::for_a_click();
+        for place in &places {
+            assert!(click.add(*place).is_continue(), "a click's walk never stops");
+        }
+        let found = click.into_places();
+        assert_eq!(found.len(), MAX_IMAGE_BOXES + 1);
+        let inside = |place: &[u16; 4]| {
+            found
+                .iter()
+                .any(|held| held[0] <= place[0] && held[1] <= place[1] && held[2] >= place[2] && held[3] >= place[3])
+        };
+        assert!(places.iter().all(inside), "every picture inside a box");
+        assert!(
+            !found.iter().any(|held| held[0] <= 500 && held[2] >= 500 && held[1] <= 500 && held[3] >= 500),
+            "the top margin under none: {found:?}"
+        );
+        let mut unplaced = ImagePlaces::for_a_click();
+        let _ = unplaced.add(square(0, 0, 10));
+        unplaced.unplaced();
+        assert_eq!(unplaced.into_places(), vec![square(0, 0, 10), WHOLE_PAGE]);
+        let mut dark = ImagePlaces::default();
+        dark.unplaced();
+        assert_eq!(dark.into_places(), Vec::<[u16; 4]>::new(), "dark paper's walk keeps what it has");
+        assert_eq!(walk(places).0, None, "dark paper's walk: too many, as before");
     }
 
     /// Failure (rule 6): a hostile page of 10,000 tiny images scattered apart, or 20,000 in a chain that keeps folding, costs a comparison with every box found before, for each, as when every distinct place was kept: up to 200 million. Scattered, the walk stops at the first place past the step that can't fold, having compared each with at most 64 and the 64 held again at the step; folding, it makes no more than two passes' worth of comparisons a place over the walk, the step's included.

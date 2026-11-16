@@ -138,9 +138,12 @@ fn run(shared: &Shared) {
                 all_told(shared, &mut reader);
             }
             // What the UI thread left is told of as any way of applying it tells it: the selection's notice gone with a selection another pane took, say.
-            let changed = take_pending_follow(shared, &mut reader).then(|| Changed::of(&mut reader));
+            // And what planning decided of a click's image with no job (`tiles/image_pick.rs`): the app's to hear it now, as no job's end may come to tell it.
+            let followed = take_pending_follow(shared, &mut reader);
+            let plan = reader.next_plan();
+            let changed = (followed || reader.pointer.has_image_news()).then(|| Changed::of(&mut reader));
             reader.work.set_telling(changed.is_some());
-            (reader.next_plan(), changed)
+            (plan, changed)
         };
         if let Some(changed) = changed {
             changed.tell(shared);
@@ -585,6 +588,15 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
         JobKind::Text { .. } => Outcome::TextFailed,
         // Read before a renderer's asked for: see the thread's loop.
         JobKind::Links => Outcome::Links(None),
+        // A click's filter: where the tab's own worker has the page's pictures, a superset asked for a click and kept apart from dark paper's (`host/images.rs`).
+        JobKind::ImageBoxes { at, .. } => {
+            let boxes = doc.image_boxes_for_a_click(job.source_page, job.generation);
+            if doc.is_stale(job.generation) {
+                Outcome::Cancelled
+            } else {
+                Outcome::ImageUnder(crate::image_pick::under(boxes.as_deref(), *at))
+            }
+        }
         JobKind::Size => match doc.page_size(job.source_page) {
             Ok((width, height)) => Outcome::Size(PageBox { width, height }),
             Err(failure) if whole_file(failure) => document_failed(failure),

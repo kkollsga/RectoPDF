@@ -754,7 +754,7 @@ fn open_failures_say_why() {
     );
 }
 
-/// Failure: a page with more pictures apart than an answer holds, a catalogue page of photos with gaps between them, is answered with one box round them all, which dark paper keeps as one bright picture over most of a page that turns over; or a page with exactly as many is refused; or one image drawn twice in the same place counts twice. Or the step at 64 isn't where the walk folds. Real PDFium's walk over made pages of one small image: in 64 places apart, in 65, and 65 times in 64 places, as many places as an answer holds are given, each once, and one more is refused as too many, for the page to be judged whole; 64 in a row, each overlapping the next, are given one by one, and 65 are folded into one box. How images fold is `places.rs`'s.
+/// Failure: a page with more pictures apart than an answer holds, a catalogue page of photos with gaps between them, is answered with one box round them all, which dark paper keeps as one bright picture over most of a page that turns over; or a page with exactly as many is refused; or one image drawn twice in the same place counts twice. Or the step at 64 isn't where the walk folds. Real PDFium's walk over made pages of one small image: in 64 places apart, in 65, and 65 times in 64 places, as many places as an answer holds are given, each once, and one more is refused as too many, for the page to be judged whole; 64 in a row, each overlapping the next, are given one by one, and 65 are folded into one box. How images fold is `places.rs`'s. And for a click (the second review of `build/image-select`): the page of 65 apart, refused to dark paper, is 65 boxes, the 64 held and one round the rest, so a click on a margin there costs no private worker; a page dark paper is given boxes for is given the same.
 #[test]
 fn a_page_with_more_images_than_an_answer_holds_is_refused() {
     let _turn = turn();
@@ -791,6 +791,18 @@ fn a_page_with_more_images_than_an_answer_holds_is_refused() {
     assert_eq!(found.len(), 64, "{found:?}");
     assert!(found.iter().all(|place| place[0] < place[2] && place[1] < place[3]), "{found:?}");
     assert_eq!(backend.image_boxes(1), Err(recto_render::FailCode::TooLarge), "65 places");
+    // For a click (the reader's image picked with a click), the same page is the 64 held and one box round the rest; and a page dark paper is given
+    // boxes for is given the same boxes.
+    let for_a_click = backend.image_boxes_for_a_click(1).expect("never too many for a click");
+    assert_eq!(for_a_click.len(), 65, "{for_a_click:?}");
+    // Page 1 is page 0's 64 places and one more: each of them is inside a box of the click's answer.
+    let inside = |place: &[u16; 4]| {
+        for_a_click
+            .iter()
+            .any(|held| held[0] <= place[0] && held[1] <= place[1] && held[2] >= place[2] && held[3] >= place[3])
+    };
+    assert!(found.iter().all(inside), "a superset of the pictures: {for_a_click:?}");
+    assert_eq!(backend.image_boxes_for_a_click(3), backend.image_boxes(3), "64 in a row: as dark paper's");
     assert_eq!(backend.image_boxes(2).map(|found| found.len()), Ok(64), "65 images in 64 places");
     assert_eq!(backend.image_boxes(3).map(|found| found.len()), Ok(64), "64 in a row: each as it is");
     assert_eq!(backend.image_boxes(4).map(|found| found.len()), Ok(1), "65 in a row: folded into one");

@@ -315,19 +315,24 @@ pub(crate) fn copy_into<O: Output>(
     }
 }
 
-/// `recto images`: a page's images, where they are and what they are.
-pub(crate) fn list_command(path: &Path, page: u32) -> Result<serde_json::Value, AgentError> {
+/// `recto images`: a page's images, where they are and what they are; with `at`, only the one a click there takes ([`ImageList::at`], as the snapshot
+/// tool's click finds it), or none.
+pub(crate) fn list_command(doc: &mut DocRenderer, path: &Path, page: u32, at: Option<[f32; 2]>) -> Result<serde_json::Value, AgentError> {
     let index = page_index(page)?;
-    let mut doc = super::open_for_text(path)?;
-    let list = list(&mut doc, path, index, &OutputCaps::default())?;
-    let images: Vec<serde_json::Value> = list
-        .images
+    let list = list(doc, path, index, &OutputCaps::default())?;
+    let picked: Vec<PlacedImage> = match at {
+        Some([x, y]) => list.at(x, y).into_iter().collect(),
+        None => list.images.clone(),
+    };
+    let images: Vec<serde_json::Value> = picked
         .iter()
         .map(|image| serde_json::json!({ "number": image.number, "rect": image.rect.map(round_points), "width": image.width, "height": image.height, "jpeg": image.jpeg, "suggested_ending": if image.jpeg { "jpg" } else { "png" } }))
         .collect();
-    Ok(
-        serde_json::json!({ "worker_peak_bytes": doc.stats().peak_footprint_bytes, "page": page, "count": list.total, "listed": images.len(), "width_pt": round_points(list.page_size.0), "height_pt": round_points(list.page_size.1), "images": images }),
-    )
+    let mut answer = serde_json::json!({ "worker_peak_bytes": doc.stats().peak_footprint_bytes, "page": page, "count": list.total, "listed": images.len(), "width_pt": round_points(list.page_size.0), "height_pt": round_points(list.page_size.1), "images": images });
+    if let Some(at) = at {
+        answer["at"] = serde_json::json!(at);
+    }
+    Ok(answer)
 }
 
 /// Points to a hundredth, so a list reads as numbers a person would write.

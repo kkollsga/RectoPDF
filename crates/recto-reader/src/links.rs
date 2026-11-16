@@ -114,10 +114,12 @@ impl Linking {
     }
 
     /// The mouse went up. A single click that didn't move, on a link whose page is here, is that link's to follow, taken with [`Self::take_clicked`].
-    pub fn release(&mut self) {
-        let Some(press) = self.press.take() else { return };
+    /// **Says where a still single click on a page landed, if not on a link:** what may pick an image there ([`crate::image_pick`]). A press with shift,
+    /// off a page, that moved, or of two or three clicks says nothing.
+    pub fn release(&mut self) -> Option<PagePoint> {
+        let press = self.press.take()?;
         if press.clicks != 1 || press.moved {
-            return;
+            return None;
         }
         self.clicked = self.held.iter().find(|(page, _)| *page == press.point.page).and_then(|(page, links)| {
             links.at(press.point.x, press.point.y).map(|link| LinkHit {
@@ -126,6 +128,7 @@ impl Linking {
                 target: link.target.clone(),
             })
         });
+        self.clicked.is_none().then_some(press.point)
     }
 
     pub fn take_clicked(&mut self) -> Option<LinkHit> {
@@ -182,25 +185,29 @@ mod tests {
         assert_eq!(linking.pages_held(), MAX_PAGES_HELD);
     }
 
-    /// Failure: a drag that starts on a link follows it when it ends, as does a double-click; or a plain click on one doesn't.
+    /// Failure: a drag that starts on a link follows it when it ends, as does a double-click; or a plain click on one doesn't. And for an image picked
+    /// with a click ([`crate::image_pick`]): a click on a link, a drag, a double-click or a shift-click is said to be a still click off any link, so it
+    /// picks the image under it too; or a plain click off a link isn't.
     #[test]
     fn only_a_still_single_click_follows() {
         let mut linking = Linking::default();
         linking.take(0, Some(page_with_link()));
         linking.press(Some(at(0, 20.0, 20.0)), 1);
         linking.drag(Some(at(0, 21.0, 21.0)));
-        linking.release();
+        assert_eq!(linking.release(), None, "on a link, the link's");
         assert!(matches!(linking.take_clicked(), Some(LinkHit { page: 0, .. })));
         assert_eq!(linking.take_clicked(), None, "once");
         linking.press(Some(at(0, 20.0, 20.0)), 1);
         linking.drag(Some(at(0, 60.0, 20.0)));
-        linking.release();
+        assert_eq!(linking.release(), None);
         assert_eq!(linking.take_clicked(), None, "a drag selects");
         linking.press(Some(at(0, 20.0, 20.0)), 2);
-        linking.release();
+        assert_eq!(linking.release(), None);
         assert_eq!(linking.take_clicked(), None, "a double-click takes a word");
         linking.press(Some(at(0, 200.0, 200.0)), 1);
-        linking.release();
+        assert_eq!(linking.release(), Some(at(0, 200.0, 200.0)), "a still click off any link");
         assert_eq!(linking.take_clicked(), None, "off any link");
+        linking.press(None, 1);
+        assert_eq!(linking.release(), None, "with shift, or off a page");
     }
 }

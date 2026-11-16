@@ -10,7 +10,7 @@ use crate::tiles::Op;
 /// What the selection is and what's done to it, on this page view.
 #[derive(Clone, Copy)]
 pub struct Selection<'a> {
-    engine: &'a Engine,
+    pub(super) engine: &'a Engine,
 }
 
 // size: one reference, so taking it costs what calling a method of `Engine` did.
@@ -41,7 +41,7 @@ impl Selection<'_> {
     }
 
     pub fn release(&self) -> Vec<Op> {
-        self.engine.pointer_did(|reader| reader.pointer.selection_release())
+        self.engine.pointer_did(|reader| reader.selection_release())
     }
 
     /// Whether the selection can be sent to the Services menu as it stands, which it's asked on the UI thread. Nothing's built.

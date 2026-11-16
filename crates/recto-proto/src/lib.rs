@@ -134,8 +134,8 @@ impl Kind {
             Self::Traits => PAGE_TRAITS_LEN as u32,
             Self::ContentsRequest => contents::CONTENTS_JOB_LEN as u32,
             Self::Contents => contents::MAX_CONTENTS_FRAME,
-            Self::ImagesRequest => SIZE_REQUEST_LEN as u32,
-            Self::Images => (8 + MAX_IMAGE_BOXES * IMAGE_BOX_LEN) as u32,
+            Self::ImagesRequest => (SIZE_REQUEST_LEN + 1) as u32,
+            Self::Images => (8 + MAX_CLICK_IMAGE_BOXES * IMAGE_BOX_LEN) as u32,
             Self::HiddenAnnots => hidden::MAX_HIDDEN_FRAME,
             Self::HiddenTaken => hidden::HIDDEN_TAKEN_LEN,
         }
@@ -697,6 +697,37 @@ pub fn encode_images_request(job_id: u32, page: u32) -> Vec<u8> {
     frame(Kind::ImagesRequest, &p)
 }
 
+/// **The one flag an images request may carry: "for a click"** (the reader's image picked with a click, `recto_reader::image_pick`). The request is then
+/// nine bytes, the eighth-byte request and this, and its answer is never too many: past [`MAX_IMAGE_BOXES`] pictures apart, the boxes held and one round
+/// every picture after, a superset of [`MAX_CLICK_IMAGE_BOXES`] at most. This build's: the app and its worker ship in one bundle and change together, so
+/// nothing older or newer ever reads it.
+pub const IMAGES_FOR_A_CLICK: u8 = 1;
+/// The most boxes the answer to a click's request holds: the boxes held, and one round the rest.
+pub const MAX_CLICK_IMAGE_BOXES: usize = MAX_IMAGE_BOXES + 1;
+
+/// [`encode_images_request`], for a click ([`IMAGES_FOR_A_CLICK`]).
+pub fn encode_images_request_for_a_click(job_id: u32, page: u32) -> Vec<u8> {
+    let mut p = [0; SIZE_REQUEST_LEN + 1];
+    p[..4].copy_from_slice(&job_id.to_le_bytes());
+    p[4..8].copy_from_slice(&page.to_le_bytes());
+    p[8] = IMAGES_FOR_A_CLICK;
+    frame(Kind::ImagesRequest, &p)
+}
+
+/// **An images request:** its job, its page, and whether it's for a click. Eight bytes are dark paper's, as ever; nine are a click's, whose last byte must be
+/// [`IMAGES_FOR_A_CLICK`]; any other length or flag is refused.
+pub fn decode_images_request(payload: &[u8]) -> Result<(u32, u32, bool), ProtoError> {
+    let mut r = Reader(payload);
+    let (job_id, page) = (r.u32()?, r.u32()?);
+    let for_a_click = match payload.len() {
+        SIZE_REQUEST_LEN => false,
+        _ if r.u8()? == IMAGES_FOR_A_CLICK => true,
+        _ => return Err(ProtoError("an images request with a flag that isn't defined")),
+    };
+    r.end()?;
+    Ok((job_id, page, for_a_click))
+}
+
 /// The most image rectangles a page reports. Up to this many distinct places, each is reported as it is; past it, images whose boxes overlap or share an edge are reported as one, the box round them, and if more than this many are still apart, a worker refuses with [`FailCode::TooLarge`]: too many to tell apart, and the page is judged whole by its pixels. One box round every image made a catalogue page of photos on white one bright picture kept on a page that turned over.
 pub const MAX_IMAGE_BOXES: usize = 64;
 const IMAGE_BOX_LEN: usize = 8;
@@ -709,8 +740,18 @@ pub struct PageImages {
 }
 
 impl PageImages {
+    /// Dark paper's answer: at most [`MAX_IMAGE_BOXES`] boxes.
     pub fn encode(&self) -> Vec<u8> {
-        let count = self.boxes.len().min(MAX_IMAGE_BOXES);
+        self.encode_up_to(MAX_IMAGE_BOXES)
+    }
+
+    /// A click's answer ([`IMAGES_FOR_A_CLICK`]): at most [`MAX_CLICK_IMAGE_BOXES`].
+    pub fn encode_for_a_click(&self) -> Vec<u8> {
+        self.encode_up_to(MAX_CLICK_IMAGE_BOXES)
+    }
+
+    fn encode_up_to(&self, cap: usize) -> Vec<u8> {
+        let count = self.boxes.len().min(cap);
         let mut p = Vec::with_capacity(8 + count * IMAGE_BOX_LEN);
         p.extend_from_slice(&self.job_id.to_le_bytes());
         p.extend_from_slice(&(count as u32).to_le_bytes());
@@ -720,11 +761,21 @@ impl PageImages {
         frame(Kind::Images, &p)
     }
 
+    /// Dark paper's answer, refused past [`MAX_IMAGE_BOXES`], a click's longer one among it.
     pub fn decode(payload: &[u8]) -> Result<Self, ProtoError> {
+        Self::decode_up_to(payload, MAX_IMAGE_BOXES)
+    }
+
+    /// A click's answer, refused past [`MAX_CLICK_IMAGE_BOXES`].
+    pub fn decode_for_a_click(payload: &[u8]) -> Result<Self, ProtoError> {
+        Self::decode_up_to(payload, MAX_CLICK_IMAGE_BOXES)
+    }
+
+    fn decode_up_to(payload: &[u8], cap: usize) -> Result<Self, ProtoError> {
         let mut r = Reader(payload);
         let job_id = r.u32()?;
         let count = r.u32()? as usize;
-        if count > MAX_IMAGE_BOXES {
+        if count > cap {
             return Err(ProtoError("more image boxes than a page reports"));
         }
         let mut boxes = Vec::with_capacity(count);

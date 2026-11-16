@@ -129,6 +129,7 @@ app.pages.end_room[]
 app.pages.highlight_layers
 app.pages.highlight_rects
 app.pages.horizontal_scroller
+app.pages.image_box
 app.pages.magnification
 app.pages.scroll_x
 app.pages.scroll_y

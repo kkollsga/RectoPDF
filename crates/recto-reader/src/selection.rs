@@ -8,6 +8,9 @@
 //!
 //! **Hidden text takes a second look.** The first read of a page is quick and has no hidden-text check, since that draws the page. Once a page is in a selection and showing, or being copied, it's read again with the check when everything visible is drawn. No character moves. What changes is what's on them: an end that was on a hidden word goes to the nearest thing that shows. A page known to be heavy isn't drawn for this, since one more draw of a USGS map is hundreds of MiB, and a copy says it wasn't checked.
 
+use crate::image_pick::ImageSelection;
+
+mod image;
 use recto_index::chrome::EdgeLine;
 use recto_index::select::{
     CopiedText, MAX_COPY_BYTES, MAX_COPY_PAGES, MAX_COPY_TIME, PAGE_END, PagePoint, PageText, Range, Rect, Selection, Texts, chrome_for, neighbour_pages,
@@ -98,7 +101,9 @@ pub struct Selecting {
     on_layers: HashSet<u32>,
     /// Pages whose layer is as it should be, until something changes.
     looked_at: HashSet<u32>,
-    copy: Option<CopyRun>,
+    /// Boxed, as it's held only while a copy is on its way: a page view's selection costs a pointer for it the rest of the time (made room for the
+    /// image picked with a click, `build/image-select`: the pointer's state at its budget of 664 bytes).
+    copy: Option<Box<CopyRun>>,
     /// What came of a copy, for the host to take.
     copied: Option<CopiedText>,
     copied_told: bool,
@@ -108,6 +113,10 @@ pub struct Selecting {
     reads: u64,
     /// Each page's edge lines as read, for its neighbours to be compared with. At most [`MAX_EDGE_PAGES`].
     edges: Vec<(u32, Vec<EdgeLine>)>,
+    /// **An image picked with a click, the other kind of selection** ([`crate::image_pick`]): whatever ends or changes the text selection tells it, in
+    /// one call ([`ImageSelection::ended`]), so the two are never both shown. Its click, and what the page's text says of it, are the page view's
+    /// (`tiles/image_pick.rs`), which reads the text held here ([`Self::held_text`]).
+    pub(crate) image: ImageSelection,
 }
 
 impl Selecting {
@@ -117,6 +126,11 @@ impl Selecting {
             reads: self.reads,
             clock: self.clock,
             on_layers: std::mem::take(&mut self.on_layers),
+            image: {
+                let mut image = std::mem::take(&mut self.image);
+                image.ended(None);
+                image
+            },
             ..Self::default()
         };
     }
@@ -148,17 +162,20 @@ impl Selecting {
         self.range = None;
         self.on_layers.clear();
         self.looked_at.clear();
+        self.image.layers_gone();
     }
 
     /// The host's layers have gone, so nothing's on them.
     pub fn layers_gone(&mut self) {
         self.on_layers.clear();
         self.looked_at.clear();
+        self.image.layers_gone();
     }
 
     pub fn page_hidden(&mut self, page: u32) {
         self.on_layers.remove(&page);
         self.looked_at.remove(&page);
+        self.image.page_hidden(page);
     }
 
     fn changed(&mut self) {
@@ -171,6 +188,11 @@ impl Selecting {
         if self.copy.is_none() {
             self.notice = None;
         }
+        // A press of one click inside the box of an image picked, off text that shows, may be a click on it again, which keeps it.
+        let on_text = HeldTexts(&self.texts)
+            .page_text(point.page)
+            .is_some_and(|text| text.is_over_text(point.x, point.y));
+        self.image.ended((clicks == 1 && !shift && !on_text).then_some(point));
         self.selection.press(point, clicks, shift);
         self.changed();
     }
@@ -179,6 +201,9 @@ impl Selecting {
         if self.selection.is_dragging() {
             self.selection.drag(point);
             self.changed();
+            if self.has_selection() {
+                self.image.ended(None);
+            }
         }
     }
 
@@ -190,6 +215,7 @@ impl Selecting {
         if self.copy.is_none() {
             self.notice = None;
         }
+        self.image.ended(None);
         self.selection.set_range(range);
         self.changed();
     }
@@ -198,6 +224,7 @@ impl Selecting {
         if self.copy.is_none() {
             self.notice = None;
         }
+        self.image.ended(None);
         self.selection.clear();
         self.changed();
     }
@@ -447,7 +474,7 @@ impl Selecting {
 
     /// Whether no page could need its layer touched, which is the cost of every scroll with nothing selected.
     pub fn nothing_to_draw(&self) -> bool {
-        self.on_layers.is_empty() && !self.has_selection()
+        self.on_layers.is_empty() && !self.has_selection() && self.image.at_rest()
     }
 
     /// Starts a copy of what's selected now. With nothing selected there's nothing to start, which is why the menu says it can't be chosen. `anyway` is the reader having said so about a file that asks not to be.
@@ -459,12 +486,12 @@ impl Selecting {
         self.notice = None;
         self.copied = None;
         self.copied_told = false;
-        self.copy = Some(CopyRun {
+        self.copy = Some(Box::new(CopyRun {
             out: CopiedText::default(),
             range,
             next: range.start.page,
             started: Instant::now(),
-        });
+        }));
         self.advance_copy(pages, is_heavy);
     }
 
@@ -606,6 +633,7 @@ impl Selecting {
             "text_edge_pages_held": self.edges.len(),
             "copying": self.copy.is_some(),
             "copy_waiting_for_host": self.copied.is_some(),
+            "image": self.image.report(),
         })
     }
 }
@@ -686,6 +714,66 @@ mod tests {
             .map(|at| [72.0 + at as f32 * 6.0, 700.0, 77.0 + at as f32 * 6.0, 710.0])
             .collect();
         Arc::new(PageText::build(&chars, &boxes, frame, true, false))
+    }
+
+    /// Failure (an image picked with a click, `crate::image_pick`): text and an image are both shown as selected, as a file seen to change, a new tab or
+    /// pages, Select All, a press elsewhere or on text that shows inside its box, a selection cleared or a drag that selects leaves the image picked; or a
+    /// press of one click inside its box off text, which may be a click on it again, lets it go, so its box comes off for the release to put back. Each
+    /// through the one call the text selection makes.
+    #[test]
+    fn a_picked_image_goes_whenever_the_text_selection_ends_or_changes() {
+        use crate::image_pick::{Under, Verdict};
+        // Round the page's line of text, so a drag from inside it selects.
+        let rect = Rect {
+            x: 60.0,
+            y: 60.0,
+            width: 340.0,
+            height: 340.0,
+        };
+        let inside = PagePoint { page: 0, x: 200.0, y: 300.0 };
+        let picked = |selecting: &mut Selecting| {
+            let serial = selecting.tick();
+            selecting.image.clicked(PagePoint { page: 0, x: 300.0, y: 300.0 }, serial, Verdict::Image);
+            selecting.image.boxes_said(serial, Under::Yes);
+            assert!(selecting.image.take_news());
+            assert!(selecting.image.found(serial, 1, rect, (612.0, 792.0)));
+        };
+        let mut selecting = Selecting::default();
+        for (how, end) in [
+            ("the file seen to change", Selecting::file_changed as fn(&mut Selecting)),
+            ("another tab or other pages", Selecting::reset),
+            ("Select All", |selecting: &mut Selecting| selecting.set_range(Range::pages(0, 0))),
+            ("a press outside it", |selecting: &mut Selecting| {
+                selecting.press(PagePoint { page: 0, x: 500.0, y: 500.0 }, 1, false)
+            }),
+            ("a double click inside it", |selecting: &mut Selecting| {
+                selecting.press(PagePoint { page: 0, x: 73.0, y: 87.0 }, 2, false)
+            }),
+            ("a selection cleared", Selecting::clear),
+            (
+                "a press inside it on text that shows, and a drag from there that selects",
+                |selecting: &mut Selecting| {
+                    selecting.press(PagePoint { page: 0, x: 73.0, y: 87.0 }, 1, false);
+                    selecting.drag(PagePoint { page: 0, x: 110.0, y: 87.0 });
+                    assert!(selecting.has_selection(), "the drag selects");
+                },
+            ),
+        ] {
+            // A reset lets the pages' text go too.
+            selecting.page_read(0, text("Caption"), true, &[0]);
+            picked(&mut selecting);
+            end(&mut selecting);
+            assert_eq!(selecting.image.picked(), None, "{how}");
+            selecting.clear();
+        }
+        picked(&mut selecting);
+        selecting.press(inside, 1, false);
+        selecting.release();
+        assert_eq!(
+            selecting.image.picked().map(|pick| pick.rect),
+            Some(rect),
+            "a press of one click inside it, off text, keeps it"
+        );
     }
 
     /// A report's page: its running head, a line of body and its number, each a line of its own.

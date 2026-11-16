@@ -319,6 +319,10 @@ fn hot_plan(reader: &mut Reader) -> Option<JobPlan> {
     if let Some(plan) = reader.text_plan(tab, Urgency::Now) {
         return Some(plan);
     }
+    // A click waiting for its image: its page's text and the worker's boxes are quick, and its look waits on them (`tiles/image_pick.rs`).
+    if let Some(plan) = super::image_pick::plan(reader, tab, Urgency::Now) {
+        return Some(plan);
+    }
     let doc = reader.docs.views.get(&tab)?;
     let pages: Vec<u32> = reader.visible_pages(doc).collect();
     for page in pages {
@@ -326,5 +330,5 @@ fn hot_plan(reader: &mut Reader) -> Option<JobPlan> {
             return Some(plan);
         }
     }
-    reader.text_plan(tab, Urgency::WhenIdle)
+    super::image_pick::plan(reader, tab, Urgency::WhenIdle).or_else(|| reader.text_plan(tab, Urgency::WhenIdle))
 }

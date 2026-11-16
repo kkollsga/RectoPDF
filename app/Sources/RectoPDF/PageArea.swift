@@ -142,6 +142,8 @@ final class CenteringClipView: NSClipView {
     private let marks = PageMarks()
     /// The snapshot tool's box, on the one page it's being drawn on: a page's sublayer, as a highlight is, so it scrolls and zooms with it.
     private var snapshotBox: (page: UInt32, layer: CAShapeLayer)?
+    /// An image picked with a click, its box where Rust says: a page's sublayer, as the snapshot tool's box is.
+    private var imageBox: (page: UInt32, layer: CAShapeLayer)?
     private var highlightDark = false
     private var highlightLighten = false
     private var windowIsActive = true
@@ -514,6 +516,31 @@ final class CenteringClipView: NSClipView {
         layer.path = CGPath(rect: CGRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height), transform: nil)
     }
 
+    /// The image picked with a click, its box where Rust says, or none. A solid line in the system's accent colour, two points wide at any zoom, over a
+    /// light wash of it: a selection, where the snapshot tool's box is dashed. A box that can't be drawn is left off, as a renderer's output is.
+    private func applyImageBox(page: UInt32, rect: HighlightRect?) {
+        if let shown = imageBox, shown.page != page || rect == nil {
+            shown.layer.removeFromSuperlayer()
+            imageBox = nil
+        }
+        guard let rect, [rect.x, rect.y, rect.width, rect.height].allSatisfy(\.isFinite), rect.width > 0, rect.height > 0, let parent = pageLayers[page] else { return }
+        let layer = imageBox?.layer ?? {
+            let made = CAShapeLayer()
+            made.anchorPoint = .zero
+            // Over the selection's highlight, which is 5, and under the snapshot tool's box.
+            made.zPosition = 6
+            parent.addSublayer(made)
+            imageBox = (page, made)
+            return made
+        }()
+        let accent = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? .systemBlue
+        layer.strokeColor = accent.cgColor
+        layer.fillColor = accent.withAlphaComponent(0.15).cgColor
+        layer.lineWidth = 2 / max(parent.affineTransform().a.magnitude + parent.affineTransform().b.magnitude, 0.01) / max(scrollView.magnification, 0.01)
+        layer.frame = parent.bounds
+        layer.path = CGPath(rect: CGRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height), transform: nil)
+    }
+
     /// A drag past the view's edge goes on scrolling with no further events, while it's there. The timer lives only that long.
     private func keepScrollingIfPastTheEdge() {
         guard beyondTheEdge() != .zero else {
@@ -715,6 +742,7 @@ final class CenteringClipView: NSClipView {
             highlightRects.removeAll()
             marks.cleared()
             snapshotBox = nil
+            imageBox = nil
             for tile in tiles.values { tile.layer.contents = nil }
             pageLayers.removeAll()
             tiles.removeAll()
@@ -766,6 +794,7 @@ final class CenteringClipView: NSClipView {
             highlightRects.removeValue(forKey: page)
             marks.hidden(page: page)
             if snapshotBox?.page == page { snapshotBox = nil }
+            if imageBox?.page == page { imageBox = nil }
             for id in tilesOnPage.removeValue(forKey: page) ?? [] {
                 if let tile = tiles.removeValue(forKey: id) { recycle(tile.layer) }
             }
@@ -796,6 +825,8 @@ final class CenteringClipView: NSClipView {
             applyHighlight(page: page, rects: rects)
         case let .snapshotBox(page, rect):
             applySnapshotBox(page: page, rect: rect)
+        case let .imageBox(page, rect):
+            applyImageBox(page: page, rect: rect)
         case let .marks(pages, rgb, lighten):
             marks.set(pages, rgb: rgb, lighten: lighten, on: pageLayers)
         }
@@ -869,6 +900,6 @@ final class CenteringClipView: NSClipView {
 
     /// What QA reads about the layers themselves, as opposed to what Rust thinks it asked for.
     func report() -> [String: Any] {
-        ["highlight_layers": highlightLayers.count, "snapshot_box": snapshotBox.map { ["page": $0.page, "x": $0.layer.path?.boundingBox.minX ?? 0, "y": $0.layer.path?.boundingBox.minY ?? 0, "width": $0.layer.path?.boundingBox.width ?? 0, "height": $0.layer.path?.boundingBox.height ?? 0] as [String: Any] } as Any? ?? NSNull(), "highlight_rects": highlightRects.values.map(\.count).reduce(0, +), "cursor": cursorLook, "autoscrolling": autoscrollTimer != nil, "pointer_steps": pointerSteps, "worst_pointer_step_us": worstPointerMicros, "document_width": documentView.frame.width, "view_width": scrollView.contentView.bounds.width, "view_height": scrollView.contentView.bounds.height, "horizontal_scroller": scrollView.scrollerStyle == .legacy && scrollView.horizontalScroller?.isHidden == false, "scroller_top_inset": scrollView.scrollerInsets.top, "scroller_style": scrollView.scrollerStyle == .legacy ? "legacy" : "overlay", "system_scroller_style": NSScroller.preferredScrollerStyle == .legacy ? "legacy" : "overlay", "shot_tint_left": tintRectsForShot(in: scrollView.window?.contentView?.superview ?? documentView)?.rects.map(\.minX).min() ?? 0, "page_gutters": pageGutters(), "page_layers": pageLayers.count, "page_turns": pageLayers.keys.sorted().map { page -> Int in let t = pageLayers[page]!.affineTransform(); return Int((atan2(t.b, t.a) / (.pi / 2)).rounded() + 4) % 4 }, "page_frames_landscape": pageLayers.values.filter { $0.frame.width > $0.frame.height }.count, "tint_layers": tintLayers.count, "tile_layers": tiles.count, "spare_layers": spareLayers.count, "document_height": documentView.frame.height, "scroll_y": scrollView.contentView.bounds.minY, "scroll_x": scrollView.contentView.bounds.minX, "magnification": scrollView.magnification, "thumb": thumb.report, "thumb_across": across.report, "vertical_scroller": scrollView.hasVerticalScroller, "end_room": [(scrollView.contentView as? CenteringClipView)?.room.top ?? 0, (scrollView.contentView as? CenteringClipView)?.room.bottom ?? 0]]
+        ["highlight_layers": highlightLayers.count, "snapshot_box": snapshotBox.map { ["page": $0.page, "x": $0.layer.path?.boundingBox.minX ?? 0, "y": $0.layer.path?.boundingBox.minY ?? 0, "width": $0.layer.path?.boundingBox.width ?? 0, "height": $0.layer.path?.boundingBox.height ?? 0] as [String: Any] } as Any? ?? NSNull(), "image_box": imageBox.map { ["page": $0.page, "x": $0.layer.path?.boundingBox.minX ?? 0, "y": $0.layer.path?.boundingBox.minY ?? 0, "width": $0.layer.path?.boundingBox.width ?? 0, "height": $0.layer.path?.boundingBox.height ?? 0] as [String: Any] } as Any? ?? NSNull(), "highlight_rects": highlightRects.values.map(\.count).reduce(0, +), "cursor": cursorLook, "autoscrolling": autoscrollTimer != nil, "pointer_steps": pointerSteps, "worst_pointer_step_us": worstPointerMicros, "document_width": documentView.frame.width, "view_width": scrollView.contentView.bounds.width, "view_height": scrollView.contentView.bounds.height, "horizontal_scroller": scrollView.scrollerStyle == .legacy && scrollView.horizontalScroller?.isHidden == false, "scroller_top_inset": scrollView.scrollerInsets.top, "scroller_style": scrollView.scrollerStyle == .legacy ? "legacy" : "overlay", "system_scroller_style": NSScroller.preferredScrollerStyle == .legacy ? "legacy" : "overlay", "shot_tint_left": tintRectsForShot(in: scrollView.window?.contentView?.superview ?? documentView)?.rects.map(\.minX).min() ?? 0, "page_gutters": pageGutters(), "page_layers": pageLayers.count, "page_turns": pageLayers.keys.sorted().map { page -> Int in let t = pageLayers[page]!.affineTransform(); return Int((atan2(t.b, t.a) / (.pi / 2)).rounded() + 4) % 4 }, "page_frames_landscape": pageLayers.values.filter { $0.frame.width > $0.frame.height }.count, "tint_layers": tintLayers.count, "tile_layers": tiles.count, "spare_layers": spareLayers.count, "document_height": documentView.frame.height, "scroll_y": scrollView.contentView.bounds.minY, "scroll_x": scrollView.contentView.bounds.minX, "magnification": scrollView.magnification, "thumb": thumb.report, "thumb_across": across.report, "vertical_scroller": scrollView.hasVerticalScroller, "end_room": [(scrollView.contentView as? CenteringClipView)?.room.top ?? 0, (scrollView.contentView as? CenteringClipView)?.room.bottom ?? 0]]
     }
 }

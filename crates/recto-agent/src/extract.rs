@@ -47,9 +47,22 @@ fn bad_number() -> AgentError {
     AgentError::new(Code::USAGE, "An image is numbered from 1, as `recto images` lists them.", exit::USAGE)
 }
 
-/// `recto images`: where a page's images are.
-pub(crate) fn images(path: &Path, page: u32) -> Result<Value, AgentError> {
-    image::list_command(path, page)
+/// `recto images`: where a page's images are, or with `at` the one on top there, as [`image_clip`] finds it. Its page is opened as `whose` says: with the
+/// person's password for their own document, as the snapshot tool's click opens it. **`stop` ends it** (the person's look for a click's image, which a
+/// newer click, a copy, a let-go or a quit stops): before its worker is opened, nothing is; after, the worker's cancel word reaches the listing. Either way
+/// it's refused as `cancelled`.
+pub(crate) fn images(whose: &ClipPage<'_>, at: Option<[f32; 2]>, stop: &ClipStop) -> Result<Value, AgentError> {
+    let stopped = || AgentError::new(Code::CANCELLED, "A newer click took its place.", exit::FAILED);
+    if stop.is_stopped() {
+        return Err(stopped());
+    }
+    let mut doc = whose.whose.open(whose.path)?;
+    stop.attach(&doc);
+    let listed = image::list_command(&mut doc, whose.path, whose.file_page + 1, at);
+    if stop.is_stopped() {
+        return Err(stopped());
+    }
+    listed
 }
 
 /// `recto image`: one of a page's images to a new file, as itself. `.jpg` takes a JPEG's own bytes and refuses anything else, as that would be re-encoded; `.png` takes any image, losslessly.
@@ -600,7 +613,7 @@ pub struct AsSeen {
 impl AsSeen {
     /// Whether `now` is still this page of the same file: refused as moved if not. Its turn isn't the page's: a turn asked before the box was let go
     /// is in what's copied (coordinator, 2026-11-14).
-    fn still(self, now: &ClipPage<'_>) -> Result<(), AgentError> {
+    pub(crate) fn still(self, now: &ClipPage<'_>) -> Result<(), AgentError> {
         if (self.file_page, self.own) == (now.file_page, now.whose.own) {
             Ok(())
         } else {

@@ -99,6 +99,10 @@ pub trait RenderBackend {
     /// Where a page's images are, as parts of the page in 65535ths, `[left, top, right, bottom]`, each distinct place once; past [`recto_proto::MAX_IMAGE_BOXES`] of them, images whose boxes overlap or share an edge given as one, the box round them (`places.rs`). Bounded like [`Self::largest_image_pixels`]. Past [`recto_proto::MAX_IMAGE_BOXES`] pictures still apart there are too many to tell apart: it stops looking and refuses with [`FailCode::TooLarge`], and the page is judged whole by its pixels.
     fn image_boxes(&mut self, page: u32) -> Result<Vec<[u16; 4]>, RenderError>;
 
+    /// **The same walk, for a click** (the reader's image picked with a click): never too many, as past [`recto_proto::MAX_IMAGE_BOXES`] pictures apart
+    /// every place met after goes into one box round them, a superset at most one box longer (`places.rs`). Dark paper never asks this.
+    fn image_boxes_for_a_click(&mut self, page: u32) -> Result<Vec<[u16; 4]>, RenderError>;
+
     /// Reads a page's characters, in the order the backend understands them.
     fn page_text(&mut self, page: u32, options: TextOptions) -> Result<PageChars, RenderError> {
         self.page_text_until(page, options, &NeverCancel)

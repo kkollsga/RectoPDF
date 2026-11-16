@@ -12,6 +12,7 @@ fn jobs_for(reader: &mut Reader, page: u32) -> Vec<Job> {
         match &job.kind {
             JobKind::Size => reader.finish(job, Outcome::Size(letter())),
             JobKind::Links => reader.finish(job, Outcome::Links(None)),
+            JobKind::ImageBoxes { .. } => reader.finish(job, Outcome::ImageUnder(crate::image_pick::Under::No)),
             JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
             _ => reader.finish(
                 job,

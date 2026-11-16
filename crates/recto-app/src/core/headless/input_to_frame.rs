@@ -114,6 +114,7 @@ fn measure(tabs: usize) {
         engine.links().clicked_for_qa(hit);
         app.act(UiAction::LinkClicked { pane: 0 });
     });
+    page_click(&app, tabs);
     case(&app, "typed page", tabs, nothing, |app, first| {
         app.act(UiAction::PageTyped {
             text: (if first { "5" } else { "2" }).into(),
@@ -208,6 +209,31 @@ fn measure(tabs: usize) {
     });
     events_for_watchers(&app, tabs, recto_session::TabId(a.tab));
     drop(app.quit());
+}
+
+/// A still click on a page, off any link and any text, as the bridge's mouse calls make it: the page view's press and release, then the window's
+/// `LinkClicked` (owner, 2026-11-16: a click in read mode may pick an image). What's timed is the UI thread's part and the session thread's flush after it.
+/// This app draws no window, so its page view's thread plans nothing and the click's text and image boxes are never asked: no job, look or worker of the
+/// click's runs here at all (where a window is drawn, `click_cost` measures what they cost). Each run's click replaces the one before, and the last is let
+/// go, so nothing of a click is left behind the cases after this one.
+fn page_click(app: &HeadlessApp, tabs: usize) {
+    case(
+        app,
+        "page click",
+        tabs,
+        |_| {},
+        |app, first| {
+            let inner = app.core();
+            let engine = inner.panes.reading_engine(&inner.engine);
+            let (x, y) = engine.points().document_point(0, if first { 400.0 } else { 450.0 }, 600.0).unwrap_or_default();
+            let _ = engine.selection().press(x, y, 1, false);
+            let _ = engine.selection().release();
+            app.act(UiAction::LinkClicked { pane: 0 });
+        },
+    );
+    app.core().panes.reading_engine(&app.core().engine).selection().let_go_image();
+    app.settle();
+    assert!(!app.core().tools.tool().busy(), "no look left running behind the cases after this one");
 }
 
 /// What an announcement costs on its way to an agent watching (S1's outlet, `recto_control::server`): a page drawn and a move in `tab`, the tab opened

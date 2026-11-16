@@ -335,6 +335,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
             CoreCall::GeneratedView(id, view, version) => host.session.with_session(|session| session.set_generated_view_for(id, view, version)),
             CoreCall::Find(call) => find::act(inner, call, &mut events),
             CoreCall::TryBack(back) => inner.on_disk.keeper().desk().try_back(&inner.window, &reads, back),
+            CoreCall::ImageLooks => super::image_select::looks_ready(&inner.panes, &inner.engine, inner.tools.tool(), person::Person::of(inner)),
             CoreCall::Run(run) => {
                 let _ = person::run(inner, &mut reads, *run, &mut events);
             }
