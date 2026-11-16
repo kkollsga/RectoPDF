@@ -243,3 +243,37 @@ fn every_control_returns_while_the_session_is_held() {
     caller.join().expect("the caller");
     app.settle();
 }
+
+/// Failure (the stall record, 2026-11-16): a control has no name for a stall's record to say, or two kinds of control share one so a stall in one reads as the
+/// other. Every kind of control, by kind: each name is one word of letters, and no two kinds have the same.
+#[test]
+fn every_control_has_a_name_of_its_own_for_the_stall_record() {
+    let (_app, actions) = every_kind_of_control();
+    let mut by_name: std::collections::BTreeMap<&'static str, std::mem::Discriminant<UiAction>> = std::collections::BTreeMap::new();
+    for action in &actions {
+        let name = action.name();
+        assert!(
+            !name.is_empty() && name.chars().all(|c| c.is_ascii_alphabetic()) && name.len() <= 24,
+            "{name:?}"
+        );
+        let kind = std::mem::discriminant(action);
+        assert_eq!(*by_name.entry(name).or_insert(kind), kind, "{name} names two kinds of control");
+    }
+    assert_eq!(by_name.len(), 23, "one name for each of the 23 kinds of control: {:?}", by_name.keys());
+}
+
+/// Failure (the stall record, 2026-11-16): `Inner::act` stops saying what it begins, so a stall in a control is kept with no name, or one run off the window's
+/// thread (as the QA channel's `SaveAs` is) is named as the window's own pass. A pass of 20 ms on the window's thread that runs a control names it.
+#[test]
+fn a_control_on_the_window_thread_names_its_pass_and_off_it_does_not() {
+    let (app, _) = every_kind_of_control();
+    let core = std::sync::Arc::clone(app.core());
+    assert!(core.window.main_busy(false));
+    core.act(UiAction::FindOpen);
+    let other = std::sync::Arc::clone(&core);
+    std::thread::spawn(move || other.act(UiAction::ToggleSidebar)).join().expect("the other thread's action");
+    std::thread::sleep(Duration::from_millis(20));
+    core.window.main_idle();
+    let kept = core.window.kept_stretches();
+    assert_eq!(kept.last().map(|stretch| stretch.doing.as_str()), Some("FindOpen"), "{kept:?}");
+}

@@ -169,6 +169,8 @@ Inner.pub window: Window
 Inner.pub(crate) keys: Arc<recto_reader::engine::Keyring>
 Inner.pub(crate) listener: Arc<dyn crate::Listener>
 Inner.pub(crate) on_disk: sleeper::OnDisk
+Inner: Doing (trait impl)
+Inner: Doing::fn doing(&self, what: &'static str) -> &Self
 Inner::pub fn act(self: &Arc<Self>, action: UiAction) -> Acted
 Inner::pub fn bar_now(&self) -> Vec<crate::menus::MenuModel>
 Inner::pub fn begin_restore(self: &Arc<Self>)
@@ -394,6 +396,7 @@ Window::pub fn main_busy(&self, block: bool) -> bool
 Window::pub fn main_idle(&self)
 Window::pub fn minimised_changed(&self, minimised: bool, saver: &Saver)
 Window::pub fn new(watchdog: Watchdog) -> Self
+Window::pub fn note_doing(&self, what: &'static str)
 Window::pub fn opens_in_background(&self, reopened: bool) -> bool
 Window::pub fn panel_open(&self) -> bool
 Window::pub fn placement(&self, screens: Vec<ScreenInfo>, reopened: bool, quiet: bool) -> WindowPlacement

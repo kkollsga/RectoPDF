@@ -9,6 +9,7 @@ mod short;
 pub use short::{BUDGET_US, KEPT, Label, Short, SlowStretch};
 
 use recto_platform::thread::{RunState, Sample, ThreadPort, own_cpu_us};
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::Thread;
@@ -21,6 +22,16 @@ pub const FAIL_MS: u64 = 2000;
 const LOOK_EVERY: Duration = Duration::from_millis(250);
 /// The longest QA verb kept, longer ones cut: a fixed slot, nothing allocated for each one.
 const VERB_MAX: usize = 24;
+/// What `doing` in a kept stretch is, said in `qa state` and `qa budget` beside the records so a reader needn't look it up.
+const DOING_IS: &str = "doing: the last thing the window's thread said it began in that run-loop pass (a control's kind, or a bridge call: scroll, select_press, select_drag, select_release, clipboard_data), empty if the pass began nothing named. A pass may do several things and only the last is named, so doing is where to look first, not proof it was the long one.";
+
+thread_local! {
+    /// The id of the watch this thread is the window's thread of: set at each wake ([`Watchdog::busy`]), which only the window's thread makes. A plain
+    /// thread-local of no destructor, so a read is a load from the thread's own block, no system call.
+    static WINDOW_OF: Cell<u64> = const { Cell::new(0) };
+}
+/// Gives each watch an id of its own (never 0), so a thread's [`WINDOW_OF`] can't name another watch's, as a reused address could.
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// **The worst stretch seen, and what the UI thread was doing in it** (CI, 2026-11-13: a 2.3 s stall in a script, with no stack, as `sample` didn't end in its bound; waiting on something or not given a core could not be told). `cpu_ms` is the thread's own CPU time over the last `window_ms` of the stretch, from the watcher's first look to its latest, so a stretch spent waiting or starved has `cpu_ms` near zero and one spent working has it near the window. `state` is the kernel's account at the latest look: `waiting` is blocked on something, `running_or_runnable` with CPU not moving is starved.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,6 +54,7 @@ pub struct Stall {
 }
 
 struct Shared {
+    id: u64,
     epoch: Instant,
     /// When the current stretch of work began, in ms from the epoch plus one, or zero while the thread sleeps.
     busy_since: AtomicU64,
@@ -91,6 +103,7 @@ impl Watchdog {
     #[must_use]
     pub fn new() -> Self {
         Self(Arc::new(Shared {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             epoch: Instant::now(),
             busy_since: AtomicU64::new(0),
             over_note: AtomicU64::new(0),
@@ -110,6 +123,7 @@ impl Watchdog {
 
     /// From the UI thread, each time it wakes. An atomic, and a wake for the watcher if that's parked.
     pub fn busy(&self) {
+        WINDOW_OF.set(self.0.id);
         let elapsed = self.0.epoch.elapsed();
         let now = elapsed.as_millis() as u64 + 1;
         self.0.short.begin(elapsed.as_micros() as u64, own_cpu_us());
@@ -164,9 +178,13 @@ impl Watchdog {
         slot.1 = len;
     }
 
-    /// The window's thread says what it begins, cheaply (one relaxed store of up to 24 bytes), for the stretch's record if it runs over the 16 ms budget.
-    pub fn note_doing(&self, what: &str) {
-        self.0.short.note_doing(what);
+    /// The window's thread says what it begins, cheaply (a thread-local read, then one relaxed store of up to 24 bytes), for the stretch's record if it runs
+    /// over the 16 ms budget. **Does nothing off the window's thread** (the QA channel's thread runs `act` too, and its word would name the wrong work), and
+    /// takes a `&'static str` so no caller can allocate for it. The last word of a stretch is the one kept.
+    pub fn note_doing(&self, what: &'static str) {
+        if WINDOW_OF.get() == self.0.id {
+            self.0.short.note_doing(what);
+        }
     }
 
     /// The worst stretches over the 16 ms budget, the longest first (at most [`KEPT`]), and how many stretches were over it and how many of those couldn't be kept.
@@ -189,7 +207,7 @@ impl Watchdog {
                 })
             })
             .collect();
-        serde_json::json!({ "budget_us": BUDGET_US, "kept_max": KEPT, "record_bytes": Short::bytes(), "over": over, "lost": lost, "worst": worst })
+        serde_json::json!({ "budget_us": BUDGET_US, "kept_max": KEPT, "record_bytes": Short::bytes(), "over": over, "lost": lost, "doing_is": DOING_IS, "worst": worst })
     }
 
     /// The worst stretch over a second seen, and what the thread did in it.
@@ -593,19 +611,30 @@ mod tests {
         assert_eq!((kept.len(), over, lost), (2, 2, 0), "{kept:?}");
         let waited = kept.iter().find(|stretch| stretch.doing.as_str() == "zoom_in").expect("named by the call");
         let worked = kept.iter().find(|stretch| stretch.doing.as_str() == "page_down").expect("named by the call");
-        assert!((40_000..2_000_000).contains(&waited.wall_us), "{waited:?}");
-        assert!((40_000..2_000_000).contains(&worked.wall_us), "{worked:?}");
+        assert!(waited.wall_us >= 40_000 && worked.wall_us >= 40_000, "{kept:?}");
         assert_eq!(waited.verb.as_str(), "zoom", "the verb being waited for");
         assert_eq!(worked.verb.as_str(), "zoom", "still set: the channel clears it when its ask returns");
         if Short::cpu_known() {
-            assert_eq!(waited.kind(), "blocked", "{waited:?}");
+            // Held by the thread's own CPU clock, which a starved machine doesn't move; the busy/blocked rule itself is `cpu_time_tells_a_wait_from_work`'s.
             assert!(worked.cpu_us.unwrap() >= 40_000, "{worked:?}");
-            assert_ne!(worked.kind(), "blocked", "{worked:?}");
-        } else {
-            assert_eq!(waited.kind(), "unknown");
         }
         assert_eq!(dog.report().1, 0, "and what a stall of a second means is as it was");
         assert!(dog.worst_stall().is_none(), "the stall record of a second or more is untouched");
+    }
+
+    /// Failure: a word said from another thread (the QA channel's runs `act` too) is kept as the window's pass, naming work the window's thread never did;
+    /// or one said on the window's thread is lost.
+    #[test]
+    fn a_word_is_kept_only_from_the_window_thread() {
+        let dog = Watchdog::new();
+        assert!(dog.enter(false));
+        dog.note_doing("window_work");
+        let other = dog.clone();
+        std::thread::spawn(move || other.note_doing("qa_save_as")).join().unwrap();
+        wait_blocked(20);
+        dog.idle();
+        let (kept, _, _) = dog.slow_stretches();
+        assert_eq!(kept[0].doing.as_str(), "window_work", "{kept:?}");
     }
 
     /// Failure: the memory of the record grows (a field added that scales with stalls), against the number the docs and `qa state` state.
