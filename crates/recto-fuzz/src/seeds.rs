@@ -379,7 +379,21 @@ fn record_seeds() -> Vec<Vec<u8>> {
     let withheld_unreadable = String::from_utf8_lossy(&body)
         .replacen("\"next_id\"", "\"withheld_places\":[1,{\"a\":[2]},-3],\"next_id\"", 1)
         .into_bytes();
+    // A tab's two lists after a copy went back (`use_a_went_back_pair`, bytes 12 to 19; byte 10 keeps the linked pair out): N under its own name and
+    // the two combining; N as 0.1.1 set it aside, combining; N kept as `.earlier` with a turn of its own, which doesn't.
+    let went_back = |at: u8, n_turn: u8| {
+        let mut bytes = vec![0u8; 20];
+        bytes[10] = 1;
+        bytes[13] = at;
+        bytes[15] = n_turn;
+        bytes[18] = 1;
+        bytes[19] = 2;
+        bytes
+    };
     vec![
+        went_back(0, 0),
+        went_back(1, 0),
+        went_back(2, 1),
         record,
         journal,
         body,
