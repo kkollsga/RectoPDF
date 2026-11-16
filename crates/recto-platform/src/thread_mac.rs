@@ -80,6 +80,18 @@ impl ThreadPort {
     }
 }
 
+/// The calling thread's own CPU time in microseconds (user and system), or `None` if the kernel won't say. One system call, no allocation: for the window's thread to take at the start and end of a stretch of work.
+#[must_use]
+pub fn own_cpu_us() -> Option<u64> {
+    unsafe extern "C" {
+        // In libSystem since macOS 10.12; the `libc` crate doesn't list it.
+        fn clock_gettime_nsec_np(clock: libc::clockid_t) -> u64;
+    }
+    // SAFETY: a plain query of the calling thread's clock.
+    let ns = unsafe { clock_gettime_nsec_np(libc::CLOCK_THREAD_CPUTIME_ID) };
+    (ns != 0).then_some(ns / 1000)
+}
+
 /// Whether the calling thread is the process's main thread: in the app, the UI thread.
 #[must_use]
 pub fn is_main_thread() -> bool {

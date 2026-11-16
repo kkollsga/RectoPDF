@@ -104,6 +104,25 @@ The checks are inside their budgets and CI is 2 minutes under its own, so develo
 
 Frames reaching a display and 120 Hz; a visible window's memory; a true cold start (emptying the file cache needs root: "cold" here is a fresh APFS clone); Launch Services and Gatekeeper in an update; helpers' QoS; the off-screen byte budget of 256 MiB under memory pressure; memory flat over 24 hours; CI's idle wake-ups; a wake's "on its paper in one frame" in the real app (its record times the first drawn frame, not the paper; the core says 0.4 to 1.2 ms); whether Save waits on the signature look; a worker's peak during a Find query on a 10,000-page file. The old report's made 2 GiB file couldn't be reused (its generator wasn't kept), so the cold-open times aren't the same file's.
 
+## Measured again with nothing else running (the coordinator, 2026-11-16 10:02 to 10:11)
+
+The same release build (`main` at 50bd47d5), the same script's parts, `HEAVY_SOLO=1` with the queue empty, load 2.4 to 4.1 (`performance-2026-11-16/quiet/`, with `run.sh`, each part's load in `parts.txt`). One reviewer agent was reading code meanwhile, building nothing. Run B, the 2 GiB file's eleven starts and hand-offs, was left out. **The misses are the reader's, not the load's:** every line that missed under load misses here by about as much.
+
+| Line | Target | Under load (above) | Nothing else running |
+|---|---|---|---|
+| Cold start, page drawn `[probe-cold]`, 11 starts | 300 ms p50, 500 p95 | 274 p50, 317 worst | **265 p50**, 282 for ten of eleven, **413 once** | 
+| 2 GiB file warm, page drawn `[probe-made]`, 11 starts | 250 ms | 337 p50 | **317 p50** (310 to 340, and 497 the first) |
+| 10,000-page file's first open `[coldopen]`, three clones | 600 ms | 2.01, 2.04, 2.03 s | **2.03, 2.03, 2.04 s**; 0.08 s cached |
+| Shaded backgrounds, settled `[colour]` | 100 MiB | 214.2 (worker 185.9) | **213.8 MiB** (worker 186.2), 44.0 after 4 s |
+| The map, about 2x and about 3x `[tabs]`, two runs | 450 MiB accepted | 456 to 459; 455 to 515 | **455.2, 455.9**; **510.9, 511.4** (worker peak 477); fitted 385 to 386 |
+| A woken tab sharp `[wake]`, 5 wakes | 100 ms | 96 to 107 | **100.0, 102.7, 103.7, 106.9, 107.2 ms**; first drawn frame 93 to 100; 2 paper frames each |
+| The window's thread's worst stall `[a]`, `[tabs]` | 16 ms | 31 to 69 | **36, 31, 44 ms** |
+| An update's first frame `[a]`, 11 hand-offs | | 344 p50, 366 worst | **360 p50, 372 worst** (the old app gone at 206 ms, the new one ready at 341, in the last) |
+| The signature look on the edited 2 GiB file `[probe-signatures]`, two hand-offs | | at rest at 3.5 to 5.3 s | page drawn at 423 and 324 ms; **at rest at 3.5 and 3.2 s** |
+| Input to frame `[rust]`, published p50 at 1 and 100 tabs | | tap a row 43.0 and 94.8 µs | tap a row **43.8 and 96.1**, open its tab 67.5 and 119.7, compare click 42.6 and 110.2 (the 1,000-tab rows are in `quiet/rust.txt`) |
+
+So: the load cost the cold start about 10 ms and the warm 2 GiB open about 20, and nothing else. The stalls are 31 to 44 ms on a quiet machine too (the 69 was the load's). The cold start's one 413 ms start is inside the 500 ms p95. Not compared here: `main`'s parent for the input-to-frame growth with tabs, which `docs/PLAN.md`'s numbers of 2026-11-15 already show is not new.
+
 ## To measure again with nothing else running
 
 The lines that miss or are close, for the coordinator at a quiet time, each with `HEAVY_SOLO=1` and `MADE` and `BENCH` set as the script says (`python3 -I docs/reports/performance-2026-11-16-bigpdf.py "$MADE"` makes the made file; `BENCH` is a temp folder with copies of the four `bench100` files the script names):

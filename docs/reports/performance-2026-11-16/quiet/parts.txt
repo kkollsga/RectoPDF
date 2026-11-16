@@ -1,0 +1,19 @@
+== probe-cold 10:02:32 load averages: 2,38 4,99 4,62
+   exit 0 10:02:53
+== probe-made 10:02:53 load averages: 3,06 4,99 4,63
+   exit 0 10:03:27
+== coldopen 10:03:27 load averages: 4,07 5,03 4,66
+   exit 0 10:03:36
+== colour 10:03:36 load averages: 3,75 4,93 4,63
+   exit 0 10:03:47
+== wake 10:03:47 load averages: 3,33 4,80 4,58
+   exit 0 10:03:55
+== a 10:03:55 load averages: 2,97 4,68 4,54
+   exit 0 10:05:48
+== tabs 10:05:48 load averages: 2,94 4,15 4,34
+   exit 0 10:08:23
+== probe-signatures 10:08:23 load averages: 2,43 3,38 3,99
+   exit 0 10:08:47
+== rust 10:08:47 load averages: 2,98 3,43 3,99
+   exit 0 10:10:42
+done

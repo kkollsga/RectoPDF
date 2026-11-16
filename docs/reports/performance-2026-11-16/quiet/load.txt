@@ -1,0 +1,95 @@
+== probe-cold 2026-11-16 10:02:32
+10:02  up 3 days, 13:03, 6 users, load averages: 2,38 4,99 4,62
+Slots: 0 in use of 3. Memory 61% free, swap 1204 MiB used. Load  2,38 4,99 4,62
+Watchdog: running, process 2080.
+Memory guard: running.
+== probe-cold-end 2026-11-16 10:02:53
+10:02  up 3 days, 13:03, 6 users, load averages: 3,06 4,99 4,63
+Slots: 0 in use of 3. Memory 61% free, swap 1204 MiB used. Load  3,06 4,99 4,63
+Watchdog: running, process 2080.
+Memory guard: running.
+== probe-made 2026-11-16 10:02:53
+10:02  up 3 days, 13:03, 6 users, load averages: 3,06 4,99 4,63
+Slots: 0 in use of 3. Memory 61% free, swap 1204 MiB used. Load  3,06 4,99 4,63
+Watchdog: running, process 2080.
+Memory guard: running.
+== probe-made-end 2026-11-16 10:03:27
+10:03  up 3 days, 13:04, 6 users, load averages: 4,07 5,03 4,66
+Slots: 0 in use of 3. Memory 60% free, swap 1204 MiB used. Load  4,07 5,03 4,66
+Watchdog: running, process 2080.
+Memory guard: running.
+== coldopen 2026-11-16 10:03:27
+10:03  up 3 days, 13:04, 6 users, load averages: 4,07 5,03 4,66
+Slots: 0 in use of 3. Memory 60% free, swap 1204 MiB used. Load  4,07 5,03 4,66
+Watchdog: running, process 2080.
+Memory guard: running.
+== coldopen-end 2026-11-16 10:03:36
+10:03  up 3 days, 13:04, 6 users, load averages: 3,75 4,93 4,63
+Slots: 0 in use of 3. Memory 60% free, swap 1204 MiB used. Load  3,75 4,93 4,63
+Watchdog: running, process 2080.
+Memory guard: running.
+== colour 2026-11-16 10:03:36
+10:03  up 3 days, 13:04, 6 users, load averages: 3,75 4,93 4,63
+Slots: 0 in use of 3. Memory 60% free, swap 1204 MiB used. Load  3,75 4,93 4,63
+Watchdog: running, process 2080.
+Memory guard: running.
+== colour-end 2026-11-16 10:03:47
+10:03  up 3 days, 13:04, 6 users, load averages: 3,33 4,80 4,58
+Slots: 0 in use of 3. Memory 60% free, swap 1204 MiB used. Load  3,33 4,80 4,58
+Watchdog: running, process 2080.
+Memory guard: running.
+== wake 2026-11-16 10:03:47
+10:03  up 3 days, 13:04, 6 users, load averages: 3,33 4,80 4,58
+Slots: 0 in use of 3. Memory 60% free, swap 1204 MiB used. Load  3,33 4,80 4,58
+Watchdog: running, process 2080.
+Memory guard: running.
+== wake-end 2026-11-16 10:03:55
+10:03  up 3 days, 13:04, 6 users, load averages: 2,97 4,68 4,54
+Slots: 0 in use of 3. Memory 60% free, swap 1204 MiB used. Load  2,97 4,68 4,54
+Watchdog: running, process 2080.
+Memory guard: running.
+== a 2026-11-16 10:03:55
+10:03  up 3 days, 13:04, 6 users, load averages: 2,97 4,68 4,54
+Slots: 0 in use of 3. Memory 60% free, swap 1204 MiB used. Load  2,97 4,68 4,54
+Watchdog: running, process 2080.
+Memory guard: running.
+== a-end 2026-11-16 10:05:48
+10:05  up 3 days, 13:06, 6 users, load averages: 2,94 4,15 4,34
+Slots: 0 in use of 3. Memory 61% free, swap 1204 MiB used. Load  2,94 4,15 4,34
+Watchdog: running, process 2080.
+Memory guard: running.
+== tabs-1 2026-11-16 10:05:48
+10:05  up 3 days, 13:06, 6 users, load averages: 2,94 4,15 4,34
+Slots: 0 in use of 3. Memory 61% free, swap 1204 MiB used. Load  2,94 4,15 4,34
+Watchdog: running, process 2080.
+Memory guard: running.
+== tabs-2 2026-11-16 10:07:05
+10:07  up 3 days, 13:08, 6 users, load averages: 2,14 3,67 4,15
+Slots: 0 in use of 3. Memory 61% free, swap 1204 MiB used. Load  2,21 3,66 4,14
+Watchdog: running, process 2080.
+Memory guard: running.
+== tabs-end 2026-11-16 10:08:23
+10:08  up 3 days, 13:09, 6 users, load averages: 2,43 3,38 3,99
+Slots: 0 in use of 3. Memory 62% free, swap 1204 MiB used. Load  2,43 3,38 3,99
+Watchdog: running, process 2080.
+Memory guard: running.
+== probe-signatures 2026-11-16 10:08:23
+10:08  up 3 days, 13:09, 6 users, load averages: 2,43 3,38 3,99
+Slots: 0 in use of 3. Memory 62% free, swap 1204 MiB used. Load  2,43 3,38 3,99
+Watchdog: running, process 2080.
+Memory guard: running.
+== probe-signatures-end 2026-11-16 10:08:47
+10:08  up 3 days, 13:09, 6 users, load averages: 2,98 3,43 3,99
+Slots: 0 in use of 3. Memory 61% free, swap 1204 MiB used. Load  2,98 3,43 3,99
+Watchdog: running, process 2080.
+Memory guard: running.
+== rust 2026-11-16 10:08:47
+10:08  up 3 days, 13:09, 6 users, load averages: 2,98 3,43 3,99
+Slots: 0 in use of 3. Memory 61% free, swap 1204 MiB used. Load  2,98 3,43 3,99
+Watchdog: running, process 2080.
+Memory guard: running.
+== rust-end 2026-11-16 10:10:42
+10:10  up 3 days, 13:11, 6 users, load averages: 1,69 2,82 3,68
+Slots: 0 in use of 3. Memory 61% free, swap 1204 MiB used. Load  1,69 2,82 3,68
+Watchdog: running, process 2080.
+Memory guard: running.

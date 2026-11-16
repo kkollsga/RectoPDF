@@ -4,7 +4,11 @@
 //!
 //! **At rest this costs nothing:** the watching thread is parked while the UI thread sleeps, so no timer ticks. It wakes only for a stretch of work, and looks every quarter second for as long as that lasts.
 
-use recto_platform::thread::{RunState, Sample, ThreadPort};
+mod short;
+
+pub use short::{BUDGET_US, KEPT, Label, Short, SlowStretch};
+
+use recto_platform::thread::{RunState, Sample, ThreadPort, own_cpu_us};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::Thread;
@@ -59,6 +63,8 @@ struct Shared {
     /// The QA verb being waited for, if any. Set by the QA channel; the UI thread never takes this lock.
     verb: Mutex<([u8; VERB_MAX], usize)>,
     worst: Mutex<Option<Stall>>,
+    /// The stretches over the 16 ms budget: see [`short`].
+    short: Short,
 }
 
 /// The watcher's first look at the stretch that began at `began`, and the thread's CPU time and the time at it (what `Stall::cpu_ms` counts from), and its
@@ -98,12 +104,15 @@ impl Watchdog {
             seen: Seen::default(),
             verb: Mutex::new(([0; VERB_MAX], 0)),
             worst: Mutex::new(None),
+            short: Short::default(),
         }))
     }
 
     /// From the UI thread, each time it wakes. An atomic, and a wake for the watcher if that's parked.
     pub fn busy(&self) {
-        let now = self.0.epoch.elapsed().as_millis() as u64 + 1;
+        let elapsed = self.0.epoch.elapsed();
+        let now = elapsed.as_millis() as u64 + 1;
+        self.0.short.begin(elapsed.as_micros() as u64, own_cpu_us());
         self.0.busy_since.store(now, Ordering::Release);
         if self.0.port.load(Ordering::Relaxed) == 0 {
             self.0.port.store(ThreadPort::current().raw(), Ordering::Relaxed);
@@ -128,7 +137,10 @@ impl Watchdog {
     pub fn idle(&self) {
         let began = self.0.busy_since.swap(0, Ordering::AcqRel);
         if began != 0 {
-            let now = self.0.epoch.elapsed().as_millis() as u64 + 1;
+            let elapsed = self.0.epoch.elapsed();
+            let now = elapsed.as_millis() as u64 + 1;
+            // A stretch over the 16 ms budget is kept with what it was: the verb by a `try_lock`, as the window's thread waits for nothing here.
+            self.0.short.end(elapsed.as_micros() as u64, own_cpu_us, || try_verb(&self.0));
             // Counted here too, as it ends: the watcher looks every quarter second, and on a starved machine (CI, 2026-11-11: a 2.3 s stall passed a script) it may not look between 2 s and the end.
             let stalled = now.saturating_sub(began);
             count(&self.0, began, stalled);
@@ -150,6 +162,34 @@ impl Watchdog {
         }
         slot.0[..len].copy_from_slice(&bytes[..len]);
         slot.1 = len;
+    }
+
+    /// The window's thread says what it begins, cheaply (one relaxed store of up to 24 bytes), for the stretch's record if it runs over the 16 ms budget.
+    pub fn note_doing(&self, what: &str) {
+        self.0.short.note_doing(what);
+    }
+
+    /// The worst stretches over the 16 ms budget, the longest first (at most [`KEPT`]), and how many stretches were over it and how many of those couldn't be kept.
+    #[must_use]
+    pub fn slow_stretches(&self) -> (Vec<SlowStretch>, u64, u64) {
+        let (over, lost) = self.0.short.counts();
+        (self.0.short.worst(), over, lost)
+    }
+
+    /// `qa state`'s `hangs.over_budget`: the stretches over the 16 ms budget, as [`Self::slow_stretches`] has them.
+    #[must_use]
+    pub fn slow_json(&self) -> serde_json::Value {
+        let (kept, over, lost) = self.slow_stretches();
+        let worst: Vec<serde_json::Value> = kept
+            .iter()
+            .map(|stretch| {
+                serde_json::json!({
+                    "wall_us": stretch.wall_us, "cpu_us": stretch.cpu_us, "at_ms": stretch.at_ms, "kind": stretch.kind(),
+                    "doing": stretch.doing.as_str(), "verb": stretch.verb.as_str(),
+                })
+            })
+            .collect();
+        serde_json::json!({ "budget_us": BUDGET_US, "kept_max": KEPT, "record_bytes": Short::bytes(), "over": over, "lost": lost, "worst": worst })
     }
 
     /// The worst stretch over a second seen, and what the thread did in it.
@@ -199,6 +239,18 @@ impl Watchdog {
     #[cfg(test)]
     fn look_sampled(&self, now_ms: u64, sample: Sample) {
         look(&self.0, now_ms, Some(sample));
+    }
+}
+
+/// The QA verb being waited for, without waiting for the lock that holds it: the window's thread calls this.
+fn try_verb(shared: &Shared) -> Label {
+    match shared.verb.try_lock() {
+        Ok(slot) => Label::new(&String::from_utf8_lossy(&slot.0[..slot.1])),
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+            let slot = poisoned.into_inner();
+            Label::new(&String::from_utf8_lossy(&slot.0[..slot.1]))
+        }
+        Err(std::sync::TryLockError::WouldBlock) => Label::default(),
     }
 }
 
@@ -500,5 +552,88 @@ mod tests {
         }
         let starved = starved.worst_stall().unwrap();
         assert_eq!((starved.waiting_looks, starved.running_looks), (0, 5));
+    }
+
+    /// Waits for `ms` on a blocked thread, as a lock or a call would: no CPU, whatever the machine does. (A park in a loop, as one can end early.)
+    fn wait_blocked(ms: u64) {
+        let until = Instant::now() + Duration::from_millis(ms);
+        while let Some(left) = until.checked_duration_since(Instant::now()) {
+            std::thread::park_timeout(left);
+        }
+    }
+
+    /// Works until the thread's own CPU clock has moved `ms`, whatever the machine does with the other cores.
+    fn work_cpu(ms: u64) {
+        let first = own_cpu_us().unwrap_or(0);
+        while own_cpu_us().unwrap_or(u64::MAX) < first + ms * 1000 {
+            std::hint::spin_loop();
+        }
+    }
+
+    /// Failure (the performance review, 2026-11-16: 31 to 69 ms stalls in every run that no record could explain): a stall of the window's thread over the 16 ms
+    /// budget is kept without a name, or as the wrong length, or a wait reads as work (or work as a wait), or a QA verb being waited for isn't named. Made
+    /// with a real wake and sleep of the watch and a thread that stalls 40 ms in a named call: once blocked, once working.
+    #[test]
+    fn a_made_stall_of_forty_ms_names_its_call_and_whether_it_waited_or_worked() {
+        let dog = Watchdog::new();
+        assert!(dog.enter(false));
+        dog.note_doing("zoom_in");
+        dog.note_verb(Some("zoom"));
+        wait_blocked(40);
+        dog.idle();
+        assert!(dog.enter(false));
+        dog.note_doing("page_down");
+        work_cpu(40);
+        dog.idle();
+        // A frame under the budget between them is not kept.
+        assert!(dog.enter(false));
+        dog.note_doing("scroll");
+        dog.idle();
+        let (kept, over, lost) = dog.slow_stretches();
+        assert_eq!((kept.len(), over, lost), (2, 2, 0), "{kept:?}");
+        let waited = kept.iter().find(|stretch| stretch.doing.as_str() == "zoom_in").expect("named by the call");
+        let worked = kept.iter().find(|stretch| stretch.doing.as_str() == "page_down").expect("named by the call");
+        assert!((40_000..2_000_000).contains(&waited.wall_us), "{waited:?}");
+        assert!((40_000..2_000_000).contains(&worked.wall_us), "{worked:?}");
+        assert_eq!(waited.verb.as_str(), "zoom", "the verb being waited for");
+        assert_eq!(worked.verb.as_str(), "zoom", "still set: the channel clears it when its ask returns");
+        if Short::cpu_known() {
+            assert_eq!(waited.kind(), "blocked", "{waited:?}");
+            assert!(worked.cpu_us.unwrap() >= 40_000, "{worked:?}");
+            assert_ne!(worked.kind(), "blocked", "{worked:?}");
+        } else {
+            assert_eq!(waited.kind(), "unknown");
+        }
+        assert_eq!(dog.report().1, 0, "and what a stall of a second means is as it was");
+        assert!(dog.worst_stall().is_none(), "the stall record of a second or more is untouched");
+    }
+
+    /// Failure: the memory of the record grows (a field added that scales with stalls), against the number the docs and `qa state` state.
+    #[test]
+    fn the_stall_record_is_fixed_in_size() {
+        assert_eq!(
+            Short::bytes(),
+            792,
+            "the kept list is {KEPT} slots of {} bytes",
+            std::mem::size_of::<SlowStretch>()
+        );
+    }
+
+    /// What a wake and a sleep of the window's thread cost, in ns, the least of 7 rounds of 200,000 pairs (release build: `cargo test --release -p recto-app
+    /// -- --ignored wake_and_sleep_cost --nocapture`). Not a gate: a number for the hand-back, before and after a change to what a wake does.
+    #[test]
+    #[ignore = "a measurement, run by hand on a release build"]
+    fn wake_and_sleep_cost() {
+        let dog = Watchdog::new();
+        let mut least = f64::MAX;
+        for _ in 0..7 {
+            let began = Instant::now();
+            for _ in 0..200_000 {
+                assert!(dog.enter(false));
+                dog.idle();
+            }
+            least = least.min(began.elapsed().as_nanos() as f64 / 200_000.0);
+        }
+        println!("wake and sleep: {least:.0} ns a pair");
     }
 }
