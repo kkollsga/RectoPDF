@@ -987,6 +987,15 @@ pub struct ParsedJournal {
     pub lost_lines: bool,
 }
 
+/// **A journal's first line alone,** whole and of its checksum, as a header: what a launch reads of a list it keeps beside a tab to say whose it is, with
+/// nothing past it read or replayed. `None` for anything else.
+pub fn journal_header(bytes: &[u8]) -> Option<JournalHeader> {
+    let (json, _) = read_line(bytes)?;
+    serde_json::from_slice::<JournalHeader>(json)
+        .ok()
+        .filter(|header| header.format == JOURNAL_KIND && header.version > 0 && header.tab != 0 && header.path.fits())
+}
+
 pub(crate) fn read_line(bytes: &[u8]) -> Option<(&[u8], usize)> {
     let end = bytes.iter().position(|byte| *byte == b'\n')?;
     let line = &bytes[..end];

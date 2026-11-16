@@ -1,7 +1,7 @@
 //! A state folder as a copy that went back left it (an older app's record over a newer app's journals), then a launch of this app.
 
 use super::super::*;
-use super::MAX_SET_ASIDE_NAMES;
+use super::{MAX_SET_ASIDE_NAMES, SET_ASIDE_LIMIT, STEPS};
 use recto_session::TabId;
 use recto_session::edit::marks::{MarkOp, MarkPage, MarkRect};
 use recto_session::record::{AuthorName, FileRecord, MARKED_JOURNAL_VERSION, PathField, TabEntry};
@@ -153,10 +153,15 @@ fn a_newer_journal_an_older_app_left_alone_reads_whole_and_the_tab_says_nothing(
 
 /// **Failure caught: a notice that's still so dropped with the older app's.** This app's own `edits_unreadable` stays until the person has seen it:
 /// on a record naming the journal it's about (one written clean after lines it couldn't use), and on a journal of the version every app reads that
-/// the record doesn't name yet (a list started after another couldn't be read, the record not yet written; what couldn't be read is kept beside it).
+/// the record doesn't name yet (a list started after another couldn't be read, the record not yet written; what couldn't be read is kept beside it);
+/// and (the review, item 5) one of the newer version with what couldn't be read of this file's journal kept beside it as `.unreadable`.
 #[test]
 fn this_apps_own_unreadable_notice_stays() {
-    for case in ["the record names the journal", "a journal every app reads"] {
+    for case in [
+        "the record names the journal",
+        "a journal every app reads",
+        "what couldn't be read kept beside it",
+    ] {
         let bed = Bed::new();
         let name = record::journal_file_name(Some(bed.stamp), &bed.file, None);
         match case {
@@ -164,9 +169,15 @@ fn this_apps_own_unreadable_notice_stays() {
                 bed.record(Some(&name), Some(FileNotice::EditsUnreadable));
                 bed.journal(&name, MARKED_JOURNAL_VERSION, &[highlight()]);
             }
-            _ => {
+            "a journal every app reads" => {
                 bed.record(None, Some(FileNotice::EditsUnreadable));
                 bed.journal(&name, record::CURRENT_VERSION, &[JournalOp::Rotate(0, 1, 1, AuthorName::Owner)]);
+            }
+            _ => {
+                // A journal of this file that couldn't be read, kept, and the next edit a highlight, its journal not yet in the record.
+                bed.record(None, Some(FileNotice::EditsUnreadable));
+                bed.put(&name.replace(".log", ".unreadable"), b"what couldn't be read");
+                bed.journal(&name, MARKED_JOURNAL_VERSION, &[highlight()]);
             }
         }
         assert_eq!(bed.launch().0, Some("edits_unreadable"), "{case}");
@@ -351,7 +362,7 @@ fn a_second_trip_back_after_a_merge_keeps_the_later_and_says_so() {
 
 /// **Failure caught (rule 6): a hostile state folder panics a launch, reads without bound, or takes another tab's list.** N with another tab's id is
 /// no list of this tab's (as `followed` judges it, unmerged); a `.not-merged` under N's name that isn't a journal is left as it is, the tab keeping O
-/// and saying nothing; and past the most kept lists a launch looks at, the rest wait (one more than the limit: one left).
+/// and saying nothing; and past the most kept lists a launch looks at, the rest wait (one more than the limit, set to 4 here: one left).
 #[test]
 fn hostile_pairs_fall_to_not_this_tabs() {
     let bed = Bed::new();
@@ -376,10 +387,185 @@ fn hostile_pairs_fall_to_not_this_tabs() {
 
     let bed = Bed::new();
     bed.record(None, None);
-    for at in 0..=MAX_SET_ASIDE_NAMES {
-        std::fs::write(bed.journals().join(format!("journal-{at:016x}.earlier")), b"x").unwrap();
+    SET_ASIDE_LIMIT.store(4, std::sync::atomic::Ordering::Relaxed);
+    for at in 0..=4 {
+        bed.put(&format!("journal-{at:016x}.earlier"), b"x");
     }
     bed.launch();
+    SET_ASIDE_LIMIT.store(MAX_SET_ASIDE_NAMES, std::sync::atomic::Ordering::Relaxed);
     let left = bed.names().iter().filter(|name| name.ends_with(".earlier")).count();
     assert_eq!(left, 1, "a bounded look: the limit's worth aged out, one waiting");
+}
+
+/// **Failure caught (the review, item 1): a power cut right after a merge hides O's edits with no notice.** O moved to a closed name could reach the
+/// disk before O's lines in N did, which a plain `fsync` doesn't make the drive write. The order is held: N back under its own name and the folder
+/// flushed, then O's lines in N flushed by the drive itself, then O moved and the folder flushed.
+#[test]
+fn a_merge_flushes_n_before_o_is_moved() {
+    let bed = Bed::new();
+    went_back_with_a_turn(&bed, true, &[turn(0)]);
+    let (newer, older) = names(&bed);
+    STEPS.with(|steps| steps.borrow_mut().clear());
+    assert_eq!(shown(&bed.session()).0, None);
+    let set_aside = newer.replace(".log", ".not-merged");
+    let closed = record::closed_journal_name(&older).unwrap();
+    assert_eq!(
+        STEPS.with(|steps| steps.borrow().clone()),
+        vec![
+            format!("moved {set_aside} to {newer}, the folder flushed"),
+            format!("appended to {newer}, flushed by the drive: true"),
+            format!("moved {older} to {closed}, the folder flushed"),
+        ]
+    );
+}
+
+/// **Failure caught (the review, item 2): the set-aside notice stops, and the kept list is orphaned, while the tab's list is still O.** A highlight
+/// added here makes O's journal the newer version; or the file moves, and the tab's path with it. Said each launch still, from the kept list's first
+/// line; then, the edits discarded, nothing is said and N goes to a closed history's name.
+#[test]
+fn the_kept_list_is_said_while_the_tabs_list_is_o_whatever_o_becomes() {
+    for change in ["a highlight added to O", "the file moved"] {
+        let bed = Bed::new();
+        let (newer, older) = names(&bed);
+        bed.record(Some(&older), None);
+        let n = bed.journal(&newer, MARKED_JOURNAL_VERSION, &[highlight(), turn(2)]);
+        bed.journal(&older, record::CURRENT_VERSION, &[turn(0)]);
+        assert_eq!(bed.launch().0, Some("edits_set_aside_went_back"), "{change}");
+        match change {
+            "a highlight added to O" => {
+                let store = RecordStore::open(&bed.paths, Flavor::App);
+                let Loaded::Restored(_) = store.load() else { panic!() };
+                let work = JournalWork {
+                    pages: Vec::new(),
+                    retired: Vec::new(),
+                    appends: vec![recto_session::JournalAppend {
+                        tab: TabId(1),
+                        name: older.clone(),
+                        header: JournalHeader::new(1, &bed.file, Some(bed.stamp), 5, 0),
+                        through: 2,
+                        ops: vec![highlight()],
+                        closing: false,
+                        base: None,
+                        replaces: None,
+                    }],
+                };
+                assert!(store.write_journals(&work, false).1.is_none());
+                let header = record::parse_journal(&std::fs::read(bed.journals().join(&older)).unwrap(), MARKED_JOURNAL_VERSION)
+                    .unwrap()
+                    .header;
+                assert_eq!(header.version, MARKED_JOURNAL_VERSION, "O is of the newer version now");
+            }
+            _ => {
+                let moved = bed.root.join("moved.pdf");
+                std::fs::rename(&bed.file, &moved).unwrap();
+                let mut record = match RecordStore::open(&bed.paths, Flavor::App).load() {
+                    Loaded::Restored(restored) => restored.record,
+                    _ => panic!(),
+                };
+                record.tabs[0].path = PathField::from_path(&moved);
+                RecordStore::open(&bed.paths, Flavor::App)
+                    .write_record(&record, &PlaceDelta::default(), false)
+                    .unwrap();
+            }
+        }
+        assert_eq!(bed.launch().0, Some("edits_set_aside_went_back"), "{change}: still said");
+        std::fs::remove_file(bed.journals().join(&older)).unwrap();
+        bed.record(None, None);
+        assert_eq!(bed.launch().0, None, "{change}: discarded, nothing said");
+        assert!(
+            bed.holding(&n).is_some_and(|name| record::is_closed_journal_name(&name)),
+            "{change}: N with closed histories"
+        );
+    }
+}
+
+/// **Failure caught (the review, item 3): a link left at a name of ours has the app change a file of the person's** (the time of a PDF, whose
+/// journals then stop matching it). A link and a folder at a kept list's name, at 0.1.1's set-aside names and at a closed history's name, of no tab
+/// and of the tab's own key: two launches touch nothing outside the journals' folder, and nothing panics.
+#[test]
+fn links_and_folders_at_our_names_touch_nothing_outside() {
+    let bed = Bed::new();
+    let (newer, older) = names(&bed);
+    bed.record(Some(&older), None);
+    bed.journal(&older, record::CURRENT_VERSION, &[turn(0)]);
+    let outside = bed.root.join("outside.pdf");
+    std::fs::write(&outside, b"a person's PDF").unwrap();
+    let long_ago = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    std::fs::File::options().write(true).open(&outside).unwrap().set_modified(long_ago).unwrap();
+    let stem = newer.trim_end_matches(".log");
+    let names = [
+        format!("{stem}.earlier"),
+        format!("{stem}-1.not-merged"),
+        "journal-00000000000000aa.earlier".to_string(),
+        "journal-00000000000000ab.not-merged".to_string(),
+        "journal-00000000000000ac-2.not-merged".to_string(),
+        "closed-00000000000000ad.log".to_string(),
+    ];
+    for (at, name) in names.iter().enumerate() {
+        if at % 2 == 0 {
+            std::os::unix::fs::symlink(&outside, bed.journals().join(name)).unwrap();
+        } else {
+            std::fs::create_dir(bed.journals().join(name)).unwrap();
+        }
+    }
+    bed.launch();
+    bed.launch();
+    let meta = std::fs::metadata(&outside).unwrap();
+    assert_eq!(meta.modified().unwrap(), long_ago, "its time as it was");
+    assert_eq!(std::fs::read(&outside).unwrap(), b"a person's PDF");
+}
+
+/// **Failure caught (the review, item 4): 0.1.1's crash rule run on the went-back state** took N for the newer by its steps (two highlights against
+/// one turn), made it the tab's list and set O aside as `journal-<key>-<n>.not-merged`, which nothing read again: O's turn hidden. The same test
+/// decides, in either order: combining, the turn and both highlights are shown and nothing is said; not combining (N turned a page of its own), O is
+/// the tab's list again and N is kept and said.
+#[test]
+fn either_order_of_the_two_lists_is_decided_the_same() {
+    for (order, n_turns) in [("O the tab's, N aside", false), ("N the tab's, O aside", false), ("N the tab's, O aside", true)] {
+        let bed = Bed::new();
+        let (newer, older) = names(&bed);
+        let mut n_ops = vec![highlight(), highlight()];
+        if n_turns {
+            n_ops.push(turn(2));
+        }
+        let o_aside = older.replace(".log", ".not-merged");
+        if order.starts_with('O') {
+            bed.record(Some(&older), None);
+            bed.journal(&newer.replace(".log", ".not-merged"), MARKED_JOURNAL_VERSION, &n_ops);
+            bed.journal(&older, record::CURRENT_VERSION, &[turn(0)]);
+        } else {
+            bed.record(Some(&newer), None);
+            bed.journal(&newer, MARKED_JOURNAL_VERSION, &n_ops);
+            bed.journal(&o_aside, record::CURRENT_VERSION, &[turn(0)]);
+        }
+        let (code, marks, turns) = shown(&bed.session());
+        if n_turns {
+            assert_eq!(
+                (code, marks, turns[0]),
+                (Some("edits_set_aside_went_back"), 0, 1),
+                "{order}, N turned a page: O shown and N said"
+            );
+        } else {
+            assert_eq!((code, marks, turns[0]), (None, 2, 1), "{order}: the turn and both highlights");
+        }
+        assert!(!bed.journals().join(&o_aside).exists(), "{order}: O isn't left aside unread");
+    }
+}
+
+/// **Failure caught (the review, item 7): O's move refused after a merge** (not a crash), the record then naming N: the next launch set O aside
+/// "after an unexpected quit", said once, and nothing pruned it. Its every step at N's end, it's moved to a closed history's name then, and nothing is
+/// said.
+#[test]
+fn an_older_list_left_after_a_merge_is_moved_at_the_next_launch() {
+    let bed = Bed::new();
+    let (newer, older) = names(&bed);
+    bed.record(Some(&newer), None);
+    let n = bed.journal(&newer, MARKED_JOURNAL_VERSION, &[highlight(), turn(0)]);
+    let o = bed.journal(&older, record::CURRENT_VERSION, &[turn(0)]);
+    assert_eq!(shown(&bed.session()), (None, 1, vec![1, 0, 0, 0, 0]), "the merged list, nothing said");
+    assert!(
+        bed.holding(&o).is_some_and(|name| record::is_closed_journal_name(&name)),
+        "O with closed histories"
+    );
+    assert_eq!(std::fs::read(bed.journals().join(&newer)).unwrap(), n, "N as it was: nothing appended twice");
 }
