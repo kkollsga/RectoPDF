@@ -72,7 +72,7 @@ fn settle_all_sized(reader: &mut Reader, size: PageBox) -> Vec<Job> {
             JobKind::Size => Outcome::Size(size),
             JobKind::Text { .. } => panic!("no text was asked for"),
             JobKind::Links => Outcome::Links(None),
-            JobKind::ImageBoxes { .. } => Outcome::ImageUnder(crate::image_pick::Under::NotKnown),
+            JobKind::ImageBoxes { .. } => Outcome::ImageUnder(crate::image_pick::Under::No),
             JobKind::Traits => Outcome::Heavy(false),
             JobKind::Draw { .. } => Outcome::Drawn {
                 kind: TileKind::Colour,
@@ -250,7 +250,7 @@ fn a_draw_job(reader: &mut Reader, what: DrawKind) -> Job {
             JobKind::Size => reader.finish(job, Outcome::Size(letter())),
             JobKind::Text { .. } => panic!("no text was asked for"),
             JobKind::Links => reader.finish(job, Outcome::Links(None)),
-            JobKind::ImageBoxes { .. } => reader.finish(job, Outcome::ImageUnder(crate::image_pick::Under::NotKnown)),
+            JobKind::ImageBoxes { .. } => reader.finish(job, Outcome::ImageUnder(crate::image_pick::Under::No)),
             JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
             JobKind::Draw { what: kind, .. } if *kind == what => return job,
             JobKind::Draw { .. } => reader.finish(
@@ -284,7 +284,7 @@ fn settle_sized(reader: &mut Reader, first: PageBox) {
             JobKind::Size => Outcome::Size(if job.position == 0 { first } else { letter() }),
             JobKind::Text { .. } => Outcome::TextFailed,
             JobKind::Links => Outcome::Links(None),
-            JobKind::ImageBoxes { .. } => Outcome::ImageUnder(crate::image_pick::Under::NotKnown),
+            JobKind::ImageBoxes { .. } => Outcome::ImageUnder(crate::image_pick::Under::No),
             JobKind::Traits => Outcome::Heavy(false),
             JobKind::Draw { .. } => Outcome::Drawn {
                 kind: TileKind::Colour,
@@ -472,7 +472,7 @@ fn a_lower_resolution_page_is_labelled() {
             JobKind::Size => Outcome::Size(letter()),
             JobKind::Text { .. } => panic!("no text was asked for"),
             JobKind::Links => Outcome::Links(None),
-            JobKind::ImageBoxes { .. } => Outcome::ImageUnder(crate::image_pick::Under::NotKnown),
+            JobKind::ImageBoxes { .. } => Outcome::ImageUnder(crate::image_pick::Under::No),
             JobKind::Traits => Outcome::Heavy(true),
             JobKind::Draw { .. } => {
                 low_done = true;
@@ -521,7 +521,7 @@ fn settle_to_text(reader: &mut Reader) -> Option<Job> {
         match &job.kind {
             JobKind::Text { .. } => return Some(job),
             JobKind::Links => reader.finish(job, Outcome::Links(None)),
-            JobKind::ImageBoxes { .. } => reader.finish(job, Outcome::ImageUnder(crate::image_pick::Under::NotKnown)),
+            JobKind::ImageBoxes { .. } => reader.finish(job, Outcome::ImageUnder(crate::image_pick::Under::No)),
             JobKind::Size => reader.finish(job, Outcome::Size(letter())),
             JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
             JobKind::Draw { .. } => reader.finish(
@@ -922,7 +922,7 @@ fn a_failed_page_let_go_at_the_cap_is_asked_for_once_when_its_back() {
                     JobKind::Size => Outcome::Size(letter()),
                     JobKind::Traits => Outcome::Heavy(false),
                     JobKind::Links => Outcome::Links(None),
-                    JobKind::ImageBoxes { .. } => Outcome::ImageUnder(crate::image_pick::Under::NotKnown),
+                    JobKind::ImageBoxes { .. } => Outcome::ImageUnder(crate::image_pick::Under::No),
                     _ => Outcome::Drawn {
                         kind: TileKind::Colour,
                         low_res: None,

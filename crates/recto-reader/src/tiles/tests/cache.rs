@@ -105,7 +105,7 @@ fn a_tile_nothing_is_showing_when_it_arrives_is_discardable() {
             JobKind::Size => reader.finish(job, Outcome::Size(letter())),
             JobKind::Text { .. } => panic!("no text was asked for"),
             JobKind::Links => reader.finish(job, Outcome::Links(None)),
-            JobKind::ImageBoxes { .. } => reader.finish(job, Outcome::ImageUnder(crate::image_pick::Under::NotKnown)),
+            JobKind::ImageBoxes { .. } => reader.finish(job, Outcome::ImageUnder(crate::image_pick::Under::No)),
             JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
             JobKind::Draw { .. } => break job,
         }

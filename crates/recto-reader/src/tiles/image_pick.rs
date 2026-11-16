@@ -43,6 +43,8 @@ pub(super) fn clicked(reader: &mut Reader, still: Option<PagePoint>) {
 enum Need {
     /// What its page's text says is known now: taken with no job.
     Settle(Verdict),
+    /// What its page's text says after the hidden-text check is known now (tried, or the page heavy): taken with no job.
+    Checked(Verdict),
     /// Its page's text, read, or with `check` drawn for the hidden-text check too.
     Read { page: u32, check: bool },
     /// The worker's boxes, at `at` in 65535ths of the page.
@@ -51,8 +53,18 @@ enum Need {
     Nothing(u32),
 }
 
-/// **What a click waiting on the tab showing needs,** if anything: its text read when none is held, the hidden-text check when its text is held
-/// unchecked, or the worker's boxes once no text that shows is there. A heavy page's text, or one whose check was tried and failed, is taken as showing.
+/// What the text held for the page of `point` says there, if any is held: a heavy page's, or one whose check was tried, is taken as showing.
+fn verdict_here(reader: &Reader, point: PagePoint) -> Verdict {
+    let held = reader.pointer.selecting.held_text(point.page);
+    verdict_at(
+        held.map(|(text, _)| text),
+        held.is_some_and(|(_, settled)| settled) || heavy(reader, point.page),
+        point,
+    )
+}
+
+/// **What a click waiting on the tab showing needs,** if anything: its text read when none is held; the worker's boxes once no text that shows is there,
+/// or text not checked; and only where a picture may be under text not checked, the hidden-text check.
 fn need(reader: &Reader) -> Option<Need> {
     let doc = reader.docs.shown()?;
     let image = &reader.pointer.selecting.image;
@@ -60,15 +72,21 @@ fn need(reader: &Reader) -> Option<Need> {
         if point.page >= doc.layout.count() {
             return Some(Need::Settle(Verdict::Text));
         }
-        return Some(match reader.pointer.selecting.held_text(point.page) {
-            None => Need::Read {
+        return Some(match verdict_here(reader, point) {
+            Verdict::Unknown => Need::Read {
                 page: point.page,
                 check: false,
             },
-            Some((text, settled)) => match verdict_at(Some(text), settled || heavy(reader, point.page), point) {
-                Verdict::Unknown => Need::Read { page: point.page, check: true },
-                verdict => Need::Settle(verdict),
-            },
+            verdict => Need::Settle(verdict),
+        });
+    }
+    if let Some(point) = image.check_wanted() {
+        if point.page >= doc.layout.count() {
+            return Some(Need::Checked(Verdict::Text));
+        }
+        return Some(match verdict_here(reader, point) {
+            Verdict::Unknown | Verdict::Unchecked => Need::Read { page: point.page, check: true },
+            verdict => Need::Checked(verdict),
         });
     }
     let (point, serial) = image.boxes_wanted()?;
@@ -79,7 +97,8 @@ fn need(reader: &Reader) -> Option<Need> {
 }
 
 /// **The next job for a click waiting on `tab`,** at this urgency: its text read and the worker's boxes are quick, and go before tiles; the hidden-text
-/// check draws the page, and goes when there's nothing better to do, as a selection's does. What's known with no job is taken here.
+/// check draws the page, and goes when there's nothing better to do, as a selection's does. What's known with no job is taken here, and what it makes the
+/// app's news is told as the thread that draws plans (`engine/run.rs`).
 pub(super) fn plan(reader: &mut Reader, tab: u32, urgency: Urgency) -> Option<JobPlan> {
     let kind = loop {
         match need(reader)? {
@@ -87,6 +106,11 @@ pub(super) fn plan(reader: &mut Reader, tab: u32, urgency: Urgency) -> Option<Jo
                 let image = &mut reader.pointer.selecting.image;
                 let page = image.text_wanted()?.page;
                 image.text_read(page, |_| verdict);
+            }
+            Need::Checked(verdict) => {
+                let image = &mut reader.pointer.selecting.image;
+                let page = image.check_wanted()?.page;
+                image.check_read(page, |_| verdict);
             }
             Need::Nothing(serial) => reader.pointer.selecting.image.boxes_said(serial, Under::No),
             Need::Read { page, check } if check == (urgency == Urgency::WhenIdle) => break (page, PlanKind::Text { check }),
@@ -113,8 +137,17 @@ pub(super) fn busy(reader: &Reader) -> bool {
     need(reader).is_some()
 }
 
-/// **What the worker said of the `serial`th click on `tab`:** taken if it's still the one waiting for it. A job stopped is asked again; any other end
-/// (the page withheld or unreadable, the file refused) isn't known, and the click is looked for, as it was before the filter.
+/// A click waiting on its page's hidden-text check, decided now if the text held says (its check in, or the page heavy). After a text job and the
+/// worker's boxes, so what it decides is told with that job's end.
+pub(super) fn text_came(reader: &mut Reader) {
+    if let Some(point) = reader.pointer.selecting.image.check_wanted() {
+        let verdict = verdict_here(reader, point);
+        reader.pointer.selecting.image.check_read(point.page, |_| verdict);
+    }
+}
+
+/// **What the worker said of the `serial`th click on `tab`:** taken if it's still the one waiting for it. A job stopped is asked again; any other end (the
+/// page's drawing failed or was stopped, withheld, its file refused) is no picture there, and the click picks nothing.
 pub(super) fn boxes_said(reader: &mut Reader, tab: u32, serial: u32, outcome: Outcome) {
     if reader.docs.hot != Some(tab) {
         return;
@@ -122,9 +155,10 @@ pub(super) fn boxes_said(reader: &mut Reader, tab: u32, serial: u32, outcome: Ou
     let under = match outcome {
         Outcome::ImageUnder(under) => under,
         Outcome::Cancelled => return,
-        _ => Under::NotKnown,
+        _ => Under::No,
     };
     reader.pointer.selecting.image.boxes_said(serial, under);
+    text_came(reader);
 }
 
 /// The click the app was told to look for, on the tab showing: the tab, the point, and its serial.

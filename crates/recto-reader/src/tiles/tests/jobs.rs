@@ -65,7 +65,7 @@ fn a_heavy_page_is_drawn_in_regions_with_no_preview() {
             JobKind::Size => Outcome::Size(PageBox { width: 1224.0, height: 1584.0 }),
             JobKind::Text { .. } => panic!("no text was asked for"),
             JobKind::Links => Outcome::Links(None),
-            JobKind::ImageBoxes { .. } => Outcome::ImageUnder(crate::image_pick::Under::NotKnown),
+            JobKind::ImageBoxes { .. } => Outcome::ImageUnder(crate::image_pick::Under::No),
             JobKind::Traits => Outcome::Heavy(true),
             JobKind::Draw { what, .. } => {
                 kinds.push(*what);
@@ -104,7 +104,7 @@ fn a_page_whose_size_cant_be_read_is_asked_once() {
             JobKind::Size => Outcome::Size(letter()),
             JobKind::Text { .. } => panic!("no text was asked for"),
             JobKind::Links => Outcome::Links(None),
-            JobKind::ImageBoxes { .. } => Outcome::ImageUnder(crate::image_pick::Under::NotKnown),
+            JobKind::ImageBoxes { .. } => Outcome::ImageUnder(crate::image_pick::Under::No),
             JobKind::Traits => Outcome::Heavy(false),
             JobKind::Draw { .. } => Outcome::Drawn {
                 kind: TileKind::Colour,
@@ -146,7 +146,7 @@ fn what_a_job_found_before_an_edit_is_thrown_away() {
             JobKind::Size => reader.finish(job, Outcome::Size(letter())),
             JobKind::Text { .. } => panic!("no text was asked for"),
             JobKind::Links => reader.finish(job, Outcome::Links(None)),
-            JobKind::ImageBoxes { .. } => reader.finish(job, Outcome::ImageUnder(crate::image_pick::Under::NotKnown)),
+            JobKind::ImageBoxes { .. } => reader.finish(job, Outcome::ImageUnder(crate::image_pick::Under::No)),
             JobKind::Traits => break job,
             JobKind::Draw { .. } => panic!("traits come before drawing"),
         }
@@ -163,7 +163,7 @@ fn what_a_job_found_before_an_edit_is_thrown_away() {
             JobKind::Size => reader.finish(job, Outcome::Size(letter())),
             JobKind::Text { .. } => panic!("no text was asked for"),
             JobKind::Links => reader.finish(job, Outcome::Links(None)),
-            JobKind::ImageBoxes { .. } => reader.finish(job, Outcome::ImageUnder(crate::image_pick::Under::NotKnown)),
+            JobKind::ImageBoxes { .. } => reader.finish(job, Outcome::ImageUnder(crate::image_pick::Under::No)),
             JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
             JobKind::Draw { .. } => break job,
         }
@@ -194,7 +194,7 @@ fn no_surface_serves_two_files() {
                 JobKind::Size => Outcome::Size(letter()),
                 JobKind::Text { .. } => panic!("no text was asked for"),
                 JobKind::Links => Outcome::Links(None),
-                JobKind::ImageBoxes { .. } => Outcome::ImageUnder(crate::image_pick::Under::NotKnown),
+                JobKind::ImageBoxes { .. } => Outcome::ImageUnder(crate::image_pick::Under::No),
                 JobKind::Traits => Outcome::Heavy(false),
                 JobKind::Draw { surface, .. } => {
                     seen.insert(surface.id());
@@ -274,7 +274,7 @@ fn a_failed_page_says_why_and_isnt_asked_for_again() {
             JobKind::Size => Outcome::Size(letter()),
             JobKind::Text { .. } => panic!("no text was asked for"),
             JobKind::Links => Outcome::Links(None),
-            JobKind::ImageBoxes { .. } => Outcome::ImageUnder(crate::image_pick::Under::NotKnown),
+            JobKind::ImageBoxes { .. } => Outcome::ImageUnder(crate::image_pick::Under::No),
             JobKind::Traits => Outcome::Heavy(false),
             JobKind::Draw { .. } if job.position == 0 => Outcome::PageFailed {
                 message: "This page couldn't be drawn.".into(),

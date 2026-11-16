@@ -63,6 +63,11 @@ impl Pointer {
         self.selecting.take_copy_signal()
     }
 
+    /// Whether the app has news of a click's image waiting, not taking it.
+    pub(crate) fn has_image_news(&self) -> bool {
+        self.selecting.image.has_news()
+    }
+
     /// Whether the app is to hear of a click's image, once ([`crate::image_pick::ImageSelection::take_news`]).
     pub(crate) fn take_image_news(&mut self) -> bool {
         self.selecting.image.take_news()
@@ -275,6 +280,7 @@ impl Reader {
             Some((text, checked)) => self.pointer.selecting.page_read(position, text, checked, &visible),
             None => self.pointer.selecting.page_failed(position, &visible),
         }
+        super::image_pick::text_came(self);
         if self.pointer.revealing.is_some_and(|(_, range, _)| range.start.page == position) {
             self.try_reveal();
         }

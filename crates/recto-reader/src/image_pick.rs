@@ -6,13 +6,16 @@
 //! **A click costs a private worker only where an image may be** (the review of `build/image-select`, S1: a still click on body text, on a blank margin,
 //! or the first click of a double click each started a worker of 351 MiB on the USGS map). A click goes through its [`Stage`]s, and the app is told to look
 //! only at the end of them ([`ImageSelection::take_news`]):
-//! 1. **The page's text first** ([`Verdict`]). Text that shows keeps a click (coordinator, 2026-11-16): a caption drawn over a figure is text's to select, and
-//!    hidden text, as a scan's OCR layer, isn't. A page's first read has no hidden-text check, as the check draws the page, so a click on text not yet
-//!    checked waits for the check, which is asked for. It always comes to an answer: a check tried and failed, or a page known to be heavy (never drawn for
-//!    a check, as for a copy), takes its text as showing; a page whose text isn't held yet waits for its read, which the press asked for already.
-//! 2. **Then the tab's own worker,** which has the page open, says whether any of the page's images is under the point ([`Under`]), from where it has them
-//!    for dark paper (`DocRenderer::image_boxes`, at most 64 boxes, a superset past that, which is right for this). No image there: nothing's looked for.
-//! 3. **Only then the look,** at most one private worker, and one at a time across the app's clicks and copies (the snapshot tool's one slot).
+//! 1. **The page's text first** ([`Verdict`]), as it's held: text that shows keeps a click (coordinator, 2026-11-16), as a caption drawn over a figure is
+//!    text's to select. A page whose text isn't held yet waits for its read, which the press asked for already.
+//! 2. **Then the tab's own worker,** which has the page open, says whether any picture is under the point ([`Under`]): its walk over the page's objects, for
+//!    a click (`DocRenderer::image_boxes_for_a_click`): dark paper's boxes where it has them, and past 64 pictures apart the boxes held and one round the
+//!    rest, so always a superset. A page it can't say of (its drawing failed or was stopped, it's withheld or its file refused, its walks killed past
+//!    their cap) has no picture to a click, which picks nothing there; the snapshot tool still serves it. No picture there: nothing's looked for.
+//! 3. **Then, on text not yet checked for hidden text** (a page's first read has no check, as the check draws the page), the check: hidden text, as a scan's
+//!    OCR layer, doesn't keep the click. Asked only where a picture may be, so a click on text with none under it draws nothing. It always comes to an
+//!    answer: a check tried and failed, or a page known to be heavy (never drawn for a check, as for a copy), takes its text as showing.
+//! 4. **Only then the look,** at most one private worker, and one at a time across the app's clicks and copies (the snapshot tool's one slot).
 //!
 //! **It's the other kind of selection, held beside the text selection** ([`crate::selection::Selecting`]), which tells it in one place when the text
 //! selection ends or changes ([`ImageSelection::ended`]): a press, a drag that selects, Select All, Find's hit, another tab or other pages, the file seen to
@@ -45,8 +48,10 @@ pub struct ImagePick {
 /// **Whether text that shows is where a click landed,** as the page's text says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
-    /// The page's text isn't here, or there's text there whose hidden-text check hasn't been tried.
+    /// The page's text isn't here.
     Unknown,
+    /// There's text there whose hidden-text check hasn't been tried.
+    Unchecked,
     /// No text that shows there: maybe an image's.
     Image,
     /// Text that shows there: text's to select.
@@ -60,32 +65,26 @@ pub fn verdict_at(text: Option<&PageText>, settled: bool, point: PagePoint) -> V
         None => Verdict::Unknown,
         Some(text) if !text.is_over_text(point.x, point.y) => Verdict::Image,
         Some(text) if text.hidden_checked() || settled => Verdict::Text,
-        Some(_) => Verdict::Unknown,
+        Some(_) => Verdict::Unchecked,
     }
 }
 
-/// **Whether any of a page's images is under a click,** as the tab's own worker has their boxes.
+/// **Whether any of a page's pictures may be under a click,** as the tab's own worker has their boxes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Under {
     Yes,
     No,
-    /// The worker couldn't say (the page has too many pictures apart, it couldn't be asked, or its file was refused): looked for, as before the filter.
-    NotKnown,
 }
 
 /// **Whether `at` is in any of `boxes`,** both in 65535ths of the page from its top left (`[left, top, right, bottom]` and `[x, y]`), edges included.
-/// `None` for boxes that aren't known. A box from a hostile file is only compared, so one upside down or of no area holds nothing.
+/// `None`, boxes the worker couldn't give (its page failed, withheld, refused, stopped), is no picture: a click picks nothing there. A box from a hostile
+/// file is only compared, so one upside down or of no area holds nothing.
 pub fn under(boxes: Option<&[[u16; 4]]>, [x, y]: [u16; 2]) -> Under {
-    match boxes {
-        None => Under::NotKnown,
-        Some(boxes)
-            if boxes
-                .iter()
-                .any(|&[left, top, right, bottom]| (left..=right).contains(&x) && (top..=bottom).contains(&y)) =>
-        {
-            Under::Yes
-        }
-        Some(_) => Under::No,
+    let holds = |&[left, top, right, bottom]: &[u16; 4]| (left..=right).contains(&x) && (top..=bottom).contains(&y);
+    if boxes.is_some_and(|boxes| boxes.iter().any(holds)) {
+        Under::Yes
+    } else {
+        Under::No
     }
 }
 
@@ -106,10 +105,14 @@ enum Stage {
     /// No click waits.
     #[default]
     Idle,
-    /// The page's text, or its hidden-text check, is to say whether text that shows is there.
+    /// The page's text is to say whether text that shows is there.
     Text,
     /// No text that shows there: the tab's own worker is to say whether an image is.
     Boxes,
+    /// Text not checked for hidden text there: the worker first, and the check only if a picture may be under it.
+    BoxesThenCheck,
+    /// A picture may be under text not checked: the page's hidden-text check is to say whether the text shows.
+    Check,
     /// An image may be there, and the app's to be told to look.
     Look,
     /// The app's been told, and its look is on its way or waits its turn.
@@ -181,6 +184,7 @@ impl ImageSelection {
         let stage = match verdict {
             Verdict::Text => Stage::Idle,
             Verdict::Unknown => Stage::Text,
+            Verdict::Unchecked => Stage::BoxesThenCheck,
             Verdict::Image => Stage::Boxes,
         };
         self.drop_wanted();
@@ -208,12 +212,13 @@ impl ImageSelection {
         self.wanted.stage = Stage::Idle;
     }
 
-    /// The click whose page's text, or its check, is to say whose it is.
+    /// The click whose page's text is to say whose it is.
     pub fn text_wanted(&self) -> Option<PagePoint> {
         (self.wanted.stage == Stage::Text).then_some(self.wanted.point)
     }
 
-    /// **What the page's text says now, of a click on `page` waiting for it:** on text that shows it goes, as text's; off it, the worker's asked.
+    /// **What the page's text says now, of a click on `page` waiting for it:** on text that shows it goes, as text's; off it, or on text not checked, the
+    /// worker's asked.
     pub fn text_read(&mut self, page: u32, verdict: impl FnOnce(PagePoint) -> Verdict) {
         if self.wanted.stage != Stage::Text || self.wanted.point.page != page {
             return;
@@ -221,24 +226,50 @@ impl ImageSelection {
         match verdict(self.wanted.point) {
             Verdict::Text => self.wanted.stage = Stage::Idle,
             Verdict::Image => self.wanted.stage = Stage::Boxes,
+            Verdict::Unchecked => self.wanted.stage = Stage::BoxesThenCheck,
             Verdict::Unknown => {}
         }
     }
 
     /// The click the tab's own worker is to say of, with its serial.
     pub fn boxes_wanted(&self) -> Option<(PagePoint, u32)> {
-        (self.wanted.stage == Stage::Boxes).then_some((self.wanted.point, self.wanted.serial))
+        matches!(self.wanted.stage, Stage::Boxes | Stage::BoxesThenCheck).then_some((self.wanted.point, self.wanted.serial))
     }
 
-    /// **What the worker said of the `serial`th click,** if it's still the one waiting for that: no image there and it goes; otherwise the app's to look.
+    /// **What the worker said of the `serial`th click,** if it's still the one waiting for that: no picture there and it goes; one may be, and the app's
+    /// to look, or on text not checked the check's asked first.
     pub fn boxes_said(&mut self, serial: u32, under: Under) {
-        if self.wanted.stage != Stage::Boxes || self.wanted.serial != serial {
+        if self.boxes_wanted().is_none() || self.wanted.serial != serial {
             return;
         }
-        self.wanted.stage = match under {
-            Under::No => Stage::Idle,
-            Under::Yes | Under::NotKnown => Stage::Look,
+        self.wanted.stage = match (under, self.wanted.stage) {
+            (Under::No, _) => Stage::Idle,
+            (Under::Yes, Stage::BoxesThenCheck) => Stage::Check,
+            (Under::Yes, _) => Stage::Look,
         };
+    }
+
+    /// The click on text not checked, with a picture maybe under it, whose page's hidden-text check is to say whose it is.
+    pub fn check_wanted(&self) -> Option<PagePoint> {
+        (self.wanted.stage == Stage::Check).then_some(self.wanted.point)
+    }
+
+    /// **What the page's text says now its check is in,** of a click on `page` waiting for it: text that shows keeps it; hidden text there doesn't, and the
+    /// app's to look.
+    pub fn check_read(&mut self, page: u32, verdict: impl FnOnce(PagePoint) -> Verdict) {
+        if self.wanted.stage != Stage::Check || self.wanted.point.page != page {
+            return;
+        }
+        match verdict(self.wanted.point) {
+            Verdict::Text => self.wanted.stage = Stage::Idle,
+            Verdict::Image => self.wanted.stage = Stage::Look,
+            Verdict::Unchecked | Verdict::Unknown => {}
+        }
+    }
+
+    /// Whether the app has news to hear ([`Self::take_news`]), not taking it.
+    pub fn has_news(&self) -> bool {
+        self.wanted.stage == Stage::Look || self.wanted.dropped
     }
 
     /// **Whether the app is to be told,** once: a click is ready to be looked for, or one it was told to look for has gone. Told with whatever else
@@ -455,12 +486,12 @@ mod tests {
             Under::No,
             "upside down, or of no area"
         );
-        assert_eq!(under(None, middle), Under::NotKnown);
+        assert_eq!(under(None, middle), Under::No, "a page the worker can't say of: no picture to a click");
     }
 
     /// Failure (S1 of the review): a click is looked for before what's known says an image may be there, so a click on text, on a margin with no image,
     /// or on text whose page isn't checked costs a private worker; or the app's told twice, or not at all. Only a click with no text that shows and the
-    /// worker saying an image is there (or not knowing) is news, once.
+    /// worker saying a picture may be there is news, once.
     #[test]
     fn the_app_is_told_to_look_only_where_an_image_may_be() {
         let point = at(0, 100.0, 100.0);
@@ -472,21 +503,20 @@ mod tests {
         assert!(!image.take_news(), "not before it says");
         image.boxes_said(2, Under::No);
         assert!(!image.finding() && !image.take_news(), "no image there: nothing's looked for");
-        for under in [Under::Yes, Under::NotKnown] {
-            image.clicked(point, 3, Verdict::Image);
-            image.boxes_said(2, Under::Yes);
-            assert_eq!(image.looking(), None, "an older click's answer says nothing");
-            image.boxes_said(3, under);
-            assert!(image.take_news(), "{under:?}: looked for");
-            assert!(!image.take_news(), "once");
-            assert_eq!(image.looking(), Some((point, 3)));
-            image.not_found(3);
-        }
+        image.clicked(point, 3, Verdict::Image);
+        image.boxes_said(2, Under::Yes);
+        assert_eq!(image.looking(), None, "an older click's answer says nothing");
+        image.boxes_said(3, Under::Yes);
+        assert!(image.take_news(), "looked for");
+        assert!(!image.take_news(), "once");
+        assert_eq!(image.looking(), Some((point, 3)));
     }
 
-    /// Failure (S1 of the review, "Unknown always resolves"): a click on text whose page isn't checked is decided before the check (so a scan's hidden words
-    /// keep the click from the scan), or waits for good: on a page whose check failed, a heavy page that's never checked, or a page whose text isn't read
-    /// yet. The check decides when it comes; one tried and failed, or a heavy page, takes the text as showing; a read with no check waits for the check.
+    /// Failure (S1 of the review, "Unknown always resolves"; the second review's fix 1): a click on text whose page isn't checked is decided before the
+    /// check (so a scan's hidden words keep the click from the scan), or waits for good: on a page whose check failed, a heavy page that's never checked,
+    /// or a page whose text isn't read yet; or the check, a draw of the whole page, is run for a click on text with no picture under it, which `main` never
+    /// drew for. The worker's asked first; the check only if a picture may be there, and it decides when it comes; one tried and failed, or a heavy page,
+    /// takes the text as showing.
     #[test]
     fn whose_a_click_on_text_is_always_comes_to_an_answer() {
         let line = |checked: bool| {
@@ -506,11 +536,7 @@ mod tests {
         let on_text = at(0, 80.0, 87.0);
         let (unchecked, checked) = (line(false), line(true));
         assert_eq!(verdict_at(None, true, on_text), Verdict::Unknown, "no text held yet: waits for its read");
-        assert_eq!(
-            verdict_at(Some(&unchecked), false, on_text),
-            Verdict::Unknown,
-            "read without the check: waits for it"
-        );
+        assert_eq!(verdict_at(Some(&unchecked), false, on_text), Verdict::Unchecked, "read without the check");
         assert_eq!(
             verdict_at(Some(&unchecked), true, on_text),
             Verdict::Text,
@@ -526,11 +552,30 @@ mod tests {
         assert_eq!(image.text_wanted(), Some(on_text), "another page's text says nothing");
         image.text_read(0, |_| Verdict::Unknown);
         assert_eq!(image.text_wanted(), Some(on_text), "still not known");
-        image.text_read(0, |_| Verdict::Image);
-        assert_eq!(image.boxes_wanted(), Some((on_text, 1)), "hidden there: the worker's asked");
-        image.clicked(on_text, 2, Verdict::Unknown);
+        image.text_read(0, |_| Verdict::Unchecked);
+        assert_eq!(image.boxes_wanted(), Some((on_text, 1)), "text not checked: the worker's asked first");
+        assert_eq!(image.check_wanted(), None, "and no check yet");
+        image.boxes_said(1, Under::No);
+        assert!(
+            !image.finding() && image.check_wanted().is_none(),
+            "no picture under it: no check, nothing looked for"
+        );
+
+        image.clicked(on_text, 2, Verdict::Unchecked);
+        image.boxes_said(2, Under::Yes);
+        assert_eq!(image.check_wanted(), Some(on_text), "a picture may be under it: now the check");
+        assert!(!image.take_news(), "nothing looked for before it");
+        image.check_read(0, |_| Verdict::Image);
+        assert!(image.take_news(), "hidden there: looked for");
+        image.not_found(2);
+
+        image.clicked(on_text, 3, Verdict::Unchecked);
+        image.boxes_said(3, Under::Yes);
+        image.check_read(0, |_| Verdict::Text);
+        assert!(!image.finding() && !image.take_news(), "it shows: text's");
+        image.clicked(on_text, 4, Verdict::Unknown);
         image.text_read(0, |_| Verdict::Text);
-        assert!(!image.finding(), "it shows: text's, and nothing's looked for");
+        assert!(!image.finding(), "read, it shows: text's, and nothing's asked");
     }
 
     /// Failure ("the last thing a person asked for wins"; should-fix 2 of the review): a look's answer is taken by a click it wasn't for (a newer one, even

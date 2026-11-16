@@ -27,7 +27,7 @@ fn settle_recording(reader: &mut Reader, seen: &mut Vec<Op>) {
             JobKind::Size => Outcome::Size(letter()),
             JobKind::Text { .. } => panic!("no text was asked for"),
             JobKind::Links => Outcome::Links(None),
-            JobKind::ImageBoxes { .. } => Outcome::ImageUnder(crate::image_pick::Under::NotKnown),
+            JobKind::ImageBoxes { .. } => Outcome::ImageUnder(crate::image_pick::Under::No),
             JobKind::Traits => Outcome::Heavy(false),
             JobKind::Draw { .. } => Outcome::Drawn {
                 kind: TileKind::Colour,

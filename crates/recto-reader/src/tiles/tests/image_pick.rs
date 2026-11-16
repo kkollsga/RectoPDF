@@ -86,10 +86,13 @@ fn a_click_asks_the_text_then_the_workers_boxes_and_always_comes_to_an_answer() 
     assert!(next_for_click(&mut reader).is_none(), "on text that shows, nothing more is asked");
     assert!(!reader.pointer.selecting.image.finding());
 
-    // On text held unchecked: the check, and a check that failed takes the text as showing.
+    // On text held unchecked, a picture maybe under it: the worker first, then the check, and a check that failed takes the text as showing.
     reader.take_text(1, 0, Some((line(false), false)));
     click(&mut reader, 80.0, 87.0);
-    let check = next_for_click(&mut reader).expect("the check");
+    let boxes = next_for_click(&mut reader).expect("the worker's boxes first");
+    assert!(matches!(boxes.kind, JobKind::ImageBoxes { .. }), "{boxes:?}");
+    reader.finish(boxes, Outcome::ImageUnder(Under::Yes));
+    let check = next_for_click(&mut reader).expect("then the check");
     assert!(matches!(check.kind, JobKind::Text { check: true }), "{check:?}");
     reader.finish(
         check,
@@ -102,6 +105,7 @@ fn a_click_asks_the_text_then_the_workers_boxes_and_always_comes_to_an_answer() 
         next_for_click(&mut reader).is_none() && !reader.pointer.selecting.image.finding(),
         "a failed check: text's"
     );
+    assert!(!reader.pointer.take_image_news(), "and nothing looked for");
 
     // The same on a heavy page, with no check at all.
     reader.take_text(1, 0, Some((line(false), false)));
@@ -126,10 +130,28 @@ fn a_click_asks_the_text_then_the_workers_boxes_and_always_comes_to_an_answer() 
     assert!(reader.is_settled(), "nothing's left for the thread that draws");
 }
 
-/// Failure: a boxes job the thread stopped is taken as "no image there", so the click picks nothing; or a refused one (a page withheld, the file changed)
-/// leaves the click waiting for good. Stopped, it's asked again; refused, the click is looked for, as before the filter.
+/// Failure (the second review of `build/image-select`, fix 1): a click on text its page's first read hasn't checked for hidden text runs the check, a draw
+/// of the whole page, though no picture is under it, which `main` never drew for a plain click. The tab's own worker is asked first, and with no picture
+/// there nothing more is asked.
 #[test]
-fn a_boxes_job_stopped_is_asked_again_and_one_refused_is_looked_for() {
+fn a_click_on_text_with_no_picture_under_it_draws_no_check() {
+    let mut reader = reader_on(3);
+    settle(&mut reader);
+    reader.take_text(1, 0, Some((line(false), false)));
+    click(&mut reader, 80.0, 87.0);
+    let first = next_for_click(&mut reader).expect("something asked");
+    assert!(matches!(first.kind, JobKind::ImageBoxes { .. }), "the worker's boxes, not the check: {first:?}");
+    reader.finish(first, Outcome::ImageUnder(Under::No));
+    assert!(next_for_click(&mut reader).is_none(), "no picture under it: no check");
+    assert!(!reader.pointer.selecting.image.finding() && !reader.pointer.take_image_news());
+}
+
+/// Failure (the second review of `build/image-select`, its blocker): a boxes job the worker couldn't answer (the page withheld or failing, its file
+/// changed or refused, the renderer stopped) is taken as "an image may be there", so a click on such a page starts a private worker, the costliest on a
+/// page whose drawing crashed, which will most likely crash the same way; or a stopped one is taken as either answer and not asked again. Stopped, it's
+/// asked again; refused, the click picks nothing and the app isn't told to look, and the page isn't marked as failing for it.
+#[test]
+fn a_boxes_job_stopped_is_asked_again_and_one_refused_picks_nothing() {
     let mut reader = reader_on(3);
     settle(&mut reader);
     reader.take_text(1, 0, Some((line(true), true)));
@@ -145,7 +167,8 @@ fn a_boxes_job_stopped_is_asked_again_and_one_refused_is_looked_for() {
             may_pass: false,
         },
     );
-    assert!(reader.pointer.take_image_news(), "not known: looked for");
+    assert!(!reader.pointer.take_image_news(), "refused: nothing looked for");
+    assert!(!reader.pointer.selecting.image.finding(), "and nothing waits");
     assert!(
         reader.docs.shown().unwrap().drawing.issues.is_empty(),
         "and the page isn't marked as failing for it"
