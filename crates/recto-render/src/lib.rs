@@ -100,7 +100,8 @@ pub trait RenderBackend {
     fn image_boxes(&mut self, page: u32) -> Result<Vec<[u16; 4]>, RenderError>;
 
     /// **The same walk, for a click** (the reader's image picked with a click): never too many, as past [`recto_proto::MAX_IMAGE_BOXES`] pictures apart
-    /// every place met after goes into one box round them, `beyond`, apart from the places (`places.rs`). Dark paper never asks this.
+    /// every place met after goes into one box round them, `beyond`, apart from the places (`places.rs`); and a picture inside a form by its own box,
+    /// through the forms' matrices, as the contents walk places it, where dark paper takes the outermost form's. Dark paper never asks this.
     fn image_boxes_for_a_click(&mut self, page: u32) -> Result<recto_proto::ClickPlaces, RenderError>;
 
     /// Reads a page's characters, in the order the backend understands them.

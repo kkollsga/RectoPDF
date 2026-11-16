@@ -93,17 +93,11 @@ impl DocRenderer {
     }
 
     /// **Where a page's images may be, for a click** (the reader's image picked with a click): a superset, never too many, the walk's answer to a request
-    /// with the click's flag (`places.rs`), typed as it's decoded: the pictures' boxes, and apart from them the box where a picture may be anywhere,
-    /// which is never read as one; or dark paper's boxes for the page, if it has them, which are the same with nothing past them. `None` if it isn't
-    /// known: stale (nothing remembered), or the page couldn't be asked or the asking failed, which a click takes as no picture there. Remembered apart
-    /// from dark paper's, under the same cap, so dark paper's answer is never this one.
+    /// with the click's flag (`places.rs`), typed as it's decoded: the pictures' boxes, each by its own box through the forms it's in, and apart from
+    /// them the box where a picture may be anywhere, which is never read as one. Never dark paper's boxes, which give a picture in a form the outermost
+    /// form's box. `None` if it isn't known: stale (nothing remembered), or the page couldn't be asked or the asking failed, which a click takes as no
+    /// picture there. Remembered apart from dark paper's, under the same cap.
     pub fn image_boxes_for_a_click(&mut self, page: u32, generation: u64) -> Option<proto::ClickPlaces> {
-        if let Some(Some(boxes)) = self.images.places.get(&page) {
-            return Some(proto::ClickPlaces {
-                boxes: boxes.clone(),
-                beyond: None,
-            });
-        }
         if let Some(known) = self.images.click_places.get(&page) {
             return known.clone();
         }

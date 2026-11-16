@@ -9,8 +9,8 @@
 //! 1. **The page's text first** ([`Verdict`]), as it's held: text that shows keeps a click (coordinator, 2026-11-16), as a caption drawn over a figure is
 //!    text's to select. A page whose text isn't held yet waits for its read, which the press asked for already.
 //! 2. **Then the tab's own worker,** which has the page open, says whether any picture is under the point ([`Under`]): its walk over the page's objects, for
-//!    a click (`DocRenderer::image_boxes_for_a_click`): dark paper's boxes where it has them, and past 64 pictures apart the boxes held and one
-//!    round the rest, so always a superset. A page it can't say of (its drawing failed or was stopped, it's withheld or its file refused,
+//!    a click (`DocRenderer::image_boxes_for_a_click`): each picture by its own box, through the forms it's in, and past 64 pictures apart the boxes
+//!    held and one round the rest, so always a superset. A page it can't say of (its drawing failed or was stopped, it's withheld or its file refused,
 //!    its walks killed past their cap) has no picture to a click, which picks nothing there; the snapshot tool still serves it. No picture there:
 //!    nothing's looked for.
 //! 3. **Then, on text not yet checked for hidden text** (a page's first read has no check, as the check draws the page), the check: hidden text, as a scan's

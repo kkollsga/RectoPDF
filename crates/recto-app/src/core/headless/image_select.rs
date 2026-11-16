@@ -877,6 +877,40 @@ fn a_persons_plain_images_isnt_taken_for_a_clicks_look() {
     assert_eq!(picked(&app), Some((1, FIGURE)), "and the look goes on as ever");
 }
 
+/// A page whose whole content is one form, drawn twice the size it's written at (`/Matrix [2 0 0 2 0 0]`), as a re-imposed, stamped or slide-deck page
+/// is: inside it, a picture over the whole page (`/Bg`, number 1) and the figure (number 2), 200 x 150 points at 100, 242 from the top as shown.
+fn page_in_a_form() -> Vec<u8> {
+    let first = recto_testpdf::first_extra_object(1);
+    let form = recto_testpdf::Object::Stream {
+        dict: format!(
+            "/Type /XObject /Subtype /Form /BBox [0 0 306 396] /Matrix [2 0 0 2 0 0] /Resources << /XObject << /Bg {} 0 R /Im {} 0 R >> >>",
+            first + 1,
+            first + 2
+        ),
+        data: b"q 306 0 0 396 0 0 cm /Bg Do Q q 100 0 0 75 50 200 cm /Im Do Q".to_vec(),
+    };
+    recto_testpdf::pages_with(
+        &[recto_testpdf::Page::new(b"q /Fm Do Q".to_vec())],
+        &format!("/XObject << /Fm {first} 0 R >>"),
+        vec![form, noisy_picture(), images().remove(0)],
+    )
+}
+
+/// Failure (the review of `build/scan-not-picked`, its first regression): the tab's own worker gives a picture inside a form the box of the outermost form,
+/// which on a page wrapped in one page-wide form is the page, so the filter takes the figure for a scan and a click on it sends no look and picks nothing.
+/// The figure's own box, through the form's matrix, is what the click is judged by: a click on it picks it through one look; a click on the page-wide
+/// picture beside it, the page's own, sends none.
+#[test]
+fn a_figure_inside_a_page_wide_form_is_picked() {
+    let disk = Disk::new();
+    let doc = disk.file("in-a-form.pdf", &page_in_a_form());
+    let app = opened(disk, &doc);
+    assert_eq!(looks_sent(&app, |app| drop(let_go(app, ON_FIGURE, None, 1))), 1, "the figure: one look");
+    assert_eq!(picked(&app), Some((2, FIGURE)), "the figure, by its own box");
+    assert_eq!(looks_sent(&app, |app| drop(let_go(app, OFF, None, 1))), 0, "the page-wide picture beside it");
+    assert_eq!(picked(&app), None);
+}
+
 /// A page of more objects than the worker's walk looks at (20,000): 20,001 small squares, then the figure, placed as [`figure`]'s is.
 fn past_the_walks_cap() -> Vec<u8> {
     let mut content = b"0 0 0 rg\n".to_vec();
