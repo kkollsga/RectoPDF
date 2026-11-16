@@ -126,7 +126,7 @@ AnswerParts (pub struct, derives Clone, Copy)
 AnswerParts::pub fn ask_password(&self, path: &Path)
 AnswerParts::pub fn fail_open(&self, words: String)
 AnswerParts::pub fn find_handle<R>(&self, step: impl FnOnce(&FindHandle<'_, dyn Listener>) -> R) -> R
-AnswerParts::pub fn image_looked<R>(&self, said: impl FnOnce(&super::image_select::ImageSelect, &[Engine]) -> R) -> R
+AnswerParts::pub fn image_looked(&self, said: impl FnOnce(&super::snapshot_tool::Tool, &[Engine]))
 AnswerParts::pub fn notice(&self, words: String)
 AnswerParts::pub fn person(&self) -> Person<'a>
 AnswerParts::pub fn print_answered(&self, said: impl FnOnce(&super::printing::Printing))
@@ -361,7 +361,6 @@ Serving.pub(crate) waiting_server: Mutex<Option<Server>>
 Tools (pub struct)
 Tools::pub fn chrome(&self) -> &crate::chrome::Chrome
 Tools::pub fn folds(&self) -> &crate::sidebar_access::Folds
-Tools::pub fn image_select(&self) -> &image_select::ImageSelect
 Tools::pub fn new(save_step: &Arc<AtomicU8>) -> Self
 Tools::pub fn printing(&self) -> &printing::Printing
 Tools::pub fn prompts(&self) -> &crate::prompts::Prompts

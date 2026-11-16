@@ -778,6 +778,10 @@ impl Reader {
             }
             return;
         }
+        if let JobKind::ImageBoxes { serial, .. } = kind {
+            image_pick::boxes_said(self, tab, serial, outcome);
+            return;
+        }
         // Asked about the pages as they were. An edit has changed what's at this position since.
         if self.docs.views.get(&tab).is_some_and(|doc| generation < doc.drawing.floor) {
             self.counts.cancelled += 1;
@@ -881,6 +885,9 @@ impl Reader {
             .selecting
             .is_settled(&visible, doc.layout.count(), |page| doc.drawing.heavy.get(&page).copied().unwrap_or(false))
         {
+            return false;
+        }
+        if image_pick::busy(self) {
             return false;
         }
         for page in self.visible_pages(doc) {

@@ -698,6 +698,7 @@ Links::pub fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<
 Links::pub fn take_clicked(&self) -> Option<crate::links::LinkHit>
 Looks (pub(super) struct, derives Debug, Default)
 LowResNote (pub(super) struct, derives Debug)
+Need (private enum, derives Clone, Copy, Debug, PartialEq)
 NoLook (pub(super) enum, derives Debug, PartialEq, Eq)
 NotShowable (pub enum, derives Clone, Copy, Debug, PartialEq, Eq)
 NotShowable::pub const fn code(reason: Option<Self>) -> u8
@@ -731,11 +732,11 @@ Pointer::pub(crate) fn link_clicked_for_qa(&mut self, hit: crate::links::LinkHit
 Pointer::pub(crate) fn selection_can_be_sent(&self, pages: u32) -> bool
 Pointer::pub(crate) fn selection_notice(&self) -> Option<Notice>
 Pointer::pub(crate) fn selection_range(&self) -> Option<recto_index::select::Range>
-Pointer::pub(crate) fn selection_release(&mut self)
 Pointer::pub(crate) fn selection_text_now(&self, pages: u32) -> Option<String>
 Pointer::pub(crate) fn take_clicked_link(&mut self) -> Option<crate::links::LinkHit>
 Pointer::pub(crate) fn take_copied(&mut self) -> Option<recto_index::select::CopiedText>
 Pointer::pub(crate) fn take_copy_signal(&mut self) -> bool
+Pointer::pub(crate) fn take_image_news(&mut self) -> bool
 Points (pub struct, derives Clone, Copy)
 Points::pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)>
 Points::pub fn has_document(&self) -> bool
@@ -797,6 +798,7 @@ Reader::pub fn running_is_wanted(&self) -> bool
 Reader::pub fn select_all(&mut self)
 Reader::pub fn selection_drag(&mut self, x: f64, y: f64)
 Reader::pub fn selection_press(&mut self, x: f64, y: f64, clicks: u32, shift: bool)
+Reader::pub fn selection_release(&mut self)
 Reader::pub fn set_margins(&mut self, left: f64, right: f64)
 Reader::pub fn set_paper(&mut self, paper: PaperKind)
 Reader::pub fn set_spread(&mut self, spread: Spread)
@@ -843,10 +845,11 @@ Selection::pub fn drag(&self, x: f64, y: f64) -> Vec<Op>
 Selection::pub fn has_any(&self) -> bool
 Selection::pub fn hidden_sets(&self) -> usize
 Selection::pub fn hot(&self) -> Option<(u32, Option<recto_index::select::Range>)>
-Selection::pub fn image_found(&self, tab: u32, point: PagePoint, number: u32, rect: Rect) -> bool
-Selection::pub fn image_not_found(&self, tab: u32, point: PagePoint)
+Selection::pub fn image_finding(&self) -> bool
+Selection::pub fn image_found(&self, tab: u32, serial: u32, number: u32, rect: Rect) -> bool
+Selection::pub fn image_looking(&self) -> Option<(u32, PagePoint, u32)>
+Selection::pub fn image_not_found(&self, tab: u32, serial: u32)
 Selection::pub fn image_picked(&self) -> Option<(u32, ImagePick)>
-Selection::pub fn image_wanted(&self) -> Option<(u32, PagePoint)>
 Selection::pub fn is_over_text(&self, x: f64, y: f64) -> bool
 Selection::pub fn let_go_image(&self) -> bool
 Selection::pub fn notice(&self) -> Option<Notice>
@@ -938,9 +941,11 @@ WorkerFigures::pub fn footprint(&self) -> (u64, u64)
 WorkerFigures::pub fn pids(&self) -> Vec<u32>
 WorkerFigures::pub fn walled(&self) -> u32
 Zoom (pub enum, derives Clone, Copy, Debug, PartialEq)
-fn (pub(crate)) pub(crate) fn found(reader: &mut Reader, tab: u32, point: PagePoint, number: u32, rect: Rect) -> bool
+fn (pub(crate)) pub(crate) fn finding(reader: &Reader) -> bool
+fn (pub(crate)) pub(crate) fn found(reader: &mut Reader, tab: u32, serial: u32, number: u32, rect: Rect) -> bool
 fn (pub(crate)) pub(crate) fn let_go(reader: &mut Reader) -> bool
-fn (pub(crate)) pub(crate) fn not_found(reader: &mut Reader, tab: u32, point: PagePoint)
+fn (pub(crate)) pub(crate) fn looking(reader: &Reader) -> Option<(u32, PagePoint, u32)>
+fn (pub(crate)) pub(crate) fn not_found(reader: &mut Reader, tab: u32, serial: u32)
 fn (pub(crate)) pub(crate) fn picked(reader: &Reader) -> Option<(u32, ImagePick)>
 fn (pub(crate)) pub(crate) fn put_hidden(sets: &mut HiddenSets, tab: u32, file: PathBuf, set: Option<Arc<HiddenAnnots>>) -> Vec<u32>
 fn (pub(crate)) pub(crate) fn redraw_own_pages(reader: &mut Reader, tab: u32, file_pages: &[u32])
@@ -948,7 +953,6 @@ fn (pub(crate)) pub(crate) fn set(reader: &mut Reader, tab: u32, on: bool) -> bo
 fn (pub(crate)) pub(crate) fn set_band(reader: &mut Reader, band: Option<(u32, u16, u16)>)
 fn (pub(crate)) pub(crate) fn system_takes_only_when_told() [qa feature only]
 fn (pub(crate)) pub(crate) fn tell(host: &mut HostQueue, docs: &Docs, marks: &TabMarks, paper: PaperKind)
-fn (pub(crate)) pub(crate) fn wanted(reader: &Reader) -> Option<(u32, PagePoint)>
 fn (pub) pub fn look(paper: PaperKind) -> (u32, bool)
 fn (pub) pub fn place_stamp() -> u64
 fn (pub) pub fn typed_zoom(text: &str, decimal: char) -> Option<Zoom>

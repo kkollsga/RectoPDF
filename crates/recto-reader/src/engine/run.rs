@@ -585,6 +585,15 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
         JobKind::Text { .. } => Outcome::TextFailed,
         // Read before a renderer's asked for: see the thread's loop.
         JobKind::Links => Outcome::Links(None),
+        // A click's filter: where the tab's own worker has the page's images, asked once a page and kept as dark paper keeps them.
+        JobKind::ImageBoxes { at, .. } => {
+            let boxes = doc.image_boxes(job.source_page, job.generation);
+            if doc.is_stale(job.generation) {
+                Outcome::Cancelled
+            } else {
+                Outcome::ImageUnder(crate::image_pick::under(boxes.as_deref(), *at))
+            }
+        }
         JobKind::Size => match doc.page_size(job.source_page) {
             Ok((width, height)) => Outcome::Size(PageBox { width, height }),
             Err(failure) if whole_file(failure) => document_failed(failure),

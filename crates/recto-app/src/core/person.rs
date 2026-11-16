@@ -86,14 +86,12 @@ impl<'a> Person<'a> {
         super::snapshot_tool::anyway(self.app, serial);
     }
 
-    /// An image picked with a click's own: the person's Copy of it, taken as the snapshot tool's click on it is ([`super::image_select::copy`],
-    /// [`super::snapshot_tool::taken`]); false with none picked.
+    /// An image picked with a click's own: the person's Copy of it, taken as the snapshot tool's click on it is ([`super::image_select::copy_picked`]);
+    /// false with none picked.
     pub fn copy_image(self) -> bool {
-        let copying = super::image_select::copy(&self.app.panes, &self.app.engine, self.app.tools.tool());
-        if copying {
-            super::snapshot_tool::taken(self.app);
-        }
-        copying
+        super::image_select::copy_picked(&self.app.panes, &self.app.engine, self.app.tools.tool(), || {
+            super::snapshot_tool::taken(self.app)
+        })
     }
 }
 

@@ -56,6 +56,9 @@ pub trait EngineEvents: Send + Sync {
     fn file_replaced(&self, _tab: u32) {}
     /// The worker has a tab's own file open, and this is how long it says it is, and which version.
     fn file_length(&self, _tab: u32, _pages: u32, _version: u64) {}
+    /// **An image picked with a click** ([`crate::image_pick`]): a click is to be looked for, as its page's text and the worker's boxes say an image may be
+    /// there, or one being looked for has gone. The app's look for it starts or stops ([`Selection::image_looking`]).
+    fn image_wanted(&self) {}
 }
 
 /// How the engine runs.
@@ -734,12 +737,14 @@ fn note_change(shared: &Shared, note: Option<String>) {
 struct SelectingNews {
     notice: Option<Notice>,
     copy_ready: bool,
+    image_wanted: bool,
 }
 
 fn selecting_news(reader: &mut Reader) -> SelectingNews {
     SelectingNews {
         notice: reader.pointer.selection_notice(),
         copy_ready: reader.pointer.take_copy_signal(),
+        image_wanted: reader.pointer.take_image_news(),
     }
 }
 
@@ -758,6 +763,9 @@ fn tell_selecting(shared: &Shared, news: SelectingNews) {
     }
     if news.copy_ready {
         shared.events.copy_ready();
+    }
+    if news.image_wanted {
+        shared.events.image_wanted();
     }
 }
 

@@ -76,7 +76,8 @@ impl<'a> RowParts<'a> {
     /// The person's selection in the pane being read, to the system's clipboard, by the page view's own copy; `anyway` once they've said to copy a
     /// protected document's text.
     pub fn copy_selection(&self, anyway: bool) {
-        if self.person.copy_image() {
+        // A plain Copy with an image picked is the image's ([`super::image_select::copy`]).
+        if super::image_select::copy(self.person, anyway) {
             return;
         }
         self.panes.reading_engine(self.engine).selection().copy(anyway);

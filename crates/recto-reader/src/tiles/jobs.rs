@@ -43,6 +43,9 @@ pub enum JobKind {
     Text { check: bool },
     /// Read a page's links, from the file's structure, with no worker.
     Links,
+    /// **Whether an image is under a click** ([`crate::image_pick`]), the `serial`th, at `at` in 65535ths of the page, as the tab's own worker has the
+    /// page's images: asked only while a click waits for it.
+    ImageBoxes { serial: u32, at: [u16; 2] },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +83,10 @@ pub(super) enum PlanKind {
         check: bool,
     },
     Links,
+    ImageBoxes {
+        serial: u32,
+        at: [u16; 2],
+    },
 }
 
 impl JobPlan {
@@ -100,6 +107,7 @@ impl JobPlan {
             PlanKind::Traits => JobKind::Traits,
             PlanKind::Text { check } => JobKind::Text { check },
             PlanKind::Links => JobKind::Links,
+            PlanKind::ImageBoxes { serial, at } => JobKind::ImageBoxes { serial, at },
             PlanKind::Draw { scale, mut rect, what, paper } => {
                 let surface = match what {
                     DrawKind::Preview => Self::take_surface(rect.width, rect.height)?,
@@ -328,6 +336,8 @@ pub enum Outcome {
     TextFailed,
     /// A page's links, or none if they couldn't be read.
     Links(Option<Arc<recto_core::nav::PageLinks>>),
+    /// Whether an image is under a click, as the worker has the page's images.
+    ImageUnder(crate::image_pick::Under),
 }
 
 #[derive(Debug)]
@@ -457,8 +467,10 @@ impl Work {
             JobKind::Draw { scale, rect, what, .. } => (Some(*rect), *scale, *what == DrawKind::Preview),
             _ => (None, 0.0, false),
         };
+        // A click's image boxes are wanted wherever its page is, as a read is: the click waits on them.
         let (text, check) = match job.kind {
             JobKind::Text { check } => (true, check),
+            JobKind::ImageBoxes { .. } => (true, false),
             _ => (false, false),
         };
         // Started, so its surface, if it needed one, was made: no retry is pending.

@@ -41,7 +41,7 @@ impl Selection<'_> {
     }
 
     pub fn release(&self) -> Vec<Op> {
-        self.engine.pointer_did(|reader| reader.pointer.selection_release())
+        self.engine.pointer_did(|reader| reader.selection_release())
     }
 
     /// Whether the selection can be sent to the Services menu as it stands, which it's asked on the UI thread. Nothing's built.

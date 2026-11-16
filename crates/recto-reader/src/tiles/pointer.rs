@@ -19,7 +19,7 @@ pub(crate) struct Pointer {
 
 // size: held at what it was on 2026-11-13 (macOS, debug and release alike) before R3.6 moved `Reader`'s methods onto its parts, so the move, or a field added later, can't grow it unseen.
 // 664 bytes then; 536 once a copy on its way was boxed (2026-11-16), and 568 with the image picked with a click beside the text selection (32 bytes:
-// the click waiting, the image boxed, the page its box is on), `build/image-select`.
+// the click waiting with its serial and stage, the image boxed, the page its box is on), `build/image-select`.
 #[cfg(target_os = "macos")]
 const _: () = assert!(size_of::<Pointer>() <= 568, "what the pointer does grew");
 
@@ -31,13 +31,6 @@ impl Pointer {
             selection_before_change: None,
             revealing: None,
         }
-    }
-
-    /// The mouse went up: a drag that was selecting or pressing a link ends, and a still single click off any link may want the image under it
-    /// ([`crate::image_pick`]).
-    pub(crate) fn selection_release(&mut self) {
-        let still = self.linking.release();
-        self.selecting.release(still);
     }
 
     /// The link a click has just landed on, taken once.
@@ -68,6 +61,11 @@ impl Pointer {
 
     pub(crate) fn take_copy_signal(&mut self) -> bool {
         self.selecting.take_copy_signal()
+    }
+
+    /// Whether the app is to hear of a click's image, once ([`crate::image_pick::ImageSelection::take_news`]).
+    pub(crate) fn take_image_news(&mut self) -> bool {
+        self.selecting.image.take_news()
     }
 
     pub(crate) fn take_copied(&mut self) -> Option<recto_index::select::CopiedText> {
@@ -146,6 +144,14 @@ impl Reader {
         }
         self.highlight_ops();
         self.cancel_if_unwanted();
+    }
+
+    /// The mouse went up: a drag that was selecting or pressing a link ends, and a still single click off any link may want the image under it
+    /// ([`crate::image_pick`]).
+    pub fn selection_release(&mut self) {
+        let still = self.pointer.linking.release();
+        self.pointer.selecting.release();
+        super::image_pick::clicked(self, still);
     }
 
     pub fn selection_drag(&mut self, x: f64, y: f64) {

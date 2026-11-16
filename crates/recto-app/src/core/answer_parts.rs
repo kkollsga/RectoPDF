@@ -117,13 +117,18 @@ impl<'a> AnswerParts<'a> {
         if said(self.tools.tool()) {
             self.listener.copy_ready();
         }
+        // A click's look that waited behind the snapshot starts at the app's next look at what the page views want.
+        if self.tools.tool().look_to_start() {
+            self.core.push(super::CoreCall::ImageLooks);
+        }
         self.core.push(super::CoreCall::Reconcile);
     }
 
-    /// An image picked with a click's own: what came of a click's look, to the feature's state and the page views that may be waiting for it
-    /// ([`super::image_select::answered`]).
-    pub fn image_looked<R>(&self, said: impl FnOnce(&super::image_select::ImageSelect, &[Engine]) -> R) -> R {
-        said(self.tools.image_select(), &self.panes.engines(self.engine))
+    /// An image picked with a click's own: what came of a click's look, to the snapshot tool's slot it ran in and the page views that may be waiting for
+    /// it, then the app's next look at what they want, so a look that waited starts ([`super::image_select::answered`]).
+    pub fn image_looked(&self, said: impl FnOnce(&super::snapshot_tool::Tool, &[Engine])) {
+        said(self.tools.tool(), &self.panes.engines(self.engine));
+        self.core.push(super::CoreCall::ImageLooks);
     }
 
     /// What the person may start on a thread of its own.

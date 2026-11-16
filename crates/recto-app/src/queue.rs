@@ -67,6 +67,9 @@ pub enum CoreCall {
     /// A late try's saved session, read on its thread, with the appearance the window had as the try was kept; or `None`, the thread ended without it (a
     /// panic). Taken in only while it's still restoring.
     LateRead(Option<Box<(Loaded, recto_session::record::Appearance)>>),
+    /// **A page view has news of an image picked with a click** (`EngineEvents::image_wanted`): a click to look for, or one being looked for gone. The
+    /// looks start and stop by what the page views want now ([`crate::core::image_select::looks_ready`]).
+    ImageLooks,
 }
 
 /// A person's command, as it's queued: what it is, where it came from, and what was read for it, if it's running again once a file's in.
@@ -171,6 +174,8 @@ impl CoreCall {
             | Self::Events(_)
             | Self::GeneratedFinished
             | Self::GeneratedView(..)
+            // A page view's news: its look is the person's command, which a freeze holds back itself.
+            | Self::ImageLooks
             | Self::TryBack(_)
             | Self::LateRead(_) => false,
         }
@@ -858,6 +863,7 @@ mod tests {
             CoreCall::GeneratedView(tab, recto_session::GeneratedView::Making, None),
             CoreCall::TryBack(crate::core::keeping::TryBack::for_test()),
             CoreCall::LateRead(None),
+            CoreCall::ImageLooks,
             CoreCall::Find(crate::find::FindCall::News),
             CoreCall::Find(crate::find::FindCall::Effect(recto_agent::Effect::Reveal { tab, hit })),
             CoreCall::Run(PersonCommand::input(recto_agent::parse(r##"{"cmd":"tap","tab":"#1"}"##).expect("a command"))),
@@ -903,8 +909,9 @@ mod tests {
             },
             CoreCall::TryBack(_) => 21,
             CoreCall::LateRead(_) => 22,
+            CoreCall::ImageLooks => 23,
         };
-        (place, 23)
+        (place, 24)
     }
 
     /// Failure (review C8): a call a person makes isn't on the hand-off freeze's list, so it's taken while a hand-off writes what comes back, and lost: closing a tab, the close prompt's answer, the contents' note and a section's chevron were. Every variant is sampled, and those a person makes, named here apart from the code that decides, are exactly the ones held back. The rest get through.

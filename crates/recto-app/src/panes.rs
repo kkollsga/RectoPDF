@@ -337,6 +337,9 @@ impl EngineEvents for PaneEvents {
     fn file_length(&self, tab: u32, pages: u32, version: u64) {
         self.events.file_length(tab, pages, version);
     }
+    fn image_wanted(&self) {
+        self.events.image_wanted();
+    }
 }
 
 #[cfg(test)]

@@ -152,8 +152,7 @@ fn check_page_view(text: &Arc<PageText>, other: &Arc<PageText>, take: &mut Take)
         match take.u8() % 14 {
             0 => selecting.press(point, u32::from(take.u8()), take.u8() & 1 == 1),
             1..=3 => selecting.drag(point),
-            // A still click off any link, sometimes: what may want an image there (`recto_reader::image_pick`).
-            4 => selecting.release((take.u8() & 1 == 1).then_some(point)),
+            4 => selecting.release(),
             5 => selecting.set_range(Range {
                 start: Place { page, at: take.u32() },
                 end: Place {
@@ -191,7 +190,7 @@ fn check_page_view(text: &Arc<PageText>, other: &Arc<PageText>, take: &mut Take)
         }
     }
     // Left to itself, with every page it asks for given to it, a copy comes to an end.
-    selecting.release(None);
+    selecting.release();
     for _ in 0..u32::from(u8::MAX) * 4 {
         let Some(wanted) = selecting
             .wanted(Urgency::Now, &visible, PAGES, |_| false)
