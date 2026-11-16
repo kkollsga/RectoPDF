@@ -5,7 +5,7 @@ mod common;
 
 use common::{kill_process, renderer, tile_surface, wait_until};
 use recto_platform::isolate::process_memory;
-use recto_render_service::{KillReason, Policy, RenderFailure, TileRect, TileRequest, TileResult};
+use recto_render_service::{KillReason, Policy, RenderFailure, Surface, TileRect, TileRequest, TileResult};
 use recto_testpdf::{Object, Page, TempPdf, first_extra_object, form_bomb, pages, pages_with, text_lines};
 use std::time::Duration;
 
@@ -246,6 +246,102 @@ fn retiring_holds_down_a_growing_worker() {
         "retiring didn't hold the worker near the line.\nWithout: {}\nWith: {}",
         without.said(),
         with.said()
+    );
+}
+
+/// An RGB image of `width` by `height`, run-length encoded so a picture the size of the USGS map's largest costs a megabyte or so in the file: each row is two greys, which
+/// change down the image, so its tiles aren't alike.
+fn run_length_image(width: usize, height: usize, seed: usize) -> Object {
+    let mut data = Vec::new();
+    let mut run = |value: u8, mut bytes: usize| {
+        while bytes > 0 {
+            let length = bytes.min(128);
+            data.extend_from_slice(&[(257 - length) as u8, value]);
+            bytes -= length;
+        }
+    };
+    for row in 0..height {
+        let grey = ((row * 255 / height + seed * 40) % 256) as u8;
+        run(grey, width / 2 * 3);
+        run(255 - grey, (width - width / 2) * 3);
+    }
+    data.push(128);
+    Object::Stream {
+        dict: format!("/Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /RunLengthDecode"),
+        data,
+    }
+}
+
+/// A made stand-in for the USGS map (`gov_usgs_usgs70277338`): its page size, 2232 by 2016 points, and its two largest images, 5104 by 6004 pixels each, side by side
+/// across it. The real page has 64 more images and holds 300 MiB in PDFium against this one's tens, but what's tested here is what a zoom adds, not that.
+fn heavy_map_page() -> Vec<u8> {
+    let first = first_extra_object(1);
+    let content = "q 1116 0 0 2016 0 0 cm /Im0 Do Q q 1116 0 0 2016 1116 0 cm /Im1 Do Q";
+    let resources = format!("/XObject << /Im0 {first} 0 R /Im1 {} 0 R >>", first + 1);
+    let mut page = Page::new(content);
+    page.media = (2232.0, 2016.0);
+    pages_with(&[page], &resources, vec![run_length_image(5104, 6004, 0), run_length_image(5104, 6004, 1)])
+}
+
+/// Draws one region of page 0, as the reader asks for a heavy page: whole tiles from the page's left edge, the rows in view, in a surface of its own.
+fn draw_region(doc: &mut recto_render_service::DocRenderer, scale: f32, rect: TileRect) {
+    let request = TileRequest {
+        page: 0,
+        rect,
+        scale,
+        stride: rect.width * 4,
+        generation: 0,
+    };
+    let surface = Surface::create(rect.width as usize * 4 * rect.height as usize).unwrap();
+    assert!(
+        matches!(doc.render_region(&request, 512, &surface).unwrap(), TileResult::Done(_)),
+        "{scale} {rect:?}"
+    );
+}
+
+/// Failure: zooming into a heavy page costs the worker what every earlier step let go as well as what the zoom needs, because the allocator keeps each freed large block,
+/// dirty and counted, and a new zoom's blocks are of new sizes, so they pile up (`worker_env.rs`). On the USGS map, in-process, that was 431 MiB for a 3x view drawn
+/// alone against 492 MiB for the same view reached as a reader does, fitted, 2x, a scroll, then 3x (2026-11-16, with `MallocLargeCache` on). So those steps, at the map's
+/// own scales in a 3024 by 1964 view, may peak no higher than the last one drawn alone in a fresh worker, plus a margin. On this page, with the cache on, the steps peaked
+/// 37 MiB over the view alone (96 against 59), and with it off 4 MiB over (63 against 59): the margin of 16 is between the two, and says nothing of this Mac's sizes.
+#[test]
+fn zooming_into_a_heavy_page_costs_no_more_than_the_zoomed_view_alone() {
+    let file = TempPdf::new("map.pdf", &heavy_map_page());
+    let rect = |y, width, height| TileRect { x: 0, y, width, height };
+    // The reader's last step: about 3x, the view's rows a scroll down.
+    let (zoomed, zoomed_rect) = (3.065, rect(512, 3072, 2560));
+    let mut alone = renderer(&file.0, Policy::default());
+    draw_region(&mut alone, zoomed, zoomed_rect);
+    let alone_peak = alone.stats().peak_footprint_bytes;
+    let mut stepped = renderer(&file.0, Policy::default());
+    for (scale, rect) in [
+        (0.681, rect(0, 1520, 1373)),
+        (2.043, rect(0, 3072, 2048)),
+        (2.043, rect(0, 3072, 2560)),
+        (zoomed, zoomed_rect),
+    ] {
+        draw_region(&mut stepped, scale, rect);
+    }
+    let stats = stepped.stats();
+    assert_eq!(
+        (stats.spawns, alone.stats().spawns),
+        (1, 1),
+        "each ran in one worker: a respawn would reset what's measured"
+    );
+    let margin = 16 * MIB;
+    println!(
+        "the zoomed view alone peaked at {:.1} MiB; reached by the reader's steps, {:.1} MiB, holding {:.1} MiB after",
+        alone_peak as f64 / MIB as f64,
+        stats.peak_footprint_bytes as f64 / MIB as f64,
+        stepped.worker_footprint().unwrap_or(0) as f64 / MIB as f64
+    );
+    assert!(alone_peak > 0, "nothing was measured");
+    assert!(
+        stats.peak_footprint_bytes <= alone_peak + margin,
+        "the reader's steps peaked at {:.1} MiB against {:.1} MiB for the zoomed view alone: more than {} MiB of what earlier steps let go was still held",
+        stats.peak_footprint_bytes as f64 / MIB as f64,
+        alone_peak as f64 / MIB as f64,
+        margin / MIB
     );
 }
 
