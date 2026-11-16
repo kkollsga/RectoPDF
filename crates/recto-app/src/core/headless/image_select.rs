@@ -278,7 +278,8 @@ fn an_image_picked_is_let_go_by_whatever_the_person_does_next() {
     gone(&app, "Select All");
 
     pick(&app);
-    let escape = image_select::plain_key(&app.core().panes, &app.core().engine, app.core().tools.tool(), "\u{1b}").expect("Escape is this feature's with an image picked");
+    let escape = image_select::plain_key(&app.core().panes, &app.core().engine, app.core().tools.tool(), "\u{1b}")
+        .expect("Escape is this feature's with an image picked");
     assert_eq!(escape, LET_GO_ID);
     app.core().perform(escape.into());
     gone(&app, "Escape");

@@ -346,7 +346,7 @@ RowParts::pub fn select_all(&self)
 RowParts::pub fn selected(&self) -> Option<(u32, Option<recto_index::select::Range>)>
 RowParts::pub fn tell_host(&self)
 RowParts::pub fn toggle_panel(&self)
-RowParts::pub fn toggle_snapshot_tool(&self)
+RowParts::pub fn toggle_snapshot_tool(&self) -> bool
 RowParts::pub fn update_installs(&self) -> bool
 RowParts::pub fn zoom_for_person(&self, zoom: Zoom) -> bool
 RowParts::pub(in crate::core) fn of(app: &'a Arc<Inner>) -> Self
