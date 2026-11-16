@@ -688,3 +688,203 @@ fn the_tool_turned_on_from_the_menu_stays_on_after_each_capture() {
         assert!(tool.is_on() && !tool.is_drawing(), "{what}: the tool is still on, and the box gone");
     }
 }
+
+/// Chooses Capture from the page's right-click menu, as the window does: the one id, to the one executor.
+fn capture(app: &HeadlessApp) {
+    app.core().perform(snapshot_tool::CAPTURE_ID.into());
+    app.settle();
+}
+
+/// The tool as `qa state` reports it: on, and whether a box is being drawn.
+fn on_and_drawing(app: &HeadlessApp) -> (bool, bool) {
+    let tool = app.core().tools.tool();
+    (tool.is_on(), tool.is_drawing())
+}
+
+/// **Failure (owner, 2026-11-16: "Capture ... will trigger a single capture, reverting to normal mode after"): the tool stays on after a Capture's release,**
+/// so the next drag draws a box instead of selecting text; or it goes off without taking what the release took; or a second capture needs the tool turned on
+/// again though Capture was chosen. A box, a click on an image and a click on nothing each: Capture turns the tool on (the menu's tick, the crosshair and
+/// `qa state` all read this flag), one release takes what it takes as the person's snapshot and turns it off, and the next press is text selection's.
+#[test]
+fn capture_takes_one_release_and_the_tool_goes_off() {
+    let disk = Disk::new();
+    let doc = disk.file("snapshot.pdf", &text_and_image());
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    for (what, from, to, said) in [
+        (
+            "a box",
+            (BOX[0], BOX[1]),
+            Some((BOX[0] + BOX[2], BOX[1] + BOX[3])),
+            "\"Copied the snapshot as PNG, text, SVG and JPG.\" []",
+        ),
+        (
+            "a click on an image",
+            (120.0, 270.0),
+            None,
+            "\"Copied the image as its own JPEG, 4 × 4 pixels.\" []",
+        ),
+        (
+            "a click on nothing",
+            (400.0, 600.0),
+            None,
+            "\"There's no image there. Drag a box to take part of the page.\" []",
+        ),
+    ] {
+        assert!(!app.core().tools.tool().is_on(), "{what}: text selection to begin with");
+        capture(&app);
+        assert_eq!(on_and_drawing(&app), (true, false), "{what}: Capture turns the tool on");
+        assert!(
+            app.core()
+                .bar_now()
+                .iter()
+                .any(|menu| menu.entries.iter().any(|item| item.id == snapshot_tool::TOGGLE_ID && item.checked)),
+            "{what}: the Tools menu ticks it"
+        );
+        mouse(&app, from, to);
+        assert_eq!(on_and_drawing(&app), (false, false), "{what}: one release and it's off");
+        assert_eq!(notice(&app), said, "{what}: taken as the tool takes it");
+        assert!(
+            !app.core()
+                .bar_now()
+                .iter()
+                .any(|menu| menu.entries.iter().any(|item| item.id == snapshot_tool::TOGGLE_ID && item.checked)),
+            "{what}: unticked"
+        );
+        let inner = app.core();
+        let engine = inner.panes.reading_engine(&inner.engine);
+        let (x, y) = at(&app, 50.0, 40.0);
+        assert!(!inner.tools.tool().is_on());
+        drop(engine.selection().press(x, y, 1, false));
+        assert!(!inner.tools.tool().is_drawing(), "{what}: the next press is text selection's");
+    }
+}
+
+/// **Failure (owner, 2026-11-16): a capture refused for a copy-restricted file loses its "Copy anyway" because the tool has gone off,** or the refusal
+/// is dropped with the tool. Capture, a box on a file that asks not to be copied: the notice offers Copy anyway with the tool off, and it copies.
+#[test]
+fn copy_anyway_still_works_after_a_refused_capture() {
+    let disk = Disk::new();
+    let restricted = disk.file("restricted.pdf", &locked_allowing("", 1, lopdf::encryption::Permissions::PRINTABLE));
+    let app = disk.start();
+    app.open(&restricted);
+    app.settle();
+    capture(&app);
+    take_box(&app);
+    assert!(!app.core().tools.tool().is_on(), "the refused capture was the one");
+    assert_eq!(notice(&app), "\"This file's permissions ask that it isn't copied.\" [Copy anyway]");
+    let anyway = app
+        .core()
+        .tools
+        .tool()
+        .selection_notice()
+        .and_then(|notice| notice.action_id)
+        .expect("Copy anyway");
+    app.act(UiAction::Menu { id: anyway });
+    app.wait_until("the snapshot's job ended", || !app.core().tools.tool().busy());
+    app.settle();
+    assert_eq!(notice(&app), "\"Copied the snapshot as PNG, text, SVG and JPG.\" []");
+    assert!(!app.core().tools.tool().is_on(), "and still off");
+}
+
+/// **Failure (owner, 2026-11-16): Escape, or the tool's own toggle, doesn't end a Capture that wasn't taken,** leaving the tool on with no way back but
+/// taking something; or Escape turns off the tool the person turned on from the menu bar, which isn't a capture and stays until it's turned off; or a
+/// Capture chosen with the tool already on from the menu bar leaves it on after the release. Nothing is taken in any case but the last.
+#[test]
+fn escape_and_the_toggle_end_a_capture_and_the_menu_bars_tool_is_left_alone() {
+    let disk = Disk::new();
+    let doc = disk.file("snapshot.pdf", &text_and_image());
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    capture(&app);
+    app.core().perform(snapshot_tool::CANCEL_ID.into());
+    assert_eq!(on_and_drawing(&app), (false, false), "Escape ends it");
+    capture(&app);
+    app.core().perform(snapshot_tool::TOGGLE_ID.into());
+    assert!(!app.core().tools.tool().is_on(), "the toggle ends it, as it ends any tool that's on");
+    assert!(!app.core().tools.tool().is_once());
+    assert!(
+        app.core().tools.tool().selection_notice().is_none() && app.core().tools.tool().notice().is_none(),
+        "nothing was taken"
+    );
+    tool_on(&app);
+    app.core().perform(snapshot_tool::CANCEL_ID.into());
+    assert!(app.core().tools.tool().is_on(), "Escape leaves the menu bar's tool on");
+    capture(&app);
+    assert!(
+        app.core().tools.tool().is_on() && app.core().tools.tool().is_once(),
+        "Capture with the tool on leaves it on, one-shot"
+    );
+    take_box(&app);
+    assert!(!app.core().tools.tool().is_on(), "and the release ended it");
+}
+
+/// **Failure (owner, 2026-11-16): Escape is taken by the window with no capture to end, or isn't sent with one,** so it stops doing what it does elsewhere,
+/// or can't end a capture. The key's id is Capture's end while one is armed, and nothing otherwise.
+#[test]
+fn escape_is_the_windows_only_while_a_capture_waits() {
+    assert_eq!(crate::snapshot_menu::plain_key("\u{1b}", true), Some(snapshot_tool::CANCEL_ID));
+    assert_eq!(crate::snapshot_menu::plain_key("\u{1b}", false), None);
+    assert_eq!(crate::snapshot_menu::plain_key("a", true), None);
+}
+
+/// **Failure (AGENTS.md: "An announcement is made when something changed, and only then"): the host is told again for a Capture that changed nothing, or an
+/// Escape with no capture to end, or never told the tool went off after the release,** so the Tools menu's tick and the crosshair stay as they were. On and
+/// off once each, and nothing for what changed nothing.
+#[test]
+fn the_host_is_told_when_a_capture_begins_and_ends_and_only_then() {
+    use crate::testkit::Heard;
+    let disk = Disk::new();
+    let doc = disk.file("snapshot.pdf", &text_and_image());
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    let told = |app: &HeadlessApp| app.listener().count(&Heard::ModelChanged);
+    let before = told(&app);
+    capture(&app);
+    assert_eq!(told(&app) - before, 1, "told it's on");
+    capture(&app);
+    assert_eq!(told(&app) - before, 1, "Capture again changed nothing");
+    app.core().perform(snapshot_tool::CANCEL_ID.into());
+    app.settle();
+    assert_eq!(told(&app) - before, 2, "told it's off");
+    app.core().perform(snapshot_tool::CANCEL_ID.into());
+    app.settle();
+    assert_eq!(told(&app) - before, 2, "Escape with nothing to end changed nothing");
+    capture(&app);
+    let armed = told(&app);
+    // A box too small to take anything is a click that takes the image under it: any release is told.
+    let_go(&app, (400.0, 600.0), None);
+    assert!(told(&app) > armed, "the release that ended it told the host");
+    app.wait_until("the job's answered", || !app.core().tools.tool().busy());
+    app.settle();
+}
+
+/// **Failure (AGENTS.md: "Nothing an agent sends runs as the person"): Capture is run for an agent wider than the tool's own toggle,** at a level that can't
+/// turn the tool on, or as the person (a snapshot to the person's clipboard from an agent's id). An agent's run of Capture does at each level exactly what
+/// its run of `tools.snapshot` does.
+#[test]
+fn an_agents_capture_is_what_its_snapshot_toggle_is() {
+    let disk = Disk::new();
+    let doc = disk.file("snapshot.pdf", &text_and_image());
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    for level in [Level::ReadOnly, Level::Control, Level::Full] {
+        let run = |id: &str| {
+            let result = app
+                .core()
+                .host
+                .run_menu_id(recto_agent::Actor::Agent(level), app.core(), id, None, &mut Vec::new());
+            app.settle();
+            let outcome = (result.map(drop).map_err(|error| error.code.to_string()), app.core().tools.tool().is_on());
+            if app.core().tools.tool().is_on() {
+                app.core().perform(snapshot_tool::TOGGLE_ID.into());
+            }
+            outcome
+        };
+        assert_eq!(run(snapshot_tool::CAPTURE_ID), run(snapshot_tool::TOGGLE_ID), "{level:?}");
+    }
+}

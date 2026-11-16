@@ -325,8 +325,10 @@ Published::pub fn empty() -> Self
 Restoring (pub struct)
 Restoring::pub(in crate::core) fn new(record: &'a SessionRecord, real: Option<&'a AppState>, appearance_then: Option<Appearance>) -> Self
 RowParts (pub struct, derives Clone, Copy)
+RowParts::pub fn arm_snapshot_once(&self) -> bool
 RowParts::pub fn can_save(&self) -> bool
 RowParts::pub fn cancel_print(&self)
+RowParts::pub fn cancel_snapshot_once(&self) -> bool
 RowParts::pub fn copy_selection(&self, anyway: bool)
 RowParts::pub fn edit_landing(&self, tab: TabId) -> bool
 RowParts::pub fn mark_update_menu(&self) -> bool

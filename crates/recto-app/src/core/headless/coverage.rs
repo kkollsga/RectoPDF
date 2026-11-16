@@ -78,7 +78,16 @@ pub(super) fn menu_ids() -> BTreeSet<String> {
         ids.extend(menus::plain_key(key).map(str::to_string));
     }
     // The window's own buttons (the tools panel's, Save's beside the window's controls, the sidebar's) and a notice's action, each naming a menu id.
-    ids.extend(["panel.toggle", "save.button", "view.sidebar", "edit.copy_anyway"].map(str::to_string));
+    ids.extend(
+        [
+            "panel.toggle",
+            "save.button",
+            "view.sidebar",
+            "edit.copy_anyway",
+            crate::snapshot_menu::CANCEL_ID,
+        ]
+        .map(str::to_string),
+    );
     ids
 }
 

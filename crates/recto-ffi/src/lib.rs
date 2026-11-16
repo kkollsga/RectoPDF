@@ -1034,7 +1034,7 @@ impl AppCore {
 
     /// The id a key does with nothing held, or none.
     pub fn plain_key_action(&self, characters: String) -> Option<String> {
-        menus::plain_key(&characters).map(str::to_string)
+        self.inner.tools.tool().plain_key(&characters).map(str::to_string)
     }
 
     /// The zoom level in the top left, as the host's magnification and the page's fit make it. Cheap: on every change of zoom.

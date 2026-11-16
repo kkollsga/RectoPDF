@@ -176,12 +176,13 @@ fn layout_id(spread: Spread) -> String {
     format!("layout.{}", spread.name().replace('-', "_"))
 }
 
-/// What a right-click on a page offers: Copy and Select All, then the layouts, and in a comparison, how its panes scroll, `synced` saying which. The system adds Services and the like itself, as it does to any menu that has a selection to act on. Owner, 2026-11-08: "right click menu can enable separate scroll (default) and synced scroll".
+/// What a right-click on a page offers: Copy and Select All, Capture, then the layouts, and in a comparison, how its panes scroll, `synced` saying which. The system adds Services and the like itself, as it does to any menu that has a selection to act on. Owner, 2026-11-08: "right click menu can enable separate scroll (default) and synced scroll".
 pub fn context_menu(shown: Option<Spread>, comparing: Option<bool>) -> Vec<MenuEntry> {
     let mut entries = edit_entries();
     for item in &mut entries {
         item.key = String::new();
     }
+    entries.push(crate::snapshot_menu::capture_entry());
     entries.push(line());
     entries.extend(layout_entries(shown));
     if let Some(synced) = comparing {
@@ -233,6 +234,7 @@ pub fn enable_rule(id: &str) -> Option<Enable> {
         "compare.separate" | "compare.synced" => Enable::Always,
         "edit.copy" | "edit.copy_anyway" => Enable::Selection,
         "edit.select_all"
+        | "tools.capture"
         | "edit.clear_history"
         | "go.page"
         | "find.open"
@@ -254,6 +256,7 @@ pub fn enable_rule(id: &str) -> Option<Enable> {
         // A file in Open Recent, by a key `action` takes.
         recent if recent.starts_with("recent.") && action(recent).is_some() => Enable::Always,
         tool if crate::snapshot_menu::is_menu_id(tool) => Enable::Always,
+        "tools.capture_cancel" => Enable::Always,
         markup if crate::core::highlight::is_menu_id(markup) => Enable::Selection,
         _ => return None,
     })
@@ -696,7 +699,7 @@ mod tests {
         assert!(
             context_menu(None, Some(false))
                 .iter()
-                .all(|item| item.key.is_empty() && (item.id.is_empty() || action(&item.id).is_some())),
+                .all(|item| item.key.is_empty() && (item.id.is_empty() || item.id == crate::snapshot_menu::CAPTURE_ID || action(&item.id).is_some())),
             "no keys shown in a context menu"
         );
     }
@@ -854,6 +857,22 @@ mod tests {
             view.entries.iter().any(|item| item.id == "layout.two_up" && item.checked),
             "and in the View menu, as on a Mac"
         );
+    }
+
+    /// Failure: the right-click menu has no Capture, or has it somewhere else than after Copy and Select All and before the layouts, in one pane or in a comparison; or it can be chosen with nothing open, where it would turn on a tool with no page to use it on. Owner, 2026-11-16: "Right click menu should have a option \"Capture\"".
+    #[test]
+    fn the_right_click_menu_offers_capture_after_select_all() {
+        for comparing in [None, Some(false), Some(true)] {
+            let ids: Vec<String> = context_menu(Some(Spread::Single), comparing).into_iter().map(|item| item.id).collect();
+            assert_eq!(
+                ids[..5],
+                ["edit.copy", "edit.select_all", "tools.capture", "", "layout.single"],
+                "{comparing:?}"
+            );
+        }
+        let capture = context_menu(None, None).into_iter().find(|item| item.id == "tools.capture").unwrap();
+        assert_eq!((capture.title.as_str(), capture.system_action.as_str()), ("Capture", ""));
+        assert!(enabled("tools.capture", true, false) && !enabled("tools.capture", false, false));
     }
 
     /// Failure: the right-click menu has no scroll choice in a comparison, doesn't tick the one in use, or offers it with one tab showing, where it does nothing. Owner, 2026-11-08: "right click menu can enable separate scroll (default) and synced scroll".

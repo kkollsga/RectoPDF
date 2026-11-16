@@ -13,7 +13,7 @@
 //! **A file that asks not to be copied** gets the notice text does, with "Copy anyway" (owner, 2026-11-08). Each notice has a number, and its button names it, so a stale button takes nothing: turning the tool, or starting a new box, takes the notice and what it offered away.
 
 use super::{HighlightRect, Inner, ReaderOp, SelectionNotice, lock};
-pub use crate::snapshot_menu::{TOGGLE_ID, is_menu_id};
+pub use crate::snapshot_menu::{CANCEL_ID, CAPTURE_ID, TOGGLE_ID, is_menu_id};
 use recto_agent::clipboard::{ClipboardKind, kind_of};
 use recto_agent::commands::Read;
 use recto_agent::commands::export::{Image, Snapshot};
@@ -205,6 +205,8 @@ pub struct Tool {
     state: Mutex<SnapshotTool>,
     /// The tool's on, readable with no lock on every press.
     on: AtomicBool,
+    /// A one-shot capture's release put the tool off, and the host isn't told yet ([`taken`]).
+    once_ended: AtomicBool,
     /// The page the box was last drawn on, by pane, to take it off when it moves or goes.
     drawn: Mutex<Option<(usize, u32)>>,
     jobs: Mutex<Box<JobSlot>>,
@@ -234,6 +236,42 @@ impl Tool {
         drop(state);
         self.dismiss_notice();
         on
+    }
+
+    /// **Capture** (the page's right-click menu; owner, 2026-11-16): the tool on for one capture, the next release it handles, which turns it off. Chosen
+    /// with the tool on from the menu bar, it leaves it on and makes it one-shot. Whether anything changed, which is what the host is told.
+    pub fn arm_once(&self) -> bool {
+        let mut state = lock(&self.state);
+        let was_on = state.is_on();
+        let changed = state.arm_once();
+        self.on.store(true, Ordering::SeqCst);
+        drop(state);
+        if !was_on {
+            self.dismiss_notice();
+        }
+        changed
+    }
+
+    /// Escape before a capture is taken: the one-shot ends, the tool off. Nothing for a tool that's on from the menu bar. Whether it ended one.
+    pub fn cancel_once(&self) -> bool {
+        let mut state = lock(&self.state);
+        let ended = state.end_once();
+        self.on.store(state.is_on(), Ordering::SeqCst);
+        drop(state);
+        if ended {
+            self.dismiss_notice();
+        }
+        ended
+    }
+
+    /// **The id a key does with nothing held** ([`crate::menus::plain_key`]), Escape's being the end of a Capture not yet taken. Asked on every key, so it takes only this tool's own lock.
+    pub fn plain_key(&self, characters: &str) -> Option<&'static str> {
+        crate::snapshot_menu::plain_key(characters, self.is_once()).or_else(|| crate::menus::plain_key(characters))
+    }
+
+    /// Whether the tool is on for one capture, which Escape ends.
+    pub fn is_once(&self) -> bool {
+        lock(&self.state).is_once()
     }
 
     /// A snapshot is being taken now, or waits its turn, which a hand-off and `qa wait-settled` wait for.
@@ -336,7 +374,17 @@ impl Tool {
     /// **The button came up:** the box goes, and what it took is kept for the person's action that takes it ([`super::controls::UiAction::SnapshotTaken`],
     /// [`taken`]), which the bridge sends next, with the page it was taken from as the view shows it now.
     pub fn release(&self, engine: &Engine, pane: usize) -> Vec<ReaderOp> {
-        let taken = lock(&self.state).release();
+        let (taken, ended) = {
+            let mut state = lock(&self.state);
+            let was_on = state.is_on();
+            let taken = state.release();
+            self.on.store(state.is_on(), Ordering::SeqCst);
+            (taken, was_on && !state.is_on())
+        };
+        // The notice isn't dismissed here, as a toggle does: the capture's own answer is coming, and "Copy anyway" must still work after.
+        if ended {
+            self.once_ended.store(true, Ordering::SeqCst);
+        }
         let ops = self.box_ops(pane, None);
         let Some(tab) = engine.hot_tab() else { return ops };
         let wanted = match taken {
@@ -519,6 +567,10 @@ impl Tool {
 
 /// **A release's snapshot, taken:** the box or click [`Tool::release`] kept, as the person's command ([`super::controls::UiAction::SnapshotTaken`]).
 pub(super) fn taken(inner: &Arc<Inner>) {
+    // A one-shot capture's release put the tool back to text selection: the host is told once, to untick it and draw the pointer.
+    if inner.tools.tool().once_ended.swap(false, Ordering::SeqCst) {
+        inner.listener.model_changed();
+    }
     let job = lock(&inner.tools.tool().jobs).taken.take();
     if let Some(job) = job {
         start(inner, job);
@@ -545,6 +597,32 @@ pub fn row<'a>(parts: &super::row_parts::RowParts<'a>, asked: &super::menu_rows:
                 parts.toggle_snapshot_tool();
                 parts.reconcile();
                 parts.tell_host();
+                super::HostAction::None
+            },
+        ));
+    }
+    if asked.id == CAPTURE_ID {
+        return Some(Row::window(
+            "Capture is the snapshot tool for one capture, what the pointer does in the window",
+            super::menu_rows::Agents::AT_FULL,
+            move || {
+                if parts.arm_snapshot_once() {
+                    parts.reconcile();
+                    parts.tell_host();
+                }
+                super::HostAction::None
+            },
+        ));
+    }
+    if asked.id == CANCEL_ID {
+        return Some(Row::window(
+            "Escape before a Capture is taken, the window's own key",
+            super::menu_rows::Agents::AT_FULL,
+            move || {
+                if parts.cancel_snapshot_once() {
+                    parts.reconcile();
+                    parts.tell_host();
+                }
                 super::HostAction::None
             },
         ));
