@@ -17,7 +17,7 @@ pub(super) struct Known {
     /// `places` has been forgotten, past its cap, and nobody's been told.
     places_cleared: bool,
     /// Where each page's images may be, for a click (`DocRenderer::image_boxes_for_a_click`): apart from dark paper's, so its answer is never this one.
-    /// At most [`MAX_IMAGE_PLACES`] pages of 64 boxes and the one past them, 8 bytes each (520 a page): the pages the tab's worker has looked at for their first draw ([`DocRenderer::largest_image_pixels`]'s job asks as it goes, `recto-reader`'s `engine/run.rs`) and those clicked on.
+    /// At most [`MAX_IMAGE_PLACES`] pages of 64 boxes and the one past them, 8 bytes each (520 a page): the pages on show that the tab's worker was asked about at rest ([`prefetch_click_places`], called from `recto-reader`'s `engine/run.rs`) and those clicked on.
     click_places: HashMap<u32, Option<proto::ClickPlaces>>,
     /// Pages a walk ahead of a click has been made for, whatever came of it, so it's made once and a page that failed isn't walked again at every rest. Holds no answer.
     prefetched: HashSet<u32>,
