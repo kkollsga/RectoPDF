@@ -401,3 +401,27 @@ So a memory fault of the first order passed a full check, 17 new tests and the i
 **Structure** (`tools/ratchet.sh --report 4b4e027c`, before image selection's merge was counted: 21 lines added to hubs, 11 in `recto-agent/src/table.rs`, 8 in `recto-ffi/src/lib.rs`). Each feature is in its own modules (`snapshot_menu.rs` and the tool's file for Capture; `image_pick.rs` in the reader, `image_select.rs` in the app; `watchdog/short.rs`; `qa_times.rs`). Left from the reviews, in the plan: the image's keep rule in `Selecting::press` and `ended` called from six places. No ratchet number was raised. The code-review graph's structure check wasn't run this time: owed at the next review.
 
 **Sonnet and Opus.** Sonnet held the three small tasks (Capture, `qa budget`, the stall record) with no hand-back sent back for judgement; Capture's extra full runs were process, not judgement. Image selection was right to start on Opus and was two workers' work.
+
+## 2026-11-16, night: 0.1.2 published (17 merges since the morning's review)
+
+**The release.** Asked "Lets release 0.1.2?" in the evening and "Release now" at about 23:05 CET; tagged at 22:07 UTC on `ae0bf8a2`, published at 22:35 UTC. Release run 43966888820: gate 9 s; the first attempt's Mac build waited 15 min for a runner GitHub never gave and was cancelled, the rerun's build took 9 min 57 s, signing 1 min 7 s, the draft 7 s. The draft's checks and the signed pair's carry passed against both published releases on the first run (about 30 s for the four). Twenty-eight minutes from the owner's word to published, fifteen of them the runner.
+
+**Progress against the dates said.** Everything the morning's review listed as owed was merged the same day: the scan rule 13:06, the map's memory 13:26, the stall record's words 14:09, the resting worker 14:45, the release gate as a script 16:42, the going-back journals 17:36, the zoom centred 17:56 (asked for by the owner that afternoon), the click's prefetch 18:42, the bump 20:05. Still open from the performance review, in the plan and the notes: the 10,000-page first open (asked of the lopdf fork in its inbox), the signature look, a woken tab's sharp frame, the window thread's stalls.
+
+**What review and the quiet runs found.**
+- The coordinator accepted a `Doing` trait that kept new logic out of the ratchet's count; the independent read named it and it was undone (`build/stall-doing-honest`). The ratchet doesn't count trait impls: tracked.
+- The scan rule's first version read a figure in a page-wide form, and a 20,000-object walk, as a scan; fixed in `build/pick-in-forms` before the owner saw it.
+- The release candidate's quiet run showed the app 4.2 MiB heavier at the map's zoom: a real fault of the zoom work (a wide page's view left at its right edge, two regions kept), fixed and measured again (33.5 MiB). Without the quiet run on the candidate itself it would have shipped.
+- `main` was red once on CI (the release test's made worker was an arm64e copy of `/bin/sleep`, which macos-15 doesn't start); the coordinator's first diagnosis, a path's spelling, was wrong and cost one round.
+
+**Waste and mistakes.**
+- The coordinator told the owner two things that were wrong and corrected both: "the worker rests at 69 MiB" (two workers), and the zoom fault's cause (the layout was never told the window's magnification, not its margin). Both came from reading a number or a symptom without its source. The rule is already in `AGENTS.md`; it was not kept twice in one day.
+- The coordinator's own 90% branch skipped `--quick` and its full run stopped at the format gate, the mistake the morning's review had just written down for workers.
+- Full runs over a branch's two (`tools/check.sh --runs`): `build/carry-two-journals` 3 (all passed, 1,023 s), `build/stall-doing` 3 (2 failed, 473 s). `build/zoom-centred` 2 (1 failed).
+- GitHub didn't give a macOS runner four times in the day (CI on `main` three times, the release once); each was a rerun and nothing of ours.
+- Twice a worker, refused a command by the permission check, asked the coordinator to run it instead (`tools/ratchet.sh --update`; deleting a temp folder). Declined both times and said to the owner. **Change:** `worker-testing.md` says a refused command is reported, not routed round.
+
+**Numbers.** CI's longest job on the evening's green runs (`tools/push-main.sh`): 21 min 49 s, 19 min 36 s, 20 min 54 s, 18 min 53 s; the median of five 20 min 34 s against 21 min. It is the first task after the release, before a feature. Tests added that launch the app: none. Workers' tokens and minutes for the afternoon weren't kept per task as the morning's were: a gap in this review, not a zero.
+
+**Structure.** No ratchet baseline was raised; `load_journals` stays at 157 with about four lines to give back (tracked). The code-review graph's structure check is owed for the second review running, and is done before the next feature starts.
+

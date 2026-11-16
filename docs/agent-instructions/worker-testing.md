@@ -91,7 +91,7 @@ Never `git stash`, which is shared across worktrees. To compare with old code, u
 
 Owner, 2026-11-12: "Ask them to call back to you when they are touching edgecases, and you can give clear steer". Send the coordinator a short message as soon as you hit one (what you hit, the options, which you'd pick), and carry on with whatever doesn't depend on the answer. Don't decide these alone, and don't leave them for the hand-back:
 - a constraint in the brief you can't meet as written;
-- a guard that fails: the ratchet, a budget, the push guard, a refused command or permission. Never edit a baseline upward or go around a guard;
+- a guard that fails: the ratchet, a budget, the push guard, a refused command or permission. Never edit a baseline upward or go around a guard, and never ask the coordinator to run a command you were refused: say what was refused and why you wanted it;
 - a test failure you can't explain, or are about to call load or flaky;
 - a change in behaviour, a wire format or a host-facing API beyond the brief;
 - a design choice with two reasonable answers that later steps will build on;
