@@ -375,16 +375,23 @@ has "limited: with its time" "ok  a made pass (" "$out"
 WA="$X/Made.app"
 WORKER="$WA/Contents/Helpers/RectoRender.app/Contents/MacOS/recto-render-service"
 mkdir -p "$(dirname "$WORKER")"
-# sleep, signed ad hoc: the system hides the environment of its own (platform) programs from ps -E, and not of a program like the worker, ad hoc
-# or with the hardened runtime (seen 2026-11-16); a Developer ID worker is read by the release preflight.
-cp /bin/sleep "$WORKER" && codesign -f -s - "$WORKER" 2>/dev/null
-# The made worker, started by its path as the made folder spells it ($X may hold a doubled slash, and /var for /private/var), with the environment given.
-# It returns once the process is the worker (env has exec'd it), polling for at most 5 s.
+# A plain arm64 program that sleeps, built here: the system hides the environment of its own programs from ps -E, and a re-signed copy of one
+# is arm64e, which macOS 15 (CI's light runner) refuses to start from anyone but Apple, so every case below would meet no worker at all
+# (run 43899524836); this Mac's newer macOS ran it.
+command -v cc >/dev/null || { echo "FAIL  worker-env: the made worker needs cc (Xcode's command line tools)"; fails=$((fails + 1)); }
+printf '#include <stdlib.h>\n#include <unistd.h>\nint main(int c, char **v) { sleep(c > 1 ? atoi(v[1]) : 30); return 0; }\n' | cc -x c -o "$WORKER" - 2>&1
+# The made worker, started by the path given with the environment given, returned once it's running as the worker (at most 5 s): one that
+# didn't start says so here, rather than as the check finding no worker.
 worker_like() {
-  local pid n=0
-  env -i "$@" "$WORKER" 30 > /dev/null 2>&1 &
+  local by="$1" pid n=0
+  shift
+  env -i "$@" "$by" 30 > /dev/null 2>&1 &
   pid=$!
-  until case "$(ps -p "$pid" -o command= 2>/dev/null)" in "$WORKER"*) true ;; *) false ;; esac || [ $n -ge 50 ]; do sleep 0.1; n=$((n + 1)); done
+  until case "$(ps -p "$pid" -o command= 2>/dev/null)" in "$by"*) true ;; *) false ;; esac || [ $n -ge 50 ]; do sleep 0.1; n=$((n + 1)); done
+  case "$(ps -p "$pid" -o command= 2>/dev/null)" in
+    "$by"*) ;;
+    *) echo "FAIL  worker-env: the made worker didn't run here ($(file -b "$WORKER" 2>&1 | head -c 120))" >&2 ;;
+  esac
   echo "$pid"
 }
 # Failure: the check passes with no worker to read, so a run whose worker ended early says nothing of its setting.
@@ -392,18 +399,31 @@ out=$("$SOURCE/tools/release/worker-env.sh" "$WA" 2>&1); rc=$?
 check "worker-env: no live worker is refused" 1 "$rc"
 has "worker-env: and says so" "no live render worker" "$out"
 # Failure: a worker started without the setting (a host that clears it, or a signature it doesn't reach) passes, and the 100 to 175 MiB come back unseen.
-bare=$(worker_like LANG=C)
+bare=$(worker_like "$WORKER" LANG=C)
 out=$("$SOURCE/tools/release/worker-env.sh" "$WA" 2>&1); rc=$?
 check "worker-env: a worker without MallocLargeCache=0 is refused" 1 "$rc"
 has "worker-env: naming it" "the render worker $bare wasn't started with MallocLargeCache=0" "$out"
 kill "$bare" 2>/dev/null; wait "$bare" 2>/dev/null
 # Failure: the check refuses the real setting, and every release run fails on it; or it misses the worker because the bundle is named by
 # another spelling of its path than the one the worker was started by (here a link; on a Mac, /var and /private/var).
-set_one=$(worker_like MallocLargeCache=0)
 ln -s "$X" "$X/link"
-out=$("$SOURCE/tools/release/worker-env.sh" "$X/link/Made.app" 2>&1); rc=$?
-check "worker-env: a worker with MallocLargeCache=0 passes" 0 "$rc"
-has "worker-env: and says the vmmap line or why not" "vmmap --summary $set_one" "$out"
+# Each spelling a worker may be started by, or a bundle named by, against the other: a link, `/./`, a doubled slash, a trailing slash, and
+# $X as TMPDIR gives it (on a Mac /var for /private/var, and a doubled slash where TMPDIR ends in one).
+for spelling in "$WORKER|$X/link/Made.app" "$X/./link//Made.app${WORKER#"$WA"}|$WA" "$WORKER|$WA/" "$(cd "$WA" && pwd -P)${WORKER#"$WA"}|$X//Made.app"; do
+  by=${spelling%%|*} named=${spelling#*|}
+  set_one=$(worker_like "$by" MallocLargeCache=0)
+  out=$("$SOURCE/tools/release/worker-env.sh" "$named" 2>&1); rc=$?
+  check "worker-env: a worker with MallocLargeCache=0 passes, started as ${by#"$X"} and asked for as ${named#"$X"}" 0 "$rc"
+  has "worker-env: and says the vmmap line or why not" "vmmap --summary $set_one" "$out"
+  kill "$set_one" 2>/dev/null; wait "$set_one" 2>/dev/null
+done
+# Failure: a check that finds no worker says only that, and a run that fails on it can't tell a missing worker from one it couldn't match.
+set_one=$(worker_like "$WORKER" MallocLargeCache=0)
+mkdir -p "$X/Other.app/Contents/Helpers/RectoRender.app/Contents/MacOS" && cp "$WORKER" "$X/Other.app/Contents/Helpers/RectoRender.app/Contents/MacOS/"
+out=$("$SOURCE/tools/release/worker-env.sh" "$X/Other.app" 2>&1); rc=$?
+check "worker-env: another bundle's worker isn't taken for this one's" 1 "$rc"
+has "worker-env: and the words say what it looked for" "looked for $(cd "$X" && pwd -P)/Other.app/Contents/Helpers/RectoRender.app/Contents/MacOS/recto-render-service, and saw" "$out"
+has "worker-env: and which workers it saw (others' too, where they run)" "$set_one $(cd "$WA" && pwd -P)/Contents/Helpers" "$out"
 kill "$set_one" 2>/dev/null; wait "$set_one" 2>/dev/null
 
 # ---- carry/expect.py: what check-carry expects of a pair, by what its older release can read, on made states ----
