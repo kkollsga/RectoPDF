@@ -123,10 +123,11 @@ impl Default for Policy {
             // Far longer than an idle heavy worker can hold the slot, which is 8 s at most, so only real use of it can make an export time out.
             export_slot_wait: Duration::from_secs(60),
             retire_bytes: 64 * 1024 * 1024,
-            // 2026-11-16, release app, quiet, one worker a file: what a worker rests at after ordinary pages is 9.5 to 10 MiB (`rfc9110`), 15 (NASA `ntrs20240002628`) and
-            // at most 16 MiB after four sweeps of 6 pages a second; the shaded page (NASA `ntrs20220005969` p175) rests at 54 and the USGS map at 301. 32 MiB is twice what
-            // ordinary pages reached, and 22 under the shaded page, which was kept for 30 s at 54 under the old line (it was `retire_bytes`, 64). `docs/engineering/app-memory.md`.
-            rest_bytes: 32 * 1024 * 1024,
+            // 2026-11-16, release app, quiet, what a worker rests at: 9 to 10 MiB after a text page (`rfc9110`), 15 after a colour page (NASA `ntrs20240002628` p50), 16 at most after
+            // four sweeps of 6 pages a second through `rfc9110`, and 34 to 42 after the same through the NASA file (three runs, 5 s apart); the shaded page (NASA `ntrs20220005969`
+            // p175) rests at 53.6 to 54.0 (six runs) and the USGS map at 301. 48 MiB is above every ordinary rest and under the shaded page's. It was `retire_bytes` (64), above
+            // that page's 54, so it was kept for the 30 s of `idle_exit`. `docs/engineering/app-memory.md`.
+            rest_bytes: 48 * 1024 * 1024,
             // About 80 pages of text a tile at a time, or 30 regions of a heavy map, for a restart of 17 ms or the map's own load.
             surface_bytes_cap: 1024 * 1024 * 1024,
             // Platform §2.6. The slowest real page at 2x took 939 ms ([`crate::page_deadline`]).
