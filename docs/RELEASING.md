@@ -46,7 +46,7 @@ Each signing and launching step is under a limit and names itself if it waits (`
 4. *Draft release*: `RectoPDF-X.Y.Z.zip`, `SHA256SUMS` and `latest.json`, not published.
 5. *Withdraw the tag* if anything failed or was cancelled, so a fix can tag the same version again. Never a release that's been published: run again after that, this fails and leaves it alone.
 
-CI runs on pushes to `main` and `build/**` and skips a push that changes only `docs/**` and `*.md`, so the gate asks about the newest commit that changes anything else.
+CI runs on pushes to `main` and `build/**` and skips a push that changes only `docs/**` and `*.md`, and runs once on a push's newest commit. So the gate asks about the tagged commit back to the newest on `main`'s own line that changes anything else: a green run on any of them checked the tag's code. (Until 2026-11-16 it asked about one commit, the newest that changed code on any line of history. For `v0.1.1` that was a branch's commit under a merge, no push had ended on it, and the gate waited its hour and withdrew the tag.)
 
 **A known limit: several commits pushed at once.** CI runs on what a push leaves at the head, not on each commit in it, so a tag on an earlier commit of the same push has no run of its own, and the gate waits an hour and withdraws it. Tag the head of a push, or push the commit to be tagged on its own first. The converting of the certificate by `openssl` has run since (the preflight of 2026-11-11 and 0.1.0's signing job): Keychain Access's `.p12` needed repacking, which `tools/release/keychain.sh` does.
 
