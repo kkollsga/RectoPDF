@@ -86,15 +86,18 @@ fn measure(app: &HeadlessApp, what: &str, at: (f32, f32), clicks: &[u32]) {
     );
     let sampler = {
         let (stop, peak, seen, worker) = (Arc::clone(&stop), Arc::clone(&peak), Arc::clone(&seen), worker.clone());
-        std::thread::spawn(move || {
-            while !stop.load(Ordering::SeqCst) {
-                let (pids, bytes) = tree(&worker);
-                peak.fetch_max(bytes, Ordering::SeqCst);
-                crate::lock(&seen).extend(pids);
-                // A sampler, not a wait: it reads the processes every 5 ms until told to stop.
-                std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
-            }
-        })
+        std::thread::Builder::new()
+            .name("test-click-cost-sampler".into())
+            .spawn(move || {
+                while !stop.load(Ordering::SeqCst) {
+                    let (pids, bytes) = tree(&worker);
+                    peak.fetch_max(bytes, Ordering::SeqCst);
+                    crate::lock(&seen).extend(pids);
+                    // A sampler, not a wait: it reads the processes every 5 ms until told to stop.
+                    std::thread::sleep(Duration::from_millis(5)); // ratchet: poll
+                }
+            })
+            .expect("a thread")
     };
     app.keep_sent();
     let started = Instant::now();
