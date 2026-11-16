@@ -9,7 +9,7 @@ mod short;
 pub use short::{BUDGET_US, KEPT, Label, Short, SlowStretch};
 
 use recto_platform::thread::{RunState, Sample, ThreadPort, own_cpu_us};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::Thread;
@@ -29,7 +29,21 @@ thread_local! {
     /// The id of the watch this thread is the window's thread of: set at each wake ([`Watchdog::busy`]), which only the window's thread makes. A plain
     /// thread-local of no destructor, so a read is a load from the thread's own block, no system call.
     static WINDOW_OF: Cell<u64> = const { Cell::new(0) };
+    /// The watch's record, kept by the window's thread so a feature's own function can name its pass ([`note_doing_here`]) without being handed the window. Set
+    /// only when the thread's watch changes (once, in the app), so a wake costs the id compare it already had.
+    static WINDOW_WATCH: RefCell<Option<Arc<Shared>>> = const { RefCell::new(None) };
 }
+/// **The window's thread says what it begins, from inside the feature's own function:** the pass it is in is named for a stall's record, as
+/// [`Watchdog::note_doing`] does, without the function being handed the window. A thread that is not a window's thread has no watch of its own here, so a call
+/// from the QA channel's or the session's thread does nothing, and the last word of a pass is the one kept.
+pub fn note_doing_here(what: &'static str) {
+    let _ = WINDOW_WATCH.try_with(|watch| {
+        if let Some(shared) = watch.borrow().as_ref() {
+            shared.short.note_doing(what);
+        }
+    });
+}
+
 /// Gives each watch an id of its own (never 0), so a thread's [`WINDOW_OF`] can't name another watch's, as a reused address could.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -123,7 +137,10 @@ impl Watchdog {
 
     /// From the UI thread, each time it wakes. An atomic, and a wake for the watcher if that's parked.
     pub fn busy(&self) {
-        WINDOW_OF.set(self.0.id);
+        if WINDOW_OF.get() != self.0.id {
+            WINDOW_OF.set(self.0.id);
+            let _ = WINDOW_WATCH.try_with(|watch| *watch.borrow_mut() = Some(Arc::clone(&self.0)));
+        }
         let elapsed = self.0.epoch.elapsed();
         let now = elapsed.as_millis() as u64 + 1;
         self.0.short.begin(elapsed.as_micros() as u64, own_cpu_us());
@@ -617,6 +634,11 @@ mod tests {
         if Short::cpu_known() {
             // Held by the thread's own CPU clock, which a starved machine doesn't move; the busy/blocked rule itself is `cpu_time_tells_a_wait_from_work`'s.
             assert!(worked.cpu_us.unwrap() >= 40_000, "{worked:?}");
+            // A parked thread has almost no CPU however starved the machine is, so this holds at any speed; it fails on a clock that reads the whole process's or
+            // another thread's time (or the wall clock) in place of this thread's.
+            assert_eq!(waited.kind(), "blocked", "{waited:?}");
+        } else {
+            assert_eq!(waited.kind(), "unknown", "{waited:?}");
         }
         assert_eq!(dog.report().1, 0, "and what a stall of a second means is as it was");
         assert!(dog.worst_stall().is_none(), "the stall record of a second or more is untouched");

@@ -21,20 +21,6 @@ use recto_session::{ContentsFollow, TabId};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-/// A bridge call names itself on the line it already has (`self.inner.doing("scroll").saver.view_changed()`), which costs the bridge no line of its own and
-/// is no method of the app's core: the window's thread says what it begins, for a stall's record ([`Watchdog::note_doing`]), and the core is handed back.
-pub trait Doing {
-    #[must_use]
-    fn doing(&self, what: &'static str) -> &Self;
-}
-
-impl Doing for super::Inner {
-    fn doing(&self, what: &'static str) -> &Self {
-        self.window.note_doing(what);
-        self
-    }
-}
-
 /// **What the window is and says:** what the host tells of it for the record, its appearance and panel, the contents' follow, the UI thread's hang watchdog, and the
 /// notices that go by themselves.
 pub struct Window {

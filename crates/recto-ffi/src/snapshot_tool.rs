@@ -23,7 +23,7 @@ impl AppCore {
 
     /// One type's bytes for the offer with this number, once. A type made with the copy is handed over and dropped from here. A promised one is the person's paste (`UiAction::Pasted`), made by their own `snapshot` command, which takes a worker and can take seconds: the system asks on the UI thread and waits for the answer, which is the one time the UI thread waits here, for at most `PASTE_PATIENCE_MS`, and only for a paste of that type from another app. Nothing for an offer replaced since, or on the way out.
     pub fn clipboard_data(&self, serial: u64, uti: String) -> Option<Vec<u8>> {
-        let tool = self.inner.doing("clipboard_data").tools.tool();
+        let tool = self.inner.tools.tool();
         let made = |pasted: bool| if pasted { tool.wait_for_paste() } else { None };
         tool.ready_bytes(serial, &uti)
             .or_else(|| made(self.inner.act(UiAction::Pasted { serial, uti }).understood))
