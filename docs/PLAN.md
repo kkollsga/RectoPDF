@@ -34,6 +34,11 @@ Open items only, by where they are in this plan; features not yet built are coun
 - Phase R, the whole-phase review: what is left of S2's follow-ups after `build/snapshot-command` merged (2026-11-15): the lines under that item.
 - (done 2026-11-15) Phase R, R3.7 and the person's lane: how fast the window answers a key or click, measured with nothing else running: no case moved by more than 5.8 µs from the step's start (the numbers are under R3.7).
 
+- Asked by the owner 2026-11-16 (`docs/OWNER-RULES.md`), started the same day, each to hand back 2026-11-16 and merge by 2026-11-17:
+  - [ ] A full performance review: every line of `SPEC.md` §2 on a release build of `main` at 4b4e027c against `docs/reports/budgets-2026-11-08.md`, with where the time and memory go and what to fix first (`build/performance-review`, report `docs/reports/performance-2026-11-16.md`).
+  - [ ] In read mode a click on an image selects it, with a box, and ⌘C copies it losslessly (`build/image-select`).
+  - [ ] "Capture" in the page's right-click menu: the snapshot tool for one capture, then text selection again (`build/capture-once`).
+
 **Phase R's close: done 2026-11-15.** The second independent read found the work sound to release from; its three findings are merged or settled (`build/close-fixes`; the comparison walk's segment back with a longer wait and a truer record); the window's Save was found to run the person's `save` through the one door already, and the size guard's item was stale. The closing review is in `docs/PROCESS.md`.
 
 **Before 0.1.1**

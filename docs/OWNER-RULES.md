@@ -2,6 +2,11 @@
 
 The owner's product rules and one-off decisions, in their words, with the date. Moved here from `AGENTS.md` on 2026-11-13 so that file stays short: it is loaded into every session and read by every worker. Read the section that touches your task; behaviour as built is in `SPEC.md`. A newer rule that replaces an older one says so.
 
+## Product rules from the owner: images in read mode, and Capture (2026-11-16)
+- Owner, 2026-11-16: "when in normal read mode (with left click to select text) clicking a image will show a selection box. Clicking cmd+c will copy lossless to clipboard. Right click menu should have a option "Capture" which will trigger a single capture, reverting to normal mode after".
+- The coordinator's readings, which the owner may change: a click selects the image on top under the pointer, as the snapshot tool's click finds it, and not when the click is on visible text; ⌘C then puts on the clipboard what the snapshot tool's click on that image does (its own JPEG bytes with a PNG beside it, or a lossless PNG at its own size), with the same notice and "Copy anyway" for a file that asks not to be copied; a click elsewhere, a text selection, Escape or another tab lets the image go. "Capture" in the page's right-click menu turns the snapshot tool on for one capture: the next box or click is taken and the tool goes off again whatever it took, and Escape or Tools > Snapshot ends it before that.
+- Owner, the same message: "Can you run a full performance review?" Read as the app's speed and memory against every line of `SPEC.md` §2 on a release build, with where the time and memory go; the report is `docs/reports/performance-2026-11-16.md`.
+
 ## Product direction from the owner: libraries, and one way to point into a PDF (2026-11-14)
 Backlog, not to be built now, except the core pieces named; planned in `docs/PLAN.md` (phase 8).
 - The use case: "indexing folders with pdf, using smart indexing powered by distillpdf", and "headless pdf search through the cli with paragraph aware search results, where the agent can get raw text, markdown or pdf segments or full page returns (with options of png or svg). All through the cli."
