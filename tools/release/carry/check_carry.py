@@ -5,19 +5,20 @@ Quiet runs only (off every screen, never active, temp state), on one state folde
      text, two tabs put to sleep) and hands off as an update does;
   B  the new build starts on that state: everything that should carry is compared, the whole of `qa state` as the restore tests compare
      it (their exceptions, crates/recto-cli/tests/restore/exceptions/, and this pair's own, carry/<old>-to-<new>.txt), and what by design
-     doesn't carry is asserted (older sleep files aren't read: each idle tab wakes once from its PDF). Then it makes what the previous
-     release never wrote (a highlight, whose journal is version 2; a sleep file of its own format) and hands off;
+     doesn't carry is asserted (what it does with the older release's sleep files). Then it makes a highlight, whose journal is version 2
+     (which 0.1.0 never wrote), and a sleep file of its own format, and hands off;
   C  the previous release again on what B left, as a copy that went back would: it must start, keep every tab and place, leave the
-     newer journal alone (byte for byte), and show that tab as it says it does;
+     newer journals as they were, and show the highlighted tab as it can read it;
   D  the new build again: nothing B made was lost on the way.
   E  the previous release again, with an edit made in it on the highlighted tab, as a person who went back might, and
-  F  the new build again: what it shows of both, and where the newer journal is on disk, byte for byte (under its name, or set aside
-     as `.not-merged`, which the tab must then say); the faults found here are named in
-     the pair's file and said as KNOWN FAULT until they are fixed, when the check fails until their line goes.
+  F  the new build again: what it shows of both, and where the version-2 journal is on disk. The faults found here are named in the pair's
+     file and said as KNOWN FAULT while they happen; a fault line that didn't happen fails, so a fixed fault's line goes.
+What C, E and F (and B, of the sleep files) expect turns on what the older release can read, each fact stated once with the version it was
+first true of, in expect.py (held by expect_test.py with made states): before 0.1.1 an app leaves a version-2 journal alone and its sleep files
+hold pictures; from 0.1.1 it reads both.
 Each comparison says what it compared; every difference not named in an exception, with its reason, fails the check.
 """
 
-import hashlib
 import json
 import os
 import re
@@ -26,6 +27,10 @@ import subprocess
 import sys
 import tempfile
 import time
+
+# Run with -I, which leaves this folder off the path: expect.py is beside this file.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from expect import Older, b_sleep, c_highlighted_tab, e_journal, f_disk, journal_version, journals, sleep_format, unmet_faults  # noqa: E402
 
 LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 repo, previous_zip, new_app, evidence = sys.argv[1:5]
@@ -209,24 +214,6 @@ def files_of(state):
     return found
 
 
-def sleep_format(data):
-    """A sleep file's own format, from its meta: 0 for one written before the format was said (0.1.0's)."""
-    try:
-        header, rest = data.split(b"\n", 1)
-        json.loads(header)
-        meta, _ = json.JSONDecoder().raw_decode(rest[:1 << 20].decode("utf-8", errors="replace"))
-    except (ValueError, IndexError):
-        return None
-    return meta.get("sleep_format", 0) if isinstance(meta, dict) else None
-
-
-def journal_version(data):
-    try:
-        return json.loads(data.split(b" ", 1)[1].split(b"\n", 1)[0]).get("version")
-    except (ValueError, IndexError):
-        return None
-
-
 def version_of(app):
     return subprocess.run(["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleShortVersionString", os.path.join(app, "Contents/Info.plist")], capture_output=True, text=True).stdout.strip()
 
@@ -242,8 +229,11 @@ def main():
         subprocess.run(["ditto", new_app, new_copy], check=True)
         apps = [old_app, new_copy]
         old_v, new_v = version_of(old_app), version_of(new_copy)
+        older = Older(old_v)
         say(f"check-carry: {old_v} (as published) then {new_v} ({new_app}), on one state folder in {work}")
         across = exceptions_from(os.path.join(repo, "tools/release/carry", f"{old_v}-to-{new_v}.txt"))
+        acknowledged = {k[len("fault:"):]: w for k, w in across if k.startswith("fault:")}
+        met = set()
         restore_dir = os.path.join(repo, "crates/recto-cli/tests/restore/exceptions")
         restart = [e for name in sorted(os.listdir(restore_dir)) if name.endswith(".txt") for e in exceptions_from(os.path.join(restore_dir, name))]
         state_ex = restart + [(k, w) for k, w in across if not k.startswith("fault:") and k.split(".")[0] not in ANSWERS]
@@ -311,17 +301,15 @@ def main():
         new_paths = compare("B: the whole of `qa state`, as the restore tests compare it", before["state"], after["state"], state_ex)
         note(f"B: {len(new_paths)} values of `qa state` are new in {new_v} and not compared (listed in {evidence}/B-new-paths.json)")
         save("B-new-paths", new_paths)
-        # By design not carried: an older sleep file is never read, and goes at its first read; each tab that slept wakes once from its PDF.
+        # The older release's sleep files: read, or (pictures, before 0.1.1) never read and gone at the first read (expect.b_sleep).
         wakes = {}
         for t in (1, 2, 3):
             b.cmd("tap", f"#{t}"); b.settled()
             wakes[t] = b.cmd("qa", "state")["reader"]["last_wake"]
         save("B-wakes", wakes)
-        check(f"B: by design, no tab woke from {old_v}'s sleep pictures (each from its PDF, once)",
-              all(w.get("from_sleep") is False for w in wakes.values()), json.dumps(wakes))
         b_files = files_of(state)
-        left = [p for p in old_sleeps if p in b_files and sleep_format(b_files[p]) == old_sleeps[p] and b_files[p] == a_files[p]]
-        check(f"B: by design, {old_v}'s sleep files ({len(old_sleeps)}, format {sorted(set(old_sleeps.values()))}) are gone once read", not left, ", ".join(left))
+        for what in b_sleep(older, new_v, wakes, (1, 2), old_sleeps, a_files, b_files):
+            check(*what)
         for t in (1, 2, 3):
             check(f"B: tab #{t} woke on its place", b.cmd("where", "--tab", f"#{t}")["page"] == before[f"where #{t}"]["page"])
         # What the previous release never wrote: a highlight (a journal of version 2) and a sleep file of this build's format.
@@ -339,6 +327,9 @@ def main():
               len(v2) == 1 and any(sleep_format(d) and sleep_format(d) >= 3 for p, d in b_files.items() if os.path.basename(p).startswith("sleep-")),
               f"journals {[(p, journal_version(d)) for p, d in journals_b.items()]}")
 
+        if seed == "highlight":
+            for p in v2:
+                os.remove(os.path.join(state, p))
         # ---- C: the previous release again, on what the new build left ----
         c = Run(old_app, f"C ({old_v} again)", state, pdfs)
         c.start()
@@ -351,15 +342,15 @@ def main():
         v2_tab = next(t for t in tabs_b if t["untrusted"]["name"] == "gamma")["tab"]
         for t in tabs_c:
             if t["tab"] == v2_tab:
-                # By design (docs/RELEASING.md, A bad release): a version-2 journal is left alone rather than read in part, and the tab says so.
-                check(f"C: by design, the highlighted tab shows the file without its edits and says why ({(t['file_notice'] or {}).get('code')})",
-                      t["edited"] is False and (t["file_notice"] or {}).get("code") == "edits_unreadable", json.dumps(t)[:300])
+                highlights = c.cmd("highlights", "--tab", f"#{v2_tab}") if older.reads_version_2_journals else None
+                for what in c_highlighted_tab(older, new_v, t, highlights):
+                    check(*what)
             else:
                 twin = next(x for x in tabs_b if x["tab"] == t["tab"])
                 check(f"C: tab #{t['tab']}'s edits as {new_v} left them", t["edited"] == twin["edited"] and went_back[f"edits #{t['tab']}"]["runs"] == b2[f"edits #{t['tab']}"]["runs"])
         c.cmd("tap", "#1"); c.settled()
         wake_c = c.cmd("qa", "state")["reader"]["last_wake"]
-        note(f"C: {old_v} woke tab #1 {'from' if wake_c.get('from_sleep') else 'without'} {new_v}'s sleep file (format 4, which it refuses): {json.dumps(wake_c)}")
+        note(f"C: {old_v} woke tab #1 {'from' if wake_c.get('from_sleep') else 'without'} {new_v}'s sleep file: {json.dumps(wake_c)}")
         check(f"C: {old_v} is still running after waking a tab from {new_v}'s files", c.alive())
         c.handoff()
         c_files = files_of(state)
@@ -376,10 +367,10 @@ def main():
         check("D: the turned page is there again", back["edits #1"]["runs"] == before["edits #1"]["runs"])
         check("D: every tab on its place", [t["page"] for t in back["tabs"]["tabs"]] == [t["page"] for t in tabs_b])
         stale = [t for t in back["tabs"]["tabs"] if t.get("file_notice")]
-        acknowledged = {k[len("fault:"):]: w for k, w in across if k.startswith("fault:")}
         for t in stale:
             code = t["file_notice"]["code"]
             if f"D.notice.{code}" in acknowledged:
+                met.add(f"D.notice.{code}")
                 note(f"D: KNOWN FAULT, tab #{t['tab']} says `{code}` though its edits read back whole: {acknowledged[f'D.notice.{code}']}")
             else:
                 fail(f"D: tab #{t['tab']} says `{code}` though its edits read back whole", json.dumps(t["file_notice"]))
@@ -390,6 +381,7 @@ def main():
         def known(where, what, detail):
             """A fault found and reported: said as KNOWN FAULT while it's in the pair's file, a failure once it isn't (and so seen when it's fixed)."""
             if where in acknowledged:
+                met.add(where)
                 note(f"{where.split('.')[0]}: KNOWN FAULT, {what}: {acknowledged[where]}")
             else:
                 fail(f"{where.split('.')[0]}: {what}", detail)
@@ -403,9 +395,11 @@ def main():
         save("E", e.snapshot([1, 2, 3]))
         e.handoff()
         e_files = files_of(state)
-        kept = [p for p in v2_journals if e_files.get(p) == v2_journals[p]]
-        check(f"E: {old_v}'s edit left {new_v}'s version-2 journal on disk byte for byte ({len(v2_journals)})", len(kept) == len(v2_journals) == 1,
-              f"journals now {[(p, journal_version(x)) for p, x in e_files.items() if os.path.basename(p).startswith('journal-')]}")
+        for what in e_journal(older, new_v, v2_journals, e_files):
+            check(*what)
+        # The version-2 journal as E left it, and the lists E started that D didn't have (the older release's own, before it read version 2).
+        v2_after_e = {p: e_files[p] for p in v2_journals if p in e_files}
+        own = {p: x for p, x in journals(e_files).items() if p not in d_files}
 
         # ---- F: the new build again: what's shown and what's on disk ----
         f = Run(new_copy, f"F ({new_v} again)", state, pdfs)
@@ -428,17 +422,11 @@ def main():
                 if p.endswith(".not-merged"):
                     os.remove(os.path.join(state, p))
         f_files = files_of(state)
-        # Where the version-2 journal is: under its own name, or set aside under the store's name for a list it keeps and won't read
-        # (`.not-merged` for `.log`, as Path::with_extension makes it), which nothing prunes and 0.1.0 leaves alone. Byte for byte either way.
-        set_aside_as = lambda p: os.path.splitext(p)[0] + ".not-merged"
-        where = {p: p if f_files.get(p) == v2 else set_aside_as(p) if f_files.get(set_aside_as(p)) == v2 else None for p, v2 in v2_journals.items()}
-        check(f"F: {new_v}'s version-2 journal is on disk byte for byte, as {', '.join(map(str, where.values()))}", len(where) == 1 and all(where.values()),
-              f"journals now {sorted(p for p in f_files if os.path.basename(p).startswith('journal-'))}")
-        if len(forward["highlights #3"]["edits"]) != 1:
-            # The highlight not shown is said on its tab, and the notice's "kept in the state folder" is so: its list is the one set aside.
-            check("F: the hidden highlight is said on its tab (`edits_set_aside_after_quit`), and its list is set aside in the state folder as the notice says",
-                  code == "edits_set_aside_after_quit" and all(w == set_aside_as(p) for p, w in where.items()), f"the tab says {code!r}; the journal is at {where}")
+        for what in f_disk(older, new_v, len(forward["highlights #3"]["edits"]) == 1, code, v2_after_e, own, f_files):
+            check(*what)
         f.cmd("qa", "quit", "now")
+        for what in unmet_faults(acknowledged, met):
+            check(*what)
     finally:
         for app in apps:
             subprocess.run([LSREGISTER, "-u", app], capture_output=True)

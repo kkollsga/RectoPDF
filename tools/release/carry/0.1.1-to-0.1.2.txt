@@ -1,0 +1,9 @@
+# What may differ between a session as 0.1.1 left it and as 0.1.2 shows it, by design, each with its reason: a path of `qa state` (or `tabs.`, `show.`,
+# `permission.` and so on for those answers), then why. Beside these, the restore tests' own exceptions hold (crates/recto-cli/tests/restore/exceptions/).
+# A key names a path and everything under it; `[*]` in it stands for any index of a list. A key that starts with an answer's name (`edits.`) is every
+# tab's answer of that name. `fault:<where>` names a fault found and reported, said as KNOWN FAULT while it happens; one that doesn't happen fails.
+# What C, E and F expect of the older release (what it can read) is tools/release/carry/expect.py's, by its version, not this file's.
+app.context_menu The page's context menu is the build's: Capture (`tools.capture`) is new since 0.1.1, before the layout items (merge of build/capture-once, 2026-11-16).
+app.save_button.frame Not the code: no source that places the window's buttons changed between these releases. A build made on this Mac links macOS SDK 15.0 and the release workflow's link 26.5 (`vtool -show-build` on the app's main executable), and the buttons sit at y 8 in the one and 7 in the other (the published 0.1.0 and 0.1.1 are both 7): AppKit lays the titlebar out by the SDK an app links, which is inferred, not built here to prove. So a local dress rehearsal differs here and the draft, built by the workflow, shouldn't.
+app.sidebar_button.frame As app.save_button.frame.
+permission.set_at_ms A quiet run sets its level as it starts, so the time it was set is that run's.

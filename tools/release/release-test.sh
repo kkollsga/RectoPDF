@@ -5,7 +5,8 @@
 #
 #   tools/release/release-test.sh
 #
-# It runs tools/release/ci-gate-test.sh, the release gate's own test, so tools/check.sh runs that when tools/release/ changes.
+# It runs tools/release/ci-gate-test.sh (the release gate's) and tools/release/carry/expect_test.py (check-carry's expectations), so
+# tools/check.sh runs them when tools/release/ changes.
 # What it doesn't do: check-draft.sh's codesign, Gatekeeper and stapler checks of a real signed bundle, and 0.1.0's own verdict, which need
 # the downloaded 0.1.0 zip and a build. `tools/release/check-draft.sh --self-test <RectoPDF-0.1.0.zip>` runs those (docs/RELEASING.md).
 set -uo pipefail
@@ -404,6 +405,11 @@ out=$("$SOURCE/tools/release/worker-env.sh" "$X/link/Made.app" 2>&1); rc=$?
 check "worker-env: a worker with MallocLargeCache=0 passes" 0 "$rc"
 has "worker-env: and says the vmmap line or why not" "vmmap --summary $set_one" "$out"
 kill "$set_one" 2>/dev/null; wait "$set_one" 2>/dev/null
+
+# ---- carry/expect.py: what check-carry expects of a pair, by what its older release can read, on made states ----
+out=$(python3 -I "$SOURCE/tools/release/carry/expect_test.py" 2>&1); rc=$?
+check "carry expectations: their own test passes ($(printf '%s\n' "$out" | sed -n 's/^Ran \([0-9]*\) tests.*/\1/p') cases)" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out" | tail -30
 
 # ---- ci-gate.sh: the release's gate on CI, by its own test (made runs and a made repository) ----
 out=$("$SOURCE/tools/release/ci-gate-test.sh" 2>&1); rc=$?

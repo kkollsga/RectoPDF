@@ -1,0 +1,16 @@
+# What may differ between a session as 0.1.0 left it and as 0.1.2 shows it, by design, each with its reason: a path of `qa state` (or `tabs.`, `show.`,
+# `permission.` and so on for those answers), then why. Beside these, the restore tests' own exceptions hold (crates/recto-cli/tests/restore/exceptions/).
+# A key names a path and everything under it; `[*]` in it stands for any index of a list. A key that starts with an answer's name (`edits.`) is every
+# tab's answer of that name. `fault:<where>` names a fault found and reported, said as KNOWN FAULT while it happens; one that doesn't happen fails.
+# What C, E and F expect of the older release (what it can read) is tools/release/carry/expect.py's, by its version, not this file's.
+# No fault line: faults D and F of 0.1.0-to-0.1.1.txt are fixed on build/carry-two-journals (D: the record's `edits_unreadable` over a newer journal that
+# reads whole goes; E and F: 0.1.0's list and 0.1.1's highlights merged, the version-2 journal the merged one's start, 0.1.0's own kept aside), so
+# this pair's check expects them fixed, and fails until that branch is merged.
+app.context_menu The page's context menu is the build's: Capture (`tools.capture`) is new since 0.1.1, before the layout items (merge of build/capture-once, 2026-11-16).
+app.save_button.frame Not the code: no source that places the window's buttons changed between these releases. A build made on this Mac links macOS SDK 15.0 and the release workflow's link 26.5 (`vtool -show-build` on the app's main executable), and the buttons sit at y 8 in the one and 7 in the other (the published 0.1.0 and 0.1.1 are both 7): AppKit lays the titlebar out by the SDK an app links, which is inferred, not built here to prove. So a local dress rehearsal differs here and the draft, built by the workflow, shouldn't.
+app.sidebar_button.frame As app.save_button.frame.
+permission.set_at_ms A quiet run sets its level as it starts, so the time it was set is that run's.
+app.menu_bar The menu bar is the build's, not the session's: 0.1.1 adds Mark Up (Highlight, Remove Highlight) before Tools, and each item says its key mask and whether it is the system's.
+edits.followed New in 0.1.1 with the page matcher (merge 888b6d0e, build/page-matcher-2): `edits` says which unsaved edits followed their pages onto a file changed on disk. No file changed here, and the check holds that each tab says nothing followed (null).
+app.find.rows_on_screen[*].untrusted.label 0.1.1's Find rows start and end on a word (merge 3ae12808, build/on-screen-fixes): a row 0.1.0 began inside a word ("…cond line") begins at the next one ("…line"). The check holds that each changed row is 0.1.0's words cut at a space.
+reader.left_picture_bytes Gone with the pictures of pages, by the owner's decision of 2026-11-15 (merge a1b29d9d, build/no-page-pictures): no picture of a page is kept, so there are no bytes of one to say.
