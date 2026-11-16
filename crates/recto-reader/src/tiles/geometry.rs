@@ -112,6 +112,24 @@ impl DocView {
         self.place.magnification
     }
 
+    /// **The host's magnification, taken into the layout, and where across the view goes with it.** A row is centred in the view, which is narrower in
+    /// document points the further in it's zoomed ([`crate::layout::PageLayout::view_width`]), so a zoom moves rows across, and the host, which zoomed about
+    /// a point (the pointer, or the view's middle) under the old places, has the view across where that point was. It goes as far across as the row at the
+    /// view's middle moved, so the point stays under the pointer, held to what the document has to scroll across: none while the row fits, which centres
+    /// it, and a row wider than the view from its left edge. Says where the view goes across, if it's to move; and nothing while `jump` (a jump or a new
+    /// window on its way, whose place across is sent with it) or with no change of zoom. A few lookups of the layout.
+    pub(super) fn take_magnification(&mut self, viewport: &super::Viewport, jump: bool) -> Option<f64> {
+        let row = self.layout.page_at(viewport.y + viewport.height / 2.0);
+        let before = self.layout.rect(row).x;
+        if !self.layout.set_magnification(viewport.magnification) || jump || self.layout.count() == 0 {
+            return None;
+        }
+        let moved = self.layout.rect(row).x - before;
+        let room = (self.layout.document_width_for(viewport.y, viewport.y + viewport.height) - self.layout.view_width()).max(0.0);
+        let x = (viewport.x + moved).clamp(0.0, room);
+        ((x - viewport.x).abs() > 1e-9).then_some(x)
+    }
+
     /// Where the reader is in the tab: a page and how far down it, as a change of layout keeps it.
     pub(crate) fn reading_anchor(&self) -> (u32, f64) {
         self.place.anchor

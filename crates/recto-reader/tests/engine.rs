@@ -593,7 +593,7 @@ fn a_press_returns_at_once_and_the_highlight_comes_when_the_text_does() {
     assert!(!engine.selection().has_any());
 }
 
-/// Failure: what's selected is drawn in document points, so it's wrong at any zoom, or a click at a zoom hits a different word. The host's points are the document's whatever the magnification, so the same point must take the same word.
+/// Failure: what's selected is drawn in document points, so it's wrong at any zoom, or a click at a zoom hits a different word: the page is drawn in one place and a press on it is read as if it were in another. A zoom moves a page across, as a row is centred in the view, which narrows as it's zoomed in (owner, 2026-11-16), so the press is where the host was last told to draw the page, at that zoom, and the same point on the page must take the same word.
 #[test]
 fn a_click_takes_the_same_word_at_any_zoom() {
     let file = TempPdf::new(
@@ -602,16 +602,23 @@ fn a_click_takes_the_same_word_at_any_zoom() {
     );
     let (engine, _events) = started(&file, 1);
     let (x, y, fit) = settled_on_page(&engine, 0);
-    let (press_x, press_y) = (x + 100.0 * fit, y + (792.0 - 720.0 - 4.0) * fit);
+    let drawn_at = std::cell::Cell::new(x);
     let word_at = |magnification: f64| {
-        engine.set_viewport(Viewport {
+        let mut ops = engine.set_viewport(Viewport {
             magnification,
             width: 1168.0 / magnification,
             height: 900.0 / magnification,
             ..view(0.0)
         });
         engine.applied();
-        pump(&engine, HANG);
+        ops.extend(pump(&engine, HANG));
+        if let Some(x) = ops.iter().rev().find_map(|op| match op {
+            Op::ShowPage { page: 0, x, .. } => Some(*x),
+            _ => None,
+        }) {
+            drawn_at.set(x);
+        }
+        let (press_x, press_y) = (drawn_at.get() + 100.0 * fit, y + (792.0 - 720.0 - 4.0) * fit);
         let mut ops = engine.selection().press(press_x, press_y, 2, false);
         ops.extend(engine.selection().release());
         engine.applied();

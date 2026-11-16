@@ -494,6 +494,10 @@ impl Reader {
             .get(&tab)
             .map_or((1.0, 0.0), |doc| (doc.place.magnification, doc.place.scroll_x));
         self.host.ops.push_back(Op::Magnify { value: magnification });
+        // Laid out at the zoom it's sent, which is what the host shows by the time it lays the document out.
+        if let Some(doc) = self.docs.views.get_mut(&tab) {
+            doc.layout.set_magnification(magnification);
+        }
         self.lay_out();
         self.jump_to_anchor(page);
         self.host.ops.push_back(Op::ScrollAcross { x: across });
@@ -587,11 +591,12 @@ impl Reader {
         }
         // The reader's own scroll: the view moved down or up, with nothing the host was sent arriving, no change of zoom or room, and no pinch or resize under way.
         self.place.note_viewport(was, viewport);
-        let mut moved_layout = false;
+        let (mut moved_layout, mut across) = (false, None);
         if let Some(doc) = self.docs.hot.and_then(|tab| self.docs.views.get_mut(&tab)) {
             if doc.layout.set_frame(viewport.frame_width) && was.frame_width != viewport.frame_width {
                 moved_layout = true;
             }
+            across = doc.take_magnification(&viewport, self.place.jump.is_some());
             // A jump under way says the host hasn't caught up with what it's been told, and that includes the zoom.
             if !viewport.live && self.place.jump.is_none() {
                 doc.place.magnification = viewport.magnification;
@@ -605,6 +610,11 @@ impl Reader {
                 self.place.track(doc, viewport);
             }
             self.widen_for_view();
+        }
+        // After the document's new width, so the host holds it to that.
+        if let (Some(x), Some(doc)) = (across, self.docs.hot.and_then(|tab| self.docs.views.get_mut(&tab))) {
+            doc.place.scroll_x = x;
+            self.host.ops.push_back(Op::ScrollAcross { x });
         }
         // After the refresh, which is what moves the tiles' scale on.
         self.refresh(MAX_ATTACH_PER_TURN);
@@ -714,7 +724,9 @@ impl Reader {
         let warm: Vec<u32> = self.docs.views.keys().copied().filter(|tab| Some(*tab) != hot).collect();
         self.recount_wanted_files(&warm);
         // The window is new, at the top of the document and no zoom. It's sent back to the place and zoom this tab was left at, and until it's got there, what it says about where it is isn't the reader moving.
-        if let Some(magnification) = self.docs.shown().map(|doc| doc.place.magnification) {
+        if let Some(doc) = self.docs.hot.and_then(|tab| self.docs.views.get_mut(&tab)) {
+            let magnification = doc.place.magnification;
+            doc.layout.set_magnification(magnification);
             self.viewport.magnification = magnification;
             self.host.ops.push_back(Op::Magnify { value: magnification });
             self.place.wait_for_the_new_window();

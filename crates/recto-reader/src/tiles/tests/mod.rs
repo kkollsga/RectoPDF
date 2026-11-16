@@ -8,6 +8,7 @@ use recto_render_service::{LowResWhy, TileKind};
 use std::collections::HashSet;
 use std::path::Path;
 
+mod across;
 mod cache;
 mod host;
 mod image_pick;

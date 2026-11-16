@@ -446,7 +446,12 @@ fn zoomed_out_past_a_preview_a_dark_page_is_never_shown_light() {
     let file = slide_and_text_pages();
     // 0.12 puts a letter page in one tile at a backing of 2; 0.3 puts it in two across.
     for magnification in [0.12, 0.3] {
-        let viewport = Viewport { magnification, ..view(0.0) };
+        // As wide as the host's view is at this zoom, the window's width over the magnification: pages are centred in that.
+        let viewport = Viewport {
+            magnification,
+            width: 1168.0 / magnification,
+            ..view(0.0)
+        };
         for (page, dark) in [(0, true), (1, false)] {
             let (shown, report) = shown_on_dark_paper(&file.0, 2, page, Policy::default(), viewport);
             assert_eq!(report["tiles"]["previews_attached"], 0, "at {magnification}: {report}");
@@ -475,6 +480,7 @@ fn a_white_page_whose_band_fills_its_first_tile_turns_over() {
     // At 0.37 a letter page is 0.92 pixels a point at a backing of 2, 566 pixels across, two tiles, its top left tile its top 557 points; a preview is drawn from 0.375 up.
     let viewport = Viewport {
         magnification: 0.37,
+        width: 1168.0 / 0.37,
         ..view(0.0)
     };
     let (shown, report) = shown_on_dark_paper(&file.0, 1, 0, Policy::default(), viewport);
