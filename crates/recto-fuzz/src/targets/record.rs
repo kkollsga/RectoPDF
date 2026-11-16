@@ -508,7 +508,7 @@ fn use_a_went_back_pair(data: &[u8]) {
         .filter_map(|entry| std::fs::read(entry.path()).ok())
         .collect();
     assert!(held.iter().any(|there| there.starts_with(&n_bytes)), "N's bytes are still a file's first bytes");
-    assert!(held.iter().any(|there| *there == o), "O's bytes are still a file's");
+    assert!(held.contains(&o), "O's bytes are still a file's");
     let _ = std::fs::remove_dir_all(&root);
 }
 
