@@ -224,6 +224,9 @@ pub enum Enable {
 
 /// Each menu item's rule, by its id. **No default** (review C8): an id that isn't listed can't be chosen, and a test holds every id the menus list to having one, so a new item that needs a document can't be enabled without one by being forgotten. The panel's items say their own `enabled`.
 pub fn enable_rule(id: &str) -> Option<Enable> {
+    if let Some(rule) = crate::snapshot_menu::enable_rule(id) {
+        return Some(rule);
+    }
     Some(match id {
         "app.about" | "app.settings" | "file.settings" | "app.services" | "app.quit" | "file.open" | "file.close_window" => Enable::Always,
         // A submenu's own item opens it, and does nothing itself.
@@ -234,7 +237,6 @@ pub fn enable_rule(id: &str) -> Option<Enable> {
         "compare.separate" | "compare.synced" => Enable::Always,
         "edit.copy" | "edit.copy_anyway" => Enable::Selection,
         "edit.select_all"
-        | "tools.capture"
         | "edit.clear_history"
         | "go.page"
         | "find.open"
@@ -255,8 +257,6 @@ pub fn enable_rule(id: &str) -> Option<Enable> {
         "go.forward" => Enable::Forward,
         // A file in Open Recent, by a key `action` takes.
         recent if recent.starts_with("recent.") && action(recent).is_some() => Enable::Always,
-        tool if crate::snapshot_menu::is_menu_id(tool) => Enable::Always,
-        "tools.capture_cancel" => Enable::Always,
         markup if crate::core::highlight::is_menu_id(markup) => Enable::Selection,
         _ => return None,
     })
@@ -548,6 +548,11 @@ pub fn action(id: &str) -> Option<Action> {
     })
 }
 
+/// [`plain_key`] with a Capture waiting, whose end Escape is: the snapshot tool is asked first, the window's own keys after.
+pub fn plain_key_with(characters: &str, capture_waiting: bool) -> Option<&'static str> {
+    crate::snapshot_menu::plain_key(characters, capture_waiting).or_else(|| plain_key(characters))
+}
+
 /// The id a key does with no ⌘ held, when no text field has it. Owner, 2026-11-07: "enable + - and command - scroll for zooming".
 pub fn plain_key(characters: &str) -> Option<&'static str> {
     match characters {
@@ -699,7 +704,7 @@ mod tests {
         assert!(
             context_menu(None, Some(false))
                 .iter()
-                .all(|item| item.key.is_empty() && (item.id.is_empty() || item.id == crate::snapshot_menu::CAPTURE_ID || action(&item.id).is_some())),
+                .all(|item| item.key.is_empty() && (item.id.is_empty() || action(&item.id).is_some() || crate::snapshot_menu::enable_rule(&item.id).is_some())),
             "no keys shown in a context menu"
         );
     }

@@ -71,6 +71,16 @@ pub fn add_to_panel(panel: &mut PanelModel, snapshot_on: bool, edit_mode: bool) 
     }
 }
 
+/// What decides whether the tool's items can be chosen: the toggle and Escape's end always, Capture with a document open in the pane.
+pub fn enable_rule(id: &str) -> Option<crate::menus::Enable> {
+    use crate::menus::Enable;
+    match id {
+        TOGGLE_ID | CANCEL_ID => Some(Enable::Always),
+        CAPTURE_ID => Some(Enable::Document),
+        _ => None,
+    }
+}
+
 /// Whether a menu item is the tool's, for QA's `menu`, which takes only what a menu has.
 pub fn is_menu_id(id: &str) -> bool {
     id == TOGGLE_ID

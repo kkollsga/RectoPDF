@@ -828,13 +828,27 @@ fn escape_and_the_toggle_end_a_capture_and_the_menu_bars_tool_is_left_alone() {
     assert!(!app.core().tools.tool().is_on(), "and the release ended it");
 }
 
-/// **Failure (owner, 2026-11-16): Escape is taken by the window with no capture to end, or isn't sent with one,** so it stops doing what it does elsewhere,
-/// or can't end a capture. The key's id is Capture's end while one is armed, and nothing otherwise.
+/// **Failure (owner, 2026-11-16): Escape is taken by the window with no capture to end, or isn't sent with one, or the keys the window already has stop working
+/// next to it,** so Escape stops doing what it does elsewhere, or can't end a capture, or "+" stops zooming. The key's id, as the bridge asks for it with
+/// the tool's real state, is Capture's end while one waits, and nothing otherwise; "+" is the zoom's either way.
 #[test]
 fn escape_is_the_windows_only_while_a_capture_waits() {
-    assert_eq!(crate::snapshot_menu::plain_key("\u{1b}", true), Some(snapshot_tool::CANCEL_ID));
-    assert_eq!(crate::snapshot_menu::plain_key("\u{1b}", false), None);
-    assert_eq!(crate::snapshot_menu::plain_key("a", true), None);
+    let disk = Disk::new();
+    let doc = disk.file("snapshot.pdf", &text_and_image());
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    let key = |characters: &str| crate::menus::plain_key_with(characters, app.core().tools.tool().is_once());
+    assert_eq!((key("\u{1b}"), key("+")), (None, Some("view.zoom_in")), "no capture waiting");
+    capture(&app);
+    assert_eq!(
+        (key("\u{1b}"), key("+"), key("a")),
+        (Some(snapshot_tool::CANCEL_ID), Some("view.zoom_in"), None),
+        "one waiting"
+    );
+    tool_on(&app);
+    app.core().perform(snapshot_tool::CANCEL_ID.into());
+    assert_eq!(key("\u{1b}"), None, "the menu bar's tool isn't a capture waiting");
 }
 
 /// **Failure (AGENTS.md: "An announcement is made when something changed, and only then"): the host is told again for a Capture that changed nothing, or an
@@ -901,7 +915,13 @@ fn an_agents_capture_is_what_its_snapshot_toggle_is() {
             }
             outcome
         };
-        assert_eq!(run(snapshot_tool::CAPTURE_ID), run(snapshot_tool::TOGGLE_ID), "{level:?}");
+        let toggle = run(snapshot_tool::TOGGLE_ID);
+        assert_eq!(run(snapshot_tool::CAPTURE_ID), toggle, "{level:?}");
+        assert_eq!(
+            run(snapshot_tool::CANCEL_ID).0,
+            toggle.0,
+            "{level:?}: Escape's id is refused where the toggle is, and does nothing where it isn't"
+        );
     }
 }
 
