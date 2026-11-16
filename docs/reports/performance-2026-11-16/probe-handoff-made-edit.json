@@ -1,0 +1,222 @@
+[
+ {
+  "drawn_ms": 315.16258299999936,
+  "drawn_and_still_ms": 457.6707500000001,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 222.565666,
+  "wait_settled": [
+   {
+    "at_ms": 972,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 1480,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 1990,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 2503,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 3013,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 3527,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 4039,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 4398,
+    "settled": {
+     "animations_waited_ms": 0,
+     "settled": true,
+     "waited_ms": 349
+    }
+   }
+  ],
+  "answering_ms": 306.13962500000014,
+  "edit": true,
+  "handoff": true,
+  "pages": 10000,
+  "memory": {
+   "compressed_bytes": 0,
+   "disk_bytes_written": 0,
+   "footprint_bytes": 18727896,
+   "heap_bytes": 8216272,
+   "open_handles": 21,
+   "threads": 19,
+   "tree_bytes": 38094480,
+   "worker_bytes": 19366584,
+   "worker_peak_bytes": 19366584,
+   "workers": 1,
+   "workers_walled": 1
+  },
+  "last_wake": {
+   "blank_frames": 0,
+   "ended": "sharp",
+   "first_frame_us": 178679,
+   "from_sleep": true,
+   "had": "facts",
+   "sharp_us": 183856,
+   "tab": 1
+  }
+ },
+ {
+  "drawn_ms": 608.5902499999988,
+  "drawn_and_still_ms": 608.5902499999988,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 459.86366699999996,
+  "wait_settled": [
+   {
+    "at_ms": 1126,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 1639,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 2154,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 2673,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 3196,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 3706,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 4225,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 4737,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 5254,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 5279,
+    "settled": {
+     "animations_waited_ms": 0,
+     "settled": true,
+     "waited_ms": 18
+    }
+   }
+  ],
+  "answering_ms": 237.65291699999835,
+  "edit": true,
+  "handoff": true,
+  "pages": 10000,
+  "memory": {
+   "compressed_bytes": 0,
+   "disk_bytes_written": 0,
+   "footprint_bytes": 18564056,
+   "heap_bytes": 8238096,
+   "open_handles": 21,
+   "threads": 15,
+   "tree_bytes": 38127272,
+   "worker_bytes": 19563216,
+   "worker_peak_bytes": 19563216,
+   "workers": 1,
+   "workers_walled": 1
+  },
+  "last_wake": {
+   "blank_frames": 0,
+   "ended": "sharp",
+   "first_frame_us": 398788,
+   "from_sleep": true,
+   "had": "facts",
+   "sharp_us": 467994,
+   "tab": 1
+  }
+ },
+ {
+  "drawn_ms": 395.136291,
+  "drawn_and_still_ms": 498.1219579999987,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 298.645166,
+  "wait_settled": [
+   {
+    "at_ms": 1017,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 1534,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 2048,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 2565,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 3074,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 3586,
+    "said": "The app didn't settle in time: still under way, 1 look(s) at a file's signatures."
+   },
+   {
+    "at_ms": 3686,
+    "settled": {
+     "animations_waited_ms": 0,
+     "settled": true,
+     "waited_ms": 90
+    }
+   }
+  ],
+  "answering_ms": 189.24425000000156,
+  "edit": true,
+  "handoff": true,
+  "pages": 10000,
+  "memory": {
+   "compressed_bytes": 0,
+   "disk_bytes_written": 0,
+   "footprint_bytes": 18777024,
+   "heap_bytes": 8229504,
+   "open_handles": 21,
+   "threads": 19,
+   "tree_bytes": 38209168,
+   "worker_bytes": 19432144,
+   "worker_peak_bytes": 19432144,
+   "workers": 1,
+   "workers_walled": 1
+  },
+  "last_wake": {
+   "blank_frames": 0,
+   "ended": "sharp",
+   "first_frame_us": 253238,
+   "from_sleep": true,
+   "had": "facts",
+   "sharp_us": 261619,
+   "tab": 1
+  }
+ }
+]
