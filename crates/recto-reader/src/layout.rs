@@ -1049,6 +1049,71 @@ mod tests {
         }
     }
 
+    /// Every layout, margin pair, window width and page size mix the gutters test walks, laid out at the fit (no zoom): the layouts a pin is taken over.
+    fn fitted_layouts() -> Vec<(String, PageLayout)> {
+        let sizes: [(f32, f32); 6] = [(612.0, 792.0), (595.0, 842.0), (842.0, 595.0), (300.0, 400.0), (1190.0, 842.0), (432.0, 648.0)];
+        let mut all = Vec::new();
+        for spread in [Spread::Single, Spread::TwoUp, Spread::TwoUpCover] {
+            for margins in [
+                (MIN_SIDE_MARGIN, CORNER_MARGIN),
+                (PANE_MARGIN, PANE_MARGIN),
+                (PANE_MARGIN, CORNER_MARGIN),
+                (0.0, 0.0),
+            ] {
+                for frame in [300.0, 480.0, 560.0, 740.0, 951.0, 1000.0, 1180.0, 1440.0, 2200.0, 3400.0] {
+                    for first in 0..sizes.len() {
+                        let mut layout = PageLayout::with_spread(12, spread);
+                        layout.set_margins(margins.0, margins.1);
+                        layout.set_frame(frame);
+                        for page in 0..12u32 {
+                            let (width, height) = sizes[(first + page as usize * 7) % sizes.len()];
+                            layout.set_page_size(page, PageBox { width, height });
+                        }
+                        all.push((format!("{spread:?} {margins:?} {frame} {first}"), layout));
+                    }
+                }
+            }
+        }
+        all
+    }
+
+    /// Failure: a change to where rows sit across moves a page at the fit, the view a document opens at and Fit goes back to, where the owner's rule keeps the margins as they were (owner, 2026-11-16: the margins kept at a fit are as they were). Pinned on 2026-11-16, before rows were centred in the zoomed view, at the numbers the layout gave then: every page's top, width and height, the document's height and fit, and the x of each page whose row fits the room between the margins, in every layout, margin pair, window width and page mix the gutters test walks. A row wider than that room is the new rule's business and isn't pinned. Held as a hash of the numbers' bits, so any change of a fitted page, by any amount, fails it.
+    #[test]
+    fn a_fitted_page_is_where_it_was() {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut feed = |value: f64| {
+            for byte in value.to_bits().to_le_bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        let mut pinned_x = 0;
+        for (_, layout) in fitted_layouts() {
+            feed(layout.fit());
+            feed(layout.document_height());
+            for page in 0..layout.count() {
+                let rect = layout.rect(page);
+                feed(rect.y);
+                feed(rect.width);
+                feed(rect.height);
+                let (one, two) = layout.row_pages(layout.row_of(page));
+                let (a, b) = (layout.rect(one), two.map_or(layout.rect(one), |p| layout.rect(p)));
+                let usual = f64::from(layout.usual.width) * layout.fit();
+                // A page alone in a two-up row sits in its column as if the usual page were beside it.
+                let row = if layout.spread() != Spread::Single && two.is_none() {
+                    a.width + PAGE_GAP + usual
+                } else {
+                    (a.x + a.width).max(b.x + b.width) - a.x.min(b.x)
+                };
+                if row <= layout.frame_width - 2.0 * layout.side + 1e-6 {
+                    feed(rect.x);
+                    pinned_x += 1;
+                }
+            }
+        }
+        assert_eq!(pinned_x, 5_212, "the pages whose x is pinned");
+        assert_eq!(hash, 4_532_361_141_731_731_096, "a page at the fit moved");
+    }
+
     /// Failure (review of f05c998, finding 4): one very wide page, a fold-out, makes the document wide, and every other page or pair is centred on that and sits off to the side, out of the window, with the view at its left. Each row is centred in the window, and only the wide one runs past it.
     #[test]
     fn a_fold_out_doesnt_push_the_other_pages_aside() {
