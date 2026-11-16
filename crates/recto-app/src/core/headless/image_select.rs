@@ -151,8 +151,10 @@ fn picked(app: &HeadlessApp) -> Option<(u32, [f32; 4])> {
 
 /// Failure (owner, 2026-11-16): a click on an image in read mode picks nothing, or another image than the snapshot tool's click and an agent's `images
 /// --at` find there, or no box is told to the host; a click on a caption that shows over the figure picks the figure, so its words can't be selected
-/// with a click; words the page's hidden-text check finds hidden keep the image under them from being picked; a click off any image, or a double-click,
-/// picks one.
+/// with a click; a click off any image, or a double-click, picks one. And, of hidden text: words drawn invisibly (`3 Tr`) over the grey patch, a single
+/// pixel stretched flat, are found hidden by the page's hidden-text check, as nothing under them differs from what they'd cover, and a click on them picks
+/// the patch. That holds only for a flat picture: over a real one the check finds ink under the words and keeps them text's
+/// (`known_gap_a_click_on_a_scans_ocr_word_over_a_real_picture_is_texts`).
 #[test]
 fn a_click_picks_the_image_under_it_and_text_that_shows_keeps_its_click() {
     let disk = Disk::new();
