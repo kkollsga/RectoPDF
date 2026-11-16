@@ -116,7 +116,7 @@ impl ImageSelect {
         *lock(&self.slot) = Slot::default();
     }
 
-    /// A look is under way or waits its turn, which `qa wait-settled` and a hand-off wait for.
+    /// A look is under way or waits its turn. A look under way is a person's command running, which a settle and a hand-off wait for already.
     pub fn busy(&self) -> bool {
         let slot = lock(&self.slot);
         slot.running || slot.waiting.is_some()

@@ -3,8 +3,9 @@
 //! for that need, which the listing in `headless/inner_guards.rs` shows to a reviewer (docs/FEATURES.md, step 6). Of its 19 methods (2026-11-14), 14 serve
 //! one feature each (reading_tab viewing's; selected highlights'; copy_selection, select_all and toggle_panel the window's own rows'; can_save saving's;
 //! update_installs and mark_update_menu the updates'; zoom_for_person the zoom's; open opening's; open_palette the palette's; toggle_snapshot_tool the
-//! snapshot tool's; cancel_print and refused_print_anyway printing's; let_go_image an image picked with a click's, 2026-11-16), four are shared (published, tell_host, reconcile, person), and one makes it. What starts on a thread of its
-//! own as the person is [`RowParts::person`]'s, which a way marked `Agents::AsTheMenu` never calls: an agent's palette run executes that way.
+//! snapshot tool's; cancel_print and refused_print_anyway printing's; let_go_image, the 20th, an image picked with a click's, 2026-11-16), four are
+//! shared (published, tell_host, reconcile, person), and one makes it. What starts on a thread of its own as the person is [`RowParts::person`]'s, which
+//! a way marked `Agents::AsTheMenu` never calls: an agent's palette run executes that way.
 //!
 //! Built once for each menu id asked about ([`RowParts::of`]), from references the app already holds: nothing is copied, locked or allocated to make it.
 
