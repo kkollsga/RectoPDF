@@ -4,7 +4,7 @@
 # tab's answer of that name (`edits #1`, `edits #2`, ...). The check holds each by-design difference to what its line says, not only leaves it unread.
 # `fault:<where>` names a fault found and reported, which the check says as KNOWN FAULT instead of failing on.
 app.menu_bar The menu bar is the build's, not the session's: 0.1.1 adds Mark Up (Highlight, Remove Highlight) before Tools, and each item says its key mask and whether it is the system's.
-app.save_button.frame The window's own buttons sit a point lower in 0.1.1: the window's layout is the build's.
+app.save_button.frame Not the code: no source that places the window's buttons changed between these releases. A build made on this Mac links macOS SDK 15.0 and the release workflow's link 26.5 (`vtool -show-build` on the app's main executable), and the buttons sit at y 8 in the one and 7 in the other (the published 0.1.0 and 0.1.1 are both 7): AppKit lays the titlebar out by the SDK an app links, which is inferred, not built here to prove. So a local dress rehearsal differs here and the draft, built by the workflow, shouldn't. (Until 2026-11-16 this line said 0.1.1 moved them a point lower, which it didn't.)
 app.sidebar_button.frame As app.save_button.frame.
 permission.set_at_ms A quiet run sets its level as it starts, so the time it was set is that run's.
 edits.followed New in 0.1.1 with the page matcher (merge 888b6d0e, build/page-matcher-2): `edits` says which unsaved edits followed their pages onto a file changed on disk. No file changed here, and the check holds that each tab says nothing followed (null).

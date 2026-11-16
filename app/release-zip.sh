@@ -168,6 +168,8 @@ assert state["reader"]["tiles"].get("attached", 0) > 0, "no surface tile arrived
 assert state["memory"].get("workers_walled", 0) >= 1, "no live worker said it was sandboxed: %r" % state["memory"]
 assert state["update"]["build"] == "release", "the app reads an override: %r" % state["update"]
 ' || { echo "the signed app didn't draw" >&2; exit 1; }
+# While that worker is alive: it was started with its allocator setting, on this signature (the team's in the preflight and the release).
+"$REPO/tools/release/worker-env.sh" "$APP"
 if "$APP/Contents/MacOS/recto" qa update-clock 1000 >/dev/null 2>&1; then echo "a release has a test's clock" >&2; exit 1; fi
 # Nor does it act as the person for a test, whoever started it with --qa: as-person, its owner-edit alias, the Save As sheet's answer, and a test's file put in place of a tab's.
 if "$APP/Contents/MacOS/recto" qa as-person undo >/dev/null 2>&1; then echo "a release acts as the person for a test" >&2; exit 1; fi

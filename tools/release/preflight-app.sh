@@ -15,7 +15,9 @@
 #                                            (--deep --strict, the team, the hardened runtime, a secure timestamp), the entitlements and the
 #                                            helper checked, one launch that answers `--build-kind` (a profile that doesn't allow what the app
 #                                            claims has the system stop it at launch), and the signing job's own after-keys checks,
-#                                            `app/release-zip.sh --check-signed --no-notarize`: its quiet run drawing a PDF with walled workers.
+#                                            `app/release-zip.sh --check-signed --no-notarize`: its quiet run drawing a PDF with walled workers, and
+#                                            a live worker's MallocLargeCache=0 read from its environment on the team's signature, with what vmmap
+#                                            says of its large-block cache, or that it couldn't read it (tools/release/worker-env.sh).
 #
 # On CI only ($GITHUB_ACTIONS): nothing of the signing path runs on a person's Mac, and --check refuses where a signing identity is found.
 # Each step is under a limit and names itself if it waits (tools/release/limited.sh). Prints no part of the profile or the certificate.
@@ -33,7 +35,7 @@ mode="${1:-}"
 case "$mode" in
   --build | --sign | --check) ;;
   *)
-    sed -n '6,19p' "$0" >&2
+    sed -n '6,21p' "$0" >&2
     exit 2
     ;;
 esac
