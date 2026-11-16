@@ -169,6 +169,31 @@ fn click_cost() {
         rects.len(),
         String::from_utf8_lossy(&std::process::Command::new("uptime").output().map(|out| out.stdout).unwrap_or_default()).trim()
     );
+    // One case alone, after the page has been drawn again and a pause (`RECTO_CLICK_ONLY=margin RECTO_CLICK_PAUSE_S=5`): what a click costs when the tab's worker has been let go
+    // or is still there. The page is drawn again just before the pause so the worker is there at the start of it, as it is when a person has been reading.
+    if let Some(only) = std::env::var("RECTO_CLICK_ONLY").ok().filter(|only| only == "margin") {
+        let pause: f64 = std::env::var("RECTO_CLICK_PAUSE_S").ok().and_then(|text| text.parse().ok()).unwrap_or(0.0);
+        let mut view = recto_reader::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: 1168.0,
+            height: 880.0,
+            frame_width: 1168.0,
+            magnification: 1.0,
+            backing: 2.0,
+            live: false,
+            scrolled_to: u64::MAX,
+        };
+        applied_as_the_host(&app.core().engine.set_viewport(view));
+        host_turns(&app, &mut view, true);
+        app.settle();
+        std::thread::sleep(Duration::from_secs_f64(pause));
+        let (workers, _) = tree(&worker());
+        eprintln!("click_cost {only}: pause {pause} s, tab workers alive at the click {}", workers.len());
+        measure(&app, "blank margin", margin.expect("a margin"), &[1]);
+        drop(app.quit());
+        return;
+    }
     if let Some(at) = on_text {
         measure(&app, "body text", at, &[1]);
     }
