@@ -44,8 +44,10 @@ type FPDF_ANNOTATION = *mut c_void;
 type FPDF_BOOL = c_int;
 
 mod contents;
+mod geometry;
 mod hidden;
 use contents::Walk;
+use geometry::{Area, IDENTITY, M, apply, inverse, then, to_f32};
 
 /// `fpdfview.h`: a transform.
 #[repr(C)]
