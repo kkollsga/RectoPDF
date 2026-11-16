@@ -140,10 +140,19 @@ extension QAChannel {
         if let event = wheelEvent(60, .maskCommand, at: overPages) {
             let at = pages.documentView.convert(overPages, from: nil)
             let before = pages.scrollView.magnification
+            // Across, by the page as it's drawn: its left gutter in the view, and the pointer's place there.
+            let left = { (pages.pageGutters().first?["left"] as? CGFloat) ?? .nan }
+            let right = { (pages.pageGutters().first?["right"] as? CGFloat) ?? .nan }
+            let pointer = pages.scrollView.convert(overPages, from: nil).x
+            let leftBefore = left()
             pages.scrollView.perform(wheel, with: event)
-            found["command_scroll_zooms"] = pages.scrollView.magnification > before
             let after = pages.documentView.convert(overPages, from: nil)
-            found["command_scroll_keeps_the_point_still"] = abs(after.x - at.x) < 2 && abs(after.y - at.y) < 2
+            let magnification = pages.scrollView.magnification
+            found["command_scroll_zooms"] = magnification > before
+            // Down the page, the point under the pointer stays. Across, a page that still fits is centred (owner, 2026-11-16: "The page should always be centered (if there is no scrollbar)"), and one wider than the view keeps the point of the page under the pointer.
+            let wider = pages.documentView.frame.width > pages.scrollView.contentView.bounds.width + 0.5
+            let across = wider ? abs((pointer - left()) / magnification - (pointer - leftBefore) / before) * magnification < 2 : abs(left() - right()) < 2
+            found["command_scroll_keeps_the_point_still"] = across && abs(after.y - at.y) < 2
         }
         _ = pressed("9")
         found["more_button"] = sidebar.moreButton.action.flatMap { action in (sidebar.moreButton.target as? NSObject)?.responds(to: action) } ?? false

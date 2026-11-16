@@ -77,7 +77,7 @@ final class PageScrollView: NSScrollView {
     }
 }
 
-/// Keeps a document smaller than the window in the middle, and lets a taller one scroll past its top and its end by the room Rust gives, the rest of the margin at each end.
+/// Keeps a document shorter than the window in the middle, and lets a taller one scroll past its top and its end by the room Rust gives, the rest of the margin at each end. Across, where a page sits and how far the view can go is Rust's: it centres each row in the view at the zoom the view has and makes the document as wide as the view or the widest row showing (`layout/across.rs`), so the document is never narrower than the view once Rust has answered, and the thumb across shows exactly when it's wider.
 final class CenteringClipView: NSClipView {
     override var isFlipped: Bool { true }
     /// How far past the document's top and its end the view may go, in the document's points.
@@ -99,6 +99,7 @@ final class CenteringClipView: NSClipView {
     override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
         var rect = super.constrainBoundsRect(proposedBounds)
         if let document = documentView {
+            // Only between a zoom out and Rust's answer to it, a moment in the same turn: the document laid out for the old zoom, centred as Rust will centre it.
             if rect.width > document.frame.width { rect.origin.x = (document.frame.width - rect.width) / 2 }
             if rect.height > document.frame.height {
                 rect.origin.y = (document.frame.height - rect.height) / 2

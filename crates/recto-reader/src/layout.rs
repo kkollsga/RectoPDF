@@ -6,6 +6,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+mod across;
+
 /// Most pages of their own size [`PageLayout::document_width_for`] looks through for a view: more, as far zoomed out over a document of mixed sizes, and it takes the whole document's width.
 pub const MAX_WIDTH_PAGES: usize = 4096;
 /// Space between pages, in document points.
@@ -88,16 +90,19 @@ pub struct PageLayout {
     known: HashSet<u32>,
     /// Document points per PDF point.
     fit: f64,
+    /// The window's reading area, unmagnified, in window points: what the fit is worked out from.
     frame_width: f64,
+    /// The host's magnification: the view shows [`Self::frame_width`] over this, in document points, and rows are centred in that ([`across`]).
+    magnification: f64,
     spread: Spread,
     /// Quarter turns clockwise added to each page by an edit, or none. A page drawn turned an odd number of times is as wide as it was tall.
     turns: Option<Arc<[u8]>>,
     /// Whether most pages are turned an odd number of times: `usual` is the size of those, as shown, and the others are overrides.
     base_odd: bool,
     /// How many pages are turned the other way from most. Their overrides are on top of the cap on pages of another size, as they're bounded by the edit list, which is a tab's own and capped where it's made.
-    turned_other_way: usize,
+    turned_other_way: u32,
     /// [`MAX_OVERRIDES`], smaller in a test so reaching it doesn't take a long time.
-    cap: usize,
+    cap: u32,
     /// **The room kept either side of the pages: the larger of the two margins, on both sides.** The top right corner holds the agent icon and the zoom level, so the right margin is the larger, and keeping it on the left too puts the pages in the middle of the window with equal gutters at any width (owner, 2026-11-12: "pages area should always have equal black gutters on both sides to appear centered, with and without sidebar, and ui elements like zoom and page number shouldn't impact this"). Before, a window narrower than the reading width plus both margins moved the page left of centre. The larger of [`MIN_SIDE_MARGIN`] and [`CORNER_MARGIN`], or of what a comparison's pane was given.
     side: f64,
 }
@@ -116,11 +121,12 @@ impl PageLayout {
             known: HashSet::new(),
             fit: 1.0,
             frame_width: 0.0,
+            magnification: 1.0,
             spread,
             turns: None,
             base_odd: false,
             turned_other_way: 0,
-            cap: MAX_OVERRIDES,
+            cap: MAX_OVERRIDES as u32,
             side: MIN_SIDE_MARGIN.max(CORNER_MARGIN),
         }
     }
@@ -230,6 +236,7 @@ impl PageLayout {
             known,
             fit: self.fit,
             frame_width: self.frame_width,
+            magnification: self.magnification,
             spread: self.spread,
             turns: None,
             base_odd: false,
@@ -263,7 +270,7 @@ impl PageLayout {
             .into_iter()
             .map(|(page, raw)| (page, if self.odd(page) { swap(raw) } else { raw }))
             .filter(|(_, shown)| *shown != self.usual)
-            .take(self.cap + self.turned_other_way)
+            .take((self.cap + self.turned_other_way) as usize)
             .map(|(page, size)| Override {
                 page,
                 size,
@@ -333,7 +340,7 @@ impl PageLayout {
                 self.overrides[at].size = size;
             }
         } else {
-            if self.overrides.len() >= self.cap + self.turned_other_way {
+            if self.overrides.len() >= (self.cap + self.turned_other_way) as usize {
                 // Forgotten, and asked for again as they're seen. Turned pages keep their shape, as that's from the edit, not from asking.
                 self.known.clear();
                 self.known.insert(page);
@@ -477,83 +484,6 @@ impl PageLayout {
     /// How far down a page starts: its row's top, as pages side by side line up at the top.
     pub fn top(&self, page: u32) -> f64 {
         self.row_top(self.row_of(page))
-    }
-
-    pub fn rect(&self, page: u32) -> PageRect {
-        let size = self.size(page);
-        let width = f64::from(size.width) * self.fit;
-        let middle = self.row_middle(page);
-        let x = match self.spread {
-            Spread::Single => middle - width / 2.0,
-            _ if self.on_the_right(page) => middle + PAGE_GAP / 2.0,
-            _ => middle - PAGE_GAP / 2.0 - width,
-        };
-        PageRect {
-            x: x.max(0.0),
-            y: self.top(page),
-            width,
-            height: f64::from(size.height) * self.fit,
-        }
-    }
-
-    /// Where a page's row is centred: the middle of the window, each row on its own, so one wide page, as a fold-out, doesn't push every other row off to the side. A row too wide for the window starts at the margin and runs on to the right. Always the middle when it fits, so the gutters are equal; the margins are the same both sides ([`Self::side`]), so nothing at a corner moves it.
-    fn row_middle(&self, page: u32) -> f64 {
-        let half = self.frame_width / 2.0;
-        let mut shift = 0.0;
-        let width = |page: u32| f64::from(self.size(page).width) * self.fit;
-        let (lowest, highest) = match self.spread {
-            Spread::Single => (self.side + width(page) / 2.0, self.frame_width - self.side - width(page) / 2.0),
-            _ => {
-                let (first, second) = self.row_pages(self.row_of(page));
-                let pages = [Some(first), second];
-                // A page alone, the cover or the last of an odd count, sits in its column as if its pair were there, so the columns line up.
-                let usual = f64::from(self.usual.width) * self.fit;
-                let left = pages.into_iter().flatten().find(|page| !self.on_the_right(*page)).map_or(usual, width);
-                let right = pages.into_iter().flatten().find(|page| self.on_the_right(*page)).map_or(usual, width);
-                // A pair of different widths is centred as a whole, so its gutters are equal; the gap between them is off the middle by half the difference.
-                if second.is_some() {
-                    shift = (left - right) / 2.0;
-                }
-                (self.side + left + PAGE_GAP / 2.0, self.frame_width - self.side - right - PAGE_GAP / 2.0)
-            }
-        };
-        (half + shift).min(highest).max(lowest)
-    }
-
-    /// The widest a page is known to be, and the window's room.
-    pub fn document_width(&self) -> f64 {
-        let widest = f64::from(self.overrides.iter().map(|o| o.size.width).fold(self.usual.width, f32::max)) * self.fit;
-        let pages = match self.spread {
-            Spread::Single => widest,
-            Spread::TwoUp | Spread::TwoUpCover => 2.0 * widest + PAGE_GAP,
-        };
-        self.frame_width.max(pages + 2.0 * self.side)
-    }
-
-    /// **The document's width for a view from `top` to `bottom`,** in document points: the window's room, and wider only where a row the view reaches runs past it, as a fold-out does. So there's room to scroll across beside the wide page while it shows, and none beside every other row, which [`Self::document_width`] would leave (PLAN, side-by-side follow-ups). A view over more than [`MAX_WIDTH_PAGES`] pages of their own size takes the whole document's.
-    pub fn document_width_for(&self, top: f64, bottom: f64) -> f64 {
-        if self.count == 0 || !top.is_finite() || !bottom.is_finite() {
-            return self.document_width();
-        }
-        let (first, last) = (self.row_at(top), self.row_at(bottom.max(top)));
-        let (from, _) = self.row_pages(first);
-        let to = match self.row_pages(last) {
-            (page, None) => page,
-            (_, Some(second)) => second,
-        };
-        let start = self.overrides.partition_point(|o| o.page < from);
-        let end = self.overrides.partition_point(|o| o.page <= to);
-        if end - start > MAX_WIDTH_PAGES {
-            return self.document_width();
-        }
-        let right = self.overrides[start..end]
-            .iter()
-            .map(|o| {
-                let rect = self.rect(o.page);
-                rect.x + rect.width
-            })
-            .fold(0.0, f64::max);
-        self.frame_width.max(right + self.side)
     }
 
     pub fn document_height(&self) -> f64 {
@@ -1004,10 +934,103 @@ mod tests {
         }
     }
 
-    /// Failure (owner, 2026-11-12): "In some pdfs the pages aren't centered (with equal black gutters on both sides)". The right margin was 96 for the agent icon and the left 56, so any window narrower than the reading width plus both (952 points, which the sidebar makes common) put every page left of centre, and a pair of different widths hung its gap, not itself, on the middle. At any width, zoomed layout, page size mix and margin pair (the window's, a pane's), every row that fits has equal gutters, and a row too wide starts at the margin.
+    /// A row's extent across, left edge and right: its pages, and a page alone in a two-up row with the column its pair would have, as it sits as if the pair were there.
+    fn row_extent(layout: &PageLayout, page: u32) -> (f64, f64, bool) {
+        let (one, two) = layout.row_pages(layout.row_of(page));
+        let a = layout.rect(one);
+        let usual = f64::from(layout.usual.width) * layout.fit();
+        match two {
+            Some(two) => {
+                let b = layout.rect(two);
+                (a.x.min(b.x), (a.x + a.width).max(b.x + b.width), true)
+            }
+            None if layout.spread() == Spread::Single => (a.x, a.x + a.width, true),
+            None if layout.on_the_right(one) => (a.x - PAGE_GAP - usual, a.x + a.width, false),
+            None => (a.x, a.x + a.width + PAGE_GAP + usual, false),
+        }
+    }
+
+    /// Failure (owner, 2026-11-16): "when I zoom into the page only the right margin is reduced. Why? The page should always be centered (if there is no scrollbar)". Before, the layout kept its margins either side whatever the zoom, so a row zoomed wider than the room between them but narrower than the window started at the left margin and ran on to the right, and the document stayed the window's width at any zoom, so a zoomed page that fitted could still be scrolled off the middle. Over a sweep of zooms from below the room to past the window's width, in every layout, margin pair (the window's, a pane's), window width and page mix: a row no wider than the view is centred in it, with equal margins and no sideways scroll (the document's width for a view of that row is the view's); a row wider starts at the document's left edge and the view scrolls over exactly its width; and as the zoom moves, the row's left edge moves only as far as the view's width does, halved (a page alone in a two-up row, held by the margin, at most as far), so it never jumps as the row passes the room or the window. (It replaces the 2026-11-12 test that held every row centred at the fit and a row wider than the room at the margin, which this rule ends: seen failing on that placement.)
     #[test]
-    fn every_row_has_equal_gutters_at_any_width_and_layout() {
+    fn every_row_is_centred_in_the_view_until_it_is_wider_at_any_zoom() {
+        for (case, mut layout) in fitted_layouts() {
+            let frame = layout.frame_width;
+            let mut was: Option<(f64, Vec<(f64, bool)>)> = None;
+            let mut magnification = 0.5;
+            while magnification < 8.0 {
+                layout.set_magnification(magnification);
+                let view = layout.view_width();
+                let mut lefts = Vec::new();
+                for page in 0..layout.count() {
+                    let (left, right, whole) = row_extent(&layout, page);
+                    let rect = layout.rect(page);
+                    let across = layout.document_width_for(rect.y, rect.y);
+                    lefts.push((left, whole));
+                    if right - left <= view + 1e-6 {
+                        // A page alone in a two-up row keeps its column, centred as if its pair were there: so a page of the usual width is centred
+                        // as a pair would be, and one of its own width is held inside the margins the row would have, the fit's or less.
+                        if !whole && (rect.width - f64::from(layout.usual.width) * layout.fit()).abs() > 1e-6 {
+                            let margin = layout.side.min(((view - (right - left)) / 2.0).max(0.0));
+                            assert!(
+                                left >= margin - 1e-6 && view - right >= margin - 1e-6,
+                                "{case} at {magnification}: page {page} alone has margins {left} and {}, not inside {margin}",
+                                view - right
+                            );
+                        } else {
+                            assert!(
+                                (left - (view - right)).abs() < 1e-6,
+                                "{case} at {magnification}: page {page} has margins {left} and {} in a view {view} wide",
+                                view - right
+                            );
+                        }
+                        assert!(
+                            across <= view + 1e-6,
+                            "{case} at {magnification}: page {page} fits, and scrolls across {across} over {view}"
+                        );
+                    } else {
+                        assert!(
+                            left.abs() < 1e-6,
+                            "{case} at {magnification}: page {page}'s row is wider than the view and starts at {left}"
+                        );
+                        assert!(
+                            across >= rect.x + rect.width - 1e-6,
+                            "{case} at {magnification}: page {page} runs past what scrolls across: {across}"
+                        );
+                        if whole {
+                            assert!(
+                                (across - right).abs() < 1e-6,
+                                "{case} at {magnification}: page {page}'s row scrolls across {across}, not its width {right}"
+                            );
+                        }
+                    }
+                    if magnification == 1.0 && right - left <= frame - 2.0 * layout.side + 1e-6 {
+                        assert!(left >= layout.side - 1e-6, "{case}: at the fit, page {page} keeps the margin: {left}");
+                    }
+                }
+                if let Some((view_was, lefts_was)) = &was {
+                    for (page, ((now, whole), (then, _))) in lefts.iter().zip(lefts_was).enumerate() {
+                        // A centred row's edge moves half as far as the view's width; a page alone, held by a margin of the fit's, as far.
+                        let rate = if *whole { 0.5 } else { 1.0 };
+                        assert!(
+                            (now - then).abs() <= (view - view_was).abs() * rate + 1e-6,
+                            "{case} at {magnification}: page {page}'s row jumped from {then} to {now} as the view went from {view_was} to {view}"
+                        );
+                    }
+                }
+                was = Some((view, lefts));
+                // Through 1.0 exactly, the fit.
+                magnification = ((magnification * 1.05) * 1e6).round() / 1e6;
+                if magnification > 0.97 && magnification < 1.03 {
+                    magnification = 1.0;
+                }
+            }
+        }
+    }
+
+    /// Every layout, margin pair, window width and page size mix the gutters test walks, laid out at the fit (no zoom): the layouts a pin is taken over.
+    fn fitted_layouts() -> Vec<(String, PageLayout)> {
         let sizes: [(f32, f32); 6] = [(612.0, 792.0), (595.0, 842.0), (842.0, 595.0), (300.0, 400.0), (1190.0, 842.0), (432.0, 648.0)];
+        let mut all = Vec::new();
         for spread in [Spread::Single, Spread::TwoUp, Spread::TwoUpCover] {
             for margins in [
                 (MIN_SIDE_MARGIN, CORNER_MARGIN),
@@ -1024,32 +1047,52 @@ mod tests {
                             let (width, height) = sizes[(first + page as usize * 7) % sizes.len()];
                             layout.set_page_size(page, PageBox { width, height });
                         }
-                        for page in 0..12u32 {
-                            let rect = layout.rect(page);
-                            let (one, two) = layout.row_pages(layout.row_of(page));
-                            // A page alone in a two-up row sits in its column, as if its pair were there, so it is not centred by itself.
-                            if spread != Spread::Single && two.is_none() {
-                                continue;
-                            }
-                            let (a, b) = (layout.rect(one), two.map_or(layout.rect(one), |p| layout.rect(p)));
-                            let (left, right) = (a.x.min(b.x), frame - (a.x + a.width).max(b.x + b.width));
-                            if (a.x + a.width).max(b.x + b.width) - a.x.min(b.x) > frame - 2.0 * layout.side + 1e-6 {
-                                // Wider than the room: starts at the margin and runs on.
-                                assert!((left - layout.side).abs() < 1e-6, "{spread:?} {margins:?} {frame}: wide row {page} {rect:?}");
-                                continue;
-                            }
-                            assert!(
-                                (left - right).abs() < 1.0,
-                                "{spread:?} {margins:?} frame {frame} first {first}: page {page} has gutters {left} and {right}"
-                            );
-                        }
+                        all.push((format!("{spread:?} {margins:?} {frame} {first}"), layout));
                     }
                 }
             }
         }
+        all
     }
 
-    /// Failure (review of f05c998, finding 4): one very wide page, a fold-out, makes the document wide, and every other page or pair is centred on that and sits off to the side, out of the window, with the view at its left. Each row is centred in the window, and only the wide one runs past it.
+    /// Failure: a change to where rows sit across moves a page at the fit, the view a document opens at and Fit goes back to, where the owner's rule keeps the margins as they were (owner, 2026-11-16: the margins kept at a fit are as they were). Pinned on 2026-11-16, before rows were centred in the zoomed view, at the numbers the layout gave then: every page's top, width and height, the document's height and fit, and the x of each page whose row fits the room between the margins, in every layout, margin pair, window width and page mix the gutters test walks. A row wider than that room is the new rule's business and isn't pinned. Held as a hash of the numbers' bits, so any change of a fitted page fails it: x to a billionth of a point, as a row exactly as wide as the room was held by bounds that crossed by a rounding error and stood an ulp (1e-13 points) off the middle, where it's now on it; checked against the old placement, which gave the same hash at that grain.
+    #[test]
+    fn a_fitted_page_is_where_it_was() {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut feed = |value: f64| {
+            for byte in value.to_bits().to_le_bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        let mut pinned_x = 0;
+        for (_, layout) in fitted_layouts() {
+            feed(layout.fit());
+            feed(layout.document_height());
+            for page in 0..layout.count() {
+                let rect = layout.rect(page);
+                feed(rect.y);
+                feed(rect.width);
+                feed(rect.height);
+                let (one, two) = layout.row_pages(layout.row_of(page));
+                let (a, b) = (layout.rect(one), two.map_or(layout.rect(one), |p| layout.rect(p)));
+                let usual = f64::from(layout.usual.width) * layout.fit();
+                // A page alone in a two-up row sits in its column as if the usual page were beside it.
+                let row = if layout.spread() != Spread::Single && two.is_none() {
+                    a.width + PAGE_GAP + usual
+                } else {
+                    (a.x + a.width).max(b.x + b.width) - a.x.min(b.x)
+                };
+                if row <= layout.frame_width - 2.0 * layout.side + 1e-6 {
+                    feed((rect.x * 1e9).round());
+                    pinned_x += 1;
+                }
+            }
+        }
+        assert_eq!(pinned_x, 5_212, "the pages whose x is pinned");
+        assert_eq!(hash, 2_155_042_483_219_912_870, "a page at the fit moved");
+    }
+
+    /// Failure (review of f05c998, finding 4): one very wide page, a fold-out, makes the document wide, and every other page or pair is centred on that and sits off to the side, out of the window, with the view at its left. Each row is centred in the window, and only the wide one runs past it, from the document's left edge (owner, 2026-11-16: a row wider than the window starts at its left edge).
     #[test]
     fn a_fold_out_doesnt_push_the_other_pages_aside() {
         for spread in [Spread::Single, Spread::TwoUp, Spread::TwoUpCover] {
@@ -1065,10 +1108,75 @@ mod tests {
                 );
             }
             let wide = layout.rect(5);
+            let (left, right, _) = row_extent(&layout, 5);
             assert!(
-                wide.x >= MIN_SIDE_MARGIN - 1e-6 && wide.x + wide.width <= layout.document_width() + 1e-6,
-                "{spread:?} the fold-out stays in the document: {wide:?}"
+                left.abs() < 1e-6 && (layout.document_width_for(wide.y, wide.y) - right).abs() < 1e-6,
+                "{spread:?} the fold-out's row, wider than the window, starts at the document's left edge and is all there is to scroll across: {wide:?}"
             );
+        }
+    }
+
+    /// Failure: with a fold-out among ordinary pages, the ordinary rows move across as the fold-out comes into view and leaves it, or sit off the middle of the window, because they were centred in the document's width, which is the fold-out's only while its row is in view ([`PageLayout::document_width_for`]). Each ordinary row is centred in the view as the view is at no scroll across, wherever the view is, zoomed or not, in every layout; the fold-out's row starts at the document's left edge and is all there is to scroll across while it shows. So scrolling across to the fold-out's right takes the ordinary rows with it, out to the left, as a page wider than the others would.
+    #[test]
+    fn rows_beside_a_fold_out_stay_centred_in_the_view() {
+        for spread in [Spread::Single, Spread::TwoUp, Spread::TwoUpCover] {
+            for magnification in [1.0, 1.5, 2.5] {
+                let mut layout = PageLayout::with_spread(8, spread);
+                layout.set_frame(1400.0);
+                layout.set_page_size(0, letter());
+                layout.set_page_size(5, PageBox { width: 3000.0, height: 792.0 });
+                layout.set_magnification(magnification);
+                let view = layout.view_width();
+                let wide = layout.rect(5);
+                let (_, right_edge, _) = row_extent(&layout, 5);
+                let both = layout.document_width_for(0.0, wide.y + wide.height);
+                assert!(
+                    (both - right_edge).abs() < 1e-6,
+                    "{spread:?} at {magnification}: {both} across, the fold-out's row ends at {right_edge}"
+                );
+                for page in (0..8).filter(|page| !layout.same_row(*page, 5)) {
+                    let (left, right, whole) = row_extent(&layout, page);
+                    if !whole || right - left > view {
+                        continue;
+                    }
+                    assert!(
+                        (left - (view - right)).abs() < 1e-6,
+                        "{spread:?} at {magnification}: page {page} has margins {left} and {} in the view, with the fold-out's row in view or not",
+                        view - right
+                    );
+                }
+                assert!(
+                    row_extent(&layout, 5).0.abs() < 1e-6,
+                    "{spread:?} at {magnification}: the fold-out's row starts at the left edge"
+                );
+            }
+        }
+    }
+
+    /// Failure (PLAN: "a page turned wider than the view keeps its left margin and runs off the right edge"): pages turned sideways by rotate-all, wider than the fitted room but no wider than the window, start at the left margin and run on to the right; or a turned page zoomed in isn't centred. A turned row is a row like any other: centred while it fits the view, with equal margins, and from the left edge once it's wider.
+    #[test]
+    fn a_turned_page_no_wider_than_the_window_is_centred() {
+        let mut layout = PageLayout::new(4);
+        layout.set_frame(1100.0);
+        layout.set_page_size(0, letter());
+        // Every other page turned: the fit stays the upright pages', and a turned one is as wide as an upright one is tall.
+        layout.set_turns(Some(Arc::from(vec![0u8, 1, 0, 1])));
+        let fitted = layout.rect(1);
+        assert!(
+            fitted.width > 1100.0 - 2.0 * layout.side && fitted.width < 1100.0,
+            "a letter page turned is wider than the room and narrower than the window: {fitted:?}"
+        );
+        for magnification in [1.0, 1.05, 1.1, 1.3] {
+            layout.set_magnification(magnification);
+            let (rect, view) = (layout.rect(1), layout.view_width());
+            if rect.width <= view {
+                assert!(
+                    (rect.x - (view - rect.x - rect.width)).abs() < 1e-6,
+                    "at {magnification}: {rect:?} in a view {view} wide"
+                );
+            } else {
+                assert!(rect.x.abs() < 1e-6, "at {magnification}: {rect:?}");
+            }
         }
     }
 
