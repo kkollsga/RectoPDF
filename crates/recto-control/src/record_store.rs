@@ -1231,21 +1231,7 @@ struct JournalRead {
 fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress, not_merged: &[String]) -> HashMap<String, RestoredEdits> {
     let folder = dir.join(JOURNALS);
     let mut journals = HashMap::new();
-    let mut names = Vec::new();
-    // Lists set aside that may be a tab's earlier one (`went_back`), from the same look: a bounded number of names, nothing read yet.
-    let mut set_aside = Vec::new();
-    for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
-        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-            continue;
-        };
-        if is_journal_name(&name) {
-            names.push(name);
-        } else if set_aside.len() < went_back::MAX_SET_ASIDE_NAMES && went_back::set_aside_key(&name).is_some() {
-            set_aside.push(name);
-        }
-    }
-    names.sort_unstable();
-    set_aside.sort_unstable();
+    let (names, aside) = went_back::names_in(&folder);
     let mut read_total = 0u64;
     let mut reads = Vec::new();
     for name in names {
@@ -1286,16 +1272,7 @@ fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress
         }
     }
     // A tab's list an older app started, after a copy went back, beside the newer app's list from before (`went_back`).
-    went_back::take_earlier(
-        &folder,
-        &set_aside,
-        record,
-        &taken_tabs,
-        &mut journals,
-        &mut unclaimed,
-        progress,
-        &mut read_total,
-    );
+    went_back::take_earlier(&folder, &aside, record, &taken_tabs, &mut journals, &mut unclaimed, progress, &mut read_total);
     for read in unclaimed {
         // Already taken over by what it would be (a save's crash left both), or what a follow's crash left beside a tab's (`followed`).
         let Some(read) = followed::unclaimed(&folder, read, record, &taken_tabs, &mut journals, progress) else {

@@ -85,6 +85,25 @@ pub(super) fn set_aside_key(name: &str) -> Option<&str> {
     .then_some(key)
 }
 
+/// The journals in the journals' folder, in order, and from the same look the lists set aside that may be a tab's earlier one (this module): a
+/// bounded number of names, nothing read.
+pub(super) fn names_in(folder: &Path) -> (Vec<String>, Vec<String>) {
+    let (mut names, mut set_aside) = (Vec::new(), Vec::new());
+    for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if record::is_journal_name(&name) {
+            names.push(name);
+        } else if set_aside.len() < MAX_SET_ASIDE_NAMES && set_aside_key(&name).is_some() {
+            set_aside.push(name);
+        }
+    }
+    names.sort_unstable();
+    set_aside.sort_unstable();
+    (names, set_aside)
+}
+
 /// Where a newer app's list was found.
 enum Found {
     /// Under its own name, claimed by no tab.
