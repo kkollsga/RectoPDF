@@ -965,3 +965,66 @@ fn a_press_in_the_other_pane_of_a_comparison_keeps_the_tool_on() {
         );
     }
 }
+
+/// **Failure (the coordinator's read of the comparison fix, 2026-11-16): a tab that wasn't in the comparison comes to be read and the camera tool stays on over it,**
+/// against the owner's rule (2026-11-08) that text selection is the default when a document opens in a new tab. With a comparison up and the tool on (from
+/// the menu bar, and once from Capture): a new file opened, a tap on a third tab's row, and a ⌘-click putting a third tab in a pane each leave the tool off
+/// whenever the tab now read wasn't showing in one of the comparison's panes before.
+#[test]
+fn a_tab_not_in_the_comparison_coming_to_be_read_turns_the_tool_off() {
+    for case in ["a new file opened", "a tap on a third tab's row", "a third tab put in a pane"] {
+        for once in [false, true] {
+            let disk = Disk::new();
+            let files: Vec<_> = ["one.pdf", "two.pdf", "three.pdf", "four.pdf"]
+                .iter()
+                .map(|name| disk.file(name, &text_and_image()))
+                .collect();
+            let app = disk.start();
+            app.open(&files[0]);
+            app.open(&files[1]);
+            app.open(&files[2]);
+            let tabs: Vec<u32> = app.tabs().iter().map(|row| row.tab).collect();
+            let row = |tab: u32| app.tabs().into_iter().find(|row| row.tab == tab).expect("its row");
+            app.act(UiAction::Row {
+                row: row(tabs[0]),
+                adding: false,
+            });
+            app.settle();
+            app.act(UiAction::Row {
+                row: row(tabs[1]),
+                adding: true,
+            });
+            app.settle();
+            assert_eq!(app.core().panes.count(), 2, "{case}: a comparison of two is up");
+            if once {
+                capture(&app);
+            } else {
+                tool_on(&app);
+            }
+            match case {
+                "a new file opened" => app.open(&files[3]),
+                "a tap on a third tab's row" => drop(app.act(UiAction::Row {
+                    row: row(tabs[2]),
+                    adding: false,
+                })),
+                _ => drop(app.act(UiAction::Row {
+                    row: row(tabs[2]),
+                    adding: true,
+                })),
+            }
+            app.settle();
+            let read = app.core().panes.tab_of(app.core().panes.reading()).map(|tab| tab.0);
+            eprintln!(
+                "PROBE {case} once={once}: panes={} reading={read:?} third={} on={}",
+                app.core().panes.count(),
+                tabs[2],
+                app.core().tools.tool().is_on()
+            );
+            assert!(
+                !app.core().tools.tool().is_on(),
+                "{case}, {}: the tool is off over a tab that wasn't in the comparison",
+                if once { "Capture" } else { "the menu bar's tool" }
+            );
+        }
+    }
+}

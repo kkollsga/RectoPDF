@@ -228,8 +228,9 @@ pub fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let pane_pages = std::mem::take(&mut facts.pane_pages);
     let shown_tab = facts.reading.shown_tab();
     // A notice about one document doesn't stay over another: a save's note, seen on the next tab, would read as being about that one.
-    // The tool goes off for another tab coming forward, not for the pane read changing inside one comparison, where a press in the other pane is the person's next box.
-    if inner.window.shows_tab(shown_tab) && comparison.is_none() {
+    // The tool goes off for another tab coming forward, not for the pane read moving to another pane of the same comparison (a tab showing in one before this look).
+    let moved_within_comparison = comparison.is_some() && synced.panes.iter().any(|pane| pane.tab.is_some_and(|tab| tab.0 == shown_tab));
+    if inner.window.shows_tab(shown_tab) && !moved_within_comparison {
         snapshot_tool::tab_came_forward(inner);
     }
     let save = save_state_now(inner, &facts.reading);
