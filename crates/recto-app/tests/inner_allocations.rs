@@ -147,3 +147,36 @@ const ALLOCATED: [(&str, u64); 13] = [
     ("swipe", 1),
     ("chevron", 0),
 ];
+
+/// Failure (the read of 2026-11-16 before 0.1.2): a zoom lays the rows out across at each step, which sends the document's width and moves the pages, and
+/// a step of a pinch or ⌘-scroll then allocates on the window's thread for each page it moves or each op it sends, which input to frame shows only as noise.
+/// Over 30 steps of 3% from the fit, past the window's width, and the step that ends the zoom, each as the host makes it (`testkit::zoomed`), the most a step
+/// allocates on the window's thread is no more than it was before rows were centred in the zoomed view.
+#[test]
+fn a_zoom_step_allocates_no_more_on_the_windows_thread() {
+    let disk = Disk::new();
+    let file = disk.pdf("z.pdf", 10);
+    let app = disk.start();
+    app.open(&file);
+    app.settle();
+    let mut view = app.zoom_view();
+    app.settle();
+    let pointer = recto_app::testkit::zoomed::FRAME / 2.0 + 100.0;
+    let (mut most, mut magnification) = (0, 1.0);
+    for step in 0..=30 {
+        if step < 30 {
+            magnification *= 1.03;
+        }
+        app.listener().forget_keeping_room(LISTENER_ROOM);
+        let before = allocations();
+        app.zoom_step(&mut view, magnification, pointer, step < 30);
+        most = most.max(allocations() - before);
+    }
+    assert!(
+        most <= ZOOM_STEP_ALLOCATED,
+        "a zoom step allocated {most} times on the window's thread, {ZOOM_STEP_ALLOCATED} before"
+    );
+}
+
+/// The most a zoom step allocated on the window's thread on 2026-11-16, before rows were centred in the zoomed view (`main` at ce54a211).
+const ZOOM_STEP_ALLOCATED: u64 = 3;
