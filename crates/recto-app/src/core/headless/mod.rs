@@ -3,6 +3,7 @@
 
 mod back_after_a_jump;
 mod changed_under_edits;
+mod click_cost;
 mod closing;
 mod compare;
 mod contents;
