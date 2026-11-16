@@ -114,6 +114,16 @@ fn measure(tabs: usize) {
         engine.links().clicked_for_qa(hit);
         app.act(UiAction::LinkClicked { pane: 0 });
     });
+    // A still click on a page, off any link and any text, as the bridge's mouse calls make it: the page view's press and release, then the window's
+    // `LinkClicked`, which looks for an image under it (owner, 2026-11-16). The call is the UI thread's part; a look it sends runs on a thread of its own.
+    case(&app, "page click", tabs, nothing, |app, first| {
+        let inner = app.core();
+        let engine = inner.panes.reading_engine(&inner.engine);
+        let (x, y) = engine.points().document_point(0, if first { 400.0 } else { 450.0 }, 600.0).unwrap_or_default();
+        let _ = engine.selection().press(x, y, 1, false);
+        let _ = engine.selection().release();
+        app.act(UiAction::LinkClicked { pane: 0 });
+    });
     case(&app, "typed page", tabs, nothing, |app, first| {
         app.act(UiAction::PageTyped {
             text: (if first { "5" } else { "2" }).into(),

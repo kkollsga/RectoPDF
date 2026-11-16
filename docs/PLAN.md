@@ -36,7 +36,7 @@ Open items only, by where they are in this plan; features not yet built are coun
 
 - Asked by the owner 2026-11-16 (`docs/OWNER-RULES.md`), started the same day, each to hand back 2026-11-16 and merge by 2026-11-17:
   - [ ] A full performance review: every line of `SPEC.md` §2 on a release build of `main` at 4b4e027c against `docs/reports/budgets-2026-11-08.md`, with where the time and memory go and what to fix first (`build/performance-review`, report `docs/reports/performance-2026-11-16.md`).
-  - [ ] In read mode a click on an image selects it, with a box, and ⌘C copies it losslessly (`build/image-select`).
+  - [x] In read mode a click on an image selects it, with a box, and ⌘C copies it losslessly (`build/image-select`, handed back 2026-11-16 with three questions: words a scan's invisible OCR layer draws over its picture keep a click on them for text, as the hidden-text check finds them showing; a turn keeps the image picked; it isn't in the state record).
   - [ ] "Capture" in the page's right-click menu: the snapshot tool for one capture, then text selection again (`build/capture-once`).
 
 **Phase R's close: done 2026-11-15.** The second independent read found the work sound to release from; its three findings are merged or settled (`build/close-fixes`; the comparison walk's segment back with a longer wait and a truer record); the window's Save was found to run the person's `save` through the one door already, and the size guard's item was stale. The closing review is in `docs/PROCESS.md`.
