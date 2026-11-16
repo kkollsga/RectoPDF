@@ -105,6 +105,7 @@ fn back_from(files: &HashMap<String, Vec<u8>>) -> HashMap<String, RestoredEdits>
                     seq: parsed.header.base_seq + applied as u64,
                     rolled_off: false,
                     set_aside_beside: false,
+                    set_aside_earlier: false,
                     lost_lines: parsed.lost_lines,
                 },
             )

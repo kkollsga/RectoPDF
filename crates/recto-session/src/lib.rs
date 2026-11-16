@@ -498,6 +498,9 @@ pub struct RestoredEdits {
     /// Another list of this tab's, with edits not all in this one, was set aside beside it at the launch (a crash's two journals, review M2): the tab
     /// says so ([`record::FileNotice::EditsSetAsideAfterQuit`]).
     pub set_aside_beside: bool,
+    /// An earlier list of this tab's, from before a copy went back to an earlier version of the app, is kept beside it and couldn't be combined with
+    /// it (`recto_control`'s `record_store/went_back.rs`): the tab says so ([`record::FileNotice::EditsSetAsideWentBack`]).
+    pub set_aside_earlier: bool,
 }
 
 /// Why a history's being cleared. SPEC decision 25. A confirmed redaction or hidden-data removal, or what's been removed could be got back from it. A file changed outside the app, as its steps no longer apply. A discard, which is all of a tab's edits. And the user's asking for it, with Clear Edit History.

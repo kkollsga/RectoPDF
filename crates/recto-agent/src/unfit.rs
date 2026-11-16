@@ -192,6 +192,7 @@ mod tests {
             lost_lines: false,
             rolled_off: false,
             set_aside_beside: false,
+            set_aside_earlier: false,
         };
         let mut after = Session::new(crate::DrawableLoader);
         after
