@@ -22,12 +22,13 @@ want=$(real "$1$suffix")
 [ -n "$want" ] && [ -f "$want" ] || { echo "there's no render worker in $1 ($1$suffix)" >&2; exit 1; }
 # Its processes: a command line that starts with a path ending in the worker's place in a bundle, which resolves to this bundle's worker (as the
 # path is spelled however the app was started: /var or /private/var, a doubled slash), and never another checkout's.
-pids=""
+pids="" seen=""
 while read -r pid cmd; do
   case "$cmd" in *"$suffix"*) ;; *) continue ;; esac
-  [ "$(real "${cmd%%"$suffix"*}$suffix")" = "$want" ] && pids="$pids $pid"
+  exe=$(real "${cmd%%"$suffix"*}$suffix")
+  if [ "$exe" = "$want" ]; then pids="$pids $pid"; else seen="$seen; $pid ${exe:-${cmd%%"$suffix"*}$suffix (gone)}"; fi
 done < <(limit 10 ps -x -o pid=,command=)
-[ -n "$pids" ] || { echo "no live render worker of $1 to read the environment of" >&2; exit 1; }
+[ -n "$pids" ] || { echo "no live render worker of $1 to read the environment of: looked for $want, and saw ${seen#; }" | sed 's/saw $/saw no render worker at all/' >&2; exit 1; }
 for pid in $pids; do
   env=$(limit 10 ps -E -p "$pid" -o command= 2>&1 || true)
   case " $env " in
