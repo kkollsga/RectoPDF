@@ -143,6 +143,14 @@ A release build of `main` at 7 merges on (the worker's allocator keeps no freed 
 
 So of this morning's seven misses, two are gone (the map zoomed, shaded backgrounds), by one setting; the 10,000-page open and the signature look are asked of the lopdf fork (its inbox, 2026-11-16); a woken tab's sharp time and the stalls stand. New from the fix: a worker that has drawn the shaded page rests at about 69 MiB for its 30 s idle time where it used to be let go at 3 s.
 
+## After the resting worker's rule (the coordinator, 2026-11-16 14:59 to 15:02, nothing else running)
+
+A release build of `main` with `build/resting-worker` merged (a render worker resting over 48 MiB is let go after 3 s), `HEAVY_SOLO=1`, load 2.7 to 2.8 (`performance-2026-11-16/quiet-after-rest/`). Parts `colour` and `tabs`.
+
+- **Shaded backgrounds:** settled **97.1 MiB** (two workers, 69.0 MiB between them: the page's own and the one left from the NASA page opened before it in the same run); **4 s later 42.6 MiB**, one worker of 14.8 (96.3 MiB at 13:39, 44.0 that morning before the allocator setting). The "worker rests at 68.8 MiB" in the section above was those two workers read as one.
+- **The map, two runs:** fitted 322.7 and 322.8 MiB, about 2x 345.5 and 345.6, about 3x 335.8 and 335.9, worker peak 374.1; 33.4 at rest 4 s later. As at 13:36.
+- The window's thread's worst stall in those runs: 40 and 41 ms.
+
 ## To measure again with nothing else running
 
 The lines that miss or are close, for the coordinator at a quiet time, each with `HEAVY_SOLO=1` and `MADE` and `BENCH` set as the script says (`python3 -I docs/reports/performance-2026-11-16-bigpdf.py "$MADE"` makes the made file; `BENCH` is a temp folder with copies of the four `bench100` files the script names):
