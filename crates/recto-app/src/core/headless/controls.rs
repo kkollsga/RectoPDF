@@ -259,7 +259,7 @@ fn every_control_has_a_name_of_its_own_for_the_stall_record() {
         let kind = std::mem::discriminant(action);
         assert_eq!(*by_name.entry(name).or_insert(kind), kind, "{name} names two kinds of control");
     }
-    assert_eq!(by_name.len(), 23, "one name for each of the 23 kinds of control: {:?}", by_name.keys());
+    // That the list holds every kind is `every_kind_of_control`'s own check (`place`'s match is exhaustive), so no count is repeated here.
 }
 
 /// Failure (the stall record, 2026-11-16): `Inner::act` stops saying what it begins, so a stall in a control is kept with no name, or one run off the window's
