@@ -302,10 +302,16 @@ fn the_calls_the_bridge_makes_name_their_pass_on_the_window_thread_and_off_it_do
             std::hint::spin_loop();
         }
         core.window.main_idle();
-        core.window.kept_stretches().iter().map(|stretch| stretch.doing.as_str().to_owned()).collect::<Vec<_>>()
+        core.window
+            .kept_stretches()
+            .iter()
+            .map(|stretch| stretch.doing.as_str().to_owned())
+            .collect::<Vec<_>>()
     };
     let reached: [(&str, &dyn Fn()); 5] = [
-        ("scroll", &|| drop(core.panes.viewport(&core.engine, 0, false, recto_reader::Viewport::default()))),
+        ("scroll", &|| {
+            drop(core.panes.viewport(&core.engine, 0, false, recto_reader::Viewport::default()))
+        }),
         ("select_press", &|| drop(core.panes.pointer_engine("select_press", &core.engine, 0))),
         ("select_drag", &|| drop(core.panes.pointer_engine("select_drag", &core.engine, 0))),
         ("select_release", &|| drop(core.panes.pointer_engine("select_release", &core.engine, 0))),
