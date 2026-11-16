@@ -614,7 +614,20 @@ mod tests {
         assert!(dog.enter(false));
         dog.note_doing("zoom_in");
         dog.note_verb(Some("zoom"));
+        // Another thread of the process works through the wait, as the session's does while the window's waits on a lock: a clock that reads the whole process's
+        // CPU time would then call the wait busy, and the thread's own does not. (With no core to spare it works little, and the check is then no stricter.)
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let spinner = {
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            })
+        };
         wait_blocked(40);
+        stop.store(true, Ordering::Relaxed);
+        spinner.join().expect("the other thread of the process");
         dog.idle();
         assert!(dog.enter(false));
         dog.note_doing("page_down");
