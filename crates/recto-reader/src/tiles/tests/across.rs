@@ -9,6 +9,8 @@ const FRAME: f64 = 1168.0;
 /// under it, and the view is held to the document's width, or centred on a document narrower than it (`CenteringClipView`). Where it draws a page is
 /// where Rust last told it to ([`drawn`]).
 struct Host {
+    /// The window's reading area, in its points: [`FRAME`] until a resize or the sidebar changes it.
+    frame: f64,
     x: f64,
     y: f64,
     magnification: f64,
@@ -19,6 +21,7 @@ struct Host {
 impl Host {
     fn new() -> Self {
         Self {
+            frame: FRAME,
             x: 0.0,
             y: 0.0,
             magnification: 1.0,
@@ -28,7 +31,13 @@ impl Host {
     }
 
     fn view_width(&self) -> f64 {
-        FRAME / self.magnification
+        self.frame / self.magnification
+    }
+
+    /// The window resized, or the sidebar shown or hidden: AppKit keeps the view's left edge, and holds it to the document as it was.
+    fn resize(&mut self, frame: f64) {
+        self.frame = frame;
+        self.hold();
     }
 
     fn hold(&mut self) {
@@ -73,23 +82,33 @@ impl Host {
     }
 
     fn viewport(&self) -> Viewport {
+        self.viewport_live(false)
+    }
+
+    /// The view as the host tells it, `live` while a pinch or ⌘-scroll is under way.
+    fn viewport_live(&self, live: bool) -> Viewport {
         Viewport {
             x: self.x,
             y: self.y,
             width: self.view_width(),
             height: 900.0 / self.magnification,
-            frame_width: FRAME,
+            frame_width: self.frame,
             magnification: self.magnification,
             backing: 2.0,
-            live: false,
+            live,
             scrolled_to: self.scrolled_to,
         }
     }
 
     /// Tells the reader where the view is, applying what comes back, until it's said nothing more: what `PageArea.sendViewport` and `apply` do.
     fn tell(&mut self, reader: &mut Reader) {
+        self.tell_live(reader, false);
+    }
+
+    /// [`Self::tell`], `live` as a step of a pinch or ⌘-scroll under way is.
+    fn tell_live(&mut self, reader: &mut Reader, live: bool) {
         for _ in 0..8 {
-            let ops = reader.set_viewport(self.viewport());
+            let ops = reader.set_viewport(self.viewport_live(live));
             reader.applied();
             let before = (self.x, self.y);
             self.apply(ops);
@@ -247,6 +266,74 @@ fn a_tab_restored_at_a_zoom_comes_back_to_the_same_point_on_its_page() {
         if again.docs.shown().unwrap().layout.rect(3).width * magnification <= FRAME {
             assert_eq!(back.x, 0.0, "at {magnification}: a page that fits is centred, with nothing across");
             assert!((now - 306.0).abs() * fit * magnification <= 0.5, "at {magnification}: centred: {now}");
+        }
+    }
+}
+
+/// Failure (the read of 2026-11-16 before 0.1.2): a zoom in small steps, as a slow pinch or a fine ⌘-scroll makes them, ends with the document up to half a
+/// point narrower or wider than the view, as a step's change of width under half a point isn't told: the host's own centring of a narrower document then
+/// holds the page instead of Rust's, up to a quarter point times the zoom off it, or there's a sliver to scroll across. Once the zoom ends, whichever way it
+/// went, the document is exactly the view's width and the page exactly in its middle.
+#[test]
+fn once_a_zoom_ends_the_document_is_exactly_as_wide_as_the_view() {
+    // A step changes the view's width by about 0.3 points here: one, three and 41 of them leave a change under half a point untold.
+    for (step, steps) in [1.0003, 1.0 / 1.0003].into_iter().flat_map(|step| [1, 3, 41].map(|steps| (step, steps))) {
+        let (mut reader, mut host) = on_page_three();
+        let mut magnification = 1.2;
+        host.zoom_at(magnification, FRAME / 2.0 + 100.0);
+        host.tell(&mut reader);
+        for _ in 0..steps {
+            magnification *= step;
+            host.zoom_at(magnification, FRAME / 2.0 + 100.0);
+            host.tell_live(&mut reader, true);
+        }
+        host.tell(&mut reader);
+        let (left, width) = (drawn(&reader, 3), reader.docs.shown().unwrap().layout.rect(3).width);
+        assert!(
+            host.document_width == host.view_width() && host.x == 0.0,
+            "{steps} steps of {step} to {magnification}: {} across a view {} wide, at {}",
+            host.document_width,
+            host.view_width(),
+            host.x
+        );
+        assert!(
+            ((left - host.x) - (host.x + host.view_width() - left - width)).abs() * magnification <= 0.5,
+            "by {step}: margins {} and {}",
+            left - host.x,
+            host.x + host.view_width() - left - width
+        );
+    }
+}
+
+/// Failure (the read of 2026-11-16): the window resized, or the sidebar shown or hidden, while zoomed in moves the page across under the reader: the host
+/// keeps the view's left edge, and the move across was measured after the layout had already taken the new width, or not at all. Zoomed past the window,
+/// the point of the page at the middle of the view stays at its middle through a narrower window (the sidebar shown, which also makes the fit smaller) and a
+/// wider one; zoomed in but still fitting, the page stays centred.
+#[test]
+fn a_resize_or_the_sidebar_at_a_zoom_keeps_the_page_centred_or_its_middle_still() {
+    for (magnification, centred) in [(2.0, false), (1.2, true)] {
+        let (mut reader, mut host) = on_page_three();
+        reader.zoom(Zoom::To(magnification));
+        host.apply(reader.host.take_ops());
+        host.tell(&mut reader);
+        for frame in [900.0, 1400.0, FRAME] {
+            let was = host.page_point_under(&reader, 3, host.frame / 2.0);
+            host.resize(frame);
+            host.tell(&mut reader);
+            let fit = reader.docs.shown().unwrap().layout.fit();
+            let now = host.page_point_under(&reader, 3, frame / 2.0);
+            if centred && reader.docs.shown().unwrap().layout.rect(3).width * magnification <= frame {
+                assert!(
+                    host.x == 0.0 && host.document_width == host.view_width() && (now - 306.0).abs() * fit * magnification <= 0.5,
+                    "at {magnification}, {frame} wide: {now} at the middle, across {}",
+                    host.x
+                );
+            } else {
+                assert!(
+                    (now - was).abs() * fit * magnification <= 0.5,
+                    "at {magnification}, {frame} wide: {was} at the middle, then {now}"
+                );
+            }
         }
     }
 }

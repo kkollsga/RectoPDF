@@ -446,14 +446,17 @@ impl Reader {
         self.host.ops.push_back(Op::ScrollTo { y, seq });
     }
 
-    /// The document as wide as the rows in view need, which is the window's unless a fold-out's row is in view: told to the host when that changes, as the view reaches a fold-out or leaves it.
+    /// The document as wide as the rows in view need, which is the view's unless a row in view is wider: told to the host when that changes, as the view reaches a fold-out or leaves it, or a zoom changes the view's width.
     pub(super) fn widen_for_view(&mut self) {
         let viewport = self.viewport;
         let Some(doc) = self.docs.hot.and_then(|tab| self.docs.views.get_mut(&tab)) else {
             return;
         };
         let width = doc.layout.document_width_for(viewport.y, viewport.y + viewport.height);
-        if (width - doc.place.width_shown).abs() < 0.5 {
+        // While a pinch or a resize is under way, half a point either way isn't told; once it's ended, the width is the layout's exactly, so a row that
+        // fits rests where Rust centres it and not where the host's own centring of a narrower document would put it.
+        let close_enough = if viewport.live { 0.5 } else { 0.0 };
+        if (width - doc.place.width_shown).abs() <= close_enough {
             return;
         }
         doc.place.width_shown = width;

@@ -750,9 +750,14 @@ final class CenteringClipView: NSClipView {
             tilesOnPage.removeAll()
         case let .document(width, height, topRoom, bottomRoom):
             (scrollView.contentView as? CenteringClipView)?.room = (topRoom, bottomRoom)
-            documentView.setFrameSize(NSSize(width: width, height: height))
-            thumb.refresh()
-            across.refresh()
+            // Both thumbs follow the document's frame by its notification, so a new size refreshes each once (a zoom sends one a step); the same size posts
+            // none, and the room past the ends may still be new, which the thumb up and down goes by.
+            let size = NSSize(width: width, height: height)
+            if documentView.frame.size == size {
+                thumb.refresh()
+                across.refresh()
+            }
+            documentView.setFrameSize(size)
             viewportDirty = true
         case let .magnify(value):
             if scrollView.magnification != value {

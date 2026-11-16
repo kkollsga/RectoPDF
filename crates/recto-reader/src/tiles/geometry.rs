@@ -112,22 +112,48 @@ impl DocView {
         self.place.magnification
     }
 
-    /// **The host's magnification, taken into the layout, and where across the view goes with it.** A row is centred in the view, which is narrower in
-    /// document points the further in it's zoomed ([`crate::layout::PageLayout::view_width`]), so a zoom moves rows across, and the host, which zoomed about
-    /// a point (the pointer, or the view's middle) under the old places, has the view across where that point was. It goes as far across as the row at the
-    /// view's middle moved, so the point stays under the pointer, held to what the document has to scroll across: none while the row fits, which centres
-    /// it, and a row wider than the view from its left edge. Says where the view goes across, if it's to move; and nothing while `jump` (a jump or a new
-    /// window on its way, whose place across is sent with it) or with no change of zoom. A few lookups of the layout.
-    pub(super) fn take_magnification(&mut self, viewport: &super::Viewport, jump: bool) -> Option<f64> {
-        let row = self.layout.page_at(viewport.y + viewport.height / 2.0);
-        let before = self.layout.rect(row).x;
-        if !self.layout.set_magnification(viewport.magnification) || jump || self.layout.count() == 0 {
-            return None;
+    /// **The host's window width and magnification, taken into the layout, and where across the view goes with them.** A row is centred in the view, which
+    /// is the window's width over the zoom in document points ([`crate::layout::PageLayout::view_width`]), so a zoom or a resize moves rows across, and the
+    /// host has the view across where it was under the old places. Measured before anything moves: the point of the page at the view's middle, or the row's
+    /// place across. After a resize or the sidebar shown or hidden (the window's width changed), whose host keeps its left edge, the view goes where that
+    /// point of the page is at its middle again; after a zoom alone, which the host made about a point (the pointer, or the view's middle), it goes as far
+    /// across as that row moved, so the point stays. Held to what the document has to scroll across: none while the row fits, which centres it, and a row
+    /// wider than the view from its left edge. Says whether the window's width changed the layout, and where the view goes across, if it's to move: nowhere
+    /// while `jump` (a jump or a new window on its way, whose place across is sent with it), with no change, or from a view the host hadn't shown yet.
+    /// A few lookups of the layout.
+    pub(super) fn take_view(&mut self, was: &super::Viewport, viewport: &super::Viewport, jump: bool) -> (bool, Option<f64>) {
+        let resized = was.frame_width != viewport.frame_width;
+        let from = if resized { was } else { viewport };
+        let page = self.layout.page_at(from.y + from.height / 2.0);
+        let (before, fit) = (self.layout.rect(page).x, self.layout.fit());
+        let point = (from.x + from.width / 2.0 - before) / fit.max(f64::MIN_POSITIVE);
+        let moved_frame = self.layout.set_frame(viewport.frame_width) && resized;
+        let zoomed = self.layout.set_magnification(viewport.magnification);
+        if jump || self.layout.count() == 0 || !(moved_frame || zoomed) || (resized && was.width <= 0.0) {
+            return (moved_frame, None);
         }
-        let moved = self.layout.rect(row).x - before;
-        let room = (self.layout.document_width_for(viewport.y, viewport.y + viewport.height) - self.layout.view_width()).max(0.0);
-        let x = (viewport.x + moved).clamp(0.0, room);
-        ((x - viewport.x).abs() > 1e-9).then_some(x)
+        let now = self.layout.rect(page).x;
+        let (x, y) = if moved_frame {
+            (now + point * self.layout.fit() - self.layout.view_width() / 2.0, self.place_y())
+        } else {
+            (viewport.x + now - before, viewport.y)
+        };
+        let room = (self.layout.document_width_for(y, y + viewport.height) - self.layout.view_width()).max(0.0);
+        let x = x.clamp(0.0, room);
+        (moved_frame, ((x - viewport.x).abs() > 1e-9).then_some(x))
+    }
+
+    /// **Whether the view across has to be sent to `x`,** or the host puts it there itself: it holds its view to the document's width as it takes a new
+    /// one (AppKit's clip view, centring one narrower than the view), so where a row fits, the document is the view's width and the view comes to 0 with no
+    /// word; a zoom step there is the document's width and the pages, and no `ScrollAcross` (the read of 2026-11-16 before 0.1.2: one op a step fewer).
+    pub(super) fn moves_the_host_across(&self, x: f64, host_x: f64) -> bool {
+        let (shown, view) = (self.place.width_shown, self.layout.view_width());
+        let held = if view > shown {
+            (shown - view) / 2.0
+        } else {
+            host_x.clamp(0.0, shown - view)
+        };
+        (x - held).abs() > 1e-9
     }
 
     /// Where the reader is in the tab: a page and how far down it, as a change of layout keeps it.

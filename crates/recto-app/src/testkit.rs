@@ -9,6 +9,7 @@ pub(crate) mod place_seams;
 mod scrolled;
 pub mod update_bed;
 pub mod watching;
+pub mod zoomed;
 
 use crate::clock::Clock;
 use crate::listener::{Listener, QuitAnswer};

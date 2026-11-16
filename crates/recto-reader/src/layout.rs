@@ -1055,7 +1055,69 @@ mod tests {
         all
     }
 
-    /// Failure: a change to where rows sit across moves a page at the fit, the view a document opens at and Fit goes back to, where the owner's rule keeps the margins as they were (owner, 2026-11-16: the margins kept at a fit are as they were). Pinned on 2026-11-16, before rows were centred in the zoomed view, at the numbers the layout gave then: every page's top, width and height, the document's height and fit, and the x of each page whose row fits the room between the margins, in every layout, margin pair, window width and page mix the gutters test walks. A row wider than that room is the new rule's business and isn't pinned. Held as a hash of the numbers' bits, so any change of a fitted page fails it: x to a billionth of a point, as a row exactly as wide as the room was held by bounds that crossed by a rounding error and stood an ulp (1e-13 points) off the middle, where it's now on it; checked against the old placement, which gave the same hash at that grain.
+    /// A layout at the fit as the rule stood on 2026-11-16, worked out the slow way: the fit from the reading width and the room between the margins, each
+    /// row's top and height from its pages ([`rows_the_slow_way`]), and each page's x as the row it's in, centred in the window when it fits the room, put it:
+    /// a pair centred as a whole, a page alone in a two-up row in its column as if the usual page were beside it, held inside the margins.
+    struct Fitted {
+        fit: f64,
+        height: f64,
+        pages: Vec<PageRect>,
+    }
+
+    fn fitted_the_slow_way(layout: &PageLayout) -> Fitted {
+        let (frame, side, usual) = (layout.frame_width, layout.side, f64::from(layout.usual.width));
+        let room = (frame - 2.0 * side).max(1.0);
+        let fit = match layout.spread() {
+            Spread::Single => READING_WIDTH.min(room) / usual,
+            _ => ((2.0 * READING_WIDTH + PAGE_GAP).min(room) - PAGE_GAP).max(1.0) / (2.0 * usual),
+        }
+        .clamp(1.0 / 64.0, MAX_FIT);
+        let rows: Vec<Vec<u32>> = (0..layout.rows())
+            .map(|row| {
+                let (first, second) = layout.row_pages(row);
+                std::iter::once(first).chain(second).collect()
+            })
+            .collect();
+        let tops = rows_the_slow_way(layout, &rows);
+        let width = |page: u32| f64::from(layout.size(page).width) * fit;
+        let mut pages = Vec::new();
+        for (row, members) in rows.iter().enumerate() {
+            for &page in members {
+                let half = frame / 2.0;
+                let x = match layout.spread() {
+                    Spread::Single => half - width(page) / 2.0,
+                    _ => {
+                        let left = members.iter().find(|p| !layout.on_the_right(**p)).map_or(usual * fit, |p| width(*p));
+                        let right = members.iter().find(|p| layout.on_the_right(**p)).map_or(usual * fit, |p| width(*p));
+                        let middle = if members.len() == 2 {
+                            half + (left - right) / 2.0
+                        } else {
+                            half.min(frame - side - right - PAGE_GAP / 2.0).max(side + left + PAGE_GAP / 2.0)
+                        };
+                        if layout.on_the_right(page) {
+                            middle + PAGE_GAP / 2.0
+                        } else {
+                            middle - PAGE_GAP / 2.0 - width(page)
+                        }
+                    }
+                };
+                pages.push(PageRect {
+                    x,
+                    y: tops[row].0,
+                    width: width(page),
+                    height: f64::from(layout.size(page).height) * fit,
+                });
+            }
+        }
+        let (top, height) = tops[tops.len() - 1];
+        Fitted {
+            fit,
+            height: top + height + END_MARGIN,
+            pages,
+        }
+    }
+
+    /// Failure: a change to where rows sit across moves a page at the fit, the view a document opens at and Fit goes back to, where the owner's rule keeps the margins as they were (owner, 2026-11-16: the margins kept at a fit are as they were). Pinned on 2026-11-16, before rows were centred in the zoomed view, at the numbers the layout gave then: every page's top, width and height, the document's height and fit, and the x of each page whose row fits the room between the margins, in every layout, margin pair, window width and page mix the gutters test walks. A row wider than that room is the new rule's business and isn't pinned. Each number is first held against the fitted layout as it was then, worked out the slow way (`fitted_the_slow_way`), and a failure names the layout, the page and the number that moved, with both values (the read of 2026-11-16 before 0.1.2: a bare hash said only that something had). Then held as a hash of the numbers' bits, so a change below the slow way's billionth of a point fails too: x to a billionth of a point, as a row exactly as wide as the room was held by bounds that crossed by a rounding error and stood an ulp (1e-13 points) off the middle, where it's now on it; checked against the old placement, which gave the same hash at that grain.
     #[test]
     fn a_fitted_page_is_where_it_was() {
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -1065,7 +1127,19 @@ mod tests {
             }
         };
         let mut pinned_x = 0;
-        for (_, layout) in fitted_layouts() {
+        for (case, layout) in fitted_layouts() {
+            let slow = fitted_the_slow_way(&layout);
+            let held = |what: &str, pinned: f64, now: f64| {
+                assert!((pinned - now).abs() <= 1e-9, "a page at the fit moved: {case}: {what} was {pinned}, now {now}");
+            };
+            held("the fit", slow.fit, layout.fit());
+            held("the document's height", slow.height, layout.document_height());
+            for page in 0..layout.count() {
+                let (rect, was) = (layout.rect(page), slow.pages[page as usize]);
+                held(&format!("page {page}'s top"), was.y, rect.y);
+                held(&format!("page {page}'s width"), was.width, rect.width);
+                held(&format!("page {page}'s height"), was.height, rect.height);
+            }
             feed(layout.fit());
             feed(layout.document_height());
             for page in 0..layout.count() {
@@ -1083,6 +1157,7 @@ mod tests {
                     (a.x + a.width).max(b.x + b.width) - a.x.min(b.x)
                 };
                 if row <= layout.frame_width - 2.0 * layout.side + 1e-6 {
+                    held(&format!("page {page}'s x"), slow.pages[page as usize].x, rect.x);
                     feed((rect.x * 1e9).round());
                     pinned_x += 1;
                 }
