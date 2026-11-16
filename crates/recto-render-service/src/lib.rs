@@ -39,8 +39,8 @@ mod page_deadline;
 mod test_deadline;
 mod worker_env;
 pub use host::{
-    CancelHandle, DocRenderer, DrawPurpose, ExportRefusal, HeavySlot, KillReason, LowRes, LowResWhy, PageCharacters, PageDrawState, Policy, RenderFailure,
-    RenderStats, ServiceConfig, Surface, Target, Tile, TileRequest, TileResult, WallsDown,
+    CancelHandle, DocRenderer, DrawPurpose, ExportRefusal, HeavyRest, HeavySlot, KillReason, LowRes, LowResWhy, PageCharacters, PageDrawState, Policy,
+    RenderFailure, RenderStats, ServiceConfig, Surface, Target, Tile, TileRequest, TileResult, WallsDown,
 };
 pub use recto_proto::{CharRecord, TILE_EDGE, TileKind, TileRect};
 #[cfg(feature = "test-seams")]

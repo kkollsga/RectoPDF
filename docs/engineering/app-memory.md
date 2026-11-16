@@ -57,7 +57,7 @@ The USGS map (`gov_usgs_usgs70277338`, 346 MiB, one page, 66 images) was past th
 - What PDFium really holds is **about 300 MiB, the same fitted and at 3x**: the page's 73 image streams read whole when the page loads (`CPDF_SyntaxParser::ReadStream`, kept with the document) **160 MiB**; its cache of decoded images (`CPDF_PageImageCache`, 27 bitmaps) **95**; one image stream's bytes read again to decode it **30**; paths and fonts about 10.
 - The rest was **freed large blocks the allocator kept** ("Malloc Large (empty)"): 52 MiB after the fitted draw, then 109, 170, 197, as each zoom's buffers came in new sizes and were let go. So the footprint went 361, 422, 483, 511 while PDFium's own stayed at 300.8 to 301.0. `malloc_zone_pressure_relief` released none of it; `MallocLargeCache=0` stops it (`MallocDeferredReclaim=0` and `MallocAggressiveMadvise=1` didn't). With the cache off the same steps peaked at 317, 373, 395, 397 MiB, the footprint back to 297 after each: a zoomed pass needs about 67 MiB above what the page holds, besides the region's own 30.
 
-**The fix:** the host starts each worker with `MallocLargeCache=0` (`crates/recto-render-service/src/worker_env.rs`). It reaches the sandboxed helper (`ps -E` on the app's worker shows it). Release app, `recto qa budget --file rfc9110 --heavy <map> --runs 1`, three runs each, the base at 12:58 to 13:02 (load 3.4 to 6.0), the fix at 13:08 to 13:13 (load 2.6 to 6.5), other workers' builds in the queue beside both:
+**The fix:** the host starts each worker with `MallocLargeCache=0` (`crates/recto-render-service/src/worker_env.rs`). **What else the variable does** (read from libmalloc's source by a reviewer, not measured here): in the newer allocator (xzone, `xzone_malloc.c`) `MallocLargeCache=0` also sets `defer_tiny`, `defer_small` and `defer_large` false, so deferred reclaim for tiny and small sizes is off too, not only the large cache. Which allocator the worker uses on this OS isn't known. The CPU a sweep costs the worker is measured below (2026-11-16, the resting worker). It reaches the sandboxed helper (`ps -E` on the app's worker shows it). Release app, `recto qa budget --file rfc9110 --heavy <map> --runs 1`, three runs each, the base at 12:58 to 13:02 (load 3.4 to 6.0), the fix at 13:08 to 13:13 (load 2.6 to 6.5), other workers' builds in the queue beside both:
 
 | The map | Before | After |
 |---|---|---|
@@ -80,3 +80,36 @@ So the worst the tree can have reached is the worker's peak plus the app, about 
 **Held by** `memory::zooming_into_a_heavy_page_costs_no_more_than_the_zoomed_view_alone`: a made page with the map's size and its two largest images (5104 x 6004, run-length encoded so the file is 2.9 MB), drawn through the reader's steps, may peak no higher than the 3x view drawn alone in a fresh worker plus 16 MiB. With the cache on it was 96 against 59 MiB, off 63 against 59. The made page holds tens of MiB where the map holds 300: it tests what a zoom adds, not what the map costs.
 
 **Not measured:** a visible window; NASA scrolled and zoomed as run A has it (52.4 MiB in the report); the made 2 GiB file's scroll; any of this with nothing else running.
+
+## A worker that rests holding a lot, and the line it is let go at (2026-11-16)
+
+**What the rule was.** `big_workers_rest` (`crates/recto-reader/src/engine/run.rs`): when the engine's thread has nothing to do, a worker whose own footprint (`worker_footprint`, the same `phys_footprint` read as `qa state`) is over `Policy::retire_bytes` is let go after `heavy_idle_exit` (3 s); every other worker waits the 30 s of `idle_exit`. `retire_bytes` is 64 MiB and is also the line a worker retires at between pages in use, so it couldn't simply be lowered.
+
+**Why the shaded page's worker stayed.** The rule read the right number and compared it right; the number was under the line. `memory.worker_bytes` in `qa state` is the **sum of every worker**, and the report's 68.8 MiB was two workers: the NASA p50 file's (14.5) opened first in the same quiet run, and the shaded page's own, which rests at **53.5 to 54.0 MiB** (nine runs). Opening the shaded file alone: tree 81.0 to 81.5, worker 53.6 to 54.0, still there 27 s later, gone at the 30 s idle rule (release app, three runs, load 2.7 to 3.4, `build-resting-worker-base-shaded-*`). With the NASA p50 file open first, 96.1 to 96.6 and two workers, as the report had (`...-base-shaded-after-nasa`).
+
+**What workers rest at** (release app, quiet runs, one run a file and page, the worker's own footprint): `rfc9110` p40 9.5 to 9.8 MiB (3 runs), NASA `ntrs20240002628` p50 14.5 to 15.0 (3), after four sweeps of 6 pages a second (30 pages each) through `rfc9110` from p64 15.5 to 15.8 (3), through the NASA file from p20 22 to 42 (the worker is retired past 64 on the way, so what it rests at depends on where the last retirement fell; 6 runs), the shaded page 53.5 to 54.0, the USGS map 300.7 to 301.5 (let go at 3 to 4 s, both before and after).
+
+**The change.** `Policy::heavy_rest` (`over_bytes`, with the 3 s `after` that was `heavy_idle_exit`), its own line for letting a resting worker go, **48 MiB**: above everything an ordinary page left (42 at most) and under the shaded page (53.5). A first try at 32 let go NASA workers after a scroll (34 to 42 MiB), which an ordinary page's worker mustn't be, so it went to 48; the margin on each side is about 6 MiB, so a worker that rests between 42 and 54 is a case to look at again with a new page. `retire_bytes` (64) is unchanged for what it decides between pages. Held by `a_worker_is_let_go_at_rest_over_the_rest_line_and_kept_under_it` (`recto-reader/tests/engine.rs`): seen failing with the rule on `retire_bytes`.
+
+**Before and after** (release app, quiet, other workers' builds and tests running beside every run: load 3 to 25, written beside each file; the coordinator measures again with nothing else running). Files `build-resting-worker-*.txt` in the worker's scratchpad.
+
+| | Before (main) | After |
+|---|---|---|
+| Shaded page, tree at rest / 4 s / 10 s / 35 s | 81.5, 81.2, 80.6, 26.8 MiB (the 30 s rule); 3 runs alike | **81.2, 27.2, 27.1, 27.1**; 3 runs alike |
+| Shaded page after the NASA p50 file, 4 s | 96.2 (two workers kept) | **42.0** (the shaded worker gone, NASA's 14.3 kept) |
+| USGS map fitted, at rest / 4 s / 12 s | 324, 22.9, 21.3 | 322.7, 21.4, 21.1 (3 runs alike) |
+| `rfc9110` p40, worker at rest / 35 s | 9.7 MiB, kept; 26.2 at 35 s when the 30 s idle rule goes | 9.3, same |
+| `rfc9110` 4 sweeps of 6 pages a second, workers started | 2, 2, 2 | 2, 2, 2 |
+| NASA `ntrs20240002628` the same, workers started | 3, 4, 3 | 3, 3, 4 |
+| Workers' CPU in those sweeps (sum of each worker's last `ps` time, polled at 5 Hz) | rfc 1.24, 1.31, 1.61 s; NASA 5.63, 5.90, 5.55 | rfc 1.25, 1.59, 1.55; NASA 5.56, 5.36, 5.81 |
+| App CPU in 20 s at rest, shaded page / `rfc9110` p40 (`ps` time, `top` wake-ups) | 0.00 s, 0 wake-ups / 0.00 s, 0 | 0.00 s, 0 / 0.00 s, 0 to 1 |
+
+A sweep rests at its end in the NASA file at 22 to 39 MiB, under the line, and no worker was let go in any run. The first sweep's worker is over 64 and retires either way.
+
+**What scrolling on after a rest costs.** Shaded page p175, a rest of 5 s, then `goto` p176 and time to settled (the page's own fade included): worker kept 296, 315, 289, 304, 303 ms (main), worker let go 322, 309, 297, 291, 283 ms (after), at load 14 to 25. No difference can be seen at this load; a rest of 1 s with the worker kept is 26 to 35 ms in both, so the 300 ms is what a 5 s rest costs in the app either way and not the worker's start (PLAN: 55 to 130 ms). Not measured with nothing else running.
+
+**Idle.** Nothing polls: the thread parks for the time left when a worker is over the line and for ever otherwise; the same rule, one more comparison. 20 s at rest, the app's CPU 0.00 s and 0 idle wake-ups on the shaded page and `rfc9110` before and after.
+
+**The allocator setting's CPU** (coordinator's question, the worker's CPU over the same sweeps, `MallocLargeCache=0` off, on `main`'s parent of 1ead938b, against `main`): `rfc9110` 1.86, 1.53, 1.02 s against 1.24, 1.31, 1.61 (means 1.47 and 1.39, about 5 % less); NASA 5.79, 5.24, 4.59 against 5.63, 5.90, 5.55 (means 5.21 and 5.69, **9 % more with the setting**), at load 3 to 13 and 3 to 16. Within the noise of load, under the 10 % that was to be reported; the sum undercounts workers that lived under 0.2 s, and without the setting the NASA sweeps started 7 to 9 workers against 3 to 4 with it (the cache let a worker pass 64 MiB sooner, so it retired more often), so the real CPU without it is higher than the sum shows.
+
+**Not measured:** anything with nothing else running; the cost of a worker started after a rest apart from the page's own fade; a Mac that isn't this one.

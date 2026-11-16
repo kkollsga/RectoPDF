@@ -70,6 +70,14 @@ impl<'a> From<&'a PixelSurface> for Target<'a> {
     }
 }
 
+/// **When a worker is let go at rest:** a worker past `over_bytes` leaves once nothing has been done for `after`, where any other waits the 30 s of [`Policy::idle_exit`]. It is not
+/// [`Policy::retire_bytes`]: that line decides what a worker may hold *between pages while it is being used*, and a worker let go there costs a restart per page.
+#[derive(Clone, Copy, Debug)]
+pub struct HeavyRest {
+    pub over_bytes: u64,
+    pub after: Duration,
+}
+
 /// What a worker may do. Defaults are the decisions from the spike; see `docs/engineering/crates/recto-render-service.md`.
 #[derive(Clone, Debug)]
 pub struct Policy {
@@ -91,8 +99,8 @@ pub struct Policy {
     pub cancel_grace: Duration,
     /// The worker leaves after this long with no job.
     pub idle_exit: Duration,
-    /// A heavy worker leaves after this long with no job, so its memory and the slot don't wait on a page nobody's using.
-    pub heavy_idle_exit: Duration,
+    /// When a heavy worker leaves with no job, so its memory and the slot don't wait on a page nobody's using.
+    pub heavy_rest: HeavyRest,
     /// How many times one document may start a heavy worker. Past this its pages draw at a lower resolution, so a hostile file can't keep asking for a gigabyte.
     pub max_heavy_retries: u32,
     /// How many workers one document may have killed for overrunning. Past this it draws nothing more until asked, so a file of many bad pages ends quickly too.
@@ -127,8 +135,15 @@ impl Default for Policy {
             // Spike §12: a stale render is gone within 100 ms, by return or kill.
             cancel_grace: Duration::from_millis(90),
             idle_exit: Duration::from_secs(30),
-            // Long enough to bridge a pause in scrolling, and a reload costs less than holding a gigabyte.
-            heavy_idle_exit: Duration::from_secs(3),
+            // Over 48 MiB, after 3 s: long enough to bridge a pause in scrolling, and a reload costs less than holding a gigabyte.
+            // 2026-11-16, release app, quiet, what a worker rests at: 9 to 10 MiB after a text page (`rfc9110`), 15 after a colour page (NASA `ntrs20240002628` p50), 16 at most after
+            // four sweeps of 6 pages a second through `rfc9110`, and 34 to 42 after the same through the NASA file (three runs); the shaded page (NASA `ntrs20220005969`
+            // p175) rests at 53.6 to 54.0 (six runs) and the USGS map at 301. 48 MiB is above every ordinary rest and under the shaded page's. It was `retire_bytes` (64), above
+            // that page's 54, so it was kept for the 30 s of `idle_exit`. `docs/engineering/app-memory.md`.
+            heavy_rest: HeavyRest {
+                over_bytes: 48 * 1024 * 1024,
+                after: Duration::from_secs(3),
+            },
             max_heavy_retries: 8,
             max_kills_per_document: 128,
             idle_grace: Duration::from_secs(5),
@@ -1640,7 +1655,7 @@ impl DocRenderer {
             self.bury_worker();
         }
         let (limit, idle_exit) = if ticket.is_some() {
-            (self.policy.heavy_limit_bytes, self.policy.heavy_idle_exit)
+            (self.policy.heavy_limit_bytes, self.policy.heavy_rest.after)
         } else {
             (self.policy.memory_limit_bytes, self.policy.idle_exit)
         };
@@ -1934,7 +1949,7 @@ impl Worker {
             }
         };
         let arg_refs: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
-        // A stand-in worker gets no arguments of ours, so this is how it learns its limit. The real one has it in its arguments and an empty environment.
+        // A stand-in worker gets no arguments of ours, so this is how it learns its limit. The real one has it in its arguments, and its environment is [`crate::worker_env::WORKER_ENV`] alone.
         let limit_text = limit.to_string();
         let mut env_refs: Vec<(&str, &str)> = config
             .extra_env
