@@ -19,6 +19,7 @@ mod followed;
 mod lock;
 mod page_ids;
 mod sleep_files;
+mod went_back;
 use crate::state::StatePaths;
 use recto_platform::{FileStamp, file_stamp, local};
 use recto_session::edit::{AddedSource, PageEdits};
@@ -1425,6 +1426,7 @@ fn claim(folder: &Path, read: JournalRead, record: &mut SessionRecord, at: usize
         tab.notice = Some(FileNotice::EditsUnreadable);
         return;
     };
+    went_back::unreadable_answered(tab, tab.journal.as_deref() == Some(name.as_str()), &parsed.header);
     let mut good_bytes = parsed.good_bytes;
     if restored.lost_lines {
         // What couldn't be used is kept, as the notice says it is. Then there's a clean start: a line replay can't pass would otherwise hide everything added after it, and every hand-off would fail against it.
