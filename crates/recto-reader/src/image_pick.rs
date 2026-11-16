@@ -41,6 +41,7 @@
 
 use crate::paper::LEAST_BACKGROUND;
 use recto_index::select::{PagePoint, PageText, Rect};
+use recto_proto::MAX_IMAGE_BOXES;
 use serde_json::{Value, json};
 use std::num::NonZeroU32;
 
@@ -106,11 +107,16 @@ fn is_the_page_in_parts([left, top, right, bottom]: [u16; 4]) -> bool {
 /// **Whether `at` is in any of `boxes`,** that isn't the page's own ([`is_the_page`]), both in 65535ths of the page from its top left
 /// (`[left, top, right, bottom]` and `[x, y]`), edges included. A box that is the page, held alone, may be a scan or a fold of several pictures into one
 /// (past 64 apart, `recto-render`'s `places.rs`), which the box can't tell: with no other box under the point, the answer is no picture here, so the page's
-/// folded figures past 64 pictures are the one thing a click there can't pick. `None`, boxes the worker couldn't give (its page failed, withheld, refused, stopped), is no picture: a click picks nothing there. A box from a hostile
+/// folded figures past 64 pictures are the one thing a click there can't pick. The 65th box of an answer, the one round every picture past the 64th,
+/// is never the page: it only says a picture may be anywhere in it, so the look runs and its answer's own box is judged ([`is_the_page`]). Its place in the
+/// answer is kept from the worker's walk (`into_places`, the wire's order), but a whole-page box the walk adds for a place it couldn't read, on a page of fewer
+/// than 64 pictures, is last of fewer and can't be told from a scan's: it is taken as the page. `None`, boxes the worker couldn't give (its page failed, withheld, refused, stopped), is no picture: a click picks nothing there. A box from a hostile
 /// file is only compared, so one upside down or of no area holds nothing.
 pub fn under(boxes: Option<&[[u16; 4]]>, [x, y]: [u16; 2]) -> Under {
     let holds = |&[left, top, right, bottom]: &[u16; 4]| (left..=right).contains(&x) && (top..=bottom).contains(&y);
-    if boxes.is_some_and(|boxes| boxes.iter().any(|one| holds(one) && !is_the_page_in_parts(*one))) {
+    // The box past the 64th (`beyond`, the last of 65) is the worker saying a picture may be anywhere in it: never taken for a page.
+    let may_be = |(at, one): (usize, &[u16; 4])| holds(one) && (at == MAX_IMAGE_BOXES || !is_the_page_in_parts(*one));
+    if boxes.is_some_and(|boxes| boxes.iter().enumerate().any(may_be)) {
         Under::Yes
     } else {
         Under::No

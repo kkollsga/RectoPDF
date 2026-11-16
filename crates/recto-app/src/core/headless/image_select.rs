@@ -767,6 +767,46 @@ fn on_a_page_of_more_pictures_than_an_answer_holds_a_margin_click_costs_nothing(
     }
 }
 
+/// A contact sheet: 6 pictures spread to the page's corners and middle, drawn first, then 64 small ones in a grid of 8 by 8, apart. The worker's walk meets
+/// the pictures from the top of the drawing down, so it holds the grid's 64 and the 65th box is the one round the 6 drawn first, which covers nearly the
+/// whole page (all but a 2-point margin).
+fn contact_sheet() -> Vec<u8> {
+    let spread = [(3, 3), (579, 759), (300, 650), (360, 650), (420, 650), (480, 650)].into_iter();
+    let grid = (0..64).map(|at| (40 + (at % 8) * 60, 100 + (at / 8) * 70));
+    let content: String = spread.chain(grid).map(|(x, y)| format!("q 30 0 0 30 {x} {y} cm /Im Do Q\n")).collect();
+    let first = recto_testpdf::first_extra_object(1);
+    recto_testpdf::pages_with(
+        &[recto_testpdf::Page::new(content.into_bytes())],
+        &format!("/XObject << /Im {first} 0 R >>"),
+        vec![images().remove(0)],
+    )
+}
+
+/// Failure (the coordinator's review of `build/scan-not-picked`): the worker's 65th box, "something may be anywhere in here" past the 64 pictures it
+/// holds, covers a contact sheet's page, and is taken for a scan, so a picture past the 64th can't be picked, where it could before the branch. A click on
+/// the one at the top right, past the 64 held, picks it through one look; a click on the margin outside every box, and a plain one-image scan, send none.
+#[test]
+fn a_picture_past_the_64th_on_a_contact_sheet_is_still_picked() {
+    let disk = Disk::new();
+    let doc = disk.file("contact.pdf", &contact_sheet());
+    let app = opened(disk, &doc);
+    assert_eq!(
+        looks_sent(&app, |app| drop(let_go(app, (1.0, 1.0), None, 1))),
+        0,
+        "the margin outside every box"
+    );
+    assert_eq!(
+        looks_sent(&app, |app| drop(let_go(app, (594.0, 18.0), None, 1))),
+        1,
+        "a picture past the 64th: one look"
+    );
+    assert_eq!(picked(&app).map(|(_, rect)| rect), Some([579.0, 3.0, 30.0, 30.0]), "that picture");
+    let disk = Disk::new();
+    let doc = disk.file("scan.pdf", &scan_page(false, false, ""));
+    let app = opened(disk, &doc);
+    assert_eq!(looks_sent(&app, |app| drop(let_go(app, (300.0, 400.0), None, 1))), 0, "a plain scan");
+}
+
 /// Failure (the second review, fix 2): a copy while a click's look runs stops the look, and its stopped answer is taken as "no image there", so the click
 /// picks nothing, though the look was to wait behind the copy. The look runs again after the copy, and picks its image.
 #[test]
