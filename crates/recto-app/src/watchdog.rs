@@ -630,7 +630,12 @@ mod tests {
         assert!(dog.enter(false));
         dog.note_doing("window_work");
         let other = dog.clone();
-        std::thread::spawn(move || other.note_doing("qa_save_as")).join().unwrap();
+        std::thread::Builder::new()
+            .name("test-qa-channel".into())
+            .spawn(move || other.note_doing("qa_save_as"))
+            .expect("a thread")
+            .join()
+            .expect("the other thread");
         wait_blocked(20);
         dog.idle();
         let (kept, _, _) = dog.slow_stretches();
