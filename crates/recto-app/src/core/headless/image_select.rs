@@ -876,3 +876,35 @@ fn a_persons_plain_images_isnt_taken_for_a_clicks_look() {
     landed(&app);
     assert_eq!(picked(&app), Some((1, FIGURE)), "and the look goes on as ever");
 }
+
+/// A page of more objects than the worker's walk looks at (20,000): 20,001 small squares, then the figure, placed as [`figure`]'s is.
+fn past_the_walks_cap() -> Vec<u8> {
+    let mut content = b"0 0 0 rg\n".to_vec();
+    content.extend(b"10 10 2 2 re f\n".repeat(20_001));
+    content.extend(b"q 200 0 0 150 100 400 cm /Im Do Q\n");
+    let first = recto_testpdf::first_extra_object(1);
+    recto_testpdf::pages_with(
+        &[recto_testpdf::Page::new(content)],
+        &format!("/XObject << /Im {first} 0 R >>"),
+        vec![images().remove(0)],
+    )
+}
+
+/// Failure (the review of `build/scan-not-picked`, its second regression): a walk cut short by its cap on objects says a picture may be anywhere on the
+/// page with a whole-page box, which on a page of fewer than 64 pictures was taken for a scan, so on a CAD or map page of more than 20,000 objects a click
+/// on an inset picture drawn after them picks nothing. The click on it picks it through one look; a click on the margin, where the walk can't say there's
+/// no picture, costs one look too (one private worker, one at a time and stopped by the next click, as every look is) and picks nothing.
+#[test]
+fn a_picture_past_the_walks_cap_is_picked() {
+    let disk = Disk::new();
+    let doc = disk.file("busy.pdf", &past_the_walks_cap());
+    let app = opened(disk, &doc);
+    assert_eq!(looks_sent(&app, |app| drop(let_go(app, ON_FIGURE, None, 1))), 1, "the picture: one look");
+    assert_eq!(picked(&app), Some((1, FIGURE)));
+    assert_eq!(
+        looks_sent(&app, |app| drop(let_go(app, OFF, None, 1))),
+        1,
+        "the margin: one look, as the walk can't say"
+    );
+    assert_eq!(picked(&app), None);
+}

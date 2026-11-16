@@ -726,11 +726,11 @@ impl RenderBackend for PdfiumBackend {
     }
 
     fn image_boxes(&mut self, page: u32) -> Result<Vec<[u16; 4]>, RenderError> {
-        self.image_places(page, ImagePlaces::default())
+        self.image_places(page, ImagePlaces::default()).map(ImagePlaces::into_places)
     }
 
-    fn image_boxes_for_a_click(&mut self, page: u32) -> Result<Vec<[u16; 4]>, RenderError> {
-        self.image_places(page, ImagePlaces::for_a_click())
+    fn image_boxes_for_a_click(&mut self, page: u32) -> Result<recto_proto::ClickPlaces, RenderError> {
+        self.image_places(page, ImagePlaces::for_a_click()).map(ImagePlaces::into_click_places)
     }
 
     fn page_text_until(&mut self, page: u32, options: TextOptions, cancel: &dyn Cancel) -> Result<PageChars, RenderError> {
@@ -818,7 +818,7 @@ impl RenderBackend for PdfiumBackend {
 impl PdfiumBackend {
     /// **Where a page's images are, by `places`' rule** (dark paper's, or a click's superset: `places.rs`): one walk over the page's objects, its forms
     /// included, that decodes nothing.
-    fn image_places(&mut self, page: u32, mut places: ImagePlaces) -> Result<Vec<[u16; 4]>, RenderError> {
+    fn image_places(&mut self, page: u32, mut places: ImagePlaces) -> Result<ImagePlaces, RenderError> {
         self.load_page(page)?;
         let Some(handle) = self.open_page_handle() else {
             return Err(FailCode::Internal);
@@ -881,7 +881,7 @@ impl PdfiumBackend {
         if cut_short {
             places.unplaced();
         }
-        Ok(places.into_places())
+        Ok(places)
     }
     /// The area of the open page that's shown, and how far it's turned. All zero if PDFium can't say, which leaves the page with nowhere to select.
     fn page_frame(&self) -> PageFrame {

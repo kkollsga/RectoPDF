@@ -793,8 +793,10 @@ fn a_page_with_more_images_than_an_answer_holds_is_refused() {
     assert_eq!(backend.image_boxes(1), Err(recto_render::FailCode::TooLarge), "65 places");
     // For a click (the reader's image picked with a click), the same page is the 64 held and one box round the rest; and a page dark paper is given
     // boxes for is given the same boxes.
-    let for_a_click = backend.image_boxes_for_a_click(1).expect("never too many for a click");
-    assert_eq!(for_a_click.len(), 65, "{for_a_click:?}");
+    let places = backend.image_boxes_for_a_click(1).expect("never too many for a click");
+    assert_eq!(places.boxes.len(), 64, "{places:?}");
+    let for_a_click: Vec<[u16; 4]> = places.boxes.into_iter().chain(places.beyond).collect();
+    assert_eq!(for_a_click.len(), 65, "and the box round the rest: {for_a_click:?}");
     // Page 1 is page 0's 64 places and one more: each of them is inside a box of the click's answer.
     let inside = |place: &[u16; 4]| {
         for_a_click
@@ -802,7 +804,11 @@ fn a_page_with_more_images_than_an_answer_holds_is_refused() {
             .any(|held| held[0] <= place[0] && held[1] <= place[1] && held[2] >= place[2] && held[3] >= place[3])
     };
     assert!(found.iter().all(inside), "a superset of the pictures: {for_a_click:?}");
-    assert_eq!(backend.image_boxes_for_a_click(3), backend.image_boxes(3), "64 in a row: as dark paper's");
+    assert_eq!(
+        backend.image_boxes_for_a_click(3).map(|places| (places.boxes, places.beyond)),
+        backend.image_boxes(3).map(|boxes| (boxes, None)),
+        "64 in a row: as dark paper's"
+    );
     assert_eq!(backend.image_boxes(2).map(|found| found.len()), Ok(64), "65 images in 64 places");
     assert_eq!(backend.image_boxes(3).map(|found| found.len()), Ok(64), "64 in a row: each as it is");
     assert_eq!(backend.image_boxes(4).map(|found| found.len()), Ok(1), "65 in a row: folded into one");

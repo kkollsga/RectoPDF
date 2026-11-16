@@ -116,14 +116,21 @@ fn every_decoder(payload: &[u8]) {
         };
         assert_eq!(decode_images_request(&again[HEADER_LEN..]), Ok((job_id, page, for_a_click)));
     }
-    if let Ok(images) = PageImages::decode_for_a_click(payload) {
-        assert!(images.boxes.len() <= MAX_CLICK_IMAGE_BOXES);
+    // A click's answer: at most 64 boxes and the one past them apart, every box the right way round, never also read as dark paper's.
+    if let Ok(images) = PageImagesForAClick::decode(payload) {
+        assert!(images.places.boxes.len() <= MAX_IMAGE_BOXES);
         assert!(
-            images.boxes.iter().all(|sides| sides[0] <= sides[2] && sides[1] <= sides[3]),
+            images
+                .places
+                .boxes
+                .iter()
+                .chain(&images.places.beyond)
+                .all(|sides| sides[0] <= sides[2] && sides[1] <= sides[3]),
             "{:?}",
-            images.boxes
+            images.places
         );
-        assert_eq!(PageImages::decode_for_a_click(&images.encode_for_a_click()[HEADER_LEN..]).as_ref(), Ok(&images));
+        assert!(PageImages::decode(payload).is_err(), "one answer read as both shapes");
+        assert_eq!(PageImagesForAClick::decode(&images.encode()[HEADER_LEN..]).as_ref(), Ok(&images));
     }
     if let Ok(images) = PageImages::decode(payload) {
         assert!(images.boxes.len() <= MAX_IMAGE_BOXES);

@@ -840,15 +840,17 @@ fn a_clicks_ask_for_a_crowded_page_leaves_dark_papers_answer_as_it_was() {
     let mut doc = renderer(&file.0, Policy::default());
     assert_eq!(doc.image_boxes(0, 0), None, "too many for dark paper");
     let for_a_click = doc.image_boxes_for_a_click(0, 0).expect("a click's superset");
-    assert_eq!(for_a_click.len(), recto_proto::MAX_CLICK_IMAGE_BOXES);
+    assert_eq!(for_a_click.boxes.len(), recto_proto::MAX_IMAGE_BOXES);
+    assert!(for_a_click.beyond.is_some(), "and the box round the rest");
     assert_eq!(doc.image_boxes(0, 0), None, "dark paper's answer as it was, after the click's");
     let mut fresh = renderer(&file.0, Policy::default());
-    assert_eq!(
-        fresh.image_boxes_for_a_click(0, 0).map(|boxes| boxes.len()),
-        Some(recto_proto::MAX_CLICK_IMAGE_BOXES)
-    );
+    assert_eq!(fresh.image_boxes_for_a_click(0, 0), Some(for_a_click));
     assert_eq!(fresh.image_boxes(0, 0), None, "and with the click's asked first");
-    assert_eq!(fresh.image_boxes_for_a_click(1, 0), Some(Vec::new()), "a page with none: none for a click");
+    assert_eq!(
+        fresh.image_boxes_for_a_click(1, 0),
+        Some(recto_proto::ClickPlaces::default()),
+        "a page with none: none for a click"
+    );
     assert_eq!(fresh.image_boxes(1, 0), Some(Vec::new()));
 }
 

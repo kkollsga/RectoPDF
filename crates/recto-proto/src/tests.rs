@@ -582,12 +582,14 @@ fn image_boxes_round_trip_and_refuse_a_bad_count() {
     );
 }
 
-/// Failure (the second review of `build/image-select`, rule 6 on both ends): dark paper's images request or its answer changes by a byte, so its pages
-/// are judged otherwise; a click's request is read as dark paper's, or a flag no build defines is taken; a click's answer of 65 boxes is refused, or dark
-/// paper's decode takes 65, so a worker answering dark paper with a click's shape isn't caught. Dark paper's request is its 8 bytes; a click's is 9 with
-/// the one flag; any other flag or length is refused; 65 boxes pass only as a click's answer.
+/// Failure (the second review of `build/image-select`, rule 6 on both ends; and the review of `build/scan-not-picked`, its second regression): dark
+/// paper's images request or its answer changes by a byte, so its pages are judged otherwise; a click's request is read as dark paper's, or a flag no build
+/// defines is taken; a click's answer loses its `beyond` box or gives it to the boxes, so "a picture may be anywhere" is read as a picture that is the
+/// page; or either answer is read as the other's, so a worker answering dark paper with a click's shape isn't caught. Dark paper's request is its 8 bytes;
+/// a click's is 9 with the one flag; any other flag or length is refused. A click's answer round-trips with its `beyond` and without, refuses a flag but 0
+/// and 1, a count past 64, and a byte more or less; dark paper's decode refuses it, and its own decode refuses dark paper's.
 #[test]
-fn an_images_request_for_a_click_is_one_flag_byte_and_its_answer_one_box_longer() {
+fn an_images_request_for_a_click_is_one_flag_byte_and_its_answer_carries_beyond_apart() {
     let dark = encode_images_request(7, 3);
     assert_eq!(&dark[HEADER_LEN..], &[7, 0, 0, 0, 3, 0, 0, 0], "dark paper's request, byte for byte");
     assert_eq!(decode_images_request(&dark[HEADER_LEN..]).unwrap(), (7, 3, false));
@@ -603,21 +605,74 @@ fn an_images_request_for_a_click_is_one_flag_byte_and_its_answer_one_box_longer(
         assert!(decode_images_request(bad).is_err(), "{bad:?}");
     }
     assert!(Kind::ImagesRequest.max_payload() as usize == SIZE_REQUEST_LEN + 1);
-    let longest = PageImages {
+    let longest = PageImagesForAClick {
         job_id: 4,
-        boxes: (0..MAX_CLICK_IMAGE_BOXES as u16).map(|at| [at, at, at + 1, at + 1]).collect(),
+        places: ClickPlaces {
+            boxes: (0..MAX_IMAGE_BOXES as u16).map(|at| [at, at, at + 1, at + 1]).collect(),
+            beyond: Some([0, 0, u16::MAX, u16::MAX]),
+        },
     };
-    let sent = longest.encode_for_a_click();
-    assert_eq!(PageImages::decode_for_a_click(&sent[HEADER_LEN..]).unwrap(), longest, "a click's 65 boxes");
-    assert!(PageImages::decode(&sent[HEADER_LEN..]).is_err(), "dark paper's answer of 65 is a violation");
+    let sent = longest.encode();
     assert_eq!(
-        PageImages::decode(&longest.encode()[HEADER_LEN..]).unwrap().boxes.len(),
-        MAX_IMAGE_BOXES,
-        "dark paper's is sent as ever"
+        sent.len() - HEADER_LEN,
+        Kind::Images.max_payload() as usize,
+        "the longest answer is the most a frame holds"
     );
-    let mut lying = sent[HEADER_LEN..].to_vec();
-    lying[4] = 66;
-    assert!(PageImages::decode_for_a_click(&lying).is_err(), "past a click's cap");
+    assert_eq!(PageImagesForAClick::decode(&sent[HEADER_LEN..]).unwrap(), longest, "64 boxes and beyond");
+    assert!(
+        PageImages::decode(&sent[HEADER_LEN..]).is_err(),
+        "a click's answer to dark paper is a violation"
+    );
+    let few = PageImagesForAClick {
+        job_id: 5,
+        places: ClickPlaces {
+            boxes: vec![[1, 2, 3, 4]],
+            beyond: Some([0, 0, u16::MAX, u16::MAX]),
+        },
+    };
+    let got = PageImagesForAClick::decode(&few.encode()[HEADER_LEN..]).unwrap();
+    assert_eq!(got.places.boxes, [[1, 2, 3, 4]], "beyond kept apart from the boxes on a page of fewer than 64");
+    assert_eq!(got.places.beyond, Some([0, 0, u16::MAX, u16::MAX]));
+    let none = PageImagesForAClick {
+        job_id: 6,
+        places: ClickPlaces::default(),
+    };
+    let sent_none = none.encode();
+    assert_eq!(&sent_none[HEADER_LEN..], &[6, 0, 0, 0, 0, 0, 0, 0, 0], "no boxes, no beyond");
+    assert_eq!(PageImagesForAClick::decode(&sent_none[HEADER_LEN..]).unwrap(), none);
+    let dark_answer = PageImages { job_id: 6, boxes: Vec::new() }.encode();
+    assert!(
+        PageImagesForAClick::decode(&dark_answer[HEADER_LEN..]).is_err(),
+        "dark paper's answer to a click is a violation"
+    );
+    let few_sent = few.encode()[HEADER_LEN..].to_vec();
+    let flag_at = 8 + IMAGE_BOX_LEN;
+    for (what, bad) in [
+        ("a flag that isn't defined", {
+            let mut bad = few_sent.clone();
+            bad[flag_at] = 2;
+            bad
+        }),
+        ("a flag that isn't defined, with nothing after", {
+            let mut bad = sent_none[HEADER_LEN..].to_vec();
+            bad[8] = 2;
+            bad
+        }),
+        ("a flag of none, with a box after", {
+            let mut bad = few_sent.clone();
+            bad[flag_at] = 0;
+            bad
+        }),
+        ("a byte more", [few_sent.as_slice(), &[0]].concat()),
+        ("a byte less", few_sent[..few_sent.len() - 1].to_vec()),
+        ("past the cap", {
+            let mut bad = sent[HEADER_LEN..].to_vec();
+            bad[4] = 65;
+            bad
+        }),
+    ] {
+        assert!(PageImagesForAClick::decode(&bad).is_err(), "{what}");
+    }
 }
 
 /// Failure (rule 6): a worker sends a box inside out, its left past its right or its top below its bottom, and the host takes it as it is, so whatever walks a page's boxes meets one that runs backwards (review of 2026-11-13: dark paper's walk along a row counted pixels more than once for such boxes). It's turned the right way round as it's decoded, so nothing after can see one.

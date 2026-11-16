@@ -144,14 +144,26 @@ pub fn proto_seeds() -> Vec<Vec<u8>> {
             boxes: vec![[0, 0, 65_535, 30_000], [50_000, 100, 1_000, 40_000]],
         }
         .encode(),
-        // A click's images request, dark paper's, and a click's answer of the most boxes it holds (`recto_proto::IMAGES_FOR_A_CLICK`).
+        // A click's images request, dark paper's, and a click's answers (`recto_proto::IMAGES_FOR_A_CLICK`): the most boxes it holds and the box past
+        // them, and one box with a whole page past it, a walk cut short.
         encode_images_request(1, 2),
         encode_images_request_for_a_click(1, 2),
-        PageImages {
+        PageImagesForAClick {
             job_id: 1,
-            boxes: (0..MAX_CLICK_IMAGE_BOXES as u16).map(|at| [at * 900, 100, at * 900 + 800, 40_000]).collect(),
+            places: ClickPlaces {
+                boxes: (0..MAX_IMAGE_BOXES as u16).map(|at| [at * 900, 100, at * 900 + 800, 40_000]).collect(),
+                beyond: Some([0, 50_000, 65_535, 60_000]),
+            },
         }
-        .encode_for_a_click(),
+        .encode(),
+        PageImagesForAClick {
+            job_id: 1,
+            places: ClickPlaces {
+                boxes: vec![[50_000, 100, 1_000, 40_000]],
+                beyond: Some([0, 0, 65_535, 65_535]),
+            },
+        }
+        .encode(),
         TextJob {
             job_id: 1,
             page: 2,
