@@ -5,8 +5,33 @@ use crate::menus::{MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
 
 /// The menu's and the panel's id for the tool.
 pub const TOGGLE_ID: &str = "tools.snapshot";
+/// The page's right-click item: the tool on for one capture (owner, 2026-11-16: "Right click menu should have a option \"Capture\" which will trigger a single capture, reverting to normal mode after").
+pub const CAPTURE_ID: &str = "tools.capture";
+/// Escape before that capture is taken. In no menu: the window's key sends it ([`plain_key`]).
+pub const CANCEL_ID: &str = "tools.capture_cancel";
+/// What Escape sends the host as a character.
+const ESCAPE: &str = "\u{1b}";
 /// The tool's name in the menu and the panel.
 pub const SNAPSHOT_TITLE: &str = "Snapshot";
+
+/// The right-click menu's Capture, after Copy and Select All.
+pub fn capture_entry() -> MenuEntry {
+    MenuEntry {
+        id: CAPTURE_ID.into(),
+        title: "Capture".into(),
+        key: String::new(),
+        with_control: false,
+        checked: false,
+        hidden: false,
+        system_action: String::new(),
+        parent: String::new(),
+    }
+}
+
+/// What Escape does with no text field having it: ends a capture asked for with Capture and not yet taken, and does nothing else (so the key goes on to whatever else wants it).
+pub fn plain_key(characters: &str, capture_armed: bool) -> Option<&'static str> {
+    (characters == ESCAPE && capture_armed).then_some(CANCEL_ID)
+}
 
 /// The tool's place in the menu bar: Tools, with Snapshot ticked while it's on. ⇧⌘A, as a key nothing else here takes, and the screenshot keys are the system's.
 pub fn tools_menu(snapshot_on: bool) -> MenuModel {
@@ -43,6 +68,16 @@ pub fn add_to_panel(panel: &mut PanelModel, snapshot_on: bool, edit_mode: bool) 
     if panel.open {
         let at = usize::from(edit_mode).min(panel.sections.len());
         panel.sections.insert(at, tools_section(snapshot_on));
+    }
+}
+
+/// What decides whether the tool's items can be chosen: the toggle and Escape's end always, Capture with a document open in the pane.
+pub fn enable_rule(id: &str) -> Option<crate::menus::Enable> {
+    use crate::menus::Enable;
+    match id {
+        TOGGLE_ID | CANCEL_ID => Some(Enable::Always),
+        CAPTURE_ID => Some(Enable::Document),
+        _ => None,
     }
 }
 

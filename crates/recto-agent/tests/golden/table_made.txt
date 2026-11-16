@@ -474,8 +474,8 @@ row 118 qa zoom-type: 5bdd295881146eac 602 bytes
 help qa zoom-type: 21db0fde50af5e72 364 bytes
 usage qa zoom-type: df3e80d76f885615 26 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
-row 119 qa context-menu: 74a7fec44cd1805d 596 bytes
-help qa context-menu: d0489bf4131d8a6e 355 bytes
+row 119 qa context-menu: 7da1fa2fe2c133f1 638 bytes
+help qa context-menu: 39237af9ed4dd8ae 397 bytes
 usage qa context-menu: 11db78e060c76b4a 29 bytes
 by tag qa_drive: bf5885d724bc81bf 13 bytes
 row 120 qa key-action: 31b240af1c946d1b 943 bytes
@@ -750,7 +750,7 @@ family update: 62ff714e1bcf66d6 626 bytes
 family settings: cbf29ce484222325 0 bytes
 family skill: 263c8540bc3d3bc9 284 bytes
 family budget: aec822ae884cf326 558 bytes
-family qa: b77b6ff269bfbc6a 12682 bytes
-help --json: 1f5ebab68ab7a101 134571 bytes
+family qa: 2ecb80f2861d848a 12724 bytes
+help --json: 2fb07340b43b6b7d 134613 bytes
 SKILL.md: 2220217f28215f41 25448 bytes
 REFERENCE.md: 55a9f62a686512a8 83515 bytes

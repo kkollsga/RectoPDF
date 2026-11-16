@@ -35,6 +35,9 @@ fn text_and_image() -> Vec<u8> {
     )
 }
 
+/// The width of the test pages, in points.
+const PAGE_WIDTH: f32 = 612.0;
+
 /// The box every case takes, on the page as the file shows it, in points from its top left: the line of text, and the image below it.
 const BOX: [f32; 4] = [40.0, 30.0, 300.0, 280.0];
 
@@ -665,4 +668,356 @@ fn a_paste_held_for_a_restore_and_dropped_by_a_freeze_leaves_the_next_paste_work
         "the next paste gets its SVG"
     );
     drop(app.quit());
+}
+
+/// **Failure (a guard put in before Capture, 2026-11-16): the tool turned on from the Tools menu stops staying on,** so a person taking several boxes in a
+/// row has to turn it on again for each. A box, a click on an image and a click on nothing in turn, each taken, and the tool is still on and drawing
+/// nothing after every one.
+#[test]
+fn the_tool_turned_on_from_the_menu_stays_on_after_each_capture() {
+    let disk = Disk::new();
+    let doc = disk.file("snapshot.pdf", &text_and_image());
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    tool_on(&app);
+    for (what, from, to) in [
+        ("a box", (BOX[0], BOX[1]), Some((BOX[0] + BOX[2], BOX[1] + BOX[3]))),
+        ("a click on an image", (120.0, 270.0), None),
+        ("a click on nothing", (400.0, 600.0), None),
+    ] {
+        mouse(&app, from, to);
+        let tool = app.core().tools.tool();
+        assert!(tool.is_on() && !tool.is_drawing(), "{what}: the tool is still on, and the box gone");
+    }
+}
+
+/// Chooses Capture from the page's right-click menu, as the window does: the one id, to the one executor.
+fn capture(app: &HeadlessApp) {
+    app.core().perform(snapshot_tool::CAPTURE_ID.into());
+    app.settle();
+}
+
+/// The tool as `qa state` reports it: on, and whether a box is being drawn.
+fn on_and_drawing(app: &HeadlessApp) -> (bool, bool) {
+    let tool = app.core().tools.tool();
+    (tool.is_on(), tool.is_drawing())
+}
+
+/// **Failure (owner, 2026-11-16: "Capture ... will trigger a single capture, reverting to normal mode after"): the tool stays on after a Capture's release,**
+/// so the next drag draws a box instead of selecting text; or it goes off without taking what the release took; or a second capture needs the tool turned on
+/// again though Capture was chosen. A box, a click on an image and a click on nothing each: Capture turns the tool on (the menu's tick, the crosshair and
+/// `qa state` all read this flag), one release takes what it takes as the person's snapshot and turns it off, and the next press is text selection's.
+#[test]
+fn capture_takes_one_release_and_the_tool_goes_off() {
+    let disk = Disk::new();
+    let doc = disk.file("snapshot.pdf", &text_and_image());
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    for (what, from, to, said) in [
+        (
+            "a box",
+            (BOX[0], BOX[1]),
+            Some((BOX[0] + BOX[2], BOX[1] + BOX[3])),
+            "\"Copied the snapshot as PNG, text, SVG and JPG.\" []",
+        ),
+        (
+            "a click on an image",
+            (120.0, 270.0),
+            None,
+            "\"Copied the image as its own JPEG, 4 × 4 pixels.\" []",
+        ),
+        (
+            "a click on nothing",
+            (400.0, 600.0),
+            None,
+            "\"There's no image there. Drag a box to take part of the page.\" []",
+        ),
+    ] {
+        assert!(!app.core().tools.tool().is_on(), "{what}: text selection to begin with");
+        capture(&app);
+        assert_eq!(on_and_drawing(&app), (true, false), "{what}: Capture turns the tool on");
+        assert!(
+            app.core()
+                .bar_now()
+                .iter()
+                .any(|menu| menu.entries.iter().any(|item| item.id == snapshot_tool::TOGGLE_ID && item.checked)),
+            "{what}: the Tools menu ticks it"
+        );
+        mouse(&app, from, to);
+        assert_eq!(on_and_drawing(&app), (false, false), "{what}: one release and it's off");
+        assert_eq!(notice(&app), said, "{what}: taken as the tool takes it");
+        assert!(
+            !app.core()
+                .bar_now()
+                .iter()
+                .any(|menu| menu.entries.iter().any(|item| item.id == snapshot_tool::TOGGLE_ID && item.checked)),
+            "{what}: unticked"
+        );
+        // The press as the bridge routes it (`selection_press`): the tool's if it's on, text selection's if not.
+        let inner = app.core();
+        let engine = inner.panes.reading_engine(&inner.engine);
+        let (x, y) = at(&app, 50.0, 40.0);
+        if inner.tools.tool().is_on() {
+            let _ = inner.tools.tool().press(&engine, 0, x, y);
+        } else {
+            drop(engine.selection().press(x, y, 1, false));
+        }
+        assert!(!inner.tools.tool().is_drawing(), "{what}: the next press is text selection's, not a box");
+    }
+}
+
+/// **Failure (owner, 2026-11-16): a capture refused for a copy-restricted file loses its "Copy anyway" because the tool has gone off,** or the refusal
+/// is dropped with the tool. Capture, a box on a file that asks not to be copied: the notice offers Copy anyway with the tool off, and it copies.
+#[test]
+fn copy_anyway_still_works_after_a_refused_capture() {
+    let disk = Disk::new();
+    let restricted = disk.file("restricted.pdf", &locked_allowing("", 1, lopdf::encryption::Permissions::PRINTABLE));
+    let app = disk.start();
+    app.open(&restricted);
+    app.settle();
+    capture(&app);
+    take_box(&app);
+    assert!(!app.core().tools.tool().is_on(), "the refused capture was the one");
+    assert_eq!(notice(&app), "\"This file's permissions ask that it isn't copied.\" [Copy anyway]");
+    let anyway = app
+        .core()
+        .tools
+        .tool()
+        .selection_notice()
+        .and_then(|notice| notice.action_id)
+        .expect("Copy anyway");
+    app.act(UiAction::Menu { id: anyway });
+    app.wait_until("the snapshot's job ended", || !app.core().tools.tool().busy());
+    app.settle();
+    assert_eq!(notice(&app), "\"Copied the snapshot as PNG, text, SVG and JPG.\" []");
+    assert!(!app.core().tools.tool().is_on(), "and still off");
+}
+
+/// **Failure (owner, 2026-11-16): Escape, or the tool's own toggle, doesn't end a Capture that wasn't taken,** leaving the tool on with no way back but
+/// taking something; or Escape turns off the tool the person turned on from the menu bar, which isn't a capture and stays until it's turned off; or a
+/// Capture chosen with the tool already on from the menu bar leaves it on after the release. Nothing is taken in any case but the last.
+#[test]
+fn escape_and_the_toggle_end_a_capture_and_the_menu_bars_tool_is_left_alone() {
+    let disk = Disk::new();
+    let doc = disk.file("snapshot.pdf", &text_and_image());
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    capture(&app);
+    app.core().perform(snapshot_tool::CANCEL_ID.into());
+    assert_eq!(on_and_drawing(&app), (false, false), "Escape ends it");
+    capture(&app);
+    app.core().perform(snapshot_tool::TOGGLE_ID.into());
+    assert!(!app.core().tools.tool().is_on(), "the toggle ends it, as it ends any tool that's on");
+    assert!(!app.core().tools.tool().is_once());
+    assert!(
+        app.core().tools.tool().selection_notice().is_none() && app.core().tools.tool().notice().is_none(),
+        "nothing was taken"
+    );
+    tool_on(&app);
+    app.core().perform(snapshot_tool::CANCEL_ID.into());
+    assert!(app.core().tools.tool().is_on(), "Escape leaves the menu bar's tool on");
+    capture(&app);
+    assert!(
+        app.core().tools.tool().is_on() && app.core().tools.tool().is_once(),
+        "Capture with the tool on leaves it on, one-shot"
+    );
+    take_box(&app);
+    assert!(!app.core().tools.tool().is_on(), "and the release ended it");
+}
+
+/// **Failure (owner, 2026-11-16): Escape is taken by the window with no capture to end, or isn't sent with one, or the keys the window already has stop working
+/// next to it,** so Escape stops doing what it does elsewhere, or can't end a capture, or "+" stops zooming. The key's id, as the bridge asks for it with
+/// the tool's real state, is Capture's end while one waits, and nothing otherwise; "+" is the zoom's either way.
+#[test]
+fn escape_is_the_windows_only_while_a_capture_waits() {
+    let disk = Disk::new();
+    let doc = disk.file("snapshot.pdf", &text_and_image());
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    let key = |characters: &str| crate::menus::plain_key_with(characters, app.core().tools.tool().is_once());
+    assert_eq!((key("\u{1b}"), key("+")), (None, Some("view.zoom_in")), "no capture waiting");
+    capture(&app);
+    assert_eq!(
+        (key("\u{1b}"), key("+"), key("a")),
+        (Some(snapshot_tool::CANCEL_ID), Some("view.zoom_in"), None),
+        "one waiting"
+    );
+    tool_on(&app);
+    app.core().perform(snapshot_tool::CANCEL_ID.into());
+    assert_eq!(key("\u{1b}"), None, "the menu bar's tool isn't a capture waiting");
+}
+
+/// **Failure (AGENTS.md: "An announcement is made when something changed, and only then"): the host is told again for a Capture that changed nothing, or an
+/// Escape with no capture to end, or never told the tool went off after the release,** so the Tools menu's tick and the crosshair stay as they were. On and
+/// off once each, and nothing for what changed nothing.
+#[test]
+fn the_host_is_told_when_a_capture_begins_and_ends_and_only_then() {
+    use crate::testkit::Heard;
+    let disk = Disk::new();
+    let doc = disk.file("snapshot.pdf", &text_and_image());
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    let told = |app: &HeadlessApp| app.listener().count(&Heard::ModelChanged);
+    let before = told(&app);
+    capture(&app);
+    assert_eq!(told(&app) - before, 1, "told it's on");
+    capture(&app);
+    assert_eq!(told(&app) - before, 1, "Capture again changed nothing");
+    app.core().perform(snapshot_tool::CANCEL_ID.into());
+    app.settle();
+    assert_eq!(told(&app) - before, 2, "told it's off");
+    app.core().perform(snapshot_tool::CANCEL_ID.into());
+    app.settle();
+    assert_eq!(told(&app) - before, 2, "Escape with nothing to end changed nothing");
+    capture(&app);
+    let armed = told(&app);
+    // A release that takes nothing and starts no job, so the only thing to tell the host is that the tool went off: pressed on the page's right edge and
+    // dragged past it, the box is held to the edge and has no width. (A click, even on nothing, starts a job whose "Copying…" tells the host by itself.)
+    let (inner, tool) = (app.core(), app.core().tools.tool());
+    let engine = inner.panes.reading_engine(&inner.engine);
+    let (x, y) = at(&app, PAGE_WIDTH, 100.0);
+    let _ = tool.press(&engine, 0, x, y);
+    assert!(tool.is_drawing(), "the press on the edge is the tool's");
+    let (x, y) = at(&app, PAGE_WIDTH + 80.0, 300.0);
+    let _ = tool.drag(&engine, 0, x, y);
+    let _ = tool.release(&engine, 0);
+    app.act(UiAction::SnapshotTaken);
+    app.settle();
+    assert!(!tool.is_on() && !tool.busy(), "off, with nothing taken");
+    assert_eq!(told(&app) - armed, 1, "told once that it's off, and nothing else was said");
+}
+
+/// **Failure (AGENTS.md: "Nothing an agent sends runs as the person"): Capture is run for an agent wider than the tool's own toggle,** at a level that can't
+/// turn the tool on, or as the person (a snapshot to the person's clipboard from an agent's id). An agent's run of Capture does at each level exactly what
+/// its run of `tools.snapshot` does.
+#[test]
+fn an_agents_capture_is_what_its_snapshot_toggle_is() {
+    let disk = Disk::new();
+    let doc = disk.file("snapshot.pdf", &text_and_image());
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    for level in [Level::ReadOnly, Level::Control, Level::Full] {
+        let run = |id: &str| {
+            let result = app
+                .core()
+                .host
+                .run_menu_id(recto_agent::Actor::Agent(level), app.core(), id, None, &mut Vec::new());
+            app.settle();
+            let outcome = (result.map(drop).map_err(|error| error.code.to_string()), app.core().tools.tool().is_on());
+            if app.core().tools.tool().is_on() {
+                app.core().perform(snapshot_tool::TOGGLE_ID.into());
+            }
+            outcome
+        };
+        let toggle = run(snapshot_tool::TOGGLE_ID);
+        assert_eq!(run(snapshot_tool::CAPTURE_ID), toggle, "{level:?}");
+        assert_eq!(
+            run(snapshot_tool::CANCEL_ID).0,
+            toggle.0,
+            "{level:?}: Escape's id is refused where the toggle is, and does nothing where it isn't"
+        );
+    }
+}
+
+/// **Failure (found by the review of Capture, 2026-11-16; there before it): in a comparison, a press in the other pane turns the snapshot tool off,** as the
+/// reading pane's change is read as another tab coming forward: nothing is taken, and the tool the person turned on from the menu bar goes off too. Two
+/// tabs side by side, the tool on (from the menu bar, and once from Capture), the other pane made the one read, a box taken in it: it's taken, and the
+/// menu bar's tool is still on while Capture's is off.
+#[test]
+fn a_press_in_the_other_pane_of_a_comparison_keeps_the_tool_on() {
+    for once in [false, true] {
+        let disk = Disk::new();
+        let (first, second) = (disk.file("one.pdf", &text_and_image()), disk.file("two.pdf", &text_and_image()));
+        let app = disk.start();
+        app.open(&first);
+        app.open(&second);
+        let (a, b) = (app.tabs()[0].tab, app.tabs()[1].tab);
+        let row = app.tabs().into_iter().find(|row| row.tab == a).expect("its row");
+        app.act(UiAction::Row { row, adding: true });
+        app.settle();
+        app.act(UiAction::PaneRead { tab: b });
+        app.settle();
+        if once {
+            capture(&app);
+        } else {
+            tool_on(&app);
+        }
+        app.act(UiAction::PaneRead { tab: a });
+        app.settle();
+        let what = if once { "Capture" } else { "the menu bar's tool" };
+        assert!(app.core().tools.tool().is_on(), "{what}: still on after the other pane is the one read");
+        take_box(&app);
+        assert_eq!(
+            notice(&app),
+            "\"Copied the snapshot as PNG, text, SVG and JPG.\" []",
+            "{what}: the box in the other pane is taken"
+        );
+        assert_eq!(
+            app.core().tools.tool().is_on(),
+            !once,
+            "{what}: Capture's goes off after its box, the menu bar's stays"
+        );
+    }
+}
+
+/// **Failure (the coordinator's read of the comparison fix, 2026-11-16): a tab that wasn't in the comparison comes to be read and the camera tool stays on over it,**
+/// against the owner's rule (2026-11-08) that text selection is the default when a document opens in a new tab. With a comparison up and the tool on (from
+/// the menu bar, and once from Capture): a new file opened, a tap on a third tab's row, and a ⌘-click putting a third tab in a pane each leave the tool off
+/// whenever the tab now read wasn't showing in one of the comparison's panes before.
+#[test]
+fn a_tab_not_in_the_comparison_coming_to_be_read_turns_the_tool_off() {
+    for case in ["a new file opened", "a tap on a third tab's row", "a third tab put in a pane"] {
+        for once in [false, true] {
+            let disk = Disk::new();
+            let files: Vec<_> = ["one.pdf", "two.pdf", "three.pdf", "four.pdf"]
+                .iter()
+                .map(|name| disk.file(name, &text_and_image()))
+                .collect();
+            let app = disk.start();
+            app.open(&files[0]);
+            app.open(&files[1]);
+            app.open(&files[2]);
+            let tabs: Vec<u32> = app.tabs().iter().map(|row| row.tab).collect();
+            let row = |tab: u32| app.tabs().into_iter().find(|row| row.tab == tab).expect("its row");
+            app.act(UiAction::Row {
+                row: row(tabs[0]),
+                adding: false,
+            });
+            app.settle();
+            app.act(UiAction::Row {
+                row: row(tabs[1]),
+                adding: true,
+            });
+            app.settle();
+            assert_eq!(app.core().panes.count(), 2, "{case}: a comparison of two is up");
+            if once {
+                capture(&app);
+            } else {
+                tool_on(&app);
+            }
+            match case {
+                "a new file opened" => app.open(&files[3]),
+                "a tap on a third tab's row" => drop(app.act(UiAction::Row {
+                    row: row(tabs[2]),
+                    adding: false,
+                })),
+                _ => drop(app.act(UiAction::Row {
+                    row: row(tabs[2]),
+                    adding: true,
+                })),
+            }
+            app.settle();
+            assert!(
+                !app.core().tools.tool().is_on(),
+                "{case}, {}: the tool is off over a tab that wasn't in the comparison",
+                if once { "Capture" } else { "the menu bar's tool" }
+            );
+        }
+    }
 }

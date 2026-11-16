@@ -2,3 +2,4 @@ snapshot.busy
 snapshot.drawing
 snapshot.notice
 snapshot.on
+snapshot.once

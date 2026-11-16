@@ -492,7 +492,7 @@ pub(crate) const ROWS: &[Spec] = &[
         tag: "qa_drive",
         group: GROUP_QA,
         access: Access::At(Level::Control),
-        summary: "Chooses an item of the page's right-click menu, through the menu item itself: the layouts, or Copy and Select All. `qa state`'s `context_menu` lists them.",
+        summary: "Chooses an item of the page's right-click menu, through the menu item itself: the layouts, Copy, Select All, or Capture (the snapshot tool for one capture). `qa state`'s `context_menu` lists them.",
         args: &[Arg {
             key: "value",
             flag: None,
