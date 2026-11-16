@@ -133,6 +133,11 @@ fn forget_places_of_a_replaced_file(doc: &mut DocRenderer) {
     }
 }
 
+/// **Reads a page's click places ahead of a click, while the tab's own worker has the page.** NAIVE FIRST VERSION (tests first).
+pub fn prefetch_click_places(doc: &mut DocRenderer, page: u32, generation: u64) -> bool {
+    doc.image_boxes_for_a_click(page, generation).is_some()
+}
+
 /// Asks `doc`'s worker where a page's images are, dark paper's way or a click's, its answer read by `decode`, the one for that request's shape, so a
 /// worker answering with the other's is a violation (a function of the renderer's, not one of its methods, which are many): `None` if `generation` went
 /// stale, which says nothing about the page.

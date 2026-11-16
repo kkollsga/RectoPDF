@@ -2,7 +2,7 @@
 
 pub mod contents;
 pub mod hidden;
-mod images;
+pub mod images;
 mod rest;
 mod slot;
 pub use rest::HeavyRest;

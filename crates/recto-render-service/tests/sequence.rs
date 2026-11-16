@@ -90,15 +90,30 @@ fn fake_worker() {
             }
             // Where the page's images are, the same at any limit: asking is a walk of its objects, with nothing drawn.
             Kind::ImagesRequest => {
-                let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
+                let (job_id, _, for_a_click) = proto::decode_images_request(&frame.payload).unwrap();
                 if mode == "low_res_walk_overruns" {
                     leak_for_ever();
                 }
-                proto::PageImages {
-                    job_id,
-                    boxes: vec![[0, 0, 32_768, 32_768]],
+                // Refused the first time asked, whoever asks, and answered after: a walk that failed for a moment.
+                if mode == "walk_refused_once" {
+                    let mark = std::env::var("RECTO_FAKE_MARK").unwrap();
+                    if !std::path::Path::new(&mark).exists() {
+                        std::fs::write(&mark, b"refused").unwrap();
+                        send_all(&channel, &proto::encode_failed(job_id, FailCode::Internal), &[]).unwrap();
+                        continue;
+                    }
                 }
-                .encode()
+                // Where the page's images are, the same at any limit: asking is a walk of its objects, with nothing drawn.
+                let boxes = vec![[0, 0, 32_768, 32_768]];
+                if for_a_click {
+                    proto::PageImagesForAClick {
+                        job_id,
+                        places: proto::ClickPlaces { boxes, beyond: None },
+                    }
+                    .encode()
+                } else {
+                    proto::PageImages { job_id, boxes }.encode()
+                }
             }
             Kind::TextRequest => {
                 let job = TextJob::decode(&frame.payload).unwrap();
@@ -1174,4 +1189,28 @@ fn a_worker_starts_with_the_allocator_setting_and_nothing_else() {
         classes.contains(&NORMAL) && classes.contains(&HEAVY),
         "expected a normal and a heavy start, saw limits {classes:?}"
     );
+}
+
+/// Failure (the independent read before 0.1.2, first finding): a walk for a click's places that fails in the background, as a worker killed while the Mac is busy, a crash, or a
+/// cap, is kept as "no picture there", so a click on a figure later, on an idle Mac, picks nothing until the file changes. A walk ahead of a click keeps only an answer; a failure
+/// keeps nothing, and the click asks as it would have without it. Seeded by the stand-in refusing the first walk it is asked.
+#[test]
+fn a_failed_prefetch_keeps_nothing_and_a_click_still_finds_the_figure() {
+    let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
+    let mark = file.0.with_file_name("walk-refused-once");
+    let _ = std::fs::remove_file(&mark);
+    let slot = HeavySlot::new();
+    let mut config = config("walk_refused_once", &slot);
+    config.extra_env.push(("RECTO_FAKE_MARK".into(), mark.to_str().unwrap().into()));
+    let mut doc = DocRenderer::new(&file.0, None, config, policy()).unwrap();
+    assert_eq!(
+        doc.largest_image_pixels(0, 0).unwrap(),
+        0,
+        "the first look, with a worker that then has the page"
+    );
+    let _ = recto_render_service::prefetch_click_places(&mut doc, 0, u64::MAX);
+    assert!(mark.exists(), "the prefetch's walk was the one refused");
+    let places = doc.image_boxes_for_a_click(0, 0).expect("a click asks again");
+    let _ = std::fs::remove_file(&mark);
+    assert_eq!(places.boxes.len(), 1, "the figure is there for a click: {places:?}");
 }

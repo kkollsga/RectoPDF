@@ -923,6 +923,47 @@ fn places_kept_of_a_file_are_not_served_once_another_app_has_rewritten_it() {
     assert!(doc.take_file_changed(), "and the renderer says the file changed, once");
 }
 
+/// A page with one picture on it, for a click's places.
+fn one_figure() -> Vec<u8> {
+    let image = recto_testpdf::first_extra_object(1);
+    recto_testpdf::pages_with(
+        &[Page::new(b"q 100 0 0 100 50 50 cm /Im0 Do Q\n".to_vec())],
+        &format!("/XObject << /Im0 {image} 0 R >>"),
+        vec![recto_testpdf::Object::Stream {
+            dict: "/Type /XObject /Subtype /Image /Width 4 /Height 4 /BitsPerComponent 8 /ColorSpace /DeviceGray".into(),
+            data: vec![90; 16],
+        }],
+    )
+}
+
+/// Failure (the same finding's second half): a prefetch starts a worker (after a crash, a retry in a new one, or when none is alive), so plain reading starts and ends workers it
+/// had no use for; or its kills count towards the 16 that stop dark paper's asking where pictures are, so scrolling on white paper ends that for the document. A prefetch with no
+/// worker starts none; one that kills the worker leaves none either; and 17 of its kills leave dark paper's ask as it was.
+#[test]
+fn a_prefetch_starts_no_worker_and_its_kills_leave_dark_papers_cap_alone() {
+    let file = TempPdf::new("figure.pdf", &one_figure());
+    let mut doc = renderer(&file.0, Policy::default());
+    assert!(
+        !recto_render_service::prefetch_click_places(&mut doc, 0, u64::MAX),
+        "no worker alive: nothing to ask"
+    );
+    assert_eq!(doc.worker_pid(), None, "and none started for it");
+    for round in 0..17 {
+        let _ = doc.largest_image_pixels(0, 0);
+        let pid = doc.worker_pid().expect("a worker that looked");
+        kill_process(pid);
+        wait_until("the worker to be gone", || recto_platform::isolate::process_memory(pid).is_none());
+        let _ = recto_render_service::prefetch_click_places(&mut doc, 0, u64::MAX);
+        assert_eq!(doc.worker_pid(), None, "round {round}: a failed prefetch left no worker, and started none");
+        doc.forget_failures();
+    }
+    assert_eq!(
+        doc.image_boxes(0, 0).map(|boxes| boxes.len()),
+        Some(1),
+        "dark paper still asks, after 17 prefetch kills"
+    );
+}
+
 /// **A measurement, not a check:** what a page's first look costs a worker, and what the click's walk costs on top, over the pages of real files (`RECTO_FIRST_LOOK_DIR`: a
 /// folder of PDFs; `RECTO_FIRST_LOOK_PAGES` pages of each, evenly spaced, 40 if not set). For each page, as the reader's first look at it is: `largest_image_pixels` (with the click's
 /// walk inside it where the code does that), then the click's walk alone (kept already where the first look did it). One line a file and the worst page, in microseconds.
