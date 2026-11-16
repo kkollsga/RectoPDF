@@ -183,6 +183,15 @@ fn measure(tabs: usize) {
             path: new.display().to_string(),
         });
     });
+    scrolls(&app, tabs);
+    events_for_watchers(&app, tabs, recto_session::TabId(a.tab));
+    live_zoom(&app, tabs);
+    drop(app.quit());
+}
+
+/// The person scrolling, in a file of its own with contents entries on its first page: the case that wakes the core each step, and ordinary reading.
+fn scrolls(app: &HeadlessApp, tabs: usize) {
+    let nothing = |_: &HeadlessApp| {};
     // The person scrolling down and up a page that has three contents entries on it, as a scroll the page view is told of: in the first case the top of the
     // view crosses an entry's place every step, so each wakes the core and the sidebar's mark moves, with the tabs open as before. The call is the UI
     // thread's part.
@@ -195,21 +204,18 @@ fn measure(tabs: usize) {
         let engine = inner.panes.reading_engine(&inner.engine);
         engine.points().document_point(0, 0.0, thousandths / 1000.0 * 800.0).map_or(0.0, |(_, y)| y)
     };
-    case(&app, "scroll crossing an entry", tabs, nothing, |app, first| {
+    case(app, "scroll crossing an entry", tabs, nothing, |app, first| {
         let to = place(if first { 100.0 } else { 400.0 });
         app.person_scrolls(to - at.get());
         at.set(to);
     });
     // Ordinary reading: the person scrolling within the stretch of the page where the same entry stays current (between 350 and 750), so no step leaves
     // the page view's band, nothing wakes the core, and only the page view's own work is timed.
-    case(&app, "scroll within an entry", tabs, nothing, |app, first| {
+    case(app, "scroll within an entry", tabs, nothing, |app, first| {
         let to = place(if first { 450.0 } else { 600.0 });
         app.person_scrolls(to - at.get());
         at.set(to);
     });
-    events_for_watchers(&app, tabs, recto_session::TabId(a.tab));
-    live_zoom(&app, tabs);
-    drop(app.quit());
 }
 
 /// One line of a zoom's table: the window's thread's own time a step, at p50, p99 and the worst, in microseconds, and how many times a step told the page
