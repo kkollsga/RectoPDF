@@ -1,0 +1,44 @@
+Analysis of sampling recto (pid 81994) every 1 millisecond
+Process:         recto [81994]
+Path:            /Volumes/VOLUME/*/recto
+Load Address:    0x1006d8000
+Identifier:      recto
+Version:         0
+Code Type:       ARM64
+Platform:        macOS
+Parent Process:  bash [81944]
+Target Type:     live task
+
+Date/Time:       2026-11-16 07:48:06.555 +0100
+Launch Time:     2026-11-16 07:48:06.500 +0100
+OS Version:      macOS 27.0.1 (26A434)
+Report Version:  7
+Analysis Tool:   /usr/bin/sample
+----
+
+Call graph:
+(call graph left out: the lines naming lopdf and pread, then the top of stack)
+1 _RNvMs0_NtNtCseShcq0r4Xgu_5lopdf14indexed_reader4openNtB7_13IndexedReader18from_erased_source  (in recto) + 11536  [0x1008243ec]  open.rs:1021
+1 _RNvMs2_NtNtCseShcq0r4Xgu_5lopdf14indexed_reader8page_mapNtB5_7PageMap26walk_with_container_budget  (in recto) + 2144  [0x100838a94]  page_map.rs:196
+1 _RNvMs3_NtNtCseShcq0r4Xgu_5lopdf14indexed_reader7resolveNtB7_13IndexedReader21resolve_normal_framed  (in recto) + 520  [0x1008285b8]  resolve.rs:1740
+1 _RNvMs3_NtNtCseShcq0r4Xgu_5lopdf14indexed_reader7resolveNtB7_13IndexedReader21resolve_normal_framed  (in recto) + 84  [0x100828404]  resolve.rs:1726
+1 _RNvMs3_NtNtCseShcq0r4Xgu_5lopdf14indexed_reader7resolveNtB7_13IndexedReader22resolve_object_reusing  (in recto) + 292  [0x100839e88]  resolve.rs:1405
+1 _RNvMs4_NtNtCseShcq0r4Xgu_5lopdf14indexed_reader7resolveNtB7_13IndexedReader18resolve_body_frame  (in recto) + 3316  [0x10082a0e4]  resolve.rs:1787
+1 _RNvMs4_NtNtCseShcq0r4Xgu_5lopdf14indexed_reader7resolveNtB7_13IndexedReader18resolve_body_frame  (in recto) + 656  [0x100829680]  resolve.rs:1787
+111 _RNvMs4_NtNtCseShcq0r4Xgu_5lopdf14indexed_reader7resolveNtB7_13IndexedReader18resolve_body_frame  (in recto) + 144  [0x100829480]  resolve.rs:1784
+111 pread  (in libsystem_kernel.dylib) + 8  [0x199f1a648]
+115 _RNvMs3_NtNtCseShcq0r4Xgu_5lopdf14indexed_reader7resolveNtB7_13IndexedReader21resolve_normal_framed  (in recto) + 672  [0x100828650]  resolve.rs:1768
+14 _RNvMs3_NtNtCseShcq0r4Xgu_5lopdf14indexed_reader7resolveNtB7_13IndexedReader21resolve_normal_framed  (in recto) + 672  [0x100828650]  resolve.rs:1768
+2 _RNvMs2_NtNtCseShcq0r4Xgu_5lopdf14indexed_reader8page_mapNtB5_7PageMap26walk_with_container_budget  (in recto) + 2216  [0x100838adc]  page_map.rs:196
+21 _RNvMs3_NtNtCseShcq0r4Xgu_5lopdf14indexed_reader7resolveNtB7_13IndexedReader14resolve_normal  (in recto) + 52  [0x1008270f8]  resolve.rs:1705
+21 _RNvMs3_NtNtCseShcq0r4Xgu_5lopdf14indexed_reader7resolveNtB7_13IndexedReader20resolve_normal_plain  (in recto) + 56  [0x100828044]  resolve.rs:1718
+21 _RNvMs3_NtNtCseShcq0r4Xgu_5lopdf14indexed_reader7resolveNtB7_13IndexedReader22resolve_object_reusing  (in recto) + 368  [0x100839ed4]  resolve.rs:1405
+22 _RNvMs2_NtNtCseShcq0r4Xgu_5lopdf14indexed_reader8page_mapNtB5_7PageMap26walk_with_container_budget  (in recto) + 1836  [0x100838960]  page_map.rs:196
+22 _RNvMs5_NtNtCseShcq0r4Xgu_5lopdf14indexed_reader8page_mapNtB7_13IndexedReader24resolve_dictionary_deref  (in recto) + 52  [0x100838fe8]  page_map.rs:330
+24 _RNvMs4_NtNtCseShcq0r4Xgu_5lopdf14indexed_reader8page_mapNtB7_13IndexedReader8page_map  (in recto) + 248  [0x100837d58]  page_map.rs:296
+3 _RNvMs4_NtNtCseShcq0r4Xgu_5lopdf14indexed_reader7resolveNtB7_13IndexedReader18resolve_body_frame  (in recto) + 3492  [0x10082a194]  resolve.rs:1795
+3 pread  (in libsystem_kernel.dylib) + 8,4  [0x199f1a648,0x199f1a644]
+Sort by top of stack, same collapsed (when >= 5):
+        pread  (in libsystem_kernel.dylib)        745
+        fstat  (in libsystem_kernel.dylib)        5
+

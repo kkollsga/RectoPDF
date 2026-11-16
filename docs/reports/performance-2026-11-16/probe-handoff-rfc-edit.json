@@ -1,0 +1,134 @@
+[
+ {
+  "drawn_ms": 264.37700000000007,
+  "drawn_and_still_ms": 468.1302089999999,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 168.869708,
+  "wait_settled": [
+   {
+    "at_ms": 481,
+    "settled": {
+     "animations_waited_ms": 0,
+     "settled": true,
+     "waited_ms": 0
+    }
+   }
+  ],
+  "answering_ms": 155.0720000000001,
+  "edit": true,
+  "handoff": true,
+  "pages": 194,
+  "memory": {
+   "compressed_bytes": 0,
+   "disk_bytes_written": 0,
+   "footprint_bytes": 27886528,
+   "heap_bytes": 8972848,
+   "open_handles": 21,
+   "threads": 19,
+   "tree_bytes": 38635128,
+   "worker_bytes": 10748600,
+   "worker_peak_bytes": 10748600,
+   "workers": 1,
+   "workers_walled": 1
+  },
+  "last_wake": {
+   "blank_frames": 0,
+   "ended": "sharp",
+   "first_frame_us": 130171,
+   "from_sleep": true,
+   "had": "facts",
+   "sharp_us": 138584,
+   "tab": 1
+  }
+ },
+ {
+  "drawn_ms": 467.907458,
+  "drawn_and_still_ms": 551.1887499999997,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 361.387584,
+  "wait_settled": [
+   {
+    "at_ms": 564,
+    "settled": {
+     "animations_waited_ms": 0,
+     "settled": true,
+     "waited_ms": 0
+    }
+   }
+  ],
+  "answering_ms": 229.55058299999996,
+  "edit": true,
+  "handoff": true,
+  "pages": 194,
+  "memory": {
+   "compressed_bytes": 0,
+   "disk_bytes_written": 0,
+   "footprint_bytes": 27968472,
+   "heap_bytes": 8990048,
+   "open_handles": 21,
+   "threads": 21,
+   "tree_bytes": 39110288,
+   "worker_bytes": 11141816,
+   "worker_peak_bytes": 11141816,
+   "workers": 1,
+   "workers_walled": 1
+  },
+  "last_wake": {
+   "blank_frames": 0,
+   "ended": "sharp",
+   "first_frame_us": 300053,
+   "from_sleep": true,
+   "had": "facts",
+   "sharp_us": 332499,
+   "tab": 1
+  }
+ },
+ {
+  "drawn_ms": 489.01166700000067,
+  "drawn_and_still_ms": 577.2163340000001,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 374.28441699999996,
+  "wait_settled": [
+   {
+    "at_ms": 591,
+    "settled": {
+     "animations_waited_ms": 0,
+     "settled": true,
+     "waited_ms": 0
+    }
+   }
+  ],
+  "answering_ms": 214.41787499999964,
+  "edit": true,
+  "handoff": true,
+  "pages": 194,
+  "memory": {
+   "compressed_bytes": 0,
+   "disk_bytes_written": 0,
+   "footprint_bytes": 28148672,
+   "heap_bytes": 8988464,
+   "open_handles": 21,
+   "threads": 21,
+   "tree_bytes": 39093880,
+   "worker_bytes": 10945208,
+   "worker_peak_bytes": 10945208,
+   "workers": 1,
+   "workers_walled": 1
+  },
+  "last_wake": {
+   "blank_frames": 0,
+   "ended": "sharp",
+   "first_frame_us": 316645,
+   "from_sleep": true,
+   "had": "facts",
+   "sharp_us": 338581,
+   "tab": 1
+  }
+ }
+]

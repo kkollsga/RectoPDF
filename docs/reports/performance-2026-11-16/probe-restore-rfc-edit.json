@@ -1,0 +1,101 @@
+[
+ {
+  "drawn_ms": 257.55799999999994,
+  "drawn_and_still_ms": 440.61570900000027,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 153.722958,
+  "answering_ms": 146.5574169999999,
+  "edit": true,
+  "pages": 194,
+  "memory": {
+   "compressed_bytes": 0,
+   "disk_bytes_written": 0,
+   "footprint_bytes": 29639640,
+   "heap_bytes": 8966656,
+   "open_handles": 21,
+   "threads": 19,
+   "tree_bytes": 40568464,
+   "worker_bytes": 10928824,
+   "worker_peak_bytes": 10928824,
+   "workers": 1,
+   "workers_walled": 1
+  },
+  "last_wake": {
+   "blank_frames": 0,
+   "ended": "sharp",
+   "first_frame_us": 133486,
+   "from_sleep": true,
+   "had": "facts",
+   "sharp_us": 143314,
+   "tab": 1
+  }
+ },
+ {
+  "drawn_ms": 289.25520800000015,
+  "drawn_and_still_ms": 482.58487499999967,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 171.324833,
+  "answering_ms": 182.40374999999975,
+  "edit": true,
+  "pages": 194,
+  "memory": {
+   "compressed_bytes": 0,
+   "disk_bytes_written": 0,
+   "footprint_bytes": 27886552,
+   "heap_bytes": 8975040,
+   "open_handles": 21,
+   "threads": 19,
+   "tree_bytes": 38602384,
+   "worker_bytes": 10715832,
+   "worker_peak_bytes": 10715832,
+   "workers": 1,
+   "workers_walled": 1
+  },
+  "last_wake": {
+   "blank_frames": 0,
+   "ended": "sharp",
+   "first_frame_us": 126667,
+   "from_sleep": true,
+   "had": "facts",
+   "sharp_us": 135521,
+   "tab": 1
+  }
+ },
+ {
+  "drawn_ms": 264.7607910000005,
+  "drawn_and_still_ms": 462.5825830000014,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 170.11200000000002,
+  "answering_ms": 164.41195800000054,
+  "edit": true,
+  "pages": 194,
+  "memory": {
+   "compressed_bytes": 0,
+   "disk_bytes_written": 0,
+   "footprint_bytes": 27968472,
+   "heap_bytes": 8977104,
+   "open_handles": 21,
+   "threads": 19,
+   "tree_bytes": 39011960,
+   "worker_bytes": 11043488,
+   "worker_peak_bytes": 11043488,
+   "workers": 1,
+   "workers_walled": 1
+  },
+  "last_wake": {
+   "blank_frames": 0,
+   "ended": "sharp",
+   "first_frame_us": 125588,
+   "from_sleep": true,
+   "had": "facts",
+   "sharp_us": 134525,
+   "tab": 1
+  }
+ }
+]

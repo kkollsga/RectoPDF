@@ -1,0 +1,52 @@
+[
+ {
+  "drawn_ms": 43.56204200000002,
+  "drawn_and_still_ms": 287.57458299999996,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 75.969458,
+  "command_answered_ms": 25.38545800000003,
+  "tabs_open": 2
+ },
+ {
+  "drawn_ms": 30.087667000000096,
+  "drawn_and_still_ms": 287.159959,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 75.969458,
+  "command_answered_ms": 15.281459000000108,
+  "tabs_open": 2
+ },
+ {
+  "drawn_ms": 43.67704100000003,
+  "drawn_and_still_ms": 296.179666,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 75.969458,
+  "command_answered_ms": 25.25637500000011,
+  "tabs_open": 2
+ },
+ {
+  "drawn_ms": 14.512417000000166,
+  "drawn_and_still_ms": 297.35666699999985,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 75.969458,
+  "command_answered_ms": 7.0244590000001494,
+  "tabs_open": 2
+ },
+ {
+  "drawn_ms": 31.310958000000166,
+  "drawn_and_still_ms": 313.6529160000001,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 75.969458,
+  "command_answered_ms": 16.16570800000039,
+  "tabs_open": 2
+ }
+]
