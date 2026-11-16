@@ -900,7 +900,7 @@ fn places_kept_of_a_file_are_not_served_once_another_app_has_rewritten_it() {
     let picture = |size: u32| {
         let image = recto_testpdf::first_extra_object(1);
         recto_testpdf::pages_with(
-            &[Page::new(format!("q 100 0 0 100 50 50 cm /Im0 Do Q\n").into_bytes())],
+            &[Page::new(b"q 100 0 0 100 50 50 cm /Im0 Do Q\n".to_vec())],
             &format!("/XObject << /Im0 {image} 0 R >>"),
             vec![recto_testpdf::Object::Stream {
                 dict: format!("/Type /XObject /Subtype /Image /Width {size} /Height {size} /BitsPerComponent 8 /ColorSpace /DeviceGray"),
