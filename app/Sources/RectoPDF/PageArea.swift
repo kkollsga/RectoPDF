@@ -25,7 +25,6 @@ final class PageDocumentView: NSView {
             if let menu = menu(for: event) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
             return
         }
-        pointer?.takeKeyboardFromSidebar()
         pointer?.pointerDown(atWindow: event.locationInWindow, clicks: event.clickCount, shift: event.modifierFlags.contains(.shift))
     }
 
@@ -422,6 +421,7 @@ final class CenteringClipView: NSClipView {
 
     /// What a press does, whoever made it: the mouse, or QA by the same window coordinates.
     func pointerDown(atWindow place: NSPoint, clicks: Int, shift: Bool) {
+        takeKeyboardFromSidebar()
         measured {
             let point = documentView.convert(place, from: nil)
             dragInWindow = place
