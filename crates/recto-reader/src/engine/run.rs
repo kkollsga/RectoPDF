@@ -332,23 +332,47 @@ fn rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Pol
     }
 }
 
-/// **A worker holding more than `Policy::heavy_rest` (48 MiB, its own line, not the retirement line: that one is 64 and is about what a worker may keep between pages in use), which only goes when it does, is let go once nothing's been done for the person for as long as a heavy worker's idle rule** (`Policy::heavy_rest`, 3 s), for the same reason: long enough to bridge a pause in scrolling, and then a heavy page at rest doesn't hold hundreds of megabytes for the 30 s of the idle rule. Looked at when there's nothing to do, and between the jobs for a tab off screen's place, which aren't the person's. Says how long is left, zero when they've just been let go, or `None` when there's none.
+/// **A worker holding a lot, which only goes when it does, is let go once nothing has been done for the person for a while that depends on how much** ([`Policy::heavy_rest`]):
+/// over the retirement line (64 MiB) after `after` (3 s), and over `over_bytes` (48 MiB) but not over that after `gently_after` (12 s), as a heavy page at rest doesn't hold
+/// hundreds of megabytes for the 30 s of the idle rule. The gentler wait is because a worker between the two lines is a page that a person reads on from: the turn after a rest
+/// costs a new worker, an open and a page load (265 ms against 51 on the shaded NASA page, measured 2026-11-16), so it isn't let go in an ordinary pause. Looked at only when this
+/// thread is about to rest with nothing to do ([`rest`], and so also while a surface is waited for): drawing for a tab off screen's place isn't a rest and doesn't look.
+/// Says how long is left to the next one, zero when some have just been let go (the loop publishes that before it rests again), or `None` when no worker is that big.
 fn big_workers_rest(renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Policy, resting_since: &mut Option<Instant>) -> Option<Duration> {
-    let big = |open: &mut OpenDoc| open.doc.worker_footprint().is_some_and(|footprint| footprint > policy.heavy_rest.over_bytes);
-    if !renderers.values_mut().any(&big) {
+    let rule = policy.heavy_rest;
+    let waits: Vec<(PathBuf, Duration)> = renderers
+        .iter_mut()
+        .filter_map(|(path, open)| {
+            let footprint = open.doc.worker_footprint()?;
+            let wait = if footprint > policy.retire_bytes {
+                rule.after
+            } else if footprint > rule.over_bytes {
+                rule.gently_after
+            } else {
+                return None;
+            };
+            Some((path.clone(), wait))
+        })
+        .collect();
+    if waits.is_empty() {
         *resting_since = None;
         return None;
     }
-    let left = policy.heavy_rest.after.saturating_sub(resting_since.get_or_insert_with(Instant::now).elapsed());
-    if left.is_zero() {
-        for open in renderers.values_mut() {
-            if big(open) {
-                open.doc.kill_worker();
+    let rested = resting_since.get_or_insert_with(Instant::now).elapsed();
+    let mut next: Option<Duration> = None;
+    let mut let_go = false;
+    for (path, wait) in waits {
+        match wait.checked_sub(rested).filter(|left| !left.is_zero()) {
+            Some(left) => next = Some(next.map_or(left, |soonest| soonest.min(left))),
+            None => {
+                if let Some(open) = renderers.get_mut(&path) {
+                    open.doc.kill_worker();
+                    let_go = true;
+                }
             }
         }
-        *resting_since = None;
     }
-    Some(left)
+    Some(if let_go { Duration::ZERO } else { next.unwrap_or_default() })
 }
 
 /// A page's links, read from the file's structure, here and with no worker.

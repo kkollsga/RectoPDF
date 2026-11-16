@@ -499,41 +499,59 @@ fn settled_with(file: &TempPdf, policy: recto_render_service::Policy) -> (Engine
 }
 
 /// Failure: a page at rest holds its worker's memory for the 30 s of the idle rule when it could have gone once the reader had paused (2026-11-16: the shaded NASA page's worker
-/// rested at 54 MiB for 30 s under a line of 64 that was the retirement line, where the map's was let go in 3 s). The worker is judged by [`Policy::heavy_rest`] and no other number:
-/// one over it goes by itself, with nobody calling and the page still on screen, and one under it stays, as it is what makes the next page fast. The line is the test's own, from
-/// what the worker really holds here, so nothing depends on how big a page's worker is on this machine.
+/// rested at 54 MiB for 30 s under a line of 64, where the map's was let go in 3 s); or, the other way, a worker between the lines is let go in any pause of 3 s while it's read, and
+/// each turn after costs a new worker (265 ms against 51 on that page). A worker over the retirement line goes at `after`; one over `over_bytes` and under it at `gently_after`,
+/// not before; one under `over_bytes` stays. Each by itself, with nobody calling and the page still on screen. The lines are the test's own, from what the worker really holds
+/// here, so nothing depends on how big a page's worker is on this machine.
 #[test]
-fn a_worker_is_let_go_at_rest_over_the_rest_line_and_kept_under_it() {
+fn a_worker_is_let_go_at_rest_by_how_much_it_holds_and_kept_under_the_line() {
     let file = document(1);
-    let policy = |rest_bytes| recto_render_service::Policy {
+    let gently = Duration::from_millis(1500);
+    let policy = |over_bytes: u64, retire_bytes: u64| recto_render_service::Policy {
+        retire_bytes,
         heavy_rest: recto_render_service::HeavyRest {
-            over_bytes: rest_bytes,
+            over_bytes,
             after: Duration::from_millis(300),
+            gently_after: gently,
         },
-        // The retirement line at its default must have no say at rest: the worker is far under 64 MiB.
-        // The ordinary idle rule can't be what lets the worker go inside the bound below.
+        // The ordinary idle rule can't be what lets the worker go inside the bounds below.
         idle_exit: Duration::from_secs(600),
         ..recto_render_service::Policy::default()
     };
-    let (probe, held) = settled_with(&file, policy(u64::MAX));
+    let gone_after = |engine: &Engine, since: Instant| {
+        let deadline = since + Duration::from_secs(20);
+        while engine.workers().footprint().0 > 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
+        }
+        assert_eq!(engine.workers().footprint().0, 0, "a worker over the rest line should have gone by now");
+        assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1, "the page stays on screen");
+        since.elapsed()
+    };
+    let (probe, held) = settled_with(&file, policy(u64::MAX, u64::MAX));
     assert!(
         held > 0 && held < recto_render_service::Policy::default().retire_bytes,
         "a text page's worker is small: {held}"
     );
     probe.shut_down();
 
-    let (over, _) = settled_with(&file, policy(held / 2));
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while over.workers().footprint().0 > 0 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50)); // ratchet: poll
-    }
-    assert_eq!(over.workers().footprint().0, 0, "a worker over the rest line should have gone by now");
-    assert!(over.report().0["tiles"]["attached"].as_u64().unwrap() >= 1, "the page stays on screen");
-    over.shut_down();
+    // Over the retirement line: at `after`, well before the gentle time.
+    let (heavy, _) = settled_with(&file, policy(held / 4, held / 2));
+    let since = Instant::now();
+    let took = gone_after(&heavy, since);
+    assert!(took < gently, "a worker over the retirement line waited the gentle time: {took:?}");
+    heavy.shut_down();
 
-    // Under the line: kept past several times the time a worker over it goes in.
-    let (under, _) = settled_with(&file, policy(held * 2));
-    let until = Instant::now() + Duration::from_millis(1500);
+    // Between the lines: not at `after`, only at `gently_after`.
+    let (between, _) = settled_with(&file, policy(held / 2, held * 4));
+    let since = Instant::now();
+    let took = gone_after(&between, since);
+    // The rest began a little before this clock did, so the bound is half the gentle time: still well past `after`.
+    assert!(took >= gently / 2, "a worker between the lines went at {took:?}, before the gentle time");
+    between.shut_down();
+
+    // Under the line: kept past the gentle time.
+    let (under, _) = settled_with(&file, policy(held * 2, held * 4));
+    let until = Instant::now() + gently * 2;
     while Instant::now() < until {
         assert!(under.workers().footprint().0 > 0, "a worker under the rest line was let go");
         std::thread::sleep(Duration::from_millis(50)); // ratchet: poll

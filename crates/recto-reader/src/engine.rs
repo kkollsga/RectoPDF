@@ -1716,7 +1716,10 @@ mod tests {
             heavy_rest: recto_render_service::HeavyRest {
                 over_bytes: 1,
                 after: Duration::from_millis(300),
+                gently_after: Duration::from_secs(60),
             },
+            // Over both lines, so it's `after` that counts.
+            retire_bytes: 1,
             ..recto_render_service::Policy::default()
         };
         let engine = waiting_for_a_surface(&file, Some(policy), Duration::from_secs(60));

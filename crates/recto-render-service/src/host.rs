@@ -70,12 +70,15 @@ impl<'a> From<&'a PixelSurface> for Target<'a> {
     }
 }
 
-/// **When a worker is let go at rest:** a worker past `over_bytes` leaves once nothing has been done for `after`, where any other waits the 30 s of [`Policy::idle_exit`]. It is not
-/// [`Policy::retire_bytes`]: that line decides what a worker may hold *between pages while it is being used*, and a worker let go there costs a restart per page.
+/// **When a worker is let go at rest,** where any other waits the 30 s of [`Policy::idle_exit`]: one past [`Policy::retire_bytes`] leaves once nothing has been done for `after`, and
+/// one past `over_bytes` but not that, a page that a person reads on from, only after `gently_after`: a turn after a pause costs a new worker, an open and a page load, which on the
+/// shaded NASA page (p175, resting at 54 MiB) is 265 ms against 51 with the worker kept (2026-11-16). `over_bytes` is not `retire_bytes`: that line decides what a worker may
+/// hold *between pages while it is being used*, and a worker let go there costs a restart per page.
 #[derive(Clone, Copy, Debug)]
 pub struct HeavyRest {
     pub over_bytes: u64,
     pub after: Duration,
+    pub gently_after: Duration,
 }
 
 /// What a worker may do. Defaults are the decisions from the spike; see `docs/engineering/crates/recto-render-service.md`.
@@ -143,6 +146,8 @@ impl Default for Policy {
             heavy_rest: HeavyRest {
                 over_bytes: 48 * 1024 * 1024,
                 after: Duration::from_secs(3),
+                // Between 48 and 64 MiB a worker is let go only after a pause that is not a reader's: 12 s, over a turn costing 265 ms against 51 (shaded p175 and p178, 5 runs each).
+                gently_after: Duration::from_secs(12),
             },
             max_heavy_retries: 8,
             max_kills_per_document: 128,
