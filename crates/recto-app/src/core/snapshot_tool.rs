@@ -264,11 +264,6 @@ impl Tool {
         ended
     }
 
-    /// **The id a key does with nothing held** ([`crate::menus::plain_key`]), Escape's being the end of a Capture not yet taken. Asked on every key, so it takes only this tool's own lock.
-    pub fn plain_key(&self, characters: &str) -> Option<&'static str> {
-        crate::snapshot_menu::plain_key(characters, self.is_once()).or_else(|| crate::menus::plain_key(characters))
-    }
-
     /// Whether the tool is on for one capture, which Escape ends.
     pub fn is_once(&self) -> bool {
         lock(&self.state).is_once()
@@ -577,14 +572,14 @@ pub(super) fn taken(inner: &Arc<Inner>) {
     }
 }
 
-/// Another tab came to the front, a new one included: text selection is the default there, so the tool goes off (owner, 2026-11-08: "Text selection should be the default tool (not camera tool), enable camera tool via hotkey or sidebar menu"). It's off at every launch too, as it's never kept. Only its menu item, its key and the panel's button turn it on.
+/// Another tab came to the front, a new one included: text selection is the default there, so the tool goes off (owner, 2026-11-08: "Text selection should be the default tool (not camera tool), enable camera tool via hotkey or sidebar menu"). It's off at every launch too, as it's never kept. Its menu item, its key, the panel's button and the page's Capture turn it on, and that is all that does.
 pub fn tab_came_forward(inner: &super::Inner) {
     if inner.tools.tool().is_on() {
         inner.tools.tool().toggle();
     }
 }
 
-/// **The snapshot tool's menu ids** ([`super::menu_rows`]), all the window's alone: toggling the tool, and a notice's "Copy anyway", which takes again only
+/// **The snapshot tool's menu ids** ([`super::menu_rows`]), all the window's alone: toggling the tool, Capture (on for one capture) and Escape's end of it, and a notice's "Copy anyway", which takes again only
 /// what that notice refused.
 pub fn row<'a>(parts: &super::row_parts::RowParts<'a>, asked: &super::menu_rows::Asked<'_>) -> Option<super::menu_rows::Row<'a>> {
     use super::menu_rows::Row;
