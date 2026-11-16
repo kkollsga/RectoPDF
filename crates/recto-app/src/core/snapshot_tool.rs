@@ -179,16 +179,24 @@ struct JobSlot {
     running: Option<Running>,
     waiting: Option<Job>,
     looking: Option<Look>,
+    /// The look a snapshot stopped, which runs again after it: its stopped answer says nothing of its click.
+    again: Option<Look>,
     made: Option<Clip>,
     taken: Option<Job>,
 }
 
 impl JobSlot {
     /// A new snapshot. With nothing running, it's to start now, with this stop. Otherwise what runs is stopped, a snapshot or a look, and this waits in
-    /// its place, replacing any snapshot that was waiting.
+    /// its place, replacing any snapshot that was waiting. A look it stops waits behind it to run again, unless a newer look waits already.
     fn offer(&mut self, job: Job) -> Option<(Job, ClipStop)> {
         if let Some(running) = &self.running {
             running.stop();
+            if let Running::Look(look, _) = running
+                && self.looking.is_none()
+            {
+                self.looking = Some(*look);
+                self.again = Some(*look);
+            }
             self.waiting = Some(job);
             return None;
         }
@@ -248,12 +256,14 @@ impl JobSlot {
         }
     }
 
-    /// The running job is the look for this click (its tab and point): taken off, as its answer is in.
-    fn take_look(&mut self, asked: (u32, recto_index::select::PagePoint)) -> Option<Look> {
-        match &self.running {
-            Some(Running::Look(look, _)) if (look.tab, look.point) == asked => Some(*look),
-            _ => None,
-        }
+    /// The running job is the look for this click (its tab and point): taken off, as its answer is in, and whether it runs again (a snapshot stopped it).
+    fn take_look(&mut self, asked: (u32, recto_index::select::PagePoint)) -> Option<(Look, bool)> {
+        let look = match &self.running {
+            Some(Running::Look(look, _)) if (look.tab, look.point) == asked => *look,
+            _ => return None,
+        };
+        let again = self.again.take().is_some_and(|again| again.same(&look));
+        Some((look, again))
     }
 }
 
@@ -362,6 +372,13 @@ impl Tool {
     /// **The looks the page views want now** ([`super::image_select::looks_ready`]), by the slot's rule ([`JobSlot::looks`]): the look to send now, and
     /// those a newer one took the place of.
     pub(super) fn looks(&self, wanted: &[Look]) -> (Option<Look>, Vec<Look>) {
+        // On the way out no new private worker starts: what runs is stopped, and the clicks are told none was found.
+        if self.quitting.load(Ordering::SeqCst) {
+            let mut jobs = lock(&self.jobs);
+            jobs.looks(&[]);
+            jobs.looking = None;
+            return (None, wanted.to_vec());
+        }
         let (start, replaced) = lock(&self.jobs).looks(wanted);
         (start.map(|(look, _)| look), replaced)
     }
@@ -853,15 +870,16 @@ fn send_next(tool: &Tool, person: super::person::Person<'_>, next: Job) {
 }
 
 /// **A click's look has answered** ([`super::image_select::answered`]): the look that ran, if it's the one for this click (its tab and point), taken off
-/// the slot, and a snapshot that waited behind it sent. A look that waited is started by the app's next look at what's wanted.
-pub(super) fn look_answered(tool: &Tool, person: super::person::Person<'_>, asked: (u32, recto_index::select::PagePoint)) -> Option<Look> {
+/// the slot, with whether it runs again (a snapshot stopped it, and it waits behind that), and a snapshot that waited behind it sent. A look that waited is
+/// started by the app's next look at what's wanted.
+pub(super) fn look_answered(tool: &Tool, person: super::person::Person<'_>, asked: (u32, recto_index::select::PagePoint)) -> Option<(Look, bool)> {
     let mut jobs = lock(&tool.jobs);
-    let look = jobs.take_look(asked)?;
+    let answered = jobs.take_look(asked)?;
     if let Next::Copy(next) = jobs.next() {
         drop(jobs);
         send_next(tool, person, next);
     }
-    Some(look)
+    Some(answered)
 }
 
 /// The newest job's answer: the notice, and what's for the clipboard. Whether there's something ready for the host.
@@ -948,12 +966,17 @@ impl recto_agent::clipboard::ClipboardSink for Sink {
         }
     }
 
-    fn begin_look(&self) -> ClipStop {
+    /// Only this feature's look ([`super::image_select`]): the running look's stop if it's for this click, its tab, page and point; any other look of the
+    /// window's is one nobody waits for any more, and stopped.
+    fn begin_look(&self, tab: u32, page: u32, at: [f32; 2]) -> ClipStop {
         let Some(app) = self.app.upgrade() else { return stopped() };
         #[cfg(test)]
         app.core.holds.at("look_drawing");
         match &lock(&app.tools.tool().jobs).running {
-            Some(Running::Look(_, stop)) => stop.clone(),
+            // The command's page counts from 1, the click's from 0: the click's page, not where its tab is.
+            Some(Running::Look(look, stop)) if (look.tab, Some(look.point.page), [look.point.x, look.point.y]) == (tab, page.checked_sub(1), at) => {
+                stop.clone()
+            }
             _ => stopped(),
         }
     }
@@ -1081,9 +1104,9 @@ mod tests {
         }
     }
 
-    /// A click's look, the `serial`th, on tab 1.
+    /// A click's look, the `serial`th, on tab 1 in pane 0.
     fn look(serial: u32) -> Look {
-        Look::for_test(1, serial)
+        Look::for_test(0, 1, serial)
     }
 
     /// Failure (the review of `build/image-select`, S2): a click's look runs beside a copy, or beside another look, so the app has two private workers of
@@ -1102,7 +1125,7 @@ mod tests {
         );
         assert!(slot.looks(&[look(2)]).0.is_none(), "a newer click waits");
         assert!(first_stop.is_stopped(), "and stops the look running");
-        assert_eq!(slot.take_look((1, look(1).point)), Some(look(1)), "the running look answers");
+        assert_eq!(slot.take_look((1, look(1).point)), Some((look(1), false)), "the running look answers");
         assert!(
             matches!(slot.next(), Next::Looks),
             "the look waiting is started by the next look at what's wanted"
@@ -1131,8 +1154,32 @@ mod tests {
         slot.looks(&[]);
         assert!(slot.looking.is_none(), "and one waiting, dropped");
         let _ = slot.next();
-        let (_, replaced) = slot.looks(&[Look::for_test(2, 5), look(6)]);
-        assert_eq!(replaced, vec![Look::for_test(2, 5)], "an older click another took the place of is told");
+        let (_, replaced) = slot.looks(&[Look::for_test(0, 2, 5), look(6)]);
+        assert_eq!(replaced, vec![Look::for_test(0, 2, 5)], "an older click another took the place of is told");
+    }
+
+    /// Failure (the second review of `build/image-select`, fixes 2 and 6): a look a copy stops is lost, its stopped answer taken as "no image there", so
+    /// the click picks nothing though the copy said it would wait; or two panes' clicks with the same serial (each pane has its own clock) are taken for one,
+    /// so one pane's look is never sent, or its answer lands on the other. A look a copy stops waits behind the copy and runs again; the same serial in two
+    /// panes is two clicks.
+    #[test]
+    fn a_look_a_copy_stops_runs_again_and_two_panes_never_collide() {
+        let mut slot = JobSlot::default();
+        let (started, _) = slot.looks(&[look(1)]);
+        let (_, stop) = started.expect("the look starts");
+        assert!(slot.offer(job(1.0)).is_none() && stop.is_stopped(), "a copy stops it");
+        assert_eq!(slot.take_look((1, look(1).point)), Some((look(1), true)), "its stopped answer is to run again");
+        assert!(matches!(slot.next(), Next::Copy(_)), "the copy first");
+        assert!(slot.looks(&[look(1)]).0.is_none(), "the look waits behind the copy");
+        assert!(matches!(slot.next(), Next::Looks), "then its turn");
+        assert_eq!(slot.looks(&[look(1)]).0.map(|(look, _)| look), Some(look(1)), "and it runs again");
+
+        let mut slot = JobSlot::default();
+        let (left, right) = (Look::for_test(0, 1, 7), Look::for_test(1, 1, 7));
+        assert!(slot.looks(&[left]).0.is_some(), "the left pane's look runs");
+        let (started, _) = slot.looks(&[left, right]);
+        assert!(started.is_none(), "one at a time");
+        assert_eq!(slot.looking, Some(right), "the right pane's click, the same serial, waits its turn: two clicks");
     }
 
     /// Failure: a "Copy anyway" from a notice that's gone, or from an older one, copies whatever was refused last, perhaps another box or file; or turning the tool or starting a new box leaves the old offer standing (review, 2026-11-08). Each button names its notice, and only that notice's refusal is taken, once.

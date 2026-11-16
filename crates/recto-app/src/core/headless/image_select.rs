@@ -647,3 +647,115 @@ fn known_gap_a_click_on_a_scans_ocr_word_over_a_real_picture_is_texts() {
     click(&app, (300.0, 400.0));
     assert_eq!(picked(&app).map(|(number, _)| number), Some(1), "a click off the words picks the scan");
 }
+
+/// A page of 72 small pictures in a grid of 8 by 9, apart from each other, more than an answer of the worker's holds (64), drawn row by row from the
+/// page's foot: picture `n` (from 1) is in column `(n - 1) % 8` and row `(n - 1) / 8`.
+fn crowded() -> Vec<u8> {
+    let content: String = (0..72)
+        .map(|at| format!("q 30 0 0 30 {} {} cm /Im Do Q\n", 40 + (at % 8) * 60, 100 + (at / 8) * 70))
+        .collect();
+    let first = recto_testpdf::first_extra_object(1);
+    recto_testpdf::pages_with(
+        &[recto_testpdf::Page::new(content.into_bytes())],
+        &format!("/XObject << /Im {first} 0 R >>"),
+        vec![images().remove(0)],
+    )
+}
+
+/// The middle of picture `n` of [`crowded`], as the page shows it from its top left.
+fn on_crowded(n: usize) -> (f32, f32) {
+    let at = n - 1;
+    (40.0 + (at % 8) as f32 * 60.0 + 15.0, 792.0 - (100.0 + (at / 8) as f32 * 70.0) - 15.0)
+}
+
+/// Failure (the second review of `build/image-select`, its blocker): on a page of more pictures apart than the worker's answer holds, as a catalogue page of
+/// photos is, the worker can't say where they are, so every click there, a margin's or a gap's, starts a private worker; or the answer that says is wrong
+/// past its 64th, so a picture past them can't be picked. A margin click and a click between pictures send no look; a click on the 3rd, 10th and 70th
+/// picture each picks that one, through one look each.
+#[test]
+fn on_a_page_of_more_pictures_than_an_answer_holds_a_margin_click_costs_nothing() {
+    let disk = Disk::new();
+    let doc = disk.file("catalogue.pdf", &crowded());
+    let app = opened(disk, &doc);
+    assert_eq!(looks_sent(&app, |app| drop(let_go(app, (20.0, 20.0), None, 1))), 0, "a margin");
+    assert_eq!(
+        looks_sent(&app, |app| drop(let_go(app, (40.0 + 45.0 + 7.0, 400.0), None, 1))),
+        0,
+        "a gap between pictures"
+    );
+    // The worker's walk keeps 64 and puts the rest in one box round them, its first row or its last as it meets them: a picture of each row is asked.
+    for n in [3, 10, 70] {
+        assert_eq!(looks_sent(&app, |app| drop(let_go(app, on_crowded(n), None, 1))), 1, "picture {n}: one look");
+        assert_eq!(picked(&app).map(|(number, _)| number), Some(n as u32), "picture {n}");
+    }
+}
+
+/// Failure (the second review, fix 2): a copy while a click's look runs stops the look, and its stopped answer is taken as "no image there", so the click
+/// picks nothing, though the look was to wait behind the copy. The look runs again after the copy, and picks its image.
+#[test]
+fn a_look_a_copy_stops_runs_again_after_the_copy() {
+    let disk = Disk::new();
+    let doc = disk.file("figure.pdf", &figure());
+    let app = opened(disk, &doc);
+    let looks = looks_sent(&app, |app| {
+        let (held, go) = app.hold_next("look_drawing");
+        let_go(app, ON_FIGURE, None, 1);
+        held.recv_timeout(WAIT_LIMIT).expect("the look held as it begins");
+        // The person's copy of the figure, as Copy with it picked or the snapshot tool's click on it sends it.
+        let inner = app.core();
+        let engine = inner.panes.reading_engine(&inner.engine);
+        let seen = engine.points().page_seen(0).expect("page 1");
+        let seen = recto_agent::extract::AsSeen {
+            quarter_turns: seen.quarter_turns,
+            file_page: seen.file_page,
+            own: seen.own,
+        };
+        inner
+            .tools
+            .tool()
+            .take_image(engine.hot_tab().expect("a tab"), 0, seen, [ON_FIGURE.0, ON_FIGURE.1]);
+        snapshot_tool::taken(inner);
+        app.wait_until("the look stopped for the copy", || inner.tools.tool().look_stopped() == Some(true));
+        drop(go);
+    });
+    assert_eq!(looks, 2, "the look, and the look again after the copy");
+    assert_eq!(picked(&app), Some((1, FIGURE)), "the click picks its image");
+    assert_eq!(offered(&app).0, ["public.png"], "and the copy was made");
+}
+
+/// Failure (the second review, fix 3): a click on an image while the app quits starts a private worker, which a quit then waits for. On the way out no
+/// look starts and the click picks nothing; staying, clicks look again.
+#[test]
+fn no_look_starts_while_the_app_quits() {
+    let disk = Disk::new();
+    let doc = disk.file("figure.pdf", &figure());
+    let app = opened(disk, &doc);
+    app.core().tools.tool().quitting();
+    assert_eq!(looks_sent(&app, |app| drop(let_go(app, ON_FIGURE, None, 1))), 0, "no look on the way out");
+    assert_eq!(picked(&app), None);
+    app.core().tools.tool().quit_not_taken();
+    pick(&app);
+}
+
+/// Failure (the second review, fix 5): a person's plain `images` (no click's point and page as seen) is handed the window's look's stop, or a stopped one
+/// when no look runs, and is refused with "A newer click took its place". Answered as on `main`, a look running or not.
+#[test]
+fn a_persons_plain_images_isnt_taken_for_a_clicks_look() {
+    let disk = Disk::new();
+    let doc = disk.file("figure.pdf", &figure());
+    let app = opened(disk, &doc);
+    let plain = || {
+        let tab = app.core().panes.reading_engine(&app.core().engine).hot_tab().expect("a tab");
+        let command = recto_agent::parse(&format!(r##"{{"cmd":"images","tab":"#{tab}","page":1}}"##)).expect("images");
+        app.core().host.run_for_person(&command, &mut Vec::new(), crate::queue::Origin::Input)
+    };
+    let listed = plain().expect("no look running: answered");
+    assert_eq!(listed["count"], 2, "{listed}");
+    let (held, go) = app.hold_next("look_drawing");
+    let_go(&app, ON_FIGURE, None, 1);
+    held.recv_timeout(WAIT_LIMIT).expect("the look held as it begins");
+    assert_eq!(plain().expect("a look running: answered")["count"], 2);
+    drop(go);
+    landed(&app);
+    assert_eq!(picked(&app), Some((1, FIGURE)), "and the look goes on as ever");
+}

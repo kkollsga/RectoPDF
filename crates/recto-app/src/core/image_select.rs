@@ -48,6 +48,8 @@ const ESCAPE: &str = "\u{1b}";
 /// person saw it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Look {
+    /// The pane whose page view the click is in: each has its own clock, so two panes' serials can be the same.
+    pane: usize,
     pub(super) tab: u32,
     pub(super) point: PagePoint,
     serial: u32,
@@ -67,7 +69,7 @@ impl Look {
 
     /// The same click: its tab and serial.
     pub(super) fn same(&self, other: &Self) -> bool {
-        (self.tab, self.serial) == (other.tab, other.serial)
+        (self.pane, self.tab, self.serial) == (other.pane, other.tab, other.serial)
     }
 
     /// The click a command of this feature's looks for, read back from it, its tab and point: none for any other, an agent's `images` among them, which
@@ -83,8 +85,9 @@ impl Look {
 
     /// A test's: the `serial`th click, on `tab`, at a point of its own.
     #[cfg(test)]
-    pub(super) fn for_test(tab: u32, serial: u32) -> Self {
+    pub(super) fn for_test(pane: usize, tab: u32, serial: u32) -> Self {
         Self {
+            pane,
             tab,
             point: PagePoint {
                 page: 0,
@@ -101,9 +104,9 @@ impl Look {
     }
 }
 
-/// The page view of `engines` with this click looked for, if it's still waiting.
+/// The page view of the look's pane in `engines`, if that click is still the one it looks for.
 fn waiting<'a>(engines: &'a [Engine], look: &Look) -> Option<&'a Engine> {
-    engines.iter().find(|engine| {
+    engines.get(look.pane).filter(|engine| {
         engine
             .selection()
             .image_looking()
@@ -117,7 +120,7 @@ fn waiting<'a>(engines: &'a [Engine], look: &Look) -> Option<&'a Engine> {
 pub fn looks_ready(panes: &Panes, engine: &Engine, tool: &Tool, person: Person<'_>) {
     let engines = panes.engines(engine);
     let mut wanted = Vec::new();
-    for engine in &engines {
+    for (pane, engine) in engines.iter().enumerate() {
         let Some((tab, point, serial)) = engine.selection().image_looking() else {
             continue;
         };
@@ -130,7 +133,13 @@ pub fn looks_ready(panes: &Panes, engine: &Engine, tool: &Tool, person: Person<'
             file_page: seen.file_page,
             own: seen.own,
         };
-        wanted.push(Look { tab, point, serial, seen });
+        wanted.push(Look {
+            pane,
+            tab,
+            point,
+            serial,
+            seen,
+        });
     }
     let (start, replaced) = tool.looks(&wanted);
     let not_found = |look: &Look| {
@@ -172,10 +181,11 @@ pub fn answered(parts: &super::answer_parts::AnswerParts<'_>, ran: &super::perso
     }
     let person = parts.person();
     parts.image_looked(|tool, engines| {
-        let Some(look) = super::snapshot_tool::look_answered(tool, person, asked) else {
+        // A look a copy stopped runs again after it, so its stopped answer says nothing of the click.
+        let Some((look, again)) = super::snapshot_tool::look_answered(tool, person, asked) else {
             return;
         };
-        let Some(engine) = waiting(engines, &look) else { return };
+        let Some(engine) = waiting(engines, &look).filter(|_| !again) else { return };
         match found_in(ran.result) {
             Some((number, rect)) => {
                 engine.selection().image_found(look.tab, look.serial, number, rect);
@@ -258,6 +268,7 @@ mod tests {
 
     fn look(x: f32) -> Look {
         Look {
+            pane: 0,
             tab: 3,
             point: PagePoint { page: 1, x, y: 20.0 },
             serial: 7,

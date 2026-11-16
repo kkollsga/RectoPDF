@@ -220,8 +220,12 @@ impl Cmd for Images {
         if let Some(seen) = as_seen {
             seen.still(&whose)?;
         }
-        // The person's look for a click's image is stopped when they move on, through the window's clipboard's one slot; an agent's has no stop.
-        let stop = access.clipboard(cx.actor).map(|sink| sink.begin_look()).unwrap_or_default();
+        // The window's look for a click's image (`at` with the page as seen) is stopped when the person moves on, through the window's clipboard's one
+        // slot; a plain `images`, the person's or an agent's, and an agent's look have no stop.
+        let stop = match (at, as_seen, access.clipboard(cx.actor)) {
+            (Some(at), Some(_), Some(sink)) => sink.begin_look(id.0, *page, *at),
+            _ => extract::ClipStop::default(),
+        };
         let mut data = extract::images(&whose, *at, &stop)?;
         describe_source(&mut data, *page, &source);
         Ok(data)

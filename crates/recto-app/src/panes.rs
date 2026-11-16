@@ -108,10 +108,15 @@ impl Panes {
     pub fn set_count(&self, primary: &Engine, count: usize, paper: PaperKind, window_open: bool) {
         let count = count.clamp(1, MAX_PANES);
         let mut extra = lock(&self.extra);
+        let closing = extra.len() + 1 > count;
         while extra.len() + 1 > count {
             if let Some(gone) = extra.pop() {
                 gone.shut_down();
             }
+        }
+        // A pane's click being looked for goes with it: the app looks again at what the page views want, which stops that look.
+        if closing {
+            self.hooks.image_wanted();
         }
         while extra.len() + 1 < count {
             // Its draws told with the pane's number (the fourth review's item 5): a pane's page views are never more than `MAX_PANES`.
@@ -391,6 +396,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Counts the news of a click's image the page views give the app.
+    #[derive(Default)]
+    struct Heard(std::sync::atomic::AtomicU32);
+    impl EngineEvents for Heard {
+        fn ops_ready(&self) {}
+        fn note_changed(&self) {}
+        fn page_moved(&self) {}
+        fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>, _asked: u64) {}
+        fn image_wanted(&self) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// Failure (the second review of `build/image-select`, fix 4): a comparison's pane closes with a click in it being looked for and nobody is told, so
+    /// that pane's private worker runs on for a page view that's gone. Closing panes tells the app to look again at what the page views want, which stops
+    /// it; opening them says nothing.
+    #[test]
+    fn closing_a_pane_has_the_app_look_again_at_the_clicks_wanted() {
+        let heard = Arc::new(Heard::default());
+        let primary = Engine::new(EngineConfig::default(), Arc::new(Quiet));
+        let panes = Panes::new(Arc::clone(&heard) as Arc<dyn EngineEvents>, EngineConfig::default());
+        panes.set_count(&primary, 3, PaperKind::White, true);
+        assert_eq!(heard.0.load(std::sync::atomic::Ordering::SeqCst), 0, "opening panes says nothing");
+        panes.set_count(&primary, 1, PaperKind::White, true);
+        assert_eq!(heard.0.load(std::sync::atomic::Ordering::SeqCst), 1, "closing them is news, once");
+        primary.shut_down();
     }
 
     /// Failure (review round 2 of the page view follow-ups): the comparison's one zoom ends different in different panes. An agent's zoom and the person's
