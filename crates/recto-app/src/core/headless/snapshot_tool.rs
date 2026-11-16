@@ -35,6 +35,9 @@ fn text_and_image() -> Vec<u8> {
     )
 }
 
+/// The width of the test pages, in points.
+const PAGE_WIDTH: f32 = 612.0;
+
 /// The box every case takes, on the page as the file shows it, in points from its top left: the line of text, and the image below it.
 const BOX: [f32; 4] = [40.0, 30.0, 300.0, 280.0];
 
@@ -855,11 +858,20 @@ fn the_host_is_told_when_a_capture_begins_and_ends_and_only_then() {
     assert_eq!(told(&app) - before, 2, "Escape with nothing to end changed nothing");
     capture(&app);
     let armed = told(&app);
-    // A box too small to take anything is a click that takes the image under it: any release is told.
-    let_go(&app, (400.0, 600.0), None);
-    assert!(told(&app) > armed, "the release that ended it told the host");
-    app.wait_until("the job's answered", || !app.core().tools.tool().busy());
+    // A release that takes nothing and starts no job, so the only thing to tell the host is that the tool went off: pressed on the page's right edge and
+    // dragged past it, the box is held to the edge and has no width. (A click, even on nothing, starts a job whose "Copying…" tells the host by itself.)
+    let (inner, tool) = (app.core(), app.core().tools.tool());
+    let engine = inner.panes.reading_engine(&inner.engine);
+    let (x, y) = at(&app, PAGE_WIDTH, 100.0);
+    let _ = tool.press(&engine, 0, x, y);
+    assert!(tool.is_drawing(), "the press on the edge is the tool's");
+    let (x, y) = at(&app, PAGE_WIDTH + 80.0, 300.0);
+    let _ = tool.drag(&engine, 0, x, y);
+    let _ = tool.release(&engine, 0);
+    app.act(UiAction::SnapshotTaken);
     app.settle();
+    assert!(!tool.is_on() && !tool.busy(), "off, with nothing taken");
+    assert_eq!(told(&app) - armed, 1, "told once that it's off, and nothing else was said");
 }
 
 /// **Failure (AGENTS.md: "Nothing an agent sends runs as the person"): Capture is run for an agent wider than the tool's own toggle,** at a level that can't
