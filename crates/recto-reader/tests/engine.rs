@@ -499,22 +499,27 @@ fn settled_with(file: &TempPdf, policy: recto_render_service::Policy) -> (Engine
 }
 
 /// Failure: a page at rest holds its worker's memory for the 30 s of the idle rule when it could have gone once the reader had paused (2026-11-16: the shaded NASA page's worker
-/// rested at 54 MiB for 30 s under a line of 64 that was the retirement line, where the map's was let go in 3 s). The worker is judged by [`Policy::rest_bytes`] and no other number:
+/// rested at 54 MiB for 30 s under a line of 64 that was the retirement line, where the map's was let go in 3 s). The worker is judged by [`Policy::heavy_rest`] and no other number:
 /// one over it goes by itself, with nobody calling and the page still on screen, and one under it stays, as it is what makes the next page fast. The line is the test's own, from
 /// what the worker really holds here, so nothing depends on how big a page's worker is on this machine.
 #[test]
 fn a_worker_is_let_go_at_rest_over_the_rest_line_and_kept_under_it() {
     let file = document(1);
     let policy = |rest_bytes| recto_render_service::Policy {
-        rest_bytes,
+        heavy_rest: recto_render_service::HeavyRest {
+            over_bytes: rest_bytes,
+            after: Duration::from_millis(300),
+        },
         // The retirement line at its default must have no say at rest: the worker is far under 64 MiB.
-        heavy_idle_exit: Duration::from_millis(300),
         // The ordinary idle rule can't be what lets the worker go inside the bound below.
         idle_exit: Duration::from_secs(600),
         ..recto_render_service::Policy::default()
     };
     let (probe, held) = settled_with(&file, policy(u64::MAX));
-    assert!(held > 0 && held < recto_render_service::Policy::default().retire_bytes, "a text page's worker is small: {held}");
+    assert!(
+        held > 0 && held < recto_render_service::Policy::default().retire_bytes,
+        "a text page's worker is small: {held}"
+    );
     probe.shut_down();
 
     let (over, _) = settled_with(&file, policy(held / 2));

@@ -1713,8 +1713,10 @@ mod tests {
         assert!(workers_gone(&engine), "memory pressure let the idle worker go: {}", engine.report().0);
         engine.shut_down();
         let policy = recto_render_service::Policy {
-            rest_bytes: 1,
-            heavy_idle_exit: Duration::from_millis(300),
+            heavy_rest: recto_render_service::HeavyRest {
+                over_bytes: 1,
+                after: Duration::from_millis(300),
+            },
             ..recto_render_service::Policy::default()
         };
         let engine = waiting_for_a_surface(&file, Some(policy), Duration::from_secs(60));

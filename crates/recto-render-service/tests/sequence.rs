@@ -8,8 +8,8 @@ use recto_platform::isolate::{self, Channel, SharedMemory};
 use recto_proto::{self as proto, CharRecord, FailCode, Kind, PageSize, RegionReply, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus};
 use recto_render_service::transport::{FrameReader, send_all};
 use recto_render_service::{
-    DocRenderer, DrawStrategy, ExportRefusal, HeavySlot, KillReason, LowResWhy, OutputCaps, PageDrawState, PageEvent, Policy, RenderFailure, ServiceConfig,
-    TileRequest, TileResult, ViewportOptions, control, draw_whole_page, measure_viewport,
+    DocRenderer, DrawStrategy, ExportRefusal, HeavyRest, HeavySlot, KillReason, LowResWhy, OutputCaps, PageDrawState, PageEvent, Policy, RenderFailure,
+    ServiceConfig, TileRequest, TileResult, ViewportOptions, control, draw_whole_page, measure_viewport,
 };
 use recto_testpdf::TempPdf;
 use std::ffi::OsString;
@@ -640,7 +640,10 @@ fn an_idle_heavy_worker_lets_a_waiting_export_through_with_nobody_touching_it() 
     let slot = HeavySlot::new();
     // A heavy worker's own idle time, which is what ends it: long enough for the export to be waiting first, and short of the default's 3 s.
     let quick = Policy {
-        heavy_idle_exit: Duration::from_secs(1),
+        heavy_rest: HeavyRest {
+            after: Duration::from_secs(1),
+            ..Policy::default().heavy_rest
+        },
         idle_grace: Duration::from_millis(50),
         ..policy()
     };
@@ -932,7 +935,10 @@ fn a_heavy_worker_lets_go_sooner_than_a_normal_one() {
     let quick = Policy {
         idle_exit: Duration::from_secs(3600),
         idle_grace: Duration::from_millis(30),
-        heavy_idle_exit: Duration::from_millis(30),
+        heavy_rest: HeavyRest {
+            after: Duration::from_millis(30),
+            ..Policy::default().heavy_rest
+        },
         ..policy()
     };
     let (mut doc, _file) = doc_with("fits_heavy", quick, &slot);
@@ -1156,9 +1162,16 @@ fn a_worker_starts_with_the_allocator_setting_and_nothing_else() {
         // What a test put there is the stand-in's own: its mode, where to report, its limit. And the one the system adds to every process it starts (the text encoding).
         let ours: Vec<&str> = vars
             .split(' ')
-            .filter(|var| !["RECTO_FAKE=", "RECTO_FAKE_ENV_REPORT=", "RECTO_WORKER_LIMIT=", "__CF_USER_TEXT_ENCODING="].iter().any(|own| var.starts_with(own)))
+            .filter(|var| {
+                !["RECTO_FAKE=", "RECTO_FAKE_ENV_REPORT=", "RECTO_WORKER_LIMIT=", "__CF_USER_TEXT_ENCODING="]
+                    .iter()
+                    .any(|own| var.starts_with(own))
+            })
             .collect();
         assert_eq!(ours, ["MallocLargeCache=0"], "a worker with limit {limit} started with another environment");
     }
-    assert!(classes.contains(&NORMAL) && classes.contains(&HEAVY), "expected a normal and a heavy start, saw limits {classes:?}");
+    assert!(
+        classes.contains(&NORMAL) && classes.contains(&HEAVY),
+        "expected a normal and a heavy start, saw limits {classes:?}"
+    );
 }
