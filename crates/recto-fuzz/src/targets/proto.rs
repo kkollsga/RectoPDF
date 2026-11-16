@@ -106,6 +106,25 @@ fn every_decoder(payload: &[u8]) {
     if let Ok((job_id, page)) = decode_size_request(payload) {
         assert_eq!(decode_size_request(&encode_size_request(job_id, page)[HEADER_LEN..]), Ok((job_id, page)));
     }
+    // An images request as the worker reads it: dark paper's 8 bytes or a click's 9 with the one flag, and nothing else, read back as itself.
+    if let Ok((job_id, page, for_a_click)) = decode_images_request(payload) {
+        assert!(payload.len() == 8 || (payload.len() == 9 && payload[8] == IMAGES_FOR_A_CLICK), "{payload:?}");
+        let again = if for_a_click {
+            encode_images_request_for_a_click(job_id, page)
+        } else {
+            encode_images_request(job_id, page)
+        };
+        assert_eq!(decode_images_request(&again[HEADER_LEN..]), Ok((job_id, page, for_a_click)));
+    }
+    if let Ok(images) = PageImages::decode_for_a_click(payload) {
+        assert!(images.boxes.len() <= MAX_CLICK_IMAGE_BOXES);
+        assert!(
+            images.boxes.iter().all(|sides| sides[0] <= sides[2] && sides[1] <= sides[3]),
+            "{:?}",
+            images.boxes
+        );
+        assert_eq!(PageImages::decode_for_a_click(&images.encode_for_a_click()[HEADER_LEN..]).as_ref(), Ok(&images));
+    }
     if let Ok(images) = PageImages::decode(payload) {
         assert!(images.boxes.len() <= MAX_IMAGE_BOXES);
         assert!(

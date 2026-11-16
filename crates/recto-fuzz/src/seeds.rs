@@ -144,6 +144,14 @@ pub fn proto_seeds() -> Vec<Vec<u8>> {
             boxes: vec![[0, 0, 65_535, 30_000], [50_000, 100, 1_000, 40_000]],
         }
         .encode(),
+        // A click's images request, dark paper's, and a click's answer of the most boxes it holds (`recto_proto::IMAGES_FOR_A_CLICK`).
+        encode_images_request(1, 2),
+        encode_images_request_for_a_click(1, 2),
+        PageImages {
+            job_id: 1,
+            boxes: (0..MAX_CLICK_IMAGE_BOXES as u16).map(|at| [at * 900, 100, at * 900 + 800, 40_000]).collect(),
+        }
+        .encode_for_a_click(),
         TextJob {
             job_id: 1,
             page: 2,

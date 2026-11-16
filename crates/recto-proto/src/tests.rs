@@ -582,6 +582,44 @@ fn image_boxes_round_trip_and_refuse_a_bad_count() {
     );
 }
 
+/// Failure (the second review of `build/image-select`, rule 6 on both ends): dark paper's images request or its answer changes by a byte, so its pages
+/// are judged otherwise; a click's request is read as dark paper's, or a flag no build defines is taken; a click's answer of 65 boxes is refused, or dark
+/// paper's decode takes 65, so a worker answering dark paper with a click's shape isn't caught. Dark paper's request is its 8 bytes; a click's is 9 with
+/// the one flag; any other flag or length is refused; 65 boxes pass only as a click's answer.
+#[test]
+fn an_images_request_for_a_click_is_one_flag_byte_and_its_answer_one_box_longer() {
+    let dark = encode_images_request(7, 3);
+    assert_eq!(&dark[HEADER_LEN..], &[7, 0, 0, 0, 3, 0, 0, 0], "dark paper's request, byte for byte");
+    assert_eq!(decode_images_request(&dark[HEADER_LEN..]).unwrap(), (7, 3, false));
+    let click = encode_images_request_for_a_click(7, 3);
+    assert_eq!(&click[HEADER_LEN..], &[7, 0, 0, 0, 3, 0, 0, 0, IMAGES_FOR_A_CLICK]);
+    assert_eq!(decode_images_request(&click[HEADER_LEN..]).unwrap(), (7, 3, true));
+    for bad in [
+        &[7, 0, 0, 0, 3, 0, 0, 0, 2][..],
+        &[7, 0, 0, 0, 3, 0, 0, 0, 0],
+        &[7, 0, 0, 0, 3, 0, 0, 0, 1, 1],
+        &[7, 0, 0, 0, 3, 0, 0],
+    ] {
+        assert!(decode_images_request(bad).is_err(), "{bad:?}");
+    }
+    assert!(Kind::ImagesRequest.max_payload() as usize == SIZE_REQUEST_LEN + 1);
+    let longest = PageImages {
+        job_id: 4,
+        boxes: (0..MAX_CLICK_IMAGE_BOXES as u16).map(|at| [at, at, at + 1, at + 1]).collect(),
+    };
+    let sent = longest.encode_for_a_click();
+    assert_eq!(PageImages::decode_for_a_click(&sent[HEADER_LEN..]).unwrap(), longest, "a click's 65 boxes");
+    assert!(PageImages::decode(&sent[HEADER_LEN..]).is_err(), "dark paper's answer of 65 is a violation");
+    assert_eq!(
+        PageImages::decode(&longest.encode()[HEADER_LEN..]).unwrap().boxes.len(),
+        MAX_IMAGE_BOXES,
+        "dark paper's is sent as ever"
+    );
+    let mut lying = sent[HEADER_LEN..].to_vec();
+    lying[4] = 66;
+    assert!(PageImages::decode_for_a_click(&lying).is_err(), "past a click's cap");
+}
+
 /// Failure (rule 6): a worker sends a box inside out, its left past its right or its top below its bottom, and the host takes it as it is, so whatever walks a page's boxes meets one that runs backwards (review of 2026-11-13: dark paper's walk along a row counted pixels more than once for such boxes). It's turned the right way round as it's decoded, so nothing after can see one.
 #[test]
 fn an_image_box_inside_out_is_turned_the_right_way_round() {

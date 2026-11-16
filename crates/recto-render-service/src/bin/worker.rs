@@ -204,15 +204,21 @@ fn handle(
                 Err(code) => proto::encode_failed(job.job_id, code),
             })
         }
+        // Dark paper's, or with its one flag a click's (`proto::IMAGES_FOR_A_CLICK`): the same walk, a click's never too many.
         Kind::ImagesRequest => {
-            let (job_id, page) = proto::decode_size_request(&frame.payload).ok()?;
+            let (job_id, page, for_a_click) = proto::decode_images_request(&frame.payload).ok()?;
             let Some(backend) = backend else {
                 return Some(proto::encode_failed(job_id, FailCode::NoDocument));
             };
-            Some(match backend.image_boxes(page) {
-                Ok(boxes) => proto::PageImages { job_id, boxes }.encode(),
-                Err(code) => proto::encode_failed(job_id, code),
-            })
+            Some(
+                match for_a_click {
+                    false => backend.image_boxes(page).map(|boxes| proto::PageImages { job_id, boxes }.encode()),
+                    true => backend
+                        .image_boxes_for_a_click(page)
+                        .map(|boxes| proto::PageImages { job_id, boxes }.encode_for_a_click()),
+                }
+                .unwrap_or_else(|code| proto::encode_failed(job_id, code)),
+            )
         }
         // The file's highlights to leave out of what's drawn: never a write (`recto_render`'s `pdfium/hidden.rs`).
         Kind::HiddenAnnots => {

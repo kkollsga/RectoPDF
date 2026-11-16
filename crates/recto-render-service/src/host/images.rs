@@ -16,6 +16,9 @@ pub(super) struct Known {
     places: HashMap<u32, Option<Vec<[u16; 4]>>>,
     /// `places` has been forgotten, past its cap, and nobody's been told.
     places_cleared: bool,
+    /// Where each page's images may be, for a click (`DocRenderer::image_boxes_for_a_click`): apart from dark paper's, so its answer is never this one.
+    /// At most [`MAX_IMAGE_PLACES`] pages of [`proto::MAX_CLICK_IMAGE_BOXES`] boxes of 8 bytes, and only pages clicked on.
+    click_places: HashMap<u32, Option<Vec<[u16; 4]>>>,
 }
 
 impl Known {
@@ -23,6 +26,7 @@ impl Known {
     pub(super) fn forget(&mut self) {
         self.traits.clear();
         self.places.clear();
+        self.click_places.clear();
     }
 }
 
@@ -76,43 +80,7 @@ impl DocRenderer {
             return known.clone();
         }
         // Stale says nothing about the page, so nothing's remembered.
-        if self.control.is_stale(generation) {
-            return None;
-        }
-        // A page whose drawing failed for time or a crash goes unasked: that's remembered at every zoom. Asking walks its objects and decodes nothing, so one needing the larger limit, drawn lower, or failed for memory even at its lower resolution (remembered from that scale down, not at every zoom), is asked as any page, and its look doesn't hang on which draw went first.
-        let state = self.page_draw_state(page);
-        let unaskable = matches!(self.page_draw_state_at(page, 0.0), PageDrawState::Failed(_));
-        let boxes = if unaskable || self.stopped() || self.left_out.walk >= MAX_ASKING_KILLS {
-            None
-        } else {
-            // The worker that's there, which has just drawn it. With none, one that can hold the page.
-            let class = if self.worker.is_none() && state == PageDrawState::NeedsHeavy {
-                WorkerClass::Heavy
-            } else {
-                WorkerClass::Normal
-            };
-            let job_id = self.next_job_id();
-            let frame = proto::encode_images_request(job_id, page);
-            let (kills, busy) = (self.kills(), self.left_out.busy);
-            let reply = self.run_job(job_id, page, false, class, Some(generation), &[], &frame, |reply| match reply.kind {
-                Kind::Images => {
-                    let images = proto::PageImages::decode(&reply.payload)?;
-                    if images.job_id == job_id {
-                        Ok(images.boxes)
-                    } else {
-                        Err(ProtoError("image boxes answer a different job"))
-                    }
-                }
-                _ => Err(ProtoError("the wrong kind of reply to an images request")),
-            });
-            // A worker killed walking the page is left out of what stops the document, as the hidden-text check's are, and counts towards the walk's own cap.
-            self.left_out.walk = self.left_out.walk.saturating_add(self.left_out.since(self.kills() - kills, busy));
-            // Stale: not about the page, so nothing's remembered.
-            if self.control.is_stale(generation) {
-                return None;
-            }
-            reply.ok()
-        };
+        let boxes = places_asked(self, page, generation, false)?;
         // One decision a page: its tiles are drawn at different times, and none of them may disagree. What's cached past this cap is long off the screen.
         if self.images.places.len() >= MAX_IMAGE_PLACES {
             self.images.places.clear();
@@ -122,8 +90,77 @@ impl DocRenderer {
         boxes
     }
 
+    /// **Where a page's images may be, for a click** (the reader's image picked with a click): a superset, never too many, at most
+    /// [`proto::MAX_CLICK_IMAGE_BOXES`] boxes, the walk's answer to a request with the click's flag (`places.rs`); or dark paper's boxes for the page, if it
+    /// has them, which are the same. `None` if it isn't known: stale (nothing remembered), or the page couldn't be asked or the asking failed, which a click
+    /// takes as no picture there. Remembered apart from dark paper's, under the same cap, so dark paper's answer is never this one.
+    pub fn image_boxes_for_a_click(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>> {
+        if let Some(Some(boxes)) = self.images.places.get(&page) {
+            return Some(boxes.clone());
+        }
+        if let Some(known) = self.images.click_places.get(&page) {
+            return known.clone();
+        }
+        let boxes = places_asked(self, page, generation, true)?;
+        if self.images.click_places.len() >= MAX_IMAGE_PLACES {
+            self.images.click_places.clear();
+        }
+        self.images.click_places.insert(page, boxes.clone());
+        boxes
+    }
+
     /// Whether the places of a page's images have been forgotten since this was last asked, with a lot of pages looked up. It says nothing about the file: it's for whoever decided something from those places, which might not be decided the same way twice.
     pub fn take_image_places_cleared(&mut self) -> bool {
         std::mem::take(&mut self.images.places_cleared)
     }
+}
+
+/// Asks `doc`'s worker where a page's images are, dark paper's way or a click's (a function of the renderer's, not one of its methods, which are many): `None` if `generation` went stale, which says nothing about the page.
+fn places_asked(doc: &mut DocRenderer, page: u32, generation: u64, for_a_click: bool) -> Option<Option<Vec<[u16; 4]>>> {
+    if doc.control.is_stale(generation) {
+        return None;
+    }
+    // A page whose drawing failed for time or a crash goes unasked: that's remembered at every zoom. Asking walks its objects and decodes nothing, so one needing the larger limit, drawn lower, or failed for memory even at its lower resolution (remembered from that scale down, not at every zoom), is asked as any page, and its look doesn't hang on which draw went first.
+    let state = doc.page_draw_state(page);
+    let unaskable = matches!(doc.page_draw_state_at(page, 0.0), PageDrawState::Failed(_));
+    if unaskable || doc.stopped() || doc.left_out.walk >= MAX_ASKING_KILLS {
+        return Some(None);
+    }
+    // The worker that's there, which has just drawn it. With none, one that can hold the page.
+    let class = if doc.worker.is_none() && state == PageDrawState::NeedsHeavy {
+        WorkerClass::Heavy
+    } else {
+        WorkerClass::Normal
+    };
+    let job_id = doc.next_job_id();
+    let frame = if for_a_click {
+        proto::encode_images_request_for_a_click(job_id, page)
+    } else {
+        proto::encode_images_request(job_id, page)
+    };
+    let (kills, busy) = (doc.kills(), doc.left_out.busy);
+    // A click's answer may hold one box more; dark paper's held to its own count, so a worker answering it with a click's shape is a violation.
+    let decode = if for_a_click {
+        proto::PageImages::decode_for_a_click
+    } else {
+        proto::PageImages::decode
+    };
+    let reply = doc.run_job(job_id, page, false, class, Some(generation), &[], &frame, |reply| match reply.kind {
+        Kind::Images => {
+            let images = decode(&reply.payload)?;
+            if images.job_id == job_id {
+                Ok(images.boxes)
+            } else {
+                Err(ProtoError("image boxes answer a different job"))
+            }
+        }
+        _ => Err(ProtoError("the wrong kind of reply to an images request")),
+    });
+    // A worker killed walking the page is left out of what stops the document, as the hidden-text check's are, and counts towards the walk's own cap.
+    doc.left_out.walk = doc.left_out.walk.saturating_add(doc.left_out.since(doc.kills() - kills, busy));
+    // Stale: not about the page, so nothing's remembered.
+    if doc.control.is_stale(generation) {
+        return None;
+    }
+    Some(reply.ok())
 }
