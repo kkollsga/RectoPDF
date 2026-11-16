@@ -1013,13 +1013,6 @@ fn a_tab_not_in_the_comparison_coming_to_be_read_turns_the_tool_off() {
                 })),
             }
             app.settle();
-            let read = app.core().panes.tab_of(app.core().panes.reading()).map(|tab| tab.0);
-            eprintln!(
-                "PROBE {case} once={once}: panes={} reading={read:?} third={} on={}",
-                app.core().panes.count(),
-                tabs[2],
-                app.core().tools.tool().is_on()
-            );
             assert!(
                 !app.core().tools.tool().is_on(),
                 "{case}, {}: the tool is off over a tab that wasn't in the comparison",
