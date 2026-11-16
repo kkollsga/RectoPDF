@@ -84,6 +84,11 @@ fn rest_or_wait_for_a_surface(
     policy: &Policy,
     resting_since: &mut Option<Instant>,
 ) {
+    // With nothing planned, before the rest is said: one walk for a click's places on a page on show, then round again, where a new view or job comes first. The thread is at rest
+    // when this has nothing left to do, so whoever waits for it to rest (a quiet run's settle, a test) finds the places kept.
+    if !planned && prefetch_at_rest(shared, renderers) {
+        return;
+    }
     let retry = {
         let mut reader = lock(&shared.reader);
         // What this turn told is told: the view taken again. Resting is said under the view's lock, which whoever waits for it to rest looks under
@@ -98,6 +103,20 @@ fn rest_or_wait_for_a_surface(
         }
     };
     rest(shared, renderers, policy, resting_since, retry);
+}
+
+/// **One page's click places read ahead of a click, between the thread's turns,** for a page on show of the tab showing, by the worker that has it, if there is one: so a click
+/// after a pause, when the worker has been let go, is answered from what's kept and starts no worker (`host/images.rs`, `prefetch_click_places`, which says what it never does).
+/// Done only here, with nothing planned for the view: never a job, nothing before a page's first pixels, and a walk is a few tens of microseconds on most pages and up to
+/// about 1.7 ms on the worst of the bench files. Says whether it walked, so the thread comes round again.
+fn prefetch_at_rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>) -> bool {
+    let wanted = crate::tiles::image_pick::pages_on_show(&mut lock(&shared.reader));
+    let Some((pages, generation)) = wanted else { return false };
+    pages.into_iter().any(|(file, page)| {
+        renderers
+            .get_mut(&file)
+            .is_some_and(|open| recto_render_service::prefetch_click_places(&mut open.doc, page, generation))
+    })
 }
 
 fn run(shared: &Shared) {
@@ -632,12 +651,7 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
         JobKind::Traits => match doc.largest_image_pixels(job.source_page, job.generation) {
             // A stale question answers zero, which isn't an answer about the page. Remembering it would draw a heavy page a tile at a time.
             Ok(_) if doc.is_stale(job.generation) => Outcome::Cancelled,
-            Ok(pixels) => {
-                // The page is loaded in the tab's own worker just now, so its click places are read here, one walk (0.6 ms on the map) kept at most 520 bytes: a click on
-                // this page after the worker has been let go at rest is then answered from what's kept and starts no worker (`host/images.rs`).
-                let _ = doc.image_boxes_for_a_click(job.source_page, job.generation);
-                Outcome::Heavy(pixels >= recto_render_service::REGION_MIN_IMAGE_PIXELS)
-            }
+            Ok(pixels) => Outcome::Heavy(pixels >= recto_render_service::REGION_MIN_IMAGE_PIXELS),
             Err(failure) if whole_file(failure) => document_failed(failure),
             Err(_) => Outcome::Heavy(false),
         },

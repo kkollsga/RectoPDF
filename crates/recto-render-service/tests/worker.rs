@@ -941,7 +941,20 @@ fn one_figure() -> Vec<u8> {
 /// worker starts none; one that kills the worker leaves none either; and 17 of its kills leave dark paper's ask as it was.
 #[test]
 fn a_prefetch_starts_no_worker_and_its_kills_leave_dark_papers_cap_alone() {
-    let file = TempPdf::new("figure.pdf", &one_figure());
+    let image = recto_testpdf::first_extra_object(17);
+    let page = || Page::new(b"q 100 0 0 100 50 50 cm /Im0 Do Q\n".to_vec());
+    let list: Vec<Page> = (0..17).map(|_| page()).collect();
+    let file = TempPdf::new(
+        "figures.pdf",
+        &recto_testpdf::pages_with(
+            &list,
+            &format!("/XObject << /Im0 {image} 0 R >>"),
+            vec![recto_testpdf::Object::Stream {
+                dict: "/Type /XObject /Subtype /Image /Width 4 /Height 4 /BitsPerComponent 8 /ColorSpace /DeviceGray".into(),
+                data: vec![90; 16],
+            }],
+        ),
+    );
     let mut doc = renderer(&file.0, Policy::default());
     assert!(
         !recto_render_service::prefetch_click_places(&mut doc, 0, u64::MAX),
@@ -949,13 +962,13 @@ fn a_prefetch_starts_no_worker_and_its_kills_leave_dark_papers_cap_alone() {
     );
     assert_eq!(doc.worker_pid(), None, "and none started for it");
     for round in 0..17 {
-        let _ = doc.largest_image_pixels(0, 0);
+        // A look at the page by a worker that is then killed from outside, just before the walk ahead of a click.
+        doc.largest_image_pixels(round, 0).unwrap();
         let pid = doc.worker_pid().expect("a worker that looked");
         kill_process(pid);
         wait_until("the worker to be gone", || recto_platform::isolate::process_memory(pid).is_none());
-        let _ = recto_render_service::prefetch_click_places(&mut doc, 0, u64::MAX);
+        let _ = recto_render_service::prefetch_click_places(&mut doc, round, u64::MAX);
         assert_eq!(doc.worker_pid(), None, "round {round}: a failed prefetch left no worker, and started none");
-        doc.forget_failures();
     }
     assert_eq!(
         doc.image_boxes(0, 0).map(|boxes| boxes.len()),

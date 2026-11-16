@@ -698,13 +698,15 @@ struct LeftOut {
     check: u32,
     /// By the walk for where a page's images are, which decodes nothing: a heavy page's walk killed is no reason to stop drawing the rest (second review of 2026-11-13).
     walk: u32,
+    /// By a walk made ahead of a click (`host/images.rs`), which is counted apart from `walk`: its kills must never use up the cap that dark paper's walk and a click's share.
+    prefetch: u32,
     /// Deadlines the Mac was too busy for the worker to meet.
     busy: u32,
 }
 
 impl LeftOut {
     fn total(self) -> u32 {
-        self.check.saturating_add(self.walk).saturating_add(self.busy)
+        self.check.saturating_add(self.walk).saturating_add(self.prefetch).saturating_add(self.busy)
     }
 
     /// Of `killed` during a job that began with `busy` busy kills, the ones not already left out as busy.
@@ -1462,9 +1464,13 @@ impl DocRenderer {
             self.stats.retirements += 1;
             self.bury_worker();
         }
-        let mut retried = false;
+        // A walk ahead of a click is never tried again in a new worker, and starts none.
+        let mut retried = self.images.prefetching;
         let mut idle_retries = 0;
         loop {
+            if self.images.prefetching && self.worker.is_none() {
+                return Err(RenderFailure::Unavailable.into());
+            }
             self.ensure_worker(class, generation)?;
             let Some(worker) = self.worker.as_mut() else {
                 return Err(RenderFailure::Unavailable.into());

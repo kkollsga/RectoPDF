@@ -1,8 +1,8 @@
 //! Where a page's images are, from the host's side, for dark paper: asked of a worker once a page, as a walk over its objects that decodes nothing, and remembered, up to a cap. See `docs/engineering/paper.md`.
 
-use super::{DocRenderer, JobFailure, KillReason, MAX_ASKING_KILLS, MAX_FAILED_PAGES, PageDrawState, RenderFailure, WorkerClass};
+use super::{DocRenderer, JobFailure, KillReason, MAX_ASKING_KILLS, MAX_FAILED_PAGES, PageDrawState, RenderFailure, WorkerClass, file_stamp};
 use recto_proto::{self as proto, Kind, ProtoError};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Pages whose images are remembered, at 64 boxes of 8 bytes each at most. Many more than the tiles and previews kept, so a page can't have tiles on the screen from before it was forgotten.
 const MAX_IMAGE_PLACES: usize = 4096;
@@ -19,6 +19,10 @@ pub(super) struct Known {
     /// Where each page's images may be, for a click (`DocRenderer::image_boxes_for_a_click`): apart from dark paper's, so its answer is never this one.
     /// At most [`MAX_IMAGE_PLACES`] pages of 64 boxes and the one past them, 8 bytes each (520 a page): the pages the tab's worker has looked at for their first draw ([`DocRenderer::largest_image_pixels`]'s job asks as it goes, `recto-reader`'s `engine/run.rs`) and those clicked on.
     click_places: HashMap<u32, Option<proto::ClickPlaces>>,
+    /// Pages a walk ahead of a click has been made for, whatever came of it, so it's made once and a page that failed isn't walked again at every rest. Holds no answer.
+    prefetched: HashSet<u32>,
+    /// A walk ahead of a click is running: a worker lost in it isn't replaced for it, and nothing starts one.
+    pub(super) prefetching: bool,
 }
 
 impl Known {
@@ -32,6 +36,7 @@ impl Known {
         self.traits.clear();
         self.places.clear();
         self.click_places.clear();
+        self.prefetched.clear();
     }
 }
 
@@ -86,7 +91,7 @@ impl DocRenderer {
             return known.clone();
         }
         // Stale says nothing about the page, so nothing's remembered.
-        let boxes = places_asked(self, page, generation, false, |payload| {
+        let boxes = places_asked(self, page, generation, Ask::Dark, |payload| {
             proto::PageImages::decode(payload).map(|images| (images.job_id, images.boxes))
         })?;
         // One decision a page: its tiles are drawn at different times, and none of them may disagree. What's cached past this cap is long off the screen.
@@ -108,7 +113,7 @@ impl DocRenderer {
         if let Some(known) = self.images.click_places.get(&page) {
             return known.clone();
         }
-        let places = places_asked(self, page, generation, true, |payload| {
+        let places = places_asked(self, page, generation, Ask::Click, |payload| {
             proto::PageImagesForAClick::decode(payload).map(|images| (images.job_id, images.places))
         })?;
         if self.images.click_places.len() >= MAX_IMAGE_PLACES {
@@ -133,28 +138,69 @@ fn forget_places_of_a_replaced_file(doc: &mut DocRenderer) {
     }
 }
 
-/// **Reads a page's click places ahead of a click, while the tab's own worker has the page.** NAIVE FIRST VERSION (tests first).
+/// **Reads a page's click places ahead of a click,** so one after the tab's worker has been let go at rest is answered from what's kept and starts no worker. It runs only where
+/// it can't cost anything the person would see, and keeps only an answer:
+/// - only with the worker that has the page alive (it never starts one, and one lost in the walk isn't replaced for it), for a page it looked at (`largest_image_pixels`
+///   came back) that draws as any (not one needing the larger limit, nor one that failed), of a file as it was opened, in a renderer not stopped;
+/// - a failure of any kind, a kill, a refusal or a cap, keeps nothing: the click asks as it would have without this, and a click's own failed walk is kept as it ever was;
+/// - its kills are counted as the document's own kills are for a check (left out of what stops the document) but not towards the 16 that dark paper's walk and a click's share
+///   ([`MAX_ASKING_KILLS`]), as scrolling on white paper mustn't end dark paper's asking.
+///
+/// Says whether a walk was made, so the thread that draws can go on to the next page, or rest.
 pub fn prefetch_click_places(doc: &mut DocRenderer, page: u32, generation: u64) -> bool {
-    doc.image_boxes_for_a_click(page, generation).is_some()
+    forget_places_of_a_replaced_file(doc);
+    doc.reap_if_gone();
+    let looked = doc.images.traits.iter().any(|(known, _)| *known == page);
+    let unchanged = file_stamp(&doc.path).ok() == doc.opened_stamp;
+    let fit = doc.worker.is_some()
+        && looked
+        && unchanged
+        && doc.page_draw_state(page) == PageDrawState::Sharp
+        && !doc.stopped()
+        && !doc.control.is_stale(generation)
+        && !doc.images.click_places.contains_key(&page)
+        && !doc.images.prefetched.contains(&page);
+    if !fit {
+        return false;
+    }
+    if doc.images.prefetched.len() >= MAX_IMAGE_PLACES {
+        doc.images.prefetched.clear();
+    }
+    doc.images.prefetched.insert(page);
+    doc.images.prefetching = true;
+    let asked = places_asked(doc, page, generation, Ask::Prefetch, |payload| {
+        proto::PageImagesForAClick::decode(payload).map(|images| (images.job_id, images.places))
+    });
+    doc.images.prefetching = false;
+    // Only an answer is kept: stale and failed say nothing about the page.
+    if let Some(Some(places)) = asked {
+        if doc.images.click_places.len() >= MAX_IMAGE_PLACES {
+            doc.images.click_places.clear();
+        }
+        doc.images.click_places.insert(page, Some(places));
+    }
+    true
+}
+
+/// Whose walk it is: dark paper's, a click's, or one ahead of a click's ([`prefetch_click_places`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ask {
+    Dark,
+    Click,
+    Prefetch,
 }
 
 /// Asks `doc`'s worker where a page's images are, dark paper's way or a click's, its answer read by `decode`, the one for that request's shape, so a
 /// worker answering with the other's is a violation (a function of the renderer's, not one of its methods, which are many): `None` if `generation` went
 /// stale, which says nothing about the page.
-fn places_asked<T>(
-    doc: &mut DocRenderer,
-    page: u32,
-    generation: u64,
-    for_a_click: bool,
-    decode: impl Fn(&[u8]) -> Result<(u32, T), ProtoError>,
-) -> Option<Option<T>> {
+fn places_asked<T>(doc: &mut DocRenderer, page: u32, generation: u64, ask: Ask, decode: impl Fn(&[u8]) -> Result<(u32, T), ProtoError>) -> Option<Option<T>> {
     if doc.control.is_stale(generation) {
         return None;
     }
     // A page whose drawing failed for time or a crash goes unasked: that's remembered at every zoom. Asking walks its objects and decodes nothing, so one needing the larger limit, drawn lower, or failed for memory even at its lower resolution (remembered from that scale down, not at every zoom), is asked as any page, and its look doesn't hang on which draw went first.
     let state = doc.page_draw_state(page);
     let unaskable = matches!(doc.page_draw_state_at(page, 0.0), PageDrawState::Failed(_));
-    if unaskable || doc.stopped() || doc.left_out.walk >= MAX_ASKING_KILLS {
+    if unaskable || doc.stopped() || (ask != Ask::Prefetch && doc.left_out.walk >= MAX_ASKING_KILLS) {
         return Some(None);
     }
     // The worker that's there, which has just drawn it. With none, one that can hold the page.
@@ -164,7 +210,7 @@ fn places_asked<T>(
         WorkerClass::Normal
     };
     let job_id = doc.next_job_id();
-    let frame = if for_a_click {
+    let frame = if ask != Ask::Dark {
         proto::encode_images_request_for_a_click(job_id, page)
     } else {
         proto::encode_images_request(job_id, page)
@@ -182,7 +228,12 @@ fn places_asked<T>(
         _ => Err(ProtoError("the wrong kind of reply to an images request")),
     });
     // A worker killed walking the page is left out of what stops the document, as the hidden-text check's are, and counts towards the walk's own cap.
-    doc.left_out.walk = doc.left_out.walk.saturating_add(doc.left_out.since(doc.kills() - kills, busy));
+    let left_out = doc.left_out.since(doc.kills() - kills, busy);
+    if ask == Ask::Prefetch {
+        doc.left_out.prefetch = doc.left_out.prefetch.saturating_add(left_out);
+    } else {
+        doc.left_out.walk = doc.left_out.walk.saturating_add(left_out);
+    }
     // Stale: not about the page, so nothing's remembered.
     if doc.control.is_stale(generation) {
         return None;
