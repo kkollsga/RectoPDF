@@ -278,6 +278,7 @@ logger build.sh '' "$R/repo/app/build.sh"
 logger render-helper.sh '' "$R/repo/app/render-helper.sh"
 logger app-entitlements.sh '' "$R/repo/tools/release/app-entitlements.sh"
 logger notes.sh 'echo "made notes"' "$R/repo/tools/release/notes.sh"
+logger worker-env.sh '' "$R/repo/tools/release/worker-env.sh"
 printf '[workspace.package]\nversion = "9.9.9"\n' > "$R/repo/Cargo.toml"
 printf 'pub const TEAM_ID: &str = "TEAMID1";\npub const REPO: &str = "https://example.invalid/made";\n' > "$R/repo/crates/recto-update/src/lib.rs"
 echo "made notices" > "$R/repo/THIRD-PARTY-NOTICES.txt"
@@ -334,6 +335,7 @@ check "release-zip: the preflight's checks of the signed app pass ($out)" 0 "$rc
 has "release-zip: the preflight checks the entitlements" "app-entitlements.sh --check $MA" "$calls"
 has "release-zip: the preflight checks the helper" "render-helper.sh --check $MA" "$calls"
 has "release-zip: the preflight runs the signed app drawing a PDF" "recto qa state --json" "$calls"
+has "release-zip: and reads its worker's allocator setting" "worker-env.sh $MA" "$calls"
 hasnt "release-zip: the preflight asks for no ticket" "stapler" "$calls"
 hasnt "release-zip: nor checks a zip" "check-zip" "$calls"
 # Failure: the release's own run of the stapled app no longer validates its ticket or checks the zip as the updater will.
@@ -342,6 +344,7 @@ calls=$(cat "$CALLS")
 check "release-zip: the release's checks of the stapled app pass ($out)" 0 "$rc"
 has "release-zip: the release validates the ticket" "xcrun stapler validate $MA" "$calls"
 has "release-zip: the release runs the stapled app" "recto qa state --json" "$calls"
+has "release-zip: and reads its worker's allocator setting" "worker-env.sh $MA" "$calls"
 has "release-zip: the release checks the zip as the updater will" "recto-updater check-zip $OUTDIR/RectoPDF-9.9.9.zip" "$calls"
 
 # ---- preflight-app.sh and limited.sh: the preflight's real-app steps ----
@@ -366,6 +369,41 @@ has "limited: and says so" "a made failure failed (exit 1" "$out"
 out=$(limits 10 "a made pass" true); rc=$?
 check "limited: a pass passes" 0 "$rc"
 has "limited: with its time" "ok  a made pass (" "$out"
+
+# ---- worker-env.sh: a live render worker was started with MallocLargeCache=0 (read by `ps -E`, as release-zip.sh's quiet run reads the real one) ----
+WA="$X/Made.app"
+WORKER="$WA/Contents/Helpers/RectoRender.app/Contents/MacOS/recto-render-service"
+mkdir -p "$(dirname "$WORKER")"
+# sleep, signed ad hoc: the system hides the environment of its own (platform) programs from ps -E, and not of a program like the worker, ad hoc
+# or with the hardened runtime (seen 2026-11-16); a Developer ID worker is read by the release preflight.
+cp /bin/sleep "$WORKER" && codesign -f -s - "$WORKER" 2>/dev/null
+# The made worker, started by its path as the made folder spells it ($X may hold a doubled slash, and /var for /private/var), with the environment given.
+# It returns once the process is the worker (env has exec'd it), polling for at most 5 s.
+worker_like() {
+  local pid n=0
+  env -i "$@" "$WORKER" 30 > /dev/null 2>&1 &
+  pid=$!
+  until case "$(ps -p "$pid" -o command= 2>/dev/null)" in "$WORKER"*) true ;; *) false ;; esac || [ $n -ge 50 ]; do sleep 0.1; n=$((n + 1)); done
+  echo "$pid"
+}
+# Failure: the check passes with no worker to read, so a run whose worker ended early says nothing of its setting.
+out=$("$SOURCE/tools/release/worker-env.sh" "$WA" 2>&1); rc=$?
+check "worker-env: no live worker is refused" 1 "$rc"
+has "worker-env: and says so" "no live render worker" "$out"
+# Failure: a worker started without the setting (a host that clears it, or a signature it doesn't reach) passes, and the 100 to 175 MiB come back unseen.
+bare=$(worker_like LANG=C)
+out=$("$SOURCE/tools/release/worker-env.sh" "$WA" 2>&1); rc=$?
+check "worker-env: a worker without MallocLargeCache=0 is refused" 1 "$rc"
+has "worker-env: naming it" "the render worker $bare wasn't started with MallocLargeCache=0" "$out"
+kill "$bare" 2>/dev/null; wait "$bare" 2>/dev/null
+# Failure: the check refuses the real setting, and every release run fails on it; or it misses the worker because the bundle is named by
+# another spelling of its path than the one the worker was started by (here a link; on a Mac, /var and /private/var).
+set_one=$(worker_like MallocLargeCache=0)
+ln -s "$X" "$X/link"
+out=$("$SOURCE/tools/release/worker-env.sh" "$X/link/Made.app" 2>&1); rc=$?
+check "worker-env: a worker with MallocLargeCache=0 passes" 0 "$rc"
+has "worker-env: and says the vmmap line or why not" "vmmap --summary $set_one" "$out"
+kill "$set_one" 2>/dev/null; wait "$set_one" 2>/dev/null
 
 # ---- ci-gate.sh: the release's gate on CI, by its own test (made runs and a made repository) ----
 out=$("$SOURCE/tools/release/ci-gate-test.sh" 2>&1); rc=$?
