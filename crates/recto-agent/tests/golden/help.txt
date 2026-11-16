@@ -141,7 +141,7 @@ Testing the app:
   qa menu              Chooses an item of the menu bar, through the menu item itself.
   qa button            Clicks one of the window's own buttons, through the button itself: `sidebar` is the one beside the window's controls that shows and hides the sidebar, and `zoom` the zoom level beside it.
   qa zoom-type         Types a zoom level into the field the zoom level opens, and presses Return, through the field's own action.
-  qa context-menu      Chooses an item of the page's right-click menu, through the menu item itself: the layouts, or Copy and Select All.
+  qa context-menu      Chooses an item of the page's right-click menu, through the menu item itself: the layouts, Copy, Select All, or Capture (the snapshot tool for one capture).
   qa key-action        Does Undo or Redo as its key or menu item does with the window key: given to the first in the window's own chain that answers it, if that says it can be chosen.
   qa password          Types a password into the sheet a protected PDF asks with, and presses Open, through the sheet's own ending.
   qa page-type         Types into the go-to field the page number opens, and presses Return, through the field's own action: a page number, or what the document calls a page, such as `iv`.
