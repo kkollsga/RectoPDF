@@ -271,8 +271,14 @@ fn a_control_on_the_window_thread_names_its_pass_and_off_it_does_not() {
     assert!(core.window.main_busy(false));
     core.act(UiAction::FindOpen);
     let other = std::sync::Arc::clone(&core);
-    std::thread::spawn(move || other.act(UiAction::ToggleSidebar)).join().expect("the other thread's action");
-    std::thread::sleep(Duration::from_millis(20));
+    std::thread::spawn(move || other.act(UiAction::ToggleSidebar))
+        .join()
+        .expect("the other thread's action");
+    // A pass is kept only over 16 ms of wall time: held that long by the clock, not by a sleep.
+    let until = std::time::Instant::now() + Duration::from_millis(20);
+    while std::time::Instant::now() < until {
+        std::hint::spin_loop();
+    }
     core.window.main_idle();
     let kept = core.window.kept_stretches();
     assert_eq!(kept.last().map(|stretch| stretch.doing.as_str()), Some("FindOpen"), "{kept:?}");
