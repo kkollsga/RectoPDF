@@ -888,3 +888,44 @@ fn an_agents_capture_is_what_its_snapshot_toggle_is() {
         assert_eq!(run(snapshot_tool::CAPTURE_ID), run(snapshot_tool::TOGGLE_ID), "{level:?}");
     }
 }
+
+/// **Failure (found by the review of Capture, 2026-11-16; there before it): in a comparison, a press in the other pane turns the snapshot tool off,** as the
+/// reading pane's change is read as another tab coming forward: nothing is taken, and the tool the person turned on from the menu bar goes off too. Two
+/// tabs side by side, the tool on (from the menu bar, and once from Capture), the other pane made the one read, a box taken in it: it's taken, and the
+/// menu bar's tool is still on while Capture's is off.
+#[test]
+fn a_press_in_the_other_pane_of_a_comparison_keeps_the_tool_on() {
+    for once in [false, true] {
+        let disk = Disk::new();
+        let (first, second) = (disk.file("one.pdf", &text_and_image()), disk.file("two.pdf", &text_and_image()));
+        let app = disk.start();
+        app.open(&first);
+        app.open(&second);
+        let (a, b) = (app.tabs()[0].tab, app.tabs()[1].tab);
+        let row = app.tabs().into_iter().find(|row| row.tab == a).expect("its row");
+        app.act(UiAction::Row { row, adding: true });
+        app.settle();
+        app.act(UiAction::PaneRead { tab: b });
+        app.settle();
+        if once {
+            capture(&app);
+        } else {
+            tool_on(&app);
+        }
+        app.act(UiAction::PaneRead { tab: a });
+        app.settle();
+        let what = if once { "Capture" } else { "the menu bar's tool" };
+        assert!(app.core().tools.tool().is_on(), "{what}: still on after the other pane is the one read");
+        take_box(&app);
+        assert_eq!(
+            notice(&app),
+            "\"Copied the snapshot as PNG, text, SVG and JPG.\" []",
+            "{what}: the box in the other pane is taken"
+        );
+        assert_eq!(
+            app.core().tools.tool().is_on(),
+            !once,
+            "{what}: Capture's goes off after its box, the menu bar's stays"
+        );
+    }
+}
