@@ -632,7 +632,12 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
         JobKind::Traits => match doc.largest_image_pixels(job.source_page, job.generation) {
             // A stale question answers zero, which isn't an answer about the page. Remembering it would draw a heavy page a tile at a time.
             Ok(_) if doc.is_stale(job.generation) => Outcome::Cancelled,
-            Ok(pixels) => Outcome::Heavy(pixels >= recto_render_service::REGION_MIN_IMAGE_PIXELS),
+            Ok(pixels) => {
+                // The page is loaded in the tab's own worker just now, so its click places are read here, one walk (0.6 ms on the map) kept at most 520 bytes: a click on
+                // this page after the worker has been let go at rest is then answered from what's kept and starts no worker (`host/images.rs`).
+                let _ = doc.image_boxes_for_a_click(job.source_page, job.generation);
+                Outcome::Heavy(pixels >= recto_render_service::REGION_MIN_IMAGE_PIXELS)
+            }
             Err(failure) if whole_file(failure) => document_failed(failure),
             Err(_) => Outcome::Heavy(false),
         },
