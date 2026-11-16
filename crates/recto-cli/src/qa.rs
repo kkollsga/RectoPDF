@@ -654,24 +654,17 @@ pub fn compare_budget(invocation: &Invocation) -> Result<Value, AgentError> {
     Ok(report)
 }
 
-/// `recto qa budget`.
-pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
-    let app = find_app(invocation.fields.get("app").and_then(Value::as_str).map(Path::new))?;
-    let file = PathBuf::from(invocation.fields.get("file").and_then(Value::as_str).unwrap_or_default());
-    let heavy = invocation.fields.get("heavy").and_then(Value::as_str).map(PathBuf::from);
-    let runs = invocation.fields.get("runs").and_then(Value::as_u64).unwrap_or(11).max(1);
-    let mut report = json!({ "file": file.file_name().map(|name| name.to_string_lossy().to_string()), "app": app, "build": if cfg!(debug_assertions) { "debug" } else { "release" } });
-
-    // Cold start: from starting the process to the first page sharp, opening a file as a double click does.
+/// The cold start line: `runs` starts of the app opening `file` as a double click does, the page drawn and the window settled apart.
+fn cold_starts(app: &Path, file: &Path, runs: u64) -> Result<Value, AgentError> {
     let mut colds = Vec::new();
     let mut first_frames = Vec::new();
     let mut ready_ms = Vec::new();
     for _ in 0..runs {
         let started = Instant::now();
         let run = Measured::start(
-            &app,
+            app,
             &Launch {
-                open: vec![file.clone()],
+                open: vec![file.to_path_buf()],
                 ..Launch::default()
             },
         )?;
@@ -682,10 +675,21 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     }
     ready_ms.sort_by(f64::total_cmp);
     first_frames.sort_by(f64::total_cmp);
-    report["cold_start_ms"] = qa_times::line(
+    Ok(qa_times::line(
         &colds,
         json!({ "budget_p50": 300, "budget_p95": 500, "ready_p50": round(percentile(&ready_ms, 0.5)), "first_frame_p50": round(percentile(&first_frames, 0.5)), "first_frame_note": "Stamped by the app (record.first_shown.ms_from_start), a window up with its place on it, however sharp." }),
-    );
+    ))
+}
+
+/// `recto qa budget`.
+pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
+    let app = find_app(invocation.fields.get("app").and_then(Value::as_str).map(Path::new))?;
+    let file = PathBuf::from(invocation.fields.get("file").and_then(Value::as_str).unwrap_or_default());
+    let heavy = invocation.fields.get("heavy").and_then(Value::as_str).map(PathBuf::from);
+    let runs = invocation.fields.get("runs").and_then(Value::as_u64).unwrap_or(11).max(1);
+    let mut report = json!({ "file": file.file_name().map(|name| name.to_string_lossy().to_string()), "app": app, "build": if cfg!(debug_assertions) { "debug" } else { "release" } });
+
+    report["cold_start_ms"] = cold_starts(&app, &file, runs)?;
 
     // One document, at rest on a page, then what idling costs, scrolling, and a closed window.
     let run = Measured::start(

@@ -61,7 +61,7 @@ pub fn until_drawn(
             return Err(AgentError::new(Code::TIMED_OUT, "The page wasn't drawn in time.", exit::TIMED_OUT)
                 .then("`recto qa state` shows `reader.settled` and `reader.tiles`."));
         }
-        std::thread::sleep(Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(1)); // ratchet: poll
     }
 }
 
