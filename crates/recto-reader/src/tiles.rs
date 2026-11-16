@@ -611,7 +611,9 @@ impl Reader {
         // After the document's new width, so the host holds it to that.
         if let (Some(x), Some(doc)) = (across, self.docs.hot.and_then(|tab| self.docs.views.get_mut(&tab))) {
             doc.place.scroll_x = x;
-            self.host.ops.push_back(Op::ScrollAcross { x });
+            if doc.moves_the_host_across(x, viewport.x) {
+                self.host.ops.push_back(Op::ScrollAcross { x });
+            }
         }
         // After the refresh, which is what moves the tiles' scale on.
         self.refresh(MAX_ATTACH_PER_TURN);

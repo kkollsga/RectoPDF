@@ -143,6 +143,19 @@ impl DocView {
         (moved_frame, ((x - viewport.x).abs() > 1e-9).then_some(x))
     }
 
+    /// **Whether the view across has to be sent to `x`,** or the host puts it there itself: it holds its view to the document's width as it takes a new
+    /// one (AppKit's clip view, centring one narrower than the view), so where a row fits, the document is the view's width and the view comes to 0 with no
+    /// word; a zoom step there is the document's width and the pages, and no `ScrollAcross` (the read of 2026-11-16 before 0.1.2: one op a step fewer).
+    pub(super) fn moves_the_host_across(&self, x: f64, host_x: f64) -> bool {
+        let (shown, view) = (self.place.width_shown, self.layout.view_width());
+        let held = if view > shown {
+            (shown - view) / 2.0
+        } else {
+            host_x.clamp(0.0, shown - view)
+        };
+        (x - held).abs() > 1e-9
+    }
+
     /// Where the reader is in the tab: a page and how far down it, as a change of layout keeps it.
     pub(crate) fn reading_anchor(&self) -> (u32, f64) {
         self.place.anchor
