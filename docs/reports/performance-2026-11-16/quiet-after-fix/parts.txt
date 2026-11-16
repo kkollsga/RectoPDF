@@ -1,0 +1,7 @@
+== tabs 13:36:24 load averages: 2,69 7,76 7,50
+   exit 0 13:39:00
+== colour 13:39:00 load averages: 2,91 5,73 6,70
+   exit 0 13:39:10
+== a 13:39:10 load averages: 2,61 5,58 6,63
+   exit 0 13:41:03
+done

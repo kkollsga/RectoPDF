@@ -123,6 +123,26 @@ The same release build (`main` at 50bd47d5), the same script's parts, `HEAVY_SOL
 
 So: the load cost the cold start about 10 ms and the warm 2 GiB open about 20, and nothing else. The stalls are 31 to 44 ms on a quiet machine too (the 69 was the load's). The cold start's one 413 ms start is inside the 500 ms p95. Not compared here: `main`'s parent for the input-to-frame growth with tabs, which `docs/PLAN.md`'s numbers of 2026-11-15 already show is not new.
 
+## After the day's fixes (the coordinator, 2026-11-16 13:36 to 13:41, nothing else running)
+
+A release build of `main` at 7 merges on (the worker's allocator keeps no freed large blocks, `MallocLargeCache=0`, `build/map-zoom-memory`; `qa budget` times the page apart from the window at rest), `HEAVY_SOLO=1`, load 2.6 to 2.9 (`performance-2026-11-16/quiet-after-fix/`). Parts `tabs` (two runs), `colour` and `a`.
+
+| Line | Target | This morning, quiet | Now, quiet | |
+|---|---|---|---|---|
+| The map fitted | 450 MiB accepted | 385 to 386 MiB | **322.7, 322.9** | |
+| The map at about 2x | 450 MiB accepted | 455.2, 455.9 | **345.5, 345.8** | **Met** (was missed) |
+| The map at about 3x | 450 MiB accepted | 510.9, 511.4 | **335.7, 336.1**; worker peak 373.9, 374.3 (477 before) | **Met** (was missed) |
+| Shaded backgrounds, settled | 100 MiB | 213.8 (worker 186.2) | **96.5** (worker 68.8, its peak 141.4) | **Met** (was missed), by 3.5 MiB |
+| Shaded backgrounds, 4 s later | | 44.0 | **96.3**: the worker rests at 68.8 MiB and isn't let go | Worse at rest: the next step |
+| Colour page (NASA p50) | 100 MiB | 43.7 under load | **41.2** | Met |
+| Text page (`rfc9110`) | 60 MiB | 36.0 under load | **34.9** (app 25.7, worker 9.2) | Met |
+| Cold start, page drawn, 11 starts, by `qa budget` itself now | 300 ms p50, 500 p95 | 265 p50 by the probe | **239 p50, 247 p95 and worst**; first frame 71 ms; the window at rest 434 | Met |
+| Sharp after scroll stops, 11 | 100 ms | | **7.5 ms p50, 20.9 worst**; the window at rest 243.7 worst (the fade) | Met |
+| Window closed | 20 MiB | 13.4 | **13.0** | Met |
+| The window's thread's worst stall | 16 ms | 36, 31, 44 | **39, 40, 41 ms** | Missed, as before |
+
+So of this morning's seven misses, two are gone (the map zoomed, shaded backgrounds), by one setting; the 10,000-page open and the signature look are asked of the lopdf fork (its inbox, 2026-11-16); a woken tab's sharp time and the stalls stand. New from the fix: a worker that has drawn the shaded page rests at about 69 MiB for its 30 s idle time where it used to be let go at 3 s.
+
 ## To measure again with nothing else running
 
 The lines that miss or are close, for the coordinator at a quiet time, each with `HEAVY_SOLO=1` and `MADE` and `BENCH` set as the script says (`python3 -I docs/reports/performance-2026-11-16-bigpdf.py "$MADE"` makes the made file; `BENCH` is a temp folder with copies of the four `bench100` files the script names):
