@@ -13,6 +13,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use crate::qa_times::{self, Moment};
+
 const READY_WAIT: Duration = Duration::from_secs(30);
 /// The process a quiet run ends with, when `--owner` doesn't say: a test or script sets it to its own, so a run it started can't outlive it.
 pub const OWNER_ENV: &str = "RECTO_QA_OWNER_PID";
@@ -401,6 +403,18 @@ impl Measured {
         self.call(json!({ "cmd": "qa_read", "verb": "state" }))
     }
 
+    /// The page drawn and then the window at rest, each from `since` ([`crate::qa_times`]): what a budget line names, and the app at rest beside it.
+    fn moment(&self, since: Instant) -> Result<Moment, AgentError> {
+        self.moment_when(since, qa_times::page_drawn)
+    }
+
+    /// As [`Self::moment`], for what counts as drawn being something else.
+    fn moment_when(&self, since: Instant, accept: fn(&Value) -> bool) -> Result<Moment, AgentError> {
+        let drawn = qa_times::drawn_since(since, || self.state(), accept)?;
+        self.settled()?;
+        Ok(Moment::new(drawn, since.elapsed().as_secs_f64() * 1000.0))
+    }
+
     fn drive(&self, verb: &str, value: &str) -> Result<Value, AgentError> {
         self.call(json!({ "cmd": "qa_drive", "verb": verb, "value": value }))
     }
@@ -418,8 +432,7 @@ impl Measured {
         self.child = child;
         self.pid = ready["pid"].as_u64().unwrap_or(0) as u32;
         let up = began.elapsed();
-        self.settled()?;
-        let settled = began.elapsed();
+        let moment = self.moment(began)?;
         let state = self.state()?;
         let ms = |duration: Duration| round(duration.as_secs_f64() * 1000.0);
         // From being told to the new window going up with the place on it, however sharp: what someone sees of an update. The old one's gone, and then the new one's own time to its first showing, as it says.
@@ -430,7 +443,8 @@ impl Measured {
             "told_ms": ms(told),
             "old_app_gone_ms": ms(ended),
             "new_app_ready_ms": ms(up),
-            "gap_to_page_drawn_ms": ms(settled),
+            "gap_to_page_drawn_ms": round(moment.drawn_ms),
+            "gap_to_window_settled_ms": round(moment.settled_ms),
             "first_shown": state["record"]["first_shown"],
             "wrote_bytes": flushed["wrote_bytes"],
             "record_bytes": flushed["record_bytes"],
@@ -458,14 +472,14 @@ fn mib(bytes: u64) -> f64 {
     (bytes as f64 / (1024.0 * 1024.0) * 100.0).round() / 100.0
 }
 
-fn percentile(sorted: &[f64], share: f64) -> f64 {
+pub(crate) fn percentile(sorted: &[f64], share: f64) -> f64 {
     sorted
         .get(((sorted.len().saturating_sub(1)) as f64 * share).round() as usize)
         .copied()
         .unwrap_or(0.0)
 }
 
-fn round(value: f64) -> f64 {
+pub(crate) fn round(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
 
@@ -650,6 +664,7 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
 
     // Cold start: from starting the process to the first page sharp, opening a file as a double click does.
     let mut colds = Vec::new();
+    let mut first_frames = Vec::new();
     let mut ready_ms = Vec::new();
     for _ in 0..runs {
         let started = Instant::now();
@@ -661,12 +676,16 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
             },
         )?;
         ready_ms.push(started.elapsed().as_secs_f64() * 1000.0);
-        run.settled()?;
-        colds.push(started.elapsed().as_secs_f64() * 1000.0);
+        colds.push(run.moment(started)?);
+        // The app's own stamp of its first frame, from the process starting.
+        first_frames.push(run.state()?["record"]["first_shown"]["ms_from_start"].as_f64().unwrap_or(0.0));
     }
-    colds.sort_by(f64::total_cmp);
     ready_ms.sort_by(f64::total_cmp);
-    report["cold_start_ms"] = json!({ "runs": runs, "p50": round(percentile(&colds, 0.5)), "p95": round(percentile(&colds, 0.95)), "max": round(percentile(&colds, 1.0)), "budget_p50": 300, "budget_p95": 500, "ready_p50": round(percentile(&ready_ms, 0.5)) });
+    first_frames.sort_by(f64::total_cmp);
+    report["cold_start_ms"] = qa_times::line(
+        &colds,
+        json!({ "budget_p50": 300, "budget_p95": 500, "ready_p50": round(percentile(&ready_ms, 0.5)), "first_frame_p50": round(percentile(&first_frames, 0.5)), "first_frame_note": "Stamped by the app (record.first_shown.ms_from_start), a window up with its place on it, however sharp." }),
+    );
 
     // One document, at rest on a page, then what idling costs, scrolling, and a closed window.
     let run = Measured::start(
@@ -730,10 +749,12 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     run.settled()?;
     for _ in 0..runs.min(20) {
         run.drive("scroll", &format!("{}", pages * 0.75))?;
-        stops.push(run.settled()?);
+        stops.push(run.moment(Instant::now())?);
     }
-    stops.sort_by(f64::total_cmp);
-    report["sharp_after_scroll_stops_ms"] = json!({ "stops": stops.len(), "p50": round(percentile(&stops, 0.5)), "worst": round(percentile(&stops, 1.0)), "budget": 100, "note": "From `qa scroll` returning. Includes one client round trip." });
+    report["sharp_after_scroll_stops_ms"] = qa_times::line(
+        &stops,
+        json!({ "budget": 100, "note": "From `qa scroll` returning; the reads are `qa state` round trips." }),
+    );
     let fast = run.call(json!({ "cmd": "qa_drive", "verb": "sweep", "value": "40", "timeout_ms": 5000 }))?;
     report["fast_scroll"] = json!({ "pages_per_second": 40, "contents": fast["contents"], "ui_step_us": fast["step_us"], "blank_seen_steps": fast["blank_seen_steps"], "peak_tree_mib": mib(fast["peak_tree_bytes"].as_u64().unwrap_or(0)), "budget_peak_mib": 170, "sharp_after_stop_ms": fast["sharp_after_ms"], "cancelled": fast["cancelled"] });
     run.drive("window", "close")?;
@@ -780,14 +801,13 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     run.settled()?;
     let started = Instant::now();
     run.call(json!({ "cmd": "view", "sidebar": "on" }))?;
-    run.settled()?;
+    let sidebar = run.moment_when(started, qa_times::sidebar_and_page_drawn)?;
     let sidebar_state = run.state()?;
-    let sidebar_ms = started.elapsed().as_secs_f64() * 1000.0;
     if sidebar_state["app"]["sidebar_visible"] != true {
         return Err(failed(Code::QA_FAILED, "The sidebar didn't come back."));
     }
     let (first_tabs, last) = (measures[0]["app_mib"].as_f64().unwrap_or(0.0), measures[2]["app_mib"].as_f64().unwrap_or(0.0));
-    report["tabs"] = json!({ "file": tab_file.file_name().map(|name| name.to_string_lossy().to_string()), "measures": measures, "app_mib_over_2_tabs_at_1000": round(last - first_tabs), "budget_mib_over_2_tabs": 4, "switch_to_a_cold_tab_ms": round(switch_ms), "sidebar_opens_ms": round(sidebar_ms), "budget_sidebar_ms": 150 });
+    report["tabs"] = json!({ "file": tab_file.file_name().map(|name| name.to_string_lossy().to_string()), "measures": measures, "app_mib_over_2_tabs_at_1000": round(last - first_tabs), "budget_mib_over_2_tabs": 4, "switch_to_a_cold_tab_ms": round(switch_ms), "sidebar_opens_ms": round(sidebar.drawn_ms), "sidebar_window_settled_ms": round(sidebar.settled_ms), "budget_sidebar_ms": 150, "sidebar_how": qa_times::HOW });
     // The same 1,000 tabs across an update: what they come back at, against what they cost opened one by one.
     let mut run = run;
     let hand_off = run.hand_off_and_relaunch(&app)?;
@@ -820,17 +840,20 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     run.drive("as_person", "page rotate 1 --by 90")?;
     run.settled()?;
     let mut gaps = Vec::new();
+    let mut settled_gaps = Vec::new();
     let mut first_frames = Vec::new();
     let mut last_gap = Value::Null;
     for _ in 0..runs.min(11) {
         let gap = run.hand_off_and_relaunch(&app)?;
         gaps.push(gap["gap_to_page_drawn_ms"].as_f64().unwrap_or(0.0));
+        settled_gaps.push(gap["gap_to_window_settled_ms"].as_f64().unwrap_or(0.0));
         first_frames.push(gap["gap_to_first_frame_ms"].as_f64().unwrap_or(0.0));
         last_gap = gap;
     }
     gaps.sort_by(f64::total_cmp);
+    settled_gaps.sort_by(f64::total_cmp);
     first_frames.sort_by(f64::total_cmp);
-    report["hand_off_gap"] = json!({ "runs": gaps.len(), "p50_ms": round(percentile(&gaps, 0.5)), "worst_ms": round(percentile(&gaps, 1.0)), "first_frame_p50_ms": round(percentile(&first_frames, 0.5)), "first_frame_worst_ms": round(percentile(&first_frames, 1.0)), "last": last_gap, "note": "From telling the old app, through its flush and quit, the new app's start and restore, to the page settled. A process launch here, from a folder on this Mac, so it doesn't include LaunchServices or Gatekeeper." });
+    report["hand_off_gap"] = json!({ "runs": gaps.len(), "p50_ms": round(percentile(&gaps, 0.5)), "worst_ms": round(percentile(&gaps, 1.0)), "window_settled_p50_ms": round(percentile(&settled_gaps, 0.5)), "window_settled_worst_ms": round(percentile(&settled_gaps, 1.0)), "first_frame_p50_ms": round(percentile(&first_frames, 0.5)), "first_frame_worst_ms": round(percentile(&first_frames, 1.0)), "last": last_gap, "note": "From telling the old app, through its flush and quit, the new app's start and restore, to the page drawn (p50_ms, worst_ms: the first `qa state` with the reader settled and a tile on show, which a fade or a look at an edited file's signatures doesn't hold up) and, apart, to the window at rest (window_settled_*, which waits for those too). A process launch here, from a folder on this Mac, so it doesn't include LaunchServices or Gatekeeper." });
     // Bytes: nothing at rest, a line for a burst of edits, as the process's own counter says.
     let written = |pid: u32| recto_platform::local::process_counters(pid).map_or(0, |counters| counters.disk_bytes_written);
     let _ = Command::new("/bin/sync").status();

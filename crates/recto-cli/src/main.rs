@@ -3,6 +3,7 @@
 
 mod handover;
 mod qa;
+mod qa_times;
 
 use recto_agent::Code;
 use recto_agent::commands::access::{Log, PermissionRequest};
