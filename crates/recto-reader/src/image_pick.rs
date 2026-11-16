@@ -29,8 +29,17 @@
 //! **What it costs:** 32 bytes a page view ([`ImageSelection`]'s guard), and once an image is found, one small allocation off the UI thread with its page,
 //! number, box and the point clicked. Nothing per page or tab, and nothing at all with nothing picked.
 //!
+//! **A picture that is the page is never picked** (owner, 2026-11-16: "lets treat true images and scanned pages differently. Click to select only for true
+//! images."): a scan, with a text layer over it or without, a full-bleed cover. One rule, [`is_the_page`]: the picture's box, held to the page, leaves
+//! under a twentieth of the page ([`crate::paper::LEAST_BACKGROUND`], dark paper's line for a page that "is a picture": with less background than that
+//! there is nothing to judge but the picture). Dark paper's rule needs the page's pixels, which a click doesn't have, so it's the box alone, at that
+//! one number. It's applied twice: to the boxes the tab's own worker gives ([`under`]), so a click on a plain scan starts no private worker, and to the
+//! box the look found ([`ImageSelection::found`]), so a figure placed over a scan is picked and the scan under it isn't. A scan made of several strips or
+//! tiles, none covering the page alone, isn't caught: it stays as it was. `recto images --at` is the lookup, not the pick, and still names a scan.
+//!
 //! **Its box comes from a hostile file** (rule 6): one that isn't finite, has no area or lies wholly off its page is refused, and the rest is held to the page.
 
+use crate::paper::LEAST_BACKGROUND;
 use recto_index::select::{PagePoint, PageText, Rect};
 use serde_json::{Value, json};
 use std::num::NonZeroU32;
@@ -76,12 +85,32 @@ pub enum Under {
     No,
 }
 
-/// **Whether `at` is in any of `boxes`,** both in 65535ths of the page from its top left (`[left, top, right, bottom]` and `[x, y]`), edges included.
-/// `None`, boxes the worker couldn't give (its page failed, withheld, refused, stopped), is no picture: a click picks nothing there. A box from a hostile
+/// **Whether a picture covering `covered` of a page of `page` (any one unit of area) is the page:** what's left of the page round it is under
+/// [`LEAST_BACKGROUND`] of it. A page of no area has no picture, so nothing is the page.
+fn covers(covered: f64, page: f64) -> bool {
+    covered > 0.0 && page > 0.0 && page - covered <= page * LEAST_BACKGROUND
+}
+
+/// **Whether a picture's `rect`, held to its page of `size`, is the page** (the module's notes): the one rule of what a click never picks. A box a hostile
+/// file gives is held first; one refused there (not finite, off the page, a page of no size) is no page and no picture.
+pub fn is_the_page(rect: Rect, size: (f32, f32)) -> bool {
+    held_to_page(rect, size).is_some_and(|held| covers(f64::from(held.width) * f64::from(held.height), f64::from(size.0) * f64::from(size.1)))
+}
+
+/// [`is_the_page`] for a box of the worker's, in 65535ths of the page: the same rule, on the same share of the page.
+fn is_the_page_in_parts([left, top, right, bottom]: [u16; 4]) -> bool {
+    let side = |from: u16, to: u16| f64::from(to.saturating_sub(from));
+    covers(side(left, right) * side(top, bottom), f64::from(u16::MAX) * f64::from(u16::MAX))
+}
+
+/// **Whether `at` is in any of `boxes`,** that isn't the page's own ([`is_the_page`]), both in 65535ths of the page from its top left
+/// (`[left, top, right, bottom]` and `[x, y]`), edges included. A box that is the page, held alone, may be a scan or a fold of several pictures into one
+/// (past 64 apart, `recto-render`'s `places.rs`), which the box can't tell: with no other box under the point, the answer is no picture here, so the page's
+/// folded figures past 64 pictures are the one thing a click there can't pick. `None`, boxes the worker couldn't give (its page failed, withheld, refused, stopped), is no picture: a click picks nothing there. A box from a hostile
 /// file is only compared, so one upside down or of no area holds nothing.
 pub fn under(boxes: Option<&[[u16; 4]]>, [x, y]: [u16; 2]) -> Under {
     let holds = |&[left, top, right, bottom]: &[u16; 4]| (left..=right).contains(&x) && (top..=bottom).contains(&y);
-    if boxes.is_some_and(|boxes| boxes.iter().any(holds)) {
+    if boxes.is_some_and(|boxes| boxes.iter().any(|one| holds(one) && !is_the_page_in_parts(*one))) {
         Under::Yes
     } else {
         Under::No
@@ -295,7 +324,9 @@ impl ImageSelection {
         }
         let point = self.wanted.point;
         self.wanted.stage = Stage::Idle;
-        let Some(rect) = held_to_page(rect, page_size) else { return false };
+        let Some(rect) = held_to_page(rect, page_size).filter(|_| !is_the_page(rect, page_size)) else {
+            return false;
+        };
         self.picked = Some(Box::new(Picked {
             pick: ImagePick {
                 page: point.page,
@@ -464,6 +495,53 @@ mod tests {
             assert_eq!(held_to_page(bad, LETTER), None, "{bad:?}");
         }
         assert_eq!(held_to_page(rect(0.0, 0.0, 10.0, 10.0), (f32::NAN, 10.0)), None, "a page of no size");
+    }
+
+    /// Failure (owner, 2026-11-16): the line between a figure and a scan is drawn in the wrong place, so a scan with a thin scanner margin is picked, or a
+    /// figure that fills most of a page is taken for the page. A picture whose box leaves a twentieth of the page or more uncovered is picked; one that
+    /// leaves less is the page, at the line included. Made boxes on a page of 100 by 100, so the sums are exact, and the worker's boxes in 65535ths agree.
+    #[test]
+    fn a_picture_leaving_under_a_twentieth_of_the_page_is_the_page() {
+        let page = (100.0, 100.0);
+        assert!(is_the_page(rect(0.0, 0.0, 100.0, 100.0), page), "the whole page");
+        assert!(
+            is_the_page(rect(0.0, 0.0, 95.0, 100.0), page),
+            "at the line: a twentieth left is the page's margin"
+        );
+        assert!(!is_the_page(rect(0.0, 0.0, 94.0, 100.0), page), "just under it: a figure");
+        assert!(is_the_page(rect(-30.0, -30.0, 500.0, 500.0), page), "drawn past the page, held to it");
+        assert!(!is_the_page(rect(10.0, 10.0, 50.0, 50.0), page));
+        for bad in [rect(f32::NAN, 0.0, 100.0, 100.0), rect(0.0, 0.0, 0.0, 100.0), rect(200.0, 0.0, 100.0, 100.0)] {
+            assert!(!is_the_page(bad, page), "a hostile box is no page: {bad:?}");
+        }
+        assert!(!is_the_page(rect(0.0, 0.0, 10.0, 10.0), (0.0, 0.0)), "a page of no size picks nothing");
+        let whole = u16::MAX;
+        assert!(is_the_page_in_parts([0, 0, whole, whole]));
+        assert!(is_the_page_in_parts([0, 0, 62_259, whole]), "95% across, a hair over the line");
+        assert!(!is_the_page_in_parts([0, 0, 61_000, whole]), "93%");
+        assert!(!is_the_page_in_parts([40_000, 40_000, 20_000, 20_000]), "upside down");
+    }
+
+    /// Failure (owner, 2026-11-16): a click on a plain scan still asks for a private worker, or a figure over a scan can't be picked because the scan's box
+    /// hides it. Only the boxes that aren't the page count: with the scan alone under the point, no picture is; with a figure on it too, one is.
+    #[test]
+    fn a_scans_box_alone_under_a_point_is_no_picture_but_a_figure_over_it_is() {
+        let scan = [0, 0, u16::MAX, u16::MAX];
+        let figure = [20_000, 20_000, 40_000, 40_000];
+        assert_eq!(under(Some(&[scan]), [30_000, 30_000]), Under::No);
+        assert_eq!(under(Some(&[scan, figure]), [30_000, 30_000]), Under::Yes);
+        assert_eq!(under(Some(&[scan, figure]), [50_000, 50_000]), Under::No, "on the scan beside the figure");
+    }
+
+    /// Failure (owner, 2026-11-16): the look finds the picture on top, and it is the page (the figure's box was folded into a scan's, or the scan was all the
+    /// worker could say), so a click on a scan is picked. A look's answer that is the page picks nothing; one beside it is picked.
+    #[test]
+    fn a_look_that_found_the_page_picks_nothing() {
+        let mut image = ImageSelection::default();
+        looking_at(&mut image, at(0, 300.0, 400.0), 1);
+        assert!(!image.found(1, 1, rect(0.0, 0.0, 612.0, 792.0), LETTER));
+        assert!(image.picked().is_none() && !image.finding(), "nothing picked and the click is done");
+        assert!(picked_at(at(0, 300.0, 400.0), rect(100.0, 100.0, 400.0, 400.0)).picked().is_some());
     }
 
     /// Failure (S1 of the review): the worker's boxes say an image is under a point it isn't, so a click on a margin starts a private worker anyway, or

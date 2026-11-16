@@ -574,16 +574,16 @@ fn an_agent_gets_nothing_new_of_a_picked_image_or_a_protected_document() {
 }
 
 /// Failure (rule 6): an image drawn far past its page gives the host a box past the page, or one drawn absurdly large (its numbers past what a point
-/// can be) panics the look or is picked. Held to the page, the one past it is picked with the page's box; the absurd ones aren't listed, as the snapshot
-/// tool's click and `recto images` don't list them either.
+/// can be) panics the look or is picked. Held to the page, the one partly past it is picked with its box cut to the page; the ones drawn past the whole page
+/// are the page, and aren't picked (owner, 2026-11-16); the absurd ones aren't listed, as the snapshot tool's click and `recto images` don't list them.
 #[test]
 fn an_image_drawn_far_past_its_page_is_held_to_it() {
     let disk = Disk::new();
-    let drawn = "2000 0 0 2000 -500 -500 cm /Im Do Q q 1e6 0 0 1e6 -5e5 -5e5 cm /Im Do Q q 1e39 0 0 1e39 0 0 cm /Im Do";
+    let drawn = "2000 0 0 2000 -500 -500 cm /Im Do Q q 1e6 0 0 1e6 -5e5 -5e5 cm /Im Do Q q 1e39 0 0 1e39 0 0 cm /Im Do Q q 400 0 0 400 300 -100 cm /Im Do";
     let doc = disk.file("far.pdf", &figure_page(drawn, "", 0));
     let app = opened(disk, &doc);
     click(&app, OFF);
-    assert_eq!(picked(&app), Some((1, [0.0, 0.0, 612.0, 792.0])), "the page's box");
+    assert_eq!(picked(&app), Some((4, [300.0, 492.0, 312.0, 300.0])), "the figure's box cut to the page");
     assert_eq!(image(&app)["box_on_page"], 1);
 }
 
@@ -621,31 +621,108 @@ fn noisy_picture() -> recto_testpdf::Object {
     }
 }
 
-/// **The known gap the owner is deciding** (the review of `build/image-select`, should-fix 5; SPEC §6): a scan's invisible OCR words over a real picture
-/// aren't found hidden by the page's hidden-text check, as the picture is ink under them, so a click on such a word is text's (a caret, and nothing
-/// picked), and only a click between the lines of words picks the scan. This holds today's behaviour, so a change to it is a deliberate one: it fails if a
-/// click on an OCR word starts picking the scan, or a click off the words stops picking it.
-#[test]
-fn known_gap_a_click_on_a_scans_ocr_word_over_a_real_picture_is_texts() {
-    let content = [
-        b"q 400 0 0 500 100 150 cm /Scan Do Q\n".to_vec(),
-        b"BT 3 Tr /F1 12 Tf 120 600 Td (Words a scan's OCR put here) Tj ET\n".to_vec(),
-    ]
-    .concat();
+/// A scan page: one picture over the whole page (`page_extra` for the page's dictionary, e.g. a turn), the OCR words invisibly over it when `ocr`, and a
+/// noisy `figure` placed over it (200 x 200 at 100, 300 up the page: 100, 292 from the top as shown) when `figure`.
+fn scan_page(ocr: bool, figure: bool, page_extra: &str) -> Vec<u8> {
+    let mut content = b"q 612 0 0 792 0 0 cm /Scan Do Q\n".to_vec();
+    if figure {
+        content.extend(b"q 200 0 0 200 100 300 cm /Fig Do Q\n");
+    }
+    if ocr {
+        content.extend(b"BT 3 Tr /F1 12 Tf 120 600 Td (Words a scan's OCR put here) Tj ET\n");
+    }
     let first = recto_testpdf::first_extra_object(1);
-    let bytes = recto_testpdf::pages_with(
-        &[recto_testpdf::Page::new(content)],
-        &format!("/XObject << /Scan {first} 0 R >>"),
-        vec![noisy_picture()],
-    );
+    recto_testpdf::pages_with(
+        &[recto_testpdf::Page {
+            page_extra: page_extra.into(),
+            ..recto_testpdf::Page::new(content)
+        }],
+        &format!("/XObject << /Scan {first} 0 R /Fig {} 0 R >>", first + 1),
+        vec![noisy_picture(), noisy_picture()],
+    )
+}
+
+/// Whether a text caret is placed (a selection's start, with nothing selected), as `qa state` says.
+fn caret(app: &HeadlessApp) -> bool {
+    let selection = app.core().panes.reading_engine(&app.core().engine).report().0["selection"].clone();
+    selection["start"] != Value::Null && selection["selected"] == false
+}
+
+/// **A scan is never picked by a click** (owner, 2026-11-16: "lets treat true images and scanned pages differently. Click to select only for true
+/// images."; it replaces the known gap this test held, where a click on an OCR word was text's and a click between words picked the scan). Failure: a
+/// click on a scan, with an OCR layer or without, on a word, between the words or at the page's edge, picks the page or starts a private worker to find
+/// out; or the click on a word stops placing the caret. A one-image scan costs 0 `images --at`, and on a word the caret is placed as before.
+#[test]
+fn a_click_on_a_scan_picks_nothing_and_costs_no_worker() {
+    for ocr in [true, false] {
+        let disk = Disk::new();
+        let doc = disk.file("scan.pdf", &scan_page(ocr, false, ""));
+        let app = opened(disk, &doc);
+        // The OCR line is 600 to 612 up the page, 180 to 192 down it as it's shown.
+        for (what, at) in [
+            ("on a word's place", (160.0, 188.0)),
+            ("between the words", (300.0, 400.0)),
+            ("at the page's edge", (4.0, 4.0)),
+        ] {
+            let looks = looks_sent(&app, |app| drop(let_go(app, at, None, 1)));
+            assert_eq!((looks, picked(&app)), (0, None), "ocr {ocr}, {what}");
+            assert_eq!(image(&app)["box_on_page"], Value::Null, "ocr {ocr}, {what}: no box");
+        }
+        if ocr {
+            let_go(&app, (160.0, 188.0), None, 1);
+            landed(&app);
+            assert!(caret(&app), "a click on an OCR word still places the caret");
+        }
+    }
+}
+
+/// **A figure placed over a scan is picked, the scan beside it isn't** (owner, 2026-11-16). Failure: the scan's page-wide box under the point hides the
+/// figure from the filter, so a figure on a scanned page can't be picked; or the look's answer for a point on the scan (the scan, as it's on top there)
+/// is picked. The click on the figure costs one look, the click on the scan beside it none, and `recto images --at` still names the scan there.
+#[test]
+fn a_figure_over_a_scan_is_picked_and_the_scan_beside_it_isnt() {
     let disk = Disk::new();
-    let doc = disk.file("scan.pdf", &bytes);
+    let doc = disk.file("scan-figure.pdf", &scan_page(true, true, ""));
     let app = opened(disk, &doc);
-    // The OCR line is 600 to 612 up the page, 180 to 192 down it as it's shown; the scan is 142 to 642 down.
-    click(&app, (160.0, 188.0));
-    assert_eq!(picked(&app), None, "a click on an OCR word over the picture is text's, today");
-    click(&app, (300.0, 400.0));
-    assert_eq!(picked(&app).map(|(number, _)| number), Some(1), "a click off the words picks the scan");
+    assert_eq!(
+        looks_sent(&app, |app| drop(let_go(app, (200.0, 392.0), None, 1))),
+        1,
+        "a figure over a scan: one look"
+    );
+    assert_eq!(picked(&app), Some((2, [100.0, 292.0, 200.0, 200.0])), "the figure, not the scan under it");
+    assert_eq!(looks_sent(&app, |app| drop(let_go(app, (500.0, 600.0), None, 1))), 0, "the scan beside it");
+    assert_eq!(picked(&app), None);
+    let agents = app.recto(Level::ReadOnly, &["images", "1", "--at", "500,600"]).expect("images --at");
+    assert_eq!(agents["images"][0]["number"].as_u64(), Some(1), "the lookup still names the scan");
+}
+
+/// Failure (owner, 2026-11-16): on a turned page, by the file's own turn or an unsaved one, the scan's box is compared against the page unturned, so a
+/// scan of a turned page is taken for a figure and picked, or a figure on a turned scan isn't. Clicks at the middle of each, by the page's own sums.
+#[test]
+fn on_a_turned_page_a_scan_isnt_picked_and_a_figure_over_it_is() {
+    for (how, extra, turn) in [("a turn of the file's own", "/Rotate 90", false), ("an unsaved turn", "", true)] {
+        let disk = Disk::new();
+        let doc = disk.file("turned-scan.pdf", &scan_page(true, true, extra));
+        let app = opened(disk, &doc);
+        if turn {
+            app.agent(Level::Control, r#"{"cmd":"page_rotate","tab":"active","pages":"1","degrees":90}"#)
+                .expect("a turn");
+            shown(&app);
+        }
+        let listed = app.recto(Level::ReadOnly, &["images", "1"]).expect("images");
+        let figure = listed["images"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|image| image["number"] == 2)
+            .expect("the figure listed");
+        let rect: Vec<f32> = (0..4).map(|at| figure["rect"][at].as_f64().unwrap() as f32).collect();
+        let on_scan = (rect[0] / 2.0, rect[1] / 2.0 + 1.0);
+        assert_eq!(looks_sent(&app, |app| drop(let_go(app, on_scan, None, 1))), 0, "{how}: the scan");
+        assert_eq!(picked(&app), None, "{how}: the scan");
+        click(&app, (rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0));
+        assert_eq!(picked(&app).map(|(number, _)| number), Some(2), "{how}: the figure");
+    }
 }
 
 /// A page of 72 small pictures in a grid of 8 by 9, apart from each other, more than an answer of the worker's holds (64), drawn row by row from the
