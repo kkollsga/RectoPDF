@@ -1,0 +1,11 @@
+== colour 18:59:09 load averages: 3,30 8,10 8,98
+   exit 0 18:59:20
+== sweeps 18:59:20 load averages: 2,94 7,87 8,89
+   exit 0 19:00:03
+== a 19:00:03 load averages: 2,24 6,98 8,51
+   exit 0 19:01:57
+== tabs 19:01:57 load averages: 3,14 5,81 7,85
+   exit 0 19:04:32
+== wake 19:04:32 load averages: 3,86 5,25 7,29
+   exit 0 19:04:40
+done

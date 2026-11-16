@@ -151,6 +151,30 @@ A release build of `main` with `build/resting-worker` merged (a render worker re
 - **The map, two runs:** fitted 322.7 and 322.8 MiB, about 2x 345.5 and 345.6, about 3x 335.8 and 335.9, worker peak 374.1; 33.4 at rest 4 s later. As at 13:36.
 - The window's thread's worst stall in those runs: 40 and 41 ms.
 
+## The release candidate for 0.1.2 (the coordinator, 2026-11-16 18:59 to 19:05, and 19:1x for the 15 s reading; nothing else in the queue)
+
+A release build of `main` at 14b62abe: everything above, and since 15:02 the click places read at rest, the resting rule's two lines (over 64 MiB after 3 s, 48 to 64 after 12 s), a zoomed page kept centred, the two-journal merge. `HEAVY_SOLO=1`, load 2.2 to 3.9 (`performance-2026-11-16/quiet-release-candidate/`). Parts `colour` (with a reading 15 s after drawing added), `sweeps`, `a`, `tabs`, `wake`.
+
+| Line | Target | At 13:36 to 15:02 | The candidate | |
+|---|---|---|---|---|
+| Cold start, page drawn, 11 starts | 300 ms p50, 500 p95 | 239 p50, 247 p95 | **246 p50, 268 p95 and worst**; first frame 75 ms | Met |
+| Text page (`rfc9110`) | 60 MiB | 34.9 | **35.1** (app 25.7, worker 9.4) | Met |
+| Colour page (NASA p50) | 100 MiB | 41.2 | **41.5** | Met |
+| Shaded backgrounds, settled | 100 MiB | 96.5, 97.1 | **96.8 and 96.3** (two workers, 68.9 MiB between them) | Met, by about 3.5 MiB |
+| Shaded backgrounds, later | | 42.6 at 4 s (the 3 s rule) | **96.1 at 4 s, 27.1 at 15 s** (the 12 s rule) | By design: a page turn after a pause was 182 to 389 ms with the worker let go at 3 s against 47 to 55 kept |
+| The map fitted, about 2x, about 3x, two runs | 450 MiB accepted | 322.7, 345.5, 335.8 | **323.0, 345.5, 340.3**; worker peak 351.7 (374.1) | Met. The app's own part at the zoom is 37.7 MiB against 33.5, and stays at rest (37.5 against 33.4): **4.2 MiB not yet explained, being looked at before the tag** |
+| Scroll, 6 and 40 pages a second (run A) | 0 blank frames on seen pages | 0 | **0 and 0**; UI thread a step 183 / 773 / 923 µs and 207 / 406 / 2,102 µs (p50 / p99 / worst); peak 43.0 and 45.8 MiB | Met. One step of 2.1 ms at 40 a second (353 µs was the worst that morning) |
+| Six sweeps from rest | 0 blank steps on seen pages | 0 in 10 | **0 in all six** | Met |
+| Sharp after scroll stops, 11 | 100 ms | 7.5 p50, 20.9 worst | **7.5 p50, 22.8 worst** | Met |
+| Window closed | 20 MiB | 13.0 | **13.4** | Met |
+| Idle | ≤ 1 wake-up a second | 0.2 | **0.0% CPU, 0.2 a second**, 9 threads | Met |
+| 1,000 tabs over 2 (the map) | 4 MiB | 1.3 | **1.4 and 1.3 MiB** | Met |
+| A woken tab sharp, 5 wakes | 100 ms | 100 to 107 | **101.3, 101.4, 103.3, 104.1, 111.3 ms**; 2 paper frames each | Missed, as before |
+| An update's first frame, 11 | | 360 p50 | **366 p50, 384 worst**; page drawn 443 p50 | As before |
+| The window's thread's worst stall | 16 ms | 39 to 41 | **35, 43, 44 ms**; run A's five kept: 34.7 ms with `qa state` running and nothing named, 31.8, 30.7 and 29.1 in `scroll`, 16.4 blocked in `scroll` | Missed, as before, and now named |
+
+So the click places' read at rest and the day's later changes moved no line that scrolling or a cold start has; the one new number to explain is the app's 4.2 MiB at the map's zoom.
+
 ## To measure again with nothing else running
 
 The lines that miss or are close, for the coordinator at a quiet time, each with `HEAVY_SOLO=1` and `MADE` and `BENCH` set as the script says (`python3 -I docs/reports/performance-2026-11-16-bigpdf.py "$MADE"` makes the made file; `BENCH` is a temp folder with copies of the four `bench100` files the script names):
