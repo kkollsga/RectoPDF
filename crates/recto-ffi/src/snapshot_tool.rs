@@ -1,8 +1,8 @@
 //! **The clipboard's calls:** what a copy offers, one type's bytes, and letting it go. The tool and its state are `recto_app::core::snapshot_tool`'s.
 
 use crate::AppCore;
+use recto_app::core::controls::UiAction;
 pub use recto_app::core::snapshot_tool::ClipboardOffer;
-use recto_app::core::{Doing, controls::UiAction};
 
 /// What the clipboard is offered: its types in the order to offer them, which of those are made only when a paste asks, and the number that names this offer for [`AppCore::clipboard_data`].
 #[uniffi::remote(Record)]
