@@ -15,7 +15,7 @@
 //! **Versions.** A record from a newer app is never touched. This app works in a folder of its own version beside it, which is also what a migration keeps: going forward copies the old folder first, so going back finds it as it was.
 
 #[cfg(test)]
-mod cold_start;
+mod cold_start_tests;
 /// The record's lock: who keeps it, waiting for it, and letting go of it.
 mod followed;
 mod lock;

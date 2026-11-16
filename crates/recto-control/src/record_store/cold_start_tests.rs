@@ -2,7 +2,7 @@
 //! one journal, and again with 1,000 lists set aside in the folder that are no tab's. Not a check: it asserts nothing about time, which is one
 //! machine's, and runs only when asked, on a release build:
 //!
-//! `tools/sysguard/heavy.sh cargo nextest run --release --locked -p recto-control --run-ignored only --no-capture -E 'test(=record_store::cold_start::a_thousand_tabs)'`
+//! `tools/sysguard/heavy.sh cargo nextest run --release --locked -p recto-control --run-ignored only --no-capture -E 'test(=record_store::cold_start_tests::a_thousand_tabs)'`
 
 use super::*;
 use recto_session::record::{AuthorName, FileRecord, PathField};
