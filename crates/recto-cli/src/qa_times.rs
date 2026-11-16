@@ -139,7 +139,6 @@ mod tests {
     /// Feeds `states` one per read, a clock that moves 5 ms a read, so the time of a read is known.
     fn feed(states: Vec<Value>) -> Result<Drawn, AgentError> {
         let reads = Cell::new(0usize);
-        let states = states;
         until_drawn(
             1000.0,
             || reads.get() as f64 * 2.5,
