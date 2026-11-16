@@ -13,6 +13,9 @@ reader.selection.copy_waiting_for_host
 reader.selection.copying
 reader.selection.dragging
 reader.selection.end
+reader.selection.image.box_on_page
+reader.selection.image.finding
+reader.selection.image.picked
 reader.selection.pages_with_highlight
 reader.selection.selected
 reader.selection.start
