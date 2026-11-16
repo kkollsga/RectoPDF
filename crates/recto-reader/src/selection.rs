@@ -98,7 +98,9 @@ pub struct Selecting {
     on_layers: HashSet<u32>,
     /// Pages whose layer is as it should be, until something changes.
     looked_at: HashSet<u32>,
-    copy: Option<CopyRun>,
+    /// Boxed, as it's held only while a copy is on its way: a page view's selection costs a pointer for it the rest of the time (made room for the
+    /// image picked with a click, `build/image-select`: the pointer's state at its budget of 664 bytes).
+    copy: Option<Box<CopyRun>>,
     /// What came of a copy, for the host to take.
     copied: Option<CopiedText>,
     copied_told: bool,
@@ -459,12 +461,12 @@ impl Selecting {
         self.notice = None;
         self.copied = None;
         self.copied_told = false;
-        self.copy = Some(CopyRun {
+        self.copy = Some(Box::new(CopyRun {
             out: CopiedText::default(),
             range,
             next: range.start.page,
             started: Instant::now(),
-        });
+        }));
         self.advance_copy(pages, is_heavy);
     }
 
