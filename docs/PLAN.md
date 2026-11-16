@@ -50,7 +50,7 @@ Open items only, by where they are in this plan; features not yet built are coun
 - From the owner's answers of 2026-11-16 (`docs/OWNER-RULES.md`), started the same day:
   - [ ] A scan is never selected by a click; only a picture placed on a page is (`build/scan-not-picked`, to hand back 2026-11-16).
   - [ ] The map at about 2x and 3x back under the 450 MiB accepted (`build/map-zoom-memory`, to hand back 2026-11-17); then shaded backgrounds, in the same crate, after it.
-  - [ ] The owner's development build 0.1.1.2 in `/Applications` in place of the 0.1.1 release, which is kept aside.
+  - [x] The owner's development build 0.1.1.2 is in `/Applications` (2026-11-16), the 0.1.1 release kept aside at `/Applications/.RectoPDF-update/previous/RectoPDF.kept`. It has Capture, image selection and the stall record; not the scan rule.
 
 **Phase R's close: done 2026-11-15.** The second independent read found the work sound to release from; its three findings are merged or settled (`build/close-fixes`; the comparison walk's segment back with a longer wait and a truer record); the window's Save was found to run the person's `save` through the one door already, and the size guard's item was stale. The closing review is in `docs/PROCESS.md`.
 
@@ -212,7 +212,7 @@ Open items only, by where they are in this plan; features not yet built are coun
 - Phase 3, sleep: whether a photograph's soft first frame (25 to 30 ms) bothers you.
 - Phase 3: whether a document should open showing the half page of margin above page 1.
 - Phase 4: the go-ahead to push distillPDF to the lopdf fork's commit.
-- Phase 7: the go-ahead to push the fork's lazy page tree, so a 10,000-page file opens in time.
+- Phase 7: a 10,000-page file's first open waits on the lopdf fork: asked for in the fork's inbox on 2026-11-16 (`lopdf-lazy-engine/inbox/unread/2026-11-16-from-rectopdf-performance-review.md`: one page's entry without the whole page tree, and a signature look that doesn't read a whole edited file; with the two older fork items), for the owner's agent there to judge against the fork's other users. RectoPDF's side is designed when its answer comes.
 - Phase R, the whole-phase review: keys typed after ⌘F before the window knows Find is open go to the page.
 - Phase R, the whole-phase review: whether `save --replace` at Full over a signed file is covered by rule 5.
 - Phase R, R4: whether a starved test machine may fail the 2 s stall check.
