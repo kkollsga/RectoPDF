@@ -34,6 +34,8 @@ pub struct PageSeen {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SnapshotTool {
     on: bool,
+    /// On for one capture (the page's Capture, owner 2026-11-16): the next release this tool handles turns it off. Only ever set with `on`.
+    once: bool,
     press: Option<PagePoint>,
     now: Option<PagePoint>,
     /// The size of the pressed page, as it's shown, which the box is held to.
@@ -45,13 +47,36 @@ impl SnapshotTool {
         self.on
     }
 
-    /// Turns it on or off. Off drops any box being drawn.
+    /// Whether it's on for one capture only.
+    pub fn is_once(&self) -> bool {
+        self.once
+    }
+
+    /// Turns it on or off. Off drops any box being drawn, and the one-shot.
     pub fn set_on(&mut self, on: bool) {
         self.on = on;
         if !on {
+            self.once = false;
             self.press = None;
             self.now = None;
         }
+    }
+
+    /// Capture: on for one capture, whether it was off or already on from the menu bar. Whether anything changed.
+    pub fn arm_once(&mut self) -> bool {
+        let changed = !self.on || !self.once;
+        self.on = true;
+        self.once = true;
+        changed
+    }
+
+    /// Ends a capture not yet taken (Escape): off, as it was before Capture. Nothing for a tool on from the menu bar. Whether it ended one.
+    pub fn end_once(&mut self) -> bool {
+        let was = self.once;
+        if was {
+            self.set_on(false);
+        }
+        was
     }
 
     /// The mouse went down on a page of this size.
@@ -116,6 +141,10 @@ impl SnapshotTool {
         };
         self.press = None;
         self.now = None;
+        // A capture asked for with Capture is this one: the tool goes back to text selection, whatever was taken.
+        if self.once {
+            self.set_on(false);
+        }
         taken
     }
 
@@ -191,5 +220,24 @@ mod tests {
         tool.press(at(0, f32::NAN, 10.0), (612.0, 792.0));
         tool.drag(at(0, 100.0, 100.0));
         assert_eq!(tool.release(), Taken::Nothing, "nothing that isn't a number gets through");
+    }
+
+    /// Failure: a capture asked for with Capture takes a second box, or goes on after Escape or the toggle; or the tool turned on from the menu bar goes off after a box.
+    #[test]
+    fn a_capture_is_one_release_and_the_menu_bars_tool_isnt() {
+        let mut tool = SnapshotTool::default();
+        assert!(tool.arm_once() && tool.is_on() && tool.is_once());
+        assert!(!tool.arm_once(), "armed again: nothing changed");
+        tool.press(at(1, 10.0, 10.0), (612.0, 792.0));
+        assert!(matches!(tool.release(), Taken::Click(_)));
+        assert!(!tool.is_on() && !tool.is_once(), "back to text selection after one release");
+        tool.set_on(true);
+        assert!(tool.arm_once(), "on from the menu bar, now one-shot: that's a change");
+        assert!(tool.end_once() && !tool.is_on(), "Escape ends a capture");
+        tool.set_on(true);
+        assert!(!tool.end_once() && tool.is_on(), "Escape leaves the menu bar's tool on");
+        tool.press(at(1, 10.0, 10.0), (612.0, 792.0));
+        tool.release();
+        assert!(tool.is_on(), "the menu bar's tool stays on");
     }
 }

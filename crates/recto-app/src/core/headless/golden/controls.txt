@@ -39,6 +39,8 @@ recent.clear | sent [{"cmd":"recent_clear"}] | host None understood true | heard
 rotate.left | sent [{"cmd":"page_rotate","tab":"#3","pages":"all","degrees":-90}] | host None understood true | heard ops_ready model_changed
 rotate.right | sent [{"cmd":"page_rotate","tab":"#3","pages":"all","degrees":90}] | host None understood true | heard ops_ready model_changed
 save.button | sent [{"cmd":"save","tab":"#3","out":null,"replace":false}] | host None understood true | heard model_changed+ ops_ready+ model_changed+
+tools.capture | sent [] | host None understood true | heard model_changed
+tools.capture_cancel | sent [] | host None understood true | heard nothing
 tools.snapshot | sent [] | host None understood true | heard model_changed
 view.actual_size | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":null,"zoom":"actual","layout":null,"tab":null}] | host None understood true | heard ops_ready
 view.agent_icon | sent [{"cmd":"view","paper":null,"sidebar":null,"agent_icon":"toggle","zoom":null,"layout":null,"tab":null}] | host None understood true | heard model_changed

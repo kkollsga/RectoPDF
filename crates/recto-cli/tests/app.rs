@@ -3483,6 +3483,7 @@ fn the_snapshot_tool_takes_a_box_and_an_image_to_the_clipboard() {
     run.ok(&["qa", "menu", "tools.snapshot"]);
     let on = run.report();
     assert_eq!(on["snapshot"]["on"], true, "{on}");
+    assert_eq!(on["snapshot"]["once"], false, "from the menu bar it isn't one-shot: {on}");
     assert_eq!(menu_item(&on, "tools.snapshot")["checked"], true, "the menu says so");
     run.ok(&["qa", "mouse-down", "1:60,50"]);
     run.ok(&["qa", "mouse-drag", "1:400,300"]);

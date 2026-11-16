@@ -1,0 +1,124 @@
+   Compiling cipher v0.5.2
+   Compiling recto-platform v0.1.1 (/Volumes/EksternalHome/Koding/Rust/PDF-reader/.worktrees/performance-review/crates/recto-platform)
+   Compiling recto-proto v0.1.1 (/Volumes/EksternalHome/Koding/Rust/PDF-reader/.worktrees/performance-review/crates/recto-proto)
+   Compiling recto-testpdf v0.1.1 (/Volumes/EksternalHome/Koding/Rust/PDF-reader/.worktrees/performance-review/crates/recto-testpdf)
+   Compiling aes v0.9.4
+   Compiling ecb v0.2.1
+   Compiling cbc v0.2.1
+   Compiling lopdf v0.47.0 (https://github.com/kkollsga/lopdf.git?rev=e5f497163b364fae5217f9b1288ccacd39a9870a#e5f49716)
+   Compiling ctr v0.10.1
+   Compiling aead v0.6.1
+   Compiling recto-svg v0.1.1 (/Volumes/EksternalHome/Koding/Rust/PDF-reader/.worktrees/performance-review/crates/recto-svg)
+   Compiling aes-gcm v0.11.1
+   Compiling recto-sign v0.1.1 (/Volumes/EksternalHome/Koding/Rust/PDF-reader/.worktrees/performance-review/crates/recto-sign)
+   Compiling recto-render v0.1.1 (/Volumes/EksternalHome/Koding/Rust/PDF-reader/.worktrees/performance-review/crates/recto-render)
+   Compiling recto-core v0.1.1 (/Volumes/EksternalHome/Koding/Rust/PDF-reader/.worktrees/performance-review/crates/recto-core)
+   Compiling recto-update v0.1.1 (/Volumes/EksternalHome/Koding/Rust/PDF-reader/.worktrees/performance-review/crates/recto-update)
+   Compiling recto-render-service v0.1.1 (/Volumes/EksternalHome/Koding/Rust/PDF-reader/.worktrees/performance-review/crates/recto-render-service)
+warning: unused import: `std::time::Duration`
+  --> crates/recto-core/src/save.rs:38:5
+   |
+38 | use std::time::Duration;
+   |     ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `recto-core` (lib) generated 1 warning (run `cargo fix --lib -p recto-core` to apply 1 suggestion)
+   Compiling recto-index v0.1.1 (/Volumes/EksternalHome/Koding/Rust/PDF-reader/.worktrees/performance-review/crates/recto-index)
+   Compiling recto-session v0.1.1 (/Volumes/EksternalHome/Koding/Rust/PDF-reader/.worktrees/performance-review/crates/recto-session)
+   Compiling recto-reader v0.1.1 (/Volumes/EksternalHome/Koding/Rust/PDF-reader/.worktrees/performance-review/crates/recto-reader)
+   Compiling recto-agent v0.1.1 (/Volumes/EksternalHome/Koding/Rust/PDF-reader/.worktrees/performance-review/crates/recto-agent)
+   Compiling recto-control v0.1.1 (/Volumes/EksternalHome/Koding/Rust/PDF-reader/.worktrees/performance-review/crates/recto-control)
+   Compiling recto-app v0.1.1 (/Volumes/EksternalHome/Koding/Rust/PDF-reader/.worktrees/performance-review/crates/recto-app)
+    Finished `release` profile [optimized + debuginfo] target(s) in 2m 42s
+────────────
+ Nextest run ID 650b55a9-1504-4b1f-905b-b0548b1cd1c5 with nextest profile: default
+    Starting 3 tests across 13 binaries (825 tests skipped)
+       START [         ] (1/3) recto-app core::headless::flick_cost::flicking_through_ten_large_tabs
+
+running 1 test
+run 0: footprint at the start 4.3 MiB; after each round (MiB, threads) [(42.9, 7), (42.9, 7), (42.9, 7)]; queue peak 1 tabs, null B; sleep files 10 (3367 B); load 7:52  up 3 days, 10:53, 6 users, load averages: 5,33 4,71 4,84
+run 1: footprint at the start 6.2 MiB; after each round (MiB, threads) [(43.1, 7), (43.1, 7), (43.1, 7)]; queue peak 1 tabs, null B; sleep files 10 (3367 B); load 7:52  up 3 days, 10:53, 6 users, load averages: 5,33 4,71 4,84
+run 2: footprint at the start 6.6 MiB; after each round (MiB, threads) [(43.4, 7), (43.4, 7), (43.4, 6)]; queue peak 1 tabs, null B; sleep files 10 (3370 B); load 7:52  up 3 days, 10:53, 6 users, load averages: 5,33 4,71 4,84
+test core::headless::flick_cost::flicking_through_ten_large_tabs ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 5.55s
+
+        PASS [   5.555s] (1/3) recto-app core::headless::flick_cost::flicking_through_ten_large_tabs
+       START [         ] (2/3) recto-app core::headless::input_to_frame::input_to_frame
+
+running 1 test
+tap row            1 tabs  ui p99      1.8  published p50     43.0  p95     46.9  p99     55.8
+open its tab       1 tabs  ui p99      1.5  published p50     73.4  p95     78.4  p99     84.2
+contents jump      1 tabs  ui p99      1.6  published p50     45.2  p95     54.8  p99     61.4
+link click         1 tabs  ui p99      1.6  published p50     51.0  p95     56.6  p99     63.4
+typed page         1 tabs  ui p99      1.6  published p50     51.0  p95     55.0  p99     58.4
+find typed         1 tabs  ui p99      1.4  published p50     51.9  p95     62.7  p99     83.8
+find step          1 tabs  ui p99      1.5  published p50     49.8  p95     54.0  p99     58.5
+compare click      1 tabs  ui p99      1.5  published p50     44.8  p95     49.6  p99     52.2
+pane focus         1 tabs  ui p99      1.3  published p50     44.6  p95     49.0  p99     57.0
+zoom               1 tabs  ui p99      2.4  published p50     29.1  p95     33.0  p99     35.3
+sidebar toggle     1 tabs  ui p99      1.4  published p50     45.5  p95     50.8  p99     53.9
+rotate             1 tabs  ui p99      2.1  published p50     54.0  p95     62.2  p99     75.6
+undo               1 tabs  ui p99      1.5  published p50     53.8  p95     60.2  p99     64.5
+open new file      1 tabs  ui p99      2.6  published p50    224.3  p95    314.9  p99    334.1
+scroll crossing an entry     1 tabs  ui p99      3.0  published p50     42.7  p95     52.7  p99     57.4
+scroll within an entry     1 tabs  ui p99      1.3  published p50     24.6  p95     33.6  p99     36.2
+events for watchers     1 tabs  ui p99      0.5  published p50     23.0  p95     31.2  p99     39.1
+tap row          100 tabs  ui p99      2.1  published p50     94.8  p95    110.2  p99    140.0
+open its tab     100 tabs  ui p99      2.1  published p50    122.2  p95    138.0  p99    163.7
+contents jump    100 tabs  ui p99      2.8  published p50     50.4  p95     62.0  p99    125.5
+link click       100 tabs  ui p99      1.6  published p50     49.4  p95     53.8  p99     58.6
+typed page       100 tabs  ui p99      1.8  published p50     52.1  p95     76.9  p99     81.5
+find typed       100 tabs  ui p99      2.3  published p50     57.1  p95     66.2  p99     81.8
+find step        100 tabs  ui p99      3.2  published p50     60.1  p95     74.8  p99     80.6
+compare click    100 tabs  ui p99      1.6  published p50    118.7  p95    160.3  p99    188.0
+pane focus       100 tabs  ui p99      1.1  published p50     82.5  p95     88.0  p99     92.4
+zoom             100 tabs  ui p99      2.2  published p50     29.4  p95     31.8  p99     34.3
+sidebar toggle   100 tabs  ui p99      1.5  published p50     49.1  p95     54.1  p99     57.3
+rotate           100 tabs  ui p99      1.6  published p50     58.6  p95     61.8  p99     77.9
+undo             100 tabs  ui p99      1.5  published p50     58.3  p95     65.4  p99     73.0
+open new file    100 tabs  ui p99      2.6  published p50    248.0  p95    348.0  p99   1063.8
+scroll crossing an entry   100 tabs  ui p99      7.7  published p50     54.2  p95     74.1  p99    104.5
+scroll within an entry   100 tabs  ui p99      1.5  published p50     28.6  p95     39.8  p99     46.1
+events for watchers   100 tabs  ui p99      0.9  published p50     25.1  p95    200.5  p99    425.9
+tap row         1000 tabs  ui p99      1.5  published p50    186.3  p95    218.3  p99    235.9
+open its tab    1000 tabs  ui p99      1.1  published p50    227.9  p95    242.0  p99    254.2
+contents jump   1000 tabs  ui p99      1.4  published p50     94.2  p95    101.0  p99    104.2
+link click      1000 tabs  ui p99      5.6  published p50     99.5  p95    409.8  p99    661.4
+typed page      1000 tabs  ui p99      1.5  published p50     96.4  p95    108.5  p99    121.7
+find typed      1000 tabs  ui p99      2.4  published p50     97.3  p95    114.0  p99    131.7
+find step       1000 tabs  ui p99      2.0  published p50     94.1  p95    110.4  p99    132.1
+compare click   1000 tabs  ui p99      7.2  published p50    219.6  p95    557.6  p99    949.4
+pane focus      1000 tabs  ui p99      3.3  published p50    177.1  p95    190.7  p99    404.9
+zoom            1000 tabs  ui p99      2.3  published p50     46.7  p95     53.0  p99     57.2
+sidebar toggle  1000 tabs  ui p99      1.3  published p50     83.8  p95     89.5  p99     93.8
+rotate          1000 tabs  ui p99      1.7  published p50     95.8  p95    101.8  p99    106.8
+undo            1000 tabs  ui p99      1.7  published p50     93.5  p95     99.1  p99    102.4
+open new file   1000 tabs  ui p99      6.7  published p50    362.2  p95   1298.9  p99   1948.5
+scroll crossing an entry  1000 tabs  ui p99      6.7  published p50     94.6  p95    114.1  p99    244.1
+scroll within an entry  1000 tabs  ui p99      2.0  published p50     49.5  p95     56.9  p99     73.8
+events for watchers  1000 tabs  ui p99      1.4  published p50     45.4  p95     54.1  p99     75.4
+test core::headless::input_to_frame::input_to_frame ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 5.40s
+
+        PASS [   5.408s] (2/3) recto-app core::headless::input_to_frame::input_to_frame
+       START [         ] (3/3) recto-app core::headless::wake_costs::waking_an_idle_tab
+
+running 1 test
+load before: 7:52  up 3 days, 10:53, 6 users, load averages: 5,14 4,68 4,83
+text page, from its sleep file's facts: showing [0.4, 0.8, 0.9, 0.9, 1.2] ms; on paper [0.4, 0.8, 0.9, 0.9, 1.2] ms; first frame [23.3, 42.2, 44.4, 59.3, 62.6] ms; sharp [28.6, 47.6, 50.2, 67.0, 70.2] ms
+text page, no sleep file, from its PDF: showing [0.4, 0.7, 0.7, 0.7, 1.5] ms; on paper [0.4, 1.5, 6.6, 7.0, 7.3] ms; first frame [21.4, 22.2, 26.2, 27.1, 62.0] ms; sharp [26.8, 27.9, 32.3, 32.7, 69.3] ms
+        SLOW [> 60.000s] (───) recto-app core::headless::wake_costs::waking_an_idle_tab
+test core::headless::wake_costs::waking_an_idle_tab has been running for over 60 seconds
+slow page, from its sleep file's facts: showing [0.4, 0.5, 0.9, 0.9, 1.6] ms; on paper [0.4, 0.5, 0.9, 0.9, 1.6] ms; first frame [38.1, 58.1, 78.3, 80.2, 81.0] ms; sharp [73.3, 91.5, 113.0, 115.2, 116.3] ms
+slow page, no sleep file, from its PDF: showing [1.5, 1.6, 2.5, 3.7, 4.8] ms; on paper [3.7, 18.3, 19.9, 47.7, 54.5] ms; first frame [57.5, 65.1, 79.2, 112.9, 116.9] ms; sharp [91.6, 98.8, 113.6, 150.1, 154.8] ms
+load after: 7:54  up 3 days, 10:55, 6 users, load averages: 2,51 3,88 4,49
+test core::headless::wake_costs::waking_an_idle_tab ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 103.57s
+
+        PASS [ 103.583s] (3/3) recto-app core::headless::wake_costs::waking_an_idle_tab
+────────────
+     Summary [ 114.547s] 3 tests run: 3 passed (1 slow), 825 skipped

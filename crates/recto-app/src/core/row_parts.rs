@@ -1,11 +1,11 @@
 //! **What a feature's menu rows may read of the app and do in it** ([`super::menu_rows`]): the argument every row is given, in place of the app. Its fields
 //! are private, so what a row may do is the list of methods below, each named for the need; a row that needs something else adds one method here, named
-//! for that need, which the listing in `headless/inner_guards.rs` shows to a reviewer (docs/FEATURES.md, step 6). Of its 19 methods (2026-11-14), 14 serve
+//! for that need, which the listing in `headless/inner_guards.rs` shows to a reviewer (docs/FEATURES.md, step 6). Of its 21 methods (2026-11-16), 16 serve
 //! one feature each (reading_tab viewing's; selected highlights'; copy_selection, select_all and toggle_panel the window's own rows'; can_save saving's;
-//! update_installs and mark_update_menu the updates'; zoom_for_person the zoom's; open opening's; open_palette the palette's; toggle_snapshot_tool the
-//! snapshot tool's; cancel_print and refused_print_anyway printing's; let_go_image, the 20th, an image picked with a click's, 2026-11-16), four are
-//! shared (published, tell_host, reconcile, person), and one makes it. What starts on a thread of its own as the person is [`RowParts::person`]'s, which
-//! a way marked `Agents::AsTheMenu` never calls: an agent's palette run executes that way.
+//! update_installs and mark_update_menu the updates'; zoom_for_person the zoom's; open opening's; open_palette the palette's; toggle_snapshot_tool,
+//! arm_snapshot_once and cancel_snapshot_once the snapshot tool's; cancel_print and refused_print_anyway printing's; let_go_image, a 22nd, an image picked
+//! with a click's, 2026-11-16), four are shared (published, tell_host, reconcile, person), and one makes it. What starts on a thread of its own as the
+//! person is [`RowParts::person`]'s, which a way marked `Agents::AsTheMenu` never calls: an agent's palette run executes that way.
 //!
 //! Built once for each menu id asked about ([`RowParts::of`]), from references the app already holds: nothing is copied, locked or allocated to make it.
 
@@ -142,11 +142,19 @@ impl<'a> RowParts<'a> {
         self.tools.palette().open();
     }
 
-    /// The snapshot tool's own: the pointer's tool on or off.
-    pub fn toggle_snapshot_tool(&self) {
-        if self.tools.tool().toggle() {
-            super::image_select::let_go(self.panes, self.engine);
-        }
+    /// The snapshot tool's own: the pointer's tool on or off. Whether it's on now.
+    pub fn toggle_snapshot_tool(&self) -> bool {
+        self.tools.tool().toggle()
+    }
+
+    /// The snapshot tool's own: Capture, the tool on for one capture. Whether anything changed.
+    pub fn arm_snapshot_once(&self) -> bool {
+        self.tools.tool().arm_once()
+    }
+
+    /// The snapshot tool's own: Escape before a capture is taken. Whether it ended one.
+    pub fn cancel_snapshot_once(&self) -> bool {
+        self.tools.tool().cancel_once()
     }
 
     /// Printing's own: the person's print being prepared stopped.

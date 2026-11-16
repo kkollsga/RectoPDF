@@ -1032,7 +1032,7 @@ impl AppCore {
 
     /// The id a key does with nothing held, or none.
     pub fn plain_key_action(&self, characters: String) -> Option<String> {
-        recto_app::core::image_select::plain_key(&self.inner.panes, &self.inner.engine, &characters).map(str::to_string)
+        recto_app::core::image_select::plain_key(&self.inner.panes, &self.inner.engine, self.inner.tools.tool(), &characters).map(str::to_string)
     }
 
     /// The zoom level in the top left, as the host's magnification and the page's fit make it. Cheap: on every change of zoom.

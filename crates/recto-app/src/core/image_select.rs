@@ -225,10 +225,10 @@ pub fn enabled(id: &str, reading: impl FnOnce() -> Engine) -> Option<bool> {
     }
 }
 
-/// **A key with nothing held** (the bridge's `plain_key_action`): the menus' keys, and Escape, which is this feature's id while there's something of it to
-/// let go, and otherwise nobody's, so it goes on to whatever else takes it.
-pub fn plain_key(panes: &Panes, engine: &Engine, characters: &str) -> Option<&'static str> {
-    crate::menus::plain_key(characters)
+/// **A key with nothing held** (the bridge's `plain_key_action`): the menus' keys, Capture's Escape first while one waits, and then Escape as this feature's
+/// id while there's something of it to let go, and otherwise nobody's, so it goes on to whatever else takes it.
+pub fn plain_key(panes: &Panes, engine: &Engine, tool: &super::snapshot_tool::Tool, characters: &str) -> Option<&'static str> {
+    crate::menus::plain_key_with(characters, tool.is_once())
         .or_else(|| (characters == ESCAPE && enabled(LET_GO_ID, || panes.reading_engine(engine)) == Some(true)).then_some(LET_GO_ID))
 }
 

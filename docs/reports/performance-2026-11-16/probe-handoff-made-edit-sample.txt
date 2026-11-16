@@ -1,0 +1,78 @@
+Analysis of sampling RectoPDF (pid 27305) every 1 millisecond
+Process:         RectoPDF [27305]
+Path:            /Volumes/VOLUME/*/RectoPDF.app/Contents/MacOS/RectoPDF
+Load Address:    0x1026c0000
+Identifier:      io.github.kkollsga.RectoPDF
+Version:         0.1.1 (1)
+Code Type:       ARM64
+Platform:        macOS
+Parent Process:  Python [25987]
+Target Type:     live task
+
+Date/Time:       2026-11-16 08:01:22.246 +0100
+Launch Time:     2026-11-16 08:01:21.875 +0100
+OS Version:      macOS 27.0.1 (26A434)
+Report Version:  7
+Analysis Tool:   /usr/bin/sample
+
+Physical footprint:         17.8M
+Physical footprint (peak):  20.8M
+Idle exit:                  untracked
+(call graph left out: the lines naming lopdf and pread, then the top of stack)
+_RNvMNtNtNtCseShcq0r4Xgu_5lopdf14indexed_reader7rewrite10signaturesNtB6_13IndexedReader10signatures  (in RectoPDF)        1253
+_RNvNtNtNtCseShcq0r4Xgu_5lopdf14indexed_reader7rewrite10signatures11decode_name  (in RectoPDF)        92
+1 _RNvNtNtNtCseShcq0r4Xgu_5lopdf14indexed_reader7rewrite10signatures11decode_name  (in RectoPDF) + 152  [0x102d484a0]  signatures.rs:345
+1 _RNvNtNtNtCseShcq0r4Xgu_5lopdf14indexed_reader7rewrite10signatures11decode_name  (in RectoPDF) + 544  [0x102d48628]  signatures.rs:362
+1 _RNvNtNtNtCseShcq0r4Xgu_5lopdf14indexed_reader7rewrite10signatures11decode_name  (in RectoPDF) + 60  [0x102d48444]  signatures.rs:343
+1253 _RNvMNtNtNtCseShcq0r4Xgu_5lopdf14indexed_reader7rewrite10signaturesNtB6_13IndexedReader10signatures  (in RectoPDF) + 1008,748,...  [0x102cf7a88,0x102cf7984
+129 _RNvMNtNtNtCseShcq0r4Xgu_5lopdf14indexed_reader7rewrite10signaturesNtB6_13IndexedReader10signatures  (in RectoPDF) + 840  [0x102cf79e0]  signatures.rs:99
+2 _RNvNtNtNtCseShcq0r4Xgu_5lopdf14indexed_reader7rewrite10signatures11decode_name  (in RectoPDF) + 20  [0x102d4841c]  signatures.rs:342
+2 _RNvNtNtNtCseShcq0r4Xgu_5lopdf14indexed_reader7rewrite10signatures11decode_name  (in RectoPDF) + 48  [0x102d48438]  signatures.rs:343
+2100 _RINvNtNtCsdnanKjkF2cC_3std3sys9backtrace28___rust_begin_short_backtraceNCINvMs_NtCs6MmEMfljEfj_9recto_app6savingNtB1f_6SaveUi18signature_facts_byNvNtCslv2
+2100 _RNSNvYNCINvNtNtCsdnanKjkF2cC_3std6thread9lifecycle15spawn_uncheckedNCINvMs_NtCs6MmEMfljEfj_9recto_app6savingNtB1b_6SaveUi18signature_facts_byNvNtCslv2lNph
+2100 _RNvNtCslv2lNphx6vk_10recto_core10signatures17persons_signature  (in RectoPDF) + 32  [0x102caadd8]
+2100 _RNvNtCslv2lNphx6vk_10recto_core10signatures18signature_facts_of  (in RectoPDF) + 112  [0x102cab0b0]
+2100 Thread_109613631: recto-signatures
+24 _RNvMNtNtNtCseShcq0r4Xgu_5lopdf14indexed_reader7rewrite10signaturesNtB6_13IndexedReader10signatures  (in RectoPDF) + 1008  [0x102cf7a88]  signatures.rs:99
+3 _RNvNtNtNtCseShcq0r4Xgu_5lopdf14indexed_reader7rewrite10signatures11decode_name  (in RectoPDF) + 564,556  [0x102d4863c,0x102d48634]  signatures.rs:363
+38 _RNvNtNtNtCseShcq0r4Xgu_5lopdf14indexed_reader7rewrite10signatures11decode_name  (in RectoPDF) + 60  [0x102d48444]  signatures.rs:343
+40 _RNvNtNtNtCseShcq0r4Xgu_5lopdf14indexed_reader7rewrite10signatures11decode_name  (in RectoPDF) + 80,76  [0x102d48458,0x102d48454]  signatures.rs:346
+44 _RNvNtNtNtCseShcq0r4Xgu_5lopdf14indexed_reader7rewrite10signatures11decode_name  (in RectoPDF) + 124,136,...  [0x102d48484,0x102d48490,...]  signatures.rs:35
+446 _RNvMNtNtNtCseShcq0r4Xgu_5lopdf14indexed_reader7rewrite10signaturesNtB6_13IndexedReader10signatures  (in RectoPDF) + 1096  [0x102cf7ae0]  signatures.rs:99
+Sort by top of stack, same collapsed (when >= 5):
+        __workq_kernreturn  (in libsystem_kernel.dylib)        18900
+        kevent  (in libsystem_kernel.dylib)        4200
+        mach_msg2_trap  (in libsystem_kernel.dylib)        4200
+        __psynch_cvwait  (in libsystem_kernel.dylib)        4154
+        semaphore_wait_trap  (in libsystem_kernel.dylib)        3636
+        poll  (in libsystem_kernel.dylib)        2100
+        _RNvMNtNtNtCseShcq0r4Xgu_5lopdf14indexed_reader7rewrite10signaturesNtB6_13IndexedReader10signatures  (in RectoPDF)        1253
+        __semwait_signal  (in libsystem_kernel.dylib)        564
+        _xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib)        99
+        _RNvNtNtNtCseShcq0r4Xgu_5lopdf14indexed_reader7rewrite10signatures11decode_name  (in RectoPDF)        92
+        _RNvNtNtCseShcq0r4Xgu_5lopdf14indexed_reader3lex16is_pdf_delimiter  (in RectoPDF)        91
+        pread  (in libsystem_kernel.dylib)        88
+        xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib)        69
+        xzm_malloc_zone_size  (in libsystem_malloc.dylib)        69
+        _xzm_free_main  (in libsystem_malloc.dylib)        59
+        _xzm_free  (in libsystem_malloc.dylib)        33
+        _xzm_malloc  (in libsystem_malloc.dylib)        22
+        _realloc  (in libsystem_malloc.dylib)        21
+        <deduplicated_symbol>  (in libsystem_malloc.dylib)        20
+        _RNvMs5_NtCs8Hh7wWMBHrQ_5alloc7raw_vecNtB5_11RawVecInner11finish_growB7_  (in RectoPDF)        19
+        _malloc_zone_malloc  (in libsystem_malloc.dylib)        19
+        _RNvCs5fGHjzWXRav_7___rustc11___rdl_alloc  (in RectoPDF)        16
+        xzm_malloc_zone_malloc_type_malloc_main  (in libsystem_malloc.dylib)        16
+        _RNvMs4_NtCs8Hh7wWMBHrQ_5alloc7raw_vecINtB5_6RawVechE8grow_oneB7_  (in RectoPDF)        14
+        _free  (in libsystem_malloc.dylib)        13
+        DYLD-STUB$$realloc  (in RectoPDF)        10
+        default_zone_realloc  (in libsystem_malloc.dylib)        9
+        realloc  (in libsystem_malloc.dylib)        9
+        DYLD-STUB$$malloc  (in RectoPDF)        8
+        malloc  (in libsystem_malloc.dylib)        8
+        DYLD-STUB$$free  (in RectoPDF)        7
+        _platform_memmove  (in libsystem_platform.dylib)        7
+        _malloc_zone_realloc  (in libsystem_malloc.dylib)        6
+        _RNvCs5fGHjzWXRav_7___rustc13___rdl_realloc  (in RectoPDF)        5
+        fstat  (in libsystem_kernel.dylib)        5
+

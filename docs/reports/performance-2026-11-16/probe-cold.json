@@ -1,0 +1,156 @@
+[
+ {
+  "drawn_ms": 316.816,
+  "drawn_and_still_ms": 489.95762499999995,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 86.852125,
+  "answering_ms": 188.870208,
+  "wait_settled_after": {
+   "animations_waited_ms": 0,
+   "settled": true,
+   "waited_ms": 0
+  }
+ },
+ {
+  "drawn_ms": 284.30500000000023,
+  "drawn_and_still_ms": 481.08754200000004,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 70.565917,
+  "answering_ms": 175.58583299999998,
+  "wait_settled_after": {
+   "animations_waited_ms": 0,
+   "settled": true,
+   "waited_ms": 0
+  }
+ },
+ {
+  "drawn_ms": 290.7857500000004,
+  "drawn_and_still_ms": 478.93229200000053,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 72.65625,
+  "answering_ms": 175.66866700000006,
+  "wait_settled_after": {
+   "animations_waited_ms": 0,
+   "settled": true,
+   "waited_ms": 0
+  }
+ },
+ {
+  "drawn_ms": 249.56795900000017,
+  "drawn_and_still_ms": 449.92583400000007,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 74.972333,
+  "answering_ms": 141.1784589999998,
+  "wait_settled_after": {
+   "animations_waited_ms": 0,
+   "settled": true,
+   "waited_ms": 0
+  }
+ },
+ {
+  "drawn_ms": 259.3607500000008,
+  "drawn_and_still_ms": 438.5112080000013,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 80.141958,
+  "answering_ms": 142.2937080000004,
+  "wait_settled_after": {
+   "animations_waited_ms": 0,
+   "settled": true,
+   "waited_ms": 0
+  }
+ },
+ {
+  "drawn_ms": 274.021874999999,
+  "drawn_and_still_ms": 438.9378329999989,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 79.73045900000001,
+  "answering_ms": 139.48249999999973,
+  "wait_settled_after": {
+   "animations_waited_ms": 0,
+   "settled": true,
+   "waited_ms": 0
+  }
+ },
+ {
+  "drawn_ms": 302.52995799999917,
+  "drawn_and_still_ms": 493.56291600000014,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 85.164708,
+  "answering_ms": 189.58716599999903,
+  "wait_settled_after": {
+   "animations_waited_ms": 0,
+   "settled": true,
+   "waited_ms": 0
+  }
+ },
+ {
+  "drawn_ms": 280.8772079999997,
+  "drawn_and_still_ms": 481.9300000000002,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 71.016875,
+  "answering_ms": 173.75825000000054,
+  "wait_settled_after": {
+   "animations_waited_ms": 0,
+   "settled": true,
+   "waited_ms": 0
+  }
+ },
+ {
+  "drawn_ms": 269.2113339999995,
+  "drawn_and_still_ms": 462.81250000000006,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 85.02674999999999,
+  "answering_ms": 150.78083399999898,
+  "wait_settled_after": {
+   "animations_waited_ms": 0,
+   "settled": true,
+   "waited_ms": 0
+  }
+ },
+ {
+  "drawn_ms": 252.84987500000256,
+  "drawn_and_still_ms": 442.54875000000027,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 81.86512499999999,
+  "answering_ms": 141.43662500000076,
+  "wait_settled_after": {
+   "animations_waited_ms": 0,
+   "settled": true,
+   "waited_ms": 0
+  }
+ },
+ {
+  "drawn_ms": 241.72174999999996,
+  "drawn_and_still_ms": 438.3745829999981,
+  "animations_seen": [
+   "chrome_fading"
+  ],
+  "first_shown_ms_from_start": 76.303125,
+  "answering_ms": 134.2006249999983,
+  "wait_settled_after": {
+   "animations_waited_ms": 0,
+   "settled": true,
+   "waited_ms": 0
+  }
+ }
+]
