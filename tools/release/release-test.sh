@@ -5,6 +5,7 @@
 #
 #   tools/release/release-test.sh
 #
+# It runs tools/release/ci-gate-test.sh, the release gate's own test, so tools/check.sh runs that when tools/release/ changes.
 # What it doesn't do: check-draft.sh's codesign, Gatekeeper and stapler checks of a real signed bundle, and 0.1.0's own verdict, which need
 # the downloaded 0.1.0 zip and a build. `tools/release/check-draft.sh --self-test <RectoPDF-0.1.0.zip>` runs those (docs/RELEASING.md).
 set -uo pipefail
@@ -365,6 +366,11 @@ has "limited: and says so" "a made failure failed (exit 1" "$out"
 out=$(limits 10 "a made pass" true); rc=$?
 check "limited: a pass passes" 0 "$rc"
 has "limited: with its time" "ok  a made pass (" "$out"
+
+# ---- ci-gate.sh: the release's gate on CI, by its own test (made runs and a made repository) ----
+out=$("$SOURCE/tools/release/ci-gate-test.sh" 2>&1); rc=$?
+check "ci-gate: its own test passes ($(printf '%s\n' "$out" | grep -c '^ok') checks)" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out" | grep -v '^ok'
 
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."
