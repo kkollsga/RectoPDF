@@ -124,7 +124,7 @@ impl Default for Policy {
             export_slot_wait: Duration::from_secs(60),
             retire_bytes: 64 * 1024 * 1024,
             // 2026-11-16, release app, quiet, what a worker rests at: 9 to 10 MiB after a text page (`rfc9110`), 15 after a colour page (NASA `ntrs20240002628` p50), 16 at most after
-            // four sweeps of 6 pages a second through `rfc9110`, and 34 to 42 after the same through the NASA file (three runs, 5 s apart); the shaded page (NASA `ntrs20220005969`
+            // four sweeps of 6 pages a second through `rfc9110`, and 34 to 42 after the same through the NASA file (three runs); the shaded page (NASA `ntrs20220005969`
             // p175) rests at 53.6 to 54.0 (six runs) and the USGS map at 301. 48 MiB is above every ordinary rest and under the shaded page's. It was `retire_bytes` (64), above
             // that page's 54, so it was kept for the 30 s of `idle_exit`. `docs/engineering/app-memory.md`.
             rest_bytes: 48 * 1024 * 1024,
