@@ -36,7 +36,7 @@ Open items only, by where they are in this plan; features not yet built are coun
 
 - Asked by the owner 2026-11-16 (`docs/OWNER-RULES.md`), started the same day, each to hand back 2026-11-16 and merge by 2026-11-17:
   - [x] A full performance review, merged 2026-11-16 (`build/performance-review`, 6c6857af): `docs/reports/performance-2026-11-16.md`, every line of `SPEC.md` §2 on a release build of `main` at 50bd47d5 beside 2026-11-08, measured under load (2.1 to 15) beside two workers' checks; the coordinator's run with nothing else running of the lines that miss or are close is owed (the report's last section). Memory held or better; no line met then is missed now. What it found that this plan didn't have, in the report's order:
-    - [ ] `qa budget` times the marks' fade (about 190 ms, since 667bfb6b) and the background looks as the page: cold start, sidebar and hand-off read 150 to 300 ms slow. A measuring fix, first (`build/budget-true-times`, started 2026-11-16).
+    - [x] `qa budget` times the marks' fade (about 190 ms, since 667bfb6b) and the background looks as the page: cold start, sidebar and hand-off read 150 to 300 ms slow. A measuring fix, first (`build/budget-true-times`, started 2026-11-16).
     - [ ] The map at about 2x, 456 to 459 MiB against the 450 accepted (441 on 2026-11-08), and 455 to 515 at 3x: the worker's peak. Rule 1.
     - [ ] Shaded backgrounds, 214 MiB against 100 for about 4 s (as on 2026-11-08; it had no open item).
     - [ ] After an update or a first edit, an edited 2 GiB file is read whole for its signatures: 3.5 to 5.3 s of one core, memory flat, the page drawn long before. Whether Save waits for it not looked at. Touches rule 5.
