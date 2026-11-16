@@ -162,7 +162,7 @@ A release build of `main` at 14b62abe: everything above, and since 15:02 the cli
 | Colour page (NASA p50) | 100 MiB | 41.2 | **41.5** | Met |
 | Shaded backgrounds, settled | 100 MiB | 96.5, 97.1 | **96.8 and 96.3** (two workers, 68.9 MiB between them) | Met, by about 3.5 MiB |
 | Shaded backgrounds, later | | 42.6 at 4 s (the 3 s rule) | **96.1 at 4 s, 27.1 at 15 s** (the 12 s rule) | By design: a page turn after a pause was 182 to 389 ms with the worker let go at 3 s against 47 to 55 kept |
-| The map fitted, about 2x, about 3x, two runs | 450 MiB accepted | 322.7, 345.5, 335.8 | **323.0, 345.5, 340.3**; worker peak 351.7 (374.1) | Met. The app's own part at the zoom is 37.7 MiB against 33.5, and stays at rest (37.5 against 33.4): **4.2 MiB not yet explained, being looked at before the tag** |
+| The map fitted, about 2x, about 3x, two runs | 450 MiB accepted | 322.7, 345.5, 335.8 | **323.0, 345.5, 340.3**; worker peak 351.7 (374.1) | Met. The app's own part at the zoom is 37.7 MiB against 33.5, and stays at rest (37.5 against 33.4): **4.2 MiB: a fault, found from this number and fixed the same evening** (a zoom the host makes left a page this wide with the view at its right edge, and a 24 MiB tile was drawn for it where 20 MiB was; `build/zoom-app-memory`: 33.5 MiB again by the worker's quiet runs; the coordinator's on the fixed build below) |
 | Scroll, 6 and 40 pages a second (run A) | 0 blank frames on seen pages | 0 | **0 and 0**; UI thread a step 183 / 773 / 923 µs and 207 / 406 / 2,102 µs (p50 / p99 / worst); peak 43.0 and 45.8 MiB | Met. One step of 2.1 ms at 40 a second (353 µs was the worst that morning) |
 | Six sweeps from rest | 0 blank steps on seen pages | 0 in 10 | **0 in all six** | Met |
 | Sharp after scroll stops, 11 | 100 ms | 7.5 p50, 20.9 worst | **7.5 p50, 22.8 worst** | Met |
@@ -173,7 +173,7 @@ A release build of `main` at 14b62abe: everything above, and since 15:02 the cli
 | An update's first frame, 11 | | 360 p50 | **366 p50, 384 worst**; page drawn 443 p50 | As before |
 | The window's thread's worst stall | 16 ms | 39 to 41 | **35, 43, 44 ms**; run A's five kept: 34.7 ms with `qa state` running and nothing named, 31.8, 30.7 and 29.1 in `scroll`, 16.4 blocked in `scroll` | Missed, as before, and now named |
 
-So the click places' read at rest and the day's later changes moved no line that scrolling or a cold start has; the one new number to explain is the app's 4.2 MiB at the map's zoom.
+So the click places' read at rest and the day's later changes moved no line that scrolling or a cold start has; the one new number, the app's 4.2 MiB at the map's zoom, was a fault in the day's centring and is fixed.
 
 ## To measure again with nothing else running
 
