@@ -22,7 +22,7 @@ A fast, light PDF reader for the Mac that stays out of the way of the page, keep
 
 ## Install
 
-1. Download `RectoPDF-0.1.1.zip` from the [latest release](https://github.com/kkollsga/RectoPDF/releases/latest).
+1. Download `RectoPDF-0.1.2.zip` from the [latest release](https://github.com/kkollsga/RectoPDF/releases/latest).
 2. Unzip it and drag **RectoPDF** to your Applications folder.
 3. Open it. Releases are signed with a Developer ID and notarized by Apple, so macOS opens them without a warning.
 
