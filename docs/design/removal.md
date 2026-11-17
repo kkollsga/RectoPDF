@@ -32,7 +32,7 @@ The guarantee applies only after a successful commit. Before commit the source s
 
 ## 3. Retention inventory and caller evidence
 
-Paths here are relative to the configured private state root unless a cache root is stated. `RECTO_STATE_DIR` still carries the quiet-run file wall; a removal transaction cannot widen it. Every row is required for the inventory, not a promise that current APIs already remove it safely.
+Storage paths here are relative to the configured private state root unless a cache root is stated. Source citations beginning with a crate name are relative to `crates/`; subsequent abbreviated module paths keep the crate named in that row. `docs/`, `Cargo.toml`, `Cargo.lock` and `clippy.toml` are relative to the repository root. Fork paths in §7 are relative to the named pinned lopdf commit. `RECTO_STATE_DIR` still carries the quiet-run file wall; a removal transaction cannot widen it. Every row is required for the inventory, not a promise that current APIs already remove it safely.
 
 | Store | What can survive | Current source | Removal obligation / gap |
 |---|---|---|---|
