@@ -31,6 +31,25 @@ This is the current priority order. The phase sections below retain the detailed
 
 **Before the next PDFium upgrade:** include the renderer version in the corpus identity so cached character positions cannot disagree with live text. Before headless persistent indexing/libraries, settle the standalone CLI's key access: normal-state CLI uses `NoKey` today. Review the explicit-state-folder disk-key exception separately; it does not decrypt the normal app's corpus.
 
+## Current run: started 2026-11-17
+
+Owner: "I agree, can you get started on the 4 items?" (`OWNER-RULES.md`). First reviewed increments targeted for **18 November**; these are the first slices, not a promise to finish the complete redaction or retrieval roadmap that day.
+
+| Track | First deliverable | Compartment / branch | Validation |
+|---|---|---|---|
+| CI and responsiveness | CI stage attribution from the last five green runs, then SVG prepared before paste | Coordinator; `codex/svg-ready`, snapshot tool and its headless tests | Recorded before/after wait, resource bounds, targeted tests, independent review |
+| Durable retrieval | Reconcile locator choices; implement the smallest approved 8.1 core slice, then 8.2 | `codex/locator-core`, `recto-core::locator` | Capped/versioned hostile-input tests, no second page identity; design reviewed before code |
+| Safe removal | Retention inventory, crash-state contract and reviewed implementation slices | `codex/removal-design`, `docs/design/removal.md` first | Source-backed inventory, one writer, signed-original behavior, recovery/remnant test plan |
+| Reader trust | Reproduce and fix one real repeated-content omission in Copy | `codex/copy-fidelity`, `recto-index::chrome` | Regression fails first; named real cases; conservative output and measured cost |
+
+All workers have warm isolated worktrees and the complete testing brief. No overlapping source ownership; shared plan/owner decisions are the coordinator's. The CI diagnosis precedes new feature implementation, while design and correctness investigation proceed. Each completed slice gets its own review and commit. The reviewed code slices are integrated on one staging branch for a single final full check of the combined result before the main merge; the remaining scope stays open. The copy branch's first full check exposed existing macOS integration failures, so it is recorded as failed and not repeated while those are diagnosed.
+
+### First increments
+
+- [x] CI initial attribution (2026-11-18): [`reports/ci-review-2026-11-18.md`](reports/ci-review-2026-11-18.md), five green jobs and morning comparison. No coverage cut or budget raise; next small slices proceed under existing no-regression rules. This is diagnosis, not a claim of faster CI.
+- [x] Safe removal D0 (2026-11-18): [`design/removal.md`](design/removal.md), reviewed retention inventory, crash-state contract, source-backed fork boundary and D1–D7 slices (`ecd13dcd`, `1b014a74`). No PDF mutation/deletion or completed-redaction claim. Category, shared-history, clipboard and semantic-redaction decisions remain explicit; D1 has no I/O/authority and waits for its separate brief.
+- [ ] First code increments in review/checking: conservative repeated-table-header Copy fix; fixed-size locator codec/geometry with fuzzing; SVG prepared before the synchronous clipboard callback. The first checks found OS-signature/quarantine integration failures outside these changes; diagnose and fix separately before code merges, preserving evidence and avoiding whole-suite diagnostic repeats.
+
 ## Release follow-ups carried forward
 
 These are the still-open parts of the old release summary that otherwise would be hidden among completed work. Measurements are from the cited release reports, not new measurements by this review.

@@ -1265,6 +1265,10 @@ RectoPDF's owner, 2026-11-07: "I think the main issue is repeating tests leading
   at release: three small unit tests caught two regressions a 141-document gate missed.
 - **Guards go in before a move** (§7).
 
+**Test the archive's real journey, including metadata.** Use the release producer's resource-fork policy and the consumer under test. A signature valid before packaging, or after extraction by a different native tool, does not prove the shipped path. In a 2026-11-18 failure, macOS provenance produced AppleDouble entries inside a fixture's signed bundle; raw extraction made them real sealed-resource additions. Matching the release archive's existing `--sequesterRsrc` policy fixed the fixture without weakening the signature checks.
+
+**A local OS command can do unrelated, unbounded work.** A backup-status command stalled while scanning every mounted disk (2026-11-18). Query the documented local OS property when that is the assertion. Bound any compiler/query child, preserve its command/output/rerun evidence, and prove timeout cleanup with a ready-handshaken peer in the owned process group: a fallback kill of the direct child must not make the group-cleanup test pass.
+
 ### 6.3 Tests that hold on slower machines
 
 - **A test waits for the condition it checks,** polling with a bound and failing with what it saw. It never sleeps and
