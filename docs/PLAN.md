@@ -44,6 +44,12 @@ Owner: "I agree, can you get started on the 4 items?" (`OWNER-RULES.md`). First 
 
 All workers have warm isolated worktrees and the complete testing brief. No overlapping source ownership; shared plan/owner decisions are the coordinator's. The CI diagnosis precedes new feature implementation, while design and correctness investigation proceed. Each completed slice gets its own review, final check and merge; the remaining scope stays open.
 
+### First increments
+
+- [x] CI initial attribution (2026-11-18): [`reports/ci-review-2026-11-18.md`](reports/ci-review-2026-11-18.md), five green jobs and morning comparison. No coverage cut or budget raise; next small slices proceed under existing no-regression rules. This is diagnosis, not a claim of faster CI.
+- [x] Safe removal D0 (2026-11-18): [`design/removal.md`](design/removal.md), reviewed retention inventory, crash-state contract, source-backed fork boundary and D1–D7 slices (`ecd13dcd`, `1b014a74`). No PDF mutation/deletion or completed-redaction claim. Category, shared-history, clipboard and semantic-redaction decisions remain explicit; D1 has no I/O/authority and waits for its separate brief.
+- [ ] First code increments in review/checking: conservative repeated-table-header Copy fix; fixed-size locator codec/geometry with fuzzing; SVG prepared before the synchronous clipboard callback. The first checks found OS-signature/quarantine integration failures outside these changes; diagnose and fix separately before code merges, preserving evidence and avoiding whole-suite diagnostic repeats.
+
 ## Release follow-ups carried forward
 
 These are the still-open parts of the old release summary that otherwise would be hidden among completed work. Measurements are from the cited release reports, not new measurements by this review.
