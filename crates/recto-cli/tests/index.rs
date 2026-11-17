@@ -1,5 +1,7 @@
 //! The search index through the real commands, the way an agent uses them: a session, a real helper process and real PDFium, on temp state.
 
+#[path = "index/backup_check.rs"]
+mod backup_check;
 mod common;
 
 use common::{Raw, State};
@@ -1279,9 +1281,8 @@ fn a_session_marks_its_corpus_folder() {
     wait_done(&state, "active");
     assert!(state.paths.corpus.ends_with("corpus.noindex"), "{}", state.paths.corpus.display());
     assert!(recto_platform::local::is_excluded_from_backups(&state.paths.corpus));
-    // As the OS itself reads it.
-    let said = Command::new("/usr/bin/tmutil").arg("isexcluded").arg(&state.paths.corpus).output().unwrap();
-    assert!(String::from_utf8_lossy(&said.stdout).contains("[Excluded]"), "{said:?}");
+    // The OS's cache-exclusion property, without tmutil's unrelated scan of every mounted disk.
+    backup_check::assert_excluded(&state.paths.corpus);
 }
 
 /// Failure: asking for the agent's folder before there's an index fails, or writes half of one. Or a search makes it, so everyone pays for what only an agent's tools will read, or a clear leaves it behind.
