@@ -42,7 +42,7 @@ Owner: "I agree, can you get started on the 4 items?" (`OWNER-RULES.md`). First 
 | Safe removal | Retention inventory, crash-state contract and reviewed implementation slices | `codex/removal-design`, `docs/design/removal.md` first | Source-backed inventory, one writer, signed-original behavior, recovery/remnant test plan |
 | Reader trust | Reproduce and fix one real repeated-content omission in Copy | `codex/copy-fidelity`, `recto-index::chrome` | Regression fails first; named real cases; conservative output and measured cost |
 
-All workers have warm isolated worktrees and the complete testing brief. No overlapping source ownership; shared plan/owner decisions are the coordinator's. The CI diagnosis precedes new feature implementation, while design and correctness investigation proceed. Each completed slice gets its own review, final check and merge; the remaining scope stays open.
+All workers have warm isolated worktrees and the complete testing brief. No overlapping source ownership; shared plan/owner decisions are the coordinator's. The CI diagnosis precedes new feature implementation, while design and correctness investigation proceed. Each completed slice gets its own review and commit. The reviewed code slices are integrated on one staging branch for a single final full check of the combined result before the main merge; the remaining scope stays open. The copy branch's first full check exposed existing macOS integration failures, so it is recorded as failed and not repeated while those are diagnosed.
 
 ### First increments
 
