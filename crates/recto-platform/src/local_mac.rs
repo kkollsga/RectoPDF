@@ -604,6 +604,18 @@ pub fn signal_process(pid: u32, kill: bool) -> bool {
     unsafe { libc::kill(pid, if kill { libc::SIGKILL } else { libc::SIGTERM }) == 0 }
 }
 
+/// Signals an owned spawned process group. Zero/current-group, one/all-processes and values outside positive pid_t are refused.
+pub fn signal_process_group(group: u32, kill: bool) -> bool {
+    let Some(target) = process_group_signal_target(group) else { return false };
+    // SAFETY: target is the checked negative identifier of a group greater than one; the caller owns the spawned group.
+    unsafe { libc::kill(target, if kill { libc::SIGKILL } else { libc::SIGTERM }) == 0 }
+}
+
+fn process_group_signal_target(group: u32) -> Option<libc::pid_t> {
+    let group = libc::pid_t::try_from(group).ok()?;
+    (group > 1).then_some(-group)
+}
+
 /// Starts a program that outlives this process: in a session of its own, with nothing on standard input and what it says appended to `log`. It isn't waited for.
 pub fn spawn_detached(program: &Path, args: &[String], envs: &[(String, String)], log: &Path) -> io::Result<u32> {
     use std::os::unix::process::CommandExt as _;
@@ -925,11 +937,46 @@ pub fn carry_attributes(from: &Path, to: &Path) -> io::Result<usize> {
             Err(_) => missed += 1,
         }
     }
-    // SAFETY: both strings are NUL-terminated and live for the call, and a null state is copyfile's own default. Only the ACL is asked for.
-    if unsafe { libc::copyfile(from_c.as_ptr(), to_c.as_ptr(), std::ptr::null_mut(), libc::COPYFILE_ACL) } != 0 {
+    // Last: a restrictive ACL can deny the attribute writes above. copyfile(COPYFILE_ACL) also rewrites quarantine on macOS 27,
+    // losing the original download's time and agent, so copy only the native ACL through checked descriptors.
+    if carry_acl(from, to).is_err() {
         missed += 1;
     }
     Ok(missed)
+}
+
+/// Native extended ACLs, with no copyfile quarantine side effect. Both files stay open until the final ACL is installed.
+fn carry_acl(from: &Path, to: &Path) -> io::Result<()> {
+    // sys/acl.h: acl_type_t is a C enum; acl_t is an opaque pointer, owned until acl_free.
+    unsafe extern "C" {
+        fn acl_get_fd_np(fd: libc::c_int, kind: libc::c_int) -> *mut libc::c_void;
+        fn acl_set_fd_np(fd: libc::c_int, acl: *mut libc::c_void, kind: libc::c_int) -> libc::c_int;
+        fn acl_init(count: libc::c_int) -> *mut libc::c_void;
+        fn acl_free(acl: *mut libc::c_void) -> libc::c_int;
+    }
+    const EXTENDED: libc::c_int = 0x0000_0100;
+    let from = crate::document_file::open_regular(from).map_err(crate::document_file::Refused::into_io)?;
+    let to = crate::document_file::open_regular(to).map_err(crate::document_file::Refused::into_io)?;
+    // SAFETY: the descriptor remains live, and EXTENDED is ACL_TYPE_EXTENDED from sys/acl.h.
+    let mut acl = unsafe { acl_get_fd_np(from.as_raw_fd(), EXTENDED) };
+    if acl.is_null() {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ENOENT) {
+            return Err(error);
+        }
+        // An open file cannot be a missing path: ENOENT here means it has no extended ACL. Install an empty one, not the target's inherited ACL.
+        // SAFETY: zero asks the system for an empty owned ACL; null is checked before any use.
+        acl = unsafe { acl_init(0) };
+        if acl.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    // SAFETY: the target descriptor and owned ACL are live, with the ABI's (fd, acl, type) argument order.
+    let changed = unsafe { acl_set_fd_np(to.as_raw_fd(), acl, EXTENDED) };
+    let error = (changed != 0).then(io::Error::last_os_error);
+    // SAFETY: this is the one release of the non-null ACL returned by acl_get_fd_np or acl_init. No early return follows allocation.
+    unsafe { acl_free(acl) };
+    error.map_or(Ok(()), Err)
 }
 
 /// **Gives a copy of a file what it should keep of the original:** the quarantine flag and where it was downloaded from, so a copy of a download is still one. A Save As, which is another file, gets only these. Says how many couldn't be carried.
@@ -981,6 +1028,16 @@ pub fn interrupt_flag() -> &'static std::sync::atomic::AtomicBool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: an invalid owned-group number becomes kill's current-group or all-processes sentinel, or overflows pid_t. Test conversion without signalling anything.
+    #[test]
+    fn group_signal_targets_never_address_current_or_all_processes() {
+        for group in [0, 1, libc::pid_t::MAX as u32 + 1, u32::MAX] {
+            assert_eq!(process_group_signal_target(group), None, "group {group}");
+        }
+        assert_eq!(process_group_signal_target(2), Some(-2));
+        assert_eq!(process_group_signal_target(libc::pid_t::MAX as u32), Some(-libc::pid_t::MAX));
+    }
 
     fn temp(name: &str) -> recto_testpdf::TempDir {
         recto_testpdf::TempDir::new(&format!("recto-local-{name}-"))

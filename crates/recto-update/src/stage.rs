@@ -448,7 +448,9 @@ pub(crate) mod tests {
     pub(crate) fn zip_of(app: &Path, to: &Path) -> (Vec<u8>, String) {
         assert!(
             Command::new("/usr/bin/ditto")
-                .args(["-c", "-k", "--keepParent"])
+                // The release's recipe: metadata goes under __MACOSX, which our reader validates but never unpacks.
+                // Otherwise macOS 27's provenance attributes become ._ files inside the sealed bundle and invalidate its signature.
+                .args(["-c", "-k", "--sequesterRsrc", "--keepParent"])
                 .arg(app)
                 .arg(to)
                 .status()
@@ -456,6 +458,15 @@ pub(crate) mod tests {
                 .success()
         );
         let bytes = std::fs::read(to).unwrap();
+        // Some callers deliberately pack a foreign app or a link to test refusal. A readable release still must not acquire metadata files.
+        if let Ok(entries) = zip::read_directory(&mut std::io::Cursor::new(&bytes), APP_BUNDLE) {
+            assert!(
+                !entries
+                    .iter()
+                    .any(|entry| entry.name.starts_with(APP_BUNDLE) && entry.name.split('/').any(|part| part.starts_with("._"))),
+                "test release metadata was packed inside the signed bundle instead of __MACOSX: {entries:?}"
+            );
+        }
         let sha = sha2::Sha256::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect();
         (bytes, sha)
     }
