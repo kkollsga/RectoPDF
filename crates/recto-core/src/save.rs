@@ -35,6 +35,7 @@ use lopdf::{
 use recto_platform::FileStamp;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+#[cfg(debug_assertions)]
 use std::time::Duration;
 
 /// Most bytes one object may take while a save reads it. The review's measurement: at lopdf's 4 MiB a 4 KB hostile file reaches about 1.5 GB during a save. The corpus's largest is 50 KB.
