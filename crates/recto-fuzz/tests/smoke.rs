@@ -76,6 +76,12 @@ fn hostile_sidecars_give_a_list_nothing_it_cant_hold() {
     smoke("sidecar", seed(), rounds(1500), 4 * 1024);
 }
 
+/// Failure: a hostile token panics its decoder, bypasses the input cap, or is accepted with ignored bytes/noncanonical checks.
+#[test]
+fn hostile_locator_tokens_are_bounded_and_canonical() {
+    smoke("locator", seed(), rounds(500), recto_core::locator::MAX_TOKEN_BYTES + 1);
+}
+
 /// Failure: a JSON line, command line or level file panics, a cap doesn't hold, or a document's name reaches Off.
 #[test]
 fn commands_from_outside_do_no_harm() {

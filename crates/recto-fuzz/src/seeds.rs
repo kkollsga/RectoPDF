@@ -501,6 +501,7 @@ pub fn for_target(name: &str) -> Vec<Vec<u8>> {
         "chrome" => chrome_seeds(),
         "svg" => svg_seeds(),
         "kept" => kept_seeds(),
+        "locator" => targets::locator::seeds(),
         "page_decode" => page_decode_seeds(),
         "sidecar" => sidecar_seeds(),
         _ => Vec::new(),
@@ -626,6 +627,7 @@ pub const TARGET_NAMES: &[&str] = &[
     "chrome",
     "svg",
     "kept",
+    "locator",
 ];
 
 /// The check a target runs, by name.
@@ -647,6 +649,7 @@ pub fn check_for(name: &str) -> Option<fn(&[u8])> {
         "chrome" => targets::chrome::check,
         "svg" => targets::svg::check,
         "kept" => targets::kept::check,
+        "locator" => targets::locator::check,
         "page_decode" => targets::page_id::check_stream,
         "sidecar" => targets::page_id::check_sidecar,
         _ => return None,
