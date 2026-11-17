@@ -13,7 +13,7 @@
 //! waits behind it; with a copy and a look both waiting, the copy goes first. A look the person has moved on from (let go, another tab, the tool turned
 //! on) is stopped by the app's next look at what the page views want ([`Tool::looks`]), and a quit stops whatever runs.
 //!
-//! **One clipboard.** A text copy and a snapshot both reach the host as one offer from [`Tool::take_offer`]: the types in order, and which are made now and which only when a paste asks for them. A snapshot's SVG is the one promised: making it can take the larger worker, 742 MiB on the USGS map, and most pastes never want it. A paste of it is the person's `snapshot --as svg --to-clipboard`, which the system's paste waits for on the UI thread, the one place the UI thread waits here, and for at most [`PASTE_PATIENCE_MS`] ([`Tool::wait_for_paste`]).
+//! **One clipboard.** A text copy and a snapshot reach the host through [`Tool::take_offer`], with every advertised type prepared. The asynchronous snapshot command makes SVG in its existing worker before publishing its result. The synchronous host callback only takes ready bytes: it starts no command and never waits for rendering. Legacy promise/action state remains covered by its cancellation tests, but the host neither receives a promised type from a new snapshot nor calls that action.
 //!
 //! **A file that asks not to be copied** gets the notice text does, with "Copy anyway" (owner, 2026-11-08). Each notice has a number, and its button names it, so a stale button takes nothing: turning the tool, or starting a new box, takes the notice and what it offered away.
 
@@ -36,10 +36,8 @@ use std::time::Duration;
 /// A notice's "Copy anyway", followed by the notice's number.
 const ANYWAY_PREFIX: &str = "tools.copy_anyway.";
 
-/// **How long the system's paste of a promised SVG is waited for,** on the app's clock: past it the paste gets nothing and the SVG being made is
-/// stopped. The UI thread waits here only, as the system asks there and wants the bytes in its answer. Three seconds (owner, 2026-11-15, on the
-/// coordinator's numbers: 17 to 511 ms for eleven of twelve cases, a full-page box of the heaviest map 2.15 s; `docs/OWNER-RULES.md`): it was 10 s for a
-/// day and had no bound before that. Making the SVG ahead of the paste, so nothing waits, is planned for after the release.
+/// The legacy explicit-promise action's patience on the app's clock. New snapshots prepare all types first, and the synchronous bridge only takes
+/// ready bytes; it never invokes this wait. Keep the existing bounded action for compatibility and its cancellation/recovery guards.
 pub const PASTE_PATIENCE_MS: u64 = 3_000;
 
 /// What a release asked for, kept so "Copy anyway" can ask again.
@@ -615,7 +613,7 @@ impl Tool {
     }
 
     /// **One type's bytes made with the copy, for the offer with this number,** once, handed over and dropped from here. Nothing for a promised one, which
-    /// a paste asks the person's command for ([`super::controls::UiAction::Pasted`], [`Self::wait_for_paste`]). The bridge's `clipboard_data`.
+    /// the legacy paste path can resolve. New snapshot offers contain prepared types only. The bridge's `clipboard_data`.
     pub fn ready_bytes(&self, serial: u64, uti: &str) -> Option<Vec<u8>> {
         crate::watchdog::note_doing_here("clipboard_data");
         match self.data(serial, uti)? {
@@ -894,12 +892,14 @@ fn publish(tool: &Tool, job: Job, result: &Result<Value, AgentError>, made: Opti
     let (Ok(_), Some(clip)) = (result, made) else { return false };
     // A box's SVG is promised only with the page it saw, which the paste is held to: none that reads, no promise.
     let promise = match (job.wanted, result) {
-        (Wanted::Box { rect }, Ok(answer)) => serde_json::from_value(answer["as_seen"].clone()).ok().map(|as_seen| Promise {
-            tab: job.tab,
-            position: job.position,
-            rect,
-            as_seen,
-        }),
+        (Wanted::Box { rect }, Ok(answer)) if clip.items.iter().any(|item| matches!(item, ClipItem::Promised { .. })) => {
+            serde_json::from_value(answer["as_seen"].clone()).ok().map(|as_seen| Promise {
+                tab: job.tab,
+                position: job.position,
+                rect,
+                as_seen,
+            })
+        }
         _ => None,
     };
     let items = clip

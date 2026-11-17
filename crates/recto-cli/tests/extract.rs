@@ -5,7 +5,7 @@ mod common;
 use common::State;
 use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
 use recto_agent::Level;
-use recto_agent::extract::{ClipItem, ClipOutcome, ClipStop, MAX_CLIP_ITEM, UTI_JPEG, UTI_PNG, UTI_SVG, UTI_TEXT, image_clip, snapshot_clip, snapshot_svg};
+use recto_agent::extract::{ClipOutcome, ClipStop, MAX_CLIP_ITEM, UTI_JPEG, UTI_PNG, UTI_SVG, UTI_TEXT, image_clip, snapshot_clip, snapshot_svg};
 use recto_svg::verify::{Embedded, check_document, read_png};
 use recto_testpdf::{Object, Page, TempPdf, first_extra_object, pages, pages_with, text_lines};
 use serde_json::Value;
@@ -493,7 +493,7 @@ fn exports_of_a_copy_restricted_file_ask_anyway_and_each_use_is_logged() {
     }
 }
 
-/// Failure: the clipboard gets the wrong types, or in an order that hands a JPEG's paste a re-encoded copy: a click on a JPEG must give its own bytes first, with a PNG beside it for what can't take a JPEG; on another image, a lossless PNG alone; and a snapshot PNG, text, SVG and JPG, all at once, the SVG promised and made only when a paste asks, with hidden text left out of it as from the text. A click off any image gives nothing.
+/// Failure: the clipboard gets the wrong types, or in an order that hands a JPEG's paste a re-encoded copy: a click on a JPEG must give its own bytes first, with a PNG beside it for what can't take a JPEG; on another image, a lossless PNG alone; and a snapshot PNG, text, SVG and JPG, all at once, the SVG prepared before a paste asks, with hidden text left out of it as from the text. A click off any image gives nothing.
 #[test]
 fn the_clipboard_gets_the_right_types_in_the_right_order() {
     let (bytes, pixels) = doc_with_images();
@@ -523,7 +523,7 @@ fn the_clipboard_gets_the_right_types_in_the_right_order() {
     };
     assert_eq!(snap.types(), vec![UTI_PNG, UTI_TEXT, UTI_SVG, UTI_JPEG], "{}", snap.note);
     assert_eq!(snap.items[1].bytes(), Some("Words beside the pictures".as_bytes()));
-    assert!(matches!(snap.items[2], ClipItem::Promised { .. }), "the SVG is made when a paste asks for it");
+    check_document(snap.items[2].bytes().expect("the SVG is prepared before the clipboard offer"));
     let jpg = snap.items[3].bytes().unwrap();
     assert_eq!(&jpg[..2], [0xFF, 0xD8], "a JPEG, from the same drawing as the PNG");
     let svg = snapshot_svg(&file.0, 0, [60.0, 50.0, 400.0, 270.0], 0, None, MAX_CLIP_ITEM).unwrap();

@@ -1,7 +1,6 @@
 //! **The clipboard's calls:** what a copy offers, one type's bytes, and letting it go. The tool and its state are `recto_app::core::snapshot_tool`'s.
 
 use crate::AppCore;
-use recto_app::core::controls::UiAction;
 pub use recto_app::core::snapshot_tool::ClipboardOffer;
 
 /// What the clipboard is offered: its types in the order to offer them, which of those are made only when a paste asks, and the number that names this offer for [`AppCore::clipboard_data`].
@@ -21,12 +20,9 @@ impl AppCore {
         self.inner.tools.tool().take_offer(&self.inner.panes.engines(&self.inner.engine))
     }
 
-    /// One type's bytes for the offer with this number, once. A type made with the copy is handed over and dropped from here. A promised one is the person's paste (`UiAction::Pasted`), made by their own `snapshot` command, which takes a worker and can take seconds: the system asks on the UI thread and waits for the answer, which is the one time the UI thread waits here, for at most `PASTE_PATIENCE_MS`, and only for a paste of that type from another app. Nothing for an offer replaced since, or on the way out.
+    /// One type's prepared bytes for this offer, once. The synchronous system callback never starts a command or waits for rendering. Nothing for an old offer, an absent type or bytes not prepared.
     pub fn clipboard_data(&self, serial: u64, uti: String) -> Option<Vec<u8>> {
-        let tool = self.inner.tools.tool();
-        let made = |pasted: bool| if pasted { tool.wait_for_paste() } else { None };
-        tool.ready_bytes(serial, &uti)
-            .or_else(|| made(self.inner.act(UiAction::Pasted { serial, uti }).understood))
+        self.inner.tools.tool().ready_bytes(serial, &uti)
     }
 
     /// The clipboard has something else on it now: what this offer promised is let go.

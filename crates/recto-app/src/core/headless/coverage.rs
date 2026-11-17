@@ -135,6 +135,17 @@ fn prepare(app: &HeadlessApp, name: &str) {
         app.settle();
         let inner = app.core();
         inner.tools.tool().take_offer(&inner.panes.engines(&inner.engine)).expect("the box offered");
+        // Normal copies are prepared; exercise the retained legacy action with an explicit promise.
+        inner.tools.tool().offer_a_promise_for_a_test(crate::core::snapshot_tool::Promise {
+            tab: inner.engine.hot_tab().expect("the open tab"),
+            position: 0,
+            rect: [40.0, 40.0, 260.0, 160.0],
+            as_seen: recto_agent::extract::AsSeen {
+                quarter_turns: 0,
+                file_page: 0,
+                own: true,
+            },
+        });
     }
     // A hit's row, which needs hits.
     if name == "UiAction::FindChoose" {

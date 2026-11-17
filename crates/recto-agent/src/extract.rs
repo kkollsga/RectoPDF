@@ -431,7 +431,7 @@ fn image_note(copied: &CopiedImage, left_off: &[&str]) -> String {
     note
 }
 
-/// The app's snapshot of a box: PNG, text, SVG and JPG, all on the clipboard at once (SPEC section 6), each as far as it fits. The PNG and JPG come from one drawing; the SVG is promised, and made by [`snapshot_svg`] only if a paste asks for it. `rect` is on the page as the file shows it, from its top left. Opens a worker of its own and can wait for the larger limit, so it's for a job thread. `page` is from 0.
+/// The app's snapshot of a box: PNG, text, SVG and JPG, prepared before they are offered (SPEC section 6), each as far as it fits. PNG and JPG share one drawing, and SVG uses the same worker afterward, so a synchronous paste never owes rendering. `rect` is on the page as the file shows it, from its top left. Opens a worker of its own and can wait for the larger limit, so it's for a job thread. `page` is from 0.
 ///
 /// **The pictures are of the page as it's seen** (coordinator's decision, 2026-11-08): `unsaved_quarter_turns` is how far the page is turned by an unsaved turn, and the PNG and JPG come out as [`drawn_for`] says the clipboard has it, turned by as much, as the SVG does from [`snapshot_svg`]. The owner's rotate-all is for turning a sideways scan, and a snapshot of it mustn't come out sideways again.
 ///
@@ -495,17 +495,45 @@ fn snapshot_clip_for(
             Some(_) => left_off.push("text"),
             None => {}
         }
-        clip.items.push(ClipItem::Promised {
-            uti: UTI_SVG,
-            cap: MAX_CLIP_ITEM,
-        });
+        let svg_at = clip.items.len();
         let jpg = jpg.into_inner().bytes;
         if jpg_came && jpg.len() <= clip.room() {
             clip.items.push(ClipItem::Ready { uti: UTI_JPEG, bytes: jpg });
         } else {
             left_off.push("JPG");
         }
+        if stop.is_stopped() {
+            return Ok(ClipOutcome::Stopped);
+        }
+        // Reserve the already made types first. The SVG writer is capped before it allocates its output, including the room the JPG takes.
+        let svg = in_memory(clip.room(), |out| {
+            crate::render::write_svg_box(
+                &mut doc,
+                path,
+                page,
+                rect,
+                DEFAULT_SCALE,
+                drawn.text,
+                &caps,
+                out,
+                Instant::now(),
+                drawn.quarter_turns,
+            )
+            .map(drop)
+        });
+        if stop.is_stopped() {
+            return Ok(ClipOutcome::Stopped);
+        }
+        let mut svg_unavailable = false;
+        match svg {
+            Ok(bytes) => clip.items.insert(svg_at, ClipItem::Ready { uti: UTI_SVG, bytes }),
+            Err(error) if error.code == Code::OUTPUT_TOO_LARGE => left_off.push("SVG"),
+            Err(_) => svg_unavailable = true,
+        }
         clip.note = snapshot_note(&clip, text.as_ref(), &left_off);
+        if svg_unavailable {
+            clip.note.push_str(" SVG couldn't be copied.");
+        }
         Ok(ClipOutcome::Ready(clip))
     };
     let outcome = run().unwrap_or_else(ClipOutcome::Failed);
@@ -719,6 +747,31 @@ fn snapshot_note(clip: &Clip, text: Option<&recto_index::select::BoxText>, left_
 mod tests {
     use super::*;
     use recto_proto::contents::TextMode;
+
+    /// Failure: a copied box advertises SVG before its bytes exist, so the system's synchronous clipboard request has to render while the UI waits.
+    #[test]
+    fn a_snapshot_has_its_svg_before_the_clipboard_can_ask() {
+        let file = recto_testpdf::TempPdf::new(
+            "ready-svg.pdf",
+            &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["Copied before a paste"]))]),
+        );
+        let ClipOutcome::Ready(clip) = snapshot_clip(&file.0, 0, [20.0, 20.0, 300.0, 120.0], (0, None), false, &ClipStop::default()) else {
+            panic!("the box must copy");
+        };
+        let svg = clip.items.iter().find(|item| item.uti() == UTI_SVG).and_then(ClipItem::bytes);
+        assert!(
+            svg.is_some_and(|bytes| String::from_utf8_lossy(bytes).contains("<svg")),
+            "SVG must already be made"
+        );
+        assert!(
+            clip.items.iter().all(|item| item.bytes().is_some()),
+            "no rendering can be owed to a synchronous paste"
+        );
+        assert!(
+            clip.items.iter().map(ClipItem::len).sum::<usize>() <= MAX_CLIP_TOTAL,
+            "prepared types share the copy's byte cap"
+        );
+    }
 
     /// A window's clipboard that keeps what reaches it.
     #[derive(Default)]

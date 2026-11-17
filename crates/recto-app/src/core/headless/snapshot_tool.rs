@@ -166,23 +166,23 @@ fn a_box(app: &HeadlessApp, path: &Path, turns: u8, anyway: bool) -> String {
 
 /// What a snapshot of the person's did, a line each, on 2026-11-14, before the tool's snapshot became the person's `snapshot` command.
 const GOLDEN: &[&str] = &[
-    "a box on a text page | \"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image*, public.jpeg] | same",
+    "a box on a text page | \"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image, public.jpeg] | same",
     "its text | \"Words to take in a box\"",
     "a click on a JPEG | \"Copied the image as its own JPEG, 4 × 4 pixels.\" [] | [public.jpeg, public.png] | its own bytes",
     "a click off any image | \"There's no image there. Drag a box to take part of the page.\" [] | nothing offered",
-    "a box on dark paper | \"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image*, public.jpeg] | same",
-    "a box on a page turned a quarter, unsaved | \"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image*, public.jpeg] | same",
+    "a box on dark paper | \"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image, public.jpeg] | same",
+    "a box on a page turned a quarter, unsaved | \"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image, public.jpeg] | same",
     "its file changed on disk under an edit | \"That page can't be read now: its file has changed or gone.\" [] | nothing offered",
     "asks not to be copied | \"This file's permissions ask that it isn't copied.\" [Copy anyway] | nothing offered",
-    "its Copy anyway | \"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image*, public.jpeg] | same",
+    "its Copy anyway | \"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image, public.jpeg] | same",
     // Decided 2026-11-14 (S2's follow-up (1), Q5): the person's own snapshot reads a document they opened with its password, as the page view does; it
     // said "This PDF needs a password." before, and offered nothing. And its flag against copying is read with the password.
-    "opened with its password | \"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image*, public.jpeg] | every type given | text \"Locked page 1\"",
+    "opened with its password | \"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image, public.jpeg] | every type given | text \"Locked page 1\"",
     "opened with its password, asking not to be copied | \"This file's permissions ask that it isn't copied.\" [Copy anyway] | nothing offered",
 ];
 
 /// **Failure (a guard before the snapshot tool's release became the person's `snapshot` and `image` commands):** what the tool puts on the clipboard, or
-/// says by the page, changes: other types or another order, the SVG made at once rather than promised, bytes other than `extract` makes for the box (as
+/// says by the page, changes: other types or another order, an SVG not prepared before the callback, bytes other than `extract` makes for the box (as
 /// the page is seen, turned by an unsaved turn; the same on dark paper), a JPEG clicked not its own bytes, other words or another button for a click off any
 /// image, a file changed under the tab, one that asks not to be copied and its Copy anyway, or a document opened with its password (read with it, its
 /// flag against copying too). One app, each case in turn, held against the golden.
@@ -344,12 +344,46 @@ fn session_held(app: &HeadlessApp) -> (std::sync::mpsc::Sender<()>, std::thread:
         .spawn(move || {
             core.host.session.with_session(|_| {
                 held_tx.send(()).expect("the test is waiting");
-                let _ = done_rx.recv_timeout(WAIT_LIMIT);
+                let _ = done_rx.recv(); // The only sender is dropped by the test, including during unwinding.
             });
         })
         .expect("a thread");
     held_rx.recv_timeout(WAIT_LIMIT).expect("the session held");
     (done_tx, holder)
+}
+
+/// Failure: the synchronous clipboard callback starts a rendering command or waits for the session after the copy already completed.
+#[test]
+fn a_prepared_svg_is_given_while_the_session_is_held_without_starting_work() {
+    let disk = Disk::new();
+    let doc = disk.file("prepared.pdf", &text_and_image());
+    let app = disk.start();
+    app.open(&doc);
+    app.settle();
+    tool_on(&app);
+    take_box(&app);
+    let core = std::sync::Arc::clone(app.core());
+    let offer = core.tools.tool().take_offer(&core.panes.engines(&core.engine)).expect("the copy is ready");
+    assert!(offer.promised.is_empty(), "every advertised type is prepared");
+    let (release, holder) = session_held(&app);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let ui = std::thread::Builder::new()
+        .name("prepared-svg-callback".into())
+        .spawn(move || tx.send(core.tools.tool().ready_bytes(offer.serial, extract::UTI_SVG)).unwrap())
+        .expect("the callback thread");
+    let bytes = rx.recv_timeout(WAIT_LIMIT);
+    // Release on both outcomes so a broken callback leaves no blocked thread behind the failure.
+    drop(release);
+    holder.join().expect("the session's holder");
+    ui.join().expect("the callback");
+    let bytes = bytes
+        .expect("the callback returned while the session was still held")
+        .expect("the prepared SVG");
+    assert!(String::from_utf8_lossy(&bytes).contains("<svg"));
+    assert!(
+        !app.core().tools.tool().paste_running() && !app.core().tools.tool().busy(),
+        "no new command or worker"
+    );
 }
 
 /// **Failure (coordinator, 2026-11-14, the one place the UI thread waits): the system's paste of a promised SVG waits without end** for the person's
@@ -369,7 +403,18 @@ fn a_paste_waits_at_most_its_patience_and_never_for_the_session() {
     let offer = inner.tools.tool().take_offer(&inner.panes.engines(&inner.engine)).expect("offered");
     let (release, holder) = session_held(&app);
     let core = std::sync::Arc::clone(app.core());
-    let serial = offer.serial;
+    // The host no longer receives a promise. Retain the legacy action's cancellation guard with an explicit test offer.
+    let serial = inner.tools.tool().offer_a_promise_for_a_test(snapshot_tool::Promise {
+        tab: inner.engine.hot_tab().expect("the open tab"),
+        position: 0,
+        rect: BOX,
+        as_seen: extract::AsSeen {
+            quarter_turns: 0,
+            file_page: 0,
+            own: true,
+        },
+    });
+    assert!(offer.promised.is_empty(), "normal copies have every type prepared");
     let ui = std::thread::Builder::new()
         .name("test-ui".into())
         .spawn(move || {
@@ -415,17 +460,16 @@ fn a_turn_asked_after_a_snapshot_isnt_copied() {
     app.settle();
     assert_eq!(
         a_box(&app, &doc, 0, false),
-        "\"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image*, public.jpeg] | same",
+        "\"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image, public.jpeg] | same",
         "copied as the page was when the box was let go"
     );
     assert!(app.core().menu_item_enabled("edit.undo".into()), "and the turn done after it");
 }
 
 /// **Failure (coordinator, 2026-11-14: the clipboard's types are one copy of one moment): a page moved between the box and the paste of its SVG** gives
-/// another page's SVG, as the paste names the page's place in the tab. The box on page 1 of two, the page moved after page 2, then the paste: no SVG, and
-/// the PNG on the clipboard still the box's.
+/// another page's SVG, as a late rendering names its old position. The copied SVG and PNG must both remain those of the original box after a move.
 #[test]
-fn a_page_moved_before_the_paste_gives_no_other_pages_svg() {
+fn a_page_moved_before_the_paste_keeps_the_copied_pages_svg() {
     let disk = Disk::new();
     let doc = disk.pdf("two.pdf", 2);
     let app = disk.start();
@@ -444,7 +488,14 @@ fn a_page_moved_before_the_paste_gives_no_other_pages_svg() {
         .into_iter()
         .find(|(uti, _)| uti == extract::UTI_PNG)
         .map(|(_, bytes)| bytes);
-    assert_eq!(svg, None, "no SVG of the page that's in its place now");
+    let box_svg = reference(&doc, 0, false)
+        .into_iter()
+        .find(|(uti, _)| uti == extract::UTI_SVG)
+        .map(|(_, bytes)| bytes);
+    assert!(
+        svg.is_some() && svg == box_svg,
+        "the prepared SVG is still the copied page, never its replacement"
+    );
     assert!(png.is_some() && png == box_png, "the PNG is still the box's");
 }
 
@@ -540,7 +591,7 @@ fn a_snapshot_that_panics_leaves_the_tool_working() {
     take_box(&app);
     assert_eq!(
         a_box(&app, &doc, 0, false),
-        "\"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image*, public.jpeg] | same",
+        "\"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image, public.jpeg] | same",
         "the next box copies"
     );
 }
@@ -559,15 +610,26 @@ fn a_paste_that_panics_leaves_the_next_paste_working() {
     let inner = app.core();
     let tool = inner.tools.tool();
     let offer = tool.take_offer(&inner.panes.engines(&inner.engine)).expect("offered");
+    assert!(offer.promised.is_empty(), "the host receives prepared types");
+    let serial = tool.offer_a_promise_for_a_test(snapshot_tool::Promise {
+        tab: inner.engine.hot_tab().expect("the open tab"),
+        position: 0,
+        rect: BOX,
+        as_seen: extract::AsSeen {
+            quarter_turns: 0,
+            file_page: 0,
+            own: true,
+        },
+    });
     app.panic_next("paste_drawing");
     let pasted = app.act(UiAction::Pasted {
-        serial: offer.serial,
+        serial,
         uti: extract::UTI_SVG.into(),
     });
     assert!(pasted.understood, "the paste's command sent");
     app.wait_until("the paste that panicked ended", || !tool.paste_running());
     assert_eq!(tool.wait_for_paste(), None, "it gives nothing");
-    let svg = clipboard_data(&app, offer.serial, extract::UTI_SVG).expect("the next paste gets its SVG");
+    let svg = clipboard_data(&app, serial, extract::UTI_SVG).expect("the next paste gets its SVG");
     assert!(String::from_utf8_lossy(&svg).contains("<svg"), "an SVG");
 }
 
@@ -599,7 +661,7 @@ fn a_box_dropped_from_the_lane_leaves_the_tool_working() {
         let turns = u8::from(matches!(how, Dropped::AtAQuit));
         assert_eq!(
             a_box(&app, &doc, turns, false),
-            "\"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image*, public.jpeg] | same",
+            "\"Copied the snapshot as PNG, text, SVG and JPG.\" [] | [public.png, public.utf8-plain-text, public.svg-image, public.jpeg] | same",
             "{how:?}: the next box copies"
         );
     }

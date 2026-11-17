@@ -194,8 +194,8 @@ const EXPORTS: &[(&str, Is, &[&str])] = &[
         &[],
     ),
     ("take_clipboard", HostOnly(CLIPBOARD), &[]),
-    // A promised type the system's paste asks for is the person's `snapshot` command, sent through `act`; the rest are bytes made with the copy.
-    ("clipboard_data", Input, &["Pasted"]),
+    // Every advertised type is prepared by the copy; the system's callback only takes those bytes.
+    ("clipboard_data", HostOnly(CLIPBOARD), &[]),
     ("clipboard_released", HostOnly(CLIPBOARD), &[]),
     ("take_print", HostOnly(PRINTING), &[]),
     ("print_finished", HostOnly(PRINTING), &[]),
