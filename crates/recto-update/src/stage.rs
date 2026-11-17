@@ -461,7 +461,9 @@ pub(crate) mod tests {
         // Some callers deliberately pack a foreign app or a link to test refusal. A readable release still must not acquire metadata files.
         if let Ok(entries) = zip::read_directory(&mut std::io::Cursor::new(&bytes), APP_BUNDLE) {
             assert!(
-                !entries.iter().any(|entry| entry.name.starts_with(APP_BUNDLE) && entry.name.split('/').any(|part| part.starts_with("._"))),
+                !entries
+                    .iter()
+                    .any(|entry| entry.name.starts_with(APP_BUNDLE) && entry.name.split('/').any(|part| part.starts_with("._"))),
                 "test release metadata was packed inside the signed bundle instead of __MACOSX: {entries:?}"
             );
         }
