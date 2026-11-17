@@ -127,8 +127,10 @@ RectoPDF has not reached all of its own targets. Don't take these as done:
   purpose, before features (§2.14).
 - **No drawing extension point.** A feature that draws on a page still reaches into the page view's shared state (the
   pilot raised a struct's field count for it, as a dated debt).
-- **Registries still take the whole app.** RectoPDF's menu-row and answer registries pass `&Arc<Inner>`; changing them
-  to pass parts is scheduled, not done.
+- **Parts must also narrow authority.** RectoPDF's menu-row and answer registries now pass `RowParts` and
+  `AnswerParts` (verified 2026-11-17), so the earlier whole-app-registry task is done. A part that offers `person()`
+  to an agent-callable row can still be too broad even when it no longer offers the whole app; give such rows only
+  the capabilities their route may use. No current misuse was found in that review.
 - **CI's margin is thin.** RectoPDF's CI budget is 21 minutes; its last 20 green runs took 16:34 to 24:15 and the median
   of five was 19:24.
 - **Settled still has gaps.** The headless kit's settle is fixed for an owed write; other deadlines due now (a lock
