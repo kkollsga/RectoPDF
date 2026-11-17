@@ -142,3 +142,10 @@ path = "fuzz_targets/sidecar.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "locator"
+path = "fuzz_targets/locator.rs"
+test = false
+doc = false
+bench = false
