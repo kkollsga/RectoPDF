@@ -1,0 +1,134 @@
+{
+  "observed_on": "2026-11-18",
+  "morning_run": 43830180421,
+  "latest_five": [
+    {
+      "run": "43881731728",
+      "stages": {
+        "clippy and the Windows compile check": 67,
+        "recto-session's doc links": 6,
+        "workers": 18,
+        "headings-tests": 29,
+        "changed-tests": 146,
+        "other-tests": 262,
+        "app-build": 160,
+        "app-bundle": 30,
+        "app-tests": 331,
+        "registrations": 7
+      }
+    },
+    {
+      "run": "43906815106",
+      "stages": {
+        "clippy and the Windows compile check": 78,
+        "recto-session's doc links": 6,
+        "workers": 21,
+        "headings-tests": 28,
+        "other-tests": 372,
+        "app-build": 165,
+        "app-bundle": 32,
+        "app-tests": 414,
+        "registrations": 13
+      }
+    },
+    {
+      "run": "43923756439",
+      "stages": {
+        "clippy and the Windows compile check": 48,
+        "recto-session's doc links": 3,
+        "workers": 16,
+        "headings-tests": 24,
+        "changed-tests": 194,
+        "other-tests": 156,
+        "app-build": 120,
+        "app-bundle": 35,
+        "app-tests": 404,
+        "registrations": 10
+      }
+    },
+    {
+      "run": "43932765225",
+      "stages": {
+        "clippy and the Windows compile check": 72,
+        "recto-session's doc links": 6,
+        "workers": 23,
+        "headings-tests": 33,
+        "changed-tests": 153,
+        "other-tests": 232,
+        "app-build": 127,
+        "app-bundle": 23,
+        "app-tests": 387,
+        "registrations": 12
+      }
+    },
+    {
+      "run": "43936528172",
+      "stages": {
+        "clippy and the Windows compile check": 41,
+        "recto-session's doc links": 4,
+        "workers": 13,
+        "headings-tests": 23,
+        "changed-tests": 122,
+        "other-tests": 244,
+        "app-build": 136,
+        "app-bundle": 22,
+        "app-tests": 308,
+        "registrations": 9
+      }
+    }
+  ],
+  "morning": {
+    "gate": 38,
+    "docs": 2,
+    "workers": 11,
+    "headings": 20,
+    "tests": 291,
+    "app_build": 103,
+    "bundle": 22,
+    "app_tests": 347,
+    "registrations": 10
+  },
+  "test_diff": {
+    "common": 3162,
+    "common_before": 2025.364,
+    "common_after": 2003.043,
+    "new_count": 86,
+    "new_test_seconds": 21.475
+  },
+  "latest_job": {
+    "wall": 1133,
+    "heavy_step": 934,
+    "restore": 85,
+    "save": 85
+  },
+  "other_jobs": [
+    {
+      "run": 43881731728,
+      "wall": 1234,
+      "heavy": 1073,
+      "restore": 123,
+      "save": 0
+    },
+    {
+      "run": 43906815106,
+      "wall": 1309,
+      "heavy": 1147,
+      "restore": 125,
+      "save": 0
+    },
+    {
+      "run": 43923756439,
+      "wall": 1176,
+      "heavy": 1025,
+      "restore": 118,
+      "save": 0
+    },
+    {
+      "run": 43932765225,
+      "wall": 1254,
+      "heavy": 1087,
+      "restore": 130,
+      "save": 0
+    }
+  ]
+}
