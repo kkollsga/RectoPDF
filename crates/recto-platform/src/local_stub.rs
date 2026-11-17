@@ -272,6 +272,10 @@ pub fn signal_process(_pid: u32, _kill: bool) -> bool {
     false
 }
 
+pub fn signal_process_group(_group: u32, _kill: bool) -> bool {
+    false
+}
+
 pub fn spawn_detached(_program: &Path, _args: &[String], _envs: &[(String, String)], _log: &Path) -> io::Result<u32> {
     unsupported()
 }
