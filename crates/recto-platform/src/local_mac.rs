@@ -925,11 +925,46 @@ pub fn carry_attributes(from: &Path, to: &Path) -> io::Result<usize> {
             Err(_) => missed += 1,
         }
     }
-    // SAFETY: both strings are NUL-terminated and live for the call, and a null state is copyfile's own default. Only the ACL is asked for.
-    if unsafe { libc::copyfile(from_c.as_ptr(), to_c.as_ptr(), std::ptr::null_mut(), libc::COPYFILE_ACL) } != 0 {
+    // Last: a restrictive ACL can deny the attribute writes above. copyfile(COPYFILE_ACL) also rewrites quarantine on macOS 27,
+    // losing the original download's time and agent, so copy only the native ACL through checked descriptors.
+    if carry_acl(from, to).is_err() {
         missed += 1;
     }
     Ok(missed)
+}
+
+/// Native extended ACLs, with no copyfile quarantine side effect. Both files stay open until the final ACL is installed.
+fn carry_acl(from: &Path, to: &Path) -> io::Result<()> {
+    // sys/acl.h: acl_type_t is a C enum; acl_t is an opaque pointer, owned until acl_free.
+    unsafe extern "C" {
+        fn acl_get_fd_np(fd: libc::c_int, kind: libc::c_int) -> *mut libc::c_void;
+        fn acl_set_fd_np(fd: libc::c_int, acl: *mut libc::c_void, kind: libc::c_int) -> libc::c_int;
+        fn acl_init(count: libc::c_int) -> *mut libc::c_void;
+        fn acl_free(acl: *mut libc::c_void) -> libc::c_int;
+    }
+    const EXTENDED: libc::c_int = 0x0000_0100;
+    let from = crate::document_file::open_regular(from).map_err(crate::document_file::Refused::into_io)?;
+    let to = crate::document_file::open_regular(to).map_err(crate::document_file::Refused::into_io)?;
+    // SAFETY: the descriptor remains live, and EXTENDED is ACL_TYPE_EXTENDED from sys/acl.h.
+    let mut acl = unsafe { acl_get_fd_np(from.as_raw_fd(), EXTENDED) };
+    if acl.is_null() {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ENOENT) {
+            return Err(error);
+        }
+        // An open file cannot be a missing path: ENOENT here means it has no extended ACL. Install an empty one, not the target's inherited ACL.
+        // SAFETY: zero asks the system for an empty owned ACL; null is checked before any use.
+        acl = unsafe { acl_init(0) };
+        if acl.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    // SAFETY: the target descriptor and owned ACL are live, with the ABI's (fd, acl, type) argument order.
+    let changed = unsafe { acl_set_fd_np(to.as_raw_fd(), acl, EXTENDED) };
+    let error = (changed != 0).then(io::Error::last_os_error);
+    // SAFETY: this is the one release of the non-null ACL returned by acl_get_fd_np or acl_init. No early return follows allocation.
+    unsafe { acl_free(acl) };
+    error.map_or(Ok(()), Err)
 }
 
 /// **Gives a copy of a file what it should keep of the original:** the quarantine flag and where it was downloaded from, so a copy of a download is still one. A Save As, which is another file, gets only these. Says how many couldn't be carried.
