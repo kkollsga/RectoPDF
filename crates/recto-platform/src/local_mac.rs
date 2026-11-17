@@ -604,6 +604,18 @@ pub fn signal_process(pid: u32, kill: bool) -> bool {
     unsafe { libc::kill(pid, if kill { libc::SIGKILL } else { libc::SIGTERM }) == 0 }
 }
 
+/// Signals an owned spawned process group. Zero/current-group, one/all-processes and values outside positive pid_t are refused.
+pub fn signal_process_group(group: u32, kill: bool) -> bool {
+    let Some(target) = process_group_signal_target(group) else { return false };
+    // SAFETY: target is the checked negative identifier of a group greater than one; the caller owns the spawned group.
+    unsafe { libc::kill(target, if kill { libc::SIGKILL } else { libc::SIGTERM }) == 0 }
+}
+
+fn process_group_signal_target(group: u32) -> Option<libc::pid_t> {
+    let group = libc::pid_t::try_from(group).ok()?;
+    (group > 1).then_some(-group)
+}
+
 /// Starts a program that outlives this process: in a session of its own, with nothing on standard input and what it says appended to `log`. It isn't waited for.
 pub fn spawn_detached(program: &Path, args: &[String], envs: &[(String, String)], log: &Path) -> io::Result<u32> {
     use std::os::unix::process::CommandExt as _;
@@ -981,6 +993,16 @@ pub fn interrupt_flag() -> &'static std::sync::atomic::AtomicBool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: an invalid owned-group number becomes kill's current-group or all-processes sentinel, or overflows pid_t. Test conversion without signalling anything.
+    #[test]
+    fn group_signal_targets_never_address_current_or_all_processes() {
+        for group in [0, 1, libc::pid_t::MAX as u32 + 1, u32::MAX] {
+            assert_eq!(process_group_signal_target(group), None, "group {group}");
+        }
+        assert_eq!(process_group_signal_target(2), Some(-2));
+        assert_eq!(process_group_signal_target(libc::pid_t::MAX as u32), Some(-libc::pid_t::MAX));
+    }
 
     fn temp(name: &str) -> recto_testpdf::TempDir {
         recto_testpdf::TempDir::new(&format!("recto-local-{name}-"))
