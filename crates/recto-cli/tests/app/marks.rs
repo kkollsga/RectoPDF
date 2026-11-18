@@ -21,25 +21,39 @@ fn wait_marks(run: &Run<'_>, holds: impl Fn(&Value) -> bool) -> Value {
     }
 }
 
-/// Failure: the zoom level or the page number stays up for good, never comes back on a change, fades from under the pointer, or Rust says one thing and the window draws another. Owner, 2026-11-08: "Zoom level should auto hid 3s after last zoom change, and similar behaviour for page number". Opening shows both; they go by themselves; the reader's scroll brings the page number back and a zoom the zoom level, each alone; the pointer over the page number holds it with no timer; and what's drawn is what's said.
+/// Failure: opening fails to deliver either mark change to Rust (even if observation arrives after the fade), the zoom level or the page number stays up for good, never comes back on a change, fades from under the pointer, or Rust says one thing and the window draws another. Owner, 2026-11-08: "Zoom level should auto hid 3s after last zoom change, and similar behaviour for page number". Opening shows both; they go by themselves; the reader's scroll brings the page number back and a zoom the zoom level, each alone; the pointer over the page number holds it with no timer; and what's drawn is what's said.
 #[test]
 fn the_zoom_level_and_the_page_number_fade_after_their_last_change() {
     let Some(run) = Run::start() else { return };
     // Drawn at once, so what's drawn can be compared with what's said without waiting out a fade.
     run.ok(&["qa", "reduce-motion", "on"]);
+    let before = marks(&run);
     let file = numbered(30);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     let opened = marks(&run);
-    assert_eq!(
-        (opened["zoom_shown"].as_bool(), opened["place_shown"].as_bool()),
-        (Some(true), Some(true)),
-        "opening a document changes both: {opened}"
-    );
+    for mark in ["zoom", "place"] {
+        assert!(
+            opened["changes_delivered"][mark].as_u64().unwrap() > before["changes_delivered"][mark].as_u64().unwrap(),
+            "opening delivered the {mark} change to Rust: before {before}, after {opened}"
+        );
+        let shown = opened[format!("{mark}_shown")].as_bool().unwrap();
+        assert_eq!(
+            opened[format!("{mark}_alpha")].as_f64(),
+            Some(if shown { 1.0 } else { 0.0 }),
+            "the current {mark} visibility is drawn: {opened}"
+        );
+    }
     // A quiet run's window sits 40,000 points off every screen and is never ordered in (`MainWindowController`), so the real pointer can't be in a corner: nothing here depends on where the owner's mouse is.
     assert_eq!(opened["pointer_in"], serde_json::json!([]), "no corner has the real pointer in it: {opened}");
-    let next = opened["next_change_in_ms"].as_u64().unwrap();
-    assert!(next > 0 && next <= 3_000, "they go within 3 s: {opened}");
+    if let Some(next) = opened["next_change_in_ms"].as_u64() {
+        assert!(next > 0 && next <= 3_000, "they go within 3 s: {opened}");
+    } else {
+        assert!(
+            opened["zoom_shown"] == false && opened["place_shown"] == false,
+            "an unheld visible mark must have its timer: {opened}"
+        );
+    }
     let gone = wait_marks(&run, |marks| marks["zoom_shown"] == false && marks["place_shown"] == false);
     assert_eq!(
         (gone["zoom_alpha"].as_f64(), gone["place_alpha"].as_f64()),
@@ -48,8 +62,7 @@ fn the_zoom_level_and_the_page_number_fade_after_their_last_change() {
     );
     assert!(gone["next_change_in_ms"].is_null(), "with nothing left to wait for: {gone}");
     // The reader's own scroll brings the page number back, and only that.
-    run.ok(&["qa", "scroll", "400"]);
-    let scrolled = marks(&run);
+    let scrolled = run.ok(&["qa", "scroll", "400"])["chrome"].clone();
     assert_eq!(
         (
             scrolled["place_shown"].as_bool(),
@@ -60,8 +73,7 @@ fn the_zoom_level_and_the_page_number_fade_after_their_last_change() {
         "{scrolled}"
     );
     // A zoom brings the zoom level back, at the change: looked at before the pages at the new zoom are drawn, which on a slow machine can take longer than the mark's 3 s (slow mode, 2026-11-11).
-    run.ok(&["qa", "zoom", "1.5"]);
-    let zoomed = marks(&run);
+    let zoomed = run.ok(&["qa", "zoom", "1.5"])["chrome"].clone();
     assert_eq!(
         (zoomed["zoom_shown"].as_bool(), zoomed["zoom_alpha"].as_f64()),
         (Some(true), Some(1.0)),
@@ -70,12 +82,10 @@ fn the_zoom_level_and_the_page_number_fade_after_their_last_change() {
     run.settled();
     // The pointer over the page number holds it, with no timer for it, and its 3 s start when it leaves.
     wait_marks(&run, |marks| marks["place_shown"] == false && marks["zoom_shown"] == false);
-    run.ok(&["qa", "corner-pointer", "lower-right:in"]);
-    let over = marks(&run);
+    let over = run.ok(&["qa", "corner-pointer", "lower-right:in"])["chrome"].clone();
     assert_eq!(over["place_shown"], true, "back under the pointer: {over}");
     assert!(over["next_change_in_ms"].is_null(), "held there, with no time running out: {over}");
-    run.ok(&["qa", "corner-pointer", "lower-right:out"]);
-    let left = marks(&run);
+    let left = run.ok(&["qa", "corner-pointer", "lower-right:out"])["chrome"].clone();
     assert!(
         left["place_shown"] == true && left["next_change_in_ms"].as_u64().is_some_and(|ms| ms <= 3_000),
         "it goes 3 s after: {left}"
