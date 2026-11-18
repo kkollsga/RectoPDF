@@ -454,7 +454,7 @@ pub(crate) mod tests {
             64 * 1024,
         )
         .unwrap();
-        assert!(fine, "archive producer: {ran:?}");
+        assert!(fine, "archive producer: {ran:?}: {}", String::from_utf8_lossy(&ran.stderr));
         let bytes = std::fs::read(to).unwrap();
         // Some callers deliberately pack a foreign app or a link to test refusal. A readable release still must not acquire metadata files.
         if let Ok(entries) = zip::read_directory(&mut std::io::Cursor::new(&bytes), APP_BUNDLE) {

@@ -659,8 +659,28 @@ pub(crate) mod tests {
         use crate::process::tool;
         use recto_platform::local;
 
-        let dir = crate::stage::tests::temp_dir("archive-metadata");
-        let app = crate::stage::tests::fake_app(&dir, "0.2.0");
+        struct Evidence(Option<recto_testpdf::TempDir>);
+        impl Drop for Evidence {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    if let Some(dir) = self.0.take() {
+                        eprintln!("archive metadata evidence: {}; rerun: {}", dir.display(), dir.join("rerun.txt").display());
+                        std::mem::forget(dir);
+                    }
+                }
+            }
+        }
+        let evidence = Evidence(Some(crate::stage::tests::temp_dir("archive-metadata")));
+        let dir = evidence.0.as_ref().unwrap();
+        std::fs::write(
+            dir.join("rerun.txt"),
+            "HEAVY_CLASS=quick tools/sysguard/heavy.sh cargo nextest run --locked -p recto-update -E 'test(=zip::tests::a_zip_from_ditto_unpacks_whole)'\n",
+        )
+        .unwrap();
+        let app = dir.join(APP);
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::write(app.join("Contents/Info.plist"), r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>example.recto.archive-test</string><key>CFBundleExecutable</key><string>RectoPDF</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1</string></dict></plist>"#).unwrap();
+        std::fs::copy("/usr/bin/true", app.join("Contents/MacOS/RectoPDF")).unwrap();
         let resource = app.join("Contents/Resources/stream.bin");
         std::fs::create_dir_all(resource.parent().unwrap()).unwrap();
         let data = vec![9u8; 300_000];
@@ -674,8 +694,18 @@ pub(crate) mod tests {
         let plist = std::fs::read(app.join("Contents/Info.plist")).unwrap();
         let limit = Duration::from_secs(30);
         let signed = tool("/usr/bin/codesign", &["--force", "--sign", "-", app.to_str().unwrap()], limit, 64 * 1024).unwrap();
-        assert!(signed.0, "signing fixture: {:?}", signed.2);
-        let verify = |path: &Path| {
+        std::fs::write(
+            dir.join("sign.txt"),
+            format!(
+                "codesign --force --sign - {}\n{:?}\n{}",
+                app.display(),
+                signed.2,
+                String::from_utf8_lossy(&signed.2.stderr)
+            ),
+        )
+        .unwrap();
+        assert!(signed.0, "signing fixture: {:?}: {}", signed.2, String::from_utf8_lossy(&signed.2.stderr));
+        let verify = |label: &str, path: &Path| {
             let (fine, _, ran) = tool(
                 "/usr/bin/codesign",
                 &["--verify", "--deep", "--strict", path.to_str().unwrap()],
@@ -683,17 +713,42 @@ pub(crate) mod tests {
                 64 * 1024,
             )
             .unwrap();
-            assert!(fine, "strict signature of {}: {ran:?}", path.display());
+            std::fs::write(
+                dir.join(format!("verify-{label}.txt")),
+                format!(
+                    "codesign --verify --deep --strict {}\n{ran:?}\n{}",
+                    path.display(),
+                    String::from_utf8_lossy(&ran.stderr)
+                ),
+            )
+            .unwrap();
+            assert!(
+                fine,
+                "strict signature of {}: {ran:?}: {}",
+                path.display(),
+                String::from_utf8_lossy(&ran.stderr)
+            );
         };
-        verify(&app);
+        verify("before", &app);
         let zip = dir.join("r.zip");
         let archive = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/archive.sh");
         let (fine, _, ran) = tool(archive.to_str().unwrap(), &[app.to_str().unwrap(), zip.to_str().unwrap()], limit, 64 * 1024).unwrap();
-        assert!(fine, "archive producer: {ran:?}");
+        std::fs::write(
+            dir.join("archive.txt"),
+            format!(
+                "{} {} {}\n{ran:?}\n{}",
+                archive.display(),
+                app.display(),
+                zip.display(),
+                String::from_utf8_lossy(&ran.stderr)
+            ),
+        )
+        .unwrap();
+        assert!(fine, "archive producer: {ran:?}: {}", String::from_utf8_lossy(&ran.stderr));
         let into = dir.join("out");
         std::fs::create_dir_all(&into).unwrap();
         unpack(&zip, APP, &into, Instant::now() + Duration::from_secs(30)).unwrap();
-        verify(&into.join(APP));
+        verify("after", &into.join(APP));
         assert_eq!(std::fs::read(into.join("RectoPDF.app/Contents/Resources/stream.bin")).unwrap(), data);
         assert_eq!(
             std::fs::metadata(into.join("RectoPDF.app/Contents/MacOS/RectoPDF"))
