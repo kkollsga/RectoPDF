@@ -1319,6 +1319,9 @@ impl AppCore {
 }
 
 #[cfg(test)]
+mod lock_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::Value;
