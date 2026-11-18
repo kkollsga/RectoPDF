@@ -51,9 +51,11 @@ impl AppCore {
         ready
     }
 
-    /// The system's printing is done with a file, however it went: it goes.
-    pub fn print_finished(&self, path: String) {
-        self.inner.tools.printing().finished(&path);
-        self.inner.core.push(CoreCall::Reconcile);
+    /// Queue the exact host completion without IO on this thread. A failed/cancelled operation only cleans its staging file; success may publish it.
+    pub fn print_finished(&self, path: String, serial: u64, success: bool) {
+        recto_app::core::printing::completion::request(self.inner.tools.printing(), &self.inner.core, &path, serial, success);
     }
 }
+
+#[cfg(test)]
+mod tests;

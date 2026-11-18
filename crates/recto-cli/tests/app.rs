@@ -875,7 +875,7 @@ fn long_titled(count: usize) -> TempPdf {
     TempPdf::new("long-titles.pdf", &build(&objects))
 }
 
-/// Failure: every other QA verb calls the method behind an event, so a method AppKit can't reach by name passes them all: hover never fired on a real window, as its handlers weren't Objective-C, so full names and hover details did nothing. Events are made and handed to the real responder by AppKit's selector, and what's checked is what comes of them: the pointer resting on a shortened contents entry opens its full name, on the real timer, and goes when it leaves. Nothing is posted.
+/// Failure: every other QA verb calls the method behind an event, so a method AppKit can't reach by name passes them all: hover never fired on a real window, as its handlers weren't Objective-C, so full names and hover details did nothing. Events are made and handed to the real responder by AppKit's selector, and what's checked is what comes of them: the pointer resting on a shortened contents entry opens its full name, on the real timer, and goes when it leaves. Nothing is posted. Also holds the print operation callback identity: a stale or repeated callback must not take the current job.
 #[test]
 fn what_appkit_calls_reaches_the_app() {
     let Some(run) = Run::start() else { return };
@@ -889,6 +889,8 @@ fn what_appkit_calls_reaches_the_app() {
     let failed: Vec<&String> = checked.iter().filter(|(_, ok)| **ok != true).map(|(name, _)| name).collect();
     assert!(failed.is_empty(), "these don't reach the app: {failed:?}\n{found}");
     for name in [
+        "old_print_callback_keeps_the_current_job",
+        "a_print_callback_finishes_only_once",
         "command_plus_zooms_in",
         "command_minus_zooms_out",
         "command_9_fits",
@@ -3643,6 +3645,10 @@ fn a_print_from_the_app_is_the_documents_pages_whatever_the_paper() {
     run.settled();
     let state = run.report();
     assert_eq!(state["printing"]["busy"], false, "{state}");
+    assert_eq!(
+        state["app"]["printing_host"]["last_result"], true,
+        "macOS completed the actual print successfully: {state}"
+    );
     // Opening the generated PDF and walking its page tree must not read or parse on the UI thread.
     assert_eq!(state["app"]["printing_host"]["last_load"]["main_thread"], false, "{state}");
     assert_eq!(

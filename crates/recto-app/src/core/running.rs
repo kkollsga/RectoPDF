@@ -25,6 +25,8 @@ pub struct Running {
     pub saves: u32,
     /// A print being prepared, or with the system's printing.
     pub printing: bool,
+    /// A completed print is pending publication or being published, not merely held by the printer.
+    pub publishing: bool,
     /// The page-identity thread is reading what edited pages are (`super::page_ids`).
     pub identifying: bool,
 }
@@ -41,6 +43,7 @@ impl Running {
             reads: life.reads_running(),
             saves: tools.save_ui().running.load(Ordering::SeqCst),
             printing: tools.printing().busy(),
+            publishing: tools.printing().publishing(),
             identifying: tools.page_ids().busy(),
         }
     }
@@ -59,14 +62,14 @@ impl Running {
     }
 
     /// **The quit's: what can change what it writes** (the record, a journal, a document's file): the person's commands, their parked edits among
-    /// them, the window's saves, and commands that change something (an agent's edit, a jump). The person's own print is one of the person's commands,
+    /// them, the window's saves, completed print output publication, and commands that change something (an agent's edit, a jump). The person's own print is one of the person's commands,
     /// so a quit during it waits for it, within the quit's 3 s: the quit cancels it as it begins (`Printing::quitting`), it stops at its next page, and
     /// its file goes. Not a sheet, a print's file with the system's printing (`printing`), an agent's read, render or export (D7), or a file being read,
     /// which on a dead volume would hold every quit (second review of the lane, 2): the record is written without what it would have opened, as on
     /// `main`.
     #[must_use]
     pub fn changes_what_a_quit_writes(&self) -> bool {
-        self.persons > 0 || self.saves > 0 || self.changing > 0
+        self.persons > 0 || self.saves > 0 || self.changing > 0 || self.publishing
     }
 }
 
