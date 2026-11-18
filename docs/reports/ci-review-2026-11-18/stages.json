@@ -153,5 +153,30 @@
     },
     "source": "push-main.sh kept times and decoded logs of workflow job 134490671643",
     "interpretation": "One successful delivery run; no source-only causal speedup claim."
+  },
+  "publication_follow_up": {
+    "run": 44266732369,
+    "commit": "86bb8b6137af3b644a29d97ad51061a7b02a3677",
+    "all_jobs": "success",
+    "longest_job": "check",
+    "longest_job_seconds": 799,
+    "median_last_five_seconds": 1133,
+    "budget_seconds": 1260,
+    "new_in_process_test_seconds": 0.391,
+    "native_test_count": 203,
+    "stages": {
+      "clippy and the Windows compile check": 35,
+      "recto-session's doc links": 2,
+      "workers": 9,
+      "headings-tests": 17,
+      "changed-tests": 151,
+      "other-tests": 123,
+      "app-build": 73,
+      "app-bundle": 16,
+      "app-tests": 228,
+      "registrations": 7
+    },
+    "source": "push-main.sh kept times and decoded logs of workflow job 134673006481",
+    "interpretation": "One successful publication run; multiple stages fell, with no source-only causal speedup claim."
   }
 }
