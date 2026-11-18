@@ -1,15 +1,46 @@
 import AppKit
 
-/// What the system's printing draws: the pages of the file Rust prepared, each fitted to the paper. Core Graphics reads that file, which is pictures Rust drew, so nothing here decides anything and nothing is drawn on the UI thread: the print runs on a thread of its own.
+/// The host's bounded state for the single print Rust permits. No document is retained by the diagnostic record.
+@MainActor final class PrintHost {
+    var infos: [UInt64: NSPrintInfo] = [:]
+    var nextSerial: UInt64 = 0
+    var path: String?
+    var lastLoad: [String: Any]?
+
+    var report: [String: Any] { ["answers_kept": infos.count, "last_load": lastLoad ?? NSNull()] }
+}
+
+/// Core Graphics alone reads this file off the UI thread. After loading, the document transfers to the main thread's print view and is drawn only by its print operation.
+private struct LoadedPrintDocument: @unchecked Sendable {
+    let document: CGPDFDocument
+    let pages: Int
+    let mainThread: Bool
+    let micros: UInt64
+
+    static func open(_ path: String) -> LoadedPrintDocument? {
+        let began = DispatchTime.now().uptimeNanoseconds
+        guard let document = CGPDFDocument(URL(fileURLWithPath: path) as CFURL) else { return nil }
+        let pages = document.numberOfPages
+        guard pages > 0 else { return nil }
+        return LoadedPrintDocument(document: document, pages: pages, mainThread: Thread.isMainThread, micros: (DispatchTime.now().uptimeNanoseconds - began) / 1000)
+    }
+
+    var report: [String: Any] { ["main_thread": mainThread, "micros": micros, "pages": pages] }
+}
+
+/// What the system's printing draws: the pages of the file Rust prepared, each fitted to the paper. Core Graphics reads that file, which is pictures Rust drew, so nothing here decides anything with opening and page counting prepared off the UI thread. The print operation is allowed a drawing thread; quiet QA has verified that path for text and map pages.
 final class PrintPagesView: NSView {
     private let document: CGPDFDocument
     private let pageSize: NSSize
+    private let pageCount: Int
 
-    init?(url: URL, paper: NSSize) {
-        guard let document = CGPDFDocument(url as CFURL), document.numberOfPages > 0 else { return nil }
-        self.document = document
+    fileprivate init?(loaded: LoadedPrintDocument, paper: NSSize) {
+        let height = paper.height * CGFloat(loaded.pages)
+        guard paper.width.isFinite, paper.width > 0, paper.height.isFinite, paper.height > 0, height.isFinite else { return nil }
+        document = loaded.document
+        pageCount = loaded.pages
         pageSize = paper
-        super.init(frame: NSRect(x: 0, y: 0, width: paper.width, height: paper.height * CGFloat(document.numberOfPages)))
+        super.init(frame: NSRect(x: 0, y: 0, width: paper.width, height: height))
     }
 
     required init?(coder: NSCoder) { nil }
@@ -17,7 +48,7 @@ final class PrintPagesView: NSView {
     override var isFlipped: Bool { true }
 
     override func knowsPageRange(_ range: NSRangePointer) -> Bool {
-        range.pointee = NSRange(location: 1, length: document.numberOfPages)
+        range.pointee = NSRange(location: 1, length: pageCount)
         return true
     }
 
@@ -28,7 +59,7 @@ final class PrintPagesView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let first = max(Int(dirtyRect.minY / pageSize.height), 0)
-        let last = min(Int((dirtyRect.maxY - 0.5) / pageSize.height), document.numberOfPages - 1)
+        let last = min(Int((dirtyRect.maxY - 0.5) / pageSize.height), pageCount - 1)
         guard first <= last else { return }
         for index in first...last {
             guard let page = document.page(at: index + 1) else { continue }
@@ -77,10 +108,10 @@ extension AppDelegate {
         let last = (settings[NSPrintInfo.AttributeKey.lastPage] as? Int) ?? Int(model.pages)
         // Saving or previewing a PDF from the panel is a print to a file, which Rust treats as an export; on paper it never asks.
         let toFile = info.jobDisposition != .spool
-        nextPrintSerial += 1
-        let serial = nextPrintSerial
+        printHost.nextSerial += 1
+        let serial = printHost.nextSerial
         let acted = core.act(action: .print(tab: model.tab, all: all, first: UInt32(max(first, 1)), last: UInt32(max(last, 1)), selectionOnly: info.isSelectionOnly, toFile: toFile, serial: serial))
-        if acted.understood { printInfos = [serial: info] }
+        if acted.understood { printHost.infos = [serial: info] }
     }
 
     /// Rust says a print's pages are ready: they go to the system's printing, with no panel, as it was answered already. It runs on a thread of its own, and the file goes when it's done.
@@ -88,32 +119,50 @@ extension AppDelegate {
         guard let ready = core.takePrint() else { return }
         let path = ready.path
         // Its own answer's printer and way, or nothing: never another answer's, nor a default printer it wasn't sent to.
-        guard let info = printInfos.removeValue(forKey: ready.serial) else {
+        guard let info = printHost.infos.removeValue(forKey: ready.serial) else {
             core.printFinished(path: path)
             return
         }
         // Answers before it whose prints went nowhere (refused, or stopped) won't come back.
-        printInfos = printInfos.filter { $0.key > ready.serial }
+        printHost.infos = printHost.infos.filter { $0.key > ready.serial }
         // The range was taken already: the file is just those pages.
         info.dictionary()[NSPrintInfo.AttributeKey.allPages] = true
         info.isSelectionOnly = false
         let paper = NSSize(width: info.paperSize.width - info.leftMargin - info.rightMargin, height: info.paperSize.height - info.topMargin - info.bottomMargin)
-        guard let window = windowController?.window, let view = PrintPagesView(url: URL(fileURLWithPath: path), paper: paper) else {
+        guard let window = windowController?.window else {
             core.printFinished(path: path)
             return
         }
-        let operation = NSPrintOperation(view: view, printInfo: info)
-        operation.showsPrintPanel = false
-        operation.showsProgressPanel = !isQuiet
-        operation.canSpawnSeparateThread = true
-        operation.jobTitle = core.printModel().jobTitle
-        printingPath = path
-        operation.runModal(for: window, delegate: self, didRun: #selector(printDidRun(_:success:contextInfo:)), contextInfo: nil)
+        let title = core.printModel().jobTitle
+        let core = self.core
+        // Rust keeps this unnamed file in `handing` until exactly one completion below. Its one-print rule bounds this work to one load, without idle state or a private thread.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self, weak window] in
+            let loaded = LoadedPrintDocument.open(path)
+            DispatchQueue.main.async { [weak self, weak window] in
+                // A closed or replaced window must not inherit the old window's pending print.
+                guard let self, let window, self.windowController?.window === window else {
+                    core.printFinished(path: path)
+                    return
+                }
+                self.printHost.lastLoad = loaded?.report
+                guard let loaded, let view = PrintPagesView(loaded: loaded, paper: paper) else {
+                    core.printFinished(path: path)
+                    return
+                }
+                let operation = NSPrintOperation(view: view, printInfo: info)
+                operation.showsPrintPanel = false
+                operation.showsProgressPanel = !self.isQuiet
+                operation.canSpawnSeparateThread = true
+                operation.jobTitle = title
+                self.printHost.path = path
+                operation.runModal(for: window, delegate: self, didRun: #selector(self.printDidRun(_:success:contextInfo:)), contextInfo: nil)
+            }
+        }
     }
 
     @objc func printDidRun(_ operation: NSPrintOperation, success: Bool, contextInfo: UnsafeMutableRawPointer?) {
-        if let path = printingPath { core.printFinished(path: path) }
-        printingPath = nil
+        if let path = printHost.path { core.printFinished(path: path) }
+        printHost.path = nil
     }
 
     /// For QA: the same path a print takes, to a PDF file through the system's own printing, with no panel shown. The paper is the first page's size with no margins, so the result can be laid page for page against the source. The system writes to a new name of Rust's, which Rust puts at `out` when it's done, never over anything.
@@ -129,10 +178,10 @@ extension AppDelegate {
         info.topMargin = 0
         info.bottomMargin = 0
         let all = first == 0
-        nextPrintSerial += 1
-        let serial = nextPrintSerial
+        printHost.nextSerial += 1
+        let serial = printHost.nextSerial
         let started = core.act(action: .print(tab: model.tab, all: all, first: max(first, 1), last: max(last, first), selectionOnly: false, toFile: true, serial: serial)).understood
-        if started { printInfos = [serial: info] }
+        if started { printHost.infos = [serial: info] }
         return started
     }
 }

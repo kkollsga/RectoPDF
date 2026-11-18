@@ -3643,6 +3643,12 @@ fn a_print_from_the_app_is_the_documents_pages_whatever_the_paper() {
     run.settled();
     let state = run.report();
     assert_eq!(state["printing"]["busy"], false, "{state}");
+    // Opening the generated PDF and walking its page tree must not read or parse on the UI thread.
+    assert_eq!(state["app"]["printing_host"]["last_load"]["main_thread"], false, "{state}");
+    assert_eq!(
+        state["app"]["printing_host"]["last_load"]["pages"], 2,
+        "the prepared range, not the source's page count: {state}"
+    );
     // Not `over_1s == 0`: a starved runner makes a stretch of a second with the thread ready to run.
     if let Err(why) = common::hang_rule::held_the_window(&state["hangs"]) {
         panic!("{why}: {state}");
@@ -3702,14 +3708,17 @@ fn a_print_to_a_file_of_a_copy_restricted_pdf_offers_print_anyway() {
     run.settled();
     let refused_again = wait_for(&run, |state| state["app"]["copy_notice"]["button"] == "Print anyway");
     assert_eq!(
-        refused_again["app"]["print_answers_kept"], 1,
+        refused_again["app"]["printing_host"]["answers_kept"], 1,
         "only the newest refused print keeps its settings: {refused_again}"
     );
     run.ok(&["qa", "notice-button"]);
     run.settled();
     let done = wait_for(&run, |state| state["printing"]["busy"] == false);
     assert!(out.exists(), "printed once asked: {done}");
-    assert_eq!(done["app"]["print_answers_kept"], 0, "a finished print releases its native settings: {done}");
+    assert_eq!(
+        done["app"]["printing_host"]["answers_kept"], 0,
+        "a finished print releases its native settings: {done}"
+    );
     std::fs::remove_file(&out).unwrap();
 }
 

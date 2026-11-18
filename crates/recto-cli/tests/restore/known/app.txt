@@ -188,7 +188,11 @@ app.paper
 app.place
 app.place_label
 app.place_label_in_lower_right
-app.print_answers_kept
+app.printing_host.answers_kept
+app.printing_host.last_load
+app.printing_host.last_load.main_thread
+app.printing_host.last_load.micros
+app.printing_host.last_load.pages
 app.reveal.row
 app.reveal.shown
 app.save_button.clear_of_window_buttons
