@@ -7,7 +7,7 @@ use recto_control::StatePaths;
 use recto_control::client::Client;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use crate::qa_times::{self, Moment};

@@ -77,3 +77,62 @@ fn the_check_sees_the_shapes_it_is_for() {
         assert!(starts_the_build(line).is_none(), "{line}");
     }
 }
+
+/// Failure: quiet-app cleanup signals an unowned numeric PID after exit, risking a signal to an unrelated process that reused it.
+#[test]
+fn quiet_run_cleanup_never_signals_a_borrowed_pid() {
+    let source = include_str!("common/app.rs");
+    for (name, code) in [
+        (
+            "Run::kill",
+            source.split("pub fn kill(mut self)").nth(1).expect("Run::kill").split("\n}").next().unwrap(),
+        ),
+        (
+            "Run::drop",
+            source.split("impl Drop for Run<'_>").nth(1).expect("Run::drop").split("\n}").next().unwrap(),
+        ),
+    ] {
+        for forbidden in ["/bin/kill", "signal_process(", "libc::kill("] {
+            assert!(!code.contains(forbidden), "{name} signals a borrowed PID through {forbidden}");
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[path = "common/app/lifetime.rs"]
+mod lifetime;
+
+#[cfg(unix)]
+fn waiting_child() -> std::process::Child {
+    use std::io::BufRead;
+    let mut child = std::process::Command::new("/bin/sh")
+        .args(["-c", "printf 'ready\n'; exec /bin/cat"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+    assert_eq!(line, "ready\n");
+    child
+}
+
+/// Failure: hard cleanup is attempted on an attached process, or an owned killed child is left unreaped and its PID unanchored.
+#[cfg(unix)]
+#[test]
+fn owned_quiet_children_are_reaped_and_borrowed_instances_cannot_be_killed() {
+    eprintln!(
+        "test harness compiler sizes: Child={}, Lifetime={}",
+        std::mem::size_of::<std::process::Child>(),
+        std::mem::size_of::<lifetime::Lifetime>()
+    );
+    let mut borrowed = lifetime::Lifetime::Borrowed(None);
+    assert!(borrowed.kill_owned(std::time::Duration::ZERO).unwrap_err().contains("requires"));
+    let child = waiting_child();
+    let pid = child.id();
+    let mut owned = lifetime::Lifetime::Owned(child);
+    owned.kill_owned(std::time::Duration::from_secs(1)).unwrap();
+    assert!(owned.gone(pid).unwrap(), "the Child is reaped, not just absent from a PID lookup");
+    owned.kill_owned(std::time::Duration::ZERO).unwrap();
+}
+
