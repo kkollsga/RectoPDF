@@ -367,3 +367,26 @@ fn missing_program_observation_keeps_only_a_canonical_parent_and_basename() {
         .unwrap();
     assert!(scan.contains("observed_program::path(executable)"));
 }
+
+/// Failure: the SIGTERM lifecycle case attaches to a CLI-launched process, so its signal lacks retained Child ownership.
+#[test]
+fn the_sigterm_lifecycle_case_launches_and_retains_its_child() {
+    let update = include_str!("restore/update.rs");
+    let case = update
+        .split("fn a_quit_isnt_an_early_end_and_a_kill_is()")
+        .nth(1)
+        .unwrap()
+        .split("\n}")
+        .next()
+        .unwrap();
+    assert!(
+        case.contains("bed.start_owned()"),
+        "SIGTERM must start an owned Child rather than attach to a CLI launch"
+    );
+    let owned = update.split("fn start_owned(").nth(1).unwrap().split("\n    }").next().unwrap();
+    assert!(owned.contains("Run::on_executable_with_env") && owned.contains("REPO_ENV") && owned.contains("self.server.url"));
+    let app = include_str!("common/app.rs");
+    let launch = app.split("pub fn on_executable_with_env(").nth(1).unwrap().split("\n    }").next().unwrap();
+    assert!(launch.contains("launch(state,") && launch.contains("Lifetime::Owned(child)"));
+}
+

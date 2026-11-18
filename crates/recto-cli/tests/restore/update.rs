@@ -269,6 +269,17 @@ impl Bed {
         self.start_with(&[])
     }
 
+    /// Only a case that sends an OS signal needs ownership; normal Bed starts retain their real CLI ingress coverage.
+    fn start_owned(&self) -> Run<'_> {
+        let run = Run::on_executable_with_env(
+            &self.state,
+            &self.app.join("Contents/MacOS/RectoPDF"),
+            &[(REPO_ENV, std::ffi::OsStr::new(&self.server.url))],
+        );
+        run.ok(&["qa", "scroller-style", "overlay"]);
+        run
+    }
+
     /// Starts the old app as `recto qa start` does, told about this bed's server. As a user's would be, but for that.
     fn start_with(&self, env: &[(&str, &str)]) -> Run<'_> {
         let mut command = self.state.command();
@@ -1125,15 +1136,9 @@ fn a_quit_isnt_an_early_end_and_a_kill_is() {
     }
     .write(&files.saved);
     let probation = || recto_update::saved::Saved::read(&files.saved).probation.unwrap();
-    let mut run = bed.start();
+    let mut run = bed.start_owned();
     assert!(probation().running_since_ms.is_some(), "this run's watched");
     run.terminate();
-    let began = Instant::now();
-    while local::process_counters(run.pid).is_some() {
-        assert!(began.elapsed() < Duration::from_secs(20), "a SIGTERM quits");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    run.ended();
     assert_eq!(probation().running_since_ms, None, "a SIGTERM's quit isn't an early end");
     assert_eq!(probation().early_ends, 0);
 }

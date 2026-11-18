@@ -231,27 +231,24 @@ pub fn end_and_forget(root: &Path, executables: &[PathBuf]) -> bool {
 impl<'a> Run<'a> {
     /// A run on a state folder that outlives it, for at most 3 minutes: quit, hand off or kill it, and start another on the same folder.
     pub fn on(state: &'a State) -> Option<Self> {
-        let app = app_path()?;
-        let (child, pid) = launch(state, &["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "3m"], &[]);
-        Some(Self {
-            state: Held::Lent(state),
-            pid,
-            done: false,
-            lifetime: Lifetime::Owned(child),
-        })
+        Self::on_with_env(state, &[])
     }
 
     /// [`Run::on`], with these in the app's environment, for a debug build's test seams such as `RECTO_TEST_SAVE_PAUSE`.
     #[allow(dead_code)] // Not every test binary uses a seam.
     pub fn on_with_env(state: &'a State, env: &[(&str, &std::ffi::OsStr)]) -> Option<Self> {
-        let app = app_path()?;
+        Some(Self::on_executable_with_env(state, &app_path()?, env))
+    }
+
+    /// A specific quiet fixture executable on existing state, retaining the Child returned by the one shared launcher.
+    pub fn on_executable_with_env(state: &'a State, app: &Path, env: &[(&str, &std::ffi::OsStr)]) -> Self {
         let (child, pid) = launch(state, &["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "3m"], env);
-        Some(Self {
+        Self {
             state: Held::Lent(state),
             pid,
             done: false,
             lifetime: Lifetime::Owned(child),
-        })
+        }
     }
 
     /// A run some other way started on that state folder, such as the app an update put in place, by its process.
@@ -333,6 +330,7 @@ impl<'a> Run<'a> {
     /// The OS termination signal, which the app handles as Quit. Only a retained owned Child can receive it.
     pub fn terminate(&mut self) {
         self.lifetime.terminate_owned().expect("SIGTERM requires this run's owned Child");
+        self.wait_gone();
     }
 
     /// What a crash does. A killed run can't forget its copy, so this does, as the drop of a run that had to be killed does.
