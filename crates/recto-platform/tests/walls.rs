@@ -9,10 +9,12 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::net::TcpListener;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
+
+#[path = "probe/command.rs"]
+mod command;
 
 const PROBE: &str = env!("CARGO_BIN_EXE_recto-sandbox-probe");
 const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
@@ -32,52 +34,13 @@ fn pdfium() -> PathBuf {
 
 /// Never with the owner's identity, whatever this shell has set: a test signs ad hoc, and raises no keychain prompt.
 fn run(command: &mut Command) {
-    let (timed_out, output) = command_output(command.env_remove("RECTO_SIGN_IDENTITY"), Duration::from_secs(10)).unwrap();
+    let (exceeded, output) = command::output(command.env_remove("RECTO_SIGN_IDENTITY"), Duration::from_secs(10)).unwrap();
     assert!(
-        !timed_out && output.status.success(),
-        "{command:?}: {}{}",
+        !exceeded && output.status.success(),
+        "{command:?}, bound_exceeded {exceeded}: {}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-}
-
-/// Own the command's process group, including script children, and retain bounded output if it misses its deadline.
-fn command_output(command: &mut Command, limit: Duration) -> std::io::Result<(bool, std::process::Output)> {
-    // Files cannot wait for a descendant's inherited pipe to close after its parent exits.
-    let captured = recto_testpdf::TempDir::new("recto-walls-command-");
-    let stdout_path = captured.join("stdout");
-    let stderr_path = captured.join("stderr");
-    let mut child = command
-        .process_group(0)
-        .stdout(std::fs::File::create(&stdout_path)?)
-        .stderr(std::fs::File::create(&stderr_path)?)
-        .spawn()?;
-    let began = Instant::now();
-    let mut timed_out = false;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {}
-            Err(error) => {
-                recto_platform::local::signal_process_group(child.id(), true);
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
-            }
-        }
-        if began.elapsed() >= limit {
-            timed_out = true;
-            recto_platform::local::signal_process_group(child.id(), true);
-            let _ = child.kill();
-            break child.wait()?;
-        }
-        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
-    };
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    std::fs::File::open(stdout_path)?.take(64 * 1024).read_to_end(&mut stdout)?;
-    std::fs::File::open(stderr_path)?.take(64 * 1024).read_to_end(&mut stderr)?;
-    Ok((timed_out, std::process::Output { status, stdout, stderr }))
 }
 
 fn capped_text(path: &Path) -> std::io::Result<String> {
@@ -270,35 +233,37 @@ impl Drop for Fixture {
         while !self.own_processes().is_empty() && began.elapsed() < Duration::from_secs(1) {
             std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
         }
-        let mut clean = self.own_processes().is_empty();
-        cleanup.push_str(&format!("remaining processes: {:?}\n", self.own_processes()));
+        let remaining = self.own_processes();
+        let processes_gone = remaining.is_empty();
+        let mut clean = processes_gone;
+        cleanup.push_str(&format!("remaining processes: {remaining:?}\n"));
         for (app, identifier) in [
             (self.escape_app(), format!("io.github.kkollsga.RectoPDF.WallsEscape.{}", self.nonce)),
             (self.helper(), ADHOC_ID.into()),
         ] {
             if app.exists() {
-                match command_output(Command::new(LSREGISTER).arg("-u").arg(&app), Duration::from_secs(5)) {
-                    Ok((timed_out, output)) => {
-                        let mut absent = !timed_out && output.status.success();
+                match command::output(Command::new(LSREGISTER).arg("-u").arg(&app), Duration::from_secs(5)) {
+                    Ok((exceeded, output)) => {
+                        let mut absent = !exceeded && output.status.success();
                         cleanup.push_str(&format!(
-                            "unregister {}: {:?}, timed_out {timed_out}\n{}\n",
+                            "unregister {}: {:?}, bound_exceeded {exceeded}\n{}\n",
                             app.display(),
                             output.status,
                             String::from_utf8_lossy(&output.stderr)
                         ));
                         if !absent {
-                            match command_output(
+                            match command::output(
                                 Command::new(PROBE).args(["--registered-app", &format!("{identifier}|{}", app.display())]),
                                 Duration::from_secs(5),
                             ) {
-                                Ok((timed_out, query)) => {
+                                Ok((exceeded, query)) => {
                                     let said = String::from_utf8_lossy(&query.stdout);
                                     let fields = parse(&said);
-                                    absent = !timed_out
+                                    absent = !exceeded
                                         && query.status.success()
                                         && fields.get("registration:lookup") == Some(&true)
                                         && fields.get("registration:present") == Some(&false);
-                                    cleanup.push_str(&format!("exact registration query: {:?}, timed_out {timed_out}\n{said}\n", query.status));
+                                    cleanup.push_str(&format!("exact registration query: {:?}, bound_exceeded {exceeded}\n{said}\n", query.status));
                                 }
                                 Err(error) => cleanup.push_str(&format!("exact registration query failed: {error}\n")),
                             }
@@ -342,7 +307,9 @@ impl Drop for Fixture {
                     let _ = std::fs::write(scratch.join(name), text);
                 }
             }
-            let _ = std::fs::remove_dir_all(scratch.join("Host.app"));
+            if processes_gone {
+                let _ = std::fs::remove_dir_all(scratch.join("Host.app"));
+            }
             eprintln!("walls evidence retained at {}\n{cleanup}rerun: {rerun}", scratch.display());
             std::mem::forget(scratch);
         }
@@ -370,34 +337,11 @@ fn probe_text(executable: &Path, args: &[String]) -> String {
 
 /// Runs the probe and returns how it ended, `None` if it hung and was killed at 30 s, and what it had said by then.
 fn probe_run(executable: &Path, args: &[String]) -> (Option<std::process::ExitStatus>, String) {
-    // This must remain a pipe: hardening sets RLIMIT_FSIZE=0, so a regular-file stdout changes the probe being tested.
-    let mut child = Command::new(executable)
-        .args(args)
-        .process_group(0)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let began = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break Some(status);
-        }
-        if began.elapsed() >= Duration::from_secs(30) {
-            recto_platform::local::signal_process_group(child.id(), true);
-            let _ = child.kill();
-            let _ = child.wait();
-            break None;
-        }
-        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
-    };
-    let mut said = String::new();
-    child.stdout.take().unwrap().take(64 * 1024 + 1).read_to_string(&mut said).unwrap();
-    if said.len() > 64 * 1024 {
-        return (None, "probe output exceeded its cap".into());
+    let (exceeded, output) = command::output(Command::new(executable).args(args), Duration::from_secs(30)).unwrap();
+    if !output.stderr.is_empty() {
+        eprintln!("probe stderr:\n{}", String::from_utf8_lossy(&output.stderr));
     }
-    (status, said)
+    ((!exceeded).then_some(output.status), String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// One attempt in a probe of its own, with the walls up first, so a process the system kills for trying one thing doesn't hide the rest. Killed by a signal after its walls went up
@@ -607,7 +551,8 @@ fn a_helper_signed_without_the_sandbox_puts_no_walls_up_and_fails_the_check() {
     run(Command::new("/usr/bin/codesign").args(["-f", "-s", "-"]).arg(fixture.helper()));
     let results = probe(&executable, &with_walls(Vec::new()));
     assert_eq!(results.get("walls"), Some(&false), "{results:?}");
-    let check = Command::new(helper_script()).arg("--check").arg(fixture.helper()).output().unwrap();
+    let (exceeded, check) = command::output(Command::new(helper_script()).arg("--check").arg(fixture.helper()), Duration::from_secs(10)).unwrap();
+    assert!(!exceeded, "the helper check exceeded its bound");
     assert!(!check.status.success(), "the check passed a helper with no sandbox");
     assert!(
         String::from_utf8_lossy(&check.stderr).contains("entitlements"),
@@ -630,12 +575,15 @@ fn key_with_keychain(name: &str, valid: &str, all: &str) -> (bool, String) {
     std::fs::write(bin.join("security"), script).unwrap();
     std::fs::set_permissions(bin.join("security"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let path = format!("{}:/usr/bin:/bin", bin.display());
-    let output = Command::new(helper_script())
-        .args(["--key", name])
-        .env("PATH", path)
-        .env_remove("RECTO_SIGN_IDENTITY")
-        .output()
-        .unwrap();
+    let (exceeded, output) = command::output(
+        Command::new(helper_script())
+            .args(["--key", name])
+            .env("PATH", path)
+            .env_remove("RECTO_SIGN_IDENTITY"),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert!(!exceeded, "the signing identity lookup exceeded its bound");
     (
         output.status.success(),
         format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)),
