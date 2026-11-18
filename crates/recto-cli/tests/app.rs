@@ -3639,7 +3639,7 @@ fn blocks_differing(one: &[u8], two: &[u8], width: usize, height: usize) -> (usi
     (bad, all)
 }
 
-/// Failure: the app's print isn't the document's pages: drawn from the screen's tiles, with dark paper in it, missing pages or out of order, or the UI thread waits on it. Through File > Print's own path to a PDF, page by page against the source.
+/// Failure: the app's print isn't the document's pages: drawn from the screen's tiles, with dark paper in it, missing pages or out of order, or the UI thread reads paper geometry or loads its PDF. Through File > Print's own path to a PDF, page by page against the source.
 #[test]
 fn a_print_from_the_app_is_the_documents_pages_whatever_the_paper() {
     use recto_svg::verify::{Embedded, read_png};
@@ -3670,6 +3670,9 @@ fn a_print_from_the_app_is_the_documents_pages_whatever_the_paper() {
     );
     // Opening the generated PDF and walking its page tree must not read or parse on the UI thread.
     assert_eq!(state["app"]["printing_host"]["last_load"]["main_thread"], false, "{state}");
+    assert_eq!(state["app"]["printing_host"]["last_load"]["paper"]["main_thread"], false, "{state}");
+    assert_eq!(state["app"]["printing_host"]["last_load"]["info_copy"]["main_thread"], true, "{state}");
+    eprintln!("print preparation: {}", state["app"]["printing_host"]["last_load"]);
     assert_eq!(
         state["app"]["printing_host"]["last_load"]["pages"], 2,
         "the prepared range, not the source's page count: {state}"
