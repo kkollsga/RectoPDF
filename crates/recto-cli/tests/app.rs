@@ -407,7 +407,7 @@ fn the_watchdog_catches_a_stall_and_it_fails_the_script() {
     eprintln!("hangs after a 2.3 s sleep: {hangs}");
 }
 
-/// Failure: a shot needs the screen or a permission, comes out at the wrong size, or is blank. Run quietly, so a screen isn't involved. The picture must have ink in it: a real PNG, of the window at 2x, and larger than the same window with no page.
+/// Failure: a shot needs the screen or a permission, comes out at the wrong size or blank, or encodes and writes on the UI thread. Window, menu and Settings captures share the background writer and produce real PNGs; a closed Settings window still refuses.
 #[test]
 fn a_shot_is_a_real_picture_of_the_window_at_2x() {
     let Some(run) = Run::start() else { return };
@@ -415,6 +415,7 @@ fn a_shot_is_a_real_picture_of_the_window_at_2x() {
     run.ok(&["qa", "resize", "1000x700"]);
     let before = run.ok(&["qa", "shot", "--out", empty.to_str().unwrap()]);
     assert_eq!((before["width"].as_u64(), before["height"].as_u64()), (Some(2000), Some(1400)), "{before}");
+    assert_eq!(before["encoding_write_on_main"], false, "{before}");
     let file = numbered(2);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -423,6 +424,22 @@ fn a_shot_is_a_real_picture_of_the_window_at_2x() {
     let bytes = std::fs::read(&shot).unwrap();
     assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
     assert_ne!(with_page["bytes"], before["bytes"], "a page changes the picture");
+    assert_eq!(with_page["encoding_write_on_main"], false, "{with_page}");
+    let closed = run.state.root.join("closed-settings.png");
+    let (reply, status) = run.state.json(&["qa", "shot-settings", "--out", closed.to_str().unwrap()]);
+    assert_ne!(status, 0, "{reply}");
+    assert_eq!(reply["error"]["message"], "The Settings window isn't open.", "{reply}");
+    assert!(!closed.exists());
+    run.ok(&["qa", "settings", "open"]);
+    for verb in ["shot-menu", "shot-menus", "shot-settings"] {
+        let path = run.state.root.join(format!("{verb}.png"));
+        let shot = run.ok(&["qa", verb, "--out", path.to_str().unwrap()]);
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"), "{verb} isn't a PNG");
+        assert_eq!(shot["bytes"].as_u64(), Some(bytes.len() as u64), "{shot}");
+        assert!(shot["width"].as_u64().unwrap() > 0 && shot["height"].as_u64().unwrap() > 0, "{shot}");
+        assert_eq!(shot["encoding_write_on_main"], false, "{verb}: {shot}");
+    }
 }
 
 /// Failure: the appearance, paper or the sidebar don't reach what's drawn, or a change draws nothing new. Read back from the app and from the tiles it attached. The sidebar goes by its own button, and hiding it leaves the page, its number, the agent icon and the button to bring it back.
@@ -875,7 +892,7 @@ fn long_titled(count: usize) -> TempPdf {
     TempPdf::new("long-titles.pdf", &build(&objects))
 }
 
-/// Failure: every other QA verb calls the method behind an event, so a method AppKit can't reach by name passes them all: hover never fired on a real window, as its handlers weren't Objective-C, so full names and hover details did nothing. Events are made and handed to the real responder by AppKit's selector, and what's checked is what comes of them: the pointer resting on a shortened contents entry opens its full name, on the real timer, and goes when it leaves. Nothing is posted. Also holds the print operation callback identity: a stale or repeated callback must not take the current job.
+/// Failure: every other QA verb calls the method behind an event, so a method AppKit can't reach by name passes them all: hover never fired on a real window, as its handlers weren't Objective-C, so full names and hover details did nothing. Events are made and handed to the real responder by AppKit's selector, and what's checked is what comes of them: the pointer resting on a shortened contents entry opens its full name, on the real timer, and goes when it leaves. Nothing is posted. Also holds the print operation callback identity: a stale or repeated callback must not take the current job. A main-thread work interval must also include autorelease-pool cleanup and preserve an enclosing run-loop watch.
 #[test]
 fn what_appkit_calls_reaches_the_app() {
     let Some(run) = Run::start() else { return };
@@ -889,6 +906,8 @@ fn what_appkit_calls_reaches_the_app() {
     let failed: Vec<&String> = checked.iter().filter(|(_, ok)| **ok != true).map(|(name, _)| name).collect();
     assert!(failed.is_empty(), "these don't reach the app: {failed:?}\n{found}");
     for name in [
+        "unbracketed_main_pool_drains_while_watched",
+        "a_main_pool_keeps_its_parent_watch",
         "old_print_callback_keeps_the_current_job",
         "a_print_callback_finishes_only_once",
         "command_plus_zooms_in",
@@ -3620,7 +3639,7 @@ fn blocks_differing(one: &[u8], two: &[u8], width: usize, height: usize) -> (usi
     (bad, all)
 }
 
-/// Failure: the app's print isn't the document's pages: drawn from the screen's tiles, with dark paper in it, missing pages or out of order, or the UI thread waits on it. Through File > Print's own path to a PDF, page by page against the source.
+/// Failure: the app's print isn't the document's pages: drawn from the screen's tiles, with dark paper in it, missing pages or out of order, or the UI thread reads paper geometry or loads its PDF. Through File > Print's own path to a PDF, page by page against the source.
 #[test]
 fn a_print_from_the_app_is_the_documents_pages_whatever_the_paper() {
     use recto_svg::verify::{Embedded, read_png};
@@ -3651,6 +3670,9 @@ fn a_print_from_the_app_is_the_documents_pages_whatever_the_paper() {
     );
     // Opening the generated PDF and walking its page tree must not read or parse on the UI thread.
     assert_eq!(state["app"]["printing_host"]["last_load"]["main_thread"], false, "{state}");
+    assert_eq!(state["app"]["printing_host"]["last_load"]["paper"]["main_thread"], false, "{state}");
+    assert_eq!(state["app"]["printing_host"]["last_load"]["info_copy"]["main_thread"], true, "{state}");
+    eprintln!("print preparation: {}", state["app"]["printing_host"]["last_load"]);
     assert_eq!(
         state["app"]["printing_host"]["last_load"]["pages"], 2,
         "the prepared range, not the source's page count: {state}"

@@ -31,6 +31,7 @@ extension QAChannel {
         let pages = controller.pages
         var found: [String: Bool] = ["window_open": true]
         found.merge(PrintHost.entryPointChecks()) { first, _ in first }
+        found.merge(MainWork.entryPointChecks()) { first, _ in first }
         let entered = #selector(NSResponder.mouseEntered(with:))
         let exited = #selector(NSResponder.mouseExited(with:))
         let moved = #selector(NSResponder.mouseMoved(with:))

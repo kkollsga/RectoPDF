@@ -70,6 +70,15 @@ Delivered on main by `db24c956` (2026-11-18), with the identical integrated sour
 - [x] Merge, push and observe CI: `86bb8b61`, [44266732369](https://github.com/kkollsga/RectoPDF/actions/runs/44266732369), all four jobs green, longest 13:19, latest five-green median 18:53 against 21:00. Owned temporary worktrees, branches, baseline bundle and background processes are removed/stopped; the regular main-checkout development app is refreshed. Evidence and inspected light/dark shots remain outside the removed worktrees.
 
 
+### Short-stall attribution increment — 18 November
+
+- [x] Capture a before-action Time Profiler trace, an unprofiled control and temporary phase intervals. The paper-size/margin reads took 88.778 ms on main; reader refresh, job-title lookup and print-operation creation were separate, shorter phases. This attributes that print wait, not the historical one-second finding or all startup/layout stalls. Temporary instrumentation was removed before implementation.
+- [x] Implement and review the separate screenshot writer and concurrent QA-verb ownership fixes (`9e298f73`, `36c67c8f`), with failed-first guards and 20 CI-like rounds. The watchdog's unbracketed main work now includes autorelease-pool cleanup; its existing native entry-point guard failed on the old ordering and passed on the fix. Final combined repetition and delivery remain below.
+- [x] Finish the measured print-paper handoff (`a6c0dee8`): one distinct private settings copy, existing background preparation job, immutable geometry returned to main, exact-key cleanup preserved. Review and 20 CI-like fidelity rounds passed.
+- [x] Complete final release input/resource measurements and repeated guards: all 216 input bounds met; main settings copies 23/19 µs, paper preparation off-main; map print app+helpers 737.24→738.28 MiB in one pair. Inspected light/dark output and detailed limits: [`reports/short-stalls-2026-11-18.md`](reports/short-stalls-2026-11-18.md).
+- [x] Mandatory lifecycle passed 30/30 plus registration 3/3. One combined `CHECK_ALL=1 tools/check.sh --full` passed at `3f852859`, 277 s: 3,280 Rust, 203 native, four slow, two bundle and three registration cases. No native launch test added.
+- [ ] Merge, push, observe CI and remove owned temporary worktrees, bundles and processes.
+
 ## Release follow-ups carried forward
 
 These are the still-open parts of the old release summary that otherwise would be hidden among completed work. Measurements are from the cited release reports, not new measurements by this review.
