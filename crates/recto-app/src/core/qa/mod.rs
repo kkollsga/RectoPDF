@@ -2,6 +2,7 @@
 
 mod as_person;
 mod levers;
+mod pending;
 mod values;
 
 #[cfg(test)]
@@ -10,9 +11,12 @@ mod answer_lock_tests;
 mod files_tests;
 #[cfg(test)]
 mod settled_tests;
+#[cfg(test)]
+mod verb_tests;
 
 use super::{CoreQueue, Inner, lock};
 use crate::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
+use pending::{PendingAnswer, PendingVerb};
 use recto_agent::Code;
 use recto_agent::commands::Cmd;
 use recto_agent::commands::Qa;
@@ -234,20 +238,11 @@ pub struct QaBridge {
     watchdog: Watchdog,
     core: Arc<CoreQueue>,
     next_id: AtomicU64,
-    answers: Mutex<HashMap<u64, Option<Result<String, String>>>>,
+    answers: Mutex<HashMap<u64, PendingAnswer>>,
     answered: Condvar,
     steps: Mutex<Vec<Step>>,
     step_waiting: AtomicBool,
     inner: OnceLock<Weak<Inner>>,
-}
-
-/// Clears the verb the watchdog notes, as the ask that set it returns by any way.
-struct ClearVerb<'a>(&'a Watchdog);
-
-impl Drop for ClearVerb<'_> {
-    fn drop(&mut self) {
-        self.0.note_verb(None);
-    }
 }
 
 impl QaBridge {
@@ -300,11 +295,20 @@ impl QaBridge {
     }
 
     pub fn answer(&self, id: u64, ok: bool, json: String) {
-        let mut answers = lock(&self.answers);
-        if let Some(slot) = answers.get_mut(&id) {
-            *slot = Some(if ok { Ok(json) } else { Err(json) });
-            self.answered.notify_all();
-        }
+        let unused = {
+            let mut answers = lock(&self.answers);
+            let reply = if ok { Ok(json) } else { Err(json) };
+            let unused = match answers.get_mut(&id) {
+                Some(slot) => slot.deliver(reply),
+                None => Some(reply),
+            };
+            if unused.is_none() {
+                self.answered.notify_all();
+            }
+            unused
+        };
+        // Duplicate/late payloads are released outside the UI-visible answer gate.
+        drop(unused);
     }
 
     pub fn note_step(&self, micros: u64, cpu_micros: u64, contents_y: f64, current_visible: bool) {
@@ -324,6 +328,10 @@ impl QaBridge {
 
     /// Asks the UI thread and waits for it. No answer in time means the UI thread is stuck, which is its own kind of failure.
     fn ask(&self, verb: &str, value: &str) -> Result<Value, AgentError> {
+        self.ask_with_wait(verb, value, UI_ANSWER_WAIT)
+    }
+
+    fn ask_with_wait(&self, verb: &str, value: &str, wait: Duration) -> Result<Value, AgentError> {
         // Only what the table says the host answers goes to it: a verb it doesn't would come back as no QA command from the host, after a wait.
         if !verbs::host_answers(verb) {
             return Err(bad("That isn't a QA command the window answers."));
@@ -335,18 +343,14 @@ impl QaBridge {
                 std::thread::sleep(ANIMATION_POLL);
             }
         }
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        lock(&self.answers).insert(id, None);
-        // The hang watchdog records which verb a stall was in; cleared when this returns.
-        self.watchdog.note_verb(Some(verb));
-        let _noted = ClearVerb(&self.watchdog);
+        let pending = PendingVerb::admit(self, verb);
+        let id = pending.id();
         self.listener.qa_request(id, verb.to_string(), value.to_string());
-        let deadline = Instant::now() + UI_ANSWER_WAIT;
+        let deadline = Instant::now() + wait;
         let mut answers = lock(&self.answers);
         loop {
-            match answers.get_mut(&id).map(Option::take) {
+            match answers.get_mut(&id).map(PendingAnswer::take) {
                 Some(Some(answer)) => {
-                    answers.remove(&id);
                     // The host delivers other answers on the UI thread. Decoding this one's JSON must never hold its map lock.
                     drop(answers);
                     return match answer {
@@ -363,7 +367,6 @@ impl QaBridge {
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                answers.remove(&id);
                 return Err(stuck());
             }
             answers = self.answered.wait_timeout(answers, left).unwrap_or_else(PoisonError::into_inner).0;

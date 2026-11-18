@@ -195,6 +195,11 @@ impl Watchdog {
         slot.1 = len;
     }
 
+    #[cfg(test)]
+    pub(crate) fn current_verb(&self) -> Label {
+        try_verb(&self.0)
+    }
+
     /// The window's thread says what it begins, cheaply (a thread-local read, then one relaxed store of up to 24 bytes), for the stretch's record if it runs
     /// over the 16 ms budget. **Does nothing off the window's thread** (the QA channel's thread runs `act` too, and its word would name the wrong work), and
     /// takes a `&'static str` so no caller can allocate for it. The last word of a stretch is the one kept.
