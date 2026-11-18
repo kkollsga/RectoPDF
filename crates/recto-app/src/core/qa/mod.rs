@@ -593,10 +593,10 @@ impl QaBridge {
             "sweep" => return self.sweep(number(0.1, 1000.0)?, Duration::from_millis(timeout_ms.unwrap_or(5000)).min(MAX_SWEEP)),
             _ => return Err(bad("That isn't a QA command.")),
         }
-        let delivered = self.ask(verb, value)?;
+        let delivered = delivery::capture(verb, self.ask(verb, value)?);
         // A click goes to the session thread and comes back as a model. The answer is what's true once that's happened, so nobody has to sleep and hope.
         self.core.flush(ANSWER_AFTER_CLICK);
-        Ok(delivery::report(verb, delivered, self.ask("state", "")?))
+        Ok(delivery::report(delivered, self.ask("state", "")?))
     }
 
     /// `qa handoff`: what an update does with the state before it quits, measured, then the quit, after the answer has had time to get out.

@@ -2,11 +2,16 @@
 
 use serde_json::Value;
 
-pub(super) fn report(verb: &str, delivered: Value, mut current: Value) -> Value {
+pub(super) fn capture(verb: &str, mut delivered: Value) -> Option<Value> {
     if matches!(verb, "scroll" | "zoom" | "corner_pointer") {
-        if let (Some(chrome), Some(report)) = (delivered.get("chrome"), current.as_object_mut()) {
-            report.insert("chrome_at_delivery".into(), chrome.clone());
-        }
+        return delivered.as_object_mut()?.remove("chrome");
+    }
+    None
+}
+
+pub(super) fn report(delivered: Option<Value>, mut current: Value) -> Value {
+    if let (Some(chrome), Some(report)) = (delivered, current.as_object_mut()) {
+        report.insert("chrome_at_delivery".into(), chrome);
     }
     current
 }
@@ -22,12 +27,13 @@ mod tests {
         let applied = json!({"chrome": {"place_shown": true, "place_alpha": 1}, "unrelated": "first callback"});
         let current = json!({"chrome": {"place_shown": false, "place_alpha": 0}, "flushed": true});
         for verb in ["scroll", "zoom", "corner_pointer"] {
-            let observed = report(verb, applied.clone(), current.clone());
+            let observed = report(capture(verb, applied.clone()), current.clone());
             assert_eq!(observed["chrome_at_delivery"], applied["chrome"]);
             assert_eq!(observed["chrome"], current["chrome"]);
             assert_eq!(observed["flushed"], true);
             assert!(observed.get("unrelated").is_none());
         }
-        assert_eq!(report("button", applied, current.clone()), current);
+        assert!(capture("button", applied).is_none());
+        assert_eq!(report(None, current.clone()), current);
     }
 }
