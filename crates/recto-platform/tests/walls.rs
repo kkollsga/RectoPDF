@@ -42,16 +42,19 @@ fn run(command: &mut Command) {
 struct Fixture {
     scratch: recto_testpdf::TempDir,
     listener: TcpListener,
+    nonce: String,
 }
 
 impl Fixture {
     fn new(name: &str) -> Self {
         let scratch = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), &format!("recto-walls-{name}-"));
         std::fs::create_dir_all(&scratch).unwrap();
-        std::fs::write(scratch.join("canary.txt"), "canary").unwrap();
+        let nonce = format!("{:016x}", recto_platform::local::random_u64());
+        std::fs::write(scratch.join("canary.txt"), format!("canary:{nonce}\n")).unwrap();
         Self {
             scratch,
             listener: TcpListener::bind("127.0.0.1:0").unwrap(),
+            nonce,
         }
     }
 
@@ -95,7 +98,8 @@ impl Fixture {
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\n{{ echo ran; cat '{}'; }} > '{}' 2>&1\n",
+                "#!/bin/sh\n{{ echo '{}'; cat '{}'; }} > '{}' 2>&1\n",
+                self.nonce,
                 self.scratch.join("canary.txt").display(),
                 self.marker().display()
             ),
@@ -330,7 +334,7 @@ fn the_helpers_walls_hold() {
 }
 
 /// Failure: the App Sandbox stops letting a process launch an app, and nobody notices that the Mach drop no longer carries its own weight. Or this stays true and the drop is taken out
-/// as unneeded, when this is the reason for it. The launched app reads a canary the sandbox can't, which is what running outside it means. Launches only the test's own background app.
+/// as unneeded, when this is the reason for it. The launched app reads a canary the sandbox can't, which is what running outside it means. An error naming `canary.txt` must never count as a successful read. Launches only the test's own background app.
 #[test]
 fn the_sandbox_alone_lets_launchservices_start_an_unsandboxed_app() {
     let fixture = Fixture::new("escape");
@@ -341,7 +345,11 @@ fn the_sandbox_alone_lets_launchservices_start_an_unsandboxed_app() {
     );
     assert_eq!(results.get("launchservices:open"), Some(&true), "{results:?}");
     let marker = fixture.marker_after_launch().expect("the launched app left no marker");
-    assert!(marker.contains("canary"), "the launched app ran inside the sandbox: {marker}");
+    assert_eq!(
+        marker,
+        format!("{}\ncanary:{}\n", fixture.nonce, fixture.nonce),
+        "the launched app didn't read its exact canary"
+    );
 }
 
 /// Failure: a compromised renderer leaves a file in its container for the next one to read. The container is writable to the sandbox by design, so `RLIMIT_FSIZE` is what holds this;
