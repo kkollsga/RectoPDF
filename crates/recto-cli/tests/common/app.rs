@@ -3,6 +3,7 @@
 //! The app has to be built, and these skip if it isn't, so `tools/check.sh --quick` stays fast and works for anyone without it. `--full` builds it and sets `RECTO_REQUIRE_APP`, so there a missing app is a failure.
 
 use super::State;
+#[cfg(unix)]
 use super::bed_folder;
 use super::evidence;
 use recto_platform::local::process_counters;
