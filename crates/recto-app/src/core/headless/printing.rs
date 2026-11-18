@@ -590,10 +590,12 @@ fn a_hand_off_waits_for_the_persons_print_to_be_handed_over() {
     assert!(app.core().hand_off_check().safe, "nothing in flight once it's done");
 }
 
-/// Failure (review of S2): a print's file the host never took is held for good when the next print's file takes its place, as two prints answered in a
-/// row with nothing handing the first to the system did. The first's descriptor goes as the second comes; once the second is done with, nothing's held.
+/// Failure (review of S2): the defensive PrintWatch::ready replacement keeps the old descriptor for good. The one-print rule refuses a second answer
+/// while ready, so inject the replacement through that actual callback, then prove the first descriptor goes and the replacement's completion holds none.
 #[test]
 fn a_print_file_the_host_never_took_goes_when_the_next_comes() {
+    use std::os::unix::fs::PermissionsExt;
+
     let disk = Disk::new();
     let doc = disk.file("widths.pdf", &widths(1));
     let app = disk.start();
@@ -603,8 +605,16 @@ fn a_print_file_the_host_never_took_goes_when_the_next_comes() {
     answer(&app, ALL);
     app.settle();
     let first = unnamed_files_held();
-    answer(&app, ALL);
-    app.settle();
+    let watch = crate::core::printing::watch(
+        app.core().tools.printing_held(),
+        std::sync::Arc::clone(&app.core().core),
+        std::sync::Arc::downgrade(&app.core().host),
+    );
+    let replacement = unnamed_file(&widths(1));
+    replacement
+        .set_permissions(std::fs::Permissions::from_mode(0o600))
+        .expect("the print's private mode");
+    watch.ready(replacement);
     let after = unnamed_files_held();
     assert_eq!(
         (first.len(), after.len()),
