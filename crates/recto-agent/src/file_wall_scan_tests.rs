@@ -102,8 +102,8 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
     ),
     (
         "recto-platform/src/bin/recto-sandbox-probe.rs",
-        2,
-        "a test's probe, never in the app: a stand-in for a compromised renderer, trying the files it's told to from inside the helper's walls",
+        4,
+        "a test's probe, never in the app: adversarial file attempts, plus capped reads of its own fixture configuration/canary and creation of its exact launch receipt",
     ),
     (
         "recto-platform/src/find_key.rs",
