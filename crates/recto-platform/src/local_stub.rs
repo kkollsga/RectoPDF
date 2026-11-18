@@ -245,6 +245,11 @@ pub fn processes_running(_executable: &Path) -> Vec<u32> {
     Vec::new()
 }
 
+#[cfg(feature = "test-seams")]
+pub fn observe_missing_program_processes(_executable: &Path) -> Vec<u32> {
+    Vec::new()
+}
+
 pub fn process_path(_pid: u32) -> Option<PathBuf> {
     None
 }

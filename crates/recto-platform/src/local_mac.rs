@@ -1,5 +1,6 @@
 //! The control socket's OS calls on the Mac: a Unix socket, the peer's user, a blocking wait on many sockets, and files only this user can touch. Nothing here decides anything.
 
+#[cfg(feature = "test-seams")]
 #[path = "observed_program.rs"]
 mod observed_program;
 
@@ -460,7 +461,18 @@ pub fn make_folder_private(path: &Path) -> io::Result<()> {
 
 /// The processes running this very executable, by what the system says each was started from. Bounded: the system's own list, read once.
 pub fn processes_running(executable: &Path) -> Vec<u32> {
+    let Ok(wanted) = executable.canonicalize() else { return Vec::new() };
+    processes_at_canonical_path(&wanted)
+}
+
+/// Fixture observation only: a mapped executable can outlive its removed program name. Never a signal target resolver.
+#[cfg(feature = "test-seams")]
+pub fn observe_missing_program_processes(executable: &Path) -> Vec<u32> {
     let Ok(wanted) = observed_program::path(executable) else { return Vec::new() };
+    processes_at_canonical_path(&wanted)
+}
+
+fn processes_at_canonical_path(wanted: &Path) -> Vec<u32> {
     // Room for a few more than there are now, as there can be new ones by the second call.
     // SAFETY: a null buffer asks only for how many.
     let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };

@@ -11,7 +11,7 @@ mod bed_folder;
 /// No copies or filesystem changes when none of these fixture programs is running.
 pub fn end(root: &Path, programs: &[PathBuf], wait: Duration) -> Result<(), String> {
     for program in programs {
-        let pids = recto_platform::local::processes_running(program);
+        let pids = recto_platform::local::observe_missing_program_processes(program);
         if pids.is_empty() {
             continue;
         }
@@ -121,7 +121,7 @@ pub fn cancel(root: &Path, program: &Path, initial: &[u32], wait: Duration) -> R
     let began = Instant::now();
     let ended = loop {
         let observed_alive = initial.iter().any(|pid| recto_platform::local::process_counters(*pid).is_some());
-        let fresh = recto_platform::local::processes_running(program);
+        let fresh = recto_platform::local::observe_missing_program_processes(program);
         if !observed_alive && fresh.is_empty() {
             break true;
         }

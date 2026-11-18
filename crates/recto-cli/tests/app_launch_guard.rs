@@ -390,3 +390,26 @@ fn the_sigterm_lifecycle_case_launches_and_retains_its_child() {
     assert!(launch.contains("launch(state,") && launch.contains("Lifetime::Owned(child)"));
 }
 
+/// Failure: missing-program observation widens the shipping updater's process selection before it sends a signal.
+#[test]
+fn missing_program_observation_cannot_widen_shipping_signal_selection() {
+    let source = include_str!("../../recto-platform/src/local_mac.rs");
+    let standard = source.split("pub fn processes_running(").nth(1).unwrap().split("\n}").next().unwrap();
+    assert!(
+        standard.contains("executable.canonicalize()"),
+        "the standard resolver must require an existing canonical executable"
+    );
+    assert!(!standard.contains("observed_program"));
+    assert!(source.contains("#[cfg(feature = \"test-seams\")]\npub fn observe_missing_program_processes"));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = Vec::new();
+    sources(&root.join("crates"), &mut files);
+    let calls: Vec<_> = files
+        .into_iter()
+        .filter(|path| {
+            path.file_name().is_none_or(|name| name != "app_launch_guard.rs")
+                && std::fs::read_to_string(path).unwrap().contains("local::observe_missing_program_processes(")
+        })
+        .collect();
+    assert_eq!(calls, [root.join("crates/recto-cli/tests/common/app/copy_cleanup.rs")]);
+}
