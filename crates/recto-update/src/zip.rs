@@ -662,11 +662,11 @@ pub(crate) mod tests {
         struct Evidence(Option<recto_testpdf::TempDir>);
         impl Drop for Evidence {
             fn drop(&mut self) {
-                if std::thread::panicking() {
-                    if let Some(dir) = self.0.take() {
-                        eprintln!("archive metadata evidence: {}; rerun: {}", dir.display(), dir.join("rerun.txt").display());
-                        std::mem::forget(dir);
-                    }
+                if std::thread::panicking()
+                    && let Some(dir) = self.0.take()
+                {
+                    eprintln!("archive metadata evidence: {}; rerun: {}", dir.display(), dir.join("rerun.txt").display());
+                    std::mem::forget(dir);
                 }
             }
         }
