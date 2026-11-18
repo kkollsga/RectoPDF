@@ -62,7 +62,7 @@ fn the_zoom_level_and_the_page_number_fade_after_their_last_change() {
     );
     assert!(gone["next_change_in_ms"].is_null(), "with nothing left to wait for: {gone}");
     // The reader's own scroll brings the page number back, and only that.
-    let scrolled = run.ok(&["qa", "scroll", "400"])["chrome"].clone();
+    let scrolled = run.ok(&["qa", "scroll", "400"])["chrome_at_delivery"].clone();
     assert_eq!(
         (
             scrolled["place_shown"].as_bool(),
@@ -73,7 +73,7 @@ fn the_zoom_level_and_the_page_number_fade_after_their_last_change() {
         "{scrolled}"
     );
     // A zoom brings the zoom level back, at the change: looked at before the pages at the new zoom are drawn, which on a slow machine can take longer than the mark's 3 s (slow mode, 2026-11-11).
-    let zoomed = run.ok(&["qa", "zoom", "1.5"])["chrome"].clone();
+    let zoomed = run.ok(&["qa", "zoom", "1.5"])["chrome_at_delivery"].clone();
     assert_eq!(
         (zoomed["zoom_shown"].as_bool(), zoomed["zoom_alpha"].as_f64()),
         (Some(true), Some(1.0)),
@@ -82,10 +82,10 @@ fn the_zoom_level_and_the_page_number_fade_after_their_last_change() {
     run.settled();
     // The pointer over the page number holds it, with no timer for it, and its 3 s start when it leaves.
     wait_marks(&run, |marks| marks["place_shown"] == false && marks["zoom_shown"] == false);
-    let over = run.ok(&["qa", "corner-pointer", "lower-right:in"])["chrome"].clone();
+    let over = run.ok(&["qa", "corner-pointer", "lower-right:in"])["chrome_at_delivery"].clone();
     assert_eq!(over["place_shown"], true, "back under the pointer: {over}");
     assert!(over["next_change_in_ms"].is_null(), "held there, with no time running out: {over}");
-    let left = run.ok(&["qa", "corner-pointer", "lower-right:out"])["chrome"].clone();
+    let left = run.ok(&["qa", "corner-pointer", "lower-right:out"])["chrome_at_delivery"].clone();
     assert!(
         left["place_shown"] == true && left["next_change_in_ms"].as_u64().is_some_and(|ms| ms <= 3_000),
         "it goes 3 s after: {left}"
