@@ -180,3 +180,19 @@ fn an_external_ready_line_is_capped_before_json_decoding() {
     assert!(error.to_string().contains("exceeds"));
     assert!(qa_launch::read_ready_line(std::io::Cursor::new([255u8]), limit).is_err());
 }
+
+/// Failure: empty startup stdout makes the launcher read an unbounded stderr file, or drops the useful prefix without saying it was truncated.
+#[cfg(unix)]
+#[test]
+fn failed_startup_stderr_is_a_bounded_explicit_excerpt() {
+    let folder = recto_testpdf::TempDir::new("ready-stderr-");
+    let file = folder.join("messages");
+    drop(recto_platform::local::create_private_file(&file).unwrap());
+    std::fs::write(&file, "small failure").unwrap();
+    assert_eq!(qa_launch::stderr_excerpt(&file, 16), "small failure");
+    std::fs::write(&file, format!("{}SECRET_TAIL", "p".repeat(16))).unwrap();
+    let excerpt = qa_launch::stderr_excerpt(&file, 16);
+    assert!(excerpt.starts_with(&"p".repeat(16)), "the failure prefix survives");
+    assert!(excerpt.contains("truncated") && !excerpt.contains("SECRET_TAIL"), "{excerpt}");
+    assert!(excerpt.len() <= 16 + 64, "only the bounded excerpt and fixed truncation notice are kept");
+}

@@ -5,7 +5,7 @@ use recto_control::client::Client;
 use recto_control::state::STATE_ENV;
 use recto_control::{StatePaths, levels};
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 const READY_WAIT: Duration = Duration::from_secs(30);
 const MAX_READY_BYTES: usize = 64 * 1024;
+const MAX_STDERR_BYTES: usize = 4 * 1024;
 pub const OWNER_ENV: &str = "RECTO_QA_OWNER_PID";
 fn failed(code: Code, message: impl Into<String>) -> AgentError {
     AgentError::new(code, message.into(), exit::FAILED)
@@ -129,7 +130,7 @@ pub fn launch(app: &Path, paths: &StatePaths, options: &Launch, environment: &[(
             return Err(cleanup_error(&mut child, primary, Duration::from_secs(1)));
         }
         Ok(Ok(_)) => {
-            let message = std::fs::read_to_string(&paths.server_messages).unwrap_or_default();
+            let message = stderr_excerpt(&paths.server_messages, MAX_STDERR_BYTES);
             let error = failed(
                 Code::APP_REFUSED,
                 if message.trim().is_empty() {
@@ -276,4 +277,35 @@ pub fn read_ready_line(reader: impl BufRead, limit: usize) -> std::io::Result<St
         ));
     }
     Ok(line)
+}
+
+/// A startup error keeps only a bounded excerpt of the owned stderr file, never follows a replacement link or waits on a FIFO.
+pub fn stderr_excerpt(path: &Path, limit: usize) -> String {
+    let file = match recto_platform::local::open_private_file(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return String::new(),
+        Err(error) => return format!("[stderr unavailable: {error}]"),
+    };
+    let mut bytes = Vec::with_capacity(limit.saturating_add(1));
+    if let Err(error) = file
+        .take(u64::try_from(limit).unwrap_or(u64::MAX - 1).saturating_add(1))
+        .read_to_end(&mut bytes)
+    {
+        return format!("[stderr unavailable: {error}]");
+    }
+    let mut truncated = bytes.len() > limit;
+    bytes.truncate(limit);
+    let mut excerpt = String::from_utf8_lossy(&bytes).into_owned();
+    if excerpt.len() > limit {
+        let mut end = limit;
+        while !excerpt.is_char_boundary(end) {
+            end -= 1;
+        }
+        excerpt.truncate(end);
+        truncated = true;
+    }
+    if truncated {
+        excerpt.push_str(&format!("\n[stderr truncated after {limit} bytes]"));
+    }
+    excerpt
 }
