@@ -274,6 +274,7 @@ impl Bed {
         let run = Run::on_executable_with_env(
             &self.state,
             &self.app.join("Contents/MacOS/RectoPDF"),
+            Duration::from_secs(3 * 60),
             &[(REPO_ENV, std::ffi::OsStr::new(&self.server.url))],
         );
         run.ok(&["qa", "scroller-style", "overlay"]);

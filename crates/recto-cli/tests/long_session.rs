@@ -9,6 +9,7 @@ use common::app::{Run, app_path};
 use recto_agent::Level;
 use recto_testpdf::{Page, pages, text_lines};
 use serde_json::{Value, json};
+use std::time::Duration;
 
 const TABS: usize = 30;
 
@@ -48,11 +49,8 @@ fn a_long_session_stays_flat() {
     let state = State::at(Level::Full);
     let Some(app) = app_path() else { return };
     eprintln!("long-session progress: phase=start command=qa start");
-    let (reply, code) = state.json(&["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "30m"]);
-    assert_eq!(code, 0, "{reply}");
-    let pid = reply["data"]["pid"].as_u64().unwrap();
-    // The run is attached, so a failure leaves its evidence folder (the app's state and threads, the machine, and the command that runs it again) as the other app tests do, and the app is stopped.
-    let run = Run::attach(&state, pid as u32);
+    // Retain the launched Child through Quit, rather than an attached connection that can expire while the workload runs.
+    let run = Run::on_executable_with_env(&state, &app, Duration::from_secs(30 * 60), &[]);
     let workload = client::Workload::new(&run);
     let ok = |args: &[&str]| workload.ok(args);
     let folder = state.root.join("docs");

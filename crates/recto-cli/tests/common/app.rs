@@ -239,12 +239,13 @@ impl<'a> Run<'a> {
     /// [`Run::on`], with these in the app's environment, for a debug build's test seams such as `RECTO_TEST_SAVE_PAUSE`.
     #[allow(dead_code)] // Not every test binary uses a seam.
     pub fn on_with_env(state: &'a State, env: &[(&str, &std::ffi::OsStr)]) -> Option<Self> {
-        Some(Self::on_executable_with_env(state, &app_path()?, env))
+        Some(Self::on_executable_with_env(state, &app_path()?, Duration::from_secs(3 * 60), env))
     }
 
     /// A specific quiet fixture executable on existing state, retaining the Child returned by the one shared launcher.
-    pub fn on_executable_with_env(state: &'a State, app: &Path, env: &[(&str, &std::ffi::OsStr)]) -> Self {
-        let (child, pid) = launch(state, &["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "3m"], env);
+    pub fn on_executable_with_env(state: &'a State, app: &Path, limit: Duration, env: &[(&str, &std::ffi::OsStr)]) -> Self {
+        let limit = format!("{}s", limit.as_secs());
+        let (child, pid) = launch(state, &["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", &limit], env);
         Self {
             state: Held::Lent(state),
             pid,
