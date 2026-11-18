@@ -16,6 +16,9 @@ import AppKit
     private var areas: [NSTrackingArea] = []
     /// Which corners the pointer's in, for QA.
     private(set) var pointerIn: Set<String> = []
+    /// Host callbacks delivered to Rust, for QA even when a later observation comes after the marks faded. No visibility rule lives here.
+    private var deliveredZoomChanges: UInt64 = 0
+    private var deliveredPlaceChanges: UInt64 = 0
 
     init(core: AppCore) {
         self.core = core
@@ -23,6 +26,11 @@ import AppKit
     }
 
     func changed(_ mark: ChromeMark) {
+        switch mark {
+        case .zoom: if deliveredZoomChanges < .max { deliveredZoomChanges += 1 }
+        case .place: if deliveredPlaceChanges < .max { deliveredPlaceChanges += 1 }
+        case .windowButtons: break
+        }
         apply(core.chromeChanged(mark: mark))
     }
 
@@ -122,6 +130,6 @@ import AppKit
     /// What QA reads: what Rust says shows, and what's drawn.
     var report: [String: Any] {
         let alpha = { (views: [NSView]) in views.map { Double($0.alphaValue) }.max() ?? 0 }
-        return ["zoom_shown": look?.zoomShown ?? false, "place_shown": look?.placeShown ?? false, "window_buttons_shown": look?.windowButtonsShown ?? true, "zoom_alpha": alpha(zoomViews()), "place_alpha": alpha(placeViews()), "window_buttons_alpha": alpha(buttonViews()), "next_change_in_ms": look?.nextChangeInMs.map { Int($0) } as Any? ?? NSNull(), "fading": fading > 0, "pointer_in": pointerIn.sorted()]
+        return ["zoom_shown": look?.zoomShown ?? false, "place_shown": look?.placeShown ?? false, "window_buttons_shown": look?.windowButtonsShown ?? true, "zoom_alpha": alpha(zoomViews()), "place_alpha": alpha(placeViews()), "window_buttons_alpha": alpha(buttonViews()), "next_change_in_ms": look?.nextChangeInMs.map { Int($0) } as Any? ?? NSNull(), "fading": fading > 0, "pointer_in": pointerIn.sorted(), "changes_delivered": ["zoom": deliveredZoomChanges, "place": deliveredPlaceChanges]]
     }
 }

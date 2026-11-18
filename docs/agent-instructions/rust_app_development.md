@@ -1273,6 +1273,12 @@ RectoPDF's owner, 2026-11-07: "I think the main issue is repeating tests leading
 
 **A local OS command can do unrelated, unbounded work.** A backup-status command stalled while scanning every mounted disk (2026-11-18). Query the documented local OS property when that is the assertion. Bound any compiler/query child, preserve its command/output/rerun evidence, and prove timeout cleanup with a ready-handshaken peer in the owned process group: a fallback kill of the direct child must not make the group-cleanup test pass.
 
+**A security control proves the operation, not a successful request or a filename in output.** On 2026-11-18, deleting a launch fixture's canary still passed its read control: the read error contained `canary.txt`, satisfying a substring check. The same seed failed an exact per-fixture nonce/content check. Separate launch-request acceptance from execution and successful reading, preserve errors as errors, and isolate each fixture's launch identity. A skipped setup must also skip diagnostics that require its resource; gate on verified setup success while preserving failures from diagnostics that can meaningfully run.
+
+**Observe transient UI state in the callback that changed it.** In a 2026-11-18 review, even a command's returned snapshot was a second host callback after a flush; a three-second mark could already have faded. Preserve only the small delivery-time facts before waiting, then retain the ordinary current-state report too. Drop the rest of the earlier report before the wait. A response's name is not evidence of when it was captured, and duplicating a whole report is not needed to test a transient mark.
+
+**Filter recording volume before capture, not only its export.** A 2026-11-18 scheduler template with a selected target still collected global kernel data: 20 seconds produced 2,298,605,672 logical bytes and could not finalize within its 30-second recorder bound. PID-filtered export was no protection. Choose narrow recording instruments and a byte ceiling before launching; preserve bounded failure metadata, stop owned processes and remove an unusable private capture. Increasing an uncapped recording's wait is not a fix.
+
 ### 6.3 Tests that hold on slower machines
 
 - **A test waits for the condition it checks,** polling with a bound and failing with what it saw. It never sleeps and

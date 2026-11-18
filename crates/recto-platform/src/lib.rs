@@ -179,6 +179,10 @@ pub fn memory_free_percent() -> Option<u32> {
 #[cfg_attr(not(target_os = "macos"), path = "isolate_stub.rs")]
 pub mod isolate;
 
+/// Bounded subprocess collection for the test harnesses; never an agent command or a shipping dependency.
+#[cfg(all(target_os = "macos", feature = "test-seams"))]
+pub mod test_command;
+
 /// A helper process on pipes, at a scheduling level set for the whole of it as it starts.
 #[cfg_attr(target_os = "macos", path = "helper_mac.rs")]
 #[cfg_attr(not(target_os = "macos"), path = "helper_stub.rs")]

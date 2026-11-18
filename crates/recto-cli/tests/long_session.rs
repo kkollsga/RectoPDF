@@ -1,5 +1,7 @@
 //! **A long session, in its own binary** (SPEC section 2: "memory flat over a 24-hour session"). 30 tabs, going round them, editing and moving about, with tabs going dormant as they would. What matters is the shape: the whole app's footprint doesn't climb from round to round. Rounds count from `RECTO_LONG_SESSION_ROUNDS`, a few by default. Each round's numbers are printed for a report, with `--no-capture`. On a debug build these are about the shape only, so what's reported comes from a release one.
 
+#[path = "long_session/client.rs"]
+mod client;
 mod common;
 
 use common::State;
@@ -13,15 +15,7 @@ const TABS: usize = 30;
 /// How long a wake's report follows it (`recto_reader::tiles::wake::WAKE_FOLLOWED_FOR`, which this test can't reach).
 const WAKE_FOLLOWED_FOR_MS: u64 = 5000;
 
-/// The machine's load averages as the system gives them ("{ 3.12 2.80 2.50 }"), for a failure to say how busy the machine was: a wake's time means little without it.
-fn load() -> String {
-    std::process::Command::new("/usr/sbin/sysctl").args(["-n", "vm.loadavg"]).output().map_or_else(
-        |error| format!("unreadable: {error}"),
-        |out| String::from_utf8_lossy(&out.stdout).trim().to_string(),
-    )
-}
-
-/// A wake that showed a bare page, or had no first frame, with everything that says why, kept as it was read: the wake's own report, what the page view said right after (settled, tiles, jobs, drawn), the app's worst stall, and the machine's load as the wake began and as it was read.
+/// A wake that showed a bare page, or had no first frame, with everything that says why, kept as it was read: the wake's own report, the page view right after, the app's worst stall, a labelled preceding load snapshot, and a fresh load snapshot when the problem was read.
 struct BareWake {
     round: usize,
     row: usize,
@@ -37,7 +31,7 @@ impl BareWake {
     /// All of it, for a failure.
     fn said(&self) -> String {
         format!(
-            "round {}, row {}: last_wake {}\n  click to settled {} ms; load as it began {}, as it was read {}\n  hangs.worst {}\n  page view after it: {}",
+            "round {}, row {}: last_wake {}\n  click to settled {} ms; load before (sample point labelled) {}, as failure was read {}\n  hangs.worst {}\n  page view after it: {}",
             self.round, self.row, self.wake, self.wall_ms, self.load_before, self.load_after, self.hangs_worst, self.reader
         )
     }
@@ -46,22 +40,26 @@ impl BareWake {
 /// Failure: the app's memory climbs as tabs come and go, as something's held per wake or per edit, or going dormant leaves what it should take. Or a tab's edits don't survive all that, or workers pile up, or disk bytes go past what edits and pictures account for. Or a wake's report loses its first frame: a wake with none is held to a first page later than a wake's followed for, by this test's own clock, with its tab drawn since.
 #[test]
 fn a_long_session_stays_flat() {
+    let started = std::time::Instant::now();
     let rounds: usize = std::env::var("RECTO_LONG_SESSION_ROUNDS")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(3);
     let state = State::at(Level::Full);
     let Some(app) = app_path() else { return };
+    eprintln!("long-session progress: phase=start command=qa start");
     let (reply, code) = state.json(&["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "30m"]);
     assert_eq!(code, 0, "{reply}");
     let pid = reply["data"]["pid"].as_u64().unwrap();
     // The run is attached, so a failure leaves its evidence folder (the app's state and threads, the machine, and the command that runs it again) as the other app tests do, and the app is stopped.
     let run = Run::attach(&state, pid as u32);
-    let ok = |args: &[&str]| run.ok(args);
+    let workload = client::Workload::new(&run);
+    let ok = |args: &[&str]| workload.ok(args);
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
     let mut ids = Vec::with_capacity(TABS);
     for at in 0..TABS {
+        workload.at("opening", 0, at);
         let file = folder.join(format!("doc{at}.pdf"));
         std::fs::write(
             &file,
@@ -96,10 +94,15 @@ fn a_long_session_stays_flat() {
     let mut bare: Vec<BareWake> = Vec::new();
     let (mut unowed_bare, mut no_first_frame, mut late) = (0u64, Vec::<BareWake>::new(), Vec::<String>::new());
     for round in 0..rounds {
+        let round_load = (!workload.cli_baseline()).then(|| workload.load());
         for (at, id) in ids.iter().enumerate() {
+            workload.at("visiting", round, at);
             // As a click on its row does.
             let _ = id;
-            let (load_before, began) = (load(), std::time::Instant::now());
+            let load_before = round_load
+                .as_ref()
+                .map_or_else(|| format!("wake start: {}", workload.load()), |load| format!("round {round} start: {load}"));
+            let began = std::time::Instant::now();
             ok(&["qa", "click-row", &format!("{at}")]);
             ok(&["qa", "wait-settled", "--timeout", "30s"]);
             let seen = ok(&["qa", "state"]);
@@ -137,7 +140,7 @@ fn a_long_session_stays_flat() {
                             reader: seen["reader"].clone(),
                             hangs_worst: seen["hangs"]["worst"].clone(),
                             load_before: load_before.clone(),
-                            load_after: load(),
+                            load_after: workload.load(),
                             wall_ms,
                         });
                     }
@@ -153,7 +156,7 @@ fn a_long_session_stays_flat() {
                         reader: seen["reader"].clone(),
                         hangs_worst: seen["hangs"]["worst"].clone(),
                         load_before,
-                        load_after: load(),
+                        load_after: workload.load(),
                         wall_ms,
                     });
                 }
@@ -221,7 +224,7 @@ fn a_long_session_stays_flat() {
             "a wake that began with its view held in the cache showed a bare page ({} wakes; {blank_frames} bare frames in all, {unowed_bare} wakes bare from their facts or nothing). `had` says which.\n{}\nall wakes (from a file, first frame us, sharp us): {wakes:?}\nload now {}",
             bare.len(),
             said.join("\n"),
-            load()
+            workload.load()
         );
     }
     println!(
@@ -259,5 +262,15 @@ fn a_long_session_stays_flat() {
         wrote <= budget,
         "wrote {wrote} bytes, against {budget}, with {edits} edits and {dormancies} tabs going dormant"
     );
+    let counts = workload.counts();
+    drop(workload);
+    eprintln!("long-session progress: phase=quit command=qa quit now");
     run.quit();
+    println!(
+        "long-session transport: {} CLI processes (including start/quit), {} public-client commands, {} sysctl processes; wall {} ms",
+        counts.cli + 2,
+        counts.protocol,
+        counts.sysctl,
+        started.elapsed().as_millis()
+    );
 }

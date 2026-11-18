@@ -1340,16 +1340,37 @@ fn pressure_and_the_budget_do_what_being_left_alone_does() {
         run.ok(&["open", file.to_str().unwrap()]);
         run.settled();
     }
-    assert_eq!(run.report()["reader"]["documents_held"], 3);
+    let before = run.report();
+    assert_eq!(before["reader"]["documents_held"], 3);
+    assert!(
+        before["reader"]["tiles"]["attached"].as_u64().unwrap() > 0 && before["reader"]["note"].is_null(),
+        "pressure fixture must already show a successfully rendered page: {}",
+        before["reader"]
+    );
     run.ok(&["qa", "memory-pressure", "warning"]);
     wait_until("they go", || run.report()["reader"]["documents_held"] == 1);
     let after = run.report();
     assert_eq!(after["record"]["sleep"]["pressure_events"], 1);
     assert_eq!(after["record"]["sleep"]["gone_dormant"]["pressure"], 2);
     run.settled();
+    let shown = run.report();
+    assert_eq!(
+        shown["reader"]["counts"]["drawn"], before["reader"]["counts"]["drawn"],
+        "pressure must retain visible content without drawing replacements: before {}, after {}",
+        before["reader"], shown["reader"]
+    );
+    for key in ["tab", "page", "visible_pages"] {
+        assert_eq!(
+            shown["reader"][key], before["reader"][key],
+            "pressure changed the visible {key}: {}",
+            shown["reader"]
+        );
+    }
     assert!(
-        run.report()["reader"]["tiles"]["attached"].as_u64().unwrap() > 0,
-        "and what's on screen is still there"
+        shown["reader"]["tiles"]["attached"].as_u64().unwrap() >= before["reader"]["tiles"]["attached"].as_u64().unwrap() && shown["reader"]["note"].is_null(),
+        "pressure must keep the content that was already visible: before {}, after {}",
+        before["reader"],
+        shown["reader"]
     );
     // Over the budget, however it's set: a document off screen holds its worker, so any at all is over nothing.
     run.ok(&["qa", "live-budget", "0"]);
