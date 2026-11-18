@@ -70,6 +70,14 @@ Delivered on main by `db24c956` (2026-11-18), with the identical integrated sour
 - [x] Merge, push and observe CI: `86bb8b61`, [44266732369](https://github.com/kkollsga/RectoPDF/actions/runs/44266732369), all four jobs green, longest 13:19, latest five-green median 18:53 against 21:00. Owned temporary worktrees, branches, baseline bundle and background processes are removed/stopped; the regular main-checkout development app is refreshed. Evidence and inspected light/dark shots remain outside the removed worktrees.
 
 
+### Short-stall attribution increment — 18 November
+
+- [x] Capture a before-action Time Profiler trace, an unprofiled control and temporary phase intervals. The paper-size/margin reads took 88.778 ms on main; reader refresh, job-title lookup and print-operation creation were separate, shorter phases. This attributes that print wait, not the historical one-second finding or all startup/layout stalls. Temporary instrumentation was removed before implementation.
+- [x] Implement and review the separate screenshot writer and concurrent QA-verb ownership fixes (`9e298f73`, `36c67c8f`), with failed-first guards and 20 CI-like rounds. The watchdog's unbracketed main work now includes autorelease-pool cleanup; its existing native entry-point guard failed on the old ordering and passed on the fix. Final combined repetition and delivery remain below.
+- [ ] Finish the measured print-paper handoff: one distinct private settings copy, existing background preparation job, immutable geometry returned to main, exact-key cleanup preserved.
+- [ ] Complete final release input/resource measurements, repeated native guards, lifecycle validation and one combined full check.
+- [ ] Merge, push, observe CI and remove owned temporary worktrees, bundles and processes.
+
 ## Release follow-ups carried forward
 
 These are the still-open parts of the old release summary that otherwise would be hidden among completed work. Measurements are from the cited release reports, not new measurements by this review.

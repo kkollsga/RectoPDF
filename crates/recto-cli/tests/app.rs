@@ -892,7 +892,7 @@ fn long_titled(count: usize) -> TempPdf {
     TempPdf::new("long-titles.pdf", &build(&objects))
 }
 
-/// Failure: every other QA verb calls the method behind an event, so a method AppKit can't reach by name passes them all: hover never fired on a real window, as its handlers weren't Objective-C, so full names and hover details did nothing. Events are made and handed to the real responder by AppKit's selector, and what's checked is what comes of them: the pointer resting on a shortened contents entry opens its full name, on the real timer, and goes when it leaves. Nothing is posted. Also holds the print operation callback identity: a stale or repeated callback must not take the current job.
+/// Failure: every other QA verb calls the method behind an event, so a method AppKit can't reach by name passes them all: hover never fired on a real window, as its handlers weren't Objective-C, so full names and hover details did nothing. Events are made and handed to the real responder by AppKit's selector, and what's checked is what comes of them: the pointer resting on a shortened contents entry opens its full name, on the real timer, and goes when it leaves. Nothing is posted. Also holds the print operation callback identity: a stale or repeated callback must not take the current job. A main-thread work interval must also include autorelease-pool cleanup and preserve an enclosing run-loop watch.
 #[test]
 fn what_appkit_calls_reaches_the_app() {
     let Some(run) = Run::start() else { return };
@@ -906,6 +906,8 @@ fn what_appkit_calls_reaches_the_app() {
     let failed: Vec<&String> = checked.iter().filter(|(_, ok)| **ok != true).map(|(name, _)| name).collect();
     assert!(failed.is_empty(), "these don't reach the app: {failed:?}\n{found}");
     for name in [
+        "unbracketed_main_pool_drains_while_watched",
+        "a_main_pool_keeps_its_parent_watch",
         "old_print_callback_keeps_the_current_job",
         "a_print_callback_finishes_only_once",
         "command_plus_zooms_in",
