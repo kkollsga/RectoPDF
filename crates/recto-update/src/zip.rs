@@ -652,7 +652,7 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Failure: release packaging turns file metadata into unsigned ._ files inside the bundle, so the updater refuses every update. The actual producer and raw consumer preserve the strict signature, streamed data, folders and executable mode; no app is launched.
+    /// Failure: release packaging puts metadata inside the signed bundle, or development packaging retains metadata it must strip. Both modes preserve the strict signature, streamed data, folders and executable mode through the actual raw consumer; no app is launched.
     #[cfg(target_os = "macos")]
     #[test]
     fn a_zip_from_ditto_unpacks_whole() {
@@ -730,35 +730,53 @@ pub(crate) mod tests {
             );
         };
         verify("before", &app);
-        let zip = dir.join("r.zip");
         let archive = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/archive.sh");
-        let (fine, _, ran) = tool(archive.to_str().unwrap(), &[app.to_str().unwrap(), zip.to_str().unwrap()], limit, 64 * 1024).unwrap();
-        std::fs::write(
-            dir.join("archive.txt"),
-            format!(
-                "{} {} {}\n{ran:?}\n{}",
-                archive.display(),
-                app.display(),
-                zip.display(),
-                String::from_utf8_lossy(&ran.stderr)
-            ),
+        let refused = tool(
+            archive.to_str().unwrap(),
+            &["--unknown-mode", app.to_str().unwrap(), dir.join("invalid.zip").to_str().unwrap()],
+            limit,
+            64 * 1024,
         )
         .unwrap();
-        assert!(fine, "archive producer: {ran:?}: {}", String::from_utf8_lossy(&ran.stderr));
-        let into = dir.join("out");
-        std::fs::create_dir_all(&into).unwrap();
-        unpack(&zip, APP, &into, Instant::now() + Duration::from_secs(30)).unwrap();
-        verify("after", &into.join(APP));
-        assert_eq!(std::fs::read(into.join("RectoPDF.app/Contents/Resources/stream.bin")).unwrap(), data);
-        assert_eq!(
-            std::fs::metadata(into.join("RectoPDF.app/Contents/MacOS/RectoPDF"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o755
-        );
-        assert_eq!(std::fs::read(into.join("RectoPDF.app/Contents/Info.plist")).unwrap(), plist);
-        assert!(!into.join("__MACOSX").exists(), "archive metadata is not installed as files");
+        assert_eq!(refused.2.code, Some(2), "unknown archive mode is refused");
+        assert!(!dir.join("invalid.zip").exists());
+        for (label, strip) in [("sequestered", false), ("stripped", true)] {
+            let zip = dir.join(format!("{label}.zip"));
+            let mut args = Vec::new();
+            if strip {
+                args.push("--no-metadata");
+            }
+            args.extend([app.to_str().unwrap(), zip.to_str().unwrap()]);
+            let (fine, _, ran) = tool(archive.to_str().unwrap(), &args, limit, 64 * 1024).unwrap();
+            std::fs::write(
+                dir.join(format!("archive-{label}.txt")),
+                format!("{} {args:?}\n{ran:?}\n{}", archive.display(), String::from_utf8_lossy(&ran.stderr)),
+            )
+            .unwrap();
+            assert!(fine, "archive producer: {ran:?}: {}", String::from_utf8_lossy(&ran.stderr));
+            let entries = read_directory(&mut std::fs::File::open(&zip).unwrap(), APP).unwrap();
+            std::fs::write(dir.join(format!("entries-{label}.txt")), format!("{entries:#?}\n")).unwrap();
+            let into = dir.join(format!("out-{label}"));
+            std::fs::create_dir_all(&into).unwrap();
+            unpack(&zip, APP, &into, Instant::now() + Duration::from_secs(30)).unwrap();
+            verify(label, &into.join(APP));
+            assert_eq!(std::fs::read(into.join("RectoPDF.app/Contents/Resources/stream.bin")).unwrap(), data);
+            assert_eq!(
+                std::fs::metadata(into.join("RectoPDF.app/Contents/MacOS/RectoPDF"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o755
+            );
+            assert_eq!(std::fs::read(into.join("RectoPDF.app/Contents/Info.plist")).unwrap(), plist);
+            assert!(!into.join("__MACOSX").exists(), "archive metadata is not installed as files");
+            if strip {
+                assert!(
+                    !entries.iter().any(|entry| entry.name.split('/').next() == Some(SIDE_FOLDER)),
+                    "development archive must strip metadata: {entries:?}"
+                );
+            }
+        }
     }
 }

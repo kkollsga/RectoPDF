@@ -1,5 +1,17 @@
 #!/bin/sh
-# One release/notarization archive recipe. The updater validates __MACOSX metadata but never unpacks it into the signed bundle.
+# One app archive producer. Releases/notarization sequester metadata outside the signed bundle; development builds keep their explicit stripping policy.
 set -eu
-[ "$#" -eq 2 ] || { echo "usage: archive.sh <app> <zip>" >&2; exit 2; }
-exec /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$1" "$2"
+usage() { echo "usage: archive.sh [--no-metadata] <app> <zip>" >&2; exit 2; }
+case "${1:-}" in
+    --no-metadata)
+        [ "$#" -eq 3 ] || usage
+        shift
+        set -- -c -k --norsrc --noextattr --keepParent "$1" "$2"
+        ;;
+    --*) usage ;;
+    *)
+        [ "$#" -eq 2 ] || usage
+        set -- -c -k --sequesterRsrc --keepParent "$1" "$2"
+        ;;
+esac
+exec /usr/bin/ditto "$@"
