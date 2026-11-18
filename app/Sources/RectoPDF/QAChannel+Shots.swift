@@ -76,13 +76,7 @@ extension QAChannel {
         guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(bounds.width * 2), pixelsHigh: Int(bounds.height * 2), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return fail(id, "The picture couldn't be made.") }
         rep.size = bounds.size
         view.cacheDisplay(in: bounds, to: rep)
-        guard let data = rep.representation(using: .png, properties: [:]) else { return fail(id, "The picture couldn't be encoded.") }
-        do {
-            try data.write(to: URL(fileURLWithPath: path), options: .atomic)
-            answer(id, ["out": path, "width": rep.pixelsWide, "height": rep.pixelsHigh, "bytes": data.count])
-        } catch {
-            let _: Void = fail(id, "The picture couldn't be written: \(error.localizedDescription)")
-        }
+        writeShot(rep, id: id, path: path)
     }
 
     /// A sheet over the window is a window of its own, which the window's drawing leaves out: its own drawing goes in where it sits, so a shot shows what a person would. A panel drawn by another process, as the save sheet's file browser is, may come out partly blank.
@@ -132,20 +126,27 @@ extension QAChannel {
             area.hideMarksForShot(false)
         }
         let flipped = view.isFlipped
-        let core = delegate.core
-        // The encoding and the write are slow, so they stay off this thread.
-        nonisolated(unsafe) let encoded = rep
-        DispatchQueue.global(qos: .userInitiated).async {
+        writeShot(rep, id: id, path: path) { encoded in
             for mark in marks { QAChannel.multiply(encoded, by: mark.rgb, in: mark.rects, viewHeight: bounds.height, flipped: flipped, lighten: mark.lighten) }
             if let highlights { QAChannel.multiply(encoded, by: highlights.rgb, in: highlights.rects, viewHeight: bounds.height, flipped: flipped, lighten: highlights.lighten) }
             if let tint { QAChannel.multiply(encoded, by: tint.rgb, in: tint.rects, viewHeight: bounds.height, flipped: flipped) }
+        }
+    }
+
+    /// Drawing is finished before ownership passes here. Prepare the pixels, encode and write on one background job, with no extra bitmap or data copy.
+    private func writeShot(_ rep: NSBitmapImageRep, id: UInt64, path: String, prepare: @escaping @Sendable (NSBitmapImageRep) -> Void = { _ in }) {
+        let core = delegate.core
+        nonisolated(unsafe) let encoded = rep
+        DispatchQueue.global(qos: .userInitiated).async {
+            prepare(encoded)
+            let onMain = Thread.isMainThread
             guard let data = encoded.representation(using: .png, properties: [:]) else {
                 core.qaAnswer(id: id, ok: false, json: "The picture couldn't be encoded.")
                 return
             }
             do {
                 try data.write(to: URL(fileURLWithPath: path), options: .atomic)
-                let answer = try JSONSerialization.data(withJSONObject: ["out": path, "width": encoded.pixelsWide, "height": encoded.pixelsHigh, "bytes": data.count])
+                let answer = try JSONSerialization.data(withJSONObject: ["out": path, "width": encoded.pixelsWide, "height": encoded.pixelsHigh, "bytes": data.count, "encoding_write_on_main": onMain])
                 core.qaAnswer(id: id, ok: true, json: String(data: answer, encoding: .utf8) ?? "null")
             } catch {
                 core.qaAnswer(id: id, ok: false, json: "The picture couldn't be written: \(error.localizedDescription)")
