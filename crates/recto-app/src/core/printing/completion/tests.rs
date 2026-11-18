@@ -16,9 +16,8 @@ fn a_failed_publication_start_retains_work_until_its_retry_is_due() {
     let ready = fixtures::handed(printing, unnamed_file(b"still owned"), 4);
     fixtures::refuse_spawns(printing, 1);
     request(printing, &app.core().core, &ready.path, ready.serial, true);
-    app.wait_until("the failed start is deferred", || {
-        printing.completion_due(app.core().life.now_ms()) == Some(Duration::from_millis(RETRY_MS))
-    });
+    app.wait_until("the failed start is deferred", || lock(&printing.handing).retry_at.is_some());
+    assert_eq!(printing.completion_due(app.core().life.now_ms()), Some(Duration::from_millis(1000)));
     assert_eq!(fixtures::worker_starts(printing), 0);
     assert!(printing.publishing() && printing.busy());
     assert_eq!(app.core().core.ways_back_held(), 1, "pending work still holds settle");
