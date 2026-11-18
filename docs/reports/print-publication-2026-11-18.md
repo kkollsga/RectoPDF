@@ -41,7 +41,7 @@ After the measured RFC print, the probe reopened the published PDF and captured 
 
 ## Delivery validation
 
-The coordinator's final quick check passed at `cd289b2a`: formatting, compilation/clippy/Windows and1,230 selected tests in its last stage. The worker's earlier quick failure was the repaired seeded-export fixture described above; its specific test passed before repetition. The final release build passed. Required CI-style lifecycle and the combined full gate follow; they are recorded only after their results are read.
+The coordinator's final quick check passed at `cd289b2a`: formatting, compilation/clippy/Windows and1,230 selected tests in its last stage. The worker's earlier quick failure was the repaired seeded-export fixture described above; its specific test passed before repetition. The final release build passed. Required `tools/check.sh --like-ci lifecycle` passed at `c7a8b730`, exit0:30/30 lifecycle cases in178.243s, then3/3 registration cases in14.929s. The combined full gate follows; it is recorded only after its result is read.
 
 ## Remaining work
 
