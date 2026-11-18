@@ -407,7 +407,7 @@ fn the_watchdog_catches_a_stall_and_it_fails_the_script() {
     eprintln!("hangs after a 2.3 s sleep: {hangs}");
 }
 
-/// Failure: a shot needs the screen or a permission, comes out at the wrong size, or is blank. Run quietly, so a screen isn't involved. The picture must have ink in it: a real PNG, of the window at 2x, and larger than the same window with no page.
+/// Failure: a shot needs the screen or a permission, comes out at the wrong size or blank, or encodes and writes on the UI thread. Window, menu and Settings captures share the background writer and produce real PNGs; a closed Settings window still refuses.
 #[test]
 fn a_shot_is_a_real_picture_of_the_window_at_2x() {
     let Some(run) = Run::start() else { return };
@@ -415,6 +415,7 @@ fn a_shot_is_a_real_picture_of_the_window_at_2x() {
     run.ok(&["qa", "resize", "1000x700"]);
     let before = run.ok(&["qa", "shot", "--out", empty.to_str().unwrap()]);
     assert_eq!((before["width"].as_u64(), before["height"].as_u64()), (Some(2000), Some(1400)), "{before}");
+    assert_eq!(before["encoding_write_on_main"], false, "{before}");
     let file = numbered(2);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -423,6 +424,22 @@ fn a_shot_is_a_real_picture_of_the_window_at_2x() {
     let bytes = std::fs::read(&shot).unwrap();
     assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
     assert_ne!(with_page["bytes"], before["bytes"], "a page changes the picture");
+    assert_eq!(with_page["encoding_write_on_main"], false, "{with_page}");
+    let closed = run.state.root.join("closed-settings.png");
+    let (reply, status) = run.state.json(&["qa", "shot-settings", "--out", closed.to_str().unwrap()]);
+    assert_ne!(status, 0, "{reply}");
+    assert_eq!(reply["error"]["message"], "The Settings window isn't open.", "{reply}");
+    assert!(!closed.exists());
+    run.ok(&["qa", "settings", "open"]);
+    for verb in ["shot-menu", "shot-menus", "shot-settings"] {
+        let path = run.state.root.join(format!("{verb}.png"));
+        let shot = run.ok(&["qa", verb, "--out", path.to_str().unwrap()]);
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"), "{verb} isn't a PNG");
+        assert_eq!(shot["bytes"].as_u64(), Some(bytes.len() as u64), "{shot}");
+        assert!(shot["width"].as_u64().unwrap() > 0 && shot["height"].as_u64().unwrap() > 0, "{shot}");
+        assert_eq!(shot["encoding_write_on_main"], false, "{verb}: {shot}");
+    }
 }
 
 /// Failure: the appearance, paper or the sidebar don't reach what's drawn, or a change draws nothing new. Read back from the app and from the tiles it attached. The sidebar goes by its own button, and hiding it leaves the page, its number, the agent icon and the button to bring it back.
