@@ -30,14 +30,19 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
+pub mod completion;
+use completion::{Entry, Handing, Key, Status};
+
+#[cfg(any(test, feature = "testkit"))]
+pub mod fixtures;
+
 /// The notice's Stop, while pages are being prepared.
 const STOP_ID: &str = "print.stop";
 /// A notice's "Print anyway", followed by the notice's number.
 const ANYWAY_PREFIX: &str = "print.anyway.";
 /// Where a print's file started its name, followed by the process's number, before it had none: for the sweep at launch.
 const FILE_PREFIX: &str = "recto-print-";
-/// The files the system's printing has at once, past which the oldest one's descriptor goes: one is the usual, and CoreGraphics maps a file as it opens it,
-/// so a descriptor let go of early takes nothing from a print under way.
+/// The most files handed to the system at once. A full cap keeps the next file ready and withholds its offer until a completion makes room.
 const MAX_HANDING: usize = 4;
 
 /// **What the print panel was answered with:** the tab it was opened for, all the pages or a range from 1, just the selection's pages, and whether the
@@ -77,13 +82,15 @@ pub struct Printing {
     asked_by: AtomicU64,
     /// A print's file, with no name, for the host, with the host's number for the answer it was asked by.
     ready: Mutex<Option<(File, u64)>>,
-    /// The files the host has taken, each until the system's printing is done with it: their descriptors, which keep them, as they have no name.
-    handing: Mutex<Vec<File>>,
+    /// Handed files and their completion phases: an entry remains until publication and the descriptor's off-lock close are complete.
+    handing: Mutex<Handing>,
     notice: Mutex<Option<Said>>,
     /// What the notice with this number refused, for its "Print anyway", and the host's number for the answer it was asked by.
     refused: Mutex<Option<(u64, (Print, u64))>>,
     /// A QA print to a file: where the system's printing writes, a new name of ours, and where it's published, never over anything.
     qa_target: Mutex<Option<(PathBuf, PathBuf)>>,
+    #[cfg(any(test, feature = "testkit"))]
+    hooks: fixtures::Hooks,
 }
 
 impl Printing {
@@ -187,7 +194,7 @@ impl Printing {
     }
 
     /// **For QA's print to a PDF through the system's printing:** where it should write, a new name of ours beside `out`, which is published at `out` when
-    /// it's done ([`Self::finished`]), never over anything. None while a print is busy, or if `out` isn't absolute, is there already, or the name of ours is taken.
+    /// it's done ([`completion`]), never over anything. None while a print is busy, or if `out` isn't absolute, is there already, or the name of ours is taken.
     pub fn qa_target_for(&self, out: PathBuf) -> Option<PathBuf> {
         if self.busy() {
             return None;
@@ -215,48 +222,40 @@ impl Printing {
     }
 
     /// **The file to print, once, for the host to hand to the system,** with the host's number for the answer it was asked by: `/dev/fd/N`, this app's
-    /// descriptor of a file with no name, which it keeps open until [`Self::finished`] is told that same path. Read from its start, as a descriptor opened
+    /// descriptor of a file with no name, kept through the exact key's [`completion`]. Read from its start, as a descriptor opened
     /// through `/dev/fd` shares this one's place in the file.
     pub fn take_ready(&self) -> Option<(PathBuf, u64)> {
         use std::io::Seek;
         let mut ready = lock(&self.ready);
+        let mut handing = lock(&self.handing);
+        if handing.entries.len() >= MAX_HANDING {
+            return None;
+        }
         let (mut file, serial) = ready.take()?;
         #[cfg(test)]
         hold_handoff(&AFTER_READY_TAKE);
         // A file that can't be read from its start goes now, and nothing's printed: the host is told of no file.
         file.rewind().ok()?;
         let path = descriptor_path(&file)?;
-        let mut handing = lock(&self.handing);
-        if handing.len() >= MAX_HANDING {
-            handing.remove(0);
-        }
-        handing.push(file);
+        handing.entries.push(Entry {
+            key: Key { path: path.clone(), serial },
+            file: Some(file),
+            status: Status::Host,
+        });
         drop(handing);
         drop(ready);
         Some((path, serial))
     }
 
-    /// **The system's printing is done with the file at `path`,** however it went: its descriptor goes, and with it the file, if `path` is one this app
-    /// handed out and still holds. A path not currently held lets nothing go or publish, and no path the host gives is ever removed: the
-    /// print's file has no name to remove. A QA print to a file is published where it was asked for.
-    pub fn finished(&self, path: &str) {
-        if !lock(&self.handing).iter().any(|file| is_at(file, path)) {
-            return;
-        }
-        #[cfg(test)]
-        hold_handoff(&BEFORE_PUBLICATION);
-        if let Some((written, out)) = lock(&self.qa_target).take() {
-            if written.exists() && recto_agent::publish_picture(&written, &out).is_err() {
-                self.say("The print couldn't be put there: a file is already there, and it won't be replaced.", false);
-            }
-            let _ = std::fs::remove_file(&written);
-        }
-        // Keep the host's descriptor and busy state through publication, without a handing lock over filesystem work.
-        lock(&self.handing).retain(|file| !is_at(file, path));
+    /// The same worker body for existing low-level resource-ownership tests, with no host API or session dispatcher.
+    #[cfg(test)]
+    pub(super) fn finished(&self, path: &str) {
+        // Existing low-level ownership guards run the same worker body directly, without a session or host API.
+        completion::finish_for_test(self, path);
     }
 
     pub fn has_ready(&self) -> bool {
-        lock(&self.ready).is_some()
+        lock(&self.ready).is_some() && lock(&self.handing).entries.len() < MAX_HANDING
     }
 
     /// Stops a print being prepared, at the next page. Cheap, for the UI thread.
@@ -308,11 +307,6 @@ fn descriptor_path(file: &File) -> Option<PathBuf> {
         let _ = file;
         None
     }
-}
-
-/// Whether `path` is the one [`descriptor_path`] gave for `file`.
-fn is_at(file: &File, path: &str) -> bool {
-    descriptor_path(file).is_some_and(|own| own.as_os_str() == path)
 }
 
 /// The process a print file's name says made it, if it's one of ours: `recto-print-PID-N.pdf` as v0.1.0 named them, or `recto-print-PID-N-HEX.pdf` as
@@ -478,7 +472,8 @@ impl PrintWatch for Watch {
     /// The file goes to the host, in place of one the host never took, which goes now with its descriptor: nothing else would ever let it go.
     fn ready(&self, file: File) {
         let asked_by = self.printing.asked_by.load(Ordering::SeqCst);
-        drop(lock(&self.printing.ready).replace((file, asked_by)));
+        let previous = { lock(&self.printing.ready).replace((file, asked_by)) };
+        drop(previous);
     }
 
     /// What came of it is said by [`answered`], which ends the print once its file is the host's, so nothing sees it neither preparing nor ready (review

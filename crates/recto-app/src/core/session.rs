@@ -254,6 +254,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
                 inner.on_disk.sleeper().wait_for_due(),
                 inner.life.due(),
                 inner.life.keeping_due(),
+                inner.tools.printing().completion_due(inner.life.now_ms()),
             ]
             .into_iter()
             .flatten()
@@ -268,6 +269,7 @@ pub fn session_thread(inner: &Arc<Inner>) {
                 restore_patience_over(inner);
             }
             inner.on_disk.keeper().desk().when_due(&inner.window, &reads);
+            printing::completion::when_due(inner.tools.printing_held(), &inner.core, inner.life.now_ms());
             release_held(&inner.life, &inner.core, &mut deferred, submit);
             if inner.saver.wait_for_due().is_some_and(|wait| wait.is_zero()) {
                 inner.saver.spawn_writer();
