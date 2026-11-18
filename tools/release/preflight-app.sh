@@ -64,7 +64,7 @@ case "$mode" in
     limited 1800 "the release's build job (app/release-zip.sh --built-only)" env MIN_FREE=0 "$root/app/release-zip.sh" --built-only
     # As release.yml's build job packs it and its signing job unpacks it, so what's signed here is what the release would get.
     zip="${RUNNER_TEMP:?}/preflight-built-app.zip"
-    ditto -c -k --keepParent "$APP" "$zip"
+    "$root/app/archive.sh" "$APP" "$zip"
     rm -rf "$APP"
     ditto -x -k "$zip" "$(dirname "$APP")"
     rm -f "$zip"
