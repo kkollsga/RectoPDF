@@ -1354,6 +1354,11 @@ fn pressure_and_the_budget_do_what_being_left_alone_does() {
     assert_eq!(after["record"]["sleep"]["gone_dormant"]["pressure"], 2);
     run.settled();
     let shown = run.report();
+    assert_eq!(
+        shown["reader"]["counts"]["drawn"], before["reader"]["counts"]["drawn"],
+        "pressure must retain visible content without drawing replacements: before {}, after {}",
+        before["reader"], shown["reader"]
+    );
     for key in ["tab", "page", "visible_pages"] {
         assert_eq!(
             shown["reader"][key], before["reader"][key],
