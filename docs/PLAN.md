@@ -74,8 +74,9 @@ Delivered on main by `db24c956` (2026-11-18), with the identical integrated sour
 
 - [x] Capture a before-action Time Profiler trace, an unprofiled control and temporary phase intervals. The paper-size/margin reads took 88.778 ms on main; reader refresh, job-title lookup and print-operation creation were separate, shorter phases. This attributes that print wait, not the historical one-second finding or all startup/layout stalls. Temporary instrumentation was removed before implementation.
 - [x] Implement and review the separate screenshot writer and concurrent QA-verb ownership fixes (`9e298f73`, `36c67c8f`), with failed-first guards and 20 CI-like rounds. The watchdog's unbracketed main work now includes autorelease-pool cleanup; its existing native entry-point guard failed on the old ordering and passed on the fix. Final combined repetition and delivery remain below.
-- [ ] Finish the measured print-paper handoff: one distinct private settings copy, existing background preparation job, immutable geometry returned to main, exact-key cleanup preserved.
-- [ ] Complete final release input/resource measurements, repeated native guards, lifecycle validation and one combined full check.
+- [x] Finish the measured print-paper handoff (`a6c0dee8`): one distinct private settings copy, existing background preparation job, immutable geometry returned to main, exact-key cleanup preserved. Review and 20 CI-like fidelity rounds passed.
+- [x] Complete final release input/resource measurements and repeated guards: all 216 input bounds met; main settings copies 23/19 µs, paper preparation off-main; map print app+helpers 737.24→738.28 MiB in one pair. Inspected light/dark output and detailed limits: [`reports/short-stalls-2026-11-18.md`](reports/short-stalls-2026-11-18.md).
+- [ ] Finish mandatory lifecycle validation and one combined full check.
 - [ ] Merge, push, observe CI and remove owned temporary worktrees, bundles and processes.
 
 ## Release follow-ups carried forward
