@@ -1273,6 +1273,8 @@ RectoPDF's owner, 2026-11-07: "I think the main issue is repeating tests leading
 
 **A local OS command can do unrelated, unbounded work.** A backup-status command stalled while scanning every mounted disk (2026-11-18). Query the documented local OS property when that is the assertion. Bound any compiler/query child, preserve its command/output/rerun evidence, and prove timeout cleanup with a ready-handshaken peer in the owned process group: a fallback kill of the direct child must not make the group-cleanup test pass.
 
+**A security control proves the operation, not a successful request or a filename in output.** On 2026-11-18, deleting a launch fixture's canary still passed its read control: the read error contained `canary.txt`, satisfying a substring check. The same seed failed an exact per-fixture nonce/content check. Separate launch-request acceptance from execution and successful reading, preserve errors as errors, and isolate each fixture's launch identity. A skipped setup must also skip diagnostics that require its resource; gate on verified setup success while preserving failures from diagnostics that can meaningfully run.
+
 ### 6.3 Tests that hold on slower machines
 
 - **A test waits for the condition it checks,** polling with a bound and failing with what it saw. It never sleeps and
