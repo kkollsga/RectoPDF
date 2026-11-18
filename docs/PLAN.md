@@ -91,7 +91,8 @@ The short-stall source push's automatic runner-acquisition retry reached real te
 - [x] Finish bounded lazy diagnostics, delivery-time chrome observations and visible-content retention proofs. Marks/pressure passed 20 slower simulated rounds each; idle passed 20 rounds at CI's actual ordinary priority. A same-binary AppKit control reproduced the extra background-wrapper wakeups without RectoPDF code; thresholds remain unchanged. Details and limits are in the CI repair report.
 - [ ] Explain the CI startup stretch exceeding 2 s. Evidence places most of it before the window-open marker; a later idle sample cannot identify its cause. Keep the strict launch guard unchanged and capture startup from process execution on a shared clock.
 - [x] Combined independent source review: fix the P2 borrowed-PID cleanup race before the gate (`5f5af2f6`). The native fixture now has checked process-local self-exit and host wait/retention; old-source/omitted-timer proofs failed and 80 focused repetition cases passed. Final review approved.
-- [ ] Run one combined final full check, integrate/push the fixes, observe CI, and remove owned worktrees/processes.
+- [x] Run one combined final full check: `660155a3`, exit 0, 3,294 Rust/203 native/four slow/two bundle/three registration cases; 305 ledger seconds plus the separately run 99 s tools suite. Integrate/push `dcdc00a2`, refresh the development app and remove owned worktrees, branches and local processes.
+- [ ] Observe replacement CI [44362843581](https://github.com/kkollsga/RectoPDF/actions/runs/44362843581): light and macOS 15 sandbox passed; both macOS 26 jobs await hosted runners at the latest checkpoint. No green check time is claimed yet.
 
 ## Release follow-ups carried forward
 
