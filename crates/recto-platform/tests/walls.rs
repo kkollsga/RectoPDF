@@ -225,12 +225,7 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let executable = self.escape_executable();
         let mut cleanup = format!("exact executable: {}\nowned processes: {:?}\n", executable.display(), self.own_processes());
-        for pid in self.own_processes() {
-            // Never signal a PID which has been reused for another executable.
-            if recto_platform::local::process_path(pid).as_deref() == Some(executable.as_path()) {
-                recto_platform::local::signal_process(pid, true);
-            }
-        }
+        // A path lookup cannot keep a numeric PID from being recycled. The Escape process owns its exit timer; cleanup only waits or retains its bundle.
         let began = Instant::now();
         while !self.own_processes().is_empty() && began.elapsed() < Duration::from_secs(1) {
             std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
