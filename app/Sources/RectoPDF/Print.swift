@@ -80,7 +80,7 @@ extension AppDelegate {
         nextPrintSerial += 1
         let serial = nextPrintSerial
         let acted = core.act(action: .print(tab: model.tab, all: all, first: UInt32(max(first, 1)), last: UInt32(max(last, 1)), selectionOnly: info.isSelectionOnly, toFile: toFile, serial: serial))
-        if acted.understood { printInfos[serial] = info }
+        if acted.understood { printInfos = [serial: info] }
     }
 
     /// Rust says a print's pages are ready: they go to the system's printing, with no panel, as it was answered already. It runs on a thread of its own, and the file goes when it's done.
@@ -132,7 +132,7 @@ extension AppDelegate {
         nextPrintSerial += 1
         let serial = nextPrintSerial
         let started = core.act(action: .print(tab: model.tab, all: all, first: max(first, 1), last: max(last, first), selectionOnly: false, toFile: true, serial: serial)).understood
-        if started { printInfos[serial] = info }
+        if started { printInfos = [serial: info] }
         return started
     }
 }

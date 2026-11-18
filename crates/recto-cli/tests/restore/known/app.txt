@@ -188,6 +188,7 @@ app.paper
 app.place
 app.place_label
 app.place_label_in_lower_right
+app.print_answers_kept
 app.reveal.row
 app.reveal.shown
 app.save_button.clear_of_window_buttons
