@@ -9,7 +9,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const READY_WAIT: Duration = Duration::from_secs(30);
 pub const OWNER_ENV: &str = "RECTO_QA_OWNER_PID";
@@ -109,7 +109,13 @@ pub fn launch(app: &Path, paths: &StatePaths, options: &Launch, environment: &[(
     let mut child = command
         .spawn()
         .map_err(|_| failed(Code::APP_MISSING, format!("The app at {} couldn't be started.", app.display())))?;
-    let stdout = child.stdout.take().ok_or_else(|| failed(Code::APP_REFUSED, "The app couldn't be started."))?;
+    let Some(stdout) = child.stdout.take() else {
+        return Err(cleanup_error(
+            &mut child,
+            failed(Code::APP_REFUSED, "The app couldn't be started."),
+            Duration::from_secs(1),
+        ));
+    };
     let (send, receive) = mpsc::channel();
     let _ = std::thread::Builder::new().name("qa-ready".into()).spawn(move || {
         let mut line = String::new();
@@ -120,34 +126,52 @@ pub fn launch(app: &Path, paths: &StatePaths, options: &Launch, environment: &[(
     let line = match said {
         Ok(Ok(line)) if !line.is_empty() => line,
         Ok(_) => {
-            let _ = child.wait();
             let message = std::fs::read_to_string(&paths.server_messages).unwrap_or_default();
-            return Err(failed(
+            let error = failed(
                 Code::APP_REFUSED,
                 if message.trim().is_empty() {
                     "The app ended before it was ready.".to_string()
                 } else {
                     message.trim().to_string()
                 },
-            ));
+            );
+            return Err(cleanup_error(&mut child, error, Duration::from_secs(1)));
         }
         Err(_) => {
-            let _ = child.kill();
-            return Err(AgentError::new(
-                Code::TIMED_OUT,
-                "The app wasn't ready in time, so it was stopped.",
-                exit::TIMED_OUT,
+            let error = AgentError::new(Code::TIMED_OUT, "The app wasn't ready in time, so it was stopped.", exit::TIMED_OUT);
+            return Err(cleanup_error(&mut child, error, Duration::from_secs(1)));
+        }
+    };
+    let value: Value = match serde_json::from_str(line.trim()) {
+        Ok(value) => value,
+        Err(_) => {
+            return Err(cleanup_error(
+                &mut child,
+                failed(Code::APP_REFUSED, "The app said something that isn't its ready line."),
+                Duration::from_secs(1),
             ));
         }
     };
-    let value: Value = serde_json::from_str(line.trim()).map_err(|_| failed(Code::APP_REFUSED, "The app said something that isn't its ready line."))?;
-    if value["ok"] != true {
-        return Err(failed(
+    let ready = ready_value(&mut child, value, Duration::from_secs(1))?;
+    Ok((child, ready))
+}
+
+/// A readiness refusal or false process identity still owns the child until bounded cleanup.
+pub fn ready_value(child: &mut Child, value: Value, cleanup_wait: Duration) -> Result<Value, AgentError> {
+    let error = if value["ok"] != true {
+        Some(failed(
             Code::APP_REFUSED,
             value["error"]["message"].as_str().unwrap_or("The app refused to start.").to_string(),
-        ));
+        ))
+    } else if value["data"]["pid"].as_u64() != Some(u64::from(child.id())) {
+        Some(failed(Code::APP_REFUSED, "The app's ready line didn't identify the process that was started."))
+    } else {
+        None
+    };
+    if let Some(error) = error {
+        return Err(cleanup_error(child, error, cleanup_wait));
     }
-    Ok((child, value["data"].clone()))
+    Ok(value["data"].clone())
 }
 
 /// The process a run's to end with: `--owner`, or else the environment's. One that isn't running would end the run as it starts, so it's refused here, with the words.
@@ -190,4 +214,49 @@ pub fn start(
         child,
         json!({ "running": true, "pid": ready["pid"], "socket": ready["socket"], "state": paths.root, "quiet": true, "owner": options.owner_pid }),
     ))
+}
+
+/// A failed launch still owns its child. Request exit first, then observe/reap within the bound, preserving the readiness error.
+pub fn cleanup_error(child: &mut Child, mut primary: AgentError, limit: Duration) -> AgentError {
+    match child.try_wait() {
+        Ok(Some(_)) => return primary,
+        Err(error) => {
+            primary.message.push_str(&format!(
+                " Cleanup could not establish child {} ownership: {error}; no signal was sent.",
+                child.id()
+            ));
+            return primary;
+        }
+        Ok(None) => {}
+    }
+    if let Err(error) = child.kill() {
+        if child.try_wait().ok().flatten().is_some() {
+            return primary;
+        }
+        primary
+            .message
+            .push_str(&format!(" Cleanup could not kill owned child {}: {error}; exit was not observed.", child.id()));
+        return primary;
+    }
+    let began = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return primary,
+            Err(error) => {
+                primary
+                    .message
+                    .push_str(&format!(" Cleanup could not reap owned child {}: {error}.", child.id()));
+                return primary;
+            }
+            Ok(None) => {}
+        }
+        let Some(left) = limit.checked_sub(began.elapsed()) else {
+            primary.message.push_str(&format!(
+                " Cleanup did not observe owned child {} exit within {limit:?} after kill; it may remain alive.",
+                child.id()
+            ));
+            return primary;
+        };
+        std::thread::sleep(left.min(Duration::from_millis(10))); // ratchet: poll
+    }
 }

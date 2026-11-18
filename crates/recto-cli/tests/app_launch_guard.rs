@@ -101,6 +101,9 @@ fn quiet_run_cleanup_never_signals_a_borrowed_pid() {
 #[allow(dead_code)]
 #[path = "common/app/lifetime.rs"]
 mod lifetime;
+#[allow(dead_code)]
+#[path = "../src/qa_launch.rs"]
+mod qa_launch;
 
 #[cfg(unix)]
 fn waiting_child() -> std::process::Child {
@@ -136,3 +139,31 @@ fn owned_quiet_children_are_reaped_and_borrowed_instances_cannot_be_killed() {
     owned.kill_owned(std::time::Duration::ZERO).unwrap();
 }
 
+/// Failure: a rejected readiness line drops a still-live owned child, or replaces the real readiness failure with teardown noise.
+#[cfg(unix)]
+#[test]
+fn rejected_launches_preserve_their_error_and_reap_the_owned_child() {
+    let mut owner = lifetime::Lifetime::Owned(waiting_child());
+    let lifetime::Lifetime::Owned(child) = &mut owner else { unreachable!() };
+    let original = recto_agent::AgentError::new(recto_agent::Code::APP_REFUSED, "fixture malformed readiness", 1);
+    let returned = qa_launch::cleanup_error(child, original, std::time::Duration::from_secs(1));
+    assert_eq!(returned.code, "app_refused");
+    assert_eq!(returned.message, "fixture malformed readiness");
+    assert!(child.try_wait().unwrap().is_some(), "failed launch left its owned child alive or unreaped");
+}
+
+/// Failure: a ready line names another process and ownership is lost before the caller can refuse it. Valid readiness transfers ownership without killing.
+#[cfg(unix)]
+#[test]
+fn readiness_names_only_the_child_that_was_actually_started() {
+    let mut owner = lifetime::Lifetime::Owned(waiting_child());
+    let lifetime::Lifetime::Owned(child) = &mut owner else { unreachable!() };
+    let wait = std::time::Duration::from_secs(1);
+    let ready = qa_launch::ready_value(child, serde_json::json!({"ok": true, "data": {"pid": child.id()}}), wait).unwrap();
+    assert_eq!(ready["pid"].as_u64(), Some(u64::from(child.id())));
+    assert!(child.try_wait().unwrap().is_none(), "accepting readiness must not terminate the child");
+    let refused = qa_launch::ready_value(child, serde_json::json!({"ok": true, "data": {"pid": 1}}), wait).unwrap_err();
+    assert_eq!(refused.code, "app_refused");
+    assert!(refused.message.contains("identify"));
+    assert!(child.try_wait().unwrap().is_some(), "a lying ready line still gets owned-child cleanup");
+}

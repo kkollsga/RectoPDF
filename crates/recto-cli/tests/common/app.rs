@@ -350,9 +350,8 @@ fn launch(state: &State, args: &[&str], environment: &[(&str, &std::ffi::OsStr)]
     let words = args.iter().map(|word| (*word).to_owned()).collect::<Vec<_>>();
     let invocation = recto_agent::table::parse_cli(&words).expect("the public CLI parses launch options");
     let owner = std::process::id().to_string();
-    let (child, ready) = qa_launch::start(&invocation, state.paths.clone(), Some(&owner), environment).expect("the same CLI launcher starts the quiet app");
+    let (child, _ready) = qa_launch::start(&invocation, state.paths.clone(), Some(&owner), environment).expect("the same CLI launcher starts the quiet app");
     let pid = child.id();
-    assert_eq!(ready["pid"].as_u64(), Some(u64::from(pid)), "the ready line identifies the owned Child");
     evidence::launched(launching, pid);
     (child, pid)
 }
