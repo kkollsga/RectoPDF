@@ -143,22 +143,6 @@ fn the_built_app_carries_the_notices() {
     assert!(copy == notices(), "the app's Licenses.txt isn't THIRD-PARTY-NOTICES.txt: build the app again");
 }
 
-/// Failure: a file in the bundle carries an extended attribute, as one copied from a checkout can (macOS adds `com.apple.provenance`
-/// to files some processes write). A zip holds it as a `._` entry, the updater's reader writes that out as a file the signature
-/// doesn't cover, and every update is refused as unsigned: the notices' first copy did this to ten update tests.
-#[test]
-fn nothing_in_the_built_app_has_extended_attributes() {
-    let Some(bundle) = built_bundle() else { return };
-    let listed = std::process::Command::new("/usr/bin/xattr")
-        .arg("-r")
-        .arg(&bundle)
-        .output()
-        .expect("xattr runs");
-    assert!(listed.status.success(), "{}", String::from_utf8_lossy(&listed.stderr));
-    let text = String::from_utf8_lossy(&listed.stdout);
-    assert!(text.trim().is_empty(), "files in the bundle with extended attributes:\n{text}");
-}
-
 /// Failure: `recto`, the program an agent runs, carries the code that reaches the Keychain: the Find key's, or Security.framework linked and called by anything (the coordinator's decision, 2026-11-15: only the app's own process). Looked at as it was just built for this test.
 #[test]
 fn recto_carries_no_keychain_code() {

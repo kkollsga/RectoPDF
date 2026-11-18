@@ -102,8 +102,8 @@ cp "$RUST_OUT/recto-headings" "$APP/Contents/MacOS/recto-headings"
 cp "$RUST_OUT/recto-updater" "$APP/Contents/MacOS/recto-updater"
 # Every third-party component that ships, with its licence (tools/notices.py writes it; recto-cli's `notices` test holds it to the lockfiles).
 mkdir -p "$APP/Contents/Resources"
-# Without extended attributes (-X): a checkout's file can carry one (macOS adds `com.apple.provenance`), a zip holds it as a `._` entry,
-# and the updater's reader writes that out as a file the signature doesn't cover, so the update is refused.
+# Avoid inheriting a checkout's attributes (-X). macOS can still add protected provenance to newly created files, including the signature itself;
+# archive.sh keeps metadata outside the signed bundle, as held by the updater's archive round-trip test.
 cp -X "$REPO/THIRD-PARTY-NOTICES.txt" "$APP/Contents/Resources/Licenses.txt"
 # The icon, from its source (app/icon/build.sh): AppIcon.icns always, and Assets.car, macOS 26's dark and tinted icon, where Xcode's actool is.
 "$APP_DIR/icon/build.sh" "$BUILD/icon"

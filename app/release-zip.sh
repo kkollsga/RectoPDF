@@ -207,7 +207,7 @@ sign_team() {
 }
 notarize_it() {
     echo "==> Notarize and staple the app (waits for Apple)"
-    ditto -c -k --sequesterRsrc --keepParent "$APP" "$WORK/notarize.zip"
+    "$APP_DIR/archive.sh" "$APP" "$WORK/notarize.zip"
     notarize "$WORK/notarize.zip"
     xcrun stapler staple "$APP"
     xcrun stapler validate "$APP"
@@ -219,7 +219,7 @@ zip_it() {
     echo "==> Zip"
     rm -rf "$OUT"; mkdir -p "$OUT"
     # ditto keeps the bundle's permissions, signature and stapled ticket intact, which zip(1) can break.
-    ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUT/$ZIP"
+    "$APP_DIR/archive.sh" "$APP" "$OUT/$ZIP"
     (cd "$OUT" && shasum -a 256 "$ZIP" > SHA256SUMS)
     # latest.json: what the app's updater reads. Every value comes from this script.
     local zip_sha min_macos
