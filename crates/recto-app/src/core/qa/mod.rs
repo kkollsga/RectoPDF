@@ -5,6 +5,8 @@ mod levers;
 mod values;
 
 #[cfg(test)]
+mod answer_lock_tests;
+#[cfg(test)]
 mod files_tests;
 #[cfg(test)]
 mod settled_tests;
@@ -345,8 +347,14 @@ impl QaBridge {
             match answers.get_mut(&id).map(Option::take) {
                 Some(Some(answer)) => {
                     answers.remove(&id);
+                    // The host delivers other answers on the UI thread. Decoding this one's JSON must never hold its map lock.
+                    drop(answers);
                     return match answer {
-                        Ok(text) => Ok(serde_json::from_str(&text).unwrap_or(Value::Null)),
+                        Ok(text) => {
+                            #[cfg(test)]
+                            answer_lock_tests::before_decode();
+                            Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
+                        }
                         Err(words) => Err(AgentError::new(Code::QA_FAILED, words, exit::FAILED)),
                     };
                 }
