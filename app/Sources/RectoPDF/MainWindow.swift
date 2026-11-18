@@ -304,6 +304,7 @@ final class BookMark: NSView {
     private var pendingFullScreen = false
 
     init(delegate: AppDelegate) {
+        StartupWatch.mark(.windowBody)
         self.delegate = delegate
         let limits = delegate.limits
         let style: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
@@ -327,8 +328,11 @@ final class BookMark: NSView {
         window.colorSpace = .sRGB
         if delegate.isQuiet { window.setFrameOrigin(NSPoint(x: -40_000, y: -40_000)) }
         window.animationBehavior = .none
+        StartupWatch.mark(.nativeWindowReady)
         paneAreas = [PageArea(core: delegate.core, limits: limits, isQuiet: delegate.isQuiet)]
+        StartupWatch.mark(.pageReady)
         sidebar = SidebarPane(core: delegate.core, strings: delegate.strings, isQuiet: delegate.isQuiet)
+        StartupWatch.mark(.sidebarReady)
         reader = delegate.core.reader()
         chrome = ChromeFader(core: delegate.core)
         super.init()
@@ -419,6 +423,7 @@ final class BookMark: NSView {
         // AppKit changes the scrollers' style itself when the system's does, with a mouse plugged in or the setting changed. What's fitted to the room they leave follows.
         NotificationCenter.default.addObserver(self, selector: #selector(scrollerStyleChanged), name: NSScroller.preferredScrollerStyleDidChangeNotification, object: nil)
         layout()
+        StartupWatch.mark(.windowLayoutReady)
         appearanceChanged()
         if delegate.isQuiet { QAChannel.drawActive(window) }
     }
