@@ -576,10 +576,16 @@ fn a_seeded_export_is_found() {
         .iter_mut()
         .find(|(file, _)| file.ends_with("printing.rs"))
         .expect("the bridge's printing");
-    *printing = printing.replace(
-        "        self.inner.tools.printing().finished(&path);",
-        "        self.inner.tools.printing().finished(&path);\n        recto_app::core::person::submit(&self.inner, todo!());\n        \
-         self.inner.core.push(CoreCall::Find(todo!()));",
+    let anchor = "        recto_app::core::printing::completion::request(";
+    assert_eq!(
+        printing.matches(anchor).count(),
+        1,
+        "the seed must reach the actual completion forwarder exactly once"
+    );
+    *printing = printing.replacen(
+        anchor,
+        &format!("        recto_app::core::person::submit(&self.inner, todo!());\n        self.inner.core.push(CoreCall::Find(todo!()));\n{anchor}"),
+        1,
     );
     let said = wrong(&bridge_methods(&sources), &walked());
     assert!(
