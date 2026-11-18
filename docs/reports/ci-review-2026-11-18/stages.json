@@ -182,21 +182,59 @@
   "short_stall_follow_up": {
     "run": 44311551530,
     "commit": "96aeabf37969d9141edc2ccb292ec7fc2c9aa672",
-    "remote_verification": "incomplete: hosted macos-26 runners never acquired",
+    "remote_verification": "failed: attempt 2 acquired macos-26 runners and failed real tests",
     "passed_jobs": [
       "light",
       "sandbox (macos-15)"
     ],
-    "unacquired_jobs": [
-      "check",
-      "sandbox (macos-26)"
-    ],
-    "unacquired_job_steps": 0,
     "native_test_count": 203,
     "local_full_seconds": 277,
     "local_new_in_process_test_seconds": 0.104,
     "median_last_five_green_seconds": 1133,
     "budget_seconds": 1260,
-    "source": "Final GitHub job summaries and check-run annotations, retained under /tmp/rectopdf-short-stalls-20261118; no green timing appended."
+    "source": "Final attempt-2 GitHub job summaries and failed logs, retained under /tmp/rectopdf-short-stalls-20261118 and /tmp/rectopdf-ci-sandbox-20261118; no green timing appended.",
+    "first_attempt": {
+      "remote_verification": "incomplete: hosted macos-26 runners never acquired",
+      "unacquired_jobs": [
+        "check",
+        "sandbox (macos-26)"
+      ],
+      "unacquired_job_steps": 0
+    },
+    "failed_jobs": [
+      "check",
+      "sandbox (macos-26)"
+    ],
+    "final_attempt": 2
+  },
+  "ci_repairs_follow_up": {
+    "run": 44362843581,
+    "commit": "dcdc00a23ba84c3bee74166f3207efd8a2fefba2",
+    "remote_verification": "incomplete: check never acquired hosted macos-26 runner in either attempt",
+    "passed_jobs": [
+      "light",
+      "sandbox (macos-15)",
+      "sandbox (macos-26)"
+    ],
+    "native_test_count": 203,
+    "local_rust_test_count": 3294,
+    "local_full_ledger_seconds": 305,
+    "local_tools_seconds_separate": 99,
+    "light_job_seconds": 400,
+    "light_stages": {
+      "ratchet": 5,
+      "tools": 147,
+      "features-check": 62
+    },
+    "median_last_five_green_seconds": 1133,
+    "budget_seconds": 1260,
+    "source": "Final GitHub attempt-2 jobs/annotations, decoded light log 135008590937 and sandbox log 135018534471, push watcher exit 2 and identical-source full-pass ledger. Heavy job never ran; no replacement green time or causal speedup claim.",
+    "unacquired_jobs": [
+      "check"
+    ],
+    "unacquired_job_steps": 0,
+    "final_attempt": 2,
+    "watch_exit_code": 2,
+    "sandbox_macos26_job_seconds": 78
   }
 }
