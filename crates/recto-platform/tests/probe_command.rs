@@ -1,7 +1,9 @@
 //! Test-only command ownership/capture guards; OS helper processes, never an app launch.
 #![cfg(target_os = "macos")]
 
-#[path = "probe/command.rs"]
+// This standalone test uses the same collector source as feature-gated test clients.
+#[allow(dead_code)]
+#[path = "../src/test_command.rs"]
 mod command;
 
 use std::io::{self, Read, Write};

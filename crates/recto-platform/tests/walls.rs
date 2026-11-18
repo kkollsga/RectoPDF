@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-#[path = "probe/command.rs"]
+// This standalone test uses the same collector source as feature-gated test clients.
+#[allow(dead_code)]
+#[path = "../src/test_command.rs"]
 mod command;
 
 const PROBE: &str = env!("CARGO_BIN_EXE_recto-sandbox-probe");
