@@ -21,9 +21,6 @@ mod snapshot_tool;
 pub mod updates;
 
 pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
-pub use recto_app::PaneView;
-pub use recto_app::RecentFile;
-pub use recto_app::SelectionNotice;
 pub use recto_app::core::WindowPlacement;
 use recto_app::core::controls::UiAction;
 use recto_app::core::*;
@@ -33,7 +30,7 @@ use recto_app::privacy;
 use recto_app::queue::CoreCall;
 pub use recto_app::reader_view::ReaderView;
 pub use recto_app::records::{HighlightRect, MarkPage, ReaderOp, ScreenInfo};
-pub use recto_app::{RowKind, SidebarRow, SidebarView, lock};
+pub use recto_app::{PaneView, RecentFile, RowKind, SelectionNotice, SidebarRow, SidebarView, lock};
 use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Viewport};
 use recto_session::record::{self, SettingsWindow};
 use recto_session::{CONTENTS_ROW_HEIGHT, ContentsRowChange, ContentsView, FollowMove, TAB_ROW_HEIGHT, TabId, row_full_text, sidebar_heights_with_note};
