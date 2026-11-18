@@ -6,6 +6,13 @@
 
 #[cfg(target_os = "macos")]
 fn main() {
+    if std::env::current_exe().is_ok_and(|path| path.ends_with("Escape.app/Contents/MacOS/escape")) {
+        if let Err(error) = mac::escape() {
+            eprintln!("escape fixture: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     mac::run(std::env::args().skip(1).collect());
 }
 
@@ -18,6 +25,58 @@ mod mac {
     use std::ffi::{CString, c_char, c_int, c_void};
     use std::io::{Read, Write};
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    /// The test's unsandboxed, single-process app. No shell, child or extra compiler is involved in the launch control.
+    pub fn escape() -> std::io::Result<()> {
+        use std::path::Path;
+        let executable = std::env::current_exe()?;
+        let contents = executable.parent().and_then(Path::parent).ok_or_else(|| std::io::Error::other("no bundle"))?;
+        let config = capped_file(&contents.join("Resources/escape.txt"), 4096)?;
+        let config = std::str::from_utf8(&config).map_err(std::io::Error::other)?;
+        let mut lines = config.lines();
+        let root = Path::new(lines.next().ok_or_else(|| std::io::Error::other("no root"))?);
+        let nonce = lines.next().ok_or_else(|| std::io::Error::other("no nonce"))?;
+        if !root.is_absolute() || nonce.len() != 16 || !nonce.bytes().all(|byte| byte.is_ascii_hexdigit()) || lines.next().is_some() {
+            return Err(std::io::Error::other("invalid fixture configuration"));
+        }
+        let identity = format!("nonce\t{nonce}\npid\t{}\nexe\t{}\n", std::process::id(), executable.display());
+        receipt(root, "started.txt", identity.as_bytes())?;
+        let mut limits = Vec::new();
+        for (name, resource) in [("fsize", libc::RLIMIT_FSIZE), ("nproc", libc::RLIMIT_NPROC)] {
+            let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            // SAFETY: `limit` is live; this only reports the fixture app's own inherited limit.
+            let rc = unsafe { libc::getrlimit(resource, &raw mut limit) };
+            limits.push(format!("{name}\t{}", if rc == 0 { limit.rlim_cur.to_string() } else { "unknown".into() }));
+        }
+        let (status, bytes) = match capped_file(&root.join("canary.txt"), 256) {
+            Ok(bytes) => ("ok".to_string(), bytes),
+            Err(error) => (format!("error:{:?}", error.kind()), Vec::new()),
+        };
+        let hex = bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let result = format!("{identity}{}\nread\t{status}\nbytes\t{hex}\n", limits.join("\n"));
+        receipt(root, "marker.txt", result.as_bytes())
+    }
+
+    fn capped_file(path: &std::path::Path, cap: u64) -> std::io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?.take(cap + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > cap {
+            return Err(std::io::Error::other("fixture input exceeds its cap"));
+        }
+        Ok(bytes)
+    }
+
+    /// A complete small receipt appears at once; an interrupted write cannot be mistaken for a completed read.
+    fn receipt(root: &std::path::Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+        if bytes.len() > 4096 {
+            return Err(std::io::Error::other("receipt exceeds its cap"));
+        }
+        let partial = root.join(format!(".{name}.partial"));
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&partial)?;
+        file.write_all(bytes)?;
+        drop(file);
+        std::fs::rename(partial, root.join(name))
+    }
 
     unsafe extern "C" {
         static bootstrap_port: u32;
@@ -56,11 +115,75 @@ mod mac {
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
         fn CFURLCreateFromFileSystemRepresentation(allocator: *const c_void, buffer: *const u8, length: isize, is_directory: u8) -> *const c_void;
+        fn CFStringCreateWithCString(allocator: *const c_void, text: *const c_char, encoding: u32) -> *const c_void;
+        fn CFArrayGetCount(array: *const c_void) -> isize;
+        fn CFArrayGetValueAtIndex(array: *const c_void, index: isize) -> *const c_void;
+        fn CFURLGetFileSystemRepresentation(url: *const c_void, resolve: u8, buffer: *mut u8, length: isize) -> u8;
+        fn CFErrorGetCode(error: *const c_void) -> isize;
+        fn CFErrorGetDomain(error: *const c_void) -> *const c_void;
+        fn CFEqual(one: *const c_void, two: *const c_void) -> u8;
+        fn CFRelease(value: *const c_void);
+        static kCFErrorDomainOSStatus: *const c_void;
     }
 
     #[link(name = "CoreServices", kind = "framework")]
     unsafe extern "C" {
         fn LSOpenCFURLRef(url: *const c_void, launched: *mut *const c_void) -> c_int;
+        fn LSCopyApplicationURLsForBundleIdentifier(identifier: *const c_void, error: *mut *const c_void) -> *const c_void;
+    }
+
+    /// Test cleanup only: a bounded list for one identifier, compared to one exact private URL. Never unregisters anything.
+    fn registered_app(value: &str) {
+        struct Cf(*const c_void);
+        impl Drop for Cf {
+            fn drop(&mut self) {
+                if !self.0.is_null() {
+                    // SAFETY: each wrapper owns one Create/Copy result or returned error, exactly once.
+                    unsafe { CFRelease(self.0) };
+                }
+            }
+        }
+        let Some((identifier, path)) = value.split_once('|') else { return };
+        let Ok(identifier) = CString::new(identifier) else { return };
+        let wanted = std::path::Path::new(path).canonicalize().unwrap_or_else(|_| path.into());
+        let mut error = std::ptr::null();
+        // SAFETY: live NUL-terminated input, valid out pointer; owned results are released by `Cf`.
+        let (array, error) = unsafe {
+            let identifier = Cf(CFStringCreateWithCString(std::ptr::null(), identifier.as_ptr(), 0x0800_0100));
+            if identifier.0.is_null() {
+                return;
+            }
+            (Cf(LSCopyApplicationURLsForBundleIdentifier(identifier.0, &raw mut error)), Cf(error))
+        };
+        if array.0.is_null() {
+            // The SDK documents this exact OSStatus for no matching application. Other errors remain errors.
+            let absent = !error.0.is_null() && unsafe { CFEqual(CFErrorGetDomain(error.0), kCFErrorDomainOSStatus) != 0 && CFErrorGetCode(error.0) == -10814 };
+            let code = (!error.0.is_null()).then(|| unsafe { CFErrorGetCode(error.0) });
+            report("registration:lookup", absent, format!("not-found/query error code {code:?}"));
+            report("registration:present", false, "no array");
+            return;
+        }
+        // SAFETY: the Copy call returned a live CFArray.
+        let count = unsafe { CFArrayGetCount(array.0) };
+        if !(0..=256).contains(&count) || !error.0.is_null() {
+            report("registration:lookup", false, "array cap or query error");
+            return;
+        }
+        let mut present = false;
+        for index in 0..count {
+            let mut path = [0u8; 4096];
+            // SAFETY: index is in this array and the initialized buffer has the advertised size.
+            let ok = unsafe { CFURLGetFileSystemRepresentation(CFArrayGetValueAtIndex(array.0, index), 1, path.as_mut_ptr(), path.len() as isize) };
+            let Ok(path) = std::ffi::CStr::from_bytes_until_nul(&path) else { return };
+            if ok == 0 {
+                return;
+            }
+            use std::os::unix::ffi::OsStrExt;
+            let path = std::path::Path::new(std::ffi::OsStr::from_bytes(path.to_bytes()));
+            present |= path.canonicalize().unwrap_or_else(|_| path.to_path_buf()) == wanted;
+        }
+        report("registration:lookup", true, count);
+        report("registration:present", present, "exact private URL only");
     }
 
     fn report(name: &str, allowed: bool, detail: impl std::fmt::Display) {
@@ -442,6 +565,7 @@ mod mac {
                 "--fork" => fork_attempt(),
                 "--mach" => mach_lookups(&value()),
                 "--ls-open" => ls_open(&value()),
+                "--registered-app" => registered_app(&value()),
                 "--signal-parent" => signal_parent(),
                 other => panic!("unknown flag {other}"),
             }

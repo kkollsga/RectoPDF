@@ -2,12 +2,14 @@
 //! worker, exactly as the app's helper is (ad hoc), puts up the worker's walls with the worker's own calls, then tries what a compromised renderer would. Every attempt also runs with
 //! no sandbox, so a wall can't pass because the attempt was broken. What only a Developer ID build can prove is in `docs/research/2026-11-07-sandbox-spike.md`.
 //!
-//! Each test's files are in its own temp folder, removed with it. The first sandboxed run of the helper's ad hoc identifier makes its container,
+//! Each test's files are in its own temp folder, removed on success; a failure retains bounded receipts and a rerun line. The first sandboxed run of the helper's ad hoc identifier makes its container,
 //! `~/Library/Containers/io.github.kkollsga.RectoPDF.Render.adhoc`, the one every development build uses; these tests share it and leave nothing else in the home folder.
 #![cfg(target_os = "macos")]
 
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::net::TcpListener;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -16,6 +18,7 @@ const PROBE: &str = env!("CARGO_BIN_EXE_recto-sandbox-probe");
 const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 const ADHOC_ID: &str = "io.github.kkollsga.RectoPDF.Render.adhoc";
 const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+const RECEIPT_CAP: u64 = 4096;
 
 fn helper_script() -> PathBuf {
     Path::new(REPO).join("app/render-helper.sh")
@@ -29,18 +32,66 @@ fn pdfium() -> PathBuf {
 
 /// Never with the owner's identity, whatever this shell has set: a test signs ad hoc, and raises no keychain prompt.
 fn run(command: &mut Command) {
-    let output = command.env_remove("RECTO_SIGN_IDENTITY").output().unwrap();
+    let (timed_out, output) = command_output(command.env_remove("RECTO_SIGN_IDENTITY"), Duration::from_secs(10)).unwrap();
     assert!(
-        output.status.success(),
+        !timed_out && output.status.success(),
         "{command:?}: {}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 }
 
+/// Own the command's process group, including script children, and retain bounded output if it misses its deadline.
+fn command_output(command: &mut Command, limit: Duration) -> std::io::Result<(bool, std::process::Output)> {
+    // Files cannot wait for a descendant's inherited pipe to close after its parent exits.
+    let captured = recto_testpdf::TempDir::new("recto-walls-command-");
+    let stdout_path = captured.join("stdout");
+    let stderr_path = captured.join("stderr");
+    let mut child = command
+        .process_group(0)
+        .stdout(std::fs::File::create(&stdout_path)?)
+        .stderr(std::fs::File::create(&stderr_path)?)
+        .spawn()?;
+    let began = Instant::now();
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                recto_platform::local::signal_process_group(child.id(), true);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        }
+        if began.elapsed() >= limit {
+            timed_out = true;
+            recto_platform::local::signal_process_group(child.id(), true);
+            let _ = child.kill();
+            break child.wait()?;
+        }
+        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
+    };
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    std::fs::File::open(stdout_path)?.take(64 * 1024).read_to_end(&mut stdout)?;
+    std::fs::File::open(stderr_path)?.take(64 * 1024).read_to_end(&mut stderr)?;
+    Ok((timed_out, std::process::Output { status, stdout, stderr }))
+}
+
+fn capped_text(path: &Path) -> std::io::Result<String> {
+    let mut text = String::new();
+    std::fs::File::open(path)?.take(RECEIPT_CAP + 1).read_to_string(&mut text)?;
+    if text.len() as u64 > RECEIPT_CAP {
+        return Err(std::io::Error::other("receipt exceeds its cap"));
+    }
+    Ok(text)
+}
+
 /// A scratch folder with a canary in it, and a listener to connect to. Removed on drop, with anything a launch left in the LaunchServices database.
 struct Fixture {
-    scratch: recto_testpdf::TempDir,
+    scratch: Option<recto_testpdf::TempDir>,
     listener: TcpListener,
     nonce: String,
 }
@@ -52,14 +103,18 @@ impl Fixture {
         let nonce = format!("{:016x}", recto_platform::local::random_u64());
         std::fs::write(scratch.join("canary.txt"), format!("canary:{nonce}\n")).unwrap();
         Self {
-            scratch,
+            scratch: Some(scratch),
             listener: TcpListener::bind("127.0.0.1:0").unwrap(),
             nonce,
         }
     }
 
+    fn scratch(&self) -> &Path {
+        self.scratch.as_ref().expect("fixture still owned").path()
+    }
+
     fn contents(&self) -> PathBuf {
-        self.scratch.join("Host.app/Contents")
+        self.scratch().join("Host.app/Contents")
     }
 
     fn helper(&self) -> PathBuf {
@@ -71,7 +126,15 @@ impl Fixture {
     }
 
     fn marker(&self) -> PathBuf {
-        self.scratch.join("marker.txt")
+        self.scratch().join("marker.txt")
+    }
+
+    fn escape_executable(&self) -> PathBuf {
+        self.escape_app().join("Contents/MacOS/escape")
+    }
+
+    fn own_processes(&self) -> Vec<u32> {
+        recto_platform::local::processes_running(&self.escape_executable())
     }
 
     /// The probe as the helper's worker, laid out and signed by the app's own script, with the sandbox. Inside it, a small background app that writes a marker when launched,
@@ -83,28 +146,24 @@ impl Fixture {
         std::fs::create_dir_all(escape.join("MacOS")).unwrap();
         std::fs::write(
             escape.join("Info.plist"),
-            r#"<?xml version="1.0" encoding="UTF-8"?>
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>io.github.kkollsga.RectoPDF.WallsEscape</string>
+<key>CFBundleIdentifier</key><string>io.github.kkollsga.RectoPDF.WallsEscape.{}</string>
 <key>CFBundleExecutable</key><string>escape</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>LSBackgroundOnly</key><true/>
 </dict></plist>
 "#,
-        )
-        .unwrap();
-        let script = escape.join("MacOS/escape");
-        std::fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\n{{ echo '{}'; cat '{}'; }} > '{}' 2>&1\n",
-                self.nonce,
-                self.scratch.join("canary.txt").display(),
-                self.marker().display()
+                self.nonce
             ),
         )
         .unwrap();
+        let script = escape.join("MacOS/escape");
+        std::fs::copy(PROBE, &script).unwrap();
+        std::fs::create_dir_all(escape.join("Resources")).unwrap();
+        std::fs::write(escape.join("Resources/escape.txt"), format!("{}\n{}\n", self.scratch().display(), self.nonce)).unwrap();
         std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         run(Command::new("/usr/bin/codesign").args(["-f", "-s", "-"]).arg(self.escape_app()));
         // Signed again, as the app's build signs it, so the seal covers what was added.
@@ -120,12 +179,12 @@ impl Fixture {
         let one = |flag: &str, value: String| vec![flag.to_string(), value];
         vec![
             (
-                one("--read", format!("scratch={}", self.scratch.join("canary.txt").display())),
+                one("--read", format!("scratch={}", self.scratch().join("canary.txt").display())),
                 vec!["read:scratch"],
             ),
             (one("--list", format!("home={home}")), vec!["list:home"]),
             (
-                one("--write", format!("scratch={}", self.scratch.join("written.txt").display())),
+                one("--write", format!("scratch={}", self.scratch().join("written.txt").display())),
                 vec!["write:scratch"],
             ),
             (
@@ -154,25 +213,142 @@ impl Fixture {
         self.attempt_list().into_iter().flat_map(|(args, _)| args).collect()
     }
 
-    /// Waits long enough for a launched app to have written its marker, and says what's in it.
+    /// The same five-second limit covers both the complete atomic receipt and the exact private executable exiting.
     fn marker_after_launch(&self) -> Option<String> {
         let started = Instant::now();
         while started.elapsed() < Duration::from_secs(5) {
-            if let Ok(text) = std::fs::read_to_string(self.marker())
-                && text.lines().count() >= 2
+            if let Ok(text) = capped_text(&self.marker())
+                && self.own_processes().is_empty()
             {
                 return Some(text);
             }
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(50)); // ratchet: poll
         }
-        std::fs::read_to_string(self.marker()).ok()
+        assert!(self.own_processes().is_empty(), "the owned app didn't exit: {:?}", self.own_processes());
+        capped_text(&self.marker()).ok()
+    }
+
+    fn assert_receipt(&self, marker: &str) {
+        let fields: BTreeMap<_, _> = marker.lines().filter_map(|line| line.split_once('\t')).collect();
+        assert_eq!(
+            fields.keys().copied().collect::<Vec<_>>(),
+            ["bytes", "exe", "fsize", "nonce", "nproc", "pid", "read"],
+            "invalid receipt fields: {marker:?}"
+        );
+        assert_eq!(marker.lines().count(), 7, "extra receipt fields: {marker:?}");
+        assert_eq!(fields.get("nonce"), Some(&self.nonce.as_str()), "wrong launch receipt: {marker:?}");
+        let executable = self.escape_executable().canonicalize().unwrap();
+        assert_eq!(fields.get("exe").copied(), executable.to_str(), "another executable answered: {marker:?}");
+        let pid = fields
+            .get("pid")
+            .and_then(|pid| pid.parse::<u32>().ok())
+            .filter(|pid| *pid > 1 && *pid <= i32::MAX as u32)
+            .expect("receipt PID");
+        assert_ne!(
+            recto_platform::local::process_path(pid),
+            Some(executable),
+            "the receipt's app still runs: {marker:?}"
+        );
+        assert_eq!(fields.get("read"), Some(&"ok"), "the app didn't read its canary: {marker:?}");
+        let expected = format!("canary:{}\n", self.nonce).bytes().map(|byte| format!("{byte:02x}")).collect::<String>();
+        assert_eq!(fields.get("bytes"), Some(&expected.as_str()), "the exact canary wasn't read: {marker:?}");
+        println!("owned native launch receipt:\n{marker}");
     }
 }
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = Command::new(LSREGISTER).arg("-u").arg(self.escape_app()).output();
-        let _ = Command::new(LSREGISTER).arg("-u").arg(self.helper()).output();
+        let executable = self.escape_executable();
+        let mut cleanup = format!("exact executable: {}\nowned processes: {:?}\n", executable.display(), self.own_processes());
+        for pid in self.own_processes() {
+            // Never signal a PID which has been reused for another executable.
+            if recto_platform::local::process_path(pid).as_deref() == Some(executable.as_path()) {
+                recto_platform::local::signal_process(pid, true);
+            }
+        }
+        let began = Instant::now();
+        while !self.own_processes().is_empty() && began.elapsed() < Duration::from_secs(1) {
+            std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
+        }
+        let mut clean = self.own_processes().is_empty();
+        cleanup.push_str(&format!("remaining processes: {:?}\n", self.own_processes()));
+        for (app, identifier) in [
+            (self.escape_app(), format!("io.github.kkollsga.RectoPDF.WallsEscape.{}", self.nonce)),
+            (self.helper(), ADHOC_ID.into()),
+        ] {
+            if app.exists() {
+                match command_output(Command::new(LSREGISTER).arg("-u").arg(&app), Duration::from_secs(5)) {
+                    Ok((timed_out, output)) => {
+                        let mut absent = !timed_out && output.status.success();
+                        cleanup.push_str(&format!(
+                            "unregister {}: {:?}, timed_out {timed_out}\n{}\n",
+                            app.display(),
+                            output.status,
+                            String::from_utf8_lossy(&output.stderr)
+                        ));
+                        if !absent {
+                            match command_output(
+                                Command::new(PROBE).args(["--registered-app", &format!("{identifier}|{}", app.display())]),
+                                Duration::from_secs(5),
+                            ) {
+                                Ok((timed_out, query)) => {
+                                    let said = String::from_utf8_lossy(&query.stdout);
+                                    let fields = parse(&said);
+                                    absent = !timed_out
+                                        && query.status.success()
+                                        && fields.get("registration:lookup") == Some(&true)
+                                        && fields.get("registration:present") == Some(&false);
+                                    cleanup.push_str(&format!("exact registration query: {:?}, timed_out {timed_out}\n{said}\n", query.status));
+                                }
+                                Err(error) => cleanup.push_str(&format!("exact registration query failed: {error}\n")),
+                            }
+                        }
+                        clean &= absent;
+                    }
+                    Err(error) => {
+                        clean = false;
+                        cleanup.push_str(&format!("unregister {}: {error}\n", app.display()));
+                    }
+                }
+            }
+        }
+        if std::thread::panicking() || !clean {
+            let scratch = self.scratch.take().expect("fixture still owned");
+            let thread = std::thread::current();
+            let test = thread.name().unwrap_or("the_sandbox_alone_lets_launchservices_start_an_unsandboxed_app");
+            let profile = if std::env::var("NEXTEST_PROFILE").as_deref() == Ok("ci") {
+                "ci"
+            } else {
+                "default"
+            };
+            let rerun = format!(
+                "cd '{}' && tools/check.sh --like-ci 'binary_id(=recto-platform::walls) & test(={test})' --profile {profile}\n",
+                REPO.replace('\'', "'\\''")
+            );
+            let _ = std::fs::write(scratch.join("cleanup.txt"), &cleanup);
+            let _ = std::fs::write(scratch.join("rerun.txt"), &rerun);
+            // Keep only bounded diagnostics, not copied executables or PDFium. A rerun rebuilds its own fixture.
+            for (from, name) in [
+                (
+                    scratch.join("Host.app/Contents/Helpers/RectoRender.app/Contents/Resources/Escape.app/Contents/Info.plist"),
+                    "escape-Info.plist",
+                ),
+                (
+                    scratch.join("Host.app/Contents/Helpers/RectoRender.app/Contents/Resources/Escape.app/Contents/Resources/escape.txt"),
+                    "escape-config.txt",
+                ),
+            ] {
+                if let Ok(text) = capped_text(&from) {
+                    let _ = std::fs::write(scratch.join(name), text);
+                }
+            }
+            let _ = std::fs::remove_dir_all(scratch.join("Host.app"));
+            eprintln!("walls evidence retained at {}\n{cleanup}rerun: {rerun}", scratch.display());
+            std::mem::forget(scratch);
+        }
+        if !std::thread::panicking() {
+            assert!(clean, "owned fixture cleanup failed: {cleanup}");
+        }
     }
 }
 
@@ -194,27 +370,33 @@ fn probe_text(executable: &Path, args: &[String]) -> String {
 
 /// Runs the probe and returns how it ended, `None` if it hung and was killed at 30 s, and what it had said by then.
 fn probe_run(executable: &Path, args: &[String]) -> (Option<std::process::ExitStatus>, String) {
+    // This must remain a pipe: hardening sets RLIMIT_FSIZE=0, so a regular-file stdout changes the probe being tested.
     let mut child = Command::new(executable)
         .args(args)
+        .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let started = Instant::now();
+    let began = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break Some(status);
         }
-        if started.elapsed() > Duration::from_secs(30) {
+        if began.elapsed() >= Duration::from_secs(30) {
+            recto_platform::local::signal_process_group(child.id(), true);
             let _ = child.kill();
             let _ = child.wait();
             break None;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
     };
     let mut said = String::new();
-    std::io::Read::read_to_string(child.stdout.as_mut().unwrap(), &mut said).unwrap();
+    child.stdout.take().unwrap().take(64 * 1024 + 1).read_to_string(&mut said).unwrap();
+    if said.len() > 64 * 1024 {
+        return (None, "probe output exceeded its cap".into());
+    }
     (status, said)
 }
 
@@ -339,17 +521,15 @@ fn the_helpers_walls_hold() {
 fn the_sandbox_alone_lets_launchservices_start_an_unsandboxed_app() {
     let fixture = Fixture::new("escape");
     let executable = fixture.sandboxed_probe();
-    let results = probe(
+    let said = probe_text(
         &executable,
         &["--harden".to_string(), "--ls-open".to_string(), fixture.escape_app().display().to_string()],
     );
+    std::fs::write(fixture.scratch().join("probe.txt"), &said).unwrap();
+    let results = parse(&said);
     assert_eq!(results.get("launchservices:open"), Some(&true), "{results:?}");
     let marker = fixture.marker_after_launch().expect("the launched app left no marker");
-    assert_eq!(
-        marker,
-        format!("{}\ncanary:{}\n", fixture.nonce, fixture.nonce),
-        "the launched app didn't read its exact canary"
-    );
+    fixture.assert_receipt(&marker);
 }
 
 /// Failure: a compromised renderer leaves a file in its container for the next one to read. The container is writable to the sandbox by design, so `RLIMIT_FSIZE` is what holds this;
@@ -439,13 +619,13 @@ fn a_helper_signed_without_the_sandbox_puts_no_walls_up_and_fails_the_check() {
 /// What `render-helper.sh --key` says, with a stand-in `security` on `PATH` that lists `valid` for `find-identity -v` and `all` without it.
 fn key_with_keychain(name: &str, valid: &str, all: &str) -> (bool, String) {
     let fixture = Fixture::new(&format!("key-{}", name.len()));
-    let bin = fixture.scratch.join("bin");
+    let bin = fixture.scratch().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    std::fs::write(fixture.scratch.join("valid.txt"), valid).unwrap();
-    std::fs::write(fixture.scratch.join("all.txt"), all).unwrap();
+    std::fs::write(fixture.scratch().join("valid.txt"), valid).unwrap();
+    std::fs::write(fixture.scratch().join("all.txt"), all).unwrap();
     let script = format!(
         "#!/bin/sh\nif [ \"$2\" = -v ]; then cat '{0}/valid.txt'; else cat '{0}/all.txt'; fi\n",
-        fixture.scratch.display()
+        fixture.scratch().display()
     );
     std::fs::write(bin.join("security"), script).unwrap();
     std::fs::set_permissions(bin.join("security"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
