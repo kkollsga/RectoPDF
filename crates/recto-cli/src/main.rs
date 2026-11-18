@@ -3,6 +3,7 @@
 
 mod handover;
 mod qa;
+mod qa_launch;
 mod qa_times;
 
 use recto_agent::Code;

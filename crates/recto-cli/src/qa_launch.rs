@@ -1,0 +1,193 @@
+//! One native quiet-app launcher, shared by recto's CLI and its owning test harness.
+use recto_agent::table::Invocation;
+use recto_agent::{AgentError, Code, Level, exit};
+use recto_control::client::Client;
+use recto_control::state::STATE_ENV;
+use recto_control::{StatePaths, levels};
+use serde_json::{Value, json};
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
+
+const READY_WAIT: Duration = Duration::from_secs(30);
+pub const OWNER_ENV: &str = "RECTO_QA_OWNER_PID";
+fn failed(code: Code, message: impl Into<String>) -> AgentError {
+    AgentError::new(code, message.into(), exit::FAILED)
+}
+
+/// The app's executable: what was asked for, or beside this `recto` as in the bundle, or the one built in this checkout.
+pub fn find_app(given: Option<&Path>) -> Result<PathBuf, AgentError> {
+    if let Some(path) = given {
+        return a_rectopdf_app(path);
+    }
+    let this = std::env::current_exe().map_err(|_| failed(Code::APP_MISSING, "This program can't tell where it is."))?;
+    let here = this.parent().map(Path::to_path_buf).unwrap_or_default();
+    let beside = here.join("RectoPDF");
+    if beside.is_file() {
+        return Ok(beside);
+    }
+    for dir in here.ancestors() {
+        let built = dir.join("app/build.noindex/RectoPDF.app/Contents/MacOS/RectoPDF");
+        if built.is_file() {
+            return Ok(built);
+        }
+    }
+    Err(failed(Code::APP_MISSING, "The app isn't built.").then("Run `tools/sysguard/heavy.sh app/build.sh`, or say where it is with `--app`."))
+}
+
+/// **The app a QA command starts is RectoPDF's** (2026-11-13): the executable `RectoPDF` in a `.app` bundle's `Contents/MacOS`, where it really is,
+/// whose bundle says RectoPDF's identifier (or a test copy's, under it). Refused before anything is started otherwise.
+///
+/// What this is: it stops `recto` being a way to run any program already on the machine, with `--qa` and what follows it as its arguments. What it isn't:
+/// proof that the bundle is ours, since an identifier can be copied into any bundle; the app started is confined to the temp folders by its state folder,
+/// whatever it is, so that isn't what keeps the user's files safe.
+pub fn a_rectopdf_app(path: &Path) -> Result<PathBuf, AgentError> {
+    let not_ours = || {
+        AgentError::new(Code::NOT_RECTOPDF, "That isn't RectoPDF's app, so it wasn't started.", exit::USAGE)
+            .then("`--app` takes the RectoPDF executable inside a RectoPDF bundle: `RectoPDF.app/Contents/MacOS/RectoPDF`.")
+    };
+    let real = path.canonicalize().map_err(|_| failed(Code::APP_MISSING, "The app named isn't there."))?;
+    let bundle = real
+        .parent()
+        .filter(|folder| folder.ends_with("Contents/MacOS"))
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .filter(|bundle| bundle.extension().is_some_and(|extension| extension == "app"));
+    let ours = real.file_name().is_some_and(|name| name == "RectoPDF")
+        && bundle
+            .and_then(recto_update::stage::bundle_id)
+            .is_some_and(|id| id == recto_update::BUNDLE_ID || id.strip_prefix(recto_update::BUNDLE_ID).is_some_and(|rest| rest.starts_with('.')));
+    if ours { Ok(real) } else { Err(not_ours()) }
+}
+
+/// What a quiet run is started with, past `--qa`.
+#[derive(Default)]
+pub struct Launch {
+    pub memory_limit_mib: Option<u64>,
+    pub time_limit: Option<Duration>,
+    pub owner_pid: Option<u32>,
+    pub open: Vec<PathBuf>,
+}
+
+/// Starts the app and waits for its ready line.
+pub fn launch(app: &Path, paths: &StatePaths, options: &Launch, environment: &[(&str, &std::ffi::OsStr)]) -> Result<(Child, Value), AgentError> {
+    paths.prepare()?;
+    levels::store(paths, Level::Full).map_err(|_| failed(Code::WRITE_FAILED, "The state folder couldn't be written to."))?;
+    // The run before's messages are kept for one launch more: a test that compares runs on one state folder fails once the next has started, and what the run before said went with this launch's truncation (CI, 2026-11-12: the contents' report on a restart, silent in the logs kept).
+    let _ = std::fs::rename(&paths.server_messages, paths.server_messages.with_file_name("server-messages.previous.txt"));
+    let messages = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&paths.server_messages)
+        .map_err(|_| failed(Code::WRITE_FAILED, "The state folder couldn't be written to."))?;
+    let mut command = Command::new(app);
+    command.arg("--qa");
+    if let Some(limit) = options.memory_limit_mib {
+        command.arg("--qa-memory-limit-mib").arg(limit.to_string());
+    }
+    if let Some(limit) = options.time_limit {
+        command.arg("--qa-time-limit-ms").arg(limit.as_millis().to_string());
+    }
+    if let Some(pid) = options.owner_pid {
+        command.arg("--qa-owner-pid").arg(pid.to_string());
+    }
+    command.args(&options.open);
+    command
+        .envs(environment.iter().copied())
+        .env(STATE_ENV, &paths.root)
+        .env("MallocSpaceEfficient", "1")
+        .env("MallocMaxMagazines", "1")
+        .current_dir(&paths.root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(messages);
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let mut child = command
+        .spawn()
+        .map_err(|_| failed(Code::APP_MISSING, format!("The app at {} couldn't be started.", app.display())))?;
+    let stdout = child.stdout.take().ok_or_else(|| failed(Code::APP_REFUSED, "The app couldn't be started."))?;
+    let (send, receive) = mpsc::channel();
+    let _ = std::thread::Builder::new().name("qa-ready".into()).spawn(move || {
+        let mut line = String::new();
+        let read = BufReader::new(stdout).read_line(&mut line);
+        let _ = send.send(read.map(|_| line));
+    });
+    let said = receive.recv_timeout(READY_WAIT);
+    let line = match said {
+        Ok(Ok(line)) if !line.is_empty() => line,
+        Ok(_) => {
+            let _ = child.wait();
+            let message = std::fs::read_to_string(&paths.server_messages).unwrap_or_default();
+            return Err(failed(
+                Code::APP_REFUSED,
+                if message.trim().is_empty() {
+                    "The app ended before it was ready.".to_string()
+                } else {
+                    message.trim().to_string()
+                },
+            ));
+        }
+        Err(_) => {
+            let _ = child.kill();
+            return Err(AgentError::new(
+                Code::TIMED_OUT,
+                "The app wasn't ready in time, so it was stopped.",
+                exit::TIMED_OUT,
+            ));
+        }
+    };
+    let value: Value = serde_json::from_str(line.trim()).map_err(|_| failed(Code::APP_REFUSED, "The app said something that isn't its ready line."))?;
+    if value["ok"] != true {
+        return Err(failed(
+            Code::APP_REFUSED,
+            value["error"]["message"].as_str().unwrap_or("The app refused to start.").to_string(),
+        ));
+    }
+    Ok((child, value["data"].clone()))
+}
+
+/// The process a run's to end with: `--owner`, or else the environment's. One that isn't running would end the run as it starts, so it's refused here, with the words.
+pub fn owner(given: Option<u64>, from_env: Option<&str>) -> Result<Option<u32>, AgentError> {
+    let pid = match (given, from_env.map(str::trim).filter(|text| !text.is_empty())) {
+        (Some(pid), _) => u32::try_from(pid).ok(),
+        (None, Some(text)) => Some(
+            text.parse::<u32>()
+                .map_err(|_| AgentError::new(Code::USAGE, format!("{OWNER_ENV} is a process number."), exit::USAGE))?,
+        ),
+        (None, None) => return Ok(None),
+    };
+    match pid {
+        Some(pid) if pid > 1 && recto_platform::local::process_exists(pid) => Ok(Some(pid)),
+        _ => Err(failed(Code::OWNER_GONE, "The process the run's to end with isn't running.")
+            .then(format!("Leave out --owner and {OWNER_ENV}, or name one that's running."))),
+    }
+}
+
+/// The public CLI's parsed invocation, with the same validation and launch for an owning caller.
+pub fn start(
+    invocation: &Invocation,
+    paths: StatePaths,
+    owner_from_env: Option<&str>,
+    environment: &[(&str, &std::ffi::OsStr)],
+) -> Result<(Child, Value), AgentError> {
+    let paths = paths.for_a_quiet_run()?;
+    if Client::connect(&paths).is_ok() {
+        return Err(failed(Code::ALREADY_RUNNING, "Something is already running on this state folder.").then("`recto stop` ends it."));
+    }
+    let app = find_app(invocation.fields.get("app").and_then(Value::as_str).map(Path::new))?;
+    let options = Launch {
+        memory_limit_mib: invocation.fields.get("memory_limit_mib").and_then(Value::as_u64),
+        time_limit: invocation.fields.get("time_limit_ms").and_then(Value::as_u64).map(Duration::from_millis),
+        owner_pid: owner(invocation.fields.get("owner_pid").and_then(Value::as_u64), owner_from_env)?,
+        open: Vec::new(),
+    };
+    let (child, ready) = launch(&app, &paths, &options, environment)?;
+    Ok((
+        child,
+        json!({ "running": true, "pid": ready["pid"], "socket": ready["socket"], "state": paths.root, "quiet": true, "owner": options.owner_pid }),
+    ))
+}
