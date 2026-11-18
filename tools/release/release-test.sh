@@ -275,6 +275,7 @@ logger security 'printf "  1) ABCDEF \"Developer ID Application: Test (TEAMID1)\
 logger xcrun 'case "$1 $2" in "notarytool submit") echo "{\"status\":\"Accepted\",\"id\":\"made\"}" ;; esac' "$RB/xcrun"
 logger spctl '' "$RB/spctl"
 cp "$SOURCE/app/release-zip.sh" "$R/repo/app/release-zip.sh"
+cp "$SOURCE/app/archive.sh" "$R/repo/app/archive.sh"
 logger build.sh '' "$R/repo/app/build.sh"
 logger render-helper.sh '' "$R/repo/app/render-helper.sh"
 logger app-entitlements.sh '' "$R/repo/tools/release/app-entitlements.sh"

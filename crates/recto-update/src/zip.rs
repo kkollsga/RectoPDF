@@ -652,39 +652,131 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Failure: a zip made the way a release is, by `ditto`, isn't what this reader takes, so no real update could ever unpack. With its file modes, folders and data descriptors.
+    /// Failure: release packaging puts metadata inside the signed bundle, or development packaging retains metadata it must strip. Both modes preserve the strict signature, streamed data, folders and executable mode through the actual raw consumer; no app is launched.
     #[cfg(target_os = "macos")]
     #[test]
     fn a_zip_from_ditto_unpacks_whole() {
-        let dir = folder("ditto");
+        use crate::process::tool;
+        use recto_platform::local;
+
+        struct Evidence(Option<recto_testpdf::TempDir>);
+        impl Drop for Evidence {
+            fn drop(&mut self) {
+                if std::thread::panicking()
+                    && let Some(dir) = self.0.take()
+                {
+                    eprintln!("archive metadata evidence: {}; rerun: {}", dir.display(), dir.join("rerun.txt").display());
+                    std::mem::forget(dir);
+                }
+            }
+        }
+        let evidence = Evidence(Some(crate::stage::tests::temp_dir("archive-metadata")));
+        let dir = evidence.0.as_ref().unwrap();
+        std::fs::write(
+            dir.join("rerun.txt"),
+            "HEAVY_CLASS=quick tools/sysguard/heavy.sh cargo nextest run --locked -p recto-update -E 'test(=zip::tests::a_zip_from_ditto_unpacks_whole)'\n",
+        )
+        .unwrap();
         let app = dir.join(APP);
         std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
-        std::fs::write(app.join("Contents/Info.plist"), "plist").unwrap();
-        std::fs::write(app.join("Contents/MacOS/RectoPDF"), vec![9u8; 300_000]).unwrap();
-        std::fs::set_permissions(app.join("Contents/MacOS/RectoPDF"), std::fs::Permissions::from_mode(0o755)).unwrap();
-        let zip = dir.join("r.zip");
-        assert!(
-            std::process::Command::new("/usr/bin/ditto")
-                .args(["-c", "-k", "--sequesterRsrc", "--keepParent"])
-                .arg(&app)
-                .arg(&zip)
-                .status()
-                .unwrap()
-                .success()
-        );
-        let into = dir.join("out");
-        std::fs::create_dir_all(&into).unwrap();
-        unpack(&zip, APP, &into, Instant::now() + Duration::from_secs(30)).unwrap();
-        assert_eq!(std::fs::read(into.join("RectoPDF.app/Contents/MacOS/RectoPDF")).unwrap().len(), 300_000);
+        std::fs::write(app.join("Contents/Info.plist"), r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>example.recto.archive-test</string><key>CFBundleExecutable</key><string>RectoPDF</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1</string></dict></plist>"#).unwrap();
+        std::fs::copy("/usr/bin/true", app.join("Contents/MacOS/RectoPDF")).unwrap();
+        let resource = app.join("Contents/Resources/stream.bin");
+        std::fs::create_dir_all(resource.parent().unwrap()).unwrap();
+        let data = vec![9u8; 300_000];
+        std::fs::write(&resource, &data).unwrap();
+        // Exercise metadata on every supported macOS, independently of whether that OS adds protected provenance.
+        local::set_attribute(&resource, "com.rectopdf.archive-test", b"harmless metadata").unwrap();
         assert_eq!(
-            std::fs::metadata(into.join("RectoPDF.app/Contents/MacOS/RectoPDF"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o755
+            local::attribute(&resource, "com.rectopdf.archive-test").as_deref(),
+            Some(b"harmless metadata".as_slice())
         );
-        assert_eq!(std::fs::read_to_string(into.join("RectoPDF.app/Contents/Info.plist")).unwrap(), "plist");
-        std::fs::remove_dir_all(&dir).unwrap();
+        let plist = std::fs::read(app.join("Contents/Info.plist")).unwrap();
+        let limit = Duration::from_secs(30);
+        let signed = tool("/usr/bin/codesign", &["--force", "--sign", "-", app.to_str().unwrap()], limit, 64 * 1024).unwrap();
+        std::fs::write(
+            dir.join("sign.txt"),
+            format!(
+                "codesign --force --sign - {}\n{:?}\n{}",
+                app.display(),
+                signed.2,
+                String::from_utf8_lossy(&signed.2.stderr)
+            ),
+        )
+        .unwrap();
+        assert!(signed.0, "signing fixture: {:?}: {}", signed.2, String::from_utf8_lossy(&signed.2.stderr));
+        let verify = |label: &str, path: &Path| {
+            let (fine, _, ran) = tool(
+                "/usr/bin/codesign",
+                &["--verify", "--deep", "--strict", path.to_str().unwrap()],
+                limit,
+                64 * 1024,
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join(format!("verify-{label}.txt")),
+                format!(
+                    "codesign --verify --deep --strict {}\n{ran:?}\n{}",
+                    path.display(),
+                    String::from_utf8_lossy(&ran.stderr)
+                ),
+            )
+            .unwrap();
+            assert!(
+                fine,
+                "strict signature of {}: {ran:?}: {}",
+                path.display(),
+                String::from_utf8_lossy(&ran.stderr)
+            );
+        };
+        verify("before", &app);
+        let archive = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/archive.sh");
+        let refused = tool(
+            archive.to_str().unwrap(),
+            &["--unknown-mode", app.to_str().unwrap(), dir.join("invalid.zip").to_str().unwrap()],
+            limit,
+            64 * 1024,
+        )
+        .unwrap();
+        assert_eq!(refused.2.code, Some(2), "unknown archive mode is refused");
+        assert!(!dir.join("invalid.zip").exists());
+        for (label, strip) in [("sequestered", false), ("stripped", true)] {
+            let zip = dir.join(format!("{label}.zip"));
+            let mut args = Vec::new();
+            if strip {
+                args.push("--no-metadata");
+            }
+            args.extend([app.to_str().unwrap(), zip.to_str().unwrap()]);
+            let (fine, _, ran) = tool(archive.to_str().unwrap(), &args, limit, 64 * 1024).unwrap();
+            std::fs::write(
+                dir.join(format!("archive-{label}.txt")),
+                format!("{} {args:?}\n{ran:?}\n{}", archive.display(), String::from_utf8_lossy(&ran.stderr)),
+            )
+            .unwrap();
+            assert!(fine, "archive producer: {ran:?}: {}", String::from_utf8_lossy(&ran.stderr));
+            let entries = read_directory(&mut std::fs::File::open(&zip).unwrap(), APP).unwrap();
+            std::fs::write(dir.join(format!("entries-{label}.txt")), format!("{entries:#?}\n")).unwrap();
+            let into = dir.join(format!("out-{label}"));
+            std::fs::create_dir_all(&into).unwrap();
+            unpack(&zip, APP, &into, Instant::now() + Duration::from_secs(30)).unwrap();
+            verify(label, &into.join(APP));
+            assert_eq!(std::fs::read(into.join("RectoPDF.app/Contents/Resources/stream.bin")).unwrap(), data);
+            assert_eq!(
+                std::fs::metadata(into.join("RectoPDF.app/Contents/MacOS/RectoPDF"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o755
+            );
+            assert_eq!(std::fs::read(into.join("RectoPDF.app/Contents/Info.plist")).unwrap(), plist);
+            assert!(!into.join("__MACOSX").exists(), "archive metadata is not installed as files");
+            if strip {
+                assert!(
+                    !entries.iter().any(|entry| entry.name.split('/').next() == Some(SIDE_FOLDER)),
+                    "development archive must strip metadata: {entries:?}"
+                );
+            }
+        }
     }
 }

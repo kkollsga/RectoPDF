@@ -122,15 +122,14 @@ fn sign(app: &Path) {
 
 fn zip_of(app: &Path) -> (Vec<u8>, String) {
     let zip = app.with_extension("zip");
-    assert!(
-        Command::new("/usr/bin/ditto")
-            .args(["-c", "-k", "--keepParent"])
-            .arg(app)
-            .arg(&zip)
-            .status()
-            .unwrap()
-            .success()
-    );
+    let archive = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/archive.sh");
+    let mut child = Command::new(archive).arg(app).arg(&zip).spawn().unwrap();
+    let timed_out = matches!(local::wait_until_gone(&[child.id()], &[], Duration::from_secs(30)), local::Gone::TimeUp);
+    if timed_out {
+        let _ = child.kill();
+    }
+    let status = child.wait().unwrap();
+    assert!(!timed_out && status.success(), "archive producer: {status}, timed_out={timed_out}");
     let bytes = std::fs::read(&zip).unwrap();
     let _ = std::fs::remove_file(&zip);
     let sha = Sha256::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect();

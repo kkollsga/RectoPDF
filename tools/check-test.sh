@@ -421,7 +421,7 @@ tools/check.sh --quick > /dev/null 2>&1
 check "the quick check skips it, as it builds no app" "0" "$(grep -c -- '--test registrations' "$CALLS")"
 : > "$CALLS"
 
-# Failure (icon worker, 2026-11-11): the bundle's own checks (its notices, no extended attributes) ran only with RECTO_SKIP_APP, so a full run never held
+# Failure (icon worker, 2026-11-11): the bundle's own checks ran only with RECTO_SKIP_APP, so a full run never held
 # the app it had just built to them. They run after the build, needing that app, and a failure there fails the run.
 fresh_ledger
 rm -f "$CALLS.bundle"
@@ -432,7 +432,7 @@ bundle=$(cat "$CALLS.bundle" 2>/dev/null)
 check "the bundle's checks run once in a full run" "1" "$(printf '%s' "$bundle" | grep -c . | tr -d ' ')"
 has "needing the app just built, not skipping it" "skip= require=1 " "$bundle"
 has "with the notices' copy" "test(=the_built_app_carries_the_notices)" "$bundle"
-has "and extended attributes" "test(=nothing_in_the_built_app_has_extended_attributes)" "$bundle"
+has "and the Keychain boundary" "test(=only_the_apps_own_program_in_the_bundle_reaches_the_keychain)" "$bundle"
 commit_code bundle-fail
 out=$(STUB_FAIL="--test notices" STUB_EXIT=100 full); rc=$?
 check "a bundle without its notices fails the full run" "100" "$rc"

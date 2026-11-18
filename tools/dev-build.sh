@@ -56,8 +56,8 @@ package() {
   codesign -d -r- "$app" 2>&1 | grep -qxF "designated => identifier \"$id\"" || fail "the build's designated requirement isn't its identifier"
   "$REPO/app/render-helper.sh" --check "$app" >/dev/null
   rm -f "$out"/RectoPDF-*.zip
-  # Without resource forks or extended attributes: the updater's reader would write one out as a file the signature doesn't cover.
-  ditto -c -k --norsrc --noextattr --keepParent "$app" "$out/RectoPDF-$dev.zip"
+  # Keep development builds' existing policy: strip resource forks and extended attributes rather than retaining them in the archive.
+  "$REPO/app/archive.sh" --no-metadata "$app" "$out/RectoPDF-$dev.zip"
   rm -rf "$staging"
   echo "$out/RectoPDF-$dev.zip"
 }

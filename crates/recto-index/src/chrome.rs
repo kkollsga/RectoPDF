@@ -9,7 +9,9 @@
 //!
 //! **Cost.** At most [`MAX_EDGE_LINES`] pieces a page, at most 80 B each (a test holds it), kept with its text, and a look at [`NEIGHBOURS`] pages' of them each side. Nothing is read for it that the page's text didn't already hold, past the neighbours' own text.
 //!
-//! **Its limits.** A header or footer that changes on every page and has no page number in it isn't found. A page whose neighbours couldn't be read is judged with what's known, so only a page number set apart goes. Real content that repeats at a page's edge does go: a table's header set off from its rows on every page, and numbered headings at the top of three pages in a row whose numbers count with them, as one-page articles' would. And the other way, running heads whose numbers move by other than the pages do stay: "Articles 12-14" then "Articles 14-15", or a two-up footer's "12 | 13" then "14 | 15". `docs/PLAN.md` tracks them.
+//! **Ambiguous columns stay.** A row with at least three substantial pieces (two words and ten letters each), and no page number or framed page number, can be a table's column labels. Repetition alone never removes it, even when each piece is long enough to repeat by itself. No new page facts are kept for this: only the pieces already read are compared.
+//!
+//! **Its limits.** A header or footer that changes on every page and has no page number in it isn't found. A page whose neighbours couldn't be read is judged with what's known, so only a page number set apart goes. Real content that repeats at a page's edge can still go: a table's header with fewer than three substantial pieces set off from its rows, and numbered headings at the top of three pages in a row whose numbers count with them, as one-page articles' would. And the other way, running heads whose numbers move by other than the pages do stay: "Articles 12-14" then "Articles 14-15", or a two-up footer's "12 | 13" then "14 | 15". `docs/PLAN.md` tracks them.
 
 /// How deep the bands at the top and bottom of a page are, as a part of its height. distillPDF's, measured on reports and papers.
 pub const BAND: f32 = 0.12;
@@ -135,6 +137,7 @@ pub fn chrome_spans(index: u32, page: &[EdgeLine], neighbours: &[(i64, &[EdgeLin
                 && line.relative <= MOST_SIZE
                 && page.iter().any(|other| other.place.row == line.place.row && other.words && !other.digits_only)
                 && row_repeats(line)
+                && !ambiguous_columns(line.place.row, page)
         })
         .map(|line| line.place.row)
         .collect();
@@ -160,11 +163,26 @@ pub fn chrome_spans(index: u32, page: &[EdgeLine], neighbours: &[(i64, &[EdgeLin
             let piece_repeated = line.isolated
                 && line.relative <= MOST_SIZE
                 && (line.substantial || (line.dated && line.relative >= NUMBER_LEAST_SIZE))
-                && repeats(line, &|seen| seen.key == line.key, |line| line.numbers);
+                && repeats(line, &|seen| seen.key == line.key, |line| line.numbers)
+                && !ambiguous_columns(line.place.row, page);
             line.words && (number || piece_repeated)
         })
         .map(|line| (line.start, line.end))
         .collect()
+}
+
+/// A repeated row can be a table's column labels: three substantial text pieces with no indication of a page number. Keep that uncertain content, by the owner's rule.
+fn ambiguous_columns(row: u16, page: &[EdgeLine]) -> bool {
+    let mut columns = 0;
+    for piece in page.iter().filter(|piece| piece.place.row == row) {
+        if piece.number.is_some() || piece.framed_number != NO_FRAMED {
+            return false;
+        }
+        if piece.substantial {
+            columns += 1;
+        }
+    }
+    columns >= 3
 }
 
 /// Whether numbers `away` pages from these are the same text again: `None` if not, and whether they're the same if so. Numbers that differ have to step with the pages, each by `away`, as "Page 12" does on the next page and "Article 12" two pages on doesn't.
@@ -371,6 +389,9 @@ fn to_roman(mut value: u32) -> String {
 }
 
 #[cfg(test)]
+mod repeated_content;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -486,6 +507,30 @@ mod tests {
         assert!(chrome_spans(5, &head, &[]).is_empty(), "nothing to compare with");
         let big = [EdgeLine { relative: 1.5, ..head[0] }];
         assert!(chrome_spans(5, &big, &[(1, &head)]).is_empty(), "a heading");
+    }
+
+    /// Failure: preserving ambiguous table columns also keeps a running footer with several text pieces and a page number that identifies it as chrome.
+    #[test]
+    fn a_running_footer_with_three_text_pieces_and_a_page_number_still_goes() {
+        let row = |number: &str| {
+            ["Annual report", "Chapter overview", "Research findings", number]
+                .into_iter()
+                .enumerate()
+                .map(|(at, words)| EdgeLine {
+                    row_key: key(format!("Annual report Chapter overview Research findings {number}").chars()),
+                    row_numbers: numbers(number.chars()),
+                    start: at as u32 * 20,
+                    end: at as u32 * 20 + words.len() as u32,
+                    place: InRow {
+                        row: 0,
+                        alone: false,
+                        last: at == 3,
+                    },
+                    ..line(false, 30.0, words)
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(chrome_spans(0, &row("1"), &[(1, &row("2"))]).len(), 4);
     }
 
     /// Failure: a page number on the last line of a page's text stays in a copy, as on 24 pages of the owner's part B, because it isn't set apart; or numbers that don't count pages, axis labels on two figure pages or a cover's year, are taken for page numbers; or a footnote's mark is.

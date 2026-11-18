@@ -446,16 +446,25 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn zip_of(app: &Path, to: &Path) -> (Vec<u8>, String) {
-        assert!(
-            Command::new("/usr/bin/ditto")
-                .args(["-c", "-k", "--keepParent"])
-                .arg(app)
-                .arg(to)
-                .status()
-                .unwrap()
-                .success()
-        );
+        let archive = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/archive.sh");
+        let (fine, _, ran) = tool(
+            archive.to_str().unwrap(),
+            &[app.to_str().unwrap(), to.to_str().unwrap()],
+            QUICK_LIMIT,
+            64 * 1024,
+        )
+        .unwrap();
+        assert!(fine, "archive producer: {ran:?}: {}", String::from_utf8_lossy(&ran.stderr));
         let bytes = std::fs::read(to).unwrap();
+        // Some callers deliberately pack a foreign app or a link to test refusal. A readable release still must not acquire metadata files.
+        if let Ok(entries) = zip::read_directory(&mut std::io::Cursor::new(&bytes), APP_BUNDLE) {
+            assert!(
+                !entries
+                    .iter()
+                    .any(|entry| entry.name.starts_with(APP_BUNDLE) && entry.name.split('/').any(|part| part.starts_with("._"))),
+                "test release metadata was packed inside the signed bundle instead of __MACOSX: {entries:?}"
+            );
+        }
         let sha = sha2::Sha256::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect();
         (bytes, sha)
     }

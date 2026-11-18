@@ -3499,13 +3499,14 @@ fn the_snapshot_tool_takes_a_box_and_an_image_to_the_clipboard() {
     run.settled();
     let after = run.report();
     assert!(after["app"]["pages"]["snapshot_box"].is_null(), "the box goes on release: {after}");
-    // The SVG is promised, and made only when a paste asks for it: seen on the first look, as a look in this process makes the system resolve it.
+    // The synchronous native paste receives prepared SVG; it must not owe rendering when the system asks.
     let first = clipboard_items(&run);
     assert_eq!(
         first.iter().map(|item| item["type"].as_str().unwrap()).collect::<Vec<_>>(),
         ["public.png", "public.utf8-plain-text", "public.svg-image", "public.jpeg"]
     );
-    assert_eq!(first[2]["promised"], true, "{first:?}");
+    assert_ne!(first[2]["promised"], true, "SVG is prepared before the native offer: {first:?}");
+    assert!(first[2]["bytes"].as_u64().is_some_and(|bytes| bytes > 100), "prepared SVG bytes: {first:?}");
     assert_eq!(copied(&run), "Words to take in a box");
     let pasted = run.ok(&["qa", "paste", "public.svg-image"]);
     let made = pasted["types"]
@@ -3515,7 +3516,7 @@ fn the_snapshot_tool_takes_a_box_and_an_image_to_the_clipboard() {
         .find(|item| item["type"] == "public.svg-image")
         .unwrap()
         .clone();
-    assert!(made["bytes"].as_u64().unwrap() > 100, "made on the paste: {pasted}");
+    assert!(made["bytes"].as_u64().unwrap() > 100, "prepared before the paste: {pasted}");
     // A click on the image: its own JPEG, then a PNG for what can't take one.
     run.ok(&["qa", "mouse-down", "1:120,270"]);
     run.ok(&["qa", "mouse-up"]);

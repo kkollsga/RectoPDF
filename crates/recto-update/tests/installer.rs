@@ -983,15 +983,14 @@ fn the_reader_can_be_asked_about_a_zip() {
     std::fs::create_dir_all(&dir).unwrap();
     let app = bundle(&dir, "0.2.0");
     let zip = dir.join("r.zip");
-    assert!(
-        Command::new("/usr/bin/ditto")
-            .args(["-c", "-k", "--sequesterRsrc", "--keepParent"])
-            .arg(&app)
-            .arg(&zip)
-            .status()
-            .unwrap()
-            .success()
-    );
+    let archive = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/archive.sh");
+    let mut child = Command::new(archive).arg(&app).arg(&zip).spawn().unwrap();
+    let timed_out = matches!(local::wait_until_gone(&[child.id()], &[], Duration::from_secs(30)), local::Gone::TimeUp);
+    if timed_out {
+        let _ = child.kill();
+    }
+    let status = child.wait().unwrap();
+    assert!(!timed_out && status.success(), "archive producer: {status}, timed_out={timed_out}");
     let into = dir.join("out");
     std::fs::create_dir_all(&into).unwrap();
     assert!(Command::new(HELPER).arg("check-zip").arg(&zip).arg(&into).status().unwrap().success());

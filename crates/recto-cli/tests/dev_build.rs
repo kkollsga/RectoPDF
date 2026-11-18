@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 fn tool() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/dev-build.sh")
@@ -132,15 +133,22 @@ fn the_first_install_replaces_a_release_only_when_told_and_keeps_it() {
     let build = dir.join("built");
     installed_as(&build.join("RectoPDF.app"), Some(&format!("{}.3", release())));
     let zip = dir.join(format!("RectoPDF-{}.3.zip", release()));
-    assert!(
-        Command::new("/usr/bin/ditto")
-            .args(["-c", "-k", "--keepParent"])
-            .arg(build.join("RectoPDF.app"))
-            .arg(&zip)
-            .status()
-            .unwrap()
-            .success()
+    let archive = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/archive.sh");
+    let mut child = Command::new(archive)
+        .arg("--no-metadata")
+        .arg(build.join("RectoPDF.app"))
+        .arg(&zip)
+        .spawn()
+        .unwrap();
+    let timed_out = matches!(
+        recto_platform::local::wait_until_gone(&[child.id()], &[], Duration::from_secs(30)),
+        recto_platform::local::Gone::TimeUp
     );
+    if timed_out {
+        let _ = child.kill();
+    }
+    let status = child.wait().unwrap();
+    assert!(!timed_out && status.success(), "archive producer: {status}, timed_out={timed_out}");
     let applications = dir.join("Applications");
     std::fs::create_dir_all(&applications).unwrap();
     let target = applications.join("RectoPDF.app");

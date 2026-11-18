@@ -279,7 +279,7 @@ fn a_draws_word_not_held_says_why() {
     engine.qa().hold_tells(false);
 }
 
-/// The person's snapshot of a box on page 1 with the snapshot tool, as the bridge's mouse calls take it, then a paste of its promised SVG: each of their
+/// The person's snapshot of a box on page 1 with the snapshot tool, as the bridge's mouse calls take it, then a paste of its prepared SVG: each of their
 /// own, read with their password. The tool's turned off after.
 fn snapshot_and_paste(app: &HeadlessApp) {
     let inner = app.core();
@@ -299,14 +299,7 @@ fn snapshot_and_paste(app: &HeadlessApp) {
     let offer = tool
         .take_offer(&inner.panes.engines(&inner.engine))
         .expect("the person's snapshot of their document");
-    let svg = app
-        .act(UiAction::Pasted {
-            serial: offer.serial,
-            uti: recto_agent::extract::UTI_SVG.into(),
-        })
-        .understood
-        .then(|| tool.wait_for_paste())
-        .flatten();
+    let svg = tool.ready_bytes(offer.serial, recto_agent::extract::UTI_SVG);
     assert!(svg.is_some_and(|svg| !svg.is_empty()), "the paste's SVG of the person's document");
     inner.perform(crate::core::snapshot_tool::TOGGLE_ID.into());
     app.settle();
