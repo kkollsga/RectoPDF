@@ -92,10 +92,10 @@ impl Lifetime {
 
 impl Drop for Lifetime {
     fn drop(&mut self) {
-        if self.owned() {
-            if let Err(error) = self.kill_owned(WAIT) {
-                eprintln!("owned quiet child cleanup: {error}");
-            }
+        if self.owned()
+            && let Err(error) = self.kill_owned(WAIT)
+        {
+            eprintln!("owned quiet child cleanup: {error}");
         }
     }
 }
