@@ -5,6 +5,7 @@
 //! **At rest this costs nothing:** the watching thread is parked while the UI thread sleeps, so no timer ticks. It wakes only for a stretch of work, and looks every quarter second for as long as that lasts.
 
 mod short;
+mod waiting;
 
 pub use short::{BUDGET_US, KEPT, Label, Short, SlowStretch};
 
@@ -179,6 +180,13 @@ impl Watchdog {
                 // This thread's own look at itself, once, for a stretch already past a second: the CPU time it ends with.
                 let sample = ThreadPort::from_raw(self.0.port.load(Ordering::Relaxed)).and_then(ThreadPort::sample);
                 record(&self.0, began, now, sample, true);
+            }
+            // Cancel its timed wait while this thread is already awake, rather than leave a timer to wake it after we've slept.
+            // Only this thread installs the handle. A diagnostic holding the slot must never make the UI wait for it.
+            if let Ok(thread) = self.0.thread.try_lock()
+                && let Some(watcher) = &*thread
+            {
+                watcher.unpark();
             }
         }
     }
@@ -384,14 +392,16 @@ fn count(shared: &Shared, began: u64, stalled: u64) {
 }
 
 fn watch(shared: &Shared) {
+    let mut waiting = waiting::Waiting::default();
     loop {
-        if shared.busy_since.load(Ordering::Acquire) == 0 {
-            std::thread::park();
-            continue;
+        match waiting.next(shared.busy_since.load(Ordering::Acquire) != 0, shared.epoch.elapsed()) {
+            waiting::Action::Park => std::thread::park(),
+            waiting::Action::Wait(for_time) => std::thread::park_timeout(for_time),
+            waiting::Action::Sample => {
+                let sample = ThreadPort::from_raw(shared.port.load(Ordering::Relaxed)).and_then(ThreadPort::sample);
+                look(shared, shared.epoch.elapsed().as_millis() as u64 + 1, sample);
+            }
         }
-        std::thread::sleep(LOOK_EVERY); // ratchet: poll (the watcher's look while the UI thread works; parked at rest)
-        let sample = ThreadPort::from_raw(shared.port.load(Ordering::Relaxed)).and_then(ThreadPort::sample);
-        look(shared, shared.epoch.elapsed().as_millis() as u64 + 1, sample);
     }
 }
 
