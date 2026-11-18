@@ -12,6 +12,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const READY_WAIT: Duration = Duration::from_secs(30);
+const MAX_READY_BYTES: usize = 64 * 1024;
 pub const OWNER_ENV: &str = "RECTO_QA_OWNER_PID";
 fn failed(code: Code, message: impl Into<String>) -> AgentError {
     AgentError::new(code, message.into(), exit::FAILED)
@@ -118,14 +119,16 @@ pub fn launch(app: &Path, paths: &StatePaths, options: &Launch, environment: &[(
     };
     let (send, receive) = mpsc::channel();
     let _ = std::thread::Builder::new().name("qa-ready".into()).spawn(move || {
-        let mut line = String::new();
-        let read = BufReader::new(stdout).read_line(&mut line);
-        let _ = send.send(read.map(|_| line));
+        let _ = send.send(read_ready_line(BufReader::new(stdout), MAX_READY_BYTES));
     });
     let said = receive.recv_timeout(READY_WAIT);
     let line = match said {
         Ok(Ok(line)) if !line.is_empty() => line,
-        Ok(_) => {
+        Ok(Err(error)) => {
+            let primary = failed(Code::APP_REFUSED, format!("The app's ready line couldn't be read: {error}"));
+            return Err(cleanup_error(&mut child, primary, Duration::from_secs(1)));
+        }
+        Ok(Ok(_)) => {
             let message = std::fs::read_to_string(&paths.server_messages).unwrap_or_default();
             let error = failed(
                 Code::APP_REFUSED,
@@ -259,4 +262,18 @@ pub fn cleanup_error(child: &mut Child, mut primary: AgentError, limit: Duration
         };
         std::thread::sleep(left.min(Duration::from_millis(10))); // ratchet: poll
     }
+}
+
+/// One bounded first line, including its newline. The extra byte detects an overlong external reply without reading to its end.
+pub fn read_ready_line(reader: impl BufRead, limit: usize) -> std::io::Result<String> {
+    let mut line = String::with_capacity(limit.saturating_add(1));
+    let mut bounded = std::io::Read::take(reader, u64::try_from(limit).unwrap_or(u64::MAX - 1).saturating_add(1));
+    bounded.read_line(&mut line)?;
+    if line.len() > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("ready line exceeds {limit} bytes"),
+        ));
+    }
+    Ok(line)
 }

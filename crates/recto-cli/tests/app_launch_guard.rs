@@ -167,3 +167,16 @@ fn readiness_names_only_the_child_that_was_actually_started() {
     assert!(refused.message.contains("identify"));
     assert!(child.try_wait().unwrap().is_some(), "a lying ready line still gets owned-child cleanup");
 }
+
+/// Failure: an executable grows the launcher's ready-line buffer without bound, or the bound discards a valid line at the limit.
+#[test]
+fn an_external_ready_line_is_capped_before_json_decoding() {
+    let limit = 16;
+    let valid = format!("{}\n", "x".repeat(limit - 1));
+    assert_eq!(qa_launch::read_ready_line(std::io::Cursor::new(&valid), limit).unwrap(), valid);
+    let too_long = format!("{}\n", "x".repeat(limit));
+    let error = qa_launch::read_ready_line(std::io::Cursor::new(&too_long), limit).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(error.to_string().contains("exceeds"));
+    assert!(qa_launch::read_ready_line(std::io::Cursor::new([255u8]), limit).is_err());
+}
