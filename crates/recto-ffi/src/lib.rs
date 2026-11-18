@@ -33,21 +33,17 @@ use recto_app::privacy;
 use recto_app::queue::CoreCall;
 pub use recto_app::reader_view::ReaderView;
 pub use recto_app::records::{HighlightRect, MarkPage, ReaderOp, ScreenInfo};
-pub use recto_app::{RowKind, SidebarRow, SidebarView};
+pub use recto_app::{RowKind, SidebarRow, SidebarView, lock};
 use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Viewport};
 use recto_session::record::{self, SettingsWindow};
 use recto_session::{CONTENTS_ROW_HEIGHT, ContentsRowChange, ContentsView, FollowMove, TAB_ROW_HEIGHT, TabId, row_full_text, sidebar_heights_with_note};
 use serde_json::json;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
 use std::time::Duration;
 
 uniffi::setup_scaffolding!();
-
-pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 /// What the host hears. Called from background threads, and must return at once: the host hops to its UI thread.
 #[uniffi::export(with_foreign)]
