@@ -131,22 +131,20 @@ struct Owned {
 
 impl Owned {
     fn exited(&mut self) -> io::Result<bool> {
-        loop {
-            // SAFETY: zero initialization is valid for siginfo_t, which waitid fills on success. WNOWAIT deliberately leaves the ownership anchor unreaped.
-            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            let result = unsafe { libc::waitid(libc::P_PID, self.child.id(), &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };
-            if result == 0 {
-                return Ok(info.si_pid != 0);
-            }
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                return Ok(false);
-            }
-            if error.raw_os_error() == Some(libc::ECHILD) {
-                self.anchor = false;
-            }
-            return Err(error);
+        // SAFETY: zero initialization is valid for siginfo_t, which waitid fills on success. WNOWAIT deliberately leaves the ownership anchor unreaped.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let result = unsafe { libc::waitid(libc::P_PID, self.child.id(), &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };
+        if result == 0 {
+            return Ok(info.si_pid != 0);
         }
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted {
+            return Ok(false);
+        }
+        if error.raw_os_error() == Some(libc::ECHILD) {
+            self.anchor = false;
+        }
+        Err(error)
     }
 
     fn finish(&mut self) -> io::Result<ExitStatus> {
@@ -215,7 +213,7 @@ fn no_live_members(group: libc::pid_t) -> bool {
         let count = libc::proc_listpids(PROC_PGRP_ONLY, group as u32, pids.as_mut_ptr().cast(), capacity);
         (count, *libc::__error())
     };
-    if count < 0 || (count == 0 && errno != 0) || count >= capacity || count as usize % size_of::<libc::pid_t>() != 0 {
+    if count < 0 || (count == 0 && errno != 0) || count >= capacity || !(count as usize).is_multiple_of(size_of::<libc::pid_t>()) {
         return false;
     }
     for pid in pids.into_iter().take(count as usize / size_of::<libc::pid_t>()) {
