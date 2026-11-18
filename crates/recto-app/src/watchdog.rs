@@ -5,6 +5,7 @@
 //! **At rest this costs nothing:** the watching thread is parked while the UI thread sleeps, so no timer ticks. It wakes only for a stretch of work, and looks every quarter second for as long as that lasts.
 
 mod short;
+pub mod startup;
 mod waiting;
 
 pub use short::{BUDGET_US, KEPT, Label, Short, SlowStretch};
@@ -700,7 +701,7 @@ mod tests {
     fn the_stall_record_is_fixed_in_size() {
         assert_eq!(
             Short::bytes(),
-            792,
+            1224,
             "the kept list is {KEPT} slots of {} bytes",
             std::mem::size_of::<SlowStretch>()
         );

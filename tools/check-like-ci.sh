@@ -120,11 +120,21 @@ like_ci_rounds() {
     [ "$rc" = 0 ] || status=$rc
     junit=$(find "$check_mark.junit" -name "*-like-ci-round-$round.xml" 2>/dev/null | head -1)
     [ -z "$junit" ] || like_ci_note "$junit" "$results"
+    # An interrupt is a request to stop, not another sample of a test's failure rate.
+    case "$rc" in
+      130 | 143)
+        echo "like-ci: interrupted (exit $rc); stopped after round $round of $LIKE_TIMES."
+        break
+        ;;
+    esac
   done
   if [ "$LIKE_TIMES" -gt 1 ] || [ "$status" != 0 ]; then
     tests=$(awk -F'\t' '$3 == "fail" { print $1 "\t" $2 }' "$results" | sort -u)
     if [ -z "$tests" ] && [ "$status" != 0 ]; then
-      echo "like-ci: a round failed with no test failing in it (a build, or the runner): its output is above."
+      case "$status" in
+        130 | 143) ;; # The interruption was already said; don't mislabel it as a build/runner failure.
+        *) echo "like-ci: a round failed with no test failing in it (a build, or the runner): its output is above." ;;
+      esac
     elif [ -z "$tests" ]; then
       echo "like-ci: every test passed every round ($LIKE_TIMES)."
     else

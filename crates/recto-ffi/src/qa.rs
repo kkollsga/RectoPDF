@@ -15,3 +15,9 @@ impl AppCore {
         policy_nudge(self.qa_mode).is_some_and(|nudge| nudge.in_put_back)
     }
 }
+
+/// The host marks a startup observation; validation and retention belong to Rust.
+#[uniffi::export]
+pub fn host_startup_phase(phase: u8) {
+    recto_app::watchdog::startup::checkpoint(phase);
+}

@@ -152,20 +152,24 @@ final class Bridge: AppListener, @unchecked Sendable {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        quitOnTerminate()
         watchMainThread()
-        watchMemoryPressure()
-        installMenu()
-        NSApp.registerServicesMenuSendTypes([.string], returnTypes: [])
-        watchActivityAndInput()
-        let info = Bundle.main.infoDictionary
-        let system = ProcessInfo.processInfo.operatingSystemVersion
-        // A development build's own version is beside its release's: Rust decides which this copy runs as.
-        core.setUpdateFacts(version: info?["CFBundleShortVersionString"] as? String ?? "", devVersion: info?["RectoDevVersion"] as? String, bundlePath: Bundle.main.bundlePath, systemVersion: "\(system.majorVersion).\(system.minorVersion).\(system.patchVersion)")
-        // The window comes when the state's been read, as its frame and what's on it come from there. It doesn't wait long.
-        core.beginRestore()
-        let core = self.core
-        DispatchQueue.main.asyncAfter(deadline: .now() + limits.restorePatienceSeconds) { core.restorePatienceOver() }
+        StartupWatch.launch { [self] in
+            quitOnTerminate()
+            watchMemoryPressure()
+            installMenu()
+            StartupWatch.mark(.menuReady)
+            NSApp.registerServicesMenuSendTypes([.string], returnTypes: [])
+            StartupWatch.mark(.servicesReady)
+            watchActivityAndInput()
+            let info = Bundle.main.infoDictionary
+            let system = ProcessInfo.processInfo.operatingSystemVersion
+            // A development build's own version is beside its release's: Rust decides which this copy runs as.
+            core.setUpdateFacts(version: info?["CFBundleShortVersionString"] as? String ?? "", devVersion: info?["RectoDevVersion"] as? String, bundlePath: Bundle.main.bundlePath, systemVersion: "\(system.majorVersion).\(system.minorVersion).\(system.patchVersion)")
+            // The window comes when the state's been read, as its frame and what's on it come from there. It doesn't wait long.
+            core.beginRestore()
+            let core = self.core
+            DispatchQueue.main.asyncAfter(deadline: .now() + limits.restorePatienceSeconds) { core.restorePatienceOver() }
+        }
     }
 
     /// The state's read and in the session, or the wait for it is over.
@@ -176,9 +180,11 @@ final class Bridge: AppListener, @unchecked Sendable {
             return
         }
         launchDone = true
+        StartupWatch.mark(.restoreBegin)
         // Asked first: a state that comes in while this runs is taken in by `restoredLate` after.
         let withState = core.stateRead()
         applyAppearanceChoice()
+        StartupWatch.mark(.appearanceReady)
         if core.windowShouldOpen() {
             openWindow()
         } else {
@@ -192,6 +198,7 @@ final class Bridge: AppListener, @unchecked Sendable {
             if isQuiet { quietHidden = true } else { NSApp.hide(nil) }
         }
         if withState { core.shownWithState() }
+        StartupWatch.mark(.hostReady)
         core.ready()
     }
 
@@ -347,9 +354,10 @@ final class Bridge: AppListener, @unchecked Sendable {
     /// The red button's way back. Tabs are kept in the session, so the window comes back as it was.
     func openWindow() {
         if windowController != nil { return }
-        let controller = MainWindowController(delegate: self)
+        let controller = StartupWatch.constructWindow(delegate: self)
         windowController = controller
         core.windowOpened()
+        StartupWatch.mark(.windowOpened)
         controller.windowIsUp()
         modelChanged()
         controller.showIfReady()

@@ -1536,6 +1536,18 @@ check "it builds the app for an app binary's test" "1" "$(grep -c '^app-build$' 
 check "and runs it that many times under the limits, 4 at once for the app's tests" "3" "$(grep -c -- '-j 4 -E binary_id(=recto-cli::app) & test(=flaky_one) profile=ci$' "$CALLS.policy")"
 has "with its rate" "failed 1 of 3" "$(printf '%s' "$out" | tr -s ' ')"
 has "and its evidence, with the line that runs it again" "evidence of 1 failed test run(s)" "$out"
+# Failure (2026-11-18): an interrupted nextest round is treated as an ordinary failed test round, so Ctrl-C starts the remaining repetitions.
+# Exercise the loop directly: no cargo, process limits, build or real app is needed to see whether another round starts.
+for interrupted in 130 143; do
+  : > "$X/interrupted-$interrupted.calls"
+  out=$(
+    . "$SOURCE/tools/check-like-ci.sh"
+    nt() { echo run >> "$X/interrupted-$interrupted.calls"; return "$interrupted"; }
+    LIKE_TIMES=3 LIKE_APP=0 LIKE_JOBS=1 LIKE_TARGET='test(=interrupted)' CHECK_EVIDENCE_ROOT="$X/interrupted-$interrupted-evidence" like_ci_rounds
+  ); rc=$?
+  check "signal exit $interrupted stops repetitions immediately and preserves its code" "$interrupted 1" "$rc $(wc -l < "$X/interrupted-$interrupted.calls" | tr -d ' ')"
+  has "signal exit $interrupted is described as interruption" "interrupted" "$out"
+done
 git checkout -q -- tools/check-scope.sh
 commit_code like-ci-none
 out=$(STUB_LIST='' tools/check.sh --like-ci 'test(=nothing_here)' 2>&1); rc=$?

@@ -3,6 +3,8 @@
 //! The app has to be built, and these skip if it isn't, so `tools/check.sh --quick` stays fast and works for anyone without it. `--full` builds it and sets `RECTO_REQUIRE_APP`, so there a missing app is a failure.
 
 use super::State;
+#[cfg(unix)]
+use super::bed_folder;
 use super::evidence;
 use recto_platform::local::process_counters;
 use recto_testpdf::{Object, Page, TempPdf, build, pages, text_lines};
@@ -10,7 +12,14 @@ use serde_json::{Value, json};
 use std::io::Read;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command};
+#[path = "app/copy_cleanup.rs"]
+mod copy_cleanup;
+#[path = "app/lifetime.rs"]
+mod lifetime;
+#[path = "../../src/qa_launch.rs"]
+mod qa_launch;
+use lifetime::Lifetime;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
@@ -49,11 +58,12 @@ impl Deref for Held<'_> {
     }
 }
 
-/// A quiet run. Dropped without [`Run::quit`], [`Run::hand_off`] or [`Run::kill`], it's stopped, and killed if it's still there after that: a run is never left on the owner's Mac.
+/// A quiet run. An owned launch is stopped, then killed/reaped if needed. An attached run is only asked through its original connection; its existing owner/state lifetime remains the final bound.
 pub struct Run<'a> {
     pub state: Held<'a>,
     pub pid: u32,
     done: bool,
+    lifetime: Lifetime,
 }
 
 impl Run<'static> {
@@ -78,11 +88,12 @@ impl Run<'static> {
         let limit = format!("{}s", limit.as_secs());
         let mut args = vec!["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", &limit];
         args.extend_from_slice(extra);
-        let pid = launch(&state, &args);
+        let (child, pid) = launch(&state, &args, &[]);
         Self {
             state: Held::Own(Box::new(state)),
             pid,
             done: false,
+            lifetime: Lifetime::Owned(child),
         }
     }
 }
@@ -164,40 +175,31 @@ impl OwnCopy {
 impl Drop for OwnCopy {
     /// Every run of this copy ended and the system told once to forget it (`end_cheaply`), then the folder. No look at the registry: the `registrations` stage, which runs last, settles every copy this tree's tests made together.
     fn drop(&mut self) {
-        end_cheaply(&self.bundle, &[self.executable()]);
-        if let Some(folder) = self.bundle.parent() {
+        if end_cheaply(&self.bundle, &[self.executable()])
+            && let Some(folder) = self.bundle.parent()
+        {
             let _ = std::fs::remove_dir_all(folder);
         }
     }
 }
 
-/// Ends every run of these executables, as only the test that started them can reach them: asked to quit, then killed, each within 5 s.
-fn end_runs(executables: &[PathBuf]) {
-    let running = || {
-        executables
-            .iter()
-            .flat_map(|executable| recto_platform::local::processes_running(executable))
-            .collect::<Vec<_>>()
-    };
-    for signal in ["-TERM", "-KILL"] {
-        if running().is_empty() {
-            break;
-        }
-        for pid in running() {
-            let _ = Command::new("/bin/kill").arg(signal).arg(pid.to_string()).status();
-        }
-        let asked = Instant::now();
-        while !running().is_empty() && asked.elapsed() < Duration::from_secs(5) {
-            std::thread::sleep(Duration::from_millis(20));
+/// Cancels private fixture program leases; scanned PIDs are observations only.
+fn end_runs(root: &Path, executables: &[PathBuf]) -> bool {
+    match copy_cleanup::end(root, executables, Duration::from_secs(5)) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("fixture cleanup retained {}: {error}", root.display());
+            false
         }
     }
 }
 
 /// **How a test's copy ends: cheaply.** Every run of these executables ended, and the system told once to forget `root` and the bundles inside it (`lsregister -u`; no dump and no look, as `Run::drop` does for the build folder). A copy launched a moment ago can be registered after that (a copy killed 20 ms after its start was registered 2 s after its forgetting, 1 of 18 kills), so this proves nothing about the registry: the `registrations` stage settles every copy this tree's tests made, together, once, after them. Settling in each test cost one dump per look, two or more per test, about twenty settlings a run: CI's app tiers took 200 test-seconds more for it (run 43408225244 against 43348992703). Call it before the folder goes.
-pub fn end_cheaply(root: &Path, executables: &[PathBuf]) {
-    end_runs(executables);
+pub fn end_cheaply(root: &Path, executables: &[PathBuf]) -> bool {
+    let ended = end_runs(root, executables);
     recto_platform::registry::forget_all_under(root);
     recto_platform::registry::forget(root);
+    ended
 }
 
 /// Ends every run of these executables, then makes the system forget `root` and every bundle inside it until its dump says so twice in a row with no run left (looks, not the clock: `Settling`). Whether it did. Dear: each look is a whole dump. For a test whose point is that a copy is forgotten (`OwnCopy::end_settled`); everything else ends with `end_cheaply`.
@@ -205,7 +207,9 @@ pub fn end_and_forget(root: &Path, executables: &[PathBuf]) -> bool {
     let began = Instant::now();
     let mut settling = recto_platform::registry::Settling::default();
     loop {
-        end_runs(executables);
+        if !end_runs(root, executables) {
+            return false;
+        }
         let still_running = executables
             .iter()
             .any(|executable| !recto_platform::local::processes_running(executable).is_empty());
@@ -229,35 +233,25 @@ pub fn end_and_forget(root: &Path, executables: &[PathBuf]) -> bool {
 impl<'a> Run<'a> {
     /// A run on a state folder that outlives it, for at most 3 minutes: quit, hand off or kill it, and start another on the same folder.
     pub fn on(state: &'a State) -> Option<Self> {
-        let app = app_path()?;
-        let pid = launch(state, &["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "3m"]);
-        Some(Self {
-            state: Held::Lent(state),
-            pid,
-            done: false,
-        })
+        Self::on_with_env(state, &[])
     }
 
     /// [`Run::on`], with these in the app's environment, for a debug build's test seams such as `RECTO_TEST_SAVE_PAUSE`.
     #[allow(dead_code)] // Not every test binary uses a seam.
     pub fn on_with_env(state: &'a State, env: &[(&str, &std::ffi::OsStr)]) -> Option<Self> {
-        let app = app_path()?;
-        let mut command = state.command();
-        command.args(["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "3m", "--json"]);
-        for (name, value) in env {
-            command.env(name, value);
-        }
-        let launch = evidence::launching(state);
-        let output = command.stderr(std::process::Stdio::inherit()).output().unwrap();
-        let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(output.status.code(), Some(0), "{reply}");
-        let pid = reply["data"]["pid"].as_u64().unwrap() as u32;
-        evidence::launched(launch, pid);
-        Some(Self {
+        Some(Self::on_executable_with_env(state, &app_path()?, Duration::from_secs(3 * 60), env))
+    }
+
+    /// A specific quiet fixture executable on existing state, retaining the Child returned by the one shared launcher.
+    pub fn on_executable_with_env(state: &'a State, app: &Path, limit: Duration, env: &[(&str, &std::ffi::OsStr)]) -> Self {
+        let limit = format!("{}s", limit.as_secs());
+        let (child, pid) = launch(state, &["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", &limit], env);
+        Self {
             state: Held::Lent(state),
             pid,
             done: false,
-        })
+            lifetime: Lifetime::Owned(child),
+        }
     }
 
     /// A run some other way started on that state folder, such as the app an update put in place, by its process.
@@ -267,6 +261,7 @@ impl<'a> Run<'a> {
             state: Held::Lent(state),
             pid,
             done: false,
+            lifetime: Lifetime::attached(&state.paths, pid),
         }
     }
 
@@ -308,7 +303,7 @@ impl<'a> Run<'a> {
     /// Waits for the app and its socket to be gone.
     fn wait_gone(&mut self) {
         let began = Instant::now();
-        while still_running(self.pid) {
+        while !self.lifetime.gone(self.pid).expect("read owned child exit") {
             assert!(began.elapsed() < Duration::from_secs(15), "the app didn't end");
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -319,33 +314,51 @@ impl<'a> Run<'a> {
 
     /// What the Quit menu item does.
     pub fn quit(mut self) {
-        let _ = self.state.json(&["qa", "quit", "now"]);
+        self.lifetime
+            .request(&self.state.paths, &["qa", "quit", "now"])
+            .expect("the exact app accepts quit");
         self.wait_gone();
     }
 
     /// What an update does.
     pub fn hand_off(mut self) -> Value {
-        let (reply, code) = self.state.json(&["qa", "handoff", "now"]);
-        assert_eq!(code, 0, "{reply}");
+        let reply = self
+            .lifetime
+            .request(&self.state.paths, &["qa", "handoff", "now"])
+            .expect("the exact app accepts handoff");
         self.wait_gone();
-        reply["data"].clone()
+        reply
+    }
+
+    /// The OS termination signal, which the app handles as Quit. Only a retained owned Child can receive it.
+    pub fn terminate(&mut self) {
+        self.lifetime.terminate_owned().expect("SIGTERM requires this run's owned Child");
+        self.wait_gone();
     }
 
     /// What a crash does. A killed run can't forget its copy, so this does, as the drop of a run that had to be killed does.
     pub fn kill(mut self) {
-        let _ = Command::new("/bin/kill").arg("-9").arg(self.pid.to_string()).status();
+        if !self.lifetime.owned() {
+            self.done = true;
+            panic!("intentional crash requires an owned launch; an attached app was not changed");
+        }
+        self.lifetime
+            .kill_owned(Duration::from_secs(5))
+            .expect("the owned app exits abruptly and is reaped");
         self.wait_gone();
         forget_the_built_app();
     }
 }
 
-fn launch(state: &State, args: &[&str]) -> u32 {
-    let launch = evidence::launching(state);
-    let (reply, code) = state.json(args);
-    assert_eq!(code, 0, "{reply}");
-    let pid = reply["data"]["pid"].as_u64().unwrap() as u32;
-    evidence::launched(launch, pid);
-    pid
+fn launch(state: &State, args: &[&str], environment: &[(&str, &std::ffi::OsStr)]) -> (Child, u32) {
+    let launching = evidence::launching(state);
+    let words = args.iter().map(|word| (*word).to_owned()).collect::<Vec<_>>();
+    let invocation = recto_agent::table::parse_cli(&words).expect("the public CLI parses launch options");
+    let owner = std::process::id().to_string();
+    let (child, _ready) = qa_launch::start(&invocation, state.paths.clone(), Some(&owner), environment).expect("the same CLI launcher starts the quiet app");
+    let pid = child.id();
+    evidence::launched(launching, pid);
+    (child, pid)
 }
 
 impl Drop for Run<'_> {
@@ -357,12 +370,23 @@ impl Drop for Run<'_> {
         if std::thread::panicking() {
             evidence::while_running(&self.state, self.pid);
         }
-        let _ = self.state.json(&["stop"]);
+        if let Err(error) = self.lifetime.stop(&self.state.paths) {
+            eprintln!("quiet app {} graceful cleanup: {error}", self.pid);
+        }
         let began = Instant::now();
-        while still_running(self.pid) && began.elapsed() < Duration::from_secs(5) {
+        while !self.lifetime.gone(self.pid).unwrap_or(false) && began.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(Duration::from_millis(20));
         }
-        let _ = Command::new("/bin/kill").arg("-9").arg(self.pid.to_string()).status();
+        if self.lifetime.owned() {
+            if let Err(error) = self.lifetime.kill_owned(Duration::from_secs(5)) {
+                eprintln!("quiet app {} cleanup: {error}", self.pid);
+            }
+        } else if !self.lifetime.gone(self.pid).unwrap_or(false) {
+            eprintln!(
+                "attached quiet app {} remains alive; no PID was signalled, and its original owner/state lifetime remains in force",
+                self.pid
+            );
+        }
         // A run ended by its own quit forgets its copy itself; one that had to be killed couldn't.
         forget_the_built_app();
     }

@@ -42,6 +42,6 @@ pub use model::*;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 /// A lock that a panic elsewhere doesn't poison, as everywhere in the app.
-pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }

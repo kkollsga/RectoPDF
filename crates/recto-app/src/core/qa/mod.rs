@@ -4,6 +4,7 @@ mod as_person;
 mod delivery;
 mod levers;
 mod pending;
+mod program_lease;
 mod values;
 
 #[cfg(test)]
@@ -94,7 +95,7 @@ pub fn end_with_starter(limit: Duration, owner: Option<u32>, state: Option<std::
     if let Some(pid) = owner {
         let _ = OWNER.set(pid);
     }
-    let program = std::env::current_exe().ok();
+    let program = program_lease::program(std::env::current_exe().ok(), std::env::args_os().next());
     let _ = std::thread::Builder::new().name("recto-qa-limit".into()).stack_size(64 * 1024).spawn(move || {
         let pids: Vec<u32> = owner.into_iter().collect();
         let paths: Vec<&Path> = state.iter().chain(program.iter()).map(std::path::PathBuf::as_path).collect();
@@ -108,7 +109,7 @@ pub fn end_with_starter(limit: Duration, owner: Option<u32>, state: Option<std::
         if let Some(inner) = ending.upgrade() {
             super::updates::forget_a_quiet_copy(inner.qa.as_deref(), &inner.updates);
         }
-        std::process::exit(124);
+        recto_platform::leave::leave_now(124);
     });
 }
 
@@ -653,7 +654,7 @@ impl QaBridge {
                 "disk_bytes_written": counters.map(|counters| counters.disk_bytes_written),
                 "open_handles": recto_platform::open_handle_count(),
             },
-            "hangs": { "over_1s": over_note, "over_2s": over_fail, "worst_ms": worst, "note_ms": NOTE_MS, "fail_ms": FAIL_MS, "unbracketed_blocks": self.watchdog.unbracketed(), "over_budget": self.watchdog.slow_json(), "worst": self.watchdog.worst_stall().map_or(Value::Null, |stall| json!({ "wall_ms": stall.wall_ms, "cpu_ms": stall.cpu_ms, "window_ms": stall.window_ms, "state": stall.state, "waiting_looks": stall.waiting_looks, "running_looks": stall.running_looks, "verb": stall.verb, "ended": stall.ended })) },
+            "hangs": { "startup": self.watchdog.startup_json(), "over_1s": over_note, "over_2s": over_fail, "worst_ms": worst, "note_ms": NOTE_MS, "fail_ms": FAIL_MS, "unbracketed_blocks": self.watchdog.unbracketed(), "over_budget": self.watchdog.slow_json(), "worst": self.watchdog.worst_stall().map_or(Value::Null, |stall| json!({ "wall_ms": stall.wall_ms, "cpu_ms": stall.cpu_ms, "window_ms": stall.window_ms, "state": stall.state, "waiting_looks": stall.waiting_looks, "running_looks": stall.running_looks, "verb": stall.verb, "ended": stall.ended })) },
             "printing": self.inner().map_or(Value::Null, |inner| json!({ "busy": inner.tools.printing().busy(), "notice": inner.tools.printing().notice(), "pid": std::process::id() })),
             "snapshot": self.inner().map_or(Value::Null, |inner| json!({ "on": inner.tools.tool().is_on(), "drawing": inner.tools.tool().is_drawing(), "once": inner.tools.tool().is_once(), "busy": inner.tools.tool().busy(), "notice": inner.tools.tool().notice().map(|notice| notice.text) })),
             "slow": slow_report(),

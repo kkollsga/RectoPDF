@@ -94,6 +94,14 @@ The short-stall source push's automatic runner-acquisition retry reached real te
 - [x] Run one combined final full check: `660155a3`, exit 0, 3,294 Rust/203 native/four slow/two bundle/three registration cases; 305 ledger seconds plus the separately run 99 s tools suite. Integrate/push `dcdc00a2`, refresh the development app and remove owned worktrees, branches and local processes.
 - [ ] Complete hosted heavy-check verification of `dcdc00a2`: [44362843581](https://github.com/kkollsga/RectoPDF/actions/runs/44362843581), attempt 2, passed light and both sandbox jobs. Check never acquired a macOS 26 runner in either attempt (zero steps), so the completed watch exited 2 for capacity. Local full and lifecycle are the delivery evidence under the existing rule; no green CI time is added. The original startup finding remains open.
 
+### Startup coverage and safe native test ownership — 18 November
+
+- [x] Capture full constructor boundaries on the watchdog clock before changing code. First attribution result21:27CET, before21:30 target; two captures exclude hostile-file reading as the main original interval and expose an unwatched didFinish callback. The149ms callback did not recur in the narrower capture. Evidence: [`reports/startup-attribution-2026-11-18.md`](reports/startup-attribution-2026-11-18.md).
+- [x] Close the demonstrated native launch-watch gap and retain a bounded 16-slot Rust trace with coherent reporting. Native first-ready proof and 20 CI-style rounds passed; original hosted 2.804 s cause stays open. See the startup report for the recorded menu phase and limits.
+- [x] Repair the borrowed-PID cleanup through the CLI's shared launcher and retained Child; bounded failed readiness, exact attached connection, private fixture lease cancellation and backup outside `.app`. The long workload keeps its existing 30-minute limit through an owned launch. Cheap failed-first guards, focused native proof, corrected 20-round runs and final-source lifecycle 30/30 plus registrations 3/3 passed. No termination endpoint or permission exception.
+- [x] Final local gate: `d1b1fefc`, single `CHECK_ALL=1 tools/check.sh --full`, exit 0, 302 s: 3,320 Rust, 203 native, four slow, two bundle and three registration cases. Independent review, release measurements (including the retained initial input-tail miss), focused repetitions and final-source lifecycle are complete.
+- [ ] Merge/push main, observe CI and remove the owned worktrees/artifacts. The startup report retains the original stall and measurement limits.
+
 ## Release follow-ups carried forward
 
 These are the still-open parts of the old release summary that otherwise would be hidden among completed work. Measurements are from the cited release reports, not new measurements by this review.

@@ -79,6 +79,7 @@ struct Kept {
 
 /// What the window's thread notes, and what it keeps.
 pub struct Short {
+    pub(super) startup: super::startup::Startup,
     began_us: AtomicU64,
     began_cpu_us: AtomicU64,
     /// The label said at [`Self::note_doing`], as three words; valid for `doing_len` bytes, which is zeroed at each wake.
@@ -94,6 +95,7 @@ pub struct Short {
 impl Default for Short {
     fn default() -> Self {
         Self {
+            startup: super::startup::Startup::default(),
             began_us: AtomicU64::new(0),
             began_cpu_us: AtomicU64::new(NO_CPU),
             doing: [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
