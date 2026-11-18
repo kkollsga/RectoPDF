@@ -267,8 +267,8 @@ fn a_long_session_stays_flat() {
     eprintln!("long-session progress: phase=quit command=qa quit now");
     run.quit();
     println!(
-        "long-session transport: {} CLI processes (including start/quit), {} public-client commands, {} sysctl processes; wall {} ms",
-        counts.cli + 2,
+        "long-session workload transport: {} CLI processes, {} public-client commands, {} sysctl processes; wall {} ms",
+        counts.cli,
         counts.protocol,
         counts.sysctl,
         started.elapsed().as_millis()

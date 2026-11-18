@@ -91,6 +91,11 @@ fn quiet_run_cleanup_never_signals_a_borrowed_pid() {
             "Run::drop",
             source.split("impl Drop for Run<'_>").nth(1).expect("Run::drop").split("\n}").next().unwrap(),
         ),
+        (
+            "fixture end_runs",
+            source.split("fn end_runs(").nth(1).expect("fixture end_runs").split("\n}").next().unwrap(),
+        ),
+        ("fixture lease cleanup", include_str!("common/app/copy_cleanup.rs")),
     ] {
         for forbidden in ["/bin/kill", "signal_process(", "libc::kill("] {
             assert!(!code.contains(forbidden), "{name} signals a borrowed PID through {forbidden}");
@@ -130,6 +135,7 @@ fn owned_quiet_children_are_reaped_and_borrowed_instances_cannot_be_killed() {
         std::mem::size_of::<lifetime::Lifetime>()
     );
     let mut borrowed = lifetime::Lifetime::Borrowed(None);
+    assert!(borrowed.terminate_owned().unwrap_err().contains("requires"));
     assert!(borrowed.kill_owned(std::time::Duration::ZERO).unwrap_err().contains("requires"));
     let child = waiting_child();
     let pid = child.id();
@@ -196,3 +202,127 @@ fn failed_startup_stderr_is_a_bounded_explicit_excerpt() {
     assert!(excerpt.contains("truncated") && !excerpt.contains("SECRET_TAIL"), "{excerpt}");
     assert!(excerpt.len() <= 16 + 64, "only the bounded excerpt and fixed truncation notice are kept");
 }
+
+#[allow(dead_code)]
+#[path = "common/app/copy_cleanup.rs"]
+mod copy_cleanup;
+#[allow(dead_code)]
+#[path = "../../recto-app/src/core/qa/program_lease.rs"]
+mod program_lease;
+
+/// Failure: deleting a just-started quiet copy makes current_exe fail, leaving no program cancellation lease; relative argv0 must never watch an unrelated file.
+#[test]
+fn quiet_program_fallback_is_an_absolute_cancellation_lease_only() {
+    let current = PathBuf::from("/real/program");
+    let fallback = std::ffi::OsString::from("/deleted/program");
+    assert_eq!(program_lease::program(Some(current.clone()), Some(fallback.clone())), Some(current));
+    assert_eq!(program_lease::program(None, Some(fallback)), Some(PathBuf::from("/deleted/program")));
+    assert_eq!(program_lease::program(None, Some("relative/program".into())), None);
+    assert_eq!(program_lease::program(None, None), None);
+    let source = include_str!("../../recto-app/src/core/qa/mod.rs");
+    let guard = source
+        .split("pub fn end_with_starter")
+        .nth(1)
+        .unwrap()
+        .split("fn updates_takes_input")
+        .next()
+        .unwrap();
+    assert!(guard.contains("leave_now(124)"), "C exit handlers must not strand the quiet lifetime guard");
+}
+
+/// Failure: fixture lease cancellation renames the live inode, loses bytes/mode, or overwrites a replacement when restoring its path.
+#[cfg(unix)]
+#[test]
+fn fixture_program_lease_restores_bytes_and_never_overwrites_replacement() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let folder = recto_testpdf::TempDir::new("lease-backup-");
+    let fixture = folder.join(format!("own-{}-1", std::process::id()));
+    std::fs::create_dir(&fixture).unwrap();
+    let fixture = fixture.canonicalize().unwrap();
+    let program = fixture.join("RectoPDF");
+    std::fs::write(&program, "original bytes").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let refused = copy_cleanup::cancel(&fixture, &program, &[std::process::id()], std::time::Duration::ZERO).unwrap_err();
+    assert!(refused.contains("no PID was signalled") && refused.contains("did not exit"), "{refused}");
+    assert_eq!(
+        std::fs::read(&program).unwrap(),
+        b"original bytes",
+        "timeout restores the program before reporting failure"
+    );
+    let inode = std::fs::metadata(&program).unwrap().ino();
+    let lease = copy_cleanup::Lease::remove(&fixture, &program).unwrap();
+    assert!(!program.exists());
+    lease.restore().unwrap();
+    assert_eq!(std::fs::read(&program).unwrap(), b"original bytes");
+    assert_eq!(std::fs::metadata(&program).unwrap().permissions().mode() & 0o777, 0o700);
+    assert_ne!(std::fs::metadata(&program).unwrap().ino(), inode, "backup must have a distinct inode");
+    let lease = copy_cleanup::Lease::remove(&fixture, &program).unwrap();
+    std::fs::write(&program, "replacement").unwrap();
+    assert!(lease.restore().unwrap_err().contains("backup retained"));
+    assert_eq!(std::fs::read(&program).unwrap(), b"replacement");
+    assert!(
+        copy_cleanup::Lease::remove(&folder, &program).is_err(),
+        "an arbitrary root is never mutation authority"
+    );
+}
+
+/// Failure: explicit quit/handoff reconnects to replacement state instead of the attached exact instance.
+#[test]
+fn explicit_lifecycle_commands_use_the_retained_instance_connection() {
+    let source = include_str!("common/app.rs");
+    for name in ["pub fn quit(mut self)", "pub fn hand_off(mut self)"] {
+        let code = source.split(name).nth(1).unwrap().split("\n    }").next().unwrap();
+        assert!(code.contains(".lifetime"));
+        assert!(!code.contains("state.json"));
+    }
+}
+
+/// The guard binary doubles as a tiny native vnode observer; no app, timer thread or polling workload is started.
+#[cfg(unix)]
+#[test]
+fn fixture_lease_watcher_child() {
+    use std::io::Write;
+    let Some(program) = std::env::var_os("RECTO_TEST_PROGRAM_LEASE") else {
+        return;
+    };
+    let program = PathBuf::from(program);
+    println!("LEASE_READY");
+    std::io::stdout().flush().unwrap();
+    let gone = recto_platform::local::wait_until_gone(&[], &[&program], std::time::Duration::from_secs(5));
+    assert!(matches!(gone, recto_platform::local::Gone::Path(_)));
+}
+
+/// Failure: removing the program lease fails to wake the existing native quiet watcher, or restoring it loses executable bytes.
+#[cfg(unix)]
+#[test]
+fn a_removed_fixture_lease_ends_its_observer_then_restores() {
+    use std::io::BufRead;
+    let folder = recto_testpdf::TempDir::new("lease-observer-");
+    let fixture = folder.join(format!("own-{}-2", std::process::id()));
+    std::fs::create_dir(&fixture).unwrap();
+    let fixture = fixture.canonicalize().unwrap();
+    let program = fixture.join("RectoPDF");
+    std::fs::write(&program, "original").unwrap();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "fixture_lease_watcher_child", "--nocapture"])
+        .env("RECTO_TEST_PROGRAM_LEASE", &program)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut owner = lifetime::Lifetime::Owned(child);
+    let mut line = String::new();
+    loop {
+        assert!(output.read_line(&mut line).unwrap() > 0, "observer exited before readiness: {line}");
+        if line.contains("LEASE_READY") {
+            break;
+        }
+        line.clear();
+    }
+    let lease = copy_cleanup::Lease::remove(&fixture, &program).unwrap();
+    let lifetime::Lifetime::Owned(child) = &mut owner else { unreachable!() };
+    assert!(child.wait().unwrap().success(), "native watcher exits by its removed lease, with no signal");
+    lease.restore().unwrap();
+    assert_eq!(std::fs::read(&program).unwrap(), b"original");
+}
+

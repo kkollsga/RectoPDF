@@ -491,8 +491,9 @@ impl Drop for Bed {
             .into_iter()
             .flat_map(|app| ["RectoPDF", "recto-updater"].map(|name| app.join("Contents/MacOS").join(name)))
             .collect();
-        crate::common::app::end_cheaply(&self.folder, &programs);
-        let _ = std::fs::remove_dir_all(&self.folder);
+        if crate::common::app::end_cheaply(&self.folder, &programs) {
+            let _ = std::fs::remove_dir_all(&self.folder);
+        }
     }
 }
 
@@ -1126,7 +1127,7 @@ fn a_quit_isnt_an_early_end_and_a_kill_is() {
     let probation = || recto_update::saved::Saved::read(&files.saved).probation.unwrap();
     let mut run = bed.start();
     assert!(probation().running_since_ms.is_some(), "this run's watched");
-    assert!(Command::new("/bin/kill").args(["-TERM", &run.pid.to_string()]).status().unwrap().success());
+    run.terminate();
     let began = Instant::now();
     while local::process_counters(run.pid).is_some() {
         assert!(began.elapsed() < Duration::from_secs(20), "a SIGTERM quits");

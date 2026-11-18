@@ -11,13 +11,17 @@ pub enum Lifetime {
     Borrowed(Option<Client>),
 }
 
-fn call(client: &mut Client, line: &str) -> Result<Value, String> {
-    let reply = client.call(line, WAIT).map_err(|error| format!("{}: {}", error.code, error.message))?;
+fn call_for(client: &mut Client, line: &str, wait: Duration) -> Result<Value, String> {
+    let reply = client.call(line, wait).map_err(|error| format!("{}: {}", error.code, error.message))?;
     if reply["ok"] == true {
         Ok(reply["data"].clone())
     } else {
         Err(reply.to_string())
     }
+}
+
+fn call(client: &mut Client, line: &str) -> Result<Value, String> {
+    call_for(client, line, WAIT)
 }
 
 fn matching(paths: &StatePaths, pid: u32) -> Result<Client, String> {
@@ -40,19 +44,37 @@ impl Lifetime {
         }
     }
 
-    /// Status and stop share one connection. An owned unreaped Child anchors its PID while identity is checked.
-    pub fn stop(&mut self, paths: &StatePaths) -> Result<(), String> {
+    /// Lifecycle commands use the retained attached connection, or a connection checked against the owned unreaped Child.
+    pub fn request(&mut self, paths: &StatePaths, args: &[&str]) -> Result<Value, String> {
+        let words: Vec<String> = args.iter().map(|word| (*word).to_owned()).collect();
+        let invocation = recto_agent::table::parse_cli(&words).map_err(|error| format!("{error:?}"))?;
+        invocation.command().map_err(|error| format!("{error:?}"))?;
+        let wait = Duration::from_secs(invocation.spec.client_wait_s);
+        self.request_line(paths, &invocation.wire(), wait)
+    }
+
+    fn request_line(&mut self, paths: &StatePaths, line: &str, wait: Duration) -> Result<Value, String> {
         match self {
             Self::Owned(child) => {
                 if child.try_wait().map_err(|error| error.to_string())?.is_some() {
-                    return Ok(());
+                    return Err("the owned app has already exited".into());
                 }
                 let mut client = matching(paths, child.id())?;
-                call(&mut client, r#"{"cmd":"stop"}"#).map(|_| ())
+                call_for(&mut client, line, wait)
             }
-            Self::Borrowed(Some(client)) => call(client, r#"{"cmd":"stop"}"#).map(|_| ()),
+            Self::Borrowed(Some(client)) => call_for(client, line, wait),
             Self::Borrowed(None) => Err("the original attached connection is unavailable; no reconnect or PID signal was attempted".into()),
         }
+    }
+
+    /// Status and stop share one connection. An owned unreaped Child anchors its PID while identity is checked.
+    pub fn stop(&mut self, paths: &StatePaths) -> Result<(), String> {
+        if let Self::Owned(child) = self
+            && child.try_wait().map_err(|error| error.to_string())?.is_some()
+        {
+            return Ok(());
+        }
+        self.request_line(paths, r#"{"cmd":"stop"}"#, WAIT).map(|_| ())
     }
 
     pub fn owned(&self) -> bool {
@@ -64,6 +86,20 @@ impl Lifetime {
             Self::Owned(child) => child.try_wait().map(|status| status.is_some()).map_err(|error| error.to_string()),
             Self::Borrowed(_) => Ok(recto_platform::local::process_counters(pid).is_none()),
         }
+    }
+
+    /// SIGTERM's quit semantics, with the PID anchored by our unreaped Child, never an attached numeric PID.
+    pub fn terminate_owned(&mut self) -> Result<(), String> {
+        let Self::Owned(child) = self else {
+            return Err("SIGTERM requires the Child owned by this launch; attached runs cannot be signalled".into());
+        };
+        if child.try_wait().map_err(|error| error.to_string())?.is_some() {
+            return Ok(());
+        }
+        if !recto_platform::local::signal_process(child.id(), false) {
+            return Err(format!("couldn't terminate owned child {}", child.id()));
+        }
+        Ok(())
     }
 
     /// Only the unreaped Child can be killed. An attached instance is never signalled.

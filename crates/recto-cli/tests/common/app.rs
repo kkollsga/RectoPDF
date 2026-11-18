@@ -11,6 +11,8 @@ use std::io::Read;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+#[path = "app/copy_cleanup.rs"]
+mod copy_cleanup;
 #[path = "app/lifetime.rs"]
 mod lifetime;
 #[path = "../../src/qa_launch.rs"]
@@ -171,40 +173,31 @@ impl OwnCopy {
 impl Drop for OwnCopy {
     /// Every run of this copy ended and the system told once to forget it (`end_cheaply`), then the folder. No look at the registry: the `registrations` stage, which runs last, settles every copy this tree's tests made together.
     fn drop(&mut self) {
-        end_cheaply(&self.bundle, &[self.executable()]);
-        if let Some(folder) = self.bundle.parent() {
+        if end_cheaply(&self.bundle, &[self.executable()])
+            && let Some(folder) = self.bundle.parent()
+        {
             let _ = std::fs::remove_dir_all(folder);
         }
     }
 }
 
-/// Ends every run of these executables, as only the test that started them can reach them: asked to quit, then killed, each within 5 s.
-fn end_runs(executables: &[PathBuf]) {
-    let running = || {
-        executables
-            .iter()
-            .flat_map(|executable| recto_platform::local::processes_running(executable))
-            .collect::<Vec<_>>()
-    };
-    for signal in ["-TERM", "-KILL"] {
-        if running().is_empty() {
-            break;
-        }
-        for pid in running() {
-            let _ = Command::new("/bin/kill").arg(signal).arg(pid.to_string()).status();
-        }
-        let asked = Instant::now();
-        while !running().is_empty() && asked.elapsed() < Duration::from_secs(5) {
-            std::thread::sleep(Duration::from_millis(20));
+/// Cancels private fixture program leases; scanned PIDs are observations only.
+fn end_runs(root: &Path, executables: &[PathBuf]) -> bool {
+    match copy_cleanup::end(root, executables, Duration::from_secs(5)) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("fixture cleanup retained {}: {error}", root.display());
+            false
         }
     }
 }
 
 /// **How a test's copy ends: cheaply.** Every run of these executables ended, and the system told once to forget `root` and the bundles inside it (`lsregister -u`; no dump and no look, as `Run::drop` does for the build folder). A copy launched a moment ago can be registered after that (a copy killed 20 ms after its start was registered 2 s after its forgetting, 1 of 18 kills), so this proves nothing about the registry: the `registrations` stage settles every copy this tree's tests made, together, once, after them. Settling in each test cost one dump per look, two or more per test, about twenty settlings a run: CI's app tiers took 200 test-seconds more for it (run 43408225244 against 43348992703). Call it before the folder goes.
-pub fn end_cheaply(root: &Path, executables: &[PathBuf]) {
-    end_runs(executables);
+pub fn end_cheaply(root: &Path, executables: &[PathBuf]) -> bool {
+    let ended = end_runs(root, executables);
     recto_platform::registry::forget_all_under(root);
     recto_platform::registry::forget(root);
+    ended
 }
 
 /// Ends every run of these executables, then makes the system forget `root` and every bundle inside it until its dump says so twice in a row with no run left (looks, not the clock: `Settling`). Whether it did. Dear: each look is a whole dump. For a test whose point is that a copy is forgotten (`OwnCopy::end_settled`); everything else ends with `end_cheaply`.
@@ -212,7 +205,9 @@ pub fn end_and_forget(root: &Path, executables: &[PathBuf]) -> bool {
     let began = Instant::now();
     let mut settling = recto_platform::registry::Settling::default();
     loop {
-        end_runs(executables);
+        if !end_runs(root, executables) {
+            return false;
+        }
         let still_running = executables
             .iter()
             .any(|executable| !recto_platform::local::processes_running(executable).is_empty());
@@ -319,16 +314,25 @@ impl<'a> Run<'a> {
 
     /// What the Quit menu item does.
     pub fn quit(mut self) {
-        let _ = self.state.json(&["qa", "quit", "now"]);
+        self.lifetime
+            .request(&self.state.paths, &["qa", "quit", "now"])
+            .expect("the exact app accepts quit");
         self.wait_gone();
     }
 
     /// What an update does.
     pub fn hand_off(mut self) -> Value {
-        let (reply, code) = self.state.json(&["qa", "handoff", "now"]);
-        assert_eq!(code, 0, "{reply}");
+        let reply = self
+            .lifetime
+            .request(&self.state.paths, &["qa", "handoff", "now"])
+            .expect("the exact app accepts handoff");
         self.wait_gone();
-        reply["data"].clone()
+        reply
+    }
+
+    /// The OS termination signal, which the app handles as Quit. Only a retained owned Child can receive it.
+    pub fn terminate(&mut self) {
+        self.lifetime.terminate_owned().expect("SIGTERM requires this run's owned Child");
     }
 
     /// What a crash does. A killed run can't forget its copy, so this does, as the drop of a run that had to be killed does.
