@@ -4,6 +4,8 @@ RectoPDF has a strong foundation for a fast Mac reader. The biggest gap is betwe
 
 This review covers `cdf7c1cc` (the release record), whose shipped implementation is `ae0bf8a2`, using the spec, owner decisions, current source, release reports, test-duration ledger and three independent read-only reviews: product, safety/reliability, and architecture. It is a source/evidence review, not a new benchmark, penetration test or execution of every feature. No personal documents were opened. Existing tests were read; no new runtime measurements are claimed.
 
+**Follow-through, 2026-11-18:** the first agreed increments are on main: CI stage attribution, prepared snapshot SVG, pure locator types/codec/geometry, the safe-removal retention/crash design, and a conservative repeated-table-label Copy fix. The integrated full check passed. The baseline findings below remain historical evidence; current completion and remaining resolver/retrieval, removal implementation and native performance work are in [`PLAN.md`](../PLAN.md). This does not mark full locator retrieval or destructive removal finished.
+
 ## What is already strong
 
 - **The memory model is a genuine product advantage.** Cold tabs do not retain a renderer, descriptors, threads or tiles. The final release-candidate report puts 1,000 map tabs at 1.3–1.4 MiB over two tabs. Only the active and two recent documents stay warm. These are measurements from the 2026-11-16 release review, not this review.

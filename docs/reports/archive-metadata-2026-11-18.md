@@ -31,4 +31,4 @@ The existing tiny unit guard now proves both modes. A temporary committed wrong 
 
 ## Final integrated result
 
-`d3ccd339` passed `CHECK_ALL=1 tools/check.sh --full --why ...`, exit0: 3,263 Rust tests, native window203/203, four slow lifecycle checks, bundle2/2 and registrations3/3. The reason records the completed producer audit and seven repaired native scenarios. No test timeout was raised and no source changed after this gate. Main merge `db24c956` contains the identical checked tree. CI on the source push is tracked separately from this local result.
+`d3ccd339` passed `CHECK_ALL=1 tools/check.sh --full --why ...`, exit0: 3,263 Rust tests, native window203/203, four slow lifecycle checks, bundle2/2 and registrations3/3. The reason records the completed producer audit and seven repaired native scenarios. No test timeout was raised and no source changed after this gate. Main merge `db24c956` contains the identical checked tree. Source CI run44211481076 subsequently passed all four jobs; its longest job was18:01. The local result and CI timing remain separate observations.

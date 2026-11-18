@@ -130,5 +130,28 @@
       "restore": 130,
       "save": 0
     }
-  ]
+  ],
+  "delivery_follow_up": {
+    "run": 44211481076,
+    "commit": "ecd351bd9c530c6e22c2fa2899f4d856521e238d",
+    "all_jobs": "success",
+    "longest_job": "check",
+    "longest_job_seconds": 1081,
+    "median_last_five_seconds": 1176,
+    "budget_seconds": 1260,
+    "stages": {
+      "clippy and the Windows compile check": 45,
+      "recto-session's doc links": 3,
+      "workers": 13,
+      "headings-tests": 24,
+      "changed-tests": 310,
+      "other-tests": 49,
+      "app-build": 137,
+      "app-bundle": 29,
+      "app-tests": 295,
+      "registrations": 8
+    },
+    "source": "push-main.sh kept times and decoded logs of workflow job 134490671643",
+    "interpretation": "One successful delivery run; no source-only causal speedup claim."
+  }
 }
