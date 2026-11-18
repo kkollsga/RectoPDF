@@ -142,6 +142,7 @@ const EXPORTS: &[(&str, Is, &[&str])] = &[
     ("no_window_to_show", Input, &[]),
     ("main_busy", Input, &[]),
     ("main_idle", Input, &[]),
+    ("fn host_startup_phase", Input, &[]),
     ("begin_restore", Input, &[]),
     ("restore_patience_over", Input, &[]),
     ("window_shown", Input, &[]),
