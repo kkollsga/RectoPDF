@@ -25,7 +25,9 @@ pub fn end(root: &Path, programs: &[PathBuf], wait: Duration) -> Result<(), Stri
 
 #[cfg(unix)]
 fn owned_program(root: &Path, program: &Path) -> Result<(), String> {
-    let root = root.canonicalize().map_err(|error| error.to_string())?;
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("canonicalize fixture root {}: {error}", root.display()))?;
     let fixture = root
         .ancestors()
         .find(|path| {
@@ -41,11 +43,17 @@ fn owned_program(root: &Path, program: &Path) -> Result<(), String> {
             })
         })
         .ok_or("not a fixture owned by this test process")?;
-    if !program.is_absolute() || !program.starts_with(&root) || program.canonicalize().map_err(|error| error.to_string())? != program {
+    if !program.is_absolute()
+        || !program.starts_with(&root)
+        || program
+            .canonicalize()
+            .map_err(|error| format!("canonicalize fixture program {}: {error}", program.display()))?
+            != program
+    {
         return Err("fixture program must be a canonical path inside its owned root".into());
     }
     for path in program.ancestors().take_while(|path| path.starts_with(fixture)) {
-        let meta = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+        let meta = std::fs::symlink_metadata(path).map_err(|error| format!("inspect fixture path {}: {error}", path.display()))?;
         if meta.file_type().is_symlink() || meta.uid() != recto_platform::local::current_uid() || meta.mode() & 0o022 != 0 {
             return Err(format!("fixture path is not private to its owner: {}", path.display()));
         }
@@ -68,12 +76,13 @@ pub struct Lease {
 #[cfg(unix)]
 impl Lease {
     pub fn remove(root: &Path, program: &Path) -> Result<Self, String> {
-        use std::io;
         use std::sync::atomic::{AtomicU32, Ordering};
         static NEXT: AtomicU32 = AtomicU32::new(0);
         owned_program(root, program)?;
-        let mut source = std::fs::File::open(program).map_err(|error| error.to_string())?;
-        let before = source.metadata().map_err(|error| error.to_string())?;
+        let mut source = std::fs::File::open(program).map_err(|error| format!("open fixture program {}: {error}", program.display()))?;
+        let before = source
+            .metadata()
+            .map_err(|error| format!("inspect open fixture program {}: {error}", program.display()))?;
         if !before.is_file() || before.mode() & 0o6000 != 0 {
             return Err("fixture program must be a regular executable without elevated mode bits".into());
         }
@@ -83,18 +92,30 @@ impl Lease {
             .create_new(true)
             .mode(0o600)
             .open(&backup)
-            .map_err(|error| error.to_string())?;
-        let prepared = (|| -> io::Result<()> {
-            io::copy(&mut source, &mut saved)?;
-            saved.set_permissions(std::fs::Permissions::from_mode(before.mode() & 0o777))?;
-            if !same(&before, &source.metadata()?) || !same(&before, &std::fs::symlink_metadata(program)?) {
-                return Err(io::Error::other("fixture program changed while its backup was made"));
+            .map_err(|error| format!("create fixture backup {}: {error}", backup.display()))?;
+        let prepared = (|| -> Result<(), String> {
+            std::io::copy(&mut source, &mut saved)
+                .map_err(|error| format!("copy fixture program {} to backup {}: {error}", program.display(), backup.display()))?;
+            saved
+                .set_permissions(std::fs::Permissions::from_mode(before.mode() & 0o777))
+                .map_err(|error| format!("set fixture backup permissions {}: {error}", backup.display()))?;
+            let source_after = source
+                .metadata()
+                .map_err(|error| format!("recheck open fixture program {}: {error}", program.display()))?;
+            let path_after = std::fs::symlink_metadata(program).map_err(|error| format!("recheck fixture program pathname {}: {error}", program.display()))?;
+            if !same(&before, &source_after) || !same(&before, &path_after) {
+                return Err(format!("fixture program {} changed while its backup was made", program.display()));
             }
-            std::fs::remove_file(program)
+            std::fs::remove_file(program).map_err(|error| format!("unlink fixture program {}: {error}", program.display()))
         })();
         if let Err(error) = prepared {
-            let _ = std::fs::remove_file(&backup);
-            return Err(error.to_string());
+            return match std::fs::remove_file(&backup) {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(format!(
+                    "{error}; remove unused fixture backup {} failed (retained): {cleanup}",
+                    backup.display()
+                )),
+            };
         }
         Ok(Self {
             program: program.to_owned(),
@@ -106,12 +127,12 @@ impl Lease {
     pub fn restore(&self) -> Result<(), String> {
         std::fs::hard_link(&self.backup, &self.program).map_err(|error| {
             format!(
-                "couldn't restore {}; backup retained at {}: {error}",
+                "restore fixture program {} with nonoverwriting hard link; backup retained at {}: {error}",
                 self.program.display(),
                 self.backup.display()
             )
         })?;
-        std::fs::remove_file(&self.backup).map_err(|error| format!("program restored but backup retained at {}: {error}", self.backup.display()))
+        std::fs::remove_file(&self.backup).map_err(|error| format!("remove restored fixture backup {} failed (retained): {error}", self.backup.display()))
     }
 }
 

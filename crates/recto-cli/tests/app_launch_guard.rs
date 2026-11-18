@@ -417,3 +417,25 @@ fn missing_program_observation_cannot_widen_shipping_signal_selection() {
         .collect();
     assert_eq!(calls, [root.join("crates/recto-cli/tests/common/app/copy_cleanup.rs")]);
 }
+
+/// Failure: fixture cleanup reports only an OS error, leaving native failures impossible to assign to source-open, backup, copy or unlink.
+#[cfg(unix)]
+#[test]
+fn fixture_cleanup_errors_name_the_failing_operation() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = recto_testpdf::TempDir::new("lease-error-context-");
+    let fixture = folder.join(format!("own-{}-3", std::process::id()));
+    std::fs::create_dir(&fixture).unwrap();
+    let fixture = fixture.canonicalize().unwrap();
+    let program = fixture.join("RectoPDF");
+    std::fs::write(&program, "unreadable fixture").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o0)).unwrap();
+    let error = copy_cleanup::Lease::remove(&fixture, &program)
+        .err()
+        .expect("made source-open permission failure");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+        error.starts_with("open fixture program ") && error.contains(&program.display().to_string()),
+        "{error}"
+    );
+}
