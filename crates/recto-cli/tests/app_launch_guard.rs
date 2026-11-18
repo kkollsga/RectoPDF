@@ -439,3 +439,28 @@ fn fixture_cleanup_errors_name_the_failing_operation() {
         "{error}"
     );
 }
+
+/// Failure: cleanup creates a backup resource inside an active app bundle, where native fixture creation has been denied before unlinking can cancel it.
+#[cfg(unix)]
+#[test]
+fn fixture_program_backup_stays_outside_the_app_bundle() {
+    let folder = recto_testpdf::TempDir::new("lease-outside-bundle-");
+    let fixture = folder.join(format!("own-{}-4", std::process::id()));
+    let macos = fixture.join("RectoPDF.app/Contents/MacOS");
+    std::fs::create_dir_all(&macos).unwrap();
+    let fixture = fixture.canonicalize().unwrap();
+    let macos = macos.canonicalize().unwrap();
+    let program = macos.join("RectoPDF");
+    std::fs::write(&program, "fixture program").unwrap();
+    let lease = copy_cleanup::Lease::remove(&fixture.join("RectoPDF.app"), &program).unwrap();
+    assert_eq!(std::fs::read_dir(&macos).unwrap().count(), 0, "the app bundle receives no new backup resource");
+    let backups: Vec<_> = std::fs::read_dir(&fixture)
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(".recto-cleanup-"))
+        .collect();
+    assert_eq!(backups.len(), 1, "the validated owned fixture root holds the live backup");
+    assert_eq!(std::fs::read(backups[0].path()).unwrap(), b"fixture program");
+    lease.restore().unwrap();
+    assert_eq!(std::fs::read(&program).unwrap(), b"fixture program");
+}
