@@ -15,6 +15,45 @@ use std::time::{Duration, Instant};
 
 const LIMIT: Duration = Duration::from_secs(5);
 
+/// Failure: fixture cleanup checks an executable path, then signals a borrowed numeric PID which can be recycled before the signal.
+#[test]
+fn borrowed_fixture_pids_are_never_signalled() {
+    let source: String = include_str!("walls.rs").chars().filter(|character| !character.is_whitespace()).collect();
+    for call in ["signal_process(", "libc::kill("] {
+        assert!(!source.contains(call), "walls fixture must not signal borrowed numeric PIDs: {call}");
+    }
+}
+
+/// Failure: the fixture's exit timer is omitted, inherits SIG_IGN/a blocked mask, or relies on the collector killing it instead of its own default SIGALRM.
+#[test]
+fn the_probe_deadline_exits_with_its_own_unblocked_signal() {
+    let mut probe = Command::new(env!("CARGO_BIN_EXE_recto-sandbox-probe"));
+    probe.arg("--self-deadline");
+    // SAFETY: child-only setup uses signal syscalls and stack values; both inherited obstacles must be removed by the actual probe helper after exec.
+    unsafe {
+        probe.pre_exec(|| {
+            if libc::signal(libc::SIGALRM, libc::SIG_IGN) == libc::SIG_ERR {
+                return Err(io::Error::last_os_error());
+            }
+            let mut blocked: libc::sigset_t = 0;
+            if libc::sigemptyset(&raw mut blocked) != 0
+                || libc::sigaddset(&raw mut blocked, libc::SIGALRM) != 0
+                || libc::sigprocmask(libc::SIG_BLOCK, &raw const blocked, std::ptr::null_mut()) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let (bounded, output) = command::output(&mut probe, Duration::from_secs(2)).unwrap();
+    assert!(!bounded, "the collector, not the probe's own timer, ended it: {output:?}");
+    assert_eq!(
+        output.status.signal(),
+        Some(libc::SIGALRM),
+        "the actual probe must restore/default/unblock its own exit signal: {output:?}"
+    );
+}
+
 struct Peer(UnixStream);
 
 impl Peer {

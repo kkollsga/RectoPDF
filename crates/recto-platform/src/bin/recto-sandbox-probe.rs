@@ -5,6 +5,10 @@
 //! Ported from the sandbox spike's probe (`spikes/sandbox/src/probe_core.rs`), keeping the attempts that bear on the shipped arrangement.
 
 #[cfg(target_os = "macos")]
+#[path = "probe/deadline.rs"]
+mod deadline;
+
+#[cfg(target_os = "macos")]
 fn main() {
     if std::env::current_exe().is_ok_and(|path| path.ends_with("Escape.app/Contents/MacOS/escape")) {
         if let Err(error) = mac::escape() {
@@ -28,6 +32,8 @@ mod mac {
 
     /// The test's unsandboxed, single-process app. No shell, child or extra compiler is involved in the launch control.
     pub fn escape() -> std::io::Result<()> {
+        // The trusted executable-identity dispatch in main precedes this; the timer bounds all subsequent fixture file-content I/O.
+        super::deadline::arm(6000)?;
         use std::path::Path;
         let executable = std::env::current_exe()?;
         let contents = executable.parent().and_then(Path::parent).ok_or_else(|| std::io::Error::other("no bundle"))?;
@@ -566,6 +572,7 @@ mod mac {
                 "--mach" => mach_lookups(&value()),
                 "--ls-open" => ls_open(&value()),
                 "--registered-app" => registered_app(&value()),
+                "--self-deadline" => super::deadline::exercise(),
                 "--signal-parent" => signal_parent(),
                 other => panic!("unknown flag {other}"),
             }
