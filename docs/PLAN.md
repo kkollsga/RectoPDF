@@ -60,7 +60,8 @@ Delivered on main by `db24c956` (2026-11-18), with the identical integrated sour
 ### Next responsiveness increment — 18 November
 
 - [x] Implement and independently review the QA answer unlock (`a4717a23`), whole print ownership and unowned-completion refusal (`7b9ccf1c`, `97f71167`), bounded refused native settings (`99d518f6`), and off-main Core Graphics opening/page counting (`2164837f`). The existing replacement-cleanup guard was rewritten with a seeded leak proof (`210e12ac`); no test was deleted. The five new lifecycle tests, QA concurrency test and rewritten guard passed 20 CI-like rounds each. Both extended native print tests passed 20 rounds each without adding launches. Evidence and remaining scope: [`reports/ui-waits-2026-11-18.md`](reports/ui-waits-2026-11-18.md).
-- [ ] Complete release resource/input measurements, required lifecycle validation and the final combined full gate; merge and watch CI. The historical print stall and the overall 16 ms target remain open even when this increment is delivered.
+- [x] Complete release resource/input measurements, required lifecycle validation and the final combined full gate. All 216 input quantile comparisons at 1/100/1,000 tabs meet the bound; map print app+helpers 736.96→738.41 MiB in one quiet pair, no memory-saving claim. Lifecycle 30/30 plus registrations 3/3; full at `48948db9` passed once: 3,269 Rust, 203 native, four slow, two bundle and three registration cases (275 s). The historical print stall and the overall 16 ms target remain open.
+- [ ] Merge and watch CI for this increment.
 
 
 ## Release follow-ups carried forward
