@@ -652,30 +652,49 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Failure: a zip made the way a release is, by `ditto`, isn't what this reader takes, so no real update could ever unpack. With its file modes, folders and data descriptors.
+    /// Failure: release packaging turns file metadata into unsigned ._ files inside the bundle, so the updater refuses every update. The actual producer and raw consumer preserve the strict signature, streamed data, folders and executable mode; no app is launched.
     #[cfg(target_os = "macos")]
     #[test]
     fn a_zip_from_ditto_unpacks_whole() {
-        let dir = folder("ditto");
-        let app = dir.join(APP);
-        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
-        std::fs::write(app.join("Contents/Info.plist"), "plist").unwrap();
-        std::fs::write(app.join("Contents/MacOS/RectoPDF"), vec![9u8; 300_000]).unwrap();
-        std::fs::set_permissions(app.join("Contents/MacOS/RectoPDF"), std::fs::Permissions::from_mode(0o755)).unwrap();
-        let zip = dir.join("r.zip");
-        assert!(
-            std::process::Command::new("/usr/bin/ditto")
-                .args(["-c", "-k", "--sequesterRsrc", "--keepParent"])
-                .arg(&app)
-                .arg(&zip)
-                .status()
-                .unwrap()
-                .success()
+        use crate::process::tool;
+        use recto_platform::local;
+
+        let dir = crate::stage::tests::temp_dir("archive-metadata");
+        let app = crate::stage::tests::fake_app(&dir, "0.2.0");
+        let resource = app.join("Contents/Resources/stream.bin");
+        std::fs::create_dir_all(resource.parent().unwrap()).unwrap();
+        let data = vec![9u8; 300_000];
+        std::fs::write(&resource, &data).unwrap();
+        // Exercise metadata on every supported macOS, independently of whether that OS adds protected provenance.
+        local::set_attribute(&resource, "com.rectopdf.archive-test", b"harmless metadata").unwrap();
+        assert_eq!(
+            local::attribute(&resource, "com.rectopdf.archive-test").as_deref(),
+            Some(b"harmless metadata".as_slice())
         );
+        let plist = std::fs::read(app.join("Contents/Info.plist")).unwrap();
+        let limit = Duration::from_secs(30);
+        let signed = tool("/usr/bin/codesign", &["--force", "--sign", "-", app.to_str().unwrap()], limit, 64 * 1024).unwrap();
+        assert!(signed.0, "signing fixture: {:?}", signed.2);
+        let verify = |path: &Path| {
+            let (fine, _, ran) = tool(
+                "/usr/bin/codesign",
+                &["--verify", "--deep", "--strict", path.to_str().unwrap()],
+                limit,
+                64 * 1024,
+            )
+            .unwrap();
+            assert!(fine, "strict signature of {}: {ran:?}", path.display());
+        };
+        verify(&app);
+        let zip = dir.join("r.zip");
+        let archive = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/archive.sh");
+        let (fine, _, ran) = tool(archive.to_str().unwrap(), &[app.to_str().unwrap(), zip.to_str().unwrap()], limit, 64 * 1024).unwrap();
+        assert!(fine, "archive producer: {ran:?}");
         let into = dir.join("out");
         std::fs::create_dir_all(&into).unwrap();
         unpack(&zip, APP, &into, Instant::now() + Duration::from_secs(30)).unwrap();
-        assert_eq!(std::fs::read(into.join("RectoPDF.app/Contents/MacOS/RectoPDF")).unwrap().len(), 300_000);
+        verify(&into.join(APP));
+        assert_eq!(std::fs::read(into.join("RectoPDF.app/Contents/Resources/stream.bin")).unwrap(), data);
         assert_eq!(
             std::fs::metadata(into.join("RectoPDF.app/Contents/MacOS/RectoPDF"))
                 .unwrap()
@@ -684,7 +703,7 @@ pub(crate) mod tests {
                 & 0o777,
             0o755
         );
-        assert_eq!(std::fs::read_to_string(into.join("RectoPDF.app/Contents/Info.plist")).unwrap(), "plist");
-        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(std::fs::read(into.join("RectoPDF.app/Contents/Info.plist")).unwrap(), plist);
+        assert!(!into.join("__MACOSX").exists(), "archive metadata is not installed as files");
     }
 }
