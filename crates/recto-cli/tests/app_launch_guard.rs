@@ -77,3 +77,122 @@ fn the_check_sees_the_shapes_it_is_for() {
         assert!(starts_the_build(line).is_none(), "{line}");
     }
 }
+
+/// Failure: quiet-app cleanup signals an unowned numeric PID after exit, risking a signal to an unrelated process that reused it.
+#[test]
+fn quiet_run_cleanup_never_signals_a_borrowed_pid() {
+    let source = include_str!("common/app.rs");
+    for (name, code) in [
+        (
+            "Run::kill",
+            source.split("pub fn kill(mut self)").nth(1).expect("Run::kill").split("\n}").next().unwrap(),
+        ),
+        (
+            "Run::drop",
+            source.split("impl Drop for Run<'_>").nth(1).expect("Run::drop").split("\n}").next().unwrap(),
+        ),
+    ] {
+        for forbidden in ["/bin/kill", "signal_process(", "libc::kill("] {
+            assert!(!code.contains(forbidden), "{name} signals a borrowed PID through {forbidden}");
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[path = "common/app/lifetime.rs"]
+mod lifetime;
+#[allow(dead_code)]
+#[path = "../src/qa_launch.rs"]
+mod qa_launch;
+
+#[cfg(unix)]
+fn waiting_child() -> std::process::Child {
+    use std::io::BufRead;
+    let mut child = std::process::Command::new("/bin/sh")
+        .args(["-c", "printf 'ready\n'; exec /bin/cat"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+    assert_eq!(line, "ready\n");
+    child
+}
+
+/// Failure: hard cleanup is attempted on an attached process, or an owned killed child is left unreaped and its PID unanchored.
+#[cfg(unix)]
+#[test]
+fn owned_quiet_children_are_reaped_and_borrowed_instances_cannot_be_killed() {
+    eprintln!(
+        "test harness compiler sizes: Child={}, Lifetime={}",
+        std::mem::size_of::<std::process::Child>(),
+        std::mem::size_of::<lifetime::Lifetime>()
+    );
+    let mut borrowed = lifetime::Lifetime::Borrowed(None);
+    assert!(borrowed.kill_owned(std::time::Duration::ZERO).unwrap_err().contains("requires"));
+    let child = waiting_child();
+    let pid = child.id();
+    let mut owned = lifetime::Lifetime::Owned(child);
+    owned.kill_owned(std::time::Duration::from_secs(1)).unwrap();
+    assert!(owned.gone(pid).unwrap(), "the Child is reaped, not just absent from a PID lookup");
+    owned.kill_owned(std::time::Duration::ZERO).unwrap();
+}
+
+/// Failure: a rejected readiness line drops a still-live owned child, or replaces the real readiness failure with teardown noise.
+#[cfg(unix)]
+#[test]
+fn rejected_launches_preserve_their_error_and_reap_the_owned_child() {
+    let mut owner = lifetime::Lifetime::Owned(waiting_child());
+    let lifetime::Lifetime::Owned(child) = &mut owner else { unreachable!() };
+    let original = recto_agent::AgentError::new(recto_agent::Code::APP_REFUSED, "fixture malformed readiness", 1);
+    let returned = qa_launch::cleanup_error(child, original, std::time::Duration::from_secs(1));
+    assert_eq!(returned.code, "app_refused");
+    assert_eq!(returned.message, "fixture malformed readiness");
+    assert!(child.try_wait().unwrap().is_some(), "failed launch left its owned child alive or unreaped");
+}
+
+/// Failure: a ready line names another process and ownership is lost before the caller can refuse it. Valid readiness transfers ownership without killing.
+#[cfg(unix)]
+#[test]
+fn readiness_names_only_the_child_that_was_actually_started() {
+    let mut owner = lifetime::Lifetime::Owned(waiting_child());
+    let lifetime::Lifetime::Owned(child) = &mut owner else { unreachable!() };
+    let wait = std::time::Duration::from_secs(1);
+    let ready = qa_launch::ready_value(child, serde_json::json!({"ok": true, "data": {"pid": child.id()}}), wait).unwrap();
+    assert_eq!(ready["pid"].as_u64(), Some(u64::from(child.id())));
+    assert!(child.try_wait().unwrap().is_none(), "accepting readiness must not terminate the child");
+    let refused = qa_launch::ready_value(child, serde_json::json!({"ok": true, "data": {"pid": 1}}), wait).unwrap_err();
+    assert_eq!(refused.code, "app_refused");
+    assert!(refused.message.contains("identify"));
+    assert!(child.try_wait().unwrap().is_some(), "a lying ready line still gets owned-child cleanup");
+}
+
+/// Failure: an executable grows the launcher's ready-line buffer without bound, or the bound discards a valid line at the limit.
+#[test]
+fn an_external_ready_line_is_capped_before_json_decoding() {
+    let limit = 16;
+    let valid = format!("{}\n", "x".repeat(limit - 1));
+    assert_eq!(qa_launch::read_ready_line(std::io::Cursor::new(&valid), limit).unwrap(), valid);
+    let too_long = format!("{}\n", "x".repeat(limit));
+    let error = qa_launch::read_ready_line(std::io::Cursor::new(&too_long), limit).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(error.to_string().contains("exceeds"));
+    assert!(qa_launch::read_ready_line(std::io::Cursor::new([255u8]), limit).is_err());
+}
+
+/// Failure: empty startup stdout makes the launcher read an unbounded stderr file, or drops the useful prefix without saying it was truncated.
+#[cfg(unix)]
+#[test]
+fn failed_startup_stderr_is_a_bounded_explicit_excerpt() {
+    let folder = recto_testpdf::TempDir::new("ready-stderr-");
+    let file = folder.join("messages");
+    drop(recto_platform::local::create_private_file(&file).unwrap());
+    std::fs::write(&file, "small failure").unwrap();
+    assert_eq!(qa_launch::stderr_excerpt(&file, 16), "small failure");
+    std::fs::write(&file, format!("{}SECRET_TAIL", "p".repeat(16))).unwrap();
+    let excerpt = qa_launch::stderr_excerpt(&file, 16);
+    assert!(excerpt.starts_with(&"p".repeat(16)), "the failure prefix survives");
+    assert!(excerpt.contains("truncated") && !excerpt.contains("SECRET_TAIL"), "{excerpt}");
+    assert!(excerpt.len() <= 16 + 64, "only the bounded excerpt and fixed truncation notice are kept");
+}

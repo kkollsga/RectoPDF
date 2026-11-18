@@ -10,7 +10,12 @@ use serde_json::{Value, json};
 use std::io::Read;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command};
+#[path = "app/lifetime.rs"]
+mod lifetime;
+#[path = "../../src/qa_launch.rs"]
+mod qa_launch;
+use lifetime::Lifetime;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
@@ -49,11 +54,12 @@ impl Deref for Held<'_> {
     }
 }
 
-/// A quiet run. Dropped without [`Run::quit`], [`Run::hand_off`] or [`Run::kill`], it's stopped, and killed if it's still there after that: a run is never left on the owner's Mac.
+/// A quiet run. An owned launch is stopped, then killed/reaped if needed. An attached run is only asked through its original connection; its existing owner/state lifetime remains the final bound.
 pub struct Run<'a> {
     pub state: Held<'a>,
     pub pid: u32,
     done: bool,
+    lifetime: Lifetime,
 }
 
 impl Run<'static> {
@@ -78,11 +84,12 @@ impl Run<'static> {
         let limit = format!("{}s", limit.as_secs());
         let mut args = vec!["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", &limit];
         args.extend_from_slice(extra);
-        let pid = launch(&state, &args);
+        let (child, pid) = launch(&state, &args, &[]);
         Self {
             state: Held::Own(Box::new(state)),
             pid,
             done: false,
+            lifetime: Lifetime::Owned(child),
         }
     }
 }
@@ -230,11 +237,12 @@ impl<'a> Run<'a> {
     /// A run on a state folder that outlives it, for at most 3 minutes: quit, hand off or kill it, and start another on the same folder.
     pub fn on(state: &'a State) -> Option<Self> {
         let app = app_path()?;
-        let pid = launch(state, &["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "3m"]);
+        let (child, pid) = launch(state, &["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "3m"], &[]);
         Some(Self {
             state: Held::Lent(state),
             pid,
             done: false,
+            lifetime: Lifetime::Owned(child),
         })
     }
 
@@ -242,21 +250,12 @@ impl<'a> Run<'a> {
     #[allow(dead_code)] // Not every test binary uses a seam.
     pub fn on_with_env(state: &'a State, env: &[(&str, &std::ffi::OsStr)]) -> Option<Self> {
         let app = app_path()?;
-        let mut command = state.command();
-        command.args(["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "3m", "--json"]);
-        for (name, value) in env {
-            command.env(name, value);
-        }
-        let launch = evidence::launching(state);
-        let output = command.stderr(std::process::Stdio::inherit()).output().unwrap();
-        let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(output.status.code(), Some(0), "{reply}");
-        let pid = reply["data"]["pid"].as_u64().unwrap() as u32;
-        evidence::launched(launch, pid);
+        let (child, pid) = launch(state, &["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "3m"], env);
         Some(Self {
             state: Held::Lent(state),
             pid,
             done: false,
+            lifetime: Lifetime::Owned(child),
         })
     }
 
@@ -267,6 +266,7 @@ impl<'a> Run<'a> {
             state: Held::Lent(state),
             pid,
             done: false,
+            lifetime: Lifetime::attached(&state.paths, pid),
         }
     }
 
@@ -308,7 +308,7 @@ impl<'a> Run<'a> {
     /// Waits for the app and its socket to be gone.
     fn wait_gone(&mut self) {
         let began = Instant::now();
-        while still_running(self.pid) {
+        while !self.lifetime.gone(self.pid).expect("read owned child exit") {
             assert!(began.elapsed() < Duration::from_secs(15), "the app didn't end");
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -333,19 +333,27 @@ impl<'a> Run<'a> {
 
     /// What a crash does. A killed run can't forget its copy, so this does, as the drop of a run that had to be killed does.
     pub fn kill(mut self) {
-        let _ = Command::new("/bin/kill").arg("-9").arg(self.pid.to_string()).status();
+        if !self.lifetime.owned() {
+            self.done = true;
+            panic!("intentional crash requires an owned launch; an attached app was not changed");
+        }
+        self.lifetime
+            .kill_owned(Duration::from_secs(5))
+            .expect("the owned app exits abruptly and is reaped");
         self.wait_gone();
         forget_the_built_app();
     }
 }
 
-fn launch(state: &State, args: &[&str]) -> u32 {
-    let launch = evidence::launching(state);
-    let (reply, code) = state.json(args);
-    assert_eq!(code, 0, "{reply}");
-    let pid = reply["data"]["pid"].as_u64().unwrap() as u32;
-    evidence::launched(launch, pid);
-    pid
+fn launch(state: &State, args: &[&str], environment: &[(&str, &std::ffi::OsStr)]) -> (Child, u32) {
+    let launching = evidence::launching(state);
+    let words = args.iter().map(|word| (*word).to_owned()).collect::<Vec<_>>();
+    let invocation = recto_agent::table::parse_cli(&words).expect("the public CLI parses launch options");
+    let owner = std::process::id().to_string();
+    let (child, _ready) = qa_launch::start(&invocation, state.paths.clone(), Some(&owner), environment).expect("the same CLI launcher starts the quiet app");
+    let pid = child.id();
+    evidence::launched(launching, pid);
+    (child, pid)
 }
 
 impl Drop for Run<'_> {
@@ -357,12 +365,23 @@ impl Drop for Run<'_> {
         if std::thread::panicking() {
             evidence::while_running(&self.state, self.pid);
         }
-        let _ = self.state.json(&["stop"]);
+        if let Err(error) = self.lifetime.stop(&self.state.paths) {
+            eprintln!("quiet app {} graceful cleanup: {error}", self.pid);
+        }
         let began = Instant::now();
-        while still_running(self.pid) && began.elapsed() < Duration::from_secs(5) {
+        while !self.lifetime.gone(self.pid).unwrap_or(false) && began.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(Duration::from_millis(20));
         }
-        let _ = Command::new("/bin/kill").arg("-9").arg(self.pid.to_string()).status();
+        if self.lifetime.owned() {
+            if let Err(error) = self.lifetime.kill_owned(Duration::from_secs(5)) {
+                eprintln!("quiet app {} cleanup: {error}", self.pid);
+            }
+        } else if !self.lifetime.gone(self.pid).unwrap_or(false) {
+            eprintln!(
+                "attached quiet app {} remains alive; no PID was signalled, and its original owner/state lifetime remains in force",
+                self.pid
+            );
+        }
         // A run ended by its own quit forgets its copy itself; one that had to be killed couldn't.
         forget_the_built_app();
     }
