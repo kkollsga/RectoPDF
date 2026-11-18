@@ -455,6 +455,7 @@ main thread, which would freeze the real app too and also held the shared build 
   value". A test (`ui_wait_tests`) proves it **with the engine stalled and saves going to a slow disk**.
 - A lock that sync calls take is **never held across a disk write or a secret store call**. Copy under the lock, write
   under a lock of the writer's own.
+- Release a response lock before decoding its payload, too. RectoPDF's QA worker decoded JSON inside a return expression while its mutex guard still lived; a second answer from the UI needed that mutex. A forced two-answer ordering caught the wait (2026-11-18). Likewise, an `if let` whose scrutinee takes through a temporary guard can keep that guard alive throughout its body: inspect the scope, not just the line that takes the lock.
 - Hosts keep blocking system calls off the UI thread: file system lookups at user paths (a network volume or a missing
   disk can block), Keychain, LaunchServices, File Provider and Finder Sync status, the registry. Read them on a
   background thread and cache the value.

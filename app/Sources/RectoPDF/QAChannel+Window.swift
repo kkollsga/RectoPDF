@@ -69,6 +69,7 @@ extension QAChannel {
         let frame = controller.window.frame
         return [
             "window_open": true,
+            "printing_host": delegate.printHost.report,
             "window": ["x": frame.minX, "y": frame.minY, "width": frame.width, "height": frame.height, "full_screen": controller.isFullScreen, "minimised": controller.isMinimised, "on_any_screen": NSScreen.screens.contains { $0.frame.intersects(frame) }, "is_visible": controller.window.isVisible],
             "is_active": NSApp.isActive,
             "hidden": delegate.isAppHidden,

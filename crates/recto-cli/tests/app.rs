@@ -3643,6 +3643,12 @@ fn a_print_from_the_app_is_the_documents_pages_whatever_the_paper() {
     run.settled();
     let state = run.report();
     assert_eq!(state["printing"]["busy"], false, "{state}");
+    // Opening the generated PDF and walking its page tree must not read or parse on the UI thread.
+    assert_eq!(state["app"]["printing_host"]["last_load"]["main_thread"], false, "{state}");
+    assert_eq!(
+        state["app"]["printing_host"]["last_load"]["pages"], 2,
+        "the prepared range, not the source's page count: {state}"
+    );
     // Not `over_1s == 0`: a starved runner makes a stretch of a second with the thread ready to run.
     if let Err(why) = common::hang_rule::held_the_window(&state["hangs"]) {
         panic!("{why}: {state}");
@@ -3684,7 +3690,7 @@ fn a_print_from_the_app_is_the_documents_pages_whatever_the_paper() {
     std::fs::remove_file(&out).unwrap();
 }
 
-/// Failure: a print to a PDF of a file that asks not to be copied gets round it, though the owner decided on 2026-11-08 that print to PDF gets the same step as Copy; or it's refused with no "Print anyway"; or the button prints nothing. Through File > Print's own path to a file, as the panel's Save as PDF takes it.
+/// Failure: a print to a PDF of a file that asks not to be copied gets round it, though the owner decided on 2026-11-08 that print to PDF gets the same step as Copy; or it's refused with no "Print anyway"; or the button prints nothing, or repeated refused prints retain unbounded native print settings. Through File > Print's own path to a file, as the panel's Save as PDF takes it.
 #[test]
 fn a_print_to_a_file_of_a_copy_restricted_pdf_offers_print_anyway() {
     let Some(run) = Run::start() else { return };
@@ -3697,10 +3703,22 @@ fn a_print_to_a_file_of_a_copy_restricted_pdf_offers_print_anyway() {
     let asked = wait_for(&run, |state| state["app"]["copy_notice"]["button"] == "Print anyway");
     assert!(asked["app"]["copy_notice"]["text"].as_str().unwrap().contains("permissions"), "{asked}");
     assert!(!out.exists(), "nothing printed yet");
+    // A new admitted answer replaces an earlier refused one, rather than retaining another native print-info object indefinitely.
+    run.ok(&["qa", "print-to-pdf", out.to_str().unwrap()]);
+    run.settled();
+    let refused_again = wait_for(&run, |state| state["app"]["copy_notice"]["button"] == "Print anyway");
+    assert_eq!(
+        refused_again["app"]["printing_host"]["answers_kept"], 1,
+        "only the newest refused print keeps its settings: {refused_again}"
+    );
     run.ok(&["qa", "notice-button"]);
     run.settled();
     let done = wait_for(&run, |state| state["printing"]["busy"] == false);
     assert!(out.exists(), "printed once asked: {done}");
+    assert_eq!(
+        done["app"]["printing_host"]["answers_kept"], 0,
+        "a finished print releases its native settings: {done}"
+    );
     std::fs::remove_file(&out).unwrap();
 }
 
