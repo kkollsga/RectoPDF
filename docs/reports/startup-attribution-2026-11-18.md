@@ -1,6 +1,6 @@
 # Startup attribution and coverage — 2026-11-18
 
-Status: source reviewed, focused and final-source lifecycle checks passed; combined full and delivery pending. The original hosted 2.804 s startup finding remains open. This increment closes a demonstrated launch-watch gap and retains bounded phase evidence for a future failure. It does not claim that the original stall was an expensive PDF read or a particular framework service.
+Status: local verification complete at `d1b1fefc`; main/CI delivery pending. The original hosted 2.804 s startup finding remains open. This increment closes a demonstrated launch-watch gap and retains bounded phase evidence for a future failure. It does not claim that the original stall was an expensive PDF read or a particular framework service.
 
 ## What the old CI evidence establishes
 
@@ -56,6 +56,6 @@ That gate's registration stage also found and removed nine folders from the earl
 
 ## Validation and delivery
 
-Source review and release measurements are complete; combined quick before the final long-route correction passed 3,319/3,319; ownership/IO/scope guards passed 360/360, startup/copy/SIGTERM native cases 60/60 over 20 CI-style rounds, and the added long-route guard 20/20. The corrected CLI passed all-target Clippy and harness compilation. The final-source constrained lifecycle passed 30/30 plus registrations 3/3 (170-second app stage, 11-second registration stage). One CHECK_ALL full and main delivery/CI watch remain pending. Three exact older failed fixture folders were removed after process/registration absence proofs; full scoped worktree cleanup follows delivery. No completion claim rests on an earlier increment's gate.
+Source review and release measurements are complete; combined quick before the final long-route correction passed 3,319/3,319; ownership/IO/scope guards passed 360/360, startup/copy/SIGTERM native cases 60/60 over 20 CI-style rounds, and the added long-route guard 20/20. The corrected CLI passed all-target Clippy and harness compilation. The final-source constrained lifecycle passed 30/30 plus registrations 3/3 (170-second app stage, 11-second registration stage). The single `CHECK_ALL=1 tools/check.sh --full` passed at `d1b1fefc`, exit 0, ledger 302 s: 3,320 Rust, 203 native, four slow, two bundle and three registration cases. Native cases took 135.373 s, slow cases 43.879 s. The changed tooling suite passed before the timed gate. No native launch test was added or deleted. Main delivery/CI watch remain pending. Three exact older failed fixture folders were removed after process/registration absence proofs; full scoped worktree cleanup follows delivery. No completion claim rests on an earlier increment's gate.
 
 Retained evidence: `/tmp/rectopdf-startup-phases-20261118/`. Temporary source/probe builds, error/seed logs and unused design drafts are diagnostic history, not final-pass evidence.
