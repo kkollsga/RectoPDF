@@ -4,6 +4,7 @@ mod as_person;
 mod delivery;
 mod levers;
 mod pending;
+mod program_lease;
 mod values;
 
 #[cfg(test)]
@@ -94,7 +95,7 @@ pub fn end_with_starter(limit: Duration, owner: Option<u32>, state: Option<std::
     if let Some(pid) = owner {
         let _ = OWNER.set(pid);
     }
-    let program = std::env::current_exe().ok();
+    let program = program_lease::program(std::env::current_exe().ok(), std::env::args_os().next());
     let _ = std::thread::Builder::new().name("recto-qa-limit".into()).stack_size(64 * 1024).spawn(move || {
         let pids: Vec<u32> = owner.into_iter().collect();
         let paths: Vec<&Path> = state.iter().chain(program.iter()).map(std::path::PathBuf::as_path).collect();
@@ -108,7 +109,7 @@ pub fn end_with_starter(limit: Duration, owner: Option<u32>, state: Option<std::
         if let Some(inner) = ending.upgrade() {
             super::updates::forget_a_quiet_copy(inner.qa.as_deref(), &inner.updates);
         }
-        std::process::exit(124);
+        recto_platform::leave::leave_now(124);
     });
 }
 
