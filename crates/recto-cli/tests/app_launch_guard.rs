@@ -326,3 +326,44 @@ fn a_removed_fixture_lease_ends_its_observer_then_restores() {
     assert_eq!(std::fs::read(&program).unwrap(), b"original");
 }
 
+#[allow(dead_code)]
+#[path = "../../recto-platform/src/observed_program.rs"]
+mod observed_program;
+
+/// Failure: deleting a fixture executable makes fresh process scans return empty before inspecting any PID; only an absolute missing basename with a canonical existing parent is safe for observation.
+#[test]
+fn missing_program_observation_keeps_only_a_canonical_parent_and_basename() {
+    use std::io::{Error, ErrorKind};
+    let missing = || Err(Error::from(ErrorKind::NotFound));
+    let program = Path::new("/aliased/RectoPDF");
+    let selected = observed_program::select(program, missing(), |parent| {
+        assert_eq!(parent, Path::new("/aliased"));
+        Ok(PathBuf::from("/canonical"))
+    })
+    .unwrap();
+    assert_eq!(selected, Path::new("/canonical/RectoPDF"));
+    assert!(observed_program::select(Path::new("relative/RectoPDF"), missing(), |_| panic!("relative paths never fall back")).is_err());
+    assert!(
+        observed_program::select(program, missing(), |_| missing()).is_err(),
+        "a missing parent never falls back"
+    );
+    assert!(
+        observed_program::select(program, Err(Error::from(ErrorKind::PermissionDenied)), |_| panic!(
+            "permission failures never fall back"
+        ))
+        .is_err()
+    );
+    assert_eq!(
+        observed_program::select(program, Ok(PathBuf::from("/existing")), |_| panic!("existing canonical paths stay unchanged")).unwrap(),
+        Path::new("/existing")
+    );
+    let source = include_str!("../../recto-platform/src/local_mac.rs");
+    let scan = source
+        .split("pub fn processes_running(")
+        .nth(1)
+        .unwrap()
+        .split("/// The path a process")
+        .next()
+        .unwrap();
+    assert!(scan.contains("observed_program::path(executable)"));
+}
