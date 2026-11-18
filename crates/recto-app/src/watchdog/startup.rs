@@ -231,14 +231,19 @@ mod tests {
         let other = std::sync::Arc::clone(&trace);
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            other.note(Phase::READY, || panic!("a contended point must not sample"));
-            done_tx.send(()).unwrap();
+            let mut sampled = false;
+            other.note(Phase::READY, || {
+                sampled = true;
+                (2, Some(2))
+            });
+            done_tx.send(sampled).unwrap();
         });
         // The rule is completion while the reader still holds its lock. This bound only retires a broken blocking implementation.
         let completed_while_held = done_rx.recv_timeout(std::time::Duration::from_secs(10));
         drop(held);
         worker.join().unwrap();
         assert!(completed_while_held.is_ok(), "checkpoint waited for the reader to release its lock");
+        assert!(!completed_while_held.unwrap(), "a contended point sampled instead of returning");
         assert_eq!(trace.state.load(Ordering::Acquire), COMPLETE);
         assert_eq!(trace.lost.load(Ordering::Relaxed), 1);
         let report = trace.json();
