@@ -464,3 +464,35 @@ fn fixture_program_backup_stays_outside_the_app_bundle() {
     lease.restore().unwrap();
     assert_eq!(std::fs::read(&program).unwrap(), b"fixture program");
 }
+
+/// Failure: a long workload attaches to its own CLI launch, loses its idle borrowed connection before Quit, or accidentally inherits the short three-minute lifetime.
+#[test]
+fn long_session_keeps_its_owned_child_and_thirty_minute_limit() {
+    let source = include_str!("long_session.rs");
+    let start = source
+        .split("fn a_long_session_stays_flat()")
+        .nth(1)
+        .unwrap()
+        .split("let workload =")
+        .next()
+        .unwrap();
+    assert!(
+        start.contains("Run::on_executable_with_env"),
+        "the long session must retain the original launch Child"
+    );
+    assert!(
+        start.contains("Duration::from_secs(30 * 60)"),
+        "the long workload must keep its existing thirty-minute lifetime"
+    );
+    assert!(
+        !start.contains("Run::attach") && !start.contains("state.json("),
+        "the long workload cannot detach and borrow its own launch"
+    );
+    let app = include_str!("common/app.rs");
+    let launch = app.split("pub fn on_executable_with_env(").nth(1).unwrap().split("\n    }").next().unwrap();
+    assert!(
+        launch.contains("limit.as_secs()") && launch.contains("\"--time-limit\", &limit"),
+        "the supplied lifetime must reach the shared CLI launcher"
+    );
+    assert!(launch.contains("Lifetime::Owned(child)"));
+}
