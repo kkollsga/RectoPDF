@@ -4,10 +4,40 @@ import AppKit
 @MainActor final class PrintHost {
     var infos: [UInt64: NSPrintInfo] = [:]
     var nextSerial: UInt64 = 0
-    var path: String?
+    fileprivate var current: ActivePrint?
     var lastLoad: [String: Any]?
+    var lastResult: Bool?
 
-    var report: [String: Any] { ["answers_kept": infos.count, "last_load": lastLoad ?? NSNull()] }
+    /// Only the operation that received this key can finish it; a repeated callback from an older operation consumes nothing.
+    func takeCompleted(_ operation: NSPrintOperation) -> ReadyPrint? {
+        guard let job = current, job.operation === operation else { return nil }
+        current = nil
+        return job.ready
+    }
+
+    /// QA's existing native entry-point launch checks the same completion method without running a print or touching the live host's state.
+    static func entryPointChecks() -> [String: Bool] {
+        let host = PrintHost()
+        let info = (NSPrintInfo.shared.copy() as? NSPrintInfo) ?? NSPrintInfo.shared
+        let old = NSPrintOperation(view: NSView(frame: NSRect(x: 0, y: 0, width: 1, height: 1)), printInfo: info)
+        let latest = NSPrintOperation(view: NSView(frame: NSRect(x: 0, y: 0, width: 1, height: 1)), printInfo: info)
+        let key = ReadyPrint(path: "/unused-print-test-key", serial: 2)
+        host.current = ActivePrint(operation: latest, ready: key)
+        let stale = host.takeCompleted(old)
+        let taken = host.takeCompleted(latest)
+        return [
+            "old_print_callback_keeps_the_current_job": stale == nil && taken?.path == key.path && taken?.serial == key.serial,
+            "a_print_callback_finishes_only_once": host.takeCompleted(latest) == nil,
+        ]
+    }
+
+    var report: [String: Any] { ["answers_kept": infos.count, "last_load": lastLoad ?? NSNull(), "last_result": lastResult as Any? ?? NSNull()] }
+}
+
+/// The operation is AppKit's; holding its identity weakly does not retain a finished view or its document.
+fileprivate struct ActivePrint {
+    weak var operation: NSPrintOperation?
+    let ready: ReadyPrint
 }
 
 /// Core Graphics alone reads this file off the UI thread. After loading, the document transfers to the main thread's print view and is drawn only by its print operation.
@@ -28,7 +58,7 @@ private struct LoadedPrintDocument: @unchecked Sendable {
     var report: [String: Any] { ["main_thread": mainThread, "micros": micros, "pages": pages] }
 }
 
-/// What the system's printing draws: the pages of the file Rust prepared, each fitted to the paper. Core Graphics reads that file, which is pictures Rust drew, so nothing here decides anything with opening and page counting prepared off the UI thread. The print operation is allowed a drawing thread; quiet QA has verified that path for text and map pages.
+/// What the system's printing draws: the pages of the file Rust prepared, each fitted to the paper. Core Graphics reads the pictures Rust prepared; opening and page counting are prepared off the UI thread. The print operation is allowed a drawing thread; quiet QA has verified that path for text and map pages.
 final class PrintPagesView: NSView {
     private let document: CGPDFDocument
     private let pageSize: NSSize
@@ -120,7 +150,7 @@ extension AppDelegate {
         let path = ready.path
         // Its own answer's printer and way, or nothing: never another answer's, nor a default printer it wasn't sent to.
         guard let info = printHost.infos.removeValue(forKey: ready.serial) else {
-            core.printFinished(path: path)
+            core.printFinished(path: path, serial: ready.serial, success: false)
             return
         }
         // Answers before it whose prints went nowhere (refused, or stopped) won't come back.
@@ -130,7 +160,7 @@ extension AppDelegate {
         info.isSelectionOnly = false
         let paper = NSSize(width: info.paperSize.width - info.leftMargin - info.rightMargin, height: info.paperSize.height - info.topMargin - info.bottomMargin)
         guard let window = windowController?.window else {
-            core.printFinished(path: path)
+            core.printFinished(path: path, serial: ready.serial, success: false)
             return
         }
         let title = core.printModel().jobTitle
@@ -141,12 +171,12 @@ extension AppDelegate {
             DispatchQueue.main.async { [weak self, weak window] in
                 // A closed or replaced window must not inherit the old window's pending print.
                 guard let self, let window, self.windowController?.window === window else {
-                    core.printFinished(path: path)
+                    core.printFinished(path: path, serial: ready.serial, success: false)
                     return
                 }
                 self.printHost.lastLoad = loaded?.report
                 guard let loaded, let view = PrintPagesView(loaded: loaded, paper: paper) else {
-                    core.printFinished(path: path)
+                    core.printFinished(path: path, serial: ready.serial, success: false)
                     return
                 }
                 let operation = NSPrintOperation(view: view, printInfo: info)
@@ -154,15 +184,16 @@ extension AppDelegate {
                 operation.showsProgressPanel = !self.isQuiet
                 operation.canSpawnSeparateThread = true
                 operation.jobTitle = title
-                self.printHost.path = path
+                self.printHost.current = ActivePrint(operation: operation, ready: ready)
                 operation.runModal(for: window, delegate: self, didRun: #selector(self.printDidRun(_:success:contextInfo:)), contextInfo: nil)
             }
         }
     }
 
     @objc func printDidRun(_ operation: NSPrintOperation, success: Bool, contextInfo: UnsafeMutableRawPointer?) {
-        if let path = printHost.path { core.printFinished(path: path) }
-        printHost.path = nil
+        guard let ready = printHost.takeCompleted(operation) else { return }
+        printHost.lastResult = success
+        core.printFinished(path: ready.path, serial: ready.serial, success: success)
     }
 
     /// For QA: the same path a print takes, to a PDF file through the system's own printing, with no panel shown. The paper is the first page's size with no margins, so the result can be laid page for page against the source. The system writes to a new name of Rust's, which Rust puts at `out` when it's done, never over anything.

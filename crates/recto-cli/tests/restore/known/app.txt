@@ -193,6 +193,7 @@ app.printing_host.last_load
 app.printing_host.last_load.main_thread
 app.printing_host.last_load.micros
 app.printing_host.last_load.pages
+app.printing_host.last_result
 app.reveal.row
 app.reveal.shown
 app.save_button.clear_of_window_buttons
