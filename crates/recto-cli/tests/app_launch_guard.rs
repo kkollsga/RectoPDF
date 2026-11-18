@@ -4,6 +4,10 @@
 
 use std::path::{Path, PathBuf};
 
+#[allow(dead_code)]
+#[path = "common/bed_folder.rs"]
+mod bed_folder;
+
 /// The test sources, every file under `tests/`.
 fn sources(folder: &Path, found: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(folder).unwrap().flatten() {

@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
-#[path = "../bed_folder.rs"]
-mod bed_folder;
+#[cfg(unix)]
+use super::bed_folder;
 
 /// No copies or filesystem changes when none of these fixture programs is running.
 pub fn end(root: &Path, programs: &[PathBuf], wait: Duration) -> Result<(), String> {
