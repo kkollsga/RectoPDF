@@ -66,7 +66,7 @@ Delivered on main by `db24c956` (2026-11-18), with the identical integrated sour
 ### Asynchronous publication increment — 18 November
 
 - [x] Implement and independently review exact-key print completion on one bounded temporary Rust worker, retained ownership through cleanup/closure, bounded failed-start retry and existing quit grace. Native callbacks bind their actual operation and forward the OS result. Cancelled partial output is discarded (`44941d0f`), with a failed-first guard. No native app-launch test added. See [`reports/print-publication-2026-11-18.md`](reports/print-publication-2026-11-18.md).
-- [ ] Finish focused repetition, release input/resource measurements, mandatory lifecycle validation and one combined final full check.
+- [x] Finish focused repetition (Rust160/160, native60/60), release input/resource measurements (216/216 bounds; map736.22→737.39MiB, one pair), mandatory lifecycle validation (30+3) and one combined final full check: `abcdf551`, exit0,275s,3,276 Rust/203 native/four slow/two bundle/three registration cases. No native launch added; shipping shared print state344→368bytes. Historical stalls remain open.
 - [ ] Merge, push, observe CI and remove this increment's owned worktrees/app bundles and background processes.
 
 

@@ -43,6 +43,8 @@ After the measured RFC print, the probe reopened the published PDF and captured 
 
 The coordinator's final quick check passed at `cd289b2a`: formatting, compilation/clippy/Windows and1,230 selected tests in its last stage. The worker's earlier quick failure was the repaired seeded-export fixture described above; its specific test passed before repetition. The final release build passed. Required `tools/check.sh --like-ci lifecycle` passed at `c7a8b730`, exit0:30/30 lifecycle cases in178.243s, then3/3 registration cases in14.929s. The combined full gate follows; it is recorded only after its result is read.
 
+Final `CHECK_ALL=1 tools/check.sh --full` passed once at `abcdf551`, exit0,275 ledger seconds:3,276 Rust tests (1,188 in21.675s plus2,088 in40.202s),203 native tests in124.548s, four slow cases in44.925s, bundle2/2 and registration3/3. Seven new in-process tests totalled0.454 test-seconds in this ordinary local gate; that is not a CI critical-path estimate. No source changed after the gate. Main merge/push, observed CI and cleanup are recorded after completion.
+
 ## Remaining work
 
 Sample the actual short-stall interval, separating UI CPU/layout/drawing from QA reporting and command round trips. This completion fix does not identify the cause of a historical one-second print stall. Horizontal scrollbar reproduction remains a separate open issue.
