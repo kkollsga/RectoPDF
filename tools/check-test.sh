@@ -1040,6 +1040,56 @@ check "heavy is core, window and lifecycle together" "$(same_calls "$X/calls-hea
 check "the app tests are two filters in window and lifecycle, and the unfiltered whole in heavy, which is both tiers" "1 1 1" "$(grep -c -- '--test compare --test evidence -j 4 -E test(~window_test)' "$X/calls-window") $(grep -c -- 'long_session -j 4 -E test(~life_test)' "$X/calls-lifecycle") $(grep -c -- 'long_session --test evidence -j 4$' "$X/calls-heavy")"
 # The CI workflow runs exactly those two parts, so a stage can't be in neither because a job is missing, or in two because one is repeated.
 check "the workflow's jobs run the light part and the heavy part, once each" "heavy light" "$(grep -E '^ +CHECK_PART:' "$SOURCE/.github/workflows/ci.yml" | awk '{ print $2 }' | sort | tr '\n' ' ' | sed 's/ $//')"
+# Failure (2026-11-18): a walls failure skipped the bundled worker setup, but !cancelled() still ran retirement against a missing worker and reported a false second failure.
+# Evaluate the actual workflow condition for the dependency outcomes, then run its actual diagnostic script with the existing failing cargo stub: a meaningful retirement failure must still propagate.
+check "retirement needs successful setup, survives a later suite failure, and keeps its own failures" "passed" "$(python3 - "$SOURCE/.github/workflows/ci.yml" "$X" <<'PY'
+import ast, os, re, subprocess, sys
+from pathlib import Path
+
+sandbox = Path(sys.argv[1]).read_text().split('\n  sandbox:\n', 1)[1]
+steps = re.split(r'(?m)^      - ', sandbox)[1:]
+setup = next(step for step in steps if 'app/render-helper.sh --layout' in step)
+suite = next(step for step in steps if re.search(r'(?m)^          RECTO_TEST_WORKER=.* cargo nextest run --locked --no-fail-fast -p recto-render-service$', step))
+retirement = next(step for step in steps if 'test(retiring_holds_down_a_growing_worker)' in step)
+setup_id = re.search(r'(?m)^        id: (\S+)$', setup)
+setup_id = setup_id.group(1) if setup_id else ''
+condition = re.search(r'(?m)^        if: (.+)$', retirement)
+condition = condition.group(1).strip().removeprefix('${{').removesuffix('}}').strip() if condition else 'success()'
+
+def runs(outcome, prior_ok, cancelled):
+    # GitHub adds success() unless a status function explicitly overrides it.
+    explicit_status = re.search(r'\b(success|failure|cancelled|always)\(\)', condition)
+    states = {'success': prior_ok, 'failure': not prior_ok and not cancelled, 'cancelled': cancelled, 'always': True}
+    expression = re.sub(r'steps\.([\w-]+)\.outcome', lambda m: repr(outcome if m[1] == setup_id else 'skipped'), condition)
+    expression = re.sub(r'\b(success|failure|cancelled|always)\(\)', lambda m: repr(states[m[1]]), expression)
+    expression = re.sub(r'!(?!=)', ' not ', expression).replace('&&', ' and ').replace('||', ' or ').strip()
+    tree = ast.parse(expression, mode='eval')
+    allowed = (ast.Expression, ast.BoolOp, ast.And, ast.Or, ast.UnaryOp, ast.Not, ast.Compare, ast.Eq, ast.NotEq, ast.Constant)
+    assert all(isinstance(node, allowed) for node in ast.walk(tree)), 'unsupported workflow condition: ' + condition
+    return bool((explicit_status or prior_ok) and eval(compile(tree, '<retirement condition>', 'eval'), {'__builtins__': {}}))
+
+for name, outcome, prior_ok, cancelled, expected in [
+    ('walls failed, setup skipped', 'skipped', False, False, False),
+    ('layout or signature check failed', 'failure', False, False, False),
+    ('prepared worker, suite passed', 'success', True, False, True),
+    ('prepared worker, suite failed', 'success', False, False, True),
+    ('cancelled after setup', 'success', False, True, False),
+]:
+    actual = runs(outcome, prior_ok, cancelled)
+    assert actual == expected, f'{name}: retirement runs={actual}, expected={expected}; condition={condition}'
+
+assert setup_id and steps.index(setup) < steps.index(suite) < steps.index(retirement), 'setup must be a separate earlier dependency'
+assert 'app/render-helper.sh --check' in setup, 'preparation includes signature/layout validation'
+assert not re.search(r'(?m)^        (if|continue-on-error):', setup), 'setup must retain normal success dependency and fail on errors'
+assert not re.search(r'(?m)^        continue-on-error: (?!false)', retirement), 'retirement failures must fail CI'
+body = re.search(r'(?m)^        run: \|\n((?:          .*\n?)+)', retirement).group(1)
+body = '\n'.join(line[10:] for line in body.splitlines())
+env = dict(os.environ, RUNNER_TEMP=sys.argv[2], STUB_FAIL='--test memory', STUB_EXIT='73')
+result = subprocess.run(['bash', '-e', '-c', body], env=env, capture_output=True, text=True)
+assert result.returncode == 73, f'retirement failed to propagate cargo failure: {result.returncode}, {result.stderr}'
+print('passed')
+PY
+)"
 # The same check seen failing: a stage that every part leaves out (here the light part is made to run nothing, as a part dropped from the case would) is not what a
 # run of everything does, and the comparison above says so.
 sed 's/^  light) runs_light=1 ;;$/  light) ;;/' tools/check.sh > "$X/check-dropped.sh"
