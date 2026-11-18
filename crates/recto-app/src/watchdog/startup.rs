@@ -13,7 +13,9 @@ pub const CAP: usize = 16;
 const NO_CPU: u64 = u64::MAX;
 const NOT_BEGUN: u8 = 0;
 const CAPTURING: u8 = 1;
-const COMPLETE: u8 = 2;
+// New points stop here; completion is published only after the final point or its loss.
+const FINISHING: u8 = 2;
+const COMPLETE: u8 = 3;
 const NAMES: [&str; 15] = [
     "launch_begin",
     "menu_ready",
@@ -93,14 +95,27 @@ impl Default for Startup {
 
 impl Startup {
     fn note(&self, phase: Phase, sample: impl FnOnce() -> (u64, Option<u64>)) {
+        self.note_observed(phase, sample, || {});
+    }
+
+    // The observer makes the publication boundary testable without scheduling or altering state.
+    fn note_observed(&self, phase: Phase, sample: impl FnOnce() -> (u64, Option<u64>), before_lock: impl FnOnce()) {
         let accepted = match phase {
             Phase::BEGIN => self.state.compare_exchange(NOT_BEGUN, CAPTURING, Ordering::AcqRel, Ordering::Acquire).is_ok(),
-            Phase::READY => self.state.compare_exchange(CAPTURING, COMPLETE, Ordering::AcqRel, Ordering::Acquire).is_ok(),
+            Phase::READY => self.state.compare_exchange(CAPTURING, FINISHING, Ordering::AcqRel, Ordering::Acquire).is_ok(),
             _ => self.state.load(Ordering::Acquire) == CAPTURING,
         };
         if !accepted {
             return;
         }
+        before_lock();
+        self.keep(phase, sample);
+        if phase == Phase::READY {
+            self.state.store(COMPLETE, Ordering::Release);
+        }
+    }
+
+    fn keep(&self, phase: Phase, sample: impl FnOnce() -> (u64, Option<u64>)) {
         let mut kept = match self.kept.try_lock() {
             Ok(kept) => kept,
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
@@ -128,10 +143,19 @@ impl Startup {
     }
 
     fn json(&self) -> Value {
-        let (points, len) = {
+        self.json_observed(|| {})
+    }
+
+    // A later writer can finish after the fixed payload has been copied, before formatting.
+    fn json_observed(&self, after_copy: impl FnOnce()) -> Value {
+        let (state, lost, points, len) = {
             let kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
-            (kept.points, kept.len)
+            // A completion acquire observes its accounted point/loss before this payload is copied.
+            let state = self.state.load(Ordering::Acquire);
+            let lost = self.lost.load(Ordering::Relaxed);
+            (state, lost, kept.points, kept.len)
         };
+        after_copy();
         let points: Vec<Value> = points[..len]
             .iter()
             .map(|point| {
@@ -141,8 +165,8 @@ impl Startup {
                 })
             })
             .collect();
-        json!({ "clock": "watchdog", "cap": CAP, "complete": self.state.load(Ordering::Acquire) == COMPLETE,
-            "lost": self.lost.load(Ordering::Relaxed), "record_bytes": std::mem::size_of::<Self>(), "points": points })
+        json!({ "clock": "watchdog", "cap": CAP, "complete": state == COMPLETE,
+            "lost": lost, "record_bytes": std::mem::size_of::<Self>(), "points": points })
     }
 }
 
@@ -292,6 +316,40 @@ mod tests {
         assert_eq!(dog.report(), before);
         assert_eq!(dog.slow_stretches().1, short);
         assert_eq!(dog.0.busy_since.load(Ordering::Acquire), 123);
+    }
+
+    fn assert_completion_has_evidence(report: &Value) {
+        if report["complete"] == true && report["lost"] == 0 {
+            assert!(
+                report["points"].as_array().unwrap().iter().any(|point| point["phase"] == "host_ready"),
+                "completion claims no loss but its snapshot has no completion point: {report}"
+            );
+        }
+    }
+
+    /// Failure: a report copies old points, then reads completion from a newer version and claims that incomplete evidence is complete with no loss.
+    #[test]
+    fn a_completion_after_payload_copy_cannot_certify_the_older_snapshot() {
+        let trace = Startup::default();
+        note(&trace, 0, 1, Some(1));
+        let report = trace.json_observed(|| note(&trace, 14, 2, Some(2)));
+        assert_completion_has_evidence(&report);
+        let final_report = trace.json();
+        assert_eq!(final_report["complete"], true);
+        assert_completion_has_evidence(&final_report);
+    }
+
+    /// Failure: the completion flag is published before either its point or its loss, so a concurrent report falsely certifies incomplete evidence.
+    #[test]
+    fn completion_is_not_visible_before_its_point_or_loss_is_accounted() {
+        let trace = Startup::default();
+        note(&trace, 0, 1, Some(1));
+        let mut during = None;
+        trace.note_observed(Phase::READY, || (2, Some(2)), || during = Some(trace.json()));
+        assert_completion_has_evidence(&during.expect("a report in the publication gap"));
+        let final_report = trace.json();
+        assert_eq!(final_report["complete"], true);
+        assert_completion_has_evidence(&final_report);
     }
 
     /// Failure: startup observation grows a per-app value without reporting its whole compiler size.
