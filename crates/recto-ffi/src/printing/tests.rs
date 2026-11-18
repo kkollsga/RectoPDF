@@ -109,9 +109,12 @@ fn print_finished_requires_the_held_serial() {
     let printing = app.core().tools.printing();
     let ready = fixtures::handed(printing, file(dir.path()), 9);
     core.print_finished(ready.path.clone(), 8, true);
+    // An admitted wrong key is either still pending/running, or has already started a worker. Observe both before sending the valid completion.
+    let unclaimed = !printing.publishing() && fixtures::worker_starts(printing) == 0;
     let preserved = std::fs::read(&ready.path).ok();
     core.print_finished(ready.path, 9, true);
     app.settle();
+    assert!(unclaimed, "the wrong serial must neither claim the print nor start a job");
     assert_eq!(preserved.as_deref(), Some(b"prepared pages".as_slice()), "wrong serial must do nothing");
 }
 
