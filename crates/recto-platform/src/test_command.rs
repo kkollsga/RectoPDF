@@ -8,8 +8,27 @@ use std::time::{Duration, Instant};
 
 const CAP: usize = 64 * 1024;
 
+/// Capture a small tool response, with a byte and time bound including inherited pipe writers.
 pub fn output(command: &mut Command, timeout: Duration) -> io::Result<(bool, Output)> {
-    output_after_spawn(command, timeout, CAP, |_| Ok(()))
+    output_with_cap(command, timeout, CAP)
+}
+
+/// Evidence may contain a larger QA reply. The caller chooses its bounded allowance, up to one evidence folder.
+pub fn output_with_cap(command: &mut Command, timeout: Duration, cap: usize) -> io::Result<(bool, Output)> {
+    if cap > 16 * 1024 * 1024 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "capture allowance exceeds 16 MiB"));
+    }
+    output_after_spawn(command, timeout, cap, |_| Ok(()))
+}
+
+/// Sampling writes into the owned pipe too, so its report cannot bypass the collector's byte bound with a regular output file.
+pub fn sample_process(pid: u32, seconds: u32, timeout: Duration, cap: usize) -> io::Result<(bool, Output)> {
+    if pid <= 1 || !(1..=10).contains(&seconds) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid sample target or duration"));
+    }
+    let mut command = Command::new("/usr/bin/sample");
+    command.arg(pid.to_string()).arg(seconds.to_string()).args(["-mayDie", "-file", "/dev/stdout"]);
+    output_with_cap(&mut command, timeout, cap)
 }
 
 /// The tests handshake an actual peer before injecting a zero deadline or an error. Normal callers add no work here and use the public cap.

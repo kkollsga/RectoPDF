@@ -4,13 +4,17 @@
 //!
 //! **Nothing of the owner's.** Every file copied is from the test's own state folder, which is in temp and never the real one ([`super::State::new`]'s override refuses that), and every document a test opens is one it made (`recto_testpdf`). Settings are kept by an allow-list of names; Launch Services is listed only for this checkout and the tests' temp folders; other processes are listed by short name and load only.
 
+#[path = "native_sample.rs"]
+mod native_sample;
+pub use native_sample::sample;
+
 use super::State;
 use super::threads;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::{Mutex, Once, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -139,27 +143,10 @@ pub fn while_running(state: &State, pid: u32) {
         folder.put(&name("qa-state-at-failure.json"), &out.stdout);
     }
     folder.put(&name("threads.txt"), format!("{}\n", threads::named(pid)).as_bytes());
-    // Into the folder, not temp, where it writes by default; then cut to the cap like anything else.
-    let into = folder.path.join(name("sample.txt"));
-    let mut sample = Command::new("/usr/bin/sample");
-    sample
-        .arg(pid.to_string())
-        .arg(SAMPLE_SECONDS.to_string())
-        .arg("-mayDie")
-        .arg("-file")
-        .arg(&into);
-    match bounded(sample, Duration::from_secs(u64::from(SAMPLE_SECONDS) + 15)) {
-        Some(out) if out.status.success() && into.is_file() => {
-            let text = std::fs::read(&into).unwrap_or_default();
-            let _ = std::fs::remove_file(&into);
-            folder.put(&name("sample.txt"), &text);
-        }
-        Some(out) => folder.put(
-            &name("sample.txt"),
-            format!("sample failed ({}): {}\n", out.status, String::from_utf8_lossy(&out.stderr)).as_bytes(),
-        ),
-        None => folder.put(&name("sample.txt"), b"sample didn't end within its bound\n"),
-    }
+    folder.put(
+        &name("sample.txt"),
+        sample(pid, SAMPLE_SECONDS, Duration::from_secs(u64::from(SAMPLE_SECONDS) + 15)).as_bytes(),
+    );
 }
 
 /// The rest, from a state folder dropped as its test fails: its messages, and once a test the launches, the machine, the settings, Launch Services and the command that runs it again. Nothing for a test that never started the app.
@@ -437,39 +424,20 @@ pub const DUMP_TIMED_OUT: &str = "Launch Services' dump didn't answer within 30 
 /// What the file starts with when it did.
 pub const DUMP_ANSWERED: &str = recto_platform::registry::DESCRIBED;
 
-/// A command's output, or `None` if it didn't end within `limit` (it's killed then) or couldn't start.
+/// A diagnostic response, or `None` if its time/byte bound was exceeded or collection failed. No inherited writer can outlive collection.
 pub fn bounded(mut command: Command, limit: Duration) -> Option<std::process::Output> {
-    let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
-    let mut stdout = child.stdout.take()?;
-    let mut stderr = child.stderr.take()?;
-    let reading = std::thread::Builder::new()
-        .name("evidence-read".into())
-        .spawn(move || {
-            let mut out = Vec::new();
-            let _ = stdout.read_to_end(&mut out);
-            out
-        })
-        .ok()?;
-    let began = Instant::now();
-    let status = loop {
-        if let Ok(Some(status)) = child.try_wait() {
-            break Some(status);
+    #[cfg(target_os = "macos")]
+    {
+        match recto_platform::test_command::output_with_cap(&mut command, limit, FOLDER_CAP as usize) {
+            Ok((false, output)) => Some(output),
+            _ => None,
         }
-        if began.elapsed() > limit {
-            let _ = child.kill();
-            let _ = child.wait();
-            break None;
-        }
-        std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
-    };
-    let mut err = Vec::new();
-    let _ = stderr.read_to_end(&mut err);
-    let out = reading.join().unwrap_or_default();
-    Some(std::process::Output {
-        status: status?,
-        stdout: out,
-        stderr: err,
-    })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (&mut command, limit);
+        None // These are the Mac app's diagnostic tools; unsupported platforms collect no response.
+    }
 }
 
 fn tail(text: &str, cap: usize) -> String {

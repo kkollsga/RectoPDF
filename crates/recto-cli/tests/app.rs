@@ -36,6 +36,9 @@ fn outlined() -> TempPdf {
 #[path = "app/quiet.rs"]
 mod quiet;
 
+#[path = "app/awake.rs"]
+mod awake;
+
 #[path = "app/marks.rs"]
 mod marks;
 
@@ -1454,26 +1457,6 @@ fn a_long_outline_scrolls_by_itself_and_keeps_the_tabs_on_screen() {
     assert!(contents["row_views"].as_u64().unwrap() > 0, "{contents}");
 }
 
-/// Where the app's threads are over the next 2 s, for a test that finds it awake when it should be resting. CI's machines don't behave like this one, so a failure there has to carry its own evidence.
-fn whats_awake(pid: u32) -> String {
-    let file = std::env::temp_dir().join(format!("recto-awake-{pid}.txt"));
-    let sampled = std::process::Command::new("/usr/bin/sample")
-        .arg(pid.to_string())
-        .args(["2", "-mayDie", "-file"])
-        .arg(&file)
-        .output();
-    let text = std::fs::read_to_string(&file).unwrap_or_else(|_| format!("no sample: {sampled:?}"));
-    let _ = std::fs::remove_file(&file);
-    // The stacks that were running most, then the threads. Long lines and the library list say nothing here.
-    let from = text.find("Call graph:").unwrap_or(0);
-    let to = text.find("Binary Images:").unwrap_or(text.len());
-    text[from..to]
-        .lines()
-        .take(320)
-        .map(|line| format!("{}\n", line.chars().take(130).collect::<String>()))
-        .collect()
-}
-
 /// Failure: following makes page scrolling slower, the contents stutter, the place drops out of view while reading, or something's left running once they've arrived. Records the contents on every step of a real sweep, and holds the properties: a small largest step, the place in view, and no frames or wake-ups at rest.
 #[test]
 fn the_contents_follow_quietly_and_nothing_runs_at_rest() {
@@ -1500,7 +1483,6 @@ fn the_contents_follow_quietly_and_nothing_runs_at_rest() {
     // With nothing to do there's nothing to wake for. Something left running never gets to the first quiet window, and something that wakes now and then fails the windows after it, so neither passes for rest.
     // The wait is for a burst seen only on CI's virtual machines, about 80 wake-ups a second for up to 6 s after settling, while a sample of every thread found none of them working. This Mac reads 0 to 4 throughout. The CPU it costs is reported, and `docs/PLAN.md` tracks finding out what it is.
     let pid = run.pid;
-    let sampling = std::thread::spawn(move || whats_awake(pid));
     let window = || {
         let before = recto_platform::local::process_counters(pid).unwrap();
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -1519,13 +1501,13 @@ fn the_contents_follow_quietly_and_nothing_runs_at_rest() {
     }
     let resting: Vec<(u64, u64)> = (0..3).map(|_| window()).collect();
     eprintln!("wake-ups and CPU ms in each 2 s: settling {settling:?}, at rest {resting:?}");
-    let evidence = format!(
-        "settling {settling:?}, at rest {resting:?}\nstate: {}\n{}",
-        run.report(),
-        sampling.join().unwrap()
-    );
-    assert!(settling.last().unwrap().0 <= 8, "it never came to rest: {evidence}");
-    assert!(resting.iter().all(|(woke, _)| *woke <= 80), "it wakes at rest: {evidence}");
+    awake::assert_rest(&settling, &resting, || {
+        format!(
+            "settling {settling:?}, at rest {resting:?}\nstate: {}\n{}",
+            run.report(),
+            awake::stack_summary(&common::evidence::sample(pid, 2, std::time::Duration::from_secs(5)))
+        )
+    });
     // Reduce Motion: it stays in view, with no frames at all.
     run.ok(&["qa", "reduce-motion", "on"]);
     run.ok(&["goto", "400"]);
