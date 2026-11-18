@@ -15,7 +15,7 @@ fn a_failed_publication_start_retains_work_until_its_retry_is_due() {
     std::fs::write(&written, b"published after retry").unwrap();
     let ready = fixtures::handed(printing, unnamed_file(b"still owned"), 4);
     fixtures::refuse_spawns(printing, 1);
-    request(printing, &app.core().core, &ready.path, ready.serial);
+    request(printing, &app.core().core, &ready.path, ready.serial, true);
     app.wait_until("the failed start is deferred", || {
         printing.completion_due(app.core().life.now_ms()) == Some(Duration::from_millis(RETRY_MS))
     });
@@ -53,7 +53,7 @@ fn only_publication_is_counted_in_the_quit_grace() {
         "a printer can wait without holding quit"
     );
     let (held, release) = fixtures::hold_publication(printing);
-    request(printing, &inner.core, &ready.path, ready.serial);
+    request(printing, &inner.core, &ready.path, ready.serial, true);
     let reached = held.recv_timeout(WAIT_LIMIT);
     let counted = Running::now(&inner.life, &inner.host, &inner.tools).changes_what_a_quit_writes();
     let unsafe_to_hand_off = !inner.hand_off_check().safe;

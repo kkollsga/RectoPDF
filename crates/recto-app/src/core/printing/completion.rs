@@ -21,6 +21,7 @@ pub(super) enum Status {
 pub(super) struct Context {
     core: Arc<CoreQueue>,
     way_back: Arc<WayBack>,
+    success: bool,
 }
 
 pub(super) struct Entry {
@@ -51,7 +52,7 @@ impl Handing {
 }
 
 /// The exact handed key claims completion once. This path only changes bounded state and wakes the session; it never starts a thread or touches disk.
-pub fn request(printing: &Printing, core: &Arc<CoreQueue>, path: &str, serial: u64) {
+pub fn request(printing: &Printing, core: &Arc<CoreQueue>, path: &str, serial: u64, success: bool) {
     let claimed = {
         let mut handing = lock(&printing.handing);
         if let Some(entry) = handing
@@ -62,6 +63,7 @@ pub fn request(printing: &Printing, core: &Arc<CoreQueue>, path: &str, serial: u
             entry.status = Status::Pending(Context {
                 core: Arc::clone(core),
                 way_back: Arc::new(core.way_back()),
+                success,
             });
             true
         } else {
@@ -159,6 +161,7 @@ struct Job<'a> {
     key: Key,
     file: Option<File>,
     context: Option<Context>,
+    success: bool,
     target: Option<(PathBuf, PathBuf)>,
 }
 
@@ -172,11 +175,13 @@ impl<'a> Job<'a> {
             Status::Pending(context) => Some(context),
             _ => None,
         };
+        let success = context.as_ref().is_none_or(|context| context.success);
         Some(Self {
             printing,
             key: entry.key.clone(),
             file: Some(file),
             context,
+            success,
             target: None,
         })
     }
@@ -186,7 +191,9 @@ impl<'a> Job<'a> {
         self.target = lock(&self.printing.qa_target).take();
         #[cfg(test)]
         hold_handoff(&super::BEFORE_PUBLICATION);
-        if let Some((written, out)) = &self.target {
+        if self.success
+            && let Some((written, out)) = &self.target
+        {
             #[cfg(any(test, feature = "testkit"))]
             self.printing.hooks.before_publish();
             if written.exists() && recto_agent::publish_picture(written, out).is_err() {

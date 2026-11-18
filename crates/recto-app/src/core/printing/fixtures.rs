@@ -44,3 +44,7 @@ pub fn refuse_spawns(printing: &Printing, count: usize) {
 pub fn worker_starts(printing: &Printing) -> usize {
     printing.hooks.starts.load(Ordering::SeqCst)
 }
+
+pub fn remaining_refusals(printing: &Printing) -> usize {
+    printing.hooks.refused_spawns.load(Ordering::SeqCst)
+}
