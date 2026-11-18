@@ -1315,11 +1315,28 @@ impl AppCore {
 }
 
 #[cfg(test)]
-mod lock_tests;
-
-#[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Failure: sharing the core's lock helper makes a bridge call panic after an earlier owner panicked, or discards the value that owner wrote.
+    #[test]
+    fn a_poisoned_bridge_lock_retains_its_written_value() {
+        let value = Mutex::new(0);
+        let poisoned = std::panic::catch_unwind(|| {
+            let mut held = value.lock().expect("not poisoned yet");
+            *held = 41;
+            panic!("poison the held lock");
+        });
+        assert!(poisoned.is_err());
+        assert!(value.is_poisoned());
+        let mut held = crate::lock(&value);
+        assert_eq!(*held, 41);
+        *held += 1;
+        drop(held);
+        assert_eq!(*crate::lock(&value), 42);
+    }
+
     use serde_json::Value;
 
     /// Failure: the host and the core decide a quiet run differently: a word after `-NS...` is that option's value here, while the host's own search found `--qa` in it. It would launch off every screen with nothing watching for a QA run, or the other way round, and take the screen.
