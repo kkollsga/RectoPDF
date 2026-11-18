@@ -100,7 +100,7 @@ The short-stall source push's automatic runner-acquisition retry reached real te
 - [x] Close the demonstrated native launch-watch gap and retain a bounded 16-slot Rust trace with coherent reporting. Native first-ready proof and 20 CI-style rounds passed; original hosted 2.804 s cause stays open. See the startup report for the recorded menu phase and limits.
 - [x] Repair the borrowed-PID cleanup through the CLI's shared launcher and retained Child; bounded failed readiness, exact attached connection, private fixture lease cancellation and backup outside `.app`. The long workload keeps its existing 30-minute limit through an owned launch. Cheap failed-first guards, focused native proof, corrected 20-round runs and final-source lifecycle 30/30 plus registrations 3/3 passed. No termination endpoint or permission exception.
 - [x] Final local gate: `d1b1fefc`, single `CHECK_ALL=1 tools/check.sh --full`, exit 0, 302 s: 3,320 Rust, 203 native, four slow, two bundle and three registration cases. Independent review, release measurements (including the retained initial input-tail miss), focused repetitions and final-source lifecycle are complete.
-- [ ] Merge/push main, observe CI and remove the owned worktrees/artifacts. The startup report retains the original stall and measurement limits.
+- [x] Delivered main `6ef57bd2`; [CI 44420916826](https://github.com/kkollsga/RectoPDF/actions/runs/44420916826) passed all four jobs. Longest job and latest five-green median 18:12 against 21:00. Normal development app refreshed; four owned worktrees/branches, private states and compiled probes removed after process/registration proofs. The startup report retains the original stall and initial input-tail miss.
 
 ## Release follow-ups carried forward
 
