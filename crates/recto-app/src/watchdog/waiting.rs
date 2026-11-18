@@ -66,8 +66,8 @@ mod tests {
         {
             assert_eq!(
                 size_of::<crate::watchdog::Shared>(),
-                1088,
-                "the whole shared watch must not grow for its wait state"
+                1520,
+                "the whole shared watch includes the fixed startup trace, with no growth for its wait state"
             );
             assert_eq!(size_of::<Waiting>(), 16, "one optional deadline, on the watcher stack");
         }

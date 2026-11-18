@@ -21,9 +21,6 @@ mod snapshot_tool;
 pub mod updates;
 
 pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
-pub use recto_app::PaneView;
-pub use recto_app::RecentFile;
-pub use recto_app::SelectionNotice;
 pub use recto_app::core::WindowPlacement;
 use recto_app::core::controls::UiAction;
 use recto_app::core::*;
@@ -33,21 +30,17 @@ use recto_app::privacy;
 use recto_app::queue::CoreCall;
 pub use recto_app::reader_view::ReaderView;
 pub use recto_app::records::{HighlightRect, MarkPage, ReaderOp, ScreenInfo};
-pub use recto_app::{RowKind, SidebarRow, SidebarView};
+pub use recto_app::{PaneView, RecentFile, RowKind, SelectionNotice, SidebarRow, SidebarView, lock};
 use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Viewport};
 use recto_session::record::{self, SettingsWindow};
 use recto_session::{CONTENTS_ROW_HEIGHT, ContentsRowChange, ContentsView, FollowMove, TAB_ROW_HEIGHT, TabId, row_full_text, sidebar_heights_with_note};
 use serde_json::json;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
 use std::time::Duration;
 
 uniffi::setup_scaffolding!();
-
-pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 /// What the host hears. Called from background threads, and must return at once: the host hops to its UI thread.
 #[uniffi::export(with_foreign)]
@@ -1321,6 +1314,26 @@ impl AppCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Failure: sharing the core's lock helper makes a bridge call panic after an earlier owner panicked, or discards the value that owner wrote.
+    #[test]
+    fn a_poisoned_bridge_lock_retains_its_written_value() {
+        let value = Mutex::new(0);
+        let poisoned = std::panic::catch_unwind(|| {
+            let mut held = value.lock().expect("not poisoned yet");
+            *held = 41;
+            panic!("poison the held lock");
+        });
+        assert!(poisoned.is_err());
+        assert!(value.is_poisoned());
+        let mut held = crate::lock(&value);
+        assert_eq!(*held, 41);
+        *held += 1;
+        drop(held);
+        assert_eq!(*crate::lock(&value), 42);
+    }
+
     use serde_json::Value;
 
     /// Failure: the host and the core decide a quiet run differently: a word after `-NS...` is that option's value here, while the host's own search found `--qa` in it. It would launch off every screen with nothing watching for a QA run, or the other way round, and take the screen.
