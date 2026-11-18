@@ -187,7 +187,7 @@ impl Printing {
     }
 
     /// **For QA's print to a PDF through the system's printing:** where it should write, a new name of ours beside `out`, which is published at `out` when
-    /// it's done ([`Self::finished`]), never over anything. None if `out` isn't absolute, is there already, or the name of ours is taken.
+    /// it's done ([`Self::finished`]), never over anything. None while a print is busy, or if `out` isn't absolute, is there already, or the name of ours is taken.
     pub fn qa_target_for(&self, out: PathBuf) -> Option<PathBuf> {
         if self.busy() {
             return None;
@@ -237,9 +237,12 @@ impl Printing {
     }
 
     /// **The system's printing is done with the file at `path`,** however it went: its descriptor goes, and with it the file, if `path` is one this app
-    /// handed out and still holds. Any other path, a stale one or one the host made up, lets nothing go, and no path the host gives is ever removed: the
+    /// handed out and still holds. A path not currently held lets nothing go or publish, and no path the host gives is ever removed: the
     /// print's file has no name to remove. A QA print to a file is published where it was asked for.
     pub fn finished(&self, path: &str) {
+        if !lock(&self.handing).iter().any(|file| is_at(file, path)) {
+            return;
+        }
         #[cfg(test)]
         hold_handoff(&BEFORE_PUBLICATION);
         if let Some((written, out)) = lock(&self.qa_target).take() {

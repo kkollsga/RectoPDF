@@ -5,6 +5,28 @@ use crate::core::headless::printing::unnamed_file;
 use crate::testkit::headless::WAIT_LIMIT;
 use std::sync::mpsc;
 
+/// Failure: a completion naming no held file consumes and publishes the active QA target even though it owns none of that print.
+#[test]
+fn an_unowned_completion_cannot_publish_the_active_print() {
+    let dir = recto_testpdf::TempDir::new("print-unowned-finish-");
+    let printing = Printing::default();
+    let out = dir.join("first.pdf");
+    let written = printing.qa_target_for(out.clone()).expect("first target");
+    std::fs::write(&written, b"first result").unwrap();
+    *lock(&printing.ready) = Some((unnamed_file(b"active host file"), 1));
+    let (path, _) = printing.take_ready().expect("active host file");
+    let before = lock(&printing.qa_target).clone();
+    printing.finished("/not-a-print-descriptor");
+    let unchanged = *lock(&printing.qa_target) == before;
+    let unpublished = !out.exists();
+    let bytes = std::fs::read(&path).expect("active descriptor unchanged");
+    printing.finished(path.to_str().unwrap());
+    assert!(unchanged && unpublished, "only a completion owning the held file may publish its target");
+    assert_eq!(bytes, b"active host file");
+    assert_eq!(std::fs::read(out).unwrap(), b"first result");
+    assert!(!printing.busy());
+}
+
 /// Failure: a second panel answer bypasses the disabled Print menu after rendering ends, evicts the first host's descriptor or shares its completion state.
 #[test]
 fn a_second_print_is_refused_until_the_host_finishes() {
