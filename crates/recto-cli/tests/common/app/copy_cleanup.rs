@@ -24,7 +24,7 @@ pub fn end(root: &Path, programs: &[PathBuf], wait: Duration) -> Result<(), Stri
 }
 
 #[cfg(unix)]
-fn owned_program(root: &Path, program: &Path) -> Result<(), String> {
+fn owned_program(root: &Path, program: &Path) -> Result<PathBuf, String> {
     let root = root
         .canonicalize()
         .map_err(|error| format!("canonicalize fixture root {}: {error}", root.display()))?;
@@ -58,7 +58,7 @@ fn owned_program(root: &Path, program: &Path) -> Result<(), String> {
             return Err(format!("fixture path is not private to its owner: {}", path.display()));
         }
     }
-    Ok(())
+    Ok(fixture.to_owned())
 }
 
 #[cfg(unix)]
@@ -78,7 +78,7 @@ impl Lease {
     pub fn remove(root: &Path, program: &Path) -> Result<Self, String> {
         use std::sync::atomic::{AtomicU32, Ordering};
         static NEXT: AtomicU32 = AtomicU32::new(0);
-        owned_program(root, program)?;
+        let fixture = owned_program(root, program)?;
         let mut source = std::fs::File::open(program).map_err(|error| format!("open fixture program {}: {error}", program.display()))?;
         let before = source
             .metadata()
@@ -86,7 +86,11 @@ impl Lease {
         if !before.is_file() || before.mode() & 0o6000 != 0 {
             return Err("fixture program must be a regular executable without elevated mode bits".into());
         }
-        let backup = program.with_file_name(format!(".recto-cleanup-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let fixture_meta = std::fs::metadata(&fixture).map_err(|error| format!("inspect fixture backup root {}: {error}", fixture.display()))?;
+        if fixture_meta.dev() != before.dev() {
+            return Err("fixture backup root and program must be on the same filesystem".into());
+        }
+        let backup = fixture.join(format!(".recto-cleanup-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
         let mut saved = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
