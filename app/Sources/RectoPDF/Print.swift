@@ -40,22 +40,59 @@ fileprivate struct ActivePrint {
     let ready: ReadyPrint
 }
 
+/// A private snapshot, never the panel's retained object or the shared defaults. Main copies it, one worker prepares it, then main consumes it.
+private struct PrintInfoTransfer: @unchecked Sendable {
+    let info: NSPrintInfo
+    let mainThread: Bool
+    let micros: UInt64
+
+    @MainActor static func snapshot(_ original: NSPrintInfo) -> PrintInfoTransfer? {
+        let began = DispatchTime.now().uptimeNanoseconds
+        guard let info = original.copy() as? NSPrintInfo, info !== original else { return nil }
+        return PrintInfoTransfer(info: info, mainThread: Thread.isMainThread, micros: (DispatchTime.now().uptimeNanoseconds - began) / 1000)
+    }
+
+    var report: [String: Any] { ["main_thread": mainThread, "micros": micros] }
+}
+
+/// Only the geometry and diagnostics cross back from paper preparation; no print settings live in the report.
+private struct PrintPaper: Sendable {
+    let size: NSSize
+    let mainThread: Bool
+    let micros: UInt64
+
+    static func read(_ info: NSPrintInfo) -> PrintPaper {
+        let began = DispatchTime.now().uptimeNanoseconds
+        // The range was taken already: the file is just those pages.
+        info.dictionary()[NSPrintInfo.AttributeKey.allPages] = true
+        info.isSelectionOnly = false
+        let paper = info.paperSize
+        let size = NSSize(width: paper.width - info.leftMargin - info.rightMargin, height: paper.height - info.topMargin - info.bottomMargin)
+        return PrintPaper(size: size, mainThread: Thread.isMainThread, micros: (DispatchTime.now().uptimeNanoseconds - began) / 1000)
+    }
+
+    var report: [String: Any] { ["main_thread": mainThread, "micros": micros] }
+}
+
 /// Core Graphics alone reads this file off the UI thread. After loading, the document transfers to the main thread's print view and is drawn only by its print operation.
 private struct LoadedPrintDocument: @unchecked Sendable {
     let document: CGPDFDocument
     let pages: Int
     let mainThread: Bool
     let micros: UInt64
+    let paper: PrintPaper
+    let info: PrintInfoTransfer
 
-    static func open(_ path: String) -> LoadedPrintDocument? {
+    static func open(_ path: String, info: PrintInfoTransfer) -> LoadedPrintDocument? {
+        let paper = PrintPaper.read(info.info)
         let began = DispatchTime.now().uptimeNanoseconds
         guard let document = CGPDFDocument(URL(fileURLWithPath: path) as CFURL) else { return nil }
         let pages = document.numberOfPages
         guard pages > 0 else { return nil }
-        return LoadedPrintDocument(document: document, pages: pages, mainThread: Thread.isMainThread, micros: (DispatchTime.now().uptimeNanoseconds - began) / 1000)
+        return LoadedPrintDocument(document: document, pages: pages, mainThread: Thread.isMainThread, micros: (DispatchTime.now().uptimeNanoseconds - began) / 1000, paper: paper, info: info)
     }
 
-    var report: [String: Any] { ["main_thread": mainThread, "micros": micros, "pages": pages] }
+    var report: [String: Any] { ["main_thread": mainThread, "micros": micros, "pages": pages, "paper": paper.report, "info_copy": info.report] }
 }
 
 /// What the system's printing draws: the pages of the file Rust prepared, each fitted to the paper. Core Graphics reads the pictures Rust prepared; opening and page counting are prepared off the UI thread. The print operation is allowed a drawing thread; quiet QA has verified that path for text and map pages.
@@ -155,11 +192,12 @@ extension AppDelegate {
         }
         // Answers before it whose prints went nowhere (refused, or stopped) won't come back.
         printHost.infos = printHost.infos.filter { $0.key > ready.serial }
-        // The range was taken already: the file is just those pages.
-        info.dictionary()[NSPrintInfo.AttributeKey.allPages] = true
-        info.isSelectionOnly = false
-        let paper = NSSize(width: info.paperSize.width - info.leftMargin - info.rightMargin, height: info.paperSize.height - info.topMargin - info.bottomMargin)
         guard let window = windowController?.window else {
+            core.printFinished(path: path, serial: ready.serial, success: false)
+            return
+        }
+        // A preview panel retains its info, so removing our entry alone does not make that object safe to transfer.
+        guard let prepared = PrintInfoTransfer.snapshot(info) else {
             core.printFinished(path: path, serial: ready.serial, success: false)
             return
         }
@@ -167,7 +205,7 @@ extension AppDelegate {
         let core = self.core
         // Rust keeps this unnamed file in `handing` until exactly one completion below. Its one-print rule bounds this work to one load, without idle state or a private thread.
         DispatchQueue.global(qos: .userInitiated).async { [weak self, weak window] in
-            let loaded = LoadedPrintDocument.open(path)
+            let loaded = LoadedPrintDocument.open(path, info: prepared)
             DispatchQueue.main.async { [weak self, weak window] in
                 // A closed or replaced window must not inherit the old window's pending print.
                 guard let self, let window, self.windowController?.window === window else {
@@ -175,11 +213,11 @@ extension AppDelegate {
                     return
                 }
                 self.printHost.lastLoad = loaded?.report
-                guard let loaded, let view = PrintPagesView(loaded: loaded, paper: paper) else {
+                guard let loaded, let view = PrintPagesView(loaded: loaded, paper: loaded.paper.size) else {
                     core.printFinished(path: path, serial: ready.serial, success: false)
                     return
                 }
-                let operation = NSPrintOperation(view: view, printInfo: info)
+                let operation = NSPrintOperation(view: view, printInfo: loaded.info.info)
                 operation.showsPrintPanel = false
                 operation.showsProgressPanel = !self.isQuiet
                 operation.canSpawnSeparateThread = true
