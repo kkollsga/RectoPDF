@@ -8,7 +8,7 @@ use std::sync::mpsc;
 const LIMIT: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
-struct DecodeHold {
+pub(super) struct DecodeHold {
     state: Mutex<(bool, bool)>, // entered, released
     changed: Condvar,
 }
@@ -23,7 +23,7 @@ impl DecodeHold {
         }
     }
 
-    fn entered(&self) -> bool {
+    pub(super) fn entered(&self) -> bool {
         let (state, _) = self
             .changed
             .wait_timeout_while(lock(&self.state), LIMIT, |state| !state.0)
@@ -31,14 +31,14 @@ impl DecodeHold {
         state.0
     }
 
-    fn release(&self) {
+    pub(super) fn release(&self) {
         lock(&self.state).1 = true;
         self.changed.notify_all();
     }
 }
 
 thread_local! {
-    static DECODING: RefCell<Option<Arc<DecodeHold>>> = const { RefCell::new(None) };
+    pub(super) static DECODING: RefCell<Option<Arc<DecodeHold>>> = const { RefCell::new(None) };
 }
 
 /// Only a test's first ask thread arms this; production has no seam or added state.
