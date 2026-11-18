@@ -89,11 +89,16 @@ pub struct Printing {
 impl Printing {
     /// **A print is asked for,** at once, on the UI thread, before its command runs: from here to what came of it being said, the window shows it being
     /// prepared with Stop, File > Print is off, and another answer isn't taken (review of S2, S4). A Stop or a quit from here on holds. False, and nothing
-    /// changed, if one is asked for already.
+    /// changed, if one is preparing, ready for the host or still held by the system's printing.
     fn ask(&self, pages: u32, asked_by: u64) -> bool {
-        if self.running.swap(true, Ordering::SeqCst) {
+        // The ready lock gates both admission and the ready→handing transition. Always take it before handing.
+        let ready = lock(&self.ready);
+        let handing = lock(&self.handing);
+        if ready.is_some() || !handing.is_empty() || self.running.swap(true, Ordering::SeqCst) {
             return false;
         }
+        drop(handing);
+        drop(ready);
         self.cancel.store(false, Ordering::SeqCst);
         self.done.store(0, Ordering::SeqCst);
         self.of.store(pages, Ordering::SeqCst);
@@ -184,6 +189,9 @@ impl Printing {
     /// **For QA's print to a PDF through the system's printing:** where it should write, a new name of ours beside `out`, which is published at `out` when
     /// it's done ([`Self::finished`]), never over anything. None if `out` isn't absolute, is there already, or the name of ours is taken.
     pub fn qa_target_for(&self, out: PathBuf) -> Option<PathBuf> {
+        if self.busy() {
+            return None;
+        }
         let folder = out.parent()?;
         if !out.is_absolute() || std::fs::symlink_metadata(&out).is_ok() {
             return None;
@@ -196,6 +204,12 @@ impl Printing {
         if std::fs::symlink_metadata(&written).is_ok() {
             return None;
         }
+        // Metadata reads stay outside the gate; refuse again under it before changing the active target.
+        let ready = lock(&self.ready);
+        let handing = lock(&self.handing);
+        if self.running.load(Ordering::SeqCst) || ready.is_some() || !handing.is_empty() {
+            return None;
+        }
         *lock(&self.qa_target) = Some((written.clone(), out));
         Some(written)
     }
@@ -205,7 +219,10 @@ impl Printing {
     /// through `/dev/fd` shares this one's place in the file.
     pub fn take_ready(&self) -> Option<(PathBuf, u64)> {
         use std::io::Seek;
-        let (mut file, serial) = lock(&self.ready).take()?;
+        let mut ready = lock(&self.ready);
+        let (mut file, serial) = ready.take()?;
+        #[cfg(test)]
+        hold_handoff(&AFTER_READY_TAKE);
         // A file that can't be read from its start goes now, and nothing's printed: the host is told of no file.
         file.rewind().ok()?;
         let path = descriptor_path(&file)?;
@@ -214,6 +231,8 @@ impl Printing {
             handing.remove(0);
         }
         handing.push(file);
+        drop(handing);
+        drop(ready);
         Some((path, serial))
     }
 
@@ -221,13 +240,16 @@ impl Printing {
     /// handed out and still holds. Any other path, a stale one or one the host made up, lets nothing go, and no path the host gives is ever removed: the
     /// print's file has no name to remove. A QA print to a file is published where it was asked for.
     pub fn finished(&self, path: &str) {
-        lock(&self.handing).retain(|file| !is_at(file, path));
+        #[cfg(test)]
+        hold_handoff(&BEFORE_PUBLICATION);
         if let Some((written, out)) = lock(&self.qa_target).take() {
             if written.exists() && recto_agent::publish_picture(&written, &out).is_err() {
                 self.say("The print couldn't be put there: a file is already there, and it won't be replaced.", false);
             }
             let _ = std::fs::remove_file(&written);
         }
+        // Keep the host's descriptor and busy state through publication, without a handing lock over filesystem work.
+        lock(&self.handing).retain(|file| !is_at(file, path));
     }
 
     pub fn has_ready(&self) -> bool {
@@ -244,6 +266,24 @@ impl Printing {
     pub fn quitting(&self) {
         self.cancel();
         lock(&self.ready).take();
+    }
+}
+
+#[cfg(test)]
+mod handoff_tests;
+
+/// Test holds at the two ownership transitions: no time or scheduling assumption decides their assertions.
+#[cfg(test)]
+static AFTER_READY_TAKE: Mutex<Option<Hold>> = Mutex::new(None);
+#[cfg(test)]
+static BEFORE_PUBLICATION: Mutex<Option<Hold>> = Mutex::new(None);
+
+#[cfg(test)]
+fn hold_handoff(at: &Mutex<Option<Hold>>) {
+    if let Some((entered, release)) = lock(at).take() {
+        let _ = entered.send(());
+        // The test's sole sender drops on success and unwind, so a failed assertion cannot leave this thread waiting.
+        let _ = release.recv();
     }
 }
 
