@@ -3,10 +3,12 @@
 pub mod contents;
 pub mod hidden;
 pub mod images;
+mod job_cpu;
 mod rest;
 mod slot;
 pub use rest::HeavyRest;
 
+use job_cpu::JobCpu;
 pub use slot::HeavySlot;
 use slot::{HeavyTicket, SlotWaitEnd};
 
@@ -1482,6 +1484,7 @@ impl DocRenderer {
                 policy: &self.policy,
                 control: &self.control,
                 generation,
+                job_cpu: JobCpu::default(),
             };
             // A worker with no link can't take this. That's only a stand-in, so it's a plain failure rather than a kill.
             if let Some(surface) = surface {
@@ -1513,6 +1516,7 @@ impl DocRenderer {
                     }
                     decode(&mut reply).map_err(|error| Stop::Killed(KillReason::Rejected(error.0)))
                 });
+            let job_cpu = watch.job_cpu;
             self.stats.jobs += 1;
             match outcome {
                 Ok(value) => {
@@ -1544,8 +1548,8 @@ impl DocRenderer {
                 }
                 Err(Stop::Killed(reason)) => {
                     let cpu_ns = self.bury_worker_noting_cpu();
-                    // Out of time with too little of the processor to have been the cause: the Mac was busy, as `open_in` reckons it, and it says nothing about the page.
-                    if matches!(reason, KillReason::Deadline) && cpu_ns.is_some_and(|cpu| was_starved(cpu, self.policy.page_deadline)) {
+                    // Only this exchange's CPU counts; earlier jobs cannot make a starved worker look busy.
+                    if matches!(reason, KillReason::Deadline) && job_cpu.starved(cpu_ns, self.policy.page_deadline) == Some(true) {
                         self.stats.too_busy += 1;
                         self.left_out.busy = self.left_out.busy.saturating_add(1);
                     }
@@ -1592,14 +1596,14 @@ impl DocRenderer {
         }
     }
 
-    /// [`Self::bury_worker`], saying how much of the processor the worker had used in its life, from its final numbers.
-    fn bury_worker_noting_cpu(&mut self) -> Option<u64> {
+    /// [`Self::bury_worker`], retaining its identity and final lifetime CPU for the exchange's checked delta.
+    fn bury_worker_noting_cpu(&mut self) -> Option<(u32, u64)> {
         self.retire_after_page = None;
         let worker = self.worker.take()?;
         worker.child.kill_now();
         worker.child.wait_bounded(FINAL_NUMBERS_WAIT);
         self.note_peak(&worker);
-        worker.child.memory().map(|memory| memory.cpu_ns)
+        worker.child.memory().map(|memory| (worker.child.pid(), memory.cpu_ns))
     }
 
     fn note_peak(&mut self, worker: &Worker) {
@@ -1759,8 +1763,10 @@ impl DocRenderer {
             policy: &self.policy,
             control: &self.control,
             generation,
+            job_cpu: JobCpu::default(),
         };
         let reply = worker.exchange(&frame, &[&file, self.control.shared.handle()], &watch);
+        let job_cpu = watch.job_cpu;
         // The frame holds the password, and it's been sent: overwritten before it goes back.
         recto_platform::secret::wipe(frame);
         let killed = |stats: &mut RenderStats, reason: KillReason| {
@@ -1779,10 +1785,10 @@ impl DocRenderer {
                 worker.child.wait_bounded(FINAL_NUMBERS_WAIT);
                 self.note_peak(&worker);
                 if matches!(reason, KillReason::Deadline)
-                    && worker
-                        .child
-                        .memory()
-                        .is_some_and(|memory| was_starved(memory.cpu_ns, self.policy.page_deadline))
+                    && job_cpu.starved(
+                        worker.child.memory().map(|memory| (worker.child.pid(), memory.cpu_ns)),
+                        self.policy.page_deadline,
+                    ) == Some(true)
                 {
                     self.stats.too_busy += 1;
                 }
@@ -1882,17 +1888,13 @@ struct Watch<'a> {
     policy: &'a Policy,
     control: &'a CancelWord,
     generation: Option<u64>,
+    job_cpu: JobCpu,
 }
 
 impl Watch<'_> {
     fn is_stale(&self) -> bool {
         self.generation.is_some_and(|generation| self.control.is_stale(generation))
     }
-}
-
-/// Whether a worker that ran out of time had too little of the processor to have been the cause. A file that's slow to open uses what it's given. A worker that's hung looks starved too, and all that costs is its time being asked for again, a whole deadline apart.
-fn was_starved(cpu_ns: u64, deadline: Duration) -> bool {
-    u128::from(cpu_ns) < deadline.as_nanos() / 2
 }
 
 /// Jobs in a row with no footprint to read, after which a worker retires anyway. What a worker holds grows by at most a page's parsed streams a job, about 2 MiB on the image
@@ -2033,6 +2035,7 @@ impl Worker {
     }
 
     fn exchange_watched(&mut self, frame: &[u8], handles: &[&Handle], watch: &Watch<'_>) -> Result<Frame, Stop> {
+        watch.job_cpu.begin(self.child.memory().map(|memory| (self.child.pid(), memory.cpu_ns)));
         let started = Instant::now();
         let deadline = started + watch.policy.page_deadline;
         let mut sent = 0;
