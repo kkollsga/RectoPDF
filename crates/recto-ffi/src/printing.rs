@@ -52,8 +52,10 @@ impl AppCore {
     }
 
     /// The system's printing is done with a file, however it went: it goes.
-    pub fn print_finished(&self, path: String) {
-        self.inner.tools.printing().finished(&path);
-        self.inner.core.push(CoreCall::Reconcile);
+    pub fn print_finished(&self, path: String, serial: u64) {
+        recto_app::core::printing::completion::request(self.inner.tools.printing(), &self.inner.core, &path, serial);
     }
 }
+
+#[cfg(test)]
+mod tests;
