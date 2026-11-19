@@ -726,8 +726,7 @@ impl Updater {
             self.log(&format!("{version} can't draw a page"));
             // Without the word from here the installer would find out only by waiting. With no installer, the launches that don't come up are what count.
             if arrived.is_some() {
-                self.ready_folder();
-                let _ = local::write_private_file(&self.files.launch_failed(), version.as_bytes());
+                started::drawing_failed(&self.files, &self.st, self.host.as_ref(), &version, second_copy);
             }
             return;
         }
@@ -1831,7 +1830,7 @@ mod tests {
             updater
         };
         let updater = launch("0.2.0");
-        updater.first_frame(100);
+        started::assert_failed_frame(&updater, 100, &bed.fake.quits, &bed.fake.hand_offs);
         assert!(files.launch_failed().exists(), "the installer hears");
         assert!(!files.launch_ok().exists(), "and doesn't hear otherwise");
         assert!(lock(&updater.st).saved.proven.is_none());
@@ -2187,7 +2186,7 @@ mod tests {
                 !second.reopened_by_update(),
                 "a second copy isn't taken as reopened by the update it didn't settle"
             );
-            second.first_frame(10);
+            started::assert_second_copy_preserves_status(&second, 10);
             let said = std::fs::read_to_string(files.launch_ok()).ok();
             match (opened_by_update, draws) {
                 (true, true) => {
