@@ -773,7 +773,7 @@ fn a_new_app_that_cant_draw_preserves_recovery_while_live() {
             break outcome;
         }
         assert!(began.elapsed() < Duration::from_secs(60), "no recovery outcome: {}", bed.said());
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(20)); // ratchet: poll — bounded outcome-file observation.
     };
     assert_eq!(outcome.kind, recto_update::plan::OutcomeKind::CouldntGoBack);
     assert_eq!(outcome.why, "app_exit_unproven");
