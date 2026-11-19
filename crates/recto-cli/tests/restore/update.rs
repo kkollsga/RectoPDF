@@ -777,6 +777,7 @@ fn a_new_app_that_cant_draw_preserves_recovery_while_live() {
     };
     assert_eq!(outcome.kind, recto_update::plan::OutcomeKind::CouldntGoBack);
     assert_eq!(outcome.why, "app_exit_unproven");
+    assert_eq!(bed.status(&run)["status"], "failed", "the live app reports its drawing failure");
     assert_eq!(bed.version(), NEW, "no bundle swap over the live replacement");
     assert_eq!(bed.kept().as_deref(), Some(OLD));
     assert!(files.plan().is_file(), "the unresolved plan remains");
