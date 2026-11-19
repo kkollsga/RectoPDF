@@ -128,7 +128,10 @@ fn present(root: &Path) -> io::Result<bool> {
             if process_vanished(&error) {
                 continue;
             }
-            return Err(error);
+            return Err(io::Error::new(
+                error.kind(),
+                format!("process path query for PID {pid} while observing {}: {error}", root.display()),
+            ));
         }
         if count as usize >= path.len() {
             return Err(io::Error::other("fixture process path reached its cap"));
@@ -151,17 +154,28 @@ pub fn wait_for_exit(root: &Path, limit: Duration) -> io::Result<()> {
     wait(limit, || present(root))
 }
 
-fn wait(limit: Duration, mut probe: impl FnMut() -> io::Result<bool>) -> io::Result<()> {
-    let deadline = Instant::now() + limit;
+fn wait(limit: Duration, probe: impl FnMut() -> io::Result<bool>) -> io::Result<()> {
+    wait_with(limit, probe, Instant::now, std::thread::sleep)
+}
+
+fn wait_with(
+    limit: Duration,
+    mut probe: impl FnMut() -> io::Result<bool>,
+    mut now: impl FnMut() -> Instant,
+    mut pause: impl FnMut(Duration),
+) -> io::Result<()> {
+    let deadline = now() + limit;
     loop {
-        if !probe()? {
-            return Ok(());
-        }
-        let left = deadline.saturating_duration_since(Instant::now());
+        let unknown = match probe() {
+            Ok(false) => return Ok(()),
+            Ok(true) => None,
+            Err(error) => Some(error),
+        };
+        let left = deadline.saturating_duration_since(now());
         if left.is_zero() {
-            return Err(io::Error::new(io::ErrorKind::TimedOut, "fixture processes remain"));
+            return Err(unknown.unwrap_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "fixture processes remain")));
         }
-        std::thread::sleep(left.min(Duration::from_millis(10))); // ratchet: poll
+        pause(left.min(Duration::from_millis(10)));
     }
 }
 
@@ -229,4 +243,29 @@ fn lost_child_anchor_never_signals_and_retains_the_fixture() {
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     assert_eq!(child.kills, 1);
     retained(error);
+}
+
+/// Failure: a single unknown OS observation rejects otherwise-proved cleanup,
+/// or persistent uncertainty is accepted as exit after patience runs out.
+#[test]
+fn uncertain_observation_retries_without_weakening_exit_proof() {
+    let began = Instant::now();
+    let clock = std::cell::Cell::new(began);
+    let limit = Duration::from_nanos(2);
+    let mut samples = [Err(io::Error::from_raw_os_error(2)), Ok(false)].into_iter();
+    assert!(wait_with(limit, || samples.next().unwrap(), || clock.get(), |step| clock.set(clock.get() + step)).is_ok());
+    clock.set(began);
+    let calls = std::cell::Cell::new(0);
+    let result = wait_with(
+        limit,
+        || {
+            calls.set(calls.get() + 1);
+            Err(io::Error::from_raw_os_error(2))
+        },
+        || clock.get(),
+        |step| clock.set(clock.get() + step),
+    );
+    assert!(result.is_err());
+    assert_eq!(clock.get(), began + limit);
+    assert_eq!(calls.get(), 2);
 }
