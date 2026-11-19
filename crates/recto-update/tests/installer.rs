@@ -205,6 +205,16 @@ impl Bed {
         self.start(old, die_at).wait().unwrap()
     }
 
+    /// A new installer has no child handle for a prior launch; end the fixture cooperatively before retrying rollback.
+    fn end_stand_in(&self) {
+        let stop = self.files.work.join("test-app-stop");
+        local::write_private_file(&stop, b"").unwrap();
+        wait_until("the prior stand-in to end", Duration::from_secs(5), || {
+            !local::update_app_is_running(&self.plan.executable()).expect("a definite fixture observation")
+        });
+        std::fs::remove_file(stop).unwrap();
+    }
+
     fn installed(&self) -> String {
         app_version(&self.app).expect("there's a whole app at the app's path")
     }
@@ -437,6 +447,7 @@ fn killed_while_putting_the_record_back_it_can_still_finish() {
     plan.id = "second".into();
     plan.pid = gone.id();
     plan.write(&bed.files.plan()).unwrap();
+    bed.end_stand_in();
     let ended = Command::new(installer_in(&bed.app))
         .arg("back")
         .arg(bed.files.plan())
@@ -731,6 +742,7 @@ fn going_back_by_itself_takes_only_a_copy_it_may() {
         plan.pid = gone.id();
         plan.team_required = true;
         plan.write(&bed.files.plan()).unwrap();
+        bed.end_stand_in();
         let _ = Command::new(installer_in(&bed.app))
             .arg("back")
             .arg(bed.files.plan())
@@ -882,6 +894,7 @@ fn with_nothing_to_go_back_to_it_says_so() {
     plan.id = "back".into();
     plan.pid = gone.id();
     plan.write(&bed.files.plan()).unwrap();
+    bed.end_stand_in();
     let ended = Command::new(installer_in(&bed.app))
         .arg("back")
         .arg(bed.files.plan())
@@ -946,6 +959,7 @@ fn going_back_after_it_came_up_keeps_the_record_as_it_is() {
         ..bed.plan.clone()
     };
     plan.write(&bed.files.plan()).unwrap();
+    bed.end_stand_in();
     let ended = Command::new(installer_in(&bed.app))
         .arg("back")
         .arg(bed.files.plan())
@@ -1055,6 +1069,7 @@ fn going_back_with_no_install_before_it_works() {
     plan.id = "guard".into();
     plan.pid = gone.id();
     plan.write(&bed.files.plan()).unwrap();
+    bed.end_stand_in();
     let ended = Command::new(installer_in(&bed.app))
         .arg("back")
         .arg(bed.files.plan())

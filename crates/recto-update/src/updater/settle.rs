@@ -14,9 +14,16 @@ impl Updater {
         let mut settled = Settled::default();
         let Some(beside) = beside_app(app) else { return settled };
         if let Some(outcome) = Outcome::read(&self.files.outcome()) {
-            let _ = std::fs::remove_file(self.files.outcome());
-            let _ = std::fs::remove_file(self.files.plan());
-            let _ = std::fs::remove_file(self.files.helper_pid());
+            let exit_unproven = outcome.kind == OutcomeKind::CouldntGoBack && outcome.why == "app_exit_unproven";
+            if exit_unproven {
+                // This unresolved refusal must not immediately launch another rollback and quit again.
+                saved.unstarted = 0;
+                saved.probation = None;
+            } else {
+                let _ = std::fs::remove_file(self.files.outcome());
+                let _ = std::fs::remove_file(self.files.plan());
+                let _ = std::fs::remove_file(self.files.helper_pid());
+            }
             // Gone back with it put back, the copy's for nothing. Stuck on a version that didn't come up, it's the state before it, and stays. Gone back with the record as it was, it's what to fall back on if the previous version can't read that, and it goes after its week as ever.
             let kept_ending = outcome.kind == OutcomeKind::WentBack && outcome.why == "kept_ending";
             if kept_ending {
@@ -30,7 +37,7 @@ impl Updater {
                 OutcomeKind::CouldntGoBack => false,
             };
             settled.changed = true;
-            settled.plan_gone = true;
+            settled.plan_gone = !exit_unproven;
             match outcome.kind {
                 OutcomeKind::WentBack => {
                     saved.note_failed_version(&outcome.to);
@@ -47,7 +54,11 @@ impl Updater {
                 }
                 OutcomeKind::CouldntGoBack => {
                     saved.note_failed_version(&outcome.to);
-                    let why = "it didn't come up, and there was no earlier version to go back to";
+                    let why = if exit_unproven {
+                        "the new app may still be running, so the earlier version was not put back"
+                    } else {
+                        "it didn't come up, and there was no earlier version to go back to"
+                    };
                     settled.status = Some(Status::Failed {
                         version: outcome.to.clone(),
                         why: why.to_owned(),

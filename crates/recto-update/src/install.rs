@@ -11,6 +11,8 @@
 //!
 //! The installer quits nothing: quitting was the app's own hand-off. What's left if this is killed is put right at the next launch ([`crate::updater`]). It writes a log to the state folder, with words of its own.
 
+mod retirement;
+
 use crate::plan::{Files, Outcome, OutcomeKind, Plan, log, new_app_in, previous_app_in};
 use crate::process::tool;
 use crate::{APP_BUNDLE, APP_EXECUTABLE, RELEASE_BUILD, TEAM_ID};
@@ -25,7 +27,7 @@ const LOOK_STEP: Duration = Duration::from_millis(20);
 const GONE_GRACE: Duration = Duration::from_secs(3);
 /// How often the installer looks at whether its plan's still its own, while it waits for the old app.
 const PLAN_LOOK: Duration = Duration::from_millis(100);
-/// How long the new app gets to end by being asked, and then by being told.
+/// At most five seconds to reap an owned direct child, then five to prove executable absence.
 const STOP_PATIENCE: Duration = Duration::from_secs(5);
 
 /// A test's way to kill the installer right after a step, to prove what's left is fine. Only in a build that isn't a release.
@@ -45,13 +47,14 @@ pub enum Ended {
     Updated,
     NotInstalled,
     WentBack,
-    /// Nothing's running and nothing could be done about it: the log says why.
+    /// Recovery could not be completed safely: the log says why.
     Stuck,
 }
 
 struct Run<'a> {
     plan: &'a Plan,
     files: Files,
+    launched: retirement::Launched,
 }
 
 impl Run<'_> {
@@ -126,8 +129,10 @@ impl Run<'_> {
         {
             let mut args = test.args.clone();
             args.extend(self.plan.open.iter().map(|path| path.display().to_string()));
-            return local::spawn_detached(&self.plan.executable(), &args, &test.env, &self.files.log).is_ok();
+            return self.launched.start(&self.plan.executable(), &args, &test.env, &self.files.log).is_ok();
         }
+        // Even an error/timeout from open can leave a launch pending in Launch Services.
+        self.launched.requested();
         let args = open_arguments(self.plan, test);
         let words: Vec<&str> = args.iter().map(String::as_str).collect();
         tool(OPEN, &words, Duration::from_secs(30), 64 * 1024).is_ok_and(|(fine, _, _)| fine)
@@ -160,7 +165,14 @@ impl Run<'_> {
             }
             if Instant::now() >= next_look {
                 next_look = Instant::now() + Duration::from_millis(100);
-                if local::processes_running(&executable).is_empty() {
+                let running = match self.launched.running(&executable) {
+                    Ok(running) => running,
+                    Err(error) => {
+                        self.say(&format!("installer: the new app's running state is unknown ({error})"));
+                        return Err("app_exit_unproven");
+                    }
+                };
+                if !running {
                     let since = *gone_since.get_or_insert_with(Instant::now);
                     if (seen && since.elapsed() >= GONE_GRACE) || (!seen && began.elapsed() >= never_seen_limit) {
                         self.say("installer: the new app ended before it came up");
@@ -177,23 +189,6 @@ impl Run<'_> {
         Err("didnt_start")
     }
 
-    /// Ends whatever's running from the app's path. Only ever the new version, which this installer started.
-    fn stop_new_app(&self) {
-        let executable = self.plan.executable();
-        for kill in [false, true] {
-            for pid in local::processes_running(&executable) {
-                local::signal_process(pid, kill);
-            }
-            let deadline = Instant::now() + STOP_PATIENCE;
-            while !local::processes_running(&executable).is_empty() && Instant::now() < deadline {
-                std::thread::sleep(WAIT_STEP * 4);
-            }
-            if local::processes_running(&executable).is_empty() {
-                return;
-            }
-        }
-    }
-
     /// Where the old app is, if it's anywhere: where it's kept, or still in the swap's other half if keeping it didn't work. Only ever the version this plan came from.
     fn old_app(&self) -> Option<PathBuf> {
         [self.plan.previous_app(), self.plan.new_app()]
@@ -204,7 +199,23 @@ impl Run<'_> {
     /// Puts things back as they were: the old record, the old app, and opens it. With no old app it can only say so, and whatever's there stays, as it's all there is.
     fn go_back(&self, why: &str) -> Ended {
         self.step("going_back");
-        self.stop_new_app();
+        self.go_back_after(why, self.launched.retire(&self.plan.executable(), STOP_PATIENCE))
+    }
+
+    fn go_back_after(&self, why: &str, retired: std::io::Result<()>) -> Ended {
+        if let Err(error) = retired {
+            self.say(&format!(
+                "installer: app exit is unproven ({error}); both bundles and the recovery record are kept"
+            ));
+            let _ = Outcome {
+                kind: OutcomeKind::CouldntGoBack,
+                from: self.plan.from.clone(),
+                to: self.plan.to.clone(),
+                why: "app_exit_unproven".into(),
+            }
+            .write(&self.files.outcome());
+            return Ended::Stuck;
+        }
         self.step("new_app_stopped");
         if !self.plan.keep_record {
             restore_record(&self.files.before(), &self.files.session());
@@ -296,6 +307,7 @@ pub fn run(plan: &Plan) -> Ended {
     let run = Run {
         plan,
         files: Files::in_state(&plan.root),
+        launched: retirement::Launched::default(),
     };
     let files = &run.files;
     if let Some(why) = plan_refusal(plan, own_bundle().as_deref(), RELEASE_BUILD, crate::real_state_root().as_deref()) {
@@ -347,10 +359,14 @@ pub fn run(plan: &Plan) -> Ended {
         return Ended::NotInstalled;
     }
     // Someone's opened it again in that moment. Their copy's in use, and it isn't this installer's to stop.
-    if !local::processes_running(&plan.executable()).is_empty() {
-        run.say("installer: the app's been opened again, so nothing was replaced");
-        run.finish_with(OutcomeKind::NotInstalled, "app_reopened");
-        return Ended::NotInstalled;
+    match local::update_app_is_running(&plan.executable()) {
+        Ok(false) => {}
+        observed => {
+            let why = if observed.is_ok() { "app_reopened" } else { "observation_unknown" };
+            run.say(&format!("installer: app absence isn't established ({why}), so nothing was replaced"));
+            run.finish_with(OutcomeKind::NotInstalled, why);
+            return Ended::NotInstalled;
+        }
     }
     if !plan.new_app().is_dir() {
         run.say("installer: the new app isn't there, so nothing was replaced");
@@ -548,6 +564,7 @@ pub fn run_back(plan: &Plan) -> Ended {
     let run = Run {
         plan,
         files: Files::in_state(&plan.root),
+        launched: retirement::Launched::default(),
     };
     let Some(_lock) = run.take_lock() else {
         run.say("installer: another installer's at work, so this one stands down");
@@ -696,7 +713,7 @@ pub fn looks_like_app(path: &Path) -> bool {
 mod tests {
     use super::*;
 
-    fn plan() -> Plan {
+    pub(super) fn plan() -> Plan {
         Plan {
             id: "1-1".into(),
             cdhash: String::new(),
