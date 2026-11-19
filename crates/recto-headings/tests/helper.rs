@@ -20,14 +20,11 @@ fn run(path: &std::path::Path, key: CorpusKey, close_stdin: bool) -> (Value, Opt
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
     writeln!(stdin, "{}", json!({ "file": path, "key": key.hex(), "memory_limit": 512u64 << 20 })).unwrap();
-    if close_stdin {
-        drop(stdin);
-    } else {
-        std::mem::forget(stdin);
-    }
+    let held_open = (!close_stdin).then_some(stdin);
     let mut said = String::new();
     child.stdout.take().unwrap().read_to_string(&mut said).unwrap();
     let _ = child.wait();
+    drop(held_open);
     let mut lines = said.lines();
     let report: Value = lines.next().and_then(|line| serde_json::from_str(line).ok()).unwrap_or(Value::Null);
     let generated = lines.next().map(|line| Generated::decode(line.as_bytes(), key).unwrap());
@@ -242,4 +239,28 @@ fn it_refuses_the_job_when_it_cant_start_its_watchers() {
         went.describe()
     );
     assert_eq!(went.said.lines().count(), 1, "{}", went.describe());
+}
+/// Failure: keeping stdin open for a completed job leaks a parent descriptor on every request.
+#[test]
+fn completed_jobs_do_not_leak_stdin() {
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command.args(["--ignored", "--exact", "stdin_fd_probe", "--nocapture"]);
+    let (_, output) = recto_platform::test_command::output(&mut command, Duration::from_secs(10)).unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[ignore = "isolated descriptor-count entry for completed_jobs_do_not_leak_stdin"]
+fn stdin_fd_probe() {
+    let count = || std::fs::read_dir("/dev/fd").unwrap().count();
+    let pdf = TempPdf::new("invalid.pdf", b"not a PDF");
+    let key = CorpusKey::of_file(&pdf.0).unwrap();
+    let before = count();
+    let _ = run(&pdf.0, key, false);
+    assert_eq!(count(), before, "completed helper leaked a parent descriptor");
 }

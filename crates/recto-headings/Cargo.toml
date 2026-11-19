@@ -46,6 +46,7 @@ lto = "thin"
 codegen-units = 16
 
 [dev-dependencies]
+recto-platform = { path = "../recto-platform", features = ["test-seams"] }
 # To make a decompression bomb for `tests/images.rs`. Already in this lockfile through distillPDF, so it adds no crate.
 flate2 = "1"
 recto-testpdf = { path = "../recto-testpdf" }
