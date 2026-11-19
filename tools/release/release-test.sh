@@ -438,6 +438,10 @@ check "carry cleanup: exit and exact registration absence precede removal" 0 "$r
 [ "$rc" = 0 ] || printf '%s\n' "$out" | tail -30
 
 # ---- ci-gate.sh: the release's gate on CI, by its own test (made runs and a made repository) ----
+out=$(python3 -I -B "$SOURCE/tools/release/carry/titlebar_test.py" 2>&1); rc=$?
+check "carry titlebar: only the measured SDK and y transition is excepted" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out" | tail -30
+
 out=$("$SOURCE/tools/release/ci-gate-test.sh" 2>&1); rc=$?
 check "ci-gate: its own test passes ($(printf '%s\n' "$out" | grep -c '^ok') checks)" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out" | grep -v '^ok'

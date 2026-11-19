@@ -31,6 +31,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from expect import Older, b_sleep, c_highlighted_tab, e_journal, f_disk, journal_version, journals, sleep_format, unmet_faults  # noqa: E402
 from cleanup import clean_up, describe  # noqa: E402
+from titlebar import comparison as titlebar_comparison  # noqa: E402
 
 repo, previous_zip, new_app, evidence = sys.argv[1:5]
 failures, notes = [], []
@@ -301,7 +302,9 @@ def main():
         compare("B: `session show` (tabs, places, zoom, Find's text, the panes) as it was", before["show"], after["show"],
                 [("record.", "the record's own counters, of this run")] + [(k[5:], w) for k, w in across if k.startswith("show.")], new_ok=False)
         compare("B: `permission show` as it was", before["permission"], after["permission"], [(k[11:], w) for k, w in across if k.startswith("permission.")], new_ok=False)
-        new_paths = compare("B: the whole of `qa state`, as the restore tests compare it", before["state"], after["state"], state_ex)
+        titlebar = titlebar_comparison(old_app, new_copy, before["state"], after["state"])
+        save("B-titlebar", titlebar)
+        new_paths = compare("B: the whole of `qa state`, as the restore tests compare it", before["state"], after["state"], state_ex + titlebar['excepted'])
         note(f"B: {len(new_paths)} values of `qa state` are new in {new_v} and not compared (listed in {evidence}/B-new-paths.json)")
         save("B-new-paths", new_paths)
         # The older release's sleep files: read, or (pictures, before 0.1.1) never read and gone at the first read (expect.b_sleep).
