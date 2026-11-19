@@ -49,6 +49,12 @@ class Scenario:
 
 
 class CleanupTests(unittest.TestCase):
+    def test_a_missing_mapped_executable_is_not_process_exit(self):
+        """macOS ENOENT can describe a still-live process with an unlinked image."""
+        self.assertTrue(cleanup.process_vanished(cleanup.errno.ESRCH))
+        self.assertFalse(cleanup.process_vanished(cleanup.errno.ENOENT))
+
+
     def test_known_nested_helper_urls_are_saved_without_a_recursive_sweep(self):
         """Forgetting only the outer app must not leave its renderer helper registered."""
         apps = ['/private/carry/old/RectoPDF.app', '/private/carry/new/RectoPDF.app']
