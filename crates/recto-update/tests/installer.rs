@@ -268,13 +268,41 @@ impl Drop for Bed {
         let fixture = self.dir.to_path_buf();
         let stopped =
             local::write_private_file(&self.files.work.join("test-app-stop"), b"").and_then(|()| cleanup::wait_for_exit(&fixture, Duration::from_secs(5)));
-        if let Err(error) = self.dir.retire(stopped) {
+        if let Err(error) = retire_fixture(&mut self.dir, stopped, std::thread::panicking()) {
             eprintln!("retained installer fixture {}: {error}", fixture.display());
             if !std::thread::panicking() {
                 panic!("installer fixture cleanup was not established: {error}");
             }
         }
         // FixtureDir removes its directory only after a successful observation.
+    }
+}
+
+fn retire_fixture(dir: &mut FixtureDir, stopped: std::io::Result<()>, panicking: bool) -> std::io::Result<()> {
+    let stopped = if panicking {
+        stopped.and(Err(std::io::Error::other("test panicked; keeping installer evidence")))
+    } else {
+        stopped
+    };
+    dir.retire(stopped)
+}
+
+/// Failure: a successful teardown erases the updater log that explains an assertion failure.
+#[test]
+fn a_failed_installer_assertion_keeps_its_evidence() {
+    for panicking in [false, true] {
+        let dir = recto_testpdf::TempDir::new("installer-panic-evidence-");
+        let path = dir.path().to_path_buf();
+        std::fs::write(path.join("update.log"), b"the updater's failure reason").unwrap();
+        let mut fixture = FixtureDir::new(dir);
+        assert_eq!(retire_fixture(&mut fixture, Ok(()), panicking).is_ok(), !panicking);
+        drop(fixture);
+        if panicking {
+            assert_eq!(std::fs::read(path.join("update.log")).unwrap(), b"the updater's failure reason");
+            std::fs::remove_dir_all(path).unwrap();
+        } else {
+            assert!(!path.exists());
+        }
     }
 }
 
@@ -628,7 +656,18 @@ fn an_ad_hoc_build_is_taken_only_with_the_owners_switch() {
         bed.as_a_build("0.1.0.1", BUNDLE_ID);
         bed.switch(switch);
         let ended = bed.run(None);
-        assert_eq!(ended.success(), taken, "{switch:?}");
+        assert_eq!(
+            ended.success(),
+            taken,
+            "{switch:?}: {ended:?}; evidence {}; outcome {:?}; update.log: {}",
+            bed.dir.display(),
+            Outcome::read(&bed.files.outcome()),
+            std::fs::read_to_string(&bed.files.log)
+                .unwrap_or_else(|error| error.to_string())
+                .chars()
+                .take(16 * 1024)
+                .collect::<String>()
+        );
         if taken {
             assert_eq!(bed.installed(), "0.1.0.1");
             assert_eq!(bed.kept().as_deref(), Some("0.1.0"), "the old app's kept, as for a release");
