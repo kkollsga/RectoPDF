@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "recto-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "flate2",
  "lopdf",
@@ -826,7 +826,7 @@ dependencies = [
 
 [[package]]
 name = "recto-headings"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "distillpdf",
  "flate2",
@@ -841,7 +841,7 @@ dependencies = [
 
 [[package]]
 name = "recto-index"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "aes-gcm",
  "crc32fast",
@@ -857,7 +857,7 @@ dependencies = [
 
 [[package]]
 name = "recto-platform"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "getrandom",
  "libc",
@@ -866,11 +866,11 @@ dependencies = [
 
 [[package]]
 name = "recto-proto"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "recto-render"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "recto-platform",
  "recto-proto",
@@ -878,7 +878,7 @@ dependencies = [
 
 [[package]]
 name = "recto-render-service"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "recto-platform",
  "recto-proto",
@@ -887,7 +887,7 @@ dependencies = [
 
 [[package]]
 name = "recto-testpdf"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "rustversion"

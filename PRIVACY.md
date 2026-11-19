@@ -2,7 +2,7 @@
 
 RectoPDF reads your PDFs on your Mac. It has no account, no analytics, no telemetry, no ads and no crash reporter of its own, and it sends nothing about your documents anywhere.
 
-This describes RectoPDF 0.1.2.
+This describes RectoPDF 0.1.3.
 
 ## What it sends
 
