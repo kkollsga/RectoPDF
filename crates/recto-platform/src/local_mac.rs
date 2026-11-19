@@ -4,6 +4,13 @@
 #[path = "observed_program.rs"]
 mod observed_program;
 
+#[path = "detached_mac.rs"]
+mod detached;
+pub use detached::{spawn_detached, spawn_detached_child};
+#[path = "update_processes.rs"]
+mod update_processes;
+pub use update_processes::update_app_is_running;
+
 use std::ffi::{CStr, OsStr};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -629,34 +636,6 @@ pub fn signal_process_group(group: u32, kill: bool) -> bool {
 fn process_group_signal_target(group: u32) -> Option<libc::pid_t> {
     let group = libc::pid_t::try_from(group).ok()?;
     (group > 1).then_some(-group)
-}
-
-/// Starts a program that outlives this process: in a session of its own, with nothing on standard input and what it says appended to `log`. It isn't waited for.
-pub fn spawn_detached(program: &Path, args: &[String], envs: &[(String, String)], log: &Path) -> io::Result<u32> {
-    use std::os::unix::process::CommandExt as _;
-    use std::process::{Command, Stdio};
-    let out = OpenOptions::new().create(true).append(true).mode(0o600).open(log)?;
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .envs(envs.iter().map(|(key, value)| (key, value)))
-        .stdin(Stdio::null())
-        .stdout(out.try_clone()?)
-        .stderr(out);
-    // SAFETY: setsid is async-signal-safe, and touches nothing of this process.
-    unsafe {
-        command.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
-    }
-    let mut child = command.spawn()?;
-    let pid = child.id();
-    // Reaps it if it ends first, and does nothing more. The handle goes with this process otherwise.
-    let _ = std::thread::Builder::new().name("recto-reap".into()).stack_size(64 * 1024).spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(pid)
 }
 
 /// Syncs the folder a file is in, so what was just renamed or removed there stays that way.
