@@ -10,6 +10,9 @@ pub use detached::{spawn_detached, spawn_detached_child};
 #[path = "update_processes.rs"]
 mod update_processes;
 pub use update_processes::update_app_is_running;
+#[path = "update_record_lock.rs"]
+mod update_record_lock;
+pub use update_record_lock::try_update_record_lock;
 
 use std::ffi::{CStr, OsStr};
 use std::fs::{File, OpenOptions};

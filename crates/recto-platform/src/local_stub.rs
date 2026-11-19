@@ -255,6 +255,11 @@ pub fn update_app_is_running(_executable: &Path) -> io::Result<bool> {
     unsupported()
 }
 
+/// This platform cannot establish the app record's writer lock.
+pub fn try_update_record_lock(_root: &Path) -> io::Result<File> {
+    unsupported()
+}
+
 pub fn process_path(_pid: u32) -> Option<PathBuf> {
     None
 }
