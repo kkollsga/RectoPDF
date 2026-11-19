@@ -11,11 +11,12 @@ set -uo pipefail
 SOURCE="$(cd "$(dirname "$0")/../.." && pwd)"
 [ $# = 2 ] && [ -f "$1" ] && [ -d "$2" ] || { sed -n '9p' "$0" >&2; exit 2; }
 X=$(mktemp -d "${TMPDIR:-/tmp}/check-carry-test.XXXXXX")
+fails=0
 cleanup() {
-  if [ "$fails" = 0 ]; then rm -rf "$X"; else echo "check-carry-test: failure evidence retained in $X" >&2; fi
+  local rc=$?
+  if [ "$rc" = 0 ] && [ "$fails" = 0 ]; then rm -rf "$X"; else echo "check-carry-test: failure evidence retained in $X" >&2; fi
 }
 trap cleanup EXIT
-fails=0
 check() { if [ "$2" = "$3" ]; then echo "ok    $1"; else echo "FAIL  $1: expected [$2], got [$3]"; fails=$((fails + 1)); fi; }
 has() { case "$3" in *"$2"*) echo "ok    $1" ;; *) echo "FAIL  $1: no [$2] in [$3]"; fails=$((fails + 1)) ;; esac; }
 run() { CHECK_CARRY_SEED="$1" "$SOURCE/tools/release/check-carry.sh" "$2" "$3" "$X/evidence-${1:-none}" 2>&1; }
