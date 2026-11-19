@@ -421,8 +421,12 @@ def main():
         if code:
             known(f"F.notice.{code}", f"the tab says `{code}`", json.dumps(tab["file_notice"]))
         if seed == "aside":
-            for p in files_of(state):
-                if p.endswith(".not-merged"):
+            # A successful merge keeps the older list; a hidden highlight keeps
+            # the newer list. Remove the promised original, not an obsolete
+            # filename suffix (the retained older list is now `closed-*.log`).
+            retained = own if len(forward["highlights #3"]["edits"]) == 1 else v2_after_e
+            for p, data in files_of(state).items():
+                if data in retained.values():
                     os.remove(os.path.join(state, p))
         f_files = files_of(state)
         for what in f_disk(older, new_v, len(forward["highlights #3"]["edits"]) == 1, code, v2_after_e, own, f_files):
