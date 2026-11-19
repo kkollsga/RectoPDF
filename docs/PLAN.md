@@ -102,6 +102,16 @@ The short-stall source push's automatic runner-acquisition retry reached real te
 - [x] Final local gate: `d1b1fefc`, single `CHECK_ALL=1 tools/check.sh --full`, exit 0, 302 s: 3,320 Rust, 203 native, four slow, two bundle and three registration cases. Independent review, release measurements (including the retained initial input-tail miss), focused repetitions and final-source lifecycle are complete.
 - [x] Delivered main `6ef57bd2`; [CI 44420916826](https://github.com/kkollsga/RectoPDF/actions/runs/44420916826) passed all four jobs. Longest job and latest five-green median 18:12 against 21:00. Normal development app refreshed; four owned worktrees/branches, private states and compiled probes removed after process/registration proofs. The startup report retains the original stall and initial input-tail miss.
 
+## Release 0.1.3 — authorized 19 November
+
+Owner: "Go ahead release as 0.1.3". Coordinator targets scope/notes and independent review by 09:00 CET; publication around 10:00 CET is an estimate contingent on every release gate passing. No new product feature is started in this release pass.
+
+- [ ] Version/notes, independent delta review and explicit known limits.
+- [ ] One final full on the release source, main CI and fresh signing preflight.
+- [ ] Published-version compatibility/dress rehearsal, then authorized tag/draft build.
+- [ ] Signed/notarized draft checks and state carry/rollback against 0.1.0, 0.1.1 and 0.1.2.
+- [ ] Publish, verify public update feed/assets, record results and remove owned temporary artifacts.
+
 ## Release follow-ups carried forward
 
 These are the still-open parts of the old release summary that otherwise would be hidden among completed work. Measurements are from the cited release reports, not new measurements by this review.

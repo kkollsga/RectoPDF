@@ -1,0 +1,5 @@
+# Explicit differences for the published 0.1.1 to 0.1.3 state-carry check.
+# Existing restore exceptions also apply. No fault waiver is permitted here.
+# New-only QA diagnostics are not persisted session changes; check_carry's normal comparison handles them.
+app.context_menu Capture is present since0.1.2; the0.1.3 menu retains that existing entry, absent in this older release.
+permission.set_at_ms Each private quiet launch sets its access level, so the time belongs to that run.

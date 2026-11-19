@@ -120,6 +120,9 @@ The coordinator put thirteen recommendations to the owner in two lists, each wit
 ## Release gate: memory soak (2026-11-11)
 - "24 hour memory soak? We don't have time for that". Asked what replaces it, the owner first chose a 2-hour fast soak, then: "Actually let's skip the soak". So 0.1.0 releases on the existing memory tests (per-feature budgets, 1,000 tabs, the leak tests), with no soak. The 24-hour soak runs after the release, and growth it finds goes into 0.1.1.
 
+## Release 0.1.3 (2026-11-19)
+- Owner: "Go ahead release as 0.1.3". This authorizes preparation, pushing `v0.1.3` and publishing its draft after the current release gates pass: reviewed scope/notes, version consistency, full local checks and CI on the release commit, fresh signing preflight, signed/notarized artifact verification and state carry/rollback checks against the published versions. A failed gate holds publication and is reported; no further confirmation is needed when the gates pass. This authorization is for 0.1.3 only.
+
 ## Release signing (2026-11-11)
 - "I dont want any manual steps." The `release` Environment has no required reviewer; its keys reach only workflows from `main` or a `v*.*.*` tag. The owner changed that setting themselves (the coordinator's own change was blocked as weakening security). Publishing a release stays the owner's decision, given in chat, not a click.
 
