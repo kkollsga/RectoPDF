@@ -21,6 +21,9 @@ copy() { rm -rf "$X/$1"; mkdir -p "$X/$1"; cp "$2"/RectoPDF-*.zip "$2/SHA256SUMS
 feed() { python3 -I -c 'import json,sys; f=json.load(open(sys.argv[1])); f.update(json.loads(sys.argv[2])); open(sys.argv[1],"w").write(json.dumps(f, separators=(",",":"))+"\n")' "$1" "$2"; }
 resum() { (cd "$1" && shasum -a 256 RectoPDF-*.zip > SHA256SUMS) && feed "$1/latest.json" "{\"sha256\":\"$(cut -d' ' -f1 "$1/SHA256SUMS")\"}"; }
 v_prev="$(basename "$PREV" .zip)"; v_prev="${v_prev#RectoPDF-}"
+# The wrong-feed mutation must change even the current published fixture, including 0.1.2.
+wrong_version=0.0.0
+[ "$v_prev" != "$wrong_version" ] || wrong_version=0.0.1
 
 # Failure: the script refuses the release that is out there and was checked by hand, so its refusals of a new one mean nothing.
 out=$("$CHECK" "$REL" --previous "$PREV" 2>&1); rc=$?
@@ -36,16 +39,16 @@ has "and named" "FAIL  assets: the zip's checksum is" "$out"
 
 # Failure: latest.json names another version than the zip and the tag, so every copy is offered something it then refuses (or worse).
 copy feed "$REL"
-feed "$X/feed/latest.json" '{"version":"0.1.2"}'
+feed "$X/feed/latest.json" "{\"version\":\"$wrong_version\"}"
 out=$("$CHECK" "$X/feed" --previous "$PREV" 2>&1); rc=$?
 check "a feed naming another version is refused" 1 "$rc"
-has "by the feed check" "FAIL  feed: version is '0.1.2', not '$v_prev'" "$out"
+has "by the feed check" "FAIL  feed: version is '$wrong_version', not '$v_prev'" "$out"
 has "and by the previous release's own reader of it" "FAIL  verdict: $v_prev's own updater refuses it" "$out"
 copy feed2 "$REL"
-feed "$X/feed2/latest.json" '{"version":"0.1.2","tag":"v0.1.2","zip":"RectoPDF-0.1.2.zip"}'
+feed "$X/feed2/latest.json" "{\"version\":\"$wrong_version\",\"tag\":\"v$wrong_version\",\"zip\":\"RectoPDF-$wrong_version.zip\"}"
 out=$("$CHECK" "$X/feed2" --previous "$PREV" 2>&1); rc=$?
 check "a well-formed feed of another version is refused too" 1 "$rc"
-has "by the feed check" "FAIL  feed: version is '0.1.2'" "$out"
+has "by the feed check" "FAIL  feed: version is '$wrong_version'" "$out"
 
 # Failure: the draft is checked as some other version than the tag's.
 out=$("$CHECK" "$REL" --previous "$PREV" --version 9.9.9 2>&1); rc=$?
