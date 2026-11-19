@@ -1,6 +1,10 @@
 //! The real installer, `recto-updater`, on stand-in bundles: a real process at a real path, a real swap, and a real kill at every step. What matters most after any of them: **there's a whole app at the app's path, and the record is as it was or put back.** The whole path with the real app is in `recto-cli`'s `restore` tests.
 #![cfg(target_os = "macos")]
 
+#[path = "installer/cleanup.rs"]
+mod cleanup;
+use cleanup::{FixtureDir, OwnedChild};
+
 use recto_platform::local;
 use recto_update::install::DIE_AT_ENV;
 use recto_update::plan::{Files, Outcome, OutcomeKind, Plan, TestLaunch, beside_app, new_app_in, previous_app_in};
@@ -9,7 +13,7 @@ use recto_update::stage::app_version;
 use recto_update::updater::{AtLaunch, Facts, HandOffRefused, HandedOff, Host, Look, Status, Updater};
 use recto_update::{APP_BUNDLE, BUNDLE_ID};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus};
+use std::process::{Command, ExitStatus};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -59,7 +63,7 @@ fn cdhash_of(app: &Path) -> String {
 
 /// An installed old version, a staged new one, a record, and a stand-in for the running process.
 struct Bed {
-    dir: recto_testpdf::TempDir,
+    dir: FixtureDir,
     files: Files,
     app: PathBuf,
     plan: Plan,
@@ -115,17 +119,22 @@ impl Bed {
             keep_record: false,
             test: Some(test),
         };
-        Self { dir, files, app, plan }
+        Self {
+            dir: FixtureDir::new(dir),
+            files,
+            app,
+            plan,
+        }
     }
 
     // A test of the way back has its new version fail by coming up having emptied the record (`misreads`, with tabs handed off), which the installer knows at once. One that ends (`exits`) is only taken for a failure after a fixed grace of seconds, so only the test of that case uses it.
 
     /// What's running: a process for the installer to wait on.
-    fn old_process(&self) -> Child {
-        Command::new("/bin/sleep").arg("30").spawn().unwrap()
+    fn old_process(&self) -> OwnedChild {
+        self.dir.own(Command::new("/bin/sleep").arg("30").spawn().unwrap())
     }
 
-    fn start(&mut self, old: u32, die_at: Option<&str>) -> Child {
+    fn start(&mut self, old: u32, die_at: Option<&str>) -> OwnedChild {
         self.plan.pid = old;
         self.plan.write(&self.files.plan()).unwrap();
         let mut command = Command::new(installer_in(&self.app));
@@ -134,7 +143,7 @@ impl Bed {
             command.env(DIE_AT_ENV, step);
         }
         command.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-        command.spawn().unwrap()
+        self.dir.own(command.spawn().unwrap())
     }
 
     /// With a process that's already gone: the installer doesn't wait.
@@ -246,9 +255,16 @@ fn status_named(code: &str, updater: &Updater) -> Status {
 
 impl Drop for Bed {
     fn drop(&mut self) {
-        for pid in local::processes_running(&self.plan.executable()) {
-            local::signal_process(pid, true);
+        let fixture = self.dir.to_path_buf();
+        let stopped =
+            local::write_private_file(&self.files.work.join("test-app-stop"), b"").and_then(|()| cleanup::wait_for_exit(&fixture, Duration::from_secs(5)));
+        if let Err(error) = self.dir.retire(stopped) {
+            eprintln!("retained installer fixture {}: {error}", fixture.display());
+            if !std::thread::panicking() {
+                panic!("installer fixture cleanup was not established: {error}");
+            }
         }
+        // FixtureDir removes its directory only after a successful observation.
     }
 }
 
@@ -944,23 +960,25 @@ fn going_back_after_it_came_up_keeps_the_record_as_it_is() {
     assert_eq!((outcome.kind, outcome.why.as_str()), (OutcomeKind::WentBack, "kept_ending"));
 }
 
-/// Failure: the old app reopened in the gap, with an installer still at work, sits with its menu disabled and no timer until the next launch. The review found this could be left that way. It goes on as normal.
+/// Failure: a stand-in ignores fixture cleanup, or the old app reopened in the gap, with an installer still at work, sits with its menu disabled and no timer until the next launch. The review found this could be left that way. It goes on as normal.
 #[test]
 fn an_app_reopened_during_an_install_goes_on_as_normal() {
     let bed = Bed::new("reopened-during", "ok");
     let plan = Plan { pid: 1, ..bed.plan.clone() };
     plan.write(&bed.files.plan()).unwrap();
     // A real process of the installer's name, for the launch to find alive.
-    let mut helper = Command::new(HELPER)
-        .args([
-            "test-app",
-            "0.0.0",
-            "hangs",
-            bed.files.work.to_str().unwrap(),
-            bed.dir.join("nowhere").to_str().unwrap(),
-        ])
-        .spawn()
-        .unwrap();
+    let mut helper = bed.dir.own(
+        Command::new(HELPER)
+            .args([
+                "test-app",
+                "",
+                "hangs",
+                bed.files.work.to_str().unwrap(),
+                bed.dir.join("nowhere").to_str().unwrap(),
+            ])
+            .spawn()
+            .unwrap(),
+    );
     std::fs::write(bed.files.helper_pid(), helper.id().to_string()).unwrap();
     let updater = Updater::new(&bed.files.root, resolve(false, true, Some("http://127.0.0.1:9".into()), None), Arc::new(NoHost));
     updater.launched(Facts {
@@ -972,7 +990,10 @@ fn an_app_reopened_during_an_install_goes_on_as_normal() {
     assert!(updater.next_wake().is_some(), "it still has a timer");
     assert_ne!(updater.report()["status"], "installing");
     assert!(bed.files.plan().exists(), "and it's left the plan alone, as there's an installer about");
-    helper.kill().unwrap();
+    local::write_private_file(&bed.files.work.join("test-app-stop"), b"").unwrap();
+    wait_until("the owned stand-in to honor cleanup", Duration::from_secs(5), || {
+        helper.try_wait().unwrap().is_some()
+    });
     helper.wait().unwrap();
 }
 

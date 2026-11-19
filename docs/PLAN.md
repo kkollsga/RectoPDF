@@ -109,6 +109,7 @@ Owner: "Go ahead release as 0.1.3". Scope/notes and independent release-source r
 - [x] **Duplicate Dock entries corrected (19 November).** CoreServices reports only `/Applications/RectoPDF.app`; two recent-app records named that same path. Removed only the duplicate and verified one after restarting the Dock, preserving the installed app and documents. Cause not established; repeat the Dock/registration check after native release testing. [`reports/single-install-2026-11-19.md`](reports/single-install-2026-11-19.md).
 
 - [x] Version/notes, independent delta review and explicit known limits (19 November; notes need any final recovery-behavior decision reflected before tagging).
+- [x] Installer-test cleanup corrections (19 November): rollback goes through the fake host rather than detaching a copied system program; fixture cleanup uses a private cooperative stop marker, bounded observations and actual owned-child handles. Ownership errors send no signal; cleanup uncertainty retains the fixture. Failed-first proofs, three final targeted guards, Clippy and independent source review passed. Production rollback safety remains separately blocked below.
 - [ ] Release blocker: stable launch ownership and exit proof before rollback restores the record or swaps bundles; safe installer-test teardown. Keep automatic-recovery behavior explicit.
 - [ ] One final full on the release source, main CI and fresh signing preflight.
 - [ ] Published-version compatibility/dress rehearsal, then authorized tag/draft build.
