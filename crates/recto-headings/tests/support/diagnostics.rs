@@ -20,19 +20,13 @@ pub fn capture(pid: u32, elapsed: Duration, job: &serde_json::Value) -> String {
 }
 
 fn collect(pid: u32, elapsed: Duration, job: &serde_json::Value) -> std::io::Result<std::path::PathBuf> {
-    let path = loop {
-        let path = std::env::temp_dir().join(format!(
-            "recto-headings-failure-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        use std::os::unix::fs::DirBuilderExt;
-        match std::fs::DirBuilder::new().mode(0o700).create(&path) {
-            Ok(()) => break path,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        }
-    };
+    let path = std::env::temp_dir().join(format!(
+        "recto-headings-failure-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new().mode(0o700).create(&path)?;
     std::fs::write(
         path.join("context.json"),
         serde_json::to_vec_pretty(
