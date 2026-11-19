@@ -199,23 +199,26 @@ impl Run<'_> {
     /// Puts things back as they were: the old record, the old app, and opens it. With no old app it can only say so, and whatever's there stays, as it's all there is.
     fn go_back(&self, why: &str) -> Ended {
         self.step("going_back");
-        self.go_back_after(why, self.launched.retire(&self.plan.executable(), STOP_PATIENCE))
+        self.go_back_after(why, self.launched.recover(&self.plan.root, &self.plan.executable(), STOP_PATIENCE))
     }
 
-    fn go_back_after(&self, why: &str, retired: std::io::Result<()>) -> Ended {
-        if let Err(error) = retired {
-            self.say(&format!(
-                "installer: app exit is unproven ({error}); both bundles and the recovery record are kept"
-            ));
-            let _ = Outcome {
-                kind: OutcomeKind::CouldntGoBack,
-                from: self.plan.from.clone(),
-                to: self.plan.to.clone(),
-                why: "app_exit_unproven".into(),
+    fn go_back_after(&self, why: &str, retired: std::io::Result<retirement::RecordLock>) -> Ended {
+        let writer = match retired {
+            Ok(writer) => writer,
+            Err(error) => {
+                self.say(&format!(
+                    "installer: app exit is unproven ({error}); both bundles and the recovery record are kept"
+                ));
+                let _ = Outcome {
+                    kind: OutcomeKind::CouldntGoBack,
+                    from: self.plan.from.clone(),
+                    to: self.plan.to.clone(),
+                    why: "app_exit_unproven".into(),
+                }
+                .write(&self.files.outcome());
+                return Ended::Stuck;
             }
-            .write(&self.files.outcome());
-            return Ended::Stuck;
-        }
+        };
         self.step("new_app_stopped");
         if !self.plan.keep_record {
             restore_record(&self.files.before(), &self.files.session());
@@ -240,6 +243,7 @@ impl Run<'_> {
         let _ = std::fs::remove_file(self.files.launch_ok());
         let _ = std::fs::remove_file(self.files.launch_failed());
         let _ = std::fs::remove_file(self.files.helper_pid());
+        drop(writer); // Release the record before the previous app tries to acquire it.
         if !self.open_app() {
             self.say("installer: the previous app couldn't be opened");
             return Ended::Stuck;

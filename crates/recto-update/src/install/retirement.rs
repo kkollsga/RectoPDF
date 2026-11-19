@@ -34,7 +34,12 @@ impl Launched {
         Ok(live)
     }
 
-    pub(super) fn retire(&self, program: &Path, patience: Duration) -> io::Result<()> {
+    pub(super) fn recover(&self, root: &Path, program: &Path, patience: Duration) -> io::Result<RecordLock> {
+        self.retire(program, patience)?;
+        record_lock(root, || self.running(program))
+    }
+
+    fn retire(&self, program: &Path, patience: Duration) -> io::Result<()> {
         let mut child = self.child.borrow_mut();
         retire(
             child.as_mut(),
@@ -47,6 +52,22 @@ impl Launched {
         *child = None;
         Ok(())
     }
+}
+
+pub(super) struct RecordLock(std::fs::File);
+
+impl Drop for RecordLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+pub(super) fn record_lock(root: &Path, mut present: impl FnMut() -> io::Result<bool>) -> io::Result<RecordLock> {
+    let held = RecordLock(local::try_update_record_lock(root)?);
+    if present()? {
+        return Err(io::Error::other("an app appeared before rollback acquired the record"));
+    }
+    Ok(held)
 }
 
 trait Owned {
@@ -247,7 +268,7 @@ mod recovery_tests {
     #[test]
     fn unproven_exit_preserves_record_bundles_and_next_launch_recovery() {
         let mut mutated = Vec::new();
-        for unknown in [false, true] {
+        for case in ["live", "unknown", "locked", "reopened", "recheck_unknown"] {
             let dir = recto_testpdf::TempDir::new("rollback-refusal-");
             let mut plan = crate::install::tests::plan();
             plan.app = dir.join("RectoPDF.app");
@@ -260,6 +281,7 @@ mod recovery_tests {
             let current = version(&plan.app, &plan.to);
             let previous = version(&plan.previous_app(), &plan.from);
             let files = Files::in_state(&plan.root);
+            local::ensure_private_dir(&plan.root).unwrap();
             local::ensure_private_dir(&files.work).unwrap();
             std::fs::create_dir_all(files.session()).unwrap();
             std::fs::create_dir_all(files.before()).unwrap();
@@ -272,20 +294,32 @@ mod recovery_tests {
                 files: files.clone(),
                 launched: Launched::default(),
             };
-            let refused = super::retire::<super::tests::Fake>(
-                None,
-                || if unknown { Err(io::Error::other("unknown")) } else { Ok(true) },
-                false,
-                Duration::ZERO,
-                Instant::now,
-                |_| panic!("zero patience waits"),
-            );
+            let _writer = (case == "locked").then(|| local::try_update_record_lock(&plan.root).unwrap());
+            let refused = if matches!(case, "locked" | "reopened" | "recheck_unknown") {
+                Ok(())
+            } else {
+                super::retire::<super::tests::Fake>(
+                    None,
+                    || if case == "unknown" { Err(io::Error::other("unknown")) } else { Ok(true) },
+                    false,
+                    Duration::ZERO,
+                    Instant::now,
+                    |_| panic!("zero patience waits"),
+                )
+            }
+            .and_then(|()| {
+                record_lock(&plan.root, || match case {
+                    "reopened" => Ok(true),
+                    "recheck_unknown" => Err(io::Error::other("recheck unknown")),
+                    _ => Ok(false),
+                })
+            });
             assert_eq!(run.go_back_after("misread", refused), Ended::Stuck);
             if std::fs::read(files.session().join("record.a.json")).ok().as_deref() != Some(b"current owner edits".as_slice())
                 || std::fs::read(plan.app.join("Contents/Info.plist")).ok().as_deref() != Some(current.as_slice())
                 || std::fs::read(plan.previous_app().join("Contents/Info.plist")).ok().as_deref() != Some(previous.as_slice())
             {
-                mutated.push(if unknown { "unknown" } else { "live" });
+                mutated.push(case);
                 continue;
             }
             assert_eq!(std::fs::read(files.session().join("record.a.json")).unwrap(), b"current owner edits");
