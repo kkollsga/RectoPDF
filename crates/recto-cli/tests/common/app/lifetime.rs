@@ -11,12 +11,43 @@ pub enum Lifetime {
     Borrowed(Option<Client>),
 }
 
-fn call_for(client: &mut Client, line: &str, wait: Duration) -> Result<Value, String> {
-    let reply = client.call(line, wait).map_err(|error| format!("{}: {}", error.code, error.message))?;
+#[derive(Debug)]
+pub(super) enum RequestError {
+    SessionEnded,
+    Other(String),
+}
+impl std::fmt::Display for RequestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SessionEnded => f.write_str("session_ended: The session ended before it answered."),
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+fn call_typed(client: &mut Client, line: &str, wait: Duration) -> Result<Value, RequestError> {
+    let reply = client.call(line, wait).map_err(|error| {
+        if error.code == "session_ended" {
+            RequestError::SessionEnded
+        } else {
+            RequestError::Other(format!("{}: {}", error.code, error.message))
+        }
+    })?;
     if reply["ok"] == true {
         Ok(reply["data"].clone())
     } else {
-        Err(reply.to_string())
+        Err(RequestError::Other(reply.to_string()))
+    }
+}
+
+fn call_for(client: &mut Client, line: &str, wait: Duration) -> Result<Value, String> {
+    call_typed(client, line, wait).map_err(|error| error.to_string())
+}
+
+pub(super) fn finish_terminal(reply: Result<Value, RequestError>, proof: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    match reply {
+        Ok(_) | Err(RequestError::SessionEnded) => proof(),
+        Err(error) => Err(error.to_string()),
     }
 }
 
@@ -54,27 +85,40 @@ impl Lifetime {
     }
 
     fn request_line(&mut self, paths: &StatePaths, line: &str, wait: Duration) -> Result<Value, String> {
+        self.request_typed(paths, line, wait).map_err(|error| error.to_string())
+    }
+
+    pub(super) fn quit_reply(&mut self, paths: &StatePaths) -> Result<Value, RequestError> {
+        let words = ["qa", "quit", "now"].map(str::to_owned);
+        let invocation = recto_agent::table::parse_cli(&words).map_err(|error| RequestError::Other(format!("{error:?}")))?;
+        invocation.command().map_err(|error| RequestError::Other(format!("{error:?}")))?;
+        self.request_typed(paths, &invocation.wire(), Duration::from_secs(invocation.spec.client_wait_s))
+    }
+
+    fn request_typed(&mut self, paths: &StatePaths, line: &str, wait: Duration) -> Result<Value, RequestError> {
         match self {
             Self::Owned(child) => {
-                if child.try_wait().map_err(|error| error.to_string())?.is_some() {
-                    return Err("the owned app has already exited".into());
+                if child.try_wait().map_err(|error| RequestError::Other(error.to_string()))?.is_some() {
+                    return Err(RequestError::Other("the owned app has already exited".into()));
                 }
-                let mut client = matching(paths, child.id())?;
-                call_for(&mut client, line, wait)
+                let mut client = matching(paths, child.id()).map_err(RequestError::Other)?;
+                call_typed(&mut client, line, wait)
             }
-            Self::Borrowed(Some(client)) => call_for(client, line, wait),
-            Self::Borrowed(None) => Err("the original attached connection is unavailable; no reconnect or PID signal was attempted".into()),
+            Self::Borrowed(Some(client)) => call_typed(client, line, wait),
+            Self::Borrowed(None) => Err(RequestError::Other(
+                "the original attached connection is unavailable; no reconnect or PID signal was attempted".into(),
+            )),
         }
     }
 
     /// Status and stop share one connection. An owned unreaped Child anchors its PID while identity is checked.
-    pub fn stop(&mut self, paths: &StatePaths) -> Result<(), String> {
+    pub(super) fn stop_reply(&mut self, paths: &StatePaths) -> Result<Value, RequestError> {
         if let Self::Owned(child) = self
-            && child.try_wait().map_err(|error| error.to_string())?.is_some()
+            && child.try_wait().map_err(|error| RequestError::Other(error.to_string()))?.is_some()
         {
-            return Ok(());
+            return Ok(Value::Null);
         }
-        self.request_line(paths, r#"{"cmd":"stop"}"#, WAIT).map(|_| ())
+        self.request_typed(paths, r#"{"cmd":"stop"}"#, WAIT)
     }
 
     pub fn owned(&self) -> bool {
@@ -133,5 +177,18 @@ impl Drop for Lifetime {
         {
             eprintln!("owned quiet child cleanup: {error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    /// Failure: shutdown loses its reply although the exact app and socket ended; other failures or missing exit proof must still fail.
+    fn a_lost_shutdown_reply_requires_complete_exit_proof() {
+        assert!(finish_terminal(Err(RequestError::SessionEnded), || Ok(())).is_ok());
+        assert!(finish_terminal(Err(RequestError::SessionEnded), || Err("app or socket remains".into())).is_err());
+        assert!(finish_terminal(Err(RequestError::Other("timeout".into())), || Ok(())).is_err());
+        assert!(finish_terminal(Ok(Value::Null), || Err("socket remains".into())).is_err());
     }
 }
