@@ -33,10 +33,13 @@ fn collect(pid: u32, elapsed: Duration, job: &serde_json::Value) -> std::io::Res
             &serde_json::json!({"pid":pid,"parent":std::process::id(),"at":format!("{:?}",SystemTime::now()),"elapsed_ms":elapsed.as_millis(),"executable":env!("CARGO_BIN_EXE_recto-headings"),"environment":{"MallocLargeCache":"0"},"priority":"Inherited","job":job}),
         )?,
     )?;
-    save(&path, "sample", test_command::sample_process(pid, 1, Duration::from_secs(2), CAP))?;
     let mut lsof = Command::new("/usr/sbin/lsof");
     lsof.args(["-nP", "-p", &format!("{pid},{}", std::process::id())]);
     save(&path, "lsof", test_command::output_with_cap(&mut lsof, Duration::from_secs(2), CAP))?;
+    let mut threads = Command::new("/bin/ps");
+    threads.args(["-M", "-p", &pid.to_string()]);
+    save(&path, "threads", test_command::output_with_cap(&mut threads, Duration::from_secs(2), CAP))?;
+    save(&path, "sample", test_command::sample_process(pid, 1, Duration::from_secs(5), CAP))?;
     let mut hash = Command::new("/usr/bin/shasum");
     hash.args(["-a", "256", env!("CARGO_BIN_EXE_recto-headings")]);
     save(
@@ -49,10 +52,13 @@ fn collect(pid: u32, elapsed: Duration, job: &serde_json::Value) -> std::io::Res
 
 fn save(root: &Path, name: &str, result: std::io::Result<(bool, std::process::Output)>) -> std::io::Result<()> {
     match result {
-        Ok((timed_out, output)) => {
+        Ok((limit_reached, output)) => {
             std::fs::write(root.join(format!("{name}.stdout")), output.stdout)?;
             std::fs::write(root.join(format!("{name}.stderr")), output.stderr)?;
-            std::fs::write(root.join(format!("{name}.status")), format!("timed_out={timed_out} status={:?}", output.status))
+            std::fs::write(
+                root.join(format!("{name}.status")),
+                format!("limit_reached={limit_reached} status={:?}", output.status),
+            )
         }
         Err(error) => std::fs::write(root.join(format!("{name}.error")), error.to_string()),
     }
