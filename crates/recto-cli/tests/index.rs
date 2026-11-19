@@ -3,6 +3,8 @@
 #[path = "index/backup_check.rs"]
 mod backup_check;
 mod common;
+#[path = "index/damage.rs"]
+mod damage;
 
 use common::{Raw, State};
 use recto_agent::{Level, exit};
@@ -591,7 +593,7 @@ fn a_damaged_corpus_answers_by_reading_the_pages() {
     let paths = recto_index::corpus::CorpusPaths::new(&state.paths.corpus, key);
     let pack = paths.app.join("text.pack");
     let mut bytes = std::fs::read(&pack).unwrap();
-    bytes[0] = 0xFF;
+    damage::damage(&mut bytes);
     std::fs::write(&pack, bytes).unwrap();
     let (found, code) = state.json(&["search", "page 1 of"]);
     assert_eq!(code, 0, "{found}");
