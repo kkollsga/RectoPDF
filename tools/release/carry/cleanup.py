@@ -24,7 +24,15 @@ MAX_OUTPUT = 8192
 def describe(work, apps):
     root = Path(work).resolve()
     bundles = []
+    if len(apps) > 2:
+        raise RuntimeError('carry cleanup expects at most two private apps')
+    paths = []
     for app in apps:
+        paths.append(Path(app))
+        helper = Path(app) / 'Contents/Helpers/RectoRender.app'
+        if helper.is_dir():
+            paths.append(helper)
+    for app in paths:  # At most four exact known URLs; never a recursive app sweep.
         path = Path(app).resolve()
         if not path.is_relative_to(root) or path == root:
             raise RuntimeError('cleanup bundle is outside this private work folder')
@@ -75,14 +83,15 @@ def observe(bundles, known_pids):
 def bounded_command(argv, timeout=5):
     """Cap both OS-query streams while running; timeout kills only our direct child."""
     child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    selector = selectors.DefaultSelector()
+    selector = None
     output = {'stdout': bytearray(), 'stderr': bytearray()}
-    for name, stream in [('stdout', child.stdout), ('stderr', child.stderr)]:
-        os.set_blocking(stream.fileno(), False)
-        selector.register(stream, selectors.EVENT_READ, name)
-    deadline = time.monotonic() + timeout
     reaped = False
     try:
+        selector = selectors.DefaultSelector()
+        for name, stream in [('stdout', child.stdout), ('stderr', child.stderr)]:
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ, name)
+        deadline = time.monotonic() + timeout
         while selector.get_map():
             left = deadline - time.monotonic()
             if left <= 0:
@@ -101,15 +110,28 @@ def bounded_command(argv, timeout=5):
         reaped = True
         return code, bytes(output['stdout']), bytes(output['stderr'])
     finally:
+        primary = sys.exc_info()[1]
         try:
             if not reaped:
                 child.kill()  # Owned OS-query child, never a discovered application PID.
                 child.wait(timeout=1)
+        except Exception as error:
+            if primary is None:
+                raise
+            raise primary from error
         finally:
-            for key in list(selector.get_map().values()):
-                selector.unregister(key.fileobj)
-                key.fileobj.close()
-            selector.close()
+            try:
+                if selector is not None:
+                    selector.close()
+            finally:
+                child.stdout.close()
+                child.stderr.close()
+
+
+def _osstatus_domain(cf, error):
+    wanted = ctypes.c_void_p.in_dll(cf, 'kCFErrorDomainOSStatus').value
+    domain = cf.CFErrorGetDomain(error)
+    return bool(wanted and domain and cf.CFEqual(domain, wanted))
 
 
 def registration_query(identifier, wanted):
@@ -123,7 +145,8 @@ def registration_query(identifier, wanted):
         ('CFArrayGetValueAtIndex', [ptr, ctypes.c_long], ptr),
         ('CFURLCopyFileSystemPath', [ptr, ctypes.c_int], ptr),
         ('CFStringGetCString', [ptr, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32], ctypes.c_bool),
-        ('CFErrorGetCode', [ptr], ctypes.c_long), ('CFRelease', [ptr], None),
+        ('CFErrorGetCode', [ptr], ctypes.c_long), ('CFErrorGetDomain', [ptr], ptr),
+        ('CFEqual', [ptr, ptr], ctypes.c_bool), ('CFRelease', [ptr], None),
     ]:
         function = getattr(cf, name)
         function.argtypes, function.restype = arguments, result
@@ -135,9 +158,11 @@ def registration_query(identifier, wanted):
     error = ptr()
     array = ls.LSCopyApplicationURLsForBundleIdentifier(key, ctypes.byref(error))
     try:
-        if not array:
-            if error and cf.CFErrorGetCode(error) == -10814:
+        if error:
+            if not array and _osstatus_domain(cf, error) and cf.CFErrorGetCode(error) == -10814:
                 return False
+            raise RuntimeError('registration lookup returned an error, so absence is unknown')
+        if not array:
             raise RuntimeError('registration lookup returned no definite result')
         count = cf.CFArrayGetCount(array)
         if not 0 <= count <= 256:

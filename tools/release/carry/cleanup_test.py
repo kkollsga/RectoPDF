@@ -49,6 +49,18 @@ class Scenario:
 
 
 class CleanupTests(unittest.TestCase):
+    def test_known_nested_helper_urls_are_saved_without_a_recursive_sweep(self):
+        """Forgetting only the outer app must not leave its renderer helper registered."""
+        apps = ['/private/carry/old/RectoPDF.app', '/private/carry/new/RectoPDF.app']
+        with patch.object(cleanup.Path, 'resolve', lambda path: path), \
+                patch.object(cleanup.Path, 'is_dir', return_value=True), \
+                patch.object(cleanup.Path, 'stat', return_value=SimpleNamespace(st_size=100)), \
+                patch.object(cleanup.Path, 'read_bytes', return_value=cleanup.plistlib.dumps({'CFBundleIdentifier': 'test.fixture'})):
+            bundles = cleanup.describe('/private/carry', apps)
+        self.assertEqual([bundle['path'] for bundle in bundles],
+                         [path for app in apps for path in [app, app + '/Contents/Helpers/RectoRender.app']])
+        self.assertEqual(len(bundles), 4)
+
     def test_os_query_pipes_close_even_if_owned_child_reaping_fails(self):
         """A timed-out OS query must release its pipes even if kill/wait also fails."""
         child, selector = Mock(), Mock()
@@ -59,11 +71,53 @@ class CleanupTests(unittest.TestCase):
         with patch.object(cleanup.subprocess, 'Popen', return_value=child), \
                 patch.object(cleanup.selectors, 'DefaultSelector', return_value=selector), \
                 patch.object(cleanup.os, 'set_blocking'):
-            with self.assertRaisesRegex(TimeoutError, 'did not reap'):
+            with self.assertRaisesRegex(TimeoutError, 'OS-query command exceeded'):
                 cleanup.bounded_command(['made OS query'], timeout=0)
         child.stdout.close.assert_called_once()
         child.stderr.close.assert_called_once()
         selector.close.assert_called_once()
+
+    def test_os_query_setup_failure_still_retires_owned_child_and_preserves_error(self):
+        """Failure before pipe registration must not strand the query child or replace its cause."""
+        child, selector = Mock(), Mock()
+        selector.get_map.return_value = {}
+        selector.register.side_effect = RuntimeError('selector setup failed')
+        child.wait.side_effect = TimeoutError('reaping also failed')
+        with patch.object(cleanup.subprocess, 'Popen', return_value=child), \
+                patch.object(cleanup.selectors, 'DefaultSelector', return_value=selector), \
+                patch.object(cleanup.os, 'set_blocking'):
+            with self.assertRaisesRegex(RuntimeError, 'selector setup failed'):
+                cleanup.bounded_command(['made OS query'])
+        child.kill.assert_called_once()
+        child.wait.assert_called_once()
+        child.stdout.close.assert_called_once()
+        child.stderr.close.assert_called_once()
+        selector.close.assert_called_once()
+
+    def query_result(self, array, error, osstatus):
+        cf, ls = Mock(), Mock()
+        cf.CFStringCreateWithCString.return_value = 11
+        cf.CFErrorGetCode.return_value = -10814
+        cf.CFArrayGetCount.return_value = 0
+        def lookup(key, error_pointer):
+            error_pointer._obj.value = error
+            return array
+        ls.LSCopyApplicationURLsForBundleIdentifier.side_effect = lookup
+        with patch.object(cleanup.ctypes, 'CDLL', side_effect=[cf, ls]), \
+                patch.object(cleanup, '_osstatus_domain', return_value=osstatus, create=True):
+            return cleanup.registration_query('test.fixture', '/private/carry/new/RectoPDF.app')
+
+    def test_not_found_code_in_another_cf_domain_is_not_absence(self):
+        """An unrelated CF error can share -10814; only OSStatus declares app-not-found."""
+        with self.assertRaises(RuntimeError):
+            self.query_result(None, 33, False)
+        self.assertFalse(self.query_result(None, 33, True))
+
+    def test_partial_registration_array_with_an_error_is_not_absence(self):
+        """A partial empty CF array plus an error is not a successful empty lookup."""
+        with self.assertRaises(RuntimeError):
+            self.query_result(22, 33, True)
+        self.assertFalse(self.query_result(22, None, False))
 
     def test_early_command_failure_quits_and_waits_before_forgetting_or_removing(self):
         """An early command error must not delete the bundle of the app it left alive."""
