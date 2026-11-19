@@ -1243,6 +1243,8 @@ RectoPDF's owner, 2026-11-07: "I think the main issue is repeating tests leading
 
 ### 6.2 What makes a good test
 
+**A corruption seed always changes its input.** Assigning a constant to an encrypted nonce left one of 256 possible initial bytes unchanged and falsely expected a healthy index to fall back. Use a guaranteed mutation, prove it for every possible prefix cheaply, and print before/after seed evidence if the real fallback case fails (2026-11-19).
+
 - **A test targets a way the code can fail, names it in its doc comment, and fails when it happens:** "a deadlock when
   two saves overlap", "the problem text contains 'os error'". Owner, 2026-11-12: "Tests should be focused on testing
   real concerns".
@@ -1418,6 +1420,8 @@ needed, 18 a failing check repeated after a fix, 9 a repeat a smaller test would
   load-sensitive bug, so keep a way to force a run.
 
 ### 6.9 A failure carries its evidence, and a red `main` is fixed first
+
+**Lifecycle fixtures use the production launcher, and capture before cleanup.** A helper fixture used a different descriptor-inheritance policy and leaked one stdin descriptor per completed request; an isolated before/after descriptor count proved 5 versus 4. Its earlier timeout had no stack, so its cause stayed unproven. Capture short-lived descriptors and CPU/thread context before expensive sampling, on the retained owned child, and test the record on a made failure. Bound diagnostics too; report an output/time limit as `limit_reached`, not necessarily a timeout (a useful sample reached 64 KiB before 5 s, 2026-11-19).
 
 - **One failure is enough to diagnose.** Owner, 2026-11-12: "What's the solution to ensure we are able to debug and fix
   issues after one failure?" A failing test that started the app leaves one folder: every launch's messages, the state
