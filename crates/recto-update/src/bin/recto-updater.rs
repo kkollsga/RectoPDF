@@ -77,7 +77,7 @@ fn test_app(version: &str, behaviour: &str, work: &Path, session: &Path) -> i32 
     match behaviour {
         "ok" => {
             let _ = recto_platform::local::write_private_file(&work.join("launch-ok"), format!("{own} {} 0", std::process::id()).as_bytes());
-            std::thread::sleep(std::time::Duration::from_secs(4));
+            hold_test_app(work, std::time::Duration::from_secs(4));
             0
         }
         // Comes up, having started empty: what was the record is gone, and it says it restored no tabs.
@@ -85,7 +85,7 @@ fn test_app(version: &str, behaviour: &str, work: &Path, session: &Path) -> i32 
             let _ = std::fs::write(session.join("record.a.json"), "emptied by the new version");
             let line = recto_update::plan::launch_ok_line(&own, std::process::id(), 0, Some(0));
             let _ = recto_platform::local::write_private_file(&work.join("launch-ok"), line.as_bytes());
-            std::thread::sleep(std::time::Duration::from_secs(120));
+            hold_test_app(work, std::time::Duration::from_secs(120));
             0
         }
         "exits" => {
@@ -94,8 +94,21 @@ fn test_app(version: &str, behaviour: &str, work: &Path, session: &Path) -> i32 
         }
         _ => {
             let _ = std::fs::write(session.join("record.a.json"), "damaged by the new version");
-            std::thread::sleep(std::time::Duration::from_secs(120));
+            hold_test_app(work, std::time::Duration::from_secs(120));
             1
         }
+    }
+}
+
+/// The private fixture asks its stand-ins to finish; the original outer limit still holds.
+fn hold_test_app(work: &Path, limit: std::time::Duration) {
+    let deadline = std::time::Instant::now() + limit;
+    let stop = work.join("test-app-stop");
+    while !stop.exists() {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        std::thread::sleep(left.min(std::time::Duration::from_millis(10))); // ratchet: poll
     }
 }
