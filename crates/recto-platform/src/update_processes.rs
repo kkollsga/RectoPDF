@@ -53,7 +53,7 @@ fn observe(wanted: &Path, scan: &mut impl Scan) -> io::Result<bool> {
         path.fill(0);
         let count = match scan.path(pid, &mut path) {
             Ok(count) => count,
-            Err(error) if matches!(error.raw_os_error(), Some(libc::ESRCH) | Some(libc::ENOENT)) => continue,
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => continue,
             Err(error) => return Err(error),
         };
         if count == 0 || count >= path.len() {
@@ -110,7 +110,7 @@ mod tests {
             assert!(observe(wanted, &mut fake).is_err());
         }
         fake.list_bytes = 4;
-        for error in [libc::EPERM, libc::EIO] {
+        for error in [libc::EPERM, libc::EIO, libc::ENOENT] {
             fake.error = Some(error);
             assert!(observe(wanted, &mut fake).is_err());
         }
