@@ -3,19 +3,34 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::process::Child;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub struct FixtureDir(Option<recto_testpdf::TempDir>);
+pub struct FixtureDir {
+    dir: Option<recto_testpdf::TempDir>,
+    failure: Arc<Mutex<Option<String>>>,
+}
 
 impl FixtureDir {
     pub fn new(dir: recto_testpdf::TempDir) -> Self {
-        Self(Some(dir))
+        Self {
+            dir: Some(dir),
+            failure: Arc::new(Mutex::new(None)),
+        }
+    }
+    pub fn own(&self, child: Child) -> OwnedChild {
+        OwnedChild {
+            child,
+            failure: Arc::clone(&self.failure),
+        }
     }
     pub fn retire(&mut self, observed: io::Result<()>) -> io::Result<()> {
-        if observed.is_err() {
-            if let Some(dir) = self.0.take() {
-                std::mem::forget(dir);
-            }
+        let failure = self.failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let observed = observed.and_then(|()| failure.map_or(Ok(()), |error| Err(io::Error::other(error))));
+        if observed.is_err()
+            && let Some(dir) = self.dir.take()
+        {
+            std::mem::forget(dir);
         }
         observed
     }
@@ -24,33 +39,66 @@ impl FixtureDir {
 impl std::ops::Deref for FixtureDir {
     type Target = Path;
     fn deref(&self) -> &Path {
-        self.0.as_ref().expect("fixture retained only at teardown").path()
+        self.dir.as_ref().expect("fixture retained only at teardown").path()
     }
 }
 
-pub struct OwnedChild(pub Child);
+pub struct OwnedChild {
+    child: Child,
+    failure: Arc<Mutex<Option<String>>>,
+}
 
 impl std::ops::Deref for OwnedChild {
     type Target = Child;
     fn deref(&self) -> &Child {
-        &self.0
+        &self.child
     }
 }
 
 impl std::ops::DerefMut for OwnedChild {
     fn deref_mut(&mut self) -> &mut Child {
-        &mut self.0
+        &mut self.child
+    }
+}
+
+trait Anchor {
+    fn exited(&mut self) -> io::Result<bool>;
+    fn kill(&mut self) -> io::Result<()>;
+}
+
+impl Anchor for Child {
+    fn exited(&mut self) -> io::Result<bool> {
+        self.try_wait().map(|status| status.is_some())
+    }
+    fn kill(&mut self) -> io::Result<()> {
+        Child::kill(self)
+    }
+}
+
+fn retire_child(child: &mut impl Anchor, limit: Duration) -> io::Result<()> {
+    // Any failed ownership check ends cleanup before a signal can be sent.
+    if child.exited()? {
+        return Ok(());
+    }
+    child.kill()?;
+    wait(limit, || child.exited().map(|exited| !exited))
+}
+
+fn latch(failure: &Mutex<Option<String>>, error: io::Error) {
+    let mut message = error.to_string();
+    message.truncate(message.floor_char_boundary(1024));
+    let mut failure = failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if failure.is_none() {
+        *failure = Some(message);
     }
 }
 
 impl Drop for OwnedChild {
     fn drop(&mut self) {
-        if matches!(self.0.try_wait(), Ok(Some(_))) {
-            return;
+        if let Err(error) = retire_child(&mut self.child, Duration::from_secs(1)) {
+            eprintln!("owned installer child {} cleanup uncertain: {error}", self.child.id());
+            latch(&self.failure, error);
         }
-        // Still our unreaped direct child, never a PID learned from enumeration.
-        let _ = self.0.kill();
-        let _ = self.0.wait();
     }
 }
 
@@ -67,7 +115,7 @@ fn present(root: &Path) -> io::Result<bool> {
     let mut pids = [0i32; 8192];
     // SAFETY: a live fixed buffer with its exact byte count; PROC_UID_ONLY is 4.
     let bytes = unsafe { proc_listpids(4, geteuid(), pids.as_mut_ptr().cast(), size_of_val(&pids) as i32) };
-    if bytes <= 0 || bytes as usize >= size_of_val(&pids) || bytes as usize % size_of::<i32>() != 0 {
+    if bytes <= 0 || bytes as usize >= size_of_val(&pids) || !(bytes as usize).is_multiple_of(size_of::<i32>()) {
         return Err(io::Error::other("fixture process scan failed or reached its cap"));
     }
     let mut live = false;
@@ -135,4 +183,44 @@ fn only_observed_absence_allows_fixture_removal() {
             std::fs::remove_dir_all(path).unwrap();
         }
     }
+}
+
+#[test]
+/// Failure: losing a Child anchor still authorizes a kill, or bounded reap uncertainty permits fixture deletion.
+fn lost_child_anchor_never_signals_and_retains_the_fixture() {
+    struct Fake {
+        error: Option<i32>,
+        kills: u32,
+    }
+    impl Anchor for Fake {
+        fn exited(&mut self) -> io::Result<bool> {
+            self.error.map_or(Ok(false), |code| Err(io::Error::from_raw_os_error(code)))
+        }
+        fn kill(&mut self) -> io::Result<()> {
+            self.kills += 1;
+            Ok(())
+        }
+    }
+    let retained = |error: io::Error| {
+        let dir = recto_testpdf::TempDir::new("installer-lost-anchor-");
+        let path = dir.path().to_path_buf();
+        let mut fixture = FixtureDir::new(dir);
+        latch(&fixture.failure, error);
+        assert!(fixture.retire(Ok(())).is_err(), "later observed absence cannot erase uncertainty");
+        drop(fixture);
+        assert!(path.exists(), "the uncertain fixture is retained");
+        std::fs::remove_dir_all(path).unwrap();
+    };
+    // Darwin ECHILD=10; another failed ownership observation is equally uncertain.
+    for code in [10, 1] {
+        let mut child = Fake { error: Some(code), kills: 0 };
+        let error = retire_child(&mut child, Duration::ZERO).unwrap_err();
+        assert_eq!(child.kills, 0, "ownership error {code} must not signal");
+        retained(error);
+    }
+    let mut child = Fake { error: None, kills: 0 };
+    let error = retire_child(&mut child, Duration::ZERO).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert_eq!(child.kills, 1);
+    retained(error);
 }

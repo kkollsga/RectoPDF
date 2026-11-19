@@ -131,7 +131,7 @@ impl Bed {
 
     /// What's running: a process for the installer to wait on.
     fn old_process(&self) -> OwnedChild {
-        OwnedChild(Command::new("/bin/sleep").arg("30").spawn().unwrap())
+        self.dir.own(Command::new("/bin/sleep").arg("30").spawn().unwrap())
     }
 
     fn start(&mut self, old: u32, die_at: Option<&str>) -> OwnedChild {
@@ -143,7 +143,7 @@ impl Bed {
             command.env(DIE_AT_ENV, step);
         }
         command.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-        OwnedChild(command.spawn().unwrap())
+        self.dir.own(command.spawn().unwrap())
     }
 
     /// With a process that's already gone: the installer doesn't wait.
@@ -263,9 +263,8 @@ impl Drop for Bed {
             if !std::thread::panicking() {
                 panic!("installer fixture cleanup was not established: {error}");
             }
-            return;
         }
-        // FixtureDir removes its directory only after this successful observation.
+        // FixtureDir removes its directory only after a successful observation.
     }
 }
 
@@ -968,7 +967,7 @@ fn an_app_reopened_during_an_install_goes_on_as_normal() {
     let plan = Plan { pid: 1, ..bed.plan.clone() };
     plan.write(&bed.files.plan()).unwrap();
     // A real process of the installer's name, for the launch to find alive.
-    let mut helper = OwnedChild(
+    let mut helper = bed.dir.own(
         Command::new(HELPER)
             .args([
                 "test-app",
