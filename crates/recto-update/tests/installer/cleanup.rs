@@ -76,12 +76,16 @@ impl Anchor for Child {
 }
 
 fn retire_child(child: &mut impl Anchor, limit: Duration) -> io::Result<()> {
+    retire_child_with(child, limit, Instant::now, std::thread::sleep)
+}
+
+fn retire_child_with(child: &mut impl Anchor, limit: Duration, now: impl FnMut() -> Instant, pause: impl FnMut(Duration)) -> io::Result<()> {
     // Any failed ownership check ends cleanup before a signal can be sent.
     if child.exited()? {
         return Ok(());
     }
     child.kill()?;
-    wait(limit, || child.exited().map(|exited| !exited))
+    wait_with(limit, || child.exited().map(|exited| !exited), now, pause, Unknown::Refuse)
 }
 
 fn latch(failure: &Mutex<Option<String>>, error: io::Error) {
@@ -155,7 +159,13 @@ pub fn wait_for_exit(root: &Path, limit: Duration) -> io::Result<()> {
 }
 
 fn wait(limit: Duration, probe: impl FnMut() -> io::Result<bool>) -> io::Result<()> {
-    wait_with(limit, probe, Instant::now, std::thread::sleep)
+    wait_with(limit, probe, Instant::now, std::thread::sleep, Unknown::Retry)
+}
+
+#[derive(Clone, Copy)]
+enum Unknown {
+    Retry,
+    Refuse,
 }
 
 fn wait_with(
@@ -163,13 +173,17 @@ fn wait_with(
     mut probe: impl FnMut() -> io::Result<bool>,
     mut now: impl FnMut() -> Instant,
     mut pause: impl FnMut(Duration),
+    unknown_policy: Unknown,
 ) -> io::Result<()> {
     let deadline = now() + limit;
     loop {
         let unknown = match probe() {
             Ok(false) => return Ok(()),
             Ok(true) => None,
-            Err(error) => Some(error),
+            Err(error) => match unknown_policy {
+                Unknown::Retry => Some(error),
+                Unknown::Refuse => return Err(error),
+            },
         };
         let left = deadline.saturating_duration_since(now());
         if left.is_zero() {
@@ -253,7 +267,16 @@ fn uncertain_observation_retries_without_weakening_exit_proof() {
     let clock = std::cell::Cell::new(began);
     let limit = Duration::from_nanos(2);
     let mut samples = [Err(io::Error::from_raw_os_error(2)), Ok(false)].into_iter();
-    assert!(wait_with(limit, || samples.next().unwrap(), || clock.get(), |step| clock.set(clock.get() + step)).is_ok());
+    assert!(
+        wait_with(
+            limit,
+            || samples.next().unwrap(),
+            || clock.get(),
+            |step| clock.set(clock.get() + step),
+            Unknown::Retry
+        )
+        .is_ok()
+    );
     clock.set(began);
     let calls = std::cell::Cell::new(0);
     let result = wait_with(
@@ -264,8 +287,48 @@ fn uncertain_observation_retries_without_weakening_exit_proof() {
         },
         || clock.get(),
         |step| clock.set(clock.get() + step),
+        Unknown::Retry,
     );
     assert!(result.is_err());
     assert_eq!(clock.get(), began + limit);
     assert_eq!(calls.get(), 2);
+}
+
+/// Failure: an error after killing an owned child is retried and erased by a
+/// later reap, so its fixture is removed despite lost ownership evidence.
+#[test]
+fn a_post_kill_ownership_error_is_latched_without_another_probe() {
+    struct Fake {
+        calls: usize,
+        kills: usize,
+    }
+    impl Anchor for Fake {
+        fn exited(&mut self) -> io::Result<bool> {
+            self.calls += 1;
+            match self.calls {
+                1 => Ok(false),
+                2 => Err(io::Error::from_raw_os_error(10)),
+                _ => Ok(true),
+            }
+        }
+        fn kill(&mut self) -> io::Result<()> {
+            self.kills += 1;
+            Ok(())
+        }
+    }
+    let began = Instant::now();
+    let clock = std::cell::Cell::new(began);
+    let mut child = Fake { calls: 0, kills: 0 };
+    let result = retire_child_with(&mut child, Duration::from_nanos(2), || clock.get(), |step| clock.set(clock.get() + step));
+    assert!(result.is_err(), "post-kill ownership error must not become a successful reap");
+    assert_eq!((child.calls, child.kills), (2, 1));
+    assert_eq!(clock.get(), began, "ownership error returns without a retry");
+    let dir = recto_testpdf::TempDir::new("installer-post-kill-anchor-");
+    let path = dir.path().to_path_buf();
+    let mut fixture = FixtureDir::new(dir);
+    latch(&fixture.failure, result.unwrap_err());
+    assert!(fixture.retire(Ok(())).is_err());
+    drop(fixture);
+    assert!(path.exists());
+    std::fs::remove_dir_all(path).unwrap();
 }
