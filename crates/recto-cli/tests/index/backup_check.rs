@@ -1,4 +1,4 @@
-//! The OS's direct cache-exclusion property, without tmutil's scan of every mounted disk.
+//! Direct backup markers checked against an OS-generated reference, without a mounted-disk scan.
 
 use std::fs::{self, File};
 use std::io::Read;
@@ -8,12 +8,122 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-/// The documented CFBoolean for caches, rather than a second interpretation of our xattr bytes.
+/// An OS-created direct marker is the reference; effective exclusion can also come from an ancestor.
 const PROBE: &str = r#"
 #include <CoreFoundation/CoreFoundation.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/xattr.h>
 #include <unistd.h>
+
+#define MARKER "com.apple.metadata:com_apple_backup_excludeItem"
+#define MARKER_CAP 4096
+
+static CFURLRef directory_url(const char *path) {
+    size_t length = strlen(path);
+    if (length > 4096) return NULL;
+    return CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, length, true);
+}
+
+static int excluded(const char *path) {
+    CFURLRef url = directory_url(path);
+    if (!url) return -1;
+    CFTypeRef value = NULL;
+    CFErrorRef error = NULL;
+    Boolean ok = CFURLCopyResourcePropertyForKey(url, kCFURLIsExcludedFromBackupKey, &value, &error);
+    int result = -1;
+    if (ok && value && CFGetTypeID(value) == CFBooleanGetTypeID()) result = CFBooleanGetValue(value);
+    else if (error) CFShow(error);
+    if (value) CFRelease(value);
+    if (error) CFRelease(error);
+    CFRelease(url);
+    return result;
+}
+
+static int set_excluded(const char *path) {
+    CFURLRef url = directory_url(path);
+    if (!url) return 3;
+    CFErrorRef error = NULL;
+    Boolean ok = CFURLSetResourcePropertyForKey(url, kCFURLIsExcludedFromBackupKey, kCFBooleanTrue, &error);
+    if (!ok && error) CFShow(error);
+    if (error) CFRelease(error);
+    CFRelease(url);
+    return ok ? 0 : 4;
+}
+
+static CFPropertyListRef direct_marker(const char *path, int *status) {
+    UInt8 bytes[MARKER_CAP];
+    ssize_t length = getxattr(path, MARKER, bytes, sizeof(bytes), 0, XATTR_NOFOLLOW);
+    if (length < 0) {
+        *status = errno == ENOATTR ? 6 : 9;
+        fprintf(stderr, "direct backup marker read failed: %s (errno=%d)\n", path, errno);
+        return NULL;
+    }
+    CFDataRef data = CFDataCreate(NULL, bytes, length);
+    if (!data) { *status = 9; return NULL; }
+    CFErrorRef error = NULL;
+    CFPropertyListRef marker = CFPropertyListCreateWithData(NULL, data, kCFPropertyListImmutable, NULL, &error);
+    if (!marker) {
+        *status = 7;
+        fprintf(stderr, "direct backup marker is not a property list: %s\n", path);
+        if (error) CFShow(error);
+    }
+    if (error) CFRelease(error);
+    CFRelease(data);
+    return marker;
+}
+
+static int no_direct_marker(const char *path) {
+    errno = 0;
+    ssize_t length = getxattr(path, MARKER, NULL, 0, 0, XATTR_NOFOLLOW);
+    return length < 0 && errno == ENOATTR;
+}
+
+static int prepare_reference(const char *parent, const char *reference_path, const char *unmarked) {
+    // Only newly created owned fixture paths reach this mode. Never alter an ancestor or machine policy.
+    if (!no_direct_marker(reference_path) || !no_direct_marker(unmarked)) return 9;
+    int status = set_excluded(parent);
+    if (status) return status;
+    if (excluded(parent) != 1) return 4;
+    CFPropertyListRef parent_marker = direct_marker(parent, &status);
+    if (!parent_marker) return status;
+    CFRelease(parent_marker);
+    status = set_excluded(reference_path);
+    if (status) return status;
+    // An inherited true must not hide a setter that skipped writing a direct reference marker.
+    CFPropertyListRef reference = direct_marker(reference_path, &status);
+    if (!reference) return status;
+    CFRelease(reference);
+    if (!no_direct_marker(unmarked)) return 9;
+    int inherited = excluded(unmarked);
+    if (inherited < 0) return 4;
+    printf("reference=direct unmarked=absent effective=%d\n", inherited);
+    return 0;
+}
+
+static int wrong_marker(const char *path) {
+    CFDataRef data = CFPropertyListCreateData(NULL, CFSTR("not-a-backup-exclusion"), kCFPropertyListBinaryFormat_v1_0, 0, NULL);
+    if (!data) return 9;
+    int result = setxattr(path, MARKER, CFDataGetBytePtr(data), CFDataGetLength(data), 0, XATTR_NOFOLLOW);
+    CFRelease(data);
+    return result == 0 ? 0 : 9;
+}
+
+static int validate_marker(const char *path, const char *reference_path) {
+    int status = 0;
+    CFPropertyListRef marker = direct_marker(path, &status);
+    if (!marker) return status;
+    CFPropertyListRef reference = direct_marker(reference_path, &status);
+    if (!reference) { CFRelease(marker); return status; }
+    Boolean same = CFEqual(marker, reference);
+    CFRelease(marker);
+    CFRelease(reference);
+    if (!same) { fprintf(stderr, "direct backup marker differs from the OS reference\n"); return 8; }
+    if (excluded(path) != 1) return 4;
+    printf("direct=1 reference=1 excluded=1\n");
+    return 0;
+}
 
 int main(int argc, char **argv) {
     if (argc == 3 && strcmp(argv[1], "--hang") == 0) {
@@ -25,23 +135,27 @@ int main(int argc, char **argv) {
         fclose(ready);
         for (;;) pause();
     }
-    if (argc != 2) return 2;
-    CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)argv[1], strlen(argv[1]), true);
-    if (!url) return 3;
-    CFTypeRef value = NULL;
-    CFErrorRef error = NULL;
-    Boolean ok = CFURLCopyResourcePropertyForKey(url, kCFURLIsExcludedFromBackupKey, &value, &error);
-    if (!ok || !value || CFGetTypeID(value) != CFBooleanGetTypeID()) {
-        if (error) CFShow(error);
-        if (value) CFRelease(value);
-        if (error) CFRelease(error);
-        CFRelease(url);
-        return 4;
+    if (argc == 4 && strcmp(argv[1], "--validate") == 0) return validate_marker(argv[2], argv[3]);
+    if (argc == 9 && strcmp(argv[1], "--check") == 0) {
+        int status = prepare_reference(argv[3], argv[4], argv[5]);
+        if (status) return status;
+        status = validate_marker(argv[2], argv[4]);
+        if (status) return status;
+        const char bytes[] = "not a property list";
+        if (setxattr(argv[6], MARKER, bytes, sizeof(bytes) - 1, 0, XATTR_NOFOLLOW) != 0) return 9;
+        status = wrong_marker(argv[7]);
+        if (status) return status;
+        char oversized[MARKER_CAP + 1];
+        memset(oversized, 'x', sizeof(oversized));
+        if (setxattr(argv[8], MARKER, oversized, sizeof(oversized), 0, XATTR_NOFOLLOW) != 0) return 9;
+        int missing = validate_marker(argv[5], argv[4]);
+        int malformed = validate_marker(argv[6], argv[4]);
+        int wrong = validate_marker(argv[7], argv[4]);
+        int too_large = validate_marker(argv[8], argv[4]);
+        printf("controls missing=%d malformed=%d wrong=%d oversized=%d\n", missing, malformed, wrong, too_large);
+        return missing == 6 && malformed == 7 && wrong == 8 && too_large == 9 ? 0 : 10;
     }
-    printf("excluded=%d\n", CFBooleanGetValue(value));
-    CFRelease(value);
-    CFRelease(url);
-    return 0;
+    return 2;
 }
 "#;
 
@@ -194,7 +308,7 @@ impl Probe {
     }
 }
 
-/// The existing session test also checks an unmarked control and forces a hung native query to prove bounded cleanup.
+/// The existing session test validates a direct OS marker under an excluded parent, rejects missing/corrupt marks, and proves hung-query cleanup.
 pub fn assert_excluded(folder: &Path) {
     let older = Probe::new();
     fs::write(older.0.join("earlier-evidence"), "keep this earlier result").unwrap();
@@ -210,14 +324,28 @@ pub fn assert_excluded(folder: &Path) {
     assert!(compiled.status.success() && !compiled.timed_out, "{compiled:?}");
     eprintln!("backup exclusion probe compiler: {:?}", compiled.elapsed);
 
-    let unmarked = probe.0.join("unmarked");
-    fs::create_dir(&unmarked).unwrap();
-    for (label, path, expected) in [("unmarked", unmarked.as_path(), "excluded=0\n"), ("marked", folder, "excluded=1\n")] {
-        let mut query = Command::new(&program);
-        query.arg(path);
-        let said = probe.run(label, query, Duration::from_secs(5));
-        assert!(said.status.success() && !said.timed_out && said.stdout == expected, "{label}: {said:?}");
+    // The negative control must remain meaningful even when the evidence root is already excluded (as cargo's target is).
+    let parent = probe.0.join("excluded-parent");
+    fs::DirBuilder::new().mode(0o700).create(&parent).unwrap();
+    let reference = parent.join("os-reference");
+    let unmarked = parent.join("unmarked");
+    let malformed = parent.join("malformed");
+    let wrong = parent.join("wrong-value");
+    let oversized = parent.join("oversized");
+    for path in [&reference, &unmarked, &malformed, &wrong, &oversized] {
+        fs::DirBuilder::new().mode(0o700).create(path).unwrap();
     }
+    // One native invocation reuses CoreFoundation for every control instead of paying for another tool process each time.
+    let mut check = Command::new(&program);
+    check
+        .arg("--check")
+        .args([folder, &parent, &reference, &unmarked, &malformed, &wrong, &oversized]);
+    let checked = probe.run("check", check, Duration::from_secs(5));
+    assert!(checked.status.success() && !checked.timed_out, "native marker validation: {checked:?}");
+    assert!(checked.stdout.contains("reference=direct unmarked=absent"), "{checked:?}");
+    assert!(checked.stdout.contains("direct=1 reference=1 excluded=1"), "{checked:?}");
+    assert!(checked.stdout.contains("controls missing=6 malformed=7 wrong=8 oversized=9"), "{checked:?}");
+    eprintln!("backup native controls: {}", checked.stdout.trim());
 
     probe.forced_hang(&program);
 }
