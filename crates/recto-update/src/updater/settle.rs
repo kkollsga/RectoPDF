@@ -3,7 +3,7 @@
 
 use super::{Notice, QUITS_FOR_NOTHING, Settled, Status, Updater, builds, clean_code, helper_alive, installer_reopened, went_back_words, why_not_installed};
 use crate::APP_NAME;
-use crate::plan::{Outcome, OutcomeKind, Plan, beside_app};
+use crate::plan::{Files, Outcome, OutcomeKind, Plan, beside_app};
 use crate::saved::Saved;
 use crate::stage;
 use std::path::Path;
@@ -13,7 +13,8 @@ impl Updater {
     pub(super) fn settle_last_install(&self, saved: &mut Saved, current: &str, app: &Path, now: u64) -> Settled {
         let mut settled = Settled::default();
         let Some(beside) = beside_app(app) else { return settled };
-        if let Some(outcome) = Outcome::read(&self.files.outcome()) {
+        let (outcome, earlier_refusal) = launch_outcome(&self.files, current, app);
+        if let Some(outcome) = outcome {
             let exit_unproven = outcome.kind == OutcomeKind::CouldntGoBack && outcome.why == "app_exit_unproven";
             if exit_unproven {
                 // This unresolved refusal must not immediately launch another rollback and quit again.
@@ -107,7 +108,7 @@ impl Updater {
             saved.install_failures = 0;
             saved.quits_for_nothing = 0;
             saved.failures = 0;
-            if !alive {
+            if !alive && !earlier_refusal {
                 self.tidy_after_swap(&plan, &beside);
             }
             settled.arrived = Some(plan);
@@ -140,5 +141,134 @@ impl Updater {
             stage::clear_staged(app);
         }
         settled
+    }
+}
+
+/// A refusal describes one version pair, never a later install's startup handshake.
+fn launch_outcome(files: &Files, current: &str, app: &Path) -> (Option<Outcome>, bool) {
+    let Some(outcome) = Outcome::read(&files.outcome()) else {
+        return (None, false);
+    };
+    if outcome.kind != OutcomeKind::CouldntGoBack || outcome.why != "app_exit_unproven" {
+        return (Some(outcome), false);
+    }
+    let superseded = Plan::read(&files.plan()).is_some_and(|plan| {
+        plan.to == current
+            && plan.from != plan.to
+            && plan.root == files.root
+            && plan.app.as_path() == app
+            && (plan.from != outcome.from || plan.to != outcome.to)
+    });
+    if current == outcome.to && !superseded {
+        return (Some(outcome), false);
+    }
+    // One fixed, bounded evidence slot. Failure to archive cannot mask a valid later arrival.
+    let archived = serde_json::to_vec(&outcome).map_err(std::io::Error::other).and_then(|bytes| {
+        if bytes.len() > 64 * 1024 {
+            return Err(std::io::Error::other("refused outcome exceeded its evidence cap"));
+        }
+        recto_platform::local::write_private_file_durably(&files.work.join("outcome.refused.json"), &bytes)
+    });
+    match archived {
+        Ok(()) => {
+            if Outcome::read(&files.outcome()).as_ref() == Some(&outcome) {
+                let _ = std::fs::remove_file(files.outcome());
+            }
+        }
+        Err(error) => crate::plan::log(&files.log, &format!("the earlier rollback refusal is retained in outcome.json: {error}")),
+    }
+    (None, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::TestLaunch;
+    use crate::updater::{HandOffRefused, HandedOff, Host, Look};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    struct Quiet;
+    impl Host for Quiet {
+        fn look(&self) -> Look {
+            Look::default()
+        }
+        fn hand_off(&self, _: Duration) -> Result<HandedOff, HandOffRefused> {
+            Ok(HandedOff::default())
+        }
+        fn quit_now(&self) -> bool {
+            false
+        }
+        fn cancelled(&self) {}
+        fn changed(&self) {}
+        fn frontmost(&self) -> bool {
+            false
+        }
+        fn relaunch(&self) -> TestLaunch {
+            TestLaunch::default()
+        }
+    }
+
+    /// Failure: an earlier refused rollback masks a valid later plan, so its healthy first frame has no arrival to acknowledge.
+    #[test]
+    fn an_old_refusal_does_not_mask_a_new_matching_arrival() {
+        for archive_fails in [false, true] {
+            let dir = recto_testpdf::TempDir::new("new-arrival-after-refusal-");
+            let app = dir.join("RectoPDF.app");
+            let root = dir.join("state");
+            let files = crate::plan::Files::in_state(&root);
+            recto_platform::local::ensure_private_dir(&root).unwrap();
+            recto_platform::local::ensure_private_dir(&files.work).unwrap();
+            std::fs::create_dir_all(files.before()).unwrap();
+            std::fs::write(files.before().join(".whole"), b"earlier record").unwrap();
+            std::fs::create_dir(&app).unwrap();
+            std::fs::write(app.join("untouched"), b"new bundle").unwrap();
+            let plan = Plan {
+                id: "later".into(),
+                cdhash: String::new(),
+                team_required: false,
+                any_version: false,
+                development_build: false,
+                team_signed: false,
+                from: "0.2.0".into(),
+                to: "0.3.0".into(),
+                pid: 0,
+                app: app.clone(),
+                beside: beside_app(&app).unwrap(),
+                root: root.clone(),
+                quit_at_ms: 0,
+                background: true,
+                quit_limit_ms: 1,
+                start_limit_ms: 1,
+                handed_off_tabs: None,
+                open: Vec::new(),
+                keep_record: false,
+                test: None,
+            };
+            plan.write(&files.plan()).unwrap();
+            let old = Outcome {
+                kind: OutcomeKind::CouldntGoBack,
+                from: "0.1.0".into(),
+                to: "0.2.0".into(),
+                why: "app_exit_unproven".into(),
+            };
+            old.write(&files.outcome()).unwrap();
+            let archive = files.work.join("outcome.refused.json");
+            if archive_fails {
+                std::fs::create_dir(&archive).unwrap();
+            }
+            let updater = Updater::new(&root, crate::source::resolve(false, false, None, None), Arc::new(Quiet));
+            let settled = updater.settle_last_install(&mut Saved::default(), &plan.to, &app, 0);
+            assert_eq!(
+                settled.arrived.as_ref().map(|arrived| (&arrived.from, &arrived.to)),
+                Some((&plan.from, &plan.to)),
+                "old refusal must not suppress launch-ok eligibility"
+            );
+            assert_eq!(Plan::read(&files.plan()), Some(plan));
+            assert_eq!(std::fs::read(files.before().join(".whole")).unwrap(), b"earlier record");
+            assert_eq!(std::fs::read(app.join("untouched")).unwrap(), b"new bundle");
+            let evidence = if archive_fails { files.outcome() } else { archive };
+            assert_eq!(Outcome::read(&evidence), Some(old));
+        }
     }
 }
