@@ -312,7 +312,7 @@ impl Updater {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use super::super::{AtLaunch, Facts, HandOffRefused, HandedOff, Host, Look};
+    use super::super::{AtLaunch, Facts, HandOffRefused, HandedOff, Host, InstallerMode, Look};
     use super::*;
     use crate::TEAM_ID;
     use crate::fetch::tests::{Answer, Server};
@@ -332,6 +332,7 @@ mod tests {
         busy: Mutex<Vec<String>>,
         hand_offs: AtomicU32,
         plan_at_quit: Mutex<Option<Plan>>,
+        installers: Mutex<Vec<InstallerMode>>,
         /// Agent access has dropped below Full.
         below_full: std::sync::atomic::AtomicBool,
     }
@@ -361,8 +362,9 @@ mod tests {
         fn may_take_a_build(&self) -> bool {
             !self.below_full.load(Ordering::SeqCst)
         }
-        fn start_installer(&self, _helper: &Path, plan: &Path, _log: &Path) -> std::io::Result<u32> {
+        fn start_installer(&self, mode: InstallerMode, _helper: &Path, plan: &Path, _log: &Path) -> std::io::Result<u32> {
             *lock(&self.plan_at_quit) = Plan::read(plan);
+            lock(&self.installers).push(mode);
             Ok(1)
         }
     }
@@ -857,7 +859,7 @@ mod tests {
         assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 0);
     }
 
-    /// Failure: a release that keeps failing goes back by itself to a development build signed ad hoc that the owner no longer allows, as 0.1.0.3, then 0.1.0 by the way back, then 0.1.0 not coming up would. With the switch on it may; with it off, it stays on the release.
+    /// Failure: rollback bypasses the host and starts a real helper in a test, or a release that keeps failing goes back by itself to a development build signed ad hoc that the owner no longer allows, as 0.1.0.3, then 0.1.0 by the way back, then 0.1.0 not coming up would. With the switch on it may; with it off, it stays on the release.
     #[test]
     fn going_back_lands_on_a_build_only_with_the_switch_on() {
         for (switch, goes_back) in [(Some(false), false), (None, false), (Some(true), true)] {
@@ -882,12 +884,20 @@ mod tests {
             let server = Server::start();
             // Releases held to the team, as a real build's are.
             let source = resolve(false, true, Some(server.source().repo), Some("developer-id".into()));
-            let updater = Updater::new(&root, source, Arc::new(Fake::default()) as Arc<dyn Host>);
+            let fake = Arc::new(Fake::default());
+            let updater = Updater::new(&root, source, Arc::clone(&fake) as Arc<dyn Host>);
+            // A bypass of the fake must fail without starting a copied system program.
+            std::fs::remove_file(app.join(crate::HELPER)).unwrap();
             let at = updater.launched(Facts {
                 version: "0.1.0".into(),
                 app: app.clone(),
                 system: "15.0".into(),
             });
+            assert_eq!(
+                *lock(&fake.installers),
+                if goes_back { vec![InstallerMode::Back] } else { Vec::new() },
+                "rollback uses the host exactly when allowed: {switch:?}"
+            );
             assert_eq!(at == AtLaunch::Exit, goes_back, "{switch:?}");
             if !goes_back {
                 assert!(

@@ -2,7 +2,9 @@
 //! back as the next phase. Nothing here decides: it asks the host what the phase reads, in the order it's read, and does what it's told.
 
 use super::flow::{self, Going, Phase, Seen, Step};
-use super::{Asked, Facts, HAND_OFF_LIMIT, HandOffRefused, HandedOff, Notice, Status, TEST_START_LIMIT_MS, Updater, WAIT_STEP, lock, test_launch};
+use super::{
+    Asked, Facts, HAND_OFF_LIMIT, HandOffRefused, HandedOff, InstallerMode, Notice, Status, TEST_START_LIMIT_MS, Updater, WAIT_STEP, lock, test_launch,
+};
 use crate::HELPER;
 use crate::plan::{Plan, beside_app};
 use crate::source::Mode;
@@ -135,7 +137,7 @@ impl Updater {
                         st.from_menu = false;
                     }
                     let helper = facts.app.join(HELPER);
-                    phase = match self.host.start_installer(&helper, &self.files.plan(), &self.files.log) {
+                    phase = match self.host.start_installer(InstallerMode::Install, &helper, &self.files.plan(), &self.files.log) {
                         Ok(_) => Phase::InstallerStarted,
                         Err(_) => Phase::Fault("the installer couldn't be started"),
                     };

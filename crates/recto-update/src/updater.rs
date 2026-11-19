@@ -19,6 +19,8 @@ use std::time::Duration;
 pub mod builds;
 mod flow;
 mod handing;
+mod host;
+pub use host::InstallerMode;
 mod menu;
 mod now;
 mod remembered;
@@ -101,8 +103,8 @@ pub trait Host: Send + Sync {
         Some(Box::new(()))
     }
     /// Starts the installer. A test stands in for this.
-    fn start_installer(&self, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32> {
-        local::spawn_detached(helper, &["install".to_owned(), plan.display().to_string()], &[], log)
+    fn start_installer(&self, mode: InstallerMode, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32> {
+        mode.start(helper, plan, log)
     }
 }
 
@@ -683,13 +685,9 @@ impl Updater {
             Back::NeverCameUp => format!("{current} didn't reach a first frame {UNSTARTED_LIMIT} times, going back"),
             Back::KeptEnding => format!("{current} ended early {EARLY_ENDS_LIMIT} times in a row, going back with the record as it is"),
         });
-        local::spawn_detached(
-            &app.join(HELPER),
-            &["back".to_owned(), self.files.plan().display().to_string()],
-            &[],
-            &self.files.log,
-        )
-        .is_ok()
+        self.host
+            .start_installer(InstallerMode::Back, &app.join(HELPER), &self.files.plan(), &self.files.log)
+            .is_ok()
     }
 
     /// The first correct frame's on the screen. **What "come up" means, which is what the installer waits for and what can send a new version back:** the state's been read and a first frame shown, and this version has drawn a page through the real renderer: our own tiny PDF, not the user's. Not the user's, as one of theirs being moved, damaged or on a dead volume says nothing of this version. And not the first frame alone, which a timer can force and a preview from a sleep file can fill without the renderer ever running. So a version whose renderer can't load, which would otherwise look fine, shows no pages for everyone, and be the one nobody can get back from, goes back. It's asked only of a version that's new here, so a normal launch costs nothing, and this waits on a worker, so it has a thread of its own.
@@ -1268,7 +1266,7 @@ mod tests {
         hand_offs: AtomicU32,
         quits: AtomicU32,
         cancels: AtomicU32,
-        installers: Mutex<Vec<PathBuf>>,
+        installers: Mutex<Vec<(InstallerMode, PathBuf)>>,
         installer_fails: AtomicBool,
         changes: AtomicU32,
         frontmost: AtomicBool,
@@ -1318,9 +1316,9 @@ mod tests {
             *lock(&self.draws) += 1;
             !self.cant_draw.load(Ordering::SeqCst)
         }
-        fn start_installer(&self, helper: &Path, plan: &Path, _log: &Path) -> std::io::Result<u32> {
+        fn start_installer(&self, mode: InstallerMode, helper: &Path, plan: &Path, _log: &Path) -> std::io::Result<u32> {
             *lock(&self.plan_at_quit) = Plan::read(plan);
-            lock(&self.installers).push(helper.to_path_buf());
+            lock(&self.installers).push((mode, helper.to_path_buf()));
             if self.installer_fails.load(Ordering::SeqCst) {
                 return Err(std::io::Error::other("no"));
             }
@@ -1549,6 +1547,7 @@ mod tests {
         assert_eq!(bed.updater.install(Asked::ByHand), Err(InstallRefused::Underway), "one at a time");
         bed.wait_for("the quit", |bed| bed.fake.quits.load(Ordering::SeqCst) == 1);
         assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 1);
+        assert_eq!(*lock(&bed.fake.installers), vec![(InstallerMode::Install, bed.app.join(HELPER))]);
         let plan = lock(&bed.fake.plan_at_quit).clone().unwrap();
         assert_eq!((plan.from.as_str(), plan.to.as_str(), plan.pid), ("0.1.0", "0.2.0", std::process::id()));
         assert!(!plan.background, "it was frontmost, so it comes back frontmost");
