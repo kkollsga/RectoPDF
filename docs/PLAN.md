@@ -104,7 +104,9 @@ The short-stall source push's automatic runner-acquisition retry reached real te
 
 ## Release 0.1.3 — authorized 19 November
 
-Owner: "Go ahead release as 0.1.3". Coordinator targets scope/notes and independent review by 09:00 CET; publication around 10:00 CET is an estimate contingent on every release gate passing. No new product feature is started in this release pass.
+Owner: "Go ahead release as 0.1.3". Scope/notes and independent release-source review are complete. Revised publication estimate on 19 November: around 10:30 CET, contingent on every release gate passing; cleanup-tool review fixes and the owner's duplicate-icon report moved the earlier 10:00 estimate. No new product feature is started in this release pass.
+
+- [x] **Duplicate Dock entries corrected (19 November).** CoreServices reports only `/Applications/RectoPDF.app`; two recent-app records named that same path. Removed only the duplicate and verified one after restarting the Dock, preserving the installed app and documents. Cause not established; repeat the Dock/registration check after native release testing. [`reports/single-install-2026-11-19.md`](reports/single-install-2026-11-19.md).
 
 - [ ] Version/notes, independent delta review and explicit known limits.
 - [ ] One final full on the release source, main CI and fresh signing preflight.
