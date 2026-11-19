@@ -22,7 +22,6 @@ Each comparison says what it compared; every difference not named in an exceptio
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -31,10 +30,11 @@ import time
 # Run with -I, which leaves this folder off the path: expect.py is beside this file.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from expect import Older, b_sleep, c_highlighted_tab, e_journal, f_disk, journal_version, journals, sleep_format, unmet_faults  # noqa: E402
+from cleanup import clean_up, describe  # noqa: E402
 
-LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 repo, previous_zip, new_app, evidence = sys.argv[1:5]
 failures, notes = [], []
+started_runs = []
 
 
 def say(line):
@@ -164,6 +164,7 @@ class Run:
         return reply["data"]
 
     def start(self):
+        started_runs.append(self)  # Before the CLI call: a failed ready answer can still have started an app.
         data = self.cmd("qa", "start", "--app", os.path.join(self.app, "Contents/MacOS/RectoPDF"), "--time-limit", "10m", "--owner", str(os.getpid()), timeout=180)
         self.pid = data.get("pid")
         self.settled()
@@ -223,11 +224,13 @@ def main():
     work = tempfile.mkdtemp(prefix="check-carry.")
     os.chmod(work, 0o700)
     apps = []
+    bundles = []
     try:
         old_app, new_copy = os.path.join(work, "old/RectoPDF.app"), os.path.join(work, "new/RectoPDF.app")
         subprocess.run(["ditto", "-x", "-k", previous_zip, os.path.dirname(old_app)], check=True)
         subprocess.run(["ditto", new_app, new_copy], check=True)
         apps = [old_app, new_copy]
+        bundles = describe(work, apps)
         old_v, new_v = version_of(old_app), version_of(new_copy)
         older = Older(old_v)
         say(f"check-carry: {old_v} (as published) then {new_v} ({new_app}), on one state folder in {work}")
@@ -428,9 +431,16 @@ def main():
         for what in unmet_faults(acknowledged, met):
             check(*what)
     finally:
-        for app in apps:
-            subprocess.run([LSREGISTER, "-u", app], capture_output=True)
-        shutil.rmtree(work, ignore_errors=True)
+        primary = sys.exc_info()[1]
+        cleanup = clean_up(work, bundles, started_runs)
+        if primary is not None:
+            cleanup['primary_error'] = type(primary).__name__ + ': ' + str(primary)[:1024]
+        try:
+            save("cleanup", cleanup)
+        except Exception as error:
+            fail("cleanup evidence could not be written", str(error))
+        if not cleanup["complete"]:
+            fail("cleanup retained the private work folder", f"{work}: {cleanup.get('error', 'exit or registration unknown')}")
     say(f"check-carry: evidence in {evidence}")
     if failures:
         say(f"check-carry: {len(failures)} check(s) failed:")

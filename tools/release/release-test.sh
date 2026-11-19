@@ -432,6 +432,11 @@ out=$(python3 -I -B "$SOURCE/tools/release/carry/expect_test.py" 2>&1); rc=$?
 check "carry expectations: their own test passes ($(printf '%s\n' "$out" | sed -n 's/^Ran \([0-9]*\) tests.*/\1/p') cases)" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out" | tail -30
 
+# Carry retirement: made process/registration failures, without apps or OS waits.
+out=$(python3 -I -B "$SOURCE/tools/release/carry/cleanup_test.py" 2>&1); rc=$?
+check "carry cleanup: exit and exact registration absence precede removal" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out" | tail -30
+
 # ---- ci-gate.sh: the release's gate on CI, by its own test (made runs and a made repository) ----
 out=$("$SOURCE/tools/release/ci-gate-test.sh" 2>&1); rc=$?
 check "ci-gate: its own test passes ($(printf '%s\n' "$out" | grep -c '^ok') checks)" 0 "$rc"
