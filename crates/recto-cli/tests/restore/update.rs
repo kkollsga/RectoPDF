@@ -554,7 +554,7 @@ fn an_update_in_the_middle_of_things_changes_nothing() {
         let (was, now) = (before["app"]["pages"][field].as_f64().unwrap(), after["app"]["pages"][field].as_f64().unwrap());
         assert!((was - now).abs() < 0.25, "{field}: {was} then {now}");
     }
-    // The first frame was the right one: the place, with something on it, which since deep sleep can be the tab's sleep file's picture before a page is drawn. That's the gap the user sees. It isn't what counts as having come up: that's a page of the app's own drawn through the real renderer, which `a_new_app_that_cant_draw_goes_back` holds to with a renderer that can't.
+    // The first frame was the right one: the place, with something on it, which since deep sleep can be the tab's sleep file's picture before a page is drawn. That's the gap the user sees. It isn't what counts as having come up: that's a page of the app's own drawn through the real renderer, which `a_new_app_that_cant_draw_preserves_recovery_while_live` holds to with a renderer that can't.
     let shown = &after["record"]["first_shown"];
     assert_eq!(shown["home"], false, "{shown}");
     assert!(shown["tile_layers"].as_u64().unwrap() > 0, "something's on it: {shown}");
@@ -744,9 +744,12 @@ fn a_new_app_that_wont_start_goes_back_with_the_same_state() {
     run.quit();
 }
 
-/// Failure: a release whose renderer can't work counts as having started, because a window came up, so every copy moves to it and shows no pages. **What "come up" means, on the real app:** the release has its renderer swapped for a program that does nothing, as a library that won't load under the hardened runtime would leave it. It shows a first frame, can't draw its own test page, and goes back.
+/// Failure: a new app whose renderer fails is accepted as started, or rollback
+/// overwrites its live state. A first frame is not proof of drawing. An unowned
+/// replacement that stays running must retain its old bundle and recovery record;
+/// its next launch reports the refusal without retrying it.
 #[test]
-fn a_new_app_that_cant_draw_goes_back() {
+fn a_new_app_that_cant_draw_preserves_recovery_while_live() {
     let Some(bed) = Bed::new() else { return };
     let run = bed.start();
     let file = long_document("alpha", 20);
@@ -762,17 +765,42 @@ fn a_new_app_that_cant_draw_goes_back() {
     bed.release_of(NEW, Broken::NoRenderer);
     assert_eq!(run.ok(&["update", "check"])["status"], "available");
     run.ok(&["update", "install"]);
-    let run = bed.wait_for_new_app_of(run, OLD);
-    run.ok(&["qa", "scroller-style", "overlay"]);
-    run.settled();
-    assert_eq!(bed.version(), OLD);
-    let status = bed.wait_status(&run, "went_back");
-    assert_eq!(status["failed_versions"], json!([NEW]));
-    assert_same_but(&before, &run.report(), &[], ACROSS_AN_UPDATE);
-    // A first frame was up, from the tab's sleep file's picture if it had one, and that wasn't enough: it was the drawing that said no.
+    let run = bed.wait_for_new_app(run);
+    let files = recto_update::plan::Files::in_state(&bed.state.root);
+    let began = Instant::now();
+    let outcome = loop {
+        if let Some(outcome) = recto_update::plan::Outcome::read(&files.outcome()) {
+            break outcome;
+        }
+        assert!(began.elapsed() < Duration::from_secs(60), "no recovery outcome: {}", bed.said());
+        std::thread::sleep(Duration::from_millis(20)); // ratchet: poll — bounded outcome-file observation.
+    };
+    assert_eq!(outcome.kind, recto_update::plan::OutcomeKind::CouldntGoBack);
+    assert_eq!(outcome.why, "app_exit_unproven");
+    assert_eq!(bed.status(&run)["status"], "failed", "the live app reports its drawing failure");
+    assert_eq!(bed.version(), NEW, "no bundle swap over the live replacement");
+    assert_eq!(bed.kept().as_deref(), Some(OLD));
+    assert!(files.plan().is_file(), "the unresolved plan remains");
+    assert!(files.before().join(".whole").is_file(), "the complete recovery record remains");
+    let recovery_record = std::fs::read(files.before().join("record.a.json")).unwrap();
+    assert!(!recovery_record.is_empty());
+    assert!(!files.launch_ok().exists(), "a first frame without drawing is never startup success");
     let log = bed.log();
-    assert!(log.contains("can't draw a page") && log.contains("couldnt_draw"), "{log}");
-    assert!(!log.contains("0.1.99 started"), "never taken as having come up: {log}");
+    assert!(log.contains("can't draw a page") && log.contains("exit is unproven"), "{log}");
+    assert!(!log.contains("0.1.99 started") && !log.contains("swapped_back"), "{log}");
+    // Only this private test asks the app to quit. The next launch reports the refusal,
+    // and must not retry rollback or remove its recovery files.
+    run.quit();
+    let run = bed.start();
+    let status = bed.wait_status(&run, "failed");
+    assert_eq!(status["version"], NEW);
+    assert_eq!(status["failed_versions"], json!([NEW]));
+    assert_eq!(std::fs::read(files.before().join("record.a.json")).unwrap(), recovery_record);
+    assert!(files.plan().is_file() && files.outcome().is_file());
+    assert_eq!(bed.version(), NEW);
+    assert_eq!(bed.kept().as_deref(), Some(OLD));
+    assert_eq!(before["session"], run.report()["session"], "the same tabs, places and unsaved edits survive");
+    assert_eq!(bed.log().matches("installer: going_back").count(), 1, "no automatic retry");
     run.quit();
 }
 

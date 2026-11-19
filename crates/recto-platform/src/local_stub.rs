@@ -250,6 +250,16 @@ pub fn observe_missing_program_processes(_executable: &Path) -> Vec<u32> {
     Vec::new()
 }
 
+/// Observation is unknown on an unsupported platform, never proven absence.
+pub fn update_app_is_running(_executable: &Path) -> io::Result<bool> {
+    unsupported()
+}
+
+/// This platform cannot establish the app record's writer lock.
+pub fn try_update_record_lock(_root: &Path) -> io::Result<File> {
+    unsupported()
+}
+
 pub fn process_path(_pid: u32) -> Option<PathBuf> {
     None
 }
@@ -282,6 +292,11 @@ pub fn signal_process_group(_group: u32, _kill: bool) -> bool {
 }
 
 pub fn spawn_detached(_program: &Path, _args: &[String], _envs: &[(String, String)], _log: &Path) -> io::Result<u32> {
+    unsupported()
+}
+
+/// This platform cannot start an owned detached update child.
+pub fn spawn_detached_child(_program: &Path, _args: &[String], _envs: &[(String, String)], _log: &Path) -> io::Result<std::process::Child> {
     unsupported()
 }
 

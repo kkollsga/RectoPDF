@@ -1,0 +1,4 @@
+# Explicit differences for the published 0.1.2 to 0.1.3 state-carry check.
+# Existing restore exceptions also apply. No fault waiver is permitted here.
+# New-only QA diagnostics are not persisted session changes; check_carry's normal comparison handles them.
+permission.set_at_ms Each private quiet launch sets its access level, so the time belongs to that run.

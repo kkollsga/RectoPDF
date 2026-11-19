@@ -314,10 +314,12 @@ impl<'a> Run<'a> {
 
     /// What the Quit menu item does.
     pub fn quit(mut self) {
-        self.lifetime
-            .request(&self.state.paths, &["qa", "quit", "now"])
-            .expect("the exact app accepts quit");
-        self.wait_gone();
+        let reply = self.lifetime.quit_reply(&self.state.paths);
+        lifetime::finish_terminal(reply, || {
+            self.wait_gone();
+            Ok(())
+        })
+        .expect("the exact app and socket end after quit");
     }
 
     /// What an update does.
@@ -370,9 +372,7 @@ impl Drop for Run<'_> {
         if std::thread::panicking() {
             evidence::while_running(&self.state, self.pid);
         }
-        if let Err(error) = self.lifetime.stop(&self.state.paths) {
-            eprintln!("quiet app {} graceful cleanup: {error}", self.pid);
-        }
+        let reply = self.lifetime.stop_reply(&self.state.paths);
         let began = Instant::now();
         while !self.lifetime.gone(self.pid).unwrap_or(false) && began.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(Duration::from_millis(20));
@@ -386,6 +386,26 @@ impl Drop for Run<'_> {
                 "attached quiet app {} remains alive; no PID was signalled, and its original owner/state lifetime remains in force",
                 self.pid
             );
+        }
+        let proof = || {
+            let began = Instant::now();
+            loop {
+                if !self.lifetime.gone(self.pid)? {
+                    return Err("the exact app remains after cleanup".into());
+                }
+                match std::os::unix::net::UnixStream::connect(&self.state.paths.socket) {
+                    Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => return Ok(()),
+                    Err(error) => return Err(format!("socket closure is unknown: {error}")),
+                    Ok(_) => {}
+                }
+                if began.elapsed() >= Duration::from_secs(5) {
+                    return Err("the session socket remains after cleanup".into());
+                }
+                std::thread::sleep(Duration::from_millis(10)); // ratchet: poll
+            }
+        };
+        if let Err(error) = lifetime::finish_terminal(reply, proof) {
+            eprintln!("quiet app {} graceful cleanup: {error}", self.pid);
         }
         // A run ended by its own quit forgets its copy itself; one that had to be killed couldn't.
         forget_the_built_app();

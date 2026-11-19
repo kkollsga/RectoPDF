@@ -11,8 +11,12 @@ set -uo pipefail
 SOURCE="$(cd "$(dirname "$0")/../.." && pwd)"
 [ $# = 2 ] && [ -f "$1" ] && [ -d "$2" ] || { sed -n '9p' "$0" >&2; exit 2; }
 X=$(mktemp -d "${TMPDIR:-/tmp}/check-carry-test.XXXXXX")
-trap 'rm -rf "$X"' EXIT
 fails=0
+cleanup() {
+  local rc=$?
+  if [ "$rc" = 0 ] && [ "$fails" = 0 ]; then rm -rf "$X"; else echo "check-carry-test: failure evidence retained in $X" >&2; fi
+}
+trap cleanup EXIT
 check() { if [ "$2" = "$3" ]; then echo "ok    $1"; else echo "FAIL  $1: expected [$2], got [$3]"; fails=$((fails + 1)); fi; }
 has() { case "$3" in *"$2"*) echo "ok    $1" ;; *) echo "FAIL  $1: no [$2] in [$3]"; fails=$((fails + 1)) ;; esac; }
 run() { CHECK_CARRY_SEED="$1" "$SOURCE/tools/release/check-carry.sh" "$2" "$3" "$X/evidence-${1:-none}" 2>&1; }
@@ -34,8 +38,7 @@ if [ "$(printf '%s\n' 0.1.1 "$older" | sort -V | head -1)" != 0.1.1 ]; then
   # Failure: a tab says its other list was kept in the state folder, and the check believes it without looking.
   out=$(run aside "$1" "$2"); rc=$?
   check "the set-aside list gone fails the check" 1 "$rc"
-  has "naming the journal" "version-2 journal is on disk byte for byte, as None" "$out"
-  has "and the notice it makes untrue" "FAIL  F: the hidden highlight is said on its tab" "$out"
+  has "naming the promised retained journal" "FAIL  F: $older's own list is kept, byte for byte, as None" "$out"
 else
   # Failure: an older release that reads highlights loses one on going back, and the check passes it as 0.1.0's way of leaving it alone.
   out=$(run highlight "$1" "$2"); rc=$?

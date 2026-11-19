@@ -559,7 +559,7 @@ checksum = "a611d15b50743feb4c76b7d03edcb0e64f399c26961e4efe6975bc398be6aa3d"
 
 [[package]]
 name = "recto-agent"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "flate2",
  "grep-matcher",
@@ -579,7 +579,7 @@ dependencies = [
 
 [[package]]
 name = "recto-control"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "recto-agent",
  "recto-core",
@@ -591,7 +591,7 @@ dependencies = [
 
 [[package]]
 name = "recto-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "flate2",
  "lopdf",
@@ -602,7 +602,7 @@ dependencies = [
 
 [[package]]
 name = "recto-fuzz"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "crc32fast",
  "flate2",
@@ -632,7 +632,7 @@ dependencies = [
 
 [[package]]
 name = "recto-index"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "aes-gcm",
  "crc32fast",
@@ -648,7 +648,7 @@ dependencies = [
 
 [[package]]
 name = "recto-platform"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "getrandom",
  "libc",
@@ -657,11 +657,11 @@ dependencies = [
 
 [[package]]
 name = "recto-proto"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "recto-reader"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "recto-core",
  "recto-index",
@@ -673,7 +673,7 @@ dependencies = [
 
 [[package]]
 name = "recto-render"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "recto-platform",
  "recto-proto",
@@ -681,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "recto-render-service"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "recto-platform",
  "recto-proto",
@@ -690,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "recto-session"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "crc32fast",
  "recto-core",
@@ -702,22 +702,22 @@ dependencies = [
 
 [[package]]
 name = "recto-sign"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "recto-svg"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "flate2",
 ]
 
 [[package]]
 name = "recto-testpdf"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "recto-update"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "crc32fast",
  "flate2",
