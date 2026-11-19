@@ -106,18 +106,28 @@ const OPENS_OUTSIDE_THE_WALL: &[(&str, usize, &str)] = &[
         "a test's probe, never in the app: adversarial file attempts, plus capped reads of its own fixture configuration/canary and creation of its exact launch receipt",
     ),
     (
+        "recto-platform/src/detached_mac.rs",
+        1,
+        "the spawned child's app-owned update log; moved from local_mac, never a document path",
+    ),
+    (
         "recto-platform/src/find_key.rs",
         2,
         "the app's own files and tools, never a document: a test state folder's key file put in place, and the test-only look at a built program for the Keychain's code",
     ),
     (
         "recto-platform/src/local_mac.rs",
-        17,
+        16,
         "the platform's file primitives, each handed its path by a caller: private state files (links not followed), clones, the untrusted open of \
-         `recto`'s update zip in `recto`, a spawned child's log, a folder flushed. Their reads (`open_untrusted`, `open_private_file`, `clone_file`) \
+         `recto`'s update zip in `recto`, a folder flushed. Their reads (`open_untrusted`, `open_private_file`, `clone_file`) \
          are counted again where a caller in these crates makes them",
     ),
     ("recto-platform/src/local_stub.rs", 4, "the same primitives' stand-ins on another system"),
+    (
+        "recto-platform/src/update_record_lock.rs",
+        1,
+        "the validated update plan's private state root plus fixed run/session.lock, shared with RecordStore; no document path, links or special files",
+    ),
 ];
 
 /// The opens in a file's production lines, a line comment left out.
