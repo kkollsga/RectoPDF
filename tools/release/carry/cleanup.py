@@ -46,6 +46,10 @@ def describe(work, apps):
     return bundles
 
 
+def process_vanished(code):
+    return code == errno.ESRCH
+
+
 def observe(bundles, known_pids):
     # SDK libproc.h / sys/proc_info.h: PROC_UID_ONLY=4; proc_listpids returns bytes.
     lib = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
@@ -66,7 +70,7 @@ def observe(bundles, known_pids):
         ctypes.set_errno(0)
         length = lib.proc_pidpath(pid, buffer, len(buffer))
         if length <= 0:
-            if ctypes.get_errno() not in (errno.ESRCH, errno.ENOENT):
+            if not process_vanished(ctypes.get_errno()):
                 unknown.append(pid)
             continue
         if length >= len(buffer):

@@ -125,7 +125,7 @@ fn present(root: &Path) -> io::Result<bool> {
         let count = unsafe { proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
         if count <= 0 {
             let error = io::Error::last_os_error();
-            if matches!(error.raw_os_error(), Some(2) | Some(3)) {
+            if process_vanished(&error) {
                 continue;
             }
             return Err(error);
@@ -141,6 +141,10 @@ fn present(root: &Path) -> io::Result<bool> {
         live |= path.starts_with(root);
     }
     Ok(live)
+}
+
+fn process_vanished(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(3) // Darwin ESRCH; ENOENT can be a live unlinked image.
 }
 
 pub fn wait_for_exit(root: &Path, limit: Duration) -> io::Result<()> {
@@ -164,6 +168,8 @@ fn wait(limit: Duration, mut probe: impl FnMut() -> io::Result<bool>) -> io::Res
 #[test]
 /// Failure: unknown observations or a live fixture at the deadline permit deletion.
 fn only_observed_absence_allows_fixture_removal() {
+    assert!(process_vanished(&io::Error::from_raw_os_error(3)));
+    assert!(!process_vanished(&io::Error::from_raw_os_error(2)), "a live unlinked image can return ENOENT");
     assert!(wait(Duration::ZERO, || Ok(false)).is_ok());
     assert!(wait(Duration::ZERO, || Ok(true)).is_err());
     assert!(wait(Duration::ZERO, || Err(io::Error::other("unknown"))).is_err());
