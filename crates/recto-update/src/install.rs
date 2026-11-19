@@ -144,8 +144,7 @@ impl Run<'_> {
         let limit = Duration::from_millis(self.plan.start_limit_ms);
         let never_seen_limit = limit / 4;
         let executable = self.plan.executable();
-        let mut seen = false;
-        let mut gone_since: Option<Instant> = None;
+        let mut observed = retirement::Startup::default();
         let mut next_look = began;
         while began.elapsed() < limit {
             if let Ok(text) = std::fs::read_to_string(self.files.launch_ok())
@@ -165,25 +164,21 @@ impl Run<'_> {
             }
             if Instant::now() >= next_look {
                 next_look = Instant::now() + Duration::from_millis(100);
-                let running = match self.launched.running(&executable) {
-                    Ok(running) => running,
-                    Err(error) => {
-                        self.say(&format!("installer: the new app's running state is unknown ({error})"));
-                        return Err("app_exit_unproven");
-                    }
-                };
-                if !running {
-                    let since = *gone_since.get_or_insert_with(Instant::now);
-                    if (seen && since.elapsed() >= GONE_GRACE) || (!seen && began.elapsed() >= never_seen_limit) {
-                        self.say("installer: the new app ended before it came up");
-                        return Err("didnt_start");
-                    }
-                } else {
-                    seen = true;
-                    gone_since = None;
+                if let Err(why) = observed.check(
+                    self.launched.running(&executable),
+                    Instant::now(),
+                    began.elapsed(),
+                    never_seen_limit,
+                    GONE_GRACE,
+                ) {
+                    self.say("installer: the new app ended before it came up");
+                    return Err(why);
                 }
             }
             std::thread::sleep(LOOK_STEP);
+        }
+        if let Some(error) = observed.last_unknown() {
+            self.say(&format!("installer: the final running-state observation was unknown ({error})"));
         }
         self.say("installer: the new app didn't come up in time");
         Err("didnt_start")
@@ -363,11 +358,13 @@ pub fn run(plan: &Plan) -> Ended {
         return Ended::NotInstalled;
     }
     // Someone's opened it again in that moment. Their copy's in use, and it isn't this installer's to stop.
-    match local::update_app_is_running(&plan.executable()) {
+    match retirement::before_swap(&plan.executable(), STOP_PATIENCE) {
         Ok(false) => {}
         observed => {
             let why = if observed.is_ok() { "app_reopened" } else { "observation_unknown" };
-            run.say(&format!("installer: app absence isn't established ({why}), so nothing was replaced"));
+            run.say(&format!(
+                "installer: app absence isn't established ({why}: {observed:?}), so nothing was replaced"
+            ));
             run.finish_with(OutcomeKind::NotInstalled, why);
             return Ended::NotInstalled;
         }
