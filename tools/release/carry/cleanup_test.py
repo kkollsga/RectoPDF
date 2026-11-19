@@ -3,7 +3,7 @@ import os
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cleanup
@@ -49,6 +49,22 @@ class Scenario:
 
 
 class CleanupTests(unittest.TestCase):
+    def test_os_query_pipes_close_even_if_owned_child_reaping_fails(self):
+        """A timed-out OS query must release its pipes even if kill/wait also fails."""
+        child, selector = Mock(), Mock()
+        streams = {stream: SimpleNamespace(fileobj=stream) for stream in [child.stdout, child.stderr]}
+        selector.get_map.return_value = streams
+        selector.unregister.side_effect = lambda stream: streams.pop(stream)
+        child.wait.side_effect = TimeoutError('owned query did not reap')
+        with patch.object(cleanup.subprocess, 'Popen', return_value=child), \
+                patch.object(cleanup.selectors, 'DefaultSelector', return_value=selector), \
+                patch.object(cleanup.os, 'set_blocking'):
+            with self.assertRaisesRegex(TimeoutError, 'did not reap'):
+                cleanup.bounded_command(['made OS query'], timeout=0)
+        child.stdout.close.assert_called_once()
+        child.stderr.close.assert_called_once()
+        selector.close.assert_called_once()
+
     def test_early_command_failure_quits_and_waits_before_forgetting_or_removing(self):
         """An early command error must not delete the bundle of the app it left alive."""
         scenario = Scenario([{'live': {'123': 'private app'}, 'unknown': []}, {'live': {}, 'unknown': []}])

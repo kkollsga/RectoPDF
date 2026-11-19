@@ -101,13 +101,15 @@ def bounded_command(argv, timeout=5):
         reaped = True
         return code, bytes(output['stdout']), bytes(output['stderr'])
     finally:
-        if not reaped:
-            child.kill()  # Owned OS-query child, never a discovered application PID.
-            child.wait(timeout=1)
-        for key in list(selector.get_map().values()):
-            selector.unregister(key.fileobj)
-            key.fileobj.close()
-        selector.close()
+        try:
+            if not reaped:
+                child.kill()  # Owned OS-query child, never a discovered application PID.
+                child.wait(timeout=1)
+        finally:
+            for key in list(selector.get_map().values()):
+                selector.unregister(key.fileobj)
+                key.fileobj.close()
+            selector.close()
 
 
 def registration_query(identifier, wanted):
@@ -161,10 +163,10 @@ def registration_query(identifier, wanted):
 
 
 def registered(bundle):
-    code, raw, _ = bounded_command([sys.executable, '-I', '-B', str(Path(__file__).resolve()),
-                                    '--registration-query', bundle['id'], bundle['path']])
+    code, raw, error = bounded_command([sys.executable, '-I', '-B', str(Path(__file__).resolve()),
+                                       '--registration-query', bundle['id'], bundle['path']])
     if code != 0:
-        raise RuntimeError('registration-query subprocess did not succeed')
+        raise RuntimeError(f'registration-query subprocess failed ({code}): {error.decode(errors="replace")[:1024]}')
     result = json.loads(raw)
     if not isinstance(result, bool):
         raise RuntimeError('registration-query result is not definite')
@@ -206,8 +208,9 @@ def finish(work, bundles, runs, probe, quit_run, forget, query, remove, now=time
                 if now() >= registration_deadline:
                     raise TimeoutError('exact bundle URL absence was not established')
                 code = forget(bundle)
+                attempt.update(exit_code=code, attempts=attempt['attempts'] + 1)
                 present = query(bundle)
-                attempt.update(exit_code=code, present=present, attempts=attempt['attempts'] + 1)
+                attempt['present'] = present
                 if present is False:
                     break  # Absence, not lsregister's return code, decides.
                 if present is not True:
