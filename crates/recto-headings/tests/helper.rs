@@ -2,27 +2,31 @@
 
 use recto_index::corpus::CorpusKey;
 use recto_index::generated::Generated;
+use recto_platform::helper::{self, Helper, Priority};
 use recto_testpdf::TempPdf;
 use serde_json::{Value, json};
 use std::io::{Read, Write};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::ExitStatus;
+#[path = "support/diagnostics.rs"]
+mod diagnostics;
 use std::time::{Duration, Instant};
 
 fn run(path: &std::path::Path, key: CorpusKey, close_stdin: bool) -> (Value, Option<Generated>, Duration) {
     let started = Instant::now();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_recto-headings"))
-        .env_clear()
-        .env("MallocLargeCache", "0")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
+    let helper::Spawned {
+        mut child,
+        mut stdin,
+        mut stdout,
+    } = helper::spawn(
+        std::path::Path::new(env!("CARGO_BIN_EXE_recto-headings")),
+        &[("MallocLargeCache", std::ffi::OsStr::new("0"))],
+        Priority::Inherited,
+    )
+    .unwrap();
     writeln!(stdin, "{}", json!({ "file": path, "key": key.hex(), "memory_limit": 512u64 << 20 })).unwrap();
     let held_open = (!close_stdin).then_some(stdin);
     let mut said = String::new();
-    child.stdout.take().unwrap().read_to_string(&mut said).unwrap();
+    stdout.read_to_string(&mut said).unwrap();
     let _ = child.wait();
     drop(held_open);
     let mut lines = said.lines();
@@ -153,18 +157,24 @@ struct Went {
     status: Option<ExitStatus>,
     said: String,
     elapsed: Duration,
+    evidence: Option<String>,
 }
 
 impl Went {
     fn describe(&self) -> String {
         match self.status {
             Some(status) => format!("exited {status} after {:?}, said {:?}", self.elapsed, self.said),
-            None => format!("was still alive after {:?} and was killed, said {:?}", self.elapsed, self.said),
+            None => format!(
+                "was still alive after {:?} and was killed, said {:?}; {}",
+                self.elapsed,
+                self.said,
+                self.evidence.as_deref().unwrap_or("evidence unavailable")
+            ),
         }
     }
 }
 
-fn wait_for(child: &mut Child, bound: Duration) -> Option<ExitStatus> {
+fn wait_for(child: &mut Helper, bound: Duration) -> Option<ExitStatus> {
     let until = Instant::now() + bound;
     while Instant::now() < until {
         if let Some(status) = child.try_wait().unwrap() {
@@ -182,27 +192,34 @@ fn start_and_wait(extra: Value, close_stdin: bool, bound: Duration) -> Went {
     let mut job = json!({ "file": pdf.0, "key": key.hex() });
     job.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
     let started = Instant::now();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_recto-headings"))
-        .env_clear()
-        .env("MallocLargeCache", "0")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
+    let helper::Spawned {
+        mut child,
+        mut stdin,
+        mut stdout,
+    } = helper::spawn(
+        std::path::Path::new(env!("CARGO_BIN_EXE_recto-headings")),
+        &[("MallocLargeCache", std::ffi::OsStr::new("0"))],
+        Priority::Inherited,
+    )
+    .unwrap();
     writeln!(stdin, "{job}").unwrap();
     let held_open = (!close_stdin).then_some(stdin);
     let status = wait_for(&mut child, bound);
     let elapsed = started.elapsed();
+    let evidence = status.is_none().then(|| diagnostics::capture(child.id(), elapsed, &job));
     if status.is_none() {
         let _ = child.kill();
     }
     let mut said = String::new();
-    let _ = child.stdout.take().unwrap().read_to_string(&mut said);
+    let _ = stdout.read_to_string(&mut said);
     let _ = child.wait();
     drop(held_open);
-    Went { status, said, elapsed }
+    Went {
+        status,
+        said,
+        elapsed,
+        evidence,
+    }
 }
 
 /// Failure: a helper whose stdin closed is kept by something in its own process, as `std::process::exit` is by an exit handler or a destructor waiting on a lock (the 2026-11-13 failure: it worked 5.3 s after its stdin closed). Here its main thread is busy for 30 s and an exit handler stalls for 15 s, and it still has to go, quietly, within the bound.
@@ -240,6 +257,7 @@ fn it_refuses_the_job_when_it_cant_start_its_watchers() {
     );
     assert_eq!(went.said.lines().count(), 1, "{}", went.describe());
 }
+
 /// Failure: keeping stdin open for a completed job leaks a parent descriptor on every request.
 #[test]
 fn completed_jobs_do_not_leak_stdin() {
