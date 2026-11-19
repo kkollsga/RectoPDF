@@ -10,7 +10,7 @@ use recto_render_service::{DocRenderer, Policy, ServiceConfig, TileKind, TileRec
 use recto_session::record::SettingsWindow;
 use recto_update::plan::TestLaunch;
 use recto_update::source::Mode;
-use recto_update::updater::{Asked, Facts, HandOffRefused, HandedOff, Host, InstallRefused, Look};
+use recto_update::updater::{Asked, Facts, HandOffRefused, HandedOff, Host, InstallRefused, InstallerMode, Look};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
@@ -32,16 +32,16 @@ pub trait Installer: Send + Sync {
     /// # Errors
     ///
     /// It couldn't be started.
-    fn start(&self, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32>;
+    fn start(&self, mode: InstallerMode, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32>;
 }
 
-/// The real installer, `recto-updater install <plan>`, as the updater has always started it.
+/// The real installer, using the updater's single helper launch implementation.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RealInstaller;
 
 impl Installer for RealInstaller {
-    fn start(&self, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32> {
-        recto_platform::local::spawn_detached(helper, &["install".to_owned(), plan.display().to_string()], &[], log)
+    fn start(&self, mode: InstallerMode, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32> {
+        mode.start(helper, plan, log)
     }
 }
 
@@ -199,8 +199,8 @@ impl Host for Hooks {
         lock(&ASKED_TO_OPEN).clone()
     }
 
-    fn start_installer(&self, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32> {
-        self.installer.start(helper, plan, log)
+    fn start_installer(&self, mode: InstallerMode, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32> {
+        self.installer.start(mode, helper, plan, log)
     }
 }
 

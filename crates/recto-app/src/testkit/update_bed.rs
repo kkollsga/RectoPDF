@@ -20,7 +20,7 @@ use recto_update::plan::{Files, Outcome, OutcomeKind, Plan, beside_app, new_app_
 use recto_update::rules::Latest;
 use recto_update::source::Source;
 use recto_update::stage::{Stage, StageError, Staged};
-use recto_update::updater::{Releases, Seams, WallClock};
+use recto_update::updater::{InstallerMode, Releases, Seams, WallClock};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -163,7 +163,7 @@ impl FakeInstaller {
 }
 
 impl Installer for FakeInstaller {
-    fn start(&self, _helper: &Path, plan: &Path, _log: &Path) -> std::io::Result<u32> {
+    fn start(&self, _mode: InstallerMode, _helper: &Path, plan: &Path, _log: &Path) -> std::io::Result<u32> {
         if self.fails.load(Ordering::SeqCst) {
             return Err(std::io::Error::other("a test's installer that can't be started"));
         }
