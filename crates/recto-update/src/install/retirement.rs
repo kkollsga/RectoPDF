@@ -54,6 +54,78 @@ impl Launched {
     }
 }
 
+#[derive(Default)]
+pub(super) struct Startup {
+    seen: bool,
+    gone_since: Option<Instant>,
+    unknown: Option<io::Error>,
+}
+
+impl Startup {
+    pub(super) fn check(
+        &mut self,
+        observed: io::Result<bool>,
+        now: Instant,
+        elapsed: Duration,
+        never_seen: Duration,
+        grace: Duration,
+    ) -> Result<(), &'static str> {
+        match observed {
+            Err(error) => {
+                self.gone_since = None;
+                self.unknown = Some(error);
+                // Unknown is neither an ended app nor a break in its known-live history.
+                Ok(())
+            }
+            Ok(true) => {
+                self.unknown = None;
+                self.seen = true;
+                self.gone_since = None;
+                Ok(())
+            }
+            Ok(false) => {
+                self.unknown = None;
+                let since = *self.gone_since.get_or_insert(now);
+                if (self.seen && now.duration_since(since) >= grace) || (!self.seen && elapsed >= never_seen) {
+                    Err("didnt_start")
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    pub(super) fn last_unknown(&self) -> Option<&io::Error> {
+        self.unknown.as_ref()
+    }
+}
+
+pub(super) fn before_swap(program: &Path, patience: Duration) -> io::Result<bool> {
+    known(|| local::update_app_is_running(program), patience, Instant::now, std::thread::sleep)
+}
+
+fn known(
+    mut probe: impl FnMut() -> io::Result<bool>,
+    patience: Duration,
+    mut now: impl FnMut() -> Instant,
+    mut pause: impl FnMut(Duration),
+) -> io::Result<bool> {
+    let mut answer = None;
+    let mut unknown = None;
+    until(patience, &mut now, &mut pause, || match probe() {
+        Ok(live) => {
+            answer = Some(live);
+            Ok(true)
+        }
+        Err(error) => {
+            unknown = Some(error);
+            Ok(false)
+        }
+    })
+    .map_err(|error| unknown.unwrap_or(error))?;
+    answer.ok_or_else(|| io::Error::other("no definite app observation"))
+}
+
 pub(super) struct RecordLock(std::fs::File);
 
 impl Drop for RecordLock {
@@ -159,6 +231,54 @@ mod tests {
             self.reaped = self.kill_completes;
             Ok(())
         }
+    }
+
+    /// Failure: one unrelated process becoming unclassifiable aborts an otherwise valid install before a definite answer.
+    #[test]
+    fn pre_swap_unknown_waits_for_a_definite_answer() {
+        for live in [false, true] {
+            let clock = Cell::new(Instant::now());
+            let mut answers = [Err(io::Error::other("transient unknown")), Ok(live)].into_iter();
+            assert_eq!(
+                known(
+                    || answers.next().unwrap(),
+                    Duration::from_millis(1),
+                    || clock.get(),
+                    |step| clock.set(clock.get() + step)
+                )
+                .unwrap(),
+                live
+            );
+        }
+        let clock = Cell::new(Instant::now());
+        let began = clock.get();
+        assert!(
+            known(
+                || Err(io::Error::other("persistent unknown")),
+                Duration::from_millis(1),
+                || clock.get(),
+                |step| clock.set(clock.get() + step)
+            )
+            .is_err()
+        );
+        assert!(clock.get().duration_since(began) <= Duration::from_millis(1));
+    }
+
+    /// Failure: a transient unknown ends startup, forgets a prior live app, or counts unknown time as proven absence.
+    #[test]
+    fn startup_unknown_preserves_live_history_until_known_gone() {
+        let start = Instant::now();
+        let never = Duration::from_millis(1);
+        let grace = Duration::from_millis(3);
+        let mut state = Startup::default();
+        let mut check = |observed, ms| state.check(observed, start + Duration::from_millis(ms), Duration::from_millis(ms), never, grace);
+        assert!(check(Ok(true), 0).is_ok());
+        assert!(check(Err(io::Error::other("unknown")), 1).is_ok());
+        assert!(check(Ok(false), 2).is_ok(), "the previously live app keeps its full gone grace");
+        assert!(check(Err(io::Error::other("unknown again")), 4).is_ok());
+        assert!(check(Ok(false), 5).is_ok(), "unknown time is not proven absence");
+        assert!(check(Ok(false), 7).is_ok());
+        assert_eq!(check(Ok(false), 8), Err("didnt_start"));
     }
 
     /// Failure: an observed live/unknown app is treated as stopped, or a lost owned Child is signalled.
