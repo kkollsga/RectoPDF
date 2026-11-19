@@ -92,17 +92,29 @@ fn retire<C: Owned>(
     mut now: impl FnMut() -> Instant,
     mut pause: impl FnMut(Duration),
 ) -> io::Result<()> {
+    let mut awaiting_launch = pending && child.is_none();
     if let Some(child) = child {
         // An error, including lost ownership, never authorizes a signal.
         if !child.exited()? {
             child.kill()?;
         }
         until(patience, &mut now, &mut pause, || child.exited())?;
-    } else if pending && !present()? {
-        return Err(io::Error::other("the requested app launch has not yet been observed"));
     }
-    // open/Launch Services gives no Child: it may only be observed, never signalled.
-    until(patience, &mut now, &mut pause, || present().map(|live| !live))
+    // Retry only OS-observation uncertainty, within the same deadline. Child ownership errors above are final.
+    let mut unknown = None;
+    let observed = until(patience, &mut now, &mut pause, || match present() {
+        Ok(true) => {
+            awaiting_launch = false;
+            Ok(false)
+        }
+        Ok(false) if awaiting_launch => Err(io::Error::other("the requested app launch has not yet been observed")),
+        Ok(false) => Ok(true),
+        Err(error) => {
+            unknown = Some(error);
+            Ok(false)
+        }
+    });
+    observed.map_err(|error| unknown.unwrap_or(error))
 }
 
 fn until(
@@ -169,17 +181,45 @@ mod tests {
         );
         assert!(retire::<Fake>(None, || Ok(false), true, Duration::ZERO, Instant::now, |_| panic!("pending waits")).is_err());
         let mut observations = [true, false].into_iter();
+        let observed_clock = Cell::new(Instant::now());
         assert!(
             retire::<Fake>(
                 None,
                 || Ok(observations.next().unwrap()),
                 true,
-                Duration::ZERO,
-                Instant::now,
-                |_| panic!("seen launch waits")
+                Duration::from_millis(1),
+                || observed_clock.get(),
+                |step| observed_clock.set(observed_clock.get() + step)
             )
             .is_ok()
         );
+        let clock = Cell::new(Instant::now());
+        let mut answers = [Err(io::Error::other("transient unknown")), Ok(false)].into_iter();
+        assert!(
+            retire::<Fake>(
+                None,
+                || answers.next().unwrap(),
+                false,
+                Duration::from_millis(1),
+                || clock.get(),
+                |step| clock.set(clock.get() + step)
+            )
+            .is_ok(),
+            "a later complete absence query resolves transient uncertainty"
+        );
+        let began = clock.get();
+        assert!(
+            retire::<Fake>(
+                None,
+                || Err(io::Error::other("persistent unknown")),
+                false,
+                Duration::from_millis(1),
+                || clock.get(),
+                |step| clock.set(clock.get() + step)
+            )
+            .is_err()
+        );
+        assert!(clock.get().duration_since(began) <= Duration::from_millis(1));
         let mut lost = Fake {
             error: true,
             reaped: false,
