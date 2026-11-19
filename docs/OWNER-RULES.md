@@ -122,6 +122,7 @@ The coordinator put thirteen recommendations to the owner in two lists, each wit
 
 ## Release 0.1.3 (2026-11-19)
 - Owner: "Go ahead release as 0.1.3". This authorizes preparation, pushing `v0.1.3` and publishing its draft after the current release gates pass: reviewed scope/notes, version consistency, full local checks and CI on the release commit, fresh signing preflight, signed/notarized artifact verification and state carry/rollback checks against the published versions. A failed gate holds publication and is reported; no further confirmation is needed when the gates pass. This authorization is for 0.1.3 only.
+- Owner, later the same day: "What do you mean rollback safety? Lets publish". The coordinator explained the demonstrated restore-over-a-possibly-live-writer defect and proceeds with a small fail-closed guard and the release checks, without another confirmation. Coordinator's implementation choice: refuse an unprovable rollback, preserving recovery files; the larger launch-identity/controller design is deferred, not a new prerequisite for this release. The release notes state the recovery limit.
 
 ## Release signing (2026-11-11)
 - "I dont want any manual steps." The `release` Environment has no required reviewer; its keys reach only workflows from `main` or a `v*.*.*` tag. The owner changed that setting themselves (the coordinator's own change was blocked as weakening security). Publishing a release stays the owner's decision, given in chat, not a click.

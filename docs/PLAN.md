@@ -104,7 +104,7 @@ The short-stall source push's automatic runner-acquisition retry reached real te
 
 ## Release 0.1.3 — authorized 19 November
 
-Owner: "Go ahead release as 0.1.3". Scope/notes and independent release-source review are complete. The revised 10:30 CET publication estimate is uncertain as of 09:39: review found that rollback restores files even after new-app termination cannot be proved, as well as discovered-PID signalling. Publication waits for the recovery decision, correction and gates. No new product feature is started in this release pass. Preparation evidence: [`reports/release-preparation-0.1.3.md`](reports/release-preparation-0.1.3.md).
+Owner: "Go ahead release as 0.1.3", then "What do you mean rollback safety? Lets publish". The coordinator proceeds with a small guard that refuses unprovable rollback and preserves the recovery files; a larger OS launch controller is deferred. Target on resumption: final guard source by 10:40 CET, local gates around 10:55, publication around 11:40 if CI, signing and Apple respond normally (estimate). No further confirmation is needed. No new product feature is started in this release pass. Preparation evidence: [`reports/release-preparation-0.1.3.md`](reports/release-preparation-0.1.3.md).
 
 - [x] **Duplicate Dock entries corrected (19 November).** CoreServices reports only `/Applications/RectoPDF.app`; two recent-app records named that same path. Removed only the duplicate and verified one after restarting the Dock, preserving the installed app and documents. Cause not established; repeat the Dock/registration check after native release testing. [`reports/single-install-2026-11-19.md`](reports/single-install-2026-11-19.md).
 
