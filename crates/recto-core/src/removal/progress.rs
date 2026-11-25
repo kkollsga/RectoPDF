@@ -81,6 +81,10 @@ impl Progress {
     }
 
     /// Continue from the persisted acknowledged count of the plan with `digest`, only once the barrier is in that prefix.
+    ///
+    /// Trust boundary: resume is not a confirmation. `digest` and `acked` must come from the transaction record the app itself wrote
+    /// after a confirmed walk passed the barrier, never from a request, an agent or a file the app didn't write. This function only
+    /// checks that they fit the plan; it cannot tell where they came from.
     pub fn resume(plan: &Plan, digest: PlanDigest, acked: u32) -> Result<Self, OrderError> {
         if digest != plan.digest {
             return Err(OrderError::WrongPlan);
