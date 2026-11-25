@@ -100,6 +100,8 @@ pub struct Caps {
     pub xobject_bytes: u64,
     pub page_bytes: u64,
     pub page_read: u64,
+    /// Bytes a page may decode in all, **the failed ones too**; refusal only, never hashed and never in [`PageRead::bytes`].
+    pub decode_work: u64,
 }
 
 impl Caps {
@@ -111,6 +113,7 @@ impl Caps {
         xobject_bytes: 16 << 20,
         page_bytes: 64 << 20,
         page_read: 256 << 20,
+        decode_work: 256 << 20,
     };
 }
 
