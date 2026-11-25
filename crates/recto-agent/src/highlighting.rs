@@ -752,9 +752,9 @@ mod tests {
         ("recto-agent/src/print.rs", 1, 1, "each page printed"),
         (
             "recto-agent/src/render.rs",
-            3,
+            4,
             1,
-            "`recto render`; the others are `open_for_text` itself, named and opening",
+            "`recto render`; the others are `open_for_text` itself, named and opening, and `page_text`, the page text a character reference is made of and checked against, which opens through it",
         ),
         ("recto-agent/src/render/snapshot.rs", 1, 0, "whether the file allows copying"),
         ("recto-agent/src/render/svg.rs", 1, 1, "`recto export svg`"),

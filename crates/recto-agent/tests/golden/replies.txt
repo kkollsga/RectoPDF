@@ -1854,6 +1854,8 @@
   refused cmd=unknown code=bad_command
 {"cmd":"ref"}
   refused cmd=unknown code=bad_command
+{"cmd":"ref","page":3,"chars":{}}
+  refused cmd=unknown code=bad_command
 {"cmd":"ref","page":3,"extra":1}
   refused cmd=unknown code=bad_command
 {"cmd":"ref","page":{}}

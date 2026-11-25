@@ -229,3 +229,7 @@ tag that differs still finds the page, and a spot is then not placed. Second, th
 `recto-id/1` hash of `/ID[0]` (no second hash), and the content tag is the first 8 bytes of SHA-256 over `recto-doc-c/1`, a NUL and the whole
 `recto-page/1` digest of the first page with an identity among the first 16. Documents that open on the same page share a content tag, a known limit
 that a later library step must answer as ambiguity. Nothing is kept between calls: no state, cache, thread or event.
+
+## Character check, settled 2026-11-25
+
+r1's `.c<start>-<end>-<check>` field had no fixed check algorithm and no `.c` token was ever issued, so its meaning is fixed now without a new version: the check is the first 8 bytes of SHA-256 of `recto-text/1` and a NUL, then the UTF-8 of characters `[start, end)` (Unicode scalar values, the end excluded) of the page's text as `recto text` gives it (`untrusted.text`, from `recto_index::read_page`). The core (`locator/text.rs`: `text_check`, `characters`, `check_characters`, `TextMatch`) hashes the text it is given, never normalises, and walks no further than the range's end. A range is checked at its own offsets only: a page with the same digest but other text at those offsets is `text_changed`, never searched, since a changed reading means the offsets can't be vouched for. `resolve` in the core stays lopdf-only (`Placed::CharactersNotChecked`); the executor reads the text of a found page and does the check, so one function serves `resolve` and `--ref`. Any later change is `recto-text/2` with token `r2`.
