@@ -248,9 +248,10 @@ impl Cmd for Resolve {
 /// `--chars` of `ref`: a range of characters that can be referred to, or the words for why not. An empty range, or one ending past what a reference can
 /// hold, is usage, whatever the page's text.
 fn reference_chars(word: &str) -> Result<(u32, u32), AgentError> {
-    let (start, end) = crate::selecting::char_range(word)?;
+    let usage = || AgentError::new(Code::USAGE, locating::CHARS_USAGE, exit::USAGE);
+    let (start, end) = crate::selecting::char_range(word).map_err(|_| usage())?;
     if start == end || end > locator::MAX_CHARACTER {
-        return Err(AgentError::new(Code::USAGE, locating::CHARS_USAGE, exit::USAGE));
+        return Err(usage());
     }
     Ok((start, end))
 }
@@ -461,6 +462,11 @@ mod tests {
         for hostile in ["5", "a-b", "9-3", "5-5", "0-0", "0-2097153", "-3", "1-2-3", ""] {
             let error = reference_chars(hostile).expect_err(hostile);
             assert_eq!((error.code, error.exit), (Code::USAGE, exit::USAGE), "{hostile:?}");
+            assert_eq!(
+                error.message,
+                locating::CHARS_USAGE,
+                "one wording for every shape that isn't a range: {hostile:?}"
+            );
             assert!(!error.message.contains("2097153"), "the refusal says only its own words: {}", error.message);
         }
         assert_eq!(reference_chars("0-2097152").ok(), Some((0, 2_097_152)), "the cap itself is held");
