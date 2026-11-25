@@ -6,7 +6,7 @@ use super::files::locked_allowing;
 use crate::core::controls::UiAction;
 use crate::core::printing::{AFTER_END, AT_PAGE};
 use crate::lock;
-use crate::testkit::headless::{Disk, HeadlessApp, WAIT_LIMIT};
+use crate::testkit::headless::{Disk, HeadlessApp, WAIT_LIMIT, print_patience};
 use std::path::Path;
 
 /// What the print panel answered: all the pages or a range from 1, the selection's pages, and whether it prints to a file (a PDF saved or previewed).
@@ -277,7 +277,7 @@ fn a_persons_print_does_what_it_did() {
     // Stop, once a page is done.
     let (held, go) = hold_at(1);
     answer(&app, ALL);
-    held.recv_timeout(WAIT_LIMIT).expect("the print held at its first page");
+    held.recv_timeout(print_patience(1)).expect("the print held at its first page");
     app.wait_until("the notice says it's preparing", || notice(&app).contains("2 of 4"));
     let preparing = notice(&app);
     let stop = app.reader().selection_notice.and_then(|notice| notice.action_id).expect("Stop");
@@ -295,7 +295,7 @@ fn a_persons_print_does_what_it_did() {
     // A second print asked while one's prepared.
     let (held, go) = hold_at(1);
     answer(&app, ALL);
-    held.recv_timeout(WAIT_LIMIT).expect("the print held at its first page");
+    held.recv_timeout(print_patience(1)).expect("the print held at its first page");
     app.wait_until("the notice says it's preparing", || notice(&app).contains("2 of 4"));
     answer(&app, ALL);
     app.wait_until("the window looked again", || app.core().core.flush(WAIT_LIMIT));

@@ -35,6 +35,15 @@ use std::time::{Duration, Instant};
 /// that a hang fails the test rather than the run.
 pub const WAIT_LIMIT: Duration = Duration::from_secs(20);
 
+/// **How long a print of `pages` pages may take, by the renderer's own bounds, and the kit's wait besides:** a fresh worker starts within its start timeout, then
+/// the open and each page get a page deadline. A wait for a print has patience for that, as a rule of the product's, not one machine's speed
+/// ([`WAIT_LIMIT`] alone was passed by a four-page print under a load of 14, 2026-11-25).
+#[must_use]
+pub fn print_patience(pages: u32) -> Duration {
+    let policy = recto_render_service::Policy::default();
+    policy.start_timeout + policy.page_deadline * (pages + 1) + WAIT_LIMIT
+}
+
 /// How often a bounded wait looks again.
 const LOOK_EVERY: Duration = Duration::from_millis(2);
 
@@ -562,13 +571,23 @@ impl HeadlessApp {
     ///
     /// # Panics
     ///
-    /// Past [`WAIT_LIMIT`], naming what was still under way.
+    /// Past [`WAIT_LIMIT`], naming what was still under way; while a print is being prepared, past [`print_patience`] of its pages, counted from the start.
     #[track_caller]
     pub fn settle(&self) {
-        if let Err(busy) = crate::settled::wait(&crate::settled::watched!(self.core()), crate::settled::PageViews::AtRest, WAIT_LIMIT, || {
-            self.take_ops()
-        }) {
-            panic!("settle: still under way after {WAIT_LIMIT:?}: {busy:?}");
+        let began = Instant::now();
+        loop {
+            let Err(busy) = crate::settled::wait(&crate::settled::watched!(self.core()), crate::settled::PageViews::AtRest, WAIT_LIMIT, || {
+                self.take_ops()
+            }) else {
+                return;
+            };
+            // A print starts a worker and draws page by page, each within the renderer's own bound: waited for on the same wait, up to the sum of them.
+            let printing = self.core().tools.printing();
+            let (done, of) = printing.progress();
+            if printing.preparing() && began.elapsed() < print_patience(of) {
+                continue;
+            }
+            panic!("settle: still under way after {:?} (a print at page {done} of {of}): {busy:?}", began.elapsed());
         }
     }
 
