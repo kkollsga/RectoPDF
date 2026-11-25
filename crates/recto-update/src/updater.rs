@@ -481,7 +481,7 @@ impl Updater {
         }
     }
 
-    /// What's kept of the record from before the last update goes once it's a week old. One look at one file's time.
+    /// What's kept of the record from before the last update goes once it's a week old, counted from `.whole`, which is made at the install (not from a refusal), as PRIVACY.md says. One look at one file's time.
     fn drop_an_old_record_copy(&self, now_ms: u64) {
         let whole = self.files.before().join(".whole");
         let made_ms = std::fs::metadata(&whole)
