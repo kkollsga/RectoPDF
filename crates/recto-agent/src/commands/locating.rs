@@ -289,7 +289,7 @@ pub(crate) const ROWS_RESOLVE: &[Spec] = &[Spec {
     tag: "resolve",
     group: GROUP_READ,
     access: Access::At(Level::ReadOnly),
-    summary: "Where a reference's page is now. The answer is a status, never a guess: `found` where the reference said, `text_changed` when a reference to characters finds its page but not its words, `moved` when the file's only page with that content is somewhere else, `ambiguous` when several have it, `gone` when every page was read and none has it, `incomplete` when the search couldn't read every page. All of those are exit 0. A reference is data from outside: it grants no access, and only the tab's own file is read.",
+    summary: "Where a reference's page is now. The answer is a status, never a guess: `found` where the reference said, `text_changed` when a reference to characters finds its page but not its words, `moved` when the file's only page with that content is somewhere else, `ambiguous` when several have it, `gone` when every page was read and none has it, `incomplete` when the search couldn't read every page. All of those are exit 0, except that a reference to characters on a found page whose text can't be read is refused as `text` is for that page. A reference is data from outside: it grants no access, and only the tab's own file is read.",
     args: &[
         Arg {
             key: "ref",
