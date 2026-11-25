@@ -401,4 +401,29 @@ mod tests {
         assert!(!misread(Some(3), None), "shown before the record was read");
         assert!(!misread(None, Some(0)), "an old app that didn't say");
     }
+
+    /// Failure: someone adds `deny_unknown_fields` (or makes `plan` required) to `Outcome`, so an older app can't read the file a newer one wrote
+    /// and a newer app can't read an older file, and a refusal is lost across an update.
+    #[test]
+    fn an_outcome_reads_across_versions_of_the_app() {
+        let dir = recto_testpdf::TempDir::new("recto-outcome-");
+        local::ensure_private_dir(&dir).unwrap();
+        let file = dir.join("outcome.json");
+        let read = |json: &str| {
+            local::write_private_file(&file, json.as_bytes()).unwrap();
+            Outcome::read(&file)
+        };
+        let newer = read(r#"{"kind":"went_back","from":"0.1.0","to":"0.2.0","why":"w","plan":"p1","added_later":{"x":1}}"#);
+        assert_eq!(
+            newer.map(|o| (o.kind, o.plan)),
+            Some((OutcomeKind::WentBack, Some("p1".to_owned()))),
+            "a key it doesn't know is ignored"
+        );
+        let older = read(r#"{"kind":"not_installed","from":"0.1.0","to":"0.2.0","why":"w"}"#);
+        assert_eq!(
+            older.map(|o| (o.kind, o.plan)),
+            Some((OutcomeKind::NotInstalled, None)),
+            "a file without `plan` reads as none"
+        );
+    }
 }
