@@ -27,6 +27,7 @@ pub(super) const MAX_NAMES: usize = 8192;
 const MAX_NAME: usize = 127;
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::hash::{BuildHasher, RandomState};
 
 /// Where the tokenizer is.
@@ -380,10 +381,11 @@ impl DoScan {
         }
         // At most `cap` (clamped to u16::MAX) names, so a place always fits.
         let place = u16::try_from(self.names.len()).unwrap_or(u16::MAX);
-        if self.places.contains_key(&hash) {
-            self.collided.push(place);
-        } else {
-            self.places.insert(hash, place);
+        match self.places.entry(hash) {
+            Entry::Vacant(slot) => {
+                slot.insert(place);
+            }
+            Entry::Occupied(_) => self.collided.push(place),
         }
         self.names.push(name.to_vec());
     }
