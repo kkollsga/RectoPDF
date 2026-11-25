@@ -25,8 +25,8 @@ pub const TAG_PAGES: usize = 16;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScanCaps {
     /// Bytes of page reads (as [`PageRead::bytes`] charges them) after which no further page is read. Checked before each read, so one page can
-    /// carry the total past it, by at most that page's caps: about 336 MiB under [`page_id::Caps::STANDARD`] (stored lengths up to `page_read`,
-    /// 256 MiB, plus hashed bytes up to `page_bytes`, 64 MiB, plus the content cap, 16 MiB). At STANDARD that is 1 GiB plus 336 MiB at most.
+    /// carry the total past it, by at most that page's caps: 320 MiB under [`page_id::Caps::STANDARD`] (stored lengths up to `page_read`,
+    /// 256 MiB, plus hashed bytes up to `page_bytes`, 64 MiB, which already includes the content it hashes).
     pub bytes: u64,
     /// Pages read, after which no further page is read.
     pub pages: u32,
@@ -38,8 +38,8 @@ impl ScanCaps {
     /// 1 GiB of page reads and as many pages as a reference can name. The byte cap bounds work (time), not memory: each page streams through
     /// `decode::CHUNK` buffers over the mapped file and nothing is kept per page, so a scan's footprint is the same at any cap (6.2 MiB peak on a
     /// 383-page report). A stream is charged each time a page draws it, so an image or form shared by many pages is charged again on every page, and
-    /// a 97 MiB report costs 269 MB to read through; 1 GiB is about 3.5 times the largest measured corpus document's whole read, so a scan of any ordinary file
-    /// completes and `gone` can be said. It is not the matcher's `MAX_JOB_BYTES` (256 MiB), which stays what it was. Worst case about 1.33 GiB.
+    /// a 97 MiB report costs 277 MB to read through; 1 GiB is about 3.9 times the largest measured corpus document's whole read, so a scan of any
+    /// ordinary file completes and `gone` can be said. It is not the matcher's `MAX_JOB_BYTES` (256 MiB), which stays what it was.
     pub const STANDARD: Self = Self {
         bytes: 1 << 30,
         pages: MAX_PAGE,
