@@ -246,7 +246,8 @@ fn fixture_program_lease_restores_bytes_and_never_overwrites_replacement() {
     let program = fixture.join("RectoPDF");
     std::fs::write(&program, "original bytes").unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let refused = copy_cleanup::cancel(&fixture, &program, &[std::process::id()], std::time::Duration::ZERO).unwrap_err();
+    let as_the_program = |_pid: u32| Some(program.clone());
+    let refused = copy_cleanup::cancel_by(&fixture, &program, &[std::process::id()], std::time::Duration::ZERO, as_the_program).unwrap_err();
     assert!(refused.contains("no PID was signalled") && refused.contains("did not exit"), "{refused}");
     assert_eq!(
         std::fs::read(&program).unwrap(),
@@ -521,7 +522,7 @@ fn cleanups_wait_for_a_copys_exit_is_the_bound_a_quiet_run_arms_its_watch_in() {
     );
     // The watch is armed by the end of the app's start, and the ready line is written by `ready`, which the host calls after `start` returned.
     let start = include_str!("../../recto-app/src/core/start.rs");
-    let arming = start.split("fn start_with(").nth(1).expect("start_with");
+    let arming = start.split("fn start_with(").nth(1).expect("start_with").split("\n    }\n").next().unwrap();
     assert!(arming.contains("qa::end_with_starter("), "start_with no longer arms the quiet run's end-watch");
     assert!(
         !start.contains("\"running\": true"),
@@ -539,7 +540,9 @@ fn cleanups_wait_for_a_copys_exit_is_the_bound_a_quiet_run_arms_its_watch_in() {
 
 /// Failure: cleanup gives a copy its program back at the first slow moment, so a run that arms its watch after that finds its program present, never sees it
 /// go, and lives on (the harness bug behind the 5 s cap: `cancel` restored the program as a new inode when its time ran out). The run here arms only after
-/// the program is absent, as a copy still starting does.
+/// the program is absent, as a copy still starting does. What it pins and what it doesn't: the old `cancel` also kept the lease until the exit or its cap,
+/// so this passes on the old code too; it holds the wait on the exit by `kevent` (no polling), that no signal is sent, and the byte-for-byte restore.
+/// The cap itself is held by `cleanups_wait_for_a_copys_exit_is_the_bound_a_quiet_run_arms_its_watch_in`.
 #[cfg(unix)]
 #[test]
 fn a_run_that_arms_its_watch_late_still_ends_by_the_lease_and_the_program_is_restored() {
@@ -575,11 +578,12 @@ fn a_run_that_arms_its_watch_late_still_ends_by_the_lease_and_the_program_is_res
         let (fixture, program) = (fixture.clone(), program.clone());
         std::thread::spawn(move || copy_cleanup::end(&fixture, &[program], copy_cleanup::EXIT_CAP))
     };
-    let began = std::time::Instant::now();
-    while program.exists() {
-        assert!(began.elapsed() < std::time::Duration::from_secs(10), "cleanup never took the program away");
-        std::thread::sleep(std::time::Duration::from_millis(5)); // ratchet: poll
-    }
+    // The program's removal is a NOTE_DELETE, seen however short the absence: no polling.
+    let gone = recto_platform::local::wait_until_gone(&[], &[&program], std::time::Duration::from_secs(10));
+    assert!(
+        matches!(gone, recto_platform::local::Gone::Path(_)),
+        "cleanup never took the program away: {gone:?}"
+    );
     writeln!(gate, "arm").unwrap();
     gate.flush().unwrap();
     let ended = cleaning.join().unwrap();
@@ -602,4 +606,29 @@ fn a_run_that_arms_its_watch_late_still_ends_by_the_lease_and_the_program_is_res
             .all(|entry| !entry.file_name().to_string_lossy().starts_with(".recto-cleanup-")),
         "no backup is left"
     );
+}
+
+/// Failure: a pid that was observed as the copy and has been reused by an unrelated process is waited for as the copy: the cleanup runs to its cap and fails.
+#[cfg(unix)]
+#[test]
+fn a_reused_pid_is_not_waited_for_as_the_copy() {
+    let folder = recto_testpdf::TempDir::new("lease-reuse-");
+    let fixture = folder.join(format!("own-{}-6", std::process::id()));
+    std::fs::create_dir(&fixture).unwrap();
+    let fixture = fixture.canonicalize().unwrap();
+    let program = fixture.join("RectoPDF");
+    std::fs::write(&program, "original").unwrap();
+    let elsewhere = |_pid: u32| Some(PathBuf::from("/usr/bin/unrelated"));
+    // This test's own pid is alive and was "observed"; it is not at the program's path.
+    copy_cleanup::cancel_by(&fixture, &program, &[std::process::id()], std::time::Duration::ZERO, elsewhere).unwrap();
+    assert_eq!(std::fs::read(&program).unwrap(), b"original");
+}
+
+/// Failure: a pid reused by an unrelated process after the copy exited is kept as the copy, costing the whole cap and an `Err`.
+#[test]
+fn only_a_pid_still_at_the_programs_path_is_the_program() {
+    let program = Path::new("/fixture/RectoPDF");
+    assert!(copy_cleanup::still_the_program(Some(program.to_owned()), program));
+    assert!(!copy_cleanup::still_the_program(Some("/usr/bin/other".into()), program));
+    assert!(!copy_cleanup::still_the_program(None, program));
 }

@@ -152,6 +152,18 @@ pub const EXIT_CAP: Duration = Duration::from_secs(40);
 /// processes' own exit; after each exit it looks again, for a launch still in flight. No PID is signalled.
 #[cfg(unix)]
 pub fn cancel(root: &Path, program: &Path, initial: &[u32], wait: Duration) -> Result<(), String> {
+    cancel_by(root, program, initial, wait, recto_platform::local::process_path)
+}
+
+/// Whether a pid is still a run of this program: the system reports a running program's path as it was started, also after the file was unlinked,
+/// which is how the runs were observed. A pid whose path is another has been reused by an unrelated process, which is neither waited for nor a reason to fail.
+pub fn still_the_program(path_of_pid: Option<PathBuf>, program: &Path) -> bool {
+    path_of_pid.as_deref() == Some(program)
+}
+
+/// [`cancel`], with how a pid's program path is told, so a reused pid can be made in a test.
+#[cfg(unix)]
+pub fn cancel_by(root: &Path, program: &Path, initial: &[u32], wait: Duration, path_of: impl Fn(u32) -> Option<PathBuf>) -> Result<(), String> {
     let lease = Lease::remove(root, program)?;
     let deadline = Instant::now() + wait;
     let mut alive: Vec<u32> = initial.to_vec();
@@ -161,7 +173,7 @@ pub fn cancel(root: &Path, program: &Path, initial: &[u32], wait: Duration) -> R
                 alive.push(pid);
             }
         }
-        alive.retain(|pid| recto_platform::local::process_counters(*pid).is_some());
+        alive.retain(|pid| still_the_program(path_of(*pid), program));
         if alive.is_empty() {
             break true;
         }
