@@ -1544,9 +1544,19 @@ mod tests {
     /// Failure: a change here starts a program to search with. `rg --pre` runs text that comes from a PDF, which is why ripgrep's engine is run in this process and nothing is ever started. The only process a search starts is the render worker, in `recto-render-service`.
     #[test]
     fn a_search_starts_no_program() {
-        let source = include_str!("search.rs");
-        for started in [concat!("process", "::Command"), concat!("Command", "::new"), concat!("\"r", "g\"")] {
-            assert!(!source.contains(started), "{started}");
+        // Every product file of the search: this one and what's under `search/`, tests excepted (`busy_tests` signals a real worker, by design).
+        let mut files = vec![("search.rs".to_string(), include_str!("search.rs").to_string())];
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/search");
+        for entry in std::fs::read_dir(&folder).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".rs") && !name.ends_with("_tests.rs") {
+                files.push((name, std::fs::read_to_string(entry.path()).unwrap()));
+            }
+        }
+        for (name, source) in &files {
+            for started in [concat!("process", "::Command"), concat!("Command", "::new"), concat!("\"r", "g\"")] {
+                assert!(!source.contains(started), "{started} in {name}");
+            }
         }
     }
 
