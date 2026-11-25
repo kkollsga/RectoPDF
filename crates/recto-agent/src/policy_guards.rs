@@ -900,7 +900,8 @@ pub(crate) fn opened(file: &Path) -> Mutex<Session<crate::DrawableLoader>> {
 }
 
 /// A command that reads by reference, given a reference to page 1 of the file the session has open: the made-up one in [`every_command`] points at no page of
-/// it, so a walk about what happens once a page is read would only see the refusal for a page that isn't there. Any other command is as it was.
+/// it, so a walk about what happens once a page is read would only see the refusal for a page that isn't there. A command with no `ref` is as it was, and one with
+/// a `ref` has it rewritten to a reference that reads, which `resolve`'s entry gets as well as the commands that read a page.
 fn pointing_at_page_one(access: &Mutex<Session<crate::DrawableLoader>>, command: Command) -> Command {
     let mut fields = fields(&command);
     if !fields.get("ref").is_some_and(Value::is_string) {
@@ -1003,7 +1004,9 @@ fn no_command_below_full_loses_the_owners_edits() {
                 execute(&access, Actor::Person, &undo, &mut Vec::new()).expect("the owner's undo");
             }
             assert_eq!(owners_steps(&access, id), OWNERS, "the owner's five steps, two undone");
-            let result = execute(&access, Actor::Agent(level), &command, &mut Vec::new());
+            // A command that reads by reference points at a page of this file, so it gets as far as reading it.
+            let asked = pointing_at_page_one(&access, command.clone());
+            let result = execute(&access, Actor::Agent(level), &asked, &mut Vec::new());
             let after = owners_steps(&access, id);
             let now = std::fs::read(&file.0).unwrap();
             let kept = if command.tag() == "save" { now.starts_with(&bytes) } else { now == bytes };
