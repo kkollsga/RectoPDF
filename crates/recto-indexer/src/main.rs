@@ -389,7 +389,7 @@ mod tests {
     #[test]
     fn a_worker_that_never_says_hello_is_a_failed_build_after_the_busy_starts() {
         let busy = (Err(RenderFailure::TooBusyToStart), true);
-        let mut renderer = scripted(vec![busy.clone(), busy, (Err(RenderFailure::Unavailable), false)]);
+        let mut renderer = scripted(vec![busy, busy, (Err(RenderFailure::Unavailable), false)]);
         let error = ask_scripted(&mut renderer).unwrap_err();
         assert_eq!(error, FeedError::Cant("couldnt_open"));
         let FeedError::Cant(code) = error else { unreachable!() };
