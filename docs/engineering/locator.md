@@ -46,8 +46,11 @@ Each phrase, regex and ranked hit of `search` carries `chars` (`[start, end]`, U
 | a word nothing has | 37.2 / 50.2 | 40.7 / 50.3 | 6.13 / 6.11 |
 | `"\bthe\b" --regex` | 35.8 / 61.0 | 43.4 / 46.1 | 6.08 / 6.42 |
 | `the --scan` | 61.3 / 103.5 | 65.7 / 139.3 | 6.23 / 6.94 |
+| `the --rank` (10 hits, all with a ref) | 38.7 / 41.5 | 52.1 / 55.1 | 6.06 / 6.56 MiB |
+| `the --rank --limit 200` (200 refs) | 36.9 / 40.8 | 159.9 / 174.9 | 6.92 / 9.27 |
+| a word nothing has, `--rank` | 35.1 / 42.7 | 34.2 / 35.5 | 5.97 / 5.70 |
 
-A search with hits pays the open of the file and the tag pages (+8 to +12 ms on this report); one that finds nothing opens nothing, and its difference (+3.5 ms at p50) is inside its spread (p95 50 ms both). Single sets of 21 runs under load: the `--scan` p95s are noise-sized.
+The `--rank` rows (2026-11-26, load average about 6.5, same method: bundles of `main` 14dc7290 and this branch, `RECTO_STATE_DIR` folders with a `control` level written as `levels::store` writes it, the index built by a `recto serve` of each bundle, 3 rounds of 7 runs, all `route: index`, folders deleted afterwards) show the cost of a reference per ranked hit: each hit is a page read and a page identity, so 200 hits on 200 pages cost +123 ms at p50 and +2.3 MiB, inside `HIT_REF_CAPS`; a ranked search that finds nothing opens nothing (its difference is inside the spread). A search with hits pays the open of the file and the tag pages (+8 to +12 ms on this report); one that finds nothing opens nothing, and its difference (+3.5 ms at p50) is inside its spread (p95 50 ms both). Single sets of 21 runs under load: the `--scan` p95s are noise-sized.
 
 ## Known limits
 
