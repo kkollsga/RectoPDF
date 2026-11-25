@@ -123,11 +123,12 @@ pub(crate) const RENDER_REF_EXAMPLE: &str = concat!("recto render --ref ", examp
 #[serde(deny_unknown_fields)]
 pub struct Ref {
     pub page: u32,
-    /// `START-END` in characters of `recto text`, to refer to those characters of the page. Read in `run`, before the file is opened.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chars: Option<String>,
     #[serde(default)]
     pub tab: TabRef,
+    /// `START-END` in characters of `recto text`, to refer to those characters of the page. Read in `run`, before the file is opened. After `tab`, so a
+    /// positional line that has always read `[ref, page, tab]` still does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chars: Option<String>,
 }
 
 impl Cmd for Ref {
@@ -268,6 +269,7 @@ pub(crate) const ROWS_REF: &[Spec] = &[Spec {
             required: true,
             help: "The page, counted from 1.",
         },
+        TAB,
         Arg {
             key: "chars",
             flag: Some("--chars"),
@@ -275,7 +277,6 @@ pub(crate) const ROWS_REF: &[Spec] = &[Spec {
             required: false,
             help: "`START-END` in characters of `recto text`, the end not included, at most 2097152: refers to those characters of the page, and checks them against the page's text, which must reach that far.",
         },
-        TAB,
     ],
     data: "`{ tab, page, file_page, ref }`, and `chars: [start, end]` when `--chars` was given. `page` is the page as asked, in the tab as shown; `file_page` is its page of the file on disk, which differs only when there are unsaved edits. `ref` is the token: pass it whole to `resolve`. With `--chars` the token also holds a check of those characters, which `resolve` and `--ref` compare with the page's text at the same offsets.",
     examples: &["recto ref 3", "recto ref 3 --chars 120-180", "recto ref 3 --tab \"#2\" --json"],

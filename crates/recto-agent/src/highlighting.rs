@@ -749,6 +749,12 @@ mod tests {
              person's with their password as their click on one), or read text",
         ),
         ("recto-agent/src/loader.rs", 1, 0, "a file's facts when it's opened"),
+        (
+            "recto-agent/src/locating.rs",
+            1,
+            0,
+            "the page text a character reference is made of and checked against",
+        ),
         ("recto-agent/src/print.rs", 1, 1, "each page printed"),
         (
             "recto-agent/src/render.rs",

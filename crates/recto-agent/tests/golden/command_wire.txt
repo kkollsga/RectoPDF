@@ -1573,9 +1573,17 @@
 {"cmd":"ref"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"ref","page":3}
-    ok ref Ref { page: 3, tab: "active" }
+    ok ref Ref { page: 3, tab: "active", chars: None }
 {"cmd":"ref","page":3,"tab":"#2"}
-    ok ref Ref { page: 3, tab: "#2" }
+    ok ref Ref { page: 3, tab: "#2", chars: None }
+{"cmd":"ref","page":3,"chars":"120-180"}
+    ok ref Ref { page: 3, tab: "active", chars: Some("120-180") }
+{"cmd":"ref","page":3,"chars":"5-5"}
+    ok ref Ref { page: 3, tab: "active", chars: Some("5-5") }
+{"cmd":"ref","page":3,"chars":null}
+    ok ref Ref { page: 3, tab: "active", chars: None }
+{"cmd":"ref","page":3,"chars":{}}
+    refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"ref","page":3,"extra":1}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"ref","page":{}}
@@ -1589,7 +1597,7 @@
 ["ref"]
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 ["ref",3,"#2"]
-    ok ref Ref { page: 3, tab: "#2" }
+    ok ref Ref { page: 3, tab: "#2", chars: None }
 {"cmd":"Ref"}
     refused {"error":{"candidates":[],"code":"bad_command","exit":1,"message":"That isn't a command RectoPDF knows.","next":"`recto help` lists every command."},"ok":false,"v":1}
 {"cmd":"resolve"}
