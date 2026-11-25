@@ -67,7 +67,7 @@ use lopdf::{Dictionary, Object, ObjectId, PageMapEntry};
 pub use lopdf::{IndexedReader, PageMap};
 use scan::DoScan;
 use sha2::{Digest, Sha256};
-use std::cell::{OnceCell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{self, Read};
 use std::path::Path;
@@ -306,19 +306,19 @@ fn digest(reader: &IndexedReader, entry: &PageMapEntry, budget: &mut Budget<'_>)
     if scan.overflowed() {
         return Err(Capped);
     }
-    let mut dicts = Dicts::new();
-    let resources = entry
+    let page_xobjects = entry
         .inherited()
         .resources()
         .and_then(|owner| dict_at(reader, owner))
-        .and_then(|owner| dict_of(reader, &mut dicts, owner.get(b"Resources").ok()?));
-    let page_xobjects = xobjects_in(reader, &mut dicts, resources.as_deref());
-    let mut memo = Memo::new();
+        .and_then(|owner| resolved_dict(reader, owner.get(b"Resources").ok()?))
+        .and_then(|resources| resolved_dict(reader, resources.get(b"XObject").ok()?));
+    let mut drawn = Drawn::new(page_xobjects);
     hasher.update(b"X");
     hasher.update(count(scan.names().len()));
     for name in scan.names() {
         budget.record()?;
-        let Some(seen) = xobject_record(reader, page_xobjects.as_deref(), name, budget, &mut hasher, &mut memo, true)? else {
+        let found = drawn.in_page(name);
+        let Some(seen) = xobject_record(reader, found, name, budget, &mut hasher, &mut drawn, true)? else {
             hasher.update(count(0));
             continue;
         };
@@ -326,14 +326,9 @@ fn digest(reader: &IndexedReader, entry: &PageMapEntry, budget: &mut Budget<'_>)
             return Err(Capped);
         }
         hasher.update(count(seen.names.len()));
-        if seen.names.is_empty() {
-            continue;
-        }
-        let own = seen.own_xobjects(reader, &mut dicts);
-        let lookup = own.as_ref().unwrap_or(&page_xobjects).as_deref();
-        for child in &seen.names {
+        for (child, found) in seen.names.iter().zip(&seen.kids) {
             budget.record()?;
-            xobject_record(reader, lookup, child, budget, &mut hasher, &mut memo, false)?;
+            xobject_record(reader, *found, child, budget, &mut hasher, &mut drawn, false)?;
         }
     }
     hasher.update(b"E");
@@ -402,28 +397,149 @@ fn content_record(reader: &IndexedReader, item: &Object, budget: &mut Budget<'_>
     Ok(())
 }
 
-/// A resource dictionary's `/XObject`, resolved: looked up by name, never copied out or sorted.
-fn xobjects_in(reader: &IndexedReader, dicts: &mut Dicts, resources: Option<&Dictionary>) -> Option<Rc<Dictionary>> {
-    dict_of(reader, dicts, resources?.get(b"XObject").ok()?)
+/// What a page has drawn, kept while it's hashed: small facts by construction, and at most one resolved table and one descriptor at a time.
+struct Drawn {
+    /// Every image and form this page has drawn, by object: what each one's record said after its name and what reading it cost, so a stream drawn under
+    /// many names is read once. Per page and dropped with it, with an entry for each record the page makes at most ([`Caps::xobjects`]).
+    seen: HashMap<ObjectId, Rc<Seen>>,
+    /// The page's own `/XObject` table, held for the page as it always was.
+    page: Option<Dictionary>,
+    /// Each `/Resources` reference a form named: what its `/XObject` is, reduced (the dictionary itself isn't kept).
+    resources: HashMap<ObjectId, Res>,
+    /// The last table resolved, kept until another is needed.
+    table: Option<(Table, Option<Rc<Dictionary>>)>,
+    /// The last gave-up stream's descriptor, kept for its re-read.
+    kept: Option<(ObjectId, Rc<lopdf::IndexedStreamDescriptor>)>,
 }
 
-/// The dictionaries this page has resolved by reference (a `/Resources`, an `/XObject` table), each once: forms that share a `/Resources 9 0 R` share the one
-/// copy of it, however many there are and however big the table, where a copy for each form was held for the whole page. `None` for a reference that
-/// isn't a dictionary. Per page and dropped with it, with at most two entries for each record the page makes ([`Caps::xobjects`]).
-type Dicts = HashMap<ObjectId, Option<Rc<Dictionary>>>;
+/// What a `/Resources` reference's `/XObject` came to, for a form that names it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Res {
+    /// Not a dictionary: the form has no resources of its own, so the page's are used.
+    Page,
+    /// A dictionary with no `/XObject` that is a table: a name is found nowhere.
+    Nothing,
+    /// A table by reference, at this object.
+    Table(ObjectId),
+    /// A table written in the `/Resources` dictionary itself, taken out of it (the table is read again from there if it's needed after another).
+    Inline,
+}
 
-/// `object` as a dictionary: a reference once per page, from `dicts`; one written in place as its own copy, which is bounded by the bytes of what holds it.
-fn dict_of(reader: &IndexedReader, dicts: &mut Dicts, object: &Object) -> Option<Rc<Dictionary>> {
-    match object {
-        Object::Reference(id) => dicts.entry(*id).or_insert_with(|| resolved_dict(reader, object).map(Rc::new)).clone(),
-        Object::Dictionary(dict) => Some(Rc::new(dict.clone())),
+/// Where the one table kept in [`Drawn::table`] came from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Table {
+    /// The table at this object.
+    At(ObjectId),
+    /// The `/XObject` written in the `/Resources` at this object.
+    In(ObjectId),
+}
+
+/// Where a form's names are looked up while its record is made.
+enum Lookup<'d> {
+    Page,
+    Nothing,
+    Table(Option<Rc<Dictionary>>),
+    /// A table written in the form's own `/Resources`, which that form's descriptor holds.
+    Here(&'d Dictionary),
+}
+
+/// The object `name` is in `table`, if it's a reference to one.
+fn found_in(table: Option<&Dictionary>, name: &[u8]) -> Option<ObjectId> {
+    match table?.get(name).ok()? {
+        Object::Reference(id) => Some(*id),
         _ => None,
     }
 }
 
-/// Every image and form this page has drawn, by object: what each one's record said after its name and what reading it cost, so a stream drawn under
-/// many names is read once. Per page and dropped with it, with an entry for each record the page makes at most ([`Caps::xobjects`]).
-type Memo = HashMap<ObjectId, Rc<Seen>>;
+impl Drawn {
+    /// The page's own `/XObject` is the one table held for the whole page.
+    fn new(page: Option<Dictionary>) -> Self {
+        Self {
+            seen: HashMap::new(),
+            page,
+            resources: HashMap::new(),
+            table: None,
+            kept: None,
+        }
+    }
+
+    /// The object the page's own table gives for `name`.
+    fn in_page(&self, name: &[u8]) -> Option<ObjectId> {
+        found_in(self.page.as_ref(), name)
+    }
+
+    /// The table `key` names, resolved once and kept until another is needed: forms sharing a table share the copy while they're drawn in a row, and a
+    /// table is never held while the next one is resolved.
+    fn table(&mut self, reader: &IndexedReader, key: Table) -> Option<Rc<Dictionary>> {
+        if let Some((kept, table)) = &self.table
+            && *kept == key
+        {
+            return table.clone();
+        }
+        self.table = None;
+        let table = match key {
+            Table::At(x) => resolved_dict(reader, &Object::Reference(x)),
+            Table::In(r) => match resolved_dict(reader, &Object::Reference(r)).and_then(|mut res| res.remove(b"XObject")) {
+                Some(Object::Dictionary(table)) => Some(table),
+                _ => None,
+            },
+        }
+        .map(Rc::new);
+        self.table = Some((key, table.clone()));
+        table
+    }
+
+    /// What each of `names` finds in the lookup a form's `resources` gives (`None`: the page's, as the form has none of its own). A `/Resources`
+    /// reference is resolved once per page into a [`Res`], so forms sharing one parse it once however big it is.
+    fn kids(&mut self, reader: &IndexedReader, resources: Option<&Object>, names: &[Vec<u8>]) -> Vec<Option<ObjectId>> {
+        let lookup = match resources {
+            None => Lookup::Page,
+            Some(Object::Reference(r)) => {
+                let res = match self.resources.get(r) {
+                    Some(res) => *res,
+                    None => {
+                        // A remembered failure includes a transient I/O error, which reads as a dictionary that isn't one. Under I/O errors an identity is
+                        // already undefined (the same file may digest differently), so this adds no case.
+                        let (res, inline) = match resolved_dict(reader, &Object::Reference(*r)) {
+                            None => (Res::Page, None),
+                            Some(mut dict) => match dict.remove(b"XObject") {
+                                Some(Object::Reference(x)) => (Res::Table(x), None),
+                                Some(Object::Dictionary(table)) => (Res::Inline, Some(table)),
+                                _ => (Res::Nothing, None),
+                            },
+                        };
+                        if let Some(table) = inline {
+                            self.table = Some((Table::In(*r), Some(Rc::new(table))));
+                        }
+                        self.resources.insert(*r, res);
+                        res
+                    }
+                };
+                match res {
+                    Res::Page => Lookup::Page,
+                    Res::Nothing => Lookup::Nothing,
+                    Res::Table(x) => Lookup::Table(self.table(reader, Table::At(x))),
+                    Res::Inline => Lookup::Table(self.table(reader, Table::In(*r))),
+                }
+            }
+            Some(Object::Dictionary(res)) => match res.get(b"XObject").ok() {
+                Some(Object::Reference(x)) => Lookup::Table(self.table(reader, Table::At(*x))),
+                Some(Object::Dictionary(table)) => Lookup::Here(table),
+                _ => Lookup::Nothing,
+            },
+            Some(_) => Lookup::Page,
+        };
+        names
+            .iter()
+            .map(|name| match &lookup {
+                Lookup::Page => self.in_page(name),
+                Lookup::Nothing => None,
+                Lookup::Table(table) => found_in(table.as_deref(), name),
+                Lookup::Here(table) => found_in(Some(table), name),
+            })
+            .collect()
+    }
+}
 
 /// What one read of an image or form came to.
 struct Seen {
@@ -443,14 +559,15 @@ struct Seen {
     scanned: bool,
     /// The names a form drew, and whether the scan of them overflowed.
     names: Vec<Vec<u8>>,
+    /// What each name found in the form's own lookup, in the order of `names`: the object it names, as an id and never a dictionary. Empty where the form
+    /// drew nothing or overflowed. Worked out while the form's descriptor is in hand, so the form's `/Resources` isn't kept for later.
+    kids: Vec<Option<ObjectId>>,
     overflowed: bool,
-    /// The form's own `/Resources`, and its `/XObject` resolved once, however many names it's drawn under.
-    resources: Option<Object>,
-    /// Its descriptor, kept where `headroom` says it may be read again, so that isn't resolved again (its dictionary is parsed whole each time). Held
-    /// for the distinct objects the page draws that gave up, at most.
-    descriptor: Option<Rc<lopdf::IndexedStreamDescriptor>>,
-    own: OnceCell<Option<Option<Rc<Dictionary>>>>,
 }
+
+/// A record whose tail is longer than this isn't kept for the page: it's read again if drawn again. Only a kind 4 (an image past its cap, with what it says
+/// of itself) can be longer, and a page draws at most [`Caps::xobjects`] records, so at most 4 of them are read again for the page's whole cap.
+const MAX_KEPT_TAIL: usize = 1024;
 
 impl Seen {
     /// What a read that cost nothing and drew nothing came to: its record's bytes, and that it's no form with children.
@@ -464,24 +581,9 @@ impl Seen {
             is_form: false,
             scanned,
             names: Vec::new(),
+            kids: Vec::new(),
             overflowed: false,
-            resources: None,
-            descriptor: None,
-            own: OnceCell::new(),
         }
-    }
-
-    /// The form's own `/Resources`' `/XObject`; `None` where it has no `/Resources` of its own, so the page's are used. Asked for only where the form
-    /// drew something.
-    fn own_xobjects(&self, reader: &IndexedReader, dicts: &mut Dicts) -> Option<Option<Rc<Dictionary>>> {
-        self.own
-            .get_or_init(|| {
-                self.resources
-                    .as_ref()
-                    .and_then(|own| dict_of(reader, dicts, own))
-                    .map(|own| xobjects_in(reader, dicts, Some(&own)))
-            })
-            .clone()
     }
 }
 
@@ -490,21 +592,20 @@ impl Seen {
 /// object at all. `children` says the caller takes the names a form drew, so a form read without them isn't taken from the memo for it.
 fn xobject_record(
     reader: &IndexedReader,
-    xobjects: Option<&Dictionary>,
+    found: Option<ObjectId>,
     name: &[u8],
     budget: &mut Budget<'_>,
     hasher: &mut Sha256,
-    memo: &mut Memo,
+    drawn: &mut Drawn,
     children: bool,
 ) -> Result<Option<Rc<Seen>>, Capped> {
     hasher.update(count(name.len()));
     hasher.update(name);
-    let Some(Object::Reference(id)) = xobjects.and_then(|xobjects| xobjects.get(name).ok()) else {
+    let Some(id) = found else {
         hasher.update([2]);
         return Ok(None);
     };
-    let id = *id;
-    if let Some(seen) = memo.get(&id) {
+    if let Some(seen) = drawn.seen.get(&id) {
         let wanted = !(children && seen.is_form && !seen.scanned);
         // Where it can't be taken as it was, it's read again, so a cap is reached as it always was and costs what it did.
         let affords = seen.read <= budget.read_left && seen.page <= budget.page_left && (!seen.headroom || budget.page_left > budget.caps.xobject_bytes);
@@ -517,16 +618,19 @@ fn xobject_record(
         }
     }
     // What was kept of an earlier read that has to be made again isn't resolved again: its dictionary is the same.
-    let kept = memo.get(&id).and_then(|seen| seen.descriptor.clone());
+    let kept = drawn.kept.as_ref().filter(|(kept, _)| *kept == id).map(|(_, descriptor)| Rc::clone(descriptor));
     #[cfg(test)]
     if kept.is_none() {
         tests::DESCRIPTORS.with(|count| count.set(count.get() + 1));
+    }
+    if kept.is_none() {
+        drawn.kept = None;
     }
     let Some(descriptor) = kept.or_else(|| reader.resolve_stream_descriptor(id).ok().map(Rc::new)) else {
         // Resolving it parsed its whole dictionary, and what it comes to doesn't depend on what's left of any cap: it's kept like any other record.
         let seen = Rc::new(Seen::of(vec![2], children));
         hasher.update(&seen.tail);
-        memo.insert(id, Rc::clone(&seen));
+        drawn.seen.insert(id, Rc::clone(&seen));
         return Ok(Some(seen));
     };
     let before = (budget.read_left, budget.page_left, budget.cost);
@@ -534,6 +638,13 @@ fn xobject_record(
     let mut scan = DoScan::default();
     let read = read_xobject(reader, id, &descriptor, budget, &mut tail, children.then_some(&mut scan))?;
     scan.end_of_stream();
+    let overflowed = read.is_form && scan.overflowed();
+    let names = scan.names().to_vec();
+    let kids = if overflowed || names.is_empty() {
+        Vec::new()
+    } else {
+        drawn.kids(reader, descriptor.dictionary().get(b"Resources").ok(), &names)
+    };
     let seen = Rc::new(Seen {
         read: before.0 - budget.read_left,
         page: before.1 - budget.page_left,
@@ -541,25 +652,27 @@ fn xobject_record(
         headroom: read.gave_up,
         is_form: read.is_form,
         scanned: children,
-        overflowed: read.is_form && scan.overflowed(),
-        names: scan.names().to_vec(),
-        resources: read.resources,
-        descriptor: read.gave_up.then_some(descriptor),
-        own: OnceCell::new(),
+        overflowed,
+        names,
+        kids,
         tail,
     });
+    if read.gave_up {
+        drawn.kept = Some((id, descriptor));
+    }
     hasher.update(&seen.tail);
-    memo.insert(id, Rc::clone(&seen));
+    if seen.tail.len() <= MAX_KEPT_TAIL {
+        drawn.seen.insert(id, Rc::clone(&seen));
+    }
     Ok(Some(seen))
 }
 
 /// What reading one image or form told, besides its record.
 struct XRead {
     gave_up: bool,
-    /// A form whose content was read, and the form's own `/Resources`. A form that wasn't, or anything that failed, is none of it and draws nothing
-    /// that can be known: it has no children, but it's still a form with its count.
+    /// A form whose content was read. A form that wasn't, or anything that failed, is not, and draws nothing that can be known: it has no children, but
+    /// it's still a form with its count.
     is_form: bool,
-    resources: Option<Object>,
 }
 
 /// Reads one image or form for its record after the name, into `tail`, its content's names fed to `children` where it's a form.
@@ -582,9 +695,8 @@ fn read_xobject(
     let general = decode::filter_names(dict, &resolve).is_some_and(|names| names.iter().all(|name| decode::is_general(name)));
     let as_stored = |budget: &mut Budget<'_>| take_stream(reader, id, descriptor, None, limit, budget, None, prefix);
     let mut gave_up = false;
-    let (kind, taken, scanned) = if general {
+    let (kind, taken) = if general {
         let mut scan = children.filter(|_| is_form);
-        let scanned = scan.is_some();
         // What a form drew is what its content decoded to: if it didn't, the names its first part gave are taken back (as `content_record` does).
         let mark = scan.as_deref().map(DoScan::mark);
         match decode::chain_of(dict, &resolve) {
@@ -594,15 +706,15 @@ fn read_xobject(
                     if let (Some(scan), Some(mark)) = (scan, mark) {
                         scan.back_to(mark);
                     }
-                    (3, as_stored(budget)?, false)
+                    (3, as_stored(budget)?)
                 }
-                taken => (0, taken, scanned),
+                taken => (0, taken),
             },
             // No decode was attempted, so nothing here depends on what's left of the page: only a stream that couldn't be read at all does.
-            None => (3, as_stored(budget)?, false),
+            None => (3, as_stored(budget)?),
         }
     } else {
-        (1, as_stored(budget)?, false)
+        (1, as_stored(budget)?)
     };
     match taken {
         Taken::Hashed(n, sub) => {
@@ -619,15 +731,10 @@ fn read_xobject(
         }
         Taken::Failed => {
             tail.push(2);
-            return Ok(XRead {
-                gave_up: true,
-                is_form: false,
-                resources: None,
-            });
+            return Ok(XRead { gave_up: true, is_form: false });
         }
     }
-    let resources = if is_form && scanned { dict.get(b"Resources").ok().cloned() } else { None };
-    Ok(XRead { gave_up, is_form, resources })
+    Ok(XRead { gave_up, is_form })
 }
 
 /// What an image past its cap says of itself, after its first cap's worth: `/Width`, `/Height`, `/BitsPerComponent`, the name of its `/ColorSpace`
@@ -803,6 +910,9 @@ struct Refs<'r> {
 
 impl<'r> Refs<'r> {
     const MAX: usize = 16;
+    /// A value is kept for a second look only if it holds at most this many bytes (`Object::retained_bytes`): a bigger one, such as a 100,000-element
+    /// array a hostile file points at, is parsed again where it's asked for again. With at most [`Self::MAX`] kept, a read holds at most 64 KiB here.
+    const MAX_KEPT_BYTES: u64 = 4096;
 
     fn new(reader: &'r IndexedReader) -> Self {
         Self {
@@ -820,7 +930,7 @@ impl<'r> Refs<'r> {
         tests::DEREFERENCES.with(|count| count.set(count.get() + 1));
         let value = deref(self.reader, object);
         let mut seen = self.seen.borrow_mut();
-        if seen.len() < Self::MAX {
+        if seen.len() < Self::MAX && value.as_ref().is_none_or(|value| value.retained_bytes() <= Self::MAX_KEPT_BYTES) {
             seen.insert(*id, value.clone());
         }
         value
