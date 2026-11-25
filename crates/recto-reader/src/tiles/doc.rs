@@ -28,16 +28,38 @@ impl Docs {
         self.hot.and_then(|tab| self.views.get(&tab))
     }
 
-    /// How long till the soonest page of the tab showing that's held without words, in view or not (a look or a draw to be tried again, [`Outcome::LookLater`]) may be asked again, if one waits: the page view's thread wakes by then, as no event may come to ask. Only a time still to come: one gone by is for the plan to take if the page is in view, and for nothing to wake for if it isn't. Held pages are bounded in their tries, which is why a failure that has words, and may pass for ever, isn't woken for.
+    /// How long till the soonest page of the tab showing that's held without words, in view or not (a look or a draw to be tried again, [`Outcome::LookLater`]) may be asked again, if one waits: the page view's thread wakes by then, as no event may come to ask. A hold whose time is over says `Duration::ZERO`, "go round now": the plan takes it (and [`Self::drop_ended_holds`] clears it), and the thread, which made its plan before it came to rest, may not have seen it end (the long session, 2026-11-25). Held pages are bounded in their tries, which is why a failure that has words, and may pass for ever, isn't woken for.
     pub(crate) fn next_hold_ends(&self, now: Instant) -> Option<std::time::Duration> {
         let doc = self.shown()?;
         doc.drawing
             .issues
             .values()
             .filter(|issue| issue.message.is_none())
-            .filter_map(|issue| issue.try_again_at?.checked_duration_since(now))
-            .filter(|left| !left.is_zero())
+            .filter_map(|issue| Some(issue.try_again_at?.saturating_duration_since(now)))
             .min()
+    }
+
+    /// A page that has just been drawn loses its issue if the issue's time to try again is over: the retry passed, and its words (a failure that may pass) would tell the person, while the page shows, that it can't be drawn.
+    pub(super) fn drop_issue_retried(&mut self, tab: u32, page: u32, now: Instant) {
+        if let Some(doc) = self.views.get_mut(&tab)
+            && doc
+                .drawing
+                .issues
+                .get(&page)
+                .is_some_and(|issue| issue.try_again_at.is_some_and(|at| now >= at))
+        {
+            doc.drawing.issues.remove(&page);
+        }
+    }
+
+    /// Drops, from the tab showing, the holds without words whose time is over: the plan has been ignoring them since their time, so the page is asked for again and drawn, and a hold left on it would keep it from being settled for good ([`Reader::is_settled`] counts a hold as a page that will change). If the tries fail again the page is held again.
+    pub(super) fn drop_ended_holds(&mut self, now: Instant) {
+        let Some(doc) = self.hot.and_then(|tab| self.views.get_mut(&tab)) else {
+            return;
+        };
+        doc.drawing
+            .issues
+            .retain(|_, issue| !(issue.message.is_none() && issue.try_again_at.is_some_and(|at| now >= at)));
     }
 
     /// The shown tab's contents band, as the core computed it for the page at the top of its view: the page, and the thousandths of it between which the same
