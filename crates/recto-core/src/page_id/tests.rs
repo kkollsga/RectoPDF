@@ -1430,9 +1430,9 @@ fn the_names_cap_does_not_multiply_the_cost_of_one_hostile_image() {
     assert_eq!(DESCRIPTORS.with(std::cell::Cell::get), 1);
 }
 
-/// A double-Flate stream that decodes to `megabytes` MiB of zeros and then fails (its inner Adler-32 cut off), from about a kilobyte stored.
-fn failing_after(megabytes: usize) -> Vec<u8> {
-    let mut inner = flate(&vec![0u8; megabytes << 20]);
+/// A double-Flate stream that decodes to `kib` KiB of zeros and then fails (its inner Adler-32 cut off), from about a kilobyte stored.
+fn failing_after(kib: usize) -> Vec<u8> {
+    let mut inner = flate(&vec![0u8; kib << 10]);
     inner.truncate(inner.len() - 4);
     flate(&inner)
 }
@@ -1441,7 +1441,7 @@ fn failing_after(megabytes: usize) -> Vec<u8> {
 fn least_decode_work(page: &[u8]) -> u64 {
     let has = |decode_work: u64| digest_under(page, &Caps { decode_work, ..Caps::STANDARD }).is_some();
     assert!(has(u64::MAX), "the page has an identity with no limit");
-    let (mut low, mut high) = (0u64, 64u64 << 20);
+    let (mut low, mut high) = (0u64, 8u64 << 20);
     while low < high {
         let middle = low + (high - low) / 2;
         if has(middle) { high = middle } else { low = middle + 1 }
@@ -1451,21 +1451,41 @@ fn least_decode_work(page: &[u8]) -> u64 {
 
 /// Failure caught (review round 1, blocker): a decode that fails is charged nothing but its stored length, so a page of failing double-Flate forms
 /// (each a kilobyte stored, 16 MiB decoded before its error) costs records times 16 MiB, 128 GiB at 8,192 records, from 2 MB of file. Four such forms,
-/// each failing after 1 MiB, have a decode work of at least 4 MiB; at that limit the page has an identity and one byte under it none.
+/// each failing after 256 KiB, have a decode work of at least 1 MiB; at that limit the page has an identity and one byte under it none.
 #[test]
 fn forms_that_fail_to_decode_are_charged_the_work_they_did() {
     let page = |count: usize| {
         let names: String = (0..count).map(|at| format!("/F{at} {} 0 R ", 5 + at)).collect();
         let drawn: String = (0..count).map(|at| format!("/F{at} Do ")).collect();
         let mut objects = vec![stream("", drawn.as_bytes())];
-        objects.extend((0..count).map(|_| stream("/Subtype /Form /BBox [0 0 1 1] /Filter [/FlateDecode /FlateDecode]", &failing_after(1))));
+        objects.extend((0..count).map(|_| stream("/Subtype /Form /BBox [0 0 1 1] /Filter [/FlateDecode /FlateDecode]", &failing_after(256))));
         one_page("", &format!("/XObject << {names} >>"), "4 0 R", objects)
     };
     let page = page(4);
     let limit = least_decode_work(&page);
-    assert!(limit >= 4 << 20, "four forms decoded 1 MiB each before failing, charged {limit}");
-    assert!(digest_under(&page, &Caps { decode_work: limit, ..Caps::STANDARD }).is_some(), "at the limit");
-    assert_eq!(digest_under(&page, &Caps { decode_work: limit - 1, ..Caps::STANDARD }), None, "one byte under");
+    assert!(limit >= 1 << 20, "four forms decoded 256 KiB each before failing, charged {limit}");
+    assert!(
+        digest_under(
+            &page,
+            &Caps {
+                decode_work: limit,
+                ..Caps::STANDARD
+            }
+        )
+        .is_some(),
+        "at the limit"
+    );
+    assert_eq!(
+        digest_under(
+            &page,
+            &Caps {
+                decode_work: limit - 1,
+                ..Caps::STANDARD
+            }
+        ),
+        None,
+        "one byte under"
+    );
 }
 
 /// Failure caught: the same for a page's content streams, which are read as stored after a failed decode: 1,024 streams each failing after 16 MiB.
@@ -1477,10 +1497,48 @@ fn content_streams_that_fail_to_decode_are_charged_the_work_they_did() {
         "",
         "",
         &format!("[{list}]"),
-        (0..count).map(|_| stream("/Filter [/FlateDecode /FlateDecode]", &failing_after(1))).collect(),
+        (0..count).map(|_| stream("/Filter [/FlateDecode /FlateDecode]", &failing_after(256))).collect(),
     );
     let limit = least_decode_work(&page);
-    assert!(limit >= 4 << 20, "four streams decoded 1 MiB each before failing, charged {limit}");
-    assert!(digest_under(&page, &Caps { decode_work: limit, ..Caps::STANDARD }).is_some(), "at the limit");
-    assert_eq!(digest_under(&page, &Caps { decode_work: limit - 1, ..Caps::STANDARD }), None, "one byte under");
+    assert!(limit >= 1 << 20, "four streams decoded 256 KiB each before failing, charged {limit}");
+    assert!(
+        digest_under(
+            &page,
+            &Caps {
+                decode_work: limit,
+                ..Caps::STANDARD
+            }
+        )
+        .is_some(),
+        "at the limit"
+    );
+    assert_eq!(
+        digest_under(
+            &page,
+            &Caps {
+                decode_work: limit - 1,
+                ..Caps::STANDARD
+            }
+        ),
+        None,
+        "one byte under"
+    );
+}
+
+/// Failure caught: a failing form drawn under many names is charged once, the memo giving it back free, so 8,192 names of one 16 MiB failure cost
+/// 128 GiB of the work the cap counts. Drawn under 4 names, it is charged 4 times.
+#[test]
+fn a_failing_form_taken_from_the_memo_is_charged_again() {
+    let draws: String = (0..4).map(|n| format!("/N{n} Do ")).collect();
+    let table: String = (0..4).map(|n| format!("/N{n} 5 0 R ")).collect();
+    let page = one_page(
+        "",
+        &format!("/XObject << {table} >>"),
+        "4 0 R",
+        vec![
+            stream("", draws.as_bytes()),
+            stream("/Subtype /Form /BBox [0 0 1 1] /Filter [/FlateDecode /FlateDecode]", &failing_after(256)),
+        ],
+    );
+    assert!(least_decode_work(&page) >= 1 << 20, "four draws of a form that decodes 256 KiB before failing");
 }

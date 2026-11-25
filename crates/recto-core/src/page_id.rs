@@ -197,6 +197,7 @@ pub fn read_page(reader: &IndexedReader, entry: &PageMapEntry, caps: &Caps) -> P
         page_left: caps.page_bytes,
         content_left: caps.content_bytes,
         read_left: caps.page_read,
+        work_left: caps.decode_work,
         records: 0,
         forms: 0,
         cost: 0,
@@ -291,6 +292,8 @@ struct Budget<'c> {
     page_left: u64,
     content_left: u64,
     read_left: u64,
+    /// What the page may still decode, failed or not ([`Caps::decode_work`]): refusal only, so it is not in [`Budget::cost`].
+    work_left: u64,
     /// Records of images and forms so far.
     records: usize,
     /// Forms the page drew whose content draws a name, so far.
@@ -579,6 +582,8 @@ struct Seen {
     read: u64,
     page: u64,
     cost: u64,
+    /// What it took off [`Budget::work_left`].
+    work: u64,
     /// The read gave up on a decode on the way (a kind 3 whose decode failed, or a stream that couldn't be read at all). A failed decode is exact for any
     /// limit at least the one it was read at: it ended in an error before reaching it. With a smaller limit it can end in a cap instead, which is no
     /// identity. So it's taken as it was only while the page has more left than any one stream may take (the limit is then the stream's own, as it was
@@ -607,6 +612,7 @@ impl Seen {
             read: 0,
             page: 0,
             cost: 0,
+            work: 0,
             headroom: false,
             is_form: false,
             scanned,
@@ -638,10 +644,14 @@ fn xobject_record(
     if let Some(seen) = drawn.seen.get(&id) {
         let wanted = !(children && seen.is_form && !seen.scanned);
         // Where it can't be taken as it was, it's read again, so a cap is reached as it always was and costs what it did.
-        let affords = seen.read <= budget.read_left && seen.page <= budget.page_left && (!seen.headroom || budget.page_left > budget.caps.xobject_bytes);
+        let affords = seen.read <= budget.read_left
+            && seen.page <= budget.page_left
+            && seen.work <= budget.work_left
+            && (!seen.headroom || budget.page_left > budget.caps.xobject_bytes);
         if wanted && affords {
             budget.read_left -= seen.read;
             budget.page_left -= seen.page;
+            budget.work_left -= seen.work;
             budget.cost = budget.cost.saturating_add(seen.cost);
             hasher.update(&seen.tail);
             return Ok(Some(Rc::clone(seen)));
@@ -665,7 +675,7 @@ fn xobject_record(
         drawn.seen.insert(id, Rc::clone(&seen));
         return Ok(Some(seen));
     };
-    let before = (budget.read_left, budget.page_left, budget.cost);
+    let before = (budget.read_left, budget.page_left, budget.cost, budget.work_left);
     let mut tail = Vec::new();
     let mut scan = DoScan::with_cap(budget.caps.xobjects);
     let read = read_xobject(reader, id, &descriptor, budget, &mut tail, children.then_some(&mut scan))?;
@@ -681,6 +691,7 @@ fn xobject_record(
         read: before.0 - budget.read_left,
         page: before.1 - budget.page_left,
         cost: budget.cost.saturating_sub(before.2),
+        work: before.3 - budget.work_left,
         headroom: read.gave_up,
         is_form: read.is_form,
         scanned: children,
@@ -893,6 +904,8 @@ fn take_stream(
         if read == 0 {
             break;
         }
+        // Every byte a decoder gives is work done, whether the stream ends well or not (a failed decode of 16 MiB costs what a good one does).
+        budget.work_left = budget.work_left.checked_sub(read as u64).ok_or(Capped)?;
         if n + read as u64 > limit {
             if !prefix {
                 return Err(Capped);
