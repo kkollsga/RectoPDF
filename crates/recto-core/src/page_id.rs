@@ -444,6 +444,9 @@ struct Seen {
     overflowed: bool,
     /// The form's own `/Resources`, and its `/XObject` resolved once, however many names it's drawn under.
     resources: Option<Object>,
+    /// Its descriptor, kept where `headroom` says it may be read again, so that isn't resolved again (its dictionary is parsed whole each time). Held
+    /// for the distinct objects the page draws that gave up, at most.
+    descriptor: Option<Rc<lopdf::IndexedStreamDescriptor>>,
     own: OnceCell<Option<Option<Rc<Dictionary>>>>,
 }
 
@@ -461,6 +464,7 @@ impl Seen {
             names: Vec::new(),
             overflowed: false,
             resources: None,
+            descriptor: None,
             own: OnceCell::new(),
         }
     }
@@ -510,9 +514,13 @@ fn xobject_record(
             return Ok(Some(Rc::clone(seen)));
         }
     }
+    // What was kept of an earlier read that has to be made again isn't resolved again: its dictionary is the same.
+    let kept = memo.get(&id).and_then(|seen| seen.descriptor.clone());
     #[cfg(test)]
-    tests::DESCRIPTORS.with(|count| count.set(count.get() + 1));
-    let Ok(descriptor) = reader.resolve_stream_descriptor(id) else {
+    if kept.is_none() {
+        tests::DESCRIPTORS.with(|count| count.set(count.get() + 1));
+    }
+    let Some(descriptor) = kept.or_else(|| reader.resolve_stream_descriptor(id).ok().map(Rc::new)) else {
         // Resolving it parsed its whole dictionary, and what it comes to doesn't depend on what's left of any cap: it's kept like any other record.
         let seen = Rc::new(Seen::of(vec![2], children));
         hasher.update(&seen.tail);
@@ -534,6 +542,7 @@ fn xobject_record(
         overflowed: read.is_form && scan.overflowed(),
         names: scan.names().to_vec(),
         resources: read.resources,
+        descriptor: read.gave_up.then_some(descriptor),
         own: OnceCell::new(),
         tail,
     });
@@ -586,10 +595,8 @@ fn read_xobject(
                 }
                 taken => (0, taken, scanned),
             },
-            None => {
-                gave_up = true;
-                (3, as_stored(budget)?, false)
-            }
+            // No decode was attempted, so nothing here depends on what's left of the page: only a stream that couldn't be read at all does.
+            None => (3, as_stored(budget)?, false),
         }
     } else {
         (1, as_stored(budget)?, false)
