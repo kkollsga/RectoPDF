@@ -200,3 +200,47 @@ fn a_page_that_may_pass_loses_its_words_once_its_retry_draws() {
         "the page's tiles are attached"
     );
 }
+
+/// Failure (review of `build/held-look-wake`): the drop of ended holds moved below `next_plan`'s early return for a closed window leaves a hold that is over reported as `ZERO` every turn, and nothing takes it, so the engine thread goes round at once for ever (100% CPU). With the window closed, the hold is dropped, no plan is made and nothing is left to wake for.
+#[test]
+fn a_hold_over_in_a_closed_window_is_dropped_and_wakes_nothing() {
+    let mut reader = reader_on(10);
+    let job = a_draw_job(&mut reader, DrawKind::Tile);
+    let page = job.position;
+    reader.work.note_started(&job, None);
+    reader.finish(job, Outcome::LookLater);
+    reader.docs.views.get_mut(&1).unwrap().drawing.issues.get_mut(&page).expect("held").try_again_at = Some(Instant::now() - Duration::from_millis(1));
+    reader.window_closed();
+    assert!(reader.next_plan().is_none(), "no plan for a closed window");
+    assert_eq!(reader.docs.next_hold_ends(Instant::now()), None, "nothing to wake for: the thread would spin");
+}
+
+/// Failure (review of `build/held-look-wake`): a page that failed and won't pass (`may_pass: false`) lost its words when another tile of it drew, so the person was no longer told why the rest of it is blank. Only a failure with a time to try again goes when its retry draws.
+#[test]
+fn a_failure_that_wont_pass_keeps_its_words_when_another_tile_draws() {
+    let mut reader = reader_on(10);
+    let job = a_draw_job(&mut reader, DrawKind::Tile);
+    // A second draw of the same page is asked while the first is out: its issue is made after the second was planned.
+    let other_tile = reader.next_job().expect("a second job");
+    assert!(
+        matches!(other_tile.kind, JobKind::Draw { .. }) && other_tile.position == job.position,
+        "{other_tile:?}"
+    );
+    reader.work.note_started(&job, None);
+    reader.finish(
+        job,
+        Outcome::PageFailed {
+            message: "Page 1 can't be drawn.".into(),
+            may_pass: false,
+        },
+    );
+    assert!(reader.note().is_some(), "told");
+    reader.finish(
+        other_tile,
+        Outcome::Drawn {
+            kind: TileKind::Colour,
+            low_res: None,
+        },
+    );
+    assert!(reader.note().is_some(), "still told: the page's failure won't pass");
+}
