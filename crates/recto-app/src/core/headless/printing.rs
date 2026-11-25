@@ -157,6 +157,7 @@ pub(crate) struct Unnamed {
 /// **The descriptors listed in `folder` that are regular files with no link, strictly:** a folder that can't be listed, or an entry that can't be read,
 /// panics with the OS error, as a look that quietly saw nothing read as "nothing's held" (2026-11-25, `[] then []`). A descriptor that closed between
 /// the listing and the look (ENOENT, EBADF) is skipped, as it's legitimately gone; any other error on it panics with its errno. Sorted by number.
+/// The skip of a descriptor that closed is not exercised by a test: it needs a close in the instant between the listing and the look.
 pub(crate) fn unnamed_descriptors_in(folder: &Path) -> Vec<Unnamed> {
     use std::os::unix::fs::MetadataExt;
     let mut held = Vec::new();
