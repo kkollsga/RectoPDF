@@ -194,10 +194,28 @@ pub(super) enum LookRefusal {
 }
 
 impl LookRefusal {
+    /// The reason the outcome file carries.
+    pub(super) fn why(&self) -> &'static str {
+        match self {
+            Self::Live | Self::LockHeld(_) => "app_reopened",
+            Self::Unknown(_) => "observation_unknown",
+        }
+    }
+
     pub(super) fn into_io(self) -> io::Error {
         match self {
             Self::Live => io::Error::other("an app is running at the look"),
             Self::LockHeld(error) | Self::Unknown(error) => error,
+        }
+    }
+}
+
+/// Plain words for the installer's log: what was found, never the variant's debug text.
+impl std::fmt::Display for LookRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Live => f.write_str("an app is running"),
+            Self::LockHeld(error) | Self::Unknown(error) => write!(f, "{error}"),
         }
     }
 }
@@ -638,6 +656,17 @@ mod recovery_tests {
             matches!(error, LookRefusal::LockHeld(ref e) if e.kind() == io::ErrorKind::WouldBlock),
             "{error:?}"
         );
+    }
+
+    /// Failure: the installer's log carrying the variant's debug text (`Unknown(Custom { kind: Other ...`) instead of what was found.
+    #[test]
+    fn a_look_refusal_reads_in_plain_words() {
+        assert_eq!(LookRefusal::Live.to_string(), "an app is running");
+        assert_eq!(LookRefusal::Unknown(io::Error::other("no answer")).to_string(), "no answer");
+        let held = LookRefusal::LockHeld(io::Error::other("the record's lock is held by another writer"));
+        assert_eq!(held.to_string(), "the record's lock is held by another writer");
+        assert_eq!((LookRefusal::Live.why(), held.why()), ("app_reopened", "app_reopened"));
+        assert_eq!(LookRefusal::Unknown(io::Error::other("x")).why(), "observation_unknown");
     }
 
     fn version(app: &Path, version: &str) -> Vec<u8> {

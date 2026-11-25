@@ -209,11 +209,7 @@ impl Run<'_> {
             Ok(held) => return Ok(held),
             Err(refusal) => refusal,
         };
-        let why = match refusal {
-            retirement::LookRefusal::Live | retirement::LookRefusal::LockHeld(_) => "app_reopened",
-            retirement::LookRefusal::Unknown(_) => "observation_unknown",
-        };
-        Err(self.absence_unproven(why, &format!("{refusal:?}")))
+        Err(self.absence_unproven(refusal.why(), &refusal.to_string()))
     }
 
     /// The app's absence isn't established, so nothing's replaced. The one place that says so and ends the run (a no-op for `before/` before the record was copied).
@@ -410,8 +406,11 @@ pub fn run(plan: &Plan) -> Ended {
     match retirement::before_swap(&plan.executable(), STOP_PATIENCE) {
         Ok(false) => {}
         observed => {
-            let why = if observed.is_ok() { "app_reopened" } else { "observation_unknown" };
-            return run.absence_unproven(why, &format!("{observed:?}"));
+            let refusal = match observed {
+                Err(error) => retirement::LookRefusal::Unknown(error),
+                Ok(_) => retirement::LookRefusal::Live,
+            };
+            return run.absence_unproven(refusal.why(), &refusal.to_string());
         }
     }
     if !plan.new_app().is_dir() {
