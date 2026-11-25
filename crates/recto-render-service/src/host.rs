@@ -714,8 +714,10 @@ struct LeftOut {
     prefetch: u32,
     /// Deadlines the Mac was too busy for the worker to meet.
     busy: u32,
-    /// Busy starts or opens in a row ([`busy::start_stopped`]).
+    /// Busy starts in a row ([`busy::start_stopped`]).
     busy_starts: u8,
+    /// Busy opens in a row ([`busy::open_stopped`]), counted apart from starts.
+    busy_opens: u8,
 }
 
 impl LeftOut {
@@ -1661,7 +1663,7 @@ impl DocRenderer {
             StartFailure::NoLibrary => RenderFailure::LibraryMissing,
             StartFailure::Walls(why) => RenderFailure::WallsDown(why),
             StartFailure::Refused => RenderFailure::StartRefused,
-            StartFailure::TimedOut => busy::start_stopped(self, RenderFailure::Unavailable),
+            StartFailure::TimedOut => busy::start_stopped(self),
             StartFailure::Other => RenderFailure::Unavailable,
         })?;
         if worker.walled {

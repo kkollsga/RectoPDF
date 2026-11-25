@@ -87,28 +87,39 @@ pub(super) fn read_landed<T>(doc: &mut DocRenderer, page: u32, read: T) -> T {
     read
 }
 
-/// A worker didn't answer in time, in starting or in opening the file, with the Mac too busy to give it the processor: [`RenderFailure::TooBusyToStart`], not remembered, so whoever asked asks again. A worker that hangs looks the same, so past [`MAX_BUSY`] in a row it's `then` after all: `Unavailable` for a start, the open's own failure for an open.
-pub(super) fn start_stopped(doc: &mut DocRenderer, then: RenderFailure) -> RenderFailure {
-    // No file has reached the worker for a start, so what kept it from saying hello isn't the file's doing; the same for an open it had no processor for.
+/// One more busy start or open in a run: whether the run is still short of [`MAX_BUSY`].
+fn within_bound(run: &mut u8) -> bool {
+    *run = run.saturating_add(1);
+    *run < MAX_BUSY
+}
+
+/// A worker didn't say hello in time, with the Mac too busy to give it the processor: [`RenderFailure::TooBusyToStart`], not remembered, so whoever asked asks again. A worker that hangs looks the same, so past [`MAX_BUSY`] in a row it's `Unavailable` after all.
+pub(super) fn start_stopped(doc: &mut DocRenderer) -> RenderFailure {
+    // No file has reached the worker, so what kept it from saying hello isn't the file's doing.
     doc.stats.too_busy += 1;
-    doc.left_out.busy_starts = doc.left_out.busy_starts.saturating_add(1);
-    if doc.left_out.busy_starts < MAX_BUSY {
+    if within_bound(&mut doc.left_out.busy_starts) {
         RenderFailure::TooBusyToStart
     } else {
-        then
+        RenderFailure::Unavailable
     }
 }
 
-/// A worker that opened the file ends a run of busy starts.
+/// A worker that opened the file ends the runs of busy starts and busy opens.
 pub(super) fn started(doc: &mut DocRenderer) {
     doc.left_out.busy_starts = 0;
+    doc.left_out.busy_opens = 0;
 }
 
-/// An open's worker was stopped for `reason`, which `failed` says. One that had no processor, `starved`, isn't the file's doing: it counts as the Mac being busy and not towards stopping the document, and is [`start_stopped`].
+/// An open's worker was stopped for `reason`, which `failed` says. One that had no processor, `starved`, isn't the file's doing: it counts as the Mac being busy and not towards stopping the document, and is [`RenderFailure::TooBusyToStart`] until [`MAX_BUSY`] opens in a row, counted apart from starts, when it's `failed` after all.
 pub(super) fn open_stopped(doc: &mut DocRenderer, failed: RenderFailure, starved: bool) -> RenderFailure {
     if !starved {
         return failed;
     }
     doc.left_out.busy = doc.left_out.busy.saturating_add(1);
-    start_stopped(doc, failed)
+    doc.stats.too_busy += 1;
+    if within_bound(&mut doc.left_out.busy_opens) {
+        RenderFailure::TooBusyToStart
+    } else {
+        failed
+    }
 }
