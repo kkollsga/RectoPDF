@@ -1193,3 +1193,82 @@ fn a_read_follows_each_reference_once() {
     expected.push(b'E');
     assert_eq!(hex(&read.identity.expect("an identity").digest), hex(&sha(&expected)));
 }
+
+/// Failure caught (the memo's untested branch): a form drawn first as another form's child (a record with no children of its own) and then by the page
+/// itself was taken from the memo as it was, so it had no children where the definition gives it the ones its content draws.
+#[test]
+fn a_form_drawn_as_a_child_and_then_directly_has_its_children() {
+    let (g_content, f_content) = (b"/F Do", b"/C Do");
+    let page = one_page(
+        "",
+        "/XObject << /G 5 0 R /F 6 0 R /C 7 0 R >>",
+        "4 0 R",
+        vec![
+            stream("", b"/G Do /F Do"),
+            stream("/Subtype /Form /BBox [0 0 1 1]", g_content),
+            stream("/Subtype /Form /BBox [0 0 1 1]", f_content),
+            stream(JPEG_DICT, IMAGE),
+        ],
+    );
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, b"/G Do /F Do"));
+    expected.push(b'X');
+    expected.extend_from_slice(&2u32.to_le_bytes());
+    // G, with F as its one child (no children of its own); then F, drawn by the page, with its child C.
+    expected.extend(xobject_bytes(b"G", 0, g_content));
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(xobject_bytes(b"F", 0, f_content));
+    expected.extend(xobject_bytes(b"F", 0, f_content));
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(xobject_bytes(b"C", 1, IMAGE));
+    expected.push(b'E');
+    assert_eq!(hex(&digest_of(&page)), hex(&sha(&expected)));
+}
+
+/// Failure caught (the memo's untested branch): an image whose decode failed, drawn under a second name, was taken from the memo as it was even where
+/// the page had less left than a stream may take, which can end the decode in a cap where it ended in an error when it was read with more. Its stream
+/// decodes to exactly `xobject_bytes` and then fails; read after another name has taken `left` of the page, the second read is as it would be alone:
+/// the same failure and the same record with `xobject_bytes` or more left, and with one less the decode reaches its cap, so no identity.
+#[test]
+fn a_gave_up_image_is_read_again_where_the_page_has_less_left_than_a_stream_may_take() {
+    let decoded_len = 64u64;
+    // A run of 64 bytes, then a literal run cut short (an error): the 64 bytes come, then the failure. Not an image, so none is hashed as a prefix.
+    let stored = vec![0xc1, b'a', 5, b'x'];
+    let draws = b"/A Do /B Do";
+    let page = one_page(
+        "",
+        "/XObject << /A 5 0 R /B 5 0 R >>",
+        "4 0 R",
+        vec![stream("", draws), stream("/Filter /RunLengthDecode", &stored)],
+    );
+    let xobject_bytes_cap = decoded_len;
+    // What's left when the second name is read: the page's cap less the content and the first read's stored bytes.
+    let under = |left: u64| Caps {
+        xobject_bytes: xobject_bytes_cap,
+        page_bytes: left + draws.len() as u64 + stored.len() as u64,
+        ..Caps::STANDARD
+    };
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, draws));
+    expected.push(b'X');
+    expected.extend_from_slice(&2u32.to_le_bytes());
+    for name in [&b"A"[..], b"B"] {
+        expected.extend(xobject_bytes(name, 3, &stored));
+        expected.extend_from_slice(&0u32.to_le_bytes());
+    }
+    expected.push(b'E');
+    let expected = sha(&expected);
+    assert_eq!(
+        digest_under(&page, &under(xobject_bytes_cap + 1)),
+        Some(expected),
+        "more left than a stream may take"
+    );
+    assert_eq!(digest_under(&page, &under(xobject_bytes_cap)), Some(expected), "just what a stream may take");
+    assert_eq!(
+        digest_under(&page, &under(xobject_bytes_cap - 1)),
+        None,
+        "less: the decode that failed reaches the cap"
+    );
+}
