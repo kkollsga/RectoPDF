@@ -65,10 +65,23 @@ pub fn the_person_scrolls(app: &HeadlessApp, view: &mut recto_reader::Viewport, 
     apply_batch(engine, view, &ops, began);
 }
 
-/// A view that has just been put up (a tab opened or shown) says where it is: the host starts at `scrolledTo = 0` and has applied no scroll, so it
-/// claims arrival at none, and [`report_where_the_host_is`] arrives at every scroll the session queued. Failure caught: a fresh view sent with "arrived
+/// A pane's view before any tab has been shown in it: the real host has one `PageArea` per pane (`MainWindow.swift`), and its `scrolledTo` starts at 0
+/// once, so the view has applied no scroll and claims arrival at none. Give it to the first [`report_a_fresh_view`] of a pane.
+pub fn first_shown(shape: recto_reader::Viewport) -> recto_reader::Viewport {
+    recto_reader::Viewport { scrolled_to: 0, ..shape }
+}
+
+/// The same pane's view when another tab is shown in it: the `PageArea` lives on, so `scrolledTo` carries over from `was` (`.clear` doesn't reset it).
+pub fn shown_again(was: &recto_reader::Viewport, shape: recto_reader::Viewport) -> recto_reader::Viewport {
+    recto_reader::Viewport {
+        scrolled_to: was.scrolled_to,
+        ..shape
+    }
+}
+
+/// A tab shown in a pane says where the view is: the host's `scrolledTo` is whatever the pane's `PageArea` last applied ([`first_shown`] before any,
+/// [`shown_again`] after), and [`report_where_the_host_is`] arrives at every scroll the session queued. Failure caught: a fresh view sent with "arrived
 /// at every scroll" cleared a jump queued but not yet drained.
 pub fn report_a_fresh_view(app: &HeadlessApp, view: &mut recto_reader::Viewport) {
-    view.scrolled_to = 0;
     report_where_the_host_is(app, view);
 }
