@@ -679,7 +679,10 @@ mod combination_tests {
         let usage = |words: &'static str| AgentError::new(Code::USAGE, words, crate::exit::USAGE);
         assert!(refused_for_its_combination("text", &usage(locating::TEXT_NEITHER)));
         assert!(refused_for_its_combination("render", &usage(locating::RENDER_NEITHER)));
-        assert!(!refused_for_its_combination("text", &usage(locating::RENDER_NEITHER)), "another command's words");
+        assert!(
+            !refused_for_its_combination("text", &usage(locating::RENDER_NEITHER)),
+            "another command's words"
+        );
         assert!(!refused_for_its_combination("text", &usage("`text` takes a page that is a number.")));
     }
 }
