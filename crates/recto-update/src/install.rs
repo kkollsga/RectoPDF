@@ -27,7 +27,9 @@ const LOOK_STEP: Duration = Duration::from_millis(20);
 const GONE_GRACE: Duration = Duration::from_secs(3);
 /// How often the installer looks at whether its plan's still its own, while it waits for the old app.
 const PLAN_LOOK: Duration = Duration::from_millis(100);
-/// At most five seconds to reap an owned direct child, then five to prove executable absence.
+/// At most five seconds to reap an owned direct child, then five in all to prove executable absence and, with the
+/// record's lock taken, to recheck it: the recheck ends at the absence proof's deadline, so rollback waits at most
+/// ten seconds.
 const STOP_PATIENCE: Duration = Duration::from_secs(5);
 
 /// A test's way to kill the installer right after a step, to prove what's left is fine. Only in a build that isn't a release.
