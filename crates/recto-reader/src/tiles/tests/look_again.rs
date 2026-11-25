@@ -82,6 +82,7 @@ fn a_busy_draw_on_white_paper_isnt_settled_and_is_asked_for_again() {
         _ => unreachable!(),
     };
     reader.work.note_started(&job, None);
+    assert_eq!(reader.docs.next_hold_ends(Instant::now()), None, "no page held, so no timer at rest");
     reader.finish(job, Outcome::LookLater);
     assert_eq!(reader.note(), None, "no words for a person");
     assert_eq!(reader.report().0["settled"].as_bool(), Some(false));
