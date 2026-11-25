@@ -12,6 +12,8 @@
 //! whatever it starts in turn inherits the clamp: the helper's threads' and its render worker's base priority (`pth_priority`) is 20, against
 //! 31 for an ordinary process and 4 at Darwin background, and the CPU time they use is charged to the utility bucket (`ri_cpu_time_qos_utility`)
 //! and no other. A thread's current priority is not ours to promise: the kernel raises it for a moment past the clamp while it holds a contended lock.
+//! The base priority isn't moved by that, but a user-space push from a higher-QoS thread of the same process can raise it (a thread at user-interactive
+//! waiting on a lock a utility thread holds lifted it from 20 to 31, measured 2026-11-25), which the task clamp doesn't apply to.
 
 use std::ffi::{CString, OsStr, c_int};
 use std::fs::File;
@@ -252,42 +254,89 @@ mod tests {
         ceiling: i32,
     }
 
-    /// Every thread of `pid`, read one after another by `proc_pidinfo` (a thread that ends meanwhile is left out), as `thread_names` does.
-    fn thread_levels(pid: u32) -> Vec<Level> {
+    /// Every thread of `pid`, read one after another by `proc_pidinfo` (a thread that ends meanwhile is left out), as `thread_names` does. An error
+    /// names the pid and the system's reason, for a process that is gone or isn't ours.
+    fn thread_levels(pid: u32) -> io::Result<Vec<Level>> {
         // <sys/proc_info.h>: not in the libc crate.
         const PROC_PIDLISTTHREADS: c_int = 6;
-        let pid = c_int::try_from(pid).unwrap();
+        let raw_pid = c_int::try_from(pid).unwrap();
         let mut handles = vec![0u64; 512];
         let room = c_int::try_from(handles.len() * size_of::<u64>()).unwrap();
         // SAFETY: the buffer and its size in bytes describe `handles`; what's written is a count of bytes within it.
-        let written = unsafe { libc::proc_pidinfo(pid, PROC_PIDLISTTHREADS, 0, handles.as_mut_ptr().cast(), room) };
-        handles.truncate(usize::try_from(written).unwrap_or(0) / size_of::<u64>());
+        let written = unsafe { libc::proc_pidinfo(raw_pid, PROC_PIDLISTTHREADS, 0, handles.as_mut_ptr().cast(), room) };
+        let written = usize::try_from(written).ok().filter(|&bytes| bytes > 0);
+        let Some(written) = written else {
+            return Err(io::Error::other(format!("listing the threads of {pid}: {}", io::Error::last_os_error())));
+        };
+        handles.truncate(written / size_of::<u64>());
         let size = c_int::try_from(size_of::<libc::proc_threadinfo>()).unwrap();
-        handles
+        Ok(handles
             .iter()
             .filter_map(|&handle| {
                 let mut info = std::mem::MaybeUninit::<libc::proc_threadinfo>::uninit();
-                // SAFETY: the buffer and its size describe `info`, and a return of `size` means it was filled.
-                let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTHREADINFO, handle, info.as_mut_ptr().cast(), size) };
-                // SAFETY: filled, as checked.
+                // SAFETY: the buffer and its size describe `info`.
+                let got = unsafe { libc::proc_pidinfo(raw_pid, libc::PROC_PIDTHREADINFO, handle, info.as_mut_ptr().cast(), size) };
+                if got != size {
+                    return None;
+                }
+                // SAFETY: a return of `size` means it was filled.
                 let info = unsafe { info.assume_init() };
-                (got == size).then_some(Level {
+                Some(Level {
                     current: info.pth_curpri,
                     base: info.pth_priority,
                     ceiling: info.pth_maxpriority,
                 })
             })
-            .collect()
+            .collect())
     }
 
     /// The CPU time `pid` has used, by the QoS bucket it ran in, as `proc_pid_rusage` keeps it.
-    fn qos_time(pid: u32) -> libc::rusage_info_v4 {
+    fn qos_time(pid: u32) -> io::Result<libc::rusage_info_v4> {
+        let raw_pid = c_int::try_from(pid).unwrap();
         let mut info = std::mem::MaybeUninit::<libc::rusage_info_v4>::uninit();
         // SAFETY: the buffer is a `rusage_info_v4`, which flavor 4 fills; a return of 0 means it was.
-        let rc = unsafe { libc::proc_pid_rusage(pid as c_int, libc::RUSAGE_INFO_V4, info.as_mut_ptr().cast()) };
-        assert_eq!(rc, 0, "proc_pid_rusage of {pid}: {}", io::Error::last_os_error());
+        let rc = unsafe { libc::proc_pid_rusage(raw_pid, libc::RUSAGE_INFO_V4, info.as_mut_ptr().cast()) };
+        if rc != 0 {
+            return Err(io::Error::other(format!("proc_pid_rusage of {pid}: {}", io::Error::last_os_error())));
+        }
         // SAFETY: filled, as checked.
-        unsafe { info.assume_init() }
+        Ok(unsafe { info.assume_init() })
+    }
+
+    /// What one reading of the stand-in shell and of what it started gave.
+    struct Seen {
+        shell: Vec<Level>,
+        sleeper: Vec<Level>,
+        shell_time: libc::rusage_info_v4,
+        sleeper_time: libc::rusage_info_v4,
+    }
+
+    /// Reads the sleeper's pid, which its shell prints once it has done its work, then both processes. Every failure is a value, so the caller can
+    /// kill and wait before it asserts.
+    fn observe(shell: u32, stdout: &mut File) -> (Option<u32>, io::Result<Seen>) {
+        let mut line = Vec::new();
+        let mut byte = [0u8; 1];
+        while matches!(io::Read::read(stdout, &mut byte), Ok(1)) && byte[0] != b'\n' {
+            line.push(byte[0]);
+        }
+        let Some(sleeper) = String::from_utf8_lossy(&line).trim().parse::<u32>().ok() else {
+            return (
+                None,
+                Err(io::Error::other(format!(
+                    "no pid line from the stand-in shell, got {:?}",
+                    String::from_utf8_lossy(&line)
+                ))),
+            );
+        };
+        let seen = (|| {
+            Ok(Seen {
+                shell: thread_levels(shell)?,
+                sleeper: thread_levels(sleeper)?,
+                shell_time: qos_time(shell)?,
+                sleeper_time: qos_time(sleeper)?,
+            })
+        })();
+        (Some(sleeper), seen)
     }
 
     /// The buckets that mean "not utility", as `(name, ns)`, for a message and a check.
@@ -318,31 +367,39 @@ mod tests {
             mut stdin,
             mut stdout,
         } = started;
+        // The stand-in shell works a little, then starts a child that works a little too, and only that child's report (its pid, once it has run and
+        // before it becomes a `sleep`) lets this test read it: a reading of a child that hasn't run yet would pass for nothing.
         stdin
-            .write_all(b"i=0; while [ $i -lt 20000 ]; do i=$((i+1)); done; /bin/sleep 30 & echo $!; read line\n")
+            .write_all(
+                b"i=0; while [ $i -lt 2000 ]; do i=$((i+1)); done; \
+                  /bin/sh -c 'i=0; while [ $i -lt 2000 ]; do i=$((i+1)); done; echo $$; exec /bin/sleep 600' & read line\n",
+            )
             .unwrap();
-        let mut line = Vec::new();
-        let mut byte = [0u8; 1];
-        while stdout.read(&mut byte).unwrap() == 1 && byte[0] != b'\n' {
-            line.push(byte[0]);
+        let (sleeper_pid, seen) = observe(child.id(), &mut stdout);
+        if let Some(pid) = sleeper_pid {
+            // SAFETY: a signal to the `sleep` this test started.
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
         }
-        let grandchild: u32 = String::from_utf8(line).unwrap().trim().parse().unwrap();
-        let (shell, sleeper) = (thread_levels(child.id()), thread_levels(grandchild));
-        let (shell_time, sleeper_time) = (qos_time(child.id()), qos_time(grandchild));
-        // SAFETY: a signal to the `sleep` this test started.
-        unsafe { libc::kill(grandchild as libc::pid_t, libc::SIGKILL) };
         drop(stdin);
         // Its `read` fails as its input closes, so it doesn't end with success. That it ends is what matters.
         child.wait().unwrap();
-        // The promise: the work ran at utility, and nowhere else. The shell has done real work by now, so its utility time is above zero.
-        assert!(
-            shell_time.ri_cpu_time_qos_utility > 0,
-            "the helper used no CPU time at utility: {:?}",
-            outside_utility(&shell_time)
-        );
-        assert_eq!(outside_utility(&shell_time), vec![], "the helper ran outside utility, by bucket in ns");
-        assert_eq!(outside_utility(&sleeper_time), vec![], "what it started ran outside utility, by bucket in ns");
-        // Below an ordinary process's 31 and above Darwin background's 4: the base priority the clamp holds, which nothing the process does lifts.
+        let Seen {
+            shell,
+            sleeper,
+            shell_time,
+            sleeper_time,
+        } = seen.unwrap();
+        // The promise: the work ran at utility, and nowhere else. Both have done real work by now, so each has utility time.
+        for (who, time) in [("the helper", &shell_time), ("what it started", &sleeper_time)] {
+            assert!(
+                time.ri_cpu_time_qos_utility > 0,
+                "{who} used no CPU time at utility: outside it {:?}",
+                outside_utility(time)
+            );
+            assert_eq!(outside_utility(time), vec![], "{who} ran outside utility, by bucket in ns");
+        }
+        // Below an ordinary process's 31 and above Darwin background's 4: the base priority the clamp holds. A kernel lock promotion doesn't move
+        // it, but a push from a higher-QoS thread of the same process can; nothing in these two processes does that.
         let utility = |levels: &[Level]| !levels.is_empty() && levels.iter().all(|l| l.base > 4 && l.base < 31);
         assert!(utility(&shell), "the helper's threads (current, base, ceiling): {shell:?}");
         assert!(utility(&sleeper), "what it started (current, base, ceiling): {sleeper:?}");
