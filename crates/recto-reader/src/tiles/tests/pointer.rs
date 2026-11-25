@@ -177,7 +177,7 @@ fn a_stopped_text_job_is_asked_for_again() {
     assert!(matches!(check.kind, JobKind::Text { check: true }));
 }
 
-/// Failure (review of the busy renderer start, 2026-11-25): a text read the busy Mac couldn't run ends as `LookLater` and is kept as a page whose text failed: a copy adds an empty page, nothing offers its text, and it's never asked for again. It says nothing of the page, so it's not failed and is asked for again.
+/// Failure (review of the busy renderer start, 2026-11-25): a text read the busy Mac couldn't run ends as `LookLater` and is kept as a page whose text failed: a copy adds an empty page, nothing offers its text, and it's never asked for again. It says nothing of the page, so it's not failed and is asked for again. This holds the reader's side only, given `Outcome::LookLater`: seeded with the job's arm back to `TextFailed` it still passes (checked 2026-11-25), as it never runs the arm. The arm is held by `engine::run`'s `a_busy_start_of_a_text_read_is_asked_again_and_a_stopped_read_is_cancelled`, seen failing on that seed.
 #[test]
 fn a_busy_text_read_isnt_a_failed_page_and_is_asked_again() {
     let mut reader = reader_on(10);
