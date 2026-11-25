@@ -183,6 +183,20 @@ fn an_edited_tab_whose_file_changed_before_the_app_looked_refuses_ref_and_resolv
     assert_eq!((referenced.code, resolved.code), (as_text, as_text), "{referenced:?} {resolved:?}");
 }
 
+/// Failure: `ref 0` opens and states the tab's file before it says there is no page 0, so a page that can't exist is answered with the file's state (here
+/// `source_changed`) and costs a read of the file. A page that can't be is refused first.
+#[test]
+fn ref_page_zero_is_refused_before_the_file_is_looked_at() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 4));
+    app.open(&file);
+    app.person(r##"{"cmd":"page_rotate","tab":"#1","pages":"2","degrees":90}"##);
+    app.settle();
+    replace(&file, &pdf_bytes("Theirs", 2));
+    let zero = app.agent(Level::ReadOnly, r##"{"cmd":"ref","page":0,"tab":"#1"}"##).expect_err("no page 0");
+    assert_eq!(zero.code.as_str(), "no_such_page", "{zero:?}");
+}
+
 /// Everything of the owner's tab an agent could change: what `edits` says, the session's list, and the file's bytes and time.
 fn owners_tab(app: &HeadlessApp, file: &Path) -> (Value, Value, Vec<u8>, std::time::SystemTime) {
     let edits = app.recto(Level::Full, &["edits"]).expect("edits");

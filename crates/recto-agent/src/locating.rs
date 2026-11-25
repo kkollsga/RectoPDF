@@ -44,8 +44,9 @@ fn not_referenceable(words: &'static str) -> AgentError {
 
 /// `recto ref <page>`: a reference to page `page` (counted from 1 in the tab as it is now, unsaved edits included).
 pub(crate) fn reference<A: SessionAccess>(access: &A, tab: &TabRef, page: u32) -> Result<Value, AgentError> {
-    let (file, opened, stamp) = readable(access, tab)?;
+    // A page that can't be is refused before the file is opened or its state said.
     let wanted = crate::one_based(page)?;
+    let (file, opened, stamp) = readable(access, tab)?;
     // The file's page that stands at this position now. A position with none, inside the tab, is a page added from another PDF.
     let Some(file_page) = file.file_page_at(wanted) else {
         return Err(if wanted < file.pages() { not_referenceable(ADDED_PAGE) } else { crate::no_such_page() });
@@ -78,7 +79,7 @@ pub(crate) fn resolve<A: SessionAccess>(access: &A, tab: &TabRef, reference: Loc
     };
     let was = reference.page().number();
     let target = found.target.map(|placed| target_json(&placed));
-    let note = note_of(&found, at.map(|page| (page, place(page))), was, file.has_edit_list());
+    let note = note_of(&found, at.map(place), was, file.has_edit_list());
     Ok(json!({
         "tab": file.id(),
         "status": status,
@@ -138,9 +139,16 @@ fn target_json(placed: &Placed) -> Value {
 
 /// What the answer says in words: one sentence for the status, and one for each thing worth knowing beside it. `at` is the page found (zero-based, in
 /// the file) and its place in the tab now; `was` the page the reference hinted at.
-fn note_of(found: &Resolution, at: Option<(u32, Option<u32>)>, was: u32, edited: bool) -> String {
+fn note_of(found: &Resolution, at: Option<Option<u32>>, was: u32, edited: bool) -> String {
+    // A page of another document, by content alone, isn't "the page": it says only what is known.
+    let other = found.document == DocumentMatch::Different;
     let mut note = match (&found.status, at) {
+        (Status::Found { page }, _) if other => format!("A page with the same content is at page {} of the file.", page + 1),
         (Status::Found { page }, _) => format!("It's still at page {} of the file.", page + 1),
+        (Status::Moved { page }, _) if other => format!(
+            "A page with the same content is page {} of the file now, where the reference was of page {was}. Only that page has its content.",
+            page + 1
+        ),
         (Status::Moved { page }, _) => format!(
             "It moved: it's page {} of the file now, and was page {was}. Only that page has its content.",
             page + 1
@@ -159,7 +167,7 @@ fn note_of(found: &Resolution, at: Option<(u32, Option<u32>)>, was: u32, edited:
         }
     };
     match at {
-        Some((_, None)) if edited => note.push_str(" Unsaved edits have removed it from the tab, so it has no page there."),
+        Some(None) if edited => note.push_str(" Unsaved edits have removed it from the tab, so it has no page there."),
         Some(_) if edited => note.push_str(" `page` counts the tab with its unsaved edits, and `file_page` the file."),
         _ => {}
     }
@@ -174,4 +182,34 @@ fn note_of(found: &Resolution, at: Option<(u32, Option<u32>)>, was: u32, edited:
         Some(Placed::Page) | None => {}
     }
     note
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn resolution(status: Status, document: DocumentMatch) -> Resolution {
+        Resolution {
+            status,
+            document,
+            frame_same: None,
+            target: None,
+            looked: Looked::All,
+            pages_read: 1,
+            bytes_read: 0,
+        }
+    }
+
+    /// Failure: a page matched by content in a file that doesn't look like the reference's document is called "still at" its page, as though it were the
+    /// page the reference was made of, where all that is known is that a page there has the same content.
+    #[test]
+    fn a_page_of_another_document_is_said_to_have_the_same_content_not_to_be_still_there() {
+        for status in [Status::Found { page: 2 }, Status::Moved { page: 2 }] {
+            let same = note_of(&resolution(status.clone(), DocumentMatch::Same), Some(Some(3)), 1, false);
+            let other = note_of(&resolution(status, DocumentMatch::Different), Some(Some(3)), 1, false);
+            assert!(!same.contains("same content"), "{same}");
+            assert!(other.contains("A page with the same content is") && other.contains("page 3 of the file"), "{other}");
+            assert!(!other.contains("still") && !other.contains("It moved"), "{other}");
+        }
+    }
 }
