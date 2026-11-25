@@ -1176,3 +1176,30 @@ fn the_worker_carries_no_keychain_code() {
     let found = recto_platform::find_key::audit::keychain_code_in(std::path::Path::new(env!("CARGO_BIN_EXE_recto-render-service")));
     assert!(found.is_empty(), "the renderer's worker reaches the Keychain: {found:?}");
 }
+
+/// Failure (the long session, 2026-11-25, a full check at load 37 after an update): the renderer took longer than its start timeout to say hello on a busy Mac, and the whole document was failed for the session ("The page renderer couldn't be started", blank pages). It comes back as `TooBusyToStart`, nothing is remembered, and the same renderer draws when asked again under the ordinary timeout. A worker that never starts is still `Unavailable`, after [`MAX_BUSY`] in a row, and a start that works begins the count again.
+#[test]
+fn a_renderer_the_mac_was_too_busy_to_start_is_started_again() {
+    use recto_render_service::{MAX_BUSY, under_start_timeout_for_test};
+    let file = TempPdf::new("busy-start.pdf", &pages(&[Page::new(text_lines(&["one"]))]));
+    let mut doc = renderer(&file.0, Policy::default());
+    let start_short = |doc: &mut DocRenderer| under_start_timeout_for_test(doc, |doc| doc, Duration::from_millis(1), |doc| doc.page_size(0));
+    assert_eq!(start_short(&mut doc).unwrap_err(), RenderFailure::TooBusyToStart, "{:?}", doc.stats());
+    assert!(doc.stats().too_busy >= 1, "counted as the Mac being busy");
+    assert!(
+        matches!(draws(&mut doc, 0), TileKind::Grey | TileKind::Colour | TileKind::Blank { .. }),
+        "drawn when asked again"
+    );
+    // A start that worked began the count again: another run of MAX_BUSY - 1 is still busy, and the one that ends it says so.
+    drop(doc);
+    let mut doc = renderer(&file.0, Policy::default());
+    for run in 1..MAX_BUSY {
+        assert_eq!(start_short(&mut doc).unwrap_err(), RenderFailure::TooBusyToStart, "start {run} in a row");
+    }
+    assert_eq!(
+        start_short(&mut doc).unwrap_err(),
+        RenderFailure::Unavailable,
+        "start {MAX_BUSY} in a row is a worker that won't start"
+    );
+    assert!(doc.page_size(0).is_ok(), "and a worker that does start still opens");
+}

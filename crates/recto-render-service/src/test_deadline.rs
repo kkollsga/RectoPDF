@@ -33,3 +33,12 @@ pub fn under_page_deadline_for_test<T, R>(holder: &mut T, renderer: fn(&mut T) -
     renderer(holder).policy.page_deadline = own;
     done.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
+
+/// **For tests: the same for the start timeout,** so a worker that can't say hello in time (a Mac too busy to run it) is made without a hostile worker: only `job` is short, and the one after it starts a worker under the ordinary timeout.
+#[doc(hidden)]
+pub fn under_start_timeout_for_test<T, R>(holder: &mut T, renderer: fn(&mut T) -> &mut DocRenderer, timeout: Duration, job: impl FnOnce(&mut T) -> R) -> R {
+    let own = std::mem::replace(&mut renderer(holder).policy.start_timeout, timeout);
+    let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(holder)));
+    renderer(holder).policy.start_timeout = own;
+    done.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}

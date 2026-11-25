@@ -86,3 +86,18 @@ pub(super) fn read_landed<T>(doc: &mut DocRenderer, page: u32, read: T) -> T {
     }
     read
 }
+
+/// A worker didn't answer in time, in starting or in opening the file, with the Mac too busy to give it the processor: [`RenderFailure::TooBusyToStart`], not remembered, so whoever asked asks again. A worker that hangs looks the same, so past [`MAX_BUSY`] in a row it's `then` after all: `Unavailable` for a start, the open's own failure for an open.
+pub(super) fn start_stopped(doc: &mut DocRenderer, then: RenderFailure) -> RenderFailure {
+    doc.left_out.busy_starts = doc.left_out.busy_starts.saturating_add(1);
+    if doc.left_out.busy_starts < MAX_BUSY {
+        RenderFailure::TooBusyToStart
+    } else {
+        then
+    }
+}
+
+/// A worker that opened the file ends a run of busy starts.
+pub(super) fn started(doc: &mut DocRenderer) {
+    doc.left_out.busy_starts = 0;
+}

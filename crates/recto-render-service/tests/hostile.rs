@@ -937,12 +937,20 @@ fn a_worker_that_never_says_hello_is_given_up_on() {
             ..policy()
         },
     );
+    // No file has reached it, so a first silence is the Mac being busy and is asked again; one that keeps on is a worker that hangs, and says so.
+    for _ in 1..recto_render_service::MAX_BUSY {
+        assert_eq!(doc.page_count().unwrap_err(), RenderFailure::TooBusyToStart);
+    }
     assert_eq!(doc.page_count().unwrap_err(), RenderFailure::Unavailable);
     assert!(!doc.worker_pid().is_some());
-    assert_eq!(doc.stats().too_busy, 1, "no file has reached it, so that's the Mac being busy");
+    assert_eq!(
+        doc.stats().too_busy,
+        u32::from(recto_render_service::MAX_BUSY),
+        "each is counted as the Mac being busy"
+    );
 }
 
-/// Failure: a worker with no time to open a file on a busy Mac reads the same as a file that takes too long to open, and the document's index is given up on. Asleep, as a starved worker is, it's the Mac. Using what it's given, it's the file.
+/// Failure (twice): a worker with no time to open a file on a busy Mac reads the same as a file that takes too long to open, and the document's index is given up on. Asleep, as a starved worker is, it's the Mac: `TooBusyToStart`, which isn't remembered (so a second ask opens it again, instead of repeating a failure at once) and isn't a kill that counts towards stopping the document (the first read after a wake is an open, 2026-11-25). Using what it's given, it's the file: `OpenFailed`.
 #[test]
 fn a_worker_too_busy_to_open_is_told_from_a_file_too_slow_to_open() {
     // Long enough that what it used getting this far, which a loaded Mac makes more of, stays well under half.
@@ -953,8 +961,12 @@ fn a_worker_too_busy_to_open_is_told_from_a_file_too_slow_to_open() {
             ..policy()
         },
     );
-    assert_eq!(asleep.page_count().unwrap_err(), RenderFailure::OpenFailed { reason: KillReason::Deadline });
+    assert_eq!(asleep.page_count().unwrap_err(), RenderFailure::TooBusyToStart);
     assert_eq!(asleep.stats().too_busy, 1);
+    // Not remembered: asked again it starts a worker again (a remembered failure would answer at once, with no new worker).
+    let spawns = asleep.stats().spawns;
+    assert_eq!(asleep.page_count().unwrap_err(), RenderFailure::TooBusyToStart);
+    assert_eq!(asleep.stats().spawns, spawns + 1, "a new worker was started for the second ask");
     // On every thread it can: between them they have over half of this in processor time, even on a Mac with a share of a core for each.
     let (mut spins, _file) = doc(
         "spin_on_open",

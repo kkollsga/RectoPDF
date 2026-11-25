@@ -312,6 +312,8 @@ pub enum RenderFailure {
     TooBusy {
         page: u32,
     },
+    /// The worker, started or asked to open the file, didn't answer in time and had no processor to answer with, so nothing is known of the file or the page and nothing is remembered: asking again starts it again. After [`busy::MAX_BUSY`] of them in a row, a start that never answered is [`Self::Unavailable`] and an open is [`Self::OpenFailed`], as they were.
+    TooBusyToStart,
 }
 
 /// Why a worker's walls weren't up. Only the first says the app is signed wrong.
@@ -451,6 +453,7 @@ impl RenderFailure {
             Self::DocumentStopped => "document_stopped",
             Self::TookTooLong => "render_took_too_long",
             Self::TooBusy { .. } => "page_mac_busy",
+            Self::TooBusyToStart => "renderer_mac_busy",
         }
     }
 
@@ -510,6 +513,7 @@ impl RenderFailure {
             Self::DocumentStopped => "This document has used too much memory too many times, so RectoPDF has stopped drawing it. It may be malicious.".into(),
             Self::TookTooLong => "Drawing this page at this zoom would take too long.".into(),
             Self::TooBusy { page } => format!("This Mac was too busy to draw page {}. It will be tried again.", page + 1),
+            Self::TooBusyToStart => "This Mac was too busy to start the page renderer. It will be tried again.".into(),
         }
     }
 }
@@ -710,6 +714,8 @@ struct LeftOut {
     prefetch: u32,
     /// Deadlines the Mac was too busy for the worker to meet.
     busy: u32,
+    /// Starts and opens in a row that the Mac was too busy for the worker to answer: [`busy::start_stopped`]. A worker that opens ends the run.
+    busy_starts: u8,
 }
 
 impl LeftOut {
@@ -1659,7 +1665,8 @@ impl DocRenderer {
             StartFailure::NoLibrary => RenderFailure::LibraryMissing,
             StartFailure::Walls(why) => RenderFailure::WallsDown(why),
             StartFailure::Refused => RenderFailure::StartRefused,
-            StartFailure::TimedOut | StartFailure::Other => RenderFailure::Unavailable,
+            StartFailure::TimedOut => busy::start_stopped(self, RenderFailure::Unavailable),
+            StartFailure::Other => RenderFailure::Unavailable,
         })?;
         if worker.walled {
             self.stats.walled_spawns += 1;
@@ -1675,7 +1682,7 @@ impl DocRenderer {
         self.open_in(worker, generation).inspect_err(|failure| {
             // `Unavailable` here means it never got to ask, which trying again may mend. What the worker itself said was noted where it was heard.
             if let JobFailure::Failed(failure) = failure
-                && !matches!(failure, RenderFailure::Unavailable)
+                && !matches!(failure, RenderFailure::Unavailable | RenderFailure::TooBusyToStart)
             {
                 self.note_open_failure(*failure);
             }
@@ -1779,15 +1786,19 @@ impl DocRenderer {
                 worker.child.kill_now();
                 worker.child.wait_bounded(FINAL_NUMBERS_WAIT);
                 self.note_peak(&worker);
-                if matches!(reason, KillReason::Deadline)
+                let starved = matches!(reason, KillReason::Deadline)
                     && job_cpu.starved(
                         worker.child.memory().map(|memory| (worker.child.pid(), memory.cpu_ns)),
                         self.policy.page_deadline,
-                    ) == Some(true)
-                {
-                    self.stats.too_busy += 1;
+                    ) == Some(true);
+                let failed = killed(&mut self.stats, reason);
+                if !starved {
+                    return Err(failed.into());
                 }
-                return Err(killed(&mut self.stats, reason).into());
+                // Not the file's doing, so it neither counts towards stopping the document nor is remembered.
+                self.stats.too_busy += 1;
+                self.left_out.busy = self.left_out.busy.saturating_add(1);
+                return Err(busy::start_stopped(self, failed).into());
             }
             // A stale job has no use for the document open. Nothing is wrong with it, so nothing is remembered.
             Err(Stop::StaleKilled) => {
@@ -1825,6 +1836,7 @@ impl DocRenderer {
             self.stats.peak_footprint_bytes = self.stats.peak_footprint_bytes.max(memory.peak_footprint_bytes);
         }
         self.worker = Some(worker);
+        busy::started(self);
         Ok(())
     }
 }

@@ -192,7 +192,7 @@ fn small_picture(doc: &mut impl LookSource, page: u32, generation: u64, image_le
     let (width, height) = match doc.page_size(page) {
         Ok(size) => size,
         // The Mac gave the worker no processor: nothing is known of the page, so it's asked again.
-        Err(RenderFailure::TooBusy { .. }) => return Ok(Err(Picture::Passing)),
+        Err(RenderFailure::TooBusy { .. } | RenderFailure::TooBusyToStart) => return Ok(Err(Picture::Passing)),
         Err(_) => return Ok(Err(Picture::Final)),
     };
     let edge = if image_less { IMAGELESS_LOOK_EDGE } else { LOOK_PICTURE_EDGE };
@@ -224,7 +224,7 @@ fn small_picture(doc: &mut impl LookSource, page: u32, generation: u64, image_le
         }
         Ok(TileResult::Cancelled { .. }) => Err(NoLook::Stale),
         // The failures of a draw the tile path treats as ones that may pass; a Mac too busy to run the worker says nothing of the page, and is bounded by the look's tries.
-        Err(RenderFailure::NotDrawableNow { .. } | RenderFailure::TooBusy { .. }) => Ok(Err(Picture::Passing)),
+        Err(RenderFailure::NotDrawableNow { .. } | RenderFailure::TooBusy { .. } | RenderFailure::TooBusyToStart) => Ok(Err(Picture::Passing)),
         Err(_) => Ok(Err(Picture::Final)),
     }
 }
