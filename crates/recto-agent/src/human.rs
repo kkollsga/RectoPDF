@@ -520,6 +520,14 @@ mod tests {
         assert!(!said.contains("Nothing found"), "{said}");
         assert!(said.contains("No hits on the pages that could be read."), "{said}");
         assert!(!said.contains("couldn't be read."), "no page of it is one that failed: {said}");
+        // Two files: the sentence once, with how many.
+        let file = json!({ "untrusted": { "file": "a.pdf" }, "why": "The page renderer couldn't be started.", "code": "render_unavailable" });
+        let two = render(
+            "search",
+            &json!({ "hits": [], "coverage": { "pages_searched": 0, "pages_in_scope": 3, "files_not_read": [file.clone(), file] } }),
+        );
+        assert_eq!(two.matches("couldn't be started").count(), 1, "said once: {two}");
+        assert!(two.contains("(2 files)"), "{two}");
     }
 
     /// Failure: a search whose pages were all left unread because the Mac was busy ended "Nothing found.", a claim about pages it never read, and said nothing of why (the owner's Find decision, 2026-11-25: say it plainly).

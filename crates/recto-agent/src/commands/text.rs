@@ -845,8 +845,12 @@ fn search_summary(shown: u64, coverage: &Value) -> String {
     if let Some(busy) = busy_sentence(coverage) {
         let _ = write!(out, " {busy}");
     }
-    for file in unstarted_files(coverage) {
-        let _ = write!(out, " {}", text(&file["why"]));
+    // Said once, with how many files when there are more than one: it's the same sentence for each.
+    if let [first, rest @ ..] = unstarted_files(coverage) {
+        let _ = write!(out, " {}", text(&first["why"]));
+        if !rest.is_empty() {
+            let _ = write!(out, " ({} files)", rest.len() + 1);
+        }
     }
     if let Some(empty) = coverage["pages_with_no_text"].as_u64().filter(|empty| *empty > 0) {
         let _ = write!(out, " {empty} had no text.");
