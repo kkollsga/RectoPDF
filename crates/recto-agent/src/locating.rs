@@ -398,6 +398,38 @@ mod tests {
         assert!(beside.exists(), "nothing else is touched");
     }
 
+    /// Failure: `agree` lets a read go on with a page that isn't the one the reference found: the page of the file standing at that place changed (another
+    /// program's save moved it), or a page added from another PDF now stands there. Only the page found, of the file, passes.
+    #[test]
+    fn agree_passes_only_the_page_that_was_found_and_refuses_an_added_page_or_another() {
+        let (_dir, _path, access) = one_open(3);
+        let found = found_at(&access, &TabRef::Active, 2);
+        let source = |page: u32, added: bool| recto_session::PageSource {
+            path: "/d/doc.pdf".into(),
+            page,
+            quarter_turns: 0,
+            added,
+            expected: None,
+        };
+        assert!(agree(&found, &source(found.file_page, false)).is_ok());
+        for refused in [source(found.file_page + 1, false), source(found.file_page, true)] {
+            let error = agree(&found, &refused).expect_err("not the page that was found");
+            assert_eq!((error.code, error.message.as_str()), (Code::FILE_CHANGED, TAB_CHANGED));
+        }
+    }
+
+    /// Failure: a file another program replaced after the page was found is read as though it were the version found: the read is about a page of another
+    /// version. `still_located` refuses it with the file-changed words, and passes while the file is as it was.
+    #[test]
+    fn still_located_refuses_a_file_changed_since_the_page_was_found_in_the_file_changed_words() {
+        let (_dir, path, access) = one_open(3);
+        let found = found_at(&access, &TabRef::Active, 2);
+        still_located(&access, &found).expect("the file is as it was found");
+        replace(&path, &pdf("Theirs", 4));
+        let error = still_located(&access, &found).expect_err("the file changed");
+        assert_eq!((error.code, error.message.as_str()), (Code::FILE_CHANGED, CHANGED_WHILE_READ));
+    }
+
     /// Failure: a reference that is gone, matches several pages, wasn't fully looked for, or points at a page unsaved edits removed gives a page anyway (so
     /// `text --ref` reads the wrong page), or two of those cases share their words (so an agent can't tell "look again" from "it's gone"), or a refusal
     /// carries something other than its own constant words.
