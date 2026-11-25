@@ -100,13 +100,14 @@ fn within_bound(run: &mut u8) -> bool {
     *run < MAX_BUSY
 }
 
-/// A worker didn't say hello in time, with the Mac too busy to give it the processor: [`RenderFailure::TooBusyToStart`], not remembered, so whoever asked asks again. A worker that hangs looks the same, so past [`MAX_BUSY`] in a row it's `Unavailable` after all.
+/// A worker didn't say hello in time, with the Mac too busy to give it the processor: [`RenderFailure::TooBusyToStart`], counted as the Mac being busy and not remembered, so whoever asked asks again. A worker that hangs looks the same, so past [`MAX_BUSY`] in a row it's `Unavailable` after all: not counted as busy (so nobody who watches the count takes it for a busy Mac) and remembered for a moment, as an open past the bound is, so asks within `open_retry_pause` fail at once instead of each waiting out another start.
 pub(super) fn start_stopped(doc: &mut DocRenderer) -> RenderFailure {
     // No file has reached the worker, so what kept it from saying hello isn't the file's doing.
-    doc.stats.too_busy += 1;
     if within_bound(&mut doc.left_out.busy_runs.starts) {
+        doc.stats.too_busy += 1;
         RenderFailure::TooBusyToStart
     } else {
+        doc.note_open_failure(RenderFailure::Unavailable);
         RenderFailure::Unavailable
     }
 }
