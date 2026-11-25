@@ -60,8 +60,8 @@ fn window_view() -> recto_reader::Viewport {
 
 /// Draws what's in a window's view, as the host would with its UI thread, till it's at rest.
 fn drawn(app: &HeadlessApp) {
-    let mut view = window_view();
-    crate::testkit::headless::applied_as_the_host(&app.core().engine.set_viewport(view));
+    let mut view = crate::testkit::host_standin::first_shown(window_view());
+    crate::testkit::host_standin::report_where_the_host_is(app, &mut view);
     crate::testkit::headless::host_turns(app, &mut view, true);
 }
 
