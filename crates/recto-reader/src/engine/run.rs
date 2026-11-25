@@ -626,10 +626,7 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                 text: Arc::new(PageText::build(&page.chars, &page.boxes, page.frame, page.hidden_checked, page.copy_restricted)),
                 checked: check && !stopped,
             },
-            Err(_) if stopped => Outcome::Cancelled,
-            // Says nothing of the page's words, so it's neither failed nor read: asked again when the hold is over.
-            Err(failure) if too_busy(failure) => Outcome::LookLater,
-            Err(_) => Outcome::TextFailed,
+            Err(failure) => text_outcome(failure, stopped),
         };
     }
     let doc = &mut open.doc;
@@ -724,6 +721,17 @@ fn traits_outcome(read: Result<u64, RenderFailure>, stale: bool) -> Outcome {
         Err(failure) if too_busy(failure) => Outcome::LookLater,
         Err(failure) if whole_file(failure) => document_failed(failure),
         Err(_) => Outcome::Heavy(false),
+    }
+}
+
+/// What a failed read of a page's text is. Told to stop, it's as though it was never tried. A renderer the busy Mac couldn't start or open says nothing of the page's words, so there's no hold: it's asked again at once, bounded by the host's start and open counts. A text read the host bounds itself arrives as `PageReadFailed`, a failure here like any other.
+fn text_outcome(failure: RenderFailure, stopped: bool) -> Outcome {
+    if stopped {
+        Outcome::Cancelled
+    } else if too_busy(failure) {
+        Outcome::LookLater
+    } else {
+        Outcome::TextFailed
     }
 }
 
@@ -834,6 +842,24 @@ mod tests {
             draw_failed(RenderFailure::NeedsPassword),
             Outcome::DocumentFailed { needs_key: true, .. }
         ));
+    }
+
+    /// Failure: a page's text read that the Mac was too busy to start the renderer for is remembered as a failed page (no words, Find saying it couldn't be read) instead of asked again. A stopped read is cancelled, and any other failure is the page's. Seen failing with the busy arm gone back to `TextFailed`.
+    #[test]
+    fn a_busy_start_of_a_text_read_is_asked_again_and_a_stopped_read_is_cancelled() {
+        assert!(matches!(text_outcome(RenderFailure::TooBusyToStart, false), Outcome::LookLater));
+        assert!(matches!(text_outcome(RenderFailure::TooBusyToStart, true), Outcome::Cancelled));
+        assert!(matches!(
+            text_outcome(
+                RenderFailure::PageFailed {
+                    page: 1,
+                    reason: KillReason::Deadline
+                },
+                false
+            ),
+            Outcome::TextFailed
+        ));
+        assert!(matches!(text_outcome(RenderFailure::Unavailable, false), Outcome::TextFailed));
     }
 
     /// Failure: a picture-size question the Mac was too busy to run is remembered as a page that isn't heavy, so a heavy page is drawn whole for the session; or a stale answer is kept. Busy is held quietly, the file's failure fails the file, and any other failure of the page is a page that isn't heavy. Seen failing with `TooBusy` mapped back to `Heavy(false)`.
