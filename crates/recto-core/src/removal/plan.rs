@@ -23,6 +23,25 @@ const RETENTION_ORDER: [Store; 15] = [
     Store::WriterTemp,
 ];
 
+/// A store missing from the step order is never acted on, so it fails the build rather than a test
+/// someone has to remember to write: every `Purge` and `Rewrite` store is in the order, `FindText`
+/// is, and nothing else is.
+const _: () = {
+    let mut s = 0;
+    while s < Store::COUNT {
+        let store = Store::ALL[s];
+        let mut listed = false;
+        let mut i = 0;
+        while i < RETENTION_ORDER.len() {
+            listed |= RETENTION_ORDER[i] as u8 == store as u8;
+            i += 1;
+        }
+        let acted_on = matches!(store.class(), Class::Purge | Class::Rewrite) || store as u8 == Store::FindText as u8;
+        assert!(listed == acted_on, "RETENTION_ORDER and the stores acted on disagree");
+        s += 1;
+    }
+};
+
 /// Decide the transaction for one request, or refuse. Pure and bounded: the artifact count is
 /// checked before anything is allocated, and every refusal is decided before any step exists.
 pub fn plan(request: &Request, inventory: &Inventory<'_>, limits: &Limits) -> Result<Plan, Refusal> {
