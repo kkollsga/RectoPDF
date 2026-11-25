@@ -208,6 +208,8 @@ enum FileRoute {
     NotLookedAt,
     Index(CorpusKey),
     Scan,
+    /// Its renderer wouldn't start (`Unavailable` after the busy starts): no more of its pages are asked in this search, and it's said once in `coverage`.
+    Unstarted,
 }
 
 /// Why a corpus can't be used for this search.
@@ -523,7 +525,7 @@ impl Found {
             "pages_with_tag_chars": self.tag_pages,
             "changed_files": reader.changed.iter().map(|file| json!({ "untrusted": { "file": plan.files[usize::from(*file)].label() } })).collect::<Vec<_>>(),
             "next_page": self.next_page,
-            "hits_total": (!self.total_cut_short && self.uncounted == 0 && self.failed.is_empty() && self.busy.is_empty() && reader.unstarted.is_empty()).then_some(self.total),
+            "hits_total": (!self.total_cut_short && self.uncounted == 0 && self.failed.is_empty() && self.busy.is_empty() && !reader.any_unstarted()).then_some(self.total),
             "hits_at_least": self.total,
             "uncounted_pages": self.uncounted,
             "pages_too_long_for_a_pattern": self.too_long,
@@ -601,8 +603,6 @@ pub(crate) struct Reader<'a> {
     /// How much of that's gone.
     live_spent: Duration,
     not_read_again: u32,
-    /// Files whose renderer wouldn't start (`Unavailable` after the busy starts): no more of their pages are asked in this search, and each is said once, in `coverage`.
-    unstarted: Vec<u16>,
     deadline: Instant,
     /// Each file's password, once looked up: `None` not yet looked.
     file_keys: Vec<Option<Option<std::sync::Arc<recto_core::Password>>>>,
@@ -625,7 +625,6 @@ impl<'a> Reader<'a> {
             live_budget: settings.live_budget,
             live_spent: Duration::ZERO,
             not_read_again: 0,
-            unstarted: Vec::new(),
             deadline: settings.deadline,
             file_keys: vec![None; plan.files.len()],
         }
@@ -751,18 +750,24 @@ impl<'a> Reader<'a> {
         got
     }
 
+    fn any_unstarted(&self) -> bool {
+        self.routes.iter().any(|route| matches!(route, FileRoute::Unstarted))
+    }
+
     /// The files this search stopped asking about because their renderer wouldn't start: the reader's own sentence, never counted as failed pages.
     fn unstarted_files(&self, plan: &Plan) -> Vec<Value> {
         let why = RenderFailure::Unavailable;
-        self.unstarted
+        self.routes
             .iter()
-            .map(|file| json!({ "untrusted": { "file": plan.files[usize::from(*file)].label() }, "why": why.message(), "code": why.code() }))
+            .zip(&plan.files)
+            .filter(|(route, _)| matches!(route, FileRoute::Unstarted))
+            .map(|(_, file)| json!({ "untrusted": { "file": file.label() }, "why": why.message(), "code": why.code() }))
             .collect()
     }
 
     /// One page's text, by a worker. `read_again_live` is that its corpus has it as failed, so this can only say it still is.
     fn read_live<'s>(&mut self, file: u16, page: u32, live: &'s mut Option<recto_index::Normalized>, read_again_live: bool) -> Result<Got<'s>, AgentError> {
-        if self.unstarted.contains(&file) {
+        if matches!(self.routes[usize::from(file)], FileRoute::Unstarted) {
             return Ok(Got::Nothing);
         }
         let key = self.key_of(file);
@@ -791,7 +796,7 @@ impl<'a> Reader<'a> {
             Err(_) if renderer.stats().too_busy > busy => return Ok(Got::Busy),
             // A renderer that wouldn't start after the busy starts: not this page's doing, so no page of the file fails; it stops the file for this search.
             Err(RenderFailure::Unavailable) => {
-                self.unstarted.push(file);
+                self.routes[usize::from(file)] = FileRoute::Unstarted;
                 return Ok(Got::Nothing);
             }
             Err(RenderFailure::NeedsPassword) if added => return Ok(Got::Failed("needs_password")),
