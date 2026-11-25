@@ -24,7 +24,8 @@ pub const TAG_PAGES: usize = 16;
 /// What one resolve may spend. [`ScanCaps::STANDARD`] is the definition; another value is for a test to hold a cap at its limit plus one cheaply.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScanCaps {
-    /// Bytes of page reads (as [`PageRead::bytes`] charges them) after which no further page is read.
+    /// Bytes of page reads (as [`PageRead::bytes`] charges them) after which no further page is read. Checked before each read, so one page's own
+    /// cap (`page.page_read`, 256 MiB under [`page_id::Caps::STANDARD`]) can carry the total past it by up to that much: 512 MiB at most, as STANDARD.
     pub bytes: u64,
     /// Pages read, after which no further page is read.
     pub pages: u32,
@@ -55,7 +56,8 @@ pub enum DocumentMatch {
 /// How far the resolve looked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Looked {
-    /// The hinted page matched; no scan.
+    /// The hinted page held the same content (the same 16-byte digest prefix) as the remembered one: "same content at the remembered place". Not proven
+    /// unique: no scan ran, so identical pages elsewhere were not looked for. No scan.
     Hint,
     /// Every page was read.
     All,
