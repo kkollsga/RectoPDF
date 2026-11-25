@@ -35,7 +35,7 @@ pub(super) fn of(request: &Request, steps: &[Step], ids: &[ArtifactId], lines: &
         h.update(id.0.to_le_bytes());
     }
     for line in lines {
-        h.update([line.store as u8]);
+        h.update([store_code(line.store)]);
         h.update(disposition_code(line.disposition));
         h.update(line.acted.to_le_bytes());
         h.update(line.kept.to_le_bytes());
@@ -51,17 +51,58 @@ fn mode_code(mode: TargetMode) -> u8 {
     }
 }
 
+/// The store's code, 0..=21 in declaration order, as an explicit table: inserting a variant fails to compile here instead of shifting the
+/// codes of the ones after it.
+pub(super) fn store_code(store: Store) -> u8 {
+    match store {
+        Store::SourcePdf => 0,
+        Store::WriterTemp => 1,
+        Store::Backup => 2,
+        Store::Journal => 3,
+        Store::JournalVariant => 4,
+        Store::KeptPages => 5,
+        Store::PageIds => 6,
+        Store::SleepFile => 7,
+        Store::SessionRecord => 8,
+        Store::FindText => 9,
+        Store::LegacySession => 10,
+        Store::CorpusText => 11,
+        Store::CorpusAgentPages => 12,
+        Store::CorpusAliases => 13,
+        Store::GeneratedContents => 14,
+        Store::UpdateCopy => 15,
+        Store::LiveViews => 16,
+        Store::HelperJobs => 17,
+        Store::Logs => 18,
+        Store::Clipboard => 19,
+        Store::External => 20,
+        Store::Library => 21,
+    }
+}
+
+/// The writer's code, 0..=5 in declaration order, as an explicit table.
+pub(super) fn writer_code(writer: Writer) -> u8 {
+    match writer {
+        Writer::Journals => 0,
+        Writer::SleepFiles => 1,
+        Writer::IndexJobs => 2,
+        Writer::HeadingJobs => 3,
+        Writer::AgentExports => 4,
+        Writer::Renders => 5,
+    }
+}
+
 /// `[tag, arg]`: tags 1..=18 in declaration order; the argument is the store or the writer, else 0.
 fn effect_code(effect: Effect) -> [u8; 2] {
     match effect {
         Effect::TakeLeases => [1, 0],
-        Effect::Quiesce(w) => [2, w as u8],
+        Effect::Quiesce(w) => [2, writer_code(w)],
         Effect::WriteCandidate => [3, 0],
         Effect::VerifyCandidate => [4, 0],
         Effect::PersistBarrier => [5, 0],
-        Effect::Rewrite(s) => [6, s as u8],
+        Effect::Rewrite(s) => [6, store_code(s)],
         Effect::ClearFindText => [7, 0],
-        Effect::Purge(s) => [8, s as u8],
+        Effect::Purge(s) => [8, store_code(s)],
         Effect::VerifyRetired => [9, 0],
         Effect::MarkNoReturn => [10, 0],
         Effect::InstallTarget => [11, 0],

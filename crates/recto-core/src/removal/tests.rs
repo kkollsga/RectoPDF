@@ -519,6 +519,18 @@ fn digest_is_pinned_for_a_known_plan() {
     assert_eq!(PlanDigest::from_bytes(*d.as_bytes()), d);
 }
 
+/// Catches a store or writer code moving: a saved digest covers every store and writer by these numbers, and the golden plan uses one
+/// store, so a shifted code elsewhere would otherwise go unseen. The codes are today's declaration order, 0 up.
+#[test]
+fn store_and_writer_codes_are_today_s_numbers() {
+    for (i, s) in Store::ALL.iter().enumerate() {
+        assert_eq!(digest::store_code(*s) as usize, i);
+    }
+    for (i, w) in Writer::ALL.iter().enumerate() {
+        assert_eq!(digest::writer_code(*w) as usize, i);
+    }
+}
+
 /// Two plans with the same number of steps but different artifacts, as one more artifact in a
 /// store whose batch is not full would not change the length.
 fn same_length_plans() -> (Plan, Plan) {
