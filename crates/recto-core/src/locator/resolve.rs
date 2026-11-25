@@ -237,14 +237,11 @@ pub fn reference(reader: &IndexedReader, map: &PageMap, page: u32, caps: &ScanCa
     Referrer::new(reader, map, caps).page(page)
 }
 
-/// References to whole pages of one file, one after another, under one [`ScanCaps`] for the lot. The document's tags are read once (at most
-/// [`TAG_PAGES`] page reads) and a page once for all the references to it, so a search with 200 hits on a few pages costs those pages and no more.
+/// References to whole pages of one file, one after another, under one [`ScanCaps`] for the lot. The tag pages (at most
+/// [`TAG_PAGES`] page reads) and a page are read once for all the references to it, so a search with 200 hits on a few pages costs those pages and no more.
 /// Nothing outlives it.
 pub struct Referrer<'a> {
     reads: Reads<'a>,
-    /// What the tags came to, once they have been read. Not stored when they were not read for want of room: a [`Unreferenceable::Capped`] is no fact
-    /// about the document.
-    tags: Option<Result<DocumentTags, Unreferenceable>>,
     /// The last page asked for, and the answer, so its next reference costs nothing.
     last: Option<(u32, Result<Locator, Unreferenceable>)>,
 }
@@ -253,12 +250,11 @@ impl<'a> Referrer<'a> {
     pub fn new(reader: &'a IndexedReader, map: &'a PageMap, caps: &'a ScanCaps) -> Self {
         Self {
             reads: Reads::new(reader, map, caps),
-            tags: None,
             last: None,
         }
     }
 
-    /// A reference to the whole of zero-based file page `page`: the page is read first, then the tags (once). The same page again costs nothing.
+    /// A reference to the whole of zero-based file page `page`: the page is read first, then the tags. The same page again costs nothing.
     pub fn page(&mut self, page: u32) -> Result<Locator, Unreferenceable> {
         if let Some((last, made)) = &self.last
             && *last == page
@@ -290,23 +286,14 @@ impl<'a> Referrer<'a> {
         Ok(Locator::new(tags, page, Target::Page))
     }
 
+    /// The document's tags. The tag pages are memoised by `Reads`, so asking again for each page costs the trailer lookup and no page read.
     fn tags(&mut self) -> Result<DocumentTags, Unreferenceable> {
-        if let Some(known) = self.tags {
-            return known;
-        }
         let (id, content) = self.reads.tags();
         match content {
-            Some(content) => {
-                let tags = DocumentTags::new(content, id);
-                self.tags = Some(Ok(tags));
-                Ok(tags)
-            }
-            // Short of room, "no page had an identity" may only mean the pages were not read: no claim about the document, and not kept.
+            Some(content) => Ok(DocumentTags::new(content, id)),
+            // Short of room, "no page had an identity" may only mean the pages were not read: no claim about the document.
             None if self.reads.spent_cap() => Err(Unreferenceable::Capped),
-            None => {
-                self.tags = Some(Err(Unreferenceable::NoDocumentTag));
-                Err(Unreferenceable::NoDocumentTag)
-            }
+            None => Err(Unreferenceable::NoDocumentTag),
         }
     }
 }

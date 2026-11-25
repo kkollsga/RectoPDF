@@ -367,10 +367,10 @@ fn numbered(count: usize) -> Vec<u8> {
     pdf(&names.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
-/// Failure: a page is read again for each of its hits (20, 20 and 21 must cost the pages 20 and 21 and the first tag page, three reads), or a token differs
-/// from the one `reference` makes. The tag pages themselves are memoised by `Reads`, so the tags cache saves only the trailer lookup, not reads.
+/// Failure: a page is read again for each of its hits, or a fresh set of reads is made for each page (20, 20 and 21 must cost the pages 20 and 21 and the
+/// first tag page, three reads), or a token differs from the one `reference` makes.
 #[test]
-fn a_referrer_reads_the_documents_tags_once_and_a_page_once_for_all_its_hits() {
+fn a_referrer_reads_a_page_once_for_all_its_hits_and_the_tag_page_once() {
     let (reader, map) = open(&numbered(25));
     let mut referrer = Referrer::new(&reader, &map, &STANDARD);
     let made: Vec<_> = [20, 20, 21].map(|page| referrer.page(page).expect("a reference")).into();
