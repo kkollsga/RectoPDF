@@ -156,7 +156,9 @@ fn fake_worker() {
                         leak_for_ever();
                     }
                     if std::fs::read(std::env::var("RECTO_FAKE_MARK").unwrap()).unwrap() != b"land" {
-                        std::thread::sleep(Duration::from_secs(60));
+                        loop {
+                            std::thread::park();
+                        }
                     }
                 }
                 let fits = match mode.as_str() {
