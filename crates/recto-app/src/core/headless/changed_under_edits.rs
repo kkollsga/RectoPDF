@@ -700,7 +700,11 @@ fn window_view() -> recto_reader::Viewport {
 /// Draws what's in the window's view, as the host would with its UI thread, till it's at rest: where the view is now, after it has arrived at every scroll it
 /// was sent (a jump the session pass queued included), so a test's place means what it says.
 fn drawn(app: &HeadlessApp) {
-    let mut view = window_view();
+    // A fresh view has applied no scroll: the host starts at `scrolledTo = 0` and only sends a number it has applied.
+    let mut view = recto_reader::Viewport {
+        scrolled_to: 0,
+        ..window_view()
+    };
     crate::testkit::host_standin::report_where_the_host_is(app, &mut view);
     crate::testkit::headless::host_turns(app, &mut view, true);
 }

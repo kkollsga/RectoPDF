@@ -15,7 +15,12 @@ pub fn report_where_the_host_is(app: &HeadlessApp, view: &mut recto_reader::View
     let at = |key: &str| report[key].as_f64().unwrap_or(0.0);
     view.x = at("scroll_x");
     view.y = at("scroll_y");
-    let arrive = |view: &mut recto_reader::Viewport, ops: &[recto_reader::Op]| {
+    // A batch is applied as the host's `apply` does: arrive at its last scroll, release its surfaces, send the viewport (which hands back a batch of its
+    // own, applied the same way), and only then say it's applied; for a moment before that everything would look settled on the old view.
+    fn apply_batch(engine: &recto_reader::Engine, view: &mut recto_reader::Viewport, ops: &[recto_reader::Op], began: std::time::Instant) {
+        if ops.is_empty() {
+            return;
+        }
         let last = ops.iter().rev().find_map(|op| {
             if let recto_reader::Op::ScrollTo { y, seq } = op {
                 Some((*y, *seq))
@@ -27,18 +32,18 @@ pub fn report_where_the_host_is(app: &HeadlessApp, view: &mut recto_reader::View
             view.y = y;
             view.scrolled_to = seq;
         }
-        last.is_some()
-    };
-    let queued = engine.drain();
-    arrive(view, &queued);
-    applied_as_the_host(&queued);
-    engine.applied();
-    let mut ops = engine.set_viewport(*view);
-    let began = std::time::Instant::now();
-    while arrive(view, &ops) {
-        applied_as_the_host(&ops);
-        ops = engine.set_viewport(*view);
+        applied_as_the_host(ops);
         assert!(began.elapsed() < WAIT_LIMIT, "the view kept being sent to a new place: {}", engine.report().0);
+        let next = engine.set_viewport(*view);
+        apply_batch(engine, view, &next, began);
+        engine.applied();
     }
-    applied_as_the_host(&ops);
+    let began = std::time::Instant::now();
+    let queued = engine.drain();
+    if queued.is_empty() {
+        let first = engine.set_viewport(*view);
+        apply_batch(engine, view, &first, began);
+    } else {
+        apply_batch(engine, view, &queued, began);
+    }
 }
