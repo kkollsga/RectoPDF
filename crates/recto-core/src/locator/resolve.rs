@@ -124,6 +124,9 @@ pub enum Unreferenceable {
     NoIdentity,
     /// The document has no tag to say which document it is.
     NoDocumentTag,
+    /// A cap on what the referrer may read was spent before the page (or the tags) could be read: no claim is made about the page. Asking again with
+    /// more room may succeed, unlike `NoIdentity`.
+    Capped,
 }
 
 /// A page read under a [`ScanCaps`], and the spending so far. The first [`TAG_PAGES`] reads and the hint's are kept so that the document tags, the
@@ -177,7 +180,7 @@ impl<'a> Reads<'a> {
         if let Some((_, read)) = self.kept.filter(|(kept, _)| *kept == index) {
             return Got::Read(read);
         }
-        if self.bytes >= self.caps.bytes || self.pages >= self.caps.pages {
+        if self.spent_cap() {
             return Got::Capped;
         }
         let read = page_id::read_page(self.reader, entry, &self.caps.page);
@@ -191,14 +194,26 @@ impl<'a> Reads<'a> {
         Got::Read(read)
     }
 
+    /// Whether a cap on the whole is spent, so that no further page is read.
+    fn spent_cap(&self) -> bool {
+        self.bytes >= self.caps.bytes || self.pages >= self.caps.pages
+    }
+
     /// The tags this document has now: the `/ID` tag, and the content tag from the first of the first [`TAG_PAGES`] pages with an identity.
     fn tags(&mut self) -> (Option<[u8; 8]>, Option<[u8; 8]>) {
         let id = page_id::document_ids(self.reader).map(|ids| first_eight(&ids.first));
-        let content = (0..TAG_PAGES as u32).find_map(|index| match self.get(index) {
-            Got::Read(PageRead { identity: Some(identity), .. }) => Some(content_tag(&identity)),
-            Got::Read(_) => None,
-            Got::Absent | Got::Capped => None,
-        });
+        // The first of the tag pages with an identity, stopping at the first page refused for a cap: a later page read already would give another page's tag.
+        let mut content = None;
+        for index in 0..TAG_PAGES as u32 {
+            match self.get(index) {
+                Got::Read(PageRead { identity: Some(identity), .. }) => {
+                    content = Some(content_tag(&identity));
+                    break;
+                }
+                Got::Read(_) => {}
+                Got::Absent | Got::Capped => break,
+            }
+        }
         (id, content)
     }
 }
@@ -224,21 +239,70 @@ pub fn document_tags(reader: &IndexedReader, map: &PageMap, caps: &ScanCaps) -> 
     Some(DocumentTags::new(content?, id))
 }
 
-/// A reference to the whole of zero-based file page `page`, made from its identity as [`page_id`] reads it.
+/// A reference to the whole of zero-based file page `page`, made from its identity as [`page_id`] reads it. One page: [`Referrer`] is for many.
 pub fn reference(reader: &IndexedReader, map: &PageMap, page: u32, caps: &ScanCaps) -> Result<Locator, Unreferenceable> {
-    if page >= MAX_PAGE {
-        return Err(Unreferenceable::NoSuchPage);
+    Referrer::new(reader, map, caps).page(page)
+}
+
+/// References to whole pages of one file, one after another, under one [`ScanCaps`] for the lot. The tag pages (at most
+/// [`TAG_PAGES`] page reads) and a page are read once for all the references to it, so a search with 200 hits on a few pages costs those pages and no more.
+/// Nothing outlives it.
+pub struct Referrer<'a> {
+    reads: Reads<'a>,
+    /// The last page asked for, and the answer, so its next reference costs nothing.
+    last: Option<(u32, Result<Locator, Unreferenceable>)>,
+}
+
+impl<'a> Referrer<'a> {
+    pub fn new(reader: &'a IndexedReader, map: &'a PageMap, caps: &'a ScanCaps) -> Self {
+        Self {
+            reads: Reads::new(reader, map, caps),
+            last: None,
+        }
     }
-    let mut reads = Reads::new(reader, map, caps);
-    let identity = match reads.get(page) {
-        Got::Absent => return Err(Unreferenceable::NoSuchPage),
-        Got::Capped | Got::Read(PageRead { identity: None, .. }) => return Err(Unreferenceable::NoIdentity),
-        Got::Read(PageRead { identity: Some(identity), .. }) => identity,
-    };
-    let (id, content) = reads.tags();
-    let tags = DocumentTags::new(content.ok_or(Unreferenceable::NoDocumentTag)?, id);
-    let page = PageRef::new(page + 1, &identity).map_err(|_| Unreferenceable::NoSuchPage)?;
-    Ok(Locator::new(tags, page, Target::Page))
+
+    /// A reference to the whole of zero-based file page `page`: the page is read first, then the tags. The same page again costs nothing.
+    pub fn page(&mut self, page: u32) -> Result<Locator, Unreferenceable> {
+        if let Some((last, made)) = &self.last
+            && *last == page
+        {
+            return *made;
+        }
+        let made = self.make(page);
+        self.last = Some((page, made));
+        made
+    }
+
+    /// Pages read, and bytes charged for them, so far.
+    pub fn spent(&self) -> (u32, u64) {
+        (self.reads.pages, self.reads.bytes)
+    }
+
+    fn make(&mut self, page: u32) -> Result<Locator, Unreferenceable> {
+        if page >= MAX_PAGE {
+            return Err(Unreferenceable::NoSuchPage);
+        }
+        let identity = match self.reads.get(page) {
+            Got::Absent => return Err(Unreferenceable::NoSuchPage),
+            Got::Capped => return Err(Unreferenceable::Capped),
+            Got::Read(PageRead { identity: None, .. }) => return Err(Unreferenceable::NoIdentity),
+            Got::Read(PageRead { identity: Some(identity), .. }) => identity,
+        };
+        let tags = self.tags()?;
+        let page = PageRef::new(page + 1, &identity).map_err(|_| Unreferenceable::NoSuchPage)?;
+        Ok(Locator::new(tags, page, Target::Page))
+    }
+
+    /// The document's tags. The tag pages are memoised by `Reads`, so asking again for each page costs the trailer lookup and no page read.
+    fn tags(&mut self) -> Result<DocumentTags, Unreferenceable> {
+        let (id, content) = self.reads.tags();
+        match content {
+            Some(content) => Ok(DocumentTags::new(content, id)),
+            // Short of room, "no page had an identity" may only mean the pages were not read: no claim about the document.
+            None if self.reads.spent_cap() => Err(Unreferenceable::Capped),
+            None => Err(Unreferenceable::NoDocumentTag),
+        }
+    }
 }
 
 /// Where `locator`'s page is in this file. Reads at most what `caps` allow and keeps nothing.

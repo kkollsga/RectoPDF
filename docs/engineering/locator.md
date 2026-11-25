@@ -29,6 +29,27 @@ Both are far under 10 s. Peak `phys_footprint` of the whole process for one scan
 
 `resolve` (and `--ref` on `text` and `render`, through `page_of`) go through one function, `locating::resolved`. For a character target on a page that is `found` or `moved`, it reads that page's text with the session free, checks the same offsets only (nothing is searched for elsewhere on the page), and checks the file's stamp after the read as well. The answer's `target` is `{ kind: "characters", start, end, checked: true, text: "same" | "changed" }`. A character target on a page that is found whose text can't be read at all (the renderer fails or is stopped on it) is not a status: it is the refusal of the read of that page's text (`render::page_text`, the one reading `recto text` makes of the characters, with its code and exit), since a page nobody can read hasn't had its text changed. It is `recto text`'s refusal for a page the characters can't be read of; `text` also runs the hidden-text check, so it can refuse `renderer_misbehaved` when that check's job is rejected, and `page_text` skips the check and doesn't. When the text is changed the status is `text_changed` (exit 0) with `page` and `file_page`, and `text --ref` and `render --ref` refuse it as `reference_unresolved` in words of their own; only `found` and `moved` with the same text give a page. A protected document, a level below Read-only and every other refusal are the commands' own.
 
+## References on search hits
+
+Each phrase and regex hit of `search` carries `chars` (`[start, end]`, Unicode scalars of `recto text`'s text of the page, end excluded, trailing whitespace trimmed) and `ref` (an r1 token with the `recto-text/1` check, as `recto ref --chars` makes one), or both null. The answer carries `references: { made, missing, note }`; a ranked answer has none yet. They are made in `crates/recto-agent/src/locating/hits.rs` (`HitRefs`), which `search.rs` calls once per hit (`mark`) and once at the end (`finish`); the core's `Referrer` (`reference()` is its one-page wrapper) reads the page identities.
+
+- **Cost per search, bounded:** the tags once (at most 16 page reads), a page once for all its hits, under `HIT_REF_CAPS` (256 MiB, 16 + 200 pages). Characters are counted on from where the last hit ended, so a page costs its length, not its hits times its length (`walked` in the test). A search with no hits opens nothing. Nothing is kept after the call.
+- **`missing` codes:** `added_file`, `not_on_characters`, `empty`, `past_character_cap`, `no_such_page`, `no_identity`, `no_document_tag`, `caps`, `file_unreadable`, `file_changed`. Order of checks: added page, range, file, page.
+- **File changed during the search:** the stamp taken at the start is checked again at the end; on a change every `ref` and `chars` is withdrawn and `missing` is `{ file_changed: <hits> }`.
+- **Another spelling** (`also_spelled`) gets a reference to its page and null `chars`.
+- **Known limit:** a hit answered from the index carries the corpus text's offsets; if the renderer changed since the corpus was built, `resolve` says `text_changed`, honestly.
+- **Timing (2026-11-25), measured under load** (load average about 9 at the start, 17 over 5 and 15 minutes, other workers building). `gov_nasa_ntrs20240002628.pdf` (383 pages, 97 MiB), release app bundles (`app/build.sh --release`, ad hoc signed, built in worktrees) of `main` d4cf8009 (before; its code is f0809c75's) and this branch (after), each with its own throwaway `RECTO_STATE_DIR` and a finished index (every answer `route: index`, `--scan` `route: scan`). The test states' level was set the way the CLI tests set it (`levels::store`'s file, with the owner's approval of 2026-11-25), and both folders were deleted afterwards. `recto local F search Q --json` under `/usr/bin/time -l`, 3 rounds of 7 runs per cell, before and after taking turns. p50 / p95 ms, peak footprint (the most of 21 runs):
+
+| Query | Before | After | Peak before / after |
+|---|---:|---:|---:|
+| `the` (20 hits, all with a ref) | 35.9 / 37.1 | 43.9 / 44.8 | 5.91 / 6.38 MiB |
+| `the --limit 200` (200 refs) | 37.7 / 40.8 | 49.4 / 52.0 | 6.89 / 7.55 |
+| a word nothing has | 37.2 / 50.2 | 40.7 / 50.3 | 6.13 / 6.11 |
+| `"\bthe\b" --regex` | 35.8 / 61.0 | 43.4 / 46.1 | 6.08 / 6.42 |
+| `the --scan` | 61.3 / 103.5 | 65.7 / 139.3 | 6.23 / 6.94 |
+
+A search with hits pays the open of the file and the tag pages (+8 to +12 ms on this report); one that finds nothing opens nothing, and its difference (+3.5 ms at p50) is inside its spread (p95 50 ms both). Single sets of 21 runs under load: the `--scan` p95s are noise-sized.
+
 ## Known limits
 
 - **2026-11-25 (`build/page-id-caps`):** the names cap went from 256 to 8,192, so the 383-page NASA report now answers `gone` for a page that is really gone (the numbers are in the table above). Before, four pages (zero-based 127, 137, 156, 197) had no identity because they draw more than 256 images. Eleven pages of bench100 gained an identity, and no digest that existed changed. At 256 MiB the scan had stopped 24 pages short, because a stream a page draws is charged each time it is drawn.
