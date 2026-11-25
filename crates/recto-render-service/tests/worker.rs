@@ -1183,16 +1183,15 @@ fn a_renderer_the_mac_was_too_busy_to_start_is_started_again() {
     use recto_render_service::{MAX_BUSY, under_start_timeout_for_test};
     let file = TempPdf::new("busy-start.pdf", &pages(&[Page::new(text_lines(&["one"]))]));
     let mut doc = renderer(&file.0, Policy::default());
-    let start_short = |doc: &mut DocRenderer| under_start_timeout_for_test(doc, |doc| doc, Duration::from_millis(1), |doc| doc.page_size(0));
+    let start_short = |doc: &mut DocRenderer| under_start_timeout_for_test(doc, |doc| doc, Duration::ZERO, |doc| doc.page_size(0));
     assert_eq!(start_short(&mut doc).unwrap_err(), RenderFailure::TooBusyToStart, "{:?}", doc.stats());
     assert!(doc.stats().too_busy >= 1, "counted as the Mac being busy");
     assert!(
         matches!(draws(&mut doc, 0), TileKind::Grey | TileKind::Colour | TileKind::Blank { .. }),
         "drawn when asked again"
     );
-    // A start that worked began the count again: another run of MAX_BUSY - 1 is still busy, and the one that ends it says so.
-    drop(doc);
-    let mut doc = renderer(&file.0, Policy::default());
+    // A start that worked began the count again: the worker is killed, and another run of MAX_BUSY - 1 is still busy, and the one that ends it says so.
+    doc.kill_worker();
     for run in 1..MAX_BUSY {
         assert_eq!(start_short(&mut doc).unwrap_err(), RenderFailure::TooBusyToStart, "start {run} in a row");
     }

@@ -1,7 +1,7 @@
 //! A test's way to make one job short of time, in a file of its own so `host.rs` doesn't grow for it. Only with the `test-seams` feature, which only this
 //! crate's own tests turn on: a release build has no such function.
 
-use crate::DocRenderer;
+use crate::{DocRenderer, Policy};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -28,17 +28,25 @@ pub(crate) fn this_process() -> Option<Duration> {
 /// the deadline this sets; a worker already started holds the deadline it was started with.
 #[doc(hidden)]
 pub fn under_page_deadline_for_test<T, R>(holder: &mut T, renderer: fn(&mut T) -> &mut DocRenderer, deadline: Duration, job: impl FnOnce(&mut T) -> R) -> R {
-    let own = std::mem::replace(&mut renderer(holder).policy.page_deadline, deadline);
-    let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(holder)));
-    renderer(holder).policy.page_deadline = own;
-    done.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    short_for(holder, renderer, |policy| &mut policy.page_deadline, deadline, job)
 }
 
 /// **For tests: the same for the start timeout,** so a worker that can't say hello in time (a Mac too busy to run it) is made without a hostile worker: only `job` is short, and the one after it starts a worker under the ordinary timeout.
 #[doc(hidden)]
 pub fn under_start_timeout_for_test<T, R>(holder: &mut T, renderer: fn(&mut T) -> &mut DocRenderer, timeout: Duration, job: impl FnOnce(&mut T) -> R) -> R {
-    let own = std::mem::replace(&mut renderer(holder).policy.start_timeout, timeout);
+    short_for(holder, renderer, |policy| &mut policy.start_timeout, timeout, job)
+}
+
+/// Runs `job` with the policy's `which` set to `short`, and puts the policy's own back after, however `job` ends.
+fn short_for<T, R>(
+    holder: &mut T,
+    renderer: fn(&mut T) -> &mut DocRenderer,
+    which: fn(&mut Policy) -> &mut Duration,
+    short: Duration,
+    job: impl FnOnce(&mut T) -> R,
+) -> R {
+    let own = std::mem::replace(which(&mut renderer(holder).policy), short);
     let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(holder)));
-    renderer(holder).policy.start_timeout = own;
+    *which(&mut renderer(holder).policy) = own;
     done.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
