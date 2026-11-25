@@ -421,8 +421,8 @@ fn the_persons_rotate_of_this_page_turns_it_where_an_agents_is_refused() {
     assert_eq!(turns, (4, Some(1)), "the person's turned page 5, where following left the tab, a quarter turn");
 }
 
-/// The host's view of the first pane, `tab`'s, at its place as the page view has it, `zoom` times its magnification, as the host's UI thread gives
-/// it. Gives the view and that pane's page view.
+/// The shape of the host's view of the first pane, `tab`'s, `zoom` times its magnification, with no place yet: `report_where_the_host_is` gives it x, y
+/// from the page view's report. Gives the view and that pane's page view.
 fn first_pane_shown(app: &HeadlessApp, tab: u32, zoom: f64) -> (recto_reader::Viewport, recto_reader::Engine) {
     let inner = std::sync::Arc::clone(app.core());
     assert_eq!(inner.panes.tab_of(0).map(|id| id.0), Some(tab), "the first pane");
@@ -430,7 +430,7 @@ fn first_pane_shown(app: &HeadlessApp, tab: u32, zoom: f64) -> (recto_reader::Vi
     let at = engine.places().1.into_iter().find(|(id, _)| *id == tab).expect("its place").1;
     let view = recto_reader::Viewport {
         x: 0.0,
-        y: at.y,
+        y: 0.0,
         width: 292.0,
         height: 225.0,
         frame_width: 292.0,
@@ -609,14 +609,14 @@ pub(super) fn left_by_following_alone_in(
     (app, plain_tab, locked_tab, view, engine)
 }
 
-/// The host's view of the first pane's tab `tab` at its place as the page view has it, applied and drawn, as the host's UI thread gives it: the view and
-/// the first pane's page view. Settled.
+/// The host's view of the first pane's tab `tab`, placed where the page view reports it (`report_where_the_host_is`), applied and drawn, as the host's
+/// UI thread gives it: the view and the first pane's page view. Settled.
 fn shown_by_the_host(app: &HeadlessApp, tab: u32) -> (recto_reader::Viewport, recto_reader::Engine) {
     let engine = app.core().engine.clone();
     let at = engine.places().1.into_iter().find(|(id, _)| *id == tab).expect("its place").1;
     let mut view = recto_reader::Viewport {
         x: 0.0,
-        y: at.y,
+        y: 0.0,
         width: 292.0,
         height: 225.0,
         frame_width: 292.0,
