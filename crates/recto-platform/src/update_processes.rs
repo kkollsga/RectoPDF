@@ -87,8 +87,10 @@ fn observe(wanted: &Path, scan: &mut impl Scan) -> io::Result<bool> {
             // "Decisions of 2026-11-25"): ignore it when the name it was started under shows it can't be the
             // app. The same name, or a name that can't be read, stays unknown, so the app is never replaced
             // while it might be open.
-            Err(error) if error.raw_os_error() == Some(libc::ENOENT) && started_as_another_program(wanted, scan, pid) => continue,
-            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => return Err(deleted_executable(scan, pid, &error)),
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => match started_as(wanted, scan, pid) {
+                Start::Other => continue,
+                Start::Unknown(name) => return Err(deleted_executable(pid, &name, &error)),
+            },
             Err(error) => return Err(error),
         };
         if count == 0 || count >= path.len() {
@@ -104,33 +106,45 @@ fn observe(wanted: &Path, scan: &mut impl Scan) -> io::Result<bool> {
     Ok(live)
 }
 
-/// The unknown for a live program whose file was deleted and that could be the app: says which process, and keeps
-/// `ErrorKind::NotFound`.
-fn deleted_executable(scan: &mut impl Scan, pid: i32, cause: &io::Error) -> io::Error {
-    let mut name = [0u8; COMM_LEN];
-    let name = match scan.name(pid, &mut name) {
-        Ok(count) if count <= COMM_LEN => String::from_utf8_lossy(&name[..count]).into_owned(),
-        _ => "unreadable name".into(),
-    };
+/// What the start name of a live program whose file was deleted shows.
+enum Start {
+    /// It can't be the wanted program.
+    Other,
+    /// It could be: the name read (or why it couldn't be), for the unknown reported.
+    Unknown(String),
+}
+
+/// The unknown for a live program whose file was deleted and that could be the app: says which process, by the same
+/// name the decision was made on, and keeps `ErrorKind::NotFound`.
+fn deleted_executable(pid: i32, name: &str, cause: &io::Error) -> io::Error {
     io::Error::new(io::ErrorKind::NotFound, format!("pid {pid} ({name}) has a deleted executable: {cause}"))
 }
 
-/// True only when the start name shows the process can't be the wanted program. The kernel cuts the name at
-/// `COMM_LEN` bytes: a shorter name must differ from the wanted file name in full; a name of exactly `COMM_LEN` may be
-/// a cut, so it is skipped only when it is not a prefix of the wanted name. A name that can't be read stays unknown,
-/// except that a process that vanished (`ESRCH`) is skipped as `path` skips it.
+/// Reads the start name once. It is `Other` only when the name shows the process can't be the wanted program. The kernel
+/// cuts the name at `COMM_LEN` bytes: a shorter name must differ from the wanted file name in full; a name of exactly
+/// `COMM_LEN` may be a cut, so it is skipped only when it is not a prefix of the wanted name. A name that can't be read
+/// stays unknown, except that a process that vanished (`ESRCH`) is skipped as `path` skips it.
 /// Known limit: the start name is the last part of the path the program was started through, so the app's own executable
 /// run through a link of another name, and then deleted while running, would be skipped. The app as launched normally
 /// runs under its own name, so a running copy of it stays unknown.
-fn started_as_another_program(wanted: &Path, scan: &mut impl Scan, pid: i32) -> bool {
-    let Some(wanted) = wanted.file_name() else { return false };
-    let wanted = wanted.as_bytes();
+fn started_as(wanted: &Path, scan: &mut impl Scan, pid: i32) -> Start {
     let mut name = [0u8; COMM_LEN];
-    match scan.name(pid, &mut name) {
-        Ok(count) if count == COMM_LEN => !wanted.starts_with(&name),
-        Ok(count) if count > 0 && count < COMM_LEN => &name[..count] != wanted,
-        Err(error) => error.raw_os_error() == Some(libc::ESRCH),
-        _ => false,
+    let count = match scan.name(pid, &mut name) {
+        Ok(count) => count,
+        Err(error) if error.raw_os_error() == Some(libc::ESRCH) => return Start::Other,
+        Err(_) => return Start::Unknown("unreadable name".into()),
+    };
+    let Some(read) = name.get(..count).filter(|read| !read.is_empty()) else {
+        return Start::Unknown("unreadable name".into());
+    };
+    let other = wanted.file_name().is_some_and(|wanted| {
+        let wanted = wanted.as_bytes();
+        if count == COMM_LEN { !wanted.starts_with(read) } else { read != wanted }
+    });
+    if other {
+        Start::Other
+    } else {
+        Start::Unknown(String::from_utf8_lossy(read).into_owned())
     }
 }
 
