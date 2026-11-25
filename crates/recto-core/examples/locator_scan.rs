@@ -38,6 +38,14 @@ fn measure(path: &Path) {
         answer.status,
         answer.looked
     );
+    // The whole process, as the kernel counts it: what one scan costs in memory at most.
+    if let Some(memory) = recto_platform::isolate::process_memory(std::process::id()) {
+        println!(
+            "  footprint {:.1} MiB now, peak {:.1} MiB",
+            memory.footprint_bytes as f64 / 1048576.0,
+            memory.peak_footprint_bytes as f64 / 1048576.0
+        );
+    }
 }
 
 fn main() {
