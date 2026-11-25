@@ -632,4 +632,42 @@ mod unreadable_text_tests {
         let answered = resolve_reading(&access, &tab, chars, |_, _| Ok("Second page".into())).expect("resolved");
         assert_eq!(answered["status"], "found", "{answered}");
     }
+
+    /// Failure: a reference to characters read with the page's text (`text --ref`) passes without being checked against that text: the characters are
+    /// handed over unchecked (so an agent is told words that aren't on the page), a missing or other text is let through, or the page's text is read
+    /// before the command's own read. `page_of` reads no text; `attach` gives `text: same`, the characters and `hit` only when they are the checked words,
+    /// and an answer with other text, or none, is refused with nothing attached.
+    #[test]
+    fn text_refs_characters_are_checked_against_the_text_it_read_and_never_pass_unchecked() {
+        let file = TempPdf::new(
+            "two.pdf",
+            &pages(&[Page::new(text_lines(&["First page"])), Page::new(text_lines(&["Second page"]))]),
+        );
+        let mut session = Session::new(DiskLoader);
+        session.open(&file.0).unwrap();
+        let access = Mutex::new(session);
+        let tab = TabRef::Active;
+        let whole = reference(&access, &tab, 2, None).expect("the page's reference");
+        let made = read_reference(whole["ref"].as_str().unwrap()).expect("a reference");
+        let range = locator::characters("Second page", 0, 6).unwrap();
+        let chars = Locator::new(made.document(), made.page(), Target::Characters(range));
+        let found = page_of_reading(&access, &tab, &chars, unreadable, CharsChecked::AgainstItsText).expect("no read happens before the command's own");
+        assert!(found.said.get("text").is_none(), "{}", found.said);
+        let mut data = json!({ "untrusted": { "text": "Second page" } });
+        attach(&access, &found, &mut data).expect("the words are those the reference was made of");
+        assert_eq!(
+            (&data["ref"]["text"], &data["ref"]["chars"], &data["untrusted"]["hit"]),
+            (&json!("same"), &json!([0, 6]), &json!("Second"))
+        );
+        for other in [json!({ "untrusted": { "text": "Secone page" } }), json!({})] {
+            let mut data = other.clone();
+            let refused = attach(&access, &found, &mut data).expect_err("not the checked words");
+            assert_eq!(
+                (refused.code, refused.message.as_str()),
+                (Code::REFERENCE_UNRESOLVED, UNRESOLVED_TEXT_CHANGED),
+                "{other}"
+            );
+            assert_eq!(data, other, "nothing is attached to a refused answer");
+        }
+    }
 }

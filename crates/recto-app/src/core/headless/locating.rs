@@ -520,8 +520,9 @@ fn a_character_reference_reads_the_same_words_after_another_program_moved_the_pa
 }
 
 /// Failure: a hand-made character token (a check that isn't the text's, or an end at 2^21) on a page that is found is answered `found`, so an agent reads
-/// words at offsets that are not the ones named; or `text --ref` goes on to read the page, or draws, or its refusal
-/// shares the words of `gone`. The answer is `text_changed`, exit 0, with the page, and `text --ref` is `reference_unresolved` in words of its own.
+/// words at offsets that are not the ones named; or `text --ref` goes on to give the page's text, or draws a page other than the one found, or its refusal
+/// shares the words of `gone`. The answer is `text_changed`, exit 0, with the page, and `text --ref` is `reference_unresolved` in words of its own, drawing
+/// only the page found (it is found by its content before its text is looked at) and giving no text.
 #[test]
 fn a_hostile_character_token_on_a_found_page_is_text_changed_never_found() {
     let app = HeadlessApp::start();
@@ -544,8 +545,14 @@ fn a_hostile_character_token_on_a_found_page_is_text_changed_never_found() {
         let (read, events) = run_saying(&app, Level::ReadOnly, &json!({ "cmd": "text", "ref": token, "tab": "#1" }));
         let read = read.expect_err("not read");
         assert_eq!((read.code.as_str(), read.exit), ("reference_unresolved", exit::NOT_FOUND), "{read:?}");
-        assert!(!drew(&events), "{events:?}");
-        assert!(!read.message.contains(&token));
+        // The page is found by its content before its text is looked at, so it is drawn and then refused: what is drawn is the page found, and no text or
+        // token reaches the agent.
+        assert!(!read.message.contains(&token) && !read.message.contains("Mine page"), "{read:?}");
+        for event in &events {
+            if let recto_agent::Event::PageDrawn { page, .. } | recto_agent::Event::PageFailed { page, .. } = event {
+                assert_eq!(*page, 3, "only the page found is drawn: {events:?}");
+            }
+        }
     }
     replace(&file, &pages_saying(&["Mine page 1", "Mine page 2", "Mine page 4", "Mine page 5"]));
     look(&app);
@@ -713,27 +720,29 @@ fn hit_refs_name_the_files_page_under_unsaved_edits_and_none_for_an_added_page()
     app.recto(Level::Full, &["page", "insert", other.to_str().expect("a path"), "--at", "2"])
         .expect("an added page");
     app.settle();
-    let found = searched(&app, Level::ReadOnly, "page", &[]).expect("search");
-    let hits = found["hits"].as_array().expect("hits");
-    assert_eq!(hits.len(), 5, "four of the file's pages and the added one: {found}");
-    let mut added = 0;
-    for hit in hits {
-        if hit["from_added_file"] == true {
-            added += 1;
-            assert_eq!((hit["ref"].clone(), hit["chars"].clone()), (Value::Null, Value::Null), "{hit}");
-            continue;
+    for extra in [&[][..], &["--rank"]] {
+        let found = searched(&app, Level::ReadOnly, "page", extra).expect("search");
+        let hits = found["hits"].as_array().expect("hits");
+        assert_eq!(hits.len(), 5, "four of the file's pages and the added one ({extra:?}): {found}");
+        let mut added = 0;
+        for hit in hits {
+            if hit["from_added_file"] == true {
+                added += 1;
+                assert_eq!((hit["ref"].clone(), hit["chars"].clone()), (Value::Null, Value::Null), "{hit}");
+                continue;
+            }
+            let resolved = resolve(&app, Level::ReadOnly, hit["ref"].as_str().expect("a reference")).expect("resolve");
+            assert_eq!(resolved["status"], "found", "{resolved}");
+            assert_eq!(
+                (&resolved["page"], &resolved["file_page"]),
+                (&hit["page"], &hit["source_page"]),
+                "{hit} {resolved}"
+            );
         }
-        let resolved = resolve(&app, Level::ReadOnly, hit["ref"].as_str().expect("a reference")).expect("resolve");
-        assert_eq!(resolved["status"], "found", "{resolved}");
-        assert_eq!(
-            (&resolved["page"], &resolved["file_page"]),
-            (&hit["page"], &hit["source_page"]),
-            "{hit} {resolved}"
-        );
+        assert_eq!(added, 1, "{extra:?}");
+        assert_eq!(found["references"]["missing"], json!({ "added_file": 1 }), "{found}");
+        assert_eq!(found["references"]["made"], 4, "{found}");
     }
-    assert_eq!(added, 1);
-    assert_eq!(found["references"]["missing"], json!({ "added_file": 1 }), "{found}");
-    assert_eq!(found["references"]["made"], 4, "{found}");
 }
 
 /// Failure: a search with references, or a read of one, changes the owner's edits, the undo history or the file; or is let through at Off. At Read-only and
@@ -757,6 +766,13 @@ fn an_agent_below_full_changes_nothing_of_the_owners_edits_by_search_refs() {
             assert_eq!(resolve(&app, level, token).expect("resolve")["status"], "found");
             assert_eq!(app.recto(level, &["text", "--ref", token]).expect("text --ref")["ref"]["text"], "same");
         }
+
+        let ranked = searched(&app, level, "page 4", &["--rank"]).expect("ranked search");
+        let hits = ranked["hits"].as_array().expect("hits").len();
+        assert_eq!(ranked["references"]["made"], hits, "{ranked}");
+        let token = ranked["hits"][0]["ref"].as_str().expect("a reference");
+        assert_eq!(resolve(&app, level, token).expect("resolve")["status"], "found");
+        assert_eq!(app.recto(level, &["text", "--ref", token]).expect("text --ref")["ref"]["text"], "same");
     }
     assert_eq!(owners_tab(&app, &file), before, "nothing of the owner's tab or file changed");
     let refused = searched(&app, Level::Off, "page 4", &[]).expect_err("Off");
@@ -794,9 +810,108 @@ fn a_protected_document_gives_a_search_no_reference() {
     let text = app
         .agent(Level::Full, &json!({ "cmd": "text", "page": 2, "tab": tab }).to_string())
         .expect_err("text is refused");
-    let (searched, events) = run_saying(&app, Level::Full, &json!({ "cmd": "search", "query": "Locked page", "tab": tab }));
-    let searched = searched.expect_err("the search is refused");
-    assert_eq!((searched.code, searched.exit, &searched.message), (text.code, text.exit, &text.message));
-    assert!(!searched.message.contains("r1.") && !drew(&events), "{searched:?}");
+    for line in [
+        json!({ "cmd": "search", "query": "Locked page", "tab": tab }),
+        json!({ "cmd": "search", "query": "Locked page", "rank": true, "tab": tab }),
+    ] {
+        let (searched, events) = run_saying(&app, Level::Full, &line);
+        let searched = searched.expect_err("the search is refused");
+        assert_eq!(
+            (searched.code, searched.exit, &searched.message),
+            (text.code, text.exit, &text.message),
+            "{line}"
+        );
+        assert!(!searched.message.contains("r1.") && !drew(&events), "{searched:?}");
+    }
     assert_eq!(tokens(&app), before, "the plain tab's references are the same with a protected tab open");
+}
+
+/// Failure: a search hit's `ref`, made before another program put a cover in front of the page, stops pointing at the hit's words: `resolve` doesn't say
+/// `moved` to the page's new place with the characters checked, `text --ref` reads another page or gives other words, doesn't say how it found them
+/// (`ref`), doesn't give the checked characters as `untrusted.hit`, or its answer carries the token.
+#[test]
+fn a_search_hits_ref_follows_its_words_after_another_program_put_a_cover_in_front() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 5));
+    app.open(&file);
+    let found = searched(&app, Level::ReadOnly, "page 3", &[]).expect("search");
+    assert_eq!(found["hits"].as_array().map(Vec::len), Some(1), "{found}");
+    let (hit, token) = (&found["hits"][0], found["hits"][0]["ref"].as_str().expect("a reference").to_owned());
+    let (start, end) = (hit["chars"][0].as_u64().expect("start"), hit["chars"][1].as_u64().expect("end"));
+    replace(
+        &file,
+        &pages_saying(&["Cover", "Mine page 1", "Mine page 2", "Mine page 3", "Mine page 4", "Mine page 5"]),
+    );
+    look(&app);
+    assert_eq!(page_text(&app, 3), "Mine page 2", "page 3 is another page now");
+    let resolved = resolve(&app, Level::ReadOnly, &token).expect("resolve");
+    assert_eq!(
+        (
+            resolved["status"].as_str(),
+            resolved["page"].as_u64(),
+            resolved["file_page"].as_u64(),
+            resolved["was_page"].as_u64()
+        ),
+        (Some("moved"), Some(4), Some(4), Some(3)),
+        "{resolved}"
+    );
+    assert_eq!(
+        resolved["target"],
+        json!({ "kind": "characters", "start": start, "end": end, "checked": true, "text": "same" }),
+        "{resolved}"
+    );
+    let read = app.recto(Level::ReadOnly, &["text", "--ref", &token]).expect("text --ref");
+    assert_eq!(read["page"], 4, "{read}");
+    let said = &read["ref"];
+    assert_eq!(
+        (&said["status"], &said["was_page"], &said["file_page"], &said["text"], &said["chars"]),
+        (&json!("moved"), &json!(3), &json!(4), &json!("same"), &json!([start, end])),
+        "{read}"
+    );
+    let hit_words = read["untrusted"]["hit"].as_str().expect("the checked words");
+    assert_eq!(hit_words.to_lowercase(), "page 3", "{read}");
+    let held: String = read["untrusted"]["text"]
+        .as_str()
+        .expect("text")
+        .chars()
+        .skip(start as usize)
+        .take((end - start) as usize)
+        .collect();
+    assert_eq!(hit_words, held, "`hit` is the characters of the answer's own text");
+    assert!(!read.to_string().contains(&token), "the token is never in the answer");
+}
+
+/// Failure: a ranked hit's `ref` or `chars` point somewhere other than the word its line shows (a page's start, another word, the page position instead of
+/// the file's page), or stop following the page when another program moves it, or `references` doesn't count them. The hit for "page 3" has `chars` that
+/// read `page` in `text`, and after a cover is put in front `resolve` says moved with the same words and `text --ref` gives `page` at page 4.
+#[test]
+fn a_ranked_hits_ref_is_of_its_first_shown_word_and_follows_the_page_another_program_moved() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 5));
+    app.open(&file);
+    let found = searched(&app, Level::ReadOnly, "page 3", &["--rank"]).expect("ranked search");
+    let hits = found["hits"].as_array().expect("hits");
+    assert_eq!(hits[0]["page"], 3, "{found}");
+    assert_eq!(found["references"]["made"], hits.len(), "{found}");
+    assert_eq!(found["references"]["missing"], json!({}), "{found}");
+    let (start, end) = (
+        hits[0]["chars"][0].as_u64().expect("start") as usize,
+        hits[0]["chars"][1].as_u64().expect("end") as usize,
+    );
+    let words: String = page_text(&app, 3).chars().skip(start).take(end - start).collect();
+    assert_eq!(words, "page", "the word the hit's line shows: {}", hits[0]);
+    let token = hits[0]["ref"].as_str().expect("a reference").to_owned();
+    replace(
+        &file,
+        &pages_saying(&["Cover", "Mine page 1", "Mine page 2", "Mine page 3", "Mine page 4", "Mine page 5"]),
+    );
+    look(&app);
+    let resolved = resolve(&app, Level::ReadOnly, &token).expect("resolve");
+    assert_eq!(
+        (resolved["status"].as_str(), resolved["target"]["text"].as_str()),
+        (Some("moved"), Some("same")),
+        "{resolved}"
+    );
+    let read = app.recto(Level::ReadOnly, &["text", "--ref", &token]).expect("text --ref");
+    assert_eq!((read["untrusted"]["hit"].as_str(), read["page"].as_u64()), (Some("page"), Some(4)), "{read}");
 }
