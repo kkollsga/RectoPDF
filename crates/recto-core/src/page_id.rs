@@ -433,9 +433,10 @@ struct Seen {
     read: u64,
     page: u64,
     cost: u64,
-    /// The read gave up on a decode on the way (a kind 3, or nothing came of it): how many bytes it had pulled by then isn't known, so it is taken again
-    /// as it was only while the page has more left than any one stream may take, as it had when this was read, when no part of the page's budget could
-    /// have decided it.
+    /// The read gave up on a decode on the way (a kind 3 whose decode failed, or a stream that couldn't be read at all). A failed decode is exact for any
+    /// limit at least the one it was read at: it ended in an error before reaching it. With a smaller limit it can end in a cap instead, which is no
+    /// identity. So it's taken as it was only while the page has more left than any one stream may take (the limit is then the stream's own, as it was
+    /// or more), and read again, with its descriptor kept, where the page has less.
     headroom: bool,
     is_form: bool,
     /// The read had a scan to feed, as a form drawn by the page does. One made for a form's own children has no names to take.
