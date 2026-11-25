@@ -1656,7 +1656,7 @@ impl DocRenderer {
         } else {
             (self.policy.memory_limit_bytes, self.policy.idle_exit)
         };
-        let started = Worker::start(&self.config, &self.policy, limit, idle_exit);
+        let started = Worker::start(&self.config, &self.policy, limit, idle_exit).inspect(|_| busy::started(self));
         let (mut worker, ready) = started.map_err(|failure| match failure {
             StartFailure::NoLibrary => RenderFailure::LibraryMissing,
             StartFailure::Walls(why) => RenderFailure::WallsDown(why),
@@ -1664,7 +1664,6 @@ impl DocRenderer {
             StartFailure::TimedOut => busy::start_stopped(self),
             StartFailure::Other => RenderFailure::Unavailable,
         })?;
-        busy::started(self);
         if worker.walled {
             self.stats.walled_spawns += 1;
         }
@@ -1824,7 +1823,8 @@ impl DocRenderer {
             self.stats.peak_footprint_bytes = self.stats.peak_footprint_bytes.max(memory.peak_footprint_bytes);
         }
         self.worker = Some(worker);
-        Ok(busy::opened(self))
+        busy::opened(self);
+        Ok(())
     }
 }
 
