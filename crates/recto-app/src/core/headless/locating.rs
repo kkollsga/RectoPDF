@@ -655,3 +655,143 @@ fn a_protected_document_gives_no_character_reference_and_no_check() {
         assert!(!drew(&events), "{events:?}");
     }
 }
+
+/// What `search` gave for `query` in tab `#1` (or `tab`), as an agent at `level` gets it.
+fn searched(app: &HeadlessApp, level: Level, query: &str, extra: &[&str]) -> Result<Value, recto_agent::AgentError> {
+    let mut args = vec!["search", query];
+    args.extend_from_slice(extra);
+    app.recto(level, &args)
+}
+
+/// Failure: a hit's `ref` doesn't point at its words: the `chars` are not the characters of `recto text`'s text of the page that the search matched, `resolve`
+/// does not find the page and say the text is the same, `text --ref` reads other text, or the answer's count of references isn't the hits'.
+#[test]
+fn a_search_hits_ref_resolves_found_with_the_same_words_text_reads() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 5));
+    app.open(&file);
+    let found = searched(&app, Level::ReadOnly, "page 3", &[]).expect("search");
+    let hits = found["hits"].as_array().expect("hits");
+    assert_eq!(hits.len(), 1, "{found}");
+    assert_eq!(found["references"]["made"], hits.len(), "{found}");
+    assert_eq!(found["references"]["missing"], json!({}), "{found}");
+    let hit = &hits[0];
+    let (start, end) = (
+        hit["chars"][0].as_u64().expect("start") as usize,
+        hit["chars"][1].as_u64().expect("end") as usize,
+    );
+    let page = app.recto(Level::ReadOnly, &["text", "--page", "3"]).expect("text")["untrusted"]["text"]
+        .as_str()
+        .expect("its text")
+        .to_owned();
+    let words: String = page.chars().skip(start).take(end - start).collect();
+    assert_eq!(words.to_lowercase(), "page 3", "the hit's characters are those of `text`'s text: {hit}");
+    let token = hit["ref"].as_str().expect("a reference");
+    let resolved = resolve(&app, Level::ReadOnly, token).expect("resolve");
+    assert_eq!((resolved["status"].as_str(), resolved["page"].as_u64()), (Some("found"), Some(3)), "{resolved}");
+    assert_eq!(resolved["target"]["text"], "same", "{resolved}");
+    let read = app.recto(Level::ReadOnly, &["text", "--ref", token]).expect("text --ref");
+    assert_eq!(read["ref"]["text"], "same", "{read}");
+}
+
+/// Failure: a hit's reference is made for a page position instead of the file's page, so under the person's unsaved edits it names the wrong page; or a
+/// hit on a page the agent added from another PDF is given a reference to a page of the tab's own file. The person deletes page 2 and a Full agent adds
+/// another PDF's page at 2: each own hit's reference resolves to the hit's own `page` and `source_page`, and the added page's hit has none, counted.
+#[test]
+fn hit_refs_name_the_files_page_under_unsaved_edits_and_none_for_an_added_page() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 5));
+    let other = app.disk().file("other.pdf", &pdf_bytes("Mine", 1));
+    app.open(&file);
+    app.person(r##"{"cmd":"page_delete","tab":"#1","pages":"2"}"##);
+    app.settle();
+    app.recto(Level::Full, &["page", "insert", other.to_str().expect("a path"), "--at", "2"])
+        .expect("an added page");
+    app.settle();
+    let found = searched(&app, Level::ReadOnly, "page", &[]).expect("search");
+    let hits = found["hits"].as_array().expect("hits");
+    assert_eq!(hits.len(), 5, "four of the file's pages and the added one: {found}");
+    let mut added = 0;
+    for hit in hits {
+        if hit["from_added_file"] == true {
+            added += 1;
+            assert_eq!((hit["ref"].clone(), hit["chars"].clone()), (Value::Null, Value::Null), "{hit}");
+            continue;
+        }
+        let resolved = resolve(&app, Level::ReadOnly, hit["ref"].as_str().expect("a reference")).expect("resolve");
+        assert_eq!(resolved["status"], "found", "{resolved}");
+        assert_eq!(
+            (&resolved["page"], &resolved["file_page"]),
+            (&hit["page"], &hit["source_page"]),
+            "{hit} {resolved}"
+        );
+    }
+    assert_eq!(added, 1);
+    assert_eq!(found["references"]["missing"], json!({ "added_file": 1 }), "{found}");
+    assert_eq!(found["references"]["made"], 4, "{found}");
+}
+
+/// Failure: a search with references, or a read of one, changes the owner's edits, the undo history or the file; or is let through at Off. At Read-only and
+/// Control a phrase search, a regex search, `resolve` of a hit's reference and `text --ref` leave the owner's tab as it was; at Off the search is refused for the
+/// level.
+#[test]
+fn an_agent_below_full_changes_nothing_of_the_owners_edits_by_search_refs() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 10));
+    app.open(&file);
+    app.person(r##"{"cmd":"page_rotate","tab":"#1","pages":"9","degrees":90}"##);
+    app.person(r##"{"cmd":"page_delete","tab":"#1","pages":"2"}"##);
+    app.settle();
+    let before = owners_tab(&app, &file);
+    for level in [Level::ReadOnly, Level::Control] {
+        let phrase = searched(&app, level, "page 4", &[]).expect("phrase search");
+        let pattern = searched(&app, level, "pa[g]e 4", &["--regex"]).expect("regex search");
+        for found in [&phrase, &pattern] {
+            assert_eq!(found["references"]["made"], 1, "{found}");
+            let token = found["hits"][0]["ref"].as_str().expect("a reference");
+            assert_eq!(resolve(&app, level, token).expect("resolve")["status"], "found");
+            assert_eq!(app.recto(level, &["text", "--ref", token]).expect("text --ref")["ref"]["text"], "same");
+        }
+    }
+    assert_eq!(owners_tab(&app, &file), before, "nothing of the owner's tab or file changed");
+    let refused = searched(&app, Level::Off, "page 4", &[]).expect_err("Off");
+    assert_eq!(refused.exit, exit::PERMISSION, "{refused:?}");
+    assert_eq!(owners_tab(&app, &file), before, "and Off changed nothing either");
+}
+
+/// Failure: a search of a document the person opened with its password gives an agent hit references (so words of the protected pages, or whether they are
+/// there, reach it), or refuses in other words than `text` does; or the hit tokens of a plain document change when a protected one is opened beside it.
+#[test]
+fn a_protected_document_gives_a_search_no_reference() {
+    let disk = Disk::new();
+    let plain = disk.file("plain.pdf", &pages_saying(&["Locked page 1", "Locked page 2"]));
+    let locked = disk.file("locked.pdf", &locked_saying(PASSWORD, 2, "Locked", lopdf::encryption::Permissions::all()));
+    let app = disk.start();
+    app.open(&plain);
+    let tokens = |app: &HeadlessApp| -> Vec<String> {
+        let line = json!({ "cmd": "search", "query": "Locked page", "tab": "#1" });
+        let found = app.agent(Level::Full, &line.to_string()).expect("the plain tab's search");
+        found["hits"]
+            .as_array()
+            .expect("hits")
+            .iter()
+            .map(|hit| hit["ref"].as_str().expect("a reference").to_owned())
+            .collect()
+    };
+    let before = tokens(&app);
+    assert_eq!(before.len(), 2);
+    person_unlocks(&app, &locked);
+    let tab = app.session_json()["tabs"]
+        .as_array()
+        .and_then(|tabs| tabs.iter().find(|tab| tab["path"].as_str().is_some_and(|path| path.ends_with("locked.pdf"))))
+        .map(|tab| format!("#{}", tab["id"]))
+        .expect("the locked tab");
+    let text = app
+        .agent(Level::Full, &json!({ "cmd": "text", "page": 2, "tab": tab }).to_string())
+        .expect_err("text is refused");
+    let (searched, events) = run_saying(&app, Level::Full, &json!({ "cmd": "search", "query": "Locked page", "tab": tab }));
+    let searched = searched.expect_err("the search is refused");
+    assert_eq!((searched.code, searched.exit, &searched.message), (text.code, text.exit, &text.message));
+    assert!(!searched.message.contains("r1.") && !drew(&events), "{searched:?}");
+    assert_eq!(tokens(&app), before, "the plain tab's references are the same with a protected tab open");
+}
