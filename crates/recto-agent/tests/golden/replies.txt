@@ -381,7 +381,7 @@
 {"cmd":"Palette"}
   refused cmd=unknown code=bad_command
 {"cmd":"find"}
-  reply {"cmd":"find","data":{"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
+  reply {"cmd":"find","data":{"busy_pages":0,"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
   events 
   words "Find is closed."
 {"cmd":"find","query":"q","next":true,"previous":true,"close":true,"limit":3}
@@ -391,7 +391,7 @@
 {"cmd":"find","query":{}}
   refused cmd=unknown code=bad_command
 {"cmd":"find","query":null}
-  reply {"cmd":"find","data":{"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
+  reply {"cmd":"find","data":{"busy_pages":0,"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
   events 
   words "Find is closed."
 {"cmd":"find","next":{}}
@@ -409,11 +409,11 @@
 {"cmd":"find","limit":{}}
   refused cmd=unknown code=bad_command
 {"cmd":"find","limit":null}
-  reply {"cmd":"find","data":{"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
+  reply {"cmd":"find","data":{"busy_pages":0,"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
   events 
   words "Find is closed."
 ["find"]
-  reply {"cmd":"find","data":{"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
+  reply {"cmd":"find","data":{"busy_pages":0,"current":null,"failed_pages":0,"first_hit_ms":null,"hits":[],"hits_listed":0,"hits_total":0,"no_text_pages":0,"open":false,"pages_in_scope":0,"pages_searched":0,"pages_with_hits":0,"query":"","state":"idle","status":"","tab":null,"took_ms":null},"ok":true,"v":1}
   events 
   words "Find is closed."
 ["find","q",true,true,true,3]
@@ -1853,6 +1853,8 @@
 {"cmd":"Settings"}
   refused cmd=unknown code=bad_command
 {"cmd":"ref"}
+  refused cmd=unknown code=bad_command
+{"cmd":"ref","page":3,"chars":{}}
   refused cmd=unknown code=bad_command
 {"cmd":"ref","page":3,"extra":1}
   refused cmd=unknown code=bad_command

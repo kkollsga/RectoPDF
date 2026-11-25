@@ -125,6 +125,10 @@ pub struct Ref {
     pub page: u32,
     #[serde(default)]
     pub tab: TabRef,
+    /// `START-END` in characters of `recto text`, to refer to those characters of the page. Read in `run`, before the file is opened. After `tab`, so a
+    /// positional line that has always read `[ref, page, tab]` still does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chars: Option<String>,
 }
 
 impl Cmd for Ref {
@@ -153,7 +157,8 @@ impl Cmd for Ref {
         json!({ "tab": super::log_tab(&self.tab), "page": self.page })
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        locating::reference(cx.access, &self.tab, self.page)
+        let chars = self.chars.as_deref().map(reference_chars).transpose()?;
+        locating::reference(cx.access, &self.tab, self.page, chars)
     }
     fn human(data: &Value) -> String {
         format!("A reference to page {}: {}", number(&data["page"]), text(&data["ref"]))
@@ -240,6 +245,17 @@ impl Cmd for Resolve {
     }
 }
 
+/// `--chars` of `ref`: a range of characters that can be referred to, or the words for why not. An empty range, or one ending past what a reference can
+/// hold, is usage, whatever the page's text.
+fn reference_chars(word: &str) -> Result<(u32, u32), AgentError> {
+    let usage = || AgentError::new(Code::USAGE, locating::CHARS_USAGE, exit::USAGE);
+    let (start, end) = crate::selecting::char_range(word).map_err(|_| usage())?;
+    if start == end || end > locator::MAX_CHARACTER {
+        return Err(usage());
+    }
+    Ok((start, end))
+}
+
 pub(crate) const ROWS_REF: &[Spec] = &[Spec {
     name: "ref",
     tag: "ref",
@@ -255,9 +271,16 @@ pub(crate) const ROWS_REF: &[Spec] = &[Spec {
             help: "The page, counted from 1.",
         },
         TAB,
+        Arg {
+            key: "chars",
+            flag: Some("--chars"),
+            kind: Kind::Text,
+            required: false,
+            help: "`START-END` in characters of `recto text`, the end not included, at most 2097152: refers to those characters of the page, and checks them against the page's text, which must reach that far.",
+        },
     ],
-    data: "`{ tab, page, file_page, ref }`. `page` is the page as asked, in the tab as shown; `file_page` is its page of the file on disk, which differs only when there are unsaved edits. `ref` is the token: pass it whole to `resolve`.",
-    examples: &["recto ref 3", "recto ref 3 --tab \"#2\" --json"],
+    data: "`{ tab, page, file_page, ref }`, and `chars: [start, end]` when `--chars` was given. `page` is the page as asked, in the tab as shown; `file_page` is its page of the file on disk, which differs only when there are unsaved edits. `ref` is the token: pass it whole to `resolve`. With `--chars` the token also holds a check of those characters, which `resolve` and `--ref` compare with the page's text at the same offsets.",
+    examples: &["recto ref 3", "recto ref 3 --chars 120-180", "recto ref 3 --tab \"#2\" --json"],
     ..BASE
 }];
 
@@ -266,7 +289,7 @@ pub(crate) const ROWS_RESOLVE: &[Spec] = &[Spec {
     tag: "resolve",
     group: GROUP_READ,
     access: Access::At(Level::ReadOnly),
-    summary: "Where a reference's page is now. The answer is a status, never a guess: `found` where the reference said, `moved` when the file's only page with that content is somewhere else, `ambiguous` when several have it, `gone` when every page was read and none has it, `incomplete` when the search couldn't read every page. All of those are exit 0. A reference is data from outside: it grants no access, and only the tab's own file is read.",
+    summary: "Where a reference's page is now. The answer is a status, never a guess: `found` where the reference said, `text_changed` when a reference to characters finds its page but not its words, `moved` when the file's only page with that content is somewhere else, `ambiguous` when several have it, `gone` when every page was read and none has it, `incomplete` when the search couldn't read every page. All of those are exit 0, except that a reference to characters on a found page whose text can't be read is refused as `text` is for that page. A reference is data from outside: it grants no access, and only the tab's own file is read.",
     args: &[
         Arg {
             key: "ref",
@@ -277,7 +300,7 @@ pub(crate) const ROWS_RESOLVE: &[Spec] = &[Spec {
         },
         TAB,
     ],
-    data: "`{ tab, status, page, file_page, was_page, candidates: [ { page, file_page } ], document, frame, target, looked_at, pages_read, note }`. `status` is `found`, `moved`, `ambiguous`, `gone` or `incomplete`. `page` (in the tab as shown, null when unsaved edits removed it) and `file_page` (of the file on disk) are only for `found` and `moved`, counted from 1; `was_page` is where the reference pointed. `candidates` lists up to 8 pages for `ambiguous`, and the one match found for `incomplete`. `document` is `same`, `different` or `unknown`: information only, it never changes the status. `frame` says whether the page's crop and turn are the reference's. `target` is `{ kind: \"page\" }`, `{ kind: \"spot\", placed, rect | why }` or `{ kind: \"characters\", start, end, checked: false }`. `looked_at` is `hint`, `all` or `part`.",
+    data: "`{ tab, status, page, file_page, was_page, candidates: [ { page, file_page } ], document, frame, target, looked_at, pages_read, note }`. `status` is `found`, `moved`, `text_changed`, `ambiguous`, `gone` or `incomplete`. `text_changed` is for a reference to characters: the page is found (`page` and `file_page` say where) but its text at those offsets isn't what the reference was made of, and nothing else on the page is searched. `page` (in the tab as shown, null when unsaved edits removed it) and `file_page` (of the file on disk) are only for `found`, `moved` and `text_changed`, counted from 1; `was_page` is where the reference pointed. `candidates` lists up to 8 pages for `ambiguous`, and the one match found for `incomplete`. `document` is `same`, `different` or `unknown`: information only, it never changes the status. `frame` says whether the page's crop and turn are the reference's. `target` is `{ kind: \"page\" }`, `{ kind: \"spot\", placed, rect | why }` or `{ kind: \"characters\", start, end, checked, text: \"same\" | \"changed\" }` (`text` only when checked). `looked_at` is `hint`, `all` or `part`.",
     examples: &[
         concat!("recto resolve ", example_ref!()),
         concat!("recto resolve ", example_ref!(), " --tab \"#2\" --json"),
@@ -430,5 +453,36 @@ mod tests {
                 assert!(!shown.contains(piece), "{cmd}: {shown}");
             }
         }
+    }
+
+    /// Failure: a `--chars` that can't be a range (no dash, backwards, empty, past what a reference holds) reaches the file, so the agent is told a page or
+    /// the file is wrong when its words were; or the cap itself is refused. It is usage in constant words, from the line alone.
+    #[test]
+    fn ref_chars_that_cannot_be_are_usage_before_the_file_is_read() {
+        for hostile in ["5", "a-b", "9-3", "5-5", "0-0", "0-2097153", "-3", "1-2-3", ""] {
+            let error = reference_chars(hostile).expect_err(hostile);
+            assert_eq!((error.code, error.exit), (Code::USAGE, exit::USAGE), "{hostile:?}");
+            assert_eq!(
+                error.message,
+                locating::CHARS_USAGE,
+                "one wording for every shape that isn't a range: {hostile:?}"
+            );
+            assert!(!error.message.contains("2097153"), "the refusal says only its own words: {}", error.message);
+        }
+        assert_eq!(reference_chars("0-2097152").ok(), Some((0, 2_097_152)), "the cap itself is held");
+        assert_eq!(reference_chars("120-180").ok(), Some((120, 180)));
+    }
+
+    /// Failure: the activity log, or a command printed in a test failure, carries more of a character reference than the page and tab (a token's checks,
+    /// or text of the page).
+    #[test]
+    fn ref_with_chars_never_logs_the_range_text_or_token() {
+        let command = crate::parse(r##"{"cmd":"ref","page":3,"chars":"120-180","tab":"#2"}"##).expect("ref with chars");
+        let logged = command.log_details();
+        assert_eq!(logged, json!({ "tab": "#2", "page": 3 }), "the page only: {logged}");
+        assert!(
+            crate::parse(&command.wire()).is_ok(),
+            "what the window or a test builds prints as a line an agent could send"
+        );
     }
 }

@@ -635,6 +635,14 @@ pub(crate) fn open_for_text(path: &Path) -> Result<DocRenderer, AgentError> {
     open(path, Policy::default())
 }
 
+/// A page's text as `text` gives it in `untrusted.text`: the one reading `text`, `ref --chars` and `resolve` share. `file_page` counts from 0. The
+/// hidden-text check isn't asked for: it changes what is reported about the text, never the text.
+pub(crate) fn page_text(path: &Path, file_page: u32) -> Result<String, AgentError> {
+    let mut doc = open_for_text(path)?;
+    let characters = doc.page_characters(file_page, true, false)?;
+    Ok(read_page(&characters.chars, &characters.boxes, false).normalized.text)
+}
+
 /// What a page's characters say about hidden text. `text` and `export svg` both go by this, so they can't disagree.
 fn hidden_text_facts(characters: &recto_render_service::PageCharacters) -> Value {
     let reading = read_page(&characters.chars, &characters.boxes, characters.hidden_checked);
@@ -870,6 +878,28 @@ mod tests {
 
     fn doc() -> TempPdf {
         TempPdf::new("doc.pdf", &pages(&[Page::new(text_lines(&["Words"]))]))
+    }
+
+    /// Failure: `ref --chars` and `resolve` read a page's text another way than `recto text` does (no boxes, so no word drawn late is put back; the hyphen not joined), so a range counted in one is in
+    /// different characters in the other. Each run is its own `BT`..`ET`, the last drawn after the line below it, as `late_word_page` has it, so `runs_moved` is above 0 and the boxes are read. The tag-character
+    /// case can't be built: the test PDFs' standard font has no code for one, and an invisible character doesn't come through it either.
+    #[test]
+    fn page_text_is_the_text_of_text_for_a_joined_hyphen_and_a_word_drawn_late() {
+        let run = |x: u32, y: u32, text: &str| format!("BT /F1 12 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET\n");
+        let content = [
+            run(72, 740, "An exam-"),
+            run(72, 726, "ple of"),
+            run(72, 700, "A recipient"),
+            run(170, 700, "ignore this field"),
+            run(72, 680, "and the next line goes on"),
+            run(132, 700, "MUST"),
+        ]
+        .concat();
+        let file = TempPdf::new("odd.pdf", &pages(&[Page::new(content.into_bytes())]));
+        let said = text(&file.0, 1).unwrap();
+        assert!(said["hyphens_joined"].as_u64().unwrap() > 0, "{said}");
+        assert!(said["runs_moved"].as_u64().unwrap() > 0, "{said}");
+        assert_eq!(page_text(&file.0, 0).unwrap(), said["untrusted"]["text"].as_str().unwrap());
     }
 
     /// Failure: `image --out` writes an image's own bytes with no cap, as `render` has one, so a file whose image is gigabytes writes gigabytes (review, 2026-11-08); or a worker's start over counts what it threw away against the cap.

@@ -252,3 +252,69 @@ fn locator_copies_the_real_existing_page_identity() {
     let value = Locator::new(DocumentTags::new([1; 8], None), reference, Target::Page);
     assert_eq!(decode(&encode(&value)).unwrap(), value);
 }
+
+/// Failure: the text check drifts from the frozen `recto-text/1` (another hash, another prefix, bytes or normalised text instead of the characters), so
+/// every reference to characters made before the drift reads as changed text.
+#[test]
+fn the_text_check_is_recto_text_1_over_the_utf8_characters() {
+    // printf 'recto-text/1\0%s' 'Mine page 3' | shasum -a 256
+    assert_eq!(text_check("Mine page 3"), [0x87, 0x5f, 0xb1, 0xc4, 0x68, 0x09, 0xd7, 0x88]);
+    let range = characters("xx Mine page 3 yy", 3, 14).unwrap();
+    assert_eq!(range.text_check(), text_check("Mine page 3"));
+    assert_eq!(range.offsets(), (3, 14));
+}
+
+/// Failure: offsets count bytes, or UTF-16 units, so a range over text with accents or an emoji names other characters than `recto text`'s offsets do.
+#[test]
+fn characters_count_unicode_scalars_not_bytes() {
+    let text = "a\u{e9}\u{1F600}b\u{e9}";
+    let range = characters(text, 1, 4).unwrap();
+    assert_eq!(range.text_check(), text_check("\u{e9}\u{1F600}b"));
+    assert_eq!(check_characters(range, text), TextMatch::Same);
+}
+
+/// Failure: an empty range, one past the cap, or one past the text's end is made into a reference (so it names nothing, or text that isn't there), or the
+/// limit itself is refused.
+#[test]
+fn a_range_empty_past_the_text_or_past_the_cap_is_refused() {
+    let text = "abcdef";
+    assert!(characters(text, 0, 6).is_ok(), "end at the count is held");
+    assert!(characters(text, 5, 6).is_ok());
+    for (start, end) in [(0, 7), (6, 7), (3, 3), (4, 2), (0, 0)] {
+        assert_eq!(characters(text, start, end).unwrap_err(), Error::OutOfRange, "{start}-{end}");
+    }
+    let long: String = "x".repeat(MAX_CHARACTER as usize);
+    assert!(characters(&long, 0, MAX_CHARACTER).is_ok(), "the cap itself is held");
+    assert_eq!(characters(&long, 0, MAX_CHARACTER + 1).unwrap_err(), Error::OutOfRange);
+}
+
+/// Failure: a changed page's range is vouched for by finding the words elsewhere (a search), or a range past a short text panics or is `Same`.
+#[test]
+fn check_is_same_only_at_the_same_offsets_and_never_searches_elsewhere() {
+    let range = characters("one two three", 4, 7).unwrap();
+    assert_eq!(check_characters(range, "one two three"), TextMatch::Same);
+    assert_eq!(check_characters(range, "one  two three"), TextMatch::Changed, "the words moved by one");
+    assert_eq!(check_characters(range, "one"), TextMatch::Changed, "past the text");
+    let hostile = CharacterRange::new(0, MAX_CHARACTER, [0; 8]).unwrap();
+    assert_eq!(check_characters(hostile, "ten chars!!"), TextMatch::Changed);
+}
+
+/// Failure: what lies past a range's `end` in a long page (100,000 characters) changes the answer for the range, so a check is about more than its own
+/// characters. Two texts that differ only past `end` give the same range and the same match, and a change inside the range is `Changed`. This holds the
+/// answer, not the cost: a walk that read on and ignored the rest would pass, and the bound on the walk is by `span` stopping at `end`, which no
+/// timing-free test sees.
+#[test]
+fn a_small_range_over_a_long_text_is_decided_by_what_is_before_its_end() {
+    let head = "Mine page 3 ";
+    let (a, b) = (format!("{head}{}", "x".repeat(100_000)), format!("{head}{}\u{1F600}", "y".repeat(100_000)));
+    let made = characters(&a, 5, 9).unwrap();
+    assert_eq!(made.text_check(), text_check("page"));
+    assert_eq!(characters(&b, 5, 9).unwrap().text_check(), made.text_check());
+    assert_eq!((check_characters(made, &a), check_characters(made, &b)), (TextMatch::Same, TextMatch::Same));
+    let changed = format!("Mine pace 3 {}", "x".repeat(100_000));
+    assert_eq!(check_characters(made, &changed), TextMatch::Changed);
+    assert_eq!(
+        characters(&a, 0, 100_000 + head.len() as u32).map(|range| range.offsets().1),
+        Ok(100_000 + head.len() as u32)
+    );
+}
