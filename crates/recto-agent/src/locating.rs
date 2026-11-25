@@ -114,7 +114,7 @@ fn readable<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<(TabFile, Open
     if file.withheld {
         return Err(crate::source_changed(&file.path));
     }
-    file.require_current()?;
+    // A changed file is refused before `run` by `execute`'s READS_PAGES gate (`source_changed`), the one implementation of that rule.
     if file.renderer_only {
         return Err(not_referenceable(RENDERER_ONLY));
     }

@@ -21,7 +21,13 @@ A reference is a short token that names a page by its content as well as its num
 | `gov_nasa_ntrs20240002628.pdf`, the most pages in bench100 | 97 MiB | 383 | 7 ms | 1,027 ms | 359 | 269,070,134 | `incomplete` (stopped at 256 MiB of reads, 24 pages short) |
 | `gov_usgs_usgs70277338.pdf`, the 330 MiB map | 330 MiB | 1 | 1 ms | 225 ms | 1 | 119,948,577 | `incomplete` (its one page came back with no identity) |
 
-Both are far under 10 s. What they say about the answers, not measured further: the NASA report is charged 269 MB of reads for a 97 MiB file (how a page's read is charged is the core's, and why it exceeds the file wasn't looked into), so a page that is really gone there is `incomplete` and not `gone`; `gone` is only reachable on files whose whole identity read fits in 256 MiB. And the map's one page has no identity under the page caps, so its resolve is `incomplete` too, and a reference to it would likely be `not_referenceable` (not tried).
+Both are far under 10 s.
+
+## Known limits
+
+- On the 383-page NASA report (97 MiB) a page that is really gone answers `incomplete`, not `gone`: the scan read 359 pages and 269,070,134 bytes and stopped at the 256 MiB cap, 24 pages short. A page read is charged more bytes than the file holds; why was not looked into. `gone` is only reachable where the whole identity read fits in 256 MiB.
+- The 330 MiB USGS map has one page, and that page has no identity (resolve answered `incomplete` after 119,948,577 bytes), so it can't be referenced with certainty; a `ref` to it would probably be `not_referenceable` (not tried).
+- Both go to the plan as follow-ups; nothing was changed for them.
 
 ## Tests
 

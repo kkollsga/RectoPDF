@@ -66,6 +66,9 @@ pub enum Kind {
     /// There or not.
     Switch,
     Text,
+    /// A reference token `recto ref` gave. Not free text: the CLI itself refuses what the command would (as `Choice` does), so a word that is no
+    /// reference never becomes a line the socket refuses, and no guard has to invent a value for it.
+    Reference,
     /// One of these words.
     Choice(&'static [&'static str]),
     /// Some of these words, with commas between.
@@ -1215,6 +1218,12 @@ fn read_value(arg: &Arg, value: &str) -> Result<Value, String> {
                 _ => Err(bad()),
             }
         }
+        // Constant words: the input is never repeated, since it is hostile and may be long.
+        Kind::Reference => match recto_core::locator::decode(value) {
+            Ok(_) => Ok(json!(value)),
+            Err(recto_core::locator::Error::UnsupportedVersion) => Err("That reference was made by a newer RectoPDF than this one.".to_string()),
+            Err(_) => Err("That isn't a reference RectoPDF made. Use the `ref` that `recto ref` gave, whole.".to_string()),
+        },
         Kind::Switch | Kind::Rest => Err("That doesn't take a value.".to_string()),
     }
 }
@@ -1412,6 +1421,7 @@ mod tests {
             Kind::Degrees => "90",
             Kind::Level => "read_only",
             Kind::Text => "words",
+            Kind::Reference => "r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000",
             Kind::Choice(words) | Kind::List(words) => words[0],
             Kind::Size => "10x10",
             Kind::Rect => "1,2,3,4",

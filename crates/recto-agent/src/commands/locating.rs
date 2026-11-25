@@ -161,7 +161,7 @@ pub(crate) const ROWS_RESOLVE: &[Spec] = &[Spec {
         Arg {
             key: "ref",
             flag: None,
-            kind: Kind::Text,
+            kind: Kind::Reference,
             required: true,
             help: "A reference `recto ref` gave, whole.",
         },
