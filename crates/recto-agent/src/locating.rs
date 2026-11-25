@@ -111,10 +111,9 @@ pub(crate) fn resolve<A: SessionAccess>(access: &A, tab: &TabRef, reference: Loc
 /// The tab's file, readable as pages: not withheld, not changed under its edits, not the renderer's alone, and opened as the version it is now.
 fn readable<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<(TabFile, Opened, recto_platform::FileStamp), AgentError> {
     let file = tab_file(access, tab)?;
-    if file.withheld {
-        return Err(crate::source_changed(&file.path));
-    }
-    // A changed file is refused before `run` by `execute`'s READS_PAGES gate (`source_changed`), the one implementation of that rule.
+    // Withheld, or changed under the tab's edits: refused as `contents` is. `execute`'s READS_PAGES gate only refuses edits it can't read, so a file another
+    // program replaced before the app has looked is caught here.
+    file.require_pages_shown()?;
     if file.renderer_only {
         return Err(not_referenceable(RENDERER_ONLY));
     }

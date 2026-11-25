@@ -164,6 +164,25 @@ fn an_edited_tab_whose_file_changed_refuses_resolve_as_text_does() {
     assert_eq!((resolved.code, referenced.code), (as_text, as_text), "{resolved:?} {referenced:?}");
 }
 
+/// Failure: another program replaces the file under a tab with unsaved edits, and an agent asks before the app has looked at the file (so nothing is
+/// withheld yet). `ref` maps the tab's page through the old positions onto the new file and hands out a token for the wrong page, or `resolve` answers about
+/// it. Both are `source_changed`, as `text` is, with no look in between.
+#[test]
+fn an_edited_tab_whose_file_changed_before_the_app_looked_refuses_ref_and_resolve_as_text_does() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 10));
+    app.open(&file);
+    app.person(r##"{"cmd":"page_rotate","tab":"#1","pages":"9","degrees":90}"##);
+    app.settle();
+    let token = reference(&app, 3);
+    replace(&file, &pdf_bytes("Theirs", 5));
+    let as_text = app.recto(Level::Full, &["text", "--page", "3"]).expect_err("text refuses").code;
+    assert_eq!(as_text.as_str(), "source_changed");
+    let referenced = app.agent(Level::ReadOnly, r##"{"cmd":"ref","page":3,"tab":"#1"}"##).expect_err("ref refuses");
+    let resolved = resolve(&app, Level::ReadOnly, &token).expect_err("resolve refuses");
+    assert_eq!((referenced.code, resolved.code), (as_text, as_text), "{referenced:?} {resolved:?}");
+}
+
 /// Everything of the owner's tab an agent could change: what `edits` says, the session's list, and the file's bytes and time.
 fn owners_tab(app: &HeadlessApp, file: &Path) -> (Value, Value, Vec<u8>, std::time::SystemTime) {
     let edits = app.recto(Level::Full, &["edits"]).expect("edits");

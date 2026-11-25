@@ -40,6 +40,15 @@ impl TabFile {
         }
         Ok(())
     }
+
+    /// Refuses when the tab's pages can't be read as they stand: its own pages are withheld, or the file isn't the one its edits' page numbers came from.
+    /// The one place that pair of rules is written, in the order and words `contents` has always had.
+    pub(crate) fn require_pages_shown(&self) -> Result<(), AgentError> {
+        if self.withheld {
+            return Err(crate::source_changed(&self.path));
+        }
+        self.require_current()
+    }
 }
 
 pub(crate) fn tab_file<A: SessionAccess>(access: &A, tab: &TabRef) -> Result<TabFile, AgentError> {
@@ -136,10 +145,7 @@ pub(crate) fn contents<A: SessionAccess>(
     }
     let file = tab_file(access, tab)?;
     // What the person's contents pane shows none of, by the same rule (review S2): the file's outline isn't about the list's pages.
-    if file.withheld {
-        return Err(crate::source_changed(&file.path));
-    }
-    file.require_current()?;
+    file.require_pages_shown()?;
     let unavailable = || json!({ "tab": file.id, "available": false, "note": "Only the renderer can read this file, so its contents can't be read. That doesn't mean it has none.", "entries": [], "total": null, "next_from": null });
     if file.renderer_only {
         return Ok(unavailable());
