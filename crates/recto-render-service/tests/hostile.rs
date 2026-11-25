@@ -947,8 +947,8 @@ fn a_worker_that_never_says_hello_is_given_up_on() {
     assert!(!doc.worker_pid().is_some());
     assert_eq!(
         doc.stats().too_busy,
-        u32::from(recto_render_service::MAX_BUSY),
-        "each is counted as the Mac being busy"
+        u32::from(recto_render_service::MAX_BUSY) - 1,
+        "each start inside the bound is counted as the Mac being busy; the one that ends the run isn't"
     );
 }
 
