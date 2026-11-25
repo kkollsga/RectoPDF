@@ -39,6 +39,8 @@ mod page_deadline;
 #[cfg(feature = "test-seams")]
 mod test_deadline;
 mod worker_env;
+#[doc(hidden)]
+pub use host::busy::MAX_BUSY;
 pub use host::{
     CancelHandle, DocRenderer, DrawPurpose, ExportRefusal, HeavyRest, HeavySlot, KillReason, LowRes, LowResWhy, PageCharacters, PageDrawState, Policy,
     RenderFailure, RenderStats, ServiceConfig, Surface, Target, Tile, TileRequest, TileResult, WallsDown,

@@ -14,6 +14,8 @@ struct StandIn {
     fails_until: Option<Instant>,
     /// What its small pictures are drawn in, black but where a test says.
     colour: [u8; 4],
+    /// What its page size read fails with, if it does.
+    size_fails: Option<RenderFailure>,
 }
 
 impl StandIn {
@@ -25,6 +27,7 @@ impl StandIn {
             now: Instant::now(),
             fails_until: None,
             colour: [0, 0, 0, 0xFF],
+            size_fails: None,
         }
     }
 
@@ -52,6 +55,9 @@ impl LookSource for StandIn {
     }
 
     fn page_size(&mut self, _page: u32) -> Result<(f32, f32), RenderFailure> {
+        if let Some(failure) = self.size_fails {
+            return Err(failure);
+        }
         Ok((612.0, 792.0))
     }
 
@@ -161,6 +167,25 @@ fn a_look_to_be_tried_again_is_never_handed_on_or_kept() {
     assert!(looks.decided.is_empty(), "nothing kept: {looks:?}");
     assert_eq!(doc.drawn, 1, "nothing drawn before its time");
     assert_eq!(*at(&mut doc, &mut looks, 30).unwrap(), PageLook::dark_page(), "decided at its time");
+}
+
+/// Failure (review of the long-session wake, B1): the small picture a dark page's look is decided from comes back `TooBusy` when the Mac gave the worker no processor, and the look took it for a final failure: a dark slide's look was decided and kept as a page of text, shown light for the renderer's life. It's a try that may pass: nothing's kept and the page is asked again after the wait. Seen failing with `TooBusy` as `Picture::Final` (decided at the first ask).
+#[test]
+fn a_small_picture_the_mac_was_too_busy_for_is_tried_again_not_decided() {
+    let (mut doc, mut looks) = (StandIn::new(Some(Vec::new()), [Err(RenderFailure::TooBusy { page: 0 })]), Looks::default());
+    assert_eq!(asked(&mut doc, &mut looks), Err(NoLook::Again));
+    assert!(looks.decided.is_empty(), "nothing kept: {looks:?}");
+}
+
+/// Failure (final review): the page's size, asked first for the small picture, comes back `TooBusy` and the look took it for a final failure, as the draw's was before B1. It's a try that may pass. Seen failing with that `Picture::Final` (decided at the first ask).
+#[test]
+fn a_page_size_the_mac_was_too_busy_for_is_tried_again_not_decided() {
+    let mut doc = StandIn::new(Some(Vec::new()), []);
+    doc.size_fails = Some(RenderFailure::TooBusy { page: 0 });
+    let mut looks = Looks::default();
+    assert_eq!(asked(&mut doc, &mut looks), Err(NoLook::Again));
+    assert!(looks.decided.is_empty(), "nothing kept: {looks:?}");
+    assert_eq!(doc.drawn, 0);
 }
 
 /// Failure: a picture that can't be had for good (a page that stopped its worker) is tried again at every job, a tile thrown away each time. It takes [`PageLook::undecided`] at once and keeps it, as before.

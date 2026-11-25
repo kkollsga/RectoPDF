@@ -4,7 +4,7 @@ mod common;
 
 use common::{kill_process, real_config, renderer, tile_surface, wait_until};
 use recto_platform::isolate::process_memory;
-use recto_render_service::{DocRenderer, KillReason, Policy, RenderFailure, TileKind, TileRect, TileRequest, TileResult};
+use recto_render_service::{DocRenderer, KillReason, PageDrawState, Policy, RenderFailure, TileKind, TileRect, TileRequest, TileResult};
 use recto_testpdf::{Page, TempPdf, busy_page, form_bomb, pages, slow_page, text_lines};
 use std::time::Duration;
 
@@ -753,6 +753,168 @@ fn busy_reads_dont_stop_a_document_and_three_in_a_row_are_remembered() {
         "remembered"
     );
     assert_eq!(doc.stats().spawns, spawns, "with no worker started to learn it again");
+}
+
+/// Stops a worker, as a Mac too busy to run it does.
+fn stop_worker(doc: &mut DocRenderer) {
+    let pid = doc.worker_pid().expect("a worker with the file open");
+    assert!(
+        std::process::Command::new("/bin/kill")
+            .arg("-STOP")
+            .arg(pid.to_string())
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+/// Failure (the long session, 2026-11-25): a page's draw is killed at its deadline because the Mac was too busy to run the worker (a wake after a sleep), and the page is remembered as failed at every scale for the session, bare with "took too long to draw", and the wake never gets a first frame. A draw that got under half its deadline in processor time says nothing about the page: it comes back as `TooBusy`, nothing is remembered, and the next ask draws it. Made by stopping the worker, so it has no processor time at all; only that draw is short of time (the seam), the one after runs under the ordinary deadline.
+#[test]
+fn a_draw_the_mac_was_too_busy_for_is_tried_again() {
+    let file = TempPdf::new("busy-draw.pdf", &pages(&[Page::new(text_lines(&["one"])), Page::new(text_lines(&["two"]))]));
+    let mut doc = renderer(&file.0, Policy::default());
+    doc.page_size(0).unwrap();
+    stop_worker(&mut doc);
+    let surface = tile_surface();
+    let stopped = recto_render_service::under_page_deadline_for_test(
+        &mut doc,
+        |doc| doc,
+        Duration::from_millis(250),
+        |doc| doc.render_tile(&tile_request(1, 0), &surface),
+    );
+    assert!(matches!(stopped, Err(RenderFailure::TooBusy { page: 1 })), "{stopped:?}, {:?}", doc.stats());
+    assert!(doc.stats().too_busy >= 1, "counted as the Mac being busy: {:?}", doc.stats());
+    assert_eq!(doc.page_draw_state_at(1, 2.0), PageDrawState::Sharp, "nothing was remembered");
+    assert!(
+        matches!(draws(&mut doc, 1), TileKind::Grey | TileKind::Colour | TileKind::Blank { .. }),
+        "drawn when asked again"
+    );
+}
+
+/// Failure: a page whose worker hangs every time looks just like a busy Mac, so busy draws that aren't remembered cost a deadline for every ask for ever, or busy draws count towards stopping the document and a busy Mac stops it drawing. Three busy draws of a page in a row remember it as failed after all, as three busy reads do, and none of them counts towards the kills that stop a document.
+#[test]
+fn three_busy_draws_in_a_row_are_remembered_and_dont_stop_the_document() {
+    let list: Vec<Page> = (0..6).map(|at| Page::new(text_lines(&[&format!("page {at}")]))).collect();
+    let file = TempPdf::new("busy-draws.pdf", &pages(&list));
+    let mut doc = renderer(
+        &file.0,
+        Policy {
+            max_kills_per_document: 2,
+            ..Policy::default()
+        },
+    );
+    for (round, other) in [2u32, 3, 4].into_iter().enumerate() {
+        doc.page_size(other).unwrap();
+        stop_worker(&mut doc);
+        let surface = tile_surface();
+        let busy = recto_render_service::under_page_deadline_for_test(
+            &mut doc,
+            |doc| doc,
+            Duration::from_millis(250),
+            |doc| doc.render_tile(&tile_request(1, 0), &surface),
+        );
+        if round < 2 {
+            assert!(
+                matches!(busy, Err(RenderFailure::TooBusy { page: 1 })),
+                "round {round}: {busy:?}, {:?}",
+                doc.stats()
+            );
+        } else {
+            assert!(
+                matches!(
+                    busy,
+                    Err(RenderFailure::PageFailed {
+                        page: 1,
+                        reason: KillReason::Deadline
+                    })
+                ),
+                "round {round}: {busy:?}, {:?}",
+                doc.stats()
+            );
+        }
+        assert_eq!(doc.stats().too_busy, round as u32 + 1, "round {round}: {:?}", doc.stats());
+    }
+    assert_eq!(
+        doc.page_draw_state_at(1, 2.0),
+        PageDrawState::Failed(KillReason::Deadline),
+        "remembered, at every scale"
+    );
+    assert!(
+        matches!(draws(&mut doc, 5), TileKind::Grey | TileKind::Colour | TileKind::Blank { .. }),
+        "three kills past an allowance of two, and the document still draws: {:?}",
+        doc.stats()
+    );
+    let spawns = doc.stats().spawns;
+    assert!(
+        matches!(
+            doc.render_tile(&tile_request(1, 0), &tile_surface()),
+            Err(RenderFailure::PageFailed { page: 1, .. })
+        ),
+        "remembered"
+    );
+    assert_eq!(doc.stats().spawns, spawns, "with no worker started to learn it again");
+}
+
+/// Failure (final review): only a draw that landed ended a run of busy draws, so two busy draws, a page whose size then read fine, and a third busy draw remembered the page as failed for good, though the worker had just answered about it. Any job of the page that succeeds ends the run.
+#[test]
+fn a_size_that_reads_fine_ends_a_run_of_busy_draws() {
+    let file = TempPdf::new(
+        "busy-then-size.pdf",
+        &pages(&[Page::new(text_lines(&["one"])), Page::new(text_lines(&["two"]))]),
+    );
+    let mut doc = renderer(&file.0, Policy::default());
+    for round in 0..3 {
+        if round == 2 {
+            doc.page_size(1).expect("the page reads fine between");
+        } else {
+            doc.page_size(0).unwrap();
+        }
+        stop_worker(&mut doc);
+        let surface = tile_surface();
+        let busy = recto_render_service::under_page_deadline_for_test(
+            &mut doc,
+            |doc| doc,
+            Duration::from_millis(250),
+            |doc| doc.render_tile(&tile_request(1, 0), &surface),
+        );
+        assert!(
+            matches!(busy, Err(RenderFailure::TooBusy { page: 1 })),
+            "round {round}: {busy:?}, {:?}",
+            doc.stats()
+        );
+    }
+}
+
+/// Runs `ask` with the worker stopped and the page's deadline short, as a wake leaves it: the Mac gave the worker no processor time.
+fn asked_starved<T>(doc: &mut DocRenderer, ask: impl FnOnce(&mut DocRenderer) -> T) -> T {
+    stop_worker(doc);
+    recto_render_service::under_page_deadline_for_test(doc, |doc| doc, Duration::from_millis(250), ask)
+}
+
+/// Failure (review of the long-session wake, B1): the reader asks for a page's traits before it draws, and a traits job starved of the processor left the page failed at every scale for good, so the page stayed bare however often it was drawn again. It comes back as `TooBusy`, nothing is remembered, and a draw after it lands.
+#[test]
+fn a_traits_job_the_mac_was_too_busy_for_is_tried_again() {
+    let file = TempPdf::new("busy-traits.pdf", &pages(&[Page::new(text_lines(&["one"])), Page::new(text_lines(&["two"]))]));
+    let mut doc = renderer(&file.0, Policy::default());
+    doc.page_size(0).unwrap();
+    let asked = asked_starved(&mut doc, |doc| doc.largest_image_pixels(1, 0));
+    assert!(matches!(asked, Err(RenderFailure::TooBusy { page: 1 })), "{asked:?}, {:?}", doc.stats());
+    assert_eq!(doc.page_draw_state_at(1, 2.0), PageDrawState::Sharp, "nothing was remembered");
+    assert!(
+        matches!(draws(&mut doc, 1), TileKind::Grey | TileKind::Colour | TileKind::Blank { .. }),
+        "drawn when asked again"
+    );
+}
+
+/// Failure (review of the long-session wake, S2): a page's size asked while the Mac was too busy for the worker was remembered as failed for the session, and the page was bare for ever. It comes back as `TooBusy` and is read again when asked.
+#[test]
+fn a_size_the_mac_was_too_busy_for_is_asked_again() {
+    let file = TempPdf::new("busy-size.pdf", &pages(&[Page::new(text_lines(&["one"])), Page::new(text_lines(&["two"]))]));
+    let mut doc = renderer(&file.0, Policy::default());
+    doc.page_size(0).unwrap();
+    let asked = asked_starved(&mut doc, |doc| doc.page_size(1));
+    assert!(matches!(asked, Err(RenderFailure::TooBusy { page: 1 })), "{asked:?}, {:?}", doc.stats());
+    assert!(doc.page_size(1).is_ok(), "read when asked again");
 }
 
 /// Failure: a check nobody wants any more holds the thread that draws for as long as its deadline, up to 5 s, and on a hostile file again and again, while the page in view stays blank. It has to stop when it's told to, and a text job's generation has to reach the worker.

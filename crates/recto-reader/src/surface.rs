@@ -607,6 +607,7 @@ Docs::pub(crate) fn files_of(&self, tab: u32) -> Vec<PathBuf>
 Docs::pub(crate) fn holds(&self, tab: u32) -> bool
 Docs::pub(crate) fn hot_tab(&self) -> Option<u32>
 Docs::pub(crate) fn is_own_file(&self, tab: u32, file: &std::path::Path) -> bool
+Docs::pub(crate) fn next_hold_ends(&self, now: Instant) -> Option<std::time::Duration>
 Docs::pub(crate) fn set_band(&mut self, band: Option<(u32, u16, u16)>)
 Docs::pub(crate) fn shown(&self) -> Option<&DocView>
 Docs::pub(crate) fn withholds(&self, tab: u32, file: &std::path::Path) -> bool
@@ -940,6 +941,7 @@ WorkerFigures (pub struct, derives Clone, Copy)
 WorkerFigures::pub fn bytes(&self, tab: u32) -> u64
 WorkerFigures::pub fn footprint(&self) -> (u64, u64)
 WorkerFigures::pub fn pids(&self) -> Vec<u32>
+WorkerFigures::pub fn starved(&self) -> (u32, u32)
 WorkerFigures::pub fn walled(&self) -> u32
 Zoom (pub enum, derives Clone, Copy, Debug, PartialEq)
 fn (pub(crate)) pub(crate) fn finding(reader: &Reader) -> bool

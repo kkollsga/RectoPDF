@@ -74,7 +74,7 @@ pub(super) fn run_guarded(shared: &Shared) {
     }
 }
 
-/// **Nothing to start:** at rest as ever, or, when there was a plan whose surface the system refused, a wait before it's asked again, only while it's planned
+/// **Nothing to start:** at rest as ever (but for the wait of a page held to be tried again), or, when there was a plan whose surface the system refused, a wait before it's asked again, only while it's planned
 /// (`SurfaceRetry`, in `tiles/jobs.rs`). Workers are let go in the wait as at rest: memory pressure and a refused surface come together.
 fn rest_or_wait_for_a_surface(
     planned: bool,
@@ -99,7 +99,8 @@ fn rest_or_wait_for_a_surface(
             Some(reader.work.surfaces.refused())
         } else {
             reader.work.surfaces.clear();
-            None
+            // A page held for a look or a draw to be tried again has no event coming to ask it: the thread wakes when its wait is over.
+            reader.docs.next_hold_ends(Instant::now())
         }
     };
     rest(shared, renderers, policy, resting_since, retry);
@@ -342,7 +343,7 @@ fn rest(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>, policy: &Pol
         // Let go just now: the loop says so before it rests again.
         (Some(left), None) if left.is_zero() => {}
         (Some(left), None) => std::thread::park_timeout(left),
-        // Waiting for a surface: told here, as the loop would only find the surface refused again, and the wait isn't cut short.
+        // Waiting for a surface, or for a held page's wait to end: told here, as the loop would only find the same again, and the wait isn't cut short.
         (Some(left), Some(retry)) if left.is_zero() => {
             publish_workers(shared, renderers);
             std::thread::park_timeout(retry);
@@ -423,15 +424,18 @@ fn read_links(shared: &Shared, renderers: &HashMap<PathBuf, OpenDoc>, job: Job, 
 
 fn publish_workers(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>) {
     let mut walled = 0;
+    let mut starved = (0u32, 0u32);
     let by_file: Vec<(PathBuf, u32)> = renderers
         .iter_mut()
         .filter_map(|(path, open)| {
+            let stats = open.doc.stats();
+            starved = (starved.0.saturating_add(stats.too_busy), starved.1.saturating_add(stats.deadline_kills));
             let pid = open.doc.worker_pid()?;
             walled += u32::from(open.doc.worker_walled() == Some(true));
             Some((path.clone(), pid))
         })
         .collect();
-    shared.workers.publish(by_file, walled);
+    shared.workers.publish(by_file, walled, starved);
 }
 
 /// **Only hot and warm tabs' files keep a renderer, and one given a password the person typed only while the tab it was given for holds it as its own
@@ -640,14 +644,7 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                 Outcome::ImageUnder(crate::image_pick::under(places.as_ref(), *at))
             }
         }
-        JobKind::Size => match doc.page_size(job.source_page) {
-            Ok((width, height)) => Outcome::Size(PageBox { width, height }),
-            Err(failure) if whole_file(failure) => document_failed(failure),
-            Err(failure) => Outcome::PageFailed {
-                message: failure.message(),
-                may_pass: false,
-            },
-        },
+        JobKind::Size => size_outcome(doc.page_size(job.source_page)),
         JobKind::Traits => match doc.largest_image_pixels(job.source_page, job.generation) {
             // A stale question answers zero, which isn't an answer about the page. Remembering it would draw a heavy page a tile at a time.
             Ok(_) if doc.is_stale(job.generation) => Outcome::Cancelled,
@@ -714,17 +711,29 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                     Outcome::Drawn { kind, low_res }
                 }
                 Ok(TileResult::Cancelled { .. }) => Outcome::Cancelled,
-                Err(failure) if whole_file(failure) => document_failed(failure),
-                Err(failure @ RenderFailure::NotDrawableNow { .. }) => Outcome::PageFailed {
-                    message: failure.message(),
-                    may_pass: true,
-                },
-                Err(failure) => Outcome::PageFailed {
-                    message: failure.message(),
-                    may_pass: false,
-                },
+                Err(failure) => draw_failed(failure),
             }
         }
+    }
+}
+
+/// What a draw that failed is to the page view. The Mac too busy to run the worker says nothing of the page, so nothing's said and it's asked again after the wait, as a look to be tried again is ([`Outcome::LookLater`]); a page that can't be drawn for now may pass; the rest of a page's failures stay, and a failure of the file fails it.
+/// What a page-size read gives: the size, or the failure as a draw's is told (a busy Mac is held quietly).
+pub(super) fn size_outcome(read: Result<(f32, f32), RenderFailure>) -> Outcome {
+    match read {
+        Ok((width, height)) => Outcome::Size(PageBox { width, height }),
+        Err(failure) => draw_failed(failure),
+    }
+}
+
+pub(super) fn draw_failed(failure: RenderFailure) -> Outcome {
+    match failure {
+        RenderFailure::TooBusy { .. } => Outcome::LookLater,
+        failure if whole_file(failure) => document_failed(failure),
+        failure => Outcome::PageFailed {
+            message: failure.message(),
+            may_pass: matches!(failure, RenderFailure::NotDrawableNow { .. }),
+        },
     }
 }
 
@@ -757,6 +766,51 @@ fn whole_file(failure: RenderFailure) -> bool {
             | RenderFailure::PageFailed { .. }
             | RenderFailure::PageReadFailed { .. }
             | RenderFailure::NotDrawableNow { .. }
+            | RenderFailure::TooBusy { .. }
             | RenderFailure::ExportRefused { .. }
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use recto_render_service::KillReason;
+
+    /// Failure (long session review): a page size the Mac was too busy to read became a page that can never pass, bare for good though it said it would be tried again. Held quietly, as a draw is.
+    #[test]
+    fn a_size_the_mac_was_too_busy_to_read_is_held_quietly() {
+        assert!(matches!(size_outcome(Err(RenderFailure::TooBusy { page: 2 })), Outcome::LookLater));
+        assert!(matches!(size_outcome(Ok((10.0, 20.0))), Outcome::Size(_)));
+        assert!(matches!(
+            size_outcome(Err(RenderFailure::PageReadFailed {
+                page: 2,
+                reason: KillReason::Deadline
+            })),
+            Outcome::PageFailed { may_pass: false, .. }
+        ));
+    }
+
+    /// Failure (the long session, 2026-11-25): a draw the Mac was too busy to run the worker for is told to the person as a page that took too long, for good: the page stays bare and the wake never gets a first frame. It ends as [`Outcome::LookLater`], with no words and a try after the wait, and a page that really can't be drawn is still said, as it was. Seen failing with `TooBusy` mapped to a failure that can't pass.
+    #[test]
+    fn a_draw_the_mac_was_too_busy_for_is_held_quietly_and_a_failed_page_is_still_said() {
+        assert!(matches!(draw_failed(RenderFailure::TooBusy { page: 3 }), Outcome::LookLater));
+        assert!(matches!(
+            draw_failed(RenderFailure::PageFailed {
+                page: 3,
+                reason: KillReason::Deadline
+            }),
+            Outcome::PageFailed { may_pass: false, .. }
+        ));
+        assert!(matches!(
+            draw_failed(RenderFailure::NotDrawableNow {
+                page: 3,
+                why: recto_render_service::LowResWhy::HeavyBusy
+            }),
+            Outcome::PageFailed { may_pass: true, .. }
+        ));
+        assert!(matches!(
+            draw_failed(RenderFailure::NeedsPassword),
+            Outcome::DocumentFailed { needs_key: true, .. }
+        ));
+    }
 }

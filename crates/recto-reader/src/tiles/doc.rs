@@ -28,6 +28,18 @@ impl Docs {
         self.hot.and_then(|tab| self.views.get(&tab))
     }
 
+    /// How long till the soonest page of the tab showing that's held without words, in view or not (a look or a draw to be tried again, [`Outcome::LookLater`]) may be asked again, if one waits: the page view's thread wakes by then, as no event may come to ask. Only a time still to come: one gone by is for the plan to take if the page is in view, and for nothing to wake for if it isn't. Held pages are bounded in their tries, which is why a failure that has words, and may pass for ever, isn't woken for.
+    pub(crate) fn next_hold_ends(&self, now: Instant) -> Option<std::time::Duration> {
+        let doc = self.shown()?;
+        doc.drawing
+            .issues
+            .values()
+            .filter(|issue| issue.message.is_none())
+            .filter_map(|issue| issue.try_again_at?.checked_duration_since(now))
+            .filter(|left| !left.is_zero())
+            .min()
+    }
+
     /// The shown tab's contents band, as the core computed it for the page at the top of its view: the page, and the thousandths of it between which the same
     /// entry is current, or none. Set with each pass for the tab showing, so a band the view has woken the core for is set again, and wakes it again if the top of
     /// the view is still out of it. Past one past the page's end isn't a place, so it's held there.

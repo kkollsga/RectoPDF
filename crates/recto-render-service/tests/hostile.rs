@@ -130,6 +130,7 @@ fn answer_render(mode: &str, job: &RenderJob, channel: &Channel, retained: &mut 
             version: 1,
             repaired: false,
         }),
+        "spin_in_draw" => spin_on_every_thread(),
         "silent" | "ignore_cancel" => loop {
             std::thread::sleep(Duration::from_secs(60));
         },
@@ -245,16 +246,7 @@ fn fake_worker() {
                     std::thread::sleep(Duration::from_secs(600));
                 }
                 if mode == "spin_on_open" {
-                    for _ in 0..8 {
-                        std::thread::spawn(|| {
-                            loop {
-                                std::hint::spin_loop();
-                            }
-                        });
-                    }
-                    loop {
-                        std::hint::spin_loop();
-                    }
+                    spin_on_every_thread();
                 }
                 let mut handles = frame.handles;
                 let shared = SharedMemory::map(handles.pop().unwrap(), control::LEN).unwrap();
@@ -460,8 +452,49 @@ fn bad_text_is_rejected() {
     }
 }
 
+/// Asks for the page in `doc` as many times as a busy Mac is told of, and the one after: a worker that gets no processor time looks like a busy Mac to the host, so each of the first asks is told so and not remembered, and the ask that makes `MAX_BUSY` in a row is remembered as failed at the deadline. One more ask is answered from memory with no worker started. Returns the footprint before and after.
+fn asked_until_remembered(doc: &mut DocRenderer) -> (u64, u64) {
+    let before = recto_platform::footprint_bytes().unwrap_or(0);
+    for ask in 1..recto_render_service::MAX_BUSY {
+        assert_eq!(
+            doc.render_tile(&request(), &surface()).unwrap_err(),
+            RenderFailure::TooBusy { page: 0 },
+            "ask {ask}"
+        );
+    }
+    assert_eq!(
+        doc.render_tile(&request(), &surface()).unwrap_err(),
+        RenderFailure::PageFailed {
+            page: 0,
+            reason: KillReason::Deadline
+        }
+    );
+    assert_eq!(doc.stats().deadline_kills, u32::from(recto_render_service::MAX_BUSY));
+    let spawns = doc.stats().spawns;
+    assert!(matches!(
+        doc.render_tile(&request(), &surface()),
+        Err(RenderFailure::PageFailed { page: 0, .. })
+    ));
+    assert_eq!(doc.stats().spawns, spawns, "remembered, with no worker started to learn it again");
+    (before, recto_platform::footprint_bytes().unwrap_or(0))
+}
+
+/// Uses the processor on 9 threads at once, for ever.
+fn spin_on_every_thread() -> ! {
+    for _ in 0..8 {
+        std::thread::spawn(|| {
+            loop {
+                std::hint::spin_loop();
+            }
+        });
+    }
+    loop {
+        std::hint::spin_loop();
+    }
+}
+
 /// Failure: a worker claims a 64 MiB frame and sends nothing, and the host allocates it up front. A claim costs nothing until bytes arrive;
-/// the deadline ends it.
+/// the deadline ends it. The stand-in sleeps, as a worker the Mac gave no processor does, so the asks go as a busy Mac's do, and the memory held across all of them stays small.
 #[test]
 fn a_claimed_frame_costs_nothing_until_it_arrives() {
     let (mut doc, _file) = doc(
@@ -472,19 +505,12 @@ fn a_claimed_frame_costs_nothing_until_it_arrives() {
         },
     );
     let before = recto_platform::footprint_bytes().unwrap_or(0);
-    let failure = doc.render_tile(&request(), &surface()).unwrap_err();
-    assert_eq!(
-        failure,
-        RenderFailure::PageFailed {
-            page: 0,
-            reason: KillReason::Deadline
-        }
-    );
+    assert_eq!(doc.render_tile(&request(), &surface()).unwrap_err(), RenderFailure::TooBusy { page: 0 });
     let after = recto_platform::footprint_bytes().unwrap_or(0);
     assert!(after.saturating_sub(before) < 32 * 1024 * 1024, "grew from {before} to {after}");
 }
 
-/// Failure: a worker stuck in a page holds the document for ever. Past the deadline it's killed, and the page is marked.
+/// Failure: a worker stuck in a page holds the document for ever. Past the deadline it's killed, and the page is marked. The stand-in sleeps and so gets no processor time, which the host takes for a Mac too busy to run it: that isn't remembered until [`recto_render_service::MAX_BUSY`] asks in a row, each a deadline, and then it is.
 #[test]
 fn a_page_that_never_finishes_is_killed_at_the_deadline() {
     let (mut doc, _file) = doc(
@@ -494,14 +520,7 @@ fn a_page_that_never_finishes_is_killed_at_the_deadline() {
             ..Policy::default()
         },
     );
-    assert_eq!(
-        doc.render_tile(&request(), &surface()).unwrap_err(),
-        RenderFailure::PageFailed {
-            page: 0,
-            reason: KillReason::Deadline
-        }
-    );
-    assert_eq!(doc.stats().deadline_kills, 1);
+    asked_until_remembered(&mut doc);
     assert!(!doc.worker_pid().is_some());
 }
 
@@ -946,6 +965,26 @@ fn a_worker_too_busy_to_open_is_told_from_a_file_too_slow_to_open() {
     );
     assert_eq!(spins.page_count().unwrap_err(), RenderFailure::OpenFailed { reason: KillReason::Deadline });
     assert_eq!(spins.stats().too_busy, 0, "it had the processor, so that's the file");
+}
+
+/// Failure: a draw that hangs while using the processor, on every thread it can, reads as a Mac too busy to run its worker, so a hostile page is asked again and again as `TooBusy` and never remembered. Using the processor, it's the page: the first ask is a failure at the deadline and nothing counts as busy. (The draw twin of the open test above; seeded by counting every deadline as busy.)
+#[test]
+fn a_draw_that_uses_the_processor_is_told_from_a_mac_too_busy_to_run_it() {
+    let (mut spins, _file) = doc(
+        "spin_in_draw",
+        Policy {
+            page_deadline: Duration::from_millis(400),
+            ..policy()
+        },
+    );
+    assert_eq!(
+        spins.render_tile(&request(), &surface()).unwrap_err(),
+        RenderFailure::PageFailed {
+            page: 0,
+            reason: KillReason::Deadline
+        }
+    );
+    assert_eq!(spins.stats().too_busy, 0, "it had the processor, so that's the page");
 }
 
 /// Failure: a compromised worker writes to the shared cancel word and the host believes it, so every tile of the document reads as stale.

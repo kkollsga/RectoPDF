@@ -1,6 +1,6 @@
 //! A page's contents, from the host's side: asks for a frame at a time, checks what comes, and hands it on. Goes down the same limits as an export, so a page comes out whole or is refused, and nothing is written.
 
-use super::{DocRenderer, ExportRefusal, JobFailure, KillReason, PageDrawState, RenderFailure, SlotWaitEnd, WorkerClass};
+use super::{DocRenderer, ExportRefusal, JobFailure, KillReason, PageDrawState, RenderFailure, SlotWaitEnd, WorkerClass, busy};
 use recto_proto::contents::{ContentsJob, Record, Records, StreamCheck, TextMode, decode_contents, validate_contents};
 use recto_proto::jpeg::JpegFacts;
 use recto_proto::{Kind, ProtoError};
@@ -126,10 +126,14 @@ impl DocRenderer {
                 sink(ContentsEvent::Restart)?;
             }
             began = true;
+            let busy_before = busy::before(self);
             let tried = self.try_contents(request, class, started, waited_before, &mut done, &mut sink);
             self.waited_ticket = None;
             match tried {
-                Ok(TryEnd::Finished) => return Ok(done),
+                Ok(TryEnd::Finished) => {
+                    busy::landed(self, page);
+                    return Ok(done);
+                }
                 Ok(TryEnd::LostPlace) => {
                     // A worker gave up its place for no reason of the page's, so it starts again. A worker that keeps doing it is broken, or hostile.
                     if done.restarts >= MAX_RESTARTS {
@@ -144,7 +148,7 @@ impl DocRenderer {
                     };
                     self.set_draw(page, scale, next);
                 }
-                Ok(TryEnd::Stopped(reason)) => return Err(self.give_up_drawing(page, 0.0, reason)),
+                Ok(TryEnd::Stopped(reason)) => return Err(busy::draw_stopped(self, page, 0.0, reason, busy_before)),
                 Err(JobFailure::Failed(failure)) => return Err(failure),
                 Err(JobFailure::StaleKilled) => return Err(RenderFailure::Cancelled),
                 Err(JobFailure::Stopped(KillReason::MemoryLimit)) => {
@@ -155,7 +159,7 @@ impl DocRenderer {
                     };
                     self.set_draw(page, scale, next);
                 }
-                Err(JobFailure::Stopped(reason)) => return Err(self.give_up_drawing(page, 0.0, reason)),
+                Err(JobFailure::Stopped(reason)) => return Err(busy::draw_stopped(self, page, 0.0, reason, busy_before)),
                 // Its worker left between frames and someone else has the slot now. Back to waiting, within the same limits.
                 Err(JobFailure::HeavyBusy) => {}
             }

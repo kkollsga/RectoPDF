@@ -901,7 +901,7 @@ fn huge_paths_and_deep_clips_end_in_a_sound_file() {
     );
 }
 
-/// Failure: `form_bomb` hangs an export, takes the whole Mac, or leaves half a file under the real name. It must stop at the limit, say so, and leave nothing, and the page after it must still export.
+/// Failure: `form_bomb` hangs an export, takes the whole Mac, or leaves half a file under the real name. It must stop at the limit, say so, and leave nothing, and the page after it must still export. A bomb whose worker got under half its deadline in processor time on a Mac loaded with other tests is told as `page_mac_busy`, which is the same: it stopped, said so and left nothing.
 #[test]
 fn a_form_bomb_fails_cleanly_with_nothing_left_behind() {
     let file = TempPdf::new("bomb.pdf", &form_bomb());
@@ -911,7 +911,7 @@ fn a_form_bomb_fails_cleanly_with_nothing_left_behind() {
     assert!(
         matches!(
             reply["error"]["code"].as_str(),
-            Some("export_page_too_heavy" | "export_memory_tight" | "page_too_slow" | "page_crashed_renderer")
+            Some("export_page_too_heavy" | "export_memory_tight" | "page_too_slow" | "page_crashed_renderer" | "page_mac_busy")
         ),
         "{reply}"
     );

@@ -150,6 +150,17 @@ fn fake_worker() {
                 if mode == "slow" {
                     std::thread::sleep(Duration::from_millis(100));
                 }
+                if mode == "low_res_by_the_mark" {
+                    // Too big for either limit; its lower resolution lands when the mark says so, and otherwise the worker is as one the Mac gave no processor time.
+                    if !low_res {
+                        leak_for_ever();
+                    }
+                    if std::fs::read(std::env::var("RECTO_FAKE_MARK").unwrap()).unwrap() != b"land" {
+                        loop {
+                            std::thread::park();
+                        }
+                    }
+                }
                 let fits = match mode.as_str() {
                     "slow" => true,
                     // A higher zoom is too much even for the larger limit, a lower one needs it, and a much lower one fits anywhere.
@@ -160,7 +171,7 @@ fn fake_worker() {
                     _ => match mode.as_str() {
                         "fits_normal" => true,
                         "fits_heavy" => in_heavy,
-                        "fits_low_res" | "low_res_walk_overruns" => low_res,
+                        "fits_low_res" | "low_res_walk_overruns" | "low_res_by_the_mark" => low_res,
                         "fits_heavy_or_low_res" => in_heavy || low_res,
                         _ => false,
                     },
@@ -1250,4 +1261,28 @@ fn a_prefetch_that_loses_its_worker_doesnt_start_another() {
     assert!(recto_render_service::prefetch_click_places(&mut doc, 1, u64::MAX), "a walk was made");
     assert_eq!(doc.worker_pid(), None, "no worker is started for it");
     assert_eq!(doc.stats().crashes, 1, "the one that was lost, and no second");
+}
+
+/// Failure (review of the long-session wake, S1): a lower-resolution draw that lands didn't end the page's run of busy draws, so two busy draws, one that landed and another busy one remembered the page as failed for the session, though it had drawn in between. The runs count in a row. The worker is one that sleeps through its deadline (no processor time, as the Mac gives a worker after a wake) until the mark says to land.
+#[test]
+fn a_lower_resolution_draw_that_lands_ends_the_run_of_busy_draws() {
+    let mark = TempPdf::new("mark", b"sleep");
+    let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
+    let mut config = config("low_res_by_the_mark", &HeavySlot::new());
+    config.extra_env.push(("RECTO_FAKE_MARK".into(), mark.0.to_string_lossy().into_owned()));
+    // Short of time only for the asks that sleep: the one that lands has the ordinary deadline, which a loaded runner needs to start the worker.
+    let policy = Policy {
+        page_deadline: Duration::from_secs(30),
+        ..policy()
+    };
+    let mut doc = DocRenderer::new(&file.0, None, config, policy).unwrap();
+    let ask = |doc: &mut DocRenderer| doc.render_tile(&request(0), &surface());
+    let starved = |doc: &mut DocRenderer| recto_render_service::under_page_deadline_for_test(doc, |doc| doc, Duration::from_millis(400), ask);
+    assert!(matches!(starved(&mut doc), Err(RenderFailure::TooBusy { page: 0 })), "first");
+    assert!(matches!(starved(&mut doc), Err(RenderFailure::TooBusy { page: 0 })), "second");
+    std::fs::write(&mark.0, b"land").unwrap();
+    assert!(done(ask(&mut doc)).low_res.is_some(), "it lands");
+    std::fs::write(&mark.0, b"sleep").unwrap();
+    let after = starved(&mut doc);
+    assert!(matches!(after, Err(RenderFailure::TooBusy { page: 0 })), "a run of one, not three: {after:?}");
 }
