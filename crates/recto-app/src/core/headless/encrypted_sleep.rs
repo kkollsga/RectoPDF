@@ -399,11 +399,21 @@ fn find_in_a_plain_document_goes_past_a_page_added_from_a_file_that_needs_a_pass
         .filter(|row| row.kind == crate::find::FindRowKind::Page)
         .map(|row| row.label)
         .collect();
-    assert_eq!(pages.len(), 2, "hits on the pages before and after it, none on it: {pages:?}; {}", view.status);
-    assert!(pages[0].contains('1') && pages[1].contains('3'), "{pages:?}");
+    // The rule, not the machine's speed: page 2 is the one that couldn't be read, and only that one. Page 3 is a hit, or, if the Mac was too busy to read it in time, said to be that and not "couldn't be read".
+    let busy = view.status.contains("the Mac was busy");
     assert!(
-        view.status.ends_with("1 page couldn't be read"),
-        "says what's true, as for any page that couldn't be read: {}",
+        pages.first().is_some_and(|page| page.contains('1')),
+        "the page before it is a hit: {pages:?}; {}",
+        view.status
+    );
+    assert!(
+        pages.len() == 2 && pages[1].contains('3') || busy && pages.len() == 1,
+        "page 3 is a hit, or said to be busy: {pages:?}; {}",
+        view.status
+    );
+    assert!(
+        view.status.contains("1 page couldn't be read") && !view.status.contains("2 pages couldn't"),
+        "says what's true of the one page that couldn't be read, and page 3 isn't counted with it: {}",
         view.status
     );
     assert!(!view.status.contains("password"), "{}", view.status);
@@ -419,8 +429,17 @@ fn an_agents_search_and_text_in_a_plain_document_go_past_a_page_added_from_a_fil
     let app = plain_with_the_crafted_page_in_the_middle(disk);
     let found = full(&app, &["search", "page"]);
     let pages: Vec<u64> = found["hits"].as_array().unwrap().iter().filter_map(|hit| hit["page"].as_u64()).collect();
-    assert_eq!(pages, [1, 3], "{found}");
+    // The rule, not the machine's speed: page 2 failed because it needs a password, and page 3 is a hit or, if the Mac was too busy, listed as busy, and never among the failed.
+    let busy: Vec<u64> = found["coverage"]["busy_pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|page| page.as_u64())
+        .collect();
     assert_eq!(found["coverage"]["failed_pages"], serde_json::json!([2]), "{found}");
+    assert_eq!(found["coverage"]["failed_page_reasons"], serde_json::json!({ "needs_password": 1 }), "{found}");
+    assert!(pages.first() == Some(&1), "{found}");
+    assert!(pages == [1, 3] || (pages == [1] && busy == [3]), "page 3 is a hit or busy: {found}");
     let refused = app
         .recto(recto_agent::Level::Full, &["text", "--page", "2"])
         .expect_err("the added page can't be read");

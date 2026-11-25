@@ -127,6 +127,8 @@ pub struct Progress {
     pub pages: u32,
     /// Pages that couldn't be read, so finding nothing says nothing about them.
     pub failed: u32,
+    /// Pages the Mac was too busy to read: not failed, and not searched. Find again reads them.
+    pub busy: u32,
     pub no_text: u32,
     /// Every hit, kept or not.
     pub total: u64,
@@ -184,7 +186,8 @@ pub fn run(plan: &FindPlan, needle: &str, indexing: Option<&dyn Indexing>, stop:
         progress.pages_done += 1;
         let mut hits = Vec::new();
         match got {
-            Got::Failed => progress.failed += 1,
+            Got::Failed(_) => progress.failed += 1,
+            Got::Busy => progress.busy += 1,
             Got::NoText => progress.no_text += 1,
             Got::Nothing => {}
             Got::Page(view) => {
@@ -539,6 +542,17 @@ impl Results {
             format!(". {} couldn't be read", pages(p.failed))
         } else {
             String::new()
+        };
+        let unread = if p.busy > 0 {
+            let (count, verb) = if p.busy == 1 {
+                ("1 page".to_string(), "wasn't")
+            } else {
+                (pages(p.busy), "weren't")
+            };
+            let again = if p.busy == 1 { "it" } else { "them" };
+            format!("{unread}. {count} {verb} read: the Mac was busy. Find again to read {again}.")
+        } else {
+            unread
         };
         match &self.end {
             None if p.total == 0 => format!("Searching… page {} of {}", group(u64::from(p.pages_done)), group(u64::from(p.pages))),
@@ -1269,6 +1283,25 @@ mod tests {
             },
         );
         assert_eq!(results.status(), "Not found. 2 pages couldn't be read");
+        // A page the Mac was too busy to read isn't one that couldn't be read: it says so, and that Find again reads it.
+        for (busy, said) in [
+            (1, "1 page wasn't read: the Mac was busy. Find again to read it."),
+            (3, "3 pages weren't read: the Mac was busy. Find again to read them."),
+        ] {
+            results.finish(
+                generation,
+                End::Finished,
+                Progress {
+                    pages: 10,
+                    pages_done: 10,
+                    busy,
+                    ..Progress::default()
+                },
+            );
+            let status = results.status();
+            assert!(!status.contains("couldn't be read"), "{status}");
+            assert_eq!(status, format!("Not found. {said}"));
+        }
         results.finish(
             generation,
             End::Finished,

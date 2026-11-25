@@ -411,6 +411,10 @@ struct Found {
     empty: Vec<u32>,
     empty_count: u32,
     failed: Vec<u32>,
+    /// Pages the Mac was too busy to read, so nothing is known of them. Not in `failed`.
+    busy: Vec<u32>,
+    /// Of `failed`, how many for each reason code.
+    failed_why: std::collections::BTreeMap<&'static str, u32>,
     next_page: Option<u32>,
     not_shown: Vec<Value>,
     tag_pages: Vec<u32>,
@@ -427,6 +431,11 @@ struct Found {
 }
 
 impl Found {
+    fn fail(&mut self, position: u32, why: &'static str) {
+        self.failed.push(position + 1);
+        *self.failed_why.entry(why).or_default() += 1;
+    }
+
     fn no_text(&mut self, position: u32) {
         self.searched += 1;
         self.empty_count += 1;
@@ -455,7 +464,7 @@ impl Found {
         let found = query.find(view.text, room, settings.deadline);
         // What it found stands, and the page isn't said to have been searched.
         if found.out_of_time {
-            self.failed.push(position + 1);
+            self.fail(position, "pattern_out_of_time");
             self.out_of_time += 1;
         } else {
             self.searched += 1;
@@ -502,11 +511,14 @@ impl Found {
             "pages_with_no_text": self.empty_count,
             "no_text_pages": self.empty,
             "failed_pages": self.failed,
+            "busy_pages": self.busy,
+            "busy_pages_note": (!self.busy.is_empty()).then_some("not read: the Mac was busy, search again"),
+            "failed_page_reasons": self.failed_why,
             "hits_not_shown": self.not_shown,
             "pages_with_tag_chars": self.tag_pages,
             "changed_files": reader.changed.iter().map(|file| json!({ "untrusted": { "file": plan.files[usize::from(*file)].label() } })).collect::<Vec<_>>(),
             "next_page": self.next_page,
-            "hits_total": (!self.total_cut_short && self.uncounted == 0 && self.failed.is_empty()).then_some(self.total),
+            "hits_total": (!self.total_cut_short && self.uncounted == 0 && self.failed.is_empty() && self.busy.is_empty()).then_some(self.total),
             "hits_at_least": self.total,
             "uncounted_pages": self.uncounted,
             "pages_too_long_for_a_pattern": self.too_long,
@@ -543,7 +555,10 @@ pub(crate) struct PageView<'a> {
 pub(crate) enum Got<'a> {
     Page(PageView<'a>),
     NoText,
-    Failed,
+    /// Couldn't be read, for a reason in a fixed code (never the document's words).
+    Failed(&'static str),
+    /// The Mac was too busy to give the worker the processor in time: nothing is known of the page, and a search again may read it.
+    Busy,
     /// There's nothing to be said about it.
     Nothing,
 }
@@ -666,7 +681,7 @@ impl<'a> Reader<'a> {
     /// One page's text. A file that won't be read at all is an error, of the whole search. One bad page isn't: it's `Failed`, so "not found" doesn't cover it.
     pub(crate) fn read<'s>(&mut self, file: u16, page: u32, slot: &'s mut Slot) -> Result<Got<'s>, AgentError> {
         if self.changed.contains(&file) {
-            return Ok(Got::Failed);
+            return Ok(Got::Failed("changed_file"));
         }
         let source = &self.plan.files[usize::from(file)];
         let Slot { buffer, live } = slot;
@@ -676,7 +691,7 @@ impl<'a> Reader<'a> {
                 // Pages it hasn't got are pages the file hasn't got: the same as a worker saying so.
                 Ok(corpus) if page >= corpus.pages() => {
                     self.used_index = true;
-                    return Ok(Got::Failed);
+                    return Ok(Got::Failed("not_in_corpus"));
                 }
                 Ok(corpus) => corpus.page(page, buffer).map_err(|Damaged| Unusable::Damaged),
                 Err(unusable) => Err(unusable),
@@ -699,7 +714,7 @@ impl<'a> Reader<'a> {
                 Ok(_) if self.live_spent >= self.live_budget => {
                     self.used_index = true;
                     self.not_read_again += 1;
-                    return Ok(Got::Failed);
+                    return Ok(Got::Failed("not_read_again"));
                 }
                 // That's only what happened when it was built, which may have been the moment rather than the page, so it's read now. It can't then end the search: past this, the rest of the corpus is still good.
                 Ok(_) => read_again_live = true,
@@ -737,19 +752,22 @@ impl<'a> Reader<'a> {
         self.used_scan = true;
         let renderer = match worker_for(&mut self.current, file, source, key) {
             Ok(Some(renderer)) => renderer,
-            Err(_) if read_again_live => return Ok(Got::Failed),
-            Err(RenderFailure::NeedsPassword) if added => return Ok(Got::Failed),
+            Err(failure) if read_again_live => return Ok(Got::Failed(why(failure))),
+            Err(RenderFailure::NeedsPassword) if added => return Ok(Got::Failed("needs_password")),
             Ok(None) | Err(RenderFailure::NotFound) if source.added || source.expected.is_some() => {
                 self.changed.push(file);
-                return Ok(Got::Failed);
+                return Ok(Got::Failed("changed_file"));
             }
             Ok(None) => return Ok(Got::Nothing),
             Err(failure) => return Err(failure.into()),
         };
+        let busy = renderer.stats().too_busy;
         let characters = match renderer.page_characters(page, true, false) {
             Ok(characters) => characters,
-            Err(_) if read_again_live => return Ok(Got::Failed),
-            Err(RenderFailure::NeedsPassword) if added => return Ok(Got::Failed),
+            Err(failure) if read_again_live => return Ok(Got::Failed(why(failure))),
+            // A page the index marked failed stays failed, but a worker the Mac gave no processor to says nothing about a page.
+            Err(_) if renderer.stats().too_busy > busy => return Ok(Got::Busy),
+            Err(RenderFailure::NeedsPassword) if added => return Ok(Got::Failed("needs_password")),
             Err(
                 failure @ (RenderFailure::NeedsPassword
                 | RenderFailure::NotFound
@@ -762,7 +780,7 @@ impl<'a> Reader<'a> {
                 | RenderFailure::StartRefused
                 | RenderFailure::DocumentStopped),
             ) => return Err(failure.into()),
-            Err(_) => return Ok(Got::Failed),
+            Err(failure) => return Ok(Got::Failed(why(failure))),
         };
         if characters.chars.is_empty() {
             return Ok(Got::NoText);
@@ -892,6 +910,33 @@ fn worker_for<'a>(
     Ok(current.as_mut().map(|(_, renderer)| renderer))
 }
 
+/// What a search's log entry says of how it went: the reason codes of pages that couldn't be read and how many weren't read for the Mac being busy. Fixed codes and a number, never document text or the query.
+pub(crate) fn log_how_it_went(details: &mut Value, command: &crate::Command, result: &Result<Value, AgentError>) {
+    let (true, Ok(answer)) = (command.tag() == "search", result) else { return };
+    let coverage = &answer["coverage"];
+    if let Some(reasons) = coverage["failed_page_reasons"].as_object().filter(|reasons| !reasons.is_empty()) {
+        details["failed_page_reasons"] = Value::Object(reasons.clone());
+    }
+    let busy = coverage["busy_pages"].as_array().map_or(0, Vec::len);
+    if busy > 0 {
+        details["busy_pages"] = json!(busy);
+    }
+}
+
+/// The fixed code a failed read goes under in `failed_page_reasons`: what the renderer said, never the document's words.
+fn why(failure: RenderFailure) -> &'static str {
+    use recto_render_service::KillReason;
+    match failure {
+        RenderFailure::PageReadFailed { reason, .. } | RenderFailure::PageFailed { reason, .. } | RenderFailure::OpenFailed { reason } => match reason {
+            KillReason::Deadline => "read_deadline",
+            KillReason::Crashed => "read_crashed",
+            KillReason::MemoryLimit => "read_memory",
+            KillReason::Rejected(_) => "renderer_misbehaved",
+        },
+        other => other.code(),
+    }
+}
+
 fn run(plan: &Plan, query: &Query, mode: &str, settings: &Settings<'_>) -> Result<Value, AgentError> {
     let mut reader = Reader::new(plan, settings);
     let mut found = Found::default();
@@ -914,17 +959,18 @@ fn run(plan: &Plan, query: &Query, mode: &str, settings: &Settings<'_>) -> Resul
             continue;
         }
         match reader.read(file, page, &mut slot)? {
-            Got::Failed => found.failed.push(position + 1),
+            Got::Failed(why) => found.fail(position, why),
+            Got::Busy => found.busy.push(position + 1),
             Got::NoText => found.no_text(position),
             Got::Nothing => {}
             Got::Page(view) if query.too_long_for(view.text) => {
-                found.failed.push(position + 1);
+                found.fail(position, "too_long");
                 found.too_long += 1;
             }
             Got::Page(view) => {
                 match query.on_page(view.text, &mut folded, settings.deadline) {
                     OnPage::OutOfTime => {
-                        found.failed.push(position + 1);
+                        found.fail(position, "pattern_out_of_time");
                         found.out_of_time += 1;
                         continue;
                     }
@@ -968,7 +1014,8 @@ fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>) -> Result<Val
             break;
         }
         match reader.read(file, page, &mut slot)? {
-            Got::Failed => found.failed.push(position + 1),
+            Got::Failed(why) => found.fail(position, why),
+            Got::Busy => found.busy.push(position + 1),
             Got::NoText => found.no_text(position),
             Got::Nothing => {}
             Got::Page(view) => {
@@ -1018,10 +1065,21 @@ fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>) -> Result<Val
             .map(|(term, _)| term.as_str())
             .collect();
         let term_counts: Vec<u32> = page_counts.iter().copied().filter(|count| *count > 0).collect();
-        let Got::Page(view) = reader.read(file, page, &mut slot)? else {
+        let view = match reader.read(file, page, &mut slot)? {
+            Got::Page(view) => view,
             // It read a moment ago, and doesn't now, so there's nothing to show of it.
-            found.failed.push(position + 1);
-            continue;
+            Got::Busy => {
+                found.busy.push(position + 1);
+                continue;
+            }
+            Got::Failed(why) => {
+                found.fail(position, why);
+                continue;
+            }
+            Got::NoText | Got::Nothing => {
+                found.fail(position, "changed_file");
+                continue;
+            }
         };
         let hidden = reader.hidden(file, page, &view);
         let place = first_term(view.text, &terms.terms);
@@ -1245,6 +1303,9 @@ fn snippet(text: &str, start: usize, end: usize) -> String {
     let joined: String = before.iter().rev().collect::<String>() + &middle + &after;
     joined.split_whitespace().collect::<Vec<_>>().join(" ")
 }
+
+#[cfg(test)]
+mod busy_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1580,6 +1641,52 @@ mod tests {
             indexing: Some(&fixture.indexing),
             force_scan: false,
         }
+    }
+
+    /// Failure: a busy page is listed with the failed, so "couldn't be read" covers it and an agent can't tell a page to search again from a damaged one; or it is left out and the total is called complete. It has its own list and its own wording, the failed have their reason codes, and neither lets `hits_total` say a number.
+    #[test]
+    fn coverage_lists_busy_pages_apart_from_failed_ones_and_says_why() {
+        let fixture = fixture("coverage", b"a file", vec![Some(("a clean page".to_string(), true))]);
+        let settings = settings(&fixture);
+        let reader = Reader::new(&fixture.plan, &settings);
+        let mut found = Found::default();
+        found.busy.push(3);
+        found.fail(1, "needs_password");
+        let coverage = found.coverage(&fixture.plan, &reader);
+        assert_eq!(coverage["busy_pages"], json!([3]), "{coverage}");
+        assert_eq!(coverage["failed_pages"], json!([2]), "{coverage}");
+        assert_eq!(coverage["failed_page_reasons"], json!({ "needs_password": 1 }), "{coverage}");
+        assert_eq!(coverage["busy_pages_note"], "not read: the Mac was busy, search again", "{coverage}");
+        assert_eq!(coverage["hits_total"], Value::Null, "{coverage}");
+        let mut only_busy = Found::default();
+        only_busy.busy.push(1);
+        assert_eq!(
+            only_busy.coverage(&fixture.plan, &reader)["hits_total"],
+            Value::Null,
+            "a busy page may hold hits"
+        );
+        assert_eq!(Found::default().coverage(&fixture.plan, &reader)["hits_total"], 0);
+    }
+
+    /// Failure: the log of a search keeps the query's words or a page's text, or says nothing of pages not read. Only fixed reason codes and a count of busy pages go in.
+    #[test]
+    fn a_searchs_log_entry_has_reason_codes_and_a_busy_count_and_no_words() {
+        let command = crate::Command::from(crate::commands::text::Search {
+            tab: "active".into(),
+            query: "hunter2".into(),
+            pages: None,
+            limit: None,
+            scan: false,
+            regex: false,
+            rank: false,
+            context: None,
+        });
+        let answer = json!({ "hits": [{ "untrusted": { "snippet": "hunter2" } }], "coverage": { "failed_page_reasons": { "needs_password": 1 }, "busy_pages": [4, 5] } });
+        let mut details = command.log_details();
+        log_how_it_went(&mut details, &command, &Ok(answer));
+        assert_eq!(details["failed_page_reasons"], json!({ "needs_password": 1 }), "{details}");
+        assert_eq!(details["busy_pages"], 2, "{details}");
+        assert!(!details.to_string().contains("hunter2"), "{details}");
     }
 
     /// Failure: a hostile pattern on one page uses up the search, and the answer reads as "nothing found" for it, or says a total, or never says where to go on from. The page is listed, and that's said to be why. The pattern takes many seconds on this page, so a short deadline runs out on it; one that ran out before the page was even reached, which a loaded machine can do, is seen in the answer and tried again longer, rather than every run waiting out a deadline long enough for any load.
