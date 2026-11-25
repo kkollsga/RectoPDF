@@ -272,6 +272,18 @@ pub enum OutcomeKind {
 }
 
 impl Outcome {
+    /// An outcome that isn't about any one plan (`plan` is `None`).
+    #[must_use]
+    pub fn new(kind: OutcomeKind, from: &str, to: &str, why: &str) -> Self {
+        Self {
+            kind,
+            from: from.to_owned(),
+            to: to.to_owned(),
+            why: why.to_owned(),
+            plan: None,
+        }
+    }
+
     #[must_use]
     pub fn read(file: &Path) -> Option<Self> {
         let bytes = local::read_private_file(file, MAX_PLAN_BYTES).ok()??;
