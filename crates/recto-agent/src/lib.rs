@@ -224,6 +224,7 @@ pub fn with_acted_tab(mut details: Value, acted: Option<TabId>, result: &Result<
     if let Some(id) = id {
         details["tab"] = json!(format!("#{id}"));
     }
+    search::log_how_it_went(&mut details, command, result);
     details
 }
 

@@ -26,8 +26,8 @@ row 6 contents: 620f1a74aaf3842d 3101 bytes
 help contents: 17c3fff3f890488a 2731 bytes
 usage contents: 7e5c5f9b2c0ccffb 94 bytes
 by tag contents: ee7ef3d0c2b5ef83 8 bytes
-row 7 search: 1dd5613f0e19d811 4725 bytes
-help search: c35db076ec900e2d 4114 bytes
+row 7 search: 963f46ff0acd04a9 4986 bytes
+help search: 655cb1061d1518a5 4375 bytes
 usage search: 7218d8db09cc9784 120 bytes
 by tag search: 220bcce27242e1e9 6 bytes
 row 8 ref: 41c6af9ea9ce76db 1639 bytes
@@ -166,8 +166,8 @@ row 41 palette: 97c7d1bdb1c7dc9d 1260 bytes
 help palette: 5da36835c88879b9 925 bytes
 usage palette: 1f9a9d32cab9add8 49 bytes
 by tag palette: 9dd691088352b680 7 bytes
-row 42 find: b3666f9dae4e03c1 3451 bytes
-help find: 916a4139c04171c7 2796 bytes
+row 42 find: 87c20ae39185fa1e 3549 bytes
+help find: 2aa4935015768db6 2894 bytes
 usage find: 15a43ec3adec7d89 102 bytes
 by tag find: aad72478f030a91a 4 bytes
 row 43 page rotate: 8eef8db1efc898ba 1247 bytes
@@ -761,6 +761,6 @@ family settings: cbf29ce484222325 0 bytes
 family skill: 263c8540bc3d3bc9 284 bytes
 family budget: aec822ae884cf326 558 bytes
 family qa: 2ecb80f2861d848a 12724 bytes
-help --json: 4b0c81b0ae9eb2ac 139957 bytes
+help --json: e147d35aeb93914b 140316 bytes
 SKILL.md: d80931129348925d 27122 bytes
-REFERENCE.md: 195d31da3158a8b3 88457 bytes
+REFERENCE.md: b303142d749aa2a4 88816 bytes

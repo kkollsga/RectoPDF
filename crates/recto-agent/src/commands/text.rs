@@ -602,7 +602,7 @@ pub(crate) const ROWS_SEARCH: &[Spec] = &[Spec {
             help: "Read the pages even if there's an index, to check one against the other.",
         },
     ],
-    data: "`{ tab, mode, hits: [ { page, source_page, from_added_file, line, also_spelled, page_has_tag_chars, hidden_text: { checked, flagged }, overlaps_hidden, score, terms, term_counts, untrusted: { snippet, added_file, label, context: { before, after } } } ], ranked_note, terms, terms_dropped, hidden_text_checked, route, index: { state, note }, coverage: { pages_searched, pages_in_scope, pages_with_no_text, no_text_pages, failed_pages, hits_not_shown: [ { page, hits } ], pages_with_tag_chars, changed_files: [ { untrusted: { file } } ], next_page, hits_total, hits_at_least, uncounted_pages, pages_too_long_for_a_pattern, pages_a_pattern_ran_out_of_time_on, failed_pages_not_read_again, pages_with_these_words, top_pages_left_out_for_time } }`. A page in the index as failed is read again, up to 5 s of them per search, and past that `failed_pages_not_read_again` counts them. `mode` is `phrase`, `regex` or `ranked`. In a ranked answer `hits` is one per page, best first, with `score` and which `terms` it has, and `hits_total` is null, since it isn't every hit: `ranked_note` says so, and a score is a count of words, never a judgement of a page. `route` is `index`, `scan` or `mixed`: how pages were read, which changes nothing about what's found, and `index.note` says why in words. Through the app (or a `recto serve` that has the key) the first search of a document starts its index, so later ones are fast; without the app there's no index, every search reads the pages (`route` is `scan`, `index.note` says `no_find_key`). `hits_total` is every hit on the pages in scope, past the limit too, or null if any page couldn't be counted: one that failed, or any past the limit when reading page by page. `hits_at_least` is what was counted, and `uncounted_pages` those past `next_page` that couldn't be read. `source_page` and `from_added_file` are on every hit, and say where its page really comes from once it's been edited. `overlaps_hidden: true` means the words matched include text that looks hidden, and `null` that it can't be said. It searches the same text `text` gives. `pages_searched` counts only pages really read. A page in `failed_pages` couldn't be read, or its file changed since its number was recorded (`changed_files`), so finding nothing says nothing about it. Only pages with hits are checked for hidden text, as `hidden_text_checked` says. `also_spelled: true` means the hit is another spelling of a word broken across lines, with no line of its own. `next_page` is where to go on from with `--pages`.",
+    data: "`{ tab, mode, hits: [ { page, source_page, from_added_file, line, also_spelled, page_has_tag_chars, hidden_text: { checked, flagged }, overlaps_hidden, score, terms, term_counts, untrusted: { snippet, added_file, label, context: { before, after } } } ], ranked_note, terms, terms_dropped, hidden_text_checked, route, index: { state, note }, coverage: { pages_searched, pages_in_scope, pages_with_no_text, no_text_pages, failed_pages, hits_not_shown: [ { page, hits } ], pages_with_tag_chars, busy_pages, busy_pages_note, failed_page_reasons, changed_files: [ { untrusted: { file } } ], next_page, hits_total, hits_at_least, uncounted_pages, pages_too_long_for_a_pattern, pages_a_pattern_ran_out_of_time_on, failed_pages_not_read_again, pages_with_these_words, top_pages_left_out_for_time } }`. A page in the index as failed is read again, up to 5 s of them per search, and past that `failed_pages_not_read_again` counts them. `mode` is `phrase`, `regex` or `ranked`. In a ranked answer `hits` is one per page, best first, with `score` and which `terms` it has, and `hits_total` is null, since it isn't every hit: `ranked_note` says so, and a score is a count of words, never a judgement of a page. `route` is `index`, `scan` or `mixed`: how pages were read, which changes nothing about what's found, and `index.note` says why in words. Through the app (or a `recto serve` that has the key) the first search of a document starts its index, so later ones are fast; without the app there's no index, every search reads the pages (`route` is `scan`, `index.note` says `no_find_key`). `hits_total` is every hit on the pages in scope, past the limit too, or null if any page couldn't be counted: one that failed, or the Mac was too busy for, or any past the limit when reading page by page. `hits_at_least` is what was counted, and `uncounted_pages` those past `next_page` that couldn't be read. `source_page` and `from_added_file` are on every hit, and say where its page really comes from once it's been edited. `overlaps_hidden: true` means the words matched include text that looks hidden, and `null` that it can't be said. It searches the same text `text` gives. `pages_searched` counts only pages really read. A page in `busy_pages` wasn't read because the Mac was busy: a search again reads it, and it is never counted as failed (`failed_page_reasons` counts the failed ones by fixed code). A page in `failed_pages` couldn't be read, or its file changed since its number was recorded (`changed_files`), so finding nothing says nothing about it. Only pages with hits are checked for hidden text, as `hidden_text_checked` says. `also_spelled: true` means the hit is another spelling of a word broken across lines, with no line of its own. `next_page` is where to go on from with `--pages`.",
     examples: &[
         "recto search \"force majeure\"",
         "recto search termination --pages 10-40 --limit 5 --json",
@@ -727,9 +727,9 @@ fn search(data: &Value) -> String {
     if let Some(note) = data["ranked_note"].as_str() {
         let _ = write!(out, "\n{note}");
     }
-    let failed = coverage["failed_pages"].as_array().map_or(0, Vec::len);
+    let failed = coverage["failed_pages"].as_array().map_or(0, Vec::len) + busy_page_count(coverage);
     if hits.is_empty() {
-        // "Nothing found" would be a claim about pages it couldn't read.
+        // "Nothing found" would be a claim about pages it couldn't read, or the Mac was too busy to.
         out.push_str(if failed > 0 {
             "\nNo hits on the pages that could be read."
         } else {
@@ -791,6 +791,9 @@ fn search(data: &Value) -> String {
     if let Some(failed) = coverage["failed_pages"].as_array().filter(|failed| !failed.is_empty()) {
         let _ = write!(out, " {} couldn't be read.", failed.len());
     }
+    if let Some(busy) = busy_sentence(coverage) {
+        let _ = write!(out, " {busy}");
+    }
     if coverage["changed_files"].as_array().is_some_and(|files| !files.is_empty()) {
         out.push_str(" Files behind some pages have changed since they were added, so those pages weren't searched.");
     }
@@ -813,6 +816,19 @@ fn search(data: &Value) -> String {
     out
 }
 
+fn busy_page_count(coverage: &Value) -> usize {
+    coverage["busy_pages"].as_array().map_or(0, Vec::len)
+}
+
+/// Pages the Mac was too busy to read, in the owner's plain words (2026-11-25), which are not "couldn't be read": a search again reads them.
+fn busy_sentence(coverage: &Value) -> Option<String> {
+    match busy_page_count(coverage) {
+        0 => None,
+        1 => Some("1 page wasn't read: the Mac was busy. Search again to read it.".to_string()),
+        busy => Some(format!("{busy} pages weren't read: the Mac was busy. Search again to read them.")),
+    }
+}
+
 /// The first line of a search's answer: how much is here and whether there's more. An agent read past "stopped early" at the bottom of a long answer, and took what it had for everything.
 fn search_summary(shown: u64, coverage: &Value) -> String {
     let (searched, scope) = (number(&coverage["pages_searched"]), number(&coverage["pages_in_scope"]));
@@ -820,6 +836,9 @@ fn search_summary(shown: u64, coverage: &Value) -> String {
     let failed = coverage["failed_pages"].as_array().map_or(0, Vec::len);
     if failed > 0 {
         let _ = write!(out, " {failed} couldn't be read.");
+    }
+    if let Some(busy) = busy_sentence(coverage) {
+        let _ = write!(out, " {busy}");
     }
     if let Some(empty) = coverage["pages_with_no_text"].as_u64().filter(|empty| *empty > 0) {
         let _ = write!(out, " {empty} had no text.");
