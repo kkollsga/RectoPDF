@@ -9,9 +9,13 @@
 //! Every value is small and copyable, no refusal repeats input, and the input is capped before any
 //! allocation.
 
+mod confirm;
+mod digest;
 mod plan;
 mod progress;
 
+pub use confirm::{Binding, CONFIRM_LIMITS, ConfirmLimits, ConfirmRefusal, Confirmations, Confirmed, PlanId, TargetKey, Version};
+pub use digest::PlanDigest;
 pub use plan::plan;
 pub use progress::{Ack, OrderError, Outcome, Progress};
 
@@ -283,6 +287,7 @@ pub enum Refusal {
 
 /// A subsystem that can recreate retained material and must be stopped before it is cleared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Writer {
     Journals,
     SleepFiles,
@@ -441,6 +446,7 @@ pub struct Plan {
     ids: Vec<ArtifactId>,
     lines: [StoreLine; Store::COUNT],
     unsigned_copy_notice: bool,
+    digest: PlanDigest,
 }
 
 impl Plan {
@@ -464,6 +470,11 @@ impl Plan {
 
     pub fn request(&self) -> Request {
         self.request
+    }
+
+    /// A fingerprint of the whole plan, computed once when it was built.
+    pub fn digest(&self) -> PlanDigest {
+        self.digest
     }
 
     /// Save As of a signed source: the copy is unsigned and the report must say so.

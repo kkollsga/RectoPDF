@@ -41,7 +41,7 @@ impl Outcome {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrderError {
-    /// The progress was made for a plan of another length.
+    /// The progress was made for another plan: its digest differs.
     WrongPlan,
     /// An acknowledgment for a step other than the next one.
     OutOfOrder,
@@ -52,12 +52,13 @@ pub enum OrderError {
     NotResumable,
 }
 
-/// How many steps are acknowledged, as the only record of where the transaction is. Plans are
-/// told apart by length only; binding to the exact plan is the confirmation's digest, not this.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// How many steps are acknowledged, as the only record of where the transaction is, bound to one plan by its digest. It starts only
+/// from a `Confirmed`, which a confirmation of exactly that plan makes. Not `Clone`: one confirmation is one walk, and a copy could
+/// be walked twice.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Progress {
+    digest: PlanDigest,
     acked: u32,
-    steps: u32,
     stopped: bool,
 }
 
@@ -67,39 +68,49 @@ fn index_of(plan: &Plan, effect: Effect) -> u32 {
 }
 
 impl Progress {
-    pub fn start(plan: &Plan) -> Self {
-        Self {
-            acked: 0,
-            steps: plan.steps.len() as u32,
-            stopped: false,
+    /// Begins the walk of `plan`, consuming the confirmation of it. A confirmation of another plan is `WrongPlan`.
+    pub fn start(plan: &Plan, confirmed: Confirmed) -> Result<Self, OrderError> {
+        if confirmed.digest() != plan.digest {
+            return Err(OrderError::WrongPlan);
         }
+        Ok(Self {
+            digest: plan.digest,
+            acked: 0,
+            stopped: false,
+        })
     }
 
-    /// Continue from the persisted acknowledged count, only once the barrier is in that prefix.
-    pub fn resume(plan: &Plan, acked: u32) -> Result<Self, OrderError> {
-        let steps = plan.steps.len() as u32;
-        if acked > steps || acked <= index_of(plan, Effect::PersistBarrier) {
+    /// Continue from the persisted acknowledged count of the plan with `digest`, only once the barrier is in that prefix.
+    ///
+    /// Trust boundary: resume is not a confirmation. `digest` and `acked` must come from the transaction record the app itself wrote
+    /// after a confirmed walk passed the barrier, never from a request, an agent or a file the app didn't write. This function only
+    /// checks that they fit the plan; it cannot tell where they came from.
+    pub fn resume(plan: &Plan, digest: PlanDigest, acked: u32) -> Result<Self, OrderError> {
+        if digest != plan.digest {
+            return Err(OrderError::WrongPlan);
+        }
+        if acked as usize > plan.steps.len() || acked <= index_of(plan, Effect::PersistBarrier) {
             return Err(OrderError::NotResumable);
         }
-        Ok(Self { acked, steps, stopped: false })
+        Ok(Self { digest, acked, stopped: false })
     }
 
-    /// The step to do next, or none when finished or stopped.
+    /// The step to do next, or none when finished, stopped or made for another plan.
     pub fn next(&self, plan: &Plan) -> Option<Step> {
-        if self.stopped || self.steps as usize != plan.steps.len() {
+        if self.stopped || self.digest != plan.digest {
             return None;
         }
         plan.steps.get(self.acked as usize).copied()
     }
 
     pub fn acknowledge(&mut self, plan: &Plan, index: u32, ack: Ack) -> Result<Outcome, OrderError> {
-        if self.steps as usize != plan.steps.len() {
+        if self.digest != plan.digest {
             return Err(OrderError::WrongPlan);
         }
         if self.stopped {
             return Err(OrderError::Stopped);
         }
-        if self.acked == self.steps {
+        if self.acked as usize == plan.steps.len() {
             return Err(OrderError::Finished);
         }
         if index != self.acked {
@@ -116,27 +127,30 @@ impl Progress {
         } else {
             self.acked += 1;
         }
-        Ok(self.outcome(plan))
+        self.outcome(plan)
     }
 
-    /// The outcome of the acknowledged prefix alone.
-    pub fn outcome(&self, plan: &Plan) -> Outcome {
-        if self.acked <= index_of(plan, Effect::PersistBarrier) {
+    /// The outcome of the acknowledged prefix alone; `WrongPlan` for a plan other than this one's.
+    pub fn outcome(&self, plan: &Plan) -> Result<Outcome, OrderError> {
+        if self.digest != plan.digest {
+            return Err(OrderError::WrongPlan);
+        }
+        Ok(if self.acked <= index_of(plan, Effect::PersistBarrier) {
             Outcome::Unchanged
         } else if self.acked <= index_of(plan, Effect::MarkNoReturn) {
             Outcome::HistoryRetiring
         } else if self.acked <= index_of(plan, Effect::ReadBackTarget) {
             Outcome::ReplacementInDoubt
-        } else if self.acked < self.steps {
+        } else if (self.acked as usize) < plan.steps.len() {
             Outcome::SanitizedCleanupPending
         } else {
             Outcome::Complete
-        }
+        })
     }
 
     /// Every step of the plan is acknowledged.
     pub fn succeeded(&self, plan: &Plan) -> bool {
-        !self.stopped && self.steps as usize == plan.steps.len() && self.acked == self.steps
+        !self.stopped && self.digest == plan.digest && self.acked as usize == plan.steps.len()
     }
 
     pub fn acked(&self) -> u32 {
