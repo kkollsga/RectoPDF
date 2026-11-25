@@ -87,7 +87,7 @@ fn the_targets_backup_is_found_and_anothers_left() {
     for of in [MINE, THEIRS] {
         let path = backup(&dir, of);
         std::fs::write(&path, b"%PDF-1.4").unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
     }
     let s = survey(&dir, TargetMode::Save, 16).unwrap();
     let p = plan_of(&s, TargetMode::Save).unwrap();
