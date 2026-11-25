@@ -36,14 +36,19 @@
 //!    length and the geometry are in it: they make look-alikes as unlikely as for whole content, not impossible.
 //! 4. `E`.
 //!
+//! **2026-11-25: the records cap went from 256 to 8,192, and the forms cap is new.** No existing digest changed (0 of 5,857 pages of the corpus
+//! `bench100`, compared page by page), and 11 pages that had none gained one; the name stays `recto-page/1`. The only cap whose value is hashed is the
+//! image's own ([`Caps::xobject_bytes`]); the others only refuse, and a page with at most 256 records drew at most 128 forms, so the forms cap can't touch
+//! an identity made before.
+//!
 //! **A page that reaches a cap has no identity** ([`read_page`] gives `None`), but for an image past its own cap (kind 4, a definition of its own): so a
 //! digest never depends on where a cap fell, on how much a decoder read ahead or on how a library buffers, only on the file. The caps,
 //! [`Caps::STANDARD`], each counted exactly (one byte past is past): more than 1,024 entries of `/Contents`; more than 16 MiB hashed of the content
-//! together; more than 256 records of images and forms (drawn by the page and by its forms, together; the scan keeps at most 256 names); more than
-//! 16 MiB hashed of one form; more than 64 MiB hashed in all; more than 256 MiB of stored length of the streams opened (each charged its length when
+//! together; more than 8,192 records of images and forms (drawn by the page and by its forms, together; the scan keeps at most 8,192 names); more than 256
+//! forms drawn by the page whose content draws a name; more than 16 MiB hashed of one form; more than 64 MiB hashed in all; more than 256 MiB of stored length of the streams opened (each charged its length when
 //! it's opened, before a byte is read, and again if it's read again as stored); and in a file anyone may open (encrypted with an empty password), a
 //! stream over 8 MiB stored, as the reader gives such a stream only whole, decrypted. So a hostile page costs at most the caps, holding a few buffers
-//! of [`decode::CHUNK`], a predictor's row and the scan's names (256 of at most 127 bytes).
+//! of [`decode::CHUNK`], a predictor's row and the scan's names (8,192 of at most 127 bytes).
 //!
 //! **What a page holds at once:** what the digest needs of what it has resolved is small facts, and a whole parsed object (a dictionary, an array: up to
 //! the reader's object limit, and an object stream's members aren't under even that) lives only in a single slot, dropped before the next is resolved,
@@ -190,6 +195,7 @@ pub fn read_page(reader: &IndexedReader, entry: &PageMapEntry, caps: &Caps) -> P
         content_left: caps.content_bytes,
         read_left: caps.page_read,
         records: 0,
+        forms: 0,
         cost: 0,
     };
     let digest = digest(reader, entry, &mut budget).ok();
@@ -284,6 +290,8 @@ struct Budget<'c> {
     read_left: u64,
     /// Records of images and forms so far.
     records: usize,
+    /// Forms the page drew whose content draws a name, so far.
+    forms: usize,
     /// Stored lengths charged and bytes hashed: [`PageRead::bytes`].
     cost: u64,
 }
@@ -308,7 +316,7 @@ fn digest(reader: &IndexedReader, entry: &PageMapEntry, budget: &mut Budget<'_>)
     }
     hasher.update(b"C");
     hasher.update(count(entries.len()));
-    let mut scan = DoScan::default();
+    let mut scan = DoScan::with_cap(budget.caps.xobjects);
     for item in &entries {
         content_record(reader, item, budget, &mut hasher, &mut scan)?;
     }
@@ -335,6 +343,12 @@ fn digest(reader: &IndexedReader, entry: &PageMapEntry, budget: &mut Budget<'_>)
         };
         if seen.overflowed {
             return Err(Capped);
+        }
+        if !seen.names.is_empty() {
+            budget.forms += 1;
+            if budget.forms > budget.caps.forms_drawing {
+                return Err(Capped);
+            }
         }
         hasher.update(count(seen.names.len()));
         for (child, found) in seen.names.iter().zip(&seen.kids) {
@@ -650,7 +664,7 @@ fn xobject_record(
     };
     let before = (budget.read_left, budget.page_left, budget.cost);
     let mut tail = Vec::new();
-    let mut scan = DoScan::default();
+    let mut scan = DoScan::with_cap(budget.caps.xobjects);
     let read = read_xobject(reader, id, &descriptor, budget, &mut tail, children.then_some(&mut scan))?;
     scan.end_of_stream();
     let overflowed = read.is_form && scan.overflowed();

@@ -587,7 +587,11 @@ fn form_page(children: usize) -> Vec<u8> {
 #[test]
 fn the_record_count_is_capped_at_its_limit_plus_one() {
     let caps = Caps { xobjects: 4, ..Caps::STANDARD };
-    assert_ne!(digest_under(&images_page(4, b"one"), &caps).unwrap(), digest_under(&images_page(4, b"two"), &caps).unwrap(), "the 4th drawn counts");
+    assert_ne!(
+        digest_under(&images_page(4, b"one"), &caps).unwrap(),
+        digest_under(&images_page(4, b"two"), &caps).unwrap(),
+        "the 4th drawn counts"
+    );
     assert_eq!(digest_under(&images_page(5, b"one"), &caps), None, "5 drawn");
     assert!(digest_under(&form_page(3), &caps).is_some(), "a form and 3 children");
     assert_eq!(digest_under(&form_page(4), &caps), None, "a form and 4 children");
@@ -618,7 +622,10 @@ fn the_forms_a_page_draws_are_capped_at_their_limit_plus_one() {
         objects.extend((0..count).map(|at| stream(JPEG_DICT, &(at as u32).to_le_bytes())));
         one_page("", &format!("/XObject << {names} >>"), "4 0 R", objects)
     };
-    let caps = Caps { forms_drawing: 2, ..Caps::STANDARD };
+    let caps = Caps {
+        forms_drawing: 2,
+        ..Caps::STANDARD
+    };
     assert!(digest_under(&forms(2), &caps).is_some(), "two forms");
     assert_eq!(digest_under(&forms(3), &caps), None, "three forms");
     assert!(digest_under(&forms(3), &Caps::STANDARD).is_some(), "three are nothing under the standard cap");

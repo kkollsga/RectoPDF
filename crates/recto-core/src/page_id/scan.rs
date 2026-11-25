@@ -13,14 +13,15 @@
 //!   operator) means it isn't.
 //! - An inline image (`BI`, its dictionary, `ID`, a whitespace byte and its data) is skipped to a whitespace byte, `EI` and a whitespace byte or a
 //!   delimiter.
-//! - At most [`MAX_NAMES`] different names are kept; one more says the page draws more than it (a cap: the page has no identity).
+//! - At most [`MAX_NAMES`] (8,192) different names are kept ([`super::Caps::xobjects`]); one more says the page draws more than it (a cap: the page
+//!   has no identity). It was 256 until 2026-11-25; see [`super`].
 //!
-//! It holds at most [`MAX_NAMES`] names of 127 bytes, their sorted index and a few bytes of state, whatever it's given, and never fails; each byte
+//! It holds at most [`MAX_NAMES`] names of 127 bytes (1 MiB), their sorted index and a few bytes of state, whatever it's given, and never fails; each byte
 //! costs a few steps, and a name drawn a lookup of about 8 comparisons. Its promise: a mistake here can only change which images are hashed, or whether
-//! the page passes 256 names and so has no identity, never what the scan costs.
+//! the page passes the names cap and so has no identity, never what the scan costs.
 
 /// Most different names kept: the digest's cap on images and forms ([`super::Caps::xobjects`]).
-pub(super) const MAX_NAMES: usize = 256;
+pub(super) const MAX_NAMES: usize = 8192;
 /// Longest name taken, as PDF's own limit on names is.
 const MAX_NAME: usize = 127;
 
@@ -80,16 +81,26 @@ pub(super) struct Mark {
 pub(super) struct DoScan {
     names: Vec<Vec<u8>>,
     /// Indexes into `names`, sorted by the name: a name drawn is looked up in about 8 comparisons, not one for each name kept (a `Do` for each few
-    /// bytes against 256 names cost about 250 comparisons a byte of input). 512 bytes at most.
+    /// bytes against 8,192 names would cost thousands of comparisons a byte of input). at most 16 KiB (8,192 names).
     sorted: Vec<u16>,
+    /// Most different names kept ([`MAX_NAMES`] unless a test holds it small), at most `u16::MAX`, which `sorted`'s indexes fit.
+    cap: usize,
     core: Core,
 }
 
 impl Default for DoScan {
     fn default() -> Self {
+        Self::with_cap(MAX_NAMES)
+    }
+}
+
+impl DoScan {
+    /// A scan that keeps at most `cap` different names ([`super::Caps::xobjects`]), clamped to `u16::MAX`.
+    pub(super) fn with_cap(cap: usize) -> Self {
         Self {
             names: Vec::new(),
             sorted: Vec::new(),
+            cap: cap.min(usize::from(u16::MAX)),
             core: Core {
                 overflowed: false,
                 state: State::Normal,
@@ -337,11 +348,11 @@ impl DoScan {
         let Err(slot) = self.sorted.binary_search_by(|at| names[usize::from(*at)].as_slice().cmp(name)) else {
             return;
         };
-        if self.names.len() == MAX_NAMES {
+        if self.names.len() >= self.cap {
             self.core.overflowed = true;
             return;
         }
-        // At most MAX_NAMES (256) names, so an index always fits.
+        // At most `cap` (clamped to u16::MAX) names, so an index always fits.
         self.sorted.insert(slot, u16::try_from(self.names.len()).unwrap_or(u16::MAX));
         self.names.push(name.to_vec());
     }
@@ -352,7 +363,11 @@ mod tests {
     use super::*;
 
     fn names_of(parts: &[&[u8]]) -> (Vec<String>, bool) {
-        let mut scan = DoScan::default();
+        names_of_capped(MAX_NAMES, parts)
+    }
+
+    fn names_of_capped(cap: usize, parts: &[&[u8]]) -> (Vec<String>, bool) {
+        let mut scan = DoScan::with_cap(cap);
         for part in parts {
             scan.feed(part);
             scan.end_of_stream();
@@ -400,16 +415,16 @@ mod tests {
     }
 
     /// Failure caught: a page drawing more different names than the cap is hashed by some of them, so its digest depends on where the cap fell, or the
-    /// scan keeps names without bound. At 256 names all kept; at 257 it says it overflowed, and keeps no more.
+    /// scan keeps names without bound. With the cap held at 4 (what's proved is the exactness at the limit, not the value): 4 names all kept; at 5 it says
+    /// it overflowed, and keeps no more. A cap past `u16::MAX` is clamped, so the sorted index never wraps.
     #[test]
     fn the_names_are_capped_at_their_limit_plus_one() {
         let many = |count: usize| (0..count).map(|at| format!("/N{at} Do ")).collect::<String>();
-        assert_eq!(
-            names_of(&[many(MAX_NAMES).as_bytes()]),
-            ((0..MAX_NAMES).map(|at| format!("N{at}")).collect(), false)
-        );
-        let (names, overflowed) = names_of(&[many(MAX_NAMES + 1).as_bytes(), b"/N0 Do"]);
-        assert_eq!((names.len(), overflowed), (MAX_NAMES, true));
+        assert_eq!(names_of_capped(4, &[many(4).as_bytes()]), ((0..4).map(|at| format!("N{at}")).collect(), false));
+        let (names, overflowed) = names_of_capped(4, &[many(5).as_bytes(), b"/N0 Do"]);
+        assert_eq!((names.len(), overflowed), (4, true));
+        let (names, overflowed) = names_of_capped(usize::MAX, &[many(70_000).as_bytes()]);
+        assert_eq!((names.len(), overflowed), (usize::from(u16::MAX), true), "clamped");
     }
 
     /// Failure caught: a stream that didn't decode (hashed as stored instead) leaves the names of its first part, so the digest depends on how far a
