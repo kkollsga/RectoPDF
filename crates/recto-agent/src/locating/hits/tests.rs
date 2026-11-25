@@ -252,9 +252,10 @@ fn a_searchs_log_entry_never_carries_a_hits_reference() {
         rank: false,
         context: None,
     });
-    let mut details = command.log_details();
-    crate::search::log_how_it_went(&mut details, &command, &Ok(answer));
+    // The way the log is made: through `with_acted_tab`, which is where a search's answer reaches its entry.
+    let details = crate::with_acted_tab(command.log_details(), None, &Ok(answer), &command);
     assert!(!details.to_string().contains("r1."), "{details}");
+    assert_eq!(details["busy_pages"], 1, "the entry was made from the answer: {details}");
 }
 
 /// Failure: references go on being read after the search's own deadline has passed (a 30 s search that stops reading pages still opens the file and reads
