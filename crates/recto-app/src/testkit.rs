@@ -6,6 +6,7 @@ pub(crate) mod heard;
 #[cfg(test)]
 pub(crate) mod holds;
 pub(crate) mod place_seams;
+pub mod host_standin;
 mod scrolled;
 pub mod update_bed;
 pub mod watching;

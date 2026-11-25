@@ -697,16 +697,11 @@ fn window_view() -> recto_reader::Viewport {
     }
 }
 
-/// Draws what's in the window's view, as the host would with its UI thread, till it's at rest: where the view is now, so a test's place means what it says.
+/// Draws what's in the window's view, as the host would with its UI thread, till it's at rest: where the view is now, after it has arrived at every scroll it
+/// was sent (a jump the session pass queued included), so a test's place means what it says.
 fn drawn(app: &HeadlessApp) {
-    let report = app.core().engine.report().0;
-    let at = |key: &str| report[key].as_f64().unwrap_or(0.0);
-    let mut view = recto_reader::Viewport {
-        x: at("scroll_x"),
-        y: at("scroll_y"),
-        ..window_view()
-    };
-    crate::testkit::headless::applied_as_the_host(&app.core().engine.set_viewport(view));
+    let mut view = window_view();
+    crate::testkit::host_standin::report_where_the_host_is(app, &mut view);
     crate::testkit::headless::host_turns(app, &mut view, true);
 }
 
