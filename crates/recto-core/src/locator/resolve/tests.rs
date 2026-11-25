@@ -175,10 +175,10 @@ fn a_byte_cap_of_one_stops_after_one_page_and_says_incomplete() {
     assert!(now.bytes_read >= 1);
 }
 
-/// Failure: the byte cap is off by one at its limit, so a scan whose whole cost equals the cap is called incomplete (or one under it complete).
-/// The cap is checked before each read: a scan costing C before its last page reads that page at `bytes: C + 1` and not at `bytes: C`.
+/// Failure: the byte cap is off by one at its limit. The cap is checked before each read: with C the cost of the first two pages, a cap of exactly C
+/// stops after two (incomplete, the third unread), and a cap of C + 1 reads the third as well (all three, `Gone`).
 #[test]
-fn the_byte_cap_at_a_whole_scans_cost_reads_every_page_and_one_less_is_incomplete() {
+fn a_byte_cap_equal_to_what_was_read_stops_and_one_more_byte_reads_on() {
     let locator = reference_of(&["A", "B", "C"], 2);
     let now = pdf(&["D", "E", "F"]);
     let all = resolve_in(&locator, &now, &ScanCaps { bytes: u64::MAX, ..STANDARD });
