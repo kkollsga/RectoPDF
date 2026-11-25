@@ -47,8 +47,9 @@ pub struct Ref {
 impl Cmd for Ref {
     const TAG: &'static str = "ref";
     const ROWS: &'static [Spec] = ROWS_REF;
-    // lopdf only: no worker draws a page.
-    const DRAWS: bool = false;
+    // No worker draws a page, but a scan reads every page of a hostile file in this process, so it takes a place under the server's draw cap like any
+    // other read of pages: at most a few run at once.
+    const DRAWS: bool = true;
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
@@ -124,7 +125,7 @@ impl From<Resolve> for line::Resolve {
 impl Cmd for Resolve {
     const TAG: &'static str = "resolve";
     const ROWS: &'static [Spec] = ROWS_RESOLVE;
-    const DRAWS: bool = false;
+    const DRAWS: bool = true;
     const READS_PAGES: bool = true;
     const PROTECTED_OK: bool = false;
     const ABOUT: super::About = super::About::Its;
@@ -245,6 +246,16 @@ mod tests {
     fn the_rows_example_token_decodes() {
         let decoded = locator::decode(EXAMPLE_REF).expect("the example decodes");
         assert_eq!(locator::encode(&decoded), EXAMPLE_REF, "and is the canonical form of what it names");
+    }
+
+    /// Failure: `ref` or `resolve` reads every page of a file with no limit on how many scans run at once, since the server's cap is of the commands that
+    /// say they draw. That the cap holds at its limit plus one is `drawing_is_capped_and_other_work_goes_around_it` (recto-control); this is that these two
+    /// commands are under it.
+    #[test]
+    fn ref_and_resolve_take_a_place_under_the_draw_cap() {
+        let resolve = read(EXAMPLE_REF).expect("resolve");
+        let reference = crate::parse(r##"{"cmd":"ref","page":1,"tab":"#1"}"##).expect("ref");
+        assert!(resolve.draws() && reference.draws());
     }
 
     /// Failure: the activity log, or a command printed in a test failure, carries the token or a piece of its checks, which name a page's content.
