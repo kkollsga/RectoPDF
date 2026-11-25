@@ -255,7 +255,7 @@ fn a_protected_document_gives_an_agent_neither_a_reference_nor_an_answer() {
     let made = app
         .agent(Level::Full, &json!({ "cmd": "ref", "page": 2, "tab": tab }).to_string())
         .expect_err("ref is refused");
-    for token in [twins.as_str(), "r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"] {
+    for token in [twins.as_str(), recto_agent::commands::locating::EXAMPLE_REF] {
         let answered = app
             .agent(Level::Full, &json!({ "cmd": "resolve", "ref": token, "tab": tab }).to_string())
             .expect_err("resolve is refused");

@@ -1416,7 +1416,7 @@ mod tests {
             Kind::Degrees => "90",
             Kind::Level => "read_only",
             Kind::Text => "words",
-            Kind::Reference => "r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000",
+            Kind::Reference => crate::commands::locating::EXAMPLE_REF,
             Kind::Choice(words) | Kind::List(words) => words[0],
             Kind::Size => "10x10",
             Kind::Rect => "1,2,3,4",

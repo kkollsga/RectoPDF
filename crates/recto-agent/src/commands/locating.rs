@@ -9,6 +9,32 @@ use crate::*;
 use recto_core::locator::{self, Locator};
 use serde_json::{Value, json};
 
+/// The one reference token the help, the tests and the activity log's walk use: a made-up page, as `recto ref` would write it. A
+/// macro, so the rows' examples can be built from the same literal with `concat!`.
+macro_rules! example_ref {
+    () => {
+        "r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000"
+    };
+}
+
+/// [`example_ref!`], for the tests that need it as a value. Holds no words: a token is page numbers and checks.
+#[cfg(any(test, feature = "test-words"))]
+pub const EXAMPLE_REF: &str = example_ref!();
+
+/// A reference to page 1 of a made-up document, with the target given: the one fixture of the tests that need a [`Locator`] (not every one needs to read
+/// a file, and a token is only numbers).
+#[cfg(test)]
+pub(crate) fn made_up_locator(target: locator::Target) -> Locator {
+    use recto_core::locator::{DocumentTags, PageRef};
+    let identity = recto_core::page_id::PageIdentity {
+        digest: [2; 32],
+        object: (1, 0),
+        frame: 0,
+    };
+    let page = PageRef::new(1, &identity).expect("page 1 is a page");
+    Locator::new(DocumentTags::new([1; 8], None), page, target)
+}
+
 /// `recto ref <page>`: a reference to a page of the tab, to give back to `resolve` later, when the file's page numbers may have changed.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -169,8 +195,8 @@ pub(crate) const ROWS_RESOLVE: &[Spec] = &[Spec {
     ],
     data: "`{ tab, status, page, file_page, was_page, candidates: [ { page, file_page } ], document, frame, target, looked_at, pages_read, note }`. `status` is `found`, `moved`, `ambiguous`, `gone` or `incomplete`. `page` (in the tab as shown, null when unsaved edits removed it) and `file_page` (of the file on disk) are only for `found` and `moved`, counted from 1; `was_page` is where the reference pointed. `candidates` lists up to 8 pages for `ambiguous`, and the one match found for `incomplete`. `document` is `same`, `different` or `unknown`: information only, it never changes the status. `frame` says whether the page's crop and turn are the reference's. `target` is `{ kind: \"page\" }`, `{ kind: \"spot\", placed, rect | why }` or `{ kind: \"characters\", start, end, checked: false }`. `looked_at` is `hint`, `all` or `part`.",
     examples: &[
-        "recto resolve r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000",
-        "recto resolve r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000 --tab \"#2\" --json",
+        concat!("recto resolve ", example_ref!()),
+        concat!("recto resolve ", example_ref!(), " --tab \"#2\" --json"),
     ],
     ..BASE
 }];
@@ -178,21 +204,6 @@ pub(crate) const ROWS_RESOLVE: &[Spec] = &[Spec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use recto_core::locator::{DocumentTags, PageRef, Target};
-    use recto_core::page_id::PageIdentity;
-
-    /// The reference the rows' examples use, minted as `recto ref` mints one from a made-up page.
-    const EXAMPLE_REF: &str = "r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000";
-
-    fn made_up() -> Locator {
-        let identity = PageIdentity {
-            digest: [2; 32],
-            object: (1, 0),
-            frame: 0,
-        };
-        let page = PageRef::new(1, &identity).expect("page 1");
-        Locator::new(DocumentTags::new([1; 8], None), page, Target::Page)
-    }
 
     fn read(token: &str) -> Result<Command, AgentError> {
         crate::parse(&json!({ "cmd": "resolve", "ref": token }).to_string())
@@ -228,15 +239,12 @@ mod tests {
         assert_eq!((error.code, error.exit), (Code::REFERENCE_TOO_NEW, exit::USAGE));
     }
 
-    /// Failure: a row's example is a token the command refuses, so the help teaches a line that fails.
+    /// Failure: the example token isn't the canonical text of a reference (it decodes, but `recto ref` would never write it that way). That every row's
+    /// example is read by its command is `table::tests::every_example_parses_to_its_own_row`.
     #[test]
     fn the_rows_example_token_decodes() {
         let decoded = locator::decode(EXAMPLE_REF).expect("the example decodes");
         assert_eq!(locator::encode(&decoded), EXAMPLE_REF, "and is the canonical form of what it names");
-        assert_eq!(decoded, made_up(), "it names the made-up page it was minted from");
-        for row in ROWS_RESOLVE {
-            assert!(row.examples.iter().all(|example| example.contains(EXAMPLE_REF)), "{:?}", row.examples);
-        }
     }
 
     /// Failure: the activity log, or a command printed in a test failure, carries the token or a piece of its checks, which name a page's content.

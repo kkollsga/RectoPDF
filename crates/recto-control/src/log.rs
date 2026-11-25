@@ -577,7 +577,7 @@ mod tests {
                 Kind::Switch => return None,
                 Kind::Text | Kind::Rest => "x".into(),
                 // A token the CLI decodes; it holds no words, and what the log keeps of `resolve` is its tab and page number.
-                Kind::Reference => "r1.040g2081040g2.p1-081040g2081040g2081040g208-0000000".into(),
+                Kind::Reference => recto_agent::commands::locating::EXAMPLE_REF.into(),
                 Kind::Choice(words) | Kind::List(words) => (*words.first()?).into(),
                 Kind::Size => "10x10".into(),
                 Kind::Rect => "0,0,10,10".into(),
