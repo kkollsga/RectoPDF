@@ -402,9 +402,12 @@ impl Updater {
             .clone()
             .filter(|offered| is_newer(offered, &current) || builds::is_way_back(&saved, offered, &current));
         // What's staged and no longer on offer is the size of the app, for nothing. Only with no installer at work.
-        if !second_copy && settled.plan_gone && !helper_alive(&self.files) {
-            self.clear_leftovers(&app, &current, offered.is_some());
-            self.drop_an_old_record_copy();
+        if !second_copy && !helper_alive(&self.files) {
+            if settled.plan_gone {
+                self.clear_leftovers(&app, &current, offered.is_some());
+            }
+            // The week is PRIVACY.md's, so it holds while a rollback refusal stands too. A copy offered to fall back on stays until the next launch.
+            self.drop_an_old_record_copy(now, settled.fall_back.is_some());
         }
         let status = settled.status.unwrap_or_else(|| match &offered {
             Some(offered) if may_replace => Status::Available(offered.clone()),
@@ -476,14 +479,15 @@ impl Updater {
         }
     }
 
-    /// What's kept of the record from before the last update goes once it's a week old. One look at one file's time.
-    fn drop_an_old_record_copy(&self) {
+    /// What's kept of the record from before the last update goes once it's a week old, counted from `.whole`, which is made at the install (not from a refusal), as PRIVACY.md says. One look at one file's time.
+    fn drop_an_old_record_copy(&self, now_ms: u64, offered_to_fall_back_on: bool) {
         let whole = self.files.before().join(".whole");
-        let age = std::fs::metadata(&whole)
+        let made_ms = std::fs::metadata(&whole)
             .ok()
             .and_then(|meta| meta.modified().ok())
-            .and_then(|at| at.elapsed().ok());
-        if age.is_some_and(|age| age.as_millis() > u128::from(KEEP_RECORD_COPY_MS)) {
+            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|since| since.as_millis());
+        if !offered_to_fall_back_on && made_ms.is_some_and(|made| u128::from(now_ms).saturating_sub(made) > u128::from(KEEP_RECORD_COPY_MS)) {
             let _ = std::fs::remove_dir_all(self.files.before());
         }
     }
@@ -1256,6 +1260,8 @@ mod tests {
     use crate::stage::tests::{fake_app, fake_app_at, latest_json, temp_dir, zip_of};
     use std::sync::atomic::AtomicU32;
     use std::time::Instant;
+
+    mod record_copy;
 
     #[derive(Default)]
     struct Fake {
@@ -2248,63 +2254,6 @@ mod tests {
                 "{tries}"
             );
         }
-    }
-
-    /// Failure: a new version that comes up and then misreads the record, starting empty or wrong, has already thrown away the record from before it, which was deleted at its first frame. It's kept for a week, and then it goes.
-    #[test]
-    fn the_record_from_before_an_update_is_kept_for_a_while() {
-        let bed = Bed::new("before");
-        let root = bed.dir.join("state");
-        let files = Files::in_state(&root);
-        local::ensure_private_dir(&files.work).unwrap();
-        std::fs::create_dir_all(files.before()).unwrap();
-        std::fs::write(files.before().join(".whole"), "").unwrap();
-        std::fs::write(files.before().join("record.a.json"), "the state before").unwrap();
-        let plan = Plan {
-            id: "1-1".into(),
-            cdhash: "a".repeat(40),
-            team_required: false,
-            any_version: false,
-            development_build: false,
-            team_signed: false,
-            from: "0.1.0".into(),
-            to: "0.2.0".into(),
-            pid: 1,
-            app: bed.app.clone(),
-            beside: beside_app(&bed.app).unwrap(),
-            root: root.clone(),
-            quit_at_ms: 5,
-            background: false,
-            quit_limit_ms: 1,
-            start_limit_ms: 1,
-            handed_off_tabs: None,
-            open: Vec::new(),
-            keep_record: false,
-            test: None,
-        };
-        plan.write(&files.plan()).unwrap();
-        let launch = |version: &str| {
-            let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
-            updater.launched(Facts {
-                version: version.into(),
-                app: bed.app.clone(),
-                system: "15.0".into(),
-            });
-            updater
-        };
-        launch("0.2.0").first_frame(100);
-        assert!(files.before().join("record.a.json").exists(), "come up, and kept");
-        launch("0.2.0").first_frame(100);
-        assert!(files.before().join("record.a.json").exists(), "and at the next launch");
-        let week_and_more = std::time::SystemTime::now() - Duration::from_millis(KEEP_RECORD_COPY_MS + 60_000);
-        std::fs::File::options()
-            .write(true)
-            .open(files.before().join(".whole"))
-            .unwrap()
-            .set_modified(week_and_more)
-            .unwrap();
-        launch("0.2.0");
-        assert!(!files.before().exists(), "a week on, it goes");
     }
 
     /// Failure: a launch tidying up deletes the only good copy, as `new/` after a keep that failed, or says the version that's here came back. All that's old in there is kept; a version it couldn't go back from says just that.
