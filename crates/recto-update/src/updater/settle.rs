@@ -157,7 +157,7 @@ fn launch_outcome(files: &Files, current: &str, app: &Path) -> (Option<Outcome>,
             && plan.from != plan.to
             && plan.root == files.root
             && plan.app.as_path() == app
-            && (plan.from != outcome.from || plan.to != outcome.to)
+            && (plan.from != outcome.from || plan.to != outcome.to || outcome.plan.as_ref().is_some_and(|earlier| *earlier != plan.id))
     });
     if current == outcome.to && !superseded {
         return (Some(outcome), false);
@@ -251,6 +251,7 @@ mod tests {
                 from: "0.1.0".into(),
                 to: "0.2.0".into(),
                 why: "app_exit_unproven".into(),
+                plan: None,
             };
             old.write(&files.outcome()).unwrap();
             let archive = files.work.join("outcome.refused.json");
@@ -269,6 +270,85 @@ mod tests {
             assert_eq!(std::fs::read(app.join("untouched")).unwrap(), b"new bundle");
             let evidence = if archive_fails { files.outcome() } else { archive };
             assert_eq!(Outcome::read(&evidence), Some(old));
+        }
+    }
+
+    /// Settles a launch of `current` = 0.2.0 whose plan (0.1.0 to 0.2.0, id `retry`) has the same versions as the refusal left on disk, which is stamped with `refusal_plan`. Returns whether the new arrival was acknowledged, and checks the recovery files and the refusal's evidence stay.
+    fn settle_same_pair_after_refusal(refusal_plan: Option<&str>, archive_fails: bool) -> bool {
+        let dir = recto_testpdf::TempDir::new("same-pair-after-refusal-");
+        let app = dir.join("RectoPDF.app");
+        let root = dir.join("state");
+        let files = crate::plan::Files::in_state(&root);
+        recto_platform::local::ensure_private_dir(&root).unwrap();
+        recto_platform::local::ensure_private_dir(&files.work).unwrap();
+        std::fs::create_dir_all(files.before()).unwrap();
+        std::fs::write(files.before().join(".whole"), b"earlier record").unwrap();
+        std::fs::create_dir(&app).unwrap();
+        std::fs::write(app.join("untouched"), b"new bundle").unwrap();
+        let plan = Plan {
+            id: "retry".into(),
+            cdhash: String::new(),
+            team_required: false,
+            any_version: false,
+            development_build: false,
+            team_signed: false,
+            from: "0.1.0".into(),
+            to: "0.2.0".into(),
+            pid: 0,
+            app: app.clone(),
+            beside: beside_app(&app).unwrap(),
+            root: root.clone(),
+            quit_at_ms: 0,
+            background: true,
+            quit_limit_ms: 1,
+            start_limit_ms: 1,
+            handed_off_tabs: None,
+            open: Vec::new(),
+            keep_record: false,
+            test: None,
+        };
+        plan.write(&files.plan()).unwrap();
+        let old = Outcome {
+            kind: OutcomeKind::CouldntGoBack,
+            from: "0.1.0".into(),
+            to: "0.2.0".into(),
+            why: "app_exit_unproven".into(),
+            plan: refusal_plan.map(str::to_owned),
+        };
+        old.write(&files.outcome()).unwrap();
+        let archive = files.work.join("outcome.refused.json");
+        if archive_fails {
+            std::fs::create_dir(&archive).unwrap();
+        }
+        let updater = Updater::new(&root, crate::source::resolve(false, false, None, None), Arc::new(Quiet));
+        let settled = updater.settle_last_install(&mut Saved::default(), &plan.to, &app, 0);
+        assert_eq!(std::fs::read(files.before().join(".whole")).unwrap(), b"earlier record", "recovery record kept");
+        assert_eq!(std::fs::read(app.join("untouched")).unwrap(), b"new bundle", "new bundle kept");
+        let arrived = settled.arrived.is_some();
+        if arrived {
+            assert_eq!(Plan::read(&files.plan()), Some(plan), "the new plan is kept");
+            let evidence = if archive_fails { files.outcome() } else { archive };
+            assert_eq!(Outcome::read(&evidence), Some(old), "the earlier refusal stays as evidence");
+        }
+        arrived
+    }
+
+    /// Failure: a person restores by hand and the updater retries the same versions under a new plan, but an old refusal that couldn't be archived (or was left) still masks the arrival, because it carried no plan identity. A refusal of the same plan, or one with no plan recorded, still applies.
+    #[test]
+    fn a_refusal_of_an_earlier_plan_for_the_same_versions_does_not_mask_a_retry() {
+        for archive_fails in [false, true] {
+            assert!(
+                settle_same_pair_after_refusal(Some("earlier"), archive_fails),
+                "retry under a new plan id must arrive (archive_fails {archive_fails})"
+            );
+            assert!(
+                !settle_same_pair_after_refusal(Some("retry"), archive_fails),
+                "the refusal of this very plan still applies (archive_fails {archive_fails})"
+            );
+            assert!(
+                !settle_same_pair_after_refusal(None, archive_fails),
+                "a refusal with no plan recorded still applies (archive_fails {archive_fails})"
+            );
         }
     }
 }

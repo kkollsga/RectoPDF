@@ -1958,6 +1958,7 @@ mod tests {
                 from: "0.1.0".into(),
                 to: "0.2.0".into(),
                 why: why.into(),
+                plan: None,
             }
             .write(&files.outcome())
             .unwrap();
@@ -2230,6 +2231,7 @@ mod tests {
                 from: "0.1.0".into(),
                 to: "0.2.0".into(),
                 why: why.into(),
+                plan: None,
             }
             .write(&files.outcome())
             .unwrap();
@@ -2343,6 +2345,7 @@ mod tests {
             from: "0.0.5".into(),
             to: "0.1.0".into(),
             why: "nothing_to_go_back_to".into(),
+            plan: None,
         }
         .write(&files.outcome())
         .unwrap();
@@ -2459,6 +2462,7 @@ mod tests {
             from: "0.1.0".into(),
             to: "0.3.0".into(),
             why: "didnt_start".into(),
+            plan: None,
         }
         .write(&files.outcome())
         .unwrap();

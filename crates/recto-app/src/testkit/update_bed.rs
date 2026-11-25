@@ -354,6 +354,7 @@ impl Disk {
             from: plan.from.clone(),
             to: plan.to.clone(),
             why: why.to_owned(),
+            plan: Some(plan.id.clone()),
         }
         .write(&files.outcome())
         .expect("the outcome written");

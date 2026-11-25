@@ -255,6 +255,9 @@ pub struct Outcome {
     pub to: String,
     /// Why, as a code of the installer's own.
     pub why: String,
+    /// The id of the plan this is about, so a retry of the same versions under a new plan isn't taken for it. Files written before this was kept read as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
