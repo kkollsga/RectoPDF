@@ -48,7 +48,7 @@ pub(super) fn person_unlocks(app: &HeadlessApp, file: &Path) {
 /// "Locked" and go to its first hit, each step settled with its drawing done. Find is left open.
 fn person_reads(app: &HeadlessApp) {
     let mut view = crate::testkit::host_standin::first_shown(window_view());
-    crate::testkit::host_standin::report_a_fresh_view(app, &mut view);
+    crate::testkit::host_standin::report_where_the_host_is(app, &mut view);
     host_turns(app, &mut view, true);
     for page in ["2", "4"] {
         app.act(UiAction::PageTyped { text: page.into() });
@@ -259,7 +259,7 @@ fn a_draws_word_not_held_says_why() {
     app.settle();
     let engine = app.core().engine.clone();
     let mut view = crate::testkit::host_standin::first_shown(window_view());
-    crate::testkit::host_standin::report_a_fresh_view(&app, &mut view);
+    crate::testkit::host_standin::report_where_the_host_is(&app, &mut view);
     host_turns(&app, &mut view, true);
     let watch = DrawWatch::from_now(&app);
     view.width *= 2.0;
