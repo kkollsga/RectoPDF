@@ -79,8 +79,8 @@ fn refusal(folder: &Path, mode: TargetMode) -> Refusal {
     plan_of(&survey(folder, mode, 16).unwrap(), mode).unwrap_err()
 }
 
-/// Failure: the wrong file goes (another document's backup is purged with this one's), or the adapter opens a backup PDF to decide, which the
-/// unreadable (mode 000) files here would refuse.
+/// Failure: the wrong file goes (another document's backup is purged with this one's), or an adapter that opens each backup and treats the
+/// error as a refusal fails on the unreadable (mode 000) files here, so the plan is refused instead of made (as a non-root user; root opens them).
 #[test]
 fn the_targets_backup_is_found_and_anothers_left() {
     let dir = TempDir::new("recto-backups-");
@@ -178,7 +178,8 @@ fn a_missing_folder_is_complete_and_a_linked_folder_is_not() {
     assert_eq!(refusal(&file, TargetMode::Save), Refusal::Incomplete(Store::Backup));
 }
 
-/// Failure: a folder past the cap is cut off and its remaining files read as "none found".
+/// Failure: a folder past the cap is cut off by stopping the listing at the cap and then marking the store complete (as `prune_backups` does with
+/// `take`), so the files past the cap read as "none found" and a copy of the document is left behind.
 #[test]
 fn a_folder_over_the_cap_refuses() {
     let dir = TempDir::new("recto-backups-");
@@ -189,4 +190,56 @@ fn a_folder_over_the_cap_refuses() {
     std::fs::remove_file(dir.join("f3")).unwrap();
     // Three files fit the cap, and none of them can be placed.
     assert!(survey(&dir, TargetMode::Save, 3).is_ok());
+}
+
+/// Failure: a folder that can't be read, or whose parent can't be searched, is marked complete, so a plan claims "none found" about backups it
+/// never saw.
+#[test]
+fn an_unreadable_folder_is_not_complete() {
+    let base = TempDir::new("recto-backups-");
+    let folder = base.join("backups");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(backup(&folder, MINE), b"%PDF-1.4").unwrap();
+    let mode = |path: &Path, bits| std::fs::set_permissions(path, std::fs::Permissions::from_mode(bits)).unwrap();
+    mode(&folder, 0o000);
+    let unlistable = refusal(&folder, TargetMode::Save);
+    mode(&folder, 0o700);
+    mode(&base, 0o000);
+    let unsearchable = refusal(&folder, TargetMode::Save);
+    mode(&base, 0o700);
+    assert_eq!(unlistable, Refusal::Incomplete(Store::Backup));
+    assert_eq!(unsearchable, Refusal::Incomplete(Store::Backup));
+}
+
+/// Failure: a link or a directory named `.DS_Store` is skipped as Finder's file, so whatever it leads to is never looked at and the plan
+/// claims "none found".
+#[test]
+fn only_a_plain_ds_store_file_is_skipped() {
+    let target = TempDir::new("recto-backups-out-");
+    let linked = TempDir::new("recto-backups-");
+    std::os::unix::fs::symlink(target.path(), linked.join(".DS_Store")).unwrap();
+    assert_eq!(refusal(&linked, TargetMode::Save), Refusal::Incomplete(Store::Backup));
+    let folder = TempDir::new("recto-backups-");
+    std::fs::create_dir(folder.join(".DS_Store")).unwrap();
+    assert_eq!(refusal(&folder, TargetMode::Save), Refusal::Incomplete(Store::Backup));
+}
+
+/// Failure: the adapter starts reading, renaming or removing a backup. It decides by name and metadata alone (rule 5 and 6: a backup is a PDF
+/// of the document, hostile input and not ours to touch here), and the survey is read-only.
+#[test]
+fn the_adapter_only_lists_and_never_touches_a_file() {
+    let source = include_str!("../backups.rs");
+    let production = source.split("#[cfg(test)]").next().unwrap();
+    for word in [
+        "File::open",
+        "fs::read(",
+        "fs::read_to",
+        "OpenOptions",
+        "rename",
+        "remove",
+        "fs::write",
+        "set_permissions",
+    ] {
+        assert!(!production.contains(word), "backups.rs must not use `{word}`");
+    }
 }

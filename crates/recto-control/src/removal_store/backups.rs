@@ -33,10 +33,10 @@ pub fn survey_backups(folder: &Path, lineage: &Lineage<'_>, mode: TargetMode, su
         let Ok(entry) = entry else { return Ok(()) };
         let name = entry.file_name();
         let name = name.as_encoded_bytes();
-        if name == b".DS_Store" {
+        let Ok(meta) = entry.metadata() else { return Ok(()) };
+        if name == b".DS_Store" && meta.is_file() {
             continue;
         }
-        let Ok(meta) = entry.metadata() else { return Ok(()) };
         let owner = match names.get(name) {
             _ if !meta.is_file() => Owner::Unknown,
             None => Owner::Unknown,
