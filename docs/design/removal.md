@@ -203,7 +203,7 @@ QA vocabulary is feature-local and uses the same command/state machine: draft/ca
 **D1a as built.** The pure plan and the progress tracker are in `crates/recto-core/src/removal.rs` and `removal/{plan,progress,tests}.rs`, not the names §8 proposed. Departures from this design:
 - There is no Draft or Planning phase in code: a plan is built whole or refused.
 - `Progress` is tied to a plan by its length only, until the confirmation's digest binds it in D1b.
-- Find text is cleared unconditionally. It is the app's one global last query, so this may wipe another document's history, which §3 says not to do without an agreed scope. **Open owner question:** what scope does clearing Find text have?
+- Find text is cleared unconditionally. It is the app's one global last query, so this may wipe another document's history, which §3 says not to do without an agreed scope. **Decided by the owner, 2026-11-25** (`OWNER-RULES.md`): a completed removal wipes the remembered Find search; the unconditional clear is the intended behaviour. Also decided the same day: "actions" keeps ordinary links, and true redaction starts as picture pages.
 - The actor and epoch staleness tests belong to D1b.
 - Snapshot and clipboard offers are not yet a `Writer`; that is a follow-up.
 

@@ -5,6 +5,11 @@ The owner's product rules and one-off decisions, in their words, with the date. 
 ## Decisions of 2026-11-25
 
 - CI: "Lets clear the backlog related to CI. For now lets assume its good enough. But lets keep an eye on it. We want to make sure dev performance is sufficient." No CI optimisation is scheduled; the coordinator watches CI time after every push against the 21:00 budget.
+- Four questions put with recommendations, answered "Agree on all 4":
+  1. A completed removal (redaction or Remove Hidden Data) also wipes the remembered Find search, the app's one last query for all documents.
+  2. Remove Hidden Data's "actions" choice removes scripts and things a PDF does by itself when opened, and keeps ordinary links (web links, jumps to other pages). The three choices (document information, attached files, actions) are ticked by default.
+  3. True redaction first replaces each page that has a redaction with a picture of itself with the area blacked out, only on those pages and labelled as such; editing the page so the content under the box is gone, keeping it searchable, comes later.
+  4. A copied link to a place in a PDF carries the standard page number only for now (`file.pdf#page=N`); RectoPDF's exact pointer is added once it has been tried in Adobe Acrobat.
 - Updates and programs whose file was deleted: asked "Should RectoPDF ignore such a program when the name it was started under shows it can't be RectoPDF, and go ahead with the update?", the owner chose "Yes, ignore those". Anything named like RectoPDF is still treated as possibly running, so RectoPDF is never replaced while it might be open.
 
 ## Starting the next four work items (2026-11-17)

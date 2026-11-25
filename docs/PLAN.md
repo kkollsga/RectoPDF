@@ -55,7 +55,7 @@ Follow-ups found this run (not done):
 - Installer (pre-existing, also before this run): an app opened after the last absence look and before the swap is replaced while it runs (rollback after `restore_record`; forward after `before_swap`, `copy_record` and the signature checks); the held record lock only makes it start without its record. Needs a design decision: re-observe under the lock right before the swap, or a launch barrier.
 - Installer: read `pbi_name` (31 bytes) instead of `pbi_comm` (15) so fewer long-named programs block updates; same prefix rule. Test gaps: `cleanup::wait`'s retry policy isn't pinned by its own test; a deleted running test binary from a parallel rebuild can make platform tests see unknown.
 
-Owner questions open (each with a recommendation, none blocking): Find text wiped on removal (yes); Remove Hidden Data "actions" keeps ordinary links (keep); true redaction method (picture-pages first, edit-in-place later); a copied link carries the page only for now (yes).
+Owner decided all four, 2026-11-25 ("Agree on all 4", `OWNER-RULES.md`): Find text is wiped on a completed removal; Remove Hidden Data's "actions" keeps ordinary links, all three choices ticked by default; true redaction starts as picture pages, edit-in-place later; a copied link carries the page number only for now.
 
 ## Current run: started 2026-11-17
 
