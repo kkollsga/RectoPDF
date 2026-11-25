@@ -246,8 +246,8 @@ fn fixture_program_lease_restores_bytes_and_never_overwrites_replacement() {
     let program = fixture.join("RectoPDF");
     std::fs::write(&program, "original bytes").unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let as_the_program = |_pid: u32| Some(program.clone());
-    let refused = copy_cleanup::cancel_by(&fixture, &program, &[std::process::id()], std::time::Duration::ZERO, as_the_program).unwrap_err();
+    let as_alive = |_pid: u32| Some((1, 1));
+    let refused = copy_cleanup::cancel_by(&fixture, &program, &[std::process::id()], std::time::Duration::ZERO, as_alive).unwrap_err();
     assert!(refused.contains("no PID was signalled") && refused.contains("did not exit"), "{refused}");
     assert_eq!(
         std::fs::read(&program).unwrap(),
@@ -563,6 +563,7 @@ fn a_run_that_arms_its_watch_late_still_ends_by_the_lease_and_the_program_is_res
         .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
+    let child_pid = child.id();
     let mut gate = child.stdin.take().unwrap();
     let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
     let mut owner = lifetime::Lifetime::Owned(child);
@@ -574,10 +575,27 @@ fn a_run_that_arms_its_watch_late_still_ends_by_the_lease_and_the_program_is_res
         }
         line.clear();
     }
+    // The gate opens only once cleanup has taken the lease and looked at the copy twice (when it was taken in, and the check that it is still the copy): a
+    // copy dropped at that look would let cleanup say Ok with the copy still running, and a gate opened at once would hide that.
+    let (looked, looks) = std::sync::mpsc::channel();
     let cleaning = {
         let (fixture, program) = (fixture.clone(), program.clone());
-        std::thread::spawn(move || copy_cleanup::end(&fixture, &[program], copy_cleanup::EXIT_CAP))
+        std::thread::spawn(move || {
+            let started = move |pid| {
+                let at = copy_cleanup::start_time(pid);
+                let _ = looked.send(());
+                at
+            };
+            let ended = copy_cleanup::cancel_by(&fixture, &program, &[child_pid], copy_cleanup::EXIT_CAP, started);
+            // Whether the copy was still running when cleanup said it was done (a zombie, exited and not yet reaped, has no counters).
+            (ended, recto_platform::local::process_counters(child_pid).is_some())
+        })
     };
+    for _ in 0..2 {
+        looks
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("cleanup never looked at the copy");
+    }
     // The program's removal is a NOTE_DELETE, seen however short the absence: no polling.
     let gone = recto_platform::local::wait_until_gone(&[], &[&program], std::time::Duration::from_secs(10));
     assert!(
@@ -586,10 +604,11 @@ fn a_run_that_arms_its_watch_late_still_ends_by_the_lease_and_the_program_is_res
     );
     writeln!(gate, "arm").unwrap();
     gate.flush().unwrap();
-    let ended = cleaning.join().unwrap();
+    let (ended, still_running) = cleaning.join().unwrap();
     let lifetime::Lifetime::Owned(child) = &mut owner else { unreachable!() };
     let status = child.wait().unwrap();
     assert!(ended.is_ok(), "{ended:?}");
+    assert!(!still_running, "cleanup returned Ok while the copy was still running");
     assert!(
         status.success() && status.signal().is_none(),
         "the run ends by its lease, not a signal: {status:?}"
@@ -618,17 +637,12 @@ fn a_reused_pid_is_not_waited_for_as_the_copy() {
     let fixture = fixture.canonicalize().unwrap();
     let program = fixture.join("RectoPDF");
     std::fs::write(&program, "original").unwrap();
-    let elsewhere = |_pid: u32| Some(PathBuf::from("/usr/bin/unrelated"));
-    // This test's own pid is alive and was "observed"; it is not at the program's path.
-    copy_cleanup::cancel_by(&fixture, &program, &[std::process::id()], std::time::Duration::ZERO, elsewhere).unwrap();
+    // This test's own pid was "observed"; its start time differs at the second look, as a number given to another process after the copy exited does.
+    let looks = std::cell::Cell::new(0);
+    let reused = |_pid: u32| {
+        looks.set(looks.get() + 1);
+        Some((looks.get(), 0))
+    };
+    copy_cleanup::cancel_by(&fixture, &program, &[std::process::id()], std::time::Duration::from_secs(30), reused).unwrap();
     assert_eq!(std::fs::read(&program).unwrap(), b"original");
-}
-
-/// Failure: a pid reused by an unrelated process after the copy exited is kept as the copy, costing the whole cap and an `Err`.
-#[test]
-fn only_a_pid_still_at_the_programs_path_is_the_program() {
-    let program = Path::new("/fixture/RectoPDF");
-    assert!(copy_cleanup::still_the_program(Some(program.to_owned()), program));
-    assert!(!copy_cleanup::still_the_program(Some("/usr/bin/other".into()), program));
-    assert!(!copy_cleanup::still_the_program(None, program));
 }

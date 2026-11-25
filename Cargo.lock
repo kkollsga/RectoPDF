@@ -771,6 +771,7 @@ dependencies = [
 name = "recto-cli"
 version = "0.1.3"
 dependencies = [
+ "libc",
  "lopdf",
  "recto-agent",
  "recto-control",

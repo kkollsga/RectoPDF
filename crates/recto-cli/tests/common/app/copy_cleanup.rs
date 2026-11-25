@@ -150,30 +150,48 @@ pub const EXIT_CAP: Duration = Duration::from_secs(40);
 /// Takes the program away (the lease), waits for every run of it to exit, and puts it back. The lease is kept until the exit, not given back at the
 /// first sign of slowness: a run that arms its watch after the program is back never sees it go and lives on. Each wait is one `kevent` on the
 /// processes' own exit; after each exit it looks again, for a launch still in flight. No PID is signalled.
+///
+/// Known limit: while the program is unlinked the system tells no path for a running copy (`proc_pidpath` is empty), so `observe_missing_program_processes`
+/// cannot see a launch that begins during the lease. Only the runs seen before it, and those the first look after it finds, are waited for.
 #[cfg(unix)]
 pub fn cancel(root: &Path, program: &Path, initial: &[u32], wait: Duration) -> Result<(), String> {
-    cancel_by(root, program, initial, wait, recto_platform::local::process_path)
+    cancel_by(root, program, initial, wait, start_time)
 }
 
-/// Whether a pid is still a run of this program: the system reports a running program's path as it was started, also after the file was unlinked,
-/// which is how the runs were observed. A pid whose path is another has been reused by an unrelated process, which is neither waited for nor a reason to fail.
-pub fn still_the_program(path_of_pid: Option<PathBuf>, program: &Path) -> bool {
-    path_of_pid.as_deref() == Some(program)
-}
-
-/// [`cancel`], with how a pid's program path is told, so a reused pid can be made in a test.
+/// When a process started, as the system tells it (seconds and microseconds), or `None` once it is gone. A pid's number can be given to another process after
+/// the copy exited; a different start time says it was, so it is not waited for as the copy. (Its path can't say: it is empty for a running copy whose program is unlinked.)
 #[cfg(unix)]
-pub fn cancel_by(root: &Path, program: &Path, initial: &[u32], wait: Duration, path_of: impl Fn(u32) -> Option<PathBuf>) -> Result<(), String> {
+#[allow(unsafe_code)] // One read-only `proc_pidinfo`, as `recto-platform` makes; a test helper, so not worth a new public function there.
+pub fn start_time(pid: u32) -> Option<(i64, i64)> {
+    let pid = libc::c_int::try_from(pid).ok()?;
+    // SAFETY: observation only; `info` is a zeroed plain struct, filled by the call with exactly its size.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+    (got == size).then_some((info.pbi_start_tvsec as i64, info.pbi_start_tvusec as i64))
+}
+
+/// [`cancel`], with how a pid's start time is told, so a reused pid can be made in a test.
+#[cfg(unix)]
+pub fn cancel_by(root: &Path, program: &Path, initial: &[u32], wait: Duration, started: impl Fn(u32) -> Option<(i64, i64)>) -> Result<(), String> {
     let lease = Lease::remove(root, program)?;
     let deadline = Instant::now() + wait;
-    let mut alive: Vec<u32> = initial.to_vec();
+    let mut alive: Vec<(u32, (i64, i64))> = Vec::new();
+    let take = |alive: &mut Vec<(u32, (i64, i64))>, pid: u32| {
+        if !alive.iter().any(|(known, _)| *known == pid)
+            && let Some(at) = started(pid)
+        {
+            alive.push((pid, at));
+        }
+    };
+    for pid in initial {
+        take(&mut alive, *pid);
+    }
     let ended = loop {
         for pid in recto_platform::local::observe_missing_program_processes(program) {
-            if !alive.contains(&pid) {
-                alive.push(pid);
-            }
+            take(&mut alive, pid);
         }
-        alive.retain(|pid| still_the_program(path_of(*pid), program));
+        alive.retain(|(pid, at)| started(*pid) == Some(*at));
         if alive.is_empty() {
             break true;
         }
@@ -182,7 +200,8 @@ pub fn cancel_by(root: &Path, program: &Path, initial: &[u32], wait: Duration, p
             break false;
         }
         let waited = Instant::now();
-        recto_platform::local::wait_until_gone(&alive, &[], left);
+        let pids: Vec<u32> = alive.iter().map(|(pid, _)| *pid).collect();
+        recto_platform::local::wait_until_gone(&pids, &[], left);
         if waited.elapsed() < Duration::from_millis(20) {
             // An exit already seen but not yet reaped by its parent answers at once: don't spin on it.
             std::thread::sleep(Duration::from_millis(20)); // ratchet: poll
@@ -191,8 +210,9 @@ pub fn cancel_by(root: &Path, program: &Path, initial: &[u32], wait: Duration, p
     let restored = lease.restore();
     if !ended {
         return Err(format!(
-            "fixture processes did not exit within {wait:?}: {} (still running: {alive:?}); no PID was signalled; restoration: {restored:?}",
-            program.display()
+            "fixture processes did not exit within {wait:?}: {} (still running: {:?}); no PID was signalled; restoration: {restored:?}",
+            program.display(),
+            alive.iter().map(|(pid, _)| *pid).collect::<Vec<_>>()
         ));
     }
     restored
