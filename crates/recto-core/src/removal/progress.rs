@@ -14,7 +14,8 @@ pub enum Ack {
 /// What a person may be told, decided only by the acknowledged prefix and never by a guess.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// The barrier is not acknowledged: nothing was written, and cancelling is safe.
+    /// The barrier is not acknowledged: the source and history are unchanged, and cancelling is safe.
+    /// A candidate file may have been written; it is not the source or its history.
     Unchanged,
     /// Old history is being retired; only forward completion is possible.
     HistoryRetiring,

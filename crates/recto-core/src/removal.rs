@@ -20,7 +20,9 @@ use std::num::NonZeroU16;
 /// How a store is treated by removal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
-    /// Not enumerated: nothing is inventoried or acted on, and an artifact claimed here is a bug.
+    /// Not inventoried, so an artifact claimed here is a bug. Such a store is still dealt with as a
+    /// whole where it matters (the source replaced, find text cleared, live views invalidated, helper
+    /// jobs quiesced), or it is excluded from removal and the report says so.
     Fixed,
     /// Whole files proven to be the target's are deleted.
     Purge,
@@ -35,6 +37,8 @@ pub enum Class {
 #[repr(u8)]
 pub enum Store {
     SourcePdf,
+    /// The sibling file a writer is producing. The candidate being written for this removal is never
+    /// inventoried here: it is the carrier's own, not retained material.
     WriterTemp,
     Backup,
     Journal,
