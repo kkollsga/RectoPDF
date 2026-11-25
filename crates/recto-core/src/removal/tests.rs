@@ -1,5 +1,8 @@
 use super::*;
 
+const PROGRESS_SIZE: usize = 40;
+const GOLDEN_DIGEST: &str = "8adff43494897c09867061f7a565383f78496f77f6ac304a28b80261a229876b";
+
 const LIMITS: Limits = Limits {
     max_artifacts: 4,
     max_batch: match NonZeroU16::new(2) {
@@ -8,11 +11,11 @@ const LIMITS: Limits = Limits {
     },
 };
 
-fn kinds() -> Kinds {
+pub(super) fn kinds() -> Kinds {
     Kinds::from_bits(Kinds::METADATA).unwrap()
 }
 
-fn request(mode: TargetMode, signed: bool) -> Request {
+pub(super) fn request(mode: TargetMode, signed: bool) -> Request {
     Request::new(kinds(), mode, signed)
 }
 
@@ -20,7 +23,7 @@ fn complete() -> StoreSet {
     Store::ALL.into_iter().filter(|s| s.enumerated()).fold(StoreSet::empty(), StoreSet::with)
 }
 
-fn art(id: u32, store: Store, owner: Owner) -> Artifact {
+pub(super) fn art(id: u32, store: Store, owner: Owner) -> Artifact {
     Artifact {
         id: ArtifactId(id),
         store,
@@ -29,11 +32,11 @@ fn art(id: u32, store: Store, owner: Owner) -> Artifact {
     }
 }
 
-fn make(mode: TargetMode, signed: bool, artifacts: &[Artifact], limits: &Limits) -> Result<Plan, Refusal> {
+pub(super) fn make(mode: TargetMode, signed: bool, artifacts: &[Artifact], limits: &Limits) -> Result<Plan, Refusal> {
     plan(&request(mode, signed), &Inventory::new(complete(), artifacts), limits)
 }
 
-fn ok(artifacts: &[Artifact]) -> Plan {
+pub(super) fn ok(artifacts: &[Artifact]) -> Plan {
     make(TargetMode::Save, false, artifacts, &DESIGN_LIMITS).unwrap()
 }
 
@@ -45,9 +48,41 @@ fn position(p: &Plan, e: Effect) -> usize {
     effects(p).iter().position(|x| *x == e).unwrap()
 }
 
+/// A real confirmation of `plan`, made by offering it and taking it back, as a caller must.
+pub(super) fn confirmed(plan: &Plan) -> Confirmed {
+    let mut store = Confirmations::new(CONFIRM_LIMITS);
+    let binding = Binding {
+        actor: 0u8,
+        version: Version {
+            epoch: 1,
+            source: recto_platform::FileStamp {
+                size: 1,
+                mtime_ns: 2,
+                device: 3,
+                inode: 4,
+            },
+        },
+        target: TargetKey::new(std::path::Path::new("/doc.pdf"), target_for(plan)),
+    };
+    let now = std::time::Instant::now();
+    let id = store.offer(binding, plan, now).unwrap();
+    store.take(id, &binding, plan, now).unwrap()
+}
+
+fn target_for(plan: &Plan) -> crate::save::Target<'static> {
+    match plan.request().mode() {
+        TargetMode::Save => crate::save::Target::Same,
+        TargetMode::SaveAs => crate::save::Target::NewFile(std::path::Path::new("/out.pdf")),
+    }
+}
+
+fn started(plan: &Plan) -> Progress {
+    Progress::start(plan, confirmed(plan)).unwrap()
+}
+
 /// Walks a plan acknowledging every step; used for outcome sweeps.
 fn progress_after(p: &Plan, acked: u32) -> Progress {
-    let mut pr = Progress::start(p);
+    let mut pr = started(p);
     for i in 0..acked {
         pr.acknowledge(p, i, Ack::Done).unwrap();
     }
@@ -246,7 +281,7 @@ fn outcome_for_every_prefix_keeps_the_contract() {
     let n = p.steps().len() as u32;
     let acked_step = |acked: u32, effect: Effect| acked > position(&p, effect) as u32;
     for acked in 0..=n {
-        let o = progress_after(&p, acked).outcome(&p);
+        let o = progress_after(&p, acked).outcome(&p).unwrap();
         if o.nothing_written() {
             for effect in [Effect::PersistBarrier, Effect::InstallTarget] {
                 assert!(!acked_step(acked, effect), "{effect:?} acknowledged yet nothing written, acked {acked}");
@@ -281,7 +316,7 @@ fn a_failed_final_step_is_never_complete() {
         let o = pr.acknowledge(&p, at, Ack::Failed).unwrap();
         assert_eq!(o, Outcome::SanitizedCleanupPending, "{effect:?}");
         assert!(!pr.succeeded(&p));
-        assert_ne!(pr.outcome(&p), Outcome::Complete);
+        assert_ne!(pr.outcome(&p), Ok(Outcome::Complete));
     }
 }
 
@@ -289,9 +324,9 @@ fn a_failed_final_step_is_never_complete() {
 #[test]
 fn success_requires_every_acknowledgment() {
     let p = ok(&[]);
-    let mut pr = Progress::start(&p);
+    let mut pr = started(&p);
     assert_eq!(pr.acknowledge(&p, 1, Ack::Done), Err(OrderError::OutOfOrder));
-    assert_eq!(pr, Progress::start(&p));
+    assert_eq!(pr, progress_after(&p, 0));
     let n = p.steps().len() as u32;
     for i in 0..n {
         assert!(!pr.succeeded(&p));
@@ -336,13 +371,13 @@ fn resume_only_after_barrier() {
     let p = ok(&[]);
     let barrier = position(&p, Effect::PersistBarrier) as u32;
     for acked in 0..=barrier {
-        assert_eq!(Progress::resume(&p, acked), Err(OrderError::NotResumable));
+        assert_eq!(Progress::resume(&p, p.digest(), acked), Err(OrderError::NotResumable));
     }
-    let r = Progress::resume(&p, barrier + 1).unwrap();
+    let r = Progress::resume(&p, p.digest(), barrier + 1).unwrap();
     assert_eq!(r.acked(), barrier + 1);
     assert_eq!(r.next(&p), Some(p.steps()[barrier as usize + 1]));
-    assert!(Progress::resume(&p, p.steps().len() as u32).is_ok());
-    assert_eq!(Progress::resume(&p, p.steps().len() as u32 + 1), Err(OrderError::NotResumable));
+    assert!(Progress::resume(&p, p.digest(), p.steps().len() as u32).is_ok());
+    assert_eq!(Progress::resume(&p, p.digest(), p.steps().len() as u32 + 1), Err(OrderError::NotResumable));
 }
 
 /// Catches a signed original being rewritten in place, or a Save As touching the source it keeps.
@@ -430,10 +465,11 @@ fn kinds_reject_empty_and_unknown_bits() {
 fn progress_from_another_plan_is_refused() {
     let small = ok(&[]);
     let big = ok(&[art(1, Store::Journal, Owner::Target)]);
-    let mut pr = Progress::start(&small);
+    let mut pr = started(&small);
     assert_eq!(pr.acknowledge(&big, 0, Ack::Done), Err(OrderError::WrongPlan));
     assert_eq!(pr.next(&big), None);
     assert!(!pr.succeeded(&big));
+    assert_eq!(pr.outcome(&big), Err(OrderError::WrongPlan));
 }
 
 /// Pins today's sizes so a field added to a capped value is seen, not slipped in.
@@ -442,4 +478,84 @@ fn values_stay_small() {
     assert_eq!(std::mem::size_of::<Artifact>(), 8);
     assert_eq!(std::mem::size_of::<Step>(), 8);
     assert_eq!(std::mem::size_of::<Store>(), 1);
+    assert_eq!(std::mem::size_of::<PlanDigest>(), 32);
+    assert_eq!(std::mem::size_of::<Progress>(), PROGRESS_SIZE);
+}
+
+fn digest_of(mode: TargetMode, kinds: u8, artifacts: &[Artifact]) -> PlanDigest {
+    let request = Request::new(Kinds::from_bits(kinds).unwrap(), mode, false);
+    plan(&request, &Inventory::new(complete(), artifacts), &DESIGN_LIMITS).unwrap().digest()
+}
+
+/// Catches a digest that ignores part of what a person was shown: two different plans would then
+/// share one confirmation. Also that equal input gives an equal digest (no clock, no randomness).
+#[test]
+fn digest_is_deterministic_and_order_sensitive() {
+    let one = [art(1, Store::Journal, Owner::Target)];
+    let base = digest_of(TargetMode::Save, Kinds::METADATA, &one);
+    assert_eq!(base, digest_of(TargetMode::Save, Kinds::METADATA, &one));
+    let ab = [art(1, Store::Journal, Owner::Target), art(2, Store::Journal, Owner::Target)];
+    let ba = [art(2, Store::Journal, Owner::Target), art(1, Store::Journal, Owner::Target)];
+    assert_ne!(
+        digest_of(TargetMode::Save, Kinds::METADATA, &ab),
+        digest_of(TargetMode::Save, Kinds::METADATA, &ba)
+    );
+    // Same steps and lines, one other id: only the id list differs.
+    assert_ne!(base, digest_of(TargetMode::Save, Kinds::METADATA, &[art(2, Store::Journal, Owner::Target)]));
+    assert_ne!(base, digest_of(TargetMode::Save, Kinds::ATTACHMENTS, &one));
+    assert_ne!(base, digest_of(TargetMode::SaveAs, Kinds::METADATA, &one));
+    // The report is covered: an unrelated artifact changes only a line's count.
+    let with_other = [art(1, Store::Journal, Owner::Target), art(2, Store::Journal, Owner::Unrelated)];
+    assert_ne!(base, digest_of(TargetMode::Save, Kinds::METADATA, &with_other));
+}
+
+/// Pins the encoding. A digest saved in a transaction record before an upgrade must still match
+/// the plan after it, so a change to the bytes hashed is a deliberate change of this value.
+#[test]
+fn digest_is_pinned_for_a_known_plan() {
+    let d = digest_of(TargetMode::Save, Kinds::METADATA, &[art(1, Store::Journal, Owner::Target)]);
+    let hex: String = d.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(hex, GOLDEN_DIGEST);
+    assert_eq!(PlanDigest::from_bytes(*d.as_bytes()), d);
+}
+
+/// Two plans with the same number of steps but different artifacts, as one more artifact in a
+/// store whose batch is not full would not change the length.
+fn same_length_plans() -> (Plan, Plan) {
+    let a = ok(&[art(1, Store::Journal, Owner::Target)]);
+    let b = ok(&[art(2, Store::Journal, Owner::Target)]);
+    assert_eq!(a.steps().len(), b.steps().len());
+    (a, b)
+}
+
+/// Catches progress for one plan walking another that is just as long, which a length check lets
+/// through: the carrier would then purge the second plan's artifacts on the first's confirmation.
+#[test]
+fn progress_refuses_a_plan_of_the_same_length() {
+    let (a, b) = same_length_plans();
+    let mut pr = started(&a);
+    assert_eq!(pr.next(&b), None);
+    assert_eq!(pr.acknowledge(&b, 0, Ack::Done), Err(OrderError::WrongPlan));
+    assert_eq!(pr.outcome(&b), Err(OrderError::WrongPlan));
+    assert!(!progress_after(&a, a.steps().len() as u32).succeeded(&b));
+    assert_eq!(pr.acknowledge(&a, 0, Ack::Done), Ok(Outcome::Unchanged));
+}
+
+/// Catches a walk starting from another plan's confirmation: a person confirmed the one they were shown.
+#[test]
+fn progress_starts_only_from_its_own_confirmation() {
+    let (a, b) = same_length_plans();
+    assert_eq!(Progress::start(&b, confirmed(&a)), Err(OrderError::WrongPlan));
+    assert!(Progress::start(&a, confirmed(&a)).is_ok());
+}
+
+/// Catches a persisted count being resumed against a plan it was not made for, and the order of
+/// the checks: another plan is `WrongPlan` even where the count alone would be `NotResumable`.
+#[test]
+fn resume_refuses_another_plans_digest() {
+    let (a, b) = same_length_plans();
+    let barrier = position(&a, Effect::PersistBarrier) as u32;
+    assert_eq!(Progress::resume(&b, a.digest(), barrier + 1), Err(OrderError::WrongPlan));
+    assert_eq!(Progress::resume(&b, a.digest(), 0), Err(OrderError::WrongPlan));
+    assert!(Progress::resume(&b, b.digest(), barrier + 1).is_ok());
 }

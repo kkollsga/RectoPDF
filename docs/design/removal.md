@@ -202,9 +202,15 @@ QA vocabulary is feature-local and uses the same command/state machine: draft/ca
 
 **D1a as built.** The pure plan and the progress tracker are in `crates/recto-core/src/removal.rs` and `removal/{plan,progress,tests}.rs`, not the names §8 proposed. Departures from this design:
 - There is no Draft or Planning phase in code: a plan is built whole or refused.
-- `Progress` is tied to a plan by its length only, until the confirmation's digest binds it in D1b.
+- `Progress` was tied to a plan by its length only; D1b binds it by digest (below).
 - Find text is cleared unconditionally. It is the app's one global last query, so this may wipe another document's history, which §3 says not to do without an agreed scope. **Decided by the owner, 2026-11-25** (`OWNER-RULES.md`): a completed removal wipes the remembered Find search; the unconditional clear is the intended behaviour. Also decided the same day: "actions" keeps ordinary links, and true redaction starts as picture pages.
 - The actor and epoch staleness tests belong to D1b.
 - Snapshot and clipboard offers are not yet a `Writer`; that is a follow-up.
+
+**D1b as built.** `removal/digest.rs` and `removal/confirm.rs` (with `confirm/tests.rs`). Pure, no I/O, nothing per tab.
+- `Plan::digest()` is a SHA-256 over the request, every step, every artifact id and the 22 report lines, in a fixed little-endian encoding with explicit code tables (never `Debug`); computed once in `plan`. A golden test pins it.
+- `Confirmations<A: Copy + Eq>` is owned by the caller, holds at most 8 plans (design limit, not a measurement) for 10 minutes against a clock passed in, and allocates nothing until the first offer. A new plan for the same (actor, target) replaces the old one; when full the asker's own oldest goes, and an asker with none gets `Full`, so no actor pushes out another's plan. Ids count from 1 and are never reused. Paths are kept only as a hash (`TargetKey`). Core compares actors for equality and states no rule about who may do what; D5 supplies the actor type.
+- `take` checks in this order: unknown id, other actor (nothing changes, nothing else revealed), expired, other target, stale `Version { epoch, FileStamp }`, plan changed; each refusal after the actor check removes the entry. Success returns a `Confirmed`, which is not `Clone` and can be made only there.
+- `Progress::start(plan, Confirmed)` is the only way to begin a walk; `Progress` keeps the digest, and `resume`, `next`, `acknowledge`, `outcome` and `succeeded` refuse another plan (`WrongPlan`) even of equal length. `outcome` now returns a `Result`.
 
 Do not proceed to real deletion because D1 passes. It proves ordering and bounds only. Missing provenance, unsupported content semantics, missing quiescence acknowledgments, inability to durably preserve the barrier, unsafe old-version restore or signed/protected-file refusal each blocks the affected operation. These blocks do not prevent locator work, copy fixes, the narrow metadata investigation or unrelated reading.
