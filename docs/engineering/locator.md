@@ -14,21 +14,20 @@ A reference is a short token that names a page by its content as well as its num
 
 **Measured** (`crates/recto-core/examples/locator_scan.rs`, release build, a reference whose page is gone, so every page is read):
 
-2026-11-25, load about 6.1 before and after (other workers building and testing beside it), a single run each, so an estimate and not a distribution. Scan cap 1 GiB.
+2026-11-25 (`build/page-id-caps`, names cap 8,192), load about 14 (other workers building and testing beside it), a single run each, so an estimate and not a distribution. Scan cap 1 GiB.
 
 | File | Size | Pages | Open | Resolve | Pages read | Bytes read | Answer |
 |---|---|---|---|---|---|---|---|
-| `gov_nasa_ntrs20240002628.pdf`, the most pages in bench100 | 97 MiB | 383 | 12 ms | 810 ms | 383 | 277,389,770 | `incomplete`: every page was read, but four pages (zero-based 127, 137, 156, 197) have no identity under `page_id::Caps::STANDARD` |
-| `gov_usgs_usgs70277338.pdf`, the 330 MiB map | 330 MiB | 1 | 4 ms | 191 ms | 1 | 119,948,577 | `incomplete` (its one page came back with no identity); `reference` to it is `NoIdentity` |
+| `gov_nasa_ntrs20240002628.pdf`, the most pages in bench100 | 97 MiB | 383 | 13 ms | 1,006 ms | 383 | 295,938,755 | `gone`: every page was read and has an identity (before the names cap rose, `incomplete`: four pages, zero-based 127, 137, 156, 197, had none, 277,389,770 bytes read) |
+| `gov_usgs_usgs70277338.pdf`, the 330 MiB map | 330 MiB | 1 | 6 ms | 338 ms | 1 | 135,979,278 | `incomplete` (its one page reaches the page byte cap and has no identity); `reference` to it is `NoIdentity` |
 
-Both are far under 10 s. Peak `phys_footprint` of the whole process for one scan (this run, release build, load about 6.1, one run each): 6.2 MiB on both, since the file is mapped and not copied; the same 6.2 MiB as at the 256 MiB cap. The scan is bounded by `ScanCaps` (1 GiB of reads, which bounds time, not memory), not by memory.
+Both are far under 10 s. Peak `phys_footprint` of the whole process for one scan, as `locator_scan` reports it (release build, load about 14, one process for each file, two runs for the NASA report): 11.3 to 12.2 MiB for the NASA report and 4.0 MiB for the map, since the file is mapped and not copied. The NASA report was 6.5 to 7.4 MiB on `main` before the names cap rose (two runs, same measure), so the caps cost about 5 MiB of working set on a page that draws thousands of images; that is the bound `page_id`'s module doc states. The scan is bounded by `ScanCaps` (1 GiB of reads, which bounds time, not memory), not by memory.
 
 ## Known limits
 
-- **2026-11-25 (`build/page-id-caps`):** the names cap went from 256 to 8,192, so the 383-page NASA report now answers `gone` for a page that is really gone: all 383 pages read, 295,938,755 bytes, 668 ms resolve, 10 ms open, peak `phys_footprint` 1.87 MB (`/usr/bin/time -l`, release build, load about 13, one run, so an estimate). Before, four pages (zero-based 127, 137, 156, 197) had no identity because they draw more than 256 images. Eleven pages of bench100 gained an identity, and no other digest changed. At 256 MiB the scan had stopped 24 pages short, because a stream a page draws is charged each time it is drawn.
+- **2026-11-25 (`build/page-id-caps`):** the names cap went from 256 to 8,192, so the 383-page NASA report now answers `gone` for a page that is really gone (the numbers are in the table above). Before, four pages (zero-based 127, 137, 156, 197) had no identity because they draw more than 256 images. Eleven pages of bench100 gained an identity, and no digest that existed changed. At 256 MiB the scan had stopped 24 pages short, because a stream a page draws is charged each time it is drawn.
 - The 330 MiB USGS map has one page, and that page still has no identity (it reaches `page_bytes`, correct under rule 1; three other bench100 pages are the same): resolve answers `incomplete` after 135,979,278 bytes (119,948,577 before the cap rose: it now does more work before it is refused) and `reference` to it is `NoIdentity`, so it can't be referenced with certainty.
 - `resolve`'s `page` is as the tab shows it, which may be the old bytes before the app has looked, the same as `text`.
-- Both identity gaps go to the plan as follow-ups; nothing in `page_id` was changed for them.
 
 ## Tests
 

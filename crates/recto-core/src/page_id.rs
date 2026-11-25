@@ -36,17 +36,21 @@
 //!    length and the geometry are in it: they make look-alikes as unlikely as for whole content, not impossible.
 //! 4. `E`.
 //!
-//! **2026-11-25: the records cap went from 256 to 8,192, and the forms cap is new.** No existing digest changed (0 of 5,857 pages of the corpus
-//! `bench100`, compared page by page), and 11 pages that had none gained one (one more refused page, the 330 MiB map's, is charged more work before its refusal); the name stays `recto-page/1`. The only cap whose value is hashed is the
+//! **2026-11-25: the records cap went from 256 to 8,192, and the forms cap and the decode-work budget are new.** No existing digest changed (0 of the
+//! 5,857 pages that had a digest, of the 5,872 of the corpus `bench100`, compared page by page), and 11 pages that had none gained one (one more
+//! refused page, the 330 MiB map's, is charged more work before its refusal); the name stays `recto-page/1`. The only cap whose value is hashed is the
 //! image's own ([`Caps::xobject_bytes`]); the others only refuse, and a page with at most 256 records drew at most 128 forms, so the forms cap can't touch
-//! an identity made before.
+//! an identity made before. The decode-work budget counts what a decoder gave, **a stream that then failed included** (a double-Flate chain that
+//! fails after 16 MiB costs a kilobyte stored, and 8,192 of them 128 GiB of work, which only the stored length was charged for before it).
 //!
 //! **A page that reaches a cap has no identity** ([`read_page`] gives `None`), but for an image past its own cap (kind 4, a definition of its own): so a
 //! digest never depends on where a cap fell, on how much a decoder read ahead or on how a library buffers, only on the file. The caps,
 //! [`Caps::STANDARD`], each counted exactly (one byte past is past): more than 1,024 entries of `/Contents`; more than 16 MiB hashed of the content
 //! together; more than 8,192 records of images and forms (drawn by the page and by its forms, together; the scan keeps at most 8,192 names); more than 256
-//! forms drawn by the page whose content draws a name; more than 16 MiB hashed of one form; more than 64 MiB hashed in all; more than 256 MiB of stored length of the streams opened (each charged its length when
-//! it's opened, before a byte is read, and again if it's read again as stored); and in a file anyone may open (encrypted with an empty password), a
+//! forms drawn by the page whose content draws a name; more than 16 MiB hashed of one form; more than 64 MiB hashed in all; more than 256 MiB of stored
+//! length of the streams opened (each charged its length when
+//! it's opened, before a byte is read, and again if it's read again as stored); more than 256 MiB decoded in all, a decode that failed counted as one
+//! that didn't ([`Caps::decode_work`]); and in a file anyone may open (encrypted with an empty password), a
 //! stream over 8 MiB stored, as the reader gives such a stream only whole, decrypted. So a hostile page costs at most the caps, holding a few buffers
 //! of [`decode::CHUNK`], a predictor's row and the scan's names (8,192 of at most 127 bytes).
 //!
@@ -56,7 +60,12 @@
 //! the names a form drew and, for each, the id it found in the form's lookup, never a dictionary; a `/Resources` reference is one small entry saying what
 //! its `/XObject` is; one `/XObject` table and one gave-up stream's descriptor are held, each until the next one is needed; and a read's references
 //! keep at most 16 values of at most 4 KiB. A page's own `/XObject` is the one table held for the whole page. Together a page holds a fixed number of whole
-//! objects (the page dictionary, the page's `/XObject` table, one form's table, one descriptor, and the one being parsed) plus under 0.5 MiB of facts.
+//! objects (the page dictionary, the page's `/XObject` table, one form's table, one descriptor, and the one being parsed) plus facts bounded by the
+//! caps: at most about 4 MiB, 6 MiB for a moment. That is the content scan's names (8,192 of at most 127 bytes, about 1.2 MiB with each `Vec`'s header, and
+//! 0.25 MiB of places), the memo of what was drawn (up to 8,192 records of about 170 bytes, 1.4 MiB) and the names and found ids of the forms being read (two
+//! forms' at once at most, the one read and the one kept, 2.4 MiB), and, while a form's read is kept, a copy of its scan's names (1.2 MiB). Measured on
+//! the 383-page NASA report, release build, `locator_scan`, whole-process `phys_footprint`: 11.4 to 12.2 MiB at the cap of 8,192 names and 6.5 to 7.4 MiB
+//! at 256 on `main`, so about 5 MiB for what the larger caps allow, under load, two runs each.
 //!
 //! **What's left out, deliberately:** `/Rotate`, `/MediaBox`, `/CropBox` (a turn or a crop is a view of the same page: our own turn keeps the identity),
 //! `/Annots` (a highlight added or taken out keeps it), fonts (an optimiser's re-subsetting keeps it), XObjects in the resources the content doesn't

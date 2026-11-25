@@ -16,8 +16,9 @@
 //! - At most [`MAX_NAMES`] (8,192) different names are kept ([`super::Caps::xobjects`]); one more says the page draws more than it (a cap: the page
 //!   has no identity). It was 256 until 2026-11-25; see [`super`].
 //!
-//! It holds at most [`MAX_NAMES`] names of 127 bytes (1 MiB), their sorted index and a few bytes of state, whatever it's given, and never fails; each byte
-//! costs a few steps, and a name drawn a lookup of about 8 comparisons. Its promise: a mistake here can only change which images are hashed, or whether
+//! It holds at most [`MAX_NAMES`] names of 127 bytes (about 1.2 MiB, each `Vec`'s header and its allocation counted), a table of their places (0.25 MiB) and
+//! a few bytes of state, whatever it's given, and never fails; each byte costs a few steps, and a name drawn a hash and a comparison. Its promise: a
+//! mistake here can only change which images are hashed, or whether
 //! the page passes the names cap and so has no identity, never what the scan costs.
 
 /// Most different names kept: the digest's cap on images and forms ([`super::Caps::xobjects`]).
