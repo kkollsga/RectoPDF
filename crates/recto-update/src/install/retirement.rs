@@ -123,15 +123,6 @@ fn known(
     mut pause: impl FnMut(Duration),
 ) -> io::Result<bool> {
     let deadline = now() + patience;
-    known_until(probe, deadline, now, pause)
-}
-
-fn known_until(
-    mut probe: impl FnMut() -> io::Result<bool>,
-    deadline: Instant,
-    mut now: impl FnMut() -> Instant,
-    mut pause: impl FnMut(Duration),
-) -> io::Result<bool> {
     let mut answer = None;
     let mut unknown = None;
     until_deadline(deadline, &mut now, &mut pause, || match probe() {
