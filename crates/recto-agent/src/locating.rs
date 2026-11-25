@@ -557,7 +557,10 @@ mod unreadable_text_tests {
     /// could read. The reader's refusal must come out of each unchanged, whatever made it fail.
     #[test]
     fn a_page_text_that_cannot_be_read_is_the_readers_own_refusal_in_ref_resolve_and_page_of() {
-        let file = TempPdf::new("two.pdf", &pages(&[Page::new(text_lines(&["First page"])), Page::new(text_lines(&["Second page"]))]));
+        let file = TempPdf::new(
+            "two.pdf",
+            &pages(&[Page::new(text_lines(&["First page"])), Page::new(text_lines(&["Second page"]))]),
+        );
         let mut session = Session::new(DiskLoader);
         session.open(&file.0).unwrap();
         let access = Mutex::new(session);
@@ -568,9 +571,12 @@ mod unreadable_text_tests {
         let chars = Locator::new(made.document(), made.page(), Target::Characters(range));
         let want = unreadable(std::path::Path::new(""), 0).unwrap_err();
         let same = |said: AgentError, from: &str| assert_eq!((said.code, said.exit, said.message), (want.code, want.exit, want.message.clone()), "{from}");
-        same(resolve_reading(&access, &tab, chars.clone(), unreadable).expect_err("not a status"), "resolve");
+        same(resolve_reading(&access, &tab, chars, unreadable).expect_err("not a status"), "resolve");
         same(page_of_reading(&access, &tab, &chars, unreadable).err().expect("not a page"), "page_of");
-        same(reference_reading(&access, &tab, 2, Some((0, 6)), unreadable).expect_err("not a reference"), "ref --chars");
+        same(
+            reference_reading(&access, &tab, 2, Some((0, 6)), unreadable).expect_err("not a reference"),
+            "ref --chars",
+        );
         // The same reference with a reader that works is answered, so the refusals above are the reader's and not the setup's.
         let answered = resolve_reading(&access, &tab, chars, |_, _| Ok("Second page".into())).expect("resolved");
         assert_eq!(answered["status"], "found", "{answered}");
