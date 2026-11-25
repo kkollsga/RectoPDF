@@ -134,3 +134,40 @@ fn the_record_copy_goes_after_its_week_while_a_refusal_stands() {
         );
     }
 }
+
+/// Failure: going back from a version that kept ending offers `before/` to fall back on, and the same launch's week-old drop deleted it (probation runs a week from the first come-up, and `.whole` is made at the install), so the fall-back restored nothing while the person was told it came back with their session from before the update. Past its week it's still there, offered, and goes at the next launch.
+#[test]
+fn a_copy_offered_to_fall_back_on_is_not_dropped_in_the_same_launch() {
+    const NOW_MS: u64 = 4_000_000_000_000;
+    let bed = Bed::new("week-fall-back");
+    let root = bed.dir.join("state");
+    let files = Files::in_state(&root);
+    local::ensure_private_dir(&files.work).unwrap();
+    std::fs::create_dir_all(files.before()).unwrap();
+    std::fs::write(files.before().join("record.a.json"), "the state before").unwrap();
+    let whole = std::fs::File::create(files.before().join(".whole")).unwrap();
+    whole
+        .set_modified(std::time::UNIX_EPOCH + Duration::from_millis(NOW_MS - KEEP_RECORD_COPY_MS - 1_000))
+        .unwrap();
+    Outcome::new(OutcomeKind::WentBack, "0.1.0", "0.2.0", "kept_ending")
+        .write(&files.outcome())
+        .unwrap();
+    let launch = || {
+        let seams = Seams {
+            wall: Arc::new(StandingClock(NOW_MS)),
+            ..Seams::default()
+        };
+        let updater = Updater::with_seams(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>, seams);
+        updater.launched(Facts {
+            version: "0.1.0".into(),
+            app: bed.app.clone(),
+            system: "15.0".into(),
+        });
+        updater
+    };
+    let updater = launch();
+    assert!(files.before().join("record.a.json").exists(), "the copy to fall back on is still there");
+    assert_eq!(updater.take_record_to_fall_back_on(), Some(files.before()));
+    launch();
+    assert!(!files.before().exists(), "and the next launch drops it, a week old");
+}

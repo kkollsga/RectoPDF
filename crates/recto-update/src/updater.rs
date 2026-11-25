@@ -406,8 +406,10 @@ impl Updater {
             if settled.plan_gone {
                 self.clear_leftovers(&app, &current, offered.is_some());
             }
-            // The week is PRIVACY.md's, so it holds while a rollback refusal stands too.
-            self.drop_an_old_record_copy(now);
+            // The week is PRIVACY.md's, so it holds while a rollback refusal stands too. Not in the launch that offers the copy to fall back on: that one's still needed, and the next launch drops it.
+            if settled.fall_back.is_none() {
+                self.drop_an_old_record_copy(now);
+            }
         }
         let status = settled.status.unwrap_or_else(|| match &offered {
             Some(offered) if may_replace => Status::Available(offered.clone()),
