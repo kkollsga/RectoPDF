@@ -1748,6 +1748,7 @@ impl DocRenderer {
         }
         if known.try_again_at.is_some_and(|at| Instant::now() >= at) {
             self.open_failure = None;
+            busy::remembering_ended(self);
             return None;
         }
         Some(known.failure)

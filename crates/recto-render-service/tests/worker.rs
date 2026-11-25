@@ -1219,3 +1219,27 @@ fn a_renderer_the_mac_was_too_busy_to_start_is_started_again() {
     doc.forget_failures();
     assert!(doc.page_size(0).is_ok(), "and a worker that does start still opens, once asked to try again");
 }
+
+/// Failure: the run of busy starts stays at the bound after the remembered `Unavailable` runs out, so on a Mac that was busy again the next slow start was `Unavailable` at once, with no busy grace, and the reader said the renderer couldn't be started. When the remembering ends the count starts again.
+#[test]
+fn a_start_after_the_remembered_failure_has_run_out_is_given_the_busy_grace_again() {
+    use recto_render_service::{MAX_BUSY, under_start_timeout_for_test};
+    let file = TempPdf::new("busy-start-expiry.pdf", &pages(&[Page::new(text_lines(&["one"]))]));
+    let mut doc = renderer(
+        &file.0,
+        Policy {
+            open_retry_pause: Duration::ZERO,
+            ..Policy::default()
+        },
+    );
+    let start_short = |doc: &mut DocRenderer| under_start_timeout_for_test(doc, |doc| doc, Duration::ZERO, |doc| doc.page_size(0));
+    for _ in 1..MAX_BUSY {
+        assert_eq!(start_short(&mut doc).unwrap_err(), RenderFailure::TooBusyToStart);
+    }
+    assert_eq!(start_short(&mut doc).unwrap_err(), RenderFailure::Unavailable, "the bound is reached");
+    assert_eq!(
+        start_short(&mut doc).unwrap_err(),
+        RenderFailure::TooBusyToStart,
+        "the remembering has run out, and the Mac is busy again"
+    );
+}

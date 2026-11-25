@@ -1,4 +1,6 @@
-//! **A draw the Mac was too busy to run the worker for.** Like a read of a page's text, it says nothing about the page, so it isn't remembered and the one who asked asks again; a worker that hangs looks the same, so a page's busy draws, or busy reads, in a row are bounded by one number.
+//! **A start or an open the Mac was too busy for.** Like a draw it says nothing about the page or the file, so it isn't remembered and whoever asked asks again; a worker that hangs looks the same, so each kind is bounded by one number, [`MAX_BUSY`] in a row. Starts (a worker that doesn't say hello) and opens (one that does, but doesn't open the file) have a run each, and past it the failure is real: a start becomes `Unavailable`, which is remembered for `open_retry_pause` (so asks inside it fail at once instead of each waiting out another start) and isn't counted as the Mac being busy, so nobody who watches the count takes it for a busy Mac; an open is the file's own failure. A run ends when a worker says hello (starts) or opens the file (opens), and the starts' run also when the remembered `Unavailable` runs out or `forget_failures` is asked.
+//!
+//! A draw or a read of a page the Mac was too busy to run the worker for is held apart the same way, and a page's busy draws, or busy reads, in a row are bounded by [`MAX_BUSY`] too.
 
 use super::{DocRenderer, JobFailure, KillReason, RenderFailure, TileResult, other_result};
 
@@ -87,7 +89,7 @@ pub(super) fn read_landed<T>(doc: &mut DocRenderer, page: u32, read: T) -> T {
     read
 }
 
-/// Busy starts in a row ([`start_stopped`]) and busy opens in a row ([`open_stopped`]), each bounded by [`MAX_BUSY`]; a worker that said hello ends the starts ([`started`]) and one that opened the file the opens ([`opened`]).
+/// Busy starts in a row ([`start_stopped`]) and busy opens in a row ([`open_stopped`]), each bounded by [`MAX_BUSY`]. A worker that said hello ends the starts ([`started`]), and so does the remembered start failure running out ([`remembering_ended`]) or `forget_failures`; one that opened the file ends the opens ([`opened`]). At the bound a start is `Unavailable`, remembered for a moment and not counted as busy; an open is its own failure, counted as the file's.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Runs {
     pub(super) starts: u8,
@@ -114,6 +116,11 @@ pub(super) fn start_stopped(doc: &mut DocRenderer) -> RenderFailure {
 
 /// A worker that said hello ends the run of busy starts: it started, whatever came of the file after.
 pub(super) fn started(doc: &mut DocRenderer) {
+    doc.left_out.busy_runs.starts = 0;
+}
+
+/// The remembered `Unavailable` ran out: the next start is asked of the Mac afresh, so a Mac that is busy again gets its [`MAX_BUSY`] busy starts again instead of `Unavailable` at once. Only the starts: an open's run is its own.
+pub(super) fn remembering_ended(doc: &mut DocRenderer) {
     doc.left_out.busy_runs.starts = 0;
 }
 
