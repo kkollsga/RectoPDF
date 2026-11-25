@@ -1019,7 +1019,7 @@ fn why(failure: RenderFailure) -> &'static str {
 fn run(plan: &Plan, query: &Query, mode: &str, settings: &Settings<'_>) -> Result<Value, AgentError> {
     let mut reader = Reader::new(plan, settings);
     let opened = std::cell::OnceCell::new();
-    let mut refs = crate::locating::HitRefs::new(plan.files.first().map(|own| own.path.as_path()), &opened).with_deadline(settings.deadline);
+    let mut refs = crate::locating::HitRefs::new(plan.files.first().map(|own| own.path.as_path()), &opened, settings.deadline);
     let mut found = Found::default();
     let mut slot = Slot::default();
     let mut folded = String::new();
