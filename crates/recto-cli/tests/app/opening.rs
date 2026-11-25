@@ -35,11 +35,12 @@ fn wait_long(run: &Run<'_>, holds: impl Fn(&Value) -> bool) -> Value {
     }
 }
 
-/// Failure: the native launch never binds its UI watchdog, so a startup stall is invisible even though later file-open work is watched.
+/// Failure: the native launch never binds its UI watchdog, so a startup stall is invisible even though later file-open work is watched; or the menu's
+/// build or the window's first model change loses its marks or moves (so `menu_built` after `NSApp.mainMenu =` hides the install's cost).
 fn assert_startup_was_watched(state: &Value) {
     let startup = &state["hangs"]["startup"];
     assert_eq!(startup["clock"].as_str(), Some("watchdog"), "startup uses another clock: {startup}");
-    assert_eq!(startup["cap"].as_u64(), Some(16), "startup evidence lost its bound: {startup}");
+    assert_eq!(startup["cap"].as_u64(), Some(32), "startup evidence lost its bound: {startup}");
     assert_eq!(
         startup["complete"].as_bool(),
         Some(true),
@@ -47,7 +48,7 @@ fn assert_startup_was_watched(state: &Value) {
     );
     assert_eq!(startup["lost"].as_u64(), Some(0), "startup evidence is incomplete: {startup}");
     let points = startup["points"].as_array().unwrap_or_else(|| panic!("startup has no points: {startup}"));
-    assert!(points.len() <= 16, "startup evidence exceeded its bound: {startup}");
+    assert!(points.len() <= 32, "startup evidence exceeded its bound: {startup}");
     let mut last_at = None;
     for point in points {
         let at = point["at_us"].as_u64().unwrap_or_else(|| panic!("startup has an invalid timestamp: {startup}"));
@@ -85,6 +86,25 @@ fn assert_startup_was_watched(state: &Value) {
         );
         previous = Some(index);
     }
+    // The menu phase and the first model change, split. First occurrences only: a menu that changes is built again.
+    let first = |phase: &str| {
+        points
+            .iter()
+            .position(|point| point["phase"] == phase)
+            .unwrap_or_else(|| panic!("startup missed {phase}: {startup}"))
+    };
+    let menu = ["launch_begin", "menu_model_ready", "services_menu_ready", "menu_built", "menu_ready"].map(first);
+    assert!(menu.windows(2).all(|pair| pair[0] < pair[1]), "the menu's marks are out of order: {startup}");
+    let window = ["window_opened", "window_model_ready", "host_ready"].map(first);
+    assert!(
+        window.windows(2).all(|pair| pair[0] < pair[1]),
+        "the window's model mark is out of order: {startup}"
+    );
+    assert_eq!(
+        points.iter().filter(|point| point["phase"] == "window_model_ready").count(),
+        1,
+        "startup repeated window_model_ready: {startup}"
+    );
 }
 
 /// Failure (PLAN, phase 4): opening reads a file's structure with lopdf on the UI thread, so a hostile file that's slow to read (here three

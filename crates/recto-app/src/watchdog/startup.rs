@@ -2,6 +2,12 @@
 //!
 //! Only the first launch-begin starts it; host-ready freezes it even if the point cannot
 //! be kept. Reopening a window cannot reset that launch. No document data is retained.
+//!
+//! The trace holds at most `CAP` (32) points. A real launch keeps up to 25: the 15 phases once, plus the three menu
+//! marks (`menu_model_ready`, `services_menu_ready`, `menu_built`) for each rebuild of the menu (a restored document
+//! rebuilds it twice more, after `restore_queued` and at the window's first model change), plus `window_model_ready`.
+//! A menu that did not change records none of the three. The last slot is reserved for `host_ready`: once only one
+//! slot is free any other point is counted in `lost`, so the closing point the intervals are measured to is never dropped.
 
 use super::{WINDOW_OF, WINDOW_WATCH, Watchdog};
 use recto_platform::thread::own_cpu_us;
@@ -9,14 +15,14 @@ use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError, TryLockError};
 
-pub const CAP: usize = 16;
+pub const CAP: usize = 32;
 const NO_CPU: u64 = u64::MAX;
 const NOT_BEGUN: u8 = 0;
 const CAPTURING: u8 = 1;
 // New points stop here; completion is published only after the final point or its loss.
 const FINISHING: u8 = 2;
 const COMPLETE: u8 = 3;
-const NAMES: [&str; 15] = [
+const NAMES: [&str; 19] = [
     "launch_begin",
     "menu_ready",
     "services_ready",
@@ -32,6 +38,11 @@ const NAMES: [&str; 15] = [
     "window_constructed",
     "window_opened",
     "host_ready",
+    // Appended after host_ready so no earlier id moves. A launch that builds its menu twice keeps 22 points.
+    "menu_model_ready",
+    "services_menu_ready",
+    "menu_built",
+    "window_model_ready",
 ];
 
 /// Validated once at the host boundary; no host-provided words are retained.
@@ -124,7 +135,8 @@ impl Startup {
                 return;
             }
         };
-        if kept.len == CAP {
+        // The last slot is for host_ready alone.
+        if kept.len == CAP || (kept.len == CAP - 1 && phase != Phase::READY) {
             self.lost.fetch_add(1, Ordering::Relaxed);
             return;
         }
@@ -225,14 +237,14 @@ mod tests {
     #[test]
     fn only_the_first_real_begin_can_start_a_trace() {
         let trace = Startup::default();
-        for id in [1, 14, 15, u8::MAX] {
+        for id in [1, 14, NAMES.len() as u8, u8::MAX] {
             note(&trace, id, 1, None);
         }
         assert!(trace.json()["points"].as_array().unwrap().is_empty());
         assert_eq!(trace.json()["complete"], false);
         note(&trace, 0, 2, Some(10));
         let begun = trace.json();
-        for id in [15, u8::MAX] {
+        for id in [NAMES.len() as u8, u8::MAX] {
             note(&trace, id, 9, Some(20));
         }
         assert_eq!(trace.json(), begun);
@@ -352,6 +364,44 @@ mod tests {
         assert_completion_has_evidence(&final_report);
     }
 
+    /// Failure: a launch that builds its menu three times (a restored document: launch, after `restore_queued`, window open) loses points or leaves one
+    /// unnamed, so the menu phase cannot be split in the evidence the cap exists to keep.
+    #[test]
+    fn a_launch_with_repeated_menu_builds_fits_without_loss() {
+        let trace = Startup::default();
+        let mut ids: Vec<u8> = vec![0, 15, 16, 17, 1, 2, 3, 15, 16, 17, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18];
+        ids.push(14);
+        assert_eq!(ids.len(), 25);
+        for (at, id) in ids.iter().enumerate() {
+            note(&trace, *id, at as u64, Some(at as u64));
+        }
+        let report = trace.json();
+        assert_eq!(report["lost"], 0);
+        assert_eq!(report["complete"], true);
+        let points = report["points"].as_array().unwrap();
+        assert_eq!(points.len(), 25);
+        for (point, id) in points.iter().zip(&ids) {
+            assert_eq!(point["phase"], NAMES[usize::from(*id)]);
+        }
+    }
+
+    /// Failure: a busy launch fills the trace and drops the very point its intervals are measured to, `host_ready`, so the evidence reads complete but ends short.
+    #[test]
+    fn the_ready_point_is_kept_when_the_trace_overflows() {
+        let trace = Startup::default();
+        note(&trace, 0, 1, Some(1));
+        for at in 0..(CAP as u64 + 5) {
+            note(&trace, 1, 2 + at, Some(2 + at));
+        }
+        note(&trace, 14, 100, Some(100));
+        let report = trace.json();
+        let points = report["points"].as_array().unwrap();
+        assert_eq!(points.len(), CAP);
+        assert_eq!(points[CAP - 1]["phase"], "host_ready");
+        assert_eq!(report["complete"], true);
+        assert_eq!(report["lost"], 7, "dropped points are counted: {report}");
+    }
+
     /// Failure: startup observation grows a per-app value without reporting its whole compiler size.
     #[test]
     fn startup_trace_whole_sizes_are_measured() {
@@ -364,8 +414,8 @@ mod tests {
             std::mem::size_of::<super::super::Shared>()
         );
         assert_eq!(std::mem::size_of::<Point>(), 24);
-        assert_eq!(std::mem::size_of::<Kept>(), 400);
-        assert_eq!(std::mem::size_of::<Startup>(), 432);
-        assert_eq!(std::mem::size_of::<super::super::Shared>(), 1520);
+        assert_eq!(std::mem::size_of::<Kept>(), 784);
+        assert_eq!(std::mem::size_of::<Startup>(), 816);
+        assert_eq!(std::mem::size_of::<super::super::Shared>(), 1904); // main: Shared 1520, Kept 400, Startup 432; CAP 16 to 32 is 16 points x 24 B = 384 B
     }
 }
