@@ -7,6 +7,7 @@ use crate::core::controls::UiAction;
 use crate::core::printing::{AFTER_END, AT_PAGE};
 use crate::lock;
 use crate::testkit::headless::{Disk, HeadlessApp, WAIT_LIMIT};
+use std::path::Path;
 
 /// What the print panel answered: all the pages or a range from 1, the selection's pages, and whether it prints to a file (a PDF saved or previewed).
 #[derive(Clone, Copy)]
@@ -59,7 +60,6 @@ pub(super) fn notice(app: &HeadlessApp) -> String {
 /// which pages of the document it holds, as each page of the test files has its own width. Its file has no name and is the user's alone while it's there,
 /// and it goes with its descriptor when it's let go. "none" if there's no file for the host.
 pub(super) fn printed(app: &HeadlessApp) -> String {
-    let before = unnamed_files_held();
     let Some((path, _)) = app.core().tools.printing().take_ready() else {
         return "none".into();
     };
@@ -69,10 +69,10 @@ pub(super) fn printed(app: &HeadlessApp) -> String {
         .match_indices("/MediaBox [0 0 ")
         .filter_map(|(at, found)| text[at + found.len()..].split(' ').next())
         .collect();
-    let (links, mode, owner) = {
+    let (links, mode, owner, identity) = {
         use std::os::unix::fs::MetadataExt;
         let file = std::fs::metadata(&path).expect("the file");
-        (file.nlink(), file.mode() & 0o777, file.uid())
+        (file.nlink(), file.mode() & 0o777, file.uid(), (file.dev(), file.ino()))
     };
     assert_eq!(
         (links, mode, owner),
@@ -81,10 +81,24 @@ pub(super) fn printed(app: &HeadlessApp) -> String {
         path.display()
     );
     app.core().tools.printing().finished(path.to_str().expect("a path"));
-    let after = unnamed_files_held();
+    // Only the print's own file is looked for, by its identity, so what other threads or tests open or close meanwhile can't change the answer: the
+    // number it had is gone or another file's now, and no descriptor of ours is still on it.
+    if let Ok(now) = std::fs::metadata(&path) {
+        use std::os::unix::fs::MetadataExt;
+        assert_ne!(
+            (now.dev(), now.ino()),
+            identity,
+            "the print's file goes with its descriptor once the system's printing is done with it: {} still is it",
+            path.display()
+        );
+    }
+    let still: Vec<Unnamed> = unnamed_descriptors_in(Path::new("/dev/fd"))
+        .into_iter()
+        .filter(|held| (held.dev, held.ino) == identity)
+        .collect();
     assert!(
-        after.len() < before.len() || before.iter().any(|held| !after.contains(held)),
-        "the print's file goes with its descriptor once the system's printing is done with it: {before:?} then {after:?}"
+        still.is_empty(),
+        "the print's file goes with its descriptor once the system's printing is done with it: still held as {still:?}"
     );
     format!("[{}]", widths.join(","))
 }
@@ -120,24 +134,59 @@ fn is_print_file_of(name: &str, pid: u32) -> bool {
 /// **The files with no name this process holds a descriptor of,** by inode, with each one's permissions, sorted: where the person's print's file is while
 /// it's anywhere, as nothing else can reach it. Counted before and after a step, the difference is what the step made or let go.
 pub(crate) fn unnamed_files_held() -> Vec<(u64, u32)> {
-    unnamed_files_held_in(std::path::Path::new("/dev/fd"))
+    unnamed_files_held_in(Path::new("/dev/fd"))
 }
 
 /// [`unnamed_files_held`] of the descriptors listed in `folder` (`/dev/fd`, or another to test the look itself).
-pub(crate) fn unnamed_files_held_in(folder: &std::path::Path) -> Vec<(u64, u32)> {
-    use std::os::unix::fs::MetadataExt;
-    let mut held: Vec<(u64, u32)> = std::fs::read_dir(folder)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|entry| std::fs::metadata(entry.path()).ok())
-        .filter(|meta| meta.is_file() && meta.nlink() == 0)
-        .map(|meta| (meta.ino(), meta.mode() & 0o777))
-        .collect();
+pub(crate) fn unnamed_files_held_in(folder: &Path) -> Vec<(u64, u32)> {
+    let mut held: Vec<(u64, u32)> = unnamed_descriptors_in(folder).into_iter().map(|held| (held.ino, held.mode)).collect();
     held.sort_unstable();
     held.dedup();
     held
 }
+
+/// One descriptor of this process on a regular file with no link.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Unnamed {
+    pub(crate) fd: u32,
+    pub(crate) dev: u64,
+    pub(crate) ino: u64,
+    pub(crate) mode: u32,
+}
+
+/// **The descriptors listed in `folder` that are regular files with no link, strictly:** a folder that can't be listed, or an entry that can't be read,
+/// panics with the OS error, as a look that quietly saw nothing read as "nothing's held" (2026-11-25, `[] then []`). A descriptor that closed between
+/// the listing and the look (ENOENT, EBADF) is skipped, as it's legitimately gone; any other error on it panics with its errno. Sorted by number.
+pub(crate) fn unnamed_descriptors_in(folder: &Path) -> Vec<Unnamed> {
+    use std::os::unix::fs::MetadataExt;
+    let mut held = Vec::new();
+    for entry in std::fs::read_dir(folder).unwrap_or_else(|error| panic!("the descriptors in {} can't be listed: {error}", folder.display())) {
+        let entry = entry.unwrap_or_else(|error| panic!("an entry of {} can't be read: {error}", folder.display()));
+        let Some(fd) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else {
+            continue;
+        };
+        let meta = match std::fs::metadata(entry.path()) {
+            Ok(meta) => meta,
+            // Closed between the listing and the look.
+            Err(error) if matches!(error.raw_os_error(), Some(ENOENT | EBADF)) => continue,
+            Err(error) => panic!("descriptor {fd} in {} can't be looked at: {error}", folder.display()),
+        };
+        if meta.is_file() && meta.nlink() == 0 {
+            held.push(Unnamed {
+                fd,
+                dev: meta.dev(),
+                ino: meta.ino(),
+                mode: meta.mode() & 0o777,
+            });
+        }
+    }
+    held.sort_unstable_by_key(|held| held.fd);
+    held
+}
+
+/// errno values on this platform (macOS and Linux agree), so no `libc` dependency is needed for two numbers.
+const ENOENT: i32 = 2;
+const EBADF: i32 = 9;
 
 /// A file with no name holding `bytes`, as a print's is, for a test of what holds it.
 pub(crate) fn unnamed_file(bytes: &[u8]) -> std::fs::File {
