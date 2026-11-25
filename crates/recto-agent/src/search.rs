@@ -1569,10 +1569,10 @@ mod tests {
     }
 
     /// A corpus of these pages, and a plan to read all of them. A page with no text failed when it was built. The file is whatever's given.
-    struct Fixture {
+    pub(super) struct Fixture {
         _folder: recto_testpdf::TempDir,
-        plan: Plan,
-        indexing: crate::index::ReadOnlyCorpus,
+        pub(super) plan: Plan,
+        pub(super) indexing: crate::index::ReadOnlyCorpus,
     }
 
     struct Pages(Vec<Option<(String, bool)>>);
@@ -1596,7 +1596,7 @@ mod tests {
         }
     }
 
-    fn fixture(name: &str, file: &[u8], pages: Vec<Option<(String, bool)>>) -> Fixture {
+    pub(super) fn fixture(name: &str, file: &[u8], pages: Vec<Option<(String, bool)>>) -> Fixture {
         let folder = recto_testpdf::TempDir::new_in(&std::env::temp_dir().canonicalize().unwrap(), &format!("recto-search-{name}-"));
         recto_platform::local::ensure_private_dir(&folder).unwrap();
         let path = folder.join("doc.pdf");
@@ -1629,7 +1629,7 @@ mod tests {
         }
     }
 
-    fn settings(fixture: &Fixture) -> Settings<'_> {
+    pub(super) fn settings(fixture: &Fixture) -> Settings<'_> {
         let far = far_future();
         Settings {
             limit: 20,

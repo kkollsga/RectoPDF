@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// Wakes and ends the stopped worker on every path, an assertion's included.
+/// Wakes the stopped worker on every path, an assertion's included. Only -CONT: the pid may be reaped and reused by the time this drops, so nothing is killed by it; the reader (declared first, dropped after) closes the worker, which ends once it runs.
 struct Stopped(u32);
 
 impl Stopped {
@@ -18,7 +18,6 @@ impl Stopped {
 impl Drop for Stopped {
     fn drop(&mut self) {
         self.signal("-CONT");
-        self.signal("-KILL");
     }
 }
 
@@ -76,4 +75,35 @@ fn a_read_the_mac_was_too_busy_for_isnt_a_page_that_failed() {
     let again = reader.read(0, 1, &mut slot).map(|got| matches!(got, Got::Page(_)));
     assert!(matches!(again, Ok(true)), "read again on a fresh worker: {again:?}");
     drop(stopped);
+}
+
+/// Failure: the busy arm sat below the read-again arms, or a change moved it, and a page the index marked failed whose worker got no processor came back `Busy`, so a search says "search again" about a page its own index says is damaged. Held only by the order of the arms in `read_live`. A page the index marked failed is read once more by a worker, and a worker that has no time says it failed (`read_deadline`), never that the Mac was busy.
+#[test]
+fn a_page_the_index_marked_failed_stays_failed_when_the_worker_is_short_of_time() {
+    let pdf = recto_testpdf::pages(&[
+        recto_testpdf::Page::new(recto_testpdf::text_lines(&["one"])),
+        recto_testpdf::Page::new(recto_testpdf::text_lines(&["two"])),
+    ]);
+    let fixture = tests::fixture("busy-failed", &pdf, vec![None, None]);
+    let settings = tests::settings(&fixture);
+    let mut reader = Reader::new(&fixture.plan, &settings);
+    let mut slot = Slot::default();
+    assert!(matches!(reader.read(0, 0, &mut slot).unwrap(), Got::Page(_)), "the first read starts a worker");
+    let pid = reader.current.as_mut().unwrap().1.worker_pid().expect("a worker with the file open");
+    let stopped = Stopped(pid);
+    assert!(stopped.signal("-STOP"));
+    let said = recto_render_service::under_page_deadline_for_test(
+        &mut reader,
+        |reader| &mut reader.current.as_mut().unwrap().1,
+        Duration::from_millis(250),
+        |reader| match reader.read(0, 1, &mut slot) {
+            Ok(Got::Busy) => "busy".to_string(),
+            Ok(Got::Failed(why)) => format!("failed: {why}"),
+            Ok(Got::Page(_)) => "page".to_string(),
+            Ok(_) => "something else".to_string(),
+            Err(error) => format!("error: {}", error.message),
+        },
+    );
+    drop(stopped);
+    assert_eq!(said, "failed: read_deadline");
 }
