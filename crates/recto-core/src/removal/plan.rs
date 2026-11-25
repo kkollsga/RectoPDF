@@ -197,7 +197,7 @@ fn lines(request: &Request, artifacts: &[Artifact]) -> [StoreLine; Store::COUNT]
         let [acted, kept, untouched] = counts[store as usize];
         StoreLine {
             store,
-            disposition: disposition(request, store, acted),
+            disposition: disposition(request, store, acted, kept),
             acted,
             kept,
             untouched,
@@ -205,7 +205,7 @@ fn lines(request: &Request, artifacts: &[Artifact]) -> [StoreLine; Store::COUNT]
     })
 }
 
-fn disposition(request: &Request, store: Store, acted: u32) -> Disposition {
+fn disposition(request: &Request, store: Store, acted: u32, kept: u32) -> Disposition {
     match store {
         Store::SourcePdf if request.mode() == TargetMode::Save => Disposition::Replaced,
         Store::SourcePdf => Disposition::KeptAsSource,
@@ -217,6 +217,8 @@ fn disposition(request: &Request, store: Store, acted: u32) -> Disposition {
         Store::External => Disposition::Excluded(Exclusion::OutsideApp),
         // A library with target material refused earlier, so none is ever found here.
         Store::Library => Disposition::NoneFound,
+        // Only a Save As source is here: it stays on disk, which is not the same as nothing found.
+        _ if acted == 0 && kept > 0 => Disposition::KeptAsSource,
         _ if acted == 0 => Disposition::NoneFound,
         _ if store.class() == Class::Rewrite => Disposition::Rewritten,
         _ => Disposition::Purged,

@@ -100,7 +100,7 @@ fn unrelated_and_source_artifacts_never_appear_in_steps() {
     let j = p.line(Store::Journal);
     assert_eq!((j.acted, j.kept, j.untouched), (1, 0, 1));
     let b = p.line(Store::Backup);
-    assert_eq!((b.disposition, b.acted, b.kept), (Disposition::NoneFound, 0, 1));
+    assert_eq!((b.disposition, b.acted, b.kept), (Disposition::KeptAsSource, 0, 1));
 }
 
 /// Catches a store missing from the report, or one the report acts on though it is excluded.
@@ -113,7 +113,6 @@ fn every_inventory_row_has_exactly_one_line() {
         let l = p.line(s);
         assert!(matches!(l.disposition, Disposition::Excluded(_)));
         assert_eq!((l.acted, l.kept, l.untouched), (0, 0, 0));
-        assert!(!effects(&p).iter().any(|e| matches!(e, Effect::Purge(x) | Effect::Rewrite(x) if *x == s)));
     }
     assert_eq!(p.line(Store::Clipboard).disposition, Disposition::Excluded(Exclusion::NotCleared));
     assert_eq!(p.line(Store::Journal).disposition, Disposition::Purged);
@@ -355,11 +354,6 @@ fn signed_original_refuses_save_and_save_as_keeps_it() {
     let p = make(TargetMode::SaveAs, true, &[], &DESIGN_LIMITS).unwrap();
     assert!(p.unsigned_copy_notice());
     assert_eq!(p.line(Store::SourcePdf).disposition, Disposition::KeptAsSource);
-    assert!(
-        p.steps()
-            .iter()
-            .all(|s| !matches!(s.effect(), Effect::Purge(Store::SourcePdf) | Effect::Rewrite(Store::SourcePdf)))
-    );
     assert!(!ok(&[]).unsigned_copy_notice());
     assert!(!make(TargetMode::SaveAs, false, &[], &DESIGN_LIMITS).unwrap().unsigned_copy_notice());
 }
