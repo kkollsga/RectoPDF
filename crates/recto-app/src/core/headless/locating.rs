@@ -466,3 +466,184 @@ fn recto_cli_words_reach_resolve() {
         "plain words, and not the token back: {words}"
     );
 }
+
+/// A reference to characters `[start, end)` of tab `#1`'s page, as an agent at Read-only is given it.
+fn chars_reference(app: &HeadlessApp, page: u32, start: u32, end: u32) -> Result<String, recto_agent::AgentError> {
+    app.agent(
+        Level::ReadOnly,
+        &json!({ "cmd": "ref", "page": page, "chars": format!("{start}-{end}"), "tab": "#1" }).to_string(),
+    )
+    .map(|made| made["ref"].as_str().expect("its token").to_owned())
+}
+
+/// The same reference with its text check, or its end, set by the core API as a hand-made token would: a page that is found, and characters that are not
+/// the ones the reference says.
+fn hostile_chars(token: &str, start: u32, end: u32) -> String {
+    use recto_core::locator::{CharacterRange, Locator, Target, decode, encode};
+    let made = decode(token).expect("a token");
+    let range = CharacterRange::new(start, end, [0xAB; 8]).expect("a range");
+    encode(&Locator::new(made.document(), made.page(), Target::Characters(range)))
+}
+
+/// Failure: a reference to words of a page, after another program put a cover in front, is found by the page's content but its offsets are taken as
+/// vouched for without reading the text (`checked: false`), or the words at its offsets are not the ones it was made of, or `text --ref` reads a page where
+/// the characters are not those. The words are `page` of "Mine page 3", the page is `moved` to 4 and says `text: same`, and the offsets read the same words
+/// in what `text --ref` gives.
+#[test]
+fn a_character_reference_reads_the_same_words_after_another_program_moved_the_page() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 5));
+    app.open(&file);
+    let whole = app.recto(Level::ReadOnly, &["text", "--page", "3"]).expect("text")["untrusted"]["text"]
+        .as_str()
+        .expect("its text")
+        .to_owned();
+    let start = whole.chars().position(|c| c == 'p').expect("the word") as u32;
+    let token = chars_reference(&app, 3, start, start + 4).expect("a character reference");
+    let before = resolve(&app, Level::ReadOnly, &token).expect("resolve");
+    assert_eq!(before["status"], "found", "{before}");
+    assert_eq!(
+        before["target"],
+        json!({ "kind": "characters", "start": start, "end": start + 4, "checked": true, "text": "same" })
+    );
+    replace(
+        &file,
+        &pages_saying(&["Cover", "Mine page 1", "Mine page 2", "Mine page 3", "Mine page 4", "Mine page 5"]),
+    );
+    look(&app);
+    let after = resolve(&app, Level::ReadOnly, &token).expect("resolve");
+    assert_eq!((after["status"].as_str(), after["page"].as_u64()), (Some("moved"), Some(4)), "{after}");
+    assert_eq!(after["target"]["text"], "same", "{after}");
+    let read = app.recto(Level::ReadOnly, &["text", "--ref", &token]).expect("text --ref");
+    let words: String = read["untrusted"]["text"]
+        .as_str()
+        .expect("text")
+        .chars()
+        .skip(start as usize)
+        .take(4)
+        .collect();
+    assert_eq!((words.as_str(), read["page"].as_u64()), ("page", Some(4)), "{read}");
+}
+
+/// Failure: a hand-made character token (a check that isn't the text's, or an end at 2^21) on a page that is found is answered `found`, so an agent reads
+/// words at offsets that are not the ones named, or its walk of the text isn't bounded; or `text --ref` goes on to read the page, or draws, or its refusal
+/// shares the words of `gone`. The answer is `text_changed`, exit 0, with the page, and `text --ref` is `reference_unresolved` in words of its own.
+#[test]
+fn a_hostile_character_token_on_a_found_page_is_text_changed_never_found() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 5));
+    app.open(&file);
+    let good = chars_reference(&app, 3, 0, 4).expect("a character reference");
+    let page = reference(&app, 3);
+    for token in [hostile_chars(&good, 0, 4), hostile_chars(&good, 0, 1 << 21), hostile_chars(&good, 4_000_000 >> 2, 1 << 21)] {
+        let said = resolve(&app, Level::ReadOnly, &token).expect("an answer, not a refusal");
+        assert_eq!((said["status"].as_str(), said["page"].as_u64(), said["file_page"].as_u64()), (Some("text_changed"), Some(3), Some(3)), "{said}");
+        assert_eq!(said["target"]["text"], "changed", "{said}");
+        let (read, events) = run_saying(&app, Level::ReadOnly, &json!({ "cmd": "text", "ref": token, "tab": "#1" }));
+        let read = read.expect_err("not read");
+        assert_eq!((read.code.as_str(), read.exit), ("reference_unresolved", exit::NOT_FOUND), "{read:?}");
+        assert!(!drew(&events), "{events:?}");
+        assert!(!read.message.contains(&token));
+    }
+    replace(&file, &pages_saying(&["Mine page 1", "Mine page 2", "Mine page 4", "Mine page 5"]));
+    look(&app);
+    let gone = app.recto(Level::ReadOnly, &["text", "--ref", &page]).expect_err("gone");
+    let changed = app.recto(Level::ReadOnly, &["text", "--ref", &hostile_chars(&good, 0, 4)]).expect_err("gone too");
+    assert_eq!(changed.code.as_str(), "reference_unresolved");
+    let again = app.disk().file("again.pdf", &pdf_bytes("Mine", 5));
+    app.open(&again);
+    let found_hostile = app.recto(Level::ReadOnly, &["resolve", &hostile_chars(&good, 0, 4), "--tab", "#2"]).expect("resolve");
+    assert_eq!(found_hostile["status"], "text_changed", "{found_hostile}");
+    let text_changed = app
+        .recto(Level::ReadOnly, &["text", "--ref", &hostile_chars(&good, 0, 4), "--tab", "#2"])
+        .expect_err("text changed");
+    assert_ne!(text_changed.message, gone.message, "each case says its own thing");
+}
+
+/// Failure: a range past the end of the page's text is made into a reference (naming characters that are not there), or the last character is refused. The
+/// page's text has `limit` characters: `0-limit` is a reference, and `0-limit+1` is `not_referenceable`.
+#[test]
+fn ref_chars_past_the_pages_text_is_not_referenceable() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 3));
+    app.open(&file);
+    let limit = app.recto(Level::ReadOnly, &["text", "--page", "2"]).expect("text")["untrusted"]["text"]
+        .as_str()
+        .expect("its text")
+        .chars()
+        .count() as u32;
+    let made = chars_reference(&app, 2, 0, limit).expect("up to the end of the text");
+    assert_eq!(resolve(&app, Level::ReadOnly, &made).expect("resolve")["status"], "found");
+    let past = chars_reference(&app, 2, 0, limit + 1).expect_err("one past the text");
+    assert_eq!((past.code.as_str(), past.exit), ("not_referenceable", exit::FAILED), "{past:?}");
+    let empty = chars_reference(&app, 2, 3, 3).expect_err("an empty range");
+    assert_eq!((empty.code.as_str(), empty.exit), ("usage", exit::USAGE), "{empty:?}");
+}
+
+/// Failure: a character reference, or checking one, is a way for an agent below Full to change the owner's edits, their undo history or the file, or is
+/// let through at Off. At Read-only and Control, `ref --chars`, `resolve` of a good and of a hostile token and `text --ref` leave the tab's edits, the
+/// session's list, the file's bytes and time as they were; at Off each is refused for the level.
+#[test]
+fn an_agent_below_full_changes_nothing_of_the_owners_edits_by_a_character_reference() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 10));
+    app.open(&file);
+    app.person(r##"{"cmd":"page_rotate","tab":"#1","pages":"9","degrees":90}"##);
+    app.person(r##"{"cmd":"page_delete","tab":"#1","pages":"2"}"##);
+    app.settle();
+    let before = owners_tab(&app, &file);
+    let good = chars_reference(&app, 4, 0, 4).expect("a character reference");
+    let hostile = hostile_chars(&good, 0, 4);
+    for level in [Level::ReadOnly, Level::Control] {
+        let made = app
+            .agent(level, r##"{"cmd":"ref","page":4,"chars":"0-4","tab":"#1"}"##)
+            .expect("ref --chars");
+        assert_eq!(made["ref"], good.as_str(), "the same words give the same reference at every level");
+        assert_eq!(resolve(&app, level, &good).expect("resolve")["status"], "found");
+        assert_eq!(resolve(&app, level, &hostile).expect("resolve")["status"], "text_changed");
+        let read = app.recto(level, &["text", "--ref", &good]).expect("text --ref");
+        assert_eq!(read["ref"]["text"], "same", "{read}");
+        app.recto(level, &["text", "--ref", &hostile]).expect_err("changed text is not read");
+    }
+    assert_eq!(owners_tab(&app, &file), before, "nothing of the owner's tab or file changed");
+    for line in [
+        r##"{"cmd":"ref","page":4,"chars":"0-4","tab":"#1"}"##.to_owned(),
+        json!({ "cmd": "resolve", "ref": good, "tab": "#1" }).to_string(),
+        json!({ "cmd": "text", "ref": hostile, "tab": "#1" }).to_string(),
+    ] {
+        let refused = app.agent(Level::Off, &line).expect_err("Off");
+        assert_eq!(refused.exit, exit::PERMISSION, "{refused:?}");
+    }
+    assert_eq!(owners_tab(&app, &file), before, "and Off changed nothing either");
+}
+
+/// Failure: a document the person opened with its password gives an agent a character reference, or a check of one, so the text of its pages (or whether
+/// words are on them) reaches an agent that the SPEC keeps them from. `ref --chars` and `resolve` of a character token give the refusal `text` gives, with
+/// nothing drawn.
+#[test]
+fn a_protected_document_gives_no_character_reference_and_no_check() {
+    let disk = Disk::new();
+    let plain = disk.file("plain.pdf", &pages_saying(&["Locked page 1", "Locked page 2"]));
+    let locked = disk.file("locked.pdf", &locked_saying(PASSWORD, 2, "Locked", lopdf::encryption::Permissions::all()));
+    let app = disk.start();
+    app.open(&plain);
+    let twin = chars_reference(&app, 2, 0, 4).expect("on the plain file");
+    person_unlocks(&app, &locked);
+    let tab = app.session_json()["tabs"]
+        .as_array()
+        .and_then(|tabs| tabs.iter().find(|tab| tab["path"].as_str().is_some_and(|path| path.ends_with("locked.pdf"))))
+        .map(|tab| format!("#{}", tab["id"]))
+        .expect("the locked tab");
+    let (text, _) = run_saying(&app, Level::Full, &json!({ "cmd": "text", "page": 2, "tab": tab }));
+    let text = text.expect_err("text is refused");
+    for line in [
+        json!({ "cmd": "ref", "page": 2, "chars": "0-4", "tab": tab }),
+        json!({ "cmd": "resolve", "ref": twin, "tab": tab }),
+        json!({ "cmd": "resolve", "ref": hostile_chars(&twin, 0, 4), "tab": tab }),
+    ] {
+        let (answered, events) = run_saying(&app, Level::Full, &line);
+        let answered = answered.expect_err("refused");
+        assert_eq!((answered.code, answered.exit, &answered.message), (text.code, text.exit, &text.message), "{line}");
+        assert!(!drew(&events), "{events:?}");
+    }
+}

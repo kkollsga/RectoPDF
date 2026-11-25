@@ -50,7 +50,7 @@ fn point(word: &str, page: u32) -> Result<PagePoint, AgentError> {
     Ok(PagePoint { page, x, y })
 }
 
-fn char_range(word: &str) -> Result<(u32, u32), AgentError> {
+pub(crate) fn char_range(word: &str) -> Result<(u32, u32), AgentError> {
     let parsed = word
         .split_once('-')
         .and_then(|(from, to)| Some((from.parse::<u32>().ok()?, to.parse::<u32>().ok()?)));

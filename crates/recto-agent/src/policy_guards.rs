@@ -187,7 +187,7 @@ pub(crate) fn every_command() -> Vec<Command> {
             rank: false,
             context: None,
         }),
-        Command::from(crate::commands::locating::Ref { page: 1, tab: tab() }),
+        Command::from(crate::commands::locating::Ref { page: 1, chars: None, tab: tab() }),
         Command::from(crate::commands::locating::Resolve {
             reference: locator_page(),
             tab: tab(),
@@ -912,6 +912,7 @@ fn pointing_at_page_one(access: &Mutex<Session<crate::DrawableLoader>>, command:
         Actor::Agent(Level::Full),
         &Command::from(commands::locating::Ref {
             page: 1,
+            chars: None,
             tab: crate::TabRef::from("#1"),
         }),
         &mut Vec::new(),
