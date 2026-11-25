@@ -999,7 +999,10 @@ impl DocRenderer {
             _ => Err(ProtoError("the wrong kind of reply to a size request")),
         });
         match size {
-            Ok(size) => Ok((size.width, size.height)),
+            Ok(size) => {
+                busy::landed(self, page);
+                Ok((size.width, size.height))
+            }
             Err(JobFailure::Stopped(reason)) => Err(busy::size_stopped(self, page, reason, busy_before)),
             Err(failure) => Err(failure.into()),
         }
@@ -1335,10 +1338,10 @@ impl DocRenderer {
                 other => return other.map_err(RenderFailure::from),
             }
         }
-        let busy_before = self.stats.too_busy;
+        let busy_before = busy::before(self);
         match self.text_job(page, boxes, false, generation) {
             // The Mac was too busy for the read to get its time: nothing's known about the page, so it isn't remembered, and the next ask reads it again. Before, a busy moment left a page unreadable for the session, the copy of it saying it took too long. A worker that hangs looks the same, so after [`MAX_BUSY`] of them in a row the page is remembered after all, and a hostile page costs a deadline at most that many times.
-            Err(JobFailure::Stopped(reason @ KillReason::Deadline)) if self.stats.too_busy > busy_before => Err(busy::read_stopped(self, page, reason)),
+            Err(JobFailure::Stopped(reason @ KillReason::Deadline)) if busy_before.moved(self) => Err(busy::read_stopped(self, page, reason)),
             Err(JobFailure::Stopped(reason)) => {
                 self.remember(page).text = Some(reason);
                 Err(RenderFailure::PageReadFailed { page, reason })

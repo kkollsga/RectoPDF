@@ -130,7 +130,10 @@ impl DocRenderer {
             let tried = self.try_contents(request, class, started, waited_before, &mut done, &mut sink);
             self.waited_ticket = None;
             match tried {
-                Ok(TryEnd::Finished) => return Ok(done),
+                Ok(TryEnd::Finished) => {
+                    busy::landed(self, page);
+                    return Ok(done);
+                }
                 Ok(TryEnd::LostPlace) => {
                     // A worker gave up its place for no reason of the page's, so it starts again. A worker that keeps doing it is broken, or hostile.
                     if done.restarts >= MAX_RESTARTS {

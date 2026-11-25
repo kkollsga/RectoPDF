@@ -855,6 +855,29 @@ fn three_busy_draws_in_a_row_are_remembered_and_dont_stop_the_document() {
     assert_eq!(doc.stats().spawns, spawns, "with no worker started to learn it again");
 }
 
+/// Failure (final review): only a draw that landed ended a run of busy draws, so two busy draws, a page whose size then read fine, and a third busy draw remembered the page as failed for good, though the worker had just answered about it. Any job of the page that succeeds ends the run.
+#[test]
+fn a_size_that_reads_fine_ends_a_run_of_busy_draws() {
+    let file = TempPdf::new("busy-then-size.pdf", &pages(&[Page::new(text_lines(&["one"])), Page::new(text_lines(&["two"]))]));
+    let mut doc = renderer(&file.0, Policy::default());
+    for round in 0..3 {
+        if round == 2 {
+            doc.page_size(1).expect("the page reads fine between");
+        } else {
+            doc.page_size(0).unwrap();
+        }
+        stop_worker(&mut doc);
+        let surface = tile_surface();
+        let busy = recto_render_service::under_page_deadline_for_test(
+            &mut doc,
+            |doc| doc,
+            Duration::from_millis(250),
+            |doc| doc.render_tile(&tile_request(1, 0), &surface),
+        );
+        assert!(matches!(busy, Err(RenderFailure::TooBusy { page: 1 })), "round {round}: {busy:?}, {:?}", doc.stats());
+    }
+}
+
 /// Runs `ask` with the worker stopped and the page's deadline short, as a wake leaves it: the Mac gave the worker no processor time.
 fn asked_starved<T>(doc: &mut DocRenderer, ask: impl FnOnce(&mut DocRenderer) -> T) -> T {
     stop_worker(doc);

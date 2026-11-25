@@ -9,6 +9,13 @@ pub const MAX_BUSY: u8 = 3;
 #[derive(Clone, Copy)]
 pub(super) struct Before(u32);
 
+impl Before {
+    /// Whether a worker was stopped for lack of the processor since this was taken.
+    pub(super) fn moved(self, doc: &DocRenderer) -> bool {
+        doc.stats.too_busy > self.0
+    }
+}
+
 /// The count to hold before a job whose stop is to go through [`draw_stopped`] or [`size_stopped`].
 pub(super) fn before(doc: &DocRenderer) -> Before {
     Before(doc.stats.too_busy)
@@ -16,7 +23,7 @@ pub(super) fn before(doc: &DocRenderer) -> Before {
 
 /// Whether a job's worker was stopped for lack of the processor rather than for anything of the page, and the page's run of such stops is still short of [`MAX_BUSY`]. Counts the stop. Not remembered, so whoever asked asks again; nothing's retried here, as that would hold this thread for another deadline while the one who asked can lose interest.
 fn starved(doc: &mut DocRenderer, page: u32, reason: KillReason, before: Before) -> bool {
-    if !matches!(reason, KillReason::Deadline) || doc.stats.too_busy <= before.0 {
+    if !matches!(reason, KillReason::Deadline) || !before.moved(doc) {
         return false;
     }
     let memory = doc.remember(page);

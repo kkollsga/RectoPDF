@@ -68,7 +68,10 @@ impl DocRenderer {
             }
         });
         let pixels = match reply {
-            Ok(pixels) => pixels,
+            Ok(pixels) => {
+                busy::landed(self, page);
+                pixels
+            }
             Err(JobFailure::StaleKilled) => return Ok(0),
             // At what scale isn't known, so it holds at every one, until a lower zoom's own draw says otherwise. Which is the same as the page's load being too heavy.
             Err(JobFailure::Stopped(KillReason::MemoryLimit)) => {
