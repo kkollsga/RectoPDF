@@ -77,6 +77,8 @@ fn whole_file(failure: RenderFailure) -> FeedError {
         RenderFailure::Security => FeedError::Refused("security"),
         RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::WallsDown(_) | RenderFailure::StartRefused => about_the_install(failure),
         RenderFailure::NotFound => FeedError::Cant("not_found"),
+        // The busy Mac gave the worker too little time to start: a paused build, as a start that timed out was.
+        RenderFailure::TooBusyToStart => FeedError::Cant(TOO_BUSY),
         RenderFailure::SourceChanged => FeedError::FileChanged,
         _ => FeedError::Cant("couldnt_open"),
     }
@@ -86,6 +88,7 @@ fn whole_file(failure: RenderFailure) -> FeedError {
 fn read_failure(failure: RenderFailure) -> FeedError {
     match failure {
         RenderFailure::Unavailable => FeedError::Cant("render_unavailable"),
+        RenderFailure::TooBusyToStart => whole_file(failure),
         RenderFailure::PageReadFailed {
             reason: KillReason::Deadline, ..
         } => FeedError::Page(FailReason::Deadline),
@@ -319,6 +322,9 @@ mod tests {
     #[test]
     fn a_failure_of_the_moment_writes_no_page_down_as_failed() {
         assert_eq!(read_failure(RenderFailure::Unavailable), FeedError::Cant("render_unavailable"));
+        // A worker the busy Mac couldn't start in time is a paused build, not a page that failed.
+        assert_eq!(read_failure(RenderFailure::TooBusyToStart), FeedError::Cant(TOO_BUSY));
+        assert_eq!(whole_file(RenderFailure::TooBusyToStart), FeedError::Cant(TOO_BUSY));
         // These go down as failed, and are read again, because they may say more about the moment than the page.
         assert!(
             matches!(read_failure(RenderFailure::PageReadFailed { page: 1, reason: KillReason::Deadline }), FeedError::Page(reason) if reason.is_temporary())
