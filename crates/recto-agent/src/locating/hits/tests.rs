@@ -256,3 +256,18 @@ fn a_searchs_log_entry_never_carries_a_hits_reference() {
     crate::search::log_how_it_went(&mut details, &command, &Ok(answer));
     assert!(!details.to_string().contains("r1."), "{details}");
 }
+
+/// Failure: references go on being read after the search's own deadline has passed (a 30 s search that stops reading pages still opens the file and reads
+/// a page for each hit). A deadline already passed gives no reference and opens no file: every hit is counted under `caps`.
+#[test]
+fn references_stop_at_the_searchs_deadline_and_are_counted_caps() {
+    let file = numbered(2);
+    let opened = OnceCell::new();
+    let mut refs = HitRefs::new(Some(file.0.as_path()), &opened).with_deadline(std::time::Instant::now());
+    let mut hits = json!([hit(), hit(), hit()]);
+    for index in 0..3 {
+        refs.mark(&mut hits[index], false, 0, "words", Some(&(0..5)));
+    }
+    assert_eq!(missing(refs, &mut hits), (0, json!({ "caps": 3 })));
+    assert!(opened.get().is_none(), "no file was opened after the deadline");
+}

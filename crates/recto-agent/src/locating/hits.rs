@@ -76,6 +76,8 @@ pub(crate) struct HitRefs<'f> {
     caps: &'f ScanCaps,
     referrer: Option<Referrer<'f>>,
     cursor: Cursor,
+    /// The search's own deadline: past it no reference is read, and the hit is counted under `caps`.
+    deadline: Option<std::time::Instant>,
     /// Characters stepped over, for the test that holds the count linear.
     walked: u64,
     made: u32,
@@ -95,10 +97,16 @@ impl<'f> HitRefs<'f> {
             caps,
             referrer: None,
             cursor: Cursor::default(),
+            deadline: None,
             walked: 0,
             made: 0,
             missing: BTreeMap::new(),
         }
+    }
+
+    pub(crate) fn with_deadline(mut self, deadline: std::time::Instant) -> Self {
+        self.deadline = Some(deadline);
+        self
     }
 
     /// Gives `hit` its `chars` and `ref`, or nulls and a count of why. `page` is the zero-based page of the file, `text` the page's text as the search
@@ -135,6 +143,9 @@ impl<'f> HitRefs<'f> {
 
     /// A reference to the whole page, the file opened and its tags read when this is the first.
     fn page(&mut self, page: u32) -> Result<Locator, Why> {
+        if self.deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            return Err(Why::Page(Unreferenceable::Capped));
+        }
         if self.referrer.is_none() {
             let (path, stamp) = self.path.zip(self.stamp).ok_or(Why::File)?;
             let opened = self.opened.get_or_init(|| Opened::open(path, stamp)).as_ref().ok_or(Why::File)?;
