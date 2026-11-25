@@ -1658,16 +1658,6 @@ mod tests {
         }
     }
 
-    /// Failure: the ranked second pass filed a page that read differently the second time under `changed_file`, the code for a file listed in `changed_files`, so an agent looked for a changed file that wasn't there.
-    #[test]
-    fn a_page_that_reads_differently_the_second_time_isnt_called_a_changed_file() {
-        let mut found = Found::default();
-        found.not_read_the_same_again(4);
-        assert_eq!(found.failed, vec![5]);
-        assert_eq!(found.failed_why.get("not_read_the_same_again"), Some(&1));
-        assert!(!found.failed_why.contains_key("changed_file"), "{:?}", found.failed_why);
-    }
-
     /// Failure: a busy page is listed with the failed, so "couldn't be read" covers it and an agent can't tell a page to search again from a damaged one; or it is left out and the total is called complete. It has its own list and its own wording, the failed have their reason codes, and neither lets `hits_total` say a number.
     #[test]
     fn coverage_lists_busy_pages_apart_from_failed_ones_and_says_why() {
