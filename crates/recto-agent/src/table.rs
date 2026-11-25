@@ -1428,6 +1428,11 @@ mod tests {
     /// The line a row makes from these of its arguments, each with its value, and its required ones with a sample, as `recto` sends it.
     fn line_of(spec: &Spec, given: &[(&Arg, &str)]) -> Result<String, AgentError> {
         let mut words: Vec<String> = spec.name.split(' ').map(str::to_string).collect();
+        // A row that reads a page either by its number or by `--ref` is refused with neither, so a line without one gets a page.
+        let by = |key: &str| given.iter().any(|(each, _)| each.key == key);
+        if spec.args.iter().any(|arg| arg.key == "ref") && spec.args.iter().any(|arg| arg.key == "page") && !by("page") && !by("ref") {
+            words.extend(["--page".to_string(), "1".to_string()]);
+        }
         let required = spec
             .args
             .iter()
@@ -1497,7 +1502,6 @@ mod tests {
             "page turn 1",
             "tabs --nope",
             "tabs extra",
-            "text",
             "text --page",
             "text --page 0",
             "text --page x",

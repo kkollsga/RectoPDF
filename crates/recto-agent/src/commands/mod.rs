@@ -346,9 +346,11 @@ family! {
         Index(text::Index),
         IndexStatus(text::IndexStatus),
         IndexClear(text::IndexClear),
+        #[line(text::line::Text)]
         Text(text::Text),
         Select(text::Select),
         Copy(text::Copy),
+        #[line(export::line::Render)]
         Render(export::Render),
         ExportSvg(export::ExportSvg),
         Images(export::Images),
@@ -551,6 +553,8 @@ const COMBINATIONS: &[(&str, &str)] = &[
     ("find", finding::ONE_THING),
     ("find", finding::JUMP_WITH_A_STEP),
     ("highlight_remove", highlight::ID_ALONE),
+    ("text", locating::TEXT_BOTH),
+    ("render", locating::RENDER_BOTH),
 ];
 
 /// For tests (the table's and the fuzz target's): whether a line the CLI built, each of whose words its row takes, is refused as it's read only for what its

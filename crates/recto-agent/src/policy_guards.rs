@@ -61,7 +61,7 @@ pub(crate) fn every_command() -> Vec<Command> {
         Command::from(crate::commands::compare::Compare::Off),
         Command::from(crate::commands::export::Render {
             tab: tab(),
-            page: 1,
+            at: crate::commands::locating::PageOrRef::Page(1),
             scale: 2.0,
             out: "/d/x.png".into(),
             anyway: false,
@@ -110,7 +110,10 @@ pub(crate) fn every_command() -> Vec<Command> {
             to_pdf: Some("/d/x.pdf".into()),
             anyway: false,
         }),
-        Command::from(crate::commands::text::Text { tab: tab(), page: 1 }),
+        Command::from(crate::commands::text::Text {
+            tab: tab(),
+            at: crate::commands::locating::PageOrRef::Page(1),
+        }),
         Command::from(crate::commands::highlight::Highlight {
             tab: tab(),
             page: Some(1),
@@ -188,6 +191,17 @@ pub(crate) fn every_command() -> Vec<Command> {
         Command::from(crate::commands::locating::Resolve {
             reference: locator_page(),
             tab: tab(),
+        }),
+        Command::from(crate::commands::text::Text {
+            tab: tab(),
+            at: crate::commands::locating::PageOrRef::Ref(locator_page()),
+        }),
+        Command::from(crate::commands::export::Render {
+            tab: tab(),
+            at: crate::commands::locating::PageOrRef::Ref(locator_page()),
+            scale: 2.0,
+            out: "/d/y.png".into(),
+            anyway: false,
         }),
         Command::from(crate::commands::locating::Resolve {
             reference: locator_spot(),
@@ -885,6 +899,27 @@ pub(crate) fn opened(file: &Path) -> Mutex<Session<crate::DrawableLoader>> {
     access
 }
 
+/// A command that reads by reference, given a reference to page 1 of the file the session has open: the made-up one in [`every_command`] points at no page of
+/// it, so a walk about what happens once a page is read would only see the refusal for a page that isn't there. Any other command is as it was.
+fn pointing_at_page_one(access: &Mutex<Session<crate::DrawableLoader>>, command: Command) -> Command {
+    let mut fields = fields(&command);
+    if !fields.get("ref").is_some_and(Value::is_string) {
+        return command;
+    }
+    let made = execute(
+        access,
+        Actor::Agent(Level::Full),
+        &Command::from(commands::locating::Ref {
+            page: 1,
+            tab: crate::TabRef::from("#1"),
+        }),
+        &mut Vec::new(),
+    )
+    .expect("a reference to page 1");
+    fields.insert("ref".into(), made["ref"].clone());
+    crate::parse(&Value::Object(fields).to_string()).expect("its own line, with a reference that reads")
+}
+
 /// How many of the owner's steps the tab's history holds, done and undone. (Counted, not compared by value: an undo keeps a step as its inverse until
 /// it's redone, and moving one step between the two is what undo and redo are.)
 fn owners_steps(access: &Mutex<Session<crate::DrawableLoader>>, id: recto_session::TabId) -> usize {
@@ -1100,7 +1135,9 @@ fn no_command_writes_over_a_file_thats_there() {
             std::fs::write(file, b"precious").unwrap();
         }
         let doc = TempPdf::new("mine.pdf", &pdf(2));
-        let result = execute(&opened(&doc.0), Actor::Agent(Level::Full), &command, &mut Vec::new());
+        let session = opened(&doc.0);
+        let command = pointing_at_page_one(&session, command);
+        let result = execute(&session, Actor::Agent(Level::Full), &command, &mut Vec::new());
         for file in &files {
             assert_eq!(std::fs::read(file).unwrap(), b"precious", "{} wrote over {}", command.tag(), file.display());
         }
@@ -1163,7 +1200,9 @@ fn a_file_that_asks_not_to_be_copied_asks_anyway_of_every_copy() {
             let folder = recto_testpdf::TempDir::new("recto-anyway-");
             fields.insert("anyway".into(), Value::from(anyway));
             let (asked, _) = writing_into(&fields, &folder, command.tag());
-            let result = execute(&opened(&doc.0), Actor::Agent(Level::Full), &asked, &mut Vec::new());
+            let session = opened(&doc.0);
+            let asked = pointing_at_page_one(&session, asked);
+            let result = execute(&session, Actor::Agent(Level::Full), &asked, &mut Vec::new());
             // Refused, or, for a selection, its places given and its text left out.
             let withheld = match &result {
                 Err(error) => error.code == crate::Code::COPY_RESTRICTED,

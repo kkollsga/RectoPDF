@@ -35,6 +35,93 @@ pub(crate) fn made_up_locator(target: locator::Target) -> Locator {
     Locator::new(DocumentTags::new([1; 8], None), page, target)
 }
 
+pub(crate) const TEXT_BOTH: &str = "`text` takes a page or `--ref`, not both.";
+pub(crate) const TEXT_NEITHER: &str = "`text` needs a page or `--ref`.";
+pub(crate) const RENDER_BOTH: &str = "`render` takes a page or `--ref`, not both.";
+pub(crate) const RENDER_NEITHER: &str = "`render` needs a page or `--ref`.";
+
+/// Where `text` and `render` read: a page by its number, or the page a reference points at now. Built only by [`PageOrRef::of`], so a command that holds
+/// one holds exactly one of the two, and a reference in it is already a reference RectoPDF made.
+#[derive(Clone, Copy, Debug)]
+pub enum PageOrRef {
+    Page(u32),
+    Ref(Locator),
+}
+
+impl PageOrRef {
+    /// Reads the two wire fields of a command that takes either: a token that can't be a reference is refused with its constant words, and a line with both
+    /// or neither with the command's own. `command` is the word the person typed.
+    pub(crate) fn of(command: &str, page: Option<u32>, reference: Option<&str>) -> Result<Self, AgentError> {
+        let (both, neither) = if command == "text" {
+            (TEXT_BOTH, TEXT_NEITHER)
+        } else {
+            (RENDER_BOTH, RENDER_NEITHER)
+        };
+        let usage = |words: &'static str| AgentError::new(Code::USAGE, words, exit::USAGE);
+        let decoded = |token: &str| {
+            locator::decode(token).map_err(|error| match error {
+                locator::Error::UnsupportedVersion => locating::reference_too_new(),
+                _ => locating::bad_reference(),
+            })
+        };
+        match (page, reference) {
+            (Some(page), None) => Ok(Self::Page(page)),
+            (None, Some(token)) => Ok(Self::Ref(decoded(token)?)),
+            (Some(_), Some(token)) => {
+                decoded(token)?;
+                Err(usage(both))
+            }
+            (None, None) => Err(usage(neither)),
+        }
+    }
+
+    /// The two wire fields it was read from.
+    pub(crate) fn wire(&self) -> (Option<u32>, Option<String>) {
+        match self {
+            Self::Page(page) => (Some(*page), None),
+            Self::Ref(reference) => (None, Some(locator::encode(reference))),
+        }
+    }
+
+    /// For the activity log: the page, or the page a reference hints at. A number, never the token or any part of its checks.
+    pub(crate) fn hint(&self) -> u32 {
+        match self {
+            Self::Page(page) => *page,
+            Self::Ref(reference) => reference.page().number(),
+        }
+    }
+
+    /// What `text` and `render` read: the page's place in the tab now, and what was said of finding it when it was by reference.
+    pub(crate) fn find<A: SessionAccess>(&self, access: &A, tab: &TabRef) -> Result<(u32, Option<locating::Located>), AgentError> {
+        match self {
+            Self::Page(page) => Ok((*page, None)),
+            Self::Ref(reference) => {
+                let found = locating::page_of(access, tab, reference)?;
+                Ok((found.page, Some(found)))
+            }
+        }
+    }
+}
+
+/// The `--ref` flag of `text` and `render`.
+pub(crate) const REF: Arg = Arg {
+    key: "ref",
+    flag: Some("--ref"),
+    kind: Kind::Reference,
+    required: false,
+    help: "A reference `recto ref` gave, whole: reads the page it points at now, even if another program moved it. Instead of a page. It refuses when the page is gone, can't be told from others or wasn't fully looked for (`recto resolve` says which).",
+};
+
+/// [`PAGE_OR_BARE`] for a command that also takes `--ref`.
+pub(crate) const PAGE_OR_REF: Arg = Arg {
+    required: false,
+    help: "The page, counted from 1. A bare number means the same: `60` or `--page 60`. Give this or `--ref`, not both.",
+    ..PAGE_OR_BARE
+};
+
+pub(crate) const TEXT_REF_EXAMPLE: &str = concat!("recto text --ref ", example_ref!());
+pub(crate) const RENDER_REF_EXAMPLE: &str = concat!("recto render --ref ", example_ref!(), " --out page.png");
+
 /// `recto ref <page>`: a reference to a page of the tab, to give back to `resolve` later, when the file's page numbers may have changed.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -267,5 +354,85 @@ mod tests {
             assert!(!shown.contains(piece), "{shown}");
         }
         assert_eq!(command.log_details()["page"], 1, "only the page number it hints at");
+    }
+
+    /// A line for `text` or `render` (which also needs a place to write), with `fields` beside its `cmd`.
+    fn ask(cmd: &str, fields: Value) -> Value {
+        let mut line = json!({ "cmd": cmd });
+        if cmd == "render" {
+            line["out"] = json!("/d/x.png");
+        }
+        for (key, value) in fields.as_object().into_iter().flatten() {
+            line[key] = value.clone();
+        }
+        line
+    }
+
+    fn read_line(line: Value) -> Result<Command, AgentError> {
+        crate::parse(&line.to_string())
+    }
+
+    /// Failure: `text` or `render` takes both a page and a reference (so which one is read depends on which the code looks at first), or neither (so a
+    /// bare `recto text` reads some page or falls through to a missing-field refusal that isn't about this), or a reference beside a page is accepted
+    /// without being read. Both refuse as usage, in the command's own words; one or the other reads; and `ref: null` is no reference.
+    #[test]
+    fn text_and_render_take_a_page_or_a_ref_never_both_or_neither() {
+        for cmd in ["text", "render"] {
+            let line = |fields: Value| ask(cmd, fields);
+            for refused in [json!({ "page": 3, "ref": EXAMPLE_REF }), json!({}), json!({ "page": null, "ref": null })] {
+                let error = read_line(line(refused.clone())).expect_err(&refused.to_string());
+                assert_eq!((error.code, error.exit), (Code::USAGE, exit::USAGE), "{cmd} {refused}");
+                assert!(
+                    error.message.contains(&format!("`{cmd}`")) && error.message.contains("`--ref`"),
+                    "{}",
+                    error.message
+                );
+            }
+            let by_page = read_line(line(json!({ "page": 3, "ref": null }))).expect("a page");
+            let by_ref = read_line(line(json!({ "ref": EXAMPLE_REF }))).expect("a reference");
+            assert_eq!(
+                (by_page.log_details()["page"].as_u64(), by_page.log_details().get("ref_page")),
+                (Some(3), None),
+                "{cmd}"
+            );
+            assert_eq!(
+                (by_ref.log_details()["ref_page"].as_u64(), by_ref.log_details().get("page")),
+                (Some(1), None),
+                "{cmd}"
+            );
+            // What the window or a test builds prints as the line an agent could send.
+            let again = crate::parse(&by_ref.wire()).expect("what it prints reads back");
+            assert_eq!(again.log_details(), by_ref.log_details(), "{cmd}");
+        }
+    }
+
+    /// Failure: a token that can't be a reference on `text` or `render` reaches the level or the tab (an agent at Off is told about its level, a hostile
+    /// token is looked at beside the session), or its refusal repeats the hostile text. Refused as the line is read, with constant words, as `resolve`
+    /// refuses; a newer version says so.
+    #[test]
+    fn a_hostile_ref_on_text_or_render_is_bad_reference_before_the_level_is_asked() {
+        let long = format!("r1.{}", "a".repeat(126));
+        for cmd in ["text", "render"] {
+            for hostile in [long.as_str(), "r1.é", "", "nonsense"] {
+                let error = read_line(ask(cmd, json!({ "ref": hostile }))).expect_err(hostile);
+                assert_eq!((error.code, error.exit), (Code::BAD_REFERENCE, exit::USAGE), "{cmd} {hostile:?}");
+                assert!(!error.message.contains("nonsense") && !error.message.contains("r1."), "{}", error.message);
+            }
+            let error = read_line(ask(cmd, json!({ "ref": "r2.040g2081040g2.p1-081040g2081040g2081040g208-0000000" }))).expect_err("r2");
+            assert_eq!(error.code, Code::REFERENCE_TOO_NEW, "{cmd}");
+        }
+    }
+
+    /// Failure: the activity log, or a command printed in a test failure, carries the token or a piece of its checks, which name a page's content, on
+    /// `text` or `render`.
+    #[test]
+    fn text_and_render_ref_never_log_the_token() {
+        for cmd in ["text", "render"] {
+            let command = read_line(ask(cmd, json!({ "ref": EXAMPLE_REF }))).expect("example");
+            let shown = format!("{:?} {}", command, command.log_details());
+            for piece in ["040g2081040g2", "081040g2081040g2081040g208", "0000000"] {
+                assert!(!shown.contains(piece), "{cmd}: {shown}");
+            }
+        }
     }
 }

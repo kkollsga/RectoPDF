@@ -1,6 +1,7 @@
 //! Pages and pictures written out: `render`, `export svg`, `images`, `image`, `snapshot` and `print`.
 
 #![allow(unused_imports)]
+use super::locating::{PAGE_OR_REF, PageOrRef, REF, RENDER_REF_EXAMPLE};
 use super::{Cmd, Cx, row_access};
 use crate::human::*;
 use crate::table::*;
@@ -10,24 +11,81 @@ use serde_json::{Value, json};
 use std::fmt::Write;
 use std::path::PathBuf;
 
-/// Draws a page to a PNG file.
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+/// Draws a page to a PNG file. By page number, or by a reference to the page, read from a `line` so a token that can't be one is refused as the line is
+/// read, before the level or the tab is asked.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(into = "line::Render")]
 pub struct Render {
-    #[serde(default)]
     pub tab: TabRef,
-    pub page: u32,
+    pub at: PageOrRef,
     /// A number, or `"max"` for the largest that fits, which reads as [`render::LARGEST_THAT_FITS`].
-    #[serde(
-        default = "crate::render::default_scale",
-        deserialize_with = "crate::render::scale_or_max",
-        serialize_with = "crate::render::scale_as_sent"
-    )]
     pub scale: f32,
     pub out: PathBuf,
     /// Draws a page of a file that asks not to be copied. Only once the user has said to; logged.
-    #[serde(default)]
     pub anyway: bool,
+}
+
+/// `render` as it's written on the wire.
+pub mod line {
+    use crate::TabRef;
+    use serde::{Deserialize, Serialize};
+    use std::path::PathBuf;
+
+    #[derive(Clone, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Render {
+        #[serde(default)]
+        pub tab: TabRef,
+        #[serde(default)]
+        pub page: Option<u32>,
+        #[serde(
+            default = "crate::render::default_scale",
+            deserialize_with = "crate::render::scale_or_max",
+            serialize_with = "crate::render::scale_as_sent"
+        )]
+        pub scale: f32,
+        pub out: PathBuf,
+        #[serde(default)]
+        pub anyway: bool,
+        /// Last, so the positional array form keeps reading `[tab, page, scale, out, anyway]` as it always has.
+        #[serde(default, rename = "ref")]
+        pub reference: Option<String>,
+    }
+}
+
+impl TryFrom<line::Render> for Render {
+    type Error = AgentError;
+    fn try_from(line: line::Render) -> Result<Self, AgentError> {
+        let line::Render {
+            tab,
+            page,
+            reference,
+            scale,
+            out,
+            anyway,
+        } = line;
+        Ok(Self {
+            tab,
+            at: PageOrRef::of(Self::TAG, page, reference.as_deref())?,
+            scale,
+            out,
+            anyway,
+        })
+    }
+}
+
+impl From<Render> for line::Render {
+    fn from(asked: Render) -> Self {
+        let (page, reference) = asked.at.wire();
+        Self {
+            tab: asked.tab,
+            page,
+            reference,
+            scale: asked.scale,
+            out: asked.out,
+            anyway: asked.anyway,
+        }
+    }
 }
 
 impl Cmd for Render {
@@ -50,16 +108,24 @@ impl Cmd for Render {
     fn route(&self) -> Runs {
         Runs::Session
     }
+    /// The page, or the page a reference hints at: a number, and never the token.
     fn log_details(&self) -> Value {
-        let Self { tab, page, out, anyway, .. } = self;
-        json!({ "tab": super::log_tab(tab), "page": page, "anyway": anyway, "untrusted": super::log_file(out) })
+        let Self { tab, at, out, anyway, .. } = self;
+        match at {
+            PageOrRef::Page(page) => json!({ "tab": super::log_tab(tab), "page": page, "anyway": anyway, "untrusted": super::log_file(out) }),
+            PageOrRef::Ref(_) => json!({ "tab": super::log_tab(tab), "ref_page": at.hint(), "anyway": anyway, "untrusted": super::log_file(out) }),
+        }
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        let Self { tab, page, scale, out, anyway } = self;
+        let Self { tab, at, scale, out, anyway } = self;
         let (access, events) = (cx.access, &mut *cx.events);
         {
             crate::quiet_files::check_new_file(access, out)?;
-            let (id, position, source) = locate(access, tab, *page)?;
+            let (page, found) = at.find(access, tab)?;
+            let (id, position, source) = locate(access, tab, page)?;
+            if let Some(found) = &found {
+                locating::agree(found, id, &source)?;
+            }
             extract::refuse_if_restricted(&source.path, source.page, *anyway)?;
             let hidden = crate::highlighting::hidden_on(access, id, &source);
             let drawn = render::render(&source.path, source.page + 1, *scale, out, hidden);
@@ -67,7 +133,10 @@ impl Cmd for Render {
                 note_draw(access, id, position, drawn.as_ref().err().map(|error| error.code.as_str()), events);
             }
             let mut data = drawn?;
-            describe_source(&mut data, *page, &source);
+            describe_source(&mut data, page, &source);
+            if let Some(found) = found {
+                locating::attach(access, tab, &found, &mut data)?;
+            }
             Ok(data)
         }
     }
@@ -629,9 +698,10 @@ pub(crate) const ROWS_RENDER: &[Spec] = &[Spec {
     tag: "render",
     group: GROUP_READ,
     access: Access::At(Level::Full),
-    summary: "Draws a page to a new PNG file, sharp or not at all. It never replaces a file, and doesn't show an unsaved rotation.",
+    summary: "Draws a page to a new PNG file, sharp or not at all. It never replaces a file, and doesn't show an unsaved rotation. With `--ref` it draws the page a reference points at now, and `ref` in the answer says how it was found; a reference's spot or characters don't narrow it.",
     args: &[
-        PAGE_OR_BARE,
+        PAGE_OR_REF,
+        REF,
         Arg {
             key: "out",
             flag: Some("--out"),
@@ -644,13 +714,14 @@ pub(crate) const ROWS_RENDER: &[Spec] = &[Spec {
         TAB,
     ],
     bare_page: true,
-    data: "`{ page, source_page, from_added_file, scale, largest_that_fits, out, took_ms, width, height, bytes, kind, unsaved_rotation_degrees, untrusted: { added_file } }`. A file whose permissions ask that it isn't copied is exit 8, `copy_restricted`, unless `--anyway` is given.",
+    data: "`{ page, source_page, from_added_file, ref, scale, largest_that_fits, out, took_ms, width, height, bytes, kind, unsaved_rotation_degrees, untrusted: { added_file } }`. A file whose permissions ask that it isn't copied is exit 8, `copy_restricted`, unless `--anyway` is given.",
     emits: &["page_drawn", "page_failed"],
     examples: &[
         "recto render --page 1 --out page1.png",
         "recto render 1 --out page1.png",
         "recto render --page 2 --scale 3x --out /tmp/p2.png --json",
         "recto render 2 --scale max --out /tmp/p2.png",
+        RENDER_REF_EXAMPLE,
     ],
     client_wait_s: 600,
     ..BASE

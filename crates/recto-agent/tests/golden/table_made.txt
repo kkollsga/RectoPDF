@@ -50,9 +50,9 @@ row 12 index clear: 368c4780ed0a4688 1057 bytes
 help index clear: e31e6abc9838d0a8 779 bytes
 usage index clear: a27fde83b445f524 39 bytes
 by tag index_clear: 08d7b884b4b31ce6 11 bytes
-row 13 text: 81aed98554724951 1812 bytes
-help text: ac56ba524dfb3836 1520 bytes
-usage text: a1656a7704cf386b 38 bytes
+row 13 text: 7ac4a1277f262e02 2404 bytes
+help text: 464342578484b225 2059 bytes
+usage text: 371ce5f6433d4c5d 54 bytes
 by tag text: fa04f4ef1995407e 4 bytes
 row 14 select: 870aeaa4174bcf82 3027 bytes
 help select: eda80f00770c25d3 2377 bytes
@@ -62,9 +62,9 @@ row 15 copy: f83fdf08194cf0d7 2768 bytes
 help copy: e2e340e1a9e3ff6f 2122 bytes
 usage copy: 9a10490a69d0bc71 139 bytes
 by tag copy: 0bf903911984eee4 4 bytes
-row 16 render: 273d3326b57b92fe 1674 bytes
-help render: 01cc091d37130aac 1218 bytes
-usage render: 6a8d793ca774e29b 81 bytes
+row 16 render: ea40d6178d0db036 2283 bytes
+help render: 39074346d12e25b8 1774 bytes
+usage render: a61b7456cf52d201 97 bytes
 by tag render: 393ee15f7d35d08d 6 bytes
 row 17 export svg: 1c878a1895d6adc1 4302 bytes
 help export svg: 340baef3c4935866 3650 bytes
@@ -761,6 +761,6 @@ family settings: cbf29ce484222325 0 bytes
 family skill: 263c8540bc3d3bc9 284 bytes
 family budget: aec822ae884cf326 558 bytes
 family qa: 2ecb80f2861d848a 12724 bytes
-help --json: 6b0377fbb9c83920 137838 bytes
-SKILL.md: bed7d58e67d6d6c8 26564 bytes
-REFERENCE.md: 42bb199afbf3f7bf 86466 bytes
+help --json: 84f0a2099a00ce39 138987 bytes
+SKILL.md: 82b10f56e51942af 26906 bytes
+REFERENCE.md: 2855b60b28d49baa 87525 bytes

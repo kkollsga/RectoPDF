@@ -33,3 +33,15 @@ Both are far under 10 s. Peak `phys_footprint` of the whole process for one scan
 ## Tests
 
 `crates/recto-agent/src/commands/locating.rs` (the token's refusals, its example, its log) and `crates/recto-app/src/core/headless/locating.rs` (moved, gone, ambiguous, unsaved edits, a changed file, the owner's edits untouched at every level, a protected document, the CLI's words).
+
+## `--ref` on `text` and `render`
+
+`recto text --ref <ref>` and `recto render --ref <ref> --out <file>` read the page a reference points at now, in place of a page number. They resolve through the same resolver as `resolve` (`crates/recto-agent/src/locating.rs`, `page_of`, `ScanCaps::STANDARD`) and then read through the same `locate` path as a page number, so the levels (`text` Read-only, `render` Full), `DRAWS`, `READS_PAGES`, the protected-document refusal and `render`'s file rules are the commands' own and are not repeated for `--ref`.
+
+**Page or `--ref`, not both.** The line carries `page` or `ref`; both or neither is `usage` (exit 2) in the command's own words. A token that can't be a reference is refused as the line is read (`bad_reference`, or `reference_too_new`), before the level or the tab is asked, and its words never repeat it. A reference's spot or characters don't narrow `text` or `render`: they read the whole page.
+
+**Only a page gives a read.** `found` and `moved` give a page. `gone`, `ambiguous`, `incomplete`, and a page that unsaved edits removed from the tab are each refused with their own constant words as `reference_unresolved` (exit 3, not found), and nothing is drawn or told to the host as drawn. The next step says `recto resolve` shows where the reference points and lists any candidates. A `document: different` answer still reads; the answer says so.
+
+**The answer** carries `ref: { status, was_page, file_page, document }` (no token), and `page` is the page's place in the tab as it was found. The file's stamp is checked after the read: if the file or the tab changed between finding the page and reading it, the refusal is `file_changed`, "The tab changed while the reference was being found. Try again." The session lock is held only where `resolve` holds it (inside `tab_file` and the page lookup), never during the scan. The activity log holds `ref_page` (the page the token hints at), never the token.
+
+**Not yet:** `goto`, `highlight`, `select`, `copy`, `snapshot`, `export svg` and `images` take a page only; each follows this pattern when it is given the flag.

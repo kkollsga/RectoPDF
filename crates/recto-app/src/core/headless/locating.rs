@@ -7,6 +7,7 @@ use super::files::locked_saying;
 use super::withheld_events::{PASSWORD, person_unlocks};
 use crate::testkit::headless::{Disk, HeadlessApp};
 use recto_agent::{Level, exit};
+use recto_control::host::Host;
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -233,15 +234,47 @@ fn an_agent_below_full_changes_nothing_of_the_owners_edits_by_ref_or_resolve() {
         assert!(!refused.message.contains("zzz"), "the hostile token isn't repeated: {}", refused.message);
     }
     assert_eq!(owners_tab(&app, &file), before, "nothing of the owner's tab or file changed");
+    // Reading by reference: `text` reads at Read-only and says where the page was found; `render` writes a file, so it is refused below Full, and
+    // neither changes the owner's edits.
+    let out = file.with_file_name("by-ref.png");
+    for level in [Level::ReadOnly, Level::Control] {
+        let read = app.recto(level, &["text", "--ref", &token]).expect("text --ref");
+        assert_eq!((read["page"].as_u64(), read["ref"]["status"].as_str()), (Some(4), Some("found")), "{read}");
+        let drawn = app
+            .agent(level, &json!({ "cmd": "render", "ref": token, "tab": "#1", "out": out }).to_string())
+            .expect_err("render is Full");
+        assert_eq!(drawn.exit, exit::PERMISSION, "{drawn:?}");
+        for line in [
+            json!({ "cmd": "text", "ref": format!("r1.{}", "z".repeat(300)) }),
+            json!({ "cmd": "render", "ref": format!("r1.{}", "z".repeat(300)), "out": out }),
+        ] {
+            let hostile = app.agent(level, &line.to_string()).expect_err("a token that is no token");
+            assert_eq!((hostile.code.as_str(), hostile.exit), ("bad_reference", exit::USAGE), "{}", line["cmd"]);
+        }
+    }
+    assert!(!out.exists(), "no file was written below Full");
+    assert_eq!(
+        owners_tab(&app, &file),
+        before,
+        "reading by reference changed nothing of the owner's tab or file"
+    );
     for line in [
         r##"{"cmd":"ref","page":4,"tab":"#1"}"##.to_owned(),
         json!({ "cmd": "resolve", "ref": token, "tab": "#1" }).to_string(),
+        json!({ "cmd": "text", "ref": token, "tab": "#1" }).to_string(),
+        json!({ "cmd": "render", "ref": token, "tab": "#1", "out": out }).to_string(),
     ] {
         let refused = app.agent(Level::Off, &line).expect_err("Off");
         assert_eq!(refused.exit, exit::PERMISSION, "{refused:?}");
     }
-    let bad = app.agent(Level::Off, r#"{"cmd":"resolve","ref":"é"}"#).expect_err("a bad token at Off");
-    assert_eq!(bad.code.as_str(), "bad_reference", "refused for its form, before the level: {bad:?}");
+    for line in [
+        r#"{"cmd":"resolve","ref":"é"}"#,
+        r#"{"cmd":"text","ref":"é"}"#,
+        r#"{"cmd":"render","ref":"é","out":"/d/x.png"}"#,
+    ] {
+        let bad = app.agent(Level::Off, line).expect_err("a bad token at Off");
+        assert_eq!(bad.code.as_str(), "bad_reference", "refused for its form, before the level: {bad:?}");
+    }
     assert_eq!(owners_tab(&app, &file), before, "and Off changed nothing either");
 }
 
@@ -280,6 +313,138 @@ fn a_protected_document_gives_an_agent_neither_a_reference_nor_an_answer() {
         );
     }
     assert_eq!((made.code, made.exit, &made.message), (text.code, text.exit, &text.message));
+    // Reading by reference is refused as reading by page is, whatever the token, for `text` and for `render` (a new file written is a read too).
+    let out = app.disk().files().join("protected.png");
+    for token in [twins.as_str(), recto_agent::commands::locating::EXAMPLE_REF] {
+        for line in [
+            json!({ "cmd": "text", "ref": token, "tab": tab }),
+            json!({ "cmd": "render", "ref": token, "tab": tab, "out": out }),
+        ] {
+            let answered = app.agent(Level::Full, &line.to_string()).expect_err("refused");
+            assert_eq!(
+                (answered.code, answered.exit, &answered.message),
+                (text.code, text.exit, &text.message),
+                "{line}"
+            );
+        }
+    }
+    assert!(!out.exists(), "and nothing was written");
+}
+
+/// What a command left of draws: whether it told the host a page was drawn or failed to draw.
+fn drew(events: &[recto_agent::Event]) -> bool {
+    events
+        .iter()
+        .any(|event| matches!(event, recto_agent::Event::PageDrawn { .. } | recto_agent::Event::PageFailed { .. }))
+}
+
+/// `line` as an agent at `level` sends it, with what it told the host.
+fn run_saying(app: &HeadlessApp, level: Level, line: &Value) -> (Result<Value, recto_agent::AgentError>, Vec<recto_agent::Event>) {
+    let command = recto_agent::parse(&line.to_string()).expect("a command");
+    let mut events = Vec::new();
+    let answer = app.core().host.run(recto_agent::Actor::Agent(level), &command, &mut events);
+    (answer, events)
+}
+
+/// Failure: the reason `--ref` exists. A page found by a search and given a reference is read at its new number after another program put a cover in front:
+/// `text --ref` says "Mine page 3" where `text --page 3` would say the cover's neighbour, and its answer says the page moved, from which page, and that
+/// the document is said, with no token in it.
+#[test]
+fn search_ref_then_text_ref_reads_the_page_another_program_moved() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 5));
+    app.open(&file);
+    let hits = app.recto(Level::ReadOnly, &["search", "Mine page 3"]).expect("search");
+    assert_eq!(hits["hits"][0]["page"], 3, "{hits}");
+    let token = reference(&app, 3);
+    replace(
+        &file,
+        &pages_saying(&["Cover", "Mine page 1", "Mine page 2", "Mine page 3", "Mine page 4", "Mine page 5"]),
+    );
+    look(&app);
+    assert_eq!(page_text(&app, 3), "Mine page 2", "the page number alone reads the wrong page now");
+    let read = app.recto(Level::ReadOnly, &["text", "--ref", &token]).expect("text --ref");
+    assert_eq!(read["untrusted"]["text"].as_str().map(str::trim), Some("Mine page 3"), "{read}");
+    assert_eq!(read["page"], 4, "{read}");
+    // The cover makes it another document by its tag; that is said and doesn't stop the read.
+    assert_eq!(
+        (
+            read["ref"]["status"].as_str(),
+            read["ref"]["was_page"].as_u64(),
+            read["ref"]["file_page"].as_u64()
+        ),
+        (Some("moved"), Some(3), Some(4)),
+        "{read}"
+    );
+    assert!(read["ref"]["document"].is_string(), "{read}");
+    assert!(!read.to_string().contains(&token), "the token isn't in the answer");
+}
+
+/// Failure: a reference to a page that is gone, or that two pages have, reads a page anyway (the nearest, or the first), or says "not found" in the words
+/// of a missing page, or starts a draw for a page it didn't choose. Each is `reference_unresolved`, exit not-found, with its own words, and tells the host
+/// of no page drawn or failed.
+#[test]
+fn text_ref_to_a_gone_or_ambiguous_page_is_refused_and_draws_nothing() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 5));
+    app.open(&file);
+    let token = reference(&app, 3);
+    let ask = json!({ "cmd": "text", "ref": token, "tab": "#1" });
+    replace(&file, &pages_saying(&["Mine page 1", "Mine page 2", "Mine page 4", "Mine page 5"]));
+    look(&app);
+    let (gone, events) = run_saying(&app, Level::ReadOnly, &ask);
+    let gone = gone.expect_err("gone");
+    assert_eq!((gone.code.as_str(), gone.exit), ("reference_unresolved", exit::NOT_FOUND), "{gone:?}");
+    assert!(!drew(&events), "{events:?}");
+    replace(&file, &pages_saying(&["Mine page 1", "Mine page 3", "Mine page 4", "Mine page 3"]));
+    look(&app);
+    let (twice, events) = run_saying(&app, Level::ReadOnly, &ask);
+    let twice = twice.expect_err("ambiguous");
+    assert_eq!((twice.code.as_str(), twice.exit), ("reference_unresolved", exit::NOT_FOUND), "{twice:?}");
+    assert_ne!(twice.message, gone.message, "each case says its own thing");
+    assert!(!drew(&events), "{events:?}");
+    assert!(!twice.message.contains(&token) && !gone.message.contains(&token));
+}
+
+/// Failure: `text --ref` counts the file's pages where the person's unsaved edits have moved them (reads the page the number says, not the one the
+/// reference names), or reads a page the person deleted, or says "gone" of it. The owner deletes page 2: the reference to page 3 reads "Mine page 3" at
+/// the tab's page 2, with the file's page 3 said; the reference to the deleted page is refused for the edit, not as gone, and draws nothing.
+#[test]
+fn text_ref_follows_unsaved_edits_and_refuses_a_page_they_removed() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 5));
+    app.open(&file);
+    let (second, third) = (reference(&app, 2), reference(&app, 3));
+    app.person(r##"{"cmd":"page_delete","tab":"#1","pages":"2"}"##);
+    app.settle();
+    let read = app.recto(Level::ReadOnly, &["text", "--ref", &third]).expect("text --ref");
+    assert_eq!(read["untrusted"]["text"].as_str().map(str::trim), Some("Mine page 3"), "{read}");
+    assert_eq!((read["page"].as_u64(), read["ref"]["file_page"].as_u64()), (Some(2), Some(3)), "{read}");
+    let (removed, events) = run_saying(&app, Level::ReadOnly, &json!({ "cmd": "text", "ref": second, "tab": "#1" }));
+    let removed = removed.expect_err("removed by the edits");
+    assert_eq!((removed.code.as_str(), removed.exit), ("reference_unresolved", exit::NOT_FOUND), "{removed:?}");
+    assert!(removed.message.contains("Unsaved edits"), "it says why: {}", removed.message);
+    assert!(!drew(&events), "{events:?}");
+}
+
+/// Failure: `render --ref` writes a file below Full (the reference is a way round `render`'s level), or at Full draws the page the number would. Below
+/// Full it's refused for the level and nothing is written; at Full the file is written and the answer says how the page was found.
+#[test]
+fn render_ref_below_full_is_refused_as_render_is_and_writes_no_file() {
+    let app = HeadlessApp::start();
+    let file = app.disk().file("doc.pdf", &pdf_bytes("Mine", 3));
+    app.open(&file);
+    let token = reference(&app, 2);
+    let out = file.with_file_name("by-ref.png");
+    let ask = json!({ "cmd": "render", "ref": token, "tab": "#1", "out": out });
+    for level in [Level::Off, Level::ReadOnly, Level::Control] {
+        let refused = app.agent(level, &ask.to_string()).expect_err("below Full");
+        assert_eq!(refused.exit, exit::PERMISSION, "{level:?} {refused:?}");
+        assert!(!out.exists(), "{level:?} wrote a file");
+    }
+    let drawn = app.agent(Level::Full, &ask.to_string()).expect("at Full");
+    assert!(out.exists(), "{drawn}");
+    assert_eq!((drawn["page"].as_u64(), drawn["ref"]["status"].as_str()), (Some(2), Some("found")), "{drawn}");
 }
 
 /// Failure: `recto ref 3` and `recto resolve <ref>` as typed don't reach the commands the wire has (a word the CLI builds into a line the socket refuses),

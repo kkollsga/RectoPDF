@@ -1,6 +1,7 @@
 //! A page's text, and finding words: `search`, `index`, `index status`, `index clear`, `text`, `select` and `copy`.
 
 #![allow(unused_imports)]
+use super::locating::{PAGE_OR_REF, PageOrRef, REF, TEXT_REF_EXAMPLE};
 use super::{Cmd, Cx, row_access};
 use crate::human::*;
 use crate::table::*;
@@ -246,13 +247,52 @@ impl Cmd for IndexClear {
     }
 }
 
-/// A page's text, normalised for search, with the hidden-text flag.
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+/// A page's text, normalised for search, with the hidden-text flag. By page number, or by a reference to the page, read from a `line` so a token that
+/// can't be one is refused as the line is read, before the level or the tab is asked.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(into = "line::Text")]
 pub struct Text {
-    #[serde(default)]
     pub tab: TabRef,
-    pub page: u32,
+    pub at: PageOrRef,
+}
+
+/// `text` as it's written on the wire.
+pub mod line {
+    use crate::TabRef;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Text {
+        #[serde(default)]
+        pub tab: TabRef,
+        #[serde(default)]
+        pub page: Option<u32>,
+        #[serde(default, rename = "ref")]
+        pub reference: Option<String>,
+    }
+}
+
+impl TryFrom<line::Text> for Text {
+    type Error = AgentError;
+    fn try_from(line: line::Text) -> Result<Self, AgentError> {
+        let line::Text { tab, page, reference } = line;
+        Ok(Self {
+            tab,
+            at: PageOrRef::of(Self::TAG, page, reference.as_deref())?,
+        })
+    }
+}
+
+impl From<Text> for line::Text {
+    fn from(asked: Text) -> Self {
+        let (page, reference) = asked.at.wire();
+        Self {
+            tab: asked.tab,
+            page,
+            reference,
+        }
+    }
 }
 
 impl Cmd for Text {
@@ -275,22 +315,33 @@ impl Cmd for Text {
     fn route(&self) -> Runs {
         Runs::Session
     }
+    /// The page, or the page a reference hints at: a number, and never the token.
     fn log_details(&self) -> Value {
-        let Self { tab, page } = self;
-        json!({ "tab": super::log_tab(tab), "page": page })
+        let Self { tab, at } = self;
+        match at {
+            PageOrRef::Page(page) => json!({ "tab": super::log_tab(tab), "page": page }),
+            PageOrRef::Ref(_) => json!({ "tab": super::log_tab(tab), "ref_page": at.hint() }),
+        }
     }
     fn run<A: SessionAccess>(&self, cx: &mut Cx<'_, A>) -> Result<Value, AgentError> {
-        let Self { tab, page } = self;
+        let Self { tab, at } = self;
         let (access, events) = (cx.access, &mut *cx.events);
         {
-            let (id, position, source) = locate(access, tab, *page)?;
-            let read = render::text(&source.path, source.page + 1).map_err(|error| unreadable_if_added_needs_password(error, &source, *page));
+            let (page, found) = at.find(access, tab)?;
+            let (id, position, source) = locate(access, tab, page)?;
+            if let Some(found) = &found {
+                locating::agree(found, id, &source)?;
+            }
+            let read = render::text(&source.path, source.page + 1).map_err(|error| unreadable_if_added_needs_password(error, &source, page));
             let drew = read.as_ref().is_ok_and(|data| data["hidden_text"]["checked"] == true);
             if drew || read.is_err() {
                 note_draw(access, id, position, read.as_ref().err().map(|error| error.code.as_str()), events);
             }
             let mut data = read?;
-            describe_source(&mut data, *page, &source);
+            describe_source(&mut data, page, &source);
+            if let Some(found) = found {
+                locating::attach(access, tab, &found, &mut data)?;
+            }
             Ok(data)
         }
     }
@@ -614,12 +665,17 @@ pub(crate) const ROWS_TEXT: &[Spec] = &[Spec {
     name: "text",
     tag: "text",
     group: GROUP_READ,
-    summary: "One page's text, normalised for reading and search, with a flag for text that looks hidden. Words a file draws out of order are put back on their lines.",
-    args: &[PAGE_OR_BARE, TAB],
+    summary: "One page's text, normalised for reading and search, with a flag for text that looks hidden. Words a file draws out of order are put back on their lines. With `--ref` it reads the page a reference points at now, and `ref` in the answer says how it was found; a reference's spot or characters don't narrow it.",
+    args: &[PAGE_OR_REF, REF, TAB],
     bare_page: true,
-    data: "`{ page, source_page, from_added_file, chars, hyphens_joined, hyphens_kept, invisible_chars_removed, tag_chars_removed, runs_moved, hidden_text: { checked, flagged, chars }, hidden_spans: [ [start, end] ], hidden_spans_dropped, chrome_spans: [ [start, end] ], untrusted: { text, also_spelled, hidden_runs, added_file } }`. `runs_moved` is how many runs drawn late were put back on their lines. `hidden_spans` says where flagged hidden text is in `text`, counted in characters, end not included. `chrome_spans` says, the same way, where running heads, footers and page numbers are: lines at the page's top or bottom edge that are a page number, or repeat on the pages either side. They stay in `text`, and it's what `copy` leaves out of body text. In plain output, a line holding any starts with `! `, and it's inside `[hidden: ...]`. `source_page` and `from_added_file` say where the page really comes from, once it's been edited. `hidden_text.checked: false` means it wasn't checked, not that there's none.",
+    data: "`{ page, source_page, from_added_file, ref, chars, hyphens_joined, hyphens_kept, invisible_chars_removed, tag_chars_removed, runs_moved, hidden_text: { checked, flagged, chars }, hidden_spans: [ [start, end] ], hidden_spans_dropped, chrome_spans: [ [start, end] ], untrusted: { text, also_spelled, hidden_runs, added_file } }`. `runs_moved` is how many runs drawn late were put back on their lines. `hidden_spans` says where flagged hidden text is in `text`, counted in characters, end not included. `chrome_spans` says, the same way, where running heads, footers and page numbers are: lines at the page's top or bottom edge that are a page number, or repeat on the pages either side. They stay in `text`, and it's what `copy` leaves out of body text. In plain output, a line holding any starts with `! `, and it's inside `[hidden: ...]`. `source_page` and `from_added_file` say where the page really comes from, once it's been edited. `hidden_text.checked: false` means it wasn't checked, not that there's none.",
     emits: &["page_drawn", "page_failed"],
-    examples: &["recto text --page 3", "recto text 3", "recto text --page 3 --tab \"#2\" --json"],
+    examples: &[
+        "recto text --page 3",
+        "recto text 3",
+        "recto text --page 3 --tab \"#2\" --json",
+        TEXT_REF_EXAMPLE,
+    ],
     ..BASE
 }];
 
