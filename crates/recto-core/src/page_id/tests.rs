@@ -1119,3 +1119,44 @@ fn a_name_that_is_not_a_stream_is_resolved_once() {
     expected.push(b'E');
     assert_eq!(hex(&read.identity.expect("an identity").digest), hex(&sha(&expected)));
 }
+
+/// Failure caught (security, review of the memo): an image whose decode failed is taken again from the memo only while the page has more left than one
+/// stream may take; with less, each name read it again, and resolved its descriptor again: the same 256 parses of a 100,000-element dictionary the memo
+/// was made to stop, by way of small streams that bring the page's budget down. Here the page's budget never exceeds a stream's, so every name is the
+/// re-read case; the descriptor is kept for it, resolved once, and each name's record is what the definition gives: kind 3, the stored bytes.
+#[test]
+fn a_gave_up_image_re_read_for_want_of_headroom_is_resolved_once() {
+    let names = 256;
+    let stored = b"not a flate stream";
+    let junk = format!("/Junk [{}]", "0 ".repeat(100_000));
+    let draws: String = (0..names).map(|n| format!("/N{n} Do ")).collect();
+    let table: String = (0..names).map(|n| format!("/N{n} 5 0 R ")).collect();
+    let page = one_page(
+        "",
+        &format!("/XObject << {table} >>"),
+        "4 0 R",
+        vec![
+            stream("", draws.as_bytes()),
+            stream(&format!("/Subtype /Image /Filter /FlateDecode {junk}"), stored),
+        ],
+    );
+    let caps = Caps {
+        xobject_bytes: 1 << 16,
+        page_bytes: 1 << 16,
+        ..Caps::STANDARD
+    };
+    DESCRIPTORS.with(|count| count.set(0));
+    let read = reads_of(&page, &caps).remove(0);
+    assert_eq!(DESCRIPTORS.with(std::cell::Cell::get), 1);
+    let mut expected = b"recto-page/1\0C".to_vec();
+    expected.extend_from_slice(&1u32.to_le_bytes());
+    expected.extend(content_bytes(0, draws.as_bytes()));
+    expected.push(b'X');
+    expected.extend_from_slice(&(names as u32).to_le_bytes());
+    for n in 0..names {
+        expected.extend(xobject_bytes(format!("N{n}").as_bytes(), 3, stored));
+        expected.extend_from_slice(&0u32.to_le_bytes());
+    }
+    expected.push(b'E');
+    assert_eq!(hex(&read.identity.expect("an identity").digest), hex(&sha(&expected)));
+}
