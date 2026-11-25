@@ -1299,7 +1299,6 @@ fn an_app_opened_while_going_back_is_not_replaced() {
             early_ends: 1000,
             since_ms: recto_update::wall_ms(),
             running_since_ms: Some(0),
-            ..recto_update::saved::Probation::default()
         }),
         ..recto_update::saved::Saved::default()
     }
