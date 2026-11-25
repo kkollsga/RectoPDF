@@ -520,7 +520,7 @@ fn a_character_reference_reads_the_same_words_after_another_program_moved_the_pa
 }
 
 /// Failure: a hand-made character token (a check that isn't the text's, or an end at 2^21) on a page that is found is answered `found`, so an agent reads
-/// words at offsets that are not the ones named, or its walk of the text isn't bounded; or `text --ref` goes on to read the page, or draws, or its refusal
+/// words at offsets that are not the ones named; or `text --ref` goes on to read the page, or draws, or its refusal
 /// shares the words of `gone`. The answer is `text_changed`, exit 0, with the page, and `text --ref` is `reference_unresolved` in words of its own.
 #[test]
 fn a_hostile_character_token_on_a_found_page_is_text_changed_never_found() {
@@ -668,7 +668,11 @@ fn a_character_target_on_a_page_whose_text_cannot_be_read_is_texts_own_refusal_n
     let token = hostile_chars(&page, 0, 1);
     let read = app.recto(Level::ReadOnly, &["text", "--page", "1"]).expect_err("the bomb's text can't be read");
     let said = resolve(&app, Level::ReadOnly, &token).expect_err("a refusal, not a status");
-    assert_eq!((said.code, said.exit, said.message.as_str()), (read.code, read.exit, read.message.as_str()), "{said:?} against {read:?}");
+    assert_eq!(
+        (said.code, said.exit, said.message.as_str()),
+        (read.code, read.exit, read.message.as_str()),
+        "{said:?} against {read:?}"
+    );
     let by_ref = app.recto(Level::ReadOnly, &["text", "--ref", &token]).expect_err("refused");
     assert_eq!((by_ref.code, by_ref.exit), (read.code, read.exit), "{by_ref:?}");
     let made = app

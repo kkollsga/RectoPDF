@@ -299,3 +299,23 @@ fn check_is_same_only_at_the_same_offsets_and_never_searches_elsewhere() {
     let hostile = CharacterRange::new(0, MAX_CHARACTER, [0; 8]).unwrap();
     assert_eq!(check_characters(hostile, "ten chars!!"), TextMatch::Changed);
 }
+
+/// Failure: what lies past a range's `end` in a long page (100,000 characters) changes the answer for the range, so a check is about more than its own
+/// characters. Two texts that differ only past `end` give the same range and the same match, and a change inside the range is `Changed`. This holds the
+/// answer, not the cost: a walk that read on and ignored the rest would pass, and the bound on the walk is by `span` stopping at `end`, which no
+/// timing-free test sees.
+#[test]
+fn a_small_range_over_a_long_text_is_decided_by_what_is_before_its_end() {
+    let head = "Mine page 3 ";
+    let (a, b) = (format!("{head}{}", "x".repeat(100_000)), format!("{head}{}\u{1F600}", "y".repeat(100_000)));
+    let made = characters(&a, 5, 9).unwrap();
+    assert_eq!(made.text_check(), text_check("page"));
+    assert_eq!(characters(&b, 5, 9).unwrap().text_check(), made.text_check());
+    assert_eq!((check_characters(made, &a), check_characters(made, &b)), (TextMatch::Same, TextMatch::Same));
+    let changed = format!("Mine pace 3 {}", "x".repeat(100_000));
+    assert_eq!(check_characters(made, &changed), TextMatch::Changed);
+    assert_eq!(
+        characters(&a, 0, 100_000 + head.len() as u32).map(|range| range.offsets().1),
+        Ok(100_000 + head.len() as u32)
+    );
+}
