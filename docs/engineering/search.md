@@ -13,3 +13,5 @@
 **Hidden text in search:** only a page with a hit is drawn to check it. Drawing every page costs too much for what it adds, since a page with no hit is never read: rfc9110, 194 pages, went from 1.14 to 3.2 ms a page, and NASA's 383 pages from 3.5 to 16 ms a page (release, this Mac, 3 runs each, `recto local F search zzzqqqxx`, with the check switched on in code for the second). Each hit says `hidden_text: { checked, flagged }` and `page_has_tag_chars`. `overlaps_hidden` says whether its own words include hidden text, so a page's flag doesn't fall equally on the innocent hit beside them: `true`, `false`, or `null` if that can't be said. That needs nothing more than the draw a hit already pays for.
 
 **Characters past 16 bits.** A font's ToUnicode gives these as two halves, and PDFium reports each as a character. `recto-render` joins them, or an emoji is lost and a tag character, the plainest hidden instruction there is, never raises its flag.
+
+Hit references (`chars`, `ref`, `references`): see `locator.md`, "References on search hits".
