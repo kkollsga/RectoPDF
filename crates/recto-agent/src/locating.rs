@@ -15,6 +15,7 @@ const NO_IDENTITY: &str = "That page can't be told apart from the others, so it 
 const NO_DOCUMENT_TAG: &str = "This document has nothing to say which document it is, so a reference to it would mean nothing.";
 const ADDED_PAGE: &str = "That page was added from another PDF and isn't in this file yet. Save first, or point at a page of the file.";
 
+const TAB_CHANGED: &str = "The tab changed while the reference was being found. Try again.";
 const BAD_REFERENCE: &str = "That isn't a reference RectoPDF made.";
 const REFERENCE_TOO_NEW: &str = "That reference was made by a newer RectoPDF than this one.";
 const USE_REFERENCE_WHOLE: &str = "Use the `ref` that `recto ref` gave, whole.";
@@ -36,6 +37,15 @@ pub(crate) fn read_reference(token: &str) -> Result<Locator, String> {
         locator::Error::UnsupportedVersion => REFERENCE_TOO_NEW.to_string(),
         _ => format!("{BAD_REFERENCE} {USE_REFERENCE_WHOLE}"),
     })
+}
+
+/// How a resolution says whether the file is the document the reference was made in.
+fn document_word(document: DocumentMatch) -> &'static str {
+    match document {
+        DocumentMatch::Same => "same",
+        DocumentMatch::Different => "different",
+        DocumentMatch::Unknown => "unknown",
+    }
 }
 
 fn not_referenceable(words: &'static str) -> AgentError {
@@ -91,11 +101,7 @@ pub(crate) fn resolve<A: SessionAccess>(access: &A, tab: &TabRef, reference: Loc
         "file_page": at.map(|page| page + 1),
         "was_page": was,
         "candidates": listed.iter().map(|page| both(*page)).collect::<Vec<_>>(),
-        "document": match found.document {
-            DocumentMatch::Same => "same",
-            DocumentMatch::Different => "different",
-            DocumentMatch::Unknown => "unknown",
-        },
+        "document": document_word(found.document),
         "frame": found.frame_same.map(|same| if same { "same" } else { "changed" }),
         "target": target,
         "looked_at": match found.looked {
@@ -106,6 +112,109 @@ pub(crate) fn resolve<A: SessionAccess>(access: &A, tab: &TabRef, reference: Loc
         "pages_read": found.pages_read,
         "note": note,
     }))
+}
+
+const UNRESOLVED_GONE: &str = "That page is gone from this file: every page was read and none is it.";
+const UNRESOLVED_AMBIGUOUS: &str = "More than one page has that content, so it can't say which one was meant.";
+const UNRESOLVED_INCOMPLETE: &str = "It stopped before every page was read, so it can't say whether that page is here.";
+const UNRESOLVED_REMOVED: &str = "Unsaved edits have removed that page from the tab.";
+
+/// A page found by a reference, as the tab has it now: what `text` and `render` go on to read.
+pub(crate) struct Located {
+    /// The tab it was found in. The command goes on in this tab whatever `--tab` named, so "the active tab" moving while the read is under way changes
+    /// nothing, as it changes nothing for a page given by number.
+    pub tab: recto_session::TabId,
+    /// Its place in the tab, counted from 1, unsaved edits included.
+    pub page: u32,
+    /// Its page of the file on disk, counted from 0.
+    pub file_page: u32,
+    /// The file's version it was found in.
+    pub stamp: recto_platform::FileStamp,
+    /// What the answer says of how it was found: constant words and numbers, never the token.
+    pub said: Value,
+}
+
+fn unresolved(words: &'static str) -> AgentError {
+    AgentError::new(Code::REFERENCE_UNRESOLVED, words, exit::NOT_FOUND)
+}
+
+/// The page a reference points at in this tab now, or the refusal in constant words. Only `found` and `moved` give a page: a reference that is gone,
+/// matches several pages, wasn't fully looked for, or points at a page unsaved edits removed is refused, because the next thing done is a read of a page
+/// and a guess would read the wrong one. The token is never repeated.
+pub(crate) fn page_of<A: SessionAccess>(access: &A, tab: &TabRef, reference: &Locator) -> Result<Located, AgentError> {
+    let (file, opened, stamp) = readable(access, tab)?;
+    let found = locator::resolve(reference, opened.reader(), opened.map(), &ScanCaps::STANDARD);
+    unchanged(&file, stamp)?;
+    let (status, file_page, page) = settle(&found.status, |file_page| file.place_of(file_page))?;
+    let said = json!({
+        "status": status,
+        "was_page": reference.page().number(),
+        "file_page": file_page + 1,
+        "document": document_word(found.document),
+    });
+    Ok(Located {
+        tab: recto_session::TabId(file.id()),
+        page,
+        file_page,
+        stamp,
+        said,
+    })
+}
+
+/// Which page a status points at: only `found` and `moved` give one, and only if the tab still has it. Each other case is refused with its own words.
+fn settle(status: &Status, place_of: impl Fn(u32) -> Option<u32>) -> Result<(&'static str, u32, u32), AgentError> {
+    let (word, file_page) = match status {
+        Status::Found { page } => ("found", *page),
+        Status::Moved { page } => ("moved", *page),
+        Status::Ambiguous { .. } => return Err(unresolved(UNRESOLVED_AMBIGUOUS)),
+        Status::Gone => return Err(unresolved(UNRESOLVED_GONE)),
+        Status::Incomplete { .. } => return Err(unresolved(UNRESOLVED_INCOMPLETE)),
+    };
+    let place = place_of(file_page).ok_or_else(|| unresolved(UNRESOLVED_REMOVED))?;
+    Ok((word, file_page, place + 1))
+}
+
+impl Located {
+    /// The tab the page was found in, as a command names a tab: what the rest of the command reads and checks it by.
+    pub(crate) fn tab_ref(&self) -> TabRef {
+        TabRef::Id(self.tab)
+    }
+}
+
+/// Refuses when the tab's file isn't the version the page was found in: what was read is about a page of another version.
+pub(crate) fn still_located<A: SessionAccess>(access: &A, at: &Located) -> Result<(), AgentError> {
+    unchanged(&tab_file(access, &at.tab_ref())?, at.stamp)
+}
+
+/// Refuses when the page the tab gave for the place the reference was found at isn't the page it was found as: a page added from another PDF, or another
+/// page of the file standing there now.
+pub(crate) fn agree(found: &Located, source: &recto_session::PageSource) -> Result<(), AgentError> {
+    if source.page == found.file_page && !source.added {
+        Ok(())
+    } else {
+        Err(tab_changed())
+    }
+}
+
+/// After the page was read: the file is still the version it was found in, and the answer says how the page was found.
+pub(crate) fn attach<A: SessionAccess>(access: &A, found: &Located, data: &mut Value) -> Result<(), AgentError> {
+    still_located(access, found)?;
+    data["ref"] = found.said.clone();
+    Ok(())
+}
+
+/// [`attach`] for a command that has just written a new file at `out` for the page it read. When the answer is refused, the file is of a page the file
+/// no longer has, so it is taken away: exactly `out`, which the command made (it refused an `out` that was already there before it wrote), and nothing
+/// else. An agent that is told to try again then can.
+pub(crate) fn attach_new_file<A: SessionAccess>(access: &A, found: &Located, data: &mut Value, out: &std::path::Path) -> Result<(), AgentError> {
+    attach(access, found, data).inspect_err(|_| {
+        let _ = std::fs::remove_file(out);
+    })
+}
+
+/// The refusal when the page standing where the reference was found isn't the page it was found as.
+fn tab_changed() -> AgentError {
+    AgentError::new(Code::FILE_CHANGED, TAB_CHANGED, exit::FAILED)
 }
 
 /// The tab's file, readable as pages: not withheld, not changed under its edits, not the renderer's alone, and opened as the version it is now.
@@ -217,6 +326,135 @@ mod tests {
                 "{other}"
             );
             assert!(!other.contains("still") && !other.contains("It moved"), "{other}");
+        }
+    }
+
+    fn pdf(who: &str, pages: usize) -> Vec<u8> {
+        let pages: Vec<recto_testpdf::Page> = (1..=pages)
+            .map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("{who} page {page}")])))
+            .collect();
+        recto_testpdf::pages(&pages)
+    }
+
+    /// A real session with one file open, as `execute` would meet it, and the folder it is in.
+    fn one_open(
+        pages: usize,
+    ) -> (
+        recto_testpdf::TempDir,
+        std::path::PathBuf,
+        std::sync::Mutex<recto_session::Session<crate::DrawableLoader>>,
+    ) {
+        let dir = recto_testpdf::TempDir::new("recto-locating-");
+        let path = dir.join("doc.pdf");
+        std::fs::write(&path, pdf("Mine", pages)).unwrap();
+        let mut session = recto_session::Session::new(crate::DrawableLoader);
+        session.open(&path).unwrap();
+        (dir, path, std::sync::Mutex::new(session))
+    }
+
+    /// The page `page` of the tab, found by a reference to it.
+    fn found_at(access: &std::sync::Mutex<recto_session::Session<crate::DrawableLoader>>, tab: &TabRef, page: u32) -> Located {
+        let made = reference(access, tab, page).expect("a reference");
+        page_of(access, tab, &read_reference(made["ref"].as_str().expect("its token")).expect("a reference")).expect("found")
+    }
+
+    /// Another program's save: new bytes of another length, renamed over the file.
+    fn replace(path: &std::path::Path, bytes: &[u8]) {
+        let incoming = path.with_extension("incoming");
+        std::fs::write(&incoming, bytes).unwrap();
+        std::fs::rename(&incoming, path).unwrap();
+    }
+
+    /// Failure: `--ref` asked for "the active tab", and the person switched tab while the agent's read was under way: the read is refused as a changed
+    /// file, though it was of the tab the reference was found in and `--page` never refuses it. The tab is settled once, where the reference is found.
+    #[test]
+    fn a_person_switching_tab_during_a_read_by_reference_does_not_refuse_it() {
+        let (dir, _path, access) = one_open(3);
+        let found = found_at(&access, &TabRef::Active, 2);
+        let other = dir.join("other.pdf");
+        std::fs::write(&other, pdf("Other", 2)).unwrap();
+        access.with(|session| session.open(&other)).unwrap();
+        let mut data = json!({});
+        attach(&access, &found, &mut data).expect("the tab it was found in is the one checked");
+        assert_eq!(data["ref"]["file_page"], 2, "{data}");
+    }
+
+    /// Failure: `render --ref` writes its picture, and the file changed during the draw, so the agent is told `file_changed` and the picture, maybe of the
+    /// wrong page, stays at `--out`, where a retry is refused as `output_exists`. The refusal takes away the file this command made, and nothing beside it;
+    /// an answer that holds keeps it.
+    #[test]
+    fn a_refusal_after_the_file_changed_takes_away_the_picture_it_wrote_and_only_that() {
+        let (dir, path, access) = one_open(3);
+        let found = found_at(&access, &TabRef::Active, 2);
+        let (out, beside) = (dir.join("page.png"), dir.join("beside.png"));
+        std::fs::write(&out, b"picture").unwrap();
+        std::fs::write(&beside, b"another").unwrap();
+        attach_new_file(&access, &found, &mut json!({}), &out).expect("the file is as it was found");
+        assert!(out.exists(), "an answer that holds keeps its picture");
+        replace(&path, &pdf("Theirs", 4));
+        let refused = attach_new_file(&access, &found, &mut json!({}), &out).expect_err("the file changed");
+        assert_eq!((refused.code, refused.message.as_str()), (Code::FILE_CHANGED, CHANGED_WHILE_READ));
+        assert!(!out.exists(), "the picture is left at --out");
+        assert!(beside.exists(), "nothing else is touched");
+    }
+
+    /// Failure: `agree` lets a read go on with a page that isn't the one the reference found: the page of the file standing at that place changed (another
+    /// program's save moved it), or a page added from another PDF now stands there. Only the page found, of the file, passes.
+    #[test]
+    fn agree_passes_only_the_page_that_was_found_and_refuses_an_added_page_or_another() {
+        let (_dir, _path, access) = one_open(3);
+        let found = found_at(&access, &TabRef::Active, 2);
+        let source = |page: u32, added: bool| recto_session::PageSource {
+            path: "/d/doc.pdf".into(),
+            page,
+            quarter_turns: 0,
+            added,
+            expected: None,
+        };
+        assert!(agree(&found, &source(found.file_page, false)).is_ok());
+        for refused in [source(found.file_page + 1, false), source(found.file_page, true)] {
+            let error = agree(&found, &refused).expect_err("not the page that was found");
+            assert_eq!((error.code, error.message.as_str()), (Code::FILE_CHANGED, TAB_CHANGED));
+        }
+    }
+
+    /// Failure: a file another program replaced after the page was found is read as though it were the version found: the read is about a page of another
+    /// version. `still_located` refuses it with the file-changed words, and passes while the file is as it was.
+    #[test]
+    fn still_located_refuses_a_file_changed_since_the_page_was_found_in_the_file_changed_words() {
+        let (_dir, path, access) = one_open(3);
+        let found = found_at(&access, &TabRef::Active, 2);
+        still_located(&access, &found).expect("the file is as it was found");
+        replace(&path, &pdf("Theirs", 4));
+        let error = still_located(&access, &found).expect_err("the file changed");
+        assert_eq!((error.code, error.message.as_str()), (Code::FILE_CHANGED, CHANGED_WHILE_READ));
+    }
+
+    /// Failure: a reference that is gone, matches several pages, wasn't fully looked for, or points at a page unsaved edits removed gives a page anyway (so
+    /// `text --ref` reads the wrong page), or two of those cases share their words (so an agent can't tell "look again" from "it's gone"), or a refusal
+    /// carries something other than its own constant words.
+    #[test]
+    fn only_found_and_moved_give_a_page_every_other_status_refuses_with_its_own_words() {
+        let at = |file_page: u32| (file_page != 9).then_some(file_page + 4);
+        assert_eq!(settle(&Status::Found { page: 2 }, at).ok(), Some(("found", 2, 7)));
+        assert_eq!(settle(&Status::Moved { page: 3 }, at).ok(), Some(("moved", 3, 8)));
+        let refused = [
+            settle(&Status::Gone, at),
+            settle(
+                &Status::Ambiguous {
+                    pages: vec![1, 2],
+                    complete: true,
+                },
+                at,
+            ),
+            settle(&Status::Incomplete { pages: vec![] }, at),
+            settle(&Status::Found { page: 9 }, at),
+        ]
+        .map(|answer| answer.expect_err("refused"));
+        let mut words = std::collections::BTreeSet::new();
+        for error in &refused {
+            assert_eq!((error.code, error.exit), (Code::REFERENCE_UNRESOLVED, exit::NOT_FOUND), "{}", error.message);
+            assert!(words.insert(error.message.clone()), "two cases share their words: {}", error.message);
         }
     }
 }

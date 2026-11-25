@@ -171,12 +171,15 @@ fn build(request: &Request, artifacts: &[Artifact], limits: &Limits) -> Plan {
         b.push(effect);
     }
     let signed_copy = request.signed_source() && request.mode() == TargetMode::SaveAs;
+    let lines = lines(request, artifacts);
+    let digest = digest::of(request, &b.steps, &b.ids, &lines);
     Plan {
         request: *request,
         steps: b.steps,
         ids: b.ids,
-        lines: lines(request, artifacts),
+        lines,
         unsigned_copy_notice: signed_copy,
+        digest,
     }
 }
 

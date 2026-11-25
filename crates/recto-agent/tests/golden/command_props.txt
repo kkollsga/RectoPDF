@@ -84,6 +84,10 @@ qa_drive level=control tab=None about=None protected_ok=false draws=false reads_
 render level=full tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"anyway":false,"page":3,"tab":"active","untrusted":{"file":"x.pdf"}}
 render level=full tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"anyway":true,"page":3,"tab":"#2","untrusted":{"file":"x.pdf"}}
 render level=full tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"anyway":true,"page":3,"tab":"#2","untrusted":{"file":"x.pdf"}}
+render level=full tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"anyway":false,"ref_page":1,"tab":"active","untrusted":{"file":"x.pdf"}}
+render level=full tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"anyway":true,"ref_page":1,"tab":"#2","untrusted":{"file":"x.pdf"}}
+render level=full tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"anyway":false,"page":3,"tab":"active","untrusted":{"file":"x.pdf"}}
+render level=full tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"anyway":true,"ref_page":1,"tab":"#2","untrusted":{"file":"x.pdf"}}
 export_svg level=full tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"anyway":false,"page":3,"tab":"active","untrusted":{"file":"x.pdf"}}
 export_svg level=full tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"anyway":true,"page":3,"tab":"#2","untrusted":{"file":"x.pdf"}}
 export_svg level=full tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"anyway":false,"page":3,"tab":"active","untrusted":{"file":"x.pdf"}}
@@ -109,6 +113,10 @@ print level=full tab=Some("#2") about=Some("#2") protected_ok=false draws=true r
 text level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"page":3,"tab":"active"}
 text level=read_only tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"page":3,"tab":"#2"}
 text level=read_only tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"page":3,"tab":"#2"}
+text level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"ref_page":1,"tab":"active"}
+text level=read_only tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"ref_page":1,"tab":"#2"}
+text level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"page":3,"tab":"active"}
+text level=read_only tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"ref_page":1,"tab":"#2"}
 select level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"all":false,"anyway":false,"page":null,"tab":"active","to_page":null}
 select level=read_only tab=Some("#2") about=Some("#2") protected_ok=false draws=true reads_pages=true route=session log={"all":true,"anyway":true,"page":3,"tab":"#2","to_page":3}
 select level=read_only tab=Some("active") about=Some("active") protected_ok=false draws=true reads_pages=true route=session log={"all":false,"anyway":false,"page":null,"tab":"active","to_page":null}

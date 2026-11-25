@@ -317,6 +317,7 @@ codes! {
     RECORD_TOO_LARGE = "record_too_large", Next::ByExit;
     RECORD_UNREADABLE = "record_unreadable", Next::ByExit;
     REFERENCE_TOO_NEW = "reference_too_new", Next::Says("Update RectoPDF, or make the reference again with `recto ref`.");
+    REFERENCE_UNRESOLVED = "reference_unresolved", Next::Says("`recto resolve` says where the reference points and lists any candidates.");
     RELEASE_COPY = "release_copy", Next::ByExit;
     RENDER_LIBRARY_MISSING = "render_library_missing", Next::Says("Tell the user RectoPDF's install is incomplete. In a source tree, `tools/pdfium.sh` fetches the library.");
     RENDER_TOOK_TOO_LONG = "render_took_too_long", Next::ByExit;

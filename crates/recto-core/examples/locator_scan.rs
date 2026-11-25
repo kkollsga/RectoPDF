@@ -38,6 +38,11 @@ fn measure(path: &Path) {
         answer.status,
         answer.looked
     );
+    // Page 1 as a reference: whether the file's first page can be referred to at all (a page with no identity cannot).
+    match locator::reference(&reader, &map, 0, &ScanCaps::STANDARD) {
+        Ok(_) => println!("  reference to page 1: Ok"),
+        Err(why) => println!("  reference to page 1: {why:?}"),
+    }
     // The whole process, as the kernel counts it: what one scan costs in memory at most.
     if let Some(memory) = recto_platform::isolate::process_memory(std::process::id()) {
         println!(

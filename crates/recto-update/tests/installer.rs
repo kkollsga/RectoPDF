@@ -803,22 +803,24 @@ fn going_back_by_itself_takes_only_a_copy_it_may() {
     }
 }
 
-/// Failure: **the last look isn't the last thing:** with the record copied after it, a same-user racer had 316 ms with 3,000 journal files to put something else in `new/`, which a review did, and an unsigned bundle was swapped in, run and kept. Held right after the record's copied, a racer swaps in an unsigned 9.9.9, and it's refused.
+/// Failure: **the signature look is taken before the record's copy:** with the record copied after the look, a same-user racer had 316 ms with 3,000 journal files to put something else in `new/`, which a review did, and an unsigned bundle was swapped in, run and kept. So the look comes after the copy: held right after the record's copied, a racer swaps in an unsigned 9.9.9, and it's refused.
 #[test]
-fn the_last_look_is_the_last_thing_before_the_swap() {
+fn the_signature_look_comes_after_the_records_copy() {
     let mut bed = Bed::new("racer", "ok");
     let mut gone = Command::new("/usr/bin/true").spawn().unwrap();
     gone.wait().unwrap();
     bed.plan.pid = gone.id();
     bed.plan.write(&bed.files.plan()).unwrap();
-    let mut installer = Command::new(installer_in(&bed.app))
-        .arg("install")
-        .arg(bed.files.plan())
-        .env(recto_update::install::PAUSE_AT_ENV, "record_copied")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut installer = bed.dir.own(
+        Command::new(installer_in(&bed.app))
+            .arg("install")
+            .arg(bed.files.plan())
+            .env(recto_update::install::PAUSE_AT_ENV, "record_copied")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     wait_until("the installer to reach the copy of the record", Duration::from_secs(20), || {
         bed.files.work.join("paused").exists()
     });
@@ -1180,6 +1182,103 @@ fn an_app_opened_again_in_the_gap_is_left_alone() {
     assert!(new_app_in(&bed.plan.beside).exists());
     second.kill().unwrap();
     second.wait().unwrap();
+}
+
+/// Failure: an app opened after the installer's first look and before the swap (the record's copy and the signature check take over a second) is replaced while it runs. Held at `still_verified`, a second app comes up; the last look under the record's lock sees it and nothing's swapped.
+#[test]
+fn an_app_opened_after_the_first_look_is_not_replaced() {
+    let mut bed = Bed::new("opened-late", "ok");
+    let mut gone = Command::new("/usr/bin/true").spawn().unwrap();
+    gone.wait().unwrap();
+    bed.plan.pid = gone.id();
+    bed.plan.write(&bed.files.plan()).unwrap();
+    let mut installer = bed.dir.own(
+        Command::new(installer_in(&bed.app))
+            .arg("install")
+            .arg(bed.files.plan())
+            .env(recto_update::install::PAUSE_AT_ENV, "still_verified")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait_until("the installer to finish checking the signature", Duration::from_secs(20), || {
+        bed.files.work.join("paused").exists()
+    });
+    let second = bed.dir.own(
+        Command::new(bed.plan.executable())
+            .args([
+                "test-app",
+                "0.1.0",
+                "hangs",
+                bed.files.work.to_str().unwrap(),
+                bed.dir.join("nowhere").to_str().unwrap(),
+            ])
+            .spawn()
+            .unwrap(),
+    );
+    wait_until("the second app", Duration::from_secs(5), || {
+        !local::processes_running(&bed.plan.executable()).is_empty()
+    });
+    std::fs::write(bed.files.work.join("go-on"), "").unwrap();
+    assert!(!installer.wait().unwrap().success());
+    let log = std::fs::read_to_string(&bed.files.log).unwrap();
+    assert_eq!(bed.installed(), "0.1.0", "{log}");
+    assert!(!bed.ran("0.2.0"), "{log}");
+    let outcome = Outcome::read(&bed.files.outcome()).unwrap();
+    assert_eq!((outcome.kind, outcome.why.as_str()), (OutcomeKind::NotInstalled, "app_reopened"), "{log}");
+    assert!(new_app_in(&bed.plan.beside).exists(), "still staged");
+    assert!(!bed.files.before().exists(), "the record's copy is taken away");
+    drop(second);
+}
+
+/// Failure: going back swaps the old app over a copy of the new one that someone opened after the rollback's recheck, while it runs. Held once the record's put back, a second app comes up; the last look sees it, nothing's swapped, and both bundles and the plan are kept for the next launch.
+#[test]
+fn an_app_opened_while_going_back_is_not_replaced() {
+    let mut bed = Bed::new("opened-going-back", "misreads");
+    bed.plan.handed_off_tabs = Some(2);
+    let mut gone = Command::new("/usr/bin/true").spawn().unwrap();
+    gone.wait().unwrap();
+    bed.plan.pid = gone.id();
+    bed.plan.write(&bed.files.plan()).unwrap();
+    let mut installer = bed.dir.own(
+        Command::new(installer_in(&bed.app))
+            .arg("install")
+            .arg(bed.files.plan())
+            .env(recto_update::install::PAUSE_AT_ENV, "record_restored")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait_until("the installer to put the record back", Duration::from_secs(30), || {
+        bed.files.work.join("paused").exists()
+    });
+    let second = bed.dir.own(
+        Command::new(bed.plan.executable())
+            .args([
+                "test-app",
+                "0.2.0",
+                "hangs",
+                bed.files.work.to_str().unwrap(),
+                bed.dir.join("nowhere").to_str().unwrap(),
+            ])
+            .spawn()
+            .unwrap(),
+    );
+    wait_until("the second app", Duration::from_secs(5), || {
+        !local::processes_running(&bed.plan.executable()).is_empty()
+    });
+    std::fs::write(bed.files.work.join("go-on"), "").unwrap();
+    assert!(!installer.wait().unwrap().success());
+    let log = std::fs::read_to_string(&bed.files.log).unwrap();
+    assert_eq!(bed.installed(), "0.2.0", "{log}");
+    assert_eq!(bed.kept().as_deref(), Some("0.1.0"), "{log}");
+    let outcome = Outcome::read(&bed.files.outcome()).unwrap();
+    assert_eq!((outcome.kind, outcome.why.as_str()), (OutcomeKind::CouldntGoBack, "app_exit_unproven"), "{log}");
+    assert!(bed.files.plan().exists(), "the plan is kept for the next launch");
+    assert!(bed.files.before().join(".whole").exists(), "{log}");
+    drop(second);
 }
 
 /// Failure: a damaged plan moves something. The installer takes nothing from a file that doesn't make sense.

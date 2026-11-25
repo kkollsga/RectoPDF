@@ -10,26 +10,38 @@ A reference is a short token that names a page by its content as well as its num
 
 **Unsaved edits.** A reference names a page of the tab's own file. `ref N` counts pages as the tab shows them and finds the file page standing there; `resolve` answers `file_page` (of the file on disk) and `page` (its place in the tab now), which is null when unsaved edits removed it. A spot's rectangle is in the file's shown frame, before any unsaved turn, and the answer's `note` says so.
 
-**Cost and safety.** Nothing is kept: no state, cache, thread, event or per-tab field. The session lock is held only inside `tab_file`; the file is then opened by its own descriptor (`recto_session::identify::Opened`), read under `ScanCaps::STANDARD` (256 MiB of page reads, at most 200,000 pages), and its stamp is checked again after. The token is never logged: `log_details` holds the tab and the page number the token hints at.
+**Cost and safety.** Nothing is kept: no state, cache, thread, event or per-tab field. The session lock is held only inside `tab_file`; the file is then opened by its own descriptor (`recto_session::identify::Opened`), read under `ScanCaps::STANDARD` (1 GiB of page reads, at most 200,000 pages), and its stamp is checked again after. The token is never logged: `log_details` holds the tab and the page number the token hints at.
 
 **Measured** (`crates/recto-core/examples/locator_scan.rs`, release build, a reference whose page is gone, so every page is read):
 
-2026-11-25, load 6 to 8 (other workers building and testing beside it), a single run each, so an estimate and not a distribution.
+2026-11-25, load about 6.1 before and after (other workers building and testing beside it), a single run each, so an estimate and not a distribution. Scan cap 1 GiB.
 
 | File | Size | Pages | Open | Resolve | Pages read | Bytes read | Answer |
 |---|---|---|---|---|---|---|---|
-| `gov_nasa_ntrs20240002628.pdf`, the most pages in bench100 | 97 MiB | 383 | 7 ms | 1,027 ms | 359 | 269,070,134 | `incomplete` (stopped at 256 MiB of reads, 24 pages short) |
-| `gov_usgs_usgs70277338.pdf`, the 330 MiB map | 330 MiB | 1 | 1 ms | 225 ms | 1 | 119,948,577 | `incomplete` (its one page came back with no identity) |
+| `gov_nasa_ntrs20240002628.pdf`, the most pages in bench100 | 97 MiB | 383 | 12 ms | 810 ms | 383 | 277,389,770 | `incomplete`: every page was read, but four pages (zero-based 127, 137, 156, 197) have no identity under `page_id::Caps::STANDARD` |
+| `gov_usgs_usgs70277338.pdf`, the 330 MiB map | 330 MiB | 1 | 4 ms | 191 ms | 1 | 119,948,577 | `incomplete` (its one page came back with no identity); `reference` to it is `NoIdentity` |
 
-Both are far under 10 s. Peak `phys_footprint` of the whole process for one scan (review 2, 2026-11-25, release build, load 4 to 6, two runs of the NASA report and one of the map): 6.2 MiB on the NASA report and 4.0 MiB on the map, since the file is mapped and not copied. The scan is bounded by `ScanCaps` (256 MiB of reads), not by memory.
+Both are far under 10 s. Peak `phys_footprint` of the whole process for one scan (this run, release build, load about 6.1, one run each): 6.2 MiB on both, since the file is mapped and not copied; the same 6.2 MiB as at the 256 MiB cap. The scan is bounded by `ScanCaps` (1 GiB of reads, which bounds time, not memory), not by memory.
 
 ## Known limits
 
-- On the 383-page NASA report (97 MiB) a page that is really gone answers `incomplete`, not `gone`: the scan read 359 pages and 269,070,134 bytes and stopped at the 256 MiB cap, 24 pages short. A page read is charged more bytes than the file holds; why was not looked into. `gone` is only reachable where the whole identity read fits in 256 MiB.
-- The 330 MiB USGS map has one page, and that page has no identity (resolve answered `incomplete` after 119,948,577 bytes), so it can't be referenced with certainty; a `ref` to it would probably be `not_referenceable` (not tried).
+- On the 383-page NASA report (97 MiB) a page that is really gone still answers `incomplete`, and the scan cap is no longer the reason. At 256 MiB the scan stopped 24 pages short, because a stream a page draws is charged each time it is drawn (a 97 MiB file costs 277 MB to read through). At 1 GiB it reads all 383 pages (277,389,770 bytes), and four of them (zero-based 127, 137, 156, 197; charged 634,024, 200,868, 384,324 and 166,147 bytes) come back from `page_id::read_page` with no identity under `page_id::Caps::STANDARD`. Why is not known and is a `page_id` question (a per-page or per-stream cap, or a filter it can't read). `gone` is reachable only where every page has an identity.
+- The 330 MiB USGS map has one page, and that page has no identity: resolve answers `incomplete` after 119,948,577 bytes and `reference` to it is `NoIdentity`, so it can't be referenced with certainty.
 - `resolve`'s `page` is as the tab shows it, which may be the old bytes before the app has looked, the same as `text`.
-- Both go to the plan as follow-ups; nothing was changed for them.
+- Both identity gaps go to the plan as follow-ups; nothing in `page_id` was changed for them.
 
 ## Tests
 
 `crates/recto-agent/src/commands/locating.rs` (the token's refusals, its example, its log) and `crates/recto-app/src/core/headless/locating.rs` (moved, gone, ambiguous, unsaved edits, a changed file, the owner's edits untouched at every level, a protected document, the CLI's words).
+
+## `--ref` on `text` and `render`
+
+`recto text --ref <ref>` and `recto render --ref <ref> --out <file>` read the page a reference points at now, in place of a page number. They resolve through the same resolver as `resolve` (`crates/recto-agent/src/locating.rs`, `page_of`, `ScanCaps::STANDARD`) and then read through the same `locate` path as a page number, so the levels (`text` Read-only, `render` Full), `DRAWS`, `READS_PAGES`, the protected-document refusal and `render`'s file rules are the commands' own and are not repeated for `--ref`.
+
+**Page or `--ref`, not both.** The line carries `page` or `ref`; both or neither is `usage` (exit 2) in the command's own words. A token that can't be a reference is refused as the line is read (`bad_reference`, or `reference_too_new`), before the level or the tab is asked, and its words never repeat it. A reference's spot or characters don't narrow `text` or `render`: they read the whole page.
+
+**Only a page gives a read.** `found` and `moved` give a page. `gone`, `ambiguous`, `incomplete`, and a page that unsaved edits removed from the tab are each refused with their own constant words as `reference_unresolved` (exit 3, not found), and nothing is drawn or told to the host as drawn (this is about the unresolved case only: once a page is read, the draw happened and is told, and a refusal after it, for a changed file, doesn't undo that). The next step says `recto resolve` shows where the reference points and lists any candidates. A `document: different` answer still reads; the answer says so.
+
+**The answer** carries `ref: { status, was_page, file_page, document }` (no token), and `page` is the page's place in the tab as it was found. The tab is settled once, where the reference is found (`--tab` is resolved there, and the active tab moving later changes nothing, as for a page number). Before the read, the page the tab gives for that place must be the page that was found (`agree`): if a page added from another PDF or another page of the file stands there, the refusal is `file_changed`, "The tab changed while the reference was being found. Try again." (the only place those words are used). The file's stamp is checked after the read (`still_located`): if the file changed since the page was found, the refusal is `file_changed`, "The file changed while it was being read. Try again." For `render`, the picture this command wrote is taken away when that refusal is made (exactly `--out`, which it created), so a retry isn't `output_exists`. The session lock is held only where `resolve` holds it (inside `tab_file` and the page lookup), never during the scan. The activity log holds `ref_page` (the page the token hints at), never the token.
+
+**Not yet:** `goto`, `highlight`, `select`, `copy`, `snapshot`, `export svg` and `images` take a page only; each follows this pattern when it is given the flag.

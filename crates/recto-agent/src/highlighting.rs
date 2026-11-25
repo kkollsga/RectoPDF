@@ -555,7 +555,7 @@ mod tests {
             let out = dir.join(format!("{name}.png"));
             let render = crate::commands::export::Render {
                 tab: TabRef::default(),
-                page: 1,
+                at: crate::commands::locating::PageOrRef::Page(1),
                 scale: 1.0,
                 out: out.clone(),
                 anyway: false,
