@@ -540,9 +540,9 @@ fn cleanups_wait_for_a_copys_exit_is_the_bound_a_quiet_run_arms_its_watch_in() {
 
 /// Failure: cleanup gives a copy its program back at the first slow moment, so a run that arms its watch after that finds its program present, never sees it
 /// go, and lives on (the harness bug behind the 5 s cap: `cancel` restored the program as a new inode when its time ran out). The run here arms only after
-/// the program is absent, as a copy still starting does. What it pins and what it doesn't: the old `cancel` also kept the lease until the exit or its cap,
-/// so this passes on the old code too; it holds the wait on the exit by `kevent` (no polling), that no signal is sent, and the byte-for-byte restore.
-/// The cap itself is held by `cleanups_wait_for_a_copys_exit_is_the_bound_a_quiet_run_arms_its_watch_in`.
+/// the program is absent, as a copy still starting does. Also the failures it names: a copy dropped at the identity check (cleanup says Ok while the copy
+/// still runs) and a cleanup that never looks at the copy. It holds the wait on the exit by `kevent` (no polling), that no signal is sent, and the
+/// byte-for-byte restore. Not the cap: that is held by `cleanups_wait_for_a_copys_exit_is_the_bound_a_quiet_run_arms_its_watch_in`.
 #[cfg(unix)]
 #[test]
 fn a_run_that_arms_its_watch_late_still_ends_by_the_lease_and_the_program_is_restored() {

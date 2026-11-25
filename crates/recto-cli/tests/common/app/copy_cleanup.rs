@@ -149,10 +149,10 @@ pub const EXIT_CAP: Duration = Duration::from_secs(40);
 
 /// Takes the program away (the lease), waits for every run of it to exit, and puts it back. The lease is kept until the exit, not given back at the
 /// first sign of slowness: a run that arms its watch after the program is back never sees it go and lives on. Each wait is one `kevent` on the
-/// processes' own exit; after each exit it looks again, for a launch still in flight. No PID is signalled.
+/// processes' own exit. No PID is signalled.
 ///
-/// Known limit: while the program is unlinked the system tells no path for a running copy (`proc_pidpath` is empty), so `observe_missing_program_processes`
-/// cannot see a launch that begins during the lease. Only the runs seen before it, and those the first look after it finds, are waited for.
+/// Known limit: only the runs in `initial`, observed before the lease, are waited for. While the program is unlinked the system tells no path for a running
+/// copy (`proc_pidpath` is empty), so no look during the lease can find a copy; one launched after `end`'s observation is not waited for.
 #[cfg(unix)]
 pub fn cancel(root: &Path, program: &Path, initial: &[u32], wait: Duration) -> Result<(), String> {
     cancel_by(root, program, initial, wait, start_time)
@@ -167,6 +167,7 @@ pub fn start_time(pid: u32) -> Option<(i64, i64)> {
     // SAFETY: observation only; `info` is a zeroed plain struct, filled by the call with exactly its size.
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     let size = size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: `info` is exactly `size` bytes of a plain struct the call fills, and the pid is only a number; nothing else is read or written.
     let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
     (got == size).then_some((info.pbi_start_tvsec as i64, info.pbi_start_tvusec as i64))
 }
@@ -177,20 +178,14 @@ pub fn cancel_by(root: &Path, program: &Path, initial: &[u32], wait: Duration, s
     let lease = Lease::remove(root, program)?;
     let deadline = Instant::now() + wait;
     let mut alive: Vec<(u32, (i64, i64))> = Vec::new();
-    let take = |alive: &mut Vec<(u32, (i64, i64))>, pid: u32| {
-        if !alive.iter().any(|(known, _)| *known == pid)
-            && let Some(at) = started(pid)
-        {
-            alive.push((pid, at));
-        }
-    };
     for pid in initial {
-        take(&mut alive, *pid);
+        if !alive.iter().any(|(known, _)| known == pid)
+            && let Some(at) = started(*pid)
+        {
+            alive.push((*pid, at));
+        }
     }
     let ended = loop {
-        for pid in recto_platform::local::observe_missing_program_processes(program) {
-            take(&mut alive, pid);
-        }
         alive.retain(|(pid, at)| started(*pid) == Some(*at));
         if alive.is_empty() {
             break true;
