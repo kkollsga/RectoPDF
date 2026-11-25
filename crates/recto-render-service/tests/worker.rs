@@ -660,17 +660,11 @@ fn checks_past_their_deadline_cant_stop_a_document_drawing() {
     assert!(doc.page_size(0).is_ok(), "the document hasn't been stopped");
 }
 
-/// Failure (seen in a full check at load 11, `checks_past_their_deadline_cant_stop_a_document_drawing`): a page's text read runs out of time because the Mac is too busy to give its worker the processor, and the page is remembered as unreadable for the rest of the session, so selecting and copying it say "took too long" though nothing's wrong with it. A worker that got under half its deadline in processor time is the Mac being busy, as an open already reckons it: counted as that, not remembered, and read again when it's next asked. Made here by stopping the worker, so it has no processor time at all.
+/// Failure (seen in a full check at load 11, `checks_past_their_deadline_cant_stop_a_document_drawing`): a page's text read runs out of time because the Mac is too busy to give its worker the processor, and the page is remembered as unreadable for the rest of the session, so selecting and copying it say "took too long" though nothing's wrong with it. A worker that got under half its deadline in processor time is the Mac being busy, as an open already reckons it: counted as that, not remembered, and read again when it's next asked. Made here by stopping the worker, so it has no processor time at all. Only the read to the stopped worker is short of time (the seam); the read again runs on a fresh worker under the ordinary deadline, so no machine speed decides it (a whole renderer at 400 ms lost its ordinary reads under CI's limits).
 #[test]
 fn a_read_the_mac_was_too_busy_for_is_tried_again() {
     let file = TempPdf::new("busy-read.pdf", &pages(&[Page::new(text_lines(&["one"])), Page::new(text_lines(&["two"]))]));
-    let mut doc = renderer(
-        &file.0,
-        Policy {
-            page_deadline: Duration::from_millis(400),
-            ..Policy::default()
-        },
-    );
+    let mut doc = renderer(&file.0, Policy::default());
     doc.page_size(0).unwrap();
     let pid = doc.worker_pid().expect("a worker with the file open");
     assert!(
@@ -681,7 +675,8 @@ fn a_read_the_mac_was_too_busy_for_is_tried_again() {
             .unwrap()
             .success()
     );
-    let stopped = doc.page_characters(1, true, false);
+    let stopped =
+        recto_render_service::under_page_deadline_for_test(&mut doc, |doc| doc, Duration::from_millis(250), |doc| doc.page_characters(1, true, false));
     assert!(
         matches!(
             stopped,
@@ -690,27 +685,17 @@ fn a_read_the_mac_was_too_busy_for_is_tried_again() {
                 reason: KillReason::Deadline
             })
         ),
-        "{stopped:?}"
+        "{stopped:?}, {:?}",
+        doc.stats()
     );
     assert!(doc.stats().too_busy >= 1, "counted as the Mac being busy: {:?}", doc.stats());
-    // Read again. Under a full check's load the new worker can be too busy for its 400 ms as well (seen 2026-11-11, at load 20+), and that's the
-    // same thing again, not the page being remembered: a second try is allowed, as two busy reads in a row are still under the three that would be.
-    let mut again = doc.page_characters(1, true, false);
-    if matches!(
-        again,
-        Err(RenderFailure::PageReadFailed {
-            reason: KillReason::Deadline,
-            ..
-        })
-    ) {
-        assert!(doc.stats().too_busy >= 2, "a deadline again is only ever the Mac being busy: {:?}", doc.stats());
-        again = doc.page_characters(1, true, false);
-    }
-    let again = again.unwrap_or_else(|failure| panic!("read again, on a worker that has the processor: {failure:?}"));
+    let again = doc
+        .page_characters(1, true, false)
+        .unwrap_or_else(|failure| panic!("read again, on a worker that has the processor: {failure:?}, {:?}", doc.stats()));
     assert!(!again.chars.is_empty());
 }
 
-/// Failure (review 1): busy reads count towards the kills that stop a document, so a busy Mac stops a document drawing; or a page whose worker hangs every time, which looks just like a busy Mac, costs a deadline for every ask for ever. Busy kills don't count towards stopping, and three busy reads of a page in a row remember it as unreadable after all.
+/// Failure (review 1): busy reads count towards the kills that stop a document, so a busy Mac stops a document drawing; or a page whose worker hangs every time, which looks just like a busy Mac, costs a deadline for every ask for ever. Busy kills don't count towards stopping, and three busy reads of a page in a row remember it as unreadable after all. Only the read to the stopped worker is short of time (the seam); before, the whole renderer had 400 ms and the ordinary read of another page on each fresh worker had to beat that, and lost under CI's limits (run 45627104175; like-ci 3 of 40 at load 10).
 #[test]
 fn busy_reads_dont_stop_a_document_and_three_in_a_row_are_remembered() {
     let list: Vec<Page> = (0..6).map(|at| Page::new(text_lines(&[&format!("page {at}")]))).collect();
@@ -718,14 +703,13 @@ fn busy_reads_dont_stop_a_document_and_three_in_a_row_are_remembered() {
     let mut doc = renderer(
         &file.0,
         Policy {
-            page_deadline: Duration::from_millis(400),
             max_kills_per_document: 2,
             ..Policy::default()
         },
     );
     for (round, other) in [2u32, 3, 4].into_iter().enumerate() {
         doc.page_characters(other, false, false)
-            .unwrap_or_else(|failure| panic!("round {round}: {failure:?}"));
+            .unwrap_or_else(|failure| panic!("round {round}: {failure:?}, {:?}", doc.stats()));
         let pid = doc.worker_pid().expect("a worker");
         assert!(
             std::process::Command::new("/bin/kill")
@@ -735,7 +719,8 @@ fn busy_reads_dont_stop_a_document_and_three_in_a_row_are_remembered() {
                 .unwrap()
                 .success()
         );
-        let busy = doc.page_characters(1, false, false);
+        let busy =
+            recto_render_service::under_page_deadline_for_test(&mut doc, |doc| doc, Duration::from_millis(250), |doc| doc.page_characters(1, false, false));
         assert!(
             matches!(
                 busy,
@@ -744,10 +729,13 @@ fn busy_reads_dont_stop_a_document_and_three_in_a_row_are_remembered() {
                     reason: KillReason::Deadline
                 })
             ),
-            "round {round}: {busy:?}"
+            "round {round}: {busy:?}, {:?}",
+            doc.stats()
         );
+        assert_eq!(doc.stats().too_busy, round as u32 + 1, "round {round}: {:?}", doc.stats());
     }
     assert!(doc.stats().too_busy >= 3, "{:?}", doc.stats());
+    assert!(doc.stats().deadline_kills >= 3, "{:?}", doc.stats());
     assert!(
         doc.page_size(5).is_ok() && doc.page_characters(5, false, false).is_ok(),
         "three kills past an allowance of two, and the document still reads: {:?}",
