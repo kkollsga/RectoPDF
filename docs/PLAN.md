@@ -93,6 +93,8 @@ Seven branches, each with two independent review rounds; one full check (3,597 +
 - [x] Updater: `pbi_name` is trusted only where it agrees with `pbi_comm` (a process can rename itself); the app's executable name is held under 15 bytes at compile time.
 - [x] Tests that pinned a machine's speed now assert the rule: the helper's QoS CPU time (not `ps`'s current priority, which a kernel lock promotion lifts to 46), and the print test kit's patience as the product's own bound for a print; the print-file test checks the print's own file, not a racy listing.
 
+- [x] Test harness (merged 2026-11-26, `build/copy-forgotten-wait`): a copy's cleanup waited a fixed 5 s for a just-opened copy to notice its program was deleted, which a starved start passes; now it keeps the lease until each observed run's own exit (by start time and kevent, since `proc_pidpath` is empty once the program is unlinked, measured) up to `READY_WAIT + EXIT_GRACE`. Passing runs end at the exit, so CI is not slower.
+
 Open follow-ups recorded overnight (not done):
 - Removal D2e (purge adapter): `survey_backups` checks the folder with `symlink_metadata` then `read_dir` follows a swapped-in link; harmless while read-only, but purge must list and recheck through a no-follow descriptor (design §4).
 - Removal D2b: `Link::At` paths must be the canonical path `backup_of` hashes (`save/backups.rs:60`); say who canonicalizes (a non-canonical path reads Unknown and refuses: safe, but a false refusal).
